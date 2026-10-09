@@ -1,0 +1,56 @@
+{
+  "_comment": "Synthetic domain fixture. Generic examples only; no private or real personal data.",
+  "sessions": [
+    {
+      "title": "Synthetic planning session",
+      "startedAt": "2026-01-01T09:00:00.000Z",
+      "endedAt": null,
+      "timeZone": "Europe/London",
+      "entries": [
+        {
+          "sequence": 1,
+          "role": "user",
+          "text": "Book the venue for the spring workshop and confirm the caterer.",
+          "capturedAt": "2026-01-01T09:01:00.000Z",
+          "sourceRef": {
+            "label": "Pasted note",
+            "availability": "present",
+            "sourceTimestamp": "2026-01-01T08:59:00.000Z"
+          }
+        },
+        {
+          "sequence": 2,
+          "role": "user",
+          "text": "The supplier résumé arrived by email but the attachment is unavailable.",
+          "capturedAt": "2026-01-01T09:05:00.000Z",
+          "sourceRef": {
+            "label": "Email export",
+            "provider": "synthetic-mail",
+            "externalId": "msg-0001",
+            "availability": "missing"
+          }
+        }
+      ]
+    }
+  ],
+  "commitments": [
+    {
+      "title": "Confirm the venue",
+      "notes": "Ask about the accessibility entrance.",
+      "dueAt": "2026-01-03T17:00:00.000Z",
+      "timeZone": "Europe/London",
+      "sourceSessionIndex": 0,
+      "sourceEntrySequence": 1
+    },
+    {
+      "title": "Review the agenda",
+      "notes": "",
+      "dueAt": null,
+      "timeZone": "Europe/London"
+    }
+  ],
+  "preferences": {
+    "recall.limit": "20",
+    "notify.grant": "native.notify"
+  }
+}

@@ -257,9 +257,13 @@ test('CONNECTED logout closes only that client stream; disconnect only detaches 
     await gate.waiting;
     const own = await f.call(`/chat/${run.runId}/events`, {}); const ownEnd = own.text();
     const other = await f.newClient(); const otherEvents = await f.call(`/chat/${run.runId}/events`, {}, 'subscriber', { Cookie: other.cookie, 'X-Didi-CSRF': other.csrf });
-    const reader = otherEvents.body!.getReader(); assert.ok((await reader.read()).value); await reader.cancel(); reader.releaseLock();
+    let otherClosed = false; const otherEnd = otherEvents.text().then(text => { otherClosed = true; return text; });
+    const detachable = await f.call(`/chat/${run.runId}/events`, {}, 'detachable', { Cookie: other.cookie, 'X-Didi-CSRF': other.csrf });
+    const reader = detachable.body!.getReader(); assert.ok((await reader.read()).value); await reader.cancel(); reader.releaseLock();
     assert.equal((await f.call('/auth/logout', {})).status, 200); await ownEnd;
-    await f.rebootstrap(); gate.release(); assert.equal((await final(f, run.runId)).run.outcome, 'complete'); assert.equal(f.captured.length, 1);
+    await new Promise<void>(resolveImmediate => setImmediate(resolveImmediate)); assert.equal(otherClosed, false, 'Logout must leave another authenticated live subscriber open');
+    await f.rebootstrap(); gate.release(); assert.match(await otherEnd, /"outcome":"complete"/);
+    assert.equal((await final(f, run.runId)).run.outcome, 'complete'); assert.equal(f.captured.length, 1);
     assert.equal((await (await f.call(`/sessions/${c.sessionId}`)).json()).data.entries.length, 2);
   } finally { gate.release(); await f.close(); }
 });

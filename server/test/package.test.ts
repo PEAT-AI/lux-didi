@@ -94,9 +94,11 @@ function verify(base: string) {
     assert.ok(licenses.length,`No upstream license file: ${path}`);
     for (const license of licenses) assert.deepEqual(readFileSync(join(base,path,license)),readFileSync(join(root,path,license)),`Missing/changed license: ${path}/${license}`);
   }
+  assert.deepEqual(actualFiles.sort(),packed.files.map(file => file.path).sort(),'Changed archive inventory');
   for (const path of actualFiles) {
     assert.ok(!path.split('/').some(part => part.startsWith('.') || /^(secrets?|credentials?|private)$/i.test(part)),`Private/hidden content: ${path}`);
     assert.ok(!/\.node$/.test(path),`Unverified native runtime: ${path}`);
+    if (path.startsWith('node_modules/')) assert.deepEqual(readFileSync(join(base,path)),readFileSync(join(root,path)),`Runtime byte mismatch: ${path}`);
   }
 }
 function unpack(tarball: string, name: string): string {
@@ -124,6 +126,7 @@ function install(tarball: string, name: string) {
 }
 
 before(() => {
+  cleanRuntime(root);
   packed = JSON.parse(run('npm',['pack','--json','--offline','--ignore-scripts','--pack-destination',scratch]))[0] as Pack;
   archive = join(scratch,packed.filename);
   extracted = unpack(archive,'original');
@@ -138,7 +141,7 @@ test('artifact matches locked runtime closure, compiled service, inventory and l
   assert.equal(statSync(archive).size,packed.size);
   assert.equal(inventory.reduce((sum,item)=>sum+item.size,0),packed.unpackedSize);
   const digest = createHash('sha256').update(JSON.stringify(inventory)).digest('hex');
-  console.log(`ARTIFACT ${JSON.stringify({name:packed.filename,node:process.version,platform:`${process.platform}/${process.arch}`,runtimePackages:closure().length,files:inventory.length,compressedBytes:packed.size,unpackedBytes:packed.unpackedSize,inventorySha256:digest,closure:closure().map(path=>({path,version:lock.packages[path]!.version,license:lock.packages[path]!.license}))})}`);
+  console.log(`ARTIFACT ${JSON.stringify({name:packed.filename,node:process.version,platform:`${process.platform}/${process.arch}`,runtimePackages:closure().length,files:inventory.length,compressedBytes:packed.size,unpackedBytes:packed.unpackedSize,archiveSha256:createHash('sha256').update(readFileSync(archive)).digest('hex'),inventorySha256:digest,closure:closure().map(path=>({path,version:lock.packages[path]!.version,license:lock.packages[path]!.license,licenseFiles:readdirSync(join(root,path)).filter(name=>/^(licen[sc]e|copying|notice)([.-]|$)/i.test(name)),files:inventory.filter(file=>file.path.startsWith(`${path}/`)).length}))})}`);
 });
 
 test('artifact installed offline exposes and uses the real MCP adapter', async () => {
@@ -192,6 +195,11 @@ test('artifact negative: tampered version and inventory are rejected', () => {
   assert.throws(()=>verify(changed.base),/Wrong version/);
   const extra = altered('private-file',base => writeFileSync(join(base,'.env'),'SYNTHETIC=not-a-secret\n'));
   assert.throws(()=>verify(extra.base),/Unexpected\/missing service files|Private\/hidden content/);
+  const runtimeFile = files(join(root,'node_modules/@modelcontextprotocol/client')).find(path => path.endsWith('.js'))!;
+  const absent = altered('missing-runtime-file',base => rmSync(join(base,relative(root,runtimeFile))));
+  assert.throws(()=>verify(absent.base),/Changed archive inventory/);
+  const tampered = altered('tampered-runtime-file',base => writeFileSync(join(base,relative(root,runtimeFile)),'/* synthetic tampering */\n'));
+  assert.throws(()=>verify(tampered.base),/Runtime byte mismatch/);
 });
 
 test('artifact negative: polluted input tree is rejected before it can be trusted', () => {

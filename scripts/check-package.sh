@@ -2,6 +2,10 @@
 set -euo pipefail
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 cd "$(dirname "$0")/.."
+if test -n "$(git status --porcelain -- server scripts/check-package.sh docs/service-packaging.md)"; then
+  echo 'Package check requires clean, committed package source' >&2
+  exit 1
+fi
 # Only committed source and a fresh, explicit builder cache can feed the artifact.
 work=$(mktemp -d "${TMPDIR:-/tmp}/didi-package.XXXXXX")
 trap 'rm -rf "$work"' EXIT
@@ -11,6 +15,7 @@ builder="$work/source/server"
 export npm_config_cache="$work/builder-cache"
 printf 'PACKAGE_SOURCE=%s NODE=%s NPM=%s PLATFORM=%s\n' "$(git rev-parse HEAD)" "$(node --version)" "$(npm --version)" "$(node -p 'process.platform+"/"+process.arch')"
 (cd "$builder" && npm ci --ignore-scripts --no-audit --no-fund && npm run typecheck && npm run build)
+cp -R "$builder/dist" "$work/exact-dist"
 # The repository tsconfig deliberately enumerates tests. Extend it only in the
 # disposable builder; do not change service compilation or another lane's tests.
 node --input-type=module - "$builder" <<'NODE'
@@ -20,6 +25,7 @@ const config = JSON.parse(readFileSync(`${root}/tsconfig.json`, 'utf8'));
 writeFileSync(`${root}/tsconfig.package.json`, JSON.stringify({extends:'./tsconfig.json', include:[...config.include, 'test/package.test.ts']}));
 NODE
 (cd "$builder" && npm exec --offline -- tsc -p tsconfig.package.json)
+diff -qr -x test "$work/exact-dist" "$builder/dist"
 cp "$builder/package.json" "$builder/package-lock.json" "$work/runtime/"
 cp -R "$builder/dist" "$work/runtime/dist"
 mkdir -p "$work/runtime/adapters/mcp"

@@ -123,28 +123,36 @@ service pair owns applying them to actual static serving; matching tests do not
 prove accepted-service deployment. Native owns exact navigation allowlisting,
 nonpersistent WKWebsiteDataStore, cookie bootstrap and window lifecycle.
 
-## Familiar orb, honest voice state (WEB-R2)
+## Familiar orb, honest voice state (WEB-R2 / WEB-R4)
 
-`src/orb.ts` is one Didi-owned, framework-independent Canvas 2D renderer. It
-implements the classic warm-plasma/tendril behavior and narrow state/meter
-interface described by the bounded ORB-REUSE scouting report, pinned to Naya's
-Vicuna main `f27bca7bcbc77a77e3401da2683abf2f1aaf023c`. **No private implementation
-source, historical image, branding, prompt, Angular wrapper or dependency was
-copied**; this is behavior/interface reuse, not pixel-parity or source-extraction
-proof. Verbatim reuse remains gated on source-rights clearance.
+`src/orb-classic.ts` reuses bounded first-party procedural drawing/helpers from
+Vicuna/Naya at `f27bca7bcbc77a77e3401da2683abf2f1aaf023c`, explicitly authorized by
+WEB-R4. `src/orb.ts` owns the framework-independent Canvas lifecycle and Didi
+state adapter. Provenance, exact line ranges and deliberate adaptations are in
+`src/orb-provenance.md`. No Angular, Sentry, persona, screenshot or private app
+configuration was copied. It is a bounded classic renderer adaptation, not a
+pixel-identical extraction of all visual effects or a new WebGL2 implementation.
+
+The closure retains the classic noise-deformed layered core, luminous glow,
+radial tentacles, current frame-delta clamp, asymmetric smoothing time constants,
+and speaking activity/offset helpers. `simplex-noise` 4.0.3 supplies the isolated
+noise function instead of the source's unprovenance inline noise class; its MIT
+notice is in `public/third-party-notices.txt` and linked in Settings.
 
 States separate connecting/thinking, idle/connected, listening, speaking and
 quiet/error/disconnected. A latest normalized audio frame has
 `level/low/mid/high/flux/timestamp`; processing with level above 0.01 has speaking
 posture, otherwise thinking. Current production inputs are always silent; only
 real service connection/request activity is mapped. The orb **never claims
-listening or speaking** without actual audio. The visible caption says **Not
-listening**, and points to the native Mac record control. No audio permission,
-record control or fabricated microphone/FFT data is added to the web UI.
+listening or speaking** without actual audio. The caption says **Not listening**,
+and points to the native Mac record control. No audio permission, record control
+or fabricated microphone/FFT data is added to the web UI.
 
-Animation uses time-based level smoothing with a clamped frame delta, six layers,
-a capped pixel ratio, no per-sample DOM rerender, and requestAnimationFrame.
-Reduced-motion draws one static frame; hidden documents stop animation. Renderer
-teardown removes observers/listeners and cancels its own frame. The browser check
-pins actual nonempty Canvas paint, idle/not-listening, and static reduced-motion
-frames. WKWebView appearance/runtime proof remains companion integration work.
+Animation uses clamped delta-corrected asymmetric smoothing, a 24fps idle/30fps
+active draw budget, capped pixel ratio, no per-sample DOM rerender, and
+requestAnimationFrame. Reduced-motion draws one static frame; hidden documents
+stop animation. Teardown removes observers/listeners and cancels its frame. The
+browser check pins actual paint, idle/not-listening, static reduced-motion frames
+and actual normal-host idle draw cost against its frame budget, recorded to
+`orb-frame-budget.json`. No synthetic load or audio capture is used. WKWebView
+appearance/runtime and actual voice delivery remain companion integration work.

@@ -1,9 +1,22 @@
 {
-  "name": "didi-web", "version": "0.1.0", "private": true, "type": "module",
-  "engines": {"node": ">=22.12.0"},
+  "name": "didi-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "scripts": {
-    "dev": "vite --host 127.0.0.1", "build": "tsc --noEmit && vite build",
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc --noEmit && vite build",
     "check": "npm run build && lux-browser-slot run --priority worker --want 1 --wait 240 -- node test/browser.mjs"
   },
-  "devDependencies": {"vite": "8.3.4", "typescript": "5.9.3", "playwright": "1.64.0"}
+  "devDependencies": {
+    "playwright": "1.64.0",
+    "typescript": "5.9.3",
+    "vite": "8.3.4"
+  },
+  "dependencies": {
+    "simplex-noise": "4.0.3"
+  }
 }

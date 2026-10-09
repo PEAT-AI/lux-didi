@@ -33,6 +33,10 @@ try {
     await page.getByText('Not listening',{exact:true}).waitFor();
     assert.equal(await page.getByRole('button',{name:/record|microphone/i}).count(),0);
     const hasPaint=await canvas.evaluate(el=>{const pixels=el.getContext('2d').getImageData(0,0,el.width,el.height).data;return pixels.some((v,i)=>i%4===3&&v>0);});assert(hasPaint);
+    await page.waitForFunction(()=>document.querySelector('#didi-orb').didiFrameStats().frames>=12);
+    const budget=await canvas.evaluate(el=>el.didiFrameStats());
+    await writeFile(`${artifacts}/orb-frame-budget.json`,JSON.stringify({mode:'normal host idle animation, 24fps draw budget; no artificial load',...budget},null,2));
+    assert(budget.meanDrawMs<1000/24,`Idle mean draw ${budget.meanDrawMs}ms exceeds 24fps budget`);
     await page.emulateMedia({reducedMotion:'reduce'});await page.waitForFunction(()=>document.querySelector('#didi-orb').dataset.motion==='still');
     const first=await canvas.evaluate(el=>el.toDataURL());
     await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));

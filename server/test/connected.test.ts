@@ -75,8 +75,9 @@ test('CONNECTED actual adapter/HTTP atomic private enrollment and whole-turn con
   try {
     const status = (await (await f.call('/chat/status')).json()).data; assert.deepEqual(status, { status: 'configured', provider: 'gemini', model: 'gemini-connected-test' });
     const local = (await (await f.call('/sessions', { title: 'EXCLUDED_OTHER_SESSION_CANARY', timeZone: 'UTC' }, 'local')).json()).data;
-    await f.call(`/sessions/${local.id}/entries`, { text: 'EXCLUDED_LOCAL_NOTE_CANARY', timeZone: 'UTC' }, 'local-entry');
-    await f.call('/commitments', { title: 'EXCLUDED_TODAY_CANARY', dueAt: null, timeZone: 'UTC' }, 'local-commitment');
+    assert.equal((await f.call(`/sessions/${local.id}/entries`, { text: 'EXCLUDED_LOCAL_NOTE_CANARY', role: 'user', timeZone: 'UTC' }, 'local-entry')).status, 200);
+    assert.equal((await (await f.call(`/sessions/${local.id}`)).json()).data.entries[0].text, 'EXCLUDED_LOCAL_NOTE_CANARY');
+    assert.equal((await f.call('/commitments', { title: 'EXCLUDED_TODAY_CANARY', dueAt: null, timeZone: 'UTC' }, 'local-commitment')).status, 200);
     const enrolled = await f.enroll();
     const replayEnrollment = await f.enroll(); assert.equal(replayEnrollment.sessionId, enrolled.sessionId);
     const domain = createDomainPort({ outbox: Outbox });
@@ -146,7 +147,7 @@ test('CONNECTED revoke while actual adapter awaits credentials makes zero transp
 test('CONNECTED unlabeled legacy append blocks without silently granting it consent', async () => {
   const f = await fixture();
   try {
-    const c = await f.enroll(); const legacy = await f.call(`/sessions/${c.sessionId}/entries`, { text: 'UNLABELED_LEGACY', timeZone: 'UTC' }, 'legacy'); assert.equal(legacy.status, 200);
+    const c = await f.enroll(); const legacy = await f.call(`/sessions/${c.sessionId}/entries`, { text: 'UNLABELED_LEGACY', role: 'user', timeZone: 'UTC' }, 'legacy'); assert.equal(legacy.status, 200);
     const before = (await (await f.call(`/sessions/${c.sessionId}`)).json()).data.entries.length;
     assert.equal((await f.call('/chat', { sessionId: c.sessionId, text: 'Never send unknown history.' })).status, 503);
     assert.equal((await (await f.call(`/sessions/${c.sessionId}`)).json()).data.entries.length, before); assert.equal(f.captured.length, 0); assert.equal(f.credentialCalls, 0);

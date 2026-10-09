@@ -306,7 +306,7 @@ test('canonical HOST symlink --help executes and ordinary module import never st
   const entry = resolve(import.meta.dirname, '../host/index.js');
   const alias = join(dir, 'canonical-host.js');
   const run = async (args: string[]) => {
-    const child = spawn(process.execPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, args, { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, DIDI_STATE_DIR: join(dir, 'unexpected-state'), DIDI_WEB_ROOT: webRoot, DIDI_PORT: '0' } });
     let stdout = '', stderr = '';
     child.stdout.on('data', chunk => { stdout += String(chunk); });
     child.stderr.on('data', chunk => { stderr += String(chunk); });
@@ -316,8 +316,8 @@ test('canonical HOST symlink --help executes and ordinary module import never st
   };
   try {
     await symlink(entry, alias);
-    assert.match(await run([alias, '--help']), /Usage: node server\/dist\/host\/index\.js/, 'Actual canonical host must execute --help through a symlink spelling');
     const url = new URL('../host/index.js', import.meta.url).href;
     assert.equal(await run(['--input-type=module', '--eval', `const host = await import(${JSON.stringify(url)}); if(typeof host.main!=='function') throw Error('Missing host export'); console.log('IMPORTED_WITHOUT_START');`]), 'IMPORTED_WITHOUT_START\n');
+    assert.match(await run([alias, '--help']), /Usage: node server\/dist\/host\/index\.js/, 'Actual canonical host must execute --help through a symlink spelling');
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

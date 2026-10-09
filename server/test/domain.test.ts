@@ -519,21 +519,32 @@ test('correction rollback: a failed correction restores the reminder, revision a
     ) as { id: string };
     assert.equal(h.store.transaction((tx) => Outbox.state(tx, `${c.id}:1`)), 'pending');
 
-    // The correction really supersedes :1 and inserts :2 before the failure.
-    assert.throws(() =>
-      h.store.transaction((tx) => {
-        const corrected = h.port.execute(
-          tx,
-          'updateCommitment',
-          { id: c.id, expectedRevision: 1, title: 'Changed', dueAt: '2026-02-02T09:00:00.000Z' },
-          context(nextNow()),
-        ) as { revision: number };
-        assert.equal(corrected.revision, 2);
-        assert.equal((tx.get('SELECT state FROM runtime_outbox WHERE id = ?', [`${c.id}:1`]) as { state: string }).state, 'superseded');
-        assert.equal((tx.get('SELECT state FROM runtime_outbox WHERE id = ?', [`${c.id}:2`]) as { state: string }).state, 'pending');
-        throw new Error('forced failure after supersession/insertion');
-      }),
+    // The correction supersedes :1 and inserts :2 for real, then the transaction
+    // is failed with a sentinel thrown only after those checkpoints are reached.
+    // The sentinel is matched by identity, so an early failure or a failed
+    // checkpoint can never be mistaken for the intentional abort.
+    const sentinel = new Error('forced failure after supersession/insertion');
+    let reachedCheckpoint = false;
+    let observed: { revision: number; older: string; newer: string } | null = null;
+    assert.throws(
+      () =>
+        h.store.transaction((tx) => {
+          const corrected = h.port.execute(
+            tx,
+            'updateCommitment',
+            { id: c.id, expectedRevision: 1, title: 'Changed', dueAt: '2026-02-02T09:00:00.000Z' },
+            context(nextNow()),
+          ) as { revision: number };
+          const older = (tx.get('SELECT state FROM runtime_outbox WHERE id = ?', [`${c.id}:1`]) as { state: string }).state;
+          const newer = (tx.get('SELECT state FROM runtime_outbox WHERE id = ?', [`${c.id}:2`]) as { state: string }).state;
+          observed = { revision: corrected.revision, older, newer };
+          reachedCheckpoint = true;
+          throw sentinel;
+        }),
+      (error: unknown) => error === sentinel,
     );
+    assert.equal(reachedCheckpoint, true, 'the transaction must reach the post-supersession checkpoint');
+    assert.deepEqual(observed, { revision: 2, older: 'superseded', newer: 'pending' });
 
     const after = h.store.transaction((tx) =>
       h.port.execute(tx, 'getCommitment', { id: c.id }, context(nextNow())),

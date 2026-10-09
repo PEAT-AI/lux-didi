@@ -111,6 +111,65 @@ def git_show(ref: str, path: str) -> str:
     return out.stdout
 
 
+def numbering_failures(nodes: list[dict], numbers: dict[str, int],
+                      observed: dict[str, dict]) -> list[str]:
+    """Validate the whole supplied mapping before anything is rendered or verified.
+
+    Every required node id needs one positive integer issue number, numbers are unique
+    across all nodes, and an observed identity is never renumbered.
+    """
+    failures: list[str] = []
+    seen: dict[int, str] = {}
+    for node in nodes:
+        node_id = node["id"]
+        number = numbers.get(node_id)
+        if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
+            failures.append(f"{node_id}: missing or non-positive issue number {number!r}")
+            continue
+        if number in seen:
+            failures.append(f"duplicate issue number {number}: {seen[number]} and {node_id}")
+        else:
+            seen[number] = node_id
+    for node_id, entry in sorted(observed.items()):
+        before = entry.get("number")
+        if before is None:
+            continue
+        after = numbers.get(node_id)
+        if after != before:
+            failures.append(f"{node_id}: observed number {before} changed to {after!r}")
+    return failures
+
+
+def observed_entries(issue_map: dict) -> dict[str, dict]:
+    return {node_id: entry["observed"] for node_id, entry in issue_map["nodes"].items()
+            if isinstance(entry.get("observed"), dict)}
+
+
+def numbering_controls(nodes: list[dict], numbers: dict[str, int],
+                       observed: dict[str, dict]) -> dict[str, bool]:
+    """Negative controls: a duplicated staged number and a missing number must fail."""
+    created = [n["id"] for n in nodes if n["id"] not in observed]
+    controls = {"duplicate_staged_rejected": False, "missing_number_rejected": False,
+                "duplicate_observed_rejected": False, "negative_number_rejected": False}
+    if len(created) >= 2:
+        mutated = dict(numbers)
+        mutated[created[1]] = mutated[created[0]]
+        controls["duplicate_staged_rejected"] = bool(numbering_failures(nodes, mutated, {}))
+    if created:
+        mutated = dict(numbers)
+        mutated.pop(created[0], None)
+        controls["missing_number_rejected"] = bool(numbering_failures(nodes, mutated, {}))
+        mutated = dict(numbers)
+        mutated[created[0]] = -1
+        controls["negative_number_rejected"] = bool(numbering_failures(nodes, mutated, {}))
+    if observed:
+        first = sorted(observed)[0]
+        mutated = dict(numbers)
+        mutated[first] = numbers[first] + 1000
+        controls["duplicate_observed_rejected"] = bool(numbering_failures(nodes, mutated, observed))
+    return controls
+
+
 def render_all(nodes: list[dict], numbers: dict[str, int]) -> dict[str, str]:
     children = children_of(nodes)
     return {node["id"]: readback_sha(render_body(node, numbers, children)) for node in nodes}
@@ -134,29 +193,34 @@ def verify_baseline(ref: str) -> dict:
             "matched": recorded - len(mismatched), "mismatched": mismatched}
 
 
-def verify_current() -> dict:
+def verify_current(map_path: Path | None = None) -> dict:
     backlog = json.loads((ROOT / "planning" / "backlog.json").read_text(encoding="utf-8"))
-    issue_map = json.loads((ROOT / "planning" / "issue-map.json").read_text(encoding="utf-8"))
+    issue_map = json.loads((map_path or (ROOT / "planning" / "issue-map.json")).read_text(
+        encoding="utf-8"))
     nodes = backlog["nodes"]
     numbers = numbers_from_map(issue_map)
+    observed = observed_entries(issue_map)
+
+    numbered = numbering_failures(nodes, numbers, observed)
+    controls = numbering_controls(nodes, numbers, observed)
     rendered = render_all(nodes, numbers)
 
     observed_numbers = set()
     staged_numbers = set()
-    mismatched: list[str] = []
+    mismatched: list[str] = list(numbered)
     counts = {"unchanged_reproduced": 0, "updated_changed": 0, "created_rendered": 0}
     for node in nodes:
         node_id = node["id"]
         entry = issue_map["nodes"].get(node_id) or {}
-        observed = entry.get("observed")
-        observed_rendered = (observed or {}).get("rendered_body_sha256")
-        if observed is None:
+        snapshot = entry.get("observed")
+        observed_rendered = (snapshot or {}).get("rendered_body_sha256")
+        if snapshot is None:
             counts["created_rendered"] += 1
             staged_numbers.add(entry.get("number"))
             continue
-        observed_numbers.add(observed.get("number"))
+        observed_numbers.add(snapshot.get("number"))
         body_hash = canonical_body_sha256(node["body"])
-        unchanged = body_hash == observed.get("canonical_body_sha256")
+        unchanged = body_hash == snapshot.get("canonical_body_sha256")
         if unchanged:
             counts["unchanged_reproduced"] += 1
             if observed_rendered and rendered[node_id] != observed_rendered:
@@ -175,6 +239,9 @@ def verify_current() -> dict:
         "observed_numbers": len({n for n in observed_numbers if isinstance(n, int)}),
         "staged_numbers": len({n for n in staged_numbers if isinstance(n, int)}),
         "staged_number_collisions": collisions,
+        "numbering_failures": numbered,
+        "controls": controls,
+        "controls_ok": all(controls.values()),
         "mismatched": sorted(set(mismatched)),
         **counts,
     }
@@ -186,19 +253,31 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--baseline-ref", default=DEFAULT_BASELINE_REF)
     parser.add_argument("--render", default=None, help="write rendered bodies into this directory")
     parser.add_argument("--ref", default=None, help="ref to render with --render")
+    parser.add_argument("--map", default=None,
+                        help="issue map to validate instead of planning/issue-map.json")
     parser.add_argument("--json", action="store_true", help="print the result as JSON")
     args = parser.parse_args(argv)
 
     if args.render:
         out_dir = Path(args.render)
-        out_dir.mkdir(parents=True, exist_ok=True)
         if args.ref:
             nodes = json.loads(git_show(args.ref, "planning/backlog.json"))["nodes"]
             numbers = numbers_from_map(json.loads(git_show(args.ref, "planning/issue-map.json")))
+            observed = observed_entries(json.loads(git_show(args.ref, "planning/issue-map.json")))
         else:
             nodes = json.loads((ROOT / "planning" / "backlog.json").read_text(encoding="utf-8"))["nodes"]
-            numbers = numbers_from_map(json.loads(
-                (ROOT / "planning" / "issue-map.json").read_text(encoding="utf-8")))
+            issue_map = json.loads((Path(args.map) if args.map
+                                    else ROOT / "planning" / "issue-map.json").read_text(
+                                        encoding="utf-8"))
+            numbers = numbers_from_map(issue_map)
+            observed = observed_entries(issue_map)
+        numbered = numbering_failures(nodes, numbers, observed)
+        if numbered:
+            print("refusing to render: the supplied issue map is not valid")
+            for item in numbered[:10]:
+                print("  " + item)
+            return 1
+        out_dir.mkdir(parents=True, exist_ok=True)
         children = children_of(nodes)
         for node in nodes:
             (out_dir / f"_render_{node['id']}.md").write_text(
@@ -210,9 +289,10 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--check or --render is required; this helper has no other mode")
 
     baseline = verify_baseline(args.baseline_ref)
-    current = verify_current()
+    current = verify_current(Path(args.map) if args.map else None)
     ok = (not baseline["mismatched"] and baseline["recorded"] > 0
           and not current["mismatched"] and not current["staged_number_collisions"]
+          and not current["numbering_failures"] and current["controls_ok"]
           and current["created_rendered"] > 0)
     result = {"ok": ok, "baseline": baseline, "current": current}
     if args.json:
@@ -225,6 +305,9 @@ def main(argv: list[str] | None = None) -> int:
               f"{current['created_rendered']} created rendered, "
               f"numbers observed {current['observed_numbers']} and staged "
               f"{current['staged_numbers']}")
+        print(f"controls: {current['controls']}")
+        if current["numbering_failures"]:
+            print(f"numbering failures: {current['numbering_failures'][:10]}")
         if baseline["mismatched"]:
             print(f"baseline mismatched: {baseline['mismatched'][:10]}")
         if current["mismatched"]:

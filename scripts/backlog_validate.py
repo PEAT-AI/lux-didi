@@ -222,12 +222,11 @@ COMPONENT_FILES = (
     "docs/mac-experience.md",
 )
 
-# Paths that must never be published, whatever else the tree contains. Applied to the
-# whole tree except the pruned artifact directories below, so a real credential file
-# fails even when it is gitignored.
+# Paths that must never be published, whatever else the tree contains. Applied first to
+# the tracked public set, then to the pruned tree scan; findings are deduplicated.
 FORBIDDEN_PATH_RES = (
     (re.compile(r"(^|/)\.env($|\.)"), "environment file"),
-    (re.compile(r"(^|/)(credentials?|secrets?)($|\.)", re.I), "credential file"),
+    (re.compile(r"(^|/)(credentials?|secrets?)(\.|$)", re.I), "credential file"),
     (re.compile(r"\.(pem|key|p12|pfx|jks|keystore)$", re.I), "key material"),
     (re.compile(r"(^|/)id_(rsa|dsa|ecdsa|ed25519)($|\.)"), "private key"),
     (re.compile(r"(^|/)\.ssh/"), "ssh material"),
@@ -251,6 +250,23 @@ def is_publication_path(rel: str) -> bool:
     if rel in ALLOWED_PATHS or rel in COMPONENT_FILES:
         return True
     return any(rel.startswith(prefix) for prefix in COMPONENT_ROOTS)
+
+
+def forbidden_findings(tracked: list[str], scanned: list[str]) -> list[tuple[str, str]]:
+    """Forbidden paths, reported from the tracked public set first and then from the pruned
+    tree scan, deduplicated so a path seen twice is reported once and never suppressed.
+
+    The tracked pass matters because the scan prunes artifact directories regardless of
+    whether a path inside them is tracked, so a tracked key file under a pruned directory
+    would otherwise be invisible to both passes. The scan still runs, so a real credential
+    file that is ignored but present on disk is reported too.
+    """
+    found: dict[str, str] = {}
+    for rel in list(tracked) + list(scanned):
+        label = is_forbidden_path(rel)
+        if label and rel not in found:
+            found[rel] = label
+    return sorted(found.items())
 
 
 def tracked_public_files(root: Path, exclude: set[str]) -> list[str] | None:
@@ -826,19 +842,21 @@ def check_v13(report: Report, root: Path, exclude: set[str]) -> None:
                    ["git could not list the tracked public source"])
         return
 
-    # Publication-set membership: the intended tracked public source only.
+    # Publication-set membership: the intended tracked public source only. A forbidden
+    # path is reported by the forbidden pass below, which runs on this same tracked set
+    # before any pruning, so nothing is suppressed here.
     for rel in walked:
         if is_forbidden_path(rel):
-            continue  # reported by the forbidden-path scan below
+            continue
         if not is_publication_path(rel):
             failures.append(f"unexpected published path: {rel}")
 
-    # Forbidden paths: scanned over the whole tree, pruned of build and dependency
-    # artifact directories, so a gitignored credential file still fails.
-    for rel in scanned_paths(root):
-        label = is_forbidden_path(rel)
-        if label:
-            failures.append(f"forbidden path ({label}): {rel}")
+    # Forbidden paths: the tracked public set first, then the whole tree with build and
+    # dependency artifact directories pruned. Findings are deduplicated, never dropped.
+    scanned = scanned_paths(root)
+    findings = forbidden_findings(walked, scanned)
+    for rel, label in findings:
+        failures.append(f"forbidden path ({label}): {rel}")
 
     for name in DOCS:
         rel = f"docs/{name}"
@@ -850,10 +868,6 @@ def check_v13(report: Report, root: Path, exclude: set[str]) -> None:
             failures.append(f"missing {required}")
     if (root / ".github" / "workflows").exists():
         failures.append(".github/workflows exists")
-    for name in walked:
-        base = os.path.basename(name).lower()
-        if base.startswith(".env") or base in {"credentials.json", "secrets.json"} or base.endswith(".pem"):
-            failures.append(f"credential-shaped file: {name}")
 
     # Negative and positive controls. A repair that accepts every path, or rejects
     # every component path, must not pass.
@@ -865,6 +879,8 @@ def check_v13(report: Report, root: Path, exclude: set[str]) -> None:
             "server/certs/tls.pem": "key material",
             ".github/workflows/ci.yml": "workflow file",
             "resources/id_ed25519": "private key",
+            "server/dist/id_ed25519": "private key",
+            "server/node_modules/pkg/cert.pfx": "key material",
         },
         "component_accepted": [
             "server/index.ts", "server/runtime/store.ts", "Sources/LuxDidi/LuxDidiApp.swift",
@@ -876,13 +892,31 @@ def check_v13(report: Report, root: Path, exclude: set[str]) -> None:
     }
     controls_ok = 0
     controls_total = len(controls["forbidden_rejected"]) + len(controls["component_accepted"]) \
-        + len(controls["unrelated_rejected"])
+        + len(controls["unrelated_rejected"]) + 3
     for rel, expected in controls["forbidden_rejected"].items():
         got = is_forbidden_path(rel)
         if got == expected:
             controls_ok += 1
         else:
             failures.append(f"control: {rel} should be forbidden as {expected!r}, got {got!r}")
+    # A tracked forbidden path under a pruned directory must be reported by the tracked
+    # pass, not only recognised by the predicate: this is the case the pruning hid.
+    reported = dict(forbidden_findings(["server/dist/id_ed25519"], []))
+    if reported.get("server/dist/id_ed25519") == "private key":
+        controls_ok += 1
+    else:
+        failures.append("control: a tracked key file under a pruned directory was not reported")
+    # A later scan sighting of the same path is deduplicated, not suppressed.
+    both = forbidden_findings(["server/.env"], ["server/.env"])
+    if both == [("server/.env", "environment file")]:
+        controls_ok += 1
+    else:
+        failures.append(f"control: duplicate reporting was not deduplicated: {both}")
+    # An ignored build artifact that is not a forbidden shape is left alone.
+    if forbidden_findings([], ["server/dist/bundle.js", "server/node_modules/pkg/index.js"]) == []:
+        controls_ok += 1
+    else:
+        failures.append("control: an ignored build artifact was reported as forbidden")
     for rel in controls["component_accepted"]:
         if is_publication_path(rel) and not is_forbidden_path(rel):
             controls_ok += 1
@@ -900,7 +934,7 @@ def check_v13(report: Report, root: Path, exclude: set[str]) -> None:
 
     report.add("V-13", "Repository hygiene and intended public set", failures, warnings,
                details={"paths": len(walked), "controls": f"{controls_ok}/{controls_total}",
-                        "scanned": len(scanned_paths(root))})
+                        "forbidden": len(findings), "scanned": len(scanned)})
 
 
 def check_x01(report: Report, nodes: list[dict] | None) -> None:
@@ -1057,7 +1091,12 @@ def check_x07(report: Report, backlog: dict | None, nodes: list[dict] | None, pa
                     failures.append(f"staged numbers collide with observed: {current['staged_number_collisions']}")
                 if current.get("created_rendered", 0) < 1:
                     failures.append("renderer produced no rendered body for a created node")
+                if current.get("numbering_failures"):
+                    failures.append(f"renderer numbering failures: {current['numbering_failures'][:5]}")
+                if not current.get("controls_ok"):
+                    failures.append(f"renderer numbering controls did not hold: {current.get('controls')}")
                 details["rendered_baseline"] = f"{base.get('matched')}/{base.get('recorded')}"
+                details["numbering_controls"] = current.get("controls")
                 details["rendered_current"] = {
                     k: current.get(k) for k in ("nodes", "unchanged_reproduced", "updated_changed",
                                                 "created_rendered", "observed_numbers",

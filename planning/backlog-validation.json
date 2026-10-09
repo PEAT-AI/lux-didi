@@ -259,7 +259,8 @@
     },
     {
       "details": {
-        "controls": "20/20",
+        "controls": "25/25",
+        "forbidden": 0,
         "paths": 43,
         "scanned": 46
       },
@@ -375,6 +376,12 @@
     {
       "details": {
         "hashed_nodes": 120,
+        "numbering_controls": {
+          "duplicate_observed_rejected": true,
+          "duplicate_staged_rejected": true,
+          "missing_number_rejected": true,
+          "negative_number_rejected": true
+        },
         "rendered_baseline": "101/101",
         "rendered_current": {
           "created_rendered": 19,
@@ -404,5 +411,5 @@
   "file_count": 43,
   "packets_mode": false,
   "schema": "lux-didi.validation/1",
-  "tree_digest": "db86c0235a0113ceb699aa76804025447f798a0e2c3b5b5c303b3fcf9fbc782a"
+  "tree_digest": "788775dcaf88d7ae78e5f35c13638afff2c1861b208da29d80b8d688d0067dd6"
 }

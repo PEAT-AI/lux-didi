@@ -225,4 +225,3 @@ struct RootView: View {
         return SendEventToEventTarget(event, GetApplicationEventTarget())
     }
 }
-

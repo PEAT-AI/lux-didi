@@ -30,8 +30,12 @@ The service's own HttpOnly, SameSite=Strict root cookie is validated and install
 in `WKHTTPCookieStore` before the first document load. Native logout reads CSRF
 through the ordinary cookie-authenticated page API; the shared page independently
 reads its own CSRF through that API. Nothing is injected into page JavaScript.
-Exact auth routes must match the service owner's published API; fixtures alone
-are not accepted production integration.
+Native auth routes are `/api/v1/auth/pairing`, `/api/v1/auth/pair`,
+`/api/v1/auth/session` and `/api/v1/auth/logout`; cookie-authenticated mutations
+use `X-Didi-CSRF`. These match the published API and read-only accepted service
+source at `821630133207ac021d022d51041f40eea8b32205`. Native parses actual
+Set-Cookie rather than constructing its own independently named cookie. Fixtures
+alone are not accepted production integration.
 
 ## Documented WebKit policies
 

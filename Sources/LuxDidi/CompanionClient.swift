@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import LocalAuthentication
 
 struct ServiceDescriptor: Codable {
     let origin: String
@@ -29,10 +30,12 @@ struct ServiceDescriptor: Codable {
         allows(url) && url?.path == "/" && url?.query == nil && url?.fragment == nil
     }
     func credential() throws -> String {
+        let context = LAContext()
+        context.interactionNotAllowed = true
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: credentialService, kSecAttrAccount as String: credentialAccount,
             kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne,
-            kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail]
+            kSecUseAuthenticationContext as String: context]
         var result: CFTypeRef?
         guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
               let data = result as? Data, let token = String(data: data, encoding: .utf8), !token.isEmpty,
@@ -102,7 +105,7 @@ enum CaptureStatus: Equatable { case idle, sending, saved, cancelled, unknown, f
         if page {
             request.setValue(descriptor.origin, forHTTPHeaderField: "Origin")
             if let cookie { request.setValue("\(cookie.name)=\(cookie.value)", forHTTPHeaderField: "Cookie") }
-            if method != "GET", let csrf { request.setValue(csrf, forHTTPHeaderField: "X-CSRF-Token") }
+            if method != "GET", let csrf { request.setValue(csrf, forHTTPHeaderField: "X-Didi-CSRF") }
         }
         if let body {
             request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
@@ -126,7 +129,7 @@ enum CaptureStatus: Equatable { case idle, sending, saved, cancelled, unknown, f
         guard let current = status["authorityEpoch"] as? String, UUID(uuidString: current) != nil else { throw CompanionError.invalidResponse }
         if epoch != current { sessionID = nil }
         epoch = current
-        let (pairing, _) = try await request("api/v1/auth/pairing-code", method: "POST", body: [:])
+        let (pairing, _) = try await request("api/v1/auth/pairing", method: "POST", body: [:])
         guard let code = pairing["pairingCode"] as? String, !code.isEmpty else { throw CompanionError.invalidResponse }
         let (_, response) = try await request("api/v1/auth/pair", method: "POST", body: ["pairingCode": code], bearer: false, page: true)
         let headers = response.allHeaderFields.reduce(into: [String: String]()) { if let key = $1.key as? String, let value = $1.value as? String { $0[key] = value } }
@@ -135,7 +138,7 @@ enum CaptureStatus: Equatable { case idle, sending, saved, cancelled, unknown, f
               scoped.isHTTPOnly, scoped.domain == "127.0.0.1", scoped.path == "/" else { throw CompanionError.invalidResponse }
         cookie = scoped
         // Normal HTTP page API, never injected into JS. The page fetches its own CSRF token too.
-        let (csrfData, _) = try await request("api/v1/auth/csrf", bearer: false, page: true)
+        let (csrfData, _) = try await request("api/v1/auth/session", bearer: false, page: true)
         guard let token = csrfData["csrfToken"] as? String, !token.isEmpty else { throw CompanionError.invalidResponse }
         csrf = token
         return scoped

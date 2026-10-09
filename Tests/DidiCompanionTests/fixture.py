@@ -13,7 +13,10 @@ code = secrets.token_urlsafe(32)
 epoch = str(uuid.uuid4())
 session = str(uuid.uuid4())
 replays = {}
-counts = {"entries": 0, "frames": 0}
+counts = {"entries": 0, "frames": 0, "root": 0}
+mode = "normal"
+active = False
+code_valid = False
 
 class Fixture(http.server.BaseHTTPRequestHandler):
     def log_message(self, *_):
@@ -33,10 +36,35 @@ class Fixture(http.server.BaseHTTPRequestHandler):
         return self.headers.get("Authorization") == "Bearer " + credential
 
     def paired(self):
-        return self.headers.get("Cookie") == "didi_session=" + page_cookie
+        return active and self.headers.get("Cookie") == "didi_session=" + page_cookie
 
     def do_GET(self):
+        global mode, active
+        if self.path.startswith("/fixture/mode/"):
+            mode = self.path.rsplit("/", 1)[1]
+            self.reply({})
+            return
+        if self.path == "/fixture/expire":
+            active = False
+            self.reply({})
+            return
         if self.path == "/":
+            counts["root"] += 1
+            if mode == "redirect":
+                mode = "normal"
+                self.send_response(302)
+                self.send_header("Location", origin + "/")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            if mode == "download":
+                mode = "normal"
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Disposition", "attachment; filename=refused.bin")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
             if not self.paired():
                 self.reply({}, 401)
                 return
@@ -47,8 +75,8 @@ class Fixture(http.server.BaseHTTPRequestHandler):
             self.send_header("Permissions-Policy", "microphone=(), camera=(), geolocation=()")
             self.end_headers()
             self.wfile.write(html)
-        elif self.path == "/api/v1/auth/csrf" and self.paired():
-            self.reply({"csrfToken": csrf})
+        elif self.path == "/api/v1/auth/session" and self.paired():
+            self.reply({"clientId": str(uuid.uuid4()), "csrfToken": csrf})
         elif self.path == "/api/v1/status" and self.native():
             self.reply({"assistantId": str(uuid.uuid4()), "authorityEpoch": epoch, "capabilities": {"memory": True}})
         elif self.path == "/fixture/counts":
@@ -60,13 +88,21 @@ class Fixture(http.server.BaseHTTPRequestHandler):
             self.reply({}, 404)
 
     def do_POST(self):
+        global code, code_valid, active, page_cookie, csrf
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))) or b"{}")
-        if self.path == "/api/v1/auth/pairing-code" and self.native():
-            self.reply({"pairingCode": code})
-        elif self.path == "/api/v1/auth/pair" and body == {"pairingCode": code} and self.headers.get("Origin") == origin:
-            self.reply({}, headers={"Set-Cookie": "didi_session=" + page_cookie + "; Path=/; HttpOnly; SameSite=Strict"})
-        elif self.path == "/api/v1/auth/logout" and self.paired() and self.headers.get("X-CSRF-Token") == csrf:
-            self.reply({})
+        if self.path == "/api/v1/auth/pairing" and self.native():
+            code = secrets.token_urlsafe(32)
+            code_valid = True
+            self.reply({"pairingCode": code, "expiresAt": "2099-01-01T00:00:00.000Z"})
+        elif self.path == "/api/v1/auth/pair" and code_valid and body == {"pairingCode": code} and self.headers.get("Origin") == origin:
+            code_valid = False
+            active = True
+            page_cookie = secrets.token_urlsafe(32)
+            csrf = secrets.token_urlsafe(32)
+            self.reply({"csrfToken": csrf}, headers={"Set-Cookie": "didi_session=" + page_cookie + "; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200"})
+        elif self.path == "/api/v1/auth/logout" and self.paired() and self.headers.get("X-Didi-CSRF") == csrf:
+            active = False
+            self.reply({"ok": True}, headers={"Set-Cookie": "didi_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"})
         elif self.native() and self.headers.get("X-Didi-Authority-Epoch") == epoch and self.path in ("/api/v1/sessions", "/api/v1/sessions/" + session + "/entries"):
             key = self.headers.get("Idempotency-Key")
             if not key:
@@ -89,6 +125,10 @@ class Fixture(http.server.BaseHTTPRequestHandler):
                 counts["entries"] += 1
                 result = {"id": str(uuid.uuid4()), "sessionId": session, "sequence": counts["entries"], "role": "user", "text": body["text"]}
             replays[key] = (fingerprint, result)
+            if self.path.endswith("/entries"):
+                # Persist then drop the first reply: ambiguous real network outcome.
+                self.close_connection = True
+                return
             self.reply(result)
         else:
             self.reply({}, 401)

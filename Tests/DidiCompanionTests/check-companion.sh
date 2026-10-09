@@ -22,6 +22,7 @@ codesign --force --sign - --entitlements Resources/LuxDidi.entitlements "$app"
 codesign --verify --strict "$app"
 proof="${LUX_DIDI_PROOF_DIR:-$work/proof}"
 mkdir -p "$proof"
+export LUX_MAC_SCREENSHOT="$proof/native-setup-ui.png"
 # Shared installed helper only belongs to development checks, never public app runtime.
 if ! command -v lux-browser-slot >/dev/null; then echo 'CHECK BLOCKED: lux-browser-slot missing' >&2; exit 75; fi
 lux-browser-slot run --wait 120 -- bash -c 'set -e; "$1" "$2" "$3"; bash Tests/DidiMacTests/check-mac.sh' _ "$app/Contents/MacOS/LuxDidi" "$work/port" "$proof"

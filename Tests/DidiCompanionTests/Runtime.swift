@@ -14,6 +14,10 @@ import WebKit
     @MainActor static func js(_ web: WKWebView, _ source: String) async throws -> Any {
         try await web.evaluateJavaScript(source)
     }
+    static func fixture(_ origin: String, _ path: String) async throws -> [String: Any] {
+        let (data, _) = try await URLSession.shared.data(from: URL(string: origin + path)!)
+        return (try JSONSerialization.jsonObject(with: data) as! [String: Any])["data"] as! [String: Any]
+    }
     @MainActor static func main() async {
         let started = Date()
         let app = NSApplication.shared
@@ -40,29 +44,50 @@ import WebKit
             expect(try await js(shell.webView, "document.body.dataset.authenticated") as? String == "yes", "cookie authenticated document request")
             expect(try await js(shell.webView, "document.cookie") as? String == "", "HttpOnly cookie invisible to document.cookie")
             expect(try await js(shell.webView, "typeof window.webkit?.messageHandlers") as? String == "undefined", "zero JavaScript authority handlers")
-            expect(try await shell.webView.callAsyncJavaScript("const r = await fetch('/api/v1/auth/csrf'); const x = await r.json(); return Boolean(x.data.csrfToken)", arguments: [:], in: nil, contentWorld: .page) as? Bool == true, "page reads CSRF through normal API")
+            expect(try await shell.webView.callAsyncJavaScript("const r = await fetch('/api/v1/auth/session'); const x = await r.json(); return Boolean(x.data.csrfToken)", arguments: [:], in: nil, contentWorld: .page) as? Bool == true, "page reads CSRF through normal API")
             let initial = try await js(shell.webView, "document.body.dataset.instance") as? String
             window.orderOut(nil); window.makeKeyAndOrderFront(nil)
             expect(try await js(shell.webView, "document.body.dataset.instance") as? String == initial, "hide/show preserves exact page session")
-            _ = try await js(shell.webView, "window.open('/','evil'); let f=document.createElement('iframe'); f.src='/frame'; document.body.appendChild(f); 'attempted'")
-            await waitFor("popup and subframe denied") { shell.deniedPopups > 0 && shell.deniedNavigations > 0 }
+            expect(try await js(shell.webView, "window.open('/','evil') === null") as? Bool == true, "programmatic popup refused")
+            _ = try await js(shell.webView, "let f=document.createElement('iframe'); f.src='/frame'; document.body.appendChild(f); 'attempted'")
+            await waitFor("subframe denied") { shell.deniedNavigations > 0 }
             for url in ["http://127.0.0.1:1/", "http://localhost:\(config["port"] as! Int)/", origin + "/download"] {
+                let before = shell.deniedNavigations
                 shell.webView.load(URLRequest(url: URL(string: url)!))
-                await waitFor("unexpected navigation denied") { !shell.webView.isLoading }
+                await waitFor("unexpected navigation denied") { shell.deniedNavigations > before }
                 expect(shell.webView.url?.absoluteString == origin + "/", "origin/port/path restriction retains canonical document")
             }
             shell.simulateTermination()
             expect(shell.state == .unavailable, "WebContent termination surfaces retry")
             await shell.load(cookie: try await client.bootstrap())
             await waitFor("explicit recovery rendered") { shell.state == .ready }
-            let receipt = try await client.capture(text: "Synthetic native capture", timeZone: "UTC")
+            for mode in ["redirect", "download"] {
+                let refreshed = try await client.bootstrap()
+                _ = try await fixture(origin, "/fixture/mode/" + mode)
+                await shell.load(cookie: refreshed)
+                await waitFor("server \(mode) response refused") { shell.state == .unavailable }
+                await shell.load(cookie: try await client.bootstrap())
+                await waitFor("response rejection recovers explicitly") { shell.state == .ready }
+            }
+            _ = try await fixture(origin, "/fixture/expire")
+            await shell.load(cookie: cookie)
+            await waitFor("authentication expiry becomes unavailable") { shell.state == .unavailable }
+            await shell.load(cookie: try await client.bootstrap())
+            await waitFor("authentication expiry rebootstrap rendered") { shell.state == .ready }
+            do {
+                _ = try await client.capture(text: "Synthetic native capture", timeZone: "UTC")
+                expect(false, "fixture drops first saved response")
+            } catch { expect(client.captureStatus == .unknown, "lost reply yields unknown, not false failure or success") }
+            let receipt = try await client.retryCapture()
             expect(!receipt.entryID.isEmpty, "authenticated native synthetic capture saved")
             let replay = try await client.retryCapture()
             expect(replay.entryID == receipt.entryID, "stable idempotency identity prevents duplicate capture")
-            let (countData, _) = try await URLSession.shared.data(from: URL(string: origin + "/fixture/counts")!)
-            let countEnvelope = try JSONSerialization.jsonObject(with: countData) as! [String: Any]
-            let counts = countEnvelope["data"] as! [String: Int]
+            let counts = try await fixture(origin, "/fixture/counts") as! [String: Int]
             expect(counts["entries"] == 1 && counts["frames"] == 0, "one business entry and zero subframe requests")
+            let cancelled = Task { try await client.capture(text: "Cancelled synthetic", timeZone: "UTC") }
+            cancelled.cancel()
+            do { _ = try await cancelled.value; expect(false, "cancelled capture did not dispatch") }
+            catch { expect(client.captureStatus == .cancelled, "cancellation before dispatch distinguished") }
             await client.revokePageSession()
             shell.clear()
             expect(shell.state == .unavailable, "clean logout clears scoped page")

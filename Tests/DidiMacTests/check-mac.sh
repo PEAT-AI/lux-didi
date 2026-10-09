@@ -18,5 +18,5 @@ xcrun swiftc -module-cache-path "$work/cache" -parse-as-library Sources/LuxDidi/
 codesign --force --sign - --entitlements Resources/LuxDidi.entitlements "$app"
 codesign --verify --strict "$app"
 "$app/Contents/MacOS/LuxDidi" --self-check
-"$app/Contents/MacOS/LuxDidi" --ui-proof "${LUX_MAC_SCREENSHOT:-/Users/rob/.lux/reports/lux-didi-overnight-1009/mac/native-ui.png}"
+"$app/Contents/MacOS/LuxDidi" --ui-proof "${LUX_MAC_SCREENSHOT:-$work/native-ui.png}"
 printf 'MAC-NATIVE PASS total=%ss\n' "$((SECONDS-start))"

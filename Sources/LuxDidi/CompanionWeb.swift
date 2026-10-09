@@ -18,7 +18,7 @@ enum PageState: Equatable { case loading, ready, unavailable }
         configuration.websiteDataStore = .nonPersistent()
         configuration.userContentController = WKUserContentController() // Deliberately zero handlers/scripts.
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
-        configuration.mediaTypesRequiringUserAction = .all
+        configuration.mediaTypesRequiringUserActionForPlayback = .all
         webView = WKWebView(frame: .zero, configuration: configuration)
         super.init()
         webView.navigationDelegate = self; webView.uiDelegate = self

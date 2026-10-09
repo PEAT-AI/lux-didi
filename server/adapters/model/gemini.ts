@@ -23,16 +23,15 @@ async function* frames(response: Response, signal: AbortSignal): AsyncGenerator<
     while (true) {
       if (signal.aborted) throw Error('interrupted');
       const chunk = await reader.read();
-      if (chunk.done) {
-        pending += decoder.decode();
-        return pending.length === 0 && data.length === 0;
+      if (chunk.done) pending += decoder.decode();
+      else {
+        bytes += chunk.value.byteLength;
+        if (bytes > 4_000_000) throw Error('response_limit');
+        pending += decoder.decode(chunk.value, { stream: true });
       }
-      bytes += chunk.value.byteLength;
-      if (bytes > 4_000_000) throw Error('response_limit');
-      pending += decoder.decode(chunk.value, { stream: true });
       while (true) {
         const i = pending.search(/[\r\n]/);
-        if (i < 0 || (pending[i] === '\r' && i === pending.length - 1)) break;
+        if (i < 0 || (!chunk.done && pending[i] === '\r' && i === pending.length - 1)) break;
         const line = pending.slice(0, i);
         const width = pending[i] === '\r' && pending[i + 1] === '\n' ? 2 : 1;
         pending = pending.slice(i + width);
@@ -42,6 +41,7 @@ async function* frames(response: Response, signal: AbortSignal): AsyncGenerator<
           data.push(line.slice(5).replace(/^ /, ''));
         }
       }
+      if (chunk.done) return pending.length === 0 && data.length === 0;
       if (pending.length > 1_000_000) throw Error('frame_limit');
     }
   } finally {
@@ -124,32 +124,34 @@ export class GeminiAdapter implements ModelPort {
         let blocked = false;
         const stream = frames(response, signal);
         let cleanEnd = false;
-        while (true) {
-          const frame = await stream.next();
-          if (frame.done) { cleanEnd = frame.value; break; }
-          const value = frame.value;
-          if (!object(value) || 'error' in value) throw Error('provider_error');
-          if (object(value.promptFeedback) && value.promptFeedback.blockReason) blocked = true;
-          if (value.candidates === undefined) continue;
-          if (!Array.isArray(value.candidates) || value.candidates.length !== 1 || !object(value.candidates[0]) || reason) throw Error('invalid_candidates');
-          const candidate = value.candidates[0];
-          if (candidate.index !== undefined && candidate.index !== 0) throw Error('invalid_candidate_index');
-          if (candidate.content !== undefined) {
-            const content = candidate.content;
-            if (!object(content) || content.role !== 'model' || !Array.isArray(content.parts) || !content.parts.every(validPart)) throw Error('invalid_content');
-            for (const part of content.parts as Part[]) {
-              parts.push(part);
-              if (!part.thought && part.text) {
-                if (firstTextMs === null) firstTextMs = Math.max(0, now() - started);
-                text += part.text; control.onEvent?.({ type: 'text', text: part.text, provisional: true });
+        try {
+          while (true) {
+            const frame = await stream.next();
+            if (frame.done) { cleanEnd = frame.value; break; }
+            const value = frame.value;
+            if (!object(value) || 'error' in value) throw Error('provider_error');
+            if (object(value.promptFeedback) && value.promptFeedback.blockReason) blocked = true;
+            if (value.candidates === undefined) continue;
+            if (!Array.isArray(value.candidates) || value.candidates.length !== 1 || !object(value.candidates[0]) || reason) throw Error('invalid_candidates');
+            const candidate = value.candidates[0];
+            if (candidate.index !== undefined && candidate.index !== 0) throw Error('invalid_candidate_index');
+            if (candidate.content !== undefined) {
+              const content = candidate.content;
+              if (!object(content) || content.role !== 'model' || !Array.isArray(content.parts) || !content.parts.every(validPart)) throw Error('invalid_content');
+              for (const part of content.parts as Part[]) {
+                parts.push(part);
+                if (!part.thought && part.text) {
+                  if (firstTextMs === null) firstTextMs = Math.max(0, now() - started);
+                  text += part.text; control.onEvent?.({ type: 'text', text: part.text, provisional: true });
+                }
               }
             }
+            if (candidate.finishReason !== undefined) {
+              if (typeof candidate.finishReason !== 'string') throw Error('invalid_finish');
+              reason = candidate.finishReason;
+            }
           }
-          if (candidate.finishReason !== undefined) {
-            if (typeof candidate.finishReason !== 'string') throw Error('invalid_finish');
-            reason = candidate.finishReason;
-          }
-        }
+        } finally { await stream.return(false); }
         if (blocked || (reason && safetyReasons.has(reason))) return finish('blocked', 'provider_blocked');
         if (!cleanEnd || !reason || reason === 'MAX_TOKENS') return finish('truncated', 'incomplete_generation');
         if (reason !== 'STOP') return finish('error', 'provider_finish_error');

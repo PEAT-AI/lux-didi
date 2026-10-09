@@ -42,7 +42,7 @@ export async function runTools(options: LoopOptions): Promise<LoopResult> {
       let outcome: ToolOutcome | undefined;
       let dispatched = false;
       try {
-        await controlled(options.control, async signal => {
+        outcome = await controlled(options.control, async signal => {
           if (!tool) return;
           if (call.id !== undefined && seenIds.has(call.id)) { record.reason = 'duplicate_call_id'; return; }
           if (call.id !== undefined) seenIds.add(call.id);
@@ -55,15 +55,19 @@ export async function runTools(options: LoopOptions): Promise<LoopResult> {
           if (signal.aborted || options.control.signal.aborted) throw new Interrupted('cancelled');
           if (Date.now() >= options.control.deadlineMs) throw new Interrupted('deadline');
           dispatched = true;
-          outcome = await tool.execute(call.args, { runId: host.runId, actorId: host.actorId, authorityEpoch: host.authorityEpoch,
+          return tool.execute(call.args, { runId: host.runId, actorId: host.actorId, authorityEpoch: host.authorityEpoch,
             revision: host.revision, executionId, accountId: tool.accountId, resourceId: tool.resourceId, signal });
+        });
+        // Publish only after the controlled operation settles. A late ignored
+        // handler resolution cannot mutate an already returned unknown outcome.
+        if (dispatched) {
           if (!outcome || !['completed', 'failed', 'unknown'].includes(outcome.status)) throw Error('invalid_tool_outcome');
           record.status = outcome.status; record.reason = 'handler_outcome';
-        });
+        }
       } catch (error) {
         record.status = dispatched ? (tool?.effect === 'write' ? 'unknown' : 'failed') : 'refused';
         record.reason = dispatched ? 'handler_interrupted_or_failed' : 'authority_or_validation_failed';
-        if (error instanceof Interrupted) { tools.push(record); return end(error.status, error.status); }
+        if (error instanceof Interrupted) { tools.push({ ...record }); return end(error.status, error.status); }
       }
       tools.push(record);
       // An uncertain effect is not retried, even if the model asks again. No

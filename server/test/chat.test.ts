@@ -10,7 +10,6 @@ import { ChatService, ChatError, chatMigrations, type ChatConfig, type RunSnapsh
 import { Store } from '../runtime/store.js';
 import { PROMPT_VERSION, compilePrompt } from '../prompt/index.js';
 import type { ModelPort, ModelRequest, ModelControl, ModelResult } from '../adapters/model/types.js';
-import type { SchemaMigration } from '../contracts/storage.js';
 
 class CountingModel implements ModelPort {
   calls: ModelRequest[] = []; controls: ModelControl[] = [];
@@ -25,9 +24,12 @@ class CountingModel implements ModelPort {
   }
   finish(index = 0) { this.pending[index]?.(result(this.calls[index]!, this.status, this.text)); }
 }
-function fixture(overrides: Partial<ChatConfig> = {}, migrations: readonly SchemaMigration[] = []) {
+function fixture(overrides: Partial<ChatConfig> = {}, faultCheck?: string) {
   const dir = mkdtempSync(join(tmpdir(), 'chat-test-')); const model = new CountingModel();
-  const f = openFixture(dir, model, overrides, migrations); const session = f.createSession();
+  let f: ReturnType<typeof openFixture>;
+  try { f = openFixture(dir, model, overrides, faultCheck); }
+  catch (error) { rmSync(dir, { recursive: true, force: true }); throw error; }
+  const session = f.createSession();
   return { ...f, model, dir, session,
     accept(text = 'Hello', key = 'key') { return f.chat.accept({ sessionId: session.id, text, idempotencyKey: key }, f.context); },
     entries() { return f.store.transaction(tx => f.domain.execute(tx, 'getSession', { id: session.id }, f.context)).entries; },
@@ -60,7 +62,7 @@ test('accept/replay/fingerprint collision and active-session serialization are d
 });
 
 test('accept rolls back user entry if chat insert fails; Store transactions are synchronous', () => {
-  const f = fixture({}, [{ owner: 'fault', version: 1, statements: ["ALTER TABLE chat_runs ADD COLUMN reject_insert INTEGER CHECK (state != 'accepted')"] }]);
+  const f = fixture({}, "state != 'accepted'");
   try {
     assert.throws(() => f.accept(), /CHECK constraint failed/); assert.equal(f.entries().length, 0);
     assert.equal(f.model.calls.length, 0);
@@ -117,7 +119,7 @@ test('complete wins: cancel after final commit returns completion unchanged', as
 });
 
 test('terminal answer/status commit is atomic and persistence failure never claims saved completion', async () => {
-  const f = fixture({}, [{ owner: 'fault', version: 1, statements: ["ALTER TABLE chat_runs ADD COLUMN reject_complete INTEGER CHECK (outcome IS NULL OR outcome != 'complete')"] }]); f.model.delayed = true;
+  const f = fixture({}, "outcome IS NULL OR outcome != 'complete'"); f.model.delayed = true;
   try {
     const run = f.accept(); await started(f);
     f.model.finish(); const done = await terminal(f, run);
@@ -297,7 +299,7 @@ test('unknown recalled evidence classification is unavailable even when history 
 });
 
 test('all terminal writes unavailable: no completion event/assistant entry, explicit subscriber resync', async () => {
-  const f = fixture({}, [{ owner: 'fault', version: 1, statements: ["ALTER TABLE chat_runs ADD COLUMN reject_terminal INTEGER CHECK (state != 'terminal')"] }]); f.model.delayed = true;
+  const f = fixture({}, "state != 'terminal'"); f.model.delayed = true;
   try {
     const run = f.accept(); await started(f); const stream = f.chat.subscribe(run.runId, f.context)[Symbol.asyncIterator]();
     await stream.next(); f.model.finish();

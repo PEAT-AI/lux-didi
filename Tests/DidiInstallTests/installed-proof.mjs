@@ -11,6 +11,7 @@ import { installArtifact, refuseLive } from '../../scripts/install-local.mjs';
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const hex40 = /^[a-f0-9]{40}$/;
 const hex64 = /^[a-f0-9]{64}$/;
+const matches = (pattern, value) => typeof value === 'string' && pattern.test(value);
 const positive = value => Number.isSafeInteger(value) && value > 0;
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 function requireProof(condition, field) { if (!condition) throw new Error(`Installed proof invalid: ${field}`); }
@@ -19,11 +20,11 @@ function object(value, fields, label) {
 }
 function record(value, proofId) {
   object(value, 'sessionId entryId text visibleInCanonicalUI', 'record schema');
-  requireProof(uuid.test(value.sessionId) && uuid.test(value.entryId) && typeof value.text === 'string' && value.text.includes(proofId) && value.visibleInCanonicalUI === true, 'record identity/full text/canonical UI');
+  requireProof(matches(uuid, value.sessionId) && matches(uuid, value.entryId) && typeof value.text === 'string' && value.text.includes(proofId) && value.visibleInCanonicalUI === true, 'record identity/full text/canonical UI');
 }
 function image(value, method) {
   object(value, 'method path width height sha256', 'visual image schema');
-  requireProof(value.method === method && isAbsolute(value.path) && positive(value.width) && positive(value.height) && hex64.test(value.sha256), 'visual image identity');
+  requireProof(value.method === method && typeof value.path === 'string' && isAbsolute(value.path) && positive(value.width) && positive(value.height) && matches(hex64, value.sha256), 'visual image identity');
   const info = lstatSync(value.path);
   requireProof(info.isFile() && !info.isSymbolicLink() && info.uid === process.getuid() && hash(readFileSync(value.path)) === value.sha256, 'visual image bytes');
 }
@@ -35,16 +36,16 @@ function ownedJson(path, maxBytes = 65536) {
 export function validateInstalledReport(report, context) {
   object(report, 'type schemaVersion phase success runId installId proofId reopened source native service priorRecords newRecord observations visual serviceStop credentialCleanup error', 'report schema');
   requireProof(report.type === 'LuxDidiInstalledProof' && report.schemaVersion === 1 && report.phase === 'complete' && report.success === true && report.error === null, 'type/version/complete/success');
-  requireProof(uuid.test(report.runId) && uuid.test(report.installId) && uuid.test(report.proofId) && report.installId === context.installId && report.proofId === context.proofId && typeof report.reopened === 'boolean' && report.reopened === context.reopened, 'identity/reopen');
+  requireProof(matches(uuid, report.runId) && matches(uuid, report.installId) && matches(uuid, report.proofId) && report.installId === context.installId && report.proofId === context.proofId && typeof report.reopened === 'boolean' && report.reopened === context.reopened, 'identity/reopen');
   object(report.source, 'appIdentifier bundlePath releaseCommit nativeExecutableSHA256 manifestSHA256 serverEntrySHA256 nodePath serverEntry webRoot', 'source schema');
-  requireProof(hex40.test(report.source.releaseCommit) && ['nativeExecutableSHA256', 'manifestSHA256', 'serverEntrySHA256'].every(key => hex64.test(report.source[key])) && Object.keys(report.source).every(key => report.source[key] === context.source[key]), 'source/actual component hashes');
+  requireProof(matches(hex40, report.source.releaseCommit) && ['nativeExecutableSHA256', 'manifestSHA256', 'serverEntrySHA256'].every(key => matches(hex64, report.source[key])) && Object.keys(report.source).every(key => report.source[key] === context.source[key]), 'source/actual component hashes');
   object(report.native, 'pid cleanQuitRequested exitEvidence', 'native schema (no self-exit claim)');
   const exit = context.nativeExit;
   requireProof(exit && positive(exit.pid) && exit.exitCode === 0 && exit.signal === null && report.native.pid === exit.pid, 'external native exit/PID');
   requireProof(report.native.cleanQuitRequested === true && report.native.exitEvidence === 'external-driver-required', 'native clean Quit');
   object(report.service, 'pid nonce origin authorityEpoch assistantId readyVerified', 'service schema');
-  const port = /^http:\/\/127\.0\.0\.1:([1-9]\d{0,4})$/.exec(report.service.origin);
-  requireProof(positive(report.service.pid) && report.service.pid !== exit.pid && /^[A-Za-z0-9_-]{16,128}$/.test(report.service.nonce) && port && Number(port[1]) <= 65535 && uuid.test(report.service.authorityEpoch) && uuid.test(report.service.assistantId) && report.service.readyVerified === true, 'service ready identity');
+  const port = typeof report.service.origin === 'string' && /^http:\/\/127\.0\.0\.1:([1-9]\d{0,4})$/.exec(report.service.origin);
+  requireProof(positive(report.service.pid) && report.service.pid !== exit.pid && matches(/^[A-Za-z0-9_-]{16,128}$/, report.service.nonce) && port && Number(port[1]) <= 65535 && matches(uuid, report.service.authorityEpoch) && matches(uuid, report.service.assistantId) && report.service.readyVerified === true, 'service ready identity');
   object(report.serviceStop, 'requested observedExited pid exitStatus terminationReason procedure', 'serviceStop schema');
   requireProof(report.serviceStop.requested === true && report.serviceStop.observedExited === true && report.serviceStop.pid === report.service.pid && Number.isSafeInteger(report.serviceStop.exitStatus) && ['exit', 'uncaughtSignal'].includes(report.serviceStop.terminationReason) && report.serviceStop.procedure === 'private-stdin-close-and-bounded-owned-escalation', 'serviceStop actual exit');
   object(report.observations, 'credentialImported bootstrap canonicalUIReady priorRecallComplete newSaved', 'observations schema');
@@ -82,13 +83,13 @@ function sourceAt(bundle, metadata, runtime, sourceCommit) {
   requireProof(runtime.releaseCommit === sourceCommit && metadata.releaseCommit === sourceCommit, 'accepted source pin');
   const component = path => {
     const entry = metadata.inventory.find(item => item.path === path && item.type === 'file');
-    requireProof(entry && hex64.test(entry.sha256), 'component inventory');
+    requireProof(entry && matches(hex64, entry.sha256), 'component inventory');
     return entry.sha256;
   };
   return { appIdentifier: 'ai.peat.lux-didi', bundlePath: realpathSync(bundle), releaseCommit: sourceCommit, nativeExecutableSHA256: component('Contents/MacOS/LuxDidi'), manifestSHA256: component('Contents/Resources/didi-runtime.json'), serverEntrySHA256: component(`Contents/Resources/${runtime.serverEntry}`), nodePath: runtime.nodePath, serverEntry: runtime.serverEntry, webRoot: runtime.webRoot };
 }
 export function runInstalledReinstallProof({ firstArtifact, reinstallArtifact, proofRoot, browserSlot, sourceCommit }) {
-  requireProof(hex40.test(sourceCommit), 'explicit accepted source pin');
+  requireProof(matches(hex40, sourceCommit), 'explicit accepted source pin');
   if (!isAbsolute(proofRoot ?? '') || !isAbsolute(browserSlot ?? '')) throw new Error('Explicit absolute owned proof root and installed renderer-slot executable required');
   const info = lstatSync(proofRoot);
   if (info.isSymbolicLink() || !info.isDirectory() || info.uid !== process.getuid() || (info.mode & 0o777) !== 0o700 || readdirSync(proofRoot).length) throw new Error('Proof root must be empty, owner-only0700 and not a symlink');
@@ -112,7 +113,7 @@ export function runInstalledReinstallProof({ firstArtifact, reinstallArtifact, p
     validateBundle(bundle, metadata); // Native must not mutate signed runtime resources.
     const marker = ownedJson(join(proofState, 'didi-installed-proof.json'));
     object(marker, 'type schemaVersion installId proofId', 'lifecycle marker');
-    requireProof(marker.type === 'didi-installed-proof-state' && marker.schemaVersion === 1 && marker.installId === initial.installId && uuid.test(marker.proofId), 'lifecycle marker identity');
+    requireProof(marker.type === 'didi-installed-proof-state' && marker.schemaVersion === 1 && marker.installId === initial.installId && matches(uuid, marker.proofId), 'lifecycle marker identity');
     return { report: validateInstalledReport(ownedJson(reportPath), { source, installId: initial.installId, proofId: marker.proofId, reopened, nativeExit: observed }), nativeExit: observed };
   };
   const firstRun = invoke(originalBundle, initial, join(reports, 'first.json'), false);

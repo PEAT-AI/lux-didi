@@ -25,6 +25,7 @@ import WebKit
         let ready = URL(fileURLWithPath: CommandLine.arguments[1])
         await waitFor("fixture ready") { FileManager.default.fileExists(atPath: ready.path) }
         do {
+            try InstalledProofTests.run()
             try await LifecycleProof.run(node: CommandLine.arguments[3])
             let config = try JSONSerialization.jsonObject(with: Data(contentsOf: ready)) as! [String: Any]
             let origin = "http://127.0.0.1:\(config["port"] as! Int)"

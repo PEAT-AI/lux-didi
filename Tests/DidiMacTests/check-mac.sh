@@ -17,6 +17,10 @@ cp Resources/Info.plist "$app/Contents/Info.plist"
 xcrun swiftc -whole-module-optimization -module-cache-path "$work/cache" -parse-as-library Sources/LuxDidi/*.swift -o "$app/Contents/MacOS/LuxDidi"
 codesign --force --sign - --entitlements Resources/LuxDidi.entitlements "$app"
 codesign --verify --strict "$app"
+if "$app/Contents/MacOS/LuxDidi" --installed-proof >"$work/invalid-proof.log" 2>&1; then
+  echo 'MAC-PROOF FAIL: malformed installed proof flags accepted' >&2; exit 1
+fi
+grep -q 'INSTALLED-PROOF INVALID' "$work/invalid-proof.log"
 "$app/Contents/MacOS/LuxDidi" --self-check
 "$app/Contents/MacOS/LuxDidi" --ui-proof "${LUX_MAC_SCREENSHOT:-$work/native-ui.png}"
 printf 'MAC-NATIVE PASS total=%ss\n' "$((SECONDS-start))"

@@ -10,7 +10,7 @@ cd "$root"
 mkdir -p "$work/cache"
 node="$(command -v node)"
 start=$SECONDS
-xcrun swiftc -whole-module-optimization -D COMPANION_TEST -parse-as-library -module-cache-path "$work/cache" Sources/LuxDidi/*.swift Tests/DidiCompanionTests/Runtime.swift Tests/DidiCompanionTests/LifecycleProof.swift -o "$work/runtime"
+xcrun swiftc -whole-module-optimization -D COMPANION_TEST -parse-as-library -module-cache-path "$work/cache" Sources/LuxDidi/*.swift Tests/DidiCompanionTests/*.swift -o "$work/runtime"
 printf 'DURATION companion-compile=%ss\n' "$((SECONDS-start))"
 python3 Tests/DidiCompanionTests/fixture.py "$work/port" &
 fixture_pid=$!

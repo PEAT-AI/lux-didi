@@ -11,9 +11,9 @@ export { chatMigrations } from './schema.js';
 
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 function nullable(value: SQLRow[string] | undefined) { return value === null || value === undefined ? null : String(value); }
-function snapshot(row: SQLRow): RunSnapshot {
+function snapshot(row: SQLRow, finalText: string | null = null): RunSnapshot {
   return { runId: String(row.run_id), sessionId: String(row.session_id), userEntryId: String(row.user_entry_id),
-    finalEntryId: nullable(row.final_entry_id), retryOf: nullable(row.retry_of), authorityEpoch: String(row.authority_epoch),
+    finalEntryId: nullable(row.final_entry_id), finalText, retryOf: nullable(row.retry_of), authorityEpoch: String(row.authority_epoch),
     provider: String(row.provider), model: String(row.model), promptVersion: String(row.prompt_version),
     state: row.state as RunSnapshot['state'], outcome: nullable(row.outcome) as Outcome | null,
     sequence: Number(row.sequence), partialText: String(row.partial_text), partialTruncated: Boolean(row.partial_truncated),
@@ -44,6 +44,13 @@ export class ChatService implements ChatPort {
     if (row.actor !== context.clientId) throw new ChatError('unauthorized');
     return row;
   }
+  #snapshot(tx: Transaction, row: SQLRow, context: DomainContext): RunSnapshot {
+    if (row.outcome !== 'complete') return snapshot(row);
+    const read = this.#config.domain.execute(tx, 'getSession', { id: String(row.session_id) }, this.#context(context));
+    const entry = read.entries.find(item => item.id === row.final_entry_id && item.role === 'assistant');
+    if (!entry) throw new ChatError('unavailable');
+    return snapshot(row, entry.text);
+  }
   recover(context: DomainContext): RunSnapshot[] {
     this.#authorize(context);
     if (this.#workers.size) throw new ChatError('active_run');
@@ -65,16 +72,18 @@ export class ChatService implements ChatPort {
     if (!this.#ready) throw new ChatError('recovery_required');
     if (!input || typeof input.sessionId !== 'string' || !input.sessionId.trim() || typeof input.text !== 'string' || !input.text.trim()
       || typeof input.idempotencyKey !== 'string' || !input.idempotencyKey.trim() || input.idempotencyKey.length > 128
+      || Object.keys(input).some(key => !['sessionId', 'text', 'idempotencyKey', 'retryOf'].includes(key))
       || (input.retryOf !== undefined && (typeof input.retryOf !== 'string' || !input.retryOf.trim()))) throw new ChatError('invalid_input');
     const fingerprint = hash(JSON.stringify({ sessionId: input.sessionId, text: input.text, retryOf: input.retryOf ?? null }));
     const result = this.#config.store.transaction(tx => {
       const prior = tx.get('SELECT * FROM chat_runs WHERE actor=? AND idempotency_key=?', [context.clientId, input.idempotencyKey]);
       if (prior) {
         if (prior.fingerprint !== fingerprint) throw new ChatError('idempotency_conflict');
-        return { run: snapshot(prior), fresh: false };
+        return { run: this.#snapshot(tx, prior, context), fresh: false };
       }
       const route = this.#config.route;
-      if (!route.available || !route.provider.trim() || !route.model.trim()) throw new ChatError('unavailable');
+      if (!route.available || typeof route.provider !== 'string' || !route.provider.trim() || typeof route.model !== 'string' || !route.model.trim()
+        || typeof route.allows !== 'function' || typeof this.#config.model?.generate !== 'function') throw new ChatError('unavailable');
       classify(this.#config, { kind: 'session', id: input.sessionId });
       const session = this.#config.domain.execute(tx, 'getSession', { id: input.sessionId }, this.#context(context)).session;
       if (tx.get("SELECT run_id FROM chat_runs WHERE session_id=? AND state!='terminal'", [input.sessionId])) throw new ChatError('active_run');
@@ -93,13 +102,17 @@ export class ChatService implements ChatPort {
     if (result.fresh) {
       this.#workers.set(result.run.runId, new AbortController());
       try { (this.#config.schedule ?? queueMicrotask)(() => { void this.#dispatch(result.run, context); }); }
-      catch { this.#finish(result.run, context, 'not_dispatched'); this.#workers.delete(result.run.runId); }
+      catch {
+        try { this.#finish(result.run, context, 'not_dispatched'); }
+        catch { this.#emit(result.run.runId, { type: 'resync_required', sequence: result.run.sequence, reason: 'storage_unavailable' }); }
+        this.#workers.delete(result.run.runId);
+      }
     }
     return result.run;
   }
   get(runId: string, context: DomainContext): RunSnapshot {
     this.#authorize(context);
-    return this.#config.store.transaction(tx => snapshot(this.#row(tx, runId, context)));
+    return this.#config.store.transaction(tx => this.#snapshot(tx, this.#row(tx, runId, context), context));
   }
   cancel(runId: string, context: DomainContext): RunSnapshot {
     this.#authorize(context);
@@ -133,7 +146,7 @@ export class ChatService implements ChatPort {
     this.#authorize(context);
     const final = this.#config.store.transaction(tx => {
       const row = this.#row(tx, run.runId, context);
-      if (row.state === 'terminal') return snapshot(row);
+      if (row.state === 'terminal') return this.#snapshot(tx, row, context);
       if (row.authority_epoch !== context.authorityEpoch) throw new ChatError('epoch_mismatch');
       let entryId: string | null = null;
       if (outcome === 'complete') {
@@ -147,7 +160,7 @@ export class ChatService implements ChatPort {
         partial_text=?,partial_truncated=?,sequence=sequence+1 WHERE run_id=? AND authority_epoch=? AND state=?`,
         [outcome, entryId, this.#context(context).now, context.authorityEpoch, partial.slice(0, max), Number(partial.length > max || Boolean(row.partial_truncated)), run.runId, context.authorityEpoch, String(row.state)]);
       if (changed !== 1) throw new ChatError('epoch_mismatch');
-      return snapshot(tx.get('SELECT * FROM chat_runs WHERE run_id=?', [run.runId])!);
+      return this.#snapshot(tx, tx.get('SELECT * FROM chat_runs WHERE run_id=?', [run.runId])!, context);
     });
     this.#publish(final); return final;
   }
@@ -181,14 +194,19 @@ export class ChatService implements ChatPort {
       if (!run) return;
       this.#publish(run);
       // Let observers consume intent; intent is never proof of provider send.
-      await Promise.resolve();
+      await new Promise<void>(resolve => setImmediate(resolve));
       if (controller.signal.aborted || this.get(run.runId, context).state !== 'dispatch_intent') return;
       const duration = this.#config.deadlineMs ?? 60000;
       const deadlineMs = this.#now() + duration;
       const deadline = new Promise<'deadline'>(resolve => { timeout = setTimeout(() => resolve('deadline'), duration); });
       const generation = this.#config.model.generate(request, { signal: controller.signal, deadlineMs,
         onEvent: event => { if (event.type === 'text') this.#partial(run, context, event.text); } });
-      const result = await Promise.race([generation, deadline]);
+      const aborted = new Promise<'aborted'>(resolve => {
+        if (controller.signal.aborted) resolve('aborted');
+        else controller.signal.addEventListener('abort', () => resolve('aborted'), { once: true });
+      });
+      const result = await Promise.race([generation, deadline, aborted]);
+      if (result === 'aborted') return;
       if (result === 'deadline') { this.#finish(run, context, 'deadline'); controller.abort(); return; }
       const outcome = this.#outcome(result);
       try { this.#finish(run, context, outcome, result.text); }

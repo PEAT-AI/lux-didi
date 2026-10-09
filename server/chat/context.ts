@@ -7,7 +7,9 @@ export class ContextFailure extends Error {
   constructor(readonly outcome: 'input_too_large' | 'compile_failed' | 'unavailable') { super(outcome); }
 }
 export function classify(config: ChatConfig, subject: ClassificationSubject) {
-  const value = config.classify(subject);
+  let value: ReturnType<ChatConfig['classify']>;
+  try { value = config.classify(subject); }
+  catch { throw new ChatError('unavailable'); }
   if (!value || value.ownerId !== config.store.assistantId || !['ordinary', 'private', 'sensitive'].includes(value.dataClass)) throw new ChatError('unavailable');
   return { schemaVersion: 1 as const, ownerId: value.ownerId, dataClass: value.dataClass };
 }
@@ -18,6 +20,10 @@ export interface ContextTrace {
 }
 /** Domain reads finish in one synchronous Store transaction before compilation. */
 export function assemble(config: ChatConfig, sessionId: string, currentId: string, context: DomainContext) {
+  const configured = new Map([['session', true], ['recall', Boolean(config.context.recall)], ['today', Boolean(config.context.today)]]);
+  for (const source of config.context.sources) {
+    if (!configured.has(source.id) || (source.state === 'available') !== configured.get(source.id)) throw new ContextFailure('unavailable');
+  }
   const read = config.store.transaction(tx => {
     const session = config.domain.execute(tx, 'getSession', { id: sessionId }, context);
     const recall = config.context.recall ? config.domain.execute(tx, 'recall', config.context.recall, context) : null;
@@ -47,7 +53,7 @@ export function assemble(config: ChatConfig, sessionId: string, currentId: strin
       sourceId: item.id, provenance: `domain.plan:${read.today!.date}:${read.today!.timeZone}`, priority: 1,
       kind: 'source', text: JSON.stringify(item) });
   }
-  const capabilities = createCapabilitySnapshot([], config.context.sources);
+  const capabilities = createCapabilitySnapshot([], [...configured].map(([id, available]) => ({ id, state: available ? 'available' : 'missing' })));
   const base: CompileInput = { ownerId: config.store.assistantId, persona: 'didi', promptVersion: PROMPT_VERSION,
     preferences: config.preferences, capabilities, evidence, history: [current], budgets: config.context.budgets };
   let compiled: CompiledPrompt;

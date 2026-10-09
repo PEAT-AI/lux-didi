@@ -6,6 +6,8 @@ import type { CompileInput, SourceAvailability, ValidatedPreferences } from '../
 export type Outcome = ModelStatus | 'not_dispatched' | 'outcome_unknown' | 'unavailable' | 'input_too_large' | 'compile_failed' | 'persistence_failed';
 export interface RunSnapshot {
   runId: string; sessionId: string; userEntryId: string; finalEntryId: string | null;
+  /** Read from the durable Domain entry, never the provisional buffer. */
+  finalText: string | null;
   retryOf: string | null; authorityEpoch: string; provider: string; model: string;
   promptVersion: string; state: 'accepted' | 'dispatch_intent' | 'terminal'; outcome: Outcome | null;
   sequence: number; partialText: string; partialTruncated: boolean;

@@ -271,14 +271,16 @@ test('fault after subject insert before label rolls back subject, history and re
   const h = fixture();
   try {
     const records = seed(h);
-    h.store.transaction(tx => tx.run("CREATE TRIGGER synthetic_label_fault BEFORE INSERT ON routing_labels BEGIN SELECT RAISE(ABORT, 'synthetic label fault'); END"));
+    // Store intentionally disallows trigger bodies (multiple SQL statements).
+    // An actual SQLite default/check fault fails the next label INSERT only.
+    h.store.transaction(tx => tx.run('ALTER TABLE routing_labels ADD COLUMN synthetic_failure INTEGER NOT NULL DEFAULT 0 CHECK(synthetic_failure=1)'));
     const before = h.store.transaction(tx => ['sessions', 'entries', 'commitments', 'commitment_revisions', 'runtime_outbox'].map(table => tx.get(`SELECT COUNT(*) AS n FROM ${table}`)!.n));
     for (const [operation, input, label] of [
       ['createSession', { title: 'Rollback session', timeZone: 'UTC' }, PRIVATE],
       ['appendEntry', { sessionId: records.session.id, text: 'Rollback entry', role: 'user', timeZone: 'UTC' }, PRIVATE],
       ['appendAssistantEntry', { sessionId: records.session.id, text: 'Rollback completion', timeZone: 'UTC' }, MODEL],
       ['createCommitment', { title: 'Rollback task', dueAt: '2026-10-10T12:00:00.000Z', timeZone: 'UTC' }, PRIVATE],
-    ] as const) assert.throws(() => h.store.transaction(tx => h.port.execute(tx, operation, input, h.context, label)), /synthetic label fault/);
+    ] as const) assert.throws(() => h.store.transaction(tx => h.port.execute(tx, operation, input, h.context, label)), /CHECK constraint failed/);
     h.store.transaction(tx => {
       assert.deepEqual(['sessions', 'entries', 'commitments', 'commitment_revisions', 'runtime_outbox'].map(table => tx.get(`SELECT COUNT(*) AS n FROM ${table}`)!.n), before);
       assert.equal(tx.get('SELECT COUNT(*) AS n FROM routing_labels')!.n, 0);

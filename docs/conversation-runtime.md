@@ -164,7 +164,7 @@ private compiler trace/manifest or raw provider parts.
 Acceptance command: `bash scripts/check-chat.sh` (managed workers run it only
 through their declared controller check). It strict-compiles fresh scoped CHAT,
 needed accepted domain/runtime/contracts/model/prompt and HTTP sources using
-existing SERVICE TypeScript/@types/node into disposable output; no installs,
+existing SERVICE TypeScript and the Node.js type declarations into disposable output; no installs,
 manifest edits, stale dist or live provider/credentials. It runs CHAT real
 SQLite tests and affected domain/runtime/compiler/model mechanism checks, plus
 only the real HTTP forged-assistant boundary regression. Existing package

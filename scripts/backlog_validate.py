@@ -324,9 +324,14 @@ def tracked_public_files(root: Path, exclude: set[str]) -> list[str] | None:
 
 
 def read_docs_text(root: Path) -> dict[str, str]:
-    """Load the explicit document corpus shared by the content checks."""
+    """Load the explicit document corpus shared by the content checks.
+
+    The corpus is README.md, the required DOCS documents, the admitted product documents and the
+    publication report. Each listed product document enters the same content and privacy checks
+    when it is present; a path that does not exist is skipped, never fabricated.
+    """
     texts = {}
-    for rel in ["README.md", *(f"docs/{name}" for name in DOCS),
+    for rel in ["README.md", *(f"docs/{name}" for name in DOCS), *PRODUCT_DOCS,
                 "planning/publishing-validation.md"]:
         path = root / rel
         if path.exists():

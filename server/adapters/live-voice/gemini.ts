@@ -49,11 +49,12 @@ export class GeminiLiveVoiceAdapter implements LiveVoicePort {
     for (const name of timerNames) if (limits[name] > 2_147_483_647) fail('invalid_settings');
     const route = options.route;
     if (!object(route) || typeof route.enabled !== 'boolean' || route.provider !== 'gemini' || route.modelId !== options.modelId) fail('route_denied');
+    const socketFactory: LiveSocketFactory = options.socketFactory ?? ((url, config) => new WebSocket(url, config));
     this.settings = Object.freeze({
       modelId: options.modelId, voice: options.voice, keyReference: options.keyReference,
       enabled: route.enabled, allowed: Object.freeze(classList(route.dataClasses, 'route_denied')),
       resolve: options.credentials.resolve.bind(options.credentials), limits: Object.freeze(limits),
-      socketFactory: options.socketFactory ?? ((url, config) => new WebSocket(url, config)),
+      socketFactory,
     });
   }
   open(request: LiveVoiceRequest, control: LiveVoiceControl): LiveVoiceSession {

@@ -7,7 +7,7 @@ import { createServer, request } from 'node:http';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
-import { startHost, type RuntimeDescriptor } from '../host/runtime.js';
+import { pairLocal, startHost, type RuntimeDescriptor } from '../host/runtime.js';
 import { Store } from '../runtime/store.js';
 import { listenService } from '../http/server.js';
 
@@ -177,6 +177,10 @@ test('actual host connects durable domain, supersedes reminders, exposes conflic
     assert.equal((await stat(host.descriptorPath)).mode & 0o777, 0o600);
     assert.equal((await stat(join(dir, 'admin-credential'))).mode & 0o777, 0o600);
     assert.ok(!(await readFile(host.descriptorPath, 'utf8')).includes(credential));
+    assert.match(await pairLocal(dir), /^[A-Za-z0-9_-]{43}$/);
+    await writeFile(host.descriptorPath, JSON.stringify({ ...host.descriptor, authorityEpoch: 'stale' }));
+    await assert.rejects(pairLocal(dir), /does not match current service identity/);
+    await writeFile(host.descriptorPath, JSON.stringify(host.descriptor));
     await host.close();
     // A deliberately stale descriptor is never trusted for the current authority/origin.
     await writeFile(join(dir, 'host-runtime.json'), JSON.stringify({ schemaVersion: 1, origin: 'http://127.0.0.1:1', authorityEpoch: 'stale', assistantId: 'stale' }));
@@ -224,4 +228,57 @@ test('host fails fatal configuration/listener/descriptor startup and releases it
     assert.equal((await once(help, 'exit'))[0], 0);
     assert.match(text, /loopback-only/);
   } finally { await new Promise<void>(resolve => blocker.close(() => resolve())); await rm(dir, { recursive: true, force: true }); }
+});
+
+test('supervised actual child reports bounded matching readiness, closes on pipe EOF and preserves data', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'didi-host-supervised-'));
+  let child: ChildProcess | undefined;
+  try {
+    child = spawn(process.execPath, [resolve(import.meta.dirname, '../host/index.js'), '--supervised', '--data-dir', dir, '--web-root', webRoot, '--port', '0'], { stdio: ['pipe', 'pipe', 'pipe'] });
+    let stderr = ''; child.stderr!.on('data', chunk => { stderr += String(chunk); });
+    const output = once(child.stdout!, 'data');
+    const nonce = randomUUID();
+    child.stdin!.write(`${JSON.stringify({ type: 'start', schemaVersion: 1, nonce })}\n`);
+    const [buffer] = await Promise.race([output, once(child, 'exit').then(([code]) => { throw new Error(`Supervised startup exited ${String(code)}: ${stderr}`); })]);
+    const text = String(buffer);
+    assert.ok(Buffer.byteLength(text) <= 1024);
+    assert.ok(text.endsWith('\n')); assert.equal(text.split('\n').length, 2);
+    const ready = JSON.parse(text);
+    assert.deepEqual(Object.keys(ready).sort(), ['assistantId', 'authorityEpoch', 'nonce', 'origin', 'pid', 'schemaVersion', 'type'].sort());
+    assert.equal(ready.type, 'ready'); assert.equal(ready.schemaVersion, 1);
+    assert.equal(ready.nonce, nonce); assert.equal(ready.pid, child.pid);
+    assert.match(ready.origin, /^http:\/\/127\.0\.0\.1:\d+$/);
+    const descriptor = JSON.parse(await readFile(join(dir, 'host-runtime.json'), 'utf8'));
+    assert.equal(ready.origin, descriptor.origin); assert.equal(ready.authorityEpoch, descriptor.authorityEpoch);
+    const credential = (await readFile(join(dir, 'admin-credential'), 'utf8')).trim();
+    assert.ok(!text.includes(credential));
+    const status = await fetch(ready.origin + '/api/v1/status', { headers: { Authorization: `Bearer ${credential}` } });
+    assert.equal(status.status, 200);
+    assert.equal((await status.json()).data.assistantId, ready.assistantId);
+    const saved = await fetch(ready.origin + '/api/v1/sessions', { method: 'POST', headers: { Authorization: `Bearer ${credential}`, 'Content-Type': 'application/json', 'Idempotency-Key': randomUUID(), 'X-Didi-Authority-Epoch': ready.authorityEpoch }, body: JSON.stringify({ title: 'Supervision preserves meaningful session', timeZone: 'UTC' }) });
+    assert.equal(saved.status, 200); const sessionId = (await saved.json()).data.id;
+    const exited = once(child, 'exit'); child.stdin!.end(); assert.equal((await exited)[0], 0); child = undefined;
+    await assert.rejects(fetch(ready.origin + '/health', { signal: AbortSignal.timeout(1000) }));
+    const restarted = await launch(dir); child = restarted.child;
+    assert.equal(restarted.descriptor.authorityEpoch, ready.authorityEpoch);
+    const recalled = await fetch(restarted.descriptor.origin + `/api/v1/sessions/${sessionId}`, { headers: { Authorization: `Bearer ${credential}` } });
+    assert.equal(recalled.status, 200); assert.equal((await recalled.json()).data.session.title, 'Supervision preserves meaningful session');
+    assert.equal((await stat(join(dir, 'host-runtime.json'))).mode & 0o777, 0o600);
+  } finally { if (child) await stopProcess(child); await rm(dir, { recursive: true, force: true }); }
+});
+
+test('supervised malformed/oversized/incomplete frames fail before readiness or state creation', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'didi-host-bad-frames-'));
+  try {
+    const frames = ['not-json\n', `${JSON.stringify({ type: 'start', schemaVersion: 1, nonce: '' })}\n`, `${JSON.stringify({ type: 'start', schemaVersion: 1, nonce: randomUUID(), extra: 'not-allowed' })}\n`, `${'x'.repeat(1025)}\n`, JSON.stringify({ type: 'start', schemaVersion: 1, nonce: randomUUID() }), ''];
+    for (const [index, frame] of frames.entries()) {
+      const dataDir = join(dir, String(index));
+      const child = spawn(process.execPath, [resolve(import.meta.dirname, '../host/index.js'), '--supervised', '--data-dir', dataDir, '--web-root', webRoot, '--port', '0']);
+      let stdout = '', stderr = '';
+      child.stdout!.on('data', chunk => { stdout += String(chunk); }); child.stderr!.on('data', chunk => { stderr += String(chunk); });
+      const exited = once(child, 'exit'); child.stdin!.end(frame);
+      assert.equal((await exited)[0], 1); assert.equal(stdout, ''); assert.match(stderr, /Supervision|supervision/);
+      await assert.rejects(stat(dataDir), /ENOENT/);
+    }
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });

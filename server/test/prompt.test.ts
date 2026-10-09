@@ -160,7 +160,7 @@ test('accepted Gemini injected transport constructs separate user evidence, exac
   const compiled = compilePrompt({ ...input(), evidence: [source('wire', 'MALICIOUS_WIRE_ONLY')] });
   const { manifest: _manifest, ...request } = compiled;
   let payload: Record<string, unknown> | undefined; let calls = 0;
-  const adapter = new GeminiAdapter({ modelId: 'synthetic', keyReference: 'synthetic-reference', credentials: { resolve: async () => 'synthetic-key' }, route: { enabled: true, provider: 'gemini', modelId: 'synthetic', dataClasses: ['ordinary', 'private', 'sensitive'] }, transport: async (_url, init) => {
+  const adapter = new GeminiAdapter({ modelId: 'gemini-synthetic', keyReference: 'synthetic-reference', credentials: { resolve: async () => 'synthetic-key' }, route: { enabled: true, provider: 'gemini', modelId: 'gemini-synthetic', dataClasses: ['ordinary', 'private', 'sensitive'] }, transport: async (_url, init) => {
     calls++; payload = JSON.parse(String(init.body)) as Record<string, unknown>;
     return new Response('data: {"candidates":[{"content":{"role":"model","parts":[{"text":"Synthetic completion"}]},"finishReason":"STOP"}]}\n\n', { headers: { 'content-type': 'text/event-stream' } });
   } });
@@ -173,6 +173,6 @@ test('accepted Gemini injected transport constructs separate user evidence, exac
   assert.deepEqual(contents.slice(1), compiled.contents);
   assert.deepEqual(payload!['tools'], [{ functionDeclarations: compiled.declarations }]);
   assert.deepEqual(result.prompt.omittedContextIds, []);
-  const denied = new GeminiAdapter({ modelId: 'synthetic', keyReference: 'unused', credentials: { resolve: async () => { throw Error('must not access'); } }, route: { enabled: true, provider: 'gemini', modelId: 'synthetic', dataClasses: ['ordinary'] }, transport: async () => { throw Error('must not transport'); } });
+  const denied = new GeminiAdapter({ modelId: 'gemini-synthetic', keyReference: 'unused', credentials: { resolve: async () => { throw Error('must not access'); } }, route: { enabled: true, provider: 'gemini', modelId: 'gemini-synthetic', dataClasses: ['ordinary'] }, transport: async () => { throw Error('must not transport'); } });
   assert.equal((await denied.generate(request, { signal: new AbortController().signal, deadlineMs: Date.now() + 10000 })).status, 'denied');
 });

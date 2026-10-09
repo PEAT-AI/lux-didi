@@ -49,7 +49,7 @@ try {
     await page.getByRole('button',{name:'Today',exact:true}).click();
     await page.getByLabel('Commitment title').fill('Review synthetic notes'); await page.getByRole('button',{name:'Add commitment',exact:true}).click();
     await page.getByRole('button',{name:'Edit Review synthetic notes'}).click();
-    assert.equal(await page.getByLabel('Title').evaluate(el=>el===document.activeElement),true);
+    assert.equal(await page.getByLabel('Title',{exact:true}).evaluate(el=>el===document.activeElement),true);
     await page.getByLabel('Due date and time').fill('2025-04-10T14:30'); await page.getByRole('button',{name:'Save changes',exact:true}).click();
     await page.getByText('Due date updated.',{exact:true}).waitFor();
     const correction=fixture.requests.find(r=>r.method==='PATCH'); assert.equal(correction.body.expectedRevision,1); assert.match(correction.body.dueAt,/Z$/);

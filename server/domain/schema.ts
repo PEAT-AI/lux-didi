@@ -78,4 +78,22 @@ export const domainMigrations: SchemaMigration[] = [
        )`,
     ],
   },
+  {
+    owner: 'domain',
+    version: 2,
+    statements: [
+      `CREATE TABLE routing_labels (
+         subject_kind TEXT NOT NULL CHECK(subject_kind IN ('session','entry','commitment')),
+         subject_id TEXT NOT NULL,
+         revision INTEGER NOT NULL CHECK(typeof(revision)='integer' AND revision > 0),
+         data_class TEXT NOT NULL CHECK(data_class IN ('ordinary','private','sensitive')),
+         writer TEXT NOT NULL CHECK(writer IN ('capture','model','owner_review')),
+         recorded_at INTEGER NOT NULL,
+         PRIMARY KEY (subject_kind, subject_id, revision),
+         CHECK(writer='owner_review' OR
+               (writer='capture' AND data_class='private') OR
+               (writer='model' AND data_class IN ('private','sensitive')))
+       )`,
+    ],
+  },
 ];

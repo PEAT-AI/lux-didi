@@ -27,10 +27,97 @@ it adds no second copy of the storage or domain contract.
 ## Operations (`createDomainPort(...).execute(tx, operation, input, context)`)
 
 Session/entry/memory: `createSession`, `listSessions`, `getSession`,
-`appendEntry`, `recall`. Commitment: `createCommitment`, `listCommitments`,
+`appendEntry`, trusted in-process `appendAssistantEntry`, `recall`. Commitment: `createCommitment`, `listCommitments`,
 `getCommitment`, `updateCommitment`, `transitionCommitment`
 (`complete|cancel|reopen`), `plan`. The domain owns no transport: the service
-maps these onto `/api/v1` routes and injects ids/identity, never the body.
+maps public operations onto `/api/v1` routes and injects ids/identity, never the body.
+`appendAssistantEntry` and the routing-label methods below are not public HTTP bindings.
+
+## Durable routing labels (Domain migration v2)
+
+Domain owns one append-only `routing_labels` table. Its primary key is
+`(subject_kind, subject_id, revision)`; subject kind, class and writer have SQLite
+CHECK constraints, revisions are positive integers, and writer/class combinations
+also obey the automatic-label policy. Migration v2 is additive: v1 tables and
+rows are unchanged and there is **no legacy backfill**. The domain appends revisions;
+there is no label UPDATE/DELETE path. Store remains the single SQLite database,
+transaction manager and durable owner (`Store.assistantId`); no per-row owner is
+stored. The composition host adds its actual Store owner to routing decisions.
+
+Exact types exported by `server/contracts/domain.ts` (and type-reexported by
+`server/domain/contract.ts`):
+
+```ts
+interface RoutingSubject { kind: 'session' | 'entry' | 'commitment'; id: string }
+type RoutingDataClass = 'ordinary' | 'private' | 'sensitive';
+type TrustedWriteLabel =
+  | { writer: 'capture'; dataClass: 'private' }
+  | { writer: 'model'; dataClass: 'private' | 'sensitive' };
+interface RoutingLabel {
+  subject: RoutingSubject;
+  revision: number;
+  dataClass: RoutingDataClass;
+  writer: 'capture' | 'model' | 'owner_review';
+  recordedAt: string;
+}
+type RoutingLabelLookup = RoutingLabel | {
+  subject: RoutingSubject; revision: 0; dataClass: 'unknown';
+  writer: null; recordedAt: null;
+};
+interface RoutingLabelCorrection {
+  subject: RoutingSubject; expectedRevision: number; dataClass: RoutingDataClass;
+}
+```
+
+The synchronous in-process port extends the existing generic execute signature:
+
+```ts
+execute<K extends DomainOperation>(
+  tx: Transaction, operation: K, input: DomainOperations[K]['input'],
+  context: DomainContext, writeLabel?: TrustedWriteLabel,
+): DomainOperations[K]['output'];
+getRoutingLabel(tx: Transaction, subject: RoutingSubject): RoutingLabelLookup;
+getRoutingLabelHistory(tx: Transaction, subject: RoutingSubject): RoutingLabel[];
+correctRoutingLabel(
+  tx: Transaction, input: RoutingLabelCorrection, context: DomainContext,
+): RoutingLabel;
+```
+
+- Only `createSession`, `appendEntry`, `appendAssistantEntry` and
+  `createCommitment` accept the fifth argument. New subjects receive revision 1
+  atomically with content and any reminder insert in the caller's Store transaction.
+  Every existing four-argument call remains valid and creates **no label**.
+- Capture can stamp **private only**. Model can stamp private or sensitive, never
+  ordinary. User `appendEntry` requires capture; `appendAssistantEntry` requires
+  model. Session/commitment creation accepts either. Unsupported operations,
+  invalid classes/writers and inconsistent append writers are BAD_REQUEST before
+  any mutation. `owner_review` is not a permitted automatic writer.
+- Public input DTOs and `SourceRef` have no class/writer/owner additions. Body-like
+  extra fields and descriptive source labels never select routing policy. A trusted
+  fifth argument is a composition seam, **not a public authorization boundary**.
+- Lookup and history validate subject kind/id and use owning domain readers to
+  verify existence. Missing subjects throw NOT_FOUND; an existing unlabeled
+  subject returns unknown/revision 0/null writer/null time (history `[]`). Stored
+  labels include their revision, writer and ISO timestamp. History is oldest first.
+  Recall is not a stored subject kind: classify its underlying entry/commitment ids.
+- Correction is explicit trusted owner review. It validates subject and a
+  nonnegative safe-integer `expectedRevision` (0 means no prior label), rejects a
+  stale revision with CONFLICT, and appends prior+1 with writer `owner_review` and
+  `context.now`. It allows raising or lowering to any stored class and retains
+  prior history; it never rewrites content or reminders. Plain commitment updates
+  and transitions never silently relabel.
+- All calls use the caller's `Transaction`. A label-insert failure, later caller
+  persistence failure or correction failure rolls back with the enclosing Store
+  transaction. There is no second connection, implicit transaction or ambient
+  provenance state. Consumer lookup/history goes through Domain, not raw SQL.
+
+Labels are owner-controlled **routing policy**, not semantic sensitivity detection
+or a privacy guarantee. Domain does not enforce external-provider consent, derive
+an output class from model context, contact providers or authorize HTTP callers.
+The trusted host must choose a model label with the required context floor.
+Actual HTTP spoof rejection, connected CHAT consent/dispatch integration and
+live-provider behavior require later integration evidence; these engine tests
+make no such claims.
 
 ## Invariants
 

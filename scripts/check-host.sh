@@ -2,13 +2,10 @@
 set -euo pipefail
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 cd "$(dirname "$0")/.."
-# No duplicate runtime: extend the accepted service compiler in its existing layout.
-config=$(mktemp "$PWD/server/.host-check-XXXXXX.json")
+# Exercise the documented build producer, using the current compiler layout.
+bash scripts/run-local.sh --build-only
 log=$(mktemp)
-trap 'rm -f "$config" "$log"' EXIT
-printf '%s\n' '{"extends":"./tsconfig.json","include":["index.ts","host/**/*.ts","http/**/*.ts","test/host.test.ts","test/http.test.ts"]}' > "$config"
-npm --prefix web run build
-server/node_modules/.bin/tsc -p "$config"
+trap 'rm -f "$log"' EXIT
 for file in server/dist/test/host.test.js server/dist/test/http.test.js; do
   test -s "$file" || { echo "Missing selected test: $file" >&2; exit 1; }
 done

@@ -14,9 +14,9 @@ out="$(mktemp -d "${TMPDIR:-/tmp}/didi-chat.XXXXXX")"
 trap 'rm -rf "$out"' EXIT
 cd "$root"
 mkdir -p "$out/source/adapters/model" "$out/source/test"
-cp -R server/chat server/domain server/runtime server/contracts server/prompt "$out/source/"
+cp -R server/chat server/domain server/runtime server/contracts server/prompt server/http "$out/source/"
 cp server/adapters/model/*.ts "$out/source/adapters/model/"
-cp server/test/chat.test.ts server/test/chat-process.ts server/test/prompt.test.ts server/test/model.test.ts server/test/runtime.test.ts "$out/source/test/"
+cp server/test/chat.test.ts server/test/chat-process.ts server/test/prompt.test.ts server/test/model.test.ts server/test/runtime.test.ts server/test/http.test.ts "$out/source/test/"
 printf '{"type":"module"}\n' > "$out/package.json"
 mapfile_compat=()
 while IFS= read -r file; do mapfile_compat+=("$file"); done < <(find "$out/source" -name '*.ts' -type f)
@@ -27,5 +27,5 @@ test -f "$out/dist/test/chat.test.js"
 # DOMAIN's accepted test imports ../dist explicitly; point it at fresh output.
 mkdir -p "$out/test"
 cp server/test/domain.test.ts "$out/test/"
-node --test --test-reporter=tap --test-timeout=15000 "$out/dist/test/chat.test.js" "$out/dist/test/prompt.test.js" "$out/dist/test/model.test.js" "$out/test/domain.test.ts" "$out/dist/test/runtime.test.js" | tee "$out/results.tap"
+node --test --test-reporter=tap --test-timeout=15000 "$out/dist/test/chat.test.js" "$out/dist/test/prompt.test.js" "$out/dist/test/model.test.js" "$out/test/domain.test.ts" "$out/dist/test/runtime.test.js" "$out/dist/test/http.test.js" | tee "$out/results.tap"
 grep -Eq '^# tests [1-9][0-9]*$' "$out/results.tap"

@@ -31,7 +31,7 @@ credential transport.
 ```
 
 All fields are required; extra and duplicate fields are rejected, including
-escaped duplicate names. `enabled` must be boolean. `modelId` is 1–128 ASCII
+escaped duplicate names. `enabled` must be boolean. `modelId` is 1 to 128 ASCII
 letters, digits, dot, underscore or hyphen, starting with a letter/digit.
 `dataClasses` is a nonempty unique subset of `ordinary`, `private`, `sensitive`.
 Preferences contain exactly the five fields shown. The accepted
@@ -47,8 +47,8 @@ or portable owner identity is accepted. A disabled profile must still be valid.
 ```
 
 Exactly these fields. The only reference is `gemini-primary`, never a filename
-or caller-selected path. Key length is 1–1024 bytes, visible ASCII without space
-(0x21–0x7e); whitespace, controls, CR/LF and non-ASCII are rejected. Examples
+or caller-selected path. Key length is 1 to 1024 bytes, visible ASCII without space
+(0x21 through 0x7e); whitespace, controls, CR/LF and non-ASCII are rejected. Examples
 are synthetic, not credentials. Secret bytes never appear in status/errors,
 causes, logs, CLI output, argv or serialized returned objects.
 

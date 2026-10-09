@@ -35,7 +35,7 @@ The leased browser proof defaults to headless GPU rendering. `DIDI_HOST_HEADED=1
 
 Set `DIDI_STATE_DIR` to a private application-data directory first. If `--data-dir`
 is omitted, defaults are macOS `~/Library/Application Support/Lux Didi`, Linux
-`$XDG_DATA_HOME/lux-didi` or `~/.local/share/lux-didi`, and Windows
+`$XDG_DATA_HOME/lux-didi` or the standard XDG user-data fallback, and Windows
 `%LOCALAPPDATA%/Lux Didi` (fallback `~/AppData/Local/Lux Didi`). Explicit paths keep
 the topology portable; this is not a Windows package or remote-device install.
 Default web root is the checkout/artifact's `web/dist`, port 8765. Environment

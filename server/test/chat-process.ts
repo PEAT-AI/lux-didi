@@ -24,9 +24,10 @@ export function openFixture(dir: string, model: ModelPort, overrides: Partial<Ch
     classify: () => ({ ownerId: store.assistantId, dataClass: 'ordinary' }),
     context: { budgets: { trustedChars: 20000, contextChars: 12000, historyChars: 12000 }, sources: [] },
     now: () => 0, ...overrides };
-  const chat = new ChatService(config); chat.recover(context);
+  const recoveryContext = { assistantId: store.assistantId, authorityEpoch: store.authorityEpoch };
+  const chat = new ChatService(config); chat.recover(recoveryContext);
   const createSession = () => store.transaction(tx => domain.execute(tx, 'createSession', { title: 'Synthetic', timeZone: 'UTC' }, context));
-  return { store, domain, context, chat, config, createSession };
+  return { store, domain, context, recoveryContext, chat, config, createSession };
 }
 
 // Only the spawned child executes this branch. Synthetic files/IPC; no network.

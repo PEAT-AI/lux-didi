@@ -87,7 +87,7 @@ test('route rejects classified history/evidence before model dispatch while repo
   const f = fixture({ route: { provider: 'synthetic', model: 'ordinary-only', available: true, allows: classes => !classes.includes('sensitive') } });
   try {
     const c = { ...f.config, classify: () => ({ ownerId: f.store.assistantId, dataClass: 'sensitive' as const }) };
-    const chat = new ChatService(c); chat.recover(f.context);
+    const chat = new ChatService(c); chat.recover(f.recoveryContext);
     const run = chat.accept({ sessionId: f.session.id, text: 'Classified', idempotencyKey: 's' }, f.context);
     for await (const e of chat.subscribe(run.runId, f.context)) if (e.type === 'snapshot' && e.run.state === 'terminal') { assert.equal(e.run.outcome, 'unavailable'); break; }
     assert.equal(f.model.calls.length, 0); assert.equal(f.entries().length, 1);
@@ -104,7 +104,7 @@ test('cancel wins: abort signal and late completion cannot append an answer; dis
     assert.equal(f.model.controls[0]!.signal.aborted, true);
     f.model.finish(); await new Promise<void>(resolve => setImmediate(resolve));
     assert.equal(f.chat.get(run.runId, f.context).outcome, 'cancelled'); assert.equal(f.entries().length, 1);
-    assert.throws(() => f.chat.cancel(run.runId, { ...f.context, clientId: 'other' }), error('unauthorized'));
+    assert.throws(() => f.chat.cancel(run.runId, { ...f.context, assistantId: 'foreign-owner' }), error('unauthorized'));
   } finally { f.close(); }
 });
 
@@ -238,7 +238,7 @@ for (const mode of ['accepted', 'intent', 'called']) {
       const replay = f.chat.accept({ sessionId: session.id, text: 'Synthetic child turn', idempotencyKey: 'child' }, f.context); assert.equal(replay.runId, runId); assert.equal(model.calls.length, 0);
       const next = f.chat.accept({ sessionId: session.id, text: 'New explicit attempt', idempotencyKey: 'new', retryOf: runId }, f.context); assert.notEqual(next.runId, runId);
       for await (const e of f.chat.subscribe(next.runId, f.context)) if (e.type === 'snapshot' && e.run.state === 'terminal') { assert.equal(e.run.outcome, 'complete'); break; }
-      assert.equal(model.calls.length, 1); f.chat.recover(f.context); assert.equal(f.chat.get(next.runId, f.context).outcome, 'complete');
+      assert.equal(model.calls.length, 1); f.chat.recover(f.recoveryContext); assert.equal(f.chat.get(next.runId, f.context).outcome, 'complete');
       const entries = f.store.transaction(tx => f.domain.execute(tx, 'getSession', { id: session.id }, f.context)).entries; assert.equal(entries.length, 3);
     } finally { if (!killed && child.exitCode === null && child.signalCode === null) { const exited = once(child, 'exit'); child.kill('SIGKILL'); await exited; } f.store.close(); rmSync(dir, { recursive: true, force: true }); }
   });
@@ -259,15 +259,15 @@ test('public snapshots/subscriber events never contain provider parts or private
   } finally { f.close(); }
 });
 
-test('startup recovery is required; stale run epoch cannot be cancelled or silently overwritten', () => {
+test('startup recovery is required; historical accepting epoch does not deny current-owner cancellation', () => {
   const f = fixture({ schedule: () => {} });
   try {
     const cold = new ChatService(f.config);
     assert.throws(() => cold.accept({ sessionId: f.session.id, text: 'x', idempotencyKey: 'cold' }, f.context), error('recovery_required'));
     const run = f.accept();
     f.store.transaction(tx => tx.run('UPDATE chat_runs SET authority_epoch=? WHERE run_id=?', ['prior-epoch', run.runId]));
-    assert.throws(() => f.chat.cancel(run.runId, f.context), error('epoch_mismatch'));
-    assert.equal(f.chat.get(run.runId, f.context).state, 'accepted');
+    assert.equal(f.chat.cancel(run.runId, f.context).outcome, 'cancelled');
+    assert.equal(f.chat.get(run.runId, f.context).authorityEpoch, 'prior-epoch');
     assert.equal(f.entries().length, 1); assert.equal(f.model.calls.length, 0);
   } finally { f.close(); }
 });
@@ -287,7 +287,7 @@ test('history suffix never splits a completed user/assistant turn', async () => 
 test('unknown recalled evidence classification is unavailable even when history is ordinary', async () => {
   const f = fixture({ context: { budgets: { trustedChars: 20000, contextChars: 12000, historyChars: 12000 }, sources: [{ id: 'recall', state: 'available' }], recall: { q: 'needle', limit: 10 } } });
   try {
-    const chat = new ChatService({ ...f.config, classify: subject => subject.kind === 'recall' ? null : ({ ownerId: f.store.assistantId, dataClass: 'ordinary' }) }); chat.recover(f.context);
+    const chat = new ChatService({ ...f.config, classify: subject => subject.kind === 'recall' ? null : ({ ownerId: f.store.assistantId, dataClass: 'ordinary' }) }); chat.recover(f.recoveryContext);
     const run = chat.accept({ sessionId: f.session.id, text: 'needle', idempotencyKey: 'no-evidence-class' }, f.context);
     for await (const event of chat.subscribe(run.runId, f.context)) if (event.type === 'snapshot' && event.run.state === 'terminal') { assert.equal(event.run.outcome, 'unavailable'); break; }
     assert.equal(f.model.calls.length, 0); assert.equal(f.entries().length, 1);
@@ -319,4 +319,67 @@ test('capability snapshot never advertises an unconfigured source as available',
   const f = fixture({ context: { budgets: { trustedChars: 20000, contextChars: 12000, historyChars: 12000 }, sources: [{ id: 'today', state: 'available' }] } });
   try { const done = await terminal(f, f.accept()); assert.equal(done.outcome, 'unavailable'); assert.equal(f.model.calls.length, 0); }
   finally { f.close(); }
+});
+
+test('same owner native/browser/rebootstrap share run and idempotency; accepting client stays immutable audit', async () => {
+  const f = fixture(); f.model.delayed = true;
+  try {
+    const native = { ...f.context, clientId: 'local-admin' };
+    const browser = { ...f.context, clientId: 'paired-browser' };
+    const rebootstrap = { ...f.context, clientId: 'new-browser-session' };
+    const input = { sessionId: f.session.id, text: 'Native-originated capture', idempotencyKey: 'shared-key' };
+    const run = f.chat.accept(input, native);
+    assert.equal(f.chat.get(run.runId, browser).runId, run.runId);
+    assert.equal(f.chat.accept({ ...input }, rebootstrap).runId, run.runId);
+    assert.throws(() => f.chat.accept({ ...input, text: 'Changed semantic body' }, browser), error('idempotency_conflict'));
+    assert.equal(f.entries().length, 1);
+    const stream = f.chat.subscribe(run.runId, rebootstrap)[Symbol.asyncIterator]();
+    const current = (await stream.next()).value; assert.equal(current.run.runId, run.runId);
+    await started(f); assert.equal(f.model.calls.length, 1);
+    const audit = f.store.transaction(tx => tx.get('SELECT owner_assistant_id,accepting_client_id,authority_epoch FROM chat_runs WHERE run_id=?', [run.runId]));
+    assert.equal(audit!.owner_assistant_id, f.store.assistantId); assert.equal(audit!.accepting_client_id, 'local-admin'); assert.equal(audit!.authority_epoch, native.authorityEpoch);
+    const cancelled = f.chat.cancel(run.runId, rebootstrap); assert.equal(cancelled.outcome, 'cancelled');
+    assert.equal(f.model.controls[0]!.signal.aborted, true);
+    f.model.finish(); await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(f.chat.get(run.runId, browser).outcome, 'cancelled'); assert.equal(f.entries().length, 1);
+    assert.deepEqual(f.store.transaction(tx => tx.get('SELECT owner_assistant_id,accepting_client_id,authority_epoch FROM chat_runs WHERE run_id=?', [run.runId])), audit);
+    await stream.return?.();
+  } finally { f.close(); }
+});
+
+test('current owner/context can read historical row epoch; missing client/stale request/foreign owner are denied', async () => {
+  const f = fixture();
+  try {
+    const run = f.accept(); await terminal(f, run);
+    f.store.transaction(tx => tx.run('UPDATE chat_runs SET authority_epoch=? WHERE run_id=?', ['historical-accepting-epoch', run.runId]));
+    const paired = { ...f.context, clientId: 'rebootstrapped-browser' };
+    assert.equal(f.chat.get(run.runId, paired).finalText, 'Answer');
+    assert.equal(f.chat.cancel(run.runId, paired).outcome, 'complete');
+    for (const context of [{ ...paired, clientId: '' }, { ...paired, assistantId: 'foreign-owner' }, { ...paired, authorityEpoch: 'stale-request' }]) {
+      const code = context.authorityEpoch === 'stale-request' ? 'epoch_mismatch' : 'unauthorized';
+      assert.throws(() => f.chat.get(run.runId, context), error(code));
+      assert.throws(() => f.chat.subscribe(run.runId, context), error(code));
+      assert.throws(() => f.chat.cancel(run.runId, context), error(code));
+      assert.throws(() => f.chat.accept({ sessionId: f.session.id, text: 'Denied', idempotencyKey: 'denied' }, context), error(code));
+    }
+    assert.equal(f.entries().length, 2); assert.equal(f.model.calls.length, 1);
+    f.store.transaction(tx => tx.run('UPDATE chat_runs SET owner_assistant_id=? WHERE run_id=?', ['foreign-record-owner', run.runId]));
+    // A foreign row is indistinguishable from an absent ID, not an existence oracle.
+    assert.throws(() => f.chat.get(run.runId, paired), error('not_found'));
+    assert.throws(() => f.chat.subscribe(run.runId, paired), error('not_found'));
+    assert.throws(() => f.chat.cancel(run.runId, paired), error('not_found'));
+  } finally { f.close(); }
+});
+
+test('clientless host recovery refuses foreign-owner orphan without mutating any rows or dispatching', () => {
+  const f = fixture({ schedule: () => {} });
+  try {
+    const run = f.accept();
+    f.store.transaction(tx => tx.run('UPDATE chat_runs SET owner_assistant_id=? WHERE run_id=?', ['foreign-owner', run.runId]));
+    const before = f.store.transaction(tx => tx.get('SELECT * FROM chat_runs WHERE run_id=?', [run.runId]));
+    const startup = new ChatService(f.config);
+    assert.throws(() => startup.recover({ assistantId: f.store.assistantId, authorityEpoch: f.store.authorityEpoch }), error('unauthorized'));
+    assert.deepEqual(f.store.transaction(tx => tx.get('SELECT * FROM chat_runs WHERE run_id=?', [run.runId])), before);
+    assert.equal(f.model.calls.length, 0); assert.equal(f.entries().length, 1);
+  } finally { f.close(); }
 });

@@ -3,12 +3,25 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=26.0.0" },
+  "engines": {
+    "node": ">=26.0.0"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/index.js",
     "test": "node --test --test-timeout=15000 dist/test/runtime.test.js dist/test/http.test.js"
   },
-  "devDependencies": { "@types/node": "^26.0.0", "typescript": "^6.0.2" }
+  "devDependencies": {
+    "@types/node": "^26.0.0",
+    "typescript": "^6.0.2"
+  },
+  "files": [
+    "dist/index.js",
+    "dist/index.d.ts",
+    "dist/index.js.map",
+    "dist/runtime",
+    "dist/http",
+    "dist/contracts"
+  ]
 }

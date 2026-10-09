@@ -20,10 +20,11 @@ async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> 
   try { return object(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } catch (error) { if (error instanceof ServiceError) throw error; throw new ServiceError('BAD_REQUEST', 'Malformed JSON'); }
 }
 interface Principal { clientId: string; mode: 'bearer' | 'browser'; tokenHash?: string; csrfToken?: string }
-export interface ServiceOptions { store: Store; domain?: DomainPort; port?: number }
+export interface ServiceOptions { store: Store; domain?: DomainPort; port?: number; now?: () => number }
 export interface RunningService { server: Server; origin: string; close(): Promise<void> }
 export async function listenService(options: ServiceOptions): Promise<RunningService> {
   const { store, domain } = options;
+  const now = options.now ?? Date.now;
   let origin = '';
   const pairing = new Map<string, number>();
   const send = (res: ServerResponse, status: number, payload: unknown) => {
@@ -39,7 +40,7 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
     const cookies = (cookie ?? '').split(';').map(item => item.trim()).filter(item => item.startsWith('didi_session='));
     if (cookies.length !== 1 || !/^didi_session=[A-Za-z0-9_-]{43}$/.test(cookies[0]!)) throw new ServiceError('UNAUTHORIZED', 'Authentication required', 401);
     const tokenHash = hash(cookies[0]!.slice('didi_session='.length));
-    const row = store.transaction(tx => tx.get('SELECT * FROM runtime_sessions WHERE token_hash=? AND expires_at>?', [tokenHash, Date.now()]));
+    const row = store.transaction(tx => tx.get('SELECT * FROM runtime_sessions WHERE token_hash=? AND expires_at>?', [tokenHash, now()]));
     if (!row) throw new ServiceError('UNAUTHORIZED', 'Authentication required', 401);
     return { clientId: String(row.client_id), mode: 'browser', tokenHash, csrfToken: String(row.csrf_token) };
   };
@@ -64,9 +65,9 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
         if (req.headers.origin !== origin) throw new ServiceError('FORBIDDEN', 'Exact Origin required', 403);
         const body = await readBody(req); resolveRoute(method, url, body);
         const codeHash = hash(String(body.pairingCode)); const expiry = pairing.get(codeHash); pairing.delete(codeHash);
-        if (!expiry || expiry <= Date.now()) throw new ServiceError('UNAUTHORIZED', 'Pairing code invalid or expired', 401);
+        if (!expiry || expiry <= now()) throw new ServiceError('UNAUTHORIZED', 'Pairing code invalid or expired', 401);
         const token = secret(), csrfToken = secret();
-        store.transaction(tx => { tx.run('DELETE FROM runtime_sessions WHERE expires_at<=?', [Date.now()]); tx.run('INSERT INTO runtime_sessions VALUES (?,?,?,?)', [hash(token), randomUUID(), csrfToken, Date.now() + 12 * 60 * 60 * 1000]); });
+        store.transaction(tx => { tx.run('DELETE FROM runtime_sessions WHERE expires_at<=?', [now()]); tx.run('INSERT INTO runtime_sessions VALUES (?,?,?,?)', [hash(token), randomUUID(), csrfToken, now() + 12 * 60 * 60 * 1000]); });
         res.setHeader('Set-Cookie', `didi_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200`);
         send(res, 200, success({ csrfToken })); return;
       }
@@ -79,9 +80,9 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
       if (route.mutation) { const body = await readBody(req); route = resolveRoute(method, url, body); }
       if (route.kind === 'pairing') {
         if (actor.mode !== 'bearer') throw new ServiceError('FORBIDDEN', 'Local operator credential required', 403);
-        for (const [key, expiry] of pairing) if (expiry <= Date.now()) pairing.delete(key);
+        for (const [key, expiry] of pairing) if (expiry <= now()) pairing.delete(key);
         if (pairing.size >= 16) throw new ServiceError('CONFLICT', 'Outstanding pairing limit reached', 409);
-        const pairingCode = secret(), expires = Date.now() + 300_000; pairing.set(hash(pairingCode), expires);
+        const pairingCode = secret(), expires = now() + 300_000; pairing.set(hash(pairingCode), expires);
         send(res, 200, success({ pairingCode, expiresAt: new Date(expires).toISOString() })); return;
       }
       if (route.kind === 'logout') {
@@ -93,7 +94,7 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
       if (route.kind !== 'domain') throw new ServiceError('NOT_FOUND', 'Route not found', 404);
       if (!domain) throw new ServiceError('DOMAIN_NOT_CONFIGURED', 'Domain capability is unavailable', 503);
       const domainRoute = route;
-      const context = { assistantId: store.assistantId, clientId: actor.clientId, authorityEpoch: store.authorityEpoch, now: new Date().toISOString() };
+      const context = { assistantId: store.assistantId, clientId: actor.clientId, authorityEpoch: store.authorityEpoch, now: new Date(now()).toISOString() };
       if (!route.mutation) { send(res, 200, success(store.transaction(tx => domain.execute(tx, domainRoute.operation, domainRoute.input, context)))); return; }
       const key = req.headers['idempotency-key'];
       if (typeof key !== 'string' || !/^[A-Za-z0-9_.:-]{1,128}$/.test(key)) throw new ServiceError('BAD_REQUEST', 'Idempotency-Key required');

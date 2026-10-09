@@ -4,6 +4,8 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { request } from 'node:http';
+import { spawn, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
 import { Store } from '../runtime/store.js';
 import { listenService } from '../http/server.js';
 import type { DomainPort } from '../contracts/domain.js';
@@ -25,10 +27,11 @@ const domain = {
 async function fixture(port?: DomainPort) {
   const dir = mkdtempSync(join(tmpdir(), 'didi-http-'));
   const store = new Store(dir, port?.migrations);
-  const service = await listenService({ store, ...(port ? { domain: port } : {}), port: 0 });
+  let time = Date.now();
+  const service = await listenService({ store, now: () => time, ...(port ? { domain: port } : {}), port: 0 });
   const token = readFileSync(join(dir, 'admin-credential'), 'utf8').trim();
   const auth = { Authorization: `Bearer ${token}` };
-  return { dir, store, service, auth, async cleanup() { await service.close(); store.close(); rmSync(dir, { recursive: true, force: true }); } };
+  return { dir, store, service, auth, advance(ms: number) { time += ms; }, async cleanup() { await service.close(); store.close(); rmSync(dir, { recursive: true, force: true }); } };
 }
 async function pair(f: Awaited<ReturnType<typeof fixture>>) {
   const bootstrap = await fetch(`${f.service.origin}/api/v1/auth/pairing`, { method: 'POST', headers: { ...f.auth, 'Content-Type': 'application/json' }, body: '{}' });
@@ -110,4 +113,60 @@ test('body boundary refuses unknown fields, identities, wrong types, malformed J
     assert.equal((await fetch(`${f.service.origin}/api/v1/sessions`, { method: 'POST', headers: { ...f.auth, 'Content-Type': 'text/plain' }, body: '{}' })).status, 400);
     assert.equal(f.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM calls'))!.n, 0);
   } finally { await f.cleanup(); }
+});
+
+
+test('pairing/session expiration use a clock seam and never silently reauthorize', async () => {
+  const f = await fixture();
+  try {
+    const issued = await (await fetch(`${f.service.origin}/api/v1/auth/pairing`, { method:'POST', headers:{...f.auth,'Content-Type':'application/json'},body:'{}' })).json();
+    f.advance(300_001);
+    assert.equal((await fetch(`${f.service.origin}/api/v1/auth/pair`, {method:'POST',headers:{Origin:f.service.origin,'Content-Type':'application/json'},body:JSON.stringify({pairingCode:issued.data.pairingCode})})).status,401);
+    const browser = await pair(f); f.advance(12*60*60*1000+1);
+    assert.equal((await fetch(`${f.service.origin}/api/v1/status`, {headers:{Cookie:browser.cookie.split(';')[0]!}})).status,401);
+  } finally { await f.cleanup(); }
+});
+
+test('HTTP request keys and browser session survive service and database restart', async () => {
+  const dir = mkdtempSync(join(tmpdir(),'didi-http-restart-'));
+  let store = new Store(dir, domain.migrations);
+  let service = await listenService({store,domain,port:0});
+  const auth = { Authorization:`Bearer ${store.adminCredential}` };
+  const mutate = () => fetch(`${service.origin}/api/v1/sessions`,{method:'POST',headers:{...auth,'Content-Type':'application/json','Idempotency-Key':'restart','X-Didi-Authority-Epoch':store.authorityEpoch},body:'{"title":"Synthetic restart","timeZone":"UTC"}'});
+  try {
+    const first = await (await mutate()).json();
+    const bootstrap = await (await fetch(`${service.origin}/api/v1/auth/pairing`,{method:'POST',headers:{...auth,'Content-Type':'application/json'},body:'{}'})).json();
+    const paired = await fetch(`${service.origin}/api/v1/auth/pair`,{method:'POST',headers:{Origin:service.origin,'Content-Type':'application/json'},body:JSON.stringify({pairingCode:bootstrap.data.pairingCode})});
+    const cookie = paired.headers.get('set-cookie')!.split(';')[0]!;
+    await service.close(); store.close();
+    store = new Store(dir,domain.migrations); service = await listenService({store,domain,port:0});
+    assert.deepEqual(await (await mutate()).json(),first);
+    assert.equal((await fetch(`${service.origin}/api/v1/status`,{headers:{Cookie:cookie}})).status,200);
+    assert.equal(store.transaction(tx=>tx.get('SELECT COUNT(*) AS n FROM calls'))!.n,1);
+  } finally { await service.close(); store.close(); rmSync(dir,{recursive:true,force:true}); }
+});
+
+test('package installs offline and actual production CLI serves honest runtime-only status', async () => {
+  const dir = mkdtempSync(join(tmpdir(),'didi-install-'));
+  let child: ReturnType<typeof spawn> | undefined;
+  try {
+    const cwd = new URL('../../',import.meta.url);
+    const env = {...process.env,npm_config_cache:join(dir,'npm-cache')};
+    const packed = spawnSync('npm',['pack','--json','--offline','--ignore-scripts','--pack-destination',dir],{cwd,env,encoding:'utf8',timeout:5000});
+    assert.equal(packed.status,0,packed.stderr);
+    const filename = (JSON.parse(packed.stdout) as {filename:string}[])[0]!.filename;
+    const installed = spawnSync('npm',['install','--prefix',join(dir,'install'),'--offline','--ignore-scripts','--omit=dev','--no-audit','--no-fund',join(dir,filename)],{env,encoding:'utf8',timeout:5000});
+    assert.equal(installed.status,0,installed.stderr);
+    const state = join(dir,'state');
+    child = spawn(process.execPath,[join(dir,'install/node_modules/@lux-didi/service/dist/index.js')],{env:{...env,DIDI_STATE_DIR:state,DIDI_PORT:'0'},stdio:['ignore','pipe','pipe']});
+    const exit = once(child,'exit');
+    const output = await Promise.race([once(child.stdout!,'data').then(([chunk])=>String(chunk)),exit.then(([code])=>{throw Error(`CLI exited ${String(code)}`);})]);
+    const origin = /http:\/\/127\.0\.0\.1:\d+/.exec(output)?.[0]; assert.ok(origin,output);
+    const health = await fetch(`${origin}/health`); assert.equal(health.status,200);
+    const token = readFileSync(join(state,'admin-credential'),'utf8').trim();
+    const status = await (await fetch(`${origin}/api/v1/status`,{headers:{Authorization:`Bearer ${token}`}})).json();
+    assert.equal(status.data.capabilities.memory,false); assert.equal(status.data.model.configured,false); assert.deepEqual(status.data.sources,[]);
+    assert.ok(!output.includes(token));
+    child.kill('SIGTERM'); const [code] = await exit; assert.equal(code,0); child = undefined;
+  } finally { if (child && child.exitCode === null) { const exit = once(child,'exit'); child.kill('SIGTERM'); await exit; } rmSync(dir,{recursive:true,force:true}); }
 });

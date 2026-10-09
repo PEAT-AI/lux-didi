@@ -22,7 +22,7 @@ as verified. Output is deterministic for a fixed revision so that re-running on
 the same commit produces byte-identical reports.
 
 Check ids follow the reviewer's validator contract (V-01 to V-14) plus the
-integration checks (X-01 to X-06) defined for the assembled backlog.
+integration checks (X-01 to X-08) defined for the assembled backlog.
 
 Definitions used by the checks:
     V-08 word band: tasks are expected in the 300 to 650 word target band; the
@@ -31,6 +31,14 @@ Definitions used by the checks:
         that each task body contains the required section concepts. That is a
         presence and size check only: it is not proof of content quality, and
         the independent reviewer reads every section substantively (R-V08-WEAK).
+    V-14 negative-control self-test: the plan size is never asserted from a
+        literal count, so the coverage checks are derived from the assembled
+        node set. V-14 proves those derived checks still bite by running them
+        against deliberately broken copies of the loaded nodes (duplicate id,
+        numbering gap, wrong master prefix, epic child mismatch, dependency
+        cycle, dash code point, private shape, missing baseline, header total
+        drift, stale body hash) and reporting a failure unless the broken copy
+        is rejected and the unmutated copy is accepted.
     V-09 near-duplicate measure: token 4-gram Jaccard similarity over body
         tokens; pairs at or above 0.30 are reported, pairs at or above 0.75 fail
         as copied boilerplate.
@@ -50,15 +58,19 @@ Definitions used by the checks:
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 SCHEMA = "lux-didi.backlog/1"
+VERIFIER_ROOT = Path(__file__).resolve().parent.parent
 
 MILESTONES = {
     "M0": "Proof and contracts",
@@ -68,32 +80,33 @@ MILESTONES = {
     "M4": "Portability and polish",
 }
 
-# epic -> (master, expected child count)
-EPICS = {
-    "E01": ("A", 8),
-    "E02": ("A", 10),
-    "E03": ("B", 9),
-    "E04": ("B", 9),
-    "E05": ("C", 11),
-    "E06": ("C", 7),
-    "E07": ("D", 9),
-    "E08": ("D", 9),
-    "E09": ("E", 9),
-    "E10": ("E", 9),
-}
-
-# master -> id prefixes
+# master -> id prefix. This is the namespace contract, not a size. The number of
+# epics, the number of tasks per master and the id ranges are derived from the
+# assembled node set below, so growing the plan never edits a count in this file.
 MASTER_PREFIX = {"A": "A", "B": "B", "C": "C", "D": "D", "E": "F"}
 
-EXPECTED_IDS = (
-    {"P00"}
-    | {f"E{i:02d}" for i in range(1, 11)}
-    | {f"A{i:02d}" for i in range(1, 19)}
-    | {f"B{i:02d}" for i in range(1, 19)}
-    | {f"C{i:02d}" for i in range(1, 19)}
-    | {f"D{i:02d}" for i in range(1, 19)}
-    | {f"F{i:02d}" for i in range(1, 19)}
-)
+PROGRAM_ID = "P00"
+EPIC_ID_RE = re.compile(r"^E\d{2}$")
+
+
+def epic_ids(nodes: list[dict]) -> list[str]:
+    return sorted(n.get("id") for n in nodes or [] if n.get("kind") == "epic")
+
+
+def task_ids_for_master(nodes: list[dict], master: str) -> list[str]:
+    return [n.get("id") for n in nodes or []
+            if n.get("kind") == "task" and n.get("master") == master]
+
+
+def expected_ids(nodes: list[dict]) -> set[str]:
+    """The complete id set implied by the node set: P00, one contiguous E## run and
+    one contiguous prefix+## run per master, each derived from the observed counts."""
+    ids = {PROGRAM_ID}
+    ids |= {f"E{i:02d}" for i in range(1, len(epic_ids(nodes)) + 1)}
+    for master, prefix in MASTER_PREFIX.items():
+        count = len(task_ids_for_master(nodes, master))
+        ids |= {f"{prefix}{i:02d}" for i in range(1, count + 1)}
+    return ids
 
 DOCS = [
     "architecture.md",
@@ -105,6 +118,8 @@ DOCS = [
     "decisions.md",
     "risks.md",
     "overnight-execution.md",
+    "cloud-deployment.md",
+    "client-service-contract.md",
 ]
 
 REQUIRED_KEYS = [
@@ -192,12 +207,192 @@ ALLOWED_PATHS = {
     "README.md",
     "README",
     "scripts/backlog_validate.py",
+    "scripts/backlog_render.py",
     "planning/backlog.json",
     "planning/backlog-validation.md",
     "planning/backlog-validation.json",
     "planning/issue-map.json",
+    "planning/publishing-validation.md",
+    "docs/domain-contract.md",
+    "docs/mcp-adapter.md",
+    "docs/model-adapter.md",
+    "docs/prompt-composition.md",
+    "docs/web-client.md",
+    "fixtures/domain/library-basic.json",
+    "scripts/check-domain.sh",
+    "scripts/check-mcp.sh",
+    "scripts/check-model.sh",
+    "scripts/check-prompt.sh",
 }
 ALLOWED_PATHS |= {f"docs/{name}" for name in DOCS}
+
+# Product paths of explicitly assigned, imminent units. Each is admitted by exact literal,
+# never a wildcard. A unit that has not landed contributes no file: an absent path is never
+# fabricated and never blocks the paths that are present.
+PRODUCT_PATHS = (
+    "docs/conversation-runtime.md",
+    "docs/service-packaging.md",
+    "scripts/check-chat.sh",
+    "scripts/check-package.sh",
+    "docs/local-runtime.md",
+    "scripts/check-host.sh",
+    "scripts/run-local.sh",
+    "docs/local-install.md",
+    "scripts/package-local.mjs",
+    "scripts/install-local.mjs",
+    "scripts/check-install.sh",
+    "docs/companion-protocol.md",
+    "docs/connected-chat.md",
+    "scripts/check-connected.sh",
+    "docs/provider-configuration.md",
+    "scripts/check-provider-config.sh",
+)
+PRODUCT_DOCS = tuple(rel for rel in PRODUCT_PATHS if rel.startswith("docs/"))
+ALLOWED_PATHS |= set(PRODUCT_PATHS)
+
+# The repository is code-bearing: accepted components publish their own source trees.
+# These are declared roots and named files, never an open wildcard.
+COMPONENT_ROOTS = ("server/", "Sources/", "Tests/", "Resources/", "web/")
+COMPONENT_FILES = (
+    "scripts/check-service.sh",
+    "docs/service-runtime.md",
+    "docs/mac-experience.md",
+)
+
+# Paths that must never be published, whatever else the tree contains. Applied first to
+# the tracked public set, then to the pruned tree scan; findings are deduplicated.
+FORBIDDEN_PATH_RES = (
+    (re.compile(r"(^|/)\.env($|\.)"), "environment file"),
+    (re.compile(r"(^|/)(credentials?|secrets?)(\.|$)", re.I), "credential file"),
+    (re.compile(r"\.(pem|key|p12|pfx|jks|keystore)$", re.I), "key material"),
+    (re.compile(r"(^|/)id_(rsa|dsa|ecdsa|ed25519)($|\.)"), "private key"),
+    (re.compile(r"(^|/)\.ssh/"), "ssh material"),
+    (re.compile(r"(^|/)\.github/workflows/"), "workflow file"),
+)
+
+# Directories excluded from publication-set validation because they are build or
+# dependency artifacts, not public source. They are pruned, never whitelisted.
+PRUNED_DIRS = {".git", "node_modules", "dist", "build", ".next", "target", "out",
+               "__pycache__", ".venv", "venv"}
+
+
+def is_forbidden_path(rel: str) -> str | None:
+    for pattern, label in FORBIDDEN_PATH_RES:
+        if pattern.search(rel):
+            return label
+    return None
+
+
+def is_publication_path(rel: str) -> bool:
+    if rel in ALLOWED_PATHS or rel in COMPONENT_FILES:
+        return True
+    return any(rel.startswith(prefix) for prefix in COMPONENT_ROOTS)
+
+
+def missing_required_documents(walked: set[str]) -> list[str]:
+    """Required documents absent from the tracked public set. DOCS is the mandatory corpus;
+    an optional product document is never required, so an unlanded unit cannot fail here."""
+    return [f"docs/{name}" for name in DOCS if f"docs/{name}" not in walked]
+
+
+def forbidden_findings(tracked: list[str], scanned: list[str]) -> list[tuple[str, str]]:
+    """Forbidden paths, reported from the tracked public set first and then from the pruned
+    tree scan, deduplicated so a path seen twice is reported once and never suppressed.
+
+    The tracked pass matters because the scan prunes artifact directories regardless of
+    whether a path inside them is tracked, so a tracked key file under a pruned directory
+    would otherwise be invisible to both passes. The scan still runs, so a real credential
+    file that is ignored but present on disk is reported too.
+    """
+    found: dict[str, str] = {}
+    for rel in list(tracked) + list(scanned):
+        label = is_forbidden_path(rel)
+        if label and rel not in found:
+            found[rel] = label
+    return sorted(found.items())
+
+
+def tracked_public_files(root: Path, exclude: set[str]) -> list[str] | None:
+    """Tracked files plus untracked-but-not-ignored files: what could be published.
+    Gitignored build artifacts are excluded here, exactly as the ruling requires."""
+    out = subprocess.run(
+        ["git", "-C", str(root), "ls-files", "--cached", "--others", "--exclude-standard"],
+        capture_output=True, text=True, check=False, env=_git_env())
+    if out.returncode != 0:
+        return None
+    return sorted({line.strip() for line in out.stdout.splitlines() if line.strip()} - exclude)
+
+
+def read_docs_text(root: Path) -> dict[str, str]:
+    """Load the explicit document corpus shared by the content checks.
+
+    The corpus is README.md, the required DOCS documents, the admitted product documents and the
+    publication report. Each listed product document enters the same content and privacy checks
+    when it is present; a path that does not exist is skipped, never fabricated.
+    """
+    texts = {}
+    for rel in ["README.md", *(f"docs/{name}" for name in DOCS), *PRODUCT_DOCS,
+                "planning/publishing-validation.md"]:
+        path = root / rel
+        if path.exists():
+            texts[rel] = path.read_text(encoding="utf-8")
+    return texts
+
+
+def _git_env() -> dict:
+    """A hermetic git environment: no system or user configuration is read."""
+    env = dict(os.environ)
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    return env
+
+
+def v13_tracked_boundary_fixture() -> tuple[bool, bool, str]:
+    """Run the real public-path enumeration against a disposable temporary git repo.
+
+    The fixture force-tracks an inert key-class filename under a pruned build directory and
+    keeps a genuinely gitignored non-key artifact beside it, then calls the same
+    tracked_public_files, scanned_paths and forbidden_findings functions check_v13 uses. It
+    therefore tests the enumeration boundary rather than a helper list. The directory is
+    removed afterwards; nothing outside it is read or written, there is no credential and no
+    network call.
+    """
+    tmp = Path(tempfile.mkdtemp(prefix="lux-didi-v13-fixture-"))
+    try:
+        (tmp / "server" / "dist").mkdir(parents=True)
+        (tmp / "server" / ".gitignore").write_text("dist/\nnode_modules/\n", encoding="utf-8")
+        (tmp / "server" / "dist" / "id_ed25519").write_text(
+            "inert fixture text, not a key\n", encoding="utf-8")
+        (tmp / "server" / "dist" / "bundle.js").write_text(
+            "// ignored build artifact\n", encoding="utf-8")
+        env = _git_env()
+        for args in (["init", "-q"], ["add", "-f", "server/dist/id_ed25519"]):
+            run = subprocess.run(["git", "-C", str(tmp)] + args, capture_output=True,
+                                 text=True, env=env)
+            if run.returncode != 0:
+                return False, False, f"fixture git {args[0]} failed"
+        tracked = tracked_public_files(tmp, set()) or []
+        scanned = scanned_paths(tmp)
+        findings = forbidden_findings(tracked, scanned)
+        hits = [item for item in findings if item[0] == "server/dist/id_ed25519"]
+        rejected_once = len(hits) == 1 and hits[0][1] == "private key"
+        ignored_allowed = not any("bundle.js" in rel for rel, _label in findings)
+        detail = (f"tracked={len(tracked)} scan={len(scanned)} findings={len(findings)} "
+                  f"rejected_once={rejected_once} ignored_build_allowed={ignored_allowed}")
+        return rejected_once, ignored_allowed, detail
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def scanned_paths(root: Path) -> list[str]:
+    """Every file outside the pruned artifact directories, for the forbidden-path scan."""
+    found: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in PRUNED_DIRS]
+        for name in filenames:
+            found.append((Path(dirpath) / name).relative_to(root).as_posix())
+    return sorted(found)
 
 
 class Report:
@@ -345,17 +540,34 @@ def check_v01(report: Report, backlog: dict | None, nodes: list[dict] | None, pa
     details["program"] = kinds.count("program")
     details["epics"] = kinds.count("epic")
     details["tasks"] = kinds.count("task")
-    if len(nodes) != 101:
-        failures.append(f"expected 101 nodes, found {len(nodes)}")
+    unknown_kinds = sorted({k for k in kinds if k not in KINDS})
+    if unknown_kinds:
+        failures.append(f"unknown kinds: {unknown_kinds}")
+    if len(nodes) != kinds.count("program") + kinds.count("epic") + kinds.count("task"):
+        failures.append(f"total {len(nodes)} does not match the program, epic and task counts")
     if kinds.count("program") != 1:
-        failures.append(f"expected exactly 1 program tracker, found {kinds.count('program')}")
-    if kinds.count("epic") != 10:
-        failures.append(f"expected exactly 10 epics, found {kinds.count('epic')}")
-    if kinds.count("task") != 90:
-        failures.append(f"expected exactly 90 tasks, found {kinds.count('task')}")
+        failures.append(f"expected exactly one program tracker, found {kinds.count('program')}")
+    if kinds.count("epic") < 1:
+        failures.append("expected at least one epic")
+    if kinds.count("task") < 1:
+        failures.append("expected at least one task")
     duplicates = sorted({i for i in ids if ids.count(i) > 1})
     if duplicates:
         failures.append(f"duplicate ids: {duplicates}")
+    tracker = next((n for n in nodes if n.get("id") == PROGRAM_ID), None)
+    if tracker is None:
+        failures.append(f"{PROGRAM_ID} program tracker is missing")
+    else:
+        tracker_body = tracker.get("body") or ""
+        stated_epics = re.findall(r"(\d+)\s+epics\b", tracker_body)
+        stated_tasks = re.findall(r"(\d+)\s+work items\b", tracker_body)
+        if not stated_epics or not stated_tasks:
+            failures.append(f"{PROGRAM_ID} body must state its epic and work-item totals")
+        else:
+            if int(stated_epics[0]) != kinds.count("epic"):
+                failures.append(f"{PROGRAM_ID} states {stated_epics[0]} epics, backlog has {kinds.count('epic')}")
+            if int(stated_tasks[0]) != kinds.count("task"):
+                failures.append(f"{PROGRAM_ID} states {stated_tasks[0]} work items, backlog has {kinds.count('task')}")
     report.add("V-01", "Backlog parses and covers the expected totals", failures, details=details)
 
 
@@ -412,40 +624,64 @@ def check_v03(report: Report, nodes: list[dict] | None) -> None:
 
 def check_v04(report: Report, nodes: list[dict] | None) -> None:
     failures: list[str] = []
-    ids = [n.get("id") for n in nodes or []]
-    expected = set(EXPECTED_IDS)
-    missing = sorted(expected - set(ids))
-    extra = sorted(set(ids) - expected)
+    ids = [n.get("id") for n in (nodes or [])]
+    expected = expected_ids(nodes or [])
+    present = {i for i in ids if isinstance(i, str)}
+    missing = sorted(expected - present)
+    extra = sorted(present - expected)
     if missing:
         failures.append(f"missing ids: {missing}")
     if extra:
         failures.append(f"unexpected ids: {extra}")
+    for node in nodes or []:
+        node_id = node.get("id")
+        kind = node.get("kind")
+        text = node_id if isinstance(node_id, str) else ""
+        if kind == "program":
+            if text != PROGRAM_ID:
+                failures.append(f"{text!r}: the program tracker id must be {PROGRAM_ID}")
+        elif kind == "epic":
+            if not EPIC_ID_RE.fullmatch(text):
+                failures.append(f"{text!r}: an epic id must match E##")
+        elif kind == "task":
+            master = node.get("master")
+            prefix = MASTER_PREFIX.get(master)
+            if prefix is None:
+                failures.append(f"{text!r}: task master {master!r} has no id prefix")
+            elif not re.fullmatch(prefix + r"\d{2}", text):
+                failures.append(f"{text!r}: a master {master} task id must match {prefix}##")
     report.add("V-04", "Id format and complete coverage", failures, details={"count": len(ids), "expected": len(expected)})
 
 
 def check_v05(report: Report, nodes: list[dict] | None) -> None:
     failures: list[str] = []
     by_id = {n.get("id"): n for n in nodes or []}
-    children: dict[str, list[str]] = {e: [] for e in EPICS}
+    epics = {n.get("id"): n for n in nodes or [] if n.get("kind") == "epic"}
+    children: dict[str, list[str]] = {e: [] for e in epics}
+    attached = 0
     for node in nodes or []:
         node_id = node.get("id")
         kind = node.get("kind")
         epic = node.get("epic")
         if kind == "task":
-            if epic not in EPICS:
-                failures.append(f"{node_id}: epic {epic!r} is not an E01..E10 value")
+            if epic not in epics:
+                failures.append(f"{node_id}: epic {epic!r} is not a declared epic id")
                 continue
             children[epic].append(node_id)
-            expected_master = EPICS[epic][0]
+            attached += 1
+            expected_master = epics[epic].get("master")
             if node.get("master") != expected_master:
-                failures.append(f"{node_id}: master {node.get('master')!r} does not match epic {epic} (master {expected_master})")
+                failures.append(f"{node_id}: master {node.get('master')!r} does not match epic {epic} (master {expected_master!r})")
         else:
             if epic is not None:
                 failures.append(f"{node_id}: epic must be null for kind {kind}")
-    for epic, (_, expected_count) in EPICS.items():
-        kids = sorted(children.get(epic, []))
-        if len(kids) != expected_count:
-            failures.append(f"{epic}: expected {expected_count} children, found {len(kids)}")
+    task_count = sum(1 for n in nodes or [] if n.get("kind") == "task")
+    if attached != task_count:
+        failures.append(f"{task_count - attached} task(s) are not attached to a declared epic")
+    for epic in sorted(children):
+        kids = sorted(children[epic])
+        if not kids:
+            failures.append(f"{epic}: epic has no child tasks")
         body = (by_id.get(epic) or {}).get("body", "")
         for kid in kids:
             if not re.search(r"(?<![A-Z0-9])" + re.escape(kid) + r"(?![0-9])", body):
@@ -705,32 +941,215 @@ def check_v12(report: Report, nodes: list[dict] | None, docs_text: dict[str, str
 def check_v13(report: Report, root: Path, exclude: set[str]) -> None:
     failures: list[str] = []
     warnings: list[str] = []
-    walked = []
-    for path in sorted(root.rglob("*")):
-        rel = path.relative_to(root).as_posix()
-        if path.is_dir():
+    walked = tracked_public_files(root, exclude)
+    if walked is None:
+        report.add("V-13", "Repository hygiene and intended public set",
+                   ["git could not list the tracked public source"])
+        return
+
+    # Publication-set membership: the intended tracked public source only. A forbidden
+    # path is reported by the forbidden pass below, which runs on this same tracked set
+    # before any pruning, so nothing is suppressed here.
+    for rel in walked:
+        if is_forbidden_path(rel):
             continue
-        if rel.startswith(".git/") or rel == ".git":
-            continue
-        walked.append(rel)
-        if rel in exclude:
-            continue
-        if rel not in ALLOWED_PATHS:
+        if not is_publication_path(rel):
             failures.append(f"unexpected published path: {rel}")
-    for name in DOCS:
-        rel = f"docs/{name}"
-        if rel not in walked:
-            failures.append(f"missing document {rel}")
-    for required in ["README.md", "scripts/backlog_validate.py", "planning/backlog.json"]:
+
+    # Forbidden paths: the tracked public set first, then the whole tree with build and
+    # dependency artifact directories pruned. Findings are deduplicated, never dropped.
+    scanned = scanned_paths(root)
+    findings = forbidden_findings(walked, scanned)
+    for rel, label in findings:
+        failures.append(f"forbidden path ({label}): {rel}")
+
+    for rel in missing_required_documents(set(walked)):
+        failures.append(f"missing document {rel}")
+    for required in ["README.md", "scripts/backlog_validate.py", "scripts/backlog_render.py",
+                     "planning/backlog.json", "planning/issue-map.json"]:
         if required not in walked:
             failures.append(f"missing {required}")
     if (root / ".github" / "workflows").exists():
         failures.append(".github/workflows exists")
-    for name in walked:
-        base = os.path.basename(name).lower()
-        if base.startswith(".env") or base in {"credentials.json", "secrets.json"} or base.endswith(".pem"):
-            failures.append(f"credential-shaped file: {name}")
-    report.add("V-13", "Repository hygiene and intended public set", failures, warnings, details={"paths": walked})
+
+    # Negative and positive controls. A repair that accepts every path, or rejects
+    # every component path, must not pass.
+    controls = {
+        "forbidden_rejected": {
+            "server/.env": "environment file",
+            "Sources/secrets.json": "credential file",
+            "planning/credentials.json": "credential file",
+            "server/certs/tls.pem": "key material",
+            ".github/workflows/ci.yml": "workflow file",
+            "resources/id_ed25519": "private key",
+            "server/dist/id_ed25519": "private key",
+            "server/node_modules/pkg/cert.pfx": "key material",
+        },
+        "component_accepted": [
+            "server/index.ts", "server/runtime/store.ts", "Sources/LuxDidi/LuxDidiApp.swift",
+            "Tests/DidiMacTests/main.swift", "Resources/Info.plist", "web/src/app.ts",
+            "docs/service-runtime.md", "docs/mac-experience.md", "scripts/check-service.sh",
+            "planning/backlog.json", "README.md",
+            "planning/publishing-validation.md",
+            "docs/domain-contract.md", "docs/mcp-adapter.md", "docs/model-adapter.md",
+            "docs/prompt-composition.md", "docs/web-client.md",
+            "fixtures/domain/library-basic.json",
+            "scripts/check-domain.sh", "scripts/check-mcp.sh", "scripts/check-model.sh",
+            "scripts/check-prompt.sh",
+        ],
+        "unrelated_rejected": [
+            "notes/scratch.md", "planning/private-notes.json", "tmp/x.txt",
+            "planning/publishing-validation-extra.md", "docs/unrelated.md",
+            "fixtures/domain/unrelated.json", "scripts/check-unrelated.sh",
+        ],
+        "product_accepted": list(PRODUCT_PATHS),
+        "near_neighbor_rejected": [
+            "docs/conversation-runtime-extra.md", "scripts/check-chat-extra.sh",
+            "docs/service-packaging.md.bak", "docs/local-runtime-old.md",
+            "scripts/run-local.sh.orig", "docs/connected-chat-old.md",
+            "docs/provider-configuration-extra.md", "scripts/check-provider-config-extra.sh",
+        ],
+    }
+    controls_ok = 0
+    controls_total = len(controls["forbidden_rejected"]) + len(controls["component_accepted"]) \
+        + len(controls["unrelated_rejected"]) + len(controls["product_accepted"]) \
+        + len(controls["near_neighbor_rejected"]) + 3 + 2 + 2 + 4
+    for rel, expected in controls["forbidden_rejected"].items():
+        got = is_forbidden_path(rel)
+        if got == expected:
+            controls_ok += 1
+        else:
+            failures.append(f"control: {rel} should be forbidden as {expected!r}, got {got!r}")
+    # A tracked forbidden path under a pruned directory must be reported by the tracked
+    # pass, not only recognised by the predicate: this is the case the pruning hid.
+    reported = dict(forbidden_findings(["server/dist/id_ed25519"], []))
+    if reported.get("server/dist/id_ed25519") == "private key":
+        controls_ok += 1
+    else:
+        failures.append("control: a tracked key file under a pruned directory was not reported")
+    # A later scan sighting of the same path is deduplicated, not suppressed.
+    both = forbidden_findings(["server/.env"], ["server/.env"])
+    if both == [("server/.env", "environment file")]:
+        controls_ok += 1
+    else:
+        failures.append(f"control: duplicate reporting was not deduplicated: {both}")
+    # An ignored build artifact that is not a forbidden shape is left alone.
+    if forbidden_findings([], ["server/dist/bundle.js", "server/node_modules/pkg/index.js"]) == []:
+        controls_ok += 1
+    else:
+        failures.append("control: an ignored build artifact was reported as forbidden")
+    # The real enumeration boundary, on a disposable temporary git fixture.
+    rejected_once, ignored_allowed, fixture_detail = v13_tracked_boundary_fixture()
+    if rejected_once:
+        controls_ok += 1
+    else:
+        failures.append("fixture: a force-tracked key file under a pruned directory was not "
+                        "rejected exactly once by the public-path enumeration")
+    if ignored_allowed:
+        controls_ok += 1
+    else:
+        failures.append("fixture: an actually gitignored non-key build artifact was reported")
+    # Admission must not leave the publication report outside the privacy corpus.
+    with tempfile.TemporaryDirectory(prefix="didi-publication-report-") as dirname:
+        fixture_root = Path(dirname)
+        report_rel = "planning/publishing-validation.md"
+        fixture_report = fixture_root / report_rel
+        fixture_report.parent.mkdir()
+        fixture_report.write_text("Fixture: member@private.invalid\n", encoding="utf-8")
+        leaking_probe = Report()
+        check_v11(leaking_probe, None, read_docs_text(fixture_root))
+        leaking_rejected = any(report_rel in failure and "address domain" in failure
+                               for check in leaking_probe.checks for failure in check["failures"])
+        fixture_report.write_text("Fixture: member@example.invalid\n", encoding="utf-8")
+        clean_texts = read_docs_text(fixture_root)
+        clean_probe = Report()
+        check_v11(clean_probe, None, clean_texts)
+        for passed, description in [
+            (leaking_rejected, "leaking publication report was not rejected"),
+            (report_rel in clean_texts and not clean_probe.failed,
+             "clean publication report was not scanned and accepted"),
+        ]:
+            if passed:
+                controls_ok += 1
+            else:
+                failures.append(f"control: {description}")
+    # Actual-file control on the DEFAULT loader: the shared reader and V-11 together reject a
+    # leaking product document and accept a clean one at a product document path, with no
+    # test-only injection.
+    with tempfile.TemporaryDirectory(prefix="didi-product-doc-") as dirname:
+        fixture_root = Path(dirname)
+        product_rel = PRODUCT_DOCS[0]
+        fixture_doc = fixture_root / product_rel
+        fixture_doc.parent.mkdir()
+        fixture_doc.write_text("Fixture: member@private.invalid\n", encoding="utf-8")
+        leaking_probe = Report()
+        check_v11(leaking_probe, None, read_docs_text(fixture_root))
+        leaking_rejected = any(product_rel in failure and "address domain" in failure
+                               for check in leaking_probe.checks for failure in check["failures"])
+        fixture_doc.write_text("Fixture: member@example.invalid\n", encoding="utf-8")
+        clean_texts = read_docs_text(fixture_root)
+        clean_probe = Report()
+        check_v11(clean_probe, None, clean_texts)
+        for passed, description in [
+            (leaking_rejected, "leaking product document was not rejected"),
+            (product_rel in clean_texts and not clean_probe.failed,
+             "clean product document was not scanned and accepted"),
+        ]:
+            if passed:
+                controls_ok += 1
+            else:
+                failures.append(f"control: {description}")
+    # Discriminating production-loader control: every listed product document that is present
+    # must be in the DEFAULT production corpus. It fails when production omits a present
+    # product document and passes only when the production loader actually includes them.
+    production_corpus = read_docs_text(root)
+    present_product_docs = [rel for rel in PRODUCT_DOCS if (root / rel).exists()]
+    omitted_product_docs = [rel for rel in present_product_docs if rel not in production_corpus]
+    if present_product_docs and not omitted_product_docs:
+        controls_ok += 1
+    else:
+        failures.append("control: production corpus omitted present product document(s): "
+                        f"{omitted_product_docs or 'none present to scan'}")
+    # Required documents stay mandatory and an absent future product document is harmless:
+    # the required set is DOCS alone, and no product path is ever required.
+    required = [f"docs/{name}" for name in DOCS]
+    required_present = set(required)
+    if (missing_required_documents(required_present) == []
+            and missing_required_documents(required_present - {required[0]}) == [required[0]]
+            and all(rel not in missing_required_documents(set()) for rel in PRODUCT_DOCS)):
+        controls_ok += 1
+    else:
+        failures.append("control: required documents are not mandatory "
+                        "or a product document is required")
+    for rel in controls["component_accepted"]:
+        if is_publication_path(rel) and not is_forbidden_path(rel):
+            controls_ok += 1
+        else:
+            failures.append(f"control: accepted component path {rel} was not accepted")
+    for rel in controls["unrelated_rejected"]:
+        if not is_publication_path(rel):
+            controls_ok += 1
+        else:
+            failures.append(f"control: unrelated path {rel} was accepted")
+    for rel in controls["product_accepted"]:
+        if is_publication_path(rel) and not is_forbidden_path(rel):
+            controls_ok += 1
+        else:
+            failures.append(f"control: product path {rel} was not accepted")
+    for rel in controls["near_neighbor_rejected"]:
+        if not is_publication_path(rel):
+            controls_ok += 1
+        else:
+            failures.append(f"control: near-neighbour path {rel} was accepted")
+    if controls_ok != controls_total:
+        failures.append(f"controls: {controls_ok} of {controls_total} behaved as required")
+    if is_publication_path("anything/at/all.bin"):
+        failures.append("control: the publication set accepts arbitrary paths")
+
+    report.add("V-13", "Repository hygiene and intended public set", failures, warnings,
+               details={"paths": len(walked), "controls": f"{controls_ok}/{controls_total}",
+                        "forbidden": len(findings), "scanned": len(scanned),
+                        "boundary_fixture": fixture_detail})
 
 
 def check_x01(report: Report, nodes: list[dict] | None) -> None:
@@ -834,7 +1253,7 @@ def check_x07(report: Report, backlog: dict | None, nodes: list[dict] | None, pa
     failures: list[str] = []
     details = {}
     if packets_mode or backlog is None:
-        report.add("X-07", "Snapshot body hashes and correction record", [])
+        report.add("X-07", "Snapshot body hashes, rendered hashes and correction record", [])
         return
     hashes = backlog.get("node_hashes")
     if not isinstance(hashes, dict):
@@ -857,7 +1276,48 @@ def check_x07(report: Report, backlog: dict | None, nodes: list[dict] | None, pa
         for index in range(1, 11):
             if f"PUB-R2:{index}" not in joined:
                 failures.append(f"corrections record does not name PUB-R2:{index}")
-    report.add("X-07", "Snapshot body hashes and correction record", failures, details=details)
+    renderer = VERIFIER_ROOT / "scripts" / "backlog_render.py"
+    if not renderer.exists():
+        failures.append("scripts/backlog_render.py is missing, so the render domain is unverified")
+    else:
+        run_env = dict(os.environ)
+        run_env["PYTHONDONTWRITEBYTECODE"] = "1"
+        run = subprocess.run([sys.executable, str(renderer), "--check", "--json"],
+                             capture_output=True, text=True, env=run_env,
+                             cwd=str(VERIFIER_ROOT))
+        if run.returncode != 0:
+            failures.append(f"renderer verification failed: {run.stdout.strip()[:200] or run.stderr.strip()[:200]}")
+        else:
+            try:
+                rendered = json.loads(run.stdout.strip().splitlines()[-1])
+            except (ValueError, IndexError):
+                rendered = None
+                failures.append("renderer verification did not print a JSON result")
+            if rendered is not None:
+                base = rendered.get("baseline") or {}
+                current = rendered.get("current") or {}
+                if not rendered.get("ok"):
+                    failures.append("renderer verification reported not ok")
+                if base.get("recorded", 0) < 101 or base.get("matched") != base.get("recorded"):
+                    failures.append(f"renderer reproduced {base.get('matched')} of {base.get('recorded')} baseline rendered hashes")
+                if current.get("mismatched"):
+                    failures.append(f"renderer mismatched current nodes: {current['mismatched'][:5]}")
+                if current.get("staged_number_collisions"):
+                    failures.append(f"staged numbers collide with observed: {current['staged_number_collisions']}")
+                if current.get("created_rendered", 0) < 1:
+                    failures.append("renderer produced no rendered body for a created node")
+                if current.get("numbering_failures"):
+                    failures.append(f"renderer numbering failures: {current['numbering_failures'][:5]}")
+                if not current.get("controls_ok"):
+                    failures.append(f"renderer numbering controls did not hold: {current.get('controls')}")
+                details["rendered_baseline"] = f"{base.get('matched')}/{base.get('recorded')}"
+                details["numbering_controls"] = current.get("controls")
+                details["rendered_current"] = {
+                    k: current.get(k) for k in ("nodes", "unchanged_reproduced", "updated_changed",
+                                                "created_rendered", "observed_numbers",
+                                                "staged_numbers")}
+    report.add("X-07", "Snapshot body hashes, rendered hashes and correction record", failures,
+               details=details)
 
 
 def check_x08(report: Report, nodes: list[dict] | None) -> None:
@@ -872,6 +1332,98 @@ def check_x08(report: Report, nodes: list[dict] | None) -> None:
         if not re.search(r"(?i)exit", body):
             failures.append(f"{node.get('id')}: epic body has no exit statement")
     report.add("X-08", "Epic phase as exit milestone", failures)
+
+
+def _probe(check_fn, *args) -> bool:
+    """True when the check reports a failure for the supplied input."""
+    probe_report = Report()
+    check_fn(probe_report, *args)
+    return probe_report.failed
+
+
+def _with_body(nodes: list[dict], node_id: str, suffix: str) -> list[dict]:
+    mutated = copy.deepcopy(nodes)
+    for node in mutated:
+        if node.get("id") == node_id:
+            node["body"] = (node.get("body") or "") + suffix
+    return mutated
+
+
+def check_v14(report: Report, backlog: dict | None, nodes: list[dict] | None, packets_mode: bool) -> None:
+    """Negative-control self-test.
+
+    The coverage checks above derive their expected totals from the loaded node set
+    instead of asserting a literal plan size, so this check proves the derived
+    assertions still bite: each deliberately broken copy of the loaded plan must be
+    rejected by its check, and the unmutated copy must be accepted.
+    """
+    failures: list[str] = []
+    details: dict = {}
+    if nodes is None or backlog is None:
+        report.add("V-14", "Negative-control self-test", ["no loaded plan to run the controls against"])
+        return
+
+    pristine = copy.deepcopy(nodes)
+    empty_docs: dict[str, str] = {}
+
+    duplicated = pristine + [copy.deepcopy(pristine[-1])]
+    gap = [n for n in pristine if n.get("id") != "A12"]
+    wrong_prefix = copy.deepcopy(pristine)
+    for node in wrong_prefix:
+        if node.get("id") == "A19":
+            node["id"] = "B19"
+    child_moved = copy.deepcopy(pristine)
+    for node in child_moved:
+        if node.get("id") == "C19":
+            node["epic"] = "E11"
+    cycle = copy.deepcopy(pristine)
+    for node in cycle:
+        if node.get("id") == "A19":
+            node["depends_on"] = ["A24"]
+    dash = _with_body(pristine, "A19", " a stray \u2014 em dash")
+    private = _with_body(pristine, "A19", " see /Users/example/notes.md")
+    no_baseline = copy.deepcopy(pristine)
+    for node in no_baseline:
+        if node.get("id") == "A19":
+            node["body"] = "Short body carrying neither a link nor a baseline statement."
+    stale_hash = dict(backlog, node_hashes=dict(backlog.get("node_hashes") or {}, A19="0" * 64))
+    drifted_total = copy.deepcopy(backlog)
+    drifted_total["nodes"] = copy.deepcopy(pristine)
+    for node in drifted_total["nodes"]:
+        if node.get("id") == PROGRAM_ID:
+            node["body"] = re.sub(r"(\d+)\s+work items", "999 work items", node.get("body") or "")
+
+    controls = [
+        ("duplicate id is rejected", _probe(check_v01, dict(backlog, nodes=duplicated), duplicated, []),
+         _probe(check_v01, backlog, pristine, [])),
+        ("numbering gap is rejected", _probe(check_v04, gap), _probe(check_v04, pristine)),
+        ("wrong master prefix is rejected",
+         _probe(check_v04, wrong_prefix) or _probe(check_v03, wrong_prefix),
+         _probe(check_v04, pristine) or _probe(check_v03, pristine)),
+        ("epic child mismatch is rejected", _probe(check_v05, child_moved), _probe(check_v05, pristine)),
+        ("dependency cycle is rejected", _probe(check_v06, cycle), _probe(check_v06, pristine)),
+        ("dash code point is rejected", _probe(check_v10, dash, empty_docs), _probe(check_v10, pristine, empty_docs)),
+        ("private path shape is rejected", _probe(check_v11, private, empty_docs),
+         _probe(check_v11, pristine, empty_docs)),
+        ("missing baseline is rejected", _probe(check_v12, no_baseline, empty_docs),
+         _probe(check_v12, pristine, empty_docs)),
+        ("stale body hash is rejected", _probe(check_x07, stale_hash, pristine, False),
+         _probe(check_x07, backlog, pristine, False)),
+        ("tracker total drift is rejected", _probe(check_v01, drifted_total, drifted_total["nodes"], []),
+         _probe(check_v01, backlog, pristine, [])),
+    ]
+    details["controls"] = len(controls)
+    rejected = 0
+    for label, broken_rejected, pristine_rejected in controls:
+        details[label] = {"broken_rejected": broken_rejected, "pristine_rejected": pristine_rejected}
+        if broken_rejected:
+            rejected += 1
+        else:
+            failures.append(f"{label}: the broken copy was accepted")
+        if pristine_rejected:
+            failures.append(f"{label}: the unmutated copy was rejected")
+    details["rejected"] = rejected
+    report.add("V-14", "Negative-control self-test", failures, details=details)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -892,14 +1444,7 @@ def main(argv: list[str] | None = None) -> int:
 
     backlog, nodes, parse_errors = load_backlog(root, Path(args.packets).resolve() if args.packets else None)
 
-    docs_text: dict[str, str] = {}
-    readme = root / "README.md"
-    if readme.exists():
-        docs_text["README.md"] = readme.read_text(encoding="utf-8")
-    for name in DOCS:
-        path = root / "docs" / name
-        if path.exists():
-            docs_text[f"docs/{name}"] = path.read_text(encoding="utf-8")
+    docs_text = read_docs_text(root)
 
     def inside(path: Path) -> bool:
         try:
@@ -925,6 +1470,7 @@ def main(argv: list[str] | None = None) -> int:
     check_v11(report, nodes, docs_text)
     check_v12(report, nodes, docs_text)
     check_v13(report, root, exclude)
+    check_v14(report, backlog, nodes, bool(args.packets))
     check_x01(report, nodes)
     check_x02(report, root, docs_text)
     check_x03(report, backlog, nodes)

@@ -24,10 +24,17 @@
     "dist/runtime",
     "dist/http",
     "dist/contracts",
+    "dist/domain",
+    "dist/host",
+    "dist/adapters/model",
+    "dist/prompt",
     "dist/adapters/mcp",
     "adapters/mcp/SDK-LICENSE.txt"
   ],
   "dependencies": {
     "@modelcontextprotocol/client": "2.3.1"
-  }
+  },
+  "bundleDependencies": [
+    "@modelcontextprotocol/client"
+  ]
 }

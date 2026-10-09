@@ -5,6 +5,7 @@ import { Store } from '../runtime/store.js';
 import type { DomainPort } from '../contracts/domain.js';
 import { ServiceError } from '../contracts/errors.js';
 import { object, resolveRoute } from './routes.js';
+import { createStaticHandler } from './static.js';
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 const secret = () => randomBytes(32).toString('base64url');
 const equal = (a: string, b: string) => timingSafeEqual(Buffer.from(hash(a)), Buffer.from(hash(b)));
@@ -20,10 +21,11 @@ async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> 
   try { return object(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } catch (error) { if (error instanceof ServiceError) throw error; throw new ServiceError('BAD_REQUEST', 'Malformed JSON'); }
 }
 interface Principal { clientId: string; mode: 'bearer' | 'browser'; tokenHash?: string; csrfToken?: string }
-export interface ServiceOptions { store: Store; domain?: DomainPort; port?: number; now?: () => number }
+export interface ServiceOptions { store: Store; domain?: DomainPort; port?: number; now?: () => number; webRoot?: string }
 export interface RunningService { server: Server; origin: string; close(): Promise<void> }
 export async function listenService(options: ServiceOptions): Promise<RunningService> {
   const { store, domain } = options;
+  const serveStatic = options.webRoot === undefined ? undefined : await createStaticHandler(options.webRoot);
   const now = options.now ?? Date.now;
   let origin = '';
   const pairing = new Map<string, number>();
@@ -58,6 +60,7 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
       if (!req.url?.startsWith('/') || req.url.startsWith('//')) throw new ServiceError('BAD_REQUEST', 'Invalid request target');
       const url = new URL(req.url, origin);
       if (url.hash || url.username || url.password) throw new ServiceError('BAD_REQUEST', 'Invalid request target');
+      if (serveStatic && await serveStatic(req, res)) return;
       const method = req.method ?? '';
       let route = resolveRoute(method, url);
       if (route.kind === 'health') { send(res, 200, { status: 'ok', version: '0.1.0', serviceMode: 'loopback' }); return; }

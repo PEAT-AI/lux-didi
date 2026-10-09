@@ -10,6 +10,8 @@ export interface DomainOperations {
   listSessions: { input: Record<string, never>; output: { items: Session[]; nextCursor: string | null } };
   getSession: { input: { id: string }; output: { session: Session; entries: Entry[]; nextCursor: string | null } };
   appendEntry: { input: { sessionId: string; text: string; role: 'user'; timeZone: string; sourceRef?: SourceRef }; output: Entry };
+  /** Trusted in-process completion only; never routed from public append-entry HTTP. */
+  appendAssistantEntry: { input: { sessionId: string; text: string; timeZone: string }; output: Entry };
   recall: { input: { q: string; limit: number }; output: { hits: { sessionId: string; entryId?: string; snippet: string; sourceRefs: SourceRef[]; sourceTimestamp: string | null }[]; totalMatches: number; truncated: boolean; nextCursor: string | null } };
   createCommitment: { input: { title: string; notes?: string; dueAt: string | null; timeZone: string; sourceSessionId?: string | null; sourceEntryId?: string | null }; output: Commitment };
   listCommitments: { input: { status?: Commitment['status'] }; output: { items: Commitment[]; nextCursor: string | null } };

@@ -69,6 +69,55 @@ the requested zone (`localDayBounds`), not in UTC, so a plan for a local date
 includes exactly that local day and flags items due before the local day start
 as overdue. Completed and cancelled commitments never appear in a plan.
 
+## Reuse from Naya (naya-reuse/MEMORY-REUSE.md, Llama@036a4bc) and gaps
+
+This first slice reuses the verified generic conventions that fit a local
+SQLite domain, and explicitly does not import the Naya service, its PostgreSQL
+schema, its agricultural identity fields or any private rows/personas:
+
+- **Commit-backed receipts, never optimistic.** A mutation and its reminder are
+  one transaction; the domain returns its DTO only from committed state, so the
+  service emits `saved` from the committed result, never from queue admission.
+  In-memory facts never outrun committed facts. (The rollback test proves a
+  failed transaction leaves neither commitment nor reminder.)
+- **Provenance with stable source identity.** A source reference carries
+  `provider`/`accountId`/`externalId`/`sourceTimestamp` and an explicit
+  `availability`; an imported source that is absent is recorded `missing`, never
+  implied present. A **failed lookup stays distinct from a confirmed absence**:
+  both are `availability: "missing"`, and the `note` field records which it was
+  (`lookup_failed` vs an accepted-absent reason). The domain never collapses the
+  two and never invents content for a source it could not read.
+- **Coverage honesty / no completeness cap disguised as retrieval.** Recall
+  reports `totalMatches` and `truncated`; an empty or unseen query returns 0,
+  never a fabricated hit.
+- **No resurrection.** Completed and cancelled commitments never reappear in a
+  plan because an older record mentioned them; reopen is explicit and keeps
+  identity.
+
+Deferred to a separate layered-memory follow-up (deliberately NOT built into
+this slice):
+
+1. `session_gists`: versioned session summaries with pending/complete/failed
+   state, source version/count, bounded retry, claim ownership and closed-session
+   sealing — a background pipeline, not a request path.
+2. A pure `buildPromptMemory` selection with an explicit token/byte budget and
+   coverage metadata, keeping the long-term store separate from the small
+   selected prompt context (a ledger, never an all-history dump).
+3. On-demand `readSource` that resolves an authorized original turn by stable id
+   with unavailable/partial/truncated/complete coverage; FTS search results are
+   leads, the source read grounds a quotation.
+4. `memory_notes`: identity/preference versus time-limited state notes, with
+   provenance, expiry, supersession and active status; corrections retire the
+   previous active fact without losing the audit trail.
+5. Owners/users and cross-owner denial, `recall_audit`, and a forget/reset path
+   with a non-content tombstone and generation fencing so later summary jobs
+   cannot resurrect forgotten memory; separately label remembered-facts reset
+   versus transcript deletion versus all-local-data deletion.
+6. SQLite FTS5 lexical search (cross-script/trigram parity is a separate,
+   explicitly claimed feature).
+
+No Naya database, credential, REST call or provider session is a dependency.
+
 ## Status and integration
 
 The runtime (`server/runtime/`) and the wire fixtures come from the service

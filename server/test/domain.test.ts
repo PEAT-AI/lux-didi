@@ -115,7 +115,23 @@ test('provenance: a present source is present and a missing imported source stay
           text: 'Imported note whose source was unavailable',
           role: 'user',
           timeZone: 'UTC',
-          sourceRef: { id: 'src-missing', label: 'Missing export', sourceTimestamp: null, availability: 'missing' },
+          sourceRef: { id: 'src-missing', label: 'Missing export', sourceTimestamp: null, availability: 'missing', note: 'absent' },
+        },
+        context(nextNow()),
+      ),
+    );
+    // A failed lookup is a missing source too, but its reason stays distinct from
+    // a confirmed absence: neither is ever implied present.
+    h.store.transaction((tx) =>
+      h.port.execute(
+        tx,
+        'appendEntry',
+        {
+          sessionId: created.id,
+          text: 'Imported note whose lookup failed',
+          role: 'user',
+          timeZone: 'UTC',
+          sourceRef: { id: 'src-lookup', label: 'Archive lookup', sourceTimestamp: null, availability: 'missing', note: 'lookup_failed' },
         },
         context(nextNow()),
       ),
@@ -124,16 +140,22 @@ test('provenance: a present source is present and a missing imported source stay
     const recall = h.store.transaction((tx) =>
       h.port.execute(tx, 'recall', { q: 'imported note', limit: 10 }, context(nextNow())),
     ) as {
-      hits: { snippet: string; sourceRefs: { id: string; availability: string; sourceTimestamp: string | null }[]; sourceTimestamp: string | null }[];
+      hits: { snippet: string; sourceRefs: { id: string; availability: string; sourceTimestamp: string | null; note?: string }[]; sourceTimestamp: string | null }[];
     };
-    assert.equal(recall.hits.length, 2);
+    assert.equal(recall.hits.length, 3);
     const present = recall.hits.find((hit) => hit.sourceRefs[0]?.id === 'src-present');
     const missing = recall.hits.find((hit) => hit.sourceRefs[0]?.id === 'src-missing');
+    const lookup = recall.hits.find((hit) => hit.sourceRefs[0]?.id === 'src-lookup');
     assert.ok(present);
     assert.ok(missing);
+    assert.ok(lookup);
     assert.equal(present.sourceRefs[0]!.availability, 'present');
     assert.equal(missing.sourceRefs[0]!.availability, 'missing');
     assert.equal(missing.sourceRefs[0]!.sourceTimestamp, null);
+    assert.equal(missing.sourceRefs[0]!.note, 'absent');
+    assert.equal(lookup.sourceRefs[0]!.availability, 'missing');
+    assert.equal(lookup.sourceRefs[0]!.note, 'lookup_failed', 'a failed lookup is recorded distinctly from absence');
+    assert.notEqual(missing.sourceRefs[0]!.note, lookup.sourceRefs[0]!.note);
   } finally {
     cleanup(h);
   }
@@ -354,7 +376,7 @@ test('timezone day boundaries: plan uses the IANA local day, incl. unscheduled a
       ),
     ) as { id: string };
     const unscheduled = h.store.transaction((tx) =>
-      h.port.execute(tx, 'createCommitment', { title: 'No date', timeZone: 'UTC' }, context(nextNow())),
+      h.port.execute(tx, 'createCommitment', { title: 'No date', dueAt: null, timeZone: 'UTC' }, context(nextNow())),
     ) as { id: string };
 
     const utcPlan = h.store.transaction((tx) =>
@@ -389,7 +411,7 @@ test('unknown ids are typed NOT_FOUND errors, not empty successes', () => {
       [() => h.store.transaction((tx) => h.port.execute(tx, 'appendEntry', { sessionId: 'nope', text: 'x', role: 'user', timeZone: 'UTC' }, context(nextNow()))), 'NOT_FOUND'],
       [() => h.store.transaction((tx) => h.port.execute(tx, 'updateCommitment', { id: 'nope', expectedRevision: 1, title: 'x' }, context(nextNow()))), 'NOT_FOUND'],
       [() => h.store.transaction((tx) => h.port.execute(tx, 'recall', { q: 'x', limit: 0 }, context(nextNow()))), 'BAD_REQUEST'],
-      [() => h.store.transaction((tx) => h.port.execute(tx, 'createCommitment', { title: '   ', timeZone: 'UTC' }, context(nextNow()))), 'BAD_REQUEST'],
+      [() => h.store.transaction((tx) => h.port.execute(tx, 'createCommitment', { title: '   ', dueAt: null, timeZone: 'UTC' }, context(nextNow()))), 'BAD_REQUEST'],
     ];
     for (const [fn, code] of cases) {
       assert.throws(fn, (error: { code?: string }) => error.code === code, `expected ${code}`);

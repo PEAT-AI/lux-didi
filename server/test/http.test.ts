@@ -13,6 +13,11 @@ import { ServiceError } from '../contracts/errors.js';
 const migrations = [{ owner: 'synthetic', version: 1, statements: ['CREATE TABLE calls(id INTEGER PRIMARY KEY, title TEXT)'] }];
 const domain = {
   migrations,
+  // These transport-fixture tests never exercise provenance. Fail loudly if
+  // label behavior is accidentally routed here; actual SQLite proves labels.
+  getRoutingLabel() { throw new Error('Unused synthetic getRoutingLabel'); },
+  getRoutingLabelHistory() { throw new Error('Unused synthetic getRoutingLabelHistory'); },
+  correctRoutingLabel() { throw new Error('Unused synthetic correctRoutingLabel'); },
   execute(tx, op, input) {
     if (op === 'createSession') {
       const title = (input as { title: string }).title;

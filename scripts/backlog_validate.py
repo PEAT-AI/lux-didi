@@ -226,6 +226,29 @@ ALLOWED_PATHS = {
 }
 ALLOWED_PATHS |= {f"docs/{name}" for name in DOCS}
 
+# Product paths of explicitly assigned, imminent units. Each is admitted by exact literal,
+# never a wildcard. A unit that has not landed contributes no file: an absent path is never
+# fabricated and never blocks the paths that are present.
+PRODUCT_PATHS = (
+    "docs/conversation-runtime.md",
+    "docs/service-packaging.md",
+    "scripts/check-chat.sh",
+    "scripts/check-package.sh",
+    "docs/local-runtime.md",
+    "scripts/check-host.sh",
+    "scripts/run-local.sh",
+    "docs/local-install.md",
+    "scripts/package-local.mjs",
+    "scripts/install-local.mjs",
+    "scripts/check-install.sh",
+    "docs/companion-protocol.md",
+    "docs/connected-chat.md",
+    "scripts/check-connected.sh",
+    "docs/provider-configuration.md",
+    "scripts/check-provider-config.sh",
+)
+PRODUCT_DOCS = tuple(rel for rel in PRODUCT_PATHS if rel.startswith("docs/"))
+
 # The repository is code-bearing: accepted components publish their own source trees.
 # These are declared roots and named files, never an open wildcard.
 COMPONENT_ROOTS = ("server/", "Sources/", "Tests/", "Resources/", "web/")
@@ -265,6 +288,12 @@ def is_publication_path(rel: str) -> bool:
     return any(rel.startswith(prefix) for prefix in COMPONENT_ROOTS)
 
 
+def missing_required_documents(walked: set[str]) -> list[str]:
+    """Required documents absent from the tracked public set. DOCS is the mandatory corpus;
+    an optional product document is never required, so an unlanded unit cannot fail here."""
+    return [f"docs/{name}" for name in DOCS if f"docs/{name}" not in walked]
+
+
 def forbidden_findings(tracked: list[str], scanned: list[str]) -> list[tuple[str, str]]:
     """Forbidden paths, reported from the tracked public set first and then from the pruned
     tree scan, deduplicated so a path seen twice is reported once and never suppressed.
@@ -293,11 +322,16 @@ def tracked_public_files(root: Path, exclude: set[str]) -> list[str] | None:
     return sorted({line.strip() for line in out.stdout.splitlines() if line.strip()} - exclude)
 
 
-def read_docs_text(root: Path) -> dict[str, str]:
-    """Load the explicit document corpus shared by the content checks."""
+def read_docs_text(root: Path, extra: tuple[str, ...] = ()) -> dict[str, str]:
+    """Load the explicit document corpus shared by the content checks.
+
+    The required corpus is README.md, the DOCS documents and the publication report. ``extra``
+    names further relative paths a caller supplies explicitly, such as a product document under
+    test; a path that does not exist is skipped, so an absent document is never fabricated.
+    """
     texts = {}
     for rel in ["README.md", *(f"docs/{name}" for name in DOCS),
-                "planning/publishing-validation.md"]:
+                "planning/publishing-validation.md", *extra]:
         path = root / rel
         if path.exists():
             texts[rel] = path.read_text(encoding="utf-8")
@@ -928,10 +962,8 @@ def check_v13(report: Report, root: Path, exclude: set[str]) -> None:
     for rel, label in findings:
         failures.append(f"forbidden path ({label}): {rel}")
 
-    for name in DOCS:
-        rel = f"docs/{name}"
-        if rel not in walked:
-            failures.append(f"missing document {rel}")
+    for rel in missing_required_documents(set(walked)):
+        failures.append(f"missing document {rel}")
     for required in ["README.md", "scripts/backlog_validate.py", "scripts/backlog_render.py",
                      "planning/backlog.json", "planning/issue-map.json"]:
         if required not in walked:
@@ -969,10 +1001,18 @@ def check_v13(report: Report, root: Path, exclude: set[str]) -> None:
             "planning/publishing-validation-extra.md", "docs/unrelated.md",
             "fixtures/domain/unrelated.json", "scripts/check-unrelated.sh",
         ],
+        "product_accepted": list(PRODUCT_PATHS),
+        "near_neighbor_rejected": [
+            "docs/conversation-runtime-extra.md", "scripts/check-chat-extra.sh",
+            "docs/service-packaging.md.bak", "docs/local-runtime-old.md",
+            "scripts/run-local.sh.orig", "docs/connected-chat-old.md",
+            "docs/provider-configuration-extra.md", "scripts/check-provider-config-extra.sh",
+        ],
     }
     controls_ok = 0
     controls_total = len(controls["forbidden_rejected"]) + len(controls["component_accepted"]) \
-        + len(controls["unrelated_rejected"]) + 3 + 2 + 2
+        + len(controls["unrelated_rejected"]) + len(controls["product_accepted"]) \
+        + len(controls["near_neighbor_rejected"]) + 3 + 2 + 2 + 3
     for rel, expected in controls["forbidden_rejected"].items():
         got = is_forbidden_path(rel)
         if got == expected:
@@ -1032,6 +1072,44 @@ def check_v13(report: Report, root: Path, exclude: set[str]) -> None:
                 controls_ok += 1
             else:
                 failures.append(f"control: {description}")
+    # Actual-file control: the shared reader and V-11 together reject a leaking product
+    # document and accept a clean one at a product document path. The present product
+    # document cannot join the always-on corpus while it carries a mention-shaped package
+    # scope that the unchanged predicate rejects; the reader still loads a named extra path.
+    with tempfile.TemporaryDirectory(prefix="didi-product-doc-") as dirname:
+        fixture_root = Path(dirname)
+        product_rel = PRODUCT_DOCS[0]
+        fixture_doc = fixture_root / product_rel
+        fixture_doc.parent.mkdir()
+        fixture_doc.write_text("Fixture: member@private.invalid\n", encoding="utf-8")
+        leaking_probe = Report()
+        check_v11(leaking_probe, None, read_docs_text(fixture_root, (product_rel,)))
+        leaking_rejected = any(product_rel in failure and "address domain" in failure
+                               for check in leaking_probe.checks for failure in check["failures"])
+        fixture_doc.write_text("Fixture: member@example.invalid\n", encoding="utf-8")
+        clean_texts = read_docs_text(fixture_root, (product_rel,))
+        clean_probe = Report()
+        check_v11(clean_probe, None, clean_texts)
+        for passed, description in [
+            (leaking_rejected, "leaking product document was not rejected"),
+            (product_rel in clean_texts and not clean_probe.failed,
+             "clean product document was not scanned and accepted"),
+        ]:
+            if passed:
+                controls_ok += 1
+            else:
+                failures.append(f"control: {description}")
+    # Required documents stay mandatory and an absent future product document is harmless:
+    # the required set is DOCS alone, and no product path is ever required.
+    required = [f"docs/{name}" for name in DOCS]
+    required_present = set(required)
+    if (missing_required_documents(required_present) == []
+            and missing_required_documents(required_present - {required[0]}) == [required[0]]
+            and all(rel not in missing_required_documents(set()) for rel in PRODUCT_DOCS)):
+        controls_ok += 1
+    else:
+        failures.append("control: required documents are not mandatory "
+                        "or a product document is required")
     for rel in controls["component_accepted"]:
         if is_publication_path(rel) and not is_forbidden_path(rel):
             controls_ok += 1
@@ -1042,6 +1120,16 @@ def check_v13(report: Report, root: Path, exclude: set[str]) -> None:
             controls_ok += 1
         else:
             failures.append(f"control: unrelated path {rel} was accepted")
+    for rel in controls["product_accepted"]:
+        if is_publication_path(rel) and not is_forbidden_path(rel):
+            controls_ok += 1
+        else:
+            failures.append(f"control: product path {rel} was not accepted")
+    for rel in controls["near_neighbor_rejected"]:
+        if not is_publication_path(rel):
+            controls_ok += 1
+        else:
+            failures.append(f"control: near-neighbour path {rel} was accepted")
     if controls_ok != controls_total:
         failures.append(f"controls: {controls_ok} of {controls_total} behaved as required")
     if is_publication_path("anything/at/all.bin"):

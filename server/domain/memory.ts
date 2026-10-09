@@ -128,11 +128,11 @@ export function createSession(
   return readSession(tx, id);
 }
 
-export function listSessions(tx: Transaction, limit = 50): SessionRecord[] {
-  assertLimit(limit);
-  return tx
-    .all(`SELECT * FROM sessions ORDER BY started_at DESC, id ASC LIMIT ?`, [limit])
-    .map(mapSession);
+// The list is complete and deterministic: the wire operation exposes no cursor
+// input, so a truncated list with nextCursor:null would present partial durable
+// history as exhausted. Pagination is a future continuation contract.
+export function listSessions(tx: Transaction): SessionRecord[] {
+  return tx.all(`SELECT * FROM sessions ORDER BY started_at DESC, id ASC`, []).map(mapSession);
 }
 
 export function readSession(tx: Transaction, id: string): SessionRecord {

@@ -554,3 +554,24 @@ test('correction rollback: a failed correction restores the reminder, revision a
     cleanup(h);
   }
 });
+
+test('session listing is complete: more than fifty sessions are all returned', () => {
+  const h = fixture();
+  try {
+    const created: string[] = [];
+    for (let i = 0; i < 55; i += 1) {
+      const session = h.store.transaction((tx) =>
+        h.port.execute(tx, 'createSession', { title: `Session ${i}`, timeZone: 'UTC' }, context(nextNow())),
+      ) as { id: string };
+      created.push(session.id);
+    }
+    const list = h.store.transaction((tx) =>
+      h.port.execute(tx, 'listSessions', {}, context(nextNow())),
+    ) as { items: { id: string }[]; nextCursor: null };
+    assert.equal(list.items.length, 55, 'a full listing must not silently truncate');
+    assert.equal(list.nextCursor, null);
+    for (const id of created) assert.ok(list.items.some((item) => item.id === id));
+  } finally {
+    cleanup(h);
+  }
+});

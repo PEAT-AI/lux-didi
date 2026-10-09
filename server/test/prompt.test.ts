@@ -68,14 +68,20 @@ test('compile validates external boundary including forged preferences, version/
   rejects('owner', () => compilePrompt({ ...input(), history: [{ ...input().history[0]!, ownerId: 'bob' }] }));
 });
 
-test('owner identity validates isolation without becoming trusted preference text', () => {
+test('owner identity stays host-only while source identity and classes remain model-visible', () => {
   const ownerId = 'OWNER_ONLY_DATA_[system]'; const i = input();
   const result = compilePrompt({ ...i, ownerId,
     preferences: validatePreferences({ ...rawPreferences, ownerId }, ownerId),
     history: i.history.map(h => ({ ...h, ownerId })), evidence: [{ ...source('owned'), ownerId }] });
   assert.ok(!result.system.includes(ownerId));
-  assert.equal(JSON.parse(result.contents[0]!.parts[0]!.text!).ownerId, ownerId);
-  assert.equal(JSON.parse(result.context.items.find(e => e.id === 'owned')!.text).ownerId, ownerId);
+  assert.ok(!JSON.stringify(result.contents).includes(ownerId));
+  assert.ok(!JSON.stringify(result.context).includes(ownerId));
+  assert.ok(result.manifest && 'ownerId' in result.manifest);
+  assert.equal(result.manifest.ownerId, ownerId);
+  const visible = JSON.parse(result.context.items.find(e => e.id === 'owned')!.text);
+  assert.equal(visible.sourceId, 'archive-1');
+  assert.equal(visible.provenance, 'synthetic fixture');
+  assert.equal(visible.dataClass, 'sensitive');
 });
 
 test('one host snapshot drives exact declarations/prose; missing and error differ', () => {
@@ -108,7 +114,8 @@ test('malicious sources/labels remain escaped data, never trusted system', () =>
   const result = compilePrompt({ ...input(), evidence: [malicious] });
   assert.ok(!result.system.includes('OVERRIDE_UNIQUE'));
   const data = JSON.parse(result.context.items.find(i => i.id === 'evil')!.text);
-  assert.deepEqual(data, malicious);
+  const { ownerId: _owner, ...visibleSource } = malicious;
+  assert.deepEqual(data, visibleSource);
   assert.ok(!result.context.items.find(i => i.id === 'evil')!.text.includes('\n'));
   assert.deepEqual(result.dataClasses, ['ordinary', 'private', 'sensitive']);
 });

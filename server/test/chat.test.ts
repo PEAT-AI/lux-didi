@@ -303,3 +303,20 @@ test('all terminal writes unavailable: no completion event/assistant entry, expl
     assert.equal(f.chat.get(run.runId, f.context).state, 'dispatch_intent'); assert.equal(f.entries().length, 1);
   } finally { f.close(); }
 });
+
+test('partial retention is explicitly bounded but final durable lookup returns the entire archival answer', async () => {
+  const f = fixture({ maxPartialChars: 4 }); f.model.delayed = true; f.model.text = 'Complete archival answer';
+  try {
+    const run = f.accept(); await started(f);
+    f.model.controls[0]!.onEvent?.({ type: 'text', text: 'Provisional overflow', provisional: true });
+    const partial = f.chat.get(run.runId, f.context); assert.equal(partial.partialText, 'Prov'); assert.equal(partial.partialTruncated, true); assert.equal(partial.finalText, null);
+    f.model.finish(); const final = await terminal(f, run); assert.equal(final.finalText, f.model.text);
+    assert.equal(f.chat.get(run.runId, f.context).finalText, f.entries()[1]!.text);
+  } finally { f.close(); }
+});
+
+test('capability snapshot never advertises an unconfigured source as available', async () => {
+  const f = fixture({ context: { budgets: { trustedChars: 20000, contextChars: 12000, historyChars: 12000 }, sources: [{ id: 'today', state: 'available' }] } });
+  try { const done = await terminal(f, f.accept()); assert.equal(done.outcome, 'unavailable'); assert.equal(f.model.calls.length, 0); }
+  finally { f.close(); }
+});

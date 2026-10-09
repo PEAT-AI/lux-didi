@@ -2,13 +2,6 @@ import AppKit
 import WebKit
 import CryptoKit
 
-struct SyntheticProofRecord {
-    let sessionId: String
-    let entryId: String
-    let text: String
-    func report(visible: Bool) -> [String: Any] { ["sessionId": sessionId, "entryId": entryId, "text": text, "visibleInCanonicalUI": visible] }
-}
-
 @MainActor enum InstalledProofRun {
     private static func hash(_ url: URL) throws -> String {
         SHA256.hash(data: try Data(contentsOf: url)).map { String(format: "%02x", $0) }.joined()

@@ -64,6 +64,13 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate {
                     newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
 }
 
+struct SyntheticProofRecord {
+    let sessionId: String
+    let entryId: String
+    let text: String
+    func report(visible: Bool) -> [String: Any] { ["sessionId": sessionId, "entryId": entryId, "text": text, "visibleInCanonicalUI": visible] }
+}
+
 struct CaptureReceipt { let entryID: String; let sessionID: String }
 enum CaptureStatus: Equatable { case idle, sending, saved, cancelled, unknown, failed }
 
@@ -160,16 +167,16 @@ enum CaptureStatus: Equatable { case idle, sending, saved, cancelled, unknown, f
     // Installed-proof observations use the authoritative APIs, never native SQL/state.
     func proofRecords(prefix: String) async throws -> [SyntheticProofRecord] {
         let (recall, _) = try await request("api/v1/recall", query: [URLQueryItem(name: "q", value: prefix), URLQueryItem(name: "limit", value: "20")])
-        guard recall["truncated"] as? Bool == false, let hits = recall["hits"] as? [[String: Any]] else { throw InstalledProofError.persistence }
+        guard recall["truncated"] as? Bool == false, let hits = recall["hits"] as? [[String: Any]] else { throw CompanionError.invalidResponse }
         var records: [SyntheticProofRecord] = []
         var seen = Set<String>()
         for hit in hits {
             guard let sessionId = hit["sessionId"] as? String, let entryId = hit["entryId"] as? String,
-                  UUID(uuidString: sessionId) != nil, UUID(uuidString: entryId) != nil else { throw InstalledProofError.persistence }
+                  UUID(uuidString: sessionId) != nil, UUID(uuidString: entryId) != nil else { throw CompanionError.invalidResponse }
             if !seen.insert(entryId).inserted { continue }
             let (detail, _) = try await request("api/v1/sessions/" + sessionId)
             guard let entries = detail["entries"] as? [[String: Any]], let entry = entries.first(where: { $0["id"] as? String == entryId }),
-                  entry["role"] as? String == "user", let text = entry["text"] as? String, text.hasPrefix(prefix) else { throw InstalledProofError.persistence }
+                  entry["role"] as? String == "user", let text = entry["text"] as? String, text.hasPrefix(prefix) else { throw CompanionError.invalidResponse }
             records.append(SyntheticProofRecord(sessionId: sessionId, entryId: entryId, text: text))
         }
         return records.sorted { $0.entryId < $1.entryId }

@@ -22,11 +22,14 @@ interface FixtureOptions {
   call?: () => Promise<unknown> | unknown;
   status?: number;
   location?: string;
+  jsonResponse?: boolean;
+  callStatus?: number;
 }
 async function fixture(options: FixtureOptions = {}) {
   const observed: { method: string; origin: string | undefined; host: string | undefined; auth: string | undefined; path: string }[] = [];
   let counter = 0;
   let cancellations = 0;
+  const responseEntities: Buffer[] = [];
   const sdk = new Server({ name: 'synthetic-fixture', version: '1' }, { capabilities: { tools: { listChanged: true } } });
   sdk.setRequestHandler('tools/list', request => (options.list?.(request.params?.cursor) ?? { tools: [tool, writeTool] }) as never);
   sdk.setRequestHandler('tools/call', async () => {
@@ -34,7 +37,7 @@ async function fixture(options: FixtureOptions = {}) {
     return (await options.call?.() ?? { content: [{ type: 'text', text: 'synthetic α payload' }] }) as never;
   });
   sdk.setNotificationHandler('notifications/cancelled', async () => { cancellations++; });
-  const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
+  const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: options.jsonResponse ?? true });
   await sdk.connect(transport);
   const listener = createServer(async (req, res) => {
     try {
@@ -49,22 +52,29 @@ async function fixture(options: FixtureOptions = {}) {
       for (const [key, value] of Object.entries(req.headers)) if (value !== undefined) headers.set(key, Array.isArray(value) ? value.join(',') : value);
       const request = new Request(`http://${req.headers.host}${req.url}`, { method: req.method ?? 'GET', headers, ...(bytes.length ? { body: new Uint8Array(bytes) } : {}) });
       const response = await transport.handleRequest(request);
+      if (packet.method === 'tools/call' && options.callStatus) {
+        void response.body?.cancel().catch(() => {});
+        res.writeHead(options.callStatus); res.end(); return;
+      }
       res.writeHead(response.status, Object.fromEntries(response.headers));
       if (!response.body) { res.end(); return; }
       const reader = response.body.getReader();
+      const entity: Buffer[] = [];
       res.on('close', () => { void reader.cancel().catch(() => {}); });
       while (!res.destroyed) {
         const chunk = await reader.read();
         if (chunk.done) break;
+        entity.push(Buffer.from(chunk.value));
         res.write(chunk.value);
       }
+      if (packet.method === 'tools/call') responseEntities.push(Buffer.concat(entity));
       res.end();
     } catch { if (!res.headersSent) res.writeHead(500); res.end(); }
   });
   listener.listen(0, '127.0.0.1'); await once(listener, 'listening');
   const address = listener.address(); assert(address && typeof address !== 'string');
   const url = `http://127.0.0.1:${address.port}/mcp`;
-  return { url, observed, sdk, get counter() { return counter; }, get cancellations() { return cancellations; }, async close() { await sdk.close(); listener.closeAllConnections(); await new Promise<void>(resolve => listener.close(() => resolve())); } };
+  return { url, observed, sdk, responseEntities, get counter() { return counter; }, get cancellations() { return cancellations; }, async close() { await sdk.close(); listener.closeAllConnections(); await new Promise<void>(resolve => listener.close(() => resolve())); } };
 }
 function setup(url: string, extras: { now?: () => number; maxBytes?: number; ttlMs?: number; maxEntries?: number; timeoutMs?: number; responseBytes?: number; credential?: string } = {}) {
   const registry = new McpRegistry();
@@ -102,6 +112,7 @@ test('official SDK handshake; no Origin; exact Host; read grants ignore advisory
       assert.equal(slice.state, 'available'); if (slice.state === 'available') pieces.push(slice.bytes);
     }
     const original = Buffer.concat(pieces);
+    assert.deepEqual(original, f.responseEntities[0]);
     assert.equal(original.length, result.payload.byteLength);
     assert.equal(createHash('sha256').update(original).digest('hex'), result.payload.sha256);
     const envelope = JSON.parse(original.toString()) as { result: { content: { text: string }[] } };
@@ -203,6 +214,7 @@ test('timeout and cancellation are unknown after observed side effect, terminate
       release();
       await adapter.discover('source'); assert.equal(f.counter, 1);
       assert.equal(adapter.visibleTools('source').length, 0);
+      assert(f.observed.some(row => row.method === 'notifications/cancelled'), 'SDK attempts bounded protocol cancellation');
     } finally { release(); await adapter.close(); await f.close(); }
   }
 });
@@ -233,7 +245,7 @@ test('revocation during dispatch invalidates completed result and prior handles;
 
 test('tool errors are explicit, capacity and oversize unavailable, empty result is not fake coverage', async () => {
   for (const mode of ['tool-error', 'capacity', 'oversize', 'empty'] as const) {
-    const f = await fixture({ call: () => mode === 'tool-error' ? { isError: true, content: [{ type: 'text', text: 'synthetic error' }] } : { content: mode === 'empty' ? [] : [{ type: 'text', text: 'x'.repeat(300) }] } });
+    const f = await fixture({ call: () => mode === 'tool-error' ? { isError: true, content: [{ type: 'text', text: 'synthetic error' }] } : { content: mode === 'empty' ? [] : [{ type: 'text', text: 'x'.repeat(mode === 'oversize' ? 1000 : 300) }] } });
     const { adapter, registry } = setup(f.url, { maxBytes: mode === 'capacity' ? 1 : 20_000, responseBytes: mode === 'oversize' ? 500 : 20_000 });
     try {
       await approve(adapter, registry);
@@ -247,4 +259,93 @@ test('tool errors are explicit, capacity and oversize unavailable, empty result 
       }
     } finally { await adapter.close(); await f.close(); }
   }
+});
+
+test('SSE call entity reconstructed exactly through bounded slices, not reserialized SDK JSON', async () => {
+  const f = await fixture({ jsonResponse: false }); const { adapter, registry } = setup(f.url);
+  try {
+    await approve(adapter, registry);
+    const result = await adapter.call(request);
+    assert.equal(result.state, 'completed');
+    if (result.state !== 'completed' || result.payload.state !== 'available') throw new Error('missing SSE result');
+    const chunks: Uint8Array[] = [];
+    for (let offset = 0; offset < result.payload.byteLength; offset += 97) {
+      const slice = adapter.readSlice({ ...request, handle: result.payload.handle, offset, length: Math.min(97, result.payload.byteLength - offset) });
+      if (slice.state !== 'available') throw new Error('missing SSE bytes');
+      chunks.push(slice.bytes);
+    }
+    assert.deepEqual(Buffer.concat(chunks), f.responseEntities[0]);
+    assert.match(Buffer.concat(chunks).toString(), /data:.*synthetic α payload/);
+  } finally { await adapter.close(); await f.close(); }
+});
+
+test('session404 after observed dispatch never reinitializes or replays the call; reconnect only discovers', async () => {
+  const f = await fixture({ callStatus: 404 }); const { adapter, registry } = setup(f.url);
+  try {
+    await approve(adapter, registry);
+    const before = f.observed.filter(row => row.method === 'initialize').length;
+    const result = await adapter.call(request); assert.equal(result.state, 'unknown'); assert.equal(f.counter, 1);
+    assert.equal(f.observed.filter(row => row.method === 'initialize').length, before);
+    // This fixture is intentionally one-session only: stale reconnect can fail explicitly, never fabricate data.
+    await adapter.discover('source'); assert.equal(f.counter, 1);
+    assert.equal(adapter.visibleTools('source').length, 0);
+  } finally { await adapter.close(); await f.close(); }
+});
+
+test('actual list_changed during call invalidates result before any handle is published', async () => {
+  let entered!: () => void; let release!: () => void;
+  const dispatched = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const f = await fixture({ call: async () => { entered(); await gate; return { content: [] }; } });
+  const { adapter, registry } = setup(f.url);
+  try {
+    await approve(adapter, registry);
+    const pending = adapter.call(request); await dispatched;
+    await f.sdk.notification({ method: 'notifications/tools/list_changed' }); await adapter.whenSuspended('source');
+    release(); assert.equal((await pending).state, 'unknown'); assert.equal(f.counter, 1);
+    assert.equal((await adapter.call(request)).state, 'refused'); assert.equal(f.counter, 1);
+  } finally { release(); await adapter.close(); await f.close(); }
+});
+
+test('store entry capacity, endpoint scope, independent caller bytes, and budget validation are explicit', async () => {
+  const f = await fixture(); const { adapter, registry } = setup(f.url, { maxEntries: 1 });
+  try {
+    await approve(adapter, registry);
+    const first = await adapter.call(request); const second = await adapter.call(request);
+    if (first.state !== 'completed' || first.payload.state !== 'available' || second.state !== 'completed') throw new Error('missing store results');
+    assert.deepEqual(second.payload, { state: 'unavailable', reason: 'capacity' });
+    assert.equal(adapter.readSlice({ ...request, endpointId: 'unknown', handle: first.payload.handle, offset: 0, length: 1 }).state, 'refused');
+    const slice = { ...request, handle: first.payload.handle, offset: 0, length: 1 };
+    const original = adapter.readSlice(slice); if (original.state !== 'available') throw new Error('missing original');
+    original.bytes[0] = 0;
+    const again = adapter.readSlice(slice); assert.equal(again.state, 'available');
+    if (again.state === 'available') assert.notEqual(again.bytes[0], 0);
+    assert.throws(() => new MemoryResultStore({ maxBytes: 0 }));
+    assert.throws(() => createMcpAdapter({ registry, store: new MemoryResultStore(), budgets: { maxPages: Infinity } }));
+  } finally { await adapter.close(); await f.close(); }
+});
+
+test('malformed remote results and finite discovery page/tool budgets fail explicitly with no partial ready state', async () => {
+  const malformed = await fixture({ call: () => ({ content: [{ type: 'unsupported', text: 'not valid MCP' }] }) });
+  const normal = await fixture();
+  const a = setup(malformed.url);
+  const registry = new McpRegistry(); registry.register({ id: 'source', url: normal.url, account: 'account-a', resource: 'resource-a' }); registry.enable('source'); registry.allowEgress('source');
+  const b = createMcpAdapter({ registry, store: new MemoryResultStore(), budgets: { maxTools: 1 } });
+  try {
+    await approve(a.adapter, a.registry);
+    assert.equal((await a.adapter.call(request)).state, 'unknown'); assert.equal(malformed.counter, 1);
+    assert.equal((await b.discover('source')).state, 'unavailable'); assert.deepEqual(b.visibleTools('source'), []);
+  } finally { await a.adapter.close(); await b.close(); await malformed.close(); await normal.close(); }
+});
+
+test('explicit JSON-RPC error is a completed protocol-error, not unknown success or retried execution', async () => {
+  const f = await fixture({ call: () => { throw new Error('synthetic protocol rejection'); } }); const { adapter, registry } = setup(f.url);
+  try {
+    await approve(adapter, registry);
+    const result = await adapter.call(request);
+    assert.equal(result.state, 'protocol-error'); assert.equal(f.counter, 1);
+    if (result.state !== 'protocol-error') throw new Error('missing explicit protocol error');
+    assert.equal(typeof result.protocolErrorCode, 'number');
+    assert.equal(result.coverage.remoteSideEffects, 'unverified');
+  } finally { await adapter.close(); await f.close(); }
 });

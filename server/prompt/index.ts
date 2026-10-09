@@ -33,14 +33,23 @@ function owned(o: Record<string, unknown>, ownerId: string): void {
   if (o['schemaVersion'] !== 1) fail('schema');
 }
 const ownedKeys = ['schemaVersion', 'ownerId', 'dataClass'];
+function canonicalLocale(value: unknown): string {
+  // Explicit BCP47 input only: no Intl default locale, inference or fallback.
+  if (typeof value !== 'string' || value.length > 64 || !/^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$/.test(value)) fail('invalid_locale');
+  try {
+    const locale = new Intl.Locale(value as string).toString();
+    if (locale.length > 64) fail('invalid_locale');
+    return locale;
+  } catch { return fail('invalid_locale'); }
+}
 export function validatePreferences(raw: unknown, ownerId: string): ValidatedPreferences {
   text(ownerId, 128);
   // Ownership/class errors are explicit even when the required property is absent.
   owned(object(raw), ownerId);
   const o = fields(raw, [...ownedKeys, 'language', 'register', 'humor', 'verbosity']);
-  enumeration(o['language'], ['en', 'fr', 'es']); enumeration(o['register'], ['plain', 'formal']);
+  const language = canonicalLocale(o['language']); enumeration(o['register'], ['plain', 'formal']);
   enumeration(o['humor'], ['off', 'dry']); enumeration(o['verbosity'], ['brief', 'balanced', 'detailed']);
-  return Object.freeze({ schemaVersion: 1, ownerId, dataClass: o['dataClass'], language: o['language'], register: o['register'], humor: o['humor'], verbosity: o['verbosity'] }) as ValidatedPreferences;
+  return Object.freeze({ schemaVersion: 1, ownerId, dataClass: o['dataClass'], language, register: o['register'], humor: o['humor'], verbosity: o['verbosity'] }) as ValidatedPreferences;
 }
 function canonical(value: unknown, depth = 0): unknown {
   if (depth > 20) fail('schema');

@@ -14,7 +14,7 @@ ESM imports use `.js`. `validatePreferences(unknown, ownerId)` returns a frozen
 `ValidatedPreferences`; `compilePrompt(CompileInput)` revalidates at the external
 boundary, including values forged through casts/JSON. `PromptCompileError.code`
 is one of `schema`, `owner`, `classification`, `version`, `budget`, `duplicate`,
-`snapshot`. Error messages contain no content, identifiers or hashes.
+`snapshot`, `invalid_locale`. Error messages contain no content, identifiers or hashes.
 
 The only persona is `didi`. `PROMPT_VERSION` is `didi-v1-` plus SHA-256 of the
 actual public persona and immutable rules separated by two newlines. It does
@@ -24,9 +24,16 @@ system hash, preference hash and capability hash remain in a **private** manifes
 Hashes are fingerprints, not anonymization. Do not send the manifest to the
 provider, logs, analytics or public messages.
 
-Preferences require schemaVersion 1, explicit ownerId/dataClass and enumerated
-language (`en`, `fr`, `es`), register (`plain`, `formal`), humor (`off`, `dry`),
-verbosity (`brief`, `balanced`, `detailed`). Unknown/missing fields fail. There is
+Preferences require schemaVersion 1, explicit ownerId/dataClass and explicitly
+supplied language as a well-formed BCP47 locale (for example `de-DE`, `hi-IN`).
+The boundary bounds locale syntax to ASCII language/subtags and 64 characters,
+validates with standard `Intl.Locale` and returns its canonical form (for
+example `de-de` becomes `de-DE`). Invalid/instruction-shaped locale values raise
+`invalid_locale`; a missing field raises `schema`. There is no default, inferred
+location/language or silent English fallback. Locale selection is not proof of
+model fluency. Register (`plain`, `formal`), humor (`off`, `dry`) and verbosity
+(`brief`, `balanced`, `detailed`) remain closed enumerations. Unknown/missing
+fields fail. There is
 no chosen-name/free-text overlay and no arbitrary client system override. The
 compiler never reads stored profiles automatically. Raw ownerId is a host-only
 isolation identity: it is validated for every supplied user item, retained only

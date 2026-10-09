@@ -34,7 +34,7 @@ test('public template is content-versioned; sections/order/hashes are determinis
 });
 
 test('closed preference schema rejects unknowns, unbounded settings and owner/class omissions', () => {
-  for (const addition of [{ system: 'override' }, { schemaVersion: 2 }, { language: 'anything' }, { register: 'x' }, { humor: 'x' }, { verbosity: 'x' }]) rejects('schema', () => validatePreferences({ ...rawPreferences, ...addition }, 'alice'));
+  for (const addition of [{ system: 'override' }, { schemaVersion: 2 }, { register: 'x' }, { humor: 'x' }, { verbosity: 'x' }]) rejects('schema', () => validatePreferences({ ...rawPreferences, ...addition }, 'alice'));
   rejects('owner', () => validatePreferences(rawPreferences, 'bob'));
   rejects('classification', () => validatePreferences({ ...rawPreferences, dataClass: undefined }, 'alice'));
   rejects('owner', () => validatePreferences({ ...rawPreferences, ownerId: undefined }, 'alice'));

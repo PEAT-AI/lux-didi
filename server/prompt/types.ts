@@ -1,7 +1,8 @@
 import type { Content, ContextSelection, DataClass, FunctionDeclaration } from '../adapters/model/types.js';
 export interface Owned { schemaVersion: 1; ownerId: string; dataClass: DataClass }
 export interface Preferences extends Owned {
-  language: 'en' | 'fr' | 'es'; register: 'plain' | 'formal';
+  /** Canonical explicit BCP47 locale, validated with Intl.Locale; not fluency proof. */
+  language: string; register: 'plain' | 'formal';
   humor: 'off' | 'dry'; verbosity: 'brief' | 'balanced' | 'detailed';
 }
 declare const validated: unique symbol;
@@ -34,7 +35,7 @@ export interface CompiledPrompt {
     historyIds: string[]; savedReceiptIds: string[];
   };
 }
-export type ErrorCode = 'schema' | 'owner' | 'classification' | 'version' | 'budget' | 'duplicate' | 'snapshot';
+export type ErrorCode = 'schema' | 'owner' | 'classification' | 'version' | 'budget' | 'duplicate' | 'snapshot' | 'invalid_locale';
 export class PromptCompileError extends Error {
   constructor(readonly code: ErrorCode) { super(`Prompt compilation failed: ${code}`); this.name = 'PromptCompileError'; }
 }

@@ -9,7 +9,7 @@ export const chatMigrations: readonly SchemaMigration[] = [{ owner: 'chat', vers
     outcome TEXT, final_entry_id TEXT, retry_of TEXT REFERENCES chat_runs(run_id),
     sequence INTEGER NOT NULL DEFAULT 1, partial_text TEXT NOT NULL DEFAULT '',
     partial_truncated INTEGER NOT NULL DEFAULT 0,
-    accepted_at TEXT NOT NULL, intent_at TEXT, terminal_at TEXT,
+    accepted_at TEXT NOT NULL, intent_at TEXT, terminal_at TEXT, terminal_epoch TEXT,
     UNIQUE(actor,idempotency_key),
     CHECK((state='terminal' AND outcome IS NOT NULL) OR (state!='terminal' AND outcome IS NULL)),
     CHECK((outcome='complete' AND final_entry_id IS NOT NULL) OR (outcome IS NULL OR outcome!='complete'))

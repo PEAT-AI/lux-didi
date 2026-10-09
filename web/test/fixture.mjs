@@ -8,7 +8,7 @@ export async function startFixture() {
   const db = new DatabaseSync(':memory:');
   db.exec('CREATE TABLE records (id TEXT PRIMARY KEY, kind TEXT, value TEXT)');
   const requests = []; const epoch = 'synthetic-authority-1'; let paired = false;
-  let failEntry = false, conflict = false;
+  let failEntry = false, conflict = false, heldEntry, heldPlan;
   const put = (kind, value) => { db.prepare('INSERT OR REPLACE INTO records VALUES(?,?,?)').run(value.id, kind, JSON.stringify(value)); return value; };
   const get = id => { const row = db.prepare('SELECT value FROM records WHERE id=?').get(id); return row ? JSON.parse(row.value) : null; };
   const all = kind => db.prepare('SELECT value FROM records WHERE kind=?').all(kind).map(r => JSON.parse(r.value));
@@ -17,7 +17,7 @@ export async function startFixture() {
     if (!path.startsWith('/api/')) {
       const asset = path === '/' ? 'index.html' : path.slice(1);
       if (asset.includes('..')) { res.writeHead(400).end(); return; }
-      try { const data = await readFile(join(import.meta.dirname, '../dist', asset)); res.setHeader('Content-Type', ({'.html':'text/html','.js':'text/javascript','.css':'text/css','.svg':'image/svg+xml','.webmanifest':'application/manifest+json'})[extname(asset)] || 'application/octet-stream'); res.end(data); }
+      try { let data = await readFile(join(import.meta.dirname, '../dist', asset)); if(asset==='index.html') data=Buffer.from(data.toString().replace('<head>','<head><meta name="didi-test-mode" content="synthetic">')); res.setHeader('Content-Type', ({'.html':'text/html','.js':'text/javascript','.css':'text/css','.svg':'image/svg+xml','.webmanifest':'application/manifest+json'})[extname(asset)] || 'application/octet-stream'); res.end(data); }
       catch { res.writeHead(404).end(); } return;
     }
     let body = {}; try { let text=''; for await (const chunk of req) text += chunk; if (text) body=JSON.parse(text); } catch { res.writeHead(400).end(); return; }
@@ -25,12 +25,15 @@ export async function startFixture() {
     res.setHeader('Content-Type','application/json'); res.setHeader('Cache-Control','no-store');
     const ok = data => res.end(JSON.stringify({data,requestId:randomUUID(),authorityEpoch:epoch}));
     const error = (code,message,status=400) => {res.statusCode=status; res.end(JSON.stringify({error:{code,message},requestId:randomUUID()}));};
-    if (path === '/api/v1/pair' && req.method === 'POST') {
-      if (body.code !== 'synthetic-only') return error('PAIRING_INVALID','Pairing code is not valid.',401);
-      paired=true; res.setHeader('Set-Cookie','didi=test-only; HttpOnly; SameSite=Strict; Path=/'); return ok({paired:true});
+    if (path === '/api/v1/auth/pair' && req.method === 'POST') {
+      if (body.pairingCode !== 'synthetic-only') return error('PAIRING_INVALID','Pairing code is not valid.',401);
+      paired=true; res.setHeader('Set-Cookie','didi=test-only; HttpOnly; SameSite=Strict; Path=/'); return ok({csrfToken:'synthetic-csrf'});
     }
     if (!paired || !req.headers.cookie?.includes('didi=test-only')) return error('UNAUTHORIZED','Pair this browser first.',401);
+    if (path === '/api/v1/auth/session') return ok({csrfToken:'synthetic-csrf'});
+    if (req.method !== 'GET' && req.headers['x-didi-csrf'] !== 'synthetic-csrf') return error('CSRF_INVALID','Missing CSRF token.',403);
     if (req.method !== 'GET' && (req.headers['x-didi-authority-epoch'] !== epoch || !req.headers['idempotency-key'])) return error('INVALID_HEADERS','Missing authority or idempotency key');
+    if(path === '/api/v1/auth/logout') { paired=false; res.setHeader('Set-Cookie','didi=; Max-Age=0; HttpOnly; SameSite=Strict; Path=/'); return ok({loggedOut:true}); }
     if (path === '/api/v1/status') return ok({assistantId:'synthetic-didi',authorityEpoch:epoch,serviceMode:'synthetic-test',capabilities:{memory:true,commitments:true,notifications:false,model:false},model:{configured:false},sources:[]});
     if (path === '/api/v1/sessions' && req.method==='GET') return ok({items:all('session'),nextCursor:null});
     if (path === '/api/v1/sessions' && req.method==='POST') return ok(put('session',{id:randomUUID(),...body,startedAt:new Date().toISOString(),endedAt:null,revision:1}));
@@ -38,12 +41,13 @@ export async function startFixture() {
     if (sessionPath) {
       const session=get(sessionPath[1]); if(!session) return error('NOT_FOUND','Conversation not found.',404);
       if (req.method==='GET') return ok({session,entries:all('entry').filter(e=>e.sessionId===session.id),nextCursor:null});
+      if(heldEntry){const wait=heldEntry;heldEntry=undefined;await wait;}
       if (failEntry) {failEntry=false; return error('WRITE_FAILED','Could not save this message.',503);}
       if (body.role!=='user') return error('INVALID_ROLE','Only user entries are accepted');
       return ok(put('entry',{id:randomUUID(),sessionId:session.id,sequence:all('entry').length+1,role:'user',text:body.text,capturedAt:new Date().toISOString(),sourceRefs:[]}));
     }
     if(path==='/api/v1/chat') return error('MODEL_NOT_CONFIGURED','No model is connected.',503);
-    if(path==='/api/v1/plan') return ok({date:url.searchParams.get('date'),timeZone:url.searchParams.get('timeZone'),items:all('commitment').filter(c=>c.status==='active'&&c.dueAt).map(commitment=>({commitment,isOverdue:false})),unscheduled:all('commitment').filter(c=>c.status==='active'&&!c.dueAt),nextCursor:null});
+    if(path==='/api/v1/plan') { if(heldPlan){const wait=heldPlan;heldPlan=undefined;await wait;} return ok({date:url.searchParams.get('date'),timeZone:url.searchParams.get('timeZone'),items:all('commitment').filter(c=>c.status==='active'&&c.dueAt&&c.dueAt.slice(0,10)<=url.searchParams.get('date')).map(commitment=>({commitment,isOverdue:false})),unscheduled:all('commitment').filter(c=>c.status==='active'&&!c.dueAt),nextCursor:null}); }
     if(path==='/api/v1/commitments' && req.method==='POST') return ok(put('commitment',{id:randomUUID(),notes:'',sourceSessionId:null,sourceEntryId:null,...body,status:'active',revision:1,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()}));
     const cm=path.match(/^\/api\/v1\/commitments\/([^/]+)(?:\/(complete|reopen|cancel))?$/);
     if(cm){const c=get(cm[1]); if(!c) return error('NOT_FOUND','Commitment not found.',404);
@@ -56,5 +60,5 @@ export async function startFixture() {
     return error('NOT_FOUND','Route not found.',404);
   });
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
-  return {url:`http://127.0.0.1:${server.address().port}`,requests,failNextEntry:()=>{failEntry=true;},conflictNextWrite:()=>{conflict=true;},close:async()=>{await new Promise(resolve=>server.close(resolve)); db.close();}};
+  return {url:`http://127.0.0.1:${server.address().port}`,requests,failNextEntry:()=>{failEntry=true;},conflictNextWrite:()=>{conflict=true;},holdNextEntry:()=>{let release;heldEntry=new Promise(r=>release=r);return ()=>release();},holdNextPlan:()=>{let release;heldPlan=new Promise(r=>release=r);return ()=>release();},close:async()=>{await new Promise(resolve=>server.close(resolve)); db.close();}};
 }

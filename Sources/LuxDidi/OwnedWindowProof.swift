@@ -4,30 +4,46 @@ import CryptoKit
 import ApplicationServices
 
 @MainActor enum OwnedWindowProof {
-    static func consumerTrace(_ window: NSWindow) -> [String: Any] {
-        // Public consumer API, only our PID; never request trust or query another app.
+    private struct ConsumerResult: Sendable {
+        var code: String
+        var windowCount = 0
+        var titleStatuses: [Int32] = []
+        var titleMatches = 0
+        var childCount = 0
+        let queryOnMainThread: Bool
+    }
+    static func consumerTrace(_ window: NSWindow) async -> [String: Any] {
         guard NSApp.windows.contains(window), window.isVisible else { return ["code": "own-window-not-visible"] }
-        let app = AXUIElementCreateApplication(getpid())
+        // Capture primitive expected state on main; NSWindow/AX objects never cross actors.
+        let pid = getpid(), expectedTitle = window.title
+        let result = await Task.detached { consumerSnapshot(pid: pid, expectedTitle: expectedTitle) }.value
+        return ["code": result.code, "windowCount": result.windowCount,
+                "titleStatuses": result.titleStatuses, "titleMatches": result.titleMatches,
+                "childCount": result.childCount, "queryOnMainThread": result.queryOnMainThread]
+    }
+    nonisolated private static func consumerSnapshot(pid: pid_t, expectedTitle: String) -> ConsumerResult {
+        // Public consumer API, only our PID; never request trust or query another app.
+        var result = ConsumerResult(code: "starting", queryOnMainThread: Thread.isMainThread)
+        let app = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(app, 0.5)
         var value: CFTypeRef?
         let status = AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &value)
-        guard status == .success, let windows = value as? [AXUIElement] else {
-            return ["code": status.rawValue, "windowCount": (value as? [AXUIElement])?.count ?? 0]
-        }
-        guard windows.count <= 8 else { return ["code": "own-window-limit", "windowCount": windows.count] }
-        var titleStatuses: [Int32] = []
+        result.code = String(status.rawValue)
+        guard status == .success, let windows = value as? [AXUIElement] else { return result }
+        result.windowCount = windows.count
+        guard windows.count <= 8 else { result.code = "own-window-limit"; return result }
         let matching = windows.filter { element in
             var title: CFTypeRef?
             let status = AXUIElementCopyAttributeValue(element, kAXTitleAttribute as CFString, &title)
-            titleStatuses.append(status.rawValue)
-            return status == .success && title as? String == window.title
+            result.titleStatuses.append(status.rawValue)
+            return status == .success && title as? String == expectedTitle
         }
-        guard matching.count == 1 else {
-            return ["code": "own-title-not-unique", "windowCount": windows.count,
-                    "titleStatuses": titleStatuses, "titleMatches": matching.count]
-        }
+        result.titleMatches = matching.count
+        guard matching.count == 1 else { result.code = "own-title-not-unique"; return result }
         let childStatus = AXUIElementCopyAttributeValue(matching[0], kAXChildrenAttribute as CFString, &value)
-        return ["code": childStatus.rawValue, "windowCount": windows.count, "childCount": (value as? [AXUIElement])?.count ?? 0]
+        result.code = String(childStatus.rawValue)
+        result.childCount = (value as? [AXUIElement])?.count ?? 0
+        return result
     }
     // Private diagnostic: own-tree types/roles and exact native-control matches only.
     // Never serialize arbitrary labels, text values, page content or credentials.

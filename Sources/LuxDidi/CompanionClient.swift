@@ -1,0 +1,176 @@
+import Foundation
+import Security
+
+struct ServiceDescriptor: Codable {
+    let origin: String
+    let credentialService: String
+    let credentialAccount: String
+    var baseURL: URL { URL(string: origin)! }
+    init(origin: String, credentialService: String, credentialAccount: String) throws {
+        guard let parts = URLComponents(string: origin), parts.scheme == "http", parts.host == "127.0.0.1",
+              let port = parts.port, (1...65535).contains(port), parts.user == nil, parts.password == nil,
+              parts.query == nil, parts.fragment == nil, parts.path.isEmpty,
+              origin == "http://127.0.0.1:\(port)", !credentialService.isEmpty, !credentialAccount.isEmpty else {
+            throw CompanionError.invalidConfiguration
+        }
+        self.origin = origin; self.credentialService = credentialService; self.credentialAccount = credentialAccount
+    }
+    static func configured() throws -> ServiceDescriptor {
+        guard let path = ProcessInfo.processInfo.environment["LUX_DIDI_DESCRIPTOR"] else { throw CompanionError.invalidConfiguration }
+        let decoded = try JSONDecoder().decode(ServiceDescriptor.self, from: Data(contentsOf: URL(fileURLWithPath: path)))
+        // Codable synthesis is not a validation boundary: always revalidate operator-supplied config.
+        return try ServiceDescriptor(origin: decoded.origin, credentialService: decoded.credentialService, credentialAccount: decoded.credentialAccount)
+    }
+    func allows(_ url: URL?) -> Bool {
+        guard let url, let parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return false }
+        return parts.scheme == baseURL.scheme && parts.host == baseURL.host && parts.port == baseURL.port && parts.user == nil && parts.password == nil
+    }
+    func page(_ url: URL?) -> Bool {
+        allows(url) && url?.path == "/" && url?.query == nil && url?.fragment == nil
+    }
+    func credential() throws -> String {
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: credentialService, kSecAttrAccount as String: credentialAccount,
+            kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail]
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let data = result as? Data, let token = String(data: data, encoding: .utf8), !token.isEmpty,
+              !token.contains("\n"), !token.contains("\r") else { throw CompanionError.credentialUnavailable }
+        return token
+    }
+}
+
+enum CompanionError: LocalizedError {
+    case invalidConfiguration, credentialUnavailable, unavailable, authentication, invalidResponse, rejected(Int), unresolvedCapture
+    var errorDescription: String? {
+        switch self {
+        case .invalidConfiguration: return "Configure an explicitly approved local service and Keychain credential reference. Remote device pairing is not enabled."
+        case .credentialUnavailable: return "The native Keychain credential is unavailable. No permission prompt was requested."
+        case .unavailable: return "Service unavailable. Retry explicitly; your draft is retained."
+        case .authentication: return "Authentication expired. Reconnect explicitly before retrying the same capture."
+        case .invalidResponse: return "The service response was not accepted. Your draft is retained."
+        case .rejected(let status): return "Service refused the request (HTTP \(status)). Your draft is retained."
+        case .unresolvedCapture: return "A previous capture has an unknown outcome. Retry that same capture before starting another."
+        }
+    }
+}
+
+private final class NoRedirect: NSObject, URLSessionTaskDelegate {
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
+}
+
+struct CaptureReceipt { let entryID: String }
+enum CaptureStatus: Equatable { case idle, sending, saved, cancelled, unknown, failed }
+
+@MainActor final class CompanionClient {
+    let descriptor: ServiceDescriptor
+    private let credential: () throws -> String
+    private let session: URLSession
+    private var epoch: String?
+    private var cookie: HTTPCookie?
+    private var csrf: String?
+    private var sessionID: String?
+    private struct Capture {
+        let text: String
+        let timeZone: String
+        let epoch: String
+        let sessionKey = UUID().uuidString
+        let entryKey = UUID().uuidString
+        var sessionID: String?
+        var receipt: CaptureReceipt?
+    }
+    private var pending: Capture?
+    private(set) var captureStatus: CaptureStatus = .idle
+    init(descriptor: ServiceDescriptor, credential: @escaping () throws -> String) {
+        self.descriptor = descriptor; self.credential = credential
+        let config = URLSessionConfiguration.ephemeral
+        config.httpCookieStorage = nil; config.httpShouldSetCookies = false
+        config.urlCache = nil; config.requestCachePolicy = .reloadIgnoringLocalCacheData
+        config.timeoutIntervalForRequest = 8; config.timeoutIntervalForResource = 12
+        session = URLSession(configuration: config, delegate: NoRedirect(), delegateQueue: nil)
+    }
+    private func request(_ path: String, method: String = "GET", body: [String: Any]? = nil,
+                         bearer: Bool = true, page: Bool = false, key: String? = nil, authority: String? = nil) async throws -> ([String: Any], HTTPURLResponse) {
+        let url = descriptor.baseURL.appendingPathComponent(path)
+        guard descriptor.allows(url) else { throw CompanionError.invalidConfiguration }
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if bearer { request.setValue("Bearer " + (try credential()), forHTTPHeaderField: "Authorization") }
+        if page {
+            request.setValue(descriptor.origin, forHTTPHeaderField: "Origin")
+            if let cookie { request.setValue("\(cookie.name)=\(cookie.value)", forHTTPHeaderField: "Cookie") }
+            if method != "GET", let csrf { request.setValue(csrf, forHTTPHeaderField: "X-CSRF-Token") }
+        }
+        if let body {
+            request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
+        if let key { request.setValue(key, forHTTPHeaderField: "Idempotency-Key") }
+        if let authority { request.setValue(authority, forHTTPHeaderField: "X-Didi-Authority-Epoch") }
+        let data: Data; let response: URLResponse
+        do { (data, response) = try await session.data(for: request) } catch { throw CompanionError.unavailable }
+        guard let http = response as? HTTPURLResponse, descriptor.allows(http.url) else { throw CompanionError.invalidResponse }
+        if http.statusCode == 401 { throw CompanionError.authentication }
+        guard (200...299).contains(http.statusCode) else { throw CompanionError.rejected(http.statusCode) }
+        guard let envelope = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let value = envelope["data"] as? [String: Any] else { throw CompanionError.invalidResponse }
+        return (value, http)
+    }
+    func bootstrap() async throws -> HTTPCookie {
+        // Only explicitly requested reconnect. No auto auth or mutation retry loop.
+        await revokePageSession()
+        let (status, _) = try await request("api/v1/status")
+        guard let current = status["authorityEpoch"] as? String, UUID(uuidString: current) != nil else { throw CompanionError.invalidResponse }
+        if epoch != current { sessionID = nil }
+        epoch = current
+        let (pairing, _) = try await request("api/v1/auth/pairing-code", method: "POST", body: [:])
+        guard let code = pairing["pairingCode"] as? String, !code.isEmpty else { throw CompanionError.invalidResponse }
+        let (_, response) = try await request("api/v1/auth/pair", method: "POST", body: ["pairingCode": code], bearer: false, page: true)
+        let headers = response.allHeaderFields.reduce(into: [String: String]()) { if let key = $1.key as? String, let value = $1.value as? String { $0[key] = value } }
+        guard let header = response.value(forHTTPHeaderField: "Set-Cookie"), header.lowercased().contains("samesite=strict"),
+              let scoped = HTTPCookie.cookies(withResponseHeaderFields: headers, for: descriptor.baseURL).first,
+              scoped.isHTTPOnly, scoped.domain == "127.0.0.1", scoped.path == "/" else { throw CompanionError.invalidResponse }
+        cookie = scoped
+        // Normal HTTP page API, never injected into JS. The page fetches its own CSRF token too.
+        let (csrfData, _) = try await request("api/v1/auth/csrf", bearer: false, page: true)
+        guard let token = csrfData["csrfToken"] as? String, !token.isEmpty else { throw CompanionError.invalidResponse }
+        csrf = token
+        return scoped
+    }
+    func revokePageSession() async {
+        if cookie != nil, csrf != nil { _ = try? await request("api/v1/auth/logout", method: "POST", body: [:], bearer: false, page: true) }
+        cookie = nil; csrf = nil
+    }
+    func capture(text: String, timeZone: String) async throws -> CaptureReceipt {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, TimeZone(identifier: timeZone) != nil,
+              let epoch else { throw CompanionError.invalidConfiguration }
+        if let pending, pending.receipt == nil { throw CompanionError.unresolvedCapture }
+        pending = Capture(text: text, timeZone: timeZone, epoch: epoch, sessionID: sessionID)
+        return try await retryCapture()
+    }
+    func retryCapture() async throws -> CaptureReceipt {
+        guard var capture = pending else { throw CompanionError.invalidConfiguration }
+        if Task.isCancelled { captureStatus = .cancelled; throw CancellationError() }
+        captureStatus = .sending
+        do {
+            if capture.sessionID == nil {
+                let (value, _) = try await request("api/v1/sessions", method: "POST", body: ["title": "Native capture", "timeZone": capture.timeZone], key: capture.sessionKey, authority: capture.epoch)
+                guard let id = value["id"] as? String, UUID(uuidString: id) != nil, let revision = value["revision"] as? Int, revision > 0 else { throw CompanionError.invalidResponse }
+                capture.sessionID = id; pending = capture; sessionID = id
+            }
+            let (entry, _) = try await request("api/v1/sessions/\(capture.sessionID!)/entries", method: "POST", body: ["text": capture.text, "role": "user", "timeZone": capture.timeZone], key: capture.entryKey, authority: capture.epoch)
+            guard let id = entry["id"] as? String, UUID(uuidString: id) != nil, entry["sessionId"] as? String == capture.sessionID else { throw CompanionError.invalidResponse }
+            let receipt = CaptureReceipt(entryID: id)
+            capture.receipt = receipt; pending = capture; captureStatus = .saved
+            return receipt
+        } catch {
+            // Transport loss, malformed success, cancellation after dispatch: may already have saved.
+            // Even a later definitive rejection cannot erase an earlier unknown result.
+            captureStatus = .unknown
+            throw error
+        }
+    }
+}

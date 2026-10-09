@@ -40,7 +40,7 @@ import WebKit
             expect(try await js(shell.webView, "document.body.dataset.authenticated") as? String == "yes", "cookie authenticated document request")
             expect(try await js(shell.webView, "document.cookie") as? String == "", "HttpOnly cookie invisible to document.cookie")
             expect(try await js(shell.webView, "typeof window.webkit?.messageHandlers") as? String == "undefined", "zero JavaScript authority handlers")
-            expect(try await js(shell.webView, "fetch('/api/v1/auth/csrf').then(r=>r.json()).then(x=>Boolean(x.data.csrfToken))") as? Bool == true, "page reads CSRF through normal API")
+            expect(try await shell.webView.callAsyncJavaScript("const r = await fetch('/api/v1/auth/csrf'); const x = await r.json(); return Boolean(x.data.csrfToken)", arguments: [:], in: nil, contentWorld: .page) as? Bool == true, "page reads CSRF through normal API")
             let initial = try await js(shell.webView, "document.body.dataset.instance") as? String
             window.orderOut(nil); window.makeKeyAndOrderFront(nil)
             expect(try await js(shell.webView, "document.body.dataset.instance") as? String == initial, "hide/show preserves exact page session")
@@ -59,7 +59,9 @@ import WebKit
             expect(!receipt.entryID.isEmpty, "authenticated native synthetic capture saved")
             let replay = try await client.retryCapture()
             expect(replay.entryID == receipt.entryID, "stable idempotency identity prevents duplicate capture")
-            let counts = try await client.fixtureCounts()
+            let (countData, _) = try await URLSession.shared.data(from: URL(string: origin + "/fixture/counts")!)
+            let countEnvelope = try JSONSerialization.jsonObject(with: countData) as! [String: Any]
+            let counts = countEnvelope["data"] as! [String: Int]
             expect(counts["entries"] == 1 && counts["frames"] == 0, "one business entry and zero subframe requests")
             await client.revokePageSession()
             shell.clear()

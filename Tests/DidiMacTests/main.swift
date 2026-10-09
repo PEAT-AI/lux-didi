@@ -29,12 +29,10 @@ expect(voice.phase == .idle && voice.transcript == "Remember tomorrow", "stop re
 voice.fail("Interrupted")
 expect(voice.phase == .failed && voice.detail == "Interrupted", "interruption remains visible")
 
-let disconnected = DisconnectedDomain()
 do {
-    _ = try disconnected.send("hello")
-    fatalError("Disconnected domain must not pretend success")
-} catch { print("PASS: disconnected text submission reports failure") }
-expect(disconnected.plan.isEmpty && disconnected.search("hello").isEmpty, "no fake account data")
+    _ = try ServiceDescriptor(origin: "http://localhost:1234", credentialService: "synthetic", credentialAccount: "test")
+    fatalError("Unconfigured localhost must not become trusted")
+} catch { print("PASS: unapproved service descriptor rejected") }
 expect(Presentation.canSend("  hello\n") && !Presentation.canSend(" \n"), "text input boundary")
 expect(Presentation.notificationResult(.acknowledged).contains("not proof"), "accepted is not read")
 print("MAC-SEAMS PASS duration=\(Date().timeIntervalSince(testStarted))s file=Tests/DidiMacTests/main.swift")

@@ -8,7 +8,7 @@ export HOME="$work/home" CFFIXED_USER_HOME="$work/home"
 mkdir -p "$HOME" "$work/cache"
 cd "$root"
 start=$SECONDS
-xcrun swiftc -module-cache-path "$work/cache" Sources/LuxDidi/AppPorts.swift Tests/DidiMacTests/main.swift -o "$work/seams"
+xcrun swiftc -module-cache-path "$work/cache" Sources/LuxDidi/AppPorts.swift Sources/LuxDidi/CompanionClient.swift Tests/DidiMacTests/main.swift -o "$work/seams"
 "$work/seams"
 printf 'DURATION seam-compile-and-run=%ss (test-only duration above)\n' "$((SECONDS-start))"
 app="$work/Lux Didi.app"

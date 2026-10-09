@@ -1,25 +1,5 @@
 import Foundation
 
-// App-facing presentation boundary. Integration supplies the domain facade; the app owns no store.
-struct PlanRow: Identifiable { let id: String; let title: String; let detail: String }
-struct MemoryRow: Identifiable { let id: String; let text: String; let source: String }
-protocol AppDomainPort {
-    var status: String { get }
-    var plan: [PlanRow] { get }
-    func send(_ text: String) throws -> String
-    func search(_ query: String) -> [MemoryRow]
-}
-struct DisconnectedDomain: AppDomainPort {
-    var status: String { "Local core not connected · nothing is saved yet" }
-    var plan: [PlanRow] { [] }
-    func send(_ text: String) throws -> String { throw AppPortError.disconnected }
-    func search(_ query: String) -> [MemoryRow] { [] }
-}
-enum AppPortError: LocalizedError {
-    case disconnected
-    var errorDescription: String? { "The local core is not connected. Your draft is still here; nothing was saved or sent." }
-}
-
 enum NotificationCapability: String {
     case notDetermined, denied, authorized, provisional, unknown
     var canSchedule: Bool { self == .authorized || self == .provisional }

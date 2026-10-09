@@ -1,0 +1,334 @@
+{
+  "checks": [
+    {
+      "details": {
+        "epics": 10,
+        "program": 1,
+        "tasks": 90,
+        "total": 101
+      },
+      "failures": [],
+      "id": "V-01",
+      "status": "PASS",
+      "title": "Backlog parses and covers the expected totals",
+      "warnings": []
+    },
+    {
+      "details": {},
+      "failures": [],
+      "id": "V-02",
+      "status": "PASS",
+      "title": "Every node has exactly the required keys",
+      "warnings": []
+    },
+    {
+      "details": {},
+      "failures": [],
+      "id": "V-03",
+      "status": "PASS",
+      "title": "Enums and master namespace consistency",
+      "warnings": []
+    },
+    {
+      "details": {
+        "count": 101,
+        "expected": 101
+      },
+      "failures": [],
+      "id": "V-04",
+      "status": "PASS",
+      "title": "Id format and complete coverage",
+      "warnings": []
+    },
+    {
+      "details": {},
+      "failures": [],
+      "id": "V-05",
+      "status": "PASS",
+      "title": "Epic membership and parent/child references",
+      "warnings": []
+    },
+    {
+      "details": {
+        "edges": 206
+      },
+      "failures": [],
+      "id": "V-06",
+      "status": "PASS",
+      "title": "Graph resolution and acyclicity",
+      "warnings": []
+    },
+    {
+      "details": {
+        "M0": 15,
+        "M1": 43,
+        "M2": 21,
+        "M3": 20,
+        "M4": 2
+      },
+      "failures": [],
+      "id": "V-07",
+      "status": "PASS",
+      "title": "Phase presence and dependency phase order",
+      "warnings": []
+    },
+    {
+      "details": {
+        "max": 814,
+        "median": 522,
+        "min": 326,
+        "values": {
+          "A01": 435,
+          "A02": 412,
+          "A03": 477,
+          "A04": 459,
+          "A05": 472,
+          "A06": 470,
+          "A07": 484,
+          "A08": 489,
+          "A09": 425,
+          "A10": 411,
+          "A11": 406,
+          "A12": 415,
+          "A13": 440,
+          "A14": 481,
+          "A15": 413,
+          "A16": 466,
+          "A17": 439,
+          "A18": 402,
+          "B01": 473,
+          "B02": 460,
+          "B03": 478,
+          "B04": 384,
+          "B05": 405,
+          "B06": 432,
+          "B07": 362,
+          "B08": 382,
+          "B09": 375,
+          "B10": 333,
+          "B11": 350,
+          "B12": 370,
+          "B13": 348,
+          "B14": 363,
+          "B15": 326,
+          "B16": 349,
+          "B17": 384,
+          "B18": 352,
+          "C01": 647,
+          "C02": 737,
+          "C03": 658,
+          "C04": 664,
+          "C05": 658,
+          "C06": 628,
+          "C07": 648,
+          "C08": 738,
+          "C09": 549,
+          "C10": 635,
+          "C11": 579,
+          "C12": 671,
+          "C13": 623,
+          "C14": 667,
+          "C15": 814,
+          "C16": 796,
+          "C17": 647,
+          "C18": 665,
+          "D01": 522,
+          "D02": 672,
+          "D03": 536,
+          "D04": 682,
+          "D05": 563,
+          "D06": 561,
+          "D07": 742,
+          "D08": 724,
+          "D09": 610,
+          "D10": 715,
+          "D11": 588,
+          "D12": 595,
+          "D13": 578,
+          "D14": 562,
+          "D15": 675,
+          "D16": 589,
+          "D17": 653,
+          "D18": 685,
+          "F01": 430,
+          "F02": 544,
+          "F03": 374,
+          "F04": 621,
+          "F05": 383,
+          "F06": 386,
+          "F07": 564,
+          "F08": 396,
+          "F09": 650,
+          "F10": 538,
+          "F11": 505,
+          "F12": 407,
+          "F13": 533,
+          "F14": 349,
+          "F15": 633,
+          "F16": 584,
+          "F17": 593,
+          "F18": 472
+        }
+      },
+      "failures": [],
+      "id": "V-08",
+      "status": "WARN",
+      "title": "Required section concepts and body size",
+      "warnings": [
+        "C02: 737 words, outside the 300 to 650 target band",
+        "C03: 658 words, outside the 300 to 650 target band",
+        "C04: 664 words, outside the 300 to 650 target band",
+        "C05: 658 words, outside the 300 to 650 target band",
+        "C08: 738 words, outside the 300 to 650 target band",
+        "C12: 671 words, outside the 300 to 650 target band",
+        "C14: 667 words, outside the 300 to 650 target band",
+        "C15: 814 words, outside the 300 to 650 target band",
+        "C16: 796 words, outside the 300 to 650 target band",
+        "C18: 665 words, outside the 300 to 650 target band",
+        "D02: 672 words, outside the 300 to 650 target band",
+        "D04: 682 words, outside the 300 to 650 target band",
+        "D07: 742 words, outside the 300 to 650 target band",
+        "D08: 724 words, outside the 300 to 650 target band",
+        "D10: 715 words, outside the 300 to 650 target band",
+        "D15: 675 words, outside the 300 to 650 target band",
+        "D17: 653 words, outside the 300 to 650 target band",
+        "D18: 685 words, outside the 300 to 650 target band"
+      ]
+    },
+    {
+      "details": {
+        "reported_pairs": [],
+        "threshold_fail": 0.75,
+        "threshold_report": 0.3
+      },
+      "failures": [],
+      "id": "V-09",
+      "status": "PASS",
+      "title": "Near-duplicate task bodies",
+      "warnings": []
+    },
+    {
+      "details": {
+        "positive_control": true
+      },
+      "failures": [],
+      "id": "V-10",
+      "status": "PASS",
+      "title": "Dash code points with positive control",
+      "warnings": []
+    },
+    {
+      "details": {},
+      "failures": [],
+      "id": "V-11",
+      "status": "WARN",
+      "title": "Privacy, secret and personal-data shapes",
+      "warnings": [
+        "docs/research.md: review external repository link https://github.com/openclaw/openclaw",
+        "docs/research.md: review external repository link https://github.com/khoj-ai/khoj",
+        "docs/research.md: review external repository link https://github.com/letta-ai/letta"
+      ]
+    },
+    {
+      "details": {
+        "reachability": "not checked (no network access in the validator)"
+      },
+      "failures": [],
+      "id": "V-12",
+      "status": "PASS",
+      "title": "Link policy and baseline statements",
+      "warnings": []
+    },
+    {
+      "details": {
+        "paths": [
+          "README.md",
+          "docs/acceptance.md",
+          "docs/architecture.md",
+          "docs/decisions.md",
+          "docs/parallel-masters.md",
+          "docs/privacy-and-authority.md",
+          "docs/research.md",
+          "docs/risks.md",
+          "docs/roadmap.md",
+          "planning/backlog-validation.json",
+          "planning/backlog-validation.md",
+          "planning/backlog.json",
+          "scripts/backlog_validate.py"
+        ]
+      },
+      "failures": [],
+      "id": "V-13",
+      "status": "PASS",
+      "title": "Repository hygiene and intended public set",
+      "warnings": []
+    },
+    {
+      "details": {
+        "references": 759
+      },
+      "failures": [],
+      "id": "X-01",
+      "status": "PASS",
+      "title": "Body cross-references resolve to ids",
+      "warnings": []
+    },
+    {
+      "details": {},
+      "failures": [],
+      "id": "X-02",
+      "status": "PASS",
+      "title": "Documentation links resolve",
+      "warnings": []
+    },
+    {
+      "details": {},
+      "failures": [],
+      "id": "X-03",
+      "status": "PASS",
+      "title": "Milestone definitions match phases",
+      "warnings": []
+    },
+    {
+      "details": {},
+      "failures": [],
+      "id": "X-04",
+      "status": "PASS",
+      "title": "Program tracker shape",
+      "warnings": []
+    },
+    {
+      "details": {},
+      "failures": [],
+      "id": "X-05",
+      "status": "PASS",
+      "title": "Title and body presence",
+      "warnings": []
+    },
+    {
+      "details": {
+        "assembly_digest": "55740c96b11d127e7b8269bc7821e9214bbd0f2c3ad52c46d3544a21bada8b01"
+      },
+      "failures": [],
+      "id": "X-06",
+      "status": "PASS",
+      "title": "Assembly digest",
+      "warnings": []
+    },
+    {
+      "details": {
+        "hashed_nodes": 101
+      },
+      "failures": [],
+      "id": "X-07",
+      "status": "PASS",
+      "title": "Snapshot body hashes and correction record",
+      "warnings": []
+    }
+  ],
+  "failed": false,
+  "file_count": 12,
+  "packets_mode": false,
+  "schema": "lux-didi.validation/1",
+  "tree_digest": "e5b435dc049a04c0977b3c183de2eac0fdf26f4a088055148657c02067edaaaf"
+}

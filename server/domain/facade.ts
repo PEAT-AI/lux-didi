@@ -1,4 +1,4 @@
-import type { DomainContext, DomainOperation, DomainOperations, DomainPort, Transaction } from './contract.js';
+import type { DomainContext, DomainOperation, DomainOperations, DomainPort, Transaction, TrustedWriteLabel, RoutingSubject, RoutingLabelCorrection } from './contract.js';
 import { REMINDER_ROUTE, REMINDER_UNBOUND_GRANT } from './contract.js';
 import type { DomainTarget, OutboxEvent, OutboxPort } from './contract.js';
 import * as memory from './memory.js';
@@ -7,6 +7,7 @@ import * as commitments from './commitments.js';
 import type { CommitmentRecord } from './commitments.js';
 import * as dto from './dto.js';
 import { domainMigrations } from './schema.js';
+import * as labels from './labels.js';
 
 // The facade IS the DomainPort the service injects. Every method runs the
 // domain mutation and its reminder/outbox insert or supersession inside the ONE
@@ -62,8 +63,10 @@ class Domain implements DomainPort {
     operation: K,
     input: DomainOperations[K]['input'],
     context: DomainContext,
+    writeLabel?: TrustedWriteLabel,
   ): DomainOperations[K]['output'] {
     const op = operation as DomainOperation;
+    labels.validateWriteLabel(op, writeLabel);
     switch (op) {
       case 'createSession': {
         const i = input as DomainOperations['createSession']['input'];
@@ -73,6 +76,7 @@ class Domain implements DomainPort {
           { title: i.title, startedAt: clock.now(), timeZone: i.timeZone },
           clock,
         );
+        if (writeLabel) labels.stamp(tx, { kind: 'session', id: session.id }, writeLabel, clock.now());
         return dto.toSessionDTO(session) as DomainOperations[K]['output'];
       }
       case 'listSessions': {
@@ -118,6 +122,7 @@ class Domain implements DomainPort {
           },
           clock,
         );
+        if (writeLabel) labels.stamp(tx, { kind: 'entry', id: entry.id }, writeLabel, clock.now());
         return dto.toEntryDTO(entry, memory.sourceReferences(tx, entry.id)) as DomainOperations[K]['output'];
       }
       case 'appendAssistantEntry': {
@@ -127,6 +132,7 @@ class Domain implements DomainPort {
           sessionId: i.sessionId, text: i.text, capturedAt: clock.now(),
           timeZone: i.timeZone, role: 'assistant',
         }, clock);
+        if (writeLabel) labels.stamp(tx, { kind: 'entry', id: entry.id }, writeLabel, clock.now());
         return dto.toEntryDTO(entry, memory.sourceReferences(tx, entry.id)) as DomainOperations[K]['output'];
       }
       case 'recall': {
@@ -148,6 +154,7 @@ class Domain implements DomainPort {
           },
           clock,
         );
+        if (writeLabel) labels.stamp(tx, { kind: 'commitment', id: c.id }, writeLabel, clock.now());
         if (c.dueAt !== null) this.#outbox.insert(tx, this.#reminder(c, context));
         return dto.toCommitmentDTO(c) as DomainOperations[K]['output'];
       }
@@ -208,6 +215,18 @@ class Domain implements DomainPort {
         throw new Error(`unknown domain operation: ${String(op)}`);
       }
     }
+  }
+
+  getRoutingLabel(tx: Transaction, subject: RoutingSubject) {
+    return labels.current(tx, subject);
+  }
+
+  getRoutingLabelHistory(tx: Transaction, subject: RoutingSubject) {
+    return labels.history(tx, subject);
+  }
+
+  correctRoutingLabel(tx: Transaction, input: RoutingLabelCorrection, context: DomainContext) {
+    return labels.correct(tx, input, clockAt(context).now());
   }
 
   #reminder(c: CommitmentRecord, context: DomainContext): OutboxEvent {

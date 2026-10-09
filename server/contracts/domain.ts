@@ -20,8 +20,33 @@ export interface DomainOperations {
   transitionCommitment: { input: { id: string; expectedRevision: number; operation: 'complete' | 'cancel' | 'reopen' }; output: Commitment };
   plan: { input: { date: string; timeZone: string }; output: { date: string; timeZone: string; items: { commitment: Commitment; isOverdue: boolean }[]; unscheduled: Commitment[]; nextCursor: string | null } };
 }
+/** Routing policy only, not semantic sensitivity detection. Recall uses its underlying subjects. */
+export interface RoutingSubject { kind: 'session' | 'entry' | 'commitment'; id: string }
+export type RoutingDataClass = 'ordinary' | 'private' | 'sensitive';
+/** Supplied only by trusted in-process composition, never by public operation DTOs. */
+export type TrustedWriteLabel =
+  | { writer: 'capture'; dataClass: 'private' }
+  | { writer: 'model'; dataClass: 'private' | 'sensitive' };
+export interface RoutingLabel {
+  subject: RoutingSubject;
+  revision: number;
+  dataClass: RoutingDataClass;
+  writer: 'capture' | 'model' | 'owner_review';
+  recordedAt: string;
+}
+/** Missing subjects throw NOT_FOUND; existing subjects without labels are unknown. */
+export type RoutingLabelLookup = RoutingLabel | {
+  subject: RoutingSubject; revision: 0; dataClass: 'unknown'; writer: null; recordedAt: null;
+};
+export interface RoutingLabelCorrection {
+  subject: RoutingSubject; expectedRevision: number; dataClass: RoutingDataClass;
+}
 export type DomainOperation = keyof DomainOperations;
 export interface DomainPort {
   readonly migrations: readonly SchemaMigration[];
-  execute<K extends DomainOperation>(tx: Transaction, operation: K, input: DomainOperations[K]['input'], context: DomainContext): DomainOperations[K]['output'];
+  execute<K extends DomainOperation>(tx: Transaction, operation: K, input: DomainOperations[K]['input'], context: DomainContext, writeLabel?: TrustedWriteLabel): DomainOperations[K]['output'];
+  getRoutingLabel(tx: Transaction, subject: RoutingSubject): RoutingLabelLookup;
+  getRoutingLabelHistory(tx: Transaction, subject: RoutingSubject): RoutingLabel[];
+  /** Explicit trusted owner review only; never bound to public HTTP operations. */
+  correctRoutingLabel(tx: Transaction, input: RoutingLabelCorrection, context: DomainContext): RoutingLabel;
 }

@@ -14,6 +14,12 @@ export type {
   DomainOperations,
   DomainOperation,
   DomainContext,
+  RoutingSubject,
+  RoutingDataClass,
+  TrustedWriteLabel,
+  RoutingLabel,
+  RoutingLabelLookup,
+  RoutingLabelCorrection,
 } from '../contracts/domain.js';
 export { ServiceError };
 

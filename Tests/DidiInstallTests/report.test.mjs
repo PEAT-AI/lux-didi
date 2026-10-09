@@ -42,7 +42,7 @@ test('exact complete v1 report validates, retaining root visual review and permi
 });
 
 test('strict schema refuses missing/extra/versioned/running/failed reports and self-certified native exit', () => {
-  for (const change of [r => delete r.error, r => r.schemaVersion = 2, r => r.type = 'other', r => r.phase = 'running', r => r.phase = 'failed', r => r.success = false, r => r.extra = true, r => r.native.exitCode = 0, r => r.runId = 'invalid', r => r.service = null, r => r.newRecord = null]) {
+  for (const change of [r => delete r.error, r => r.schemaVersion = 2, r => r.type = 'other', r => r.phase = 'running', r => r.phase = 'failed', r => r.success = false, r => r.extra = true, r => r.native.exitCode = 0, r => r.runId = 'invalid', r => r.service = null, r => r.newRecord = null, r => r.service.nonce = 1234567890123456, r => r.runId = [r.runId], r => r.newRecord.sessionId = [r.newRecord.sessionId]]) {
     const report = sample(); change(report);
     assert.throws(() => validate(report), /Installed proof/);
   }

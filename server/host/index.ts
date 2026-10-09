@@ -51,6 +51,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     } else console.log(`Didi host ${host.descriptor.origin}; local memory/commitments available; model/notifications unavailable`);
   } catch (error) { supervision?.dispose(); throw error; }
 }
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// Node 26 main-module identity handles symlink spellings and stays false on import.
+// https://nodejs.org/api/esm.html#importmetamain
+if (import.meta.main) {
   void main().catch(error => { console.error(error instanceof Error ? error.message : 'Host startup failed'); process.exitCode = 1; });
 }

@@ -343,7 +343,7 @@ test('explicit JSON-RPC error is a completed protocol-error, not unknown success
   try {
     await approve(adapter, registry);
     const result = await adapter.call(request);
-    assert.equal(result.state, 'protocol-error'); assert.equal(f.counter, 1);
+    assert.equal(String(result.state), 'protocol-error'); assert.equal(f.counter, 1);
     assert('protocolErrorCode' in result);
     assert.equal(typeof result.protocolErrorCode, 'number');
     assert('coverage' in result);

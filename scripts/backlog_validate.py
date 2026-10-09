@@ -935,8 +935,18 @@ def check_v13(report: Report, root: Path, exclude: set[str]) -> None:
             "Tests/DidiMacTests/main.swift", "Resources/Info.plist", "web/src/app.ts",
             "docs/service-runtime.md", "docs/mac-experience.md", "scripts/check-service.sh",
             "planning/backlog.json", "README.md",
+            "planning/publishing-validation.md",
+            "docs/domain-contract.md", "docs/mcp-adapter.md", "docs/model-adapter.md",
+            "docs/prompt-composition.md", "docs/web-client.md",
+            "fixtures/domain/library-basic.json",
+            "scripts/check-domain.sh", "scripts/check-mcp.sh", "scripts/check-model.sh",
+            "scripts/check-prompt.sh",
         ],
-        "unrelated_rejected": ["notes/scratch.md", "planning/private-notes.json", "tmp/x.txt"],
+        "unrelated_rejected": [
+            "notes/scratch.md", "planning/private-notes.json", "tmp/x.txt",
+            "planning/publishing-validation-extra.md", "docs/unrelated.md",
+            "fixtures/domain/unrelated.json", "scripts/check-unrelated.sh",
+        ],
     }
     controls_ok = 0
     controls_total = len(controls["forbidden_rejected"]) + len(controls["component_accepted"]) \

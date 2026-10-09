@@ -3,6 +3,24 @@ import ScreenCaptureKit
 import CryptoKit
 
 @MainActor enum OwnedWindowProof {
+    // Private diagnostic: own-tree types/roles and exact native-control matches only.
+    // Never serialize arbitrary labels, text values, page content or credentials.
+    static func accessibilityTrace(_ window: NSWindow) -> [[String: Any]] {
+        var trace: [[String: Any]] = []
+        let expected: Set<String> = ["Start recording", "Stop recording", "Send text"]
+        func visit(_ value: Any, depth: Int) {
+            guard depth < 16, trace.count < 64 else { return }
+            let element = value as? NSAccessibilityProtocol
+            trace.append(["depth": depth, "type": String(describing: type(of: value)),
+                          "protocol": element != nil, "role": element?.accessibilityRole()?.rawValue ?? "none",
+                          "childCount": element?.accessibilityChildren()?.count ?? 0,
+                          "knownLabel": element?.accessibilityLabel().map { expected.contains($0) } ?? false,
+                          "knownTitle": element?.accessibilityTitle().map { expected.contains($0) } ?? false])
+            for child in element?.accessibilityChildren() ?? [] { visit(child, depth: depth + 1) }
+        }
+        visit(window, depth: 0)
+        return trace
+    }
     static func accessibility(_ window: NSWindow) -> [[String: Any]] {
         let expected: Set<String> = ["Start recording", "Stop recording", "Send text"]
         var found: [String: [String: Any]] = [:]

@@ -127,7 +127,10 @@ test('permission/settings snapshots resist mutation and no-revoke control sends 
   await f.frame(1); f.send({ setupComplete: {} }); await session.ready;
   assert.throws(() => session.sendAudio({ pcm, dataClass: 'private' }), code('route_denied'));
   for (const invalid of [new Uint8Array(), new Uint8Array([0])]) assert.throws(() => session.sendAudio({ pcm: invalid, dataClass: 'ordinary' }), code('invalid_audio'));
-  session.sendAudio({ pcm, dataClass: 'ordinary' }); await f.frame(2); session.close(); await session.done; await captured.done;
+  const ownedInput = new Uint8Array(pcm);
+  session.sendAudio({ pcm: ownedInput, dataClass: 'ordinary' }); ownedInput.fill(99);
+  await f.frame(2); session.close(); await session.done; await captured.done;
+  assert.deepEqual(f.frames[1], { realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: Buffer.from(pcm).toString('base64') } } });
   assert.equal(f.frames.length, 2); assert.equal(f.attempts, 1);
 });
 
@@ -150,6 +153,9 @@ for (const [name, payload, expected] of [
   ['unsupported tool', { toolCall: { functionCalls: [{ name: CANARY, args: { secret: CANARY } }] } }, 'unsupported_tool'],
   ['provider error', { error: { code: 401, message: CANARY } }, 'provider_error'],
   ['invalid goAway', { goAway: { timeLeft: CANARY } }, 'protocol_error'],
+  ['key in model text', { serverContent: { modelTurn: { parts: [{ text: `wss://example.test/?key=${CANARY}` }] } } }, 'protocol_error'],
+  ['key in transcription', { serverContent: { inputTranscription: { text: CANARY } } }, 'protocol_error'],
+  ['bad activity', { serverContent: { waitingForInput: CANARY } }, 'protocol_error'],
 ] as const) {
   test(`recognized payload fails closed: ${name}`, async t => {
     const { f, session, captured } = await ready(t);
@@ -239,4 +245,32 @@ test('close cleanup terminates a peer that never completes close handshake', asy
   // Pause the real peer socket before it can read the close frame.
   f.peer.pause(); const start = Date.now(); session.close(); assert.equal((await session.done).code, 'closed');
   assert.ok(Date.now() - start < 1000); f.peer.resume();
+});
+
+test('abort invalidation inside trusted socket factory closes real socket without setup', async t => {
+  const f = await fixture(t); const abort = new AbortController(); let client!: WebSocket;
+  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: (url, config) => {
+    client = f.socketFactory(url, config); abort.abort(CANARY); return client;
+  } })).open(request(), control(abort.signal));
+  const captured = collect(session);
+  assert.equal((await session.done).code, 'cancelled'); await captured.done;
+  assert.equal(client.readyState, WebSocket.CLOSED);
+  assert.equal(f.frames.length, 0); assert.equal(f.attempts, 1); noCanary(captured.events);
+});
+
+test('unsolicited disconnect has one remote outcome and no audio resend', async t => {
+  const { f, session, captured } = await ready(t);
+  session.sendAudio({ pcm, dataClass: 'ordinary' }); await f.frame(2); f.terminate();
+  assert.equal((await session.done).code, 'remote_closed'); await captured.done;
+  assert.throws(() => session.sendAudio({ pcm, dataClass: 'ordinary' }), code('remote_closed'));
+  assert.equal(f.frames.length, 2); assert.equal(f.attempts, 1);
+});
+
+test('expired deadline and unrepresentable initial frame have zero credential/socket calls', async () => {
+  let keys = 0, sockets = 0;
+  const settings = options({ credentials: { resolve: async () => { keys++; return CANARY; } }, socketFactory: () => { sockets++; throw Error(CANARY); } });
+  const expired = new GeminiLiveVoiceAdapter(settings).open(request(), { ...control(), deadlineMs: Date.now() - 1 });
+  assert.equal((await expired.done).code, 'deadline');
+  assert.throws(() => new GeminiLiveVoiceAdapter({ ...settings, limits: { maxOutgoingBytes: 1 } }).open(request(), control()), code('outgoing_limit'));
+  assert.equal(keys, 0); assert.equal(sockets, 0);
 });

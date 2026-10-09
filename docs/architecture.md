@@ -4,7 +4,7 @@ Status: proposed design on a decided stack. The service stack is recorded in A01
 
 ## Shape
 
-The design is one authoritative service process plus client shells, with adapter modules around the service and one transactional application store. The service owns reasoning turns, durable jobs, storage, commitments, planning and policy, and it is the only writer. The Mac companion owns the native operating-system surfaces: global hotkey, microphone and playback, notifications, permissions dialogs. The browser client is a responsive shell over the same contract. Whether the service is bound to the loopback interface or to a Linux virtual machine is a placement question, not a contract change. Adapters translate external systems into the versioned contracts the core consumes. One authoritative writer owns each entity or fact.
+The design is one authoritative service process plus client shells, with adapter modules around the service and one transactional application store. The service owns reasoning turns, durable jobs, storage, commitments, planning and policy, and it is the only writer. The Mac companion owns the native operating-system surfaces: global hotkey, microphone and playback, notifications, permissions dialogs. The same responsive shell is also hosted inside the Mac companion in its own web view (F23), and the companion does not duplicate business screens in SwiftUI. Whether the service is bound to the loopback interface or to a Linux virtual machine is a placement question, not a contract change. Adapters translate external systems into the versioned contracts the core consumes. One authoritative writer owns each entity or fact.
 
 ```mermaid
 flowchart LR
@@ -142,3 +142,27 @@ explicit user action (C20).
 
 The initial shape is one database per assistant. Instance isolation is a later question, not a first
 requirement.
+
+## Shared web interface and the native host
+
+There is one web interface, not two. The same responsive orb and conversation surface is loaded by a
+browser (F19) and displayed inside the Mac companion in its own web view (F23). The companion keeps
+the surfaces that must be native: global hotkey, menu bar and window lifecycle, on-device speech,
+notifications, the credential store and the outbound service client.
+
+The web page is not an authority and there is no privileged bridge into the native process:
+
+- No inbound JavaScript-to-native handlers and no generic native RPC. A page script that reaches for
+  a native capability finds nothing to call.
+- The page has its own scoped HttpOnly session cookie and a same-origin CSRF flow for browser
+  pairing. The service bearer stays in the native credential store and never enters JavaScript.
+- The web view uses a nonpersistent data store and loads only the exact configured origin, main
+  frame, with no popups, downloads, subframes or arbitrary remote content.
+- The page owns no operating-system permission. Screen capture, accessibility and automation grants
+  belong to the native process, and same-user process separation is not a security sandbox.
+- Speech starts and stops from a native control; recognised text travels through the service API and
+  the page learns about it through its normal refresh and event stream.
+
+Open questions about cookie persistence across a content-process termination and about losing a
+graphics context are treated as test cases, not as facts. Only a test-owned surface may be
+terminated, never a broad sweep of web content processes.

@@ -90,3 +90,21 @@ expires with a report; it is never delivered twice.
 A shared conformance suite (F22) covers envelope version negotiation, command acceptance, query
 shape, progress ordering, error classes and reconnect at each breakpoint. A contract change updates
 the suite before it updates a client, and a run reports each case rather than a single boolean.
+
+## The shared interface and its native host
+
+The same responsive page serves a browser and the Mac companion (F23). The companion hosts it in a
+web view configured with a nonpersistent data store, an exact configured scheme, host and port, and
+main-frame navigation only. Redirects to another origin, popups, downloads, subframes and arbitrary
+remote content are refused rather than negotiated.
+
+The page holds no authority. There are no inbound JavaScript-to-native handlers and no generic
+native RPC; the service bearer is native-only; the page owns no operating-system permission; speech
+is started and stopped from a native control and the recognised text arrives through the service
+API. Native chrome covers the unavailable, setup and retry states and preserves a draft while
+reporting the configuration fault.
+
+An open question list travels with this contract: whether a hidden view loses its graphics context,
+whether terminating a content process clears the page's cookie, and whether two views can
+inadvertently break the single-writer rule. Each is a test case with a measurement, not a settled
+claim.

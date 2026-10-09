@@ -52,7 +52,7 @@ An epic's phase is the milestone at which its stated outcome exits, not the earl
 - E10 Installability, computer control and companion portability (master E, phase M3, leaves F10 to F18): onboarding and grants, review surfaces, computer control, lifecycle, wake word, packaging, companion and portability.
 - E11 Portable assistant service and cloud deployment (master A, phase M4, leaves A19 to A24): the command, query and progress seam, the container and runbook, secret references, backup, restore and rehearsal, suite endpoints and the hosting boundary.
 - E12 Channels, authority epochs and device grants (master C, phase M3, leaves C19 to C23): the channel inbox and outbox, channel identity separate from account identity, one active authority epoch, device grants with pulled intents, and revocation with offline delivery.
-- E13 Responsive and mobile client surfaces (master E, phase M2, leaves F19 to F22): the responsive browser shell, the shell-only cache and offline policy, the Android access path and cross-breakpoint conformance.
+- E13 Responsive and mobile client surfaces (master E, phase M2, leaves F19 to F23): the responsive browser shell, the shared web UI host inside the Mac companion, the shell-only cache and offline policy, the Android access path and cross-breakpoint conformance.
 
 Phase counts: M0 has 12 work items, M1 has 40, M2 has 17, M3 has 19, and M4 has 2.
 
@@ -89,9 +89,17 @@ Read [the P00 program tracker](https://github.com/PEAT-AI/lux-didi/issues/1) fir
 - PLAN-R1 (2026-10-09): the service stack is recorded as TypeScript on Node with SQLite, a Swift Mac
   companion and a responsive browser client, with the same service running on loopback now and on a
   Linux virtual machine later. New work: E11 portable assistant service and cloud deployment (A19 to
-  A24), E12 channels, authority epochs and device grants (C19 to C23), E13 responsive and mobile
-  client surfaces (F19 to F22). Existing IDs, titles where already published and every existing
+  A24), E12 channels, authority epochs and device grants (C19 to C23), E13 responsive and mobile client surfaces (F19 to F23). Existing IDs, titles where already published and every existing
   dependency edge are preserved. A01 now records the stack and the superseded Swift prototype instead
   of an open comparison. Totals move from 101 nodes to 119, from 10 epics to 13, and from 90 work
   items to 105. The validator derives those totals from the node set rather than from a literal, and
   V-14 proves the derived checks still reject a broken plan.
+
+- PLAN-R3 (2026-10-09): the four review findings are adopted. Observed publication metadata and
+  milestone identifiers are preserved while the staged projection stays separate; the phone proof is
+  scoped to a phone-width laptop proof tonight with no physical-phone connectivity claim; an
+  unavailable old host never triggers an automatic authority transfer, which now requires a
+  demonstrated fence plus a separate-store partition and resume acceptance. The ruling also records
+  first-party Naya reuse, one shared web UI hosted in a web view with a native-only control surface,
+  and the concise source-linked context economy. New leaf: F23. Totals move to 120 nodes and 106 work
+  items.

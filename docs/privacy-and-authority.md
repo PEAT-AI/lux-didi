@@ -100,3 +100,17 @@ never a command, a query result or a progress payload. Private records are read-
 while the service is unreachable, there is no offline writing of commitments, sessions or recall
 results, and signing out clears the partitioned cache. A shared or stolen device therefore exposes
 the shell, not the person's data (F20).
+
+## The web page holds no authority
+
+The shared web interface is a rendering surface, not a privilege boundary. It has no inbound
+JavaScript-to-native handler, no generic native RPC and no injected bearer; the service bearer lives
+in the native credential store. It holds its own scoped HttpOnly session cookie and a same-origin
+CSRF flow for browser pairing, and it owns no operating-system permission: screen capture,
+accessibility and automation grants belong to the native process. The web view uses a nonpersistent
+data store and loads only the exact configured origin and main frame, so redirected content, popups,
+downloads and subframes are refused rather than rendered.
+
+Same-user process separation is not a security sandbox, and this document does not claim that it is.
+Hidden-view graphics-context loss and cookie behaviour across a content-process termination are open
+questions with measurements attached, not established facts.

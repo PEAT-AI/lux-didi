@@ -4,8 +4,8 @@
       "details": {
         "epics": 13,
         "program": 1,
-        "tasks": 105,
-        "total": 119
+        "tasks": 106,
+        "total": 120
       },
       "failures": [],
       "id": "V-01",
@@ -31,8 +31,8 @@
     },
     {
       "details": {
-        "count": 119,
-        "expected": 119
+        "count": 120,
+        "expected": 120
       },
       "failures": [],
       "id": "V-04",
@@ -50,7 +50,7 @@
     },
     {
       "details": {
-        "edges": 242
+        "edges": 245
       },
       "failures": [],
       "id": "V-06",
@@ -62,7 +62,7 @@
       "details": {
         "M0": 14,
         "M1": 45,
-        "M2": 25,
+        "M2": 26,
         "M3": 26,
         "M4": 9
       },
@@ -75,10 +75,10 @@
     {
       "details": {
         "max": 834,
-        "median": 472,
+        "median": 477,
         "min": 303,
         "values": {
-          "A01": 444,
+          "A01": 509,
           "A02": 412,
           "A03": 487,
           "A04": 459,
@@ -91,13 +91,13 @@
           "A11": 406,
           "A12": 415,
           "A13": 440,
-          "A14": 497,
+          "A14": 523,
           "A15": 413,
           "A16": 466,
           "A17": 439,
           "A18": 406,
-          "A19": 322,
-          "A20": 324,
+          "A19": 374,
+          "A20": 405,
           "A21": 311,
           "A22": 303,
           "A23": 306,
@@ -105,15 +105,15 @@
           "B01": 473,
           "B02": 460,
           "B03": 478,
-          "B04": 384,
+          "B04": 411,
           "B05": 405,
           "B06": 432,
           "B07": 362,
           "B08": 382,
           "B09": 375,
           "B10": 333,
-          "B11": 350,
-          "B12": 370,
+          "B11": 380,
+          "B12": 405,
           "B13": 348,
           "B14": 363,
           "B15": 326,
@@ -122,7 +122,7 @@
           "B18": 352,
           "C01": 647,
           "C02": 737,
-          "C03": 658,
+          "C03": 689,
           "C04": 664,
           "C05": 658,
           "C06": 628,
@@ -133,15 +133,15 @@
           "C11": 579,
           "C12": 671,
           "C13": 623,
-          "C14": 667,
+          "C14": 701,
           "C15": 814,
           "C16": 834,
           "C17": 677,
           "C18": 665,
           "C19": 315,
           "C20": 320,
-          "C21": 319,
-          "C22": 310,
+          "C21": 401,
+          "C22": 341,
           "C23": 311,
           "D01": 522,
           "D02": 672,
@@ -161,28 +161,29 @@
           "D16": 589,
           "D17": 653,
           "D18": 685,
-          "F01": 434,
-          "F02": 554,
-          "F03": 374,
-          "F04": 621,
+          "F01": 477,
+          "F02": 580,
+          "F03": 420,
+          "F04": 654,
           "F05": 383,
           "F06": 386,
           "F07": 564,
-          "F08": 396,
+          "F08": 428,
           "F09": 650,
           "F10": 538,
           "F11": 505,
-          "F12": 407,
+          "F12": 434,
           "F13": 533,
           "F14": 349,
           "F15": 633,
-          "F16": 601,
+          "F16": 635,
           "F17": 600,
           "F18": 472,
-          "F19": 325,
+          "F19": 412,
           "F20": 317,
           "F21": 306,
-          "F22": 305
+          "F22": 305,
+          "F23": 458
         }
       },
       "failures": [],
@@ -191,12 +192,12 @@
       "title": "Required section concepts and body size",
       "warnings": [
         "C02: 737 words, outside the 300 to 650 target band",
-        "C03: 658 words, outside the 300 to 650 target band",
+        "C03: 689 words, outside the 300 to 650 target band",
         "C04: 664 words, outside the 300 to 650 target band",
         "C05: 658 words, outside the 300 to 650 target band",
         "C08: 738 words, outside the 300 to 650 target band",
         "C12: 671 words, outside the 300 to 650 target band",
-        "C14: 667 words, outside the 300 to 650 target band",
+        "C14: 701 words, outside the 300 to 650 target band",
         "C15: 814 words, outside the 300 to 650 target band",
         "C16: 834 words, outside the 300 to 650 target band",
         "C17: 677 words, outside the 300 to 650 target band",
@@ -208,7 +209,8 @@
         "D10: 715 words, outside the 300 to 650 target band",
         "D15: 675 words, outside the 300 to 650 target band",
         "D17: 653 words, outside the 300 to 650 target band",
-        "D18: 685 words, outside the 300 to 650 target band"
+        "D18: 685 words, outside the 300 to 650 target band",
+        "F04: 654 words, outside the 300 to 650 target band"
       ]
     },
     {
@@ -336,7 +338,7 @@
     },
     {
       "details": {
-        "references": 934
+        "references": 951
       },
       "failures": [],
       "id": "X-01",
@@ -378,7 +380,7 @@
     },
     {
       "details": {
-        "assembly_digest": "538b768df652204475019aa35d56ee3c6d88ed8cda51aeded309c134535fd649"
+        "assembly_digest": "2fa06914d85db3a06b1d27364350c545ed1b20f9ce629d3f1618c6e520968a6b"
       },
       "failures": [],
       "id": "X-06",
@@ -388,7 +390,7 @@
     },
     {
       "details": {
-        "hashed_nodes": 119
+        "hashed_nodes": 120
       },
       "failures": [],
       "id": "X-07",
@@ -409,5 +411,5 @@
   "file_count": 15,
   "packets_mode": false,
   "schema": "lux-didi.validation/1",
-  "tree_digest": "297f11263c0703c66c098be8500d3c3c67b4f358385be8762eba58d1fb052a1f"
+  "tree_digest": "6263cc86492ed8b96b6832616bff08aecacb9db56a41615a61c4e56e3b15f6f2"
 }

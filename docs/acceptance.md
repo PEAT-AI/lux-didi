@@ -72,9 +72,11 @@ architecture.
 
 - First slice (M1): the local daily loop works unchanged, and the service seam (A19) is part of the
   slice because both the Mac companion and the browser client depend on it.
-- Responsive client proof: a phone browser reaches the same loopback service through the shell (F19)
-  with a shell-only cache (F20). This proves the client path; it is not a claim that a mobile feature
-  is complete.
+- Responsive client proof, tonight: the shared shell renders at a phone-width viewport in the
+  laptop browser and inside the companion's own web view (F23), with a shell-only cache (F20).
+  A physical phone is a separate device and is NOT claimed tonight: it cannot use the laptop
+  loopback address, and reaching it needs a bound local network interface plus pairing. The
+  device path is a later milestone (F21) whose proof explicitly names the bound interface.
 - Channels and authority (M3): the authority epoch (C21), device grants (C22) and offline delivery
   (C23) follow the slice, because they constrain the loop rather than enable it.
 - Portability (M4): the runbook, secret references, backup, restore and rehearsal (A20 to A24). No
@@ -87,3 +89,24 @@ local loop, a service seam and a responsive client proof where each is reachable
 evidence. It is explicitly not a claim that a virtual machine is live, that Android is feature
 complete, that any channel is connected, or that M1 as a milestone is done. A partial slice is
 reported as partial, and an issue closes only when all of its acceptance criteria are met.
+
+## Partition, fence and resume acceptance
+
+The authority transfer case is not proved by two processes sharing one store. Three cases are
+required, in this order:
+
+1. Two instances against one epoch record: writes accepted from the non-holder are zero.
+2. A demonstrated fence: the new holder is promoted only after it is shown that the old holder
+   cannot write. An unreachable holder is never a reason for automatic promotion.
+3. Partition and resume with a separate restored store: the old holder returns with its own store,
+   its writes and queued intents are refused, and its state is never merged. The report says which
+   case ran and quotes the measured refusal counts.
+
+## Interface-host acceptance, tonight
+
+The companion loads the shared page only from the configured origin and refuses any other origin. A
+script that reaches for a native capability finds no handler. The unavailable state preserves a
+draft and reports the configuration fault. Cookie persistence across a content-process termination
+and graphics-context loss are measured rather than assumed, and only a test-owned surface is
+terminated. No live microphone capture and no audible playback runs in an automated check; a real
+speech and permission test stays a distinct user-run case.

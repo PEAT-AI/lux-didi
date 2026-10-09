@@ -36,6 +36,19 @@ refused afterwards rather than reconciled.
 The initial shape is one database per assistant. Running more than one assistant, or isolating one
 assistant's store per tenant, is a later question and not a first requirement.
 
+A transfer never promotes a new holder merely because the old holder is unreachable. Unavailability
+is not a reason for automatic promotion, because a partitioned host can return with its own restored
+store. Promotion requires a demonstrated fence: the new holder shows that the old holder cannot
+write, and the runbook records how that was shown. When the old host does return, it holds a stale
+epoch token, it cannot take the store writer lock, and its writes and queued intents are refused
+rather than merged. The runbook names the read-only recovery mode an operator uses on a returning
+holder while a transfer is incomplete, and the rehearsal runs a partition and resume cycle against a
+separate restored store, not only two processes sharing one store.
+
+A device reaches the service through the same contract whether it runs on the laptop or on a virtual
+machine, but only over an explicitly bound local network path with pairing. The loopback interface
+serves the laptop alone.
+
 ## Deployment artifacts
 
 - A container image built from the same entry point the laptop runs, with a pinned runtime version

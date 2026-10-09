@@ -44,6 +44,20 @@ Status: accepted design directions with named owners. These decisions were taken
 
 ## Deferred proof questions
 
+- D-27 One shared web interface, not two. The same responsive orb and conversation page serves a
+  browser (F19) and is hosted inside the Mac companion in its own web view (F23). Native surfaces
+  stay native: hotkey, menu bar and lifecycle, on-device speech, notifications, credentials and the
+  outbound service client. There is no inbound JavaScript-to-native handler, no generic native RPC
+  and no injected bearer; speech starts from a native control; the web view uses a nonpersistent data
+  store, an exact configured origin and main-frame navigation only. Owner: F23, F19, F01.
+- D-28 First-party reuse is authorized. The Vicuna orb and interaction surface, the generic
+  personality and system-prompt structure and the verified memory patterns may be cloned from the
+  Naya codebase. Asset and dependency rights are verified before public source reuse, third-party
+  attribution and licence notices are preserved, and private persona payloads, family details and
+  real transcripts remain private and are never published. Owner: A01, B12, F08.
+- D-29 Context economy. A turn receives a concise source-linked digest, and originals are retrieved
+  on demand. Full logs, mail archives and long transcripts are never placed in a model prompt
+  wholesale. Owner: B11, B05, C03.
 - Q-01 Which host shell wins? Resolved by PLAN-R1 into D-20: one TypeScript and Node service, a Swift Mac companion and a responsive browser client, with the pinned third-party host retained only as a design reference.
 - Q-02 Is any third-party component retained, and under which licence and notice terms? Owner A01, open; per-component licence review before reuse.
 - Q-03 Will the existing harness grant a scoped companion-controller contract for steer and cancel, or must a master delegate? Owner A11, blocked on that contract; observation-only until then.

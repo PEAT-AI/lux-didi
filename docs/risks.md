@@ -48,3 +48,19 @@ Status: proposed risk register for the plan. Each risk names a trigger that woul
 - R-29 A channel message is treated as identity proof. Trigger: a binding learned from conversation or
   a verified address promoted into authority. Mitigation: explicit binding only, and an unbound
   identity that can be read but cannot act. Owners: C20, C19.
+
+- R-31 The web page acquires native authority. Trigger: a JavaScript-to-native handler, a generic
+  native RPC, an injected bearer or a page-owned operating-system permission. Mitigation: no inbound
+  bridge, native-only bearer, exact-origin and main-frame navigation, native control for speech, and
+  a test that a page script finds no handler. Owners: F23, F12, F03.
+- R-32 An assumed web-view fact drives a design decision. Trigger: a claim that hiding a view always
+  loses its graphics context, or that terminating a content process always clears cookies, is treated
+  as established. Mitigation: each is a test case with a measurement, and only a test-owned surface
+  is terminated. Owners: F23, F19.
+- R-33 Context bloat puts archives in the prompt. Trigger: full logs, mail archives or long
+  transcripts loaded wholesale instead of a bounded digest. Mitigation: a concise source-linked
+  digest with on-demand retrieval of originals. Owners: B11, B05, C03.
+- R-34 First-party reuse without a rights check. Trigger: an orb asset, a dependency or a copied
+  component lands without a verified licence or notice. Mitigation: rights are verified before public
+  source reuse, third-party attribution is preserved, and private persona payloads never ship.
+  Owners: A01, B12.

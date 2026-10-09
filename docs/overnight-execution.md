@@ -86,3 +86,12 @@ been given, and the branch is merged only by the owner.
 Hosting this assistant is one decision. Migrating any other repository or Lux package is a separate
 decision owned elsewhere, is not covered by this window, and is not implied by the portable service
 work. This assistant shares no runtime directory and no database with another package.
+
+## Tonight's scope against the wider plan
+
+Tonight proves the local slice and the shared interface at a phone-width viewport inside the laptop
+browser and the companion's own web view. It does not claim a physical phone, a virtual machine, a
+connected channel, or a completed mobile feature. No cloud account is created, no paid run happens,
+no workflow exists to run, and no automated check records live microphone audio or plays sound
+audibly. Automated checks never terminate web content processes broadly; only a surface owned by the
+test may be stopped.

@@ -95,3 +95,22 @@ An earlier internal draft overstated the licence position as "no obligation beyo
 - Whether a local notification scheduled by an agent app is delivered during sleep is not verified.
 - The private baseline for existing internal systems is intentionally not linked or quoted. Where a planning issue depends on it, the issue says the baseline is non-public and states what must be re-verified against real interfaces at implementation time.
 - Provider data protection arrangements are not verified by this project. The product states that the operator verifies their own agreement and never claims an arrangement on the user's behalf.
+
+## Naya reuse and the shared web interface
+
+The user requirement and the recorded decision authorize reusing first-party material: the Vicuna
+orb, the interaction surface, the generic personality and system-prompt structure and the verified
+memory patterns. That removes a large invented-interface cost, but it moves the risk into rights and
+provenance. Asset and dependency rights are verified before any public source reuse, third-party
+attribution and licence notices are preserved, and private persona payloads, family details and real
+transcripts never ship in a public repository.
+
+The recorded interface decision puts one responsive page in a web view inside the companion rather
+than duplicating screens in the native toolkit. What that decision does not settle is web-view
+behaviour: cookie persistence across a content-process termination, graphics-context loss on a
+hidden view, and whether two views can break the single-writer rule are all listed as test cases.
+The council explicitly rejected the claims that a hidden view always loses its context and that
+termination always clears cookies, and it rejected any broad termination of web content processes.
+
+Evidence limits are unchanged: none of this was exercised for this product, no web view was
+embedded, no measurement was taken, and the deployment path remains a design.

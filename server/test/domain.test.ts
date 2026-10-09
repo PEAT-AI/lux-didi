@@ -635,3 +635,17 @@ test('provenance validation: unknown or inconsistent local source links are refu
     cleanup(h);
   }
 });
+
+test('trusted assistant append forces assistant role and participates in caller rollback', () => {
+  const h = fixture();
+  try {
+    const ctx = context(nextNow());
+    const session = h.store.transaction(tx => h.port.execute(tx, 'createSession', { title: 'Synthetic', timeZone: 'UTC' }, ctx));
+    const input = { sessionId: session.id, text: 'Durable answer', timeZone: 'UTC', role: 'user' as const };
+    const entry = h.store.transaction(tx => h.port.execute(tx, 'appendAssistantEntry', input, ctx));
+    assert.equal(entry.role, 'assistant');
+    assert.throws(() => h.store.transaction(tx => { h.port.execute(tx, 'appendAssistantEntry', { ...input, text: 'Rollback' }, ctx); throw Error('rollback'); }), /rollback/);
+    const read = h.store.transaction(tx => h.port.execute(tx, 'getSession', { id: session.id }, ctx));
+    assert.equal(read.entries.length, 1); assert.equal(read.entries[0]!.text, 'Durable answer');
+  } finally { cleanup(h); }
+});

@@ -351,3 +351,112 @@ test('tool error and post-dispatch uncertainty preserve honest outcomes with no 
     assert.equal(uncertain.calls.length, 1);
   } finally { await b.adapter.close(); await uncertain.close(); }
 });
+
+test('strict dense-array DTO rejects sparse, accessor, symbol, non-enumerable, extra-key and custom-iterator IDs with zero dispatch', async () => {
+  const f = await fixture();
+  const { adapter, registry } = setup(f.url);
+  try {
+    const { reader } = await readerFor(adapter, registry);
+    const sparse: (number | undefined)[] = [1, 2, 3]; delete sparse[1];
+    const accessor = [1, 2]; Object.defineProperty(accessor, '0', { get: () => 1, enumerable: true, configurable: true });
+    const symbolKey = [1, 2]; Object.defineProperty(symbolKey, Symbol('hidden'), { value: 9, enumerable: false, configurable: true });
+    const customIterator = [1, 2]; Object.defineProperty(customIterator, Symbol.iterator, { value: () => [].values(), enumerable: false, configurable: true });
+    const nonEnumerable = [1, 2]; Object.defineProperty(nonEnumerable, 'hidden', { value: 9, enumerable: false, configurable: true });
+    const extraKey = [1, 2]; (extraKey as unknown as Record<string, unknown>).extra = 9;
+    const getter: Record<string, unknown> = {}; Object.defineProperty(getter, 'ids', { get: () => [1], enumerable: true, configurable: true });
+    const rejected = await Promise.all([
+      reader.get({ ids: sparse as never }),
+      reader.get({ ids: accessor as never }),
+      reader.get({ ids: symbolKey as never }),
+      reader.get({ ids: customIterator as never }),
+      reader.get({ ids: nonEnumerable as never }),
+      reader.get({ ids: extraKey as never }),
+      reader.get({ ids: [1, 2.5] as never }),
+      reader.get(getter as never),
+    ]);
+    for (const result of rejected) assert.equal(result.state, 'refused');
+    assert.equal(f.calls.length, 0);
+  } finally { await adapter.close(); await f.close(); }
+});
+
+test('input objects with accessor, symbol, non-enumerable extras or a class prototype refuse with zero dispatch', async () => {
+  const f = await fixture();
+  const { adapter, registry } = setup(f.url);
+  try {
+    const { reader } = await readerFor(adapter, registry);
+    const accessorQuery: Record<string, unknown> = { limit: 1 };
+    Object.defineProperty(accessorQuery, 'query', { get: () => 'x', enumerable: true, configurable: true });
+    const symbolExtra: Record<PropertyKey, unknown> = { query: 'x', limit: 1 };
+    symbolExtra[Symbol('extra')] = 1;
+    const nonEnumerableExtra: Record<string, unknown> = { query: 'x', limit: 1 };
+    Object.defineProperty(nonEnumerableExtra, 'hidden', { value: 1, enumerable: false });
+    class Instance { query = 'x'; limit = 1 }
+    const rejected = await Promise.all([
+      reader.search(accessorQuery as never),
+      reader.search(symbolExtra as never),
+      reader.search(nonEnumerableExtra as never),
+      reader.search(new Instance() as never),
+    ]);
+    for (const result of rejected) assert.equal(result.state, 'refused');
+    assert.equal(f.calls.length, 0);
+  } finally { await adapter.close(); await f.close(); }
+});
+
+test('configured budgets must be positive finite safe integers at construction; invalid config throws with no dispatch', async () => {
+  const f = await fixture();
+  const { adapter, registry } = setup(f.url);
+  try {
+    const digest = (await approve(adapter, registry)).schemaDigest;
+    const invalid: Partial<LuxKnowledgeConfig>[] = [
+      { maxSearchLimit: 0 }, { maxSearchLimit: -1 }, { maxSearchLimit: 1.5 },
+      { maxSearchLimit: Number.POSITIVE_INFINITY }, { maxSearchLimit: Number.NaN },
+      { maxGetIds: 0 }, { maxQueryChars: 0 }, { generation: 0 }, { generation: 1.5 },
+    ];
+    for (const override of invalid) {
+      assert.throws(() => createLuxKnowledgeReader({ port: adapter, registry, config: baseConfig(digest, override) }), /invalid-connector-config/);
+    }
+    assert.equal(f.calls.length, 0);
+  } finally { await adapter.close(); await f.close(); }
+});
+
+test('budgets are captured stably at construction and never silently capped or defaulted', async () => {
+  const f = await fixture();
+  const { adapter, registry } = setup(f.url);
+  try {
+    const digest = (await approve(adapter, registry)).schemaDigest;
+    const config = baseConfig(digest, { maxSearchLimit: 123_456_789 });
+    const reader = createLuxKnowledgeReader({ port: adapter, registry, config });
+    config.maxSearchLimit = 1; // later caller mutation must not change the captured budget
+    const result = await reader.search({ query: 'x', limit: 123_456_789 });
+    assert.equal(result.state, 'completed');
+    assert.deepEqual(f.calls[0]?.arguments, { query: 'x', limit: 123_456_789, include_sensitive: false });
+    const over = await reader.search({ query: 'x', limit: 123_456_790 });
+    assert.equal(over.state, 'refused');
+    assert.equal(f.calls.length, 1);
+  } finally { await adapter.close(); await f.close(); }
+});
+
+test('F1/F2: a search withheld count and by-ID sensitivity-shaped markdown are never classification authority', async () => {
+  const searchMarkdown = '_3 sensitive row(s) withheld; pass include_sensitive=true to see them_\n## #1 [note] ordinary\n';
+  const byIdMarkdown = '## #7 [personnel]\nSensitivity: compensation\nfull sensitive-shaped content\n';
+  const f = await fixture({ call: name => ({ content: [{ type: 'text', text: name === 'search_knowledge' ? searchMarkdown : byIdMarkdown }] }) });
+  const { adapter, registry } = setup(f.url);
+  try {
+    const { reader } = await readerFor(adapter, registry);
+    const search = complete(await reader.search({ query: 'ordinary query', limit: 5 }));
+    const fetched = complete(await reader.get({ ids: [7] }));
+    assert.equal(search.classification, 'unknown');
+    assert.equal(fetched.classification, 'unknown');
+    assert.equal('sensitivity' in search, false);
+    assert.equal('sensitivity' in fetched, false);
+    assert.deepEqual(search.requestedIds, undefined);
+    assert.deepEqual(fetched.requestedIds, [7]);
+    assert.deepEqual(f.calls, [
+      { name: 'search_knowledge', arguments: { query: 'ordinary query', limit: 5, include_sensitive: false } },
+      { name: 'get_insight', arguments: { ids: [7], include_links: false } },
+    ]);
+    // The by-ID path has no upstream sensitivity gate (knowledge-boundary F4/F5): the connector
+    // neither filters nor reclassifies it and never derives authority from the markdown.
+    assert.match(fetched.projection.text, /compensation/);
+  } finally { await adapter.close(); await f.close(); }
+});

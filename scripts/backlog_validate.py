@@ -323,16 +323,11 @@ def tracked_public_files(root: Path, exclude: set[str]) -> list[str] | None:
     return sorted({line.strip() for line in out.stdout.splitlines() if line.strip()} - exclude)
 
 
-def read_docs_text(root: Path, extra: tuple[str, ...] = ()) -> dict[str, str]:
-    """Load the explicit document corpus shared by the content checks.
-
-    The required corpus is README.md, the DOCS documents and the publication report. ``extra``
-    names further relative paths a caller supplies explicitly, such as a product document under
-    test; a path that does not exist is skipped, so an absent document is never fabricated.
-    """
+def read_docs_text(root: Path) -> dict[str, str]:
+    """Load the explicit document corpus shared by the content checks."""
     texts = {}
     for rel in ["README.md", *(f"docs/{name}" for name in DOCS),
-                "planning/publishing-validation.md", *extra]:
+                "planning/publishing-validation.md"]:
         path = root / rel
         if path.exists():
             texts[rel] = path.read_text(encoding="utf-8")
@@ -1013,7 +1008,7 @@ def check_v13(report: Report, root: Path, exclude: set[str]) -> None:
     controls_ok = 0
     controls_total = len(controls["forbidden_rejected"]) + len(controls["component_accepted"]) \
         + len(controls["unrelated_rejected"]) + len(controls["product_accepted"]) \
-        + len(controls["near_neighbor_rejected"]) + 3 + 2 + 2 + 3
+        + len(controls["near_neighbor_rejected"]) + 3 + 2 + 2 + 4
     for rel, expected in controls["forbidden_rejected"].items():
         got = is_forbidden_path(rel)
         if got == expected:
@@ -1073,10 +1068,9 @@ def check_v13(report: Report, root: Path, exclude: set[str]) -> None:
                 controls_ok += 1
             else:
                 failures.append(f"control: {description}")
-    # Actual-file control: the shared reader and V-11 together reject a leaking product
-    # document and accept a clean one at a product document path. The present product
-    # document cannot join the always-on corpus while it carries a mention-shaped package
-    # scope that the unchanged predicate rejects; the reader still loads a named extra path.
+    # Actual-file control on the DEFAULT loader: the shared reader and V-11 together reject a
+    # leaking product document and accept a clean one at a product document path, with no
+    # test-only injection.
     with tempfile.TemporaryDirectory(prefix="didi-product-doc-") as dirname:
         fixture_root = Path(dirname)
         product_rel = PRODUCT_DOCS[0]
@@ -1084,11 +1078,11 @@ def check_v13(report: Report, root: Path, exclude: set[str]) -> None:
         fixture_doc.parent.mkdir()
         fixture_doc.write_text("Fixture: member@private.invalid\n", encoding="utf-8")
         leaking_probe = Report()
-        check_v11(leaking_probe, None, read_docs_text(fixture_root, (product_rel,)))
+        check_v11(leaking_probe, None, read_docs_text(fixture_root))
         leaking_rejected = any(product_rel in failure and "address domain" in failure
                                for check in leaking_probe.checks for failure in check["failures"])
         fixture_doc.write_text("Fixture: member@example.invalid\n", encoding="utf-8")
-        clean_texts = read_docs_text(fixture_root, (product_rel,))
+        clean_texts = read_docs_text(fixture_root)
         clean_probe = Report()
         check_v11(clean_probe, None, clean_texts)
         for passed, description in [
@@ -1100,6 +1094,17 @@ def check_v13(report: Report, root: Path, exclude: set[str]) -> None:
                 controls_ok += 1
             else:
                 failures.append(f"control: {description}")
+    # Discriminating production-loader control: every listed product document that is present
+    # must be in the DEFAULT production corpus. It fails when production omits a present
+    # product document and passes only when the production loader actually includes them.
+    production_corpus = read_docs_text(root)
+    present_product_docs = [rel for rel in PRODUCT_DOCS if (root / rel).exists()]
+    omitted_product_docs = [rel for rel in present_product_docs if rel not in production_corpus]
+    if present_product_docs and not omitted_product_docs:
+        controls_ok += 1
+    else:
+        failures.append("control: production corpus omitted present product document(s): "
+                        f"{omitted_product_docs or 'none present to scan'}")
     # Required documents stay mandatory and an absent future product document is harmless:
     # the required set is DOCS alone, and no product path is ever required.
     required = [f"docs/{name}" for name in DOCS]

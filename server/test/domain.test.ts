@@ -115,7 +115,7 @@ test('provenance: a present source is present and a missing imported source stay
           text: 'Imported note whose source was unavailable',
           role: 'user',
           timeZone: 'UTC',
-          sourceRef: { id: 'src-missing', label: 'Missing export', availability: 'missing' },
+          sourceRef: { id: 'src-missing', label: 'Missing export', sourceTimestamp: null, availability: 'missing' },
         },
         context(nextNow()),
       ),

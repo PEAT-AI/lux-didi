@@ -175,7 +175,7 @@ test('remote close reason and thrown resolver/socket errors are sanitized, disti
     for (const credentials of [ { resolve: async () => { throw Error(`wss://${CANARY}/?key=${CANARY}`); } }, { resolve: async () => CANARY } ]) {
       const s = new GeminiLiveVoiceAdapter(options({ credentials, socketFactory: () => { throw Error(CANARY); } })).open(request(), control());
       const c = collect(s); const result = await s.done; await c.done;
-      assert.equal(result.status, 'failed'); await assert.rejects(s.ready, e => { noCanary({ name: e.name, message: e.message, stack: e.stack }); return e instanceof LiveVoiceError; }); noCanary(c.events);
+      assert.equal(result.status, 'failed'); await assert.rejects(s.ready, e => { assert.ok(e instanceof LiveVoiceError); noCanary({ name: e.name, message: e.message, stack: e.stack }); return true; }); noCanary(c.events);
     }
   } finally { console.error = old; }
   noCanary(logs);

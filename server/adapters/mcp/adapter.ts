@@ -135,10 +135,10 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
     // Observe the SDK transport's parsed messages, then forward unchanged. A local
     // decode/validation ProtocolError is not proof of an explicit remote rejection.
     const onmessage = transport.onmessage;
-    transport.onmessage = (message, extra) => {
+    transport.onmessage = message => {
       const operation = session.operation;
       if (operation && isJSONRPCErrorResponse(message) && message.id === operation.requestId) operation.explicitErrorCode = message.error.code;
-      onmessage?.(message, extra);
+      onmessage?.(message);
     };
     if (!client.getServerCapabilities()?.tools) throw new PolicyError('tools-unavailable');
     return session;

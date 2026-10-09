@@ -1,0 +1,116 @@
+# Architecture (proposed)
+
+Status: proposed design, gated by the runtime host decision in issue A01. No application exists yet, and no behavior in this document has been verified by running code. Component names and directory seams are proposals to validate, not a description of a working system.
+
+## Shape
+
+The default design is a small native host application plus a per-user local core process, with adapter modules around them and one local transactional application store. The host owns the user experience and the operating system surfaces: global hotkey, microphone and playback, notifications, permissions dialogs. The core owns reasoning turns, durable jobs, storage, commitments, planning and policy. Adapters translate external systems into the versioned contracts the core consumes. One authoritative writer owns each entity or fact.
+
+```mermaid
+flowchart LR
+  subgraph Mac["User's Mac (local)"]
+    Host["Native host\nhotkey, audio, notifications"]
+    Core["Local core\nruntime, jobs, policy, commitments"]
+    Store[("Local transactional store")]
+    Broker["Deterministic grant broker"]
+    subgraph Adapters["Adapters"]
+      Voice["Voice provider adapter"]
+      GoogleA["Google adapter\nGmail, Calendar, Drive"]
+      Chat["Chat adapter\nMattermost"]
+      TrelloA["Trello adapter"]
+      LuxA["Lux Knowledge adapter\noptional"]
+      MongooseA["Mongoose adapter\noptional"]
+      CoworkerA["Coworker adapter\noptional"]
+      Harness["Harness adapter\nsupervised sessions"]
+      MCP["MCP transport\nlocal tools"]
+    end
+  end
+  Models["Model providers\nreplaceable, Gemini preferred"]
+  External["External services\nuser's own accounts"]
+
+  Host <--> Core
+  Core <--> Store
+  Core --> Broker
+  Core <--> Models
+  Broker <--> Adapters
+  Adapters <--> External
+```
+
+## First-loop data flow (proposed)
+
+The first loop is one session in which the user asks about the calendar, a commitment is captured with evidence, a reminder is scheduled, the notification opens the conversation, and an unsent reply is prepared. The same session is recalled later, resolved, and never resurrected.
+
+```mermaid
+sequenceDiagram
+  participant U as User
+  participant H as Host
+  participant C as Core
+  participant B as Broker
+  participant G as Google adapter
+  participant S as Store
+
+  U->>H: hotkey, then speech or text
+  H->>C: voice session events or text turn
+  C->>S: session transcript original
+  C->>C: compile context with suppression overlays
+  C-->>H: answer as audio or text
+  U->>C: asks about upcoming calendar
+  C->>B: bounded calendar read under a standing grant
+  B->>G: provider read with source reference
+  G-->>B: events with account and revision
+  B-->>C: result plus provenance
+  C->>S: commitment candidate with evidence links
+  C->>C: lifecycle gate (open, deduplicated, not suppressed)
+  C-->>H: reminder notification
+  U->>H: opens the conversation from the notification
+  C->>B: prepare an unsent reply draft
+  B-->>C: draft receipt, no send
+  C->>S: job, intent, receipt and reminder state
+```
+
+## Concrete invariants
+
+These are the properties later implementation issues must preserve. Each one names the issue that owns it.
+
+1. One authoritative writer per entity or fact. Didi owns its operational sessions, jobs, action receipts, commitment lifecycle, notification state and voice transcript originals. External providers keep ownership of their originals. Optional retrieval services are projections, not new authorities. (B01, C12)
+2. Every source reference carries provider, account, source identity, revision or hash where available, and span where available, together with coverage, freshness and availability. (B01, B03)
+3. A cached authorized source is an explicitly versioned cache, never a new source authority, and it says what it covers. (B03, B09)
+4. Explicit typed preferences are the only mutable preference authority. Retrieved insights are evidence or history, never a second preference store. (B07)
+5. Suppression overlays (resolved, cancelled, forgotten) are consulted before planning. Background extraction cannot silently reopen a closed item. (B08, D03)
+6. Cancellation distinguishes stop playback, cancel a model turn, abort a running job, cancel queued jobs, and end a session. A dispatched effect with an unknown outcome is reconciled, never reported as canceled or no-effect, and never blindly retried. (A05, A08)
+7. Reasoning text and tool results never create authority. Only a user grant does. (C12, C16)
+8. Grants are per user, account, tool, action, resource and effect class. Changes are visible and revocable, and dispatch checks a live revocation state. (C12, C15, C17)
+9. Secrets are held by the operating system credential store behind broker handles; subprocess environments are allowlisted. (C15, A13)
+10. Processes running as the same operating system user are not an isolation boundary between each other. Broad shell or computer control is an explicit capability with honest residual risk. (A13, F12)
+11. Provider egress is gated by a per-credential destination allowlist and a data class per payload on first use. The product states that the operator verifies their own provider agreement and never claims a data protection arrangement on the user's behalf. (C15)
+12. Model calls do not happen on blind heartbeats. Synchronization is incremental, and due processing is event-driven or coalesced. (D07)
+13. The store is transactional, jobs survive conversation end, and crash recovery uses an outbox and replayable transitions. (A04, A15)
+14. No model identifier is hardcoded forever. Providers are replaceable and budgets are configured. (A06)
+15. MCP is an interoperability adapter, not a permission system and not the internal API. (A14, C14)
+16. The existing harness owns delegated coding worker lifecycle and admission. Didi does not reimplement scheduling, and ordinary calendar reads never route through a coding worker. (A09, A12)
+17. The mobile companion never holds product authority. One Mac remains the authority while it is awake. While the Mac is asleep, closed or offline, nothing executes and nothing is sent, and the companion says so plainly. (F16, F17)
+18. Notification display is not proof the user saw anything. Copy must not promise to bypass Focus without an entitlement the product may not have. (D10, F09)
+19. Source failure is explicit. No fake empty success, no silent truncation; coverage and missing data are reported. (B03, C08)
+20. User interface belongs to the native experience lane. Other lanes expose services and view models. (E master)
+21. One completion graph. Every dependency edge in `depends_on` is a completion or integration prerequisite, never a prohibition on starting; lanes may begin against each other's fixtures, and [parallel-masters.md](parallel-masters.md) names which leaves start that way. (A02, A17)
+22. Single safe model-call entry. No model call receives content before its route policy resolves; the initial posture is default-deny until policy is supplied, and model availability is never treated as approved data handling. (A06, C15)
+
+## Proposed ownership seams
+
+Directories are proposed seams, not an existing tree. Shared contract changes are proposed to the runtime lane (A), which sequences migration files; other lanes work against fixtures in parallel.
+
+| Lane | Owns | Proposed paths |
+|---|---|---|
+| A runtime | Host decision, versioned contracts, local service, store, jobs, providers, tool turns, receipts, harness adapters, MCP transport, diagnostics, first daily-loop integration and lean validation gate, measurement | core/runtime, core/storage, core/jobs, adapters/harness, adapters/mcp-transport, contracts |
+| B memory and persona | Evidence model, transcript originals and resolution, recall, preferences, correction and suppression, consolidation, persona specification and learning, memory inspector, evaluation corpus | core/memory, core/persona, adapters/lux-knowledge, evals/memory, evals/persona |
+| C accounts and trust | Account identity, Google, chat, Trello and company adapters, policy and grants, capability registry, egress, adverse security tests, revocation | core/policy, core/identity, adapters/google, adapters/mattermost, adapters/trello, adapters/mongoose, adapters/coworker, evals/security |
+| D commitments and proactivity | Commitment lifecycle, extraction, prioritization, planning, reminders, interruption policy, follow-through, calibration | core/commitments, core/planning, core/proactivity, evals/follow-through |
+| E native experience | Mac host and surfaces, voice session plumbing, notifications, onboarding, review surfaces, computer control, packaging, companion and portability | apps/macos, adapters/voice, clients/mobile, platform |
+
+## Evidence gaps
+
+- The host is not chosen. A01 runs the comparison and the architecture decision record.
+- No latency or energy number has been measured. The numbers in [acceptance.md](acceptance.md) are proposals for A18 and the voice issues to falsify.
+- Storage engine, transport and turn boundary choices are candidates, not selections.
+- Whether any third-party host code is retained is a licensing and maintenance decision reserved to A01, with a per-component licence and notice review before reuse.
+- Full transcript retrieval from any existing private retrieval service is not assumed. B03 resolves originals through their providers when authorized and reports missing coverage.

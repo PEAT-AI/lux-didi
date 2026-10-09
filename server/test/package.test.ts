@@ -9,7 +9,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 type Manifest = {name: string; version: string; dependencies?: Record<string,string>; optionalDependencies?: Record<string,string>; peerDependencies?: Record<string,string>; peerDependenciesMeta?: Record<string,{optional?: boolean}>; bundleDependencies?: string[]; dev?: boolean; license?: string};
 type Lock = {packages: Record<string,Manifest>};
-type Pack = {filename: string; size: number; unpackedSize: number; files: {path: string; size: number}[]};
+type Pack = {filename: string; size: number; unpackedSize: number; files: {path: string; size: number; mode: number}[]};
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const source = process.env.DIDI_PACKAGE_SOURCE;
 const lock = JSON.parse(readFileSync(join(root,'package-lock.json'),'utf8')) as Lock;
@@ -138,7 +138,7 @@ after(() => rmSync(scratch,{recursive:true,force:true}));
 test('artifact matches locked runtime closure, compiled service, inventory and licenses', () => {
   cleanRuntime(root);
   verify(extracted);
-  const inventory = files(extracted).map(path => ({path:relative(extracted,path),size:statSync(path).size})).sort((a,b)=>a.path.localeCompare(b.path));
+  const inventory = files(extracted).map(path => ({path:relative(extracted,path),size:statSync(path).size,mode:statSync(path).mode & 0o777})).sort((a,b)=>a.path.localeCompare(b.path));
   assert.deepEqual(inventory,[...packed.files].sort((a,b)=>a.path.localeCompare(b.path)));
   assert.equal(statSync(archive).size,packed.size);
   assert.equal(inventory.reduce((sum,item)=>sum+item.size,0),packed.unpackedSize);

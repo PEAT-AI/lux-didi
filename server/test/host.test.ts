@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
-import { request } from 'node:http';
+import { createServer, request } from 'node:http';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { once } from 'node:events';
+import { randomUUID } from 'node:crypto';
+import { startHost, type RuntimeDescriptor } from '../host/runtime.js';
 import { Store } from '../runtime/store.js';
 import { listenService } from '../http/server.js';
 
@@ -90,4 +94,134 @@ test('host refuses incomplete builds before listening and denies a symlink escap
       } finally { await service.close(); }
     } finally { await rm(escape, { force: true }); }
   } finally { store.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+async function stopProcess(child: ChildProcess) {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  const exited = once(child, 'exit');
+  child.kill('SIGTERM');
+  const [code] = await exited;
+  assert.equal(code, 0, 'canonical host must shut down cleanly');
+}
+async function launch(dataDir: string) {
+  const child = spawn(process.execPath, [resolve(import.meta.dirname, '../host/index.js'), '--data-dir', dataDir, '--web-root', webRoot, '--port', '0'], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let stderr = '';
+  child.stderr!.on('data', chunk => { stderr += String(chunk); });
+  try {
+    await Promise.race([
+      once(child.stdout!, 'data'),
+      once(child, 'exit').then(([code]) => { throw new Error(`Host exited ${String(code)}: ${stderr}`); }),
+    ]);
+    const descriptor = JSON.parse(await readFile(join(dataDir, 'host-runtime.json'), 'utf8')) as RuntimeDescriptor;
+    return { child, descriptor };
+  } catch (error) { await stopProcess(child); throw error; }
+}
+
+test('actual host connects durable domain, supersedes reminders, exposes conflicts and survives process restart', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'didi-host-domain-'));
+  let host = await startHost({ dataDir: dir, webRoot, port: 0 });
+  let child: ChildProcess | undefined;
+  try {
+    const credential = host.store.adminCredential;
+    let origin = host.descriptor.origin;
+    const epoch = host.descriptor.authorityEpoch;
+    const call = async (path: string, method = 'GET', body?: unknown) => {
+      const headers: Record<string, string> = { Authorization: `Bearer ${credential}` };
+      if (method !== 'GET') Object.assign(headers, { 'Content-Type': 'application/json', 'Idempotency-Key': randomUUID(), 'X-Didi-Authority-Epoch': epoch });
+      const response = await fetch(origin + '/api/v1' + path, { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+      return { status: response.status, ...(await response.json()) };
+    };
+    const status = await call('/status');
+    assert.deepEqual(status.data.capabilities, { memory: true, commitments: true, notifications: false, model: false });
+    assert.equal(status.data.model.configured, false);
+    const session = (await call('/sessions', 'POST', { title: 'Synthetic host session', timeZone: 'UTC' })).data;
+    assert.equal((await call('/chat', 'POST', { sessionId: session.id, text: 'do not fabricate model work', timeZone: 'UTC' })).status, 503);
+    const source = { id: randomUUID(), label: 'Synthetic meeting note', sourceTimestamp: new Date().toISOString(), availability: 'present' };
+    const entry = (await call(`/sessions/${session.id}/entries`, 'POST', { text: 'Synthetic host kestrel launch: prepare the release checklist.', role: 'user', timeZone: 'UTC', sourceRef: source })).data;
+    const recalled = await call('/recall?q=kestrel&limit=10');
+    assert.equal(recalled.data.totalMatches, 1);
+    assert.equal(recalled.data.hits[0].entryId, entry.id);
+    assert.match(recalled.data.hits[0].snippet, /release checklist/);
+    assert.ok(recalled.data.hits[0].sourceRefs.some((ref: { id: string; label: string }) => ref.id === source.id && ref.label === source.label));
+    const due = new Date(Date.now() + 3_600_000).toISOString();
+    let commitment = (await call('/commitments', 'POST', { title: 'Synthetic release checklist', dueAt: due, timeZone: 'UTC', sourceSessionId: session.id, sourceEntryId: entry.id })).data;
+    assert.equal(commitment.revision, 1);
+    const reminders = () => host.store.transaction(tx => tx.all('SELECT entity_revision, required_grant, state, payload FROM runtime_outbox WHERE entity_id=? ORDER BY entity_revision', [commitment.id]));
+    assert.equal(reminders()[0]!.required_grant, 'native.notify.unbound');
+    assert.equal(JSON.parse(String(reminders()[0]!.payload)).targetDeviceId, null);
+    const nextDue = new Date(Date.now() + 7_200_000).toISOString();
+    const revised = await call(`/commitments/${commitment.id}`, 'PATCH', { expectedRevision: 1, dueAt: nextDue, notes: 'Corrected to the later review slot' });
+    assert.equal(revised.status, 200);
+    commitment = revised.data;
+    assert.equal(commitment.revision, 2);
+    assert.equal(commitment.dueAt, nextDue);
+    assert.deepEqual(reminders().map(row => [row.entity_revision, row.state]), [[1, 'superseded'], [2, 'pending']]);
+    const stale = await call(`/commitments/${commitment.id}`, 'PATCH', { expectedRevision: 1, title: 'Stale overwrite must not win' });
+    assert.equal(stale.status, 409);
+    assert.equal(stale.error.code, 'CONFLICT');
+    assert.equal((await call(`/commitments/${commitment.id}`)).data.commitment.title, 'Synthetic release checklist');
+    for (const [operation, expectedStatus] of [['complete', 'completed'], ['reopen', 'active'], ['cancel', 'cancelled']] as const) {
+      const changed = await call(`/commitments/${commitment.id}/${operation}`, 'POST', { expectedRevision: commitment.revision });
+      assert.equal(changed.status, 200);
+      commitment = changed.data;
+      assert.equal(commitment.status, expectedStatus);
+      const pending = reminders().filter(row => row.state === 'pending');
+      assert.equal(pending.length, expectedStatus === 'active' ? 1 : 0);
+      assert.ok(pending.every(row => row.entity_revision === commitment.revision), 'reopen must not resurrect old revisions');
+    }
+    const date = due.slice(0, 10);
+    const plan = await call(`/plan?date=${date}&timeZone=UTC`);
+    assert.equal(plan.status, 200);
+    assert.ok(!plan.data.items.some((item: { commitment: { id: string } }) => item.commitment.id === commitment.id));
+    const identity = { authorityEpoch: epoch, assistantId: host.descriptor.assistantId };
+    assert.equal((await stat(host.descriptorPath)).mode & 0o777, 0o600);
+    assert.equal((await stat(join(dir, 'admin-credential'))).mode & 0o777, 0o600);
+    assert.ok(!(await readFile(host.descriptorPath, 'utf8')).includes(credential));
+    await host.close();
+    // A deliberately stale descriptor is never trusted for the current authority/origin.
+    await writeFile(join(dir, 'host-runtime.json'), JSON.stringify({ schemaVersion: 1, origin: 'http://127.0.0.1:1', authorityEpoch: 'stale', assistantId: 'stale' }));
+    const restarted = await launch(dir); child = restarted.child;
+    origin = restarted.descriptor.origin;
+    assert.equal(restarted.descriptor.authorityEpoch, identity.authorityEpoch);
+    assert.equal(restarted.descriptor.assistantId, identity.assistantId);
+    const after = await call('/status');
+    assert.equal(after.data.authorityEpoch, restarted.descriptor.authorityEpoch);
+    assert.equal((await call('/recall?q=kestrel&limit=10')).data.hits[0].entryId, entry.id);
+    assert.equal((await call(`/sessions/${session.id}`)).data.entries[0].text, 'Synthetic host kestrel launch: prepare the release checklist.');
+    const persisted = (await call(`/commitments/${commitment.id}`)).data;
+    assert.equal(persisted.commitment.status, 'cancelled');
+    assert.equal(persisted.commitment.revision, 5);
+    const second = spawn(process.execPath, [resolve(import.meta.dirname, '../host/index.js'), '--data-dir', dir, '--web-root', webRoot, '--port', '0']);
+    let failure = ''; second.stderr!.on('data', chunk => { failure += String(chunk); }); second.stdout!.resume();
+    const [exit] = await once(second, 'exit');
+    assert.equal(exit, 1);
+    assert.match(failure, /Another process owns this state directory/);
+    assert.equal((await call('/sessions')).data.items.length, 1, 'second writer must not reseed');
+    await stopProcess(child); child = undefined;
+    host = await startHost({ dataDir: dir, webRoot, port: 0 });
+    assert.equal(host.store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM entries')!.n), 1);
+    assert.equal(reminders().filter(row => row.state === 'pending').length, 0, 'restart must not resurrect cancelled reminder');
+  } finally { if (child) await stopProcess(child); await host.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test('host fails fatal configuration/listener/descriptor startup and releases its single writer', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'didi-host-failure-'));
+  const blocker = createServer();
+  await new Promise<void>(resolve => blocker.listen(0, '127.0.0.1', resolve));
+  try {
+    await assert.rejects(startHost({ dataDir: join(dir, 'state'), webRoot: join(dir, 'absent'), port: 0 }), /ENOENT/);
+    await assert.rejects(stat(join(dir, 'state')), /ENOENT/);
+    await assert.rejects(startHost({ dataDir: dir, webRoot, port: -1 }), /Invalid local port/);
+    const address = blocker.address() as { port: number };
+    await assert.rejects(startHost({ dataDir: dir, webRoot, port: address.port }), /EADDRINUSE/);
+    const descriptor = join(dir, 'symlink.json');
+    await symlink(join(dir, 'admin-credential'), descriptor);
+    await assert.rejects(startHost({ dataDir: dir, webRoot, port: 0, descriptor }), /regular file/);
+    const recovered = await startHost({ dataDir: dir, webRoot, port: 0 });
+    await recovered.close();
+    const help = spawn(process.execPath, [resolve(import.meta.dirname, '../host/index.js'), '--help']);
+    let text = ''; help.stdout!.on('data', chunk => { text += String(chunk); }); help.stderr!.resume();
+    assert.equal((await once(help, 'exit'))[0], 0);
+    assert.match(text, /loopback-only/);
+  } finally { await new Promise<void>(resolve => blocker.close(() => resolve())); await rm(dir, { recursive: true, force: true }); }
 });

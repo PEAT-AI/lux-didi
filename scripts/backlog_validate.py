@@ -293,6 +293,16 @@ def tracked_public_files(root: Path, exclude: set[str]) -> list[str] | None:
     return sorted({line.strip() for line in out.stdout.splitlines() if line.strip()} - exclude)
 
 
+def read_docs_text(root: Path) -> dict[str, str]:
+    """Load the explicit document corpus shared by the content checks."""
+    texts = {}
+    for rel in ["README.md", *(f"docs/{name}" for name in DOCS)]:
+        path = root / rel
+        if path.exists():
+            texts[rel] = path.read_text(encoding="utf-8")
+    return texts
+
+
 def _git_env() -> dict:
     """A hermetic git environment: no system or user configuration is read."""
     env = dict(os.environ)
@@ -961,7 +971,7 @@ def check_v13(report: Report, root: Path, exclude: set[str]) -> None:
     }
     controls_ok = 0
     controls_total = len(controls["forbidden_rejected"]) + len(controls["component_accepted"]) \
-        + len(controls["unrelated_rejected"]) + 3 + 2
+        + len(controls["unrelated_rejected"]) + 3 + 2 + 2
     for rel, expected in controls["forbidden_rejected"].items():
         got = is_forbidden_path(rel)
         if got == expected:
@@ -997,6 +1007,30 @@ def check_v13(report: Report, root: Path, exclude: set[str]) -> None:
         controls_ok += 1
     else:
         failures.append("fixture: an actually gitignored non-key build artifact was reported")
+    # Admission must not leave the publication report outside the privacy corpus.
+    with tempfile.TemporaryDirectory(prefix="didi-publication-report-") as dirname:
+        fixture_root = Path(dirname)
+        report_rel = "planning/publishing-validation.md"
+        fixture_report = fixture_root / report_rel
+        fixture_report.parent.mkdir()
+        fixture_report.write_text("Fixture: member@private.invalid\n", encoding="utf-8")
+        leaking_probe = Report()
+        check_v11(leaking_probe, None, read_docs_text(fixture_root))
+        leaking_rejected = any(report_rel in failure and "address domain" in failure
+                               for check in leaking_probe.checks for failure in check["failures"])
+        fixture_report.write_text("Fixture: member@example.invalid\n", encoding="utf-8")
+        clean_texts = read_docs_text(fixture_root)
+        clean_probe = Report()
+        check_v11(clean_probe, None, clean_texts)
+        for passed, description in [
+            (leaking_rejected, "leaking publication report was not rejected"),
+            (report_rel in clean_texts and not clean_probe.failed,
+             "clean publication report was not scanned and accepted"),
+        ]:
+            if passed:
+                controls_ok += 1
+            else:
+                failures.append(f"control: {description}")
     for rel in controls["component_accepted"]:
         if is_publication_path(rel) and not is_forbidden_path(rel):
             controls_ok += 1
@@ -1310,14 +1344,7 @@ def main(argv: list[str] | None = None) -> int:
 
     backlog, nodes, parse_errors = load_backlog(root, Path(args.packets).resolve() if args.packets else None)
 
-    docs_text: dict[str, str] = {}
-    readme = root / "README.md"
-    if readme.exists():
-        docs_text["README.md"] = readme.read_text(encoding="utf-8")
-    for name in DOCS:
-        path = root / "docs" / name
-        if path.exists():
-            docs_text[f"docs/{name}"] = path.read_text(encoding="utf-8")
+    docs_text = read_docs_text(root)
 
     def inside(path: Path) -> bool:
         try:

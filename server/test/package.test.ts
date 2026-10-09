@@ -197,7 +197,7 @@ test('artifact negative: tampered version and inventory are rejected', () => {
   assert.throws(()=>verify(changed.base),/Wrong version/);
   const extra = altered('private-file',base => writeFileSync(join(base,'.env'),'SYNTHETIC=not-a-secret\n'));
   assert.throws(()=>verify(extra.base),/Unexpected\/missing service files|Private\/hidden content/);
-  const runtimeFile = files(join(root,'node_modules/@modelcontextprotocol/client')).find(path => path.endsWith('.js'))!;
+  const runtimeFile = files(join(root,'node_modules/@modelcontextprotocol/client')).find(path => /\.[cm]?js$/.test(path))!;
   const absent = altered('missing-runtime-file',base => rmSync(join(base,relative(root,runtimeFile))));
   assert.throws(()=>verify(absent.base),/Changed archive inventory/);
   const tampered = altered('tampered-runtime-file',base => writeFileSync(join(base,relative(root,runtimeFile)),'/* synthetic tampering */\n'));

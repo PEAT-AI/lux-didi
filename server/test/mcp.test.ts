@@ -344,8 +344,9 @@ test('explicit JSON-RPC error is a completed protocol-error, not unknown success
     await approve(adapter, registry);
     const result = await adapter.call(request);
     assert.equal(result.state, 'protocol-error'); assert.equal(f.counter, 1);
-    if (result.state !== 'protocol-error') throw new Error('missing explicit protocol error');
+    assert('protocolErrorCode' in result);
     assert.equal(typeof result.protocolErrorCode, 'number');
+    assert('coverage' in result);
     assert.equal(result.coverage.remoteSideEffects, 'unverified');
   } finally { await adapter.close(); await f.close(); }
 });

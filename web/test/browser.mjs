@@ -1,9 +1,11 @@
 import {chromium} from 'playwright';
 import assert from 'node:assert/strict';
 import {mkdir,writeFile} from 'node:fs/promises';
+import {join} from 'node:path';
 import {startFixture} from './fixture.mjs';
-const artifacts = process.env.DIDI_WEB_ARTIFACTS || '/Users/rob/.lux/reports/lux-didi-overnight-1009/web';
+const artifacts = process.env.DIDI_WEB_ARTIFACTS || join(import.meta.dirname, '../test-artifacts');
 await mkdir(artifacts,{recursive:true});
+console.log(`Browser artifacts: ${artifacts}`);
 const fixture=await startFixture(); let browser;
 const timings=[];
 async function step(name,fn){const start=performance.now(); await fn(); timings.push({name,seconds:Math.round((performance.now()-start)/10)/100}); console.log(`PASS ${name}`);}

@@ -9,9 +9,10 @@ it or grant its permissions.
 
 ## Local use
 
-Requirements: Node 26+ for the service and the isolated SQLite browser fixture;
+Requirements: Node 26+ for this package, the service, and the isolated SQLite browser fixture;
 npm; installed Playwright Chromium; `lux-browser-slot` on the managed host.
-Vite itself supports Node 20.19+/22.12+. Dependencies are pinned in the separate
+Vite itself has a lower upstream floor, but Didi supports Node 26+ consistently
+for installation, development, builds, and checks. Dependencies are pinned in the separate
 `web/package-lock.json`. No external font, image, analytics, or CDN request.
 
 ```sh
@@ -94,8 +95,11 @@ Focused acceptance covers capture, failed send preserving the draft, stop
 waiting, loading, stale revision, date correction, complete/reopen, source
 recall, denied/offline behavior, CSRF/cookie transport, private cache isolation,
 keyboard skip/focus/live regions, locally authored manifest/icon, and overflow
-at 375px/768px. Artifacts default to the private assigned WEB report directory;
-`DIDI_WEB_ARTIFACTS` can redirect artifacts on another local checkout. Actual
+at 375px/768px. Artifacts default to the ignored, repository-relative
+`web/test-artifacts/` directory. `DIDI_WEB_ARTIFACTS` overrides that directory;
+managed check configuration supplies an explicit private review output path.
+The check logs its resolved output directory. No developer home path is baked
+into the client or test source. Actual
 renderer and durations are recorded as JSON. Screenshots require coordinator
 inspection. No CI workflow or paid CI is introduced.
 

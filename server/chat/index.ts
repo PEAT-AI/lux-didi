@@ -5,7 +5,7 @@ import type { ModelResult } from '../adapters/model/types.js';
 import { PROMPT_VERSION } from '../prompt/index.js';
 import { assemble, classify, ContextFailure } from './context.js';
 import { Subscription } from './subscription.js';
-import { ChatError, type AcceptInput, type ChatConfig, type ChatEvent, type ChatPort, type Outcome, type RunSnapshot } from './types.js';
+import { ChatError, type AcceptInput, type ChatConfig, type ChatEvent, type ChatPort, type ChatRecoveryContext, type Outcome, type RunSnapshot } from './types.js';
 export * from './types.js';
 export { chatMigrations } from './schema.js';
 
@@ -33,9 +33,13 @@ export class ChatService implements ChatPort {
     this.#config = { ...config, route: { ...config.route }, context: structuredClone(config.context) };
     this.#now = config.now ?? Date.now;
   }
-  #authorize(context: DomainContext) {
-    if (context.assistantId !== this.#config.store.assistantId || typeof context.clientId !== 'string' || !context.clientId.trim()) throw new ChatError('unauthorized');
+  #authorizeOwner(context: ChatRecoveryContext) {
+    if (context.assistantId !== this.#config.store.assistantId) throw new ChatError('unauthorized');
     if (context.authorityEpoch !== this.#config.store.authorityEpoch) throw new ChatError('epoch_mismatch');
+  }
+  #authorize(context: DomainContext) {
+    this.#authorizeOwner(context);
+    if (typeof context.clientId !== 'string' || !context.clientId.trim()) throw new ChatError('unauthorized');
   }
   #context(context: DomainContext): DomainContext { return { ...context, now: new Date(this.#now()).toISOString() }; }
   #row(tx: Transaction, runId: string, context: DomainContext) {
@@ -51,15 +55,15 @@ export class ChatService implements ChatPort {
     if (!entry) throw new ChatError('unavailable');
     return snapshot(row, entry.text);
   }
-  recover(context: DomainContext): RunSnapshot[] {
-    this.#authorize(context);
+  recover(context: ChatRecoveryContext): RunSnapshot[] {
+    this.#authorizeOwner(context);
     if (this.#workers.size) throw new ChatError('active_run');
     const recovered = this.#config.store.transaction(tx => {
       const rows = tx.all("SELECT * FROM chat_runs WHERE state!='terminal' ORDER BY accepted_at,run_id");
       return rows.map(row => {
         const outcome = row.state === 'accepted' ? 'not_dispatched' : 'outcome_unknown';
         tx.run("UPDATE chat_runs SET state='terminal',outcome=?,terminal_at=?,terminal_epoch=?,sequence=sequence+1 WHERE run_id=? AND authority_epoch=? AND state=?",
-          [outcome, this.#context(context).now, context.authorityEpoch, String(row.run_id), String(row.authority_epoch), String(row.state)]);
+          [outcome, new Date(this.#now()).toISOString(), context.authorityEpoch, String(row.run_id), String(row.authority_epoch), String(row.state)]);
         return snapshot(tx.get('SELECT * FROM chat_runs WHERE run_id=?', [String(row.run_id)])!);
       });
     });

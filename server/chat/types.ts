@@ -17,8 +17,10 @@ export type ChatEvent = { type: 'snapshot'; sequence: number; run: RunSnapshot }
   | { type: 'text'; sequence: number; text: string; provisional: true }
   | { type: 'resync_required'; sequence: number; reason: 'backpressure' | 'storage_unavailable' };
 export interface AcceptInput { sessionId: string; text: string; idempotencyKey: string; retryOf?: string }
+/** Host startup authority, not an authenticated browser/client request. */
+export interface ChatRecoveryContext { assistantId: string; authorityEpoch: string }
 export interface ChatPort {
-  recover(context: DomainContext): RunSnapshot[];
+  recover(context: ChatRecoveryContext): RunSnapshot[];
   accept(input: AcceptInput, context: DomainContext): RunSnapshot;
   get(runId: string, context: DomainContext): RunSnapshot;
   cancel(runId: string, context: DomainContext): RunSnapshot;

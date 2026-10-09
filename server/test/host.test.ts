@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
+import { request } from 'node:http';
 import { Store } from '../runtime/store.js';
 import { listenService } from '../http/server.js';
 
@@ -40,7 +41,12 @@ test('host serves the accepted build with security policy, never API or private 
       assert.ok(denied.status >= 400, path);
       assert.doesNotMatch(denied.headers.get('content-type') ?? '', /text\/html/, path);
     }
-    assert.equal((await fetch(service.origin, { headers: { Host: 'evil.invalid' } })).status, 403);
+    // Fetch normalizes Host; exercise the actual wire as the accepted HTTP suite does.
+    const hostDenied = await new Promise<number>((resolve, reject) => {
+      const req = request(service.origin, { headers: { Host: 'evil.invalid' } }, res => { res.resume(); resolve(res.statusCode!); });
+      req.on('error', reject); req.end();
+    });
+    assert.equal(hostDenied, 403);
     assert.equal((await fetch(service.origin, { headers: { Origin: 'http://evil.invalid' } })).status, 403);
     const status = await fetch(service.origin + '/api/v1/status');
     assert.equal(status.status, 401, 'static shell must not relax API auth');

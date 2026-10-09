@@ -32,7 +32,8 @@ async function main() {
   if (!dir || !webRoot) throw Error('Connected fixture needs state and built web paths');
   try { await access(join(dir, 'provider-config')); } catch { await profile(dir); }
   let calls = 0, aborted = 0, nextMode = '';
-  process.on('message', value => { if (value === 'hold-next' || value === 'fail-next') nextMode = value; });
+  const completions = new Set<() => void>();
+  process.on('message', value => { if (value === 'hold-next' || value === 'fail-next' || value === 'stream-next') nextMode = value; if (value === 'finish-stream') for (const finish of [...completions]) finish(); });
   const responses = new Set<import('node:http').ServerResponse>();
   const transportServer = createServer(async (req, res) => {
     responses.add(res); let body = ''; for await (const chunk of req) body += String(chunk);
@@ -45,7 +46,10 @@ async function main() {
     if (control === 'fail-next') { res.writeHead(503); res.end('controlled provider failure'); return; }
     const frames = Buffer.from(modelFrames()); res.writeHead(200, { 'content-type': 'text/event-stream' });
     const cut = frames.indexOf('\n\n') + 2; res.write(frames.subarray(0, cut));
-    timer = setTimeout(() => { for (let i = cut; i < frames.length; i += 7) res.write(frames.subarray(i, i + 7)); res.end(); }, 150);
+    const finish = () => { completions.delete(finish); for (let i = cut; i < frames.length; i += 7) res.write(frames.subarray(i, i + 7)); res.end(); };
+    res.on('close', () => completions.delete(finish));
+    if (control === 'stream-next') completions.add(finish);
+    else timer = setTimeout(finish, 150);
   });
   await new Promise<void>(resolveListen => transportServer.listen(0, '127.0.0.1', resolveListen));
   const addr = transportServer.address(); if (!addr || typeof addr === 'string') throw Error('Missing capturing transport address');

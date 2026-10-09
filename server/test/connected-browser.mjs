@@ -75,7 +75,8 @@ try {
   });
   await step('real adapter captured request, split provisional stream, meaningful atomic saved answer', async () => {
     await page.locator('#connected-draft').fill('Help me choose one small next step for this synthetic release checklist.');
-    const partial = page.locator('.provisional').waitFor(); await page.locator('#connected-send').click(); await partial;
+    child.send('stream-next');
+    const partial = page.locator('.provisional').waitFor(); await page.locator('#connected-send').click(); await partial; child.send('finish-stream');
     await page.waitForFunction(() => document.querySelector('#connected-run')?.textContent.includes('Answer saved durably.'));
     await page.getByText('Naya: Let us choose one small next step and keep the rest for later.', { exact: true }).waitFor();
     const sessions = await api('/sessions');
@@ -124,4 +125,7 @@ try {
   assert.deepEqual(errors, []);
   await writeFile(join(artifacts, `proof-${sha}.json`), JSON.stringify({ sha, steps, requests, errors, screenshots: [`desktop-${sha}.png`, `mobile-375-${sha}.png`, `truthful-errors-${sha}.png`], liveModel: false, nativeVoice: false }, null, 2));
   console.log(`PASS ${steps.length} actual connected browser checks at ${sha}; artifacts ${artifacts}`);
+} catch (error) {
+  if (page) { const visible = { run: await page.locator('#connected-run').textContent().catch(() => null), error: await page.locator('#connected-error').textContent().catch(() => null), pageErrors: errors }; console.error(JSON.stringify(visible)); await page.screenshot({ path: join(artifacts, `diagnostic-${sha}.png`), fullPage: true }).catch(() => {}); }
+  throw error;
 } finally { await context?.close(); await browser?.close(); await stop(); await rm(state, { recursive: true, force: true }); }

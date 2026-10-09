@@ -29,6 +29,7 @@
     "dist/adapters/model",
     "dist/prompt",
     "dist/adapters/mcp",
+    "dist/connectors",
     "adapters/mcp/SDK-LICENSE.txt"
   ],
   "dependencies": {

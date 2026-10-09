@@ -100,7 +100,7 @@ function verify(base: string) {
     // upstream packaging metadata, verified byte-for-byte below, not dotenv.
     assert.ok(!path.split('/').some(part => (part.startsWith('.') && !(path.startsWith('node_modules/') && part === '.npmignore')) || /^(secrets?|credentials?|private)$/i.test(part)),`Private/hidden content: ${path}`);
     assert.ok(!/\.node$/.test(path),`Unverified native runtime: ${path}`);
-    if (path.startsWith('node_modules/')) assert.deepEqual(readFileSync(join(base,path)),readFileSync(join(root,path)),`Runtime byte mismatch: ${path}`);
+    if (path.startsWith('node_modules/')) assert.ok(readFileSync(join(base,path)).equals(readFileSync(join(root,path))),`Runtime byte mismatch: ${path}`);
   }
 }
 function unpack(tarball: string, name: string): string {

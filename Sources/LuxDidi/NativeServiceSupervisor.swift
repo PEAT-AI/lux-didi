@@ -31,22 +31,28 @@ import Security
         try process.run()
         try input.fileHandleForReading.close(); try output.fileHandleForWriting.close()
         let stream = output.fileHandleForReading
+        let descriptor = stream.fileDescriptor
         reader = Task.detached { [weak self] in
+            // The reader owns closing this FD: cancelling must not race a new
+            // process reusing a descriptor while this thread is still reading.
+            defer { try? stream.close() }
             var buffer = Data()
             var delivered = false
-            do {
-                while let chunk = try stream.read(upToCount: 1025), !chunk.isEmpty {
-                    if delivered { await self?.invalidOutput(); return }
-                    buffer.append(chunk)
-                    guard buffer.count <= 1024 else { await self?.invalidOutput(); return }
-                    if let newline = buffer.firstIndex(of: 10) {
-                        guard newline == buffer.index(before: buffer.endIndex) else { await self?.invalidOutput(); return }
-                        delivered = true
-                        await self?.received(Data(buffer.dropLast()))
-                    }
+            while !Task.isCancelled {
+                var bytes = [UInt8](repeating: 0, count: 1025)
+                let count = bytes.withUnsafeMutableBytes { Darwin.read(descriptor, $0.baseAddress, $0.count) }
+                if count < 0 && errno == EINTR { continue }
+                if count <= 0 { break }
+                if delivered { await self?.invalidOutput(); return }
+                buffer.append(contentsOf: bytes.prefix(count))
+                guard buffer.count <= 1024 else { await self?.invalidOutput(); return }
+                if let newline = buffer.firstIndex(of: 10) {
+                    guard newline == buffer.index(before: buffer.endIndex) else { await self?.invalidOutput(); return }
+                    delivered = true
+                    await self?.received(Data(buffer.dropLast()))
                 }
-                await self?.endedOutput()
-            } catch { await self?.endedOutput() }
+            }
+            await self?.endedOutput()
         }
     }
     func writeStart(_ data: Data) throws { try input.fileHandleForWriting.write(contentsOf: data) }
@@ -99,7 +105,6 @@ import Security
             if !isRunning { continuation.resume() } else { exitWaiters.append(continuation) }
         }
         escalation.cancel(); reader?.cancel()
-        try? output.fileHandleForReading.close()
         frameWaiter?.resume(throwing: NativeServiceError.exited); frameWaiter = nil
     }
 }

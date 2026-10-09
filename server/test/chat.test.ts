@@ -6,9 +6,11 @@ import { join } from 'node:path';
 import { fork } from 'node:child_process';
 import { once } from 'node:events';
 import { openFixture, result } from './chat-process.js';
-import { ChatService, ChatError, type ChatConfig, type RunSnapshot } from '../chat/index.js';
+import { ChatService, ChatError, chatMigrations, type ChatConfig, type RunSnapshot } from '../chat/index.js';
+import { Store } from '../runtime/store.js';
 import { PROMPT_VERSION, compilePrompt } from '../prompt/index.js';
 import type { ModelPort, ModelRequest, ModelControl, ModelResult } from '../adapters/model/types.js';
+import type { SchemaMigration } from '../contracts/storage.js';
 
 class CountingModel implements ModelPort {
   calls: ModelRequest[] = []; controls: ModelControl[] = [];
@@ -21,9 +23,9 @@ class CountingModel implements ModelPort {
   }
   finish(index = 0) { this.pending[index]?.(result(this.calls[index]!, this.status, this.text)); }
 }
-function fixture(overrides: Partial<ChatConfig> = {}) {
+function fixture(overrides: Partial<ChatConfig> = {}, migrations: readonly SchemaMigration[] = []) {
   const dir = mkdtempSync(join(tmpdir(), 'chat-test-')); const model = new CountingModel();
-  const f = openFixture(dir, model, overrides); const session = f.createSession();
+  const f = openFixture(dir, model, overrides, migrations); const session = f.createSession();
   return { ...f, model, dir, session,
     accept(text = 'Hello', key = 'key') { return f.chat.accept({ sessionId: session.id, text, idempotencyKey: key }, f.context); },
     entries() { return f.store.transaction(tx => f.domain.execute(tx, 'getSession', { id: session.id }, f.context)).entries; },
@@ -56,9 +58,8 @@ test('accept/replay/fingerprint collision and active-session serialization are d
 });
 
 test('accept rolls back user entry if chat insert fails; Store transactions are synchronous', () => {
-  const f = fixture();
+  const f = fixture({}, [{ owner: 'fault', version: 1, statements: ["CREATE TRIGGER reject_run BEFORE INSERT ON chat_runs BEGIN SELECT RAISE(ABORT,'run write rejected'); END"] }]);
   try {
-    f.store.transaction(tx => tx.run("CREATE TRIGGER reject_run BEFORE INSERT ON chat_runs BEGIN SELECT RAISE(ABORT,'run write rejected'); END"));
     assert.throws(() => f.accept(), /run write rejected/); assert.equal(f.entries().length, 0);
     assert.equal(f.model.calls.length, 0);
     assert.throws(() => f.store.transaction((async () => {}) as never), /synchronous/);
@@ -114,10 +115,9 @@ test('complete wins: cancel after final commit returns completion unchanged', as
 });
 
 test('terminal answer/status commit is atomic and persistence failure never claims saved completion', async () => {
-  const f = fixture(); f.model.delayed = true;
+  const f = fixture({}, [{ owner: 'fault', version: 1, statements: ["CREATE TRIGGER reject_complete BEFORE UPDATE ON chat_runs WHEN NEW.outcome='complete' BEGIN SELECT RAISE(ABORT,'terminal rejected'); END"] }]); f.model.delayed = true;
   try {
     const run = f.accept(); await started(f);
-    f.store.transaction(tx => tx.run("CREATE TRIGGER reject_complete BEFORE UPDATE ON chat_runs WHEN NEW.outcome='complete' BEGIN SELECT RAISE(ABORT,'terminal rejected'); END"));
     f.model.finish(); const done = await terminal(f, run);
     assert.equal(done.outcome, 'persistence_failed'); assert.equal(done.finalEntryId, null); assert.equal(f.entries().length, 1);
   } finally { f.close(); }
@@ -161,15 +161,15 @@ test('sequenced provisional events, reconnect snapshot, bounded overflow explici
 test('long archive selects contiguous whole-turn suffix using actual compiler accounting and preserves all records', async () => {
   const f = fixture({ context: { budgets: { trustedChars: 20000, contextChars: 12000, historyChars: 1200 }, sources: [] } });
   try {
-    for (let i = 0; i < 80; i++) f.store.transaction(tx => f.domain.execute(tx, 'appendEntry', { sessionId: f.session.id, text: `old-${i} ${'x'.repeat(70)}`, role: 'user', timeZone: 'UTC' }, f.context));
+    for (let i = 0; i < 180; i++) f.store.transaction(tx => f.domain.execute(tx, 'appendEntry', { sessionId: f.session.id, text: `old-${i} ${'x'.repeat(70)}`, role: 'user', timeZone: 'UTC' }, f.context));
     const run = f.accept('Current'); await terminal(f, run);
     const request = f.model.calls[0]!; const contents = request.contents;
-    assert.equal(JSON.parse(contents.at(-1)!.parts[0]!.text!).text, 'Current'); assert.ok(contents.length < 81);
+    assert.equal(JSON.parse(contents.at(-1)!.parts[0]!.text!).text, 'Current'); assert.ok(contents.length < 181);
     const trace = f.store.transaction(tx => tx.get('SELECT trace FROM chat_runs WHERE run_id=?', [run.runId]));
-    const parsed = JSON.parse(String(trace!.trace)); assert.equal(parsed.omittedHistoryCount, 81 - contents.length);
+    const parsed = JSON.parse(String(trace!.trace)); assert.equal(parsed.omittedHistoryCount, 181 - contents.length);
     const texts = contents.slice(0, -1).map(c => JSON.parse(c.parts[0]!.text!).text);
-    assert.deepEqual(texts, f.entries().slice(80 - texts.length, 80).map(e => e.text));
-    assert.equal(f.entries().length, 82); assert.deepEqual(request.declarations, []);
+    assert.deepEqual(texts, f.entries().slice(180 - texts.length, 180).map(e => e.text));
+    assert.equal(f.entries().length, 182); assert.deepEqual(request.declarations, []);
     assert.equal(request.promptVersion, PROMPT_VERSION); assert.ok(request.system.includes('de-DE'));
     assert.equal(JSON.stringify(request).includes(f.store.assistantId), false);
     const expected = compilePrompt(parsed.compileInput); assert.equal(expected.manifest.systemHash, parsed.manifest.systemHash);
@@ -207,7 +207,11 @@ test('noncomplete provider text never enters the next ordinary history', async (
 for (const mode of ['accepted', 'intent', 'called']) {
   test(`real SIGKILL ${mode}: startup sweep no replay, explicit retry/new identity, prior entries preserved`, async () => {
     const dir = mkdtempSync(join(tmpdir(), 'chat-kill-')); const model = new CountingModel();
-    let f = openFixture(dir, model); const session = f.createSession(); f.store.close();
+    let f = openFixture(dir, model); const session = f.createSession(); const completeSession = f.createSession();
+    const completed = f.chat.accept({ sessionId: completeSession.id, text: 'Preserved complete turn', idempotencyKey: 'preserve' }, f.context);
+    for await (const e of f.chat.subscribe(completed.runId, f.context)) if (e.type === 'snapshot' && e.run.state === 'terminal') { assert.equal(e.run.outcome, 'complete'); break; }
+    const terminalRow = f.store.transaction(tx => tx.get('SELECT * FROM chat_runs WHERE run_id=?', [completed.runId]));
+    model.calls = []; model.controls = []; f.store.close();
     const child = fork(new URL('./chat-process.js', import.meta.url), ['child', dir, mode, session.id], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
     let runId = ''; let killed = false;
     try {
@@ -221,13 +225,81 @@ for (const mode of ['accepted', 'intent', 'called']) {
       const exited = once(child, 'exit'); child.kill('SIGKILL'); killed = true; await exited;
       assert.ok(runId); const calls = existsSync(join(dir, 'calls')) ? readFileSync(join(dir, 'calls'), 'utf8').trim().split('\n').length : 0;
       assert.equal(calls, mode === 'called' ? 1 : 0);
+      // Rotate actual synthetic Store authority before constructing startup
+      // CHAT: recovery sees genuine prior-epoch orphans, not edited run states.
+      const rotated = new Store(dir, [...f.domain.migrations, ...chatMigrations]);
+      rotated.transaction(tx => tx.run("UPDATE runtime_meta SET value=? WHERE key='authorityEpoch'", ['next-synthetic-epoch'])); rotated.close();
       f = openFixture(dir, model); const recovered = f.chat.get(runId, f.context);
+      assert.notEqual(recovered.authorityEpoch, f.context.authorityEpoch);
+      assert.deepEqual(f.store.transaction(tx => tx.get('SELECT * FROM chat_runs WHERE run_id=?', [completed.runId])), terminalRow);
+      assert.equal(f.chat.get(completed.runId, f.context).outcome, 'complete');
+      assert.equal(f.store.transaction(tx => tx.get('SELECT terminal_epoch FROM chat_runs WHERE run_id=?', [runId]))!.terminal_epoch, f.context.authorityEpoch);
       assert.equal(recovered.outcome, mode === 'accepted' ? 'not_dispatched' : 'outcome_unknown'); assert.equal(model.calls.length, 0);
       const replay = f.chat.accept({ sessionId: session.id, text: 'Synthetic child turn', idempotencyKey: 'child' }, f.context); assert.equal(replay.runId, runId); assert.equal(model.calls.length, 0);
       const next = f.chat.accept({ sessionId: session.id, text: 'New explicit attempt', idempotencyKey: 'new', retryOf: runId }, f.context); assert.notEqual(next.runId, runId);
       for await (const e of f.chat.subscribe(next.runId, f.context)) if (e.type === 'snapshot' && e.run.state === 'terminal') { assert.equal(e.run.outcome, 'complete'); break; }
       assert.equal(model.calls.length, 1); f.chat.recover(f.context); assert.equal(f.chat.get(next.runId, f.context).outcome, 'complete');
       const entries = f.store.transaction(tx => f.domain.execute(tx, 'getSession', { id: session.id }, f.context)).entries; assert.equal(entries.length, 3);
-    } finally { if (!killed) { const exited = once(child, 'exit'); child.kill('SIGKILL'); await exited; } f.store.close(); rmSync(dir, { recursive: true, force: true }); }
+    } finally { if (!killed && child.exitCode === null && child.signalCode === null) { const exited = once(child, 'exit'); child.kill('SIGKILL'); await exited; } f.store.close(); rmSync(dir, { recursive: true, force: true }); }
   });
 }
+
+test('public snapshots/subscriber events never contain provider parts or private compiler manifests', async () => {
+  const f = fixture(); f.model.delayed = true;
+  try {
+    const run = f.accept(); const stream = f.chat.subscribe(run.runId, f.context);
+    const events: unknown[] = [];
+    const collect = (async () => { for await (const event of stream) { events.push(event); if (event.type === 'snapshot' && event.run.state === 'terminal') return; } })();
+    await started(f); f.model.controls[0]!.onEvent?.({ type: 'text', text: 'Safe provisional', provisional: true });
+    f.model.finish(); await collect;
+    const publicValue = JSON.stringify({ run, events, lookup: f.chat.get(run.runId, f.context) });
+    for (const forbidden of ['must-not-persist', 'thoughtSignature', 'providerContent', 'compileInput', 'manifest', 'trace', f.store.assistantId]) assert.equal(publicValue.includes(forbidden), false, forbidden);
+    const row = f.store.transaction(tx => tx.get('SELECT * FROM chat_runs WHERE run_id=?', [run.runId]));
+    assert.ok(String(row!.trace).includes('manifest')); assert.equal(JSON.stringify(row).includes('must-not-persist'), false);
+  } finally { f.close(); }
+});
+
+test('startup recovery is required; stale run epoch cannot be cancelled or silently overwritten', () => {
+  const f = fixture({ schedule: () => {} });
+  try {
+    const cold = new ChatService(f.config);
+    assert.throws(() => cold.accept({ sessionId: f.session.id, text: 'x', idempotencyKey: 'cold' }, f.context), error('recovery_required'));
+    const run = f.accept();
+    f.store.transaction(tx => tx.run('UPDATE chat_runs SET authority_epoch=? WHERE run_id=?', ['prior-epoch', run.runId]));
+    assert.throws(() => f.chat.cancel(run.runId, f.context), error('epoch_mismatch'));
+    assert.equal(f.chat.get(run.runId, f.context).state, 'accepted');
+    assert.equal(f.entries().length, 1); assert.equal(f.model.calls.length, 0);
+  } finally { f.close(); }
+});
+
+test('history suffix never splits a completed user/assistant turn', async () => {
+  const f = fixture({ context: { budgets: { trustedChars: 20000, contextChars: 12000, historyChars: 1000 }, sources: [] } });
+  try {
+    for (let i = 0; i < 8; i++) await terminal(f, f.accept(`User-${i} ${'x'.repeat(70)}`, `k${i}`));
+    const request = f.model.calls.at(-1)!;
+    assert.equal(request.contents[0]!.role, 'user'); assert.equal(request.contents.at(-1)!.role, 'user');
+    assert.ok(request.contents.length < 15); assert.equal(request.contents.length % 2, 1);
+    for (let i = 0; i < request.contents.length - 1; i += 2) assert.deepEqual(request.contents.slice(i, i + 2).map(c => c.role), ['user', 'model']);
+    assert.equal(f.entries().length, 16);
+  } finally { f.close(); }
+});
+
+test('unknown recalled evidence classification is unavailable even when history is ordinary', async () => {
+  const f = fixture({ context: { budgets: { trustedChars: 20000, contextChars: 12000, historyChars: 12000 }, sources: [{ id: 'recall', state: 'available' }], recall: { q: 'needle', limit: 10 } } });
+  try {
+    const chat = new ChatService({ ...f.config, classify: subject => subject.kind === 'recall' ? null : ({ ownerId: f.store.assistantId, dataClass: 'ordinary' }) }); chat.recover(f.context);
+    const run = chat.accept({ sessionId: f.session.id, text: 'needle', idempotencyKey: 'no-evidence-class' }, f.context);
+    for await (const event of chat.subscribe(run.runId, f.context)) if (event.type === 'snapshot' && event.run.state === 'terminal') { assert.equal(event.run.outcome, 'unavailable'); break; }
+    assert.equal(f.model.calls.length, 0); assert.equal(f.entries().length, 1);
+  } finally { f.close(); }
+});
+
+test('all terminal writes unavailable: no completion event/assistant entry, explicit subscriber resync', async () => {
+  const f = fixture({}, [{ owner: 'fault', version: 1, statements: ["CREATE TRIGGER reject_terminal BEFORE UPDATE ON chat_runs WHEN NEW.state='terminal' BEGIN SELECT RAISE(ABORT,'storage unavailable'); END"] }]); f.model.delayed = true;
+  try {
+    const run = f.accept(); await started(f); const stream = f.chat.subscribe(run.runId, f.context)[Symbol.asyncIterator]();
+    await stream.next(); f.model.finish();
+    const event = (await stream.next()).value; assert.equal(event.type, 'resync_required'); assert.equal(event.reason, 'storage_unavailable');
+    assert.equal(f.chat.get(run.runId, f.context).state, 'dispatch_intent'); assert.equal(f.entries().length, 1);
+  } finally { f.close(); }
+});

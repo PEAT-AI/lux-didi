@@ -5,6 +5,7 @@ import { ChatService, chatMigrations, type ChatConfig } from '../chat/index.js';
 import { validatePreferences } from '../prompt/index.js';
 import type { ModelPort, ModelRequest, ModelResult } from '../adapters/model/types.js';
 import type { DomainContext } from '../contracts/domain.js';
+import type { SchemaMigration } from '../contracts/storage.js';
 import { appendFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -13,9 +14,9 @@ export function result(request: ModelRequest, status: ModelResult['status'] = 'c
     reason: 'synthetic', prompt: { version: request.promptVersion, hash: 'synthetic', omittedContextIds: [] },
     timings: { kind: 'synthetic', totalMs: 0, firstTextMs: null } };
 }
-export function openFixture(dir: string, model: ModelPort, overrides: Partial<ChatConfig> = {}) {
+export function openFixture(dir: string, model: ModelPort, overrides: Partial<ChatConfig> = {}, migrations: readonly SchemaMigration[] = []) {
   const domain = createDomainPort({ outbox: Outbox });
-  const store = new Store(dir, [...domain.migrations, ...chatMigrations]);
+  const store = new Store(dir, [...domain.migrations, ...chatMigrations, ...migrations]);
   const context: DomainContext = { assistantId: store.assistantId, clientId: 'test-actor', authorityEpoch: store.authorityEpoch, now: new Date(0).toISOString() };
   const config: ChatConfig = { store, domain, model,
     route: { provider: 'synthetic', model: 'counting', available: true, allows: () => true },

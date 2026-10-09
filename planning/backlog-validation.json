@@ -2,14 +2,18 @@
   "checks": [
     {
       "details": {
-        "epics": 10,
+        "epics": 13,
         "program": 1,
-        "tasks": 90,
-        "total": 101
+        "tasks": 105,
+        "total": 119
       },
-      "failures": [],
+      "failures": [
+        "expected 101 nodes, found 119",
+        "expected exactly 10 epics, found 13",
+        "expected exactly 90 tasks, found 105"
+      ],
       "id": "V-01",
-      "status": "PASS",
+      "status": "FAIL",
       "title": "Backlog parses and covers the expected totals",
       "warnings": []
     },
@@ -31,26 +35,44 @@
     },
     {
       "details": {
-        "count": 101,
+        "count": 119,
         "expected": 101
       },
-      "failures": [],
+      "failures": [
+        "unexpected ids: ['A19', 'A20', 'A21', 'A22', 'A23', 'A24', 'C19', 'C20', 'C21', 'C22', 'C23', 'E11', 'E12', 'E13', 'F19', 'F20', 'F21', 'F22']"
+      ],
       "id": "V-04",
-      "status": "PASS",
+      "status": "FAIL",
       "title": "Id format and complete coverage",
       "warnings": []
     },
     {
       "details": {},
-      "failures": [],
+      "failures": [
+        "A19: epic 'E11' is not an E01..E10 value",
+        "A20: epic 'E11' is not an E01..E10 value",
+        "A21: epic 'E11' is not an E01..E10 value",
+        "A22: epic 'E11' is not an E01..E10 value",
+        "A23: epic 'E11' is not an E01..E10 value",
+        "A24: epic 'E11' is not an E01..E10 value",
+        "C19: epic 'E12' is not an E01..E10 value",
+        "C20: epic 'E12' is not an E01..E10 value",
+        "C21: epic 'E12' is not an E01..E10 value",
+        "C22: epic 'E12' is not an E01..E10 value",
+        "C23: epic 'E12' is not an E01..E10 value",
+        "F19: epic 'E13' is not an E01..E10 value",
+        "F20: epic 'E13' is not an E01..E10 value",
+        "F21: epic 'E13' is not an E01..E10 value",
+        "F22: epic 'E13' is not an E01..E10 value"
+      ],
       "id": "V-05",
-      "status": "PASS",
+      "status": "FAIL",
       "title": "Epic membership and parent/child references",
       "warnings": []
     },
     {
       "details": {
-        "edges": 206
+        "edges": 242
       },
       "failures": [],
       "id": "V-06",
@@ -61,10 +83,10 @@
     {
       "details": {
         "M0": 14,
-        "M1": 44,
-        "M2": 20,
-        "M3": 21,
-        "M4": 2
+        "M1": 45,
+        "M2": 25,
+        "M3": 26,
+        "M4": 9
       },
       "failures": [],
       "id": "V-07",
@@ -75,12 +97,12 @@
     {
       "details": {
         "max": 834,
-        "median": 522,
-        "min": 326,
+        "median": 472,
+        "min": 303,
         "values": {
-          "A01": 435,
+          "A01": 444,
           "A02": 412,
-          "A03": 477,
+          "A03": 487,
           "A04": 459,
           "A05": 472,
           "A06": 470,
@@ -91,11 +113,17 @@
           "A11": 406,
           "A12": 415,
           "A13": 440,
-          "A14": 481,
+          "A14": 497,
           "A15": 413,
           "A16": 466,
           "A17": 439,
-          "A18": 402,
+          "A18": 406,
+          "A19": 322,
+          "A20": 324,
+          "A21": 311,
+          "A22": 303,
+          "A23": 306,
+          "A24": 309,
           "B01": 473,
           "B02": 460,
           "B03": 478,
@@ -132,6 +160,11 @@
           "C16": 834,
           "C17": 677,
           "C18": 665,
+          "C19": 315,
+          "C20": 320,
+          "C21": 319,
+          "C22": 310,
+          "C23": 311,
           "D01": 522,
           "D02": 672,
           "D03": 588,
@@ -150,8 +183,8 @@
           "D16": 589,
           "D17": 653,
           "D18": 685,
-          "F01": 430,
-          "F02": 544,
+          "F01": 434,
+          "F02": 554,
           "F03": 374,
           "F04": 621,
           "F05": 383,
@@ -165,9 +198,13 @@
           "F13": 533,
           "F14": 349,
           "F15": 633,
-          "F16": 584,
-          "F17": 593,
-          "F18": 472
+          "F16": 601,
+          "F17": 600,
+          "F18": 472,
+          "F19": 325,
+          "F20": 317,
+          "F21": 306,
+          "F22": 305
         }
       },
       "failures": [],
@@ -246,6 +283,8 @@
           "README.md",
           "docs/acceptance.md",
           "docs/architecture.md",
+          "docs/client-service-contract.md",
+          "docs/cloud-deployment.md",
           "docs/decisions.md",
           "docs/overnight-execution.md",
           "docs/parallel-masters.md",
@@ -260,15 +299,18 @@
           "scripts/backlog_validate.py"
         ]
       },
-      "failures": [],
+      "failures": [
+        "unexpected published path: docs/client-service-contract.md",
+        "unexpected published path: docs/cloud-deployment.md"
+      ],
       "id": "V-13",
-      "status": "PASS",
+      "status": "FAIL",
       "title": "Repository hygiene and intended public set",
       "warnings": []
     },
     {
       "details": {
-        "references": 778
+        "references": 934
       },
       "failures": [],
       "id": "X-01",
@@ -310,7 +352,7 @@
     },
     {
       "details": {
-        "assembly_digest": "669648727adff01c327179c5631f0a816e34294f97d9273b0dea616812141c4a"
+        "assembly_digest": "538b768df652204475019aa35d56ee3c6d88ed8cda51aeded309c134535fd649"
       },
       "failures": [],
       "id": "X-06",
@@ -320,7 +362,7 @@
     },
     {
       "details": {
-        "hashed_nodes": 101
+        "hashed_nodes": 119
       },
       "failures": [],
       "id": "X-07",
@@ -337,9 +379,9 @@
       "warnings": []
     }
   ],
-  "failed": false,
+  "failed": true,
   "file_count": 13,
   "packets_mode": false,
   "schema": "lux-didi.validation/1",
-  "tree_digest": "08f1f554e105137116ff7c6296002cd77e0a5817d180f1817d7ed8092d0fb8b5"
+  "tree_digest": "a914a39b06354cacfa3253eeb76dc9d2800985a521055b5f9e8f3ed320017d9f"
 }

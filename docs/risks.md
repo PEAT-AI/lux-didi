@@ -2,7 +2,7 @@
 
 Status: proposed risk register for the plan. Each risk names a trigger that would make it real, the mitigation already built into the plan, and the issues that own it. None of these risks is a prediction; they are the failure modes the plan deliberately works against.
 
-- R-01 Host chosen on opinion rather than evidence, and a later change invalidates work built on it. Trigger: the host decision is made without the measured comparison or without an architecture decision record. Mitigation: A01 owns a benchmark spike against one fixed scenario and a decision record; A02 keeps the contracts transport-neutral. Owners: A01, A02.
+- R-01 The recorded service stack is not validated by measurement. Trigger: a later measurement contradicts the TypeScript on Node with SQLite service, or the Superseded Swift prototype turns out to hold a capability the companion cannot reach. Mitigation: A01 records the stack and the superseded prototype explicitly; A19 keeps the seam behind a versioned contract so a placement or runtime change is a seam change, not a rewrite; the companion keeps the native surfaces. Owners: A01, A19.
 - R-02 Account mix-up: a read or draft silently uses a different account than the user chose. Trigger: tokens stored per tool rather than per account, or the account inferred from context. Mitigation: per-account OAuth with credential-store storage; explicit account for send and commit; account mix-up is a named adverse test. Owners: C01, C16, F10.
 - R-03 Prompt injection through mail, chat or tool results causes an unauthorized effect. Trigger: untrusted content instructs the model to send, delete or change a grant. Mitigation: reasoning and tool text never create authority; draft-only default; the broker checks grants at dispatch; injection containment tests. Owners: C16, C12, A07.
 - R-04 A dispatched action has an unknown outcome and is misreported as canceled or repeated. Trigger: cancellation after dispatch, or a timeout with no response. Mitigation: receipts, an explicit unknown-outcome state, reconciliation before any retry, and undo as a compensating action. Owners: A08, A05.
@@ -24,3 +24,27 @@ Status: proposed risk register for the plan. Each risk names a trigger that woul
 - R-20 The first slice grows until it cannot ship. Trigger: scope pressure adds send, delete, wake word or public distribution to M1. Mitigation: the first slice is fixed in the roadmap and acceptance documents, with what it deliberately excludes named. Owners: P00, F10, D06.
 - R-21 A model call reaches a provider before its route policy resolves. Trigger: a new data class, provider path or tool is added without passing the entry gate. Mitigation: A06 is the single safe model-call entry and default-denies while policy is missing; completion of source-content cloud paths waits for C15; egress refusal is an acceptance scenario. Owners: A06, C15.
 - R-22 An expired or revoked grant leaves stale silent data or a dead account. Trigger: token expiry, user revocation, or a testing-status refresh-token expiry. Mitigation: C02 stops ingestion for the account and shows the coverage gap and reauthorization state; C17 propagates revocation; scenarios S11 and S12 cover it. Owners: C02, C17.
+
+- R-23 Cloud and laptop both write at once. Trigger: an operator starts the virtual machine without
+  transferring the authority epoch. Mitigation: an epoch token on every write path, a single-writer
+  lock that makes a second instance refuse to start, and an explicit transfer procedure. Owners: C21,
+  A20.
+- R-24 A revoked device acts on a stale intent. Trigger: intents queued without expiry, or a replay
+  accepted. Mitigation: scoped expiring intents with a nonce, a revocation epoch that expires queued
+  items, and a device-side grant check before any effect. Owners: C22, C23.
+- R-25 Private data cached on a shared or stolen browser. Trigger: a serviceworker caches a query
+  result or a progress payload. Mitigation: shell-only cache policy, sign-out clears the partition,
+  and a test that asserts zero cached private payloads. Owners: F20, F19.
+- R-26 A cloud process acquires local authority by implication. Trigger: a deployment grants the
+  service device or operating-system capability, or a channel message is read as authorization.
+  Mitigation: the hosting boundary statement, device grants that are separate and device-enforced, and
+  channel identities that cannot act unbound. Owners: A24, C22, C20.
+- R-27 Credential sprawl on a host. Trigger: a secret value copied into an image, a configuration
+  file, an environment dump or a log. Mitigation: references only, a resolver at call time, and image
+  and log scans in the acceptance path. Owners: A21, C15.
+- R-28 Hosting cost surprise. Trigger: a host left running or an egress loop that repeats. Mitigation:
+  no host without an explicit authorization, a runbook that records teardown, and default-deny egress.
+  Owners: A20, A24.
+- R-29 A channel message is treated as identity proof. Trigger: a binding learned from conversation or
+  a verified address promoted into authority. Mitigation: explicit binding only, and an unbound
+  identity that can be read but cannot act. Owners: C20, C19.

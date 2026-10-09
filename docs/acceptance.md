@@ -1,6 +1,6 @@
 # Acceptance scenarios and proposed budgets
 
-Status: proposed acceptance plan. No product exists, so no scenario here has been run, and no test command for a product exists yet. This page defines what the first slice must demonstrably do once it is built, and how that evidence is recorded. Failing to meet a scenario is a real outcome; a document saying a scenario passes is not evidence.
+Status: proposed acceptance plan on the decided stack (PLAN-R1). No product exists, so no scenario here has been run, and no test command for a product exists yet. This page defines what the first slice must demonstrably do once it is built, and how that evidence is recorded. Failing to meet a scenario is a real outcome; a document saying a scenario passes is not evidence.
 
 ## How to read this page
 
@@ -63,3 +63,27 @@ Resource and energy shape (proposed ceilings, to be pinned by A18 before any alw
 - A scenario passes only with a recorded command and a pasted result attached to its owning issue, including the adverse variants that were actually run.
 - Partial success is reported as partial. Missing coverage is reported, not inferred away.
 - Until a product exists, every row above is PROPOSED, and the acceptance plan itself is reviewed for realism, not executed.
+
+## Milestone ordering revision (PLAN-R1)
+
+The stack decision changes what the first slice has to prove, not what the product must do. The
+ordering below supersedes any earlier reading in which the first night proves a native-only
+architecture.
+
+- First slice (M1): the local daily loop works unchanged, and the service seam (A19) is part of the
+  slice because both the Mac companion and the browser client depend on it.
+- Responsive client proof: a phone browser reaches the same loopback service through the shell (F19)
+  with a shell-only cache (F20). This proves the client path; it is not a claim that a mobile feature
+  is complete.
+- Channels and authority (M3): the authority epoch (C21), device grants (C22) and offline delivery
+  (C23) follow the slice, because they constrain the loop rather than enable it.
+- Portability (M4): the runbook, secret references, backup, restore and rehearsal (A20 to A24). No
+  host is provisioned in this window.
+
+## Acceptance in this bounded window
+
+Within the window 2026-10-09T16:44:08Z to 2026-10-10T08:44:08Z the required acceptance is a working
+local loop, a service seam and a responsive client proof where each is reachable, each with recorded
+evidence. It is explicitly not a claim that a virtual machine is live, that Android is feature
+complete, that any channel is connected, or that M1 as a milestone is done. A partial slice is
+reported as partial, and an issue closes only when all of its acceptance criteria are met.

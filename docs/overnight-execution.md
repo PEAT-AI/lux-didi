@@ -1,12 +1,12 @@
 # First-night execution plan
 
-Status: proposed execution plan. The implementation target must be selected before this plan becomes an unattended run. The published roadmap is a product plan, not a claim that the application already exists.
+Status: authorized and bounded execution plan. The window is 2026-10-09T16:44:08Z to 2026-10-10T08:44:08Z (14:14 IST), with final hardening beginning by 06:44 UTC, and no CI or paid run is part of it. The published roadmap is a product plan, not a claim that the application already exists.
 
 ## The result to aim for
 
-A user opens the local Mac app, creates or captures a commitment, sees it in today's plan, closes and reopens the app, recalls the originating conversation, corrects the commitment, receives a due reminder, and completes it without another stale reminder appearing. A separate real voice spike proves hotkey, microphone, playback and interruption on the target Mac.
+A user opens the Mac companion, which reaches the local service, creates or captures a commitment, sees it in today's plan, closes and reopens the app, recalls the originating conversation, corrects the commitment, receives a due reminder, and completes it without another stale reminder appearing. A separate real voice spike proves hotkey, microphone, playback and interruption on the target Mac.
 
-This is a first-night integration proof toward M1. It is not the completion of M1, all email/calendar integrations, public distribution or the 90-task product. Existing issues close only when all their acceptance criteria are met.
+This is a first-night integration proof toward M1. It is not the completion of M1, all email/calendar integrations, public distribution, the 105-work-item product, a live virtual machine or a feature-complete mobile client. Existing issues close only when all their acceptance criteria are met.
 
 ## Concurrency
 
@@ -66,3 +66,23 @@ Before an actual unattended run, record the selected scope, stop time, permitted
 Normal feature-branch commits, scoped pushes and the agreed PR are within an authorized implementation run. Production dispatch, external messages, purchases, destructive operations and a main merge require their own applicable authorization. This document grants none of them.
 
 The morning handoff contains the exact revision, a short reproducible demonstration, observed checks, PR status, which issue criteria are satisfied, remaining blockers and the next executable unit. Publish no fabricated completion count.
+
+## Authorization and bounded window
+
+Authorized by the user on 2026-10-09; the recorded window ends 2026-10-10T08:44:08Z, with final
+hardening beginning by 06:44 UTC. The authorization covers local implementation, local test
+installation and local verification. It does not cover cloud provisioning or purchases, CI or paid
+runs, human sends, deletion of unrelated data, changes to the harness installation, or private
+content in the public repository.
+
+The same window is authorized to revise the published plan: the roadmap, the decision record, the
+acceptance order and the issue manifest are updated to record the service stack ruling. That revision
+performs no tracker write until an independent review has passed and an explicit publish ruling has
+been given, and the branch is merged only by the owner.
+
+
+## Boundary between this assistant and other services
+
+Hosting this assistant is one decision. Migrating any other repository or Lux package is a separate
+decision owned elsewhere, is not covered by this window, and is not implied by the portable service
+work. This assistant shares no runtime directory and no database with another package.

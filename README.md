@@ -43,6 +43,8 @@ The first real-user slice is deliberately small. A person installs an early buil
 - [docs/decisions.md](docs/decisions.md): adjudicated choices and deferred proof questions.
 - [docs/risks.md](docs/risks.md): material risks with triggers, mitigations and owners.
 - [docs/overnight-execution.md](docs/overnight-execution.md): the reviewed first-night execution plan (proposed; target selection pending).
+- [docs/cloud-deployment.md](docs/cloud-deployment.md): the designed path from the loopback service to a Linux virtual machine, with runbook, secret, backup and hosting-boundary rules.
+- [docs/client-service-contract.md](docs/client-service-contract.md): the contract the Mac companion, the browser client and the channel adapters share.
 
 ## If you have five minutes
 

@@ -26,10 +26,25 @@ Primary sources:
 - Tauri, macOS hotkey implementation: https://raw.githubusercontent.com/tauri-apps/global-hotkey/dev/src/platform_impl/macos/mod.rs
 - Electron, global shortcut, updater and power monitor: https://www.electronjs.org/docs/latest/api/global-shortcut, https://www.electronjs.org/docs/latest/api/auto-updater, https://www.electronjs.org/docs/latest/api/power-monitor
 - MDN, Keyboard Lock: https://developer.mozilla.org/en-US/docs/Web/API/Keyboard/lock
-- OpenClaw public documentation, used as a design reference for a bounded host plus gateway and companion model: gateway pairing and access control https://docs.openclaw.ai/gateway/pairing; the gated pinned comparison is assigned to A01 and no capability is assumed.
+- OpenClaw public documentation, used as a design reference for a bounded host plus gateway and companion model: gateway pairing and access control https://docs.openclaw.ai/gateway/pairing; the pinned comparison was consumed by the A01 service-stack decision record and no capability is assumed.
 - OpenClaw repository and releases, for the gated pinned comparison: https://github.com/openclaw/openclaw and https://api.github.com/repos/openclaw/openclaw/releases
 
 A gated comparison of a thin native host against integrating the current pinned OpenClaw release as a host or plugin carrier is assigned to issue A01. Feature count is not a defect in itself; the comparison selects on working seams and maintenance burden. No fork is mandated, and no configuration may be claimed workable without evidence.
+
+## Runtime and deployment stack decision (PLAN-R1)
+
+The comparison earlier on this page was a source comparison, not a measurement. The council round
+b9bdda79 and the architect ruling PLAN-R1 closed it: one authoritative service written in TypeScript
+on Node with a SQLite store, a Swift companion for the native surfaces, and a responsive progressive
+web application as the portable client, with the same process running on loopback now and on a Linux
+virtual machine later. The native framework advantages the comparison names (global hotkey, control
+of the audio processing graph, on-device streaming speech, sleep and wake hooks) are preserved by
+keeping those surfaces in the companion rather than by making the companion the core. The earlier
+Swift runtime and domain prototype is superseded as a product core; its findings remain evidence for
+companion audio, permission and wake behaviour, and it is recorded as superseded in A01.
+
+No deployment claim follows from this section. No host was provisioned, no image was built, no
+measurement was taken, and the operational runbook is planned work in E11.
 
 ## Voice transport
 

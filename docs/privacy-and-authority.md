@@ -60,3 +60,43 @@ Where a company service has its own permission model, Didi presents the token th
 ## Publication hygiene for this repository
 
 Never commit or copy into public artifacts: personal profiles and facts, private transcripts or message contents, internal hostnames, ports or endpoint URLs, internal record identifiers, unpublished prompt or persona text, credential values of any kind, internal run or session records, or one person's private operating rules presented as product policy. Publish the generic rule and its rationale instead, with synthetic identities (`example.invalid`) where an example is needed. The planning validator scans the repository for common violations; the independent reviewer judges content, not just patterns.
+
+## Authority epochs and host transfer
+
+One assistant has exactly one active authority epoch, and every write path must present the epoch
+token. A laptop and a virtual machine never both hold it: there is no cloud and local multi-writer
+synchronisation, no last-writer-wins merge and no automatic transfer. Moving the assistant is an
+explicit prepare, quiesce, revoke, activate and verify sequence, and the previous holder's writes are
+refused rather than reconciled. Every transfer is audited with its reason and evidence (C21).
+
+## Cloud egress
+
+Running the service off the laptop changes what leaves the machine, so the route table is evaluated
+at the deployed service boundary as well as in local mode. A destination and purpose that is not
+classified is denied by default. A payload class the route table does not permit is blocked and the
+product degrades (a local summary, or a question) rather than sending anyway. Credential values are
+resolved at call time and never travel in a payload, in a configuration file, in an image or in a log
+(A21, C15).
+
+## Device grants
+
+A device holds its own authority and the service holds none over it. The device pulls scoped,
+expiring intents outbound, checks its own local grants, and refuses an intent it did not grant. An
+intent is single-use, replay is refused by a nonce check, and an expired intent is refused rather
+than refreshed silently. A device that revokes its own grant wins over any service request (C22).
+
+## Channels are not identity
+
+Signal, email and Mattermost are channels and transports. A verified sender address, a workspace
+membership or a phone number is never promoted into authority by the product. The product keeps two
+separate records, the source account the user bound and the channel identity that carried a message,
+and links them only by an explicit user action. An unbound or mismatched identity can be read and
+cannot act, and no message is an administrative bypass (C19, C20).
+
+## Browser and offline data
+
+The browser client caches the shell only: the application shell, the manifest and static assets,
+never a command, a query result or a progress payload. Private records are read-only and unavailable
+while the service is unreachable, there is no offline writing of commitments, sessions or recall
+results, and signing out clears the partitioned cache. A shared or stolen device therefore exposes
+the shell, not the person's data (F20).

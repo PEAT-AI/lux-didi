@@ -1,16 +1,16 @@
 # Architecture (proposed)
 
-Status: proposed design, gated by the runtime host decision in issue A01. No application exists yet, and no behavior in this document has been verified by running code. Component names and directory seams are proposals to validate, not a description of a working system.
+Status: proposed design on a decided stack. The service stack is recorded in A01 (PLAN-R1): one authoritative service in TypeScript on Node with a SQLite store, a Swift Mac companion for native operating-system surfaces, and a responsive progressive web application as the portable client. No application exists yet, and no behavior in this document has been verified by running code. Component names and directory seams are proposals to validate, not a description of a working system.
 
 ## Shape
 
-The default design is a small native host application plus a per-user local core process, with adapter modules around them and one local transactional application store. The host owns the user experience and the operating system surfaces: global hotkey, microphone and playback, notifications, permissions dialogs. The core owns reasoning turns, durable jobs, storage, commitments, planning and policy. Adapters translate external systems into the versioned contracts the core consumes. One authoritative writer owns each entity or fact.
+The design is one authoritative service process plus client shells, with adapter modules around the service and one transactional application store. The service owns reasoning turns, durable jobs, storage, commitments, planning and policy, and it is the only writer. The Mac companion owns the native operating-system surfaces: global hotkey, microphone and playback, notifications, permissions dialogs. The same responsive shell is also hosted inside the Mac companion in its own web view (F23), and the companion does not duplicate business screens in SwiftUI. Whether the service is bound to the loopback interface or to a Linux virtual machine is a placement question, not a contract change. Adapters translate external systems into the versioned contracts the core consumes. One authoritative writer owns each entity or fact.
 
 ```mermaid
 flowchart LR
   subgraph Mac["User's Mac (local)"]
-    Host["Native host\nhotkey, audio, notifications"]
-    Core["Local core\nruntime, jobs, policy, commitments"]
+    Host["Mac companion\nhotkey, audio, notifications"]
+    Core["Assistant service\nruntime, jobs, policy, commitments, single writer"]
     Store[("Local transactional store")]
     Broker["Deterministic grant broker"]
     subgraph Adapters["Adapters"]
@@ -105,7 +105,7 @@ These are the properties later implementation issues must preserve. Each one nam
 
 Directories are proposed seams, not an existing tree. Shared contract changes are proposed to the runtime lane (A), which sequences migration files; other lanes work against fixtures in parallel.
 
-- A runtime owns the host decision, versioned contracts, local service and store, durable jobs, model providers, tool turns, action receipts, harness adapters, MCP transport, diagnostics, the first daily-loop integration and lean validation gate, and measurement. Proposed paths: core/runtime, core/storage, core/jobs, adapters/harness, adapters/mcp-transport, contracts.
+- A runtime owns the service stack record, versioned contracts, local service and store, durable jobs, model providers, tool turns, action receipts, harness adapters, MCP transport, diagnostics, the first daily-loop integration and lean validation gate, and measurement. Proposed paths: core/runtime, core/storage, core/jobs, adapters/harness, adapters/mcp-transport, contracts.
 - B memory and persona owns the evidence model, transcript originals and resolution, recall, preferences, correction and suppression, consolidation, the persona specification and learning, the memory inspector and the recall evaluation corpus. Proposed paths: core/memory, core/persona, adapters/lux-knowledge, evals/memory, evals/persona.
 - C accounts and trust owns account identity, the Google, chat, Trello and company adapters, policy and grants, the capability registry, egress, adverse security testing and revocation. Proposed paths: core/policy, core/identity, adapters/google, adapters/mattermost, adapters/trello, adapters/mongoose, adapters/coworker, evals/security.
 - D commitments and proactivity owns the commitment lifecycle, extraction, prioritization, planning, reminders, interruption policy, follow-through and calibration. Proposed paths: core/commitments, core/planning, core/proactivity, evals/follow-through.
@@ -113,8 +113,56 @@ Directories are proposed seams, not an existing tree. Shared contract changes ar
 
 ## Evidence gaps
 
-- The host is not chosen. A01 runs the comparison and the architecture decision record.
+- The service stack is decided and is not reopened here. A01 records it; A19 implements the seam; C21 keeps one active authority epoch. What remains unproven is behaviour, not the choice.
 - No latency or energy number has been measured. The numbers in [acceptance.md](acceptance.md) are proposals for A18 and the voice issues to falsify.
 - Storage engine, transport and turn boundary choices are candidates, not selections.
-- Whether any third-party host code is retained is a licensing and maintenance decision reserved to A01, with a per-component licence and notice review before reuse.
+- Whether any third-party component is retained is a licensing and maintenance decision reserved to A01, with a per-component licence and notice review before reuse.
 - Full transcript retrieval from any existing private retrieval service is not assumed. B03 resolves originals through their providers when authorized and reports missing coverage.
+
+## Portable deployment and clients
+
+The same service process runs on the loopback interface when the laptop is the host and on a Linux
+virtual machine when the host is moved. The client contract does not change between the two
+placements. The deployment path, its runbook, its secret references and its backup and restore
+procedure are described in [cloud-deployment.md](cloud-deployment.md); the contract the companion,
+the browser client and the channel adapters share is described in
+[client-service-contract.md](client-service-contract.md).
+
+Two rules keep the portable path from eroding the local one:
+
+- One active authority epoch per assistant (C21). There is no cloud and local multi-writer
+  synchronisation, no last-writer-wins merge, and no silent transfer.
+- A cloud process inherits no local operating-system authority. A device effect needs a
+  device-specific grant, and the device pulls scoped, expiring intents and enforces its own local
+  grants before it acts (C22).
+
+Channels (Signal, email and Mattermost) are transports into the same service. They are not identity
+proof and not an administrative bypass: a channel identity is bound to a source account only by an
+explicit user action (C20).
+
+The initial shape is one database per assistant. Instance isolation is a later question, not a first
+requirement.
+
+## Shared web interface and the native host
+
+There is one web interface, not two. The same responsive orb and conversation surface is loaded by a
+browser (F19) and displayed inside the Mac companion in its own web view (F23). The companion keeps
+the surfaces that must be native: global hotkey, menu bar and window lifecycle, on-device speech,
+notifications, the credential store and the outbound service client.
+
+The web page is not an authority and there is no privileged bridge into the native process:
+
+- No inbound JavaScript-to-native handlers and no generic native RPC. A page script that reaches for
+  a native capability finds nothing to call.
+- The page has its own scoped HttpOnly session cookie and a same-origin CSRF flow for browser
+  pairing. The service bearer stays in the native credential store and never enters JavaScript.
+- The web view uses a nonpersistent data store and loads only the exact configured origin, main
+  frame, with no popups, downloads, subframes or arbitrary remote content.
+- The page owns no operating-system permission. Screen capture, accessibility and automation grants
+  belong to the native process, and same-user process separation is not a security sandbox.
+- Speech starts and stops from a native control; recognised text travels through the service API and
+  the page learns about it through its normal refresh and event stream.
+
+Open questions about cookie persistence across a content-process termination and about losing a
+graphics context are treated as test cases, not as facts. Only a test-owned surface may be
+terminated, never a broad sweep of web content processes.

@@ -31,10 +31,13 @@ flowchart LR
   Host <--> Core
   Core <--> Store
   Core --> Broker
-  Core <--> Models
+  Core --> EgressGate["Route policy and egress gate\none safe model-call entry, default deny (C15)"]
+  EgressGate <--> Models["Model providers\nreplaceable, Gemini preferred"]
   Broker <--> Adapters
   Adapters <--> External
 ```
+
+Every model call passes the route policy before a request starts, and the duplex voice session route is checked before any stream opens.
 
 ## First-loop data flow (proposed)
 
@@ -45,6 +48,7 @@ sequenceDiagram
   participant U as User
   participant H as Host
   participant C as Core
+  participant RG as Route gate
   participant B as Broker
   participant G as Google adapter
   participant S as Store
@@ -53,6 +57,8 @@ sequenceDiagram
   H->>C: voice session events or text turn
   C->>S: session transcript original
   C->>C: compile context with suppression overlays
+  C->>RG: resolve route and data class for this turn
+  RG-->>C: allowed route
   C-->>H: answer as audio or text
   U->>C: asks about upcoming calendar
   C->>B: bounded calendar read under a standing grant
@@ -72,7 +78,7 @@ sequenceDiagram
 
 These are the properties later implementation issues must preserve. Each one names the issue that owns it.
 
-1. One authoritative writer per entity or fact. Didi owns its operational sessions, jobs, action receipts, commitment lifecycle, notification state and voice transcript originals. External providers keep ownership of their originals. Optional retrieval services are projections, not new authorities. (B01, C12)
+1. One authoritative writer per entity or fact. Didi owns its operational sessions, jobs, action receipts, commitment lifecycle, notification state and voice transcript originals. External providers keep ownership of their originals. Didi's own caches and read models are projections it owns; an optional retrieval service or a company knowledge service keeps its own authoritative knowledge rather than becoming a projection of Didi. (B01, C12)
 2. Every source reference carries provider, account, source identity, revision or hash where available, and span where available, together with coverage, freshness and availability. (B01, B03)
 3. A cached authorized source is an explicitly versioned cache, never a new source authority, and it says what it covers. (B03, B09)
 4. Explicit typed preferences are the only mutable preference authority. Retrieved insights are evidence or history, never a second preference store. (B07)
@@ -99,13 +105,11 @@ These are the properties later implementation issues must preserve. Each one nam
 
 Directories are proposed seams, not an existing tree. Shared contract changes are proposed to the runtime lane (A), which sequences migration files; other lanes work against fixtures in parallel.
 
-| Lane | Owns | Proposed paths |
-|---|---|---|
-| A runtime | Host decision, versioned contracts, local service, store, jobs, providers, tool turns, receipts, harness adapters, MCP transport, diagnostics, first daily-loop integration and lean validation gate, measurement | core/runtime, core/storage, core/jobs, adapters/harness, adapters/mcp-transport, contracts |
-| B memory and persona | Evidence model, transcript originals and resolution, recall, preferences, correction and suppression, consolidation, persona specification and learning, memory inspector, evaluation corpus | core/memory, core/persona, adapters/lux-knowledge, evals/memory, evals/persona |
-| C accounts and trust | Account identity, Google, chat, Trello and company adapters, policy and grants, capability registry, egress, adverse security tests, revocation | core/policy, core/identity, adapters/google, adapters/mattermost, adapters/trello, adapters/mongoose, adapters/coworker, evals/security |
-| D commitments and proactivity | Commitment lifecycle, extraction, prioritization, planning, reminders, interruption policy, follow-through, calibration | core/commitments, core/planning, core/proactivity, evals/follow-through |
-| E native experience | Mac host and surfaces, voice session plumbing, notifications, onboarding, review surfaces, computer control, packaging, companion and portability | apps/macos, adapters/voice, clients/mobile, platform |
+- A runtime owns the host decision, versioned contracts, local service and store, durable jobs, model providers, tool turns, action receipts, harness adapters, MCP transport, diagnostics, the first daily-loop integration and lean validation gate, and measurement. Proposed paths: core/runtime, core/storage, core/jobs, adapters/harness, adapters/mcp-transport, contracts.
+- B memory and persona owns the evidence model, transcript originals and resolution, recall, preferences, correction and suppression, consolidation, the persona specification and learning, the memory inspector and the recall evaluation corpus. Proposed paths: core/memory, core/persona, adapters/lux-knowledge, evals/memory, evals/persona.
+- C accounts and trust owns account identity, the Google, chat, Trello and company adapters, policy and grants, the capability registry, egress, adverse security testing and revocation. Proposed paths: core/policy, core/identity, adapters/google, adapters/mattermost, adapters/trello, adapters/mongoose, adapters/coworker, evals/security.
+- D commitments and proactivity owns the commitment lifecycle, extraction, prioritization, planning, reminders, interruption policy, follow-through and calibration. Proposed paths: core/commitments, core/planning, core/proactivity, evals/follow-through.
+- E native experience owns the Mac host and surfaces, voice session plumbing, notifications, onboarding, review surfaces, computer control, packaging, the companion and portability. Proposed paths: apps/macos, adapters/voice, clients/mobile, platform.
 
 ## Evidence gaps
 

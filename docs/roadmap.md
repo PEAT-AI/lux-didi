@@ -4,15 +4,13 @@ Status: proposed plan. The repository contains no application, and every capabil
 
 ## Numbering
 
-| Range | Meaning |
-|---|---|
-| P00 | Program tracker: five lanes plus milestone entry points |
-| E01 to E10 | Epics: outcomes and exit criteria, no direct work |
-| A01 to A18 | Runtime and local execution leaves (master A) |
-| B01 to B18 | Evidence, memory and persona leaves (master B) |
-| C01 to C18 | Accounts, connectors and trust leaves (master C) |
-| D01 to D18 | Commitments and proactivity leaves (master D) |
-| F01 to F18 | Native experience leaves (master E, prefix F so leaves never collide with epic IDs) |
+- P00: program tracker with the five lanes and the milestone entry points.
+- E01 to E10: epics with outcomes and exit criteria, no direct work.
+- A01 to A18: runtime and local execution leaves (master A).
+- B01 to B18: evidence, memory and persona leaves (master B).
+- C01 to C18: accounts, connectors and trust leaves (master C).
+- D01 to D18: commitments and proactivity leaves (master D).
+- F01 to F18: native experience leaves (master E, prefix F so leaves never collide with epic IDs).
 
 ## Milestones
 
@@ -20,19 +18,19 @@ Milestones are delivery stages, not dates. No completion date or effort estimate
 
 ### M0, proof and contracts
 
-Turn the open host and evidence questions into contracts the other lanes can build against. Entry points: A01 (host and licence feasibility, with a measured spike and an architecture decision record), A02 (versioned cross-track contracts and fixtures), B01 (evidence and source identity model), C14 (tool capability registry), D01 (commitment lifecycle schema), C01 (multi-account identity map), C02 (Google installed-app OAuth). Exit criteria: the host is chosen by a measured spike and recorded in an ADR, the contract package and fixtures exist and are consumed by at least the storage, provider and MCP areas, and no task asserts a measured figure it has not recorded.
+Turn the open host and evidence questions into contracts the other lanes can build against. Entry points: A01 (host and licence feasibility, with a measured spike and an architecture decision record), A02 (versioned cross-track contracts and fixtures), A03, A04, B01 (evidence and source identity model), B07 (preference authority), B12 (persona specification), B17 (evidence classes), C01 (multi-account identity map), C02 (Google installed-app OAuth), C14 (tool capability registry), D01 (commitment lifecycle schema). Exit criteria: the host is chosen by a measured spike and recorded in an ADR, the contract package and fixtures exist and are consumed by concrete storage, provider and domain contract consumers, and no task asserts a measured figure it has not recorded. MCP transport is deferred to M3 and is not part of this exit.
 
 ### M1, useful daily loop
 
-Make one person's day work end to end without optional infrastructure. Entry points: A08 (action intents, receipts and unknown-outcome reconciliation), C12 (grants, allowlists and the effect broker, both first-loop prerequisites), A04 (store), A05 (durable jobs), A07 (tool turns), A15 (outbox and crash recovery), D02 (promise extraction) and D06 (realistic daily plan), D10 (quiet and urgency policy contract), B02 to B09 (transcript originals, resolution, recall, preferences, correction), C03 (Gmail ingestion) and C05 (Calendar), F01, F02, F09 (notification baseline), F10 and F13, the Stage A half of F15, and A17 as the first daily-loop integration owner. Exit criteria: the scenarios in [acceptance.md](acceptance.md) pass on the Stage A pilot with the real surfaces they name, and the first loop in that document works from a clean account with one Google account.
+Make one person's day work end to end without optional infrastructure. Entry points: A05 to A08 and A15 to A18 (durable tasks, receipts, tool turns, outbox, diagnostics and the integration gate); B02 to B05, B07 to B09, B11, B13 and B16; C03 to C05, C12 and C15 to C17; D02 to D10 and D17; F01, F02, F09, F10, F13 and the Stage A half of F15. A08 (action receipts) and C12 (grant broker) are first-loop prerequisites, not late hardening, and the essential source-injection, account-isolation, egress-denial and revocation cases (C16, C17) gate this milestone too. Exit criteria: the scenarios in [acceptance.md](acceptance.md) pass on the Stage A pilot with the real surfaces they name, and the first loop in that document works from a clean account with one Google account.
 
 ### M2, voice and proactive beta
 
-Voice becomes the default conversational surface and proactive work earns trust. Entry points: F03 to F08 (audio devices, duplex provider, fallback, barge-in, reconnect, voice character), B10 (consolidation), B14 (gradual persona learning), B15 (memory inspector), C07 to C10 (document resolution, chat and Trello reads), C16 (injection and account isolation adverse tests), C17 (disconnect, revoke, cache propagation), D11 to D14 and D18 (asynchronous investigation, replanning, follow-ups, advanced catch-up). Exit criteria: a duplex voice loop with barge-in and honest cancellation, proactive reminders under the interruption policy, and the adverse security tests passing.
+Voice becomes the default conversational surface and proactive work earns trust. Entry points: F03, F04 and F06 to F08 (audio devices, duplex provider, barge-in, reconnect, voice character); B10, B14 and B15 (consolidation, persona learning, memory inspector); C07 to C10 (document resolution, chat and Trello reads); D11 to D14 and D18 (asynchronous investigation, replanning, follow-ups, advanced catch-up); and the extended adversarial corpus beyond the M1 essential cases. Exit criteria: a duplex voice loop with barge-in and honest cancellation, proactive reminders under the interruption policy, and the extended security tests passing.
 
 ### M3, controlled execution and integrations
 
-Extend from reading and preparing to bounded, authorized action and optional integrations. Entry points: A09 to A13 and A14 (A14 is optional transport, deferred unless a first-slice dependency proves otherwise), B06 (optional knowledge adapter, deferred on the same rule), B18 (embedding and index portability), C06 (Calendar actions), C11 (Trello actions), C13 (company knowledge permissions), C18 (optional consultation adapter), D15 and D16 (external task reconciliation, calibration), F11, F12, F16, F17 (review surfaces, computer control, pairing, companion). Exit criteria: every effect passes the broker with a receipt, revocation and unknown outcomes are handled, and the companion works as a controller without holding authority.
+Extend from reading and preparing to bounded, authorized action and optional integrations. Entry points: A09 to A13 and A14 (A14 is optional transport, deferred unless a first-slice dependency proves otherwise), B06 (optional knowledge adapter, deferred on the same rule), B18 (embedding and index portability), C06 (Calendar actions), C11 (Trello actions), C13 (company knowledge permissions), C18 (optional consultation adapter), D15 and D16 (external task reconciliation, calibration), F05 (alternate speech fallback), F11, F12, F16, F17 (review surfaces, computer control, pairing, companion). Exit criteria: every effect passes the broker with a receipt, revocation and unknown outcomes are handled, and the companion works as a controller without holding authority.
 
 ### M4, portability and polish
 
@@ -40,20 +38,20 @@ Close the seams that need evidence or a decision. Entry points: F14 (optional wa
 
 ## Track map
 
-| Epic | Master | Phase | Leaves | Goal |
-|---|---|---|---|---|
-| E01 Runtime and local execution | A | M0 | A01 to A08 | The host decision, shared contracts, service, store, jobs, providers, tool turns and receipts |
-| E02 Harness supervision and operational reliability | A | M1 | A09 to A18 | Supervise existing harness sessions safely, plus diagnostics and measurement |
-| E03 Evidence and durable recall | B | M0 | B01 to B09 | Source identity, transcript originals and resolution, gists, recall, preferences, suppression, export and forget |
-| E04 Evolving personality and memory quality | B | M1 | B10 to B18 | Consolidation, context compilation, a public persona spec, private customization, learning with provenance, evaluation |
-| E05 Accounts and work sources | C | M1 | C01 to C11 | The user's own accounts: Google, chat and Trello, with read and prepare adapters |
-| E06 Authority and optional company integrations | C | M1 | C12 to C18 | Grants, the effect broker, egress policy, capability registry, adverse tests, revocation, optional company adapter |
-| E07 Commitments and daily planning | D | M1 | D01 to D09 | Commitments with evidence, prioritization, planning, reminders and conversation control |
-| E08 Proactive follow-through | D | M2 | D10 to D18 | Interruption policy, asynchronous progress, replanning, follow-ups, calibration, sleep and offline behavior |
-| E09 Mac conversation surface | E | M2 | F01 to F09 | Hotkey, text and voice conversation, barge-in, reconnection, voice character, notifications |
-| E10 Installability, computer control and companion portability | E | M3 | F10 to F18 | Onboarding and grants, review surfaces, computer control, lifecycle, wake word, packaging, companion, portability |
+An epic's phase is the milestone at which its stated outcome exits, not the earliest or the latest child leaf. A later extended or optional leaf can sit in a later milestone without moving the epic: E05 exits at M1 while its action leaves extend to M3, E09 exits at M2 with the minimal notification baseline pulled into M1, and E02 exits at M3 with its reliability baseline in M1.
 
-Phase counts: M0 has 12 work items, M1 has 38, M2 has 19, M3 has 19, and M4 has 2.
+- E01 Runtime and local execution (master A, phase M0, leaves A01 to A08): the host decision, shared contracts, service, store, jobs, providers, tool turns and receipts.
+- E02 Harness supervision and operational reliability (master A, phase M3, leaves A09 to A18): supervise existing harness sessions safely, plus diagnostics, the first daily-loop integration gate and measurement.
+- E03 Evidence and durable recall (master B, phase M1, leaves B01 to B09): source identity, transcript originals and resolution, gists, recall, preferences, suppression, export and forget.
+- E04 Evolving personality and memory quality (master B, phase M2, leaves B10 to B18): consolidation, context compilation, the public persona spec, private customization, learning with provenance and evaluation.
+- E05 Accounts and work sources (master C, phase M1, leaves C01 to C11): the user's own accounts, with Google, chat and Trello read and prepare adapters.
+- E06 Authority and optional company integrations (master C, phase M1, leaves C12 to C18): grants, the effect broker, egress policy, the capability registry, adverse tests, revocation and the optional company adapter.
+- E07 Commitments and daily planning (master D, phase M1, leaves D01 to D09): commitments with evidence, prioritization, planning, reminders and conversation control.
+- E08 Proactive follow-through (master D, phase M2, leaves D10 to D18): interruption policy, asynchronous progress, replanning, follow-ups, calibration, sleep and offline behavior.
+- E09 Mac conversation surface (master E, phase M2, leaves F01 to F09): hotkey, text and voice conversation, barge-in, reconnection, voice character and notifications.
+- E10 Installability, computer control and companion portability (master E, phase M3, leaves F10 to F18): onboarding and grants, review surfaces, computer control, lifecycle, wake word, packaging, companion and portability.
+
+Phase counts: M0 has 12 work items, M1 has 40, M2 has 17, M3 has 19, and M4 has 2.
 
 ## First slice
 

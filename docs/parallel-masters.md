@@ -4,13 +4,11 @@ Status: proposed working agreement for the build. Five implementation lanes are 
 
 ## Lanes and ownership
 
-| Master | Epics | Owns | Does not own | Proposed paths |
-|---|---|---|---|---|
-| A, runtime | E01, E02 | Host shell decision, versioned contracts and fixtures, local service lifecycle, application store and migrations, durable jobs, model providers and budgets, tool-turn orchestration, action receipts, harness adapters, MCP transport, outbox, diagnostics, measurement | Voice character, memory semantics, account connectors, commitments, user interface | core/runtime, core/storage, core/jobs, adapters/harness, adapters/mcp-transport, contracts |
-| B, memory and persona | E03, E04 | Evidence and source identity, transcript originals, external resolution, recall, preferences, correction and suppression, consolidation, context compilation, public persona specification, private customization and learning, memory inspector, recall evaluation | Account authorization, commitment planning, host shell | core/memory, core/persona, adapters/lux-knowledge, evals/memory, evals/persona |
-| C, accounts and trust | E05, E06 | Account identity, OAuth and credential references, Google, chat, Trello and company adapters, grants and effect broker, capability registry, egress policy, adverse security testing, revocation | Commitment semantics, memory tables, user interface | core/policy, core/identity, adapters/google, adapters/mattermost, adapters/trello, adapters/mongoose, adapters/coworker, evals/security |
-| D, commitments and proactivity | E07, E08 | Commitment lifecycle, extraction and attribution, deduplication and suppression integration, prioritization, planning, reminders and notification intents, interruption policy, follow-up, calibration, follow-through evaluation | Notification rendering, memory storage, connector authorization | core/commitments, core/planning, core/proactivity, evals/follow-through |
-| E, native experience | E09, E10 | Mac host, hotkey and menu bar, text and voice surfaces, audio devices, notifications, onboarding and grants review, computer control, lifecycle, packaging, companion pairing, portability | Core storage, broker policy, commitment semantics | apps/macos, adapters/voice, clients/mobile, platform |
+- A runtime (E01, E02) owns the host shell decision, versioned contracts and fixtures, local service lifecycle, application store and migrations, durable jobs, model providers and budgets, tool-turn orchestration, action receipts, harness adapters, MCP transport, outbox, diagnostics, first daily-loop integration and measurement. It does not own voice character, memory semantics, account connectors, commitments or the user interface. Proposed paths: core/runtime, core/storage, core/jobs, adapters/harness, adapters/mcp-transport, contracts.
+- B memory and persona (E03, E04) owns evidence and source identity, transcript originals, external resolution, recall, preferences, correction and suppression, consolidation, context compilation, the public persona specification, private customization and learning, the memory inspector and recall evaluation. It does not own account authorization, commitment planning or the host shell. Proposed paths: core/memory, core/persona, adapters/lux-knowledge, evals/memory, evals/persona.
+- C accounts and trust (E05, E06) owns account identity, OAuth and credential references, the Google, chat, Trello and company adapters, grants and the effect broker, the capability registry, egress policy, adverse security testing and revocation. It does not own commitment semantics, memory tables or the user interface. Proposed paths: core/policy, core/identity, adapters/google, adapters/mattermost, adapters/trello, adapters/mongoose, adapters/coworker, evals/security.
+- D commitments and proactivity (E07, E08) owns the commitment lifecycle, extraction and attribution, deduplication and suppression integration, prioritization, planning, reminders and notification intents, interruption policy, follow-up, calibration and follow-through evaluation. It does not own notification rendering, memory storage or connector authorization. Proposed paths: core/commitments, core/planning, core/proactivity, evals/follow-through.
+- E native experience (E09, E10) owns the Mac host, hotkey and menu bar, text and voice surfaces, audio devices, notifications, onboarding and grants review, computer control, lifecycle, packaging, companion pairing and portability. It does not own core storage, broker policy or commitment semantics. Proposed paths: apps/macos, adapters/voice, clients/mobile, platform.
 
 Directories are proposed ownership seams, not a claim that the tree exists.
 
@@ -45,7 +43,7 @@ Each lane starts with the leaves that have no blocking dependency, then follows 
 
 ## Boundaries for everyone
 
-- No application code before the host decision is recorded in A01.
+- Only host-dependent work waits for the host decision recorded in A01. Independent domain contracts, evaluations and adapter fixtures proceed in parallel against the A02 contracts, and nothing requires the chosen host in order to start.
 - No promise of proactive work while the Mac sleeps. The companion queues with an honest message.
 - No same-user process isolation claims; broad local control is an explicit capability with residual risk stated.
 - No unilateral licence assumption; see [decisions.md](decisions.md) and the licence boundary in [research.md](research.md).

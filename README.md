@@ -34,16 +34,18 @@ The first real-user slice is deliberately small. A person installs an early buil
 
 ## Documents
 
-| Document | What it covers |
-|---|---|
-| [docs/architecture.md](docs/architecture.md) | Proposed components, data flow and concrete invariants |
-| [docs/roadmap.md](docs/roadmap.md) | Milestones, tracks, dependency order and the first slice |
-| [docs/parallel-masters.md](docs/parallel-masters.md) | Lane ownership, start packets and the change protocol |
-| [docs/research.md](docs/research.md) | Primary sources, options and evidence limits |
-| [docs/privacy-and-authority.md](docs/privacy-and-authority.md) | Accounts, egress, tool trust and authority rules |
-| [docs/acceptance.md](docs/acceptance.md) | Synthetic acceptance scenarios and explicitly proposed budgets |
-| [docs/decisions.md](docs/decisions.md) | Adjudicated choices and deferred proof questions |
-| [docs/risks.md](docs/risks.md) | Material risks with triggers, mitigations and owners |
+- [docs/architecture.md](docs/architecture.md): proposed components, data flow and concrete invariants.
+- [docs/roadmap.md](docs/roadmap.md): milestones, tracks, dependency order and the first slice.
+- [docs/parallel-masters.md](docs/parallel-masters.md): lane ownership, start packets and the change protocol.
+- [docs/research.md](docs/research.md): primary sources, options and evidence limits.
+- [docs/privacy-and-authority.md](docs/privacy-and-authority.md): accounts, egress, tool trust and authority rules.
+- [docs/acceptance.md](docs/acceptance.md): synthetic acceptance scenarios and explicitly proposed budgets.
+- [docs/decisions.md](docs/decisions.md): adjudicated choices and deferred proof questions.
+- [docs/risks.md](docs/risks.md): material risks with triggers, mitigations and owners.
+
+## If you have five minutes
+
+Read this page, then the program tracker `P00` once the issues are published, then [docs/roadmap.md](docs/roadmap.md). The detail of any single work item lives in its issue, and the backlog file is the machine-readable source.
 
 ## What this repository is not
 

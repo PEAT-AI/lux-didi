@@ -1,6 +1,6 @@
 # Privacy and authority
 
-Status: proposed product policy. These are the rules later implementation issues must encode and test. They are written as defaults that need no user decision to ship, with the operator free to override one by configuration, and every override logged.
+Status: proposed product policy. These are the rules later implementation issues must encode and test. They are written as defaults that need no user decision to ship. Two layers are distinct: user-configurable product preferences (retention windows, notification style, default account for reads) can be changed by the operator, while provider policy, organization restrictions and operating system authority are not overridable in the product and are reported honestly when they block something. Every override of a configurable preference is logged.
 
 ## Starting state
 
@@ -12,7 +12,7 @@ A fresh install carries no credentials, no tokens, no grants and no allowlist en
 - The default account may be stored for reads and drafts. Every send or commit action names its account explicitly; the account is never inferred from context. (C01, C04, C06, C09)
 - Authorization tokens carry an audience. A token issued for one server is never presented to another, and the credential model records this as a first-class field. (C15)
 - Same-user processes are not an isolation boundary between each other. A process split buys an authorization chokepoint, not isolation, and the product never claims otherwise. (A13, F12)
-- Full local control (screen capture, Accessibility, Automation, broad shell) requires a Developer ID signed, notarized, non-sandboxed build, and the operating system's own permission prompts cannot be bypassed or pre-granted. Those permissions are recorded as part of capability state and are revocable in one action. (F12, F13)
+- Full local control (screen capture, Accessibility, Automation, broad shell) on distributed builds uses a Developer ID signed, notarized, non-sandboxed build, and the operating system's own permission prompts cannot be bypassed or pre-granted. A local Stage A developer pilot can exercise the same TCC-granted capabilities without that distribution step; Developer ID and notarization are a distribution choice, not an inherent prerequisite for using local permission-gated features on one's own machine. Those permissions are recorded as part of capability state: a product-level grant can be disabled immediately in the app, while removing an operating system permission itself is done in System Settings, outside the product's control. (F12, F13)
 - Multi-account mix-up is an explicit adverse test: a scenario that proves a read or draft can never silently use a different account than the one the user chose. (C16)
 
 ## Capability state
@@ -44,10 +44,10 @@ Where a company service has its own permission model, Didi presents the token th
 
 ## Data lifecycle
 
-- Local-first is the default: state, transcripts and execution stay on the user's Mac, and the shipped default involves no third party.
+- Local-first is the default: state, transcripts and execution stay on the user's Mac. An unconfigured install makes no external calls, and no third party is involved until the user configures and approves a route. Once a cloud route is configured and approved for a data class, approved inference calls are the designed behavior, not a violation of local-first.
 - A cached copy of an authorized remote source is a versioned cache with stated coverage, never a new authority. (B03, B09)
 - Deleting a Didi memory deletes the Didi copy and records the propagation state of anything derived from it. It does not claim to delete an external source that Didi does not own. (B09)
-- Raw audio retention defaults to discard after the transcript is confirmed, user-overridable, and raw audio is never included in exports. (B09)
+- Raw audio defaults to discard after bounded transcription processing. Retention is a user-controlled choice, and the user can choose whether audio is included in their own export. The plan does not promise an indefinite buffer pending confirmation, and it does not claim a universal export ban. (B09)
 - Resolved, cancelled and forgotten items are suppressed before planning and cannot silently reappear from stale retrieval. (B08, D03)
 
 ## Honest limits

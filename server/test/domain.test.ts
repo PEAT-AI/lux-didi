@@ -300,7 +300,13 @@ test('rollback: a failed transaction leaves neither commitment nor reminder', ()
       h.port.execute(tx, 'listCommitments', {}, context(nextNow())),
     ) as { items: unknown[] };
     assert.equal(all.items.length, 0);
-    assert.equal(h.store.transaction((tx) => Outbox.state(tx, 'anything:1')), undefined);
+    // Inspect the actual tables: no commitment, history or outbox event may survive.
+    const counts = h.store.transaction((tx) => ({
+      commitments: (tx.get('SELECT COUNT(*) AS n FROM commitments', []) as { n: number }).n,
+      history: (tx.get('SELECT COUNT(*) AS n FROM commitment_revisions', []) as { n: number }).n,
+      outbox: (tx.get('SELECT COUNT(*) AS n FROM runtime_outbox', []) as { n: number }).n,
+    }));
+    assert.deepEqual(counts, { commitments: 0, history: 0, outbox: 0 });
   } finally {
     cleanup(h);
   }
@@ -497,5 +503,54 @@ test('reminder targeting: no dispatchable intent without a bound authorized devi
     assert.equal(after[1]!.required_grant, 'native.notify.unbound', 'revoked target yields a non-dispatchable need');
   } finally {
     cleanup(bound);
+  }
+});
+
+test('correction rollback: a failed correction restores the reminder, revision and history', () => {
+  const h = fixture();
+  try {
+    const c = h.store.transaction((tx) =>
+      h.port.execute(
+        tx,
+        'createCommitment',
+        { title: 'Send the report', dueAt: '2026-02-01T09:00:00.000Z', timeZone: 'UTC' },
+        context(nextNow()),
+      ),
+    ) as { id: string };
+    assert.equal(h.store.transaction((tx) => Outbox.state(tx, `${c.id}:1`)), 'pending');
+
+    // The correction really supersedes :1 and inserts :2 before the failure.
+    assert.throws(() =>
+      h.store.transaction((tx) => {
+        const corrected = h.port.execute(
+          tx,
+          'updateCommitment',
+          { id: c.id, expectedRevision: 1, title: 'Changed', dueAt: '2026-02-02T09:00:00.000Z' },
+          context(nextNow()),
+        ) as { revision: number };
+        assert.equal(corrected.revision, 2);
+        assert.equal((tx.get('SELECT state FROM runtime_outbox WHERE id = ?', [`${c.id}:1`]) as { state: string }).state, 'superseded');
+        assert.equal((tx.get('SELECT state FROM runtime_outbox WHERE id = ?', [`${c.id}:2`]) as { state: string }).state, 'pending');
+        throw new Error('forced failure after supersession/insertion');
+      }),
+    );
+
+    const after = h.store.transaction((tx) =>
+      h.port.execute(tx, 'getCommitment', { id: c.id }, context(nextNow())),
+    ) as { commitment: { revision: number; title: string; dueAt: string | null }; history: { revision: number }[] };
+    assert.equal(after.commitment.revision, 1);
+    assert.equal(after.commitment.title, 'Send the report');
+    assert.equal(after.commitment.dueAt, '2026-02-01T09:00:00.000Z');
+    assert.deepEqual(after.history.map((row) => row.revision), [1]);
+
+    const events = h.store.transaction((tx) =>
+      tx.all('SELECT id, state FROM runtime_outbox WHERE entity_id = ? ORDER BY entity_revision', [c.id]),
+    ) as { id: string; state: string }[];
+    assert.equal(events.length, 1);
+    assert.equal(events[0]!.id, `${c.id}:1`);
+    assert.equal(events[0]!.state, 'pending', 'the superseded reminder must come back after rollback');
+    assert.equal(h.store.transaction((tx) => Outbox.state(tx, `${c.id}:2`)), undefined);
+  } finally {
+    cleanup(h);
   }
 });

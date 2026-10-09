@@ -2,8 +2,9 @@
   "assembly_digest": "2fa06914d85db3a06b1d27364350c545ed1b20f9ce629d3f1618c6e520968a6b",
   "hash_domains": {
     "canonical_body_sha256": "sha256 of the assembled node body in planning/backlog.json, the public source of truth",
-    "observed": "the verbatim baseline entry for the node, kept per node as the observed snapshot and never overwritten by the staged projection",
-    "rendered_body_sha256": "sha256 of the published issue body after render; the publisher computes it and it is unknown until publication"
+    "observed": "Immutable per-node pre-expansion baseline snapshot, preserved for rollback and accepted renderer verification; not the current publication state.",
+    "publication_readback": "Per-node current live publication evidence; top-level number, url and body hash domains describe the observed publication, not prospective identities.",
+    "rendered_body_sha256": "sha256 of the actual re-read published issue body after accepted portable rendering with observed issue numbers (CRLF normalized to LF)."
   },
   "nodes": {
     "A01": {
@@ -43,6 +44,13 @@
       },
       "phase": "M0",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 2,
+        "state": "open"
+      },
+      "rendered_body_sha256": "95e92b4e00a2c8f387e5196e71721dced8ebaece9398f47d876bf1f08ee35adf",
       "sub_issue_of": 2,
       "title": "[A01] Service stack, client roles and license boundary decision",
       "url": "https://github.com/PEAT-AI/lux-didi/issues/12"
@@ -84,6 +92,12 @@
       },
       "phase": "M0",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 2,
+        "state": "open"
+      },
       "rendered_body_sha256": "c24cd7619c3f3006b042f7548233f54f84b7c296a826edbc36ada0dbedb47f0b",
       "sub_issue_of": 2,
       "title": "[A02] Versioned cross-track contracts and shared fixtures",
@@ -130,6 +144,15 @@
       },
       "phase": "M0",
       "priority": "P1",
+      "publication_readback": {
+        "depends_on_numbers": [
+          12
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 2,
+        "state": "open"
+      },
+      "rendered_body_sha256": "0a0a671b7029c7cab343d8a02da2a23da26cd30f5c1dcb1b43a55deb7579a806",
       "sub_issue_of": 2,
       "title": "[A03] Local service lifecycle and control surface",
       "url": "https://github.com/PEAT-AI/lux-didi/issues/14"
@@ -175,6 +198,14 @@
       },
       "phase": "M0",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [
+          13
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 2,
+        "state": "open"
+      },
       "rendered_body_sha256": "5d4199753b9e0dc9ff68ae1aca0211bfe04aa3c2bf947ac589aaa23349ed5092",
       "sub_issue_of": 2,
       "title": "[A04] Application storage, migrations and backup/restore",
@@ -221,6 +252,14 @@
       },
       "phase": "M1",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [
+          15
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 2,
+        "state": "open"
+      },
       "rendered_body_sha256": "edc01514d6a1a4a18abbffc2e2a626f62a1ed81b5c7d9b2db61d27f5a8c37bd4",
       "sub_issue_of": 2,
       "title": "[A05] Durable task progress and cancellation semantics",
@@ -267,6 +306,14 @@
       },
       "phase": "M1",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [
+          13
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 2,
+        "state": "open"
+      },
       "rendered_body_sha256": "76dc502584ad45351afeb7ac0f1143bbcaef7a55a023fd9da19cac94a3404daf",
       "sub_issue_of": 2,
       "title": "[A06] Replaceable model providers and configured budgets",
@@ -319,6 +366,17 @@
       },
       "phase": "M1",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [
+          17,
+          19,
+          59,
+          62
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 2,
+        "state": "open"
+      },
       "rendered_body_sha256": "eb6d2840717fc686bda916f3c14c6e87a8cfc28845a6fe75e59e2282f2c58028",
       "sub_issue_of": 2,
       "title": "[A07] Tool-turn orchestration and bounded agent loop",
@@ -371,6 +429,17 @@
       },
       "phase": "M1",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [
+          13,
+          15,
+          16,
+          26
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 2,
+        "state": "open"
+      },
       "rendered_body_sha256": "f3a2e6d8f3ec8e7a0578822a6a6b424dd9cd82393a4bfca466a6aea52d880893",
       "sub_issue_of": 2,
       "title": "[A08] Action intents, receipts and unknown-outcome reconciliation",
@@ -413,6 +482,12 @@
       },
       "phase": "M3",
       "priority": "P1",
+      "publication_readback": {
+        "depends_on_numbers": [],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 3,
+        "state": "open"
+      },
       "rendered_body_sha256": "858dc68fbd815400ab7cb442250d35f8c1ab6c8356893d9fb7ebfaa69bd982f6",
       "sub_issue_of": 3,
       "title": "[A09] Harness discovery and identity, read-only",
@@ -459,6 +534,14 @@
       },
       "phase": "M3",
       "priority": "P1",
+      "publication_readback": {
+        "depends_on_numbers": [
+          20
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 3,
+        "state": "open"
+      },
       "rendered_body_sha256": "cfcf99e981fd92c56de00ec6a385253b0995913bb8a7e5e1e3a30e69f437897a",
       "sub_issue_of": 3,
       "title": "[A10] Harness events, session evidence and replay",
@@ -505,6 +588,14 @@
       },
       "phase": "M3",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [
+          21
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 3,
+        "state": "open"
+      },
       "rendered_body_sha256": "ef6d7f3c5c92f00ffc464fd68661b5e350a2f2dd444d8db962d15b2465f31032",
       "sub_issue_of": 3,
       "title": "[A11] Authorized harness steering and cancellation",
@@ -551,6 +642,14 @@
       },
       "phase": "M3",
       "priority": "P1",
+      "publication_readback": {
+        "depends_on_numbers": [
+          22
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 3,
+        "state": "open"
+      },
       "rendered_body_sha256": "2976653756f6e1d6d898511c3cf085394ba56357cf0ffe43f075774e7728c640",
       "sub_issue_of": 3,
       "title": "[A12] Delegated concurrency and admission discipline",
@@ -597,6 +696,14 @@
       },
       "phase": "M3",
       "priority": "P2",
+      "publication_readback": {
+        "depends_on_numbers": [
+          18
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 3,
+        "state": "open"
+      },
       "rendered_body_sha256": "cc68bcf7444b0fc94e01dd41c5d0b4f6362ca8836b756a52de6b1f15240db513",
       "sub_issue_of": 3,
       "title": "[A13] Scoped command and filesystem tools with explicit broad mode",
@@ -643,6 +750,15 @@
       },
       "phase": "M3",
       "priority": "P1",
+      "publication_readback": {
+        "depends_on_numbers": [
+          13
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 3,
+        "state": "open"
+      },
+      "rendered_body_sha256": "1e452222dfb221a9fede6698c56b7c1df8fb3a7af6b16a5af23bb263373e0e6d",
       "sub_issue_of": 3,
       "title": "[A14] MCP transport and server lifecycle",
       "url": "https://github.com/PEAT-AI/lux-didi/issues/25"
@@ -688,6 +804,14 @@
       },
       "phase": "M1",
       "priority": "P1",
+      "publication_readback": {
+        "depends_on_numbers": [
+          15
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 3,
+        "state": "open"
+      },
       "rendered_body_sha256": "b7e9ff4e73d2243309eac2e4e0712d9e10d37ba36beb76482f79fe67e816b41a",
       "sub_issue_of": 3,
       "title": "[A15] Core event outbox and crash recovery",
@@ -734,6 +858,14 @@
       },
       "phase": "M1",
       "priority": "P2",
+      "publication_readback": {
+        "depends_on_numbers": [
+          26
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 3,
+        "state": "open"
+      },
       "rendered_body_sha256": "5f8b4a98d7f27a9e91dd4b70e28c170aaf75fc09c523db3c2a164601cf19a86a",
       "sub_issue_of": 3,
       "title": "[A16] Diagnostics with redacted evidence",
@@ -828,6 +960,38 @@
       },
       "phase": "M1",
       "priority": "P1",
+      "publication_readback": {
+        "depends_on_numbers": [
+          13,
+          14,
+          15,
+          16,
+          19,
+          26,
+          48,
+          49,
+          59,
+          62,
+          31,
+          33,
+          34,
+          36,
+          37,
+          66,
+          67,
+          68,
+          71,
+          72,
+          73,
+          74,
+          84,
+          85,
+          92
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 3,
+        "state": "open"
+      },
       "rendered_body_sha256": "5b3a681fb7ce6856b4e14e23f7bb2e0d4ee91d4984be368cd505bb50c53551e5",
       "sub_issue_of": 3,
       "title": "[A17] First daily-loop integration and lean validation gate",
@@ -876,6 +1040,16 @@
       },
       "phase": "M1",
       "priority": "P2",
+      "publication_readback": {
+        "depends_on_numbers": [
+          14,
+          18
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 3,
+        "state": "open"
+      },
+      "rendered_body_sha256": "b6ab27181a78c9125748f7aa7bca14e305248789f6f8b5986f76f93539db10a4",
       "sub_issue_of": 3,
       "title": "[A18] Latency, energy and resource measurement and budgets",
       "url": "https://github.com/PEAT-AI/lux-didi/issues/29"
@@ -897,11 +1071,23 @@
       ],
       "master": "A",
       "milestone": "Useful daily loop",
-      "number": 107,
+      "number": 104,
       "phase": "M1",
       "priority": "P0",
-      "sub_issue_of": 104,
-      "title": "[A19] Portable command and query service seam"
+      "publication_readback": {
+        "depends_on_numbers": [
+          13,
+          14,
+          15
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 115,
+        "state": "open"
+      },
+      "rendered_body_sha256": "e9d9ae14ba53f72570ef8aac3f77474a25adc1d8c3fc1cc730b2e3a44a50c6c9",
+      "sub_issue_of": 115,
+      "title": "[A19] Portable command and query service seam",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/104"
     },
     "A20": {
       "canonical_body_sha256": "1639aec33982775c841eb935d41cc7d29c69f410fefc027a2d39f2d02721df5d",
@@ -919,11 +1105,22 @@
       ],
       "master": "A",
       "milestone": "Portability and polish",
-      "number": 108,
+      "number": 105,
       "phase": "M4",
       "priority": "P0",
-      "sub_issue_of": 104,
-      "title": "[A20] Container image, VM runbook and Linux service host"
+      "publication_readback": {
+        "depends_on_numbers": [
+          104,
+          26
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 115,
+        "state": "open"
+      },
+      "rendered_body_sha256": "5b7ff467374e117f7d3aa0cbca16be5307b5864b3339a6c861b4c645dd7e862f",
+      "sub_issue_of": 115,
+      "title": "[A20] Container image, VM runbook and Linux service host",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/105"
     },
     "A21": {
       "canonical_body_sha256": "4c54bdf24e8c02a63b3fee470795b32e10178e355b1e558d4144962cf6267a0e",
@@ -941,11 +1138,22 @@
       ],
       "master": "A",
       "milestone": "Portability and polish",
-      "number": 109,
+      "number": 106,
       "phase": "M4",
       "priority": "P0",
-      "sub_issue_of": 104,
-      "title": "[A21] Secret reference broker and VM credential provisioning"
+      "publication_readback": {
+        "depends_on_numbers": [
+          49,
+          62
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 115,
+        "state": "open"
+      },
+      "rendered_body_sha256": "96797f65dbeff701cfeb893c80e3fcd7e5d6b771fe595de29ce65d543e04631e",
+      "sub_issue_of": 115,
+      "title": "[A21] Secret reference broker and VM credential provisioning",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/106"
     },
     "A22": {
       "canonical_body_sha256": "3fe51101ec5acf798943be470d02199325dfc122b379660390e2fc61411b98c4",
@@ -963,11 +1171,22 @@
       ],
       "master": "A",
       "milestone": "Portability and polish",
-      "number": 110,
+      "number": 107,
       "phase": "M4",
       "priority": "P0",
-      "sub_issue_of": 104,
-      "title": "[A22] Backup, restore and migration rehearsal on synthetic data"
+      "publication_readback": {
+        "depends_on_numbers": [
+          15,
+          104
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 115,
+        "state": "open"
+      },
+      "rendered_body_sha256": "58c54ab095724ce0ee679d2d6442c0b260c0b9b1ad41c787ef83c9af29b36fe5",
+      "sub_issue_of": 115,
+      "title": "[A22] Backup, restore and migration rehearsal on synthetic data",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/107"
     },
     "A23": {
       "canonical_body_sha256": "620c2e4ad5420210622d081a663fa7018123f31223654bb81479dabf05e2268f",
@@ -985,11 +1204,22 @@
       ],
       "master": "A",
       "milestone": "Portability and polish",
-      "number": 111,
+      "number": 108,
       "phase": "M4",
       "priority": "P1",
-      "sub_issue_of": 104,
-      "title": "[A23] Suite endpoint configuration and independent installation"
+      "publication_readback": {
+        "depends_on_numbers": [
+          104,
+          106
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 115,
+        "state": "open"
+      },
+      "rendered_body_sha256": "c32c34dfd1c6f4a857fe28b06629f273926517fed84fed4ad8664ca280a12beb",
+      "sub_issue_of": 115,
+      "title": "[A23] Suite endpoint configuration and independent installation",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/108"
     },
     "A24": {
       "canonical_body_sha256": "b975c668913124ad0a1c9fb98e1947d37154fc3ffbc409945b4019fd02f89bf9",
@@ -1007,11 +1237,22 @@
       ],
       "master": "A",
       "milestone": "Portability and polish",
-      "number": 112,
+      "number": 109,
       "phase": "M4",
       "priority": "P1",
-      "sub_issue_of": 104,
-      "title": "[A24] Hosting boundary and cloud egress data classes"
+      "publication_readback": {
+        "depends_on_numbers": [
+          62,
+          105
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 115,
+        "state": "open"
+      },
+      "rendered_body_sha256": "f89b8ea1d762a9a422880f393ef7ae250bb87ac1a6f86f1ffa468c7c1820ec96",
+      "sub_issue_of": 115,
+      "title": "[A24] Hosting boundary and cloud egress data classes",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/109"
     },
     "B01": {
       "canonical_body_sha256": "2efb114a6bb7fba8121db775f4e8a7edeef337bb5e8f9cbe90da46572d52b170",
@@ -1050,6 +1291,12 @@
       },
       "phase": "M0",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 4,
+        "state": "open"
+      },
       "rendered_body_sha256": "ef67e6c8b2e3bfce0570869a8fdbf987246547c1d2f81264ea68b6389903a56f",
       "sub_issue_of": 4,
       "title": "[B01] Evidence and source identity model",
@@ -1098,6 +1345,15 @@
       },
       "phase": "M1",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [
+          30,
+          15
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 4,
+        "state": "open"
+      },
       "rendered_body_sha256": "dba98ff340978d198c6c866884b5631502eeb475c3af0b23f9b7022418f7da97",
       "sub_issue_of": 4,
       "title": "[B02] Local voice and session transcript originals",
@@ -1148,6 +1404,16 @@
       },
       "phase": "M1",
       "priority": "P1",
+      "publication_readback": {
+        "depends_on_numbers": [
+          30,
+          31,
+          15
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 4,
+        "state": "open"
+      },
       "rendered_body_sha256": "966c46835921851a5bade9e887dc73e2c768b91d0ff52a3c28907510820f6e05",
       "sub_issue_of": 4,
       "title": "[B03] External transcript resolution and coverage",
@@ -1200,6 +1466,18 @@
       },
       "phase": "M1",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [
+          30,
+          31,
+          15,
+          62
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 4,
+        "state": "open"
+      },
+      "rendered_body_sha256": "054de196423a2ea6fe27909b73703a45a57f94e2a2289e1116286fb0cc7e0d60",
       "sub_issue_of": 4,
       "title": "[B04] Session gists with evidence links",
       "url": "https://github.com/PEAT-AI/lux-didi/issues/33"
@@ -1249,6 +1527,16 @@
       },
       "phase": "M1",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [
+          30,
+          33,
+          15
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 4,
+        "state": "open"
+      },
       "rendered_body_sha256": "402d8df819c3db2c098f5efae1a59de1a11c353d38edbbbe997621926439b902",
       "sub_issue_of": 4,
       "title": "[B05] Exact and semantic session recall",
@@ -1299,6 +1587,16 @@
       },
       "phase": "M3",
       "priority": "P1",
+      "publication_readback": {
+        "depends_on_numbers": [
+          30,
+          13,
+          15
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 4,
+        "state": "open"
+      },
       "rendered_body_sha256": "5634336e697ad22b32d3c2cbbdc911391353d84fcd77ef8512083bdf12869994",
       "sub_issue_of": 4,
       "title": "[B06] Optional private knowledge adapter",
@@ -1347,6 +1645,15 @@
       },
       "phase": "M0",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [
+          30,
+          15
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 4,
+        "state": "open"
+      },
       "rendered_body_sha256": "fd3c022387ee9b9117307751c76e3c1db68f7046bfa396ecc01ed4c87a73980e",
       "sub_issue_of": 4,
       "title": "[B07] Authoritative explicit preferences",
@@ -1397,6 +1704,16 @@
       },
       "phase": "M1",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [
+          30,
+          33,
+          15
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 4,
+        "state": "open"
+      },
       "rendered_body_sha256": "354d48e09e8d89f1e6f1ff7a5a53681c6770ec2c397317963decb44c6da8c752",
       "sub_issue_of": 4,
       "title": "[B08] Correction, conflict and suppression semantics",
@@ -1449,6 +1766,17 @@
       },
       "phase": "M1",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [
+          30,
+          36,
+          37,
+          15
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 4,
+        "state": "open"
+      },
       "rendered_body_sha256": "7bbdb2683f9df58110c4fef1e4b35edafa6b0e900dc2980384074d290eefd2fe",
       "sub_issue_of": 4,
       "title": "[B09] Export, forget and cache propagation",
@@ -1499,6 +1827,16 @@
       },
       "phase": "M2",
       "priority": "P1",
+      "publication_readback": {
+        "depends_on_numbers": [
+          33,
+          34,
+          15
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 5,
+        "state": "open"
+      },
       "rendered_body_sha256": "12931084a4ee9f781bb79262bfff9353228b6186c1d8cf995128b48c45278519",
       "sub_issue_of": 5,
       "title": "[B10] Consolidation and retention",
@@ -1551,6 +1889,18 @@
       },
       "phase": "M1",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [
+          34,
+          36,
+          46,
+          62
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 5,
+        "state": "open"
+      },
+      "rendered_body_sha256": "1c547fb489b5699195516e25a9f96f609c6fd555f63cdf1cd822a5ed04ee3f1a",
       "sub_issue_of": 5,
       "title": "[B11] Bounded context compilation",
       "url": "https://github.com/PEAT-AI/lux-didi/issues/40"
@@ -1592,6 +1942,13 @@
       },
       "phase": "M0",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 5,
+        "state": "open"
+      },
+      "rendered_body_sha256": "9223c7d41eb6ffcd778b7bc7738cc44d740ea9e3ca8f809eeea898320ece5db1",
       "sub_issue_of": 5,
       "title": "[B12] Public Naya-inspired persona specification",
       "url": "https://github.com/PEAT-AI/lux-didi/issues/41"
@@ -1641,6 +1998,16 @@
       },
       "phase": "M1",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [
+          36,
+          41,
+          15
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 5,
+        "state": "open"
+      },
       "rendered_body_sha256": "cc2b6467833a2044fdbe3ee38311409d31d9ee8d2634b9c82a80f4385900d40c",
       "sub_issue_of": 5,
       "title": "[B13] Private customization and onboarding",
@@ -1693,6 +2060,17 @@
       },
       "phase": "M2",
       "priority": "P1",
+      "publication_readback": {
+        "depends_on_numbers": [
+          37,
+          41,
+          46,
+          15
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 5,
+        "state": "open"
+      },
       "rendered_body_sha256": "4b2e2de0b4a0979120f07fe520e3d3be99523405a0337e82602c660616eaf7b7",
       "sub_issue_of": 5,
       "title": "[B14] Gradual persona learning with inspectable provenance",
@@ -1745,6 +2123,17 @@
       },
       "phase": "M2",
       "priority": "P1",
+      "publication_readback": {
+        "depends_on_numbers": [
+          36,
+          37,
+          39,
+          15
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 5,
+        "state": "open"
+      },
       "rendered_body_sha256": "b92427961cd28746d1e365cd6b26efb67e140be45367e1415ce661ca0f313310",
       "sub_issue_of": 5,
       "title": "[B15] Memory inspector services",
@@ -1793,6 +2182,15 @@
       },
       "phase": "M1",
       "priority": "P1",
+      "publication_readback": {
+        "depends_on_numbers": [
+          34,
+          46
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 5,
+        "state": "open"
+      },
       "rendered_body_sha256": "1b56e8db1c9291dd6c87346475d44b534d0e1dc26416c5fe7d49519d2ab9ac3f",
       "sub_issue_of": 5,
       "title": "[B16] Recall evaluation corpus",
@@ -1839,6 +2237,14 @@
       },
       "phase": "M0",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [
+          30
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 5,
+        "state": "open"
+      },
       "rendered_body_sha256": "c8b38570b197b23a7444ed05ccada061d0cebe702debfb8aa6a82132871f8169",
       "sub_issue_of": 5,
       "title": "[B17] Trust and epistemic separation in retrieved context",
@@ -1889,6 +2295,16 @@
       },
       "phase": "M3",
       "priority": "P2",
+      "publication_readback": {
+        "depends_on_numbers": [
+          33,
+          34,
+          15
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 5,
+        "state": "open"
+      },
       "rendered_body_sha256": "a22a6aeb87450fcb2763fa969fab25f97f8eacb1307e5f05ecdb5f8131b16100",
       "sub_issue_of": 5,
       "title": "[B18] Optional embeddings, index portability and reindexing",
@@ -1935,6 +2351,14 @@
       },
       "phase": "M0",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [
+          15
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 6,
+        "state": "open"
+      },
       "rendered_body_sha256": "79349df28362c2ef90ece4aa341361a0b6c63de60195bbb637d21e82b68954be",
       "sub_issue_of": 6,
       "title": "[C01] Multi-account identity map and account binding contract",
@@ -1981,6 +2405,14 @@
       },
       "phase": "M0",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [
+          48
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 6,
+        "state": "open"
+      },
       "rendered_body_sha256": "4a1a52dfe4722604e206d047af0061104111b6dfb42030424a97a8824043d82d",
       "sub_issue_of": 6,
       "title": "[C02] Per-account credential records and Google installed-app OAuth",
@@ -2029,6 +2461,16 @@
       },
       "phase": "M1",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [
+          49,
+          15
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 6,
+        "state": "open"
+      },
+      "rendered_body_sha256": "0737337e42057d39b732a9a45c75e3fdad4b78cda56d1c7146d23fe78ae169b8",
       "sub_issue_of": 6,
       "title": "[C03] Gmail incremental ingestion with history cursor and full resync",
       "url": "https://github.com/PEAT-AI/lux-didi/issues/50"
@@ -2080,6 +2522,17 @@
       },
       "phase": "M1",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [
+          49,
+          50,
+          19,
+          59
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 6,
+        "state": "open"
+      },
       "rendered_body_sha256": "d51090ac052423b969f598257b67b876824a0856173cd3f3941043692dc84fc6",
       "sub_issue_of": 6,
       "title": "[C04] Gmail reply drafting with write receipts and duplicate-send guards",
@@ -2128,6 +2581,15 @@
       },
       "phase": "M1",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [
+          49,
+          15
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 6,
+        "state": "open"
+      },
       "rendered_body_sha256": "ff11bd18734fba45343fbd95a994fda191ed7e7fb480eefa71f218fa4b88b880",
       "sub_issue_of": 6,
       "title": "[C05] Calendar incremental sync with recurrence, timezones and stable event identity",
@@ -2178,6 +2640,16 @@
       },
       "phase": "M3",
       "priority": "P1",
+      "publication_readback": {
+        "depends_on_numbers": [
+          52,
+          59,
+          19
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 6,
+        "state": "open"
+      },
       "rendered_body_sha256": "1871ad90eae427b48719ef525b7261b899ba73b8d43cc073cc12ce2b87e33607",
       "sub_issue_of": 6,
       "title": "[C06] Authorized Calendar actions and conflict handling",
@@ -2224,6 +2696,14 @@
       },
       "phase": "M2",
       "priority": "P1",
+      "publication_readback": {
+        "depends_on_numbers": [
+          49
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 6,
+        "state": "open"
+      },
       "rendered_body_sha256": "bbf4295abc90ee121dd62579edddcf45377c20c8e148ccb81be405d2b341a177",
       "sub_issue_of": 6,
       "title": "[C07] Document and Drive original resolver for meeting preparation",
@@ -2272,6 +2752,15 @@
       },
       "phase": "M2",
       "priority": "P1",
+      "publication_readback": {
+        "depends_on_numbers": [
+          48,
+          15
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 6,
+        "state": "open"
+      },
       "rendered_body_sha256": "8f5993a563f553dae4e21fd57822b75002b8b7506af25f51060371ec4474e2c9",
       "sub_issue_of": 6,
       "title": "[C08] Mattermost archive coverage and live repair",
@@ -2320,6 +2809,15 @@
       },
       "phase": "M2",
       "priority": "P1",
+      "publication_readback": {
+        "depends_on_numbers": [
+          55,
+          59
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 6,
+        "state": "open"
+      },
       "rendered_body_sha256": "d4b5b6011d8abfc7a71780d212e84187522f33f5694e0281a6e0448cee449db2",
       "sub_issue_of": 6,
       "title": "[C09] Mattermost draft and action adapter",
@@ -2366,6 +2864,14 @@
       },
       "phase": "M2",
       "priority": "P1",
+      "publication_readback": {
+        "depends_on_numbers": [
+          48
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 6,
+        "state": "open"
+      },
       "rendered_body_sha256": "bdbcbef2f1bf86e0ad7b19bf43528ff2b0f4d21e96b35c281e12aeecd1027a32",
       "sub_issue_of": 6,
       "title": "[C10] Trello board read and per-user board mapping",
@@ -2416,6 +2922,16 @@
       },
       "phase": "M3",
       "priority": "P2",
+      "publication_readback": {
+        "depends_on_numbers": [
+          57,
+          59,
+          19
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 6,
+        "state": "open"
+      },
       "rendered_body_sha256": "eda377bb715b287811850f4273d2903a143b186e74a2b8c9d12dd4da172e8419",
       "sub_issue_of": 6,
       "title": "[C11] Trello actions with idempotent reconciliation",
@@ -2464,6 +2980,15 @@
       },
       "phase": "M1",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [
+          61,
+          16
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 7,
+        "state": "open"
+      },
       "rendered_body_sha256": "933e4604d36a9d2d895f2f0f334bd7f9ed51a8403fcb83534ed53ab4b87742a4",
       "sub_issue_of": 7,
       "title": "[C12] Grants, allowlists and the deterministic effect broker",
@@ -2512,6 +3037,15 @@
       },
       "phase": "M3",
       "priority": "P2",
+      "publication_readback": {
+        "depends_on_numbers": [
+          59,
+          62
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 7,
+        "state": "open"
+      },
       "rendered_body_sha256": "8c9c56ef6f8d4b514b31740098751f72a6deab366b9025ea34f4c59532b5831a",
       "sub_issue_of": 7,
       "title": "[C13] Mongoose per-user permission adapter",
@@ -2558,6 +3092,15 @@
       },
       "phase": "M0",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [
+          13
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 7,
+        "state": "open"
+      },
+      "rendered_body_sha256": "2d23bab06a4d5385d72a8684c661f91976eb60c16a59c7c7dc2eda704788f0d9",
       "sub_issue_of": 7,
       "title": "[C14] Tool capability registry and adapter manifests",
       "url": "https://github.com/PEAT-AI/lux-didi/issues/61"
@@ -2607,6 +3150,16 @@
       },
       "phase": "M1",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [
+          48,
+          13,
+          17
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 7,
+        "state": "open"
+      },
       "rendered_body_sha256": "a6c55377af811ce1890ae2301eb0fcd093c64bac8637d747f017ef78ccbaace9",
       "sub_issue_of": 7,
       "title": "[C15] Provider egress and credential policy with route assessment",
@@ -2659,6 +3212,17 @@
       },
       "phase": "M1",
       "priority": "P1",
+      "publication_readback": {
+        "depends_on_numbers": [
+          50,
+          59,
+          62,
+          27
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 7,
+        "state": "open"
+      },
       "rendered_body_sha256": "c5b8ad8f8f60e451010c00cbb872472dedabad813f64b257e400196bdea7e5e2",
       "sub_issue_of": 7,
       "title": "[C16] Injection and account isolation adverse test suite",
@@ -2711,6 +3275,17 @@
       },
       "phase": "M1",
       "priority": "P1",
+      "publication_readback": {
+        "depends_on_numbers": [
+          48,
+          59,
+          15,
+          16
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 7,
+        "state": "open"
+      },
       "rendered_body_sha256": "38248b7d2f286878759226125189420ce8aed3c3fb83df5af2be835e015070c7",
       "sub_issue_of": 7,
       "title": "[C17] Disconnect, revoke and cache propagation",
@@ -2761,6 +3336,16 @@
       },
       "phase": "M3",
       "priority": "P2",
+      "publication_readback": {
+        "depends_on_numbers": [
+          59,
+          62,
+          25
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 7,
+        "state": "open"
+      },
       "rendered_body_sha256": "44870afdda63dbcabe1e1848188e478a89bbad772511a7973c0eef9a19c5f562",
       "sub_issue_of": 7,
       "title": "[C18] Optional Coworker consultation adapter with explicit context routing",
@@ -2783,11 +3368,23 @@
       ],
       "master": "C",
       "milestone": "Voice and proactive beta",
-      "number": 113,
+      "number": 110,
       "phase": "M2",
       "priority": "P1",
-      "sub_issue_of": 105,
-      "title": "[C19] Channel-neutral inbox and outbox with delivery receipts"
+      "publication_readback": {
+        "depends_on_numbers": [
+          48,
+          50,
+          55
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 116,
+        "state": "open"
+      },
+      "rendered_body_sha256": "38af9b2091b518f4dbfdd6dbea405ef4df7c839d7d9a08258bf741ab9a4ac9ef",
+      "sub_issue_of": 116,
+      "title": "[C19] Channel-neutral inbox and outbox with delivery receipts",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/110"
     },
     "C20": {
       "canonical_body_sha256": "0db544caf9ea35bbd35dca0c37a91c8c2311df7a4d3e3d5c6065a2bfb33853bc",
@@ -2805,11 +3402,22 @@
       ],
       "master": "C",
       "milestone": "Voice and proactive beta",
-      "number": 114,
+      "number": 111,
       "phase": "M2",
       "priority": "P1",
-      "sub_issue_of": 105,
-      "title": "[C20] Channel identity separated from source-account identity"
+      "publication_readback": {
+        "depends_on_numbers": [
+          48,
+          110
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 116,
+        "state": "open"
+      },
+      "rendered_body_sha256": "9a71a960d527955e5bf170890ed4b4638358a8be9c77b1c21f31aec4001a5864",
+      "sub_issue_of": 116,
+      "title": "[C20] Channel identity separated from source-account identity",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/111"
     },
     "C21": {
       "canonical_body_sha256": "8e1ace79e4d19cdc0f66e208062483229dfa9582061a645cd52486d1cbda4191",
@@ -2828,11 +3436,23 @@
       ],
       "master": "C",
       "milestone": "Controlled execution and integrations",
-      "number": 115,
+      "number": 112,
       "phase": "M3",
       "priority": "P0",
-      "sub_issue_of": 105,
-      "title": "[C21] Single active authority epoch and host transfer"
+      "publication_readback": {
+        "depends_on_numbers": [
+          59,
+          19,
+          110
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 116,
+        "state": "open"
+      },
+      "rendered_body_sha256": "6d1a674b658b222739449a98dbe4e52aca8f70655b95501329a2ef82d06b30dc",
+      "sub_issue_of": 116,
+      "title": "[C21] Single active authority epoch and host transfer",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/112"
     },
     "C22": {
       "canonical_body_sha256": "98941dc692472d10af31a2be7ca00ba824eeebbe25614b3de8d5539f811cfb52",
@@ -2851,11 +3471,23 @@
       ],
       "master": "C",
       "milestone": "Controlled execution and integrations",
-      "number": 116,
+      "number": 113,
       "phase": "M3",
       "priority": "P0",
-      "sub_issue_of": 105,
-      "title": "[C22] Device grants and scoped expiring intents pulled outbound"
+      "publication_readback": {
+        "depends_on_numbers": [
+          59,
+          99,
+          112
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 116,
+        "state": "open"
+      },
+      "rendered_body_sha256": "486c2642ba18b62561a8c976f65af49df7dbf197ad7377f4ad0ba15a518f4872",
+      "sub_issue_of": 116,
+      "title": "[C22] Device grants and scoped expiring intents pulled outbound",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/113"
     },
     "C23": {
       "canonical_body_sha256": "f30285cfee068137d94796aaaf11cededc8d58ff34fd58d51a02da2b37b71a0d",
@@ -2874,11 +3506,23 @@
       ],
       "master": "C",
       "milestone": "Controlled execution and integrations",
-      "number": 117,
+      "number": 114,
       "phase": "M3",
       "priority": "P1",
-      "sub_issue_of": 105,
-      "title": "[C23] Revocation epochs and offline delivery queue"
+      "publication_readback": {
+        "depends_on_numbers": [
+          64,
+          113,
+          26
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 116,
+        "state": "open"
+      },
+      "rendered_body_sha256": "f2721630dbb4e3031f1928bf0d8f1ba6cf1f2b301655711f83594c6bea86c982",
+      "sub_issue_of": 116,
+      "title": "[C23] Revocation epochs and offline delivery queue",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/114"
     },
     "D01": {
       "canonical_body_sha256": "f72e34744450238b5278006f4b51c19c1b9f682879ed370c4c90b50bf4d5931a",
@@ -2921,6 +3565,14 @@
       },
       "phase": "M0",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [
+          13
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 8,
+        "state": "open"
+      },
       "rendered_body_sha256": "4442508c534f9fdff5b4b34f6369aaa1937653b54a9feea2c55093a21978fc81",
       "sub_issue_of": 8,
       "title": "[D01] Commitment lifecycle schema and state machine contract",
@@ -2971,6 +3623,16 @@
       },
       "phase": "M1",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [
+          66,
+          17,
+          62
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 8,
+        "state": "open"
+      },
       "rendered_body_sha256": "d12b4798b382b0bda600b2bc413325a0fe0f5c4a8b4a6857f976b16408f2f5d0",
       "sub_issue_of": 8,
       "title": "[D02] Promise extraction with attribution, negative rules and evidence spans",
@@ -3019,6 +3681,15 @@
       },
       "phase": "M1",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [
+          66,
+          67
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 8,
+        "state": "open"
+      },
       "rendered_body_sha256": "bca29cba49d7f19bc070f59441720f9d5c468521607f1882925c0e41f6fbdbba",
       "sub_issue_of": 8,
       "title": "[D03] Dedup, reconciliation and closed-state suppression",
@@ -3069,6 +3740,16 @@
       },
       "phase": "M1",
       "priority": "P1",
+      "publication_readback": {
+        "depends_on_numbers": [
+          50,
+          66,
+          62
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 8,
+        "state": "open"
+      },
       "rendered_body_sha256": "c600837dee550dea356ccc4250c00ef2920113e7f6acfa77ab1da57eda6beb69",
       "sub_issue_of": 8,
       "title": "[D04] Unanswered inbox and chat prioritization",
@@ -3121,6 +3802,17 @@
       },
       "phase": "M1",
       "priority": "P1",
+      "publication_readback": {
+        "depends_on_numbers": [
+          32,
+          52,
+          66,
+          62
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 8,
+        "state": "open"
+      },
       "rendered_body_sha256": "825c30a3b1a2d4ab83fef31fd194caab6f39fbfd8e1129b0673a893f3cfcd7df",
       "sub_issue_of": 8,
       "title": "[D05] Meeting preparation with continuity from prior commitments",
@@ -3169,6 +3861,15 @@
       },
       "phase": "M1",
       "priority": "P1",
+      "publication_readback": {
+        "depends_on_numbers": [
+          52,
+          66
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 8,
+        "state": "open"
+      },
       "rendered_body_sha256": "5b1f7333b8c9b192c045feffea5996722513eefd3016c6866954e7637818a1bf",
       "sub_issue_of": 8,
       "title": "[D06] Realistic daily plan and capacity",
@@ -3221,6 +3922,17 @@
       },
       "phase": "M1",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [
+          15,
+          16,
+          66,
+          75
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 8,
+        "state": "open"
+      },
       "rendered_body_sha256": "9d307b2230ecd19c05a65be37a8fbd8faea0f627bfd98b3d966f84fc891b1fd2",
       "sub_issue_of": 8,
       "title": "[D07] Incremental trigger and due processing loop",
@@ -3275,6 +3987,18 @@
       },
       "phase": "M1",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [
+          16,
+          19,
+          26,
+          66,
+          75
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 8,
+        "state": "open"
+      },
       "rendered_body_sha256": "11c0033cdf18b0ab335031d2c8a4dba2eba64fe34c31c9afc24c69abf3581ca1",
       "sub_issue_of": 8,
       "title": "[D08] Reminder intent and outbox semantics",
@@ -3323,6 +4047,15 @@
       },
       "phase": "M1",
       "priority": "P1",
+      "publication_readback": {
+        "depends_on_numbers": [
+          66,
+          73
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 8,
+        "state": "open"
+      },
       "rendered_body_sha256": "6ae56c6004f8fd9dbf604ee2a8efcb39c8814fbc281578c7abe76c3a99048597",
       "sub_issue_of": 8,
       "title": "[D09] Snooze, dismiss and defer conversation",
@@ -3365,6 +4098,12 @@
       },
       "phase": "M1",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 9,
+        "state": "open"
+      },
       "rendered_body_sha256": "fa0b7d480641aae00ecad5a9c601c7f9b4327afe69c1b642f67f4ddc5556c793",
       "sub_issue_of": 9,
       "title": "[D10] Urgency, quiet hours and focus-aware interruption policy",
@@ -3413,6 +4152,15 @@
       },
       "phase": "M2",
       "priority": "P1",
+      "publication_readback": {
+        "depends_on_numbers": [
+          16,
+          85
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 9,
+        "state": "open"
+      },
       "rendered_body_sha256": "3c14b36707274f62b555cd6aad46a484b0748587c03d571ddcec98651aa2fa4d",
       "sub_issue_of": 9,
       "title": "[D11] Asynchronous investigation with conversational progress",
@@ -3461,6 +4209,15 @@
       },
       "phase": "M2",
       "priority": "P1",
+      "publication_readback": {
+        "depends_on_numbers": [
+          52,
+          70
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 9,
+        "state": "open"
+      },
       "rendered_body_sha256": "43911a32c44ecf482e2d6ee42e52fce0260c898498929e9de28de34859314dbc",
       "sub_issue_of": 9,
       "title": "[D12] Calendar change detection and replanning",
@@ -3509,6 +4266,15 @@
       },
       "phase": "M2",
       "priority": "P2",
+      "publication_readback": {
+        "depends_on_numbers": [
+          69,
+          71
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 9,
+        "state": "open"
+      },
       "rendered_body_sha256": "be57ee966fa4be8a02a44cec56c997566e7a8a290756e5e0310051483ac23f7a",
       "sub_issue_of": 9,
       "title": "[D13] Dormant project and open-loop follow-up",
@@ -3557,6 +4323,15 @@
       },
       "phase": "M2",
       "priority": "P2",
+      "publication_readback": {
+        "depends_on_numbers": [
+          67,
+          70
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 9,
+        "state": "open"
+      },
       "rendered_body_sha256": "947cc2eda1b1cb5c5ec4b37ef46e06cd1e9c35a7e0b1eb51f1dd701ef65e3f82",
       "sub_issue_of": 9,
       "title": "[D14] One-on-one preparation and recurring follow-through",
@@ -3607,6 +4382,16 @@
       },
       "phase": "M3",
       "priority": "P2",
+      "publication_readback": {
+        "depends_on_numbers": [
+          57,
+          58,
+          66
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 9,
+        "state": "open"
+      },
       "rendered_body_sha256": "eb8654d5915981cab1605b4b73b340aa3e41fd60b00ec05f86ce7ab96f56b358",
       "sub_issue_of": 9,
       "title": "[D15] Optional external task reconciliation with honest completion semantics",
@@ -3655,6 +4440,15 @@
       },
       "phase": "M3",
       "priority": "P2",
+      "publication_readback": {
+        "depends_on_numbers": [
+          74,
+          75
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 9,
+        "state": "open"
+      },
       "rendered_body_sha256": "267e42ab9fc6c16108120453352e6000e9fd0f2ca286abed2b42b50a9f4c17a8",
       "sub_issue_of": 9,
       "title": "[D16] Outcome learning and nudge calibration with hard bounds",
@@ -3703,6 +4497,15 @@
       },
       "phase": "M1",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [
+          67,
+          68
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 9,
+        "state": "open"
+      },
       "rendered_body_sha256": "8a94d841de55e051479a96e735e301ccde732c4417b2d2a03d7cda9b6418f75b",
       "sub_issue_of": 9,
       "title": "[D17] Proactivity and false-promise evaluation gate over a current synthetic corpus",
@@ -3753,6 +4556,16 @@
       },
       "phase": "M2",
       "priority": "P1",
+      "publication_readback": {
+        "depends_on_numbers": [
+          14,
+          72,
+          75
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 9,
+        "state": "open"
+      },
       "rendered_body_sha256": "74593641351ad3e009e3a5ab1f4455a06d7324ab11de51d27afdf3585c456236",
       "sub_issue_of": 9,
       "title": "[D18] Sleep, offline and catch-up without notification bursts",
@@ -3795,6 +4608,14 @@
       },
       "phase": "M0",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": null,
+        "state": "open"
+      },
+      "rendered_body_sha256": "1f9092dbe11960df19f52910cbc2707d8f334d210c71b0c9694d8318ec35adf9",
+      "sub_issue_of": null,
       "title": "[E01] Runtime and local execution",
       "url": "https://github.com/PEAT-AI/lux-didi/issues/2"
     },
@@ -3835,7 +4656,14 @@
       },
       "phase": "M3",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": null,
+        "state": "open"
+      },
       "rendered_body_sha256": "84598e82376ff6d2c2857d4271b86be68c96cdccd6aff49efd56d0b9e6bef8d5",
+      "sub_issue_of": null,
       "title": "[E02] Harness supervision and operational reliability",
       "url": "https://github.com/PEAT-AI/lux-didi/issues/3"
     },
@@ -3876,7 +4704,14 @@
       },
       "phase": "M1",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": null,
+        "state": "open"
+      },
       "rendered_body_sha256": "d27d786b574a6a150196fd8ebcbac4f8f37b1d1f6ccf9f1d157ba6555f670ae0",
+      "sub_issue_of": null,
       "title": "[E03] Evidence and durable recall",
       "url": "https://github.com/PEAT-AI/lux-didi/issues/4"
     },
@@ -3917,7 +4752,14 @@
       },
       "phase": "M2",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": null,
+        "state": "open"
+      },
       "rendered_body_sha256": "825d03031750c23f70199f2fd71fe8ad58dc0ceabf88a8f034869d5902c9ce91",
+      "sub_issue_of": null,
       "title": "[E04] Evolving personality and memory quality",
       "url": "https://github.com/PEAT-AI/lux-didi/issues/5"
     },
@@ -3958,7 +4800,14 @@
       },
       "phase": "M1",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": null,
+        "state": "open"
+      },
       "rendered_body_sha256": "0883b330c62fb128323d27952a01871449602b85e86c2c2f37e25556088aaf8c",
+      "sub_issue_of": null,
       "title": "[E05] Accounts and work sources: connect a user's own accounts and read their sources safely",
       "url": "https://github.com/PEAT-AI/lux-didi/issues/6"
     },
@@ -3999,7 +4848,14 @@
       },
       "phase": "M1",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": null,
+        "state": "open"
+      },
       "rendered_body_sha256": "c76684b0cf01d04ae87eaa14dc276ca7b196cdf262a7ea2a680ba61038515d12",
+      "sub_issue_of": null,
       "title": "[E06] Authority and optional company integrations: deterministic grants, egress policy and adverse isolation",
       "url": "https://github.com/PEAT-AI/lux-didi/issues/7"
     },
@@ -4040,7 +4896,14 @@
       },
       "phase": "M1",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": null,
+        "state": "open"
+      },
       "rendered_body_sha256": "cafa04d7071eeb0930d1ee8670367c14185280e4d1175d898eb941a4e413dcc1",
+      "sub_issue_of": null,
       "title": "[E07] Commitments and daily planning",
       "url": "https://github.com/PEAT-AI/lux-didi/issues/8"
     },
@@ -4081,7 +4944,14 @@
       },
       "phase": "M2",
       "priority": "P1",
+      "publication_readback": {
+        "depends_on_numbers": [],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": null,
+        "state": "open"
+      },
       "rendered_body_sha256": "c24eb07246e95618a6db8d732b25c9d1932e50a07c04e7d301d73dac8fe0f262",
+      "sub_issue_of": null,
       "title": "[E08] Proactive follow-through",
       "url": "https://github.com/PEAT-AI/lux-didi/issues/9"
     },
@@ -4122,6 +4992,14 @@
       },
       "phase": "M2",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": null,
+        "state": "open"
+      },
+      "rendered_body_sha256": "351af6723d84ca417bf7c2645f9c59f77a18edd2db6c1b9aadca21447b44aca4",
+      "sub_issue_of": null,
       "title": "[E09] Mac conversation surface: hotkey, duplex voice and native notifications",
       "url": "https://github.com/PEAT-AI/lux-didi/issues/10"
     },
@@ -4162,7 +5040,14 @@
       },
       "phase": "M3",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": null,
+        "state": "open"
+      },
       "rendered_body_sha256": "d6f1c0c472b2a1cb4092eb13b1db171d7fdd67718a557373dcf0d138e49de1a6",
+      "sub_issue_of": null,
       "title": "[E10] Installability, computer control and companion portability",
       "url": "https://github.com/PEAT-AI/lux-didi/issues/11"
     },
@@ -4179,10 +5064,19 @@
       ],
       "master": "A",
       "milestone": "Portability and polish",
-      "number": 104,
+      "number": 115,
       "phase": "M4",
       "priority": "P0",
-      "title": "[E11] Portable assistant service and cloud deployment"
+      "publication_readback": {
+        "depends_on_numbers": [],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": null,
+        "state": "open"
+      },
+      "rendered_body_sha256": "3df021f13c62b071c75c122abe3d0b0f68549b7263ef0dba0df0cca9fafe1cba",
+      "sub_issue_of": null,
+      "title": "[E11] Portable assistant service and cloud deployment",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/115"
     },
     "E12": {
       "canonical_body_sha256": "98c4cb5de807fde9eea9df4ed8a5b8918731a11c45580e5d73389db40e9e0ca1",
@@ -4197,10 +5091,19 @@
       ],
       "master": "C",
       "milestone": "Controlled execution and integrations",
-      "number": 105,
+      "number": 116,
       "phase": "M3",
       "priority": "P0",
-      "title": "[E12] Channels, authority epochs and device grants"
+      "publication_readback": {
+        "depends_on_numbers": [],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": null,
+        "state": "open"
+      },
+      "rendered_body_sha256": "fcc54a5d4e49934e22527524f177b811c90d4c35c6d08f1a33734079e7fe352f",
+      "sub_issue_of": null,
+      "title": "[E12] Channels, authority epochs and device grants",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/116"
     },
     "E13": {
       "canonical_body_sha256": "b1a2336f64c77127349083c3ed3c49930c127257865e51614ad23589531885ee",
@@ -4215,10 +5118,19 @@
       ],
       "master": "E",
       "milestone": "Voice and proactive beta",
-      "number": 106,
+      "number": 117,
       "phase": "M2",
       "priority": "P0",
-      "title": "[E13] Responsive and mobile client surfaces"
+      "publication_readback": {
+        "depends_on_numbers": [],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": null,
+        "state": "open"
+      },
+      "rendered_body_sha256": "9b9a4bcda94d22e2d7a9a03116d84db36e6f9537438b38ef5e02c30a72347552",
+      "sub_issue_of": null,
+      "title": "[E13] Responsive and mobile client surfaces",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/117"
     },
     "F01": {
       "canonical_body_sha256": "b63f47c0f464f4f4e84bd5b5515c4fb9b3edc006dc0b2e11f17e0b99ffe07c1a",
@@ -4257,6 +5169,13 @@
       },
       "phase": "M1",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 10,
+        "state": "open"
+      },
+      "rendered_body_sha256": "ebd78975fc27834c84081f663b9cd9ec72f7300f97c08dd56fa3ebac682823e7",
       "sub_issue_of": 10,
       "title": "[F01] Native hotkey and menu bar shell",
       "url": "https://github.com/PEAT-AI/lux-didi/issues/84"
@@ -4302,6 +5221,15 @@
       },
       "phase": "M1",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [
+          84
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 10,
+        "state": "open"
+      },
+      "rendered_body_sha256": "5d818b93bb4eb8eb93c3f6d3c6718a052634188cf3c1d95f98c6ab2a337f87af",
       "sub_issue_of": 10,
       "title": "[F02] Text conversation and async job cards",
       "url": "https://github.com/PEAT-AI/lux-didi/issues/85"
@@ -4347,6 +5275,15 @@
       },
       "phase": "M2",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [
+          84
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 10,
+        "state": "open"
+      },
+      "rendered_body_sha256": "8757f3fc721c5442b43eee74a12be1cbe01b341d0249f806dd99c468268b337e",
       "sub_issue_of": 10,
       "title": "[F03] Microphone, audio devices and permissions",
       "url": "https://github.com/PEAT-AI/lux-didi/issues/86"
@@ -4394,6 +5331,16 @@
       },
       "phase": "M2",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [
+          86,
+          17
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 10,
+        "state": "open"
+      },
+      "rendered_body_sha256": "b1d40364ef9536dd51aafed3b656a92e18d81aacfc73bb72dd3e4038e1dbf3cc",
       "sub_issue_of": 10,
       "title": "[F04] Gemini Live duplex adapter",
       "url": "https://github.com/PEAT-AI/lux-didi/issues/87"
@@ -4441,6 +5388,15 @@
       },
       "phase": "M3",
       "priority": "P1",
+      "publication_readback": {
+        "depends_on_numbers": [
+          87,
+          17
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 10,
+        "state": "open"
+      },
       "rendered_body_sha256": "05ddde8307e0d14c1e0165354cbe80908ffb448c0bcffecb28fd31f32dd56042",
       "sub_issue_of": 10,
       "title": "[F05] Alternate speech and text fallback provider capabilities",
@@ -4487,6 +5443,14 @@
       },
       "phase": "M2",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [
+          87
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 10,
+        "state": "open"
+      },
       "rendered_body_sha256": "bc24489eb97af15b0cf744a5432e6c9b3b6ad8630b3a6579c4a5b701a4161a7b",
       "sub_issue_of": 10,
       "title": "[F06] Barge-in, echo and cancel",
@@ -4533,6 +5497,14 @@
       },
       "phase": "M2",
       "priority": "P1",
+      "publication_readback": {
+        "depends_on_numbers": [
+          87
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 10,
+        "state": "open"
+      },
       "rendered_body_sha256": "f81a374cb0488dc1289e1eaff1cff2e5a3a64a9fa5dcbd5b8cca135d60c0d54f",
       "sub_issue_of": 10,
       "title": "[F07] Session reconnect, expiry and recovery",
@@ -4581,6 +5553,16 @@
       },
       "phase": "M2",
       "priority": "P1",
+      "publication_readback": {
+        "depends_on_numbers": [
+          87,
+          41
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 10,
+        "state": "open"
+      },
+      "rendered_body_sha256": "b1445ca0941a1767f9901c028fc0804d80b68cdadce951c13cc4577825b5761c",
       "sub_issue_of": 10,
       "title": "[F08] Voice, personality, localization and accessibility",
       "url": "https://github.com/PEAT-AI/lux-didi/issues/91"
@@ -4626,6 +5608,14 @@
       },
       "phase": "M1",
       "priority": "P1",
+      "publication_readback": {
+        "depends_on_numbers": [
+          85
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 10,
+        "state": "open"
+      },
       "rendered_body_sha256": "4b01eb1eadf5fd664f1f35d24cc69aafb115824c1b367e36d4af4b97a387d208",
       "sub_issue_of": 10,
       "title": "[F09] Native notification-to-conversation",
@@ -4678,6 +5668,17 @@
       },
       "phase": "M1",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [
+          48,
+          49,
+          59,
+          98
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 11,
+        "state": "open"
+      },
       "rendered_body_sha256": "a3f775fceaacf1a5e45e82a59dc80e275dea7922ffab57af2f537e97d1228839",
       "sub_issue_of": 11,
       "title": "[F10] Clean-user onboarding, accounts and grants",
@@ -4726,6 +5727,15 @@
       },
       "phase": "M3",
       "priority": "P1",
+      "publication_readback": {
+        "depends_on_numbers": [
+          93,
+          44
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 11,
+        "state": "open"
+      },
       "rendered_body_sha256": "0bea083191229bc079085c740ea090e4e3034874f99b2e46cddd267b361d974d",
       "sub_issue_of": 11,
       "title": "[F11] Memory, authority and action review surfaces",
@@ -4774,6 +5784,16 @@
       },
       "phase": "M3",
       "priority": "P1",
+      "publication_readback": {
+        "depends_on_numbers": [
+          93,
+          24
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 11,
+        "state": "open"
+      },
+      "rendered_body_sha256": "883bf9e4a52cc6ef839bc93bb84baddae862f74f6dcba333f311fa7ca413e2a2",
       "sub_issue_of": 11,
       "title": "[F12] Native computer-use controls, TCC and screen capture",
       "url": "https://github.com/PEAT-AI/lux-didi/issues/95"
@@ -4821,6 +5841,15 @@
       },
       "phase": "M1",
       "priority": "P1",
+      "publication_readback": {
+        "depends_on_numbers": [
+          84,
+          14
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 11,
+        "state": "open"
+      },
       "rendered_body_sha256": "af609f0f60fdae5122a78bc53cd257102f945df5dcab410e15238e479c9e2803",
       "sub_issue_of": 11,
       "title": "[F13] Login, background, sleep and power",
@@ -4869,6 +5898,15 @@
       },
       "phase": "M4",
       "priority": "P2",
+      "publication_readback": {
+        "depends_on_numbers": [
+          87,
+          96
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 11,
+        "state": "open"
+      },
       "rendered_body_sha256": "29f73fd4567949f31879d998cb64050029359112eb5eb0058121b9bc242e65e2",
       "sub_issue_of": 11,
       "title": "[F14] Opt-in wake phrase feasibility",
@@ -4911,6 +5949,12 @@
       },
       "phase": "M1",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 11,
+        "state": "open"
+      },
       "rendered_body_sha256": "401600be7c4df99dc04fac2132723c9f2ebc786824af18af1895f9b05daa2947",
       "sub_issue_of": 11,
       "title": "[F15] Packaging, signing, notarization, update and uninstall",
@@ -4957,6 +6001,15 @@
       },
       "phase": "M3",
       "priority": "P1",
+      "publication_readback": {
+        "depends_on_numbers": [
+          98
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 11,
+        "state": "open"
+      },
+      "rendered_body_sha256": "c82f21eaaf0426d0e3b78415c392eb9c9e6a850c9de655800480df7784b72c0a",
       "sub_issue_of": 11,
       "title": "[F16] Companion device pairing, revocation and transport",
       "url": "https://github.com/PEAT-AI/lux-didi/issues/99"
@@ -5002,6 +6055,15 @@
       },
       "phase": "M3",
       "priority": "P2",
+      "publication_readback": {
+        "depends_on_numbers": [
+          99
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 11,
+        "state": "open"
+      },
+      "rendered_body_sha256": "1a26486439017de8c7ac0c49b99241290d2b1452950e41bd511306c412437d36",
       "sub_issue_of": 11,
       "title": "[F17] Mobile notifications and control with one Mac authority",
       "url": "https://github.com/PEAT-AI/lux-didi/issues/100"
@@ -5049,6 +6111,15 @@
       },
       "phase": "M4",
       "priority": "P2",
+      "publication_readback": {
+        "depends_on_numbers": [
+          98,
+          12
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 11,
+        "state": "open"
+      },
       "rendered_body_sha256": "15dbd08c01b24db4684229ecf5c86a0f30028ee3a0d50d6813b4f57ab9f0f280",
       "sub_issue_of": 11,
       "title": "[F18] Windows port seam and conformance guide",
@@ -5073,8 +6144,19 @@
       "number": 118,
       "phase": "M2",
       "priority": "P0",
-      "sub_issue_of": 106,
-      "title": "[F19] Responsive PWA shell over the service contract"
+      "publication_readback": {
+        "depends_on_numbers": [
+          85,
+          104
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 117,
+        "state": "open"
+      },
+      "rendered_body_sha256": "fea14f1db9d879cb100b31617f572a54c04b724cecab4f715e66ec8fbd29b946",
+      "sub_issue_of": 117,
+      "title": "[F19] Responsive PWA shell over the service contract",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/118"
     },
     "F20": {
       "canonical_body_sha256": "31e0965483e7a8c49c443d26b5565a35a46a199467559462de489f6c4a164d4b",
@@ -5095,8 +6177,19 @@
       "number": 119,
       "phase": "M2",
       "priority": "P0",
-      "sub_issue_of": 106,
-      "title": "[F20] Browser shell-only cache and private-data offline policy"
+      "publication_readback": {
+        "depends_on_numbers": [
+          118,
+          62
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 117,
+        "state": "open"
+      },
+      "rendered_body_sha256": "ed6f762a103e823510783dea65a665ea9ce01b87f8ded4b4fd2bad329d83dea7",
+      "sub_issue_of": 117,
+      "title": "[F20] Browser shell-only cache and private-data offline policy",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/119"
     },
     "F21": {
       "canonical_body_sha256": "3f8f6d3765fc3a71a26f11a48a4bc6fa12ef46864f58b09f05ec016c7f6eb330",
@@ -5117,8 +6210,19 @@
       "number": 120,
       "phase": "M3",
       "priority": "P1",
-      "sub_issue_of": 106,
-      "title": "[F21] Android installable access path on the same contract"
+      "publication_readback": {
+        "depends_on_numbers": [
+          118,
+          100
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 117,
+        "state": "open"
+      },
+      "rendered_body_sha256": "c75f008fdb676c13fcb4c20244d1378e608b4a47aa29a6a878452c76233e5544",
+      "sub_issue_of": 117,
+      "title": "[F21] Android installable access path on the same contract",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/120"
     },
     "F22": {
       "canonical_body_sha256": "e54fe88c3db015e3d35378cd6215ef71d3dd804c37e92f85cf849fad11c6124f",
@@ -5140,8 +6244,20 @@
       "number": 121,
       "phase": "M4",
       "priority": "P1",
-      "sub_issue_of": 106,
-      "title": "[F22] Client contract conformance across breakpoints"
+      "publication_readback": {
+        "depends_on_numbers": [
+          118,
+          120,
+          108
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 117,
+        "state": "open"
+      },
+      "rendered_body_sha256": "5c9d3b6971b39778d2c53478abac05a7501b767e36c13e6d371fa3fcc16019ff",
+      "sub_issue_of": 117,
+      "title": "[F22] Client contract conformance across breakpoints",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/121"
     },
     "F23": {
       "canonical_body_sha256": "1fe94fa974dcb5ef80a0c41469639c6adb4014b1d4df23fd34954f553e76f932",
@@ -5163,8 +6279,20 @@
       "number": 122,
       "phase": "M2",
       "priority": "P0",
-      "sub_issue_of": 106,
-      "title": "[F23] Shared web UI host in WKWebView with a native-only control surface"
+      "publication_readback": {
+        "depends_on_numbers": [
+          84,
+          118,
+          104
+        ],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": 117,
+        "state": "open"
+      },
+      "rendered_body_sha256": "e1482375a052a297771422021d4020556182f4aeed82537219e243d527b0dd91",
+      "sub_issue_of": 117,
+      "title": "[F23] Shared web UI host in WKWebView with a native-only control surface",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/122"
     },
     "P00": {
       "canonical_body_sha256": "60f68154c284e3c06120c26564bbfa60837c06849626860bf29545a176764029",
@@ -5201,6 +6329,14 @@
       },
       "phase": "M0",
       "priority": "P0",
+      "publication_readback": {
+        "depends_on_numbers": [],
+        "observed_at": "2026-10-09T19:38:08.527975+00:00",
+        "parent_number": null,
+        "state": "open"
+      },
+      "rendered_body_sha256": "ade58b797370a43d63789732bfaf39386b6f4d0ff182bec12c64cebc4720d784",
+      "sub_issue_of": null,
       "title": "[P00] Lux Didi program tracker",
       "url": "https://github.com/PEAT-AI/lux-didi/issues/1"
     }
@@ -5246,7 +6382,7 @@
     "nodes_to_create": 19,
     "nodes_to_update": 20,
     "nodes_unchanged": 81,
-    "note": "staged projection, not observed readback: nothing below has happened on the tracker",
+    "note": "Historical independently accepted pre-publication projection. Publication completed; these projected assignments/counters are not live state. Current actual identities are nodes[].number/url and publication readback.",
     "projected_milestone_issue_counts": {
       "Controlled execution and integrations": 26,
       "Portability and polish": 9,
@@ -5256,6 +6392,7 @@
     },
     "projected_published_issue_total": 121,
     "projected_sub_issue_links": 106,
+    "status": "published",
     "updated_ids": [
       "A01",
       "A03",
@@ -5280,7 +6417,9 @@
     ]
   },
   "publication": {
-    "issues_created": 0,
+    "created_body_reconciliations": 11,
+    "issue_total_excluding_prs": 121,
+    "issues_created": 19,
     "issues_reused": 102,
     "labels": [
       "kind:epic",
@@ -5301,6 +6440,13 @@
       "priority:P1",
       "priority:P2"
     ],
+    "milestone_roadmap_issue_counts": {
+      "Controlled execution and integrations": 26,
+      "Portability and polish": 9,
+      "Proof and contracts": 14,
+      "Useful daily loop": 45,
+      "Voice and proactive beta": 26
+    },
     "milestones": {
       "Controlled execution and integrations": 4,
       "Portability and polish": 5,
@@ -5308,14 +6454,80 @@
       "Useful daily loop": 2,
       "Voice and proactive beta": 3
     },
+    "new_unique_identities": 19,
+    "nodes_unchanged": 81,
+    "nodes_updated": 20,
+    "number_projection_differences": {
+      "A19": {
+        "observed": 104,
+        "projected": 107
+      },
+      "A20": {
+        "observed": 105,
+        "projected": 108
+      },
+      "A21": {
+        "observed": 106,
+        "projected": 109
+      },
+      "A22": {
+        "observed": 107,
+        "projected": 110
+      },
+      "A23": {
+        "observed": 108,
+        "projected": 111
+      },
+      "A24": {
+        "observed": 109,
+        "projected": 112
+      },
+      "C19": {
+        "observed": 110,
+        "projected": 113
+      },
+      "C20": {
+        "observed": 111,
+        "projected": 114
+      },
+      "C21": {
+        "observed": 112,
+        "projected": 115
+      },
+      "C22": {
+        "observed": 113,
+        "projected": 116
+      },
+      "C23": {
+        "observed": 114,
+        "projected": 117
+      },
+      "E11": {
+        "observed": 115,
+        "projected": 104
+      },
+      "E12": {
+        "observed": 116,
+        "projected": 105
+      },
+      "E13": {
+        "observed": 117,
+        "projected": 106
+      }
+    },
+    "plan_delivery_state": "closed",
+    "readback_at": "2026-10-09T19:38:08.527975+00:00",
     "readback_mismatches": [],
-    "sub_issue_links": 90,
+    "roadmap_identities_preserved": 101,
+    "source_commit": "a74ff1e955bb6ad3b7e29470e85f79c2d73f6cda",
+    "status": "published",
+    "sub_issue_links": 106,
     "sub_issues_supported": true
   },
-  "published_issue_total": 102,
+  "published_issue_total": 121,
   "repo": "PEAT-AI/lux-didi",
   "roadmap_issue_total": 120,
   "schema": "lux-didi.issue-map/1",
   "snapshot_commit": "23d7b8a",
-  "totals_note": "roadmap_issue_total counts the nodes in this plan; published_issue_total counts the issues currently on the tracker"
+  "totals_note": "Observed publication: 120 roadmap nodes plus unchanged closed plan-delivery issue102 =121 issues, excluding PRs. Historical proposed_publication and observed baseline snapshots are retained separately from current publication readback."
 }

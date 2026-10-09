@@ -9,7 +9,7 @@ chmod 700 "$proof/real-host"
 git archive HEAD server web | tar -x -C "$work/source"
 # Build accepted owner bytes in disposable staging, never copy PACKAGE implementation.
 # Offline/null npm config prevents cloud calls and reading real npm credentials.
-export npm_config_userconfig=/dev/null npm_config_globalconfig=/dev/null
+export npm_config_userconfig=/dev/null npm_config_globalconfig="$work/absent-global-config"
 cache="${LUX_COMPANION_NPM_CACHE:?explicit warmed npm cache required}"
 npm --prefix "$work/source/server" ci --offline --ignore-scripts --no-audit --no-fund --cache "$cache"
 npm --prefix "$work/source/web" ci --offline --ignore-scripts --no-audit --no-fund --cache "$cache"

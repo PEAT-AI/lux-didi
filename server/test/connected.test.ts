@@ -77,7 +77,12 @@ test('CONNECTED actual adapter/HTTP atomic private enrollment and whole-turn con
     const local = (await (await f.call('/sessions', { title: 'EXCLUDED_OTHER_SESSION_CANARY', timeZone: 'UTC' }, 'local')).json()).data;
     assert.equal((await f.call(`/sessions/${local.id}/entries`, { text: 'EXCLUDED_LOCAL_NOTE_CANARY', role: 'user', timeZone: 'UTC' }, 'local-entry')).status, 200);
     assert.equal((await (await f.call(`/sessions/${local.id}`)).json()).data.entries[0].text, 'EXCLUDED_LOCAL_NOTE_CANARY');
+    assert.equal((await f.call(`/sessions/${local.id}/entries`, { text: 'EXCLUDED_RECALL_CANARY', role: 'user', timeZone: 'UTC' }, 'recall-entry')).status, 200);
+    const recalled = (await (await f.call('/recall?q=EXCLUDED_RECALL_CANARY')).json()).data;
+    assert.ok(recalled.hits.some((hit: { snippet: string }) => hit.snippet.includes('EXCLUDED_RECALL_CANARY')));
     assert.equal((await f.call('/commitments', { title: 'EXCLUDED_TODAY_CANARY', dueAt: null, timeZone: 'UTC' }, 'local-commitment')).status, 200);
+    const today = (await (await f.call(`/plan?date=${new Date().toISOString().slice(0, 10)}&timeZone=UTC`)).json()).data;
+    assert.ok(today.unscheduled.some((item: { title: string }) => item.title === 'EXCLUDED_TODAY_CANARY'));
     const enrolled = await f.enroll();
     const replayEnrollment = await f.enroll(); assert.equal(replayEnrollment.sessionId, enrolled.sessionId);
     const domain = createDomainPort({ outbox: Outbox });
@@ -262,7 +267,7 @@ test('CONNECTED logout closes only that client stream; disconnect only detaches 
 test('CONNECTED actual adapter failure, empty, truncated, deadline and explicit cancel are honest', async () => {
   for (const outcome of ['error', 'empty', 'truncated', 'deadline', 'cancelled']) {
     const gate = outcome === 'cancelled' ? deferredCredentials() : undefined;
-    const f = await fixture(true, { ...(gate ? { credentials: gate.credentials } : {}), deadlineMs: 50,
+    const f = await fixture(true, { ...(gate ? { credentials: gate.credentials } : {}), deadlineMs: outcome === 'deadline' ? 50 : 2000,
       transport: async (_url, init) => {
         if (outcome === 'deadline') return new Promise<Response>((_resolve, reject) => { init.signal!.addEventListener('abort', () => reject(new Error('aborted')), { once: true }); });
         return outcome === 'error' ? new Response('synthetic refusal', { status: 500 }) : sse(outcome === 'empty' ? '' : answer, outcome === 'truncated' ? 'MAX_TOKENS' : 'STOP');

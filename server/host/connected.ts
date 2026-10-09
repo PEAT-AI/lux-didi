@@ -24,7 +24,7 @@ export function composeChat(store: Store, domain: DomainPort, configDir: string,
   const route = ready?.route;
   const chat = new ChatService({ store, domain, model,
     route: { provider: 'gemini', model: ready?.profile.modelId ?? '', available: !!ready,
-      endpoint: 'https://generativelanguage.googleapis.com', apiVersion: 'v1beta', keyReference: 'gemini-primary',
+      endpoint: `https://generativelanguage.googleapis.com/v1beta/models/${ready?.profile.modelId ?? ''}:streamGenerateContent?alt=sse`, apiVersion: 'v1beta', keyReference: 'gemini-primary',
       allowedClasses: route?.dataClasses ?? [], allows: classes => !!route && classes.every(c => route.dataClasses.includes(c)) },
     preferences: ready?.profile.preferences ?? validatePreferences({ schemaVersion: 1, ownerId: store.assistantId, dataClass: 'ordinary', language: 'en-US', register: 'plain', humor: 'off', verbosity: 'balanced' }, store.assistantId),
     classify: (subject, tx) => {

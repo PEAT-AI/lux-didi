@@ -7,7 +7,7 @@ export class ConfigError extends Error {
     this.name = 'ConfigError';
   }
 }
-export const fail = (code: ConfigErrorCode): never => { throw new ConfigError(code); };
+export function fail(code: ConfigErrorCode): never { throw new ConfigError(code); }
 export function safeError(error: unknown): ConfigError {
   return error instanceof ConfigError ? error : new ConfigError('io_error');
 }

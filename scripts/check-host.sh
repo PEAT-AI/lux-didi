@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 config=$(mktemp "$PWD/server/.host-check-XXXXXX.json")
 log=$(mktemp)
 trap 'rm -f "$config" "$log"' EXIT
-printf '%s\n' '{"extends":"./tsconfig.json","include":["host/**/*.ts","http/**/*.ts","test/host.test.ts","test/http.test.ts"]}' > "$config"
+printf '%s\n' '{"extends":"./tsconfig.json","include":["index.ts","host/**/*.ts","http/**/*.ts","test/host.test.ts","test/http.test.ts"]}' > "$config"
 npm --prefix web run build
 server/node_modules/.bin/tsc -p "$config"
 for file in server/dist/test/host.test.js server/dist/test/http.test.js; do

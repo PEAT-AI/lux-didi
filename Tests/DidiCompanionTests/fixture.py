@@ -144,6 +144,6 @@ origin = "http://127.0.0.1:" + str(server.server_port)
 path = sys.argv[1]
 fd = os.open(path + ".pending", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
 with os.fdopen(fd, "w") as output:
-    json.dump({"port": server.server_port, "credential": credential}, output)
+    json.dump({"port": server.server_port, "credential": credential, "authorityEpoch": epoch}, output)
 os.rename(path + ".pending", path)
 server.serve_forever()

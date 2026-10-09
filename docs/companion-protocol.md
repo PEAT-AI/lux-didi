@@ -98,3 +98,45 @@ dependency. Snapshot proves actual native rendering, not GPU acceleration.
 Canvas2D/DOM Naya rendering is owned by the shared web author; no WebGL2 or GPU
 claim follows from the WKWebView class or a successful screenshot. Accepted
 service+web integration and measurable hardware rendering are separate root gates.
+
+## App-owned installed service (native extension; combined proof still required)
+
+A build-generated `Contents/Resources/didi-runtime.json` selects installed mode.
+The native schema uses `schemaVersion: 1`, installId UUID, releaseCommit40hex,
+absolute nodePath, nodeMajor26 and resource-relative serverEntry/webRoot. The
+installer owns the actual machine path and release identity; no machine paths or
+runtime credentials are committed. A present invalid manifest never falls back
+to explicit attach mode. Relative paths cannot traverse or escape resources by
+symlink. State derives from macOS Application Support/ai.peat.lux-didi with
+current-owner0700 directory; proof executables alone have explicit test overrides.
+
+Native launches verified Node directly with a scrubbed environment (no shell,
+PATH fallback, NODE_OPTIONS/NODE_PATH/DYLD injection). A bounded probe checks the
+actual major and built-in SQLite. The service argv is exactly serverEntry,
+`--supervised --data-dir <state> --web-root <webRoot> --port 0`. Only one owned
+child is started. Private stdin carries one HOST-R3 `{type:"start",schemaVersion:1,
+nonce}` line and remains open for liveness. One stdout ready line, at most1024
+bytes, must match schema/type/fresh nonce/live owned PID, exact127.0.0.1 origin,
+UUID authorityEpoch and assistantId. Stale disk descriptors never select a port.
+The ready frame does not include a release commit; native does not invent one or
+claim signed/notarized provenance from it. Installer validation supplies the
+manifest/resource release boundary; same-UID malicious code is not a sandbox claim.
+
+Only after readiness, native opens canonical admin-credential relative to a
+validated private directory FD using O_NOFOLLOW, checking regular/current-owner
+0600 and bounded/header-safe bytes. It imports via noninteractive Keychain API to
+fixed service ai.peat.lux-didi.admin/account lowercase installId. A differing
+existing item is an explicit blocker, never silent credential rotation/deletion
+or ACL broadening. The canonical service file remains. Synthetic unique Keychain
+services exist only in proof builds and are removed by their test owner.
+
+Every installed native REST request checks current owned-child identity before
+credential lookup/dispatch. Explicit restart rebinds only after fresh readiness,
+retaining unresolved text/UUID/epoch rather than silently saving a new request.
+Bootstrap checks the readiness epoch against authenticated status. Unexpected
+child exit clears the page and requires explicit reconnect; there is no automatic
+restart/retry loop. Hide/close retains the child. Quit first awaits bounded scoped
+logout, then closes stdin, then applies bounded TERM/owned-PID KILL only if needed.
+The actual HOST's supervised EOF contract owns crash cleanup; protocol fixtures
+are not combined HOST/web installation proof. No launchd or installation effect
+is added by these native sources.

@@ -18,7 +18,8 @@ import Darwin
         var children: [NativeServiceSupervisor] = []
         defer {
             for account in accounts {
-                SecItemDelete([kSecClass: kSecClassGenericPassword, kSecAttrService: service, kSecAttrAccount: account] as CFDictionary)
+                let context = LAContext(); context.interactionNotAllowed = true
+                SecItemDelete([kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account, kSecUseAuthenticationContext as String: context] as CFDictionary)
             }
             try? fm.removeItem(at: root)
         }
@@ -80,7 +81,7 @@ import Darwin
             catch { try expect(!second.isRunning, "actual second-writer rejection before authority") }
             try expect(owned.isRunning, "other child failure never terminates first owner")
 
-            for mode in ["stale", "peer", "pid", "epoch", "malformed", "oversize", "extra", "exit"] {
+            for mode in ["stale", "peer", "pid", "epoch", "malformed", "oversize", "extra", "exit", "silent"] {
                 let bad = try setup(mode)
                 let child = supervisor(bad)
                 do { _ = try await child.start(); try expect(false, "invalid ready must fail: " + mode) }
@@ -107,6 +108,10 @@ import Darwin
             let eofDeadline = Date().addingTimeInterval(2)
             while owned.isRunning && Date() < eofDeadline { try await Task.sleep(nanoseconds: 20_000_000) }
             try expect(!owned.isRunning, "private supervision EOF exits actual child")
+            var credentialReads = 0
+            let staleClient = CompanionClient(descriptor: first.descriptor, credential: { credentialReads += 1; return try first.descriptor.credential() }, expectedEpoch: first.authorityEpoch, connectionGuard: { owned.isCurrent(first) })
+            do { _ = try await staleClient.bootstrap(); try expect(false, "dead peer must not receive authentication") }
+            catch { try expect(credentialReads == 0, "dead owned connection refuses before credential lookup/dispatch") }
             let restarted = try await owned.start()
             try expect(restarted.pid != first.pid && restarted.descriptor.origin != first.descriptor.origin, "explicit restart uses fresh child readiness not stale port")
             try expect(Data(try restarted.descriptor.credential().utf8) == canonical, "restart retains canonical credential without silent rotation")

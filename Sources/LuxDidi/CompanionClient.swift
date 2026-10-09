@@ -48,8 +48,8 @@ enum CompanionError: LocalizedError {
     case invalidConfiguration, credentialUnavailable, unavailable, authentication, invalidResponse, rejected(Int), unresolvedCapture
     var errorDescription: String? {
         switch self {
-        case .invalidConfiguration: return "Configure an explicitly approved local service and Keychain credential reference. Remote device pairing is not enabled."
-        case .credentialUnavailable: return "The native Keychain credential is unavailable. No permission prompt was requested."
+        case .invalidConfiguration: return "Didi isn’t connected. Start the Didi service, then connect this app."
+        case .credentialUnavailable: return "Didi couldn’t access its saved connection. Check Settings, then try again."
         case .unavailable: return "Service unavailable. Retry explicitly; your draft is retained."
         case .authentication: return "Authentication expired. Reconnect explicitly before retrying the same capture."
         case .invalidResponse: return "The service response was not accepted. Your draft is retained."
@@ -68,8 +68,10 @@ struct CaptureReceipt { let entryID: String }
 enum CaptureStatus: Equatable { case idle, sending, saved, cancelled, unknown, failed }
 
 @MainActor final class CompanionClient {
-    let descriptor: ServiceDescriptor
-    private let credential: () throws -> String
+    private(set) var descriptor: ServiceDescriptor
+    private var credential: () throws -> String
+    private var connectionGuard: () -> Bool
+    private var expectedEpoch: String?
     private let session: URLSession
     private var epoch: String?
     private var cookie: HTTPCookie?
@@ -86,16 +88,26 @@ enum CaptureStatus: Equatable { case idle, sending, saved, cancelled, unknown, f
     }
     private var pending: Capture?
     private(set) var captureStatus: CaptureStatus = .idle
-    init(descriptor: ServiceDescriptor, credential: @escaping () throws -> String) {
+    init(descriptor: ServiceDescriptor, credential: @escaping () throws -> String, expectedEpoch: String? = nil, connectionGuard: @escaping () -> Bool = { true }) {
         self.descriptor = descriptor; self.credential = credential
+        self.expectedEpoch = expectedEpoch; self.connectionGuard = connectionGuard
         let config = URLSessionConfiguration.ephemeral
         config.httpCookieStorage = nil; config.httpShouldSetCookies = false
         config.urlCache = nil; config.requestCachePolicy = .reloadIgnoringLocalCacheData
         config.timeoutIntervalForRequest = 8; config.timeoutIntervalForResource = 12
         session = URLSession(configuration: config, delegate: NoRedirect(), delegateQueue: nil)
     }
+    // Only after new owned readiness. Keep pending UUID/body/epoch on restart;
+    // transport replacement must never silently turn an uncertain send into a new one.
+    func rebind(descriptor: ServiceDescriptor, credential: @escaping () throws -> String, expectedEpoch: String, connectionGuard: @escaping () -> Bool) async {
+        if self.connectionGuard() { await revokePageSession() }
+        self.descriptor = descriptor; self.credential = credential
+        self.expectedEpoch = expectedEpoch; self.connectionGuard = connectionGuard
+        cookie = nil; csrf = nil
+    }
     private func request(_ path: String, method: String = "GET", body: [String: Any]? = nil,
                          bearer: Bool = true, page: Bool = false, key: String? = nil, authority: String? = nil) async throws -> ([String: Any], HTTPURLResponse) {
+        guard connectionGuard() else { throw CompanionError.unavailable }
         let url = descriptor.baseURL.appendingPathComponent(path)
         guard descriptor.allows(url) else { throw CompanionError.invalidConfiguration }
         var request = URLRequest(url: url)
@@ -126,7 +138,7 @@ enum CaptureStatus: Equatable { case idle, sending, saved, cancelled, unknown, f
         // Only explicitly requested reconnect. No auto auth or mutation retry loop.
         await revokePageSession()
         let (status, _) = try await request("api/v1/status")
-        guard let current = status["authorityEpoch"] as? String, UUID(uuidString: current) != nil else { throw CompanionError.invalidResponse }
+        guard let current = status["authorityEpoch"] as? String, UUID(uuidString: current) != nil, expectedEpoch == nil || expectedEpoch == current else { throw CompanionError.invalidResponse }
         if epoch != current { sessionID = nil }
         epoch = current
         let (pairing, _) = try await request("api/v1/auth/pairing", method: "POST", body: [:])

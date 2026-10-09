@@ -79,6 +79,7 @@ import WebKit
                 _ = try await client.capture(text: "Synthetic native capture", timeZone: "UTC")
                 expect(false, "fixture drops first saved response")
             } catch { expect(client.captureStatus == .unknown, "lost reply yields unknown, not false failure or success") }
+            await client.rebind(descriptor: descriptor, credential: { config["credential"] as! String }, expectedEpoch: config["authorityEpoch"] as! String, connectionGuard: { true })
             let receipt = try await client.retryCapture()
             expect(!receipt.entryID.isEmpty, "authenticated native synthetic capture saved")
             let replay = try await client.retryCapture()

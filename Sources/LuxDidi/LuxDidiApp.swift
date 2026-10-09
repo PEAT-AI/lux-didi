@@ -13,8 +13,23 @@ import Carbon
     let voice = NativeVoice()
     let notifications = NativeNotifications()
     private(set) var client: CompanionClient?
+    private(set) var supervisor: NativeServiceSupervisor?
     private var submittedDraft: String?
     init() {
+        // A present but invalid installed resource is a blocker, never attach fallback.
+        if let resources = Bundle.main.resourceURL {
+            do {
+                if let runtime = try InstalledRuntime.load(resources: resources) {
+                    let owner = try NativeServiceSupervisor(runtime: runtime)
+                    supervisor = owner
+                    owner.onUnavailable = { [weak self] in
+                        self?.error = NativeServiceError.exited.localizedDescription
+                        self?.shell?.clear()
+                    }
+                    return
+                }
+            } catch { self.error = NativeServiceError.invalidRuntime.localizedDescription; return }
+        }
         do {
             let descriptor = try ServiceDescriptor.configured()
             shell = CompanionWeb(descriptor: descriptor)
@@ -23,10 +38,27 @@ import Carbon
     }
     func refresh() async { voice.refresh(); notificationStatus = await notifications.capability() }
     func reconnect() async {
-        guard !connecting, let client, let shell else { return }
+        guard !connecting else { return }
         connecting = true; defer { connecting = false }
-        do { await shell.load(cookie: try await client.bootstrap()); error = nil }
-        catch { self.error = error.localizedDescription; shell.clear() }
+        do {
+            if let supervisor {
+                let connection = try await supervisor.start()
+                let descriptor = connection.descriptor
+                let allowed = { supervisor.isCurrent(connection) }
+                let credential = { () throws -> String in
+                    guard allowed() else { throw CompanionError.unavailable }
+                    return try descriptor.credential()
+                }
+                if let client {
+                    await client.rebind(descriptor: descriptor, credential: credential, expectedEpoch: connection.authorityEpoch, connectionGuard: allowed)
+                } else {
+                    client = CompanionClient(descriptor: descriptor, credential: credential, expectedEpoch: connection.authorityEpoch, connectionGuard: allowed)
+                }
+                if shell?.descriptor.origin != descriptor.origin { shell = CompanionWeb(descriptor: descriptor) }
+            }
+            guard let client, let shell else { throw CompanionError.invalidConfiguration }
+            await shell.load(cookie: try await client.bootstrap()); error = nil
+        } catch { self.error = error.localizedDescription; shell?.clear() }
     }
     func saveDraft() async {
         guard captureStatus != .sending else { return }
@@ -55,6 +87,10 @@ import Carbon
         if wasRecording && !voice.state.transcript.isEmpty { draft = voice.state.transcript }
     }
     func logout() async { stopRecording("Logout"); await client?.revokePageSession(); shell?.clear() }
+    func shutdown() async {
+        await logout()
+        await supervisor?.stop()
+    }
 }
 
 struct RootView: View {
@@ -66,8 +102,10 @@ struct RootView: View {
                 SharedServicePanel(shell: shell) { Task { await model.reconnect() } }
             } else {
                 VStack(spacing: 16) {
-                    Text("Set up Didi’s local service").font(.title)
-                    Text("Configure an approved service descriptor and a Keychain credential reference, then reopen the app. No localhost instance is automatically trusted.").multilineTextAlignment(.center)
+                    Text("Connect Didi").font(.title)
+                    Text("Start the Didi service, then connect this app.").multilineTextAlignment(.center)
+                    Button(model.connecting ? "Starting…" : "Connect") { Task { await model.reconnect() } }
+                        .disabled(model.connecting).accessibilityLabel("Connect Didi")
                 }.padding(48).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             Divider()
@@ -75,28 +113,34 @@ struct RootView: View {
                 Text("Native capture · \(model.hotkeyStatus)").font(.caption).foregroundStyle(.secondary)
                 HStack {
                     TextField("User-entered or on-device transcribed text", text: $model.draft)
-                    Button(model.captureStatus == .unknown ? "Retry same capture" : "Save text") { Task { await model.saveDraft() } }
+                    Button(model.captureStatus == .unknown ? "Retry Send" : "Send") { Task { await model.saveDraft() } }
                         .disabled(!Presentation.canSend(model.draft) || model.captureStatus == .sending || voice.state.phase == .recording)
-                    Button(voice.state.phase == .recording ? "Stop" : "Record") {
+                        .accessibilityLabel(model.captureStatus == .unknown ? "Retry same text capture" : "Send text")
+                    Button(voice.state.phase == .recording ? "Stop" : "Start") {
                         if voice.state.phase == .recording { model.stopRecording("Stopped by user") } else { voice.start() }
-                    }.disabled(voice.microphone != .granted || voice.speech != .granted || !voice.onDevice)
-                    Menu("Native settings") {
+                    }.disabled(voice.state.phase != .recording && (voice.microphone != .granted || voice.speech != .granted || !voice.onDevice))
+                        .accessibilityLabel(voice.state.phase == .recording ? "Stop recording" : "Start recording")
+                    Menu("Settings") {
                         Button("Request microphone/speech permissions") { Task { await model.voice.requestPermissions() } }
                         Button("Reconnect service") { Task { await model.reconnect() } }
-                        Button("Log out page session") { Task { await model.logout() } }
+                        Button("Disconnect") { Task { await model.logout() } }
+                        if let shell = model.shell {
+                            Text("Service: \(shell.descriptor.origin)")
+                            Text("Credential reference: \(shell.descriptor.credentialService)")
+                        }
                         Button("Quit Didi") { NSApp.terminate(nil) }
                     }
                 }
                 Text(captureDetail).font(.caption)
                 if let error = model.error { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
-                Text("Recording starts only from this native control and requires on-device recognition. Hide/close stops recording; draft stays. Page content cannot grant OS permissions.").font(.caption2).foregroundStyle(.secondary)
+                Text("Record locally, review the text, then send it. Closing Didi keeps your draft.").font(.caption2).foregroundStyle(.secondary)
             }.padding(12)
         }.frame(minWidth: 780, minHeight: 620)
     }
     private var captureDetail: String {
         switch model.captureStatus {
         case .saved: return "Saved to the service."
-        case .unknown: return "Outcome unknown. Draft retained; retry the same idempotent capture."
+        case .unknown: return "Couldn’t confirm it was saved. Your draft is here; retry this send."
         case .cancelled: return "Cancelled before dispatch. Draft retained."
         case .sending: return "Saving…"
         case .failed: return "Not saved. Draft retained."
@@ -163,7 +207,7 @@ struct RootView: View {
             // async MainActor job can hold that executor and starve cleanup.
             // Return first, then reissue clean termination after bounded logout.
             Task {
-                await model.logout()
+                await model.shutdown()
                 cleanQuit = true
                 sender.terminate(nil)
             }

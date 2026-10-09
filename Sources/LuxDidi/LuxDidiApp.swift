@@ -268,7 +268,8 @@ struct RootView: View {
                 "accessibility": controls, "nativeChrome": null, "limitation": null, "timeoutSeconds": 4,
                 "axRootProtocol": window is NSAccessibilityProtocol,
                 "axRootChildren": window.accessibilityChildren()?.count ?? 0,
-                "axTrace": OwnedWindowProof.accessibilityTrace(window)]
+                "axTrace": OwnedWindowProof.accessibilityTrace(window),
+                "axConsumer": OwnedWindowProof.consumerTrace(window)]
             do { evidence["nativeChrome"] = try await OwnedWindowProof.capture(window, to: url) }
             catch {
                 evidence["limitation"] = "Own-process capture unavailable (platform code \((error as NSError).code)); legacy cache artifact is NOT faithful native-chrome evidence."

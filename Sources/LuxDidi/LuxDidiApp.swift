@@ -114,6 +114,7 @@ struct RootView: View {
     private var terminationMonitor: NSObjectProtocol?
     private var hotkeyCode: OSStatus = noErr
     private var cleanQuit = false
+    private var quitting = false
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 980, height: 760), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
@@ -155,9 +156,19 @@ struct RootView: View {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if cleanQuit { return .terminateNow }
-        model.stopRecording("Didi quit")
-        Task { await model.logout(); cleanQuit = true; sender.reply(toApplicationShouldTerminate: true) }
-        return .terminateLater
+        if !quitting {
+            quitting = true
+            model.stopRecording("Didi quit")
+            // terminateLater enters a nested AppKit loop. A caller inside an
+            // async MainActor job can hold that executor and starve cleanup.
+            // Return first, then reissue clean termination after bounded logout.
+            Task {
+                await model.logout()
+                cleanQuit = true
+                sender.terminate(nil)
+            }
+        }
+        return .terminateCancel
     }
     func applicationWillTerminate(_ notification: Notification) {
         model.stopRecording("Didi quit"); hotkey.unregister()

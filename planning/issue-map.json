@@ -1,0 +1,2464 @@
+{
+  "assembly_digest": "669648727adff01c327179c5631f0a816e34294f97d9273b0dea616812141c4a",
+  "nodes": {
+    "A01": {
+      "canonical_body_sha256": "0d673a4d006c9059bb4118e86a5b9c1a8c7a75817293f0685fbee9194bd4df67",
+      "depends_on": [],
+      "epic": "E01",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:A",
+        "phase:M0",
+        "priority:P0"
+      ],
+      "master": "A",
+      "milestone": "Proof and contracts",
+      "number": 12,
+      "phase": "M0",
+      "priority": "P0",
+      "rendered_body_sha256": "5a1c6db7320a51402b403891d9864a0263ecb78967c476a91b3e2768c6815b80",
+      "sub_issue_of": 2,
+      "title": "[A01] Runtime host, sidecar and license feasibility decision",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/12"
+    },
+    "A02": {
+      "canonical_body_sha256": "8399134fd5d4a19c58676166c64c3e70840ca292ba005a2bf850bdb28b13bb3d",
+      "depends_on": [],
+      "epic": "E01",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:A",
+        "phase:M0",
+        "priority:P0"
+      ],
+      "master": "A",
+      "milestone": "Proof and contracts",
+      "number": 13,
+      "phase": "M0",
+      "priority": "P0",
+      "rendered_body_sha256": "c24cd7619c3f3006b042f7548233f54f84b7c296a826edbc36ada0dbedb47f0b",
+      "sub_issue_of": 2,
+      "title": "[A02] Versioned cross-track contracts and shared fixtures",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/13"
+    },
+    "A03": {
+      "canonical_body_sha256": "ec9ffc683683c4407806d59471502aa3a500c906e527a2ffdb80594678e5f8f2",
+      "depends_on": [
+        "A01"
+      ],
+      "epic": "E01",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:A",
+        "phase:M0",
+        "priority:P1"
+      ],
+      "master": "A",
+      "milestone": "Proof and contracts",
+      "number": 14,
+      "phase": "M0",
+      "priority": "P1",
+      "rendered_body_sha256": "cd7fed81f26f161770027e4c10f631ffe8d0a251e1ef3f47e4f3e3e1ac2cf3d1",
+      "sub_issue_of": 2,
+      "title": "[A03] Local service lifecycle and control surface",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/14"
+    },
+    "A04": {
+      "canonical_body_sha256": "c2225123e964b79b1066aac5e305367fe180da7cbdbd1a78e56c57fe03a462e2",
+      "depends_on": [
+        "A02"
+      ],
+      "epic": "E01",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:A",
+        "phase:M0",
+        "priority:P0"
+      ],
+      "master": "A",
+      "milestone": "Proof and contracts",
+      "number": 15,
+      "phase": "M0",
+      "priority": "P0",
+      "rendered_body_sha256": "5d4199753b9e0dc9ff68ae1aca0211bfe04aa3c2bf947ac589aaa23349ed5092",
+      "sub_issue_of": 2,
+      "title": "[A04] Application storage, migrations and backup/restore",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/15"
+    },
+    "A05": {
+      "canonical_body_sha256": "2bef0e82d14687ffca0bc37bc4ff9a2a60d68deb20b4b1a9f3bafabe50e0b536",
+      "depends_on": [
+        "A04"
+      ],
+      "epic": "E01",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:A",
+        "phase:M1",
+        "priority:P0"
+      ],
+      "master": "A",
+      "milestone": "Useful daily loop",
+      "number": 16,
+      "phase": "M1",
+      "priority": "P0",
+      "rendered_body_sha256": "edc01514d6a1a4a18abbffc2e2a626f62a1ed81b5c7d9b2db61d27f5a8c37bd4",
+      "sub_issue_of": 2,
+      "title": "[A05] Durable task progress and cancellation semantics",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/16"
+    },
+    "A06": {
+      "canonical_body_sha256": "0eae183227f2c8276de58b5c5cae0bdf5f803d2b7af444cfe7ba5c34fa54ae67",
+      "depends_on": [
+        "A02"
+      ],
+      "epic": "E01",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:A",
+        "phase:M1",
+        "priority:P0"
+      ],
+      "master": "A",
+      "milestone": "Useful daily loop",
+      "number": 17,
+      "phase": "M1",
+      "priority": "P0",
+      "rendered_body_sha256": "76dc502584ad45351afeb7ac0f1143bbcaef7a55a023fd9da19cac94a3404daf",
+      "sub_issue_of": 2,
+      "title": "[A06] Replaceable model providers and configured budgets",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/17"
+    },
+    "A07": {
+      "canonical_body_sha256": "3652b438e850a7e46eca4acfcf786d3f19d64418b06e1b1ba13375b44326c6d8",
+      "depends_on": [
+        "A06",
+        "A08",
+        "C12",
+        "C15"
+      ],
+      "epic": "E01",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:A",
+        "phase:M1",
+        "priority:P0"
+      ],
+      "master": "A",
+      "milestone": "Useful daily loop",
+      "number": 18,
+      "phase": "M1",
+      "priority": "P0",
+      "rendered_body_sha256": "eb6d2840717fc686bda916f3c14c6e87a8cfc28845a6fe75e59e2282f2c58028",
+      "sub_issue_of": 2,
+      "title": "[A07] Tool-turn orchestration and bounded agent loop",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/18"
+    },
+    "A08": {
+      "canonical_body_sha256": "b16b63728366db13258fb4ea35628f2615bd0a4be4e487f0dc8899a73c82c239",
+      "depends_on": [
+        "A02",
+        "A04",
+        "A05",
+        "A15"
+      ],
+      "epic": "E01",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:A",
+        "phase:M1",
+        "priority:P0"
+      ],
+      "master": "A",
+      "milestone": "Useful daily loop",
+      "number": 19,
+      "phase": "M1",
+      "priority": "P0",
+      "rendered_body_sha256": "f3a2e6d8f3ec8e7a0578822a6a6b424dd9cd82393a4bfca466a6aea52d880893",
+      "sub_issue_of": 2,
+      "title": "[A08] Action intents, receipts and unknown-outcome reconciliation",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/19"
+    },
+    "A09": {
+      "canonical_body_sha256": "8d11f8332898124d5bba1e645fccc36b95f44af9453be841ba9a1490da035c43",
+      "depends_on": [],
+      "epic": "E02",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:A",
+        "phase:M3",
+        "priority:P1"
+      ],
+      "master": "A",
+      "milestone": "Controlled execution and integrations",
+      "number": 20,
+      "phase": "M3",
+      "priority": "P1",
+      "rendered_body_sha256": "858dc68fbd815400ab7cb442250d35f8c1ab6c8356893d9fb7ebfaa69bd982f6",
+      "sub_issue_of": 3,
+      "title": "[A09] Harness discovery and identity, read-only",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/20"
+    },
+    "A10": {
+      "canonical_body_sha256": "c474268acf827e3e8df092a14808fe633c91166969bbeccb1aaf41f687095bd9",
+      "depends_on": [
+        "A09"
+      ],
+      "epic": "E02",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:A",
+        "phase:M3",
+        "priority:P1"
+      ],
+      "master": "A",
+      "milestone": "Controlled execution and integrations",
+      "number": 21,
+      "phase": "M3",
+      "priority": "P1",
+      "rendered_body_sha256": "cfcf99e981fd92c56de00ec6a385253b0995913bb8a7e5e1e3a30e69f437897a",
+      "sub_issue_of": 3,
+      "title": "[A10] Harness events, session evidence and replay",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/21"
+    },
+    "A11": {
+      "canonical_body_sha256": "f4d036ba8d6e5530ac5a3ca04b6f8b203ad61899df345b886364fd964f01211c",
+      "depends_on": [
+        "A10"
+      ],
+      "epic": "E02",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:A",
+        "phase:M3",
+        "priority:P0"
+      ],
+      "master": "A",
+      "milestone": "Controlled execution and integrations",
+      "number": 22,
+      "phase": "M3",
+      "priority": "P0",
+      "rendered_body_sha256": "ef6d7f3c5c92f00ffc464fd68661b5e350a2f2dd444d8db962d15b2465f31032",
+      "sub_issue_of": 3,
+      "title": "[A11] Authorized harness steering and cancellation",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/22"
+    },
+    "A12": {
+      "canonical_body_sha256": "596ad91de59ce2fd8e6d8c48b7e7ba97cf3ccfcc6962cd8a32a6b6a9492d420e",
+      "depends_on": [
+        "A11"
+      ],
+      "epic": "E02",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:A",
+        "phase:M3",
+        "priority:P1"
+      ],
+      "master": "A",
+      "milestone": "Controlled execution and integrations",
+      "number": 23,
+      "phase": "M3",
+      "priority": "P1",
+      "rendered_body_sha256": "2976653756f6e1d6d898511c3cf085394ba56357cf0ffe43f075774e7728c640",
+      "sub_issue_of": 3,
+      "title": "[A12] Delegated concurrency and admission discipline",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/23"
+    },
+    "A13": {
+      "canonical_body_sha256": "634ce10b4cd9cb4c70b99e6ea388f87bf21cf527baa09836252f2fc921fd3189",
+      "depends_on": [
+        "A07"
+      ],
+      "epic": "E02",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:A",
+        "phase:M3",
+        "priority:P2"
+      ],
+      "master": "A",
+      "milestone": "Controlled execution and integrations",
+      "number": 24,
+      "phase": "M3",
+      "priority": "P2",
+      "rendered_body_sha256": "cc68bcf7444b0fc94e01dd41c5d0b4f6362ca8836b756a52de6b1f15240db513",
+      "sub_issue_of": 3,
+      "title": "[A13] Scoped command and filesystem tools with explicit broad mode",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/24"
+    },
+    "A14": {
+      "canonical_body_sha256": "56fa111848ed7a81ad78c43cdb010114638d7bb01a50210c7c2e0de030dcc67b",
+      "depends_on": [
+        "A02"
+      ],
+      "epic": "E02",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:A",
+        "phase:M3",
+        "priority:P1"
+      ],
+      "master": "A",
+      "milestone": "Controlled execution and integrations",
+      "number": 25,
+      "phase": "M3",
+      "priority": "P1",
+      "rendered_body_sha256": "4fb2b298c8115beeeefccc6a2bd4c99a0a2851140de79c53565d93a48fda661d",
+      "sub_issue_of": 3,
+      "title": "[A14] MCP transport and server lifecycle",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/25"
+    },
+    "A15": {
+      "canonical_body_sha256": "de735b1ed6a6cf97fd6fb3460093d316abde70311a0bab5be79ebc776a7e6e15",
+      "depends_on": [
+        "A04"
+      ],
+      "epic": "E02",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:A",
+        "phase:M1",
+        "priority:P1"
+      ],
+      "master": "A",
+      "milestone": "Useful daily loop",
+      "number": 26,
+      "phase": "M1",
+      "priority": "P1",
+      "rendered_body_sha256": "b7e9ff4e73d2243309eac2e4e0712d9e10d37ba36beb76482f79fe67e816b41a",
+      "sub_issue_of": 3,
+      "title": "[A15] Core event outbox and crash recovery",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/26"
+    },
+    "A16": {
+      "canonical_body_sha256": "5f9a2c8af94685e1601572ac9f6eeaf3b5de3c8a5144555c015b3a00995a3ce1",
+      "depends_on": [
+        "A15"
+      ],
+      "epic": "E02",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:A",
+        "phase:M1",
+        "priority:P2"
+      ],
+      "master": "A",
+      "milestone": "Useful daily loop",
+      "number": 27,
+      "phase": "M1",
+      "priority": "P2",
+      "rendered_body_sha256": "5f8b4a98d7f27a9e91dd4b70e28c170aaf75fc09c523db3c2a164601cf19a86a",
+      "sub_issue_of": 3,
+      "title": "[A16] Diagnostics with redacted evidence",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/27"
+    },
+    "A17": {
+      "canonical_body_sha256": "68a27bcba2a4fca1c43c9b85a92ff668599b7502df4fdd7a533dfa417c683014",
+      "depends_on": [
+        "A02",
+        "A03",
+        "A04",
+        "A05",
+        "A08",
+        "A15",
+        "C01",
+        "C02",
+        "C12",
+        "C15",
+        "B02",
+        "B04",
+        "B05",
+        "B07",
+        "B08",
+        "D01",
+        "D02",
+        "D03",
+        "D06",
+        "D07",
+        "D08",
+        "D09",
+        "F01",
+        "F02",
+        "F09"
+      ],
+      "epic": "E02",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:A",
+        "phase:M1",
+        "priority:P1"
+      ],
+      "master": "A",
+      "milestone": "Useful daily loop",
+      "number": 28,
+      "phase": "M1",
+      "priority": "P1",
+      "rendered_body_sha256": "5b3a681fb7ce6856b4e14e23f7bb2e0d4ee91d4984be368cd505bb50c53551e5",
+      "sub_issue_of": 3,
+      "title": "[A17] First daily-loop integration and lean validation gate",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/28"
+    },
+    "A18": {
+      "canonical_body_sha256": "4a4e435aac4bdcd746a419d1e0b2adb18a7826888391974454d62ef3a8aae4ba",
+      "depends_on": [
+        "A03",
+        "A07"
+      ],
+      "epic": "E02",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:A",
+        "phase:M1",
+        "priority:P2"
+      ],
+      "master": "A",
+      "milestone": "Useful daily loop",
+      "number": 29,
+      "phase": "M1",
+      "priority": "P2",
+      "rendered_body_sha256": "6cbe5e9f71f383ca0db7bc8762eb034549a7c7f0d096564be216f4831a2f7d41",
+      "sub_issue_of": 3,
+      "title": "[A18] Latency, energy and resource measurement and budgets",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/29"
+    },
+    "B01": {
+      "canonical_body_sha256": "2efb114a6bb7fba8121db775f4e8a7edeef337bb5e8f9cbe90da46572d52b170",
+      "depends_on": [],
+      "epic": "E03",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:B",
+        "phase:M0",
+        "priority:P0"
+      ],
+      "master": "B",
+      "milestone": "Proof and contracts",
+      "number": 30,
+      "phase": "M0",
+      "priority": "P0",
+      "rendered_body_sha256": "ef67e6c8b2e3bfce0570869a8fdbf987246547c1d2f81264ea68b6389903a56f",
+      "sub_issue_of": 4,
+      "title": "[B01] Evidence and source identity model",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/30"
+    },
+    "B02": {
+      "canonical_body_sha256": "ceec3cdc0d18ac7fa44c8e1e9268dd8f6c0864169632494782031dc1455e2afc",
+      "depends_on": [
+        "B01",
+        "A04"
+      ],
+      "epic": "E03",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:B",
+        "phase:M1",
+        "priority:P0"
+      ],
+      "master": "B",
+      "milestone": "Useful daily loop",
+      "number": 31,
+      "phase": "M1",
+      "priority": "P0",
+      "rendered_body_sha256": "dba98ff340978d198c6c866884b5631502eeb475c3af0b23f9b7022418f7da97",
+      "sub_issue_of": 4,
+      "title": "[B02] Local voice and session transcript originals",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/31"
+    },
+    "B03": {
+      "canonical_body_sha256": "180b5674e7f9db3d4a894405867b950f40193172c67a46252ea9e57826896de2",
+      "depends_on": [
+        "B01",
+        "B02",
+        "A04"
+      ],
+      "epic": "E03",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:B",
+        "phase:M1",
+        "priority:P1"
+      ],
+      "master": "B",
+      "milestone": "Useful daily loop",
+      "number": 32,
+      "phase": "M1",
+      "priority": "P1",
+      "rendered_body_sha256": "966c46835921851a5bade9e887dc73e2c768b91d0ff52a3c28907510820f6e05",
+      "sub_issue_of": 4,
+      "title": "[B03] External transcript resolution and coverage",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/32"
+    },
+    "B04": {
+      "canonical_body_sha256": "ad9aa5bab6e2bcf8411bda9cabf968ad7f68c667e4a6ec3a1df1ece056918cef",
+      "depends_on": [
+        "B01",
+        "B02",
+        "A04",
+        "C15"
+      ],
+      "epic": "E03",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:B",
+        "phase:M1",
+        "priority:P0"
+      ],
+      "master": "B",
+      "milestone": "Useful daily loop",
+      "number": 33,
+      "phase": "M1",
+      "priority": "P0",
+      "rendered_body_sha256": "5da7f15f8ca63f5c14d6cc61571101f935c1676659beeef21b77f7d084d5abad",
+      "sub_issue_of": 4,
+      "title": "[B04] Session gists with evidence links",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/33"
+    },
+    "B05": {
+      "canonical_body_sha256": "09ff9509c3cafdd9d13c1c40ecd247bbb57364b9e18aa076a029210d77010c26",
+      "depends_on": [
+        "B01",
+        "B04",
+        "A04"
+      ],
+      "epic": "E03",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:B",
+        "phase:M1",
+        "priority:P0"
+      ],
+      "master": "B",
+      "milestone": "Useful daily loop",
+      "number": 34,
+      "phase": "M1",
+      "priority": "P0",
+      "rendered_body_sha256": "402d8df819c3db2c098f5efae1a59de1a11c353d38edbbbe997621926439b902",
+      "sub_issue_of": 4,
+      "title": "[B05] Exact and semantic session recall",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/34"
+    },
+    "B06": {
+      "canonical_body_sha256": "eb3f41340c8503a858a5adf368668192e59bfc0900283c88347b7a21852a20d4",
+      "depends_on": [
+        "B01",
+        "A02",
+        "A04"
+      ],
+      "epic": "E03",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:B",
+        "phase:M3",
+        "priority:P1"
+      ],
+      "master": "B",
+      "milestone": "Controlled execution and integrations",
+      "number": 35,
+      "phase": "M3",
+      "priority": "P1",
+      "rendered_body_sha256": "5634336e697ad22b32d3c2cbbdc911391353d84fcd77ef8512083bdf12869994",
+      "sub_issue_of": 4,
+      "title": "[B06] Optional private knowledge adapter",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/35"
+    },
+    "B07": {
+      "canonical_body_sha256": "525ab90a82bd22f01a831e0c7fecc88276795164943a9f12c73b09e734861d9b",
+      "depends_on": [
+        "B01",
+        "A04"
+      ],
+      "epic": "E03",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:B",
+        "phase:M0",
+        "priority:P0"
+      ],
+      "master": "B",
+      "milestone": "Proof and contracts",
+      "number": 36,
+      "phase": "M0",
+      "priority": "P0",
+      "rendered_body_sha256": "fd3c022387ee9b9117307751c76e3c1db68f7046bfa396ecc01ed4c87a73980e",
+      "sub_issue_of": 4,
+      "title": "[B07] Authoritative explicit preferences",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/36"
+    },
+    "B08": {
+      "canonical_body_sha256": "74c01ab247042d568abbafc6234b6cd57ffbbeb742b8a9e2451d581b33ef8acb",
+      "depends_on": [
+        "B01",
+        "B04",
+        "A04"
+      ],
+      "epic": "E03",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:B",
+        "phase:M1",
+        "priority:P0"
+      ],
+      "master": "B",
+      "milestone": "Useful daily loop",
+      "number": 37,
+      "phase": "M1",
+      "priority": "P0",
+      "rendered_body_sha256": "354d48e09e8d89f1e6f1ff7a5a53681c6770ec2c397317963decb44c6da8c752",
+      "sub_issue_of": 4,
+      "title": "[B08] Correction, conflict and suppression semantics",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/37"
+    },
+    "B09": {
+      "canonical_body_sha256": "866eff385385265e09b377f0802636c7a9179b5f284222bdbd79d1b989f14b02",
+      "depends_on": [
+        "B01",
+        "B07",
+        "B08",
+        "A04"
+      ],
+      "epic": "E03",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:B",
+        "phase:M1",
+        "priority:P0"
+      ],
+      "master": "B",
+      "milestone": "Useful daily loop",
+      "number": 38,
+      "phase": "M1",
+      "priority": "P0",
+      "rendered_body_sha256": "7bbdb2683f9df58110c4fef1e4b35edafa6b0e900dc2980384074d290eefd2fe",
+      "sub_issue_of": 4,
+      "title": "[B09] Export, forget and cache propagation",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/38"
+    },
+    "B10": {
+      "canonical_body_sha256": "9d7bb6599771aa555f1ff469ef3914ad1f685157e9fa1f4989658b93cb898c74",
+      "depends_on": [
+        "B04",
+        "B05",
+        "A04"
+      ],
+      "epic": "E04",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:B",
+        "phase:M2",
+        "priority:P1"
+      ],
+      "master": "B",
+      "milestone": "Voice and proactive beta",
+      "number": 39,
+      "phase": "M2",
+      "priority": "P1",
+      "rendered_body_sha256": "12931084a4ee9f781bb79262bfff9353228b6186c1d8cf995128b48c45278519",
+      "sub_issue_of": 5,
+      "title": "[B10] Consolidation and retention",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/39"
+    },
+    "B11": {
+      "canonical_body_sha256": "02402d3571ca4633cbb2b45fe375ae3317a4997220e14dd8d413fe4b0433d2b4",
+      "depends_on": [
+        "B05",
+        "B07",
+        "B17",
+        "C15"
+      ],
+      "epic": "E04",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:B",
+        "phase:M1",
+        "priority:P0"
+      ],
+      "master": "B",
+      "milestone": "Useful daily loop",
+      "number": 40,
+      "phase": "M1",
+      "priority": "P0",
+      "rendered_body_sha256": "fcd7449d8c339a2cffa2ee55429919da12e00d0f5a56373b8f00312c6c76a65b",
+      "sub_issue_of": 5,
+      "title": "[B11] Bounded context compilation",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/40"
+    },
+    "B12": {
+      "canonical_body_sha256": "7f2aba93e07e9242040d02864689d9df4aeacbe718d54ddb3e75a40d72735951",
+      "depends_on": [],
+      "epic": "E04",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:B",
+        "phase:M0",
+        "priority:P0"
+      ],
+      "master": "B",
+      "milestone": "Proof and contracts",
+      "number": 41,
+      "phase": "M0",
+      "priority": "P0",
+      "rendered_body_sha256": "dc28b2a9e9f5f59d29571d59e1e93c5a11f8e05d69ef0e72ebb303b69a6afddb",
+      "sub_issue_of": 5,
+      "title": "[B12] Public Naya-inspired persona specification",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/41"
+    },
+    "B13": {
+      "canonical_body_sha256": "99f4fac2835c5e5683b616280e34990728b9fc4466dbb11da2f11de7e74dcbd0",
+      "depends_on": [
+        "B07",
+        "B12",
+        "A04"
+      ],
+      "epic": "E04",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:B",
+        "phase:M1",
+        "priority:P0"
+      ],
+      "master": "B",
+      "milestone": "Useful daily loop",
+      "number": 42,
+      "phase": "M1",
+      "priority": "P0",
+      "rendered_body_sha256": "cc2b6467833a2044fdbe3ee38311409d31d9ee8d2634b9c82a80f4385900d40c",
+      "sub_issue_of": 5,
+      "title": "[B13] Private customization and onboarding",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/42"
+    },
+    "B14": {
+      "canonical_body_sha256": "766060134d2db34319f7bc1e006f89f349400f9d2c088f48767543093001bcc1",
+      "depends_on": [
+        "B08",
+        "B12",
+        "B17",
+        "A04"
+      ],
+      "epic": "E04",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:B",
+        "phase:M2",
+        "priority:P1"
+      ],
+      "master": "B",
+      "milestone": "Voice and proactive beta",
+      "number": 43,
+      "phase": "M2",
+      "priority": "P1",
+      "rendered_body_sha256": "4b2e2de0b4a0979120f07fe520e3d3be99523405a0337e82602c660616eaf7b7",
+      "sub_issue_of": 5,
+      "title": "[B14] Gradual persona learning with inspectable provenance",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/43"
+    },
+    "B15": {
+      "canonical_body_sha256": "4e87958f158104fd7b500fa282bd775e92a32fb18e9e8c5b9df3ec08b0687f55",
+      "depends_on": [
+        "B07",
+        "B08",
+        "B10",
+        "A04"
+      ],
+      "epic": "E04",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:B",
+        "phase:M2",
+        "priority:P1"
+      ],
+      "master": "B",
+      "milestone": "Voice and proactive beta",
+      "number": 44,
+      "phase": "M2",
+      "priority": "P1",
+      "rendered_body_sha256": "b92427961cd28746d1e365cd6b26efb67e140be45367e1415ce661ca0f313310",
+      "sub_issue_of": 5,
+      "title": "[B15] Memory inspector services",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/44"
+    },
+    "B16": {
+      "canonical_body_sha256": "82272d76212ea4d586755c4cc43808931a538f865c6022484e334af0b73239f8",
+      "depends_on": [
+        "B05",
+        "B17"
+      ],
+      "epic": "E04",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:B",
+        "phase:M1",
+        "priority:P1"
+      ],
+      "master": "B",
+      "milestone": "Useful daily loop",
+      "number": 45,
+      "phase": "M1",
+      "priority": "P1",
+      "rendered_body_sha256": "1b56e8db1c9291dd6c87346475d44b534d0e1dc26416c5fe7d49519d2ab9ac3f",
+      "sub_issue_of": 5,
+      "title": "[B16] Recall evaluation corpus",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/45"
+    },
+    "B17": {
+      "canonical_body_sha256": "6c008a4a32cbf816637bea60f25c02e5c8c8a23cff9350d814aa8d40d248b001",
+      "depends_on": [
+        "B01"
+      ],
+      "epic": "E04",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:B",
+        "phase:M0",
+        "priority:P0"
+      ],
+      "master": "B",
+      "milestone": "Proof and contracts",
+      "number": 46,
+      "phase": "M0",
+      "priority": "P0",
+      "rendered_body_sha256": "c8b38570b197b23a7444ed05ccada061d0cebe702debfb8aa6a82132871f8169",
+      "sub_issue_of": 5,
+      "title": "[B17] Trust and epistemic separation in retrieved context",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/46"
+    },
+    "B18": {
+      "canonical_body_sha256": "09f5aeaa233618226bc8eaad19cd6f594a50e8069711c65725a0e699a693a9f7",
+      "depends_on": [
+        "B04",
+        "B05",
+        "A04"
+      ],
+      "epic": "E04",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:B",
+        "phase:M3",
+        "priority:P2"
+      ],
+      "master": "B",
+      "milestone": "Controlled execution and integrations",
+      "number": 47,
+      "phase": "M3",
+      "priority": "P2",
+      "rendered_body_sha256": "a22a6aeb87450fcb2763fa969fab25f97f8eacb1307e5f05ecdb5f8131b16100",
+      "sub_issue_of": 5,
+      "title": "[B18] Optional embeddings, index portability and reindexing",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/47"
+    },
+    "C01": {
+      "canonical_body_sha256": "96b0d655316ddcce6fefff068f92e2c843335721a3013f236cbea6a7f33deb87",
+      "depends_on": [
+        "A04"
+      ],
+      "epic": "E05",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:C",
+        "phase:M0",
+        "priority:P0"
+      ],
+      "master": "C",
+      "milestone": "Proof and contracts",
+      "number": 48,
+      "phase": "M0",
+      "priority": "P0",
+      "rendered_body_sha256": "79349df28362c2ef90ece4aa341361a0b6c63de60195bbb637d21e82b68954be",
+      "sub_issue_of": 6,
+      "title": "[C01] Multi-account identity map and account binding contract",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/48"
+    },
+    "C02": {
+      "canonical_body_sha256": "d6e59b689253038dda60c47f66257d35e5def22ebb6e11dfa6af7da65884d265",
+      "depends_on": [
+        "C01"
+      ],
+      "epic": "E05",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:C",
+        "phase:M0",
+        "priority:P0"
+      ],
+      "master": "C",
+      "milestone": "Proof and contracts",
+      "number": 49,
+      "phase": "M0",
+      "priority": "P0",
+      "rendered_body_sha256": "4a1a52dfe4722604e206d047af0061104111b6dfb42030424a97a8824043d82d",
+      "sub_issue_of": 6,
+      "title": "[C02] Per-account credential records and Google installed-app OAuth",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/49"
+    },
+    "C03": {
+      "canonical_body_sha256": "5486d91d6b1e6d35d280490dcae934fbd173a2a70708ea55e81f4debb11ee7bd",
+      "depends_on": [
+        "C02",
+        "A04"
+      ],
+      "epic": "E05",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:C",
+        "phase:M1",
+        "priority:P0"
+      ],
+      "master": "C",
+      "milestone": "Useful daily loop",
+      "number": 50,
+      "phase": "M1",
+      "priority": "P0",
+      "rendered_body_sha256": "89b45d09a90e04d505d701dec996a3536cfc0ac6835dc433fc9e4add3d991eda",
+      "sub_issue_of": 6,
+      "title": "[C03] Gmail incremental ingestion with history cursor and full resync",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/50"
+    },
+    "C04": {
+      "canonical_body_sha256": "903f37ddd75057254993c42770ba4cbe01423e6184e11d03b2e0e12cac3ee423",
+      "depends_on": [
+        "C02",
+        "C03",
+        "A08",
+        "C12"
+      ],
+      "epic": "E05",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:C",
+        "phase:M1",
+        "priority:P0"
+      ],
+      "master": "C",
+      "milestone": "Useful daily loop",
+      "number": 51,
+      "phase": "M1",
+      "priority": "P0",
+      "rendered_body_sha256": "d51090ac052423b969f598257b67b876824a0856173cd3f3941043692dc84fc6",
+      "sub_issue_of": 6,
+      "title": "[C04] Gmail reply drafting with write receipts and duplicate-send guards",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/51"
+    },
+    "C05": {
+      "canonical_body_sha256": "d0da0222b3b825b34f03d180678e579336fcd6c6760124ad2cea2924b91b903f",
+      "depends_on": [
+        "C02",
+        "A04"
+      ],
+      "epic": "E05",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:C",
+        "phase:M1",
+        "priority:P0"
+      ],
+      "master": "C",
+      "milestone": "Useful daily loop",
+      "number": 52,
+      "phase": "M1",
+      "priority": "P0",
+      "rendered_body_sha256": "ff11bd18734fba45343fbd95a994fda191ed7e7fb480eefa71f218fa4b88b880",
+      "sub_issue_of": 6,
+      "title": "[C05] Calendar incremental sync with recurrence, timezones and stable event identity",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/52"
+    },
+    "C06": {
+      "canonical_body_sha256": "b42830efbef3294bd8296fc7e03d34794ce9b39a51f597ec8358f4776f367796",
+      "depends_on": [
+        "C05",
+        "C12",
+        "A08"
+      ],
+      "epic": "E05",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:C",
+        "phase:M3",
+        "priority:P1"
+      ],
+      "master": "C",
+      "milestone": "Controlled execution and integrations",
+      "number": 53,
+      "phase": "M3",
+      "priority": "P1",
+      "rendered_body_sha256": "1871ad90eae427b48719ef525b7261b899ba73b8d43cc073cc12ce2b87e33607",
+      "sub_issue_of": 6,
+      "title": "[C06] Authorized Calendar actions and conflict handling",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/53"
+    },
+    "C07": {
+      "canonical_body_sha256": "890a10cf8b6fffa6f3b934050e73a412f9cf6b652f734247e3814eab72ca786e",
+      "depends_on": [
+        "C02"
+      ],
+      "epic": "E05",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:C",
+        "phase:M2",
+        "priority:P1"
+      ],
+      "master": "C",
+      "milestone": "Voice and proactive beta",
+      "number": 54,
+      "phase": "M2",
+      "priority": "P1",
+      "rendered_body_sha256": "bbf4295abc90ee121dd62579edddcf45377c20c8e148ccb81be405d2b341a177",
+      "sub_issue_of": 6,
+      "title": "[C07] Document and Drive original resolver for meeting preparation",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/54"
+    },
+    "C08": {
+      "canonical_body_sha256": "1806d9dfa23586c4c1e18bf67acfb44921b4760bd8f16608b59f689ff3fac6f7",
+      "depends_on": [
+        "C01",
+        "A04"
+      ],
+      "epic": "E05",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:C",
+        "phase:M2",
+        "priority:P1"
+      ],
+      "master": "C",
+      "milestone": "Voice and proactive beta",
+      "number": 55,
+      "phase": "M2",
+      "priority": "P1",
+      "rendered_body_sha256": "8f5993a563f553dae4e21fd57822b75002b8b7506af25f51060371ec4474e2c9",
+      "sub_issue_of": 6,
+      "title": "[C08] Mattermost archive coverage and live repair",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/55"
+    },
+    "C09": {
+      "canonical_body_sha256": "512c5bac9314aa95137d7a45029afed8e4d9117848f5c906e48ff00cd1137fe9",
+      "depends_on": [
+        "C08",
+        "C12"
+      ],
+      "epic": "E05",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:C",
+        "phase:M2",
+        "priority:P1"
+      ],
+      "master": "C",
+      "milestone": "Voice and proactive beta",
+      "number": 56,
+      "phase": "M2",
+      "priority": "P1",
+      "rendered_body_sha256": "d4b5b6011d8abfc7a71780d212e84187522f33f5694e0281a6e0448cee449db2",
+      "sub_issue_of": 6,
+      "title": "[C09] Mattermost draft and action adapter",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/56"
+    },
+    "C10": {
+      "canonical_body_sha256": "f85d712cb576496794c8f42ffb8d974737ae8199b7d4a39528398250ec81eae2",
+      "depends_on": [
+        "C01"
+      ],
+      "epic": "E05",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:C",
+        "phase:M2",
+        "priority:P1"
+      ],
+      "master": "C",
+      "milestone": "Voice and proactive beta",
+      "number": 57,
+      "phase": "M2",
+      "priority": "P1",
+      "rendered_body_sha256": "bdbcbef2f1bf86e0ad7b19bf43528ff2b0f4d21e96b35c281e12aeecd1027a32",
+      "sub_issue_of": 6,
+      "title": "[C10] Trello board read and per-user board mapping",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/57"
+    },
+    "C11": {
+      "canonical_body_sha256": "92133daeb4dbee7719cb9c77e65fd230c60f08bb7bac29773d3fff1899cb7983",
+      "depends_on": [
+        "C10",
+        "C12",
+        "A08"
+      ],
+      "epic": "E05",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:C",
+        "phase:M3",
+        "priority:P2"
+      ],
+      "master": "C",
+      "milestone": "Controlled execution and integrations",
+      "number": 58,
+      "phase": "M3",
+      "priority": "P2",
+      "rendered_body_sha256": "eda377bb715b287811850f4273d2903a143b186e74a2b8c9d12dd4da172e8419",
+      "sub_issue_of": 6,
+      "title": "[C11] Trello actions with idempotent reconciliation",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/58"
+    },
+    "C12": {
+      "canonical_body_sha256": "9a92933e5409b7cb86c210f7af485cf0593d00c22a4b3c61c55f9de5e4c95ee0",
+      "depends_on": [
+        "C14",
+        "A05"
+      ],
+      "epic": "E06",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:C",
+        "phase:M1",
+        "priority:P0"
+      ],
+      "master": "C",
+      "milestone": "Useful daily loop",
+      "number": 59,
+      "phase": "M1",
+      "priority": "P0",
+      "rendered_body_sha256": "933e4604d36a9d2d895f2f0f334bd7f9ed51a8403fcb83534ed53ab4b87742a4",
+      "sub_issue_of": 7,
+      "title": "[C12] Grants, allowlists and the deterministic effect broker",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/59"
+    },
+    "C13": {
+      "canonical_body_sha256": "564034c1e93d09818d4f2008d15bbc1b5356767325a4c980bb9ca2fe38fb2b00",
+      "depends_on": [
+        "C12",
+        "C15"
+      ],
+      "epic": "E06",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:C",
+        "phase:M3",
+        "priority:P2"
+      ],
+      "master": "C",
+      "milestone": "Controlled execution and integrations",
+      "number": 60,
+      "phase": "M3",
+      "priority": "P2",
+      "rendered_body_sha256": "8c9c56ef6f8d4b514b31740098751f72a6deab366b9025ea34f4c59532b5831a",
+      "sub_issue_of": 7,
+      "title": "[C13] Mongoose per-user permission adapter",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/60"
+    },
+    "C14": {
+      "canonical_body_sha256": "185930f4fc43a14de77d631bf5d477f2e2e8ba65f3e52b7663458db65c637310",
+      "depends_on": [
+        "A02"
+      ],
+      "epic": "E06",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:C",
+        "phase:M0",
+        "priority:P0"
+      ],
+      "master": "C",
+      "milestone": "Proof and contracts",
+      "number": 61,
+      "phase": "M0",
+      "priority": "P0",
+      "rendered_body_sha256": "f4ed5e96df70eaf4496ace9dc3df136461bd88e2fcbe32feeae419fe743ed2b8",
+      "sub_issue_of": 7,
+      "title": "[C14] Tool capability registry and adapter manifests",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/61"
+    },
+    "C15": {
+      "canonical_body_sha256": "618dc32222874311968e487e7d9508811b6fcd14ff9017e233f1cf4d03c6eb57",
+      "depends_on": [
+        "C01",
+        "A02",
+        "A06"
+      ],
+      "epic": "E06",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:C",
+        "phase:M1",
+        "priority:P0"
+      ],
+      "master": "C",
+      "milestone": "Useful daily loop",
+      "number": 62,
+      "phase": "M1",
+      "priority": "P0",
+      "rendered_body_sha256": "a6c55377af811ce1890ae2301eb0fcd093c64bac8637d747f017ef78ccbaace9",
+      "sub_issue_of": 7,
+      "title": "[C15] Provider egress and credential policy with route assessment",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/62"
+    },
+    "C16": {
+      "canonical_body_sha256": "f3f0b84fbc2be091d6a828f279b382f8260685a03b11cbce374773fa1375d7c6",
+      "depends_on": [
+        "C03",
+        "C12",
+        "C15",
+        "A16"
+      ],
+      "epic": "E06",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:C",
+        "phase:M1",
+        "priority:P1"
+      ],
+      "master": "C",
+      "milestone": "Useful daily loop",
+      "number": 63,
+      "phase": "M1",
+      "priority": "P1",
+      "rendered_body_sha256": "c5b8ad8f8f60e451010c00cbb872472dedabad813f64b257e400196bdea7e5e2",
+      "sub_issue_of": 7,
+      "title": "[C16] Injection and account isolation adverse test suite",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/63"
+    },
+    "C17": {
+      "canonical_body_sha256": "ec624b247923fbe3d4807b94dc25888165b579b475c46dca74b3abcf6cc2951a",
+      "depends_on": [
+        "C01",
+        "C12",
+        "A04",
+        "A05"
+      ],
+      "epic": "E06",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:C",
+        "phase:M1",
+        "priority:P1"
+      ],
+      "master": "C",
+      "milestone": "Useful daily loop",
+      "number": 64,
+      "phase": "M1",
+      "priority": "P1",
+      "rendered_body_sha256": "38248b7d2f286878759226125189420ce8aed3c3fb83df5af2be835e015070c7",
+      "sub_issue_of": 7,
+      "title": "[C17] Disconnect, revoke and cache propagation",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/64"
+    },
+    "C18": {
+      "canonical_body_sha256": "a4f4baca7ec06f2305c84d255f2bd279ae7110f87f4c960087a58e39d67654ec",
+      "depends_on": [
+        "C12",
+        "C15",
+        "A14"
+      ],
+      "epic": "E06",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:C",
+        "phase:M3",
+        "priority:P2"
+      ],
+      "master": "C",
+      "milestone": "Controlled execution and integrations",
+      "number": 65,
+      "phase": "M3",
+      "priority": "P2",
+      "rendered_body_sha256": "44870afdda63dbcabe1e1848188e478a89bbad772511a7973c0eef9a19c5f562",
+      "sub_issue_of": 7,
+      "title": "[C18] Optional Coworker consultation adapter with explicit context routing",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/65"
+    },
+    "D01": {
+      "canonical_body_sha256": "f72e34744450238b5278006f4b51c19c1b9f682879ed370c4c90b50bf4d5931a",
+      "depends_on": [
+        "A02"
+      ],
+      "epic": "E07",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:D",
+        "phase:M0",
+        "priority:P0"
+      ],
+      "master": "D",
+      "milestone": "Proof and contracts",
+      "number": 66,
+      "phase": "M0",
+      "priority": "P0",
+      "rendered_body_sha256": "4442508c534f9fdff5b4b34f6369aaa1937653b54a9feea2c55093a21978fc81",
+      "sub_issue_of": 8,
+      "title": "[D01] Commitment lifecycle schema and state machine contract",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/66"
+    },
+    "D02": {
+      "canonical_body_sha256": "b55edbc417371487128dc02f85388c3aaf854e1279952cec2dcad199c4b2a784",
+      "depends_on": [
+        "D01",
+        "A06",
+        "C15"
+      ],
+      "epic": "E07",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:D",
+        "phase:M1",
+        "priority:P0"
+      ],
+      "master": "D",
+      "milestone": "Useful daily loop",
+      "number": 67,
+      "phase": "M1",
+      "priority": "P0",
+      "rendered_body_sha256": "d12b4798b382b0bda600b2bc413325a0fe0f5c4a8b4a6857f976b16408f2f5d0",
+      "sub_issue_of": 8,
+      "title": "[D02] Promise extraction with attribution, negative rules and evidence spans",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/67"
+    },
+    "D03": {
+      "canonical_body_sha256": "96782935425496b5b0eb31a203192e2070afe890c735f151de3bd558a33e413a",
+      "depends_on": [
+        "D01",
+        "D02"
+      ],
+      "epic": "E07",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:D",
+        "phase:M1",
+        "priority:P0"
+      ],
+      "master": "D",
+      "milestone": "Useful daily loop",
+      "number": 68,
+      "phase": "M1",
+      "priority": "P0",
+      "rendered_body_sha256": "bca29cba49d7f19bc070f59441720f9d5c468521607f1882925c0e41f6fbdbba",
+      "sub_issue_of": 8,
+      "title": "[D03] Dedup, reconciliation and closed-state suppression",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/68"
+    },
+    "D04": {
+      "canonical_body_sha256": "8c96f594869b8898a4806c253df8b374e9af594763d75d8d8af5908ab8546576",
+      "depends_on": [
+        "C03",
+        "D01",
+        "C15"
+      ],
+      "epic": "E07",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:D",
+        "phase:M1",
+        "priority:P1"
+      ],
+      "master": "D",
+      "milestone": "Useful daily loop",
+      "number": 69,
+      "phase": "M1",
+      "priority": "P1",
+      "rendered_body_sha256": "c600837dee550dea356ccc4250c00ef2920113e7f6acfa77ab1da57eda6beb69",
+      "sub_issue_of": 8,
+      "title": "[D04] Unanswered inbox and chat prioritization",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/69"
+    },
+    "D05": {
+      "canonical_body_sha256": "8fe63494afe856e91bb6239159c82a1e330ce8bbfadde0febd64a7afdd68bb4e",
+      "depends_on": [
+        "B03",
+        "C05",
+        "D01",
+        "C15"
+      ],
+      "epic": "E07",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:D",
+        "phase:M1",
+        "priority:P1"
+      ],
+      "master": "D",
+      "milestone": "Useful daily loop",
+      "number": 70,
+      "phase": "M1",
+      "priority": "P1",
+      "rendered_body_sha256": "825c30a3b1a2d4ab83fef31fd194caab6f39fbfd8e1129b0673a893f3cfcd7df",
+      "sub_issue_of": 8,
+      "title": "[D05] Meeting preparation with continuity from prior commitments",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/70"
+    },
+    "D06": {
+      "canonical_body_sha256": "af8e449724132e6bb540a0cfa098ab9157a02829f46ad234683d28f66257de5d",
+      "depends_on": [
+        "C05",
+        "D01"
+      ],
+      "epic": "E07",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:D",
+        "phase:M1",
+        "priority:P1"
+      ],
+      "master": "D",
+      "milestone": "Useful daily loop",
+      "number": 71,
+      "phase": "M1",
+      "priority": "P1",
+      "rendered_body_sha256": "5b1f7333b8c9b192c045feffea5996722513eefd3016c6866954e7637818a1bf",
+      "sub_issue_of": 8,
+      "title": "[D06] Realistic daily plan and capacity",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/71"
+    },
+    "D07": {
+      "canonical_body_sha256": "4a0899cf1545c1c39dfad6ed11cd98820e56ff60c92020b9b86cfef1af28cb8b",
+      "depends_on": [
+        "A04",
+        "A05",
+        "D01",
+        "D10"
+      ],
+      "epic": "E07",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:D",
+        "phase:M1",
+        "priority:P0"
+      ],
+      "master": "D",
+      "milestone": "Useful daily loop",
+      "number": 72,
+      "phase": "M1",
+      "priority": "P0",
+      "rendered_body_sha256": "9d307b2230ecd19c05a65be37a8fbd8faea0f627bfd98b3d966f84fc891b1fd2",
+      "sub_issue_of": 8,
+      "title": "[D07] Incremental trigger and due processing loop",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/72"
+    },
+    "D08": {
+      "canonical_body_sha256": "885b300261248874ecf79bd0c0956b9e8103ceec89205b8278dad8c4062be6e8",
+      "depends_on": [
+        "A05",
+        "A08",
+        "A15",
+        "D01",
+        "D10"
+      ],
+      "epic": "E07",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:D",
+        "phase:M1",
+        "priority:P0"
+      ],
+      "master": "D",
+      "milestone": "Useful daily loop",
+      "number": 73,
+      "phase": "M1",
+      "priority": "P0",
+      "rendered_body_sha256": "11c0033cdf18b0ab335031d2c8a4dba2eba64fe34c31c9afc24c69abf3581ca1",
+      "sub_issue_of": 8,
+      "title": "[D08] Reminder intent and outbox semantics",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/73"
+    },
+    "D09": {
+      "canonical_body_sha256": "47bdef8d20226f69248638eabfd863a36d39076f6f31f5fcb4df8e2aacd5477c",
+      "depends_on": [
+        "D01",
+        "D08"
+      ],
+      "epic": "E07",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:D",
+        "phase:M1",
+        "priority:P1"
+      ],
+      "master": "D",
+      "milestone": "Useful daily loop",
+      "number": 74,
+      "phase": "M1",
+      "priority": "P1",
+      "rendered_body_sha256": "6ae56c6004f8fd9dbf604ee2a8efcb39c8814fbc281578c7abe76c3a99048597",
+      "sub_issue_of": 8,
+      "title": "[D09] Snooze, dismiss and defer conversation",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/74"
+    },
+    "D10": {
+      "canonical_body_sha256": "8fc0d292cd9e0b84825f0559650b965ea907958b7df2cc1e37db7c28eb6f75e8",
+      "depends_on": [],
+      "epic": "E08",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:D",
+        "phase:M1",
+        "priority:P0"
+      ],
+      "master": "D",
+      "milestone": "Useful daily loop",
+      "number": 75,
+      "phase": "M1",
+      "priority": "P0",
+      "rendered_body_sha256": "fa0b7d480641aae00ecad5a9c601c7f9b4327afe69c1b642f67f4ddc5556c793",
+      "sub_issue_of": 9,
+      "title": "[D10] Urgency, quiet hours and focus-aware interruption policy",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/75"
+    },
+    "D11": {
+      "canonical_body_sha256": "f20603b00847554a151a19fa43d025af8320b2b723c1f4eb64523b5a1d547a5b",
+      "depends_on": [
+        "A05",
+        "F02"
+      ],
+      "epic": "E08",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:D",
+        "phase:M2",
+        "priority:P1"
+      ],
+      "master": "D",
+      "milestone": "Voice and proactive beta",
+      "number": 76,
+      "phase": "M2",
+      "priority": "P1",
+      "rendered_body_sha256": "3c14b36707274f62b555cd6aad46a484b0748587c03d571ddcec98651aa2fa4d",
+      "sub_issue_of": 9,
+      "title": "[D11] Asynchronous investigation with conversational progress",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/76"
+    },
+    "D12": {
+      "canonical_body_sha256": "7dd3fa6bccf26e5b143ae9bc8fa71bb5ca87075267e0481a4cad8c5ed414260e",
+      "depends_on": [
+        "C05",
+        "D05"
+      ],
+      "epic": "E08",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:D",
+        "phase:M2",
+        "priority:P1"
+      ],
+      "master": "D",
+      "milestone": "Voice and proactive beta",
+      "number": 77,
+      "phase": "M2",
+      "priority": "P1",
+      "rendered_body_sha256": "43911a32c44ecf482e2d6ee42e52fce0260c898498929e9de28de34859314dbc",
+      "sub_issue_of": 9,
+      "title": "[D12] Calendar change detection and replanning",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/77"
+    },
+    "D13": {
+      "canonical_body_sha256": "0cd30a024252de7f13365d76d4a6333adad9a1231d83e2f4a3502603a4d467f0",
+      "depends_on": [
+        "D04",
+        "D06"
+      ],
+      "epic": "E08",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:D",
+        "phase:M2",
+        "priority:P2"
+      ],
+      "master": "D",
+      "milestone": "Voice and proactive beta",
+      "number": 78,
+      "phase": "M2",
+      "priority": "P2",
+      "rendered_body_sha256": "be57ee966fa4be8a02a44cec56c997566e7a8a290756e5e0310051483ac23f7a",
+      "sub_issue_of": 9,
+      "title": "[D13] Dormant project and open-loop follow-up",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/78"
+    },
+    "D14": {
+      "canonical_body_sha256": "d2842095f80120ead3c4c2c79deac68c4a7bcc83e1b8c5ac0fba5a66dff1ce6a",
+      "depends_on": [
+        "D02",
+        "D05"
+      ],
+      "epic": "E08",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:D",
+        "phase:M2",
+        "priority:P2"
+      ],
+      "master": "D",
+      "milestone": "Voice and proactive beta",
+      "number": 79,
+      "phase": "M2",
+      "priority": "P2",
+      "rendered_body_sha256": "947cc2eda1b1cb5c5ec4b37ef46e06cd1e9c35a7e0b1eb51f1dd701ef65e3f82",
+      "sub_issue_of": 9,
+      "title": "[D14] One-on-one preparation and recurring follow-through",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/79"
+    },
+    "D15": {
+      "canonical_body_sha256": "d3a590852f3d5707b0be343f035caadc3d1a035bb34c2be8bf12f36e2a07ed7d",
+      "depends_on": [
+        "C10",
+        "C11",
+        "D01"
+      ],
+      "epic": "E08",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:D",
+        "phase:M3",
+        "priority:P2"
+      ],
+      "master": "D",
+      "milestone": "Controlled execution and integrations",
+      "number": 80,
+      "phase": "M3",
+      "priority": "P2",
+      "rendered_body_sha256": "eb8654d5915981cab1605b4b73b340aa3e41fd60b00ec05f86ce7ab96f56b358",
+      "sub_issue_of": 9,
+      "title": "[D15] Optional external task reconciliation with honest completion semantics",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/80"
+    },
+    "D16": {
+      "canonical_body_sha256": "084e648895cc02a68f5dd8f035cee2df2a944816260fcf16e493881ece4458f6",
+      "depends_on": [
+        "D09",
+        "D10"
+      ],
+      "epic": "E08",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:D",
+        "phase:M3",
+        "priority:P2"
+      ],
+      "master": "D",
+      "milestone": "Controlled execution and integrations",
+      "number": 81,
+      "phase": "M3",
+      "priority": "P2",
+      "rendered_body_sha256": "267e42ab9fc6c16108120453352e6000e9fd0f2ca286abed2b42b50a9f4c17a8",
+      "sub_issue_of": 9,
+      "title": "[D16] Outcome learning and nudge calibration with hard bounds",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/81"
+    },
+    "D17": {
+      "canonical_body_sha256": "ab8cbbf5967f422fd0427806ff437232e42b9155420d98e63ae14d777cd0fedf",
+      "depends_on": [
+        "D02",
+        "D03"
+      ],
+      "epic": "E08",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:D",
+        "phase:M1",
+        "priority:P0"
+      ],
+      "master": "D",
+      "milestone": "Useful daily loop",
+      "number": 82,
+      "phase": "M1",
+      "priority": "P0",
+      "rendered_body_sha256": "8a94d841de55e051479a96e735e301ccde732c4417b2d2a03d7cda9b6418f75b",
+      "sub_issue_of": 9,
+      "title": "[D17] Proactivity and false-promise evaluation gate over a current synthetic corpus",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/82"
+    },
+    "D18": {
+      "canonical_body_sha256": "806238356746c6b8aa39b696b3d044b88bfa6155731c3692e1da934d1472a222",
+      "depends_on": [
+        "A03",
+        "D07",
+        "D10"
+      ],
+      "epic": "E08",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:D",
+        "phase:M2",
+        "priority:P1"
+      ],
+      "master": "D",
+      "milestone": "Voice and proactive beta",
+      "number": 83,
+      "phase": "M2",
+      "priority": "P1",
+      "rendered_body_sha256": "74593641351ad3e009e3a5ab1f4455a06d7324ab11de51d27afdf3585c456236",
+      "sub_issue_of": 9,
+      "title": "[D18] Sleep, offline and catch-up without notification bursts",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/83"
+    },
+    "E01": {
+      "canonical_body_sha256": "9ea9e61654ea2430a35418a039859b638bc27c01c6aefcf28a67b197305b86cd",
+      "depends_on": [],
+      "epic": null,
+      "kind": "epic",
+      "labels": [
+        "kind:epic",
+        "master:A",
+        "phase:M0",
+        "priority:P0"
+      ],
+      "master": "A",
+      "milestone": "Proof and contracts",
+      "number": 2,
+      "phase": "M0",
+      "priority": "P0",
+      "rendered_body_sha256": "ff690b27209679e3b063f790e3b4cbd803c35cf0e79c60c9ffa0ba1dd67eeb66",
+      "sub_issue_of": null,
+      "title": "[E01] Runtime and local execution",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/2"
+    },
+    "E02": {
+      "canonical_body_sha256": "c7b0c692def675c6da8eab73e700e2eebc48b72782dfd0b3256ac59992e23a42",
+      "depends_on": [],
+      "epic": null,
+      "kind": "epic",
+      "labels": [
+        "kind:epic",
+        "master:A",
+        "phase:M3",
+        "priority:P0"
+      ],
+      "master": "A",
+      "milestone": "Controlled execution and integrations",
+      "number": 3,
+      "phase": "M3",
+      "priority": "P0",
+      "rendered_body_sha256": "84598e82376ff6d2c2857d4271b86be68c96cdccd6aff49efd56d0b9e6bef8d5",
+      "sub_issue_of": null,
+      "title": "[E02] Harness supervision and operational reliability",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/3"
+    },
+    "E03": {
+      "canonical_body_sha256": "001b0d52cc554ac336caa7ff7c5b6d0bff4a5dd08214b9aa0ed5225ef7009e3e",
+      "depends_on": [],
+      "epic": null,
+      "kind": "epic",
+      "labels": [
+        "kind:epic",
+        "master:B",
+        "phase:M1",
+        "priority:P0"
+      ],
+      "master": "B",
+      "milestone": "Useful daily loop",
+      "number": 4,
+      "phase": "M1",
+      "priority": "P0",
+      "rendered_body_sha256": "d27d786b574a6a150196fd8ebcbac4f8f37b1d1f6ccf9f1d157ba6555f670ae0",
+      "sub_issue_of": null,
+      "title": "[E03] Evidence and durable recall",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/4"
+    },
+    "E04": {
+      "canonical_body_sha256": "0de6edf4947bcf16ffb1504a43c20b9b29288e6fab1036973630c24190da1c9b",
+      "depends_on": [],
+      "epic": null,
+      "kind": "epic",
+      "labels": [
+        "kind:epic",
+        "master:B",
+        "phase:M2",
+        "priority:P0"
+      ],
+      "master": "B",
+      "milestone": "Voice and proactive beta",
+      "number": 5,
+      "phase": "M2",
+      "priority": "P0",
+      "rendered_body_sha256": "825d03031750c23f70199f2fd71fe8ad58dc0ceabf88a8f034869d5902c9ce91",
+      "sub_issue_of": null,
+      "title": "[E04] Evolving personality and memory quality",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/5"
+    },
+    "E05": {
+      "canonical_body_sha256": "7bcace4f6f39447208dd4aa7dadd86b7acb93387e59a02366bd49ac929b9da69",
+      "depends_on": [],
+      "epic": null,
+      "kind": "epic",
+      "labels": [
+        "kind:epic",
+        "master:C",
+        "phase:M1",
+        "priority:P0"
+      ],
+      "master": "C",
+      "milestone": "Useful daily loop",
+      "number": 6,
+      "phase": "M1",
+      "priority": "P0",
+      "rendered_body_sha256": "0883b330c62fb128323d27952a01871449602b85e86c2c2f37e25556088aaf8c",
+      "sub_issue_of": null,
+      "title": "[E05] Accounts and work sources: connect a user's own accounts and read their sources safely",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/6"
+    },
+    "E06": {
+      "canonical_body_sha256": "82867f38d67bd9bef717eaa58afaf38fa4505d62c418b5f37523ee9b5881d7dc",
+      "depends_on": [],
+      "epic": null,
+      "kind": "epic",
+      "labels": [
+        "kind:epic",
+        "master:C",
+        "phase:M1",
+        "priority:P0"
+      ],
+      "master": "C",
+      "milestone": "Useful daily loop",
+      "number": 7,
+      "phase": "M1",
+      "priority": "P0",
+      "rendered_body_sha256": "c76684b0cf01d04ae87eaa14dc276ca7b196cdf262a7ea2a680ba61038515d12",
+      "sub_issue_of": null,
+      "title": "[E06] Authority and optional company integrations: deterministic grants, egress policy and adverse isolation",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/7"
+    },
+    "E07": {
+      "canonical_body_sha256": "3fee6a8ca1d708d3d44c5ed0fdbf4c31e68b4f0d3cd38b6881293b6021dd2570",
+      "depends_on": [],
+      "epic": null,
+      "kind": "epic",
+      "labels": [
+        "kind:epic",
+        "master:D",
+        "phase:M1",
+        "priority:P0"
+      ],
+      "master": "D",
+      "milestone": "Useful daily loop",
+      "number": 8,
+      "phase": "M1",
+      "priority": "P0",
+      "rendered_body_sha256": "cafa04d7071eeb0930d1ee8670367c14185280e4d1175d898eb941a4e413dcc1",
+      "sub_issue_of": null,
+      "title": "[E07] Commitments and daily planning",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/8"
+    },
+    "E08": {
+      "canonical_body_sha256": "15f4d88c7adfd823088a7dadb8994d591cf6193903f73cb6289083a65389dcf5",
+      "depends_on": [],
+      "epic": null,
+      "kind": "epic",
+      "labels": [
+        "kind:epic",
+        "master:D",
+        "phase:M2",
+        "priority:P1"
+      ],
+      "master": "D",
+      "milestone": "Voice and proactive beta",
+      "number": 9,
+      "phase": "M2",
+      "priority": "P1",
+      "rendered_body_sha256": "c24eb07246e95618a6db8d732b25c9d1932e50a07c04e7d301d73dac8fe0f262",
+      "sub_issue_of": null,
+      "title": "[E08] Proactive follow-through",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/9"
+    },
+    "E09": {
+      "canonical_body_sha256": "16f2c30dcd625fa805fa31ddf9c320f1cf808a6069355227f2a4e59d60aab339",
+      "depends_on": [],
+      "epic": null,
+      "kind": "epic",
+      "labels": [
+        "kind:epic",
+        "master:E",
+        "phase:M2",
+        "priority:P0"
+      ],
+      "master": "E",
+      "milestone": "Voice and proactive beta",
+      "number": 10,
+      "phase": "M2",
+      "priority": "P0",
+      "rendered_body_sha256": "024297c57eca66f395e4ce988ba9e3c1478f721dda8ed501f18b6124bf19c076",
+      "sub_issue_of": null,
+      "title": "[E09] Mac conversation surface: hotkey, duplex voice and native notifications",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/10"
+    },
+    "E10": {
+      "canonical_body_sha256": "5432677ee65af52ec8f5414b78e6668f7c05c43ce881eaa57270196936e03043",
+      "depends_on": [],
+      "epic": null,
+      "kind": "epic",
+      "labels": [
+        "kind:epic",
+        "master:E",
+        "phase:M3",
+        "priority:P0"
+      ],
+      "master": "E",
+      "milestone": "Controlled execution and integrations",
+      "number": 11,
+      "phase": "M3",
+      "priority": "P0",
+      "rendered_body_sha256": "d6f1c0c472b2a1cb4092eb13b1db171d7fdd67718a557373dcf0d138e49de1a6",
+      "sub_issue_of": null,
+      "title": "[E10] Installability, computer control and companion portability",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/11"
+    },
+    "F01": {
+      "canonical_body_sha256": "c01b05ba4032a9bb66a9dcfc4e0799c4eaaa071787587ff13867056121b139f1",
+      "depends_on": [],
+      "epic": "E09",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:E",
+        "phase:M1",
+        "priority:P0"
+      ],
+      "master": "E",
+      "milestone": "Useful daily loop",
+      "number": 84,
+      "phase": "M1",
+      "priority": "P0",
+      "rendered_body_sha256": "a59addbb2b0f452b428f1294eebdb4b7551ad7c0658699629b36ae7c6e77cc1b",
+      "sub_issue_of": 10,
+      "title": "[F01] Native hotkey and menu bar shell",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/84"
+    },
+    "F02": {
+      "canonical_body_sha256": "6f6d4f1881ba51ba6927e50dcf29d83049dedaf61c5d50d395a45634d3ca3e0a",
+      "depends_on": [
+        "F01"
+      ],
+      "epic": "E09",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:E",
+        "phase:M1",
+        "priority:P0"
+      ],
+      "master": "E",
+      "milestone": "Useful daily loop",
+      "number": 85,
+      "phase": "M1",
+      "priority": "P0",
+      "rendered_body_sha256": "2f192f99aa3e2f23b49dc27b271cd846ead15174037654e8e0cde6ef3f2c7d79",
+      "sub_issue_of": 10,
+      "title": "[F02] Text conversation and async job cards",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/85"
+    },
+    "F03": {
+      "canonical_body_sha256": "c27cff7ebc6f2a94556caf25b31a655fe4b3fdb1bdd81e092ee128943027a4d3",
+      "depends_on": [
+        "F01"
+      ],
+      "epic": "E09",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:E",
+        "phase:M2",
+        "priority:P0"
+      ],
+      "master": "E",
+      "milestone": "Voice and proactive beta",
+      "number": 86,
+      "phase": "M2",
+      "priority": "P0",
+      "rendered_body_sha256": "0cbeb9ff134b404f6466397cb98c4a38b123e2340a0af829e3c3916cf9185ef3",
+      "sub_issue_of": 10,
+      "title": "[F03] Microphone, audio devices and permissions",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/86"
+    },
+    "F04": {
+      "canonical_body_sha256": "a96a01caaab5dffca92c9c470c83b6c447fcb4fda3209ac28d89543e73cd37ba",
+      "depends_on": [
+        "F03",
+        "A06"
+      ],
+      "epic": "E09",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:E",
+        "phase:M2",
+        "priority:P0"
+      ],
+      "master": "E",
+      "milestone": "Voice and proactive beta",
+      "number": 87,
+      "phase": "M2",
+      "priority": "P0",
+      "rendered_body_sha256": "25bb605a52c87b59768c4350d389c32acc8cd033b6f5cf7f77c2390c17d438e9",
+      "sub_issue_of": 10,
+      "title": "[F04] Gemini Live duplex adapter",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/87"
+    },
+    "F05": {
+      "canonical_body_sha256": "3e09dbedc59c08b309fbfaa546b6f614546c85e931be64f690167309b34ec2d6",
+      "depends_on": [
+        "F04",
+        "A06"
+      ],
+      "epic": "E09",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:E",
+        "phase:M3",
+        "priority:P1"
+      ],
+      "master": "E",
+      "milestone": "Controlled execution and integrations",
+      "number": 88,
+      "phase": "M3",
+      "priority": "P1",
+      "rendered_body_sha256": "05ddde8307e0d14c1e0165354cbe80908ffb448c0bcffecb28fd31f32dd56042",
+      "sub_issue_of": 10,
+      "title": "[F05] Alternate speech and text fallback provider capabilities",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/88"
+    },
+    "F06": {
+      "canonical_body_sha256": "5af71de0048bbc3778a8fb7c55918c2d6b41e04f2ad8a2c9354a0d0ee575d1d1",
+      "depends_on": [
+        "F04"
+      ],
+      "epic": "E09",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:E",
+        "phase:M2",
+        "priority:P0"
+      ],
+      "master": "E",
+      "milestone": "Voice and proactive beta",
+      "number": 89,
+      "phase": "M2",
+      "priority": "P0",
+      "rendered_body_sha256": "bc24489eb97af15b0cf744a5432e6c9b3b6ad8630b3a6579c4a5b701a4161a7b",
+      "sub_issue_of": 10,
+      "title": "[F06] Barge-in, echo and cancel",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/89"
+    },
+    "F07": {
+      "canonical_body_sha256": "691d698ed1e3c4625f816da6231e34dc0da434882eb8d412674dc40116ef9bfb",
+      "depends_on": [
+        "F04"
+      ],
+      "epic": "E09",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:E",
+        "phase:M2",
+        "priority:P1"
+      ],
+      "master": "E",
+      "milestone": "Voice and proactive beta",
+      "number": 90,
+      "phase": "M2",
+      "priority": "P1",
+      "rendered_body_sha256": "f81a374cb0488dc1289e1eaff1cff2e5a3a64a9fa5dcbd5b8cca135d60c0d54f",
+      "sub_issue_of": 10,
+      "title": "[F07] Session reconnect, expiry and recovery",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/90"
+    },
+    "F08": {
+      "canonical_body_sha256": "6cb492a17477dae45db88e66211b89d008a4235654bdec1288bba7cbe11a25ea",
+      "depends_on": [
+        "F04",
+        "B12"
+      ],
+      "epic": "E09",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:E",
+        "phase:M2",
+        "priority:P1"
+      ],
+      "master": "E",
+      "milestone": "Voice and proactive beta",
+      "number": 91,
+      "phase": "M2",
+      "priority": "P1",
+      "rendered_body_sha256": "2b224537cfb7e80f6ed9837eff9e4c703f1f647d2490ae44f4ba33c8e6d57445",
+      "sub_issue_of": 10,
+      "title": "[F08] Voice, personality, localization and accessibility",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/91"
+    },
+    "F09": {
+      "canonical_body_sha256": "0918c31be214768045443db7bee998eb6739d931b53a8e2fa63dae0ae95ec960",
+      "depends_on": [
+        "F02"
+      ],
+      "epic": "E09",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:E",
+        "phase:M1",
+        "priority:P1"
+      ],
+      "master": "E",
+      "milestone": "Useful daily loop",
+      "number": 92,
+      "phase": "M1",
+      "priority": "P1",
+      "rendered_body_sha256": "4b01eb1eadf5fd664f1f35d24cc69aafb115824c1b367e36d4af4b97a387d208",
+      "sub_issue_of": 10,
+      "title": "[F09] Native notification-to-conversation",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/92"
+    },
+    "F10": {
+      "canonical_body_sha256": "f838c3d3ae1faf92d7bb921ae407a1e5bf6236c9161992612d6bab553a60b98b",
+      "depends_on": [
+        "C01",
+        "C02",
+        "C12",
+        "F15"
+      ],
+      "epic": "E10",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:E",
+        "phase:M1",
+        "priority:P0"
+      ],
+      "master": "E",
+      "milestone": "Useful daily loop",
+      "number": 93,
+      "phase": "M1",
+      "priority": "P0",
+      "rendered_body_sha256": "a3f775fceaacf1a5e45e82a59dc80e275dea7922ffab57af2f537e97d1228839",
+      "sub_issue_of": 11,
+      "title": "[F10] Clean-user onboarding, accounts and grants",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/93"
+    },
+    "F11": {
+      "canonical_body_sha256": "05d293b71b6562e72160f9826571d0cb70c9ccb22b829bac2385d09fd337a75e",
+      "depends_on": [
+        "F10",
+        "B15"
+      ],
+      "epic": "E10",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:E",
+        "phase:M3",
+        "priority:P1"
+      ],
+      "master": "E",
+      "milestone": "Controlled execution and integrations",
+      "number": 94,
+      "phase": "M3",
+      "priority": "P1",
+      "rendered_body_sha256": "0bea083191229bc079085c740ea090e4e3034874f99b2e46cddd267b361d974d",
+      "sub_issue_of": 11,
+      "title": "[F11] Memory, authority and action review surfaces",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/94"
+    },
+    "F12": {
+      "canonical_body_sha256": "d8aae075575c162338bfef2ef4e776076c6d747780a27a9e90a87381be1232a4",
+      "depends_on": [
+        "F10",
+        "A13"
+      ],
+      "epic": "E10",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:E",
+        "phase:M3",
+        "priority:P1"
+      ],
+      "master": "E",
+      "milestone": "Controlled execution and integrations",
+      "number": 95,
+      "phase": "M3",
+      "priority": "P1",
+      "rendered_body_sha256": "48cb9966d9eafc6a5d62819643ea09aec5486fa78ed0a9f4ce3af32e6b82ba49",
+      "sub_issue_of": 11,
+      "title": "[F12] Native computer-use controls, TCC and screen capture",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/95"
+    },
+    "F13": {
+      "canonical_body_sha256": "f5ecfb6d1498142a9d9b7b3bf63a91975d198d6cb779b3a6b78e61e114bfeeea",
+      "depends_on": [
+        "F01",
+        "A03"
+      ],
+      "epic": "E10",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:E",
+        "phase:M1",
+        "priority:P1"
+      ],
+      "master": "E",
+      "milestone": "Useful daily loop",
+      "number": 96,
+      "phase": "M1",
+      "priority": "P1",
+      "rendered_body_sha256": "af609f0f60fdae5122a78bc53cd257102f945df5dcab410e15238e479c9e2803",
+      "sub_issue_of": 11,
+      "title": "[F13] Login, background, sleep and power",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/96"
+    },
+    "F14": {
+      "canonical_body_sha256": "6da5e993722079378a554b036bb0ca65694c7ecd975f58ce64a7b0da3b4c0853",
+      "depends_on": [
+        "F04",
+        "F13"
+      ],
+      "epic": "E10",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:E",
+        "phase:M4",
+        "priority:P2"
+      ],
+      "master": "E",
+      "milestone": "Portability and polish",
+      "number": 97,
+      "phase": "M4",
+      "priority": "P2",
+      "rendered_body_sha256": "29f73fd4567949f31879d998cb64050029359112eb5eb0058121b9bc242e65e2",
+      "sub_issue_of": 11,
+      "title": "[F14] Opt-in wake phrase feasibility",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/97"
+    },
+    "F15": {
+      "canonical_body_sha256": "dbfce76bea4f828ae43a0a1f43806c924ac21a1db477fe27853f476b3f5374a0",
+      "depends_on": [],
+      "epic": "E10",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:E",
+        "phase:M1",
+        "priority:P0"
+      ],
+      "master": "E",
+      "milestone": "Useful daily loop",
+      "number": 98,
+      "phase": "M1",
+      "priority": "P0",
+      "rendered_body_sha256": "401600be7c4df99dc04fac2132723c9f2ebc786824af18af1895f9b05daa2947",
+      "sub_issue_of": 11,
+      "title": "[F15] Packaging, signing, notarization, update and uninstall",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/98"
+    },
+    "F16": {
+      "canonical_body_sha256": "7706fafbd9bc38df78ab686b75c3817d8667071f2756ffa72865aa0508a82bb7",
+      "depends_on": [
+        "F15"
+      ],
+      "epic": "E10",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:E",
+        "phase:M3",
+        "priority:P1"
+      ],
+      "master": "E",
+      "milestone": "Controlled execution and integrations",
+      "number": 99,
+      "phase": "M3",
+      "priority": "P1",
+      "rendered_body_sha256": "657d186b816a62ea791e3cf3356f17bb219e935a21499d227323f48ca8dc3ae4",
+      "sub_issue_of": 11,
+      "title": "[F16] Companion device pairing, revocation and transport",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/99"
+    },
+    "F17": {
+      "canonical_body_sha256": "1db4cacb831415228b38e35a7201729c91ef03934f32da35d701e343546b81ca",
+      "depends_on": [
+        "F16"
+      ],
+      "epic": "E10",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:E",
+        "phase:M3",
+        "priority:P2"
+      ],
+      "master": "E",
+      "milestone": "Controlled execution and integrations",
+      "number": 100,
+      "phase": "M3",
+      "priority": "P2",
+      "rendered_body_sha256": "17505889cd4d9cfc1ff0bf5fcffa7cc335ceb77139ff65a2f46fcde1896642b3",
+      "sub_issue_of": 11,
+      "title": "[F17] Mobile notifications and control with one Mac authority",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/100"
+    },
+    "F18": {
+      "canonical_body_sha256": "f94befd2d17c946f71611ad3c716068e3ddfa4aaa380f6f59b3696f0b3100c11",
+      "depends_on": [
+        "F15",
+        "A01"
+      ],
+      "epic": "E10",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:E",
+        "phase:M4",
+        "priority:P2"
+      ],
+      "master": "E",
+      "milestone": "Portability and polish",
+      "number": 101,
+      "phase": "M4",
+      "priority": "P2",
+      "rendered_body_sha256": "15dbd08c01b24db4684229ecf5c86a0f30028ee3a0d50d6813b4f57ab9f0f280",
+      "sub_issue_of": 11,
+      "title": "[F18] Windows port seam and conformance guide",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/101"
+    },
+    "P00": {
+      "canonical_body_sha256": "f8b358651147239efa3b5a67ee2e8a730a81d22a4cdf37f1d4b6030f9a5e07ad",
+      "depends_on": [],
+      "epic": null,
+      "kind": "program",
+      "labels": [
+        "kind:program",
+        "phase:M0",
+        "priority:P0"
+      ],
+      "master": null,
+      "milestone": "Proof and contracts",
+      "number": 1,
+      "phase": "M0",
+      "priority": "P0",
+      "rendered_body_sha256": "f6093f308132a3b2b83d99be78513398f6ac1859c9440a5764d176a27c9975db",
+      "sub_issue_of": null,
+      "title": "[P00] Lux Didi program tracker",
+      "url": "https://github.com/PEAT-AI/lux-didi/issues/1"
+    }
+  },
+  "plan_delivery": {
+    "closing_rule": "the documentation pull request closes only this record, never P00",
+    "labels": [
+      "kind:plan-delivery",
+      "phase:M0",
+      "priority:P0"
+    ],
+    "marker": "PLAN-DELIVERY",
+    "milestone": "Proof and contracts",
+    "number": 102,
+    "rendered_body_sha256": "1ce45da7c7b075582b8c2227086b01a4958b822929cebafd0130f20908b3005e",
+    "url": "https://github.com/PEAT-AI/lux-didi/issues/102"
+  },
+  "publication": {
+    "issues_created": 0,
+    "issues_reused": 102,
+    "labels": [
+      "kind:epic",
+      "kind:plan-delivery",
+      "kind:program",
+      "kind:task",
+      "master:A",
+      "master:B",
+      "master:C",
+      "master:D",
+      "master:E",
+      "phase:M0",
+      "phase:M1",
+      "phase:M2",
+      "phase:M3",
+      "phase:M4",
+      "priority:P0",
+      "priority:P1",
+      "priority:P2"
+    ],
+    "milestones": {
+      "Controlled execution and integrations": 4,
+      "Portability and polish": 5,
+      "Proof and contracts": 1,
+      "Useful daily loop": 2,
+      "Voice and proactive beta": 3
+    },
+    "readback_mismatches": [],
+    "sub_issue_links": 90,
+    "sub_issues_supported": true
+  },
+  "published_issue_total": 102,
+  "repo": "PEAT-AI/lux-didi",
+  "roadmap_issue_total": 101,
+  "schema": "lux-didi.issue-map/1",
+  "snapshot_commit": "2a80c4fee6d1f8d80b99b4d58908f018572d4a66"
+}

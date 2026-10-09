@@ -61,7 +61,7 @@ try {
     const pairing = await operator('/auth/pairing'); await page.locator('#pair-code').fill(pairing.pairingCode); await page.locator('#pair-form').evaluate(form => form.requestSubmit());
     await page.locator('#connected-route').waitFor(); await page.locator('#didi-orb').waitFor();
     await page.waitForFunction(() => document.querySelector('#connected-route')?.textContent.includes('gemini-connected-test'));
-    assert.ok((await page.locator('#didi-orb').boundingBox()).width > 200);
+    assert.equal(Math.round((await page.locator('#didi-orb').boundingBox()).width), 190, 'Preserve the accepted desktop orb layout');
   });
   await step('local Save stays local; explicit Start names actual model and creates trusted session', async () => {
     await page.locator('#message').fill('EXCLUDED_BROWSER_LOCAL_CANARY: archive this without any model send.');

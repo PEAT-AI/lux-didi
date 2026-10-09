@@ -829,6 +829,20 @@ def check_x07(report: Report, backlog: dict | None, nodes: list[dict] | None, pa
     report.add("X-07", "Snapshot body hashes and correction record", failures, details=details)
 
 
+def check_x08(report: Report, nodes: list[dict] | None) -> None:
+    failures: list[str] = []
+    for node in nodes or []:
+        if node.get("kind") != "epic":
+            continue
+        body = node.get("body") or ""
+        phase = node.get("phase")
+        if phase not in body:
+            failures.append(f"{node.get('id')}: epic body does not name its phase {phase}")
+        if not re.search(r"(?i)exit", body):
+            failures.append(f"{node.get('id')}: epic body has no exit statement")
+    report.add("X-08", "Epic phase as exit milestone", failures)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Lux Didi planning integrity validator")
     parser.add_argument("--all", action="store_true", help="run every check (required)")
@@ -887,6 +901,7 @@ def main(argv: list[str] | None = None) -> int:
     check_x05(report, nodes)
     check_x06(report, backlog, nodes, bool(args.packets))
     check_x07(report, backlog, nodes, bool(args.packets))
+    check_x08(report, nodes)
 
     commit_state = {
         "schema": "lux-didi.validation/1",

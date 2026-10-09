@@ -60,10 +60,10 @@
     },
     {
       "details": {
-        "M0": 15,
-        "M1": 43,
-        "M2": 21,
-        "M3": 20,
+        "M0": 14,
+        "M1": 44,
+        "M2": 20,
+        "M3": 21,
         "M4": 2
       },
       "failures": [],
@@ -74,7 +74,7 @@
     },
     {
       "details": {
-        "max": 814,
+        "max": 834,
         "median": 522,
         "min": 326,
         "values": {
@@ -129,12 +129,12 @@
           "C13": 623,
           "C14": 667,
           "C15": 814,
-          "C16": 796,
-          "C17": 647,
+          "C16": 834,
+          "C17": 677,
           "C18": 665,
           "D01": 522,
           "D02": 672,
-          "D03": 536,
+          "D03": 588,
           "D04": 682,
           "D05": 563,
           "D06": 561,
@@ -183,7 +183,8 @@
         "C12: 671 words, outside the 300 to 650 target band",
         "C14: 667 words, outside the 300 to 650 target band",
         "C15: 814 words, outside the 300 to 650 target band",
-        "C16: 796 words, outside the 300 to 650 target band",
+        "C16: 834 words, outside the 300 to 650 target band",
+        "C17: 677 words, outside the 300 to 650 target band",
         "C18: 665 words, outside the 300 to 650 target band",
         "D02: 672 words, outside the 300 to 650 target band",
         "D04: 682 words, outside the 300 to 650 target band",
@@ -265,7 +266,7 @@
     },
     {
       "details": {
-        "references": 759
+        "references": 775
       },
       "failures": [],
       "id": "X-01",
@@ -307,7 +308,7 @@
     },
     {
       "details": {
-        "assembly_digest": "55740c96b11d127e7b8269bc7821e9214bbd0f2c3ad52c46d3544a21bada8b01"
+        "assembly_digest": "5741e807f92d0239410fa2162610ba484533c22156ec11b4d4a20f494cb2b76a"
       },
       "failures": [],
       "id": "X-06",
@@ -324,11 +325,19 @@
       "status": "PASS",
       "title": "Snapshot body hashes and correction record",
       "warnings": []
+    },
+    {
+      "details": {},
+      "failures": [],
+      "id": "X-08",
+      "status": "PASS",
+      "title": "Epic phase as exit milestone",
+      "warnings": []
     }
   ],
   "failed": false,
   "file_count": 12,
   "packets_mode": false,
   "schema": "lux-didi.validation/1",
-  "tree_digest": "e5b435dc049a04c0977b3c183de2eac0fdf26f4a088055148657c02067edaaaf"
+  "tree_digest": "ccc375f4eac4ddfc58b4710e222b8f694e12ed58d9e350f31f2100a6daa45f0b"
 }

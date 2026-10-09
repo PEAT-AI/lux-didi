@@ -1,12 +1,13 @@
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, chownSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, constants, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { inspect } from 'node:util';
 import { ConfigError, initializeProviderConfig, loadProviderConfig } from '../config/index.js';
+import { validateOwner } from '../config/files.js';
 
 const synthetic = 'synthetic_NEVER_PRINT_739+abc=';
 const profile = () => ({ schemaVersion: 1, enabled: true, provider: 'gemini', modelId: 'gemini-synthetic', keyReference: 'gemini-primary', dataClasses: ['ordinary', 'private'], preferences: { dataClass: 'ordinary', language: 'de-de', register: 'plain', humor: 'off', verbosity: 'balanced' } });
@@ -97,11 +98,23 @@ test('real root and opened file mode/type/symlink/hardlink/size validation', asy
   const ready = f.load(); assert.equal(ready.status, 'ready'); if (ready.status === 'ready') { chmodSync(f.configDir, 0o755); await assert.rejects(ready.credentials.resolve('gemini-primary')); }
 });
 
-test('wrong file owner is rejected when host permits a real ownership fixture', t => {
+test('real opened descriptor ownership accepts current UID and rejects a different expected UID', t => {
   const f = fixture(t); f.setup();
-  try { chownSync(join(f.configDir, 'gemini-primary.json'), process.getuid!() + 1, process.getgid!()); }
-  catch (e) { if ((e as NodeJS.ErrnoException).code === 'EPERM') { t.skip('unprivileged host cannot create a foreign-UID fixture; no privileged command attempted'); return; } throw e; }
-  errorStatus(f.load());
+  const uid = process.getuid!();
+  for (const [path, flags, code] of [
+    [join(f.configDir, 'gemini-primary.json'), constants.O_RDONLY | constants.O_NOFOLLOW, 'file_owner'],
+    [f.configDir, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW, 'directory_owner']
+  ] as const) {
+    const fd = openSync(path, flags);
+    try {
+      const actual = fstatSync(fd); // Real metadata, not mocked or fabricated.
+      assert.equal(actual.uid, uid);
+      assert.doesNotThrow(() => validateOwner(actual, uid, code));
+      // Discriminating negative: removing the ownership comparison makes this fail.
+      assert.throws(() => validateOwner(actual, uid + 1, code), e => e instanceof ConfigError && e.code === code);
+      assert.equal(fstatSync(fd).uid, uid); // Test never changes actual ownership.
+    } finally { closeSync(fd); }
+  }
 });
 
 test('every successful and failed load/resolve closes descriptors', async t => {

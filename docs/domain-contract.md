@@ -264,17 +264,17 @@ loads the real runtime and the domain from the compiled output in `server/dist`
 (the service package's own convention, where its tests run from `dist/` after
 `npm run build`).
 
-Reproduce the compiled run:
+Reproduce from the repository root:
 
 ```sh
-cd server
-npm run build                    # service: contracts, runtime, http -> dist/
-./node_modules/.bin/tsc -p domain/tsconfig.build.json   # domain -> dist/domain
-cd ..
-node --test server/test/domain.test.ts
+bash scripts/check-domain.sh
 ```
 
-The declared argv alone has no build step, so it passes only in a worktree where
-`server/dist` is already built. Making the check self-building (a
-`scripts/check-domain.sh` that runs the two builds, mirroring
-`scripts/check-service.sh`) is the service/root decision, not a domain change.
+This focused check is self-building: it runs the existing service build and
+`domain/tsconfig.build.json` compiler, checks their required outputs, then runs
+all `domain.test.ts` and `provenance.test.ts` cases against the compiled actual
+Store/Domain. It also selects exactly the four compiled HTTP tests that use the
+synthetic DomainPort fixture (pairing/logout, replay/rollback/stale epoch, body
+validation and restart persistence). That fixture's label methods throw if used;
+it supplies no provenance behavior proof. The package-install test does not use
+that fixture and is not selected. This is not the broad service/HTTP test ring.

@@ -6,15 +6,15 @@
 // database: every operation receives a Transaction and runs inside the
 // caller's transaction. Shared types are imported type-only, so this module
 // adds no second copy of the storage/domain contract.
-import { ServiceError } from '../contracts/errors.ts';
+import { ServiceError } from '../contracts/errors.js';
 
-export type { Transaction, SQLValue, SQLRow, SchemaMigration } from '../contracts/storage.ts';
+export type { Transaction, SQLValue, SQLRow, SchemaMigration } from '../contracts/storage.js';
 export type {
   DomainPort,
   DomainOperations,
   DomainOperation,
   DomainContext,
-} from '../contracts/domain.ts';
+} from '../contracts/domain.js';
 export { ServiceError };
 
 export function badRequest(message: string, details: Record<string, unknown> = {}): never {
@@ -55,9 +55,9 @@ export interface OutboxEvent {
 
 // Structural subset of the runtime `Outbox` value the facade composes with.
 export interface OutboxPort {
-  insert(tx: import('../contracts/storage.ts').Transaction, event: OutboxEvent): void;
+  insert(tx: import('../contracts/storage.js').Transaction, event: OutboxEvent): void;
   supersede(
-    tx: import('../contracts/storage.ts').Transaction,
+    tx: import('../contracts/storage.js').Transaction,
     entityId: string,
     throughRevision: number,
   ): number;

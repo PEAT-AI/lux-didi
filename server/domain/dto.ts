@@ -1,6 +1,6 @@
-import type { EntryRecord, RecallResult, SessionRecord, SourceRefRecord } from './memory.ts';
-import type { CommitmentRecord, CommitmentStatus, DailyPlan, HistoryRecord } from './commitments.ts';
-import { toIso } from './util.ts';
+import type { EntryRecord, RecallResult, SessionRecord, SourceRefRecord } from './memory.js';
+import type { CommitmentRecord, CommitmentStatus, DailyPlan, HistoryRecord } from './commitments.js';
+import { toIso } from './util.js';
 
 // Transport-blind DTO serializers. Shapes follow SERVICE-CONTRACT and
 // server/contracts/domain.ts exactly: instants are ISO8601 UTC strings, ids are

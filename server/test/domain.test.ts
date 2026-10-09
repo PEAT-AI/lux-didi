@@ -5,11 +5,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 // Actual service runtime, not a stand-in: the real Store (node:sqlite, sole
-// writer) and the real Outbox. The domain under test never opens a database.
-import { Store } from '../runtime/store.ts';
-import { Outbox } from '../runtime/outbox.ts';
-import type { DomainContext } from '../contracts/domain.ts';
-import { createDomainPort } from '../domain/facade.ts';
+// writer) and the real Outbox, loaded from the service package's compiled
+// output (`server/dist`, produced by `npm run build` + the domain build config).
+// The domain under test never opens a database.
+import { Store } from '../dist/runtime/store.js';
+import { Outbox } from '../dist/runtime/outbox.js';
+import type { DomainContext } from '../dist/contracts/domain.js';
+import { createDomainPort } from '../dist/domain/facade.js';
 
 const AUTHORITY = 'epoch-1';
 

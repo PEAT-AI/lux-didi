@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { badRequest } from './contract.ts';
+import { badRequest } from './contract.js';
 
 export function newId(): string {
   return randomUUID();

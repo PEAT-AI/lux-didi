@@ -1,4 +1,4 @@
-import type { SchemaMigration } from './contract.ts';
+import type { SchemaMigration } from './contract.js';
 
 // Domain-owned migrations. The runtime applies them in one writer; the domain
 // only declares them (SERVICE-CONTRACT: "Domain exports migrations").
@@ -60,7 +60,10 @@ export const domainMigrations: SchemaMigration[] = [
          created_at INTEGER NOT NULL,
          updated_at INTEGER NOT NULL
        )`,
-      // Append-only history, enforced at storage level as well as in code.
+      // Append-only history: no code path issues UPDATE/DELETE on this table,
+      // and (commitment_id, revision) is the primary key. A storage-level
+      // trigger is not possible here because the runtime admits exactly one SQL
+      // statement per migration entry and a trigger body needs an inner `;`.
       `CREATE TABLE commitment_revisions (
          commitment_id TEXT NOT NULL,
          revision INTEGER NOT NULL,
@@ -73,12 +76,6 @@ export const domainMigrations: SchemaMigration[] = [
          recorded_at INTEGER NOT NULL,
          PRIMARY KEY (commitment_id, revision)
        )`,
-      `CREATE TRIGGER commitment_revisions_no_update
-         BEFORE UPDATE ON commitment_revisions
-         BEGIN SELECT RAISE(ABORT, 'commitment_revisions is append-only'); END`,
-      `CREATE TRIGGER commitment_revisions_no_delete
-         BEFORE DELETE ON commitment_revisions
-         BEGIN SELECT RAISE(ABORT, 'commitment_revisions is append-only'); END`,
     ],
   },
 ];

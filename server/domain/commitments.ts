@@ -1,7 +1,7 @@
-import { notFound, conflict, badRequest } from './contract.ts';
-import type { Transaction, SQLRow } from './contract.ts';
-import { assertTimeZone, newId, requireText, localDayBounds } from './util.ts';
-import type { Clock } from './memory.ts';
+import { notFound, conflict, badRequest } from './contract.js';
+import type { Transaction, SQLRow } from './contract.js';
+import { assertTimeZone, newId, requireText, localDayBounds } from './util.js';
+import type { Clock } from './memory.js';
 
 export type CommitmentStatus = 'active' | 'completed' | 'cancelled';
 export type CommitmentOperation = 'captured' | 'corrected' | 'completed' | 'reopened' | 'cancelled';

@@ -1,12 +1,12 @@
-import type { DomainContext, DomainOperation, DomainOperations, DomainPort, Transaction } from './contract.ts';
-import { REMINDER_ROUTE } from './contract.ts';
-import type { OutboxEvent, OutboxPort } from './contract.ts';
-import * as memory from './memory.ts';
-import type { Clock } from './memory.ts';
-import * as commitments from './commitments.ts';
-import type { CommitmentRecord } from './commitments.ts';
-import * as dto from './dto.ts';
-import { domainMigrations } from './schema.ts';
+import type { DomainContext, DomainOperation, DomainOperations, DomainPort, Transaction } from './contract.js';
+import { REMINDER_ROUTE } from './contract.js';
+import type { OutboxEvent, OutboxPort } from './contract.js';
+import * as memory from './memory.js';
+import type { Clock } from './memory.js';
+import * as commitments from './commitments.js';
+import type { CommitmentRecord } from './commitments.js';
+import * as dto from './dto.js';
+import { domainMigrations } from './schema.js';
 
 // The facade IS the DomainPort the service injects. Every method runs the
 // domain mutation and its reminder/outbox insert or supersession inside the ONE

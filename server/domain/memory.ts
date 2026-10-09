@@ -1,6 +1,6 @@
-import { notFound, badRequest } from './contract.ts';
-import type { Transaction, SQLRow } from './contract.ts';
-import { assertLimit, assertTimeZone, fold, newId, requireText, tokenize } from './util.ts';
+import { notFound, badRequest } from './contract.js';
+import type { Transaction, SQLRow } from './contract.js';
+import { assertLimit, assertTimeZone, fold, newId, requireText, tokenize } from './util.js';
 
 export type EntryRole = 'user' | 'assistant' | 'system';
 export type SourceAvailability = 'present' | 'missing';

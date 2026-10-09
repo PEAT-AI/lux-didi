@@ -34,8 +34,10 @@ maps these onto `/api/v1` routes and injects ids/identity, never the body.
 
 ## Invariants
 
-- Append-only correction history (`commitment_revisions`; UPDATE/DELETE are
-  refused by storage triggers as well as by code).
+- Append-only correction history (`commitment_revisions`; no code path issues
+  UPDATE/DELETE, and `(commitment_id, revision)` is the primary key). A
+  storage-level trigger is not usable here: the service runtime admits exactly
+  one SQL statement per migration entry and a trigger body needs an inner `;`.
 - `expectedRevision` guard: a stale writer gets a typed `CONFLICT` carrying
   `{id, expected, stored}`; nothing else changes.
 - A correction, completion, cancellation or reopen supersedes the pending
@@ -139,15 +141,31 @@ const store = new Store(dataDir, domain.migrations); // runtime/store.js
 `domain.migrations` are the contiguous domain owner versions the runtime
 applies. `createDomainPort` closes over the runtime outbox, so a route runs the
 mutation and the reminder insert/supersede in the one transaction the service
-opened. The service's TypeScript build must include `domain/**/*.ts` and
-`test/domain.test.ts` for a compiled run of the domain check.
+opened. `server/domain/tsconfig.build.json` compiles the domain into
+`server/dist/domain` next to the service's own build output.
 
 ### Check-runtime note (integration decision for the service pair / root)
 
-The declared domain check runs a `.ts` file directly. The service's ESM source
-uses `.js` specifiers resolved from compiled `dist/`, and `contracts/errors.ts`
-uses a TypeScript parameter property, which Node's strip-only mode refuses
-(`ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`). So a direct source run cannot load the
-service contract graph. The resolved check must either run after
-`npm run build` against `dist/`, or the service contracts must become
-strip-compatible. This is owned by the service/root decision, not by the domain.
+The declared domain check runs a `.ts` file directly, but the service runtime
+cannot be loaded from TypeScript source: `runtime/store.ts` and
+`contracts/errors.ts` use TypeScript parameter properties, which this Node
+build's strip-only mode refuses (`ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`), and the
+service's `.js` import specifiers do not resolve to `.ts`. So the domain test
+loads the real runtime and the domain from the compiled output in `server/dist`
+(the service package's own convention, where its tests run from `dist/` after
+`npm run build`).
+
+Reproduce the compiled run:
+
+```sh
+cd server
+npm run build                    # service: contracts, runtime, http -> dist/
+./node_modules/.bin/tsc -p domain/tsconfig.build.json   # domain -> dist/domain
+cd ..
+node --test server/test/domain.test.ts
+```
+
+The declared argv alone has no build step, so it passes only in a worktree where
+`server/dist` is already built. Making the check self-building (a
+`scripts/check-domain.sh` that runs the two builds, mirroring
+`scripts/check-service.sh`) is the service/root decision, not a domain change.

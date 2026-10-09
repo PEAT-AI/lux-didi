@@ -212,6 +212,17 @@ ALLOWED_PATHS = {
     "planning/backlog-validation.md",
     "planning/backlog-validation.json",
     "planning/issue-map.json",
+    "planning/publishing-validation.md",
+    "docs/domain-contract.md",
+    "docs/mcp-adapter.md",
+    "docs/model-adapter.md",
+    "docs/prompt-composition.md",
+    "docs/web-client.md",
+    "fixtures/domain/library-basic.json",
+    "scripts/check-domain.sh",
+    "scripts/check-mcp.sh",
+    "scripts/check-model.sh",
+    "scripts/check-prompt.sh",
 }
 ALLOWED_PATHS |= {f"docs/{name}" for name in DOCS}
 

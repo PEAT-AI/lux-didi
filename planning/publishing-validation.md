@@ -5,7 +5,7 @@ Accepted source ancestor: `a74ff1e955bb6ad3b7e29470e85f79c2d73f6cda`.
 
 ## Authorization and scope
 
-Root explicitly authorized the accepted manifest's 19 creates, 20 updates and81 unchanged nodes on public `PEAT-AI/lux-didi`. Only publication metadata changes here; canonical bodies, renderer, validator, runtime, native and web source remain unchanged. No main push, settings changes, human messages or implementation-status changes.
+Root explicitly authorized the accepted manifest's 19 creates, 20 updates and81 unchanged nodes on public `PEAT-AI/lux-didi`. Initial publication changes were metadata-only. Follow-up PUBLISHFIX admits this literal report path and ten exact accepted-main public paths in the validator, with narrow positive/rejection controls and no scanner exemption. Canonical bodies, renderer, runtime, native and web source remain unchanged. No main push, settings changes, human messages or implementation-status changes.
 
 ## Full observed readback
 
@@ -59,9 +59,15 @@ The repository is public, under `PEAT-AI`, and the authenticated session has adm
 
 ## Verification procedure and evidence location
 
-Declared acceptance: `python3 scripts/backlog_validate.py --all --report planning/backlog-validation.md`, executed only through the managed controller at the metadata commit. Its receipt/result is recorded in the external publication report; any generated report delta must be disclosed rather than committed outside scope.
+Declared acceptance: `python3 scripts/backlog_validate.py --all --report planning/backlog-validation.md`, executed only through the managed controller at the metadata commit. Its exact-commit receipt/result is recorded in the external publication report. PUBLISHFIX authorizes the deterministic generated validation reports for independent review; their deltas do not alter source or suppress warnings.
 
 Root release desk evidence: `observed-publication.json`, `before-snapshot.json`, `after-snapshot.json` and `report.md` in the assigned publishing report directory. Those snapshots record real command timestamps, actual API argv/statuses, durable create responses and zero final readback mismatches. No credential values or private content are included.
+
+## Literal public-set remediation
+
+The validator admits only this required report plus these ten already accepted-main files: `docs/domain-contract.md`, `docs/mcp-adapter.md`, `docs/model-adapter.md`, `docs/prompt-composition.md`, `docs/web-client.md`, `fixtures/domain/library-basic.json`, `scripts/check-domain.sh`, `scripts/check-mcp.sh`, `scripts/check-model.sh` and `scripts/check-prompt.sh`. These ten files are unchanged from accepted main; no new directory wildcard or privacy-scan exclusion was added.
+
+The owning V-13 controls require admission of all eleven literal paths and continued rejection of neighboring arbitrary files in planning, docs, fixtures/domain and scripts. All prior forbidden-path, content/privacy and real Git-boundary controls remain intact. The failing test-first receipt and independent review evidence are retained at the root release desk; author success does not imply reviewer acceptance.
 
 ## Milestone counts (roadmap only)
 

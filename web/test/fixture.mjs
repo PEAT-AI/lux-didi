@@ -5,6 +5,7 @@ import {randomUUID} from 'node:crypto';
 import {readFile} from 'node:fs/promises';
 import {join, extname} from 'node:path';
 export async function startFixture() {
+  const headers = JSON.parse(await readFile(join(import.meta.dirname, '../security-headers.json'),'utf8'));
   const db = new DatabaseSync(':memory:');
   db.exec('CREATE TABLE records (id TEXT PRIMARY KEY, kind TEXT, value TEXT)');
   const requests = []; const epoch = 'synthetic-authority-1'; let paired = false;
@@ -15,6 +16,7 @@ export async function startFixture() {
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, 'http://fixture'); const path = url.pathname;
     if (!path.startsWith('/api/')) {
+      for(const [name,value] of Object.entries(headers))res.setHeader(name,value);
       const asset = path === '/' ? 'index.html' : path.slice(1);
       if (asset.includes('..')) { res.writeHead(400).end(); return; }
       try { let data = await readFile(join(import.meta.dirname, '../dist', asset)); if(asset==='index.html') data=Buffer.from(data.toString().replace('<head>','<head><meta name="didi-test-mode" content="synthetic">')); res.setHeader('Content-Type', ({'.html':'text/html','.js':'text/javascript','.css':'text/css','.svg':'image/svg+xml','.webmanifest':'application/manifest+json'})[extname(asset)] || 'application/octet-stream'); res.end(data); }

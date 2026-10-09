@@ -104,3 +104,21 @@ The next runtime integration must serve these assets from the accepted service,
 pair via its real operator-issued code, and repeat capture, correction/conflict,
 complete/reopen, recall and cookie/CSRF/cache checks against its real database.
 Do not infer that proof from matching DTOs or a green synthetic fixture.
+
+## Canonical UI inside the Mac shell (WEB-R3)
+
+The same built web assets are intended for the companion's WKWebView; there is
+**no JavaScript native capability bridge, message handler, injected bearer,
+remote microphone control or browser microphone fallback** in this client.
+Native record controls and on-device speech remain companion-owned. Recognized
+text reaches the service API; this page only reads the service state. Automatic
+browser capture is intentionally absent, and permissions policy denies it.
+
+The serving integration must apply `web/security-headers.json` to shell/assets.
+It requires `frame-src 'none'`, `frame-ancestors 'none'`, `connect-src 'self'`,
+no remote/eval/inline scripts, and microphone/camera denial. A matching meta CSP
+provides a shell fallback, but **frame-ancestors works only in an HTTP response
+header**, not meta. The isolated fixture serves/asserts the real headers. The
+service pair owns applying them to actual static serving; matching tests do not
+prove accepted-service deployment. Native owns exact navigation allowlisting,
+nonpersistent WKWebsiteDataStore, cookie bootstrap and window lifecycle.

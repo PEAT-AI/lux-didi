@@ -228,18 +228,45 @@ def canonical_nodes(nodes: list[dict]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def tracked_files(root: Path) -> list[str] | None:
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(root), "ls-files"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    if out.returncode != 0:
+        return None
+    files = [line for line in out.stdout.splitlines() if line.strip()]
+    return sorted(files) if files else None
+
+
 def tree_digest(root: Path, exclude: set[str]) -> tuple[str, list[str]]:
     entries = []
-    for path in sorted(root.rglob("*")):
-        rel = path.relative_to(root).as_posix()
-        if path.is_dir():
+    tracked = tracked_files(root)
+    if tracked is not None:
+        candidates = tracked
+    else:
+        candidates = []
+        for path in sorted(root.rglob("*")):
+            rel = path.relative_to(root).as_posix()
+            if path.is_dir():
+                continue
+            if rel.startswith(".git/") or rel == ".git":
+                continue
+            candidates.append(rel)
+    for rel in candidates:
+        if rel in exclude:
             continue
-        if rel.startswith(".git/") or rel in exclude:
+        path = root / rel
+        if not path.is_file():
             continue
-        data = path.read_bytes()
-        entries.append(f"{rel}\0{hashlib.sha256(data).hexdigest()}")
+        entries.append(f"{rel}\0{hashlib.sha256(path.read_bytes()).hexdigest()}")
     digest = hashlib.sha256("\n".join(entries).encode("utf-8")).hexdigest()
-    return digest, [e.split("\0")[0] for e in entries]
+    return digest, [entry.split("\0")[0] for entry in entries]
 
 
 def git_head(root: Path) -> str:

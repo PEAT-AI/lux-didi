@@ -336,8 +336,8 @@
     }
   ],
   "failed": false,
-  "file_count": 12,
+  "file_count": 11,
   "packets_mode": false,
   "schema": "lux-didi.validation/1",
-  "tree_digest": "d2c518ba4a5610d7767a18ae5830fd70b96640cd0c1a29ab3a3808cc5ec6b31b"
+  "tree_digest": "b1efbe9e20fbe8d46a14ebed7a8a13990a6028a675ebe64182f22985808b2171"
 }

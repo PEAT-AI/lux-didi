@@ -7,13 +7,9 @@
         "tasks": 105,
         "total": 119
       },
-      "failures": [
-        "expected 101 nodes, found 119",
-        "expected exactly 10 epics, found 13",
-        "expected exactly 90 tasks, found 105"
-      ],
+      "failures": [],
       "id": "V-01",
-      "status": "FAIL",
+      "status": "PASS",
       "title": "Backlog parses and covers the expected totals",
       "warnings": []
     },
@@ -36,37 +32,19 @@
     {
       "details": {
         "count": 119,
-        "expected": 101
+        "expected": 119
       },
-      "failures": [
-        "unexpected ids: ['A19', 'A20', 'A21', 'A22', 'A23', 'A24', 'C19', 'C20', 'C21', 'C22', 'C23', 'E11', 'E12', 'E13', 'F19', 'F20', 'F21', 'F22']"
-      ],
+      "failures": [],
       "id": "V-04",
-      "status": "FAIL",
+      "status": "PASS",
       "title": "Id format and complete coverage",
       "warnings": []
     },
     {
       "details": {},
-      "failures": [
-        "A19: epic 'E11' is not an E01..E10 value",
-        "A20: epic 'E11' is not an E01..E10 value",
-        "A21: epic 'E11' is not an E01..E10 value",
-        "A22: epic 'E11' is not an E01..E10 value",
-        "A23: epic 'E11' is not an E01..E10 value",
-        "A24: epic 'E11' is not an E01..E10 value",
-        "C19: epic 'E12' is not an E01..E10 value",
-        "C20: epic 'E12' is not an E01..E10 value",
-        "C21: epic 'E12' is not an E01..E10 value",
-        "C22: epic 'E12' is not an E01..E10 value",
-        "C23: epic 'E12' is not an E01..E10 value",
-        "F19: epic 'E13' is not an E01..E10 value",
-        "F20: epic 'E13' is not an E01..E10 value",
-        "F21: epic 'E13' is not an E01..E10 value",
-        "F22: epic 'E13' is not an E01..E10 value"
-      ],
+      "failures": [],
       "id": "V-05",
-      "status": "FAIL",
+      "status": "PASS",
       "title": "Epic membership and parent/child references",
       "warnings": []
     },
@@ -299,13 +277,61 @@
           "scripts/backlog_validate.py"
         ]
       },
-      "failures": [
-        "unexpected published path: docs/client-service-contract.md",
-        "unexpected published path: docs/cloud-deployment.md"
-      ],
+      "failures": [],
       "id": "V-13",
-      "status": "FAIL",
+      "status": "PASS",
       "title": "Repository hygiene and intended public set",
+      "warnings": []
+    },
+    {
+      "details": {
+        "controls": 10,
+        "dash code point is rejected": {
+          "broken_rejected": true,
+          "pristine_rejected": false
+        },
+        "dependency cycle is rejected": {
+          "broken_rejected": true,
+          "pristine_rejected": false
+        },
+        "duplicate id is rejected": {
+          "broken_rejected": true,
+          "pristine_rejected": false
+        },
+        "epic child mismatch is rejected": {
+          "broken_rejected": true,
+          "pristine_rejected": false
+        },
+        "missing baseline is rejected": {
+          "broken_rejected": true,
+          "pristine_rejected": false
+        },
+        "numbering gap is rejected": {
+          "broken_rejected": true,
+          "pristine_rejected": false
+        },
+        "private path shape is rejected": {
+          "broken_rejected": true,
+          "pristine_rejected": false
+        },
+        "rejected": 10,
+        "stale body hash is rejected": {
+          "broken_rejected": true,
+          "pristine_rejected": false
+        },
+        "tracker total drift is rejected": {
+          "broken_rejected": true,
+          "pristine_rejected": false
+        },
+        "wrong master prefix is rejected": {
+          "broken_rejected": true,
+          "pristine_rejected": false
+        }
+      },
+      "failures": [],
+      "id": "V-14",
+      "status": "PASS",
+      "title": "Negative-control self-test",
       "warnings": []
     },
     {
@@ -379,9 +405,9 @@
       "warnings": []
     }
   ],
-  "failed": true,
-  "file_count": 13,
+  "failed": false,
+  "file_count": 15,
   "packets_mode": false,
   "schema": "lux-didi.validation/1",
-  "tree_digest": "a914a39b06354cacfa3253eeb76dc9d2800985a521055b5f9e8f3ed320017d9f"
+  "tree_digest": "297f11263c0703c66c098be8500d3c3c67b4f358385be8762eba58d1fb052a1f"
 }

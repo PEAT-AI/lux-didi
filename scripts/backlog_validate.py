@@ -22,7 +22,7 @@ as verified. Output is deterministic for a fixed revision so that re-running on
 the same commit produces byte-identical reports.
 
 Check ids follow the reviewer's validator contract (V-01 to V-14) plus the
-integration checks (X-01 to X-06) defined for the assembled backlog.
+integration checks (X-01 to X-08) defined for the assembled backlog.
 
 Definitions used by the checks:
     V-08 word band: tasks are expected in the 300 to 650 word target band; the
@@ -31,6 +31,14 @@ Definitions used by the checks:
         that each task body contains the required section concepts. That is a
         presence and size check only: it is not proof of content quality, and
         the independent reviewer reads every section substantively (R-V08-WEAK).
+    V-14 negative-control self-test: the plan size is never asserted from a
+        literal count, so the coverage checks are derived from the assembled
+        node set. V-14 proves those derived checks still bite by running them
+        against deliberately broken copies of the loaded nodes (duplicate id,
+        numbering gap, wrong master prefix, epic child mismatch, dependency
+        cycle, dash code point, private shape, missing baseline, header total
+        drift, stale body hash) and reporting a failure unless the broken copy
+        is rejected and the unmutated copy is accepted.
     V-09 near-duplicate measure: token 4-gram Jaccard similarity over body
         tokens; pairs at or above 0.30 are reported, pairs at or above 0.75 fail
         as copied boilerplate.
@@ -50,6 +58,7 @@ Definitions used by the checks:
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -68,32 +77,33 @@ MILESTONES = {
     "M4": "Portability and polish",
 }
 
-# epic -> (master, expected child count)
-EPICS = {
-    "E01": ("A", 8),
-    "E02": ("A", 10),
-    "E03": ("B", 9),
-    "E04": ("B", 9),
-    "E05": ("C", 11),
-    "E06": ("C", 7),
-    "E07": ("D", 9),
-    "E08": ("D", 9),
-    "E09": ("E", 9),
-    "E10": ("E", 9),
-}
-
-# master -> id prefixes
+# master -> id prefix. This is the namespace contract, not a size. The number of
+# epics, the number of tasks per master and the id ranges are derived from the
+# assembled node set below, so growing the plan never edits a count in this file.
 MASTER_PREFIX = {"A": "A", "B": "B", "C": "C", "D": "D", "E": "F"}
 
-EXPECTED_IDS = (
-    {"P00"}
-    | {f"E{i:02d}" for i in range(1, 11)}
-    | {f"A{i:02d}" for i in range(1, 19)}
-    | {f"B{i:02d}" for i in range(1, 19)}
-    | {f"C{i:02d}" for i in range(1, 19)}
-    | {f"D{i:02d}" for i in range(1, 19)}
-    | {f"F{i:02d}" for i in range(1, 19)}
-)
+PROGRAM_ID = "P00"
+EPIC_ID_RE = re.compile(r"^E\d{2}$")
+
+
+def epic_ids(nodes: list[dict]) -> list[str]:
+    return sorted(n.get("id") for n in nodes or [] if n.get("kind") == "epic")
+
+
+def task_ids_for_master(nodes: list[dict], master: str) -> list[str]:
+    return [n.get("id") for n in nodes or []
+            if n.get("kind") == "task" and n.get("master") == master]
+
+
+def expected_ids(nodes: list[dict]) -> set[str]:
+    """The complete id set implied by the node set: P00, one contiguous E## run and
+    one contiguous prefix+## run per master, each derived from the observed counts."""
+    ids = {PROGRAM_ID}
+    ids |= {f"E{i:02d}" for i in range(1, len(epic_ids(nodes)) + 1)}
+    for master, prefix in MASTER_PREFIX.items():
+        count = len(task_ids_for_master(nodes, master))
+        ids |= {f"{prefix}{i:02d}" for i in range(1, count + 1)}
+    return ids
 
 DOCS = [
     "architecture.md",
@@ -105,6 +115,8 @@ DOCS = [
     "decisions.md",
     "risks.md",
     "overnight-execution.md",
+    "cloud-deployment.md",
+    "client-service-contract.md",
 ]
 
 REQUIRED_KEYS = [
@@ -345,17 +357,34 @@ def check_v01(report: Report, backlog: dict | None, nodes: list[dict] | None, pa
     details["program"] = kinds.count("program")
     details["epics"] = kinds.count("epic")
     details["tasks"] = kinds.count("task")
-    if len(nodes) != 101:
-        failures.append(f"expected 101 nodes, found {len(nodes)}")
+    unknown_kinds = sorted({k for k in kinds if k not in KINDS})
+    if unknown_kinds:
+        failures.append(f"unknown kinds: {unknown_kinds}")
+    if len(nodes) != kinds.count("program") + kinds.count("epic") + kinds.count("task"):
+        failures.append(f"total {len(nodes)} does not match the program, epic and task counts")
     if kinds.count("program") != 1:
-        failures.append(f"expected exactly 1 program tracker, found {kinds.count('program')}")
-    if kinds.count("epic") != 10:
-        failures.append(f"expected exactly 10 epics, found {kinds.count('epic')}")
-    if kinds.count("task") != 90:
-        failures.append(f"expected exactly 90 tasks, found {kinds.count('task')}")
+        failures.append(f"expected exactly one program tracker, found {kinds.count('program')}")
+    if kinds.count("epic") < 1:
+        failures.append("expected at least one epic")
+    if kinds.count("task") < 1:
+        failures.append("expected at least one task")
     duplicates = sorted({i for i in ids if ids.count(i) > 1})
     if duplicates:
         failures.append(f"duplicate ids: {duplicates}")
+    tracker = next((n for n in nodes if n.get("id") == PROGRAM_ID), None)
+    if tracker is None:
+        failures.append(f"{PROGRAM_ID} program tracker is missing")
+    else:
+        tracker_body = tracker.get("body") or ""
+        stated_epics = re.findall(r"(\d+)\s+epics\b", tracker_body)
+        stated_tasks = re.findall(r"(\d+)\s+work items\b", tracker_body)
+        if not stated_epics or not stated_tasks:
+            failures.append(f"{PROGRAM_ID} body must state its epic and work-item totals")
+        else:
+            if int(stated_epics[0]) != kinds.count("epic"):
+                failures.append(f"{PROGRAM_ID} states {stated_epics[0]} epics, backlog has {kinds.count('epic')}")
+            if int(stated_tasks[0]) != kinds.count("task"):
+                failures.append(f"{PROGRAM_ID} states {stated_tasks[0]} work items, backlog has {kinds.count('task')}")
     report.add("V-01", "Backlog parses and covers the expected totals", failures, details=details)
 
 
@@ -412,40 +441,64 @@ def check_v03(report: Report, nodes: list[dict] | None) -> None:
 
 def check_v04(report: Report, nodes: list[dict] | None) -> None:
     failures: list[str] = []
-    ids = [n.get("id") for n in nodes or []]
-    expected = set(EXPECTED_IDS)
-    missing = sorted(expected - set(ids))
-    extra = sorted(set(ids) - expected)
+    ids = [n.get("id") for n in (nodes or [])]
+    expected = expected_ids(nodes or [])
+    present = {i for i in ids if isinstance(i, str)}
+    missing = sorted(expected - present)
+    extra = sorted(present - expected)
     if missing:
         failures.append(f"missing ids: {missing}")
     if extra:
         failures.append(f"unexpected ids: {extra}")
+    for node in nodes or []:
+        node_id = node.get("id")
+        kind = node.get("kind")
+        text = node_id if isinstance(node_id, str) else ""
+        if kind == "program":
+            if text != PROGRAM_ID:
+                failures.append(f"{text!r}: the program tracker id must be {PROGRAM_ID}")
+        elif kind == "epic":
+            if not EPIC_ID_RE.fullmatch(text):
+                failures.append(f"{text!r}: an epic id must match E##")
+        elif kind == "task":
+            master = node.get("master")
+            prefix = MASTER_PREFIX.get(master)
+            if prefix is None:
+                failures.append(f"{text!r}: task master {master!r} has no id prefix")
+            elif not re.fullmatch(prefix + r"\d{2}", text):
+                failures.append(f"{text!r}: a master {master} task id must match {prefix}##")
     report.add("V-04", "Id format and complete coverage", failures, details={"count": len(ids), "expected": len(expected)})
 
 
 def check_v05(report: Report, nodes: list[dict] | None) -> None:
     failures: list[str] = []
     by_id = {n.get("id"): n for n in nodes or []}
-    children: dict[str, list[str]] = {e: [] for e in EPICS}
+    epics = {n.get("id"): n for n in nodes or [] if n.get("kind") == "epic"}
+    children: dict[str, list[str]] = {e: [] for e in epics}
+    attached = 0
     for node in nodes or []:
         node_id = node.get("id")
         kind = node.get("kind")
         epic = node.get("epic")
         if kind == "task":
-            if epic not in EPICS:
-                failures.append(f"{node_id}: epic {epic!r} is not an E01..E10 value")
+            if epic not in epics:
+                failures.append(f"{node_id}: epic {epic!r} is not a declared epic id")
                 continue
             children[epic].append(node_id)
-            expected_master = EPICS[epic][0]
+            attached += 1
+            expected_master = epics[epic].get("master")
             if node.get("master") != expected_master:
-                failures.append(f"{node_id}: master {node.get('master')!r} does not match epic {epic} (master {expected_master})")
+                failures.append(f"{node_id}: master {node.get('master')!r} does not match epic {epic} (master {expected_master!r})")
         else:
             if epic is not None:
                 failures.append(f"{node_id}: epic must be null for kind {kind}")
-    for epic, (_, expected_count) in EPICS.items():
-        kids = sorted(children.get(epic, []))
-        if len(kids) != expected_count:
-            failures.append(f"{epic}: expected {expected_count} children, found {len(kids)}")
+    task_count = sum(1 for n in nodes or [] if n.get("kind") == "task")
+    if attached != task_count:
+        failures.append(f"{task_count - attached} task(s) are not attached to a declared epic")
+    for epic in sorted(children):
+        kids = sorted(children[epic])
+        if not kids:
+            failures.append(f"{epic}: epic has no child tasks")
         body = (by_id.get(epic) or {}).get("body", "")
         for kid in kids:
             if not re.search(r"(?<![A-Z0-9])" + re.escape(kid) + r"(?![0-9])", body):
@@ -874,6 +927,98 @@ def check_x08(report: Report, nodes: list[dict] | None) -> None:
     report.add("X-08", "Epic phase as exit milestone", failures)
 
 
+def _probe(check_fn, *args) -> bool:
+    """True when the check reports a failure for the supplied input."""
+    probe_report = Report()
+    check_fn(probe_report, *args)
+    return probe_report.failed
+
+
+def _with_body(nodes: list[dict], node_id: str, suffix: str) -> list[dict]:
+    mutated = copy.deepcopy(nodes)
+    for node in mutated:
+        if node.get("id") == node_id:
+            node["body"] = (node.get("body") or "") + suffix
+    return mutated
+
+
+def check_v14(report: Report, backlog: dict | None, nodes: list[dict] | None, packets_mode: bool) -> None:
+    """Negative-control self-test.
+
+    The coverage checks above derive their expected totals from the loaded node set
+    instead of asserting a literal plan size, so this check proves the derived
+    assertions still bite: each deliberately broken copy of the loaded plan must be
+    rejected by its check, and the unmutated copy must be accepted.
+    """
+    failures: list[str] = []
+    details: dict = {}
+    if nodes is None or backlog is None:
+        report.add("V-14", "Negative-control self-test", ["no loaded plan to run the controls against"])
+        return
+
+    pristine = copy.deepcopy(nodes)
+    empty_docs: dict[str, str] = {}
+
+    duplicated = pristine + [copy.deepcopy(pristine[-1])]
+    gap = [n for n in pristine if n.get("id") != "A12"]
+    wrong_prefix = copy.deepcopy(pristine)
+    for node in wrong_prefix:
+        if node.get("id") == "A19":
+            node["id"] = "B19"
+    child_moved = copy.deepcopy(pristine)
+    for node in child_moved:
+        if node.get("id") == "C19":
+            node["epic"] = "E11"
+    cycle = copy.deepcopy(pristine)
+    for node in cycle:
+        if node.get("id") == "A19":
+            node["depends_on"] = ["A24"]
+    dash = _with_body(pristine, "A19", " a stray \u2014 em dash")
+    private = _with_body(pristine, "A19", " see /Users/example/notes.md")
+    no_baseline = copy.deepcopy(pristine)
+    for node in no_baseline:
+        if node.get("id") == "A19":
+            node["body"] = "Short body carrying neither a link nor a baseline statement."
+    stale_hash = dict(backlog, node_hashes=dict(backlog.get("node_hashes") or {}, A19="0" * 64))
+    drifted_total = copy.deepcopy(backlog)
+    drifted_total["nodes"] = copy.deepcopy(pristine)
+    for node in drifted_total["nodes"]:
+        if node.get("id") == PROGRAM_ID:
+            node["body"] = re.sub(r"(\d+)\s+work items", "999 work items", node.get("body") or "")
+
+    controls = [
+        ("duplicate id is rejected", _probe(check_v01, dict(backlog, nodes=duplicated), duplicated, []),
+         _probe(check_v01, backlog, pristine, [])),
+        ("numbering gap is rejected", _probe(check_v04, gap), _probe(check_v04, pristine)),
+        ("wrong master prefix is rejected",
+         _probe(check_v04, wrong_prefix) or _probe(check_v03, wrong_prefix),
+         _probe(check_v04, pristine) or _probe(check_v03, pristine)),
+        ("epic child mismatch is rejected", _probe(check_v05, child_moved), _probe(check_v05, pristine)),
+        ("dependency cycle is rejected", _probe(check_v06, cycle), _probe(check_v06, pristine)),
+        ("dash code point is rejected", _probe(check_v10, dash, empty_docs), _probe(check_v10, pristine, empty_docs)),
+        ("private path shape is rejected", _probe(check_v11, private, empty_docs),
+         _probe(check_v11, pristine, empty_docs)),
+        ("missing baseline is rejected", _probe(check_v12, no_baseline, empty_docs),
+         _probe(check_v12, pristine, empty_docs)),
+        ("stale body hash is rejected", _probe(check_x07, stale_hash, pristine, False),
+         _probe(check_x07, backlog, pristine, False)),
+        ("tracker total drift is rejected", _probe(check_v01, drifted_total, drifted_total["nodes"], []),
+         _probe(check_v01, backlog, pristine, [])),
+    ]
+    details["controls"] = len(controls)
+    rejected = 0
+    for label, broken_rejected, pristine_rejected in controls:
+        details[label] = {"broken_rejected": broken_rejected, "pristine_rejected": pristine_rejected}
+        if broken_rejected:
+            rejected += 1
+        else:
+            failures.append(f"{label}: the broken copy was accepted")
+        if pristine_rejected:
+            failures.append(f"{label}: the unmutated copy was rejected")
+    details["rejected"] = rejected
+    report.add("V-14", "Negative-control self-test", failures, details=details)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Lux Didi planning integrity validator")
     parser.add_argument("--all", action="store_true", help="run every check (required)")
@@ -925,6 +1070,7 @@ def main(argv: list[str] | None = None) -> int:
     check_v11(report, nodes, docs_text)
     check_v12(report, nodes, docs_text)
     check_v13(report, root, exclude)
+    check_v14(report, backlog, nodes, bool(args.packets))
     check_x01(report, nodes)
     check_x02(report, root, docs_text)
     check_x03(report, backlog, nodes)

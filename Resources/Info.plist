@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleExecutable</key><string>LuxDidi</string>
+<key>CFBundleIdentifier</key><string>ai.peat.lux-didi</string>
+<key>CFBundleName</key><string>Lux Didi</string>
+<key>CFBundleDisplayName</key><string>Lux Didi</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleVersion</key><string>1</string>
+<key>CFBundleShortVersionString</key><string>0.1.0</string>
+<key>LSMinimumSystemVersion</key><string>14.0</string>
+<key>LSUIElement</key><true/>
+<key>NSMicrophoneUsageDescription</key><string>Record only when you choose Record, to draft a message on this Mac.</string>
+<key>NSSpeechRecognitionUsageDescription</key><string>Turn your recording into editable text using on-device recognition only.</string>
+<key>NSHighResolutionCapable</key><true/>
+</dict></plist>

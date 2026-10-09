@@ -26,6 +26,7 @@ export interface CompiledPrompt {
   system: string; promptVersion: string; dataClasses: DataClass[];
   context: ContextSelection; declarations: FunctionDeclaration[]; contents: Content[];
   manifest: {
+    ownerId: string;
     sections: { id: string; chars: number; hash: string }[];
     systemHash: string; preferenceHash: string; capabilityHash: string;
     contextChars: number; historyChars: number; selectedIds: string[];

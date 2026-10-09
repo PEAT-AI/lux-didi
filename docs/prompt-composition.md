@@ -28,7 +28,14 @@ Preferences require schemaVersion 1, explicit ownerId/dataClass and enumerated
 language (`en`, `fr`, `es`), register (`plain`, `formal`), humor (`off`, `dry`),
 verbosity (`brief`, `balanced`, `detailed`). Unknown/missing fields fail. There is
 no chosen-name/free-text overlay and no arbitrary client system override. The
-compiler never reads stored profiles automatically.
+compiler never reads stored profiles automatically. Raw ownerId is a host-only
+isolation identity: it is validated for every supplied user item, retained only
+in the private manifest/preference hash, and omitted from model-visible
+preference/history/evidence serialization. Source IDs, provenance, record IDs and
+explicit data classes remain in evidence where needed for recall. No account
+labels are inferred. This boundary removes the structured ownerId field, not
+occurrences of the same bytes inside user-authored source text; it never rewrites
+original source content.
 
 `createCapabilitySnapshot` projects the accepted `ToolDefinition` registry into
 exact `FunctionDeclaration` values; canonical parameter key ordering and tool

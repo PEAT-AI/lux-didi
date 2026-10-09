@@ -133,20 +133,28 @@ export function compilePrompt(input: CompileInput): CompiledPrompt {
   const turns = array(i['history'], 100).map(v => history(v, ownerId));
   if (!turns.length) fail('schema');
   unique(material.map(v => v.id)); unique(turns.map(v => v.id));
+  // Host identity enforces isolation; it is not model reasoning material.
+  const { ownerId: _preferenceOwner, ...trustedPrefs } = prefs;
   const sections = [
     { id: 'persona', text: PUBLIC_PERSONA }, { id: 'rules', text: TRUSTED_RULES },
-    { id: 'preferences', text: JSON.stringify(prefs) },
+    { id: 'preferences', text: JSON.stringify(trustedPrefs) },
     { id: 'capabilities', text: JSON.stringify({ declarations: caps.declarations, sources: caps.sources }) },
   ];
   const system = sections.map(s => `[${s.id}]\n${s.text}`).join('\n\n');
   if (system.length > trustedLimit) fail('budget');
-  const contents = turns.map(t => ({ role: t.role, parts: [{ text: JSON.stringify(t) }] }));
+  const contents = turns.map(t => {
+    const { ownerId: _owner, ...data } = t;
+    return { role: t.role, parts: [{ text: JSON.stringify(data) }] };
+  });
   const historyChars = JSON.stringify(contents).length;
   if (historyChars > historyLimit) fail('budget');
   // Fixed-width counts keep the notice's exact cost invariant during selection.
   const count = (n: number): string => String(n).padStart(4, '0');
   const notice = (selected: number) => ({ id: coverageId, text: JSON.stringify({ kind: 'coverage', scope: 'supplied materialized set only; not whole archive', supplied: count(material.length), selected: count(selected), omitted: count(material.length - selected), handling: 'Whole records omitted, never summarized or deleted. Separate later retrieval may be requested.' }), dataClass: 'ordinary' as const });
-  const encoded = material.map(item => ({ id: item.id, text: JSON.stringify(item), dataClass: item.dataClass }));
+  const encoded = material.map(item => {
+    const { ownerId: _owner, ...data } = item;
+    return { id: item.id, text: JSON.stringify(data), dataClass: item.dataClass };
+  });
   const selected: typeof encoded = [];
   const visibleChars = (items: typeof encoded): number => (evidencePrefix + JSON.stringify([notice(items.length), ...items].map(({ id, text }) => ({ id, text })))).length;
   if (visibleChars([]) > contextLimit) fail('budget');
@@ -162,6 +170,7 @@ export function compilePrompt(input: CompileInput): CompiledPrompt {
     declarations: structuredClone([...caps.declarations]), contents,
     context: { items: [notice(selected.length), ...selected], selectedIds: [coverageId, ...selectedIds], maxChars: contextLimit },
     manifest: {
+      ownerId,
       sections: sections.map(s => ({ id: s.id, chars: s.text.length, hash: hash(s.text) })),
       systemHash: hash(system), preferenceHash: hash(JSON.stringify(prefs)), capabilityHash: caps.hash,
       contextChars: visibleChars(selected), historyChars, selectedIds, omitted, historyIds: turns.map(t => t.id),

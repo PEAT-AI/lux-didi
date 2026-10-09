@@ -200,7 +200,11 @@ test('accepted Gemini injected transport constructs separate user evidence, exac
   assert.deepEqual(payload!['systemInstruction'], { parts: [{ text: compiled.system }] });
   assert.ok(!JSON.stringify(payload!['systemInstruction']).includes('MALICIOUS_WIRE_ONLY'));
   const contents = payload!['contents'] as { role: string; parts: { text: string }[] }[];
-  assert.equal(contents[0]!.role, 'user'); assert.equal(contents[0]!.parts[0]!.text, wireContext(compiled));
+  assert.equal(contents[0]!.role, 'user');
+  // Drift gate for the read-only adapter wrapper: actual wire text and overhead
+  // must match the compiler, not just a compiler-side serializer assertion.
+  assert.equal(contents[0]!.parts[0]!.text, wireContext(compiled));
+  assert.equal(contents[0]!.parts[0]!.text.length, compiled.manifest.contextChars);
   assert.deepEqual(contents.slice(1), compiled.contents);
   assert.deepEqual(payload!['tools'], [{ functionDeclarations: compiled.declarations }]);
   assert.deepEqual(result.prompt.omittedContextIds, []);

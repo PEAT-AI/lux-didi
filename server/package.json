@@ -15,7 +15,8 @@
   "devDependencies": {
     "@modelcontextprotocol/server": "2.3.1",
     "@types/node": "^26.0.0",
-    "typescript": "^6.0.2"
+    "typescript": "^6.0.2",
+    "@types/ws": "8.18.2"
   },
   "files": [
     "dist/index.js",
@@ -30,12 +31,15 @@
     "dist/prompt",
     "dist/adapters/mcp",
     "dist/connectors",
-    "adapters/mcp/SDK-LICENSE.txt"
+    "adapters/mcp/SDK-LICENSE.txt",
+    "dist/adapters/live-voice"
   ],
   "dependencies": {
-    "@modelcontextprotocol/client": "2.3.1"
+    "@modelcontextprotocol/client": "2.3.1",
+    "ws": "8.22.0"
   },
   "bundleDependencies": [
-    "@modelcontextprotocol/client"
+    "@modelcontextprotocol/client",
+    "ws"
   ]
 }

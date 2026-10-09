@@ -26,6 +26,21 @@ try {
     assert.match(await page.locator('body').innerText(),/No model connected/);
     assert.equal(await page.locator('#connection-state').getAttribute('aria-live'),'polite');
   });
+  await step('classic Canvas orb is idle not listening and honors reduced motion',async()=>{
+    const canvas=page.locator('#didi-orb');
+    assert.equal(await canvas.getAttribute('data-state'),'CONNECTED');
+    assert.equal(await canvas.getAttribute('data-posture'),'idle');
+    await page.getByText('Not listening',{exact:true}).waitFor();
+    assert.equal(await page.getByRole('button',{name:/record|microphone/i}).count(),0);
+    const hasPaint=await canvas.evaluate(el=>{const pixels=el.getContext('2d').getImageData(0,0,el.width,el.height).data;return pixels.some((v,i)=>i%4===3&&v>0);});assert(hasPaint);
+    await page.emulateMedia({reducedMotion:'reduce'});await page.waitForFunction(()=>document.querySelector('#didi-orb').dataset.motion==='still');
+    const first=await canvas.evaluate(el=>el.toDataURL());
+    await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+    assert.equal(await canvas.evaluate(el=>el.toDataURL()),first);
+    await page.screenshot({path:`${artifacts}/desktop-orb-reduced-motion.png`,fullPage:true});
+    await page.emulateMedia({reducedMotion:'no-preference'});
+    await page.waitForFunction(()=>document.querySelector('#didi-orb').dataset.motion==='animated');
+  });
   await step('failed send preserves draft; capture uses real HTTP',async()=>{
     await page.getByLabel('Your message').fill('Remember the synthetic blue notebook'); fixture.failNextEntry();
     await page.getByRole('button',{name:'Save message',exact:true}).click(); await page.getByRole('alert').filter({hasText:'Could not save'}).waitFor();assert.equal(await page.getByRole('alert').getAttribute('aria-live'),'assertive');

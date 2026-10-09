@@ -122,3 +122,29 @@ header**, not meta. The isolated fixture serves/asserts the real headers. The
 service pair owns applying them to actual static serving; matching tests do not
 prove accepted-service deployment. Native owns exact navigation allowlisting,
 nonpersistent WKWebsiteDataStore, cookie bootstrap and window lifecycle.
+
+## Familiar orb, honest voice state (WEB-R2)
+
+`src/orb.ts` is one Didi-owned, framework-independent Canvas 2D renderer. It
+implements the classic warm-plasma/tendril behavior and narrow state/meter
+interface described by the bounded ORB-REUSE scouting report, pinned to Naya's
+Vicuna main `f27bca7bcbc77a77e3401da2683abf2f1aaf023c`. **No private implementation
+source, historical image, branding, prompt, Angular wrapper or dependency was
+copied**; this is behavior/interface reuse, not pixel-parity or source-extraction
+proof. Verbatim reuse remains gated on source-rights clearance.
+
+States separate connecting/thinking, idle/connected, listening, speaking and
+quiet/error/disconnected. A latest normalized audio frame has
+`level/low/mid/high/flux/timestamp`; processing with level above 0.01 has speaking
+posture, otherwise thinking. Current production inputs are always silent; only
+real service connection/request activity is mapped. The orb **never claims
+listening or speaking** without actual audio. The visible caption says **Not
+listening**, and points to the native Mac record control. No audio permission,
+record control or fabricated microphone/FFT data is added to the web UI.
+
+Animation uses time-based level smoothing with a clamped frame delta, six layers,
+a capped pixel ratio, no per-sample DOM rerender, and requestAnimationFrame.
+Reduced-motion draws one static frame; hidden documents stop animation. Renderer
+teardown removes observers/listeners and cancels its own frame. The browser check
+pins actual nonempty Canvas paint, idle/not-listening, and static reduced-motion
+frames. WKWebView appearance/runtime proof remains companion integration work.

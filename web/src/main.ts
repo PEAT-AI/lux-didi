@@ -1,4 +1,5 @@
 import './style.css';
+import { Orb, type VoiceState } from './orb';
 import { ApiError, request, pair, demoMode, onAuthorityChanged, clearAuthority, restoreSession, logout } from './api';
 import type { Session, Entry, Commitment, CommitmentDetail, Plan, Recall, Status, Job } from './protocol';
 
@@ -7,6 +8,7 @@ const root = document.querySelector<HTMLDivElement>('#app')!;
 const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 const tabs: Tab[] = ['Conversation', 'Today', 'Memory', 'Settings'];
 let tab: Tab = 'Conversation';
+let orb: Orb | undefined;
 let status: Status | undefined;
 let connection: 'Connecting' | 'Connected' | 'Disconnected' | 'Offline' | 'Pair this browser' = 'Connecting';
 let sessions: Session[] = [], entries: Entry[] = [], session: Session | undefined;
@@ -36,9 +38,21 @@ function failure(err: unknown, mutation = false) {
 }
 function sourceMarkup(refs: Entry['sourceRefs']) { return refs.map(s => `<div class="source"><span>${e(s.label)}</span><small>${s.availability === 'missing' ? 'Source unavailable' : 'Source available'}${s.sourceTimestamp ? ` · ${e(datetime(s.sourceTimestamp))}` : ''}</small>${s.note ? `<p>${e(s.note)}</p>` : ''}</div>`).join(''); }
 function entryMarkup(entry: Entry) { return `<article class="entry ${entry.role}"><header><strong>${entry.role === 'user' ? 'You' : entry.role === 'assistant' ? 'Didi' : 'Update'}</strong><time datetime="${e(entry.capturedAt)}">${e(datetime(entry.capturedAt))}</time></header><p>${e(entry.text)}</p>${sourceMarkup(entry.sourceRefs)}${entry.role === 'user' ? `<button class="quiet" data-capture="${e(entry.id)}" ${disabled(!writable() || !status?.capabilities.commitments)}>Make a commitment</button>` : ''}</article>`; }
+function orbState(): VoiceState {
+  if(connection==='Offline'||connection==='Disconnected'||pairingRequired)return 'DISCONNECTED';
+  if(connection==='Connecting')return 'CONNECTING';
+  if(jobId&&!jobPaused||busy)return 'PROCESSING';
+  if(error)return 'ERROR';
+  return 'CONNECTED';
+}
+function orbMarkup() {
+  const state=orbState();
+  const label=state==='PROCESSING'?'Working on your request':state==='CONNECTING'?'Connecting':state==='DISCONNECTED'?'Waiting for connection':state==='ERROR'?'Needs your attention':'Ready when you are';
+  return `<section class="orb-stage" aria-label="Didi voice and activity"><canvas id="didi-orb" width="440" height="440" aria-hidden="true"></canvas><div class="orb-caption"><p class="orb-label" role="status" aria-live="polite">${e(label)}</p><p class="voice-honesty">Not listening<span>Voice stays on your Mac. Use its native record control.</span></p></div></section>`;
+}
 function conversation() {
   return `<section class="page-heading"><div><p class="eyebrow">SPACE TO THINK</p><h1>A little clarity.</h1><p>Put it into words. We’ll keep what matters.</p></div><button id="new-conversation" class="secondary" ${disabled(busy)}>New conversation</button></section>
-  <div class="conversation-grid"><aside class="panel conversations" aria-label="Conversations"><h2>Your conversations</h2>${sessions.length ? sessions.map(s => `<button data-session="${e(s.id)}" class="session ${session?.id === s.id ? 'selected' : ''}"><strong>${e(s.title)}</strong><small>${e(datetime(s.startedAt))}</small></button>`).join('') : '<p class="muted">No conversations yet.</p>'}${sessionMore ? '<p class="muted">More conversations are available in the service. This view shows the first page.</p>' : ''}</aside>
+  ${orbMarkup()}<div class="conversation-grid"><aside class="panel conversations" aria-label="Conversations"><h2>Your conversations</h2>${sessions.length ? sessions.map(s => `<button data-session="${e(s.id)}" class="session ${session?.id === s.id ? 'selected' : ''}"><strong>${e(s.title)}</strong><small>${e(datetime(s.startedAt))}</small></button>`).join('') : '<p class="muted">No conversations yet.</p>'}${sessionMore ? '<p class="muted">More conversations are available in the service. This view shows the first page.</p>' : ''}</aside>
   <section class="panel thread" aria-label="Conversation">${sessions.length ? `<div class="mobile-conversations"><label for="conversation-select">Choose a conversation</label><select id="conversation-select"><option value="">Start a new conversation</option>${sessions.map(s=>`<option value="${e(s.id)}" ${session?.id===s.id?'selected':''}>${e(s.title)}</option>`).join('')}</select></div>` : ''}<div class="thread-heading"><span class="dot"></span><h2>${e(session?.title ?? 'Start where you are')}</h2></div>
   <div class="entries">${entries.length ? entries.map(entryMarkup).join('') : `<div class="empty"><span class="empty-icon" aria-hidden="true">✳</span><h3>What’s on your mind?</h3><p>Save a thought, make a plan, or pick up a conversation.</p></div>`}${entriesMore ? '<p class="muted">There are more messages in this conversation. This view shows the first page.</p>' : ''}</div>
   <form id="message-form" class="composer"><label for="message">Your message</label><textarea id="message" rows="3" maxlength="12000" placeholder="A thought, a next step, a thing to remember…">${e(messageDraft)}</textarea><div class="composer-foot"><small>${status?.model.configured ? 'Save a message, or ask Didi for help.' : 'No model connected. You can still save messages and commitments.'}</small><div class="button-row"><button type="submit" ${disabled(!writable())}>${busy ? 'Working…' : 'Save message'}</button><button type="button" id="ask-didi" class="secondary" ${disabled(!writable() || !status?.model.configured || !status?.capabilities.model)}>Ask Didi</button></div></div></form>
@@ -71,8 +85,11 @@ function render() {
   // Keep cursor and unsent text stable across connection checks and action completion.
   const focus = document.activeElement as HTMLInputElement | HTMLTextAreaElement | null;
   const focusId = focus?.id; const selection = focus && (focus.tagName === 'TEXTAREA' || ['text','search','password'].includes(focus.type)) ? [focus.selectionStart,focus.selectionEnd] : null;
+  orb?.destroy();orb=undefined;
   root.innerHTML = `<a class="skip" href="#main">Skip to content</a><div class="app-shell"><aside class="sidebar"><a class="brand" href="/" aria-label="Didi home"><img src="/icon.svg" alt="" width="38" height="38"><span>didi<span class="brand-dot">.</span></span></a><p class="brand-note">A little clarity.<br>A little follow-through.</p><nav aria-label="Main navigation">${tabs.map((t,i)=>`<button data-tab="${t}" aria-current="${tab===t?'page':'false'}"><span aria-hidden="true">${['◌','✓','↗','⚙'][i]}</span>${t}</button>`).join('')}</nav><div class="sidebar-foot">Here for the next step.<br><small>No rush. No pretending.</small></div></aside><div class="workspace"><header class="topbar"><span>YOUR SPACE</span><div class="connection"><span class="connection-dot ${connection==='Connected'?'online':''}"></span><span id="connection-state" role="status" aria-live="polite" aria-atomic="true">${e(connection)}</span><button id="reconnect-top" class="quiet" aria-label="Refresh connection">↻</button></div></header>${demoMode || status?.serviceMode==='synthetic-test' ? '<div class="demo-banner"><strong>Demo test mode</strong><span>Isolated synthetic data · not your personal service</span></div>' : ''}<main id="main" tabindex="-1">${error ? `<div class="alert" role="alert" aria-live="assertive">${e(error)}</div>` : ''}${notice ? `<div class="notice" role="status" aria-live="polite" aria-atomic="true">${e(notice)}</div>` : ''}${readBusy ? '<p class="loading" role="status" aria-live="polite" aria-atomic="true">Loading your records…</p>' : ''}${busy ? '<button id="cancel-request" class="quiet">Stop waiting</button>' : ''}${pairingRequired ? pairing() : ({Conversation:conversation,Today:today,Memory:memory,Settings:settings}[tab])()}</main><footer>Small steps count. <span>Your service is the source of truth.</span></footer></div></div>`;
   bind();
+  const canvas=document.getElementById('didi-orb') as HTMLCanvasElement | null;
+  if(canvas)orb=new Orb(canvas,orbState());
   if (focusId) { const next=document.getElementById(focusId) as HTMLInputElement | HTMLTextAreaElement | null; next?.focus({preventScroll:true}); if(selection && next && selection[0]!==null) next.setSelectionRange(selection[0],selection[1]); }
 }
 function button(id: string, action: () => void) { document.getElementById(id)?.addEventListener('click', action); }

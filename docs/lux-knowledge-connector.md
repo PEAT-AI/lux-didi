@@ -52,17 +52,24 @@ const reader = createLuxKnowledgeReader({
 ```
 
 Construction performs no I/O: the connector never calls `discover`, never approves anything,
-never enables egress and never grants a wildcard.
+never enables egress and never grants a wildcard. It does validate the numeric budgets
+(`generation`, `maxSearchLimit`, `maxGetIds`, `maxQueryChars`) as positive finite safe integers
+and throws `invalid-connector-config` otherwise; they are captured once and never silently
+defaulted or clamped, and later caller mutation of `config` cannot change behavior.
 
 ## Two methods, strict input
 
 `search({ query, limit })` and `get({ ids })` only.
 
-- Exactly those keys; any extra key (for example `include_sensitive`, `project`, `include_links`)
-  is refused before any dispatch.
+Inputs are read once as a strict plain-data snapshot; validated primitives are copied into the
+outgoing arguments a single time. There is no getter re-read and no caller iterator use.
+
+- Exactly those own keys; any extra key — including symbol and non-enumerable keys — is refused
+  before any dispatch, as is any accessor property or non-plain prototype.
 - `query` is a non-empty string no longer than `maxQueryChars`; `limit` is a positive finite safe
-  integer within `maxSearchLimit`; `ids` is a non-empty array of unique positive safe integers
-  within `maxGetIds`.
+  integer within `maxSearchLimit`.
+- `ids` is a dense array of unique positive safe integers within `maxGetIds`; holes, accessor
+  elements, extra own keys, symbols and a custom iterator are refused.
 - The tool name is a literal in the module; the arguments are built exactly as
   `{ query, limit, include_sensitive: false }` and `{ ids, include_links: false }`. There is no
   arbitrary tool name, no advanced-argument pass-through and no callback that could authorize a

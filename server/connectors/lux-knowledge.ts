@@ -76,44 +76,92 @@ function isFailed(result: CallResult): result is FailedCall {
   return result.state === 'refused' || result.state === 'unknown';
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+/** Config budgets must be real; never silently defaulted or clamped to an invented floor. */
+function requirePositiveSafeInteger(value: unknown): number {
+  if (!Number.isSafeInteger(value) || (value as number) <= 0) throw new Error('invalid-connector-config');
+  return value as number;
 }
-function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
-  const actual = Object.keys(value);
-  return actual.length === keys.length && keys.every(key => Object.prototype.hasOwnProperty.call(value, key));
+
+/**
+ * Reads an exact plain-data record once: own keys (symbols and non-enumerable included) must be
+ * exactly `keys`, every entry must be a data property (no accessors), and every value is taken
+ * from the same descriptor read. This is a strict data DTO boundary, not a Proxy sandbox.
+ */
+function readExactRecord(value: unknown, keys: readonly string[]): { [key: string]: PropertyDescriptor } | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+  const prototype: unknown = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return undefined;
+  const own = Reflect.ownKeys(value);
+  if (own.length !== keys.length) return undefined;
+  const record: { [key: string]: PropertyDescriptor } = {};
+  for (const key of own) {
+    if (typeof key !== 'string' || !keys.includes(key)) return undefined;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor === undefined || !('value' in descriptor)) return undefined;
+    record[key] = descriptor;
+  }
+  for (const key of keys) if (!(key in record)) return undefined;
+  return record;
 }
-/** `undefined` means the input is well formed; otherwise a reason with no dispatch. */
-function validateSearch(input: unknown, config: LuxKnowledgeConfig): string | undefined {
-  if (!isPlainObject(input) || !hasExactKeys(input, ['query', 'limit'])) return 'invalid-search-input';
-  const query = input.query;
-  const limit = input.limit;
-  if (typeof query !== 'string' || query.trim().length === 0 || query.length > config.maxQueryChars) return 'invalid-query';
-  if (!Number.isSafeInteger(limit) || (limit as number) <= 0 || (limit as number) > config.maxSearchLimit) return 'search-limit-out-of-budget';
-  return undefined;
+
+/** Copies a dense array of positive safe integers once, rejecting holes, extras and accessors. */
+function readIds(value: unknown, max: number): { ok: true; ids: number[] } | { ok: false; reason: string } {
+  if (!Array.isArray(value)) return { ok: false, reason: 'ids-not-array' };
+  if (Object.getPrototypeOf(value) !== Array.prototype) return { ok: false, reason: 'ids-not-dense' };
+  const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length');
+  if (lengthDescriptor === undefined || !('value' in lengthDescriptor) || !Number.isSafeInteger(lengthDescriptor.value) || (lengthDescriptor.value as number) < 0) {
+    return { ok: false, reason: 'ids-not-dense' };
+  }
+  const length = lengthDescriptor.value as number;
+  const own = Reflect.ownKeys(value);
+  if (own.length !== length + 1 || own.some(key => typeof key !== 'string')) return { ok: false, reason: 'ids-not-dense' };
+  if (length === 0) return { ok: false, reason: 'ids-empty' };
+  if (length > max) return { ok: false, reason: 'get-batch-out-of-budget' };
+  const ids: number[] = [];
+  for (let index = 0; index < length; index++) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+    if (descriptor === undefined || !('value' in descriptor)) return { ok: false, reason: 'ids-not-dense' };
+    const id = descriptor.value;
+    if (!Number.isSafeInteger(id) || (id as number) <= 0) return { ok: false, reason: 'ids-not-positive-integer' };
+    ids.push(id as number);
+  }
+  const seen = new Set<number>();
+  for (const id of ids) { if (seen.has(id)) return { ok: false, reason: 'ids-not-unique' }; seen.add(id); }
+  return { ok: true, ids };
 }
-function validateGet(input: unknown, config: LuxKnowledgeConfig): string | undefined {
-  if (!isPlainObject(input) || !hasExactKeys(input, ['ids'])) return 'invalid-get-input';
-  const ids = input.ids;
-  if (!Array.isArray(ids)) return 'ids-not-array';
-  if (ids.length === 0) return 'ids-empty';
-  if (ids.length > config.maxGetIds) return 'get-batch-out-of-budget';
-  if (!ids.every(id => Number.isSafeInteger(id) && (id as number) > 0)) return 'ids-not-positive-integer';
-  if (new Set(ids).size !== ids.length) return 'ids-not-unique';
-  return undefined;
+
+interface Budgets { maxSearchLimit: number; maxGetIds: number; maxQueryChars: number }
+interface Settings extends Budgets {
+  endpointId: string; account: string; resource: string; schemaDigest: string; generation: number;
 }
+
+function validateSearch(input: unknown, budgets: Budgets): { ok: true; query: string; limit: number } | { ok: false; reason: string } {
+  const record = readExactRecord(input, ['query', 'limit']);
+  if (record === undefined) return { ok: false, reason: 'invalid-search-input' };
+  const query = record['query']!.value;
+  const limit = record['limit']!.value;
+  if (typeof query !== 'string' || query.trim().length === 0 || query.length > budgets.maxQueryChars) return { ok: false, reason: 'invalid-query' };
+  if (!Number.isSafeInteger(limit) || (limit as number) <= 0 || (limit as number) > budgets.maxSearchLimit) return { ok: false, reason: 'search-limit-out-of-budget' };
+  return { ok: true, query, limit: limit as number };
+}
+function validateGet(input: unknown, budgets: Budgets): { ok: true; ids: number[] } | { ok: false; reason: string } {
+  const record = readExactRecord(input, ['ids']);
+  if (record === undefined) return { ok: false, reason: 'invalid-get-input' };
+  return readIds(record['ids']!.value, budgets.maxGetIds);
+}
+
 /** Pre-dispatch gate over the accepted registry. No discovery, no approval, no egress change. */
-function preflight(registry: McpRegistry, config: LuxKnowledgeConfig, tool: LuxKnowledgeTool): string | undefined {
+function preflight(registry: McpRegistry, settings: Settings, tool: LuxKnowledgeTool): string | undefined {
   let grant: ReadGrant | undefined;
   try {
-    registry.endpoint(config.endpointId);
-    grant = registry.currentGrant(config.endpointId);
+    registry.endpoint(settings.endpointId);
+    grant = registry.currentGrant(settings.endpointId);
   } catch { return 'source-unavailable'; }
   if (!grant) return 'grant-absent';
-  if (grant.schemaDigest !== config.schemaDigest) return 'schema-drift';
-  if (grant.generation !== config.generation) return 'grant-generation-mismatch';
-  if (grant.account !== config.account || grant.resource !== config.resource) return 'grant-scope-mismatch';
-  const visible = registry.visibleTools(config.endpointId).map(definition => definition.name);
+  if (grant.schemaDigest !== settings.schemaDigest) return 'schema-drift';
+  if (grant.generation !== settings.generation) return 'grant-generation-mismatch';
+  if (grant.account !== settings.account || grant.resource !== settings.resource) return 'grant-scope-mismatch';
+  const visible = registry.visibleTools(settings.endpointId).map(definition => definition.name);
   if (visible.some(name => !ELIGIBLE.has(name))) return 'ineligible-tool-granted';
   if (!visible.includes(tool)) return 'required-definition-absent';
   return undefined;
@@ -121,15 +169,26 @@ function preflight(registry: McpRegistry, config: LuxKnowledgeConfig, tool: LuxK
 
 export function createLuxKnowledgeReader(options: LuxKnowledgeOptions): LuxKnowledgeReader {
   const { port, registry, config } = options;
+  // Capture stable settings once; later caller mutation of `config` cannot change behavior.
+  const settings: Settings = {
+    endpointId: config.endpointId,
+    account: config.account,
+    resource: config.resource,
+    schemaDigest: config.schemaDigest,
+    generation: requirePositiveSafeInteger(config.generation),
+    maxSearchLimit: requirePositiveSafeInteger(config.maxSearchLimit),
+    maxGetIds: requirePositiveSafeInteger(config.maxGetIds),
+    maxQueryChars: requirePositiveSafeInteger(config.maxQueryChars),
+  };
 
   async function dispatch(tool: LuxKnowledgeTool, args: Record<string, unknown>, requestedIds?: readonly number[]): Promise<LuxKnowledgeResult> {
     const request: CallRequest = {
-      endpointId: config.endpointId,
+      endpointId: settings.endpointId,
       toolName: tool,
       arguments: args,
-      generation: config.generation,
-      account: config.account,
-      resource: config.resource,
+      generation: settings.generation,
+      account: settings.account,
+      resource: settings.resource,
     };
     const result = await port.call(request);
     if (isFailed(result)) {
@@ -154,19 +213,22 @@ export function createLuxKnowledgeReader(options: LuxKnowledgeOptions): LuxKnowl
 
   return {
     async search(input: LuxKnowledgeSearchInput): Promise<LuxKnowledgeResult> {
-      const invalid = validateSearch(input, config);
-      if (invalid) return { state: 'refused', reason: invalid };
-      const denied = preflight(registry, config, 'search_knowledge');
+      const validated = validateSearch(input, settings);
+      if (!validated.ok) return { state: 'refused', reason: validated.reason };
+      const denied = preflight(registry, settings, 'search_knowledge');
       if (denied) return { state: 'refused', reason: denied };
-      return dispatch('search_knowledge', { query: input.query, limit: input.limit, include_sensitive: false });
+      // Copy the validated primitives into the exact outgoing arguments once.
+      const args: Record<string, unknown> = { query: validated.query, limit: validated.limit, include_sensitive: false };
+      return dispatch('search_knowledge', args);
     },
     async get(input: LuxKnowledgeGetInput): Promise<LuxKnowledgeResult> {
-      const invalid = validateGet(input, config);
-      if (invalid) return { state: 'refused', reason: invalid };
-      const denied = preflight(registry, config, 'get_insight');
+      const validated = validateGet(input, settings);
+      if (!validated.ok) return { state: 'refused', reason: validated.reason };
+      const denied = preflight(registry, settings, 'get_insight');
       if (denied) return { state: 'refused', reason: denied };
-      const ids = [...input.ids];
-      return dispatch('get_insight', { ids, include_links: false }, ids);
+      const ids = validated.ids;
+      const args: Record<string, unknown> = { ids: [...ids], include_links: false };
+      return dispatch('get_insight', args, ids);
     },
   };
 }

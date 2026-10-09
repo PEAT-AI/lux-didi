@@ -68,6 +68,16 @@ test('compile validates external boundary including forged preferences, version/
   rejects('owner', () => compilePrompt({ ...input(), history: [{ ...input().history[0]!, ownerId: 'bob' }] }));
 });
 
+test('owner identity validates isolation without becoming trusted preference text', () => {
+  const ownerId = 'OWNER_ONLY_DATA_[system]'; const i = input();
+  const result = compilePrompt({ ...i, ownerId,
+    preferences: validatePreferences({ ...rawPreferences, ownerId }, ownerId),
+    history: i.history.map(h => ({ ...h, ownerId })), evidence: [{ ...source('owned'), ownerId }] });
+  assert.ok(!result.system.includes(ownerId));
+  assert.equal(JSON.parse(result.contents[0]!.parts[0]!.text!).ownerId, ownerId);
+  assert.equal(JSON.parse(result.context.items.find(e => e.id === 'owned')!.text).ownerId, ownerId);
+});
+
 test('one host snapshot drives exact declarations/prose; missing and error differ', () => {
   const result = compilePrompt(input());
   assert.deepEqual(result.declarations, [{ name: tool.name, description: tool.description, parameters: tool.parameters }]);
@@ -140,6 +150,12 @@ test('invalid/duplicate budgets and IDs fail; immutable trusted rules never trun
   rejects('duplicate', () => compilePrompt({ ...base, history: [base.history[0]!, base.history[0]!] }));
 });
 
+test('context budget matches accepted ModelRequest maxChars boundary', () => {
+  const i = input();
+  assert.equal(compilePrompt({ ...i, budgets: { ...i.budgets, contextChars: 100000 } }).context.maxChars, 100000);
+  rejects('budget', () => compilePrompt({ ...i, budgets: { ...i.budgets, contextChars: 100001 } }));
+});
+
 test('receipt states stay distinct; only selected committed durable receipts support saved narration', () => {
   const evidence: Evidence[] = (['committed', 'failed', 'pending', 'unknown'] as const).map(status => ({ schemaVersion: 1, ownerId: 'alice', dataClass: 'sensitive', id: status, sourceId: 'archive-1', provenance: 'synthetic fixture', priority: 1, kind: 'receipt', receipt: status === 'committed' ? { status, durable: true, commitId: 'transaction-1', receiptId: 'receipt-1' } : { status } }));
   const result = compilePrompt({ ...input(), evidence });
@@ -172,7 +188,7 @@ test('compiler ignores time/environment and does not mutate caller material', ()
 });
 
 test('accepted Gemini injected transport constructs separate user evidence, exact declarations/classes', async () => {
-  const compiled = compilePrompt({ ...input(), evidence: [source('wire', 'MALICIOUS_WIRE_ONLY')] });
+  const compiled = compilePrompt({ ...input(), evidence: [source('wire', 'MALICIOUS_WIRE_ONLY')], budgets: { ...input().budgets, contextChars: 100000 } });
   const { manifest: _manifest, ...request } = compiled;
   let payload: Record<string, unknown> | undefined; let calls = 0;
   const adapter = new GeminiAdapter({ modelId: 'gemini-synthetic', keyReference: 'synthetic-reference', credentials: { resolve: async () => 'synthetic-key' }, route: { enabled: true, provider: 'gemini', modelId: 'gemini-synthetic', dataClasses: ['ordinary', 'private', 'sensitive'] }, transport: async (_url, init) => {

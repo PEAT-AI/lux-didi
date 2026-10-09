@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { inventory, probeNode, validateArtifact, checkPrerequisites } from '../../scripts/package-local.mjs';
+import { inventory, probeNode, validateArtifact, checkPrerequisites, buildArtifact } from '../../scripts/package-local.mjs';
 import { installArtifact } from '../../scripts/install-local.mjs';
 
 const root = mkdtempSync(join(tmpdir(), 'didi-install-tests-'));
@@ -53,12 +53,30 @@ test('explicit Node is realpath-resolved, executable, exactly 26 with real SQLit
   assert.equal(result.sqlite, true);
   assert.ok(result.sha256);
   assert.ok(result.linkage.length);
+  const oldOptions = process.env.NODE_OPTIONS;
+  process.env.NODE_OPTIONS = '--require=/nonexistent/didi-scrubbed-env-sentinel';
+  try { assert.equal(probeNode(node).major, 26); }
+  finally { if (oldOptions === undefined) delete process.env.NODE_OPTIONS; else process.env.NODE_OPTIONS = oldOptions; }
   assert.throws(() => probeNode(join(root, 'missing-node')), /Node/i);
   assert.throws(() => probeNode('/usr/bin/false'), /Node/i);
   const fake = join(root, 'wrong-node');
   writeFileSync(fake, '#!/bin/sh\nprintf \'{"version":"v25.0.0","major":25,"sqlite":true}\\n\'\n');
   chmodSync(fake, 0o700);
   assert.throws(() => probeNode(fake), /Node 26/);
+});
+
+test('dirty or mismatched clean source identity refuses before compilation', () => {
+  const source = mkdtempSync(join(root, 'source-'));
+  execFileSync('/usr/bin/git', ['init', '-q', source]);
+  writeFileSync(join(source, 'tracked'), 'source');
+  execFileSync('/usr/bin/git', ['-C', source, 'add', 'tracked']);
+  execFileSync('/usr/bin/git', ['-C', source, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture']);
+  const head = execFileSync('/usr/bin/git', ['-C', source, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  const options = { source, output: join(root, 'unused-output'), nodePath: node };
+  assert.throws(() => buildArtifact({ ...options, sourceCommit: commit }), /source HEAD/i);
+  writeFileSync(join(source, 'tracked'), 'dirty');
+  assert.throws(() => buildArtifact({ ...options, sourceCommit: head }), /clean/i);
+  assert.equal(existsSync(options.output), false);
 });
 
 test('accepted source capability gate refuses absent HOST or COMPANION rather than fake packaging', () => {
@@ -98,6 +116,14 @@ test('inventory forbids dotenv/private state and symlinks even inside signed bun
   assert.throws(() => inventory(f.bundle), /symlink/i);
 });
 
+test('dangling unrelated target symlink is preserved, not silently replaced', () => {
+  const f = fixture();
+  const target = destination();
+  symlinkSync(join(root, 'nonexistent-unrelated'), target);
+  assert.throws(() => installArtifact(f.dir, target), /UnrelatedTarget/);
+  assert.equal(execFileSync('/usr/bin/readlink', [target], { encoding: 'utf8' }).trim(), join(root, 'nonexistent-unrelated'));
+});
+
 test('unrelated target refuses without modifying it', () => {
   const f = fixture();
   const target = destination();
@@ -134,6 +160,22 @@ test('live actual owned native subprocess produces typed refusal; no force stop'
     assert.throws(() => installArtifact(f.dir, target), /LiveInstance/);
     assert.equal(child.exitCode, null);
   } finally {
+    const exited = new Promise(resolve => child.once('exit', resolve));
+    child.kill('SIGTERM');
+    await exited;
+  }
+});
+
+test('live actual Node service subprocess produces typed refusal', async () => {
+  const f = fixture();
+  const target = destination();
+  writeFileSync(join(f.resources, 'server/dist/host/index.js'), 'setInterval(() => {}, 1000);');
+  resign(f);
+  installArtifact(f.dir, target);
+  const child = spawn(node, [join(target, 'Contents/Resources/server/dist/host/index.js')], { stdio: 'ignore' });
+  await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
+  try { assert.throws(() => installArtifact(f.dir, target), /LiveInstance/); }
+  finally {
     const exited = new Promise(resolve => child.once('exit', resolve));
     child.kill('SIGTERM');
     await exited;

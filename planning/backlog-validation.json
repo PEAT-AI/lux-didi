@@ -266,7 +266,7 @@
     },
     {
       "details": {
-        "references": 775
+        "references": 778
       },
       "failures": [],
       "id": "X-01",
@@ -308,7 +308,7 @@
     },
     {
       "details": {
-        "assembly_digest": "5741e807f92d0239410fa2162610ba484533c22156ec11b4d4a20f494cb2b76a"
+        "assembly_digest": "e72d804c89322f4e6b7186a52d6395ea4124fd7dc8af7b286a285f1b711e0cd4"
       },
       "failures": [],
       "id": "X-06",
@@ -339,5 +339,5 @@
   "file_count": 11,
   "packets_mode": false,
   "schema": "lux-didi.validation/1",
-  "tree_digest": "b1efbe9e20fbe8d46a14ebed7a8a13990a6028a675ebe64182f22985808b2171"
+  "tree_digest": "2e1f15e451a4cc36c9ec9d52db6fd26ba13a9a69b1d99c9e42f0555234ac2e62"
 }

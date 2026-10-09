@@ -22,7 +22,7 @@ Turn the open host and evidence questions into contracts the other lanes can bui
 
 ### M1, useful daily loop
 
-Make one person's day work end to end without optional infrastructure. Entry points: A05 to A08 and A15 to A18 (durable tasks, receipts, tool turns, outbox, diagnostics and the integration gate); B02 to B05, B07 to B09, B11, B13 and B16; C03 to C05, C12 and C15 to C17; D02 to D10 and D17; F01, F02, F09, F10, F13 and the Stage A half of F15. A08 (action receipts) and C12 (grant broker) are first-loop prerequisites, not late hardening, and the essential source-injection, account-isolation, egress-denial and revocation cases (C16, C17) gate this milestone too. Exit criteria: the scenarios in [acceptance.md](acceptance.md) pass on the Stage A pilot with the real surfaces they name, and the first loop in that document works from a clean account with one Google account.
+Make one person's day work end to end without optional infrastructure. Entry points: A05 to A08 and A15 to A18 (durable tasks, receipts, tool turns, outbox, diagnostics and the integration gate); B02 to B05, B08 and B09, B11, B13 and B16; C03 to C05, C12 and C15 to C17; D02 to D10 and D17; F01, F02, F09, F10, F13 and the Stage A half of F15. A08 (action receipts) and C12 (grant broker) are first-loop prerequisites, not late hardening, and the essential source-injection, account-isolation, egress-denial and revocation cases (C16, C17) gate this milestone too. Exit criteria: the scenarios in [acceptance.md](acceptance.md) pass on the Stage A pilot with the real surfaces they name, and the first loop in that document works from a clean account with one Google account.
 
 ### M2, voice and proactive beta
 

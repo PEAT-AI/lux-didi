@@ -16,11 +16,22 @@ npm --prefix server ci
 npm --prefix web ci
 ```
 
-Build exact sources and run the actual host (not Vite's development proxy):
+Build exact sources and run the actual host (not Vite's development proxy). The wrapper uses the canonical `server/tsconfig.json`, shared with the service package build; its explicit production roots are service/runtime, HTTP, contracts, domain, host, model/MCP adapters and prompt, never unaccepted CHAT/config globs:
 
 ```sh
 bash scripts/run-local.sh --data-dir "$DIDI_STATE_DIR" --web-root "$PWD/web/dist" --port 0
 ```
+
+For a two-stage foreground launch (also exercised by the focused host check):
+
+```sh
+bash scripts/run-local.sh --build-only
+bash scripts/run-local.sh --run-built --data-dir "$DIDI_STATE_DIR" --web-root "$PWD/web/dist" --port 0
+```
+
+`--run-built` consumes the preceding canonical build without rebuilding. It does not validate source freshness; after any source change, use the default build-and-run path or repeat `--build-only`. A missing compiled entry fails explicitly. Tests always clean and rebuild before this stage.
+
+The leased browser proof defaults to headless GPU rendering. `DIDI_HOST_HEADED=1` requests a bounded headed GPU run for root visual inspection; `DIDI_HOST_ARTIFACTS` chooses the proof directory. Its `browser-proof.json` records the exact source commit, mode, runtime origin, compiled entry/web-index hashes and screenshot hashes, never a credential. The producer closes its browser and disposable service/state before returning.
 
 Set `DIDI_STATE_DIR` to a private application-data directory first. If `--data-dir`
 is omitted, defaults are macOS `~/Library/Application Support/Lux Didi`, Linux

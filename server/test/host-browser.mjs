@@ -1,15 +1,17 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 // Reuse the accepted web package's installed browser; no dependency/fixture copy.
 const { chromium } = createRequire(new URL('../../web/package.json', import.meta.url))('playwright');
 const root = resolve(import.meta.dirname, '../..');
+const sourceCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+const headed = process.env.DIDI_HOST_HEADED === '1';
 const state = await mkdtemp(join(tmpdir(), 'didi-host-browser-state-'));
 const artifacts = process.env.DIDI_HOST_ARTIFACTS || await mkdtemp(join(tmpdir(), 'didi-host-proof-'));
 await mkdir(artifacts, { recursive: true });
@@ -64,7 +66,7 @@ let sessionId, entryId, commitmentId, originalEpoch, originalAssistant;
 try {
   const origin = await start();
   originalEpoch = descriptor.authorityEpoch; originalAssistant = descriptor.assistantId;
-  browser = await chromium.launch({ channel: 'chromium', headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
+  browser = await chromium.launch({ channel: 'chromium', headless: !headed, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
   context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, timezoneId: 'UTC' });
   page = await context.newPage(); page.setDefaultTimeout(10000);
   page.on('request', req => requests.push({ url: req.url(), method: req.method() }));
@@ -184,7 +186,14 @@ try {
     assert.ok(requests.every(req => new URL(req.url).origin === origin), 'no remote/proxy route');
     assert.deepEqual(errors, []);
   });
-  await writeFile(join(artifacts, 'browser-proof.json'), JSON.stringify({ source: 'canonical host + accepted durable domain + shipped Vite UI', checks: timings, viewport: [1440, 375], capabilities: { memory: true, commitments: true, model: false, notifications: false }, nativeWK: 'separate install gate, not exercised' }, null, 2));
+  const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
+  const screenshots = {};
+  for (const name of ['desktop-conversation.png', 'desktop-today.png', 'desktop-conflict.png', 'mobile-375.png']) {
+    screenshots[name] = sha256(await readFile(join(artifacts, name)));
+  }
+  await writeFile(join(artifacts, 'browser-proof.json'), JSON.stringify({ source: 'canonical host + accepted durable domain + shipped Vite UI', sourceCommit, headed, run: process.env.LUX_WORKER_RUN_ID,
+    origin: descriptor.origin, screenshots, webIndexSha256: sha256(await readFile(join(root, 'web/dist/index.html'))), hostEntrySha256: sha256(await readFile(exec)),
+    checks: timings, viewport: [1440, 375], capabilities: { memory: true, commitments: true, model: false, notifications: false }, nativeWK: 'separate install gate, not exercised' }, null, 2));
   console.log(`HOST browser checks ${timings.length}, all passed; no fixture routes/model/tool/device authority`);
 } catch (error) {
   if (page) await page.screenshot({ path: join(artifacts, 'failure.png'), fullPage: true }).catch(() => {});

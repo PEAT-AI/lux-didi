@@ -104,7 +104,7 @@ async function stopProcess(child: ChildProcess) {
   assert.equal(code, 0, 'canonical host must shut down cleanly');
 }
 async function launch(dataDir: string) {
-  const child = spawn(process.execPath, [resolve(import.meta.dirname, '../host/index.js'), '--data-dir', dataDir, '--web-root', webRoot, '--port', '0'], { stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn('bash', [resolve(import.meta.dirname, '../../../scripts/run-local.sh'), '--run-built', '--data-dir', dataDir, '--web-root', webRoot, '--port', '0'], { stdio: ['ignore', 'pipe', 'pipe'] });
   let stderr = '';
   child.stderr!.on('data', chunk => { stderr += String(chunk); });
   try {

@@ -55,13 +55,25 @@ maps these onto `/api/v1` routes and injects ids/identity, never the body.
 
 ## Reminders
 
-A reminder is a pending scheduling need, never an invented success. The facade
-inserts an outbox event with the exact grant `native.notify`, bound to
-`authorityEpoch`, `entityId` and `entityRevision`, with a `dueAt` and an
-`expiresAt` (`REMINDER_TTL_MS` after due). Whether an authorized device may
-claim it is the runtime `AuthorityPolicy` decision; with no authorized device
-the event simply stays pending. The domain performs no effect itself and
-`supersede`/`insert` share the domain transaction, so there is no second queue.
+A reminder is a pending scheduling need, never an invented success. The host
+injects a target resolver (`createDomainPort({ outbox, resolveTarget })`); the
+resolver is host-owned and never read from a request body, model field or
+browser `clientId`.
+
+- **Bound target:** the resolver returns an authorized `{deviceId, grant}`, and
+the event's `requiredGrant` is that scoped grant with the `deviceId` in the
+payload, so the runtime `revalidate` can permit exactly that device.
+- **No target:** the intent is registered under `native.notify.unbound`, a grant
+no authorized device holds, so `revalidate` can never permit it and the need
+stays non-dispatchable. It is an explicit scheduling need, not a delivery.
+- **Revocation:** the resolver is consulted on every mutation, so when a target
+is revoked a correction supersedes the bound intent and re-inserts a
+non-dispatchable need.
+
+Every event is bound to `authorityEpoch`, `entityId`, `entityRevision` and an
+`expiresAt` (`REMINDER_TTL_MS` after due). The domain performs no effect itself
+and `supersede`/`insert` share the domain transaction, so there is no second
+queue. The route in the payload is the exact string `native.notify`.
 
 ## Time
 

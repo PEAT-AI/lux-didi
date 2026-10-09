@@ -40,6 +40,23 @@ export function conflict(id: string, expected: number, stored: number): never {
 // reported success.
 export const REMINDER_ROUTE = 'native.notify' as const;
 
+// A reminder with no bound, user-authorized device is a pending scheduling
+// need, never a dispatchable one. The host injects a target resolver; when it
+// reports no target, the intent is registered under a grant no authorized
+// device holds, so the runtime `revalidate` (which sees only the grant) cannot
+// permit it. Binding a target later supersedes it and re-inserts under the
+// target's scoped grant. Delivering a bound reminder needs a host-owned
+// target-binding contract; permission is never inferred from a model field or
+// a browser clientId.
+export const REMINDER_UNBOUND_GRANT = 'native.notify.unbound' as const;
+
+/** A host-resolved, authorized notification target. */
+export interface DomainTarget {
+  deviceId: string;
+  /** The scoped capability grant the bound device holds. */
+  grant: string;
+}
+
 // Event shape mirrors runtime/outbox.ts OutboxEvent exactly.
 export interface OutboxEvent {
   id: string;

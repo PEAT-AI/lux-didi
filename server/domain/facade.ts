@@ -1,6 +1,6 @@
 import type { DomainContext, DomainOperation, DomainOperations, DomainPort, Transaction } from './contract.js';
-import { REMINDER_ROUTE } from './contract.js';
-import type { OutboxEvent, OutboxPort } from './contract.js';
+import { REMINDER_ROUTE, REMINDER_UNBOUND_GRANT } from './contract.js';
+import type { DomainTarget, OutboxEvent, OutboxPort } from './contract.js';
 import * as memory from './memory.js';
 import type { Clock } from './memory.js';
 import * as commitments from './commitments.js';
@@ -14,15 +14,24 @@ import { domainMigrations } from './schema.js';
 // commitment, its append-only history and the reminder together. The domain
 // performs no side effect itself.
 //
-// A reminder is a pending scheduling need, never an invented success: it is
-// inserted with the exact grant `native.notify`, and only an authorized device
-// that claims it can act.
+// A reminder is a pending scheduling need, never an invented success. A bound,
+// user-authorized device makes it dispatchable under the exact grant
+// `native.notify`; with no bound target it is registered non-dispatchable under
+// `native.notify.unbound`, so the runtime can never claim it as delivered.
 
 /** A reminder stops being useful a day after its due instant. */
 export const REMINDER_TTL_MS = 24 * 60 * 60 * 1000;
 
 export interface DomainDeps {
   outbox: OutboxPort;
+  /**
+   * Host-owned target resolver: returns the authorized device and its scoped
+   * grant, or null when no target is bound. Absent/null keeps the reminder a
+   * non-dispatchable scheduling need. The DomainPort carries no target, so this
+   * is composed by whoever wires the domain into the service; it is never
+   * taken from a request body, model field or browser clientId.
+   */
+  resolveTarget?: () => DomainTarget | null;
 }
 
 function clockAt(context: DomainContext): Clock {
@@ -41,9 +50,11 @@ function isoToMs(value: string | null | undefined): number | null {
 class Domain implements DomainPort {
   readonly migrations = domainMigrations;
   readonly #outbox: OutboxPort;
+  readonly #resolveTarget: (() => DomainTarget | null) | null;
 
-  constructor(outbox: OutboxPort) {
+  constructor(outbox: OutboxPort, resolveTarget: (() => DomainTarget | null) | null) {
     this.#outbox = outbox;
+    this.#resolveTarget = resolveTarget;
   }
 
   execute<K extends DomainOperation>(
@@ -194,12 +205,16 @@ class Domain implements DomainPort {
     const dueAtMs = c.dueAt as number;
     const dueAt = new Date(dueAtMs).toISOString();
     const timeZone = c.dueTimeZone ?? 'UTC';
+    const target = this.#resolveTarget ? this.#resolveTarget() : null;
     return {
       id: `${c.id}:${c.revision}`,
       entityId: c.id,
       entityRevision: c.revision,
       authorityEpoch: context.authorityEpoch,
-      requiredGrant: REMINDER_ROUTE,
+      // A bound target's scoped grant makes the intent dispatchable; with no
+      // target the unbound grant can never revalidate, so the need stays
+      // pending rather than becoming an invented delivery.
+      requiredGrant: target ? target.grant : REMINDER_UNBOUND_GRANT,
       payload: JSON.stringify({
         route: REMINDER_ROUTE,
         commitmentId: c.id,
@@ -208,6 +223,7 @@ class Domain implements DomainPort {
         notes: c.notes,
         dueAt,
         timeZone,
+        targetDeviceId: target?.deviceId ?? null,
       }),
       sourceTimeZone: timeZone,
       dueAt,
@@ -217,5 +233,5 @@ class Domain implements DomainPort {
 }
 
 export function createDomainPort(deps: DomainDeps): DomainPort {
-  return new Domain(deps.outbox);
+  return new Domain(deps.outbox, deps.resolveTarget ?? null);
 }

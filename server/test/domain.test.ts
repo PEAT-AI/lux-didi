@@ -21,8 +21,8 @@ interface Harness {
   port: ReturnType<typeof createDomainPort>;
 }
 
-function open(dir: string): Harness {
-  const port = createDomainPort({ outbox: Outbox });
+function open(dir: string, resolveTarget?: () => { deviceId: string; grant: string } | null): Harness {
+  const port = createDomainPort({ outbox: Outbox, resolveTarget });
   const store = new Store(dir, port.migrations);
   return { dir, store, port };
 }
@@ -420,5 +420,82 @@ test('unknown ids are typed NOT_FOUND errors, not empty successes', () => {
     }
   } finally {
     cleanup(h);
+  }
+});
+
+test('reminder targeting: no dispatchable intent without a bound authorized device', () => {
+  // No resolver: the need is recorded but cannot be dispatched.
+  const unbound = fixture();
+  try {
+    const c = unbound.store.transaction((tx) =>
+      unbound.port.execute(
+        tx,
+        'createCommitment',
+        { title: 'Unbound need', dueAt: '2026-06-01T10:00:00.000Z', timeZone: 'UTC' },
+        context(nextNow()),
+      ),
+    ) as { id: string };
+    const row = unbound.store.transaction((tx) =>
+      tx.get('SELECT required_grant, payload FROM runtime_outbox WHERE entity_id = ?', [c.id]),
+    ) as { required_grant: string; payload: string };
+    assert.equal(row.required_grant, 'native.notify.unbound', 'an absent target must not be a claimable grant');
+    assert.equal((JSON.parse(row.payload) as { targetDeviceId: string | null }).targetDeviceId, null);
+
+    const now = '2026-06-01T11:00:00.000Z';
+    const dispatchable = unbound.store.transaction((tx) => {
+      const claim = Outbox.claim(tx, now, 60_000);
+      if (!claim) return 'no-claim';
+      return Outbox.revalidate(tx, claim, AUTHORITY, claim.event.entityRevision, now, {
+        permits: (grant: string) => grant === 'native.notify',
+      });
+    });
+    assert.equal(dispatchable, false, 'a native.notify policy must not dispatch an unbound need');
+  } finally {
+    cleanup(unbound);
+  }
+
+  // A host-owned resolver binds a device and its scoped grant.
+  let target: { deviceId: string; grant: string } | null = { deviceId: 'device-1', grant: 'native.notify' };
+  const bound = open(mkdtempSync(join(tmpdir(), 'didi-domain-bar-')), () => target);
+  try {
+    const c = bound.store.transaction((tx) =>
+      bound.port.execute(
+        tx,
+        'createCommitment',
+        { title: 'Bound need', dueAt: '2026-06-01T10:00:00.000Z', timeZone: 'UTC' },
+        context(nextNow()),
+      ),
+    ) as { id: string };
+    const row = bound.store.transaction((tx) =>
+      tx.get('SELECT required_grant, payload FROM runtime_outbox WHERE entity_id = ?', [c.id]),
+    ) as { required_grant: string; payload: string };
+    assert.equal(row.required_grant, 'native.notify');
+    assert.equal((JSON.parse(row.payload) as { targetDeviceId: string | null }).targetDeviceId, 'device-1');
+
+    const now = '2026-06-01T11:00:00.000Z';
+    const dispatchable = bound.store.transaction((tx) => {
+      const claim = Outbox.claim(tx, now, 60_000);
+      if (!claim) return 'no-claim';
+      return Outbox.revalidate(tx, claim, AUTHORITY, claim.event.entityRevision, now, {
+        permits: (grant: string) => grant === 'native.notify',
+      });
+    });
+    assert.equal(dispatchable, true, 'a bound device with the scoped grant is dispatchable');
+
+    // Revocation: the resolver now reports no target, so a correction replaces
+    // the bound intent with a non-dispatchable one.
+    target = null;
+    bound.store.transaction((tx) =>
+      bound.port.execute(tx, 'updateCommitment', { id: c.id, expectedRevision: 1, title: 'Bound need (revoked)' }, context(nextNow())),
+    );
+    const after = bound.store.transaction((tx) =>
+      tx.all('SELECT id, required_grant, state FROM runtime_outbox WHERE entity_id = ? ORDER BY entity_revision', [c.id]),
+    ) as { id: string; required_grant: string; state: string }[];
+    assert.equal(after.length, 2);
+    assert.equal(after[0]!.state, 'superseded');
+    assert.equal(after[0]!.required_grant, 'native.notify');
+    assert.equal(after[1]!.required_grant, 'native.notify.unbound', 'revoked target yields a non-dispatchable need');
+  } finally {
+    cleanup(bound);
   }
 });

@@ -34,7 +34,7 @@ All fields are required; extra and duplicate fields are rejected, including
 escaped duplicate names. `enabled` must be boolean. `modelId` is 1–128 ASCII
 letters, digits, dot, underscore or hyphen, starting with a letter/digit.
 `dataClasses` is a nonempty unique subset of `ordinary`, `private`, `sensitive`.
-Preferences contain exactly the six fields shown. The accepted
+Preferences contain exactly the five fields shown. The accepted
 `validatePreferences` validates them after injecting `schemaVersion:1` and the
 host's current `ownerId`, and canonicalizes the explicit BCP47 locale. Its closed
 register/humor/verbosity choices apply; no default language, free-form instruction
@@ -121,7 +121,7 @@ not a shell parser. Other simple assignments are ignored, not exported; unsuppor
 syntax anywhere is rejected. GEMINI_API_KEY must appear exactly once, nonempty;
 duplicate, absent, malformed and malicious assignments fail without quoting input.
 
-All roots/files are explicit. Input profile and authorized source must be current
+All roots/files use explicit absolute paths (no relative-path or default-location resolution). Input profile and authorized source must be current
 UID, final non-symlink, regular, single-link 0600. Runtime config root is 0700,
 profile/secret files are 0600; secret has exactly one hardlink. Limits are byte
 limits and parsing uses fatal UTF-8 decoding. Files are opened O_NOFOLLOW and

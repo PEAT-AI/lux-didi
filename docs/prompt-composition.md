@@ -74,7 +74,7 @@ remains host-owned; never reconstruct it from the compiler's text-history API.
 ## Deterministic budgets and actual wire placement
 
 Budgets are explicit positive integer UTF-16 code-unit counts, not tokens, bytes
-or context-window guarantees: trustedChars <=100000, contextChars <=200000,
+or context-window guarantees: trustedChars <=100000, contextChars <=100000,
 historyChars <=200000. Trusted sections are immutable; too-small budgets fail,
 never truncate rules. History budget includes serialized contents formatting
 and fails rather than dropping turns. IDs/provenance and source text are bounded;

@@ -128,7 +128,7 @@ export function compilePrompt(input: CompileInput): CompiledPrompt {
   const prefs = validatePreferences(i['preferences'], ownerId);
   const caps = validateSnapshot(i['capabilities']);
   const b = fields(i['budgets'], ['trustedChars', 'contextChars', 'historyChars']);
-  const trustedLimit = budget(b['trustedChars'], 100000), contextLimit = budget(b['contextChars'], 200000), historyLimit = budget(b['historyChars'], 200000);
+  const trustedLimit = budget(b['trustedChars'], 100000), contextLimit = budget(b['contextChars'], 100000), historyLimit = budget(b['historyChars'], 200000);
   const material = array(i['evidence'], 1000).map(v => evidence(v, ownerId)).sort((a, b) => b.priority - a.priority || compare(a.id, b.id));
   const turns = array(i['history'], 100).map(v => history(v, ownerId));
   if (!turns.length) fail('schema');

@@ -40,7 +40,7 @@ async function main() {
     calls++; await appendFile(join(dir, 'wire.jsonl'), JSON.stringify({ body: JSON.parse(body) }) + '\n');
     process.send?.({ phase: 'transport', calls });
     let timer: ReturnType<typeof setTimeout> | undefined;
-    res.on('close', () => { if (timer) clearTimeout(timer); responses.delete(res); if (!res.writableFinished) { aborted++; process.send?.({ phase: 'aborted', aborted }); } });
+    res.on('close', () => { if (timer) clearTimeout(timer); responses.delete(res); if (!res.writableFinished) { aborted++; if (process.connected) process.send?.({ phase: 'aborted', aborted }); } });
     const control = nextMode; nextMode = '';
     if (mode === 'hold' || control === 'hold-next') return;
     if (control === 'fail-next') { res.writeHead(503); res.end('controlled provider failure'); return; }
@@ -55,7 +55,10 @@ async function main() {
   const addr = transportServer.address(); if (!addr || typeof addr === 'string') throw Error('Missing capturing transport address');
   const host = await startHost({ dataDir: resolve(dir), webRoot: resolve(webRoot), port: Number(rawPort ?? 0), modelTesting: {
     credentials: { resolve: async reference => { if (reference !== 'gemini-primary') throw Error('bad fixture reference'); return syntheticKey; } },
-    transport: async (url, init) => { if (!url.startsWith('https://generativelanguage.googleapis.com/v1beta/models/gemini-')) throw Error('Wrong actual adapter URL'); return fetch(`http://127.0.0.1:${addr.port}/capture`, init); }
+    transport: async (url, init) => { if (!url.startsWith('https://generativelanguage.googleapis.com/v1beta/models/gemini-')) throw Error('Wrong actual adapter URL'); const response = await fetch(`http://127.0.0.1:${addr.port}/capture`, init);
+      // Trusted synthetic provider transport: stream the actual local HTTP body,
+      // not a redirected provider Response. Production URL validation stays intact.
+      return new Response(response.body, { status: response.status, headers: response.headers }); }
   } });
   let closing = false;
   async function stop() {

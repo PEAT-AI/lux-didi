@@ -68,7 +68,7 @@ export class ChatService implements ChatPort {
   }
   #conversation(row: SQLRow): ConversationStatus {
     return { sessionId: String(row.session_id), provider: String(row.provider), model: String(row.model),
-      revision: Number(row.revision), permittedClasses: JSON.parse(String(row.permitted_classes)),
+      latestRunId: null, revision: Number(row.revision), permittedClasses: JSON.parse(String(row.permitted_classes)),
       state: row.revoked_at !== null ? 'revoked' : row.route_identity !== this.#identity() ? 'route_changed' : 'active' };
   }
   #liveConsent(tx: Transaction, sessionId: string, context: DomainContext) {
@@ -99,7 +99,7 @@ export class ChatService implements ChatPort {
   }
   conversation(sessionId: string, context: DomainContext): ConversationStatus {
     this.#authorize(context);
-    return this.#config.store.transaction(tx => this.#conversation(this.#consent(tx, sessionId, context)));
+    return this.#config.store.transaction(tx => ({ ...this.#conversation(this.#consent(tx, sessionId, context)), latestRunId: nullable(tx.get('SELECT run_id FROM chat_runs WHERE session_id=? AND owner_assistant_id=? ORDER BY accepted_at DESC,rowid DESC LIMIT 1', [sessionId, context.assistantId])?.run_id) }));
   }
   #labels(tx: Transaction, sessionId: string, context: DomainContext) {
     const consent = this.#liveConsent(tx, sessionId, context);

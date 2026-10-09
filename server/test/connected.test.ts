@@ -1,38 +1,29 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { request } from 'node:http';
+import { createServer, request } from 'node:http';
+import { fork } from 'node:child_process';
+import { once } from 'node:events';
+import { Store } from '../runtime/store.js';
+import { chatMigrations } from '../chat/index.js';
+import { composeChat } from '../host/connected.js';
 import { startHost, pairLocal } from '../host/runtime.js';
 import { createDomainPort } from '../domain/index.js';
 import { Outbox } from '../runtime/outbox.js';
 import type { Credentials, Transport } from '../adapters/model/types.js';
 
 const webRoot = resolve(import.meta.dirname, '../../../web/dist');
-const syntheticKey = 'connected-synthetic-not-a-real-key';
-const answer = 'Naya: Let us choose one small next step and keep the rest for later.';
-export async function profile(dir: string, model = 'connected-test-model', classes = ['ordinary', 'private']) {
-  const configDir = join(dir, 'provider-config');
-  await mkdir(configDir, { mode: 0o700 });
-  await writeFile(join(configDir, 'profile.json'), JSON.stringify({ schemaVersion: 1, enabled: true, provider: 'gemini', modelId: model, keyReference: 'gemini-primary', dataClasses: classes,
-    preferences: { dataClass: 'ordinary', language: 'en-US', register: 'plain', humor: 'off', verbosity: 'balanced' } }), { mode: 0o600 });
-  await writeFile(join(configDir, 'gemini-primary.json'), JSON.stringify({ schemaVersion: 1, keyReference: 'gemini-primary', key: syntheticKey }), { mode: 0o600 });
-  return configDir;
-}
-export function sse(text = answer, finish = 'STOP') {
-  const frames = `data: ${JSON.stringify({ candidates: [{ content: { role: 'model', parts: [{ text: text.slice(0, 25) }] } }] })}\n\ndata: ${JSON.stringify({ candidates: [{ content: { role: 'model', parts: [{ text: text.slice(25) }] }, finishReason: finish }] })}\n\n`;
-  return new Response(new ReadableStream<Uint8Array>({ start(controller) {
-    const bytes = new TextEncoder().encode(frames); for (let i = 0; i < bytes.length; i += 7) controller.enqueue(bytes.slice(i, i + 7)); controller.close();
-  } }), { headers: { 'content-type': 'text/event-stream' } });
-}
-async function fixture(configured = true, options: { credentials?: Credentials; transport?: Transport; now?: () => number } = {}) {
+import { profile, sse, syntheticKey, answer } from './connected-process.js';
+
+async function fixture(configured = true, options: { credentials?: Credentials; transport?: Transport; now?: () => number; model?: string; classes?: string[]; deadlineMs?: number } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'didi-connected-'));
-  if (configured) await profile(dir);
+  if (configured) await profile(dir, options.model, options.classes);
   const captured: { url: string; init: RequestInit }[] = [];
   let credentialCalls = 0;
   const config = { dataDir: dir, webRoot, port: 0, ...(options.now ? { now: options.now } : {}),
-    modelTesting: { credentials: options.credentials ?? { resolve: async () => { credentialCalls++; return syntheticKey; } }, transport: options.transport ?? (async (url: string, init: RequestInit) => { captured.push({ url, init }); return sse(); }) } };
+    modelTesting: { ...(options.deadlineMs ? { deadlineMs: options.deadlineMs } : {}), credentials: options.credentials ?? { resolve: async () => { credentialCalls++; return syntheticKey; } }, transport: options.transport ?? (async (url: string, init: RequestInit) => { captured.push({ url, init }); return sse(); }) } };
   let host = await startHost(config);
   async function pair() {
     const code = await pairLocal(dir);
@@ -53,6 +44,8 @@ async function fixture(configured = true, options: { credentials?: Credentials; 
       if (model) { const p = join(dir, 'provider-config', 'profile.json'); const data = JSON.parse(await readFile(p, 'utf8')); data.modelId = model; await writeFile(p, JSON.stringify(data), { mode: 0o600 }); }
       host = await startHost(config); auth = await pair();
     },
+    async rebootstrap() { auth = await pair(); },
+    async newClient() { return pair(); },
     async close() { await host.close(); await rm(dir, { recursive: true, force: true }); }
   };
 }
@@ -80,7 +73,7 @@ test('CONNECTED absent config is sanitized; unavailable enrollment creates nothi
 test('CONNECTED actual adapter/HTTP atomic private enrollment and whole-turn context, replay and restart', async () => {
   const f = await fixture();
   try {
-    const status = (await (await f.call('/chat/status')).json()).data; assert.deepEqual(status, { status: 'configured', provider: 'gemini', model: 'connected-test-model' });
+    const status = (await (await f.call('/chat/status')).json()).data; assert.deepEqual(status, { status: 'configured', provider: 'gemini', model: 'gemini-connected-test' });
     const local = (await (await f.call('/sessions', { title: 'EXCLUDED_OTHER_SESSION_CANARY', timeZone: 'UTC' }, 'local')).json()).data;
     await f.call(`/sessions/${local.id}/entries`, { text: 'EXCLUDED_LOCAL_NOTE_CANARY', timeZone: 'UTC' }, 'local-entry');
     await f.call('/commitments', { title: 'EXCLUDED_TODAY_CANARY', dueAt: null, timeZone: 'UTC' }, 'local-commitment');
@@ -92,7 +85,7 @@ test('CONNECTED actual adapter/HTTP atomic private enrollment and whole-turn con
     const first = (await accepted.json()).data; const completed = await final(f, first.runId);
     assert.equal(completed.run.outcome, 'complete'); assert.equal(completed.run.finalText, answer); assert.match(completed.text, /provisional/);
     assert.equal(f.captured.length, 1); assert.equal(f.credentialCalls, 1);
-    assert.match(f.captured[0]!.url, /^https:\/\/generativelanguage\.googleapis\.com\/v1beta\/models\/connected-test-model:streamGenerateContent\?alt=sse$/);
+    assert.match(f.captured[0]!.url, /^https:\/\/generativelanguage\.googleapis\.com\/v1beta\/models\/gemini-connected-test:streamGenerateContent\?alt=sse$/);
     const payload = JSON.parse(String(f.captured[0]!.init.body)); assert.ok(payload.systemInstruction); assert.match(JSON.stringify(payload), /small next step/); assert.doesNotMatch(JSON.stringify(payload), /EXCLUDED_/);
     const entries = (await (await f.call(`/sessions/${enrolled.sessionId}`)).json()).data.entries;
     assert.deepEqual(entries.map((e: { role: string }) => e.role), ['user', 'assistant']);
@@ -106,14 +99,14 @@ test('CONNECTED actual adapter/HTTP atomic private enrollment and whole-turn con
     const second = (await (await f.call('/chat', { sessionId: enrolled.sessionId, text: 'Now help me make that step concrete.' }, 'second-turn')).json()).data;
     assert.equal((await final(f, second.runId)).run.outcome, 'complete');
     const nextPayload = JSON.stringify(JSON.parse(String(f.captured[1]!.init.body))); assert.match(nextPayload, /small next step/); assert.match(nextPayload, /keep the rest for later/); assert.match(nextPayload, /step concrete/); assert.doesNotMatch(nextPayload, /EXCLUDED_/);
-    await f.restart('connected-new-model');
+    await f.restart('gemini-connected-new');
     assert.equal((await (await f.call(`/conversations/${enrolled.sessionId}`)).json()).data.state, 'route_changed');
     const count = f.credentialCalls;
     assert.equal((await f.call('/chat', { sessionId: enrolled.sessionId, text: 'must not capture' }, 'changed-route')).status, 409);
     assert.equal(f.credentialCalls, count); assert.equal(f.captured.length, 2);
     const newConversation = await f.enroll('new-route');
     const third = (await (await f.call('/chat', { sessionId: newConversation.sessionId, text: 'New explicit route.' }, 'new-turn')).json()).data;
-    assert.equal((await final(f, third.runId)).run.outcome, 'complete'); assert.match(f.captured[2]!.url, /connected-new-model/);
+    assert.equal((await final(f, third.runId)).run.outcome, 'complete'); assert.match(f.captured[2]!.url, /gemini-connected-new/);
   } finally { await f.close(); }
 });
 
@@ -158,4 +151,143 @@ test('CONNECTED unlabeled legacy append blocks without silently granting it cons
     assert.equal((await f.call('/chat', { sessionId: c.sessionId, text: 'Never send unknown history.' })).status, 503);
     assert.equal((await (await f.call(`/sessions/${c.sessionId}`)).json()).data.entries.length, before); assert.equal(f.captured.length, 0); assert.equal(f.credentialCalls, 0);
   } finally { await f.close(); }
+});
+
+const trusted = (f: Awaited<ReturnType<typeof fixture>>) => ({ assistantId: f.host.store.assistantId, authorityEpoch: f.host.store.authorityEpoch, clientId: 'trusted-test-review', now: new Date().toISOString() });
+function deferredCredentials() {
+  let release!: (key: string) => void, entered!: () => void;
+  const waiting = new Promise<void>(resolve => { entered = resolve; });
+  const credentials: Credentials = { resolve: () => { entered(); return new Promise<string>(resolve => { release = resolve; }); } };
+  return { credentials, waiting, release() { release(syntheticKey); } };
+}
+
+test('CONNECTED private-denying and unsupported profiles keep local host alive and never enroll', async () => {
+  for (const options of [{ classes: ['ordinary'] }, { model: 'unsupported-by-actual-adapter' }]) {
+    const f = await fixture(true, options);
+    try {
+      const status = (await (await f.call('/chat/status')).json()).data;
+      assert.equal(status.status, options.model ? 'error' : 'configured');
+      if (options.model) assert.deepEqual(status, { status: 'error', code: 'ADAPTER_CONFIGURATION_INVALID' });
+      assert.equal((await f.call('/conversations', { title: 'No grant', timeZone: 'UTC' })).status, 503);
+      assert.equal((await (await f.call('/sessions')).json()).data.items.length, 0);
+      assert.equal((await f.call('/sessions', { title: 'Still local', timeZone: 'UTC' }, 'local')).status, 200);
+      assert.equal(f.credentialCalls, 0); assert.equal(f.captured.length, 0);
+    } finally { await f.close(); }
+  }
+});
+
+test('CONNECTED trusted blocking label correction aborts deferred actual-adapter credentials', async () => {
+  const gate = deferredCredentials(); let calls = 0;
+  const f = await fixture(true, { credentials: gate.credentials, transport: async () => { calls++; return sse(); } });
+  try {
+    const c = await f.enroll(); const run = (await (await f.call('/chat', { sessionId: c.sessionId, text: 'Waiting for credentials.' })).json()).data;
+    await gate.waiting;
+    const correction = f.host.chat.correctRoutingLabel({ subject: { kind: 'entry', id: run.userEntryId }, expectedRevision: 1, dataClass: 'sensitive' }, trusted(f));
+    assert.equal(correction.revision, 2); gate.release();
+    assert.equal((await final(f, run.runId)).run.outcome, 'cancelled'); assert.equal(calls, 0);
+    assert.equal((await f.call('/chat', { sessionId: c.sessionId, text: 'Do not send sensitive history.' }, 'after-correction')).status, 503);
+  } finally { gate.release(); await f.close(); }
+});
+
+test('CONNECTED revoke after local HTTP transport receives bytes aborts it and never saves assistant', async () => {
+  let received!: () => void, closed!: () => void;
+  const receiving = new Promise<void>(resolve => { received = resolve; }), closing = new Promise<void>(resolve => { closed = resolve; });
+  const transportServer = createServer(async (req, res) => {
+    let body = ''; for await (const part of req) body += String(part); assert.match(body, /already sent/);
+    res.on('close', () => { if (!res.writableFinished) closed(); }); received();
+  });
+  await new Promise<void>(resolveListen => transportServer.listen(0, '127.0.0.1', resolveListen));
+  const addr = transportServer.address(); assert.ok(addr && typeof addr !== 'string');
+  const f = await fixture(true, { transport: (_url, init) => fetch(`http://127.0.0.1:${addr.port}/capturing-transport`, init) });
+  try {
+    const c = await f.enroll(); const run = (await (await f.call('/chat', { sessionId: c.sessionId, text: 'This has already sent bytes.' })).json()).data;
+    await receiving; assert.equal((await f.call(`/conversations/${c.sessionId}/revoke`, {})).status, 200); await closing;
+    const ended = (await final(f, run.runId)).run; assert.equal(ended.outcome, 'cancelled'); assert.equal(ended.mayHaveBeenSent, true);
+    assert.equal((await (await f.call(`/sessions/${c.sessionId}`)).json()).data.entries.length, 1);
+  } finally { await f.close(); await new Promise<void>(resolveClose => { transportServer.close(() => resolveClose()); transportServer.closeAllConnections(); }); }
+});
+
+test('CONNECTED terminal SQLite failure after persisted revoke still aborts outstanding actual adapter', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'didi-connected-fault-')); await profile(dir);
+  const gate = deferredCredentials(); let calls = 0;
+  const domain = createDomainPort({ outbox: Outbox });
+  const migrations = chatMigrations.map(m => ({ ...m, statements: m.statements.map(sql => sql.startsWith('CREATE TABLE chat_runs') ? sql.replace(/\)\s*$/, ", CHECK(outcome IS NULL OR outcome!='cancelled'))") : sql) }));
+  const store = new Store(dir, [...domain.migrations, ...migrations]);
+  const { chat } = composeChat(store, domain, join(dir, 'provider-config'), { credentials: gate.credentials, transport: async () => { calls++; return sse(); } });
+  const context = { assistantId: store.assistantId, authorityEpoch: store.authorityEpoch, clientId: 'trusted-fixture', now: new Date().toISOString() };
+  try {
+    const c = chat.enroll({ title: 'Fault control', timeZone: 'UTC', idempotencyKey: 'enroll' }, context);
+    const run = chat.accept({ sessionId: c.sessionId, text: 'Revocation must abort despite storage failure.', idempotencyKey: 'turn' }, context);
+    await gate.waiting; assert.equal(chat.revoke(c.sessionId, context).state, 'revoked'); gate.release();
+    // Recovery of intent is truthful, not a completed answer or an automatic retry.
+    await new Promise<void>(resolveImmediate => setImmediate(resolveImmediate));
+    assert.equal(calls, 0); assert.equal(chat.get(run.runId, context).finalEntryId, null);
+    assert.equal(chat.get(run.runId, context).state, 'dispatch_intent');
+    assert.deepEqual(store.transaction(tx => domain.execute(tx, 'getSession', { id: c.sessionId }, context)).entries.map(e => e.role), ['user']);
+  } finally { chat.shutdown(); gate.release(); store.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test('CONNECTED idle expiry closes stream but not durable work; rebootstrap recovers without send', async () => {
+  let clock = Date.now(); const gate = deferredCredentials(); const f = await fixture(true, { now: () => clock, credentials: gate.credentials });
+  try {
+    const c = await f.enroll(); const run = (await (await f.call('/chat', { sessionId: c.sessionId, text: 'Work survives subscriber expiry.' })).json()).data;
+    await gate.waiting; const events = await f.call(`/chat/${run.runId}/events`, {}); assert.equal(events.status, 200);
+    const end = events.text(); clock += 13 * 60 * 60 * 1000; assert.match(await end, /snapshot/);
+    assert.equal((await f.call(`/chat/${run.runId}`)).status, 401);
+    await f.rebootstrap(); gate.release(); assert.equal((await final(f, run.runId)).run.outcome, 'complete'); assert.equal(f.captured.length, 1);
+  } finally { gate.release(); await f.close(); }
+});
+
+test('CONNECTED logout closes only that client stream; disconnect only detaches subscriber', async () => {
+  const gate = deferredCredentials(), f = await fixture(true, { credentials: gate.credentials });
+  try {
+    const c = await f.enroll(); const run = (await (await f.call('/chat', { sessionId: c.sessionId, text: 'Different clients share the durable owner.' })).json()).data;
+    await gate.waiting;
+    const own = await f.call(`/chat/${run.runId}/events`, {}); const ownEnd = own.text();
+    const other = await f.newClient(); const otherEvents = await f.call(`/chat/${run.runId}/events`, {}, 'subscriber', { Cookie: other.cookie, 'X-Didi-CSRF': other.csrf });
+    const reader = otherEvents.body!.getReader(); assert.ok((await reader.read()).value); await reader.cancel(); reader.releaseLock();
+    assert.equal((await f.call('/auth/logout', {})).status, 200); await ownEnd;
+    await f.rebootstrap(); gate.release(); assert.equal((await final(f, run.runId)).run.outcome, 'complete'); assert.equal(f.captured.length, 1);
+    assert.equal((await (await f.call(`/sessions/${c.sessionId}`)).json()).data.entries.length, 2);
+  } finally { gate.release(); await f.close(); }
+});
+
+test('CONNECTED actual adapter failure, empty, truncated, deadline and explicit cancel are honest', async () => {
+  for (const outcome of ['error', 'empty', 'truncated', 'deadline', 'cancelled']) {
+    const gate = outcome === 'cancelled' ? deferredCredentials() : undefined;
+    const f = await fixture(true, { ...(gate ? { credentials: gate.credentials } : {}), deadlineMs: 50,
+      transport: async (_url, init) => {
+        if (outcome === 'deadline') return new Promise<Response>((_resolve, reject) => { init.signal!.addEventListener('abort', () => reject(new Error('aborted')), { once: true }); });
+        return outcome === 'error' ? new Response('synthetic refusal', { status: 500 }) : sse(outcome === 'empty' ? '' : answer, outcome === 'truncated' ? 'MAX_TOKENS' : 'STOP');
+      } });
+    try {
+      const c = await f.enroll(); const run = (await (await f.call('/chat', { sessionId: c.sessionId, text: 'Failure control.' })).json()).data;
+      if (gate) { await gate.waiting; assert.equal((await f.call(`/chat/${run.runId}/cancel`, {})).status, 200); gate.release(); }
+      const result = (await final(f, run.runId)).run; assert.equal(result.outcome, outcome); assert.equal(result.finalText, null);
+      assert.equal((await (await f.call(`/sessions/${c.sessionId}`)).json()).data.entries.length, 1);
+    } finally { gate?.release(); await f.close(); }
+  }
+});
+
+test('CONNECTED actual in-flight host process crash recovers unknown with no provider retry', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'didi-connected-crash-'));
+  const child = fork(new URL('./connected-process.js', import.meta.url), [dir, webRoot, '0', 'hold'], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
+  let host: Awaited<ReturnType<typeof startHost>> | undefined;
+  const phase = (name: string) => new Promise<Record<string, unknown>>((resolvePhase, reject) => {
+    const listener = (value: unknown) => { if (value && typeof value === 'object' && 'phase' in value && value.phase === name) { child.off('message', listener); child.off('exit', exited); resolvePhase(value as Record<string, unknown>); } };
+    const exited = () => { child.off('message', listener); reject(Error('Fixture exited before ' + name)); };
+    child.on('message', listener); child.once('exit', exited);
+  });
+  try {
+    const ready = await phase('ready'); const descriptor = ready.descriptor as { origin: string; authorityEpoch: string };
+    const token = (await readFile(join(dir, 'admin-credential'), 'utf8')).trim();
+    const call = (path: string, body: unknown, key: string) => fetch(descriptor.origin + '/api/v1' + path, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'X-Didi-Authority-Epoch': descriptor.authorityEpoch, 'Idempotency-Key': key }, body: JSON.stringify(body) });
+    const c = (await (await call('/conversations', { title: 'Crash proof', timeZone: 'UTC' }, 'enroll')).json()).data;
+    const sent = phase('transport'); const run = (await (await call('/chat', { sessionId: c.sessionId, text: 'Interrupted in-flight.' }, 'turn')).json()).data;
+    await sent; const exited = once(child, 'exit'); child.kill('SIGKILL'); await exited;
+    let retries = 0; host = await startHost({ dataDir: dir, webRoot, port: 0, modelTesting: { credentials: { resolve: async () => { retries++; return syntheticKey; } }, transport: async () => { retries++; return sse(); } } });
+    const response = await fetch(host.descriptor.origin + `/api/v1/chat/${run.runId}`, { headers: { Authorization: `Bearer ${token}` } });
+    const recovered = (await response.json()).data; assert.equal(recovered.outcome, 'outcome_unknown'); assert.equal(recovered.finalEntryId, null); assert.equal(recovered.mayHaveBeenSent, true);
+    assert.equal(retries, 0); assert.equal((await readFile(join(dir, 'wire.jsonl'), 'utf8')).trim().split('\n').length, 1);
+  } finally { if (child.exitCode === null && child.signalCode === null) { const exited = once(child, 'exit'); child.kill('SIGKILL'); await exited; } await host?.close(); await rm(dir, { recursive: true, force: true }); }
 });

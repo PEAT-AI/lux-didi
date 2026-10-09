@@ -5,7 +5,7 @@ import { supervise } from './supervision.js';
 
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (argv.length === 1 && argv[0] === '--help') {
-    console.log('Usage: node server/dist/host/index.js [pair] [--supervised] [--data-dir PATH] [--web-root BUILD] [--port 0..65535] [--descriptor PATH.json]\nForeground, loopback-only; no bearer argument. Defaults: platform application data, repository web/dist, port 8765.\npair verifies current local service identity and prints a single-use browser pairing code, never a bearer.\n--supervised requires one bounded nonce JSON line on stdin, emits ready JSON, and closes on stdin EOF.');
+    console.log('Usage: node server/dist/host/index.js [pair] [--supervised] [--data-dir PATH] [--web-root BUILD] [--port 0..65535] [--descriptor PATH.json] [--config-dir PATH]\nForeground, loopback-only; no bearer argument. Defaults: platform application data, repository web/dist, port 8765.\npair verifies current local service identity and prints a single-use browser pairing code, never a bearer.\n--supervised requires one bounded nonce JSON line on stdin, emits ready JSON, and closes on stdin EOF.');
     return;
   }
   const pairing = argv[0] === 'pair';

@@ -21,7 +21,7 @@ export interface AcceptInput { sessionId: string; text: string; idempotencyKey: 
 /** Host startup authority, not an authenticated browser/client request. */
 export interface ChatRecoveryContext { assistantId: string; authorityEpoch: string }
 export interface EnrollInput { title: string; timeZone: string; idempotencyKey: string }
-export interface ConversationStatus { sessionId: string; provider: string; model: string; state: 'active' | 'revoked' | 'route_changed'; revision: number; permittedClasses: DataClass[] }
+export interface ConversationStatus { sessionId: string; provider: string; model: string; state: 'active' | 'revoked' | 'route_changed'; revision: number; permittedClasses: DataClass[]; latestRunId: string | null }
 export interface ChatPort {
   enroll(input: EnrollInput, context: DomainContext): ConversationStatus;
   conversation(sessionId: string, context: DomainContext): ConversationStatus;

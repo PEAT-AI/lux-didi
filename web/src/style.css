@@ -14,3 +14,5 @@
 .orb-stage canvas{display:block;pointer-events:none;transition:filter .4s ease}
 .orb-stage canvas[data-posture=quiet]{filter:grayscale(.82) brightness(.96) opacity(.9)}
 @media(prefers-reduced-motion:reduce){.orb-stage canvas{transition:none}}
+
+.connected-conversation{margin-top:24px;overflow-wrap:anywhere}.connected-conversation h2{margin-bottom:12px}.connected-conversation label{display:block;margin:16px 0 8px}.connected-consent{display:flex!important;gap:10px;align-items:flex-start}.connected-consent input{width:auto;flex:none;margin-top:5px}.connected-conversation select,.connected-conversation textarea{width:100%;max-width:100%}.connected-disclosure,.connected-conversation small{color:var(--muted);line-height:1.6}.connected-state{margin:18px 0}.connected-state button{margin:8px 8px 0 0}.connected-entries{margin:18px 0}.connected-entries p,.provisional{white-space:pre-wrap}.provisional{border-left:3px solid #a781b5;padding-left:12px}.connected-conversation form button{margin:12px 0;max-width:100%;white-space:normal}.connected-conversation small{display:block}#connected-error{color:#a33d44}

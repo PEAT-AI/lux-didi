@@ -49,9 +49,10 @@ loaded records. No offline writer exists.
 ## What you can do
 
 - **Conversation:** save your own words, reopen conversations, make a
-  source-linked commitment from a message. Ask Didi only when a model is
-  configured. Stop waiting is not cancellation of an already sent server write
-  or model job; the UI says so and preserves the unsent draft.
+  source-linked commitment from a message. Local Save never sends to a model.
+  The separate connected Start/Send flow requires explicit route consent; its
+  Cancel model run action cancels durable work, not merely subscription waiting.
+  Neither cancel nor revoke can retract bytes already sent.
 - **Today:** server-defined due/overdue and unscheduled commitments; correct a
   title, notes or date; complete, cancel or reopen; inspect service history.
   Recently completed/cancelled records remain visible during this visit.
@@ -69,8 +70,9 @@ No private data is seeded at startup.
 
 Status polls every 30 seconds, backs off up to 120 seconds on failures, and stops
 while hidden. Each connection request times out after eight seconds; writes stop
-waiting after 20 seconds. Model jobs poll at 2.5 seconds with a two-minute cap,
-and pause when offline/hidden. Polls never create work or retry a mutation.
+waiting after 20 seconds. Connected runs use authenticated fetch SSE and durable
+GET recovery rather than legacy model-job polling. Polls, reconnect and focus
+never create model work or retry a mutation.
 
 ## PWA privacy
 
@@ -160,3 +162,28 @@ browser check pins actual paint, idle/not-listening, static reduced-motion frame
 and actual normal-host idle draw cost against its frame budget, recorded to
 `orb-frame-budget.json`. No synthetic load or audio capture is used. WKWebView
 appearance/runtime and actual voice delivery remain companion integration work.
+
+## Connected Naya conversation
+
+The shared orb and existing layout remain. Local **Save message** is a local note,
+not a model send; the old undisclosed Ask action is disabled. The separate
+**Start connected conversation** action requires agreeing to the named, locally
+validated provider/model and its disclosure. Only this conversation's current and
+selected earlier whole turns are sent. Local notes, Today, recall, other sessions
+and tools are not part of model context.
+
+Connected history is recovered through authenticated actual service routes. The
+browser uses fetch SSE with the existing cookie, CSRF and current authority epoch;
+no URL token, native bridge, request interception or product fixture mode is used.
+Provisional chunks, a saved answer and a terminal failure render distinctly.
+Disconnect only detaches a subscriber. Recovery fetches saved state and never
+resends; cancellation and conversation revocation are explicit actions. Failed
+acceptance preserves the draft and stable request key across rebootstrap. Editing
+and explicitly sending a different message uses a new key. A changed route pauses
+the old conversation while preserving its history; start a newly disclosed one.
+
+The focused proof is `bash scripts/check-connected.sh`. It uses the real shared
+browser/host/SQLite/compiler/Gemini adapter with synthetic ordinary input and a
+trusted controlled transport, not live Gemini. Hardware-GPU desktop and 375px
+captures are acceptance artifacts, not native/audio or production reachability
+claims.

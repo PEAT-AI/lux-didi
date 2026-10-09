@@ -1,8 +1,8 @@
 {
-  "assembly_digest": "538b768df652204475019aa35d56ee3c6d88ed8cda51aeded309c134535fd649",
+  "assembly_digest": "2fa06914d85db3a06b1d27364350c545ed1b20f9ce629d3f1618c6e520968a6b",
   "nodes": {
     "A01": {
-      "canonical_body_sha256": "39d23648d8ae754fc74effa0781348c6075c3234784fdeea080d507dcc7a292d",
+      "canonical_body_sha256": "71681955eb71390804c00c343863334b53f7e461190610cefe9fd23f7f6e9ee6",
       "depends_on": [],
       "epic": "E01",
       "kind": "task",
@@ -299,7 +299,7 @@
       "url": "https://github.com/PEAT-AI/lux-didi/issues/24"
     },
     "A14": {
-      "canonical_body_sha256": "efebc8660b90e7ce20f2145e79f3cfeb2b40697f0177a4ee3f023e701bccc1eb",
+      "canonical_body_sha256": "6b1e23e0d80f5299323b3998beffaa4b657c3d90ea056c1f0a842c112a0986bd",
       "depends_on": [
         "A02"
       ],
@@ -437,7 +437,7 @@
       "url": "https://github.com/PEAT-AI/lux-didi/issues/29"
     },
     "A19": {
-      "canonical_body_sha256": "db0c8092bed7b1ebf72b566c4d339745d6906bd4d5697b01d1e96e1765eebdf9",
+      "canonical_body_sha256": "daa5af2c1e7a277bb10e792fec1d5c0b9140b80a5975a6bfd30e1fca97378052",
       "depends_on": [
         "A02",
         "A03",
@@ -460,7 +460,7 @@
       "title": "[A19] Portable command and query service seam"
     },
     "A20": {
-      "canonical_body_sha256": "4616a3171cea7e995003aff26466b832b3e8ae9957be92c2273b7a1765c14048",
+      "canonical_body_sha256": "1639aec33982775c841eb935d41cc7d29c69f410fefc027a2d39f2d02721df5d",
       "depends_on": [
         "A19",
         "A15"
@@ -640,7 +640,7 @@
       "url": "https://github.com/PEAT-AI/lux-didi/issues/32"
     },
     "B04": {
-      "canonical_body_sha256": "ad9aa5bab6e2bcf8411bda9cabf968ad7f68c667e4a6ec3a1df1ece056918cef",
+      "canonical_body_sha256": "6a6e0b756816dbb591b9caea69521bf0a71adb4d4cdead2412b5d27df6bc0564",
       "depends_on": [
         "B01",
         "B02",
@@ -660,7 +660,6 @@
       "number": 33,
       "phase": "M1",
       "priority": "P0",
-      "rendered_body_sha256": "5da7f15f8ca63f5c14d6cc61571101f935c1676659beeef21b77f7d084d5abad",
       "sub_issue_of": 4,
       "title": "[B04] Session gists with evidence links",
       "url": "https://github.com/PEAT-AI/lux-didi/issues/33"
@@ -816,7 +815,7 @@
       "url": "https://github.com/PEAT-AI/lux-didi/issues/39"
     },
     "B11": {
-      "canonical_body_sha256": "02402d3571ca4633cbb2b45fe375ae3317a4997220e14dd8d413fe4b0433d2b4",
+      "canonical_body_sha256": "6317ad5b76c55aab867fffe6dd923c64f344634c16817fbb8b639ab82d281f31",
       "depends_on": [
         "B05",
         "B07",
@@ -836,13 +835,12 @@
       "number": 40,
       "phase": "M1",
       "priority": "P0",
-      "rendered_body_sha256": "fcd7449d8c339a2cffa2ee55429919da12e00d0f5a56373b8f00312c6c76a65b",
       "sub_issue_of": 5,
       "title": "[B11] Bounded context compilation",
       "url": "https://github.com/PEAT-AI/lux-didi/issues/40"
     },
     "B12": {
-      "canonical_body_sha256": "7f2aba93e07e9242040d02864689d9df4aeacbe718d54ddb3e75a40d72735951",
+      "canonical_body_sha256": "1f46b0dcc7e4c56c78cc42c04ce48eee23bbe6df3aac8f4b9c6f09de209536d5",
       "depends_on": [],
       "epic": "E04",
       "kind": "task",
@@ -857,7 +855,6 @@
       "number": 41,
       "phase": "M0",
       "priority": "P0",
-      "rendered_body_sha256": "dc28b2a9e9f5f59d29571d59e1e93c5a11f8e05d69ef0e72ebb303b69a6afddb",
       "sub_issue_of": 5,
       "title": "[B12] Public Naya-inspired persona specification",
       "url": "https://github.com/PEAT-AI/lux-didi/issues/41"
@@ -1058,7 +1055,7 @@
       "url": "https://github.com/PEAT-AI/lux-didi/issues/49"
     },
     "C03": {
-      "canonical_body_sha256": "5486d91d6b1e6d35d280490dcae934fbd173a2a70708ea55e81f4debb11ee7bd",
+      "canonical_body_sha256": "5f161db8d76102029e4bfd1feb4bfb44376ad058407376a8c90b34fe950ddafe",
       "depends_on": [
         "C02",
         "A04"
@@ -1076,7 +1073,6 @@
       "number": 50,
       "phase": "M1",
       "priority": "P0",
-      "rendered_body_sha256": "89b45d09a90e04d505d701dec996a3536cfc0ac6835dc433fc9e4add3d991eda",
       "sub_issue_of": 6,
       "title": "[C03] Gmail incremental ingestion with history cursor and full resync",
       "url": "https://github.com/PEAT-AI/lux-didi/issues/50"
@@ -1324,7 +1320,7 @@
       "url": "https://github.com/PEAT-AI/lux-didi/issues/60"
     },
     "C14": {
-      "canonical_body_sha256": "185930f4fc43a14de77d631bf5d477f2e2e8ba65f3e52b7663458db65c637310",
+      "canonical_body_sha256": "98a20faddc583032d56fab3a60b77767a90eda018bde8038e960342e72b68dca",
       "depends_on": [
         "A02"
       ],
@@ -1341,7 +1337,6 @@
       "number": 61,
       "phase": "M0",
       "priority": "P0",
-      "rendered_body_sha256": "f4ed5e96df70eaf4496ace9dc3df136461bd88e2fcbe32feeae419fe743ed2b8",
       "sub_issue_of": 7,
       "title": "[C14] Tool capability registry and adapter manifests",
       "url": "https://github.com/PEAT-AI/lux-didi/issues/61"
@@ -1494,7 +1489,7 @@
       "title": "[C20] Channel identity separated from source-account identity"
     },
     "C21": {
-      "canonical_body_sha256": "d654b071e7ed703e0b11ed570add2c28c0c8a8d85f172482a2db5860435c1c15",
+      "canonical_body_sha256": "8e1ace79e4d19cdc0f66e208062483229dfa9582061a645cd52486d1cbda4191",
       "depends_on": [
         "C12",
         "A08",
@@ -1517,7 +1512,7 @@
       "title": "[C21] Single active authority epoch and host transfer"
     },
     "C22": {
-      "canonical_body_sha256": "ae5a8cad40c08941fc5106ce2a9ed9b9b11dfd392be36b2e8523ba80f44c3d7a",
+      "canonical_body_sha256": "98941dc692472d10af31a2be7ca00ba824eeebbe25614b3de8d5539f811cfb52",
       "depends_on": [
         "C12",
         "F16",
@@ -2236,7 +2231,7 @@
       "title": "[E12] Channels, authority epochs and device grants"
     },
     "E13": {
-      "canonical_body_sha256": "1806a9880a3cebdb298639c6711a0db7c4cc01e742cf195ee3b64bba1e139028",
+      "canonical_body_sha256": "b1a2336f64c77127349083c3ed3c49930c127257865e51614ad23589531885ee",
       "depends_on": [],
       "epic": null,
       "kind": "epic",
@@ -2254,7 +2249,7 @@
       "title": "[E13] Responsive and mobile client surfaces"
     },
     "F01": {
-      "canonical_body_sha256": "4a5900ce2a7376973553a601227711a75dbcb07687015c1c58d0a76400e0b0c3",
+      "canonical_body_sha256": "b63f47c0f464f4f4e84bd5b5515c4fb9b3edc006dc0b2e11f17e0b99ffe07c1a",
       "depends_on": [],
       "epic": "E09",
       "kind": "task",
@@ -2274,7 +2269,7 @@
       "url": "https://github.com/PEAT-AI/lux-didi/issues/84"
     },
     "F02": {
-      "canonical_body_sha256": "2502c36c8b2e0fb770f241c90b515dda0fa0096bc9acd0b5b833dcb89667cdad",
+      "canonical_body_sha256": "7940e5b0a505d1dc1ccde3ed7394dd5cd6c0cbf4282c714b39cb9ecd74e95888",
       "depends_on": [
         "F01"
       ],
@@ -2296,7 +2291,7 @@
       "url": "https://github.com/PEAT-AI/lux-didi/issues/85"
     },
     "F03": {
-      "canonical_body_sha256": "c27cff7ebc6f2a94556caf25b31a655fe4b3fdb1bdd81e092ee128943027a4d3",
+      "canonical_body_sha256": "ed044f2a0ddbdc3e0d997959747a7a0073d9ce461081be7d555b4dbba26b3347",
       "depends_on": [
         "F01"
       ],
@@ -2313,13 +2308,12 @@
       "number": 86,
       "phase": "M2",
       "priority": "P0",
-      "rendered_body_sha256": "0cbeb9ff134b404f6466397cb98c4a38b123e2340a0af829e3c3916cf9185ef3",
       "sub_issue_of": 10,
       "title": "[F03] Microphone, audio devices and permissions",
       "url": "https://github.com/PEAT-AI/lux-didi/issues/86"
     },
     "F04": {
-      "canonical_body_sha256": "a96a01caaab5dffca92c9c470c83b6c447fcb4fda3209ac28d89543e73cd37ba",
+      "canonical_body_sha256": "f2b30ef572e03a7c1c5fb0fe7a25f6cfc3148a844ac2d45ca8265f4ef84e71d1",
       "depends_on": [
         "F03",
         "A06"
@@ -2337,7 +2331,6 @@
       "number": 87,
       "phase": "M2",
       "priority": "P0",
-      "rendered_body_sha256": "25bb605a52c87b59768c4350d389c32acc8cd033b6f5cf7f77c2390c17d438e9",
       "sub_issue_of": 10,
       "title": "[F04] Gemini Live duplex adapter",
       "url": "https://github.com/PEAT-AI/lux-didi/issues/87"
@@ -2413,7 +2406,7 @@
       "url": "https://github.com/PEAT-AI/lux-didi/issues/90"
     },
     "F08": {
-      "canonical_body_sha256": "6cb492a17477dae45db88e66211b89d008a4235654bdec1288bba7cbe11a25ea",
+      "canonical_body_sha256": "1250363f569bdb6dab401626263d837ea9548300c8c3023ad992ba9218cd841d",
       "depends_on": [
         "F04",
         "B12"
@@ -2431,7 +2424,6 @@
       "number": 91,
       "phase": "M2",
       "priority": "P1",
-      "rendered_body_sha256": "2b224537cfb7e80f6ed9837eff9e4c703f1f647d2490ae44f4ba33c8e6d57445",
       "sub_issue_of": 10,
       "title": "[F08] Voice, personality, localization and accessibility",
       "url": "https://github.com/PEAT-AI/lux-didi/issues/91"
@@ -2510,7 +2502,7 @@
       "url": "https://github.com/PEAT-AI/lux-didi/issues/94"
     },
     "F12": {
-      "canonical_body_sha256": "d8aae075575c162338bfef2ef4e776076c6d747780a27a9e90a87381be1232a4",
+      "canonical_body_sha256": "5541950f21a473f5df75d9ca2849b9dc2a4f4f643231d7bb472f77734ffe7785",
       "depends_on": [
         "F10",
         "A13"
@@ -2528,7 +2520,6 @@
       "number": 95,
       "phase": "M3",
       "priority": "P1",
-      "rendered_body_sha256": "48cb9966d9eafc6a5d62819643ea09aec5486fa78ed0a9f4ce3af32e6b82ba49",
       "sub_issue_of": 11,
       "title": "[F12] Native computer-use controls, TCC and screen capture",
       "url": "https://github.com/PEAT-AI/lux-didi/issues/95"
@@ -2603,7 +2594,7 @@
       "url": "https://github.com/PEAT-AI/lux-didi/issues/98"
     },
     "F16": {
-      "canonical_body_sha256": "a7b1d56094971ec960d211525d6c806c37f1102ca0cc96bdfd4a688c75895d3c",
+      "canonical_body_sha256": "67b08509197770578c0cf80f34d34257bf74ffbed2756c26702db33b90895755",
       "depends_on": [
         "F15"
       ],
@@ -2671,7 +2662,7 @@
       "url": "https://github.com/PEAT-AI/lux-didi/issues/101"
     },
     "F19": {
-      "canonical_body_sha256": "d72c0b3d3d527c9ddd2a5d29633bbe65d809e3f742b47bdd71d2e70e67dc10ee",
+      "canonical_body_sha256": "339af57994c02a07581443067c3cdc84f04ddc2a96b91783833684976647c12e",
       "depends_on": [
         "F02",
         "A19"
@@ -2759,8 +2750,31 @@
       "sub_issue_of": 106,
       "title": "[F22] Client contract conformance across breakpoints"
     },
+    "F23": {
+      "canonical_body_sha256": "1fe94fa974dcb5ef80a0c41469639c6adb4014b1d4df23fd34954f553e76f932",
+      "depends_on": [
+        "F01",
+        "F19",
+        "A19"
+      ],
+      "epic": "E13",
+      "kind": "task",
+      "labels": [
+        "kind:task",
+        "master:E",
+        "phase:M2",
+        "priority:P0"
+      ],
+      "master": "E",
+      "milestone": "Voice and proactive beta",
+      "number": 122,
+      "phase": "M2",
+      "priority": "P0",
+      "sub_issue_of": 106,
+      "title": "[F23] Shared web UI host in WKWebView with a native-only control surface"
+    },
     "P00": {
-      "canonical_body_sha256": "27800279c940a4f05285daea3632fcd2d16bc2d9546ff063bc0bdd65c86a6757",
+      "canonical_body_sha256": "60f68154c284e3c06120c26564bbfa60837c06849626860bf29545a176764029",
       "depends_on": [],
       "epic": null,
       "kind": "program",
@@ -2791,8 +2805,69 @@
     "rendered_body_sha256": "1ce45da7c7b075582b8c2227086b01a4958b822929cebafd0130f20908b3005e",
     "url": "https://github.com/PEAT-AI/lux-didi/issues/102"
   },
+  "proposed_publication": {
+    "created_ids": [
+      "A19",
+      "A20",
+      "A21",
+      "A22",
+      "A23",
+      "A24",
+      "C19",
+      "C20",
+      "C21",
+      "C22",
+      "C23",
+      "E11",
+      "E12",
+      "E13",
+      "F19",
+      "F20",
+      "F21",
+      "F22",
+      "F23"
+    ],
+    "issues_created": 19,
+    "issues_reused": 102,
+    "next_free_number": 123,
+    "nodes_to_create": 19,
+    "nodes_to_update": 20,
+    "nodes_unchanged": 81,
+    "note": "staged projection, not observed readback: nothing below has happened on the tracker",
+    "projected_milestone_issue_counts": {
+      "Controlled execution and integrations": 26,
+      "Portability and polish": 9,
+      "Proof and contracts": 14,
+      "Useful daily loop": 45,
+      "Voice and proactive beta": 26
+    },
+    "projected_published_issue_total": 121,
+    "projected_sub_issue_links": 106,
+    "updated_ids": [
+      "A01",
+      "A03",
+      "A14",
+      "A18",
+      "B04",
+      "B11",
+      "B12",
+      "C03",
+      "C14",
+      "E01",
+      "E09",
+      "F01",
+      "F02",
+      "F03",
+      "F04",
+      "F08",
+      "F12",
+      "F16",
+      "F17",
+      "P00"
+    ]
+  },
   "publication": {
-    "issues_created": 18,
+    "issues_created": 0,
     "issues_reused": 102,
     "labels": [
       "kind:epic",
@@ -2814,19 +2889,20 @@
       "priority:P2"
     ],
     "milestones": {
-      "Controlled execution and integrations": 26,
-      "Portability and polish": 9,
-      "Proof and contracts": 14,
-      "Useful daily loop": 45,
-      "Voice and proactive beta": 25
+      "Controlled execution and integrations": 4,
+      "Portability and polish": 5,
+      "Proof and contracts": 1,
+      "Useful daily loop": 2,
+      "Voice and proactive beta": 3
     },
     "readback_mismatches": [],
-    "sub_issue_links": 105,
+    "sub_issue_links": 90,
     "sub_issues_supported": true
   },
-  "published_issue_total": 120,
+  "published_issue_total": 102,
   "repo": "PEAT-AI/lux-didi",
-  "roadmap_issue_total": 119,
+  "roadmap_issue_total": 120,
   "schema": "lux-didi.issue-map/1",
-  "snapshot_commit": "9ce035a"
+  "snapshot_commit": "23d7b8a",
+  "totals_note": "roadmap_issue_total counts the nodes in this plan; published_issue_total counts the issues currently on the tracker"
 }

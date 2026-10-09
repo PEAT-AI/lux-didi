@@ -93,7 +93,13 @@ import WebKit
             expect(shell.state == .unavailable, "clean logout clears scoped page")
             let bad = CompanionWeb(descriptor: try ServiceDescriptor(origin: "http://127.0.0.1:1", credentialService: "test", credentialAccount: "test"))
             await bad.load(cookie: cookie)
-            await waitFor("unavailable service not blank forever") { bad.state == .unavailable }
+            // Temporary R3 observation: original assertion deadline is 8s; observe
+            // the unchanged 12s product timer, then intentionally stop this red stage.
+            try await Task.sleep(nanoseconds: 8_000_000_000)
+            print("R3-DIAGNOSTIC at-original-8s state=\(bad.state) events=\(bad.diagnosticEvents)")
+            try await Task.sleep(nanoseconds: 5_000_000_000)
+            print("R3-DIAGNOSTIC after-product-12s state=\(bad.state) events=\(bad.diagnosticEvents)")
+            expect(false, "R3 diagnosis intentionally red; unavailable contract not fixed")
             let model = AppModel()
             model.draft = "Synthetic draft retained"
             await model.saveDraft()

@@ -21,13 +21,15 @@ try {
     assert.equal(await page.evaluate(()=>Object.keys(localStorage).length),0);
     assert.equal(await page.evaluate(()=>document.cookie),'');
     assert.match(await page.locator('body').innerText(),/No model connected/);
+    assert.equal(await page.locator('#connection-state').getAttribute('aria-live'),'polite');
   });
   await step('failed send preserves draft; capture uses real HTTP',async()=>{
     await page.getByLabel('Your message').fill('Remember the synthetic blue notebook'); fixture.failNextEntry();
-    await page.getByRole('button',{name:'Save message',exact:true}).click(); await page.getByRole('alert').filter({hasText:'Could not save'}).waitFor();
+    await page.getByRole('button',{name:'Save message',exact:true}).click(); await page.getByRole('alert').filter({hasText:'Could not save'}).waitFor();assert.equal(await page.getByRole('alert').getAttribute('aria-live'),'assertive');
     assert.equal(await page.getByLabel('Your message').inputValue(),'Remember the synthetic blue notebook');
     await page.getByRole('button',{name:'Save message',exact:true}).click(); await page.locator('.entry').filter({hasText:'Remember the synthetic blue notebook'}).waitFor();
     assert.equal(await page.getByLabel('Your message').inputValue(),'');
+    assert.equal(await page.getByRole('status').filter({hasText:'Message saved.'}).getAttribute('aria-live'),'polite');
     const entry=fixture.requests.find(r=>r.path.endsWith('/entries')&&r.method==='POST'); assert.equal(entry.body.role,'user');
   });
   await step('stop waiting preserves draft without claiming saved',async()=>{
@@ -57,6 +59,9 @@ try {
     await page.getByRole('alert').filter({hasText:'another device'}).waitFor(); await page.getByText('Changed on another device',{exact:true}).waitFor();
     await page.getByRole('button',{name:'Complete Changed on another device'}).click(); await page.getByText('Completed',{exact:true}).waitFor();
     await page.getByRole('button',{name:'Reopen Changed on another device'}).click(); await page.getByRole('button',{name:'Complete Changed on another device'}).waitFor();
+    await page.getByRole('button',{name:'Cancel commitment',exact:true}).click();await page.getByText('Cancelled',{exact:true}).waitFor();
+    assert.equal(await page.getByRole('button',{name:'Complete Changed on another device'}).count(),0);
+    await page.getByRole('button',{name:'Reopen Changed on another device'}).click();await page.getByRole('button',{name:'Complete Changed on another device'}).waitFor();
   });
   await page.screenshot({path:`${artifacts}/desktop-today.png`,fullPage:true});
   await step('source-linked recall, missing source remains missing',async()=>{

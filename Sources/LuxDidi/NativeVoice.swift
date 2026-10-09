@@ -12,6 +12,7 @@ import Combine
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var observer: NSObjectProtocol?
     private var generation = 0
+    private var tapInstalled = false
     private let recognizer = SFSpeechRecognizer(locale: Locale.current)
 
     init() { refresh() }
@@ -56,6 +57,7 @@ import Combine
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else { stop(reason: "No audio input device"); state.fail("No audio input device"); return }
         input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in request.append(buffer) }
+        tapInstalled = true
         observer = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.interrupt("Audio device changed") }
         }
@@ -72,7 +74,8 @@ import Combine
     }
     func stop(reason: String) {
         generation += 1
-        if let engine { engine.stop(); if engine.inputNode.numberOfInputs > 0 { engine.inputNode.removeTap(onBus: 0) } }
+        if let engine { engine.stop(); if tapInstalled { engine.inputNode.removeTap(onBus: 0) } }
+        tapInstalled = false
         request?.endAudio(); task?.cancel()
         if let observer { NotificationCenter.default.removeObserver(observer) }
         observer = nil; task = nil; request = nil; engine = nil

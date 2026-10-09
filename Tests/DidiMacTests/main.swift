@@ -1,5 +1,7 @@
 import Foundation
 
+let testStarted = Date()
+
 func expect(_ condition: @autoclosure () -> Bool, _ label: String) {
     guard condition() else { fatalError("FAIL: \(label)") }
     print("PASS: \(label)")
@@ -35,4 +37,4 @@ do {
 expect(disconnected.plan.isEmpty && disconnected.search("hello").isEmpty, "no fake account data")
 expect(Presentation.canSend("  hello\n") && !Presentation.canSend(" \n"), "text input boundary")
 expect(Presentation.notificationResult(.acknowledged).contains("not proof"), "accepted is not read")
-print("MAC-SEAMS PASS")
+print("MAC-SEAMS PASS duration=\(Date().timeIntervalSince(testStarted))s file=Tests/DidiMacTests/main.swift")

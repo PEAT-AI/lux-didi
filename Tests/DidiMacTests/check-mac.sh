@@ -10,7 +10,7 @@ cd "$root"
 start=$SECONDS
 xcrun swiftc -module-cache-path "$work/cache" Sources/LuxDidi/AppPorts.swift Tests/DidiMacTests/main.swift -o "$work/seams"
 "$work/seams"
-printf 'DURATION seams=%ss\n' "$((SECONDS-start))"
+printf 'DURATION seam-compile-and-run=%ss (test-only duration above)\n' "$((SECONDS-start))"
 app="$work/Lux Didi.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp Resources/Info.plist "$app/Contents/Info.plist"

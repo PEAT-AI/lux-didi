@@ -93,6 +93,8 @@ struct DidiView: View {
                 }
             }.padding(28).frame(maxWidth: .infinity, maxHeight: .infinity)
         }.frame(minWidth: 860, minHeight: 580).tint(accent)
+            .background(Color(nsColor: .windowBackgroundColor))
+            .preferredColorScheme(.light)
             .onChange(of: voice.state.transcript) { _, value in if !value.isEmpty { model.draft = value } }
             .onChange(of: model.page) { _, page in if page == .conversation { composerFocused = true } }
     }

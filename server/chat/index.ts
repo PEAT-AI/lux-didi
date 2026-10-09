@@ -1,11 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto';
-import type { DomainContext } from '../contracts/domain.js';
+import type { DomainContext, RoutingLabelCorrection, RoutingSubject } from '../contracts/domain.js';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
 import type { ModelResult } from '../adapters/model/types.js';
 import { PROMPT_VERSION } from '../prompt/index.js';
 import { assemble, classify, ContextFailure } from './context.js';
 import { Subscription } from './subscription.js';
-import { ChatError, type AcceptInput, type ChatConfig, type ChatEvent, type ChatPort, type ChatRecoveryContext, type Outcome, type RunSnapshot } from './types.js';
+import { ChatError, type AcceptInput, type ChatConfig, type ChatEvent, type ChatPort, type ChatRecoveryContext, type Outcome, type RunSnapshot, type EnrollInput, type ConversationStatus } from './types.js';
 export * from './types.js';
 export { chatMigrations } from './schema.js';
 
@@ -17,7 +17,7 @@ function snapshot(row: SQLRow, finalText: string | null = null): RunSnapshot {
     provider: String(row.provider), model: String(row.model), promptVersion: String(row.prompt_version),
     state: row.state as RunSnapshot['state'], outcome: nullable(row.outcome) as Outcome | null,
     sequence: Number(row.sequence), partialText: String(row.partial_text), partialTruncated: Boolean(row.partial_truncated),
-    acceptedAt: String(row.accepted_at), intentAt: nullable(row.intent_at), terminalAt: nullable(row.terminal_at) };
+    acceptedAt: String(row.accepted_at), intentAt: nullable(row.intent_at), terminalAt: nullable(row.terminal_at), mayHaveBeenSent: row.intent_at !== null };
 }
 
 export class ChatService implements ChatPort {
@@ -25,6 +25,7 @@ export class ChatService implements ChatPort {
   readonly #config: ChatConfig;
   readonly #now: () => number;
   readonly #workers = new Map<string, AbortController>();
+  readonly #livePolicies = new Map<string, { session_id: string; selected_labels: string }>();
   readonly #subscribers = new Map<string, Set<Subscription>>();
   constructor(config: ChatConfig) {
     if (!Number.isFinite(config.deadlineMs ?? 60000) || (config.deadlineMs ?? 60000) <= 0
@@ -53,6 +54,108 @@ export class ChatService implements ChatPort {
     const entry = read.entries.find(item => item.id === row.final_entry_id && item.role === 'assistant');
     if (!entry) throw new ChatError('unavailable');
     return snapshot(row, entry.text);
+  }
+  #identity() {
+    const route = this.#config.route;
+    return JSON.stringify({ version: 1, provider: route.provider, model: route.model,
+      endpoint: route.endpoint, apiVersion: route.apiVersion, keyReference: route.keyReference,
+      allowedClasses: [...route.allowedClasses].sort(), policyVersion: 1 });
+  }
+  #consent(tx: Transaction, sessionId: string, context: DomainContext) {
+    const row = tx.get('SELECT * FROM chat_consents WHERE session_id=? AND owner_assistant_id=?', [sessionId, context.assistantId]);
+    if (!row) throw new ChatError('consent_required');
+    return row;
+  }
+  #conversation(row: SQLRow): ConversationStatus {
+    return { sessionId: String(row.session_id), provider: String(row.provider), model: String(row.model),
+      revision: Number(row.revision), permittedClasses: JSON.parse(String(row.permitted_classes)),
+      state: row.revoked_at !== null ? 'revoked' : row.route_identity !== this.#identity() ? 'route_changed' : 'active' };
+  }
+  #liveConsent(tx: Transaction, sessionId: string, context: DomainContext) {
+    const row = this.#consent(tx, sessionId, context);
+    const state = this.#conversation(row).state;
+    if (state === 'revoked') throw new ChatError('consent_revoked');
+    if (state === 'route_changed') throw new ChatError('route_changed');
+    if (!this.#config.route.available) throw new ChatError('unavailable');
+    return row;
+  }
+  enroll(input: EnrollInput, context: DomainContext): ConversationStatus {
+    this.#authorize(context);
+    if (!this.#ready) throw new ChatError('recovery_required');
+    if (!input || typeof input.title !== 'string' || !input.title.trim() || typeof input.timeZone !== 'string'
+      || typeof input.idempotencyKey !== 'string' || !/^[A-Za-z0-9_.:-]{1,128}$/.test(input.idempotencyKey)) throw new ChatError('invalid_input');
+    const fingerprint = hash(JSON.stringify({ title: input.title, timeZone: input.timeZone }));
+    return this.#config.store.transaction(tx => {
+      const prior = tx.get('SELECT * FROM chat_consents WHERE owner_assistant_id=? AND idempotency_key=?', [context.assistantId, input.idempotencyKey]);
+      if (prior) { if (prior.fingerprint !== fingerprint) throw new ChatError('idempotency_conflict'); return this.#conversation(prior); }
+      const route = this.#config.route;
+      if (!route.available || !route.allows(['private'])) throw new ChatError('unavailable');
+      const session = this.#config.domain.execute(tx, 'createSession', { title: input.title, timeZone: input.timeZone }, this.#context(context), { writer: 'capture', dataClass: 'private' });
+      const permitted = (['ordinary', 'private'] as const).filter(c => route.allowedClasses.includes(c));
+      tx.run(`INSERT INTO chat_consents VALUES (?,?,?,?,?,1,?,?,NULL,?,?)`,
+        [session.id, context.assistantId, route.provider, route.model, this.#identity(), JSON.stringify(permitted), this.#context(context).now, input.idempotencyKey, fingerprint]);
+      return this.#conversation(this.#consent(tx, session.id, context));
+    });
+  }
+  conversation(sessionId: string, context: DomainContext): ConversationStatus {
+    this.#authorize(context);
+    return this.#config.store.transaction(tx => this.#conversation(this.#consent(tx, sessionId, context)));
+  }
+  #labels(tx: Transaction, sessionId: string, context: DomainContext) {
+    const consent = this.#liveConsent(tx, sessionId, context);
+    const permitted: string[] = JSON.parse(String(consent.permitted_classes));
+    if (!permitted.includes(this.#config.preferences.dataClass)) throw new ChatError('unavailable');
+    const read = this.#config.domain.execute(tx, 'getSession', { id: sessionId }, this.#context(context));
+    if (read.nextCursor !== null) throw new ChatError('unavailable');
+    return [{ kind: 'session' as const, id: sessionId }, ...read.entries.map(e => ({ kind: 'entry' as const, id: e.id }))].map(subject => {
+      const label = classify(this.#config, subject, tx);
+      if (!permitted.includes(label.dataClass) || !this.#config.route.allows([label.dataClass])) throw new ChatError('unavailable');
+      return { ...subject, ...label, revision: this.#config.classify(subject, tx)!.revision };
+    });
+  }
+  #checkPolicy(runId: string, sessionId: string, context: DomainContext) {
+    return this.#config.store.transaction(tx => {
+      const consent = this.#liveConsent(tx, sessionId, context);
+      const policy = tx.get('SELECT * FROM chat_run_policy WHERE run_id=?', [runId]);
+      if (!policy || policy.consent_revision !== consent.revision || policy.route_identity !== this.#identity()) throw new ChatError('unavailable');
+      const labels: { kind: 'session' | 'entry'; id: string; revision: number; dataClass: string }[] = JSON.parse(String(policy.selected_labels));
+      for (const expected of labels) {
+        const actual = this.#config.classify(expected, tx);
+        if (!actual || actual.ownerId !== context.assistantId || actual.revision !== expected.revision || actual.dataClass !== expected.dataClass) throw new ChatError('unavailable');
+      }
+      return { version: 1, consentRevision: Number(consent.revision), routeIdentity: String(policy.route_identity), selectedLabels: labels };
+    });
+  }
+  #invalidate(matches: (row: SQLRow) => boolean, context: DomainContext) {
+    for (const [id, policy] of this.#livePolicies) if (matches(policy)) this.#workers.get(id)?.abort();
+    const runs = this.#config.store.transaction(tx => tx.all(`SELECT r.*,p.selected_labels FROM chat_runs r JOIN chat_run_policy p ON r.run_id=p.run_id WHERE r.owner_assistant_id=? AND r.state!='terminal'`, [context.assistantId]).filter(matches).map(row => snapshot(row)));
+    for (const run of runs) {
+      // Consent/correction has already committed. Abort before any terminal write,
+      // so a failing terminal persistence cannot leave provider work running.
+      this.#workers.get(run.runId)?.abort();
+      try { this.#finish(run, context, 'cancelled'); }
+      catch { this.#emit(run.runId, { type: 'resync_required', sequence: run.sequence, reason: 'storage_unavailable' }); }
+    }
+  }
+  revoke(sessionId: string, context: DomainContext): ConversationStatus {
+    this.#authorize(context);
+    const result = this.#config.store.transaction(tx => {
+      const row = this.#consent(tx, sessionId, context);
+      if (row.revoked_at === null) tx.run('UPDATE chat_consents SET revision=revision+1,revoked_at=? WHERE session_id=? AND owner_assistant_id=?', [this.#context(context).now, sessionId, context.assistantId]);
+      return this.#conversation(this.#consent(tx, sessionId, context));
+    });
+    this.#invalidate(row => row.session_id === sessionId, context);
+    return result;
+  }
+  correctRoutingLabel(input: RoutingLabelCorrection, context: DomainContext) {
+    this.#authorize(context);
+    const label = this.#config.store.transaction(tx => this.#config.domain.correctRoutingLabel(tx, input, this.#context(context)));
+    this.#invalidate(row => (JSON.parse(String(row.selected_labels)) as RoutingSubject[]).some(s => s.kind === input.subject.kind && s.id === input.subject.id), context);
+    return label;
+  }
+  shutdown() {
+    for (const controller of this.#workers.values()) controller.abort();
+    for (const listeners of this.#subscribers.values()) for (const subscriber of [...listeners]) subscriber.close();
   }
   recover(context: ChatRecoveryContext): RunSnapshot[] {
     this.#authorizeOwner(context);
@@ -83,12 +186,13 @@ export class ChatService implements ChatPort {
       const prior = tx.get('SELECT * FROM chat_runs WHERE owner_assistant_id=? AND idempotency_key=?', [context.assistantId, input.idempotencyKey]);
       if (prior) {
         if (prior.fingerprint !== fingerprint) throw new ChatError('idempotency_conflict');
-        return { run: this.#snapshot(tx, prior, context), fresh: false };
+        return { run: this.#snapshot(tx, prior, context), fresh: false, policy: '' };
       }
       const route = this.#config.route;
       if (!route.available || typeof route.provider !== 'string' || !route.provider.trim() || typeof route.model !== 'string' || !route.model.trim()
         || typeof route.allows !== 'function' || typeof this.#config.model?.generate !== 'function') throw new ChatError('unavailable');
-      classify(this.#config, { kind: 'session', id: input.sessionId });
+      const consent = this.#liveConsent(tx, input.sessionId, context);
+      const labels = this.#labels(tx, input.sessionId, context);
       const session = this.#config.domain.execute(tx, 'getSession', { id: input.sessionId }, this.#context(context)).session;
       if (tx.get("SELECT run_id FROM chat_runs WHERE session_id=? AND state!='terminal'", [input.sessionId])) throw new ChatError('active_run');
       if (input.retryOf) {
@@ -96,15 +200,18 @@ export class ChatService implements ChatPort {
         if (old.session_id !== input.sessionId || old.state !== 'terminal') throw new ChatError('invalid_retry');
       }
       const ctx = this.#context(context);
-      const entry = this.#config.domain.execute(tx, 'appendEntry', { sessionId: input.sessionId, text: input.text, role: 'user', timeZone: session.timeZone }, ctx);
+      const entry = this.#config.domain.execute(tx, 'appendEntry', { sessionId: input.sessionId, text: input.text, role: 'user', timeZone: session.timeZone }, ctx, { writer: 'capture', dataClass: 'private' });
       const runId = (this.#config.id ?? randomUUID)();
       tx.run(`INSERT INTO chat_runs(run_id,session_id,user_entry_id,owner_assistant_id,accepting_client_id,idempotency_key,fingerprint,authority_epoch,provider,model,prompt_version,state,retry_of,accepted_at)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,'accepted',?,?)`,
       [runId, input.sessionId, entry.id, context.assistantId, context.clientId, input.idempotencyKey, fingerprint, context.authorityEpoch, route.provider, route.model, PROMPT_VERSION, input.retryOf ?? null, ctx.now]);
-      return { run: snapshot(tx.get('SELECT * FROM chat_runs WHERE run_id=?', [runId])!), fresh: true };
+      labels.push({ kind: 'entry', id: entry.id, ...classify(this.#config, { kind: 'entry', id: entry.id }, tx), revision: this.#config.classify({ kind: 'entry', id: entry.id }, tx)!.revision });
+      tx.run('INSERT INTO chat_run_policy VALUES (?,1,?,?,?)', [runId, Number(consent.revision), this.#identity(), JSON.stringify(labels)]);
+      return { run: snapshot(tx.get('SELECT * FROM chat_runs WHERE run_id=?', [runId])!), fresh: true, policy: JSON.stringify(labels) };
     });
     if (result.fresh) {
       this.#workers.set(result.run.runId, new AbortController());
+      this.#livePolicies.set(result.run.runId, { session_id: result.run.sessionId, selected_labels: result.policy });
       try { (this.#config.schedule ?? queueMicrotask)(() => { void this.#dispatch(result.run, context); }); }
       catch {
         try { this.#finish(result.run, context, 'not_dispatched'); }
@@ -130,6 +237,7 @@ export class ChatService implements ChatPort {
   subscribe(runId: string, context: DomainContext): AsyncIterable<ChatEvent> {
     const run = this.get(runId, context);
     const listeners = this.#subscribers.get(runId) ?? new Set<Subscription>();
+    if (listeners.size >= 32) throw new ChatError('unavailable');
     const subscription = new Subscription(this.#config.subscriberCapacity ?? 16, () => {
       listeners.delete(subscription); if (!listeners.size) this.#subscribers.delete(runId);
     });
@@ -154,7 +262,7 @@ export class ChatService implements ChatPort {
       let entryId: string | null = null;
       if (outcome === 'complete') {
         const session = this.#config.domain.execute(tx, 'getSession', { id: run.sessionId }, this.#context(context)).session;
-        const entry = this.#config.domain.execute(tx, 'appendAssistantEntry', { sessionId: run.sessionId, text, timeZone: session.timeZone }, this.#context(context));
+        const entry = this.#config.domain.execute(tx, 'appendAssistantEntry', { sessionId: run.sessionId, text, timeZone: session.timeZone }, this.#context(context), { writer: 'model', dataClass: 'private' });
         entryId = entry.id;
       }
       const max = this.#config.maxPartialChars ?? 100000;
@@ -188,11 +296,17 @@ export class ChatService implements ChatPort {
     let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
       if (this.get(accepted.runId, context).state !== 'accepted') return;
+      const acceptedPolicy = this.#checkPolicy(accepted.runId, accepted.sessionId, context);
       const { request, trace } = assemble(this.#config, accepted.sessionId, accepted.userEntryId, this.#context(context));
-      if (!this.#config.route.available || !this.#config.route.allows(request.dataClasses)) { this.#finish(accepted, context, 'unavailable'); return; }
+      if (!this.#config.route.available || !this.#config.route.allows(request.dataClasses) || !this.#config.model) { this.#finish(accepted, context, 'unavailable'); return; }
+      const permitted = this.conversation(accepted.sessionId, context).permittedClasses;
+      if (request.dataClasses.some(c => !permitted.includes(c))) throw new ContextFailure('unavailable');
+      const policy = { ...acceptedPolicy, selectedLabels: acceptedPolicy.selectedLabels.filter(s => s.kind === 'session' || trace.selectedHistoryIds.includes(s.id)) };
+      this.#config.store.transaction(tx => tx.run('UPDATE chat_run_policy SET selected_labels=? WHERE run_id=?', [JSON.stringify(policy.selectedLabels), accepted.runId]));
+      this.#livePolicies.set(accepted.runId, { session_id: accepted.sessionId, selected_labels: JSON.stringify(policy.selectedLabels) });
       const run = this.#config.store.transaction(tx => {
         const changed = tx.run("UPDATE chat_runs SET state='dispatch_intent',intent_at=?,trace=?,manifest_hash=?,sequence=sequence+1 WHERE run_id=? AND owner_assistant_id=? AND authority_epoch=? AND state='accepted'",
-          [this.#context(context).now, JSON.stringify(trace), hash(JSON.stringify(trace.manifest)), accepted.runId, context.assistantId, context.authorityEpoch]);
+          [this.#context(context).now, JSON.stringify({ ...trace, policy }), hash(JSON.stringify(trace.manifest)), accepted.runId, context.assistantId, context.authorityEpoch]);
         return changed === 1 ? snapshot(this.#row(tx, accepted.runId, context)) : null;
       });
       if (!run) return;
@@ -200,9 +314,11 @@ export class ChatService implements ChatPort {
       // Let observers consume intent; intent is never proof of provider send.
       await new Promise<void>(resolve => setImmediate(resolve));
       if (controller.signal.aborted || this.get(run.runId, context).state !== 'dispatch_intent') return;
+      this.#checkPolicy(run.runId, run.sessionId, context);
       const duration = this.#config.deadlineMs ?? 60000;
       const deadlineMs = this.#now() + duration;
       const deadline = new Promise<'deadline'>(resolve => { timeout = setTimeout(() => resolve('deadline'), duration); });
+      if (!this.#config.model) throw new ContextFailure('unavailable');
       const generation = this.#config.model.generate(request, { signal: controller.signal, deadlineMs,
         onEvent: event => { if (event.type === 'text') this.#partial(run, context, event.text); } });
       const aborted = new Promise<'aborted'>(resolve => {

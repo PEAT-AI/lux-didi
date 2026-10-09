@@ -16,7 +16,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   const values = new Map<string, string>();
   for (let i = 0; i < argv.length; i += 2) {
     const key = argv[i]!, value = argv[i + 1];
-    if (!['--data-dir', '--web-root', '--port', '--descriptor'].includes(key) || values.has(key) || !value || value.startsWith('--')) throw new Error('Invalid host configuration; see --help');
+    if (!['--data-dir', '--web-root', '--port', '--descriptor', '--config-dir'].includes(key) || values.has(key) || !value || value.startsWith('--')) throw new Error('Invalid host configuration; see --help');
     values.set(key, value);
   }
   const rawPort = values.get('--port') ?? process.env.DIDI_PORT ?? '8765';
@@ -26,6 +26,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     webRoot: resolve(values.get('--web-root') ?? process.env.DIDI_WEB_ROOT ?? fileURLToPath(new URL('../../../web/dist', import.meta.url))),
     port: Number(rawPort),
   };
+  if (values.has('--config-dir')) config.configDir = resolve(values.get('--config-dir')!);
   const descriptor = values.get('--descriptor') ?? process.env.DIDI_DESCRIPTOR;
   if (descriptor) config.descriptor = resolve(descriptor);
   if (pairing) { console.log(await pairLocal(config.dataDir, config.descriptor)); return; }

@@ -1,5 +1,5 @@
-import type { StorePort } from '../contracts/storage.js';
-import type { DomainContext, DomainPort, SourceRef } from '../contracts/domain.js';
+import type { StorePort, Transaction } from '../contracts/storage.js';
+import type { DomainContext, DomainPort, SourceRef, RoutingLabel, RoutingLabelCorrection } from '../contracts/domain.js';
 import type { DataClass, ModelPort, ModelStatus } from '../adapters/model/types.js';
 import type { CompileInput, SourceAvailability, ValidatedPreferences } from '../prompt/index.js';
 
@@ -12,6 +12,7 @@ export interface RunSnapshot {
   promptVersion: string; state: 'accepted' | 'dispatch_intent' | 'terminal'; outcome: Outcome | null;
   sequence: number; partialText: string; partialTruncated: boolean;
   acceptedAt: string; intentAt: string | null; terminalAt: string | null;
+  mayHaveBeenSent: boolean;
 }
 export type ChatEvent = { type: 'snapshot'; sequence: number; run: RunSnapshot }
   | { type: 'text'; sequence: number; text: string; provisional: true }
@@ -19,7 +20,14 @@ export type ChatEvent = { type: 'snapshot'; sequence: number; run: RunSnapshot }
 export interface AcceptInput { sessionId: string; text: string; idempotencyKey: string; retryOf?: string }
 /** Host startup authority, not an authenticated browser/client request. */
 export interface ChatRecoveryContext { assistantId: string; authorityEpoch: string }
+export interface EnrollInput { title: string; timeZone: string; idempotencyKey: string }
+export interface ConversationStatus { sessionId: string; provider: string; model: string; state: 'active' | 'revoked' | 'route_changed'; revision: number; permittedClasses: DataClass[] }
 export interface ChatPort {
+  enroll(input: EnrollInput, context: DomainContext): ConversationStatus;
+  conversation(sessionId: string, context: DomainContext): ConversationStatus;
+  revoke(sessionId: string, context: DomainContext): ConversationStatus;
+  correctRoutingLabel(input: RoutingLabelCorrection, context: DomainContext): RoutingLabel;
+  shutdown(): void;
   recover(context: ChatRecoveryContext): RunSnapshot[];
   accept(input: AcceptInput, context: DomainContext): RunSnapshot;
   get(runId: string, context: DomainContext): RunSnapshot;
@@ -31,16 +39,17 @@ export interface ClassificationSubject {
   sourceRefs?: readonly SourceRef[];
 }
 export interface ChatConfig {
-  store: StorePort & { readonly assistantId: string }; domain: DomainPort; model: ModelPort;
-  route: { provider: string; model: string; available: boolean; allows(classes: readonly DataClass[]): boolean };
+  store: StorePort & { readonly assistantId: string }; domain: DomainPort; model: ModelPort | null;
+  route: { provider: string; model: string; available: boolean; allows(classes: readonly DataClass[]): boolean;
+    endpoint: string; apiVersion: string; keyReference: string; allowedClasses: readonly DataClass[] }; 
   preferences: ValidatedPreferences;
-  classify(subject: ClassificationSubject): { ownerId: string; dataClass: DataClass } | null;
+  classify(subject: ClassificationSubject, tx: Transaction): { ownerId: string; dataClass: DataClass; revision: number } | null;
   context: { budgets: CompileInput['budgets']; sources: readonly SourceAvailability[];
     recall?: { q: string; limit: number }; today?: { date: string; timeZone: string } };
   now?: () => number; id?: () => string; schedule?: (work: () => void) => void;
   deadlineMs?: number; subscriberCapacity?: number; maxPartialChars?: number;
 }
-export type ChatErrorCode = 'invalid_input' | 'unauthorized' | 'epoch_mismatch' | 'not_found' | 'idempotency_conflict' | 'active_run' | 'unavailable' | 'recovery_required' | 'invalid_retry';
+export type ChatErrorCode = 'invalid_input' | 'unauthorized' | 'epoch_mismatch' | 'not_found' | 'idempotency_conflict' | 'active_run' | 'unavailable' | 'recovery_required' | 'invalid_retry' | 'consent_required' | 'consent_revoked' | 'route_changed';
 export class ChatError extends Error {
   readonly localCapture = false;
   constructor(readonly code: ChatErrorCode) { super(`Chat request rejected: ${code}; no local capture by this request`); this.name = 'ChatError'; }

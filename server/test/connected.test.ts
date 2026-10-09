@@ -31,7 +31,7 @@ async function fixture(configured = true, options: { credentials?: Credentials; 
   if (configured) await profile(dir);
   const captured: { url: string; init: RequestInit }[] = [];
   let credentialCalls = 0;
-  const config = { dataDir: dir, webRoot, port: 0, now: options.now,
+  const config = { dataDir: dir, webRoot, port: 0, ...(options.now ? { now: options.now } : {}),
     modelTesting: { credentials: options.credentials ?? { resolve: async () => { credentialCalls++; return syntheticKey; } }, transport: options.transport ?? (async (url: string, init: RequestInit) => { captured.push({ url, init }); return sse(); }) } };
   let host = await startHost(config);
   async function pair() {

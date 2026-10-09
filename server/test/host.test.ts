@@ -122,10 +122,10 @@ test('canonical compiler emits every published production unit and no unpublishe
   const config = JSON.parse(await readFile(join(server, 'tsconfig.json'), 'utf8')) as { include: string[] };
   assert.deepEqual(config.include.filter(path => !path.startsWith('test/')).sort(), [
     'index.ts', 'runtime/**/*.ts', 'http/**/*.ts', 'contracts/**/*.ts', 'domain/**/*.ts',
-    'host/**/*.ts', 'adapters/model/**/*.ts', 'adapters/mcp/**/*.ts', 'prompt/**/*.ts',
-  ].sort(), 'canonical production roots must include all accepted units, not CHAT/config globs');
+    'host/**/*.ts', 'chat/**/*.ts', 'config/**/*.ts', 'adapters/model/**/*.ts', 'adapters/mcp/**/*.ts', 'prompt/**/*.ts',
+  ].sort(), 'canonical production roots must include all accepted units and approved CHAT/config composition');
   for (const entry of ['index', 'runtime/store', 'http/server', 'contracts/index', 'domain/facade',
-    'host/index', 'adapters/model/index', 'adapters/mcp/adapter', 'prompt/index']) {
+    'host/index', 'chat/index', 'config/index', 'adapters/model/index', 'adapters/mcp/adapter', 'prompt/index']) {
     for (const suffix of ['.js', '.d.ts', '.js.map']) {
       assert.ok((await stat(join(server, 'dist', entry + suffix))).size > 0, `Missing canonical output ${entry + suffix}`);
     }

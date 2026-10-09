@@ -3,6 +3,8 @@ import type { IncomingMessage, ServerResponse, Server } from 'node:http';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { Store } from '../runtime/store.js';
 import type { DomainPort } from '../contracts/domain.js';
+import { ChatError, type ChatPort } from '../chat/index.js';
+import type { ConnectedStatus } from '../host/connected.js';
 import { ServiceError } from '../contracts/errors.js';
 import { object, resolveRoute } from './routes.js';
 import { createStaticHandler } from './static.js';
@@ -21,10 +23,13 @@ async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> 
   try { return object(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } catch (error) { if (error instanceof ServiceError) throw error; throw new ServiceError('BAD_REQUEST', 'Malformed JSON'); }
 }
 interface Principal { clientId: string; mode: 'bearer' | 'browser'; tokenHash?: string; csrfToken?: string }
-export interface ServiceOptions { store: Store; domain?: DomainPort; port?: number; now?: () => number; webRoot?: string }
+export interface ServiceOptions { store: Store; domain?: DomainPort; port?: number; now?: () => number; webRoot?: string; chat?: ChatPort; modelStatus?: ConnectedStatus }
 export interface RunningService { server: Server; origin: string; close(): Promise<void> }
 export async function listenService(options: ServiceOptions): Promise<RunningService> {
-  const { store, domain } = options;
+  const { store, domain, chat } = options;
+  const modelStatus = options.modelStatus ?? { status: 'unconfigured' };
+  const streamClosers = new Map<string, Set<() => void>>();
+  let streamCount = 0;
   const serveStatic = options.webRoot === undefined ? undefined : await createStaticHandler(options.webRoot);
   const now = options.now ?? Date.now;
   let origin = '';
@@ -77,7 +82,7 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
       const actor = principal(req);
       if (route.mutation) csrf(req, actor);
       if (route.kind === 'status') {
-        send(res, 200, success({ assistantId: store.assistantId, authorityEpoch: store.authorityEpoch, serviceMode: 'loopback', capabilities: { memory: !!domain, commitments: !!domain, notifications: false, model: false }, model: { configured: false }, sources: [], capabilityReasons: { ...(!domain ? { memory: 'DOMAIN_NOT_CONFIGURED', commitments: 'DOMAIN_NOT_CONFIGURED' } : {}), notifications: 'NOTIFICATION_NOT_CONFIGURED', model: 'MODEL_NOT_CONFIGURED' } })); return;
+        send(res, 200, success({ assistantId: store.assistantId, authorityEpoch: store.authorityEpoch, serviceMode: 'loopback', capabilities: { memory: !!domain, commitments: !!domain, notifications: false, model: modelStatus.status === 'configured' }, model: { configured: modelStatus.status === 'configured', ...modelStatus }, sources: [], capabilityReasons: { ...(!domain ? { memory: 'DOMAIN_NOT_CONFIGURED', commitments: 'DOMAIN_NOT_CONFIGURED' } : {}), notifications: 'NOTIFICATION_NOT_CONFIGURED', ...(modelStatus.status === 'configured' ? {} : { model: 'MODEL_NOT_CONFIGURED' }) } })); return;
       }
       if (route.kind === 'session') { send(res, 200, success({ clientId: actor.clientId, csrfToken: actor.csrfToken ?? null })); return; }
       if (route.mutation) { const body = await readBody(req); route = resolveRoute(method, url, body); }
@@ -91,7 +96,49 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
       if (route.kind === 'logout') {
         if (actor.mode !== 'browser') throw new ServiceError('BAD_REQUEST', 'Browser session required');
         store.transaction(tx => tx.run('DELETE FROM runtime_sessions WHERE token_hash=?', [actor.tokenHash!]));
+        for (const close of [...(streamClosers.get(actor.clientId) ?? [])]) close();
         res.setHeader('Set-Cookie', 'didi_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'); send(res, 200, success({ revoked: true })); return;
+      }
+      if (route.kind === 'connected') {
+        const context = { assistantId: store.assistantId, clientId: actor.clientId, authorityEpoch: store.authorityEpoch, now: new Date(now()).toISOString() };
+        if (route.action === 'status') { send(res, 200, success(modelStatus)); return; }
+        if (!chat || (['enroll', 'accept'].includes(route.action) && modelStatus.status !== 'configured')) throw new ServiceError('MODEL_NOT_CONFIGURED', 'Model route is not locally configured', 503);
+        if (route.mutation && req.headers['x-didi-authority-epoch'] !== store.authorityEpoch) throw new ServiceError('STALE_AUTHORITY', 'Authority epoch does not match', 409);
+        const key = req.headers['idempotency-key'];
+        if (['enroll', 'accept'].includes(route.action) && (typeof key !== 'string' || !/^[A-Za-z0-9_.:-]{1,128}$/.test(key))) throw new ServiceError('BAD_REQUEST', 'Idempotency-Key required');
+        const input = route.input;
+        if (route.action === 'enroll') { send(res, 200, success(chat.enroll({ title: String(input.title), timeZone: String(input.timeZone), idempotencyKey: String(key) }, context))); return; }
+        if (route.action === 'conversation') { send(res, 200, success(chat.conversation(route.id!, context))); return; }
+        if (route.action === 'revoke') { send(res, 200, success(chat.revoke(route.id!, context))); return; }
+        if (route.action === 'accept') { send(res, 200, success(chat.accept({ sessionId: String(input.sessionId), text: String(input.text), idempotencyKey: String(key), ...(input.retryOf === undefined ? {} : { retryOf: String(input.retryOf) }) }, context))); return; }
+        if (route.action === 'run') { send(res, 200, success(chat.get(route.id!, context))); return; }
+        if (route.action === 'cancel') { send(res, 200, success(chat.cancel(route.id!, context))); return; }
+        const closers = streamClosers.get(actor.clientId) ?? new Set<() => void>();
+        if (streamCount >= 64 || closers.size >= 4) throw new ServiceError('CONFLICT', 'Subscriber limit reached', 429);
+        const iterator = chat.subscribe(route.id!, context)[Symbol.asyncIterator]();
+        let closed = false, timer: ReturnType<typeof setInterval> | undefined;
+        const close = () => {
+          if (closed) return; closed = true;
+          if (timer) clearInterval(timer);
+          closers.delete(close); if (!closers.size) streamClosers.delete(actor.clientId); streamCount--;
+          res.off('close', close); void iterator.return?.(); res.end();
+        };
+        const authorized = () => {
+          try { const current = principal(req); return current.clientId === actor.clientId && store.authorityEpoch === context.authorityEpoch && req.headers['x-didi-authority-epoch'] === context.authorityEpoch; }
+          catch { return false; }
+        };
+        closers.add(close); streamClosers.set(actor.clientId, closers); streamCount++;
+        res.on('close', close);
+        res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' });
+        const flush = (frame: string) => { if (closed) return false; if (!authorized()) { close(); return false; } if (!res.write(frame)) { close(); return false; } return true; };
+        timer = setInterval(() => { flush(': heartbeat\n\n'); }, 250);
+        try {
+          while (!closed) {
+            const item = await iterator.next(); if (item.done) break;
+            if (!flush(`data: ${JSON.stringify(item.value)}\n\n`)) break;
+          }
+        } finally { close(); }
+        return;
       }
       if (route.kind === 'chat') throw new ServiceError('MODEL_NOT_CONFIGURED', 'Model capability is unavailable', 503);
       if (route.kind !== 'domain') throw new ServiceError('NOT_FOUND', 'Route not found', 404);
@@ -113,7 +160,10 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
       });
       send(res, 200, response);
     } catch (error) {
-      const typed = error instanceof ServiceError ? error : new ServiceError('INTERNAL_ERROR', 'Internal service error', 500);
+      const typed = error instanceof ServiceError ? error : error instanceof ChatError
+        ? new ServiceError(error.code === 'unavailable' ? 'MODEL_NOT_CONFIGURED' : error.code === 'invalid_input' ? 'BAD_REQUEST' : error.code === 'not_found' ? 'NOT_FOUND' : error.code === 'unauthorized' ? 'FORBIDDEN' : 'CONFLICT', error.message,
+          error.code === 'invalid_input' ? 400 : error.code === 'not_found' ? 404 : ['unauthorized'].includes(error.code) ? 403 : error.code === 'unavailable' ? 503 : 409)
+        : new ServiceError('INTERNAL_ERROR', 'Internal service error', 500);
       if (!res.headersSent && !res.destroyed) send(res, typed.status, { error: { code: typed.code, message: typed.message, ...(typed.details ? { details: typed.details } : {}) }, requestId });
     }
   };
@@ -123,5 +173,5 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('Missing service address');
   origin = `http://127.0.0.1:${address.port}`;
-  return { server, origin, close: () => new Promise<void>((resolve, reject) => { server.close(error => error ? reject(error) : resolve()); server.closeIdleConnections(); }) };
+  return { server, origin, close: () => new Promise<void>((resolve, reject) => { for (const closers of [...streamClosers.values()]) for (const close of [...closers]) close(); server.close(error => error ? reject(error) : resolve()); server.closeIdleConnections(); }) };
 }

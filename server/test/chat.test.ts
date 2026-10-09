@@ -71,7 +71,7 @@ test('accept rolls back user entry if chat insert fails; Store transactions are 
 });
 
 test('boundary rejects unavailable routes before capture and validates ownership/epoch', () => {
-  const f = fixture({ route: { provider: 'synthetic', model: 'absent', available: false, allows: () => true } });
+  const f = fixture({ route: { provider: 'synthetic', model: 'absent', available: false, allows: () => true, endpoint: 'https://generativelanguage.googleapis.com', apiVersion: 'v1beta', keyReference: 'gemini-primary', allowedClasses: ['ordinary', 'private'] } });
   try {
     assert.throws(() => f.accept(), error('unavailable')); assert.equal(f.entries().length, 0); assert.equal(f.model.calls.length, 0);
     assert.throws(() => f.chat.accept({ sessionId: f.session.id, text: 'x', idempotencyKey: 'k' }, { ...f.context, assistantId: 'foreign' }), error('unauthorized'));
@@ -80,21 +80,20 @@ test('boundary rejects unavailable routes before capture and validates ownership
 });
 
 test('unknown classification and foreign owner fail unavailable, never guessed ordinary', () => {
-  for (const classify of [() => null, () => ({ ownerId: 'foreign', dataClass: 'ordinary' as const })]) {
+  for (const classify of [() => null, () => ({ ownerId: 'foreign', dataClass: 'ordinary' as const, revision: 1 })]) {
     const f = fixture({ classify });
     try { assert.throws(() => f.accept(), error('unavailable')); assert.equal(f.entries().length, 0); assert.equal(f.model.calls.length, 0); }
     finally { f.close(); }
   }
 });
 
-test('route rejects classified history/evidence before model dispatch while reporting captured user', async () => {
-  const f = fixture({ route: { provider: 'synthetic', model: 'ordinary-only', available: true, allows: classes => !classes.includes('sensitive') } });
+test('route rejects unsupported classified history synchronously before capture or model dispatch', async () => {
+  const f = fixture({ route: { provider: 'synthetic', model: 'ordinary-only', available: true, allows: classes => !classes.includes('sensitive'), endpoint: 'https://generativelanguage.googleapis.com', apiVersion: 'v1beta', keyReference: 'gemini-primary', allowedClasses: ['ordinary', 'private'] } });
   try {
-    const c = { ...f.config, classify: () => ({ ownerId: f.store.assistantId, dataClass: 'sensitive' as const }) };
+    const c = { ...f.config, classify: () => ({ ownerId: f.store.assistantId, dataClass: 'sensitive' as const, revision: 1 }) };
     const chat = new ChatService(c); chat.recover(f.recoveryContext);
-    const run = chat.accept({ sessionId: f.session.id, text: 'Classified', idempotencyKey: 's' }, f.context);
-    for await (const e of chat.subscribe(run.runId, f.context)) if (e.type === 'snapshot' && e.run.state === 'terminal') { assert.equal(e.run.outcome, 'unavailable'); break; }
-    assert.equal(f.model.calls.length, 0); assert.equal(f.entries().length, 1);
+    assert.throws(() => chat.accept({ sessionId: f.session.id, text: 'Classified', idempotencyKey: 's' }, f.context), error('unavailable'));
+    assert.equal(f.model.calls.length, 0); assert.equal(f.entries().length, 0);
   } finally { f.close(); }
 });
 
@@ -291,7 +290,7 @@ test('history suffix never splits a completed user/assistant turn', async () => 
 test('unknown recalled evidence classification is unavailable even when history is ordinary', async () => {
   const f = fixture({ context: { budgets: { trustedChars: 20000, contextChars: 12000, historyChars: 12000 }, sources: [{ id: 'recall', state: 'available' }], recall: { q: 'needle', limit: 10 } } });
   try {
-    const chat = new ChatService({ ...f.config, classify: subject => subject.kind === 'recall' ? null : ({ ownerId: f.store.assistantId, dataClass: 'ordinary' }) }); chat.recover(f.recoveryContext);
+    const chat = new ChatService({ ...f.config, classify: subject => subject.kind === 'recall' ? null : ({ ownerId: f.store.assistantId, dataClass: 'ordinary', revision: 1 }) }); chat.recover(f.recoveryContext);
     const run = chat.accept({ sessionId: f.session.id, text: 'needle', idempotencyKey: 'no-evidence-class' }, f.context);
     for await (const event of chat.subscribe(run.runId, f.context)) if (event.type === 'snapshot' && event.run.state === 'terminal') { assert.equal(event.run.outcome, 'unavailable'); break; }
     assert.equal(f.model.calls.length, 0); assert.equal(f.entries().length, 1);

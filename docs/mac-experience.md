@@ -55,3 +55,14 @@ keystroke proof, or GPU acceleration evidence. The shared web author owns the
 Naya Canvas2D/DOM source/provenance. Root coordinates the accepted service+web
 runtime gate before claiming a working standalone integrated local app. No local
 app installation occurs in this task.
+
+### Installed synthetic proof
+
+`--installed-proof --proof-state /owned-private/state --proof-report /owned-private/result.json`
+uses a marked isolated state directory and the actual installed HOST/shared UI.
+Reopen preserves prior service records; the lifecycle marker contains identity
+only. The report distinguishes observed functional persistence/accessibility
+from native-chrome visual review, and leaves native exit to the external driver.
+No real appdata, permission prompt, live microphone, playback or notification
+is involved. See [the companion protocol](companion-protocol.md) for rejection,
+reinstall/relocation and versioned reporting semantics.

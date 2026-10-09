@@ -140,3 +140,49 @@ logout, then closes stdin, then applies bounded TERM/owned-PID KILL only if need
 The actual HOST's supervised EOF contract owns crash cleanup; protocol fixtures
 are not combined HOST/web installation proof. No launchd or installation effect
 is added by these native sources.
+
+## Isolated installed executable proof
+
+The ordinary installed executable accepts exactly:
+
+```sh
+Contents/MacOS/LuxDidi --installed-proof --proof-state /owned-private/state --proof-report /owned-private/result.json
+```
+
+This is an explicit synthetic-only mode, not an attach shortcut. Missing,
+duplicate, relative or mixed flags fail before normal startup. State must be
+outside normal appdata (including its ancestors/descendants), with an owned0700
+parent/directory. New state must be empty; existing state must carry the exact
+owned0600 `didi-installed-proof.json` lifecycle marker with type
+`didi-installed-proof-state`, schemaVersion1, installId and stable proofId.
+No business records are stored in the marker, and reopening never deletes or
+reseeds service data. The real installed manifest, verified owned HOST process,
+canonical private credential file, noninteractive synthetic-scoped Keychain
+account and normal bootstrap/client/UI paths are used; there is no fixture HOST
+fallback. Normal install credentials are not read or changed.
+
+Version1 JSON reports use type `LuxDidiInstalledProof`, schemaVersion1,
+phase (`running`, `complete`, `failed`), success, runId, installId, proofId,
+reopened, source, native, service, priorRecords, newRecord, observations, visual,
+serviceStop, credentialCleanup and error. Record fields are exact sessionId,
+entryId, full synthetic text and visibleInCanonicalUI. Previous records come
+from authoritative untruncated recall/session APIs and are verified in the
+canonical UI before one new native synthetic save. Source identity records the
+manifest releaseCommit and actual executable/manifest/server-entry SHA256s;
+the external build driver must pin them to accepted source. Readiness reports
+live owned PID/nonce/origin/epoch/assistantId without secrets. serviceStop
+records observed owned exit/status/reason after private stdin/bounded stop.
+Native pid/cleanQuitRequested are reported, **not native exit**: the external
+driver must observe native exit0 and reject stale/running reports. Early
+argument/ownership/config rejection can exit without a new report; never read
+a previous successful report after a nonzero invocation.
+
+CGPreflightScreenCaptureAccess is probed, never requested. An existing grant
+permits supported capture of only the exact own window; otherwise actual WK
+page snapshot and actual own accessibility names/enabled/visible states are
+reported with an explicit native-chrome visual limitation. Missing capture
+permission does not block functional proof. Native chrome remains a separate
+visual review; an NSView cache image is not faithful evidence. The external
+producer owns the shared rendererlease; the public app does not depend on
+private harness tooling. No microphone, playback, notifications, model calls
+or OS grant prompts are introduced by proof mode.

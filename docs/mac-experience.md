@@ -43,7 +43,10 @@ Run `bash Tests/DidiCompanionTests/check-companion.sh` for disposable signed nat
 WebKit proof and the retained `Tests/DidiMacTests/check-mac.sh` checks. The producer
 uses the installed shared `lux-browser-slot` renderer lease. It has no role in
 public app runtime. `LUX_DIDI_PROOF_DIR` may select the output directory for the
-actual WKWebView screenshot; otherwise temporary proofs are removed on exit.
+actual WKWebView screenshot; otherwise a portable, run-unique temporary proof
+directory is printed as `PROOF-DIR` and retained for inspection. Remove that
+artifact directory after inspection; disposable app bundles/servers are still
+cleaned on producer exit.
 The Mac proof still exercises close/Escape/hotkey callback retention and safe
 voice/notification checks with the canonical changed setup UI.
 

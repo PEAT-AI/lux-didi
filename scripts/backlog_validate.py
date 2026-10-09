@@ -63,8 +63,10 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 SCHEMA = "lux-didi.backlog/1"
@@ -274,10 +276,56 @@ def tracked_public_files(root: Path, exclude: set[str]) -> list[str] | None:
     Gitignored build artifacts are excluded here, exactly as the ruling requires."""
     out = subprocess.run(
         ["git", "-C", str(root), "ls-files", "--cached", "--others", "--exclude-standard"],
-        capture_output=True, text=True, check=False)
+        capture_output=True, text=True, check=False, env=_git_env())
     if out.returncode != 0:
         return None
     return sorted({line.strip() for line in out.stdout.splitlines() if line.strip()} - exclude)
+
+
+def _git_env() -> dict:
+    """A hermetic git environment: no system or user configuration is read."""
+    env = dict(os.environ)
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    return env
+
+
+def v13_tracked_boundary_fixture() -> tuple[bool, bool, str]:
+    """Run the real public-path enumeration against a disposable temporary git repo.
+
+    The fixture force-tracks an inert key-class filename under a pruned build directory and
+    keeps a genuinely gitignored non-key artifact beside it, then calls the same
+    tracked_public_files, scanned_paths and forbidden_findings functions check_v13 uses. It
+    therefore tests the enumeration boundary rather than a helper list. The directory is
+    removed afterwards; nothing outside it is read or written, there is no credential and no
+    network call.
+    """
+    tmp = Path(tempfile.mkdtemp(prefix="lux-didi-v13-fixture-"))
+    try:
+        (tmp / "server" / "dist").mkdir(parents=True)
+        (tmp / "server" / ".gitignore").write_text("dist/\nnode_modules/\n", encoding="utf-8")
+        (tmp / "server" / "dist" / "id_ed25519").write_text(
+            "inert fixture text, not a key\n", encoding="utf-8")
+        (tmp / "server" / "dist" / "bundle.js").write_text(
+            "// ignored build artifact\n", encoding="utf-8")
+        env = _git_env()
+        for args in (["init", "-q"], ["add", "-f", "server/dist/id_ed25519"]):
+            run = subprocess.run(["git", "-C", str(tmp)] + args, capture_output=True,
+                                 text=True, env=env)
+            if run.returncode != 0:
+                return False, False, f"fixture git {args[0]} failed"
+        tracked = tracked_public_files(tmp, set()) or []
+        scanned = scanned_paths(tmp)
+        findings = forbidden_findings(tracked, scanned)
+        hits = [item for item in findings if item[0] == "server/dist/id_ed25519"]
+        rejected_once = len(hits) == 1 and hits[0][1] == "private key"
+        ignored_allowed = not any("bundle.js" in rel for rel, _label in findings)
+        detail = (f"tracked={len(tracked)} scan={len(scanned)} findings={len(findings)} "
+                  f"rejected_once={rejected_once} ignored_build_allowed={ignored_allowed}")
+        return rejected_once, ignored_allowed, detail
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def scanned_paths(root: Path) -> list[str]:
@@ -892,7 +940,7 @@ def check_v13(report: Report, root: Path, exclude: set[str]) -> None:
     }
     controls_ok = 0
     controls_total = len(controls["forbidden_rejected"]) + len(controls["component_accepted"]) \
-        + len(controls["unrelated_rejected"]) + 3
+        + len(controls["unrelated_rejected"]) + 3 + 2
     for rel, expected in controls["forbidden_rejected"].items():
         got = is_forbidden_path(rel)
         if got == expected:
@@ -917,6 +965,17 @@ def check_v13(report: Report, root: Path, exclude: set[str]) -> None:
         controls_ok += 1
     else:
         failures.append("control: an ignored build artifact was reported as forbidden")
+    # The real enumeration boundary, on a disposable temporary git fixture.
+    rejected_once, ignored_allowed, fixture_detail = v13_tracked_boundary_fixture()
+    if rejected_once:
+        controls_ok += 1
+    else:
+        failures.append("fixture: a force-tracked key file under a pruned directory was not "
+                        "rejected exactly once by the public-path enumeration")
+    if ignored_allowed:
+        controls_ok += 1
+    else:
+        failures.append("fixture: an actually gitignored non-key build artifact was reported")
     for rel in controls["component_accepted"]:
         if is_publication_path(rel) and not is_forbidden_path(rel):
             controls_ok += 1
@@ -934,7 +993,8 @@ def check_v13(report: Report, root: Path, exclude: set[str]) -> None:
 
     report.add("V-13", "Repository hygiene and intended public set", failures, warnings,
                details={"paths": len(walked), "controls": f"{controls_ok}/{controls_total}",
-                        "forbidden": len(findings), "scanned": len(scanned)})
+                        "forbidden": len(findings), "scanned": len(scanned),
+                        "boundary_fixture": fixture_detail})
 
 
 def check_x01(report: Report, nodes: list[dict] | None) -> None:

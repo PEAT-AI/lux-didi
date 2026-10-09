@@ -259,7 +259,8 @@
     },
     {
       "details": {
-        "controls": "25/25",
+        "boundary_fixture": "tracked=2 scan=1 findings=1 rejected_once=True ignored_build_allowed=True",
+        "controls": "27/27",
         "forbidden": 0,
         "paths": 43,
         "scanned": 46
@@ -411,5 +412,5 @@
   "file_count": 43,
   "packets_mode": false,
   "schema": "lux-didi.validation/1",
-  "tree_digest": "788775dcaf88d7ae78e5f35c13638afff2c1861b208da29d80b8d688d0067dd6"
+  "tree_digest": "5cd505f0e6eb676c8a367096abfbe08239cdddd4bfe4c199ee8f08f4f4a573c5"
 }

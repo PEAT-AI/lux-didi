@@ -16,8 +16,10 @@ class CountingModel implements ModelPort {
   calls: ModelRequest[] = []; controls: ModelControl[] = [];
   pending: ((value: ModelResult) => void)[] = [];
   delayed = false; status: ModelResult['status'] = 'complete'; text = 'Answer';
+  onCall: () => void = () => {};
+  readonly called = new Promise<void>(resolve => { this.onCall = resolve; });
   generate(request: ModelRequest, control: ModelControl): Promise<ModelResult> {
-    this.calls.push(request); this.controls.push(control);
+    this.calls.push(request); this.controls.push(control); this.onCall();
     if (this.delayed) return new Promise(resolve => this.pending.push(resolve));
     return Promise.resolve(result(request, this.status, this.text));
   }
@@ -37,8 +39,8 @@ async function terminal(f: ReturnType<typeof fixture>, run: RunSnapshot) {
   throw Error('no durable terminal event');
 }
 async function started(f: ReturnType<typeof fixture>) {
-  // Deterministic scheduling boundary, no timer/polling or synthetic load.
-  await new Promise<void>(resolve => setImmediate(resolve));
+  // Observe the external seam rather than guessing event-loop yield count.
+  await f.model.called;
   assert.equal(f.model.calls.length, 1);
 }
 function error(code: string) { return (e: unknown) => e instanceof ChatError && e.code === code && !e.localCapture; }
@@ -58,9 +60,9 @@ test('accept/replay/fingerprint collision and active-session serialization are d
 });
 
 test('accept rolls back user entry if chat insert fails; Store transactions are synchronous', () => {
-  const f = fixture({}, [{ owner: 'fault', version: 1, statements: ["CREATE TRIGGER reject_run BEFORE INSERT ON chat_runs BEGIN SELECT RAISE(ABORT,'run write rejected'); END"] }]);
+  const f = fixture({}, [{ owner: 'fault', version: 1, statements: ["ALTER TABLE chat_runs ADD COLUMN reject_insert INTEGER CHECK (state != 'accepted')"] }]);
   try {
-    assert.throws(() => f.accept(), /run write rejected/); assert.equal(f.entries().length, 0);
+    assert.throws(() => f.accept(), /CHECK constraint failed/); assert.equal(f.entries().length, 0);
     assert.equal(f.model.calls.length, 0);
     assert.throws(() => f.store.transaction((async () => {}) as never), /synchronous/);
   } finally { f.close(); }
@@ -115,7 +117,7 @@ test('complete wins: cancel after final commit returns completion unchanged', as
 });
 
 test('terminal answer/status commit is atomic and persistence failure never claims saved completion', async () => {
-  const f = fixture({}, [{ owner: 'fault', version: 1, statements: ["CREATE TRIGGER reject_complete BEFORE UPDATE ON chat_runs WHEN NEW.outcome='complete' BEGIN SELECT RAISE(ABORT,'terminal rejected'); END"] }]); f.model.delayed = true;
+  const f = fixture({}, [{ owner: 'fault', version: 1, statements: ["ALTER TABLE chat_runs ADD COLUMN reject_complete INTEGER CHECK (outcome IS NULL OR outcome != 'complete')"] }]); f.model.delayed = true;
   try {
     const run = f.accept(); await started(f);
     f.model.finish(); const done = await terminal(f, run);
@@ -295,7 +297,7 @@ test('unknown recalled evidence classification is unavailable even when history 
 });
 
 test('all terminal writes unavailable: no completion event/assistant entry, explicit subscriber resync', async () => {
-  const f = fixture({}, [{ owner: 'fault', version: 1, statements: ["CREATE TRIGGER reject_terminal BEFORE UPDATE ON chat_runs WHEN NEW.state='terminal' BEGIN SELECT RAISE(ABORT,'storage unavailable'); END"] }]); f.model.delayed = true;
+  const f = fixture({}, [{ owner: 'fault', version: 1, statements: ["ALTER TABLE chat_runs ADD COLUMN reject_terminal INTEGER CHECK (state != 'terminal')"] }]); f.model.delayed = true;
   try {
     const run = f.accept(); await started(f); const stream = f.chat.subscribe(run.runId, f.context)[Symbol.asyncIterator]();
     await stream.next(); f.model.finish();
@@ -330,7 +332,7 @@ test('same owner native/browser/rebootstrap share run and idempotency; accepting
     const input = { sessionId: f.session.id, text: 'Native-originated capture', idempotencyKey: 'shared-key' };
     const run = f.chat.accept(input, native);
     assert.equal(f.chat.get(run.runId, browser).runId, run.runId);
-    assert.equal(f.chat.accept({ ...input }, rebootstrap).runId, run.runId);
+    assert.equal(f.chat.accept({ text: input.text, idempotencyKey: input.idempotencyKey, sessionId: input.sessionId }, rebootstrap).runId, run.runId);
     assert.throws(() => f.chat.accept({ ...input, text: 'Changed semantic body' }, browser), error('idempotency_conflict'));
     assert.equal(f.entries().length, 1);
     const stream = f.chat.subscribe(run.runId, rebootstrap)[Symbol.asyncIterator]();

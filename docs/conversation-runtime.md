@@ -30,7 +30,8 @@ const chat = new ChatService({
   context: { budgets: { trustedChars: 20000, contextChars: 12000, historyChars: 12000 },
     sources: [] },
 });
-chat.recover(trustedStartupContext); // before accepting work/listening
+chat.recover({ assistantId: store.assistantId, authorityEpoch: store.authorityEpoch });
+// Clientless host startup authority, before accepting work/listening.
 ```
 
 The placeholders are host-owned values, not globals supplied by this module.
@@ -39,10 +40,17 @@ validates any provider/key configuration before marking the route available,
 and provides declared language/register/humor/verbosity (no inferred language).
 Every call receives a **trusted** DomainContext, not user JSON. CHAT checks
 assistantId against the Store, current authorityEpoch and a nonempty clientId;
-run lookup/cancel/subscribe additionally require the accepting actor. The host
-still owns authenticated actor derivation and HTTP Host/Origin/auth/CSRF rules.
-The engine's startup recovery must run exclusively before listeners/work; it
-is not a browser or model operation and may sweep multiple actors' orphans.
+run lookup/cancel/subscribe additionally match the persisted stable owner.
+`clientId` is an immutable accepting-client audit, not run ownership: accepted
+HTTP uses local-admin for bearer and random browser client IDs on each pairing.
+A new authenticated same-owner browser can read/subscribe/explicitly cancel a
+native or previous-client run. Current request epoch is required; historical
+accepting epoch does not deny access. Foreign rows return the same not_found as
+absent IDs. The host still owns actual authentication/context derivation and
+HTTP Host/Origin/auth/CSRF rules. Startup recovery uses CHAT-owned
+`ChatRecoveryContext={assistantId,authorityEpoch}` with no fictitious client,
+runs exclusively before listeners/work, and is never a browser/model operation.
+It refuses foreign-owner active rows before any mutation, never adopting them.
 
 `appendEntry` remains public-user-only. The separate trusted in-process domain
 operation `appendAssistantEntry({sessionId,text,timeZone})` always forces role
@@ -53,10 +61,12 @@ assistant-append route; the existing append-entry route rejects forged roles.
 
 `accept({sessionId,text,idempotencyKey,retryOf?}, context)` synchronously commits
 the domain user entry and chat run together. Its closed input includes no
-provider/model/role override. Actor/key plus a SHA-256 canonical fingerprint
+provider/model/role/owner/client override. Stable owner/key plus a SHA-256 canonical fingerprint
 of `{sessionId,text,retryOf:null-or-id}` identify acceptance. Same key/body
-returns the original run even after completion/recovery and never dispatches
-again. Changed body conflicts. One active run per session is protected by both
+returns the original run even across native/browser/rebootstrap, after
+completion/recovery, and never dispatches again or changes accepting-client
+audit. Changed body conflicts. This semantic fingerprint uses a server-defined
+fixed field order, not raw JSON wire bytes; no canonicalization library is needed. One active run per session is protected by both
 transactional checks and a partial unique index. Unavailable/unconfigured route
 and invalid session/ownership fail before capture. A ChatError from acceptance
 has `localCapture=false`; database/domain errors may propagate but roll back
@@ -89,7 +99,7 @@ intent orphans to `outcome_unknown`. It works under the current Store authority
 for prior-epoch orphans, retains original run epoch, and records terminal epoch.
 Existing terminal rows/user entries stay unchanged. It never retries/resubmits.
 A crash after intent may have **zero** actual provider calls and still has
-unknown outcome. A deliberate new acceptance may name a terminal same-actor,
+unknown outcome. A deliberate new acceptance may name a terminal same-owner,
 same-session `retryOf` with a new key/run; it does not reuse previous effects.
 
 `cancel(runId, context)` commits terminal cancellation conditionally before
@@ -167,4 +177,10 @@ zero observed calls are possible with unknown recovery. Temporary synthetic
 Store authority is rotated before restart; prior terminal records are compared
 byte-for-byte. No production data, external network or artificial host load.
 Node TAP reports per-test durations; pytest-only `--durations=10` is inapplicable
-to this Node test runner. Host HTTP/PWA/voice integration is a later component.
+to this Node test runner. Owner-scoped engine tests inject synthetic trusted
+native/browser/rebootstrap contexts; they do not prove actual transport auth.
+Before connected chat is accepted, the owning integration must authenticate
+every route, reject body owner/client injection, enforce CSRF/Origin/epoch,
+and maintain authenticated SSE-session liveness on every flush with explicit
+expiry/revocation closure that never cancels durable background work. A new
+valid client reconnects to the same run. HTTP/PWA/voice integration is later.

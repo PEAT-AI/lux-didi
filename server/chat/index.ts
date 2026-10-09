@@ -43,9 +43,8 @@ export class ChatService implements ChatPort {
   }
   #context(context: DomainContext): DomainContext { return { ...context, now: new Date(this.#now()).toISOString() }; }
   #row(tx: Transaction, runId: string, context: DomainContext) {
-    const row = tx.get('SELECT * FROM chat_runs WHERE run_id=?', [runId]);
+    const row = tx.get('SELECT * FROM chat_runs WHERE run_id=? AND owner_assistant_id=?', [runId, context.assistantId]);
     if (!row) throw new ChatError('not_found');
-    if (row.actor !== context.clientId) throw new ChatError('unauthorized');
     return row;
   }
   #snapshot(tx: Transaction, row: SQLRow, context: DomainContext): RunSnapshot {
@@ -59,11 +58,12 @@ export class ChatService implements ChatPort {
     this.#authorizeOwner(context);
     if (this.#workers.size) throw new ChatError('active_run');
     const recovered = this.#config.store.transaction(tx => {
-      const rows = tx.all("SELECT * FROM chat_runs WHERE state!='terminal' ORDER BY accepted_at,run_id");
+      if (tx.get("SELECT run_id FROM chat_runs WHERE owner_assistant_id!=? AND state!='terminal'", [context.assistantId])) throw new ChatError('unauthorized');
+      const rows = tx.all("SELECT * FROM chat_runs WHERE owner_assistant_id=? AND state!='terminal' ORDER BY accepted_at,run_id", [context.assistantId]);
       return rows.map(row => {
         const outcome = row.state === 'accepted' ? 'not_dispatched' : 'outcome_unknown';
-        tx.run("UPDATE chat_runs SET state='terminal',outcome=?,terminal_at=?,terminal_epoch=?,sequence=sequence+1 WHERE run_id=? AND authority_epoch=? AND state=?",
-          [outcome, new Date(this.#now()).toISOString(), context.authorityEpoch, String(row.run_id), String(row.authority_epoch), String(row.state)]);
+        tx.run("UPDATE chat_runs SET state='terminal',outcome=?,terminal_at=?,terminal_epoch=?,sequence=sequence+1 WHERE run_id=? AND owner_assistant_id=? AND authority_epoch=? AND state=?",
+          [outcome, new Date(this.#now()).toISOString(), context.authorityEpoch, String(row.run_id), context.assistantId, String(row.authority_epoch), String(row.state)]);
         return snapshot(tx.get('SELECT * FROM chat_runs WHERE run_id=?', [String(row.run_id)])!);
       });
     });
@@ -80,7 +80,7 @@ export class ChatService implements ChatPort {
       || (input.retryOf !== undefined && (typeof input.retryOf !== 'string' || !input.retryOf.trim()))) throw new ChatError('invalid_input');
     const fingerprint = hash(JSON.stringify({ sessionId: input.sessionId, text: input.text, retryOf: input.retryOf ?? null }));
     const result = this.#config.store.transaction(tx => {
-      const prior = tx.get('SELECT * FROM chat_runs WHERE actor=? AND idempotency_key=?', [context.clientId, input.idempotencyKey]);
+      const prior = tx.get('SELECT * FROM chat_runs WHERE owner_assistant_id=? AND idempotency_key=?', [context.assistantId, input.idempotencyKey]);
       if (prior) {
         if (prior.fingerprint !== fingerprint) throw new ChatError('idempotency_conflict');
         return { run: this.#snapshot(tx, prior, context), fresh: false };
@@ -98,9 +98,9 @@ export class ChatService implements ChatPort {
       const ctx = this.#context(context);
       const entry = this.#config.domain.execute(tx, 'appendEntry', { sessionId: input.sessionId, text: input.text, role: 'user', timeZone: session.timeZone }, ctx);
       const runId = (this.#config.id ?? randomUUID)();
-      tx.run(`INSERT INTO chat_runs(run_id,session_id,user_entry_id,actor,idempotency_key,fingerprint,authority_epoch,provider,model,prompt_version,state,retry_of,accepted_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,'accepted',?,?)`,
-      [runId, input.sessionId, entry.id, context.clientId, input.idempotencyKey, fingerprint, context.authorityEpoch, route.provider, route.model, PROMPT_VERSION, input.retryOf ?? null, ctx.now]);
+      tx.run(`INSERT INTO chat_runs(run_id,session_id,user_entry_id,owner_assistant_id,accepting_client_id,idempotency_key,fingerprint,authority_epoch,provider,model,prompt_version,state,retry_of,accepted_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,'accepted',?,?)`,
+      [runId, input.sessionId, entry.id, context.assistantId, context.clientId, input.idempotencyKey, fingerprint, context.authorityEpoch, route.provider, route.model, PROMPT_VERSION, input.retryOf ?? null, ctx.now]);
       return { run: snapshot(tx.get('SELECT * FROM chat_runs WHERE run_id=?', [runId])!), fresh: true };
     });
     if (result.fresh) {
@@ -151,7 +151,6 @@ export class ChatService implements ChatPort {
     const final = this.#config.store.transaction(tx => {
       const row = this.#row(tx, run.runId, context);
       if (row.state === 'terminal') return this.#snapshot(tx, row, context);
-      if (row.authority_epoch !== context.authorityEpoch) throw new ChatError('epoch_mismatch');
       let entryId: string | null = null;
       if (outcome === 'complete') {
         const session = this.#config.domain.execute(tx, 'getSession', { id: run.sessionId }, this.#context(context)).session;
@@ -161,8 +160,8 @@ export class ChatService implements ChatPort {
       const max = this.#config.maxPartialChars ?? 100000;
       const partial = outcome === 'complete' ? '' : text || String(row.partial_text);
       const changed = tx.run(`UPDATE chat_runs SET state='terminal',outcome=?,final_entry_id=?,terminal_at=?,terminal_epoch=?,
-        partial_text=?,partial_truncated=?,sequence=sequence+1 WHERE run_id=? AND authority_epoch=? AND state=?`,
-        [outcome, entryId, this.#context(context).now, context.authorityEpoch, partial.slice(0, max), Number(partial.length > max || Boolean(row.partial_truncated)), run.runId, context.authorityEpoch, String(row.state)]);
+        partial_text=?,partial_truncated=?,sequence=sequence+1 WHERE run_id=? AND owner_assistant_id=? AND authority_epoch=? AND state=?`,
+        [outcome, entryId, this.#context(context).now, context.authorityEpoch, partial.slice(0, max), Number(partial.length > max || Boolean(row.partial_truncated)), run.runId, context.assistantId, String(row.authority_epoch), String(row.state)]);
       if (changed !== 1) throw new ChatError('epoch_mismatch');
       return this.#snapshot(tx, tx.get('SELECT * FROM chat_runs WHERE run_id=?', [run.runId])!, context);
     });
@@ -170,14 +169,15 @@ export class ChatService implements ChatPort {
   }
   #partial(run: RunSnapshot, context: DomainContext, text: string) {
     if (!text) return;
+    this.#authorize(context);
     const event = this.#config.store.transaction(tx => {
       const row = this.#row(tx, run.runId, context);
-      if (row.state !== 'dispatch_intent' || row.authority_epoch !== context.authorityEpoch) return null;
+      if (row.state !== 'dispatch_intent') return null;
       const max = this.#config.maxPartialChars ?? 100000;
       const previous = String(row.partial_text);
       const retained = text.slice(0, Math.max(0, max - previous.length));
-      tx.run("UPDATE chat_runs SET partial_text=?,partial_truncated=?,sequence=sequence+1 WHERE run_id=? AND authority_epoch=? AND state='dispatch_intent'",
-        [previous + retained, Number(Boolean(row.partial_truncated) || retained.length !== text.length), run.runId, context.authorityEpoch]);
+      tx.run("UPDATE chat_runs SET partial_text=?,partial_truncated=?,sequence=sequence+1 WHERE run_id=? AND owner_assistant_id=? AND authority_epoch=? AND state='dispatch_intent'",
+        [previous + retained, Number(Boolean(row.partial_truncated) || retained.length !== text.length), run.runId, context.assistantId, String(row.authority_epoch)]);
       return { type: 'text' as const, sequence: Number(row.sequence) + 1, text: retained, provisional: true as const };
     });
     if (event) this.#emit(run.runId, event);
@@ -191,8 +191,8 @@ export class ChatService implements ChatPort {
       const { request, trace } = assemble(this.#config, accepted.sessionId, accepted.userEntryId, this.#context(context));
       if (!this.#config.route.available || !this.#config.route.allows(request.dataClasses)) { this.#finish(accepted, context, 'unavailable'); return; }
       const run = this.#config.store.transaction(tx => {
-        const changed = tx.run("UPDATE chat_runs SET state='dispatch_intent',intent_at=?,trace=?,manifest_hash=?,sequence=sequence+1 WHERE run_id=? AND authority_epoch=? AND state='accepted'",
-          [this.#context(context).now, JSON.stringify(trace), hash(JSON.stringify(trace.manifest)), accepted.runId, context.authorityEpoch]);
+        const changed = tx.run("UPDATE chat_runs SET state='dispatch_intent',intent_at=?,trace=?,manifest_hash=?,sequence=sequence+1 WHERE run_id=? AND owner_assistant_id=? AND authority_epoch=? AND state='accepted'",
+          [this.#context(context).now, JSON.stringify(trace), hash(JSON.stringify(trace.manifest)), accepted.runId, context.assistantId, context.authorityEpoch]);
         return changed === 1 ? snapshot(this.#row(tx, accepted.runId, context)) : null;
       });
       if (!run) return;

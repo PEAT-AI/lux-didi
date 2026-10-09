@@ -15,7 +15,6 @@ import Carbon
     private(set) var client: CompanionClient?
     private var submittedDraft: String?
     init() {
-        voice.onTranscript = { [weak self] text in self?.draft = text }
         do {
             let descriptor = try ServiceDescriptor.configured()
             shell = CompanionWeb(descriptor: descriptor)
@@ -50,12 +49,17 @@ import Carbon
             self.error = error.localizedDescription
         }
     }
-    func stopRecording(_ reason: String) { voice.stop(reason: reason) }
+    func stopRecording(_ reason: String) {
+        let wasRecording = voice.state.phase == .recording
+        voice.stop(reason: reason)
+        if wasRecording && !voice.state.transcript.isEmpty { draft = voice.state.transcript }
+    }
     func logout() async { stopRecording("Logout"); await client?.revokePageSession(); shell?.clear() }
 }
 
 struct RootView: View {
     @ObservedObject var model: AppModel
+    @ObservedObject var voice: NativeVoice
     var body: some View {
         VStack(spacing: 0) {
             if let shell = model.shell {
@@ -72,10 +76,10 @@ struct RootView: View {
                 HStack {
                     TextField("User-entered or on-device transcribed text", text: $model.draft)
                     Button(model.captureStatus == .unknown ? "Retry same capture" : "Save text") { Task { await model.saveDraft() } }
-                        .disabled(!Presentation.canSend(model.draft) || model.captureStatus == .sending)
-                    Button(model.voice.state.phase == .recording ? "Stop" : "Record") {
-                        if model.voice.state.phase == .recording { model.stopRecording("Stopped by user") } else { model.voice.start() }
-                    }.disabled(!model.voice.canRecord)
+                        .disabled(!Presentation.canSend(model.draft) || model.captureStatus == .sending || voice.state.phase == .recording)
+                    Button(voice.state.phase == .recording ? "Stop" : "Record") {
+                        if voice.state.phase == .recording { model.stopRecording("Stopped by user") } else { voice.start() }
+                    }.disabled(voice.microphone != .granted || voice.speech != .granted || !voice.onDevice)
                     Menu("Native settings") {
                         Button("Request microphone/speech permissions") { Task { await model.voice.requestPermissions() } }
                         Button("Reconnect service") { Task { await model.reconnect() } }
@@ -115,7 +119,7 @@ struct RootView: View {
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 980, height: 760), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.title = "Didi"; window.center(); window.delegate = self
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: RootView(model: model))
+        window.contentView = NSHostingView(rootView: RootView(model: model, voice: model.voice))
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.button?.image = NSImage(systemSymbolName: "sparkle", accessibilityDescription: "Didi")
         let menu = NSMenu()

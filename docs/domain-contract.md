@@ -44,6 +44,16 @@ maps these onto `/api/v1` routes and injects ids/identity, never the body.
   reminder and (where due) inserts the new one **in the same transaction**, so a
   rollback leaves neither commitment nor reminder.
 - A genuinely new promise gets a new identity; reopen keeps identity.
+- **Local provenance is validated before any write.** A commitment's
+  `sourceSessionId`/`sourceEntryId` must resolve in the local store, and an
+  entry must belong to the named session; unknown ids are `NOT_FOUND` and a
+  mismatched pair is `BAD_REQUEST`, with zero commitment/history/outbox writes.
+  An external source explicitly recorded as unavailable stays distinct from a
+  resolvable local link.
+- **Complete listing.** The wire `listSessions` exposes no cursor input, so the
+  domain returns the complete deterministic list; it never presents a truncated
+  list as exhausted with `nextCursor:null`. Real pagination is a future
+  continuation contract, not a silent coverage cap.
 - Honest recall: empty/whitespace query ⇒ 0 hits, 0 matches; an unseen term ⇒ 0
   hits; `totalMatches` counts every match and `truncated` is honest about the
   `limit`. Matching is case- and diacritic-insensitive and deterministic

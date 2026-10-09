@@ -575,3 +575,52 @@ test('session listing is complete: more than fifty sessions are all returned', (
     cleanup(h);
   }
 });
+
+test('provenance validation: unknown or inconsistent local source links are refused with no writes', () => {
+  const h = fixture();
+  try {
+    const sessionA = h.store.transaction((tx) =>
+      h.port.execute(tx, 'createSession', { title: 'A', timeZone: 'UTC' }, context(nextNow())),
+    ) as { id: string };
+    const sessionB = h.store.transaction((tx) =>
+      h.port.execute(tx, 'createSession', { title: 'B', timeZone: 'UTC' }, context(nextNow())),
+    ) as { id: string };
+    const entry = h.store.transaction((tx) =>
+      h.port.execute(tx, 'appendEntry', { sessionId: sessionA.id, text: 'note', role: 'user', timeZone: 'UTC' }, context(nextNow())),
+    ) as { id: string };
+
+    const unknown = '00000000-0000-0000-0000-000000000000';
+    const capture = (extra: Record<string, unknown>) =>
+      h.store.transaction((tx) =>
+        h.port.execute(
+          tx,
+          'createCommitment',
+          { title: 'Linked', dueAt: '2030-01-01T09:00:00.000Z', timeZone: 'UTC', ...extra },
+          context(nextNow()),
+        ),
+      );
+
+    assert.throws(() => capture({ sourceSessionId: unknown }), (error: { code?: string }) => error.code === 'NOT_FOUND');
+    assert.throws(() => capture({ sourceEntryId: unknown }), (error: { code?: string }) => error.code === 'NOT_FOUND');
+    assert.throws(
+      () => capture({ sourceSessionId: sessionB.id, sourceEntryId: entry.id }),
+      (error: { code?: string }) => error.code === 'BAD_REQUEST',
+    );
+
+    const counts = h.store.transaction((tx) => ({
+      commitments: (tx.get('SELECT COUNT(*) AS n FROM commitments', []) as { n: number }).n,
+      history: (tx.get('SELECT COUNT(*) AS n FROM commitment_revisions', []) as { n: number }).n,
+      outbox: (tx.get('SELECT COUNT(*) AS n FROM runtime_outbox', []) as { n: number }).n,
+    }));
+    assert.deepEqual(counts, { commitments: 0, history: 0, outbox: 0 }, 'a rejected link must write nothing');
+
+    const ok = capture({ sourceSessionId: sessionA.id, sourceEntryId: entry.id }) as {
+      sourceSessionId: string | null;
+      sourceEntryId: string | null;
+    };
+    assert.equal(ok.sourceSessionId, sessionA.id);
+    assert.equal(ok.sourceEntryId, entry.id);
+  } finally {
+    cleanup(h);
+  }
+});

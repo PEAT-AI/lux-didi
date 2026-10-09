@@ -141,6 +141,12 @@ export function readSession(tx: Transaction, id: string): SessionRecord {
   return mapSession(row);
 }
 
+export function readEntry(tx: Transaction, id: string): EntryRecord {
+  const row = tx.get(`SELECT * FROM entries WHERE id = ?`, [id]);
+  if (!row) notFound(`unknown entry ${id}`, { id });
+  return mapEntry(row);
+}
+
 export function entries(tx: Transaction, sessionId: string): EntryRecord[] {
   readSession(tx, sessionId);
   return tx

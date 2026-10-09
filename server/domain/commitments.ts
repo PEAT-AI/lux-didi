@@ -1,6 +1,7 @@
 import { notFound, conflict, badRequest } from './contract.js';
 import type { Transaction, SQLRow } from './contract.js';
 import { assertTimeZone, newId, requireText, localDayBounds } from './util.js';
+import { readSession, readEntry } from './memory.js';
 import type { Clock } from './memory.js';
 
 export type CommitmentStatus = 'active' | 'completed' | 'cancelled';
@@ -127,6 +128,19 @@ export function captureCommitment(
 ): CommitmentRecord {
   const title = requireText(input.title, 'title');
   assertTimeZone(input.timeZone);
+  // Local provenance must resolve and be consistent before anything is written:
+  // an unknown id is NOT_FOUND and an entry from another session is a
+  // BAD_REQUEST, with zero commitment/history/outbox writes.
+  if (input.sourceSessionId != null) readSession(tx, input.sourceSessionId);
+  if (input.sourceEntryId != null) {
+    const entry = readEntry(tx, input.sourceEntryId);
+    if (input.sourceSessionId != null && entry.sessionId !== input.sourceSessionId) {
+      badRequest('source entry does not belong to the source session', {
+        sourceSessionId: input.sourceSessionId,
+        sourceEntryId: input.sourceEntryId,
+      });
+    }
+  }
   const now = clock.now();
   tx.run(
     `INSERT INTO commitments

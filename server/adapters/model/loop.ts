@@ -20,7 +20,7 @@ export async function runTools(options: LoopOptions): Promise<LoopResult> {
   const tools: ToolRecord[] = [];
   const seenIds = new Set<string>();
   let steps = 0;
-  const end = (status: LoopResult['status'], reason: string, text = ''): LoopResult => ({ status, reason, text, steps, tools });
+  const end = (status: LoopResult['status'], reason: string, text = ''): LoopResult => ({ status, reason, text, steps, tools, continuation: structuredClone(contents) });
   for (; steps < options.maxSteps;) {
     let result;
     try {
@@ -31,7 +31,10 @@ export async function runTools(options: LoopOptions): Promise<LoopResult> {
     steps++;
     if (result.status !== 'complete') return { ...end(result.status, result.reason, result.text), modelResult: result };
     const calls = modelCalls(result.providerContent);
-    if (!calls.length) return { ...end('complete', 'stop', result.text), modelResult: result };
+    if (!calls.length) {
+      contents.push(structuredClone(result.providerContent));
+      return { ...end('complete', 'stop', result.text), modelResult: result };
+    }
     if (calls.length > 16) return end('limit', 'tool_calls_per_step_limit');
     contents.push(structuredClone(result.providerContent));
     const responses: Part[] = [];

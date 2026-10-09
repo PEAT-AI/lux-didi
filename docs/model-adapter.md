@@ -81,7 +81,11 @@ response; the trusted execution ID remains `runId:step:index`.
 
 Tool output is untrusted evidence returned in a `functionResponse`, never a new
 registry/grant/system instruction. IDs and signature-bearing model parts survive
-continuation. Result values above 100 KB or unserializable values are omitted
+continuation. `LoopResult.continuation` returns host-only history for an explicit
+next-turn selection, including the final complete answer. Never serialize it to
+UI; the host must bound/reclassify history before reuse. Incomplete model output
+is not appended as a completed turn; an interrupted tool batch may have pending
+calls, so non-complete continuations must not be blindly replayed. Result values above 100 KB or unserializable values are omitted
 explicitly without falsely relabelling the effect outcome. Limits are 1–32 model
 steps, 32 registered tools, and 16 calls per step. Exhaustion is `limit`, never
 success. A final assistant answer does not override refused/failed tool records;

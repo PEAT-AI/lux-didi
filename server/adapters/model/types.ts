@@ -63,4 +63,6 @@ export interface ToolRecord {
 export interface LoopResult {
   status: ModelStatus | 'limit' | 'uncertain'; text: string; tools: ToolRecord[];
   steps: number; reason: string; modelResult?: ModelResult;
+  /** Host-only history, including opaque signatures. Never serialize to UI. */
+  continuation: Content[];
 }

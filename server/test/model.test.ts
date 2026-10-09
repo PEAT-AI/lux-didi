@@ -184,3 +184,58 @@ test('failed tools stay failed and cancelled execution cannot be success', async
     authority: { isCurrent: async () => true }, maxSteps: 3, control: { signal: c.signal, deadlineMs: Date.now() + 500 } });
   assert.equal((await p).status, 'cancelled');
 });
+
+test('cancelled write stays unknown when a non-cooperative handler resolves late', async () => {
+  const c = new AbortController();
+  let finish: ((outcome: { status: 'completed'; value: null }) => void) | undefined;
+  let announce: (() => void) | undefined;
+  const started = new Promise<void>(resolve => { announce = resolve; });
+  const p = runTools({ model: adapter(async () => sse([call()])), request: request(),
+    registry: [tool(async () => { announce!(); return new Promise(resolve => { finish = resolve; }); }, 'write')],
+    host: { ...host, grants: [{ ...host.grants[0]!, effect: 'write' }] }, authority: { isCurrent: async () => true }, maxSteps: 3,
+    control: { signal: c.signal, deadlineMs: Date.now() + 500 } });
+  await started; c.abort();
+  const result = await p;
+  assert.equal(result.status, 'cancelled'); assert.equal(result.tools[0]?.status, 'unknown');
+  finish!({ status: 'completed', value: null });
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(result.tools[0]?.status, 'unknown');
+});
+
+test('parser rejects invalid UTF8, supports multiline SSE/CR and closes rejected response body', async () => {
+  const bytes = new Uint8Array([100, 97, 116, 97, 58, 32, 0xc3, 0x28, 10, 10]);
+  const invalid = await adapter(async () => new Response(bytes, { headers: { 'content-type': 'text/event-stream' } })).generate(request(), control());
+  assert.equal(invalid.status, 'error');
+  const json = JSON.stringify(stop());
+  const multiline = await adapter(async () => new Response('data: ' + json.slice(0, 1) + '\rdata: ' + json.slice(1) + '\r\r', { headers: { 'content-type': 'text/event-stream' } })).generate(request(), control());
+  assert.equal(multiline.status, 'complete');
+  let cancelled = false;
+  const rejected = await adapter(async () => new Response(new ReadableStream({
+    start(controller) { controller.enqueue(new TextEncoder().encode('data: {"candidates":[{"content":{"role":"user","parts":[]}}]}\n\n')); },
+    cancel() { cancelled = true; },
+  }), { headers: { 'content-type': 'text/event-stream' } })).generate(request(), control());
+  assert.equal(rejected.status, 'error'); assert.equal(cancelled, true);
+});
+
+test('route mismatch and selected private context deny before key resolution', async () => {
+  let used = 0;
+  const credentials = { resolve: async () => { used++; return key; } };
+  for (const route of [{ enabled: false, provider: 'gemini', modelId: 'gemini-2.5-flash', dataClasses: ['ordinary'] },
+    { enabled: true, provider: 'gemini', modelId: 'gemini-another', dataClasses: ['ordinary'] }]) {
+    assert.equal((await adapter(async () => { used++; return sse([stop()]); }, { credentials, route }).generate(request(), control())).status, 'denied');
+  }
+  const r = request(); r.context = { items: [{ id: 'private', text: 'Synthetic only', dataClass: 'private' }], selectedIds: ['private'], maxChars: 100 };
+  assert.equal((await adapter(async () => { used++; return sse([stop()]); }, { credentials }).generate(r, control())).status, 'denied');
+  assert.equal(used, 0);
+});
+
+test('duplicate call IDs are not replayed, and unknown transport has no retry', async () => {
+  let executions = 0;
+  const r = await runTools({ model: adapter(async () => sse([call()])), request: request(),
+    registry: [tool(async () => { executions++; return { status: 'completed', value: null }; })], host,
+    authority: { isCurrent: async () => true }, maxSteps: 2, control: control() });
+  assert.equal(r.status, 'limit'); assert.equal(executions, 1); assert.equal(r.tools[1]?.reason, 'duplicate_call_id');
+  let transports = 0;
+  const failure = await adapter(async () => { transports++; throw Error('synthetic disconnect'); }).generate(request(), control());
+  assert.equal(failure.status, 'error'); assert.equal(transports, 1);
+});

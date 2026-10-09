@@ -61,7 +61,8 @@ export type DiscoveryResult =
   | { state: 'discovered'; endpointId: string; schemaDigest: string; tools: readonly ToolDefinition[]; observedAt: number }
   | { state: 'unavailable'; reason: string };
 export interface CompletedResult {
-  state: 'completed' | 'tool-error';
+  state: 'completed' | 'tool-error' | 'protocol-error';
+  protocolErrorCode?: number;
   source: { endpointId: string; url: string; account: string; resource: string; toolName: string; schemaDigest: string; generation: number };
   coverage: { completeCorpus: false; basis: 'single-tool-result'; remoteSideEffects: 'unverified' };
   freshness: { receivedAt: number; sourceVersion: 'unknown' };

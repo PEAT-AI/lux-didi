@@ -1,7 +1,7 @@
-import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { Client, ProtocolError, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/ajv';
 import { McpRegistry } from './registry.js';
-import type { CallRequest, CallResult, DiscoveryResult, EndpointConfig, McpBudgets, McpPort, ResultScope, ResultStorePort, SliceRequest, SliceResult, StoredPayload, ToolDefinition } from './port.js';
+import type { CallRequest, CallResult, CompletedResult, DiscoveryResult, EndpointConfig, McpBudgets, McpPort, ResultScope, ResultStorePort, SliceRequest, SliceResult, StoredPayload, ToolDefinition } from './port.js';
 
 export interface McpAdapterOptions {
   registry: McpRegistry;
@@ -10,7 +10,7 @@ export interface McpAdapterOptions {
   budgets?: Partial<McpBudgets>;
 }
 class PolicyError extends Error { constructor(readonly reason: string) { super(reason); } }
-interface Operation { scope: ResultScope; signal: AbortSignal; dispatched: boolean; bytes?: Uint8Array }
+interface Operation { scope: ResultScope; signal: AbortSignal; dispatched: boolean; bytes?: Uint8Array; requestId?: string | number }
 interface Session { client: Client; config: EndpointConfig; operation?: Operation }
 const allowedHeaders = new Set(['accept', 'content-type', 'mcp-session-id', 'mcp-protocol-version', 'last-event-id', 'mcp-method', 'mcp-name']);
 
@@ -22,7 +22,7 @@ function guardedFetch(session: Session, options: McpAdapterOptions, budgets: Mcp
     if (request.url !== config.url || config.url !== session.config.url) throw new PolicyError('destination-refused');
     for (const name of request.headers.keys()) if (!allowedHeaders.has(name)) throw new PolicyError('header-refused');
     if (!['GET', 'POST', 'DELETE'].includes(request.method)) throw new PolicyError('method-refused');
-    const packet = request.method === 'POST' ? await request.clone().json() as { method?: string } : undefined;
+    const packet = request.method === 'POST' ? await request.clone().json() as { method?: string; id?: string | number } : undefined;
     const isCall = packet?.method === 'tools/call';
     const operation = isCall ? session.operation : undefined;
     if (isCall && (!operation || operation.dispatched)) throw new PolicyError('call-replay-refused');
@@ -41,10 +41,34 @@ function guardedFetch(session: Session, options: McpAdapterOptions, budgets: Mcp
     // Recheck after asynchronous credential resolution; enablement never implies egress.
     options.registry.endpoint(config.id);
     if (operation && !options.registry.authorizesScope(operation.scope)) throw new PolicyError('grant-revoked-before-dispatch');
-    if (operation) operation.dispatched = true;
-    const response = await fetch(request, { headers, redirect: 'manual', signal });
+    if (operation) {
+      operation.dispatched = true;
+      if (typeof packet?.id === 'string' || typeof packet?.id === 'number') operation.requestId = packet.id;
+    }
+    // Bound GET connection establishment without expiring an idle notification stream.
+    const connection = new AbortController(); const abortConnection = () => connection.abort();
+    if (request.method === 'GET') signal.addEventListener('abort', abortConnection, { once: true });
+    let response: Response;
+    try {
+      response = await bounded(fetch(request, { headers, redirect: 'manual', signal: request.method === 'GET' ? AbortSignal.any([request.signal, connection.signal]) : signal }), signal);
+    } finally { signal.removeEventListener('abort', abortConnection); }
     if (response.status >= 300 && response.status < 400) { void response.body?.cancel().catch(() => {}); throw new PolicyError('redirect-refused'); }
-    // GET is the SDK's long-lived notification stream. Do not buffer or await it.
+    if (request.method === 'GET' && response.body) {
+      const reader = response.body.getReader(); let received = 0;
+      const stream = new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          try {
+            const chunk = await reader.read();
+            if (chunk.done) { controller.close(); return; }
+            received += chunk.value.length;
+            if (received > budgets.maxResponseBytes) throw new PolicyError('notification-stream-budget');
+            controller.enqueue(chunk.value);
+          } catch (error) { void reader.cancel().catch(() => {}); controller.error(error); }
+        },
+        cancel() { return reader.cancel(); },
+      });
+      return new Response(stream, { status: response.status, statusText: response.statusText, headers: response.headers });
+    }
     // POST entity capture is bounded, exact, and passed unchanged to the SDK parser.
     if (request.method !== 'POST' || !response.body) return response;
     const reader = response.body.getReader(); const chunks: Uint8Array[] = []; let length = 0;
@@ -102,13 +126,25 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
     const existing = sessions.get(config.id); if (existing) return existing;
     const client = new Client({ name: 'lux-didi-optional-mcp', version: '0.1.0' }, { enforceStrictCapabilities: true });
     const session: Session = { client, config };
-    client.onerror = () => {}; // No remote error/header/body is logged.
+    client.onerror = () => { suspend(config.id); }; // No remote error/header/body is logged.
+    client.onclose = () => { suspend(config.id); };
     client.setNotificationHandler('notifications/tools/list_changed', async () => { suspend(config.id); });
     const transport = new StreamableHTTPClientTransport(new URL(config.url), { fetch: guardedFetch(session, options, budgets), redirectPolicy: 'follow', reconnectionOptions: { maxRetries: 0, initialReconnectionDelay: 1000, maxReconnectionDelay: 1000, reconnectionDelayGrowFactor: 1 } });
     sessions.set(config.id, session);
     await bounded(client.connect(transport, { timeout: budgets.timeoutMs }), AbortSignal.timeout(budgets.timeoutMs));
     if (!client.getServerCapabilities()?.tools) throw new PolicyError('tools-unavailable');
     return session;
+  }
+  function completed(scope: ResultScope, bytes: Uint8Array, result: unknown, state: CompletedResult['state'], protocolErrorCode?: number): CompletedResult {
+    const full = JSON.stringify(result); const text = full.slice(0, budgets.projectionChars);
+    let payload: StoredPayload;
+    try { payload = options.store.put(scope, bytes); } catch { payload = { state: 'unavailable', reason: 'store-unavailable' }; }
+    return {
+      state, ...(protocolErrorCode === undefined ? {} : { protocolErrorCode }), source: scope,
+      coverage: { completeCorpus: false, basis: 'single-tool-result', remoteSideEffects: 'unverified' },
+      freshness: { receivedAt: Date.now(), sourceVersion: 'unknown' },
+      projection: { text, omitted: text.length !== full.length, originalCharacters: full.length, omittedCharacters: full.length - text.length }, payload,
+    };
   }
   return {
     async discover(endpointId: string): Promise<DiscoveryResult> {
@@ -154,20 +190,17 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
       const localSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
       const operation: Operation = { scope, signal: localSignal, dispatched: false }; session.operation = operation;
       try {
-        const result = await bounded(session.client.callTool({ name: request.toolName, arguments: request.arguments }, { signal: localSignal, timeout: budgets.timeoutMs }), localSignal);
+        // Supported SDK request API avoids callTool's automatic header-mismatch refresh/retry.
+        const result = await bounded(session.client.request({ method: 'tools/call', params: { name: request.toolName, arguments: request.arguments } }, { signal: localSignal, timeout: budgets.timeoutMs }), localSignal);
         if (!options.registry.authorizesScope(scope)) throw new PolicyError('grant-revoked-after-dispatch');
         if (!operation.bytes) throw new PolicyError('original-response-unavailable');
-        const full = JSON.stringify(result); const text = full.slice(0, budgets.projectionChars);
-        let payload: StoredPayload;
-        try { payload = options.store.put(scope, operation.bytes); } catch { payload = { state: 'unavailable', reason: 'store-unavailable' }; }
-        return {
-          state: result.isError ? 'tool-error' : 'completed', source: scope,
-          coverage: { completeCorpus: false, basis: 'single-tool-result', remoteSideEffects: 'unverified' },
-          freshness: { receivedAt: Date.now(), sourceVersion: 'unknown' },
-          projection: { text, omitted: text.length !== full.length, originalCharacters: full.length, omittedCharacters: full.length - text.length }, payload,
-        };
+        return completed(scope, operation.bytes, result, result.isError ? 'tool-error' : 'completed');
       } catch (error) {
         if (operation.dispatched) {
+          if (error instanceof ProtocolError && operation.bytes && options.registry.authorizesScope(scope)) return completed(scope, operation.bytes, { error: { code: error.code } }, 'protocol-error', error.code);
+          // HTTP SDK cancellation aborts the request, rather than notifying. Use its
+          // supported notification API with the SDK-owned id; never wait indefinitely.
+          if (localSignal.aborted && operation.requestId !== undefined) await bounded(session.client.notification({ method: 'notifications/cancelled', params: { requestId: operation.requestId, reason: 'local cancellation' } }), AbortSignal.timeout(200)).catch(() => {});
           // No call retry or reconnect here. A later explicit discovery can reconnect only.
           suspend(request.endpointId); await retire(request.endpointId);
           return { state: 'unknown', reason: error instanceof PolicyError ? error.reason : 'protocol-or-transport-outcome-unknown' };

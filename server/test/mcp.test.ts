@@ -30,7 +30,7 @@ async function fixture(options: FixtureOptions = {}) {
   let counter = 0;
   let cancellations = 0;
   const responseEntities: Buffer[] = [];
-  const sdk = new Server({ name: 'synthetic-fixture', version: '1' }, { capabilities: { tools: { listChanged: true } } });
+  const sdk = new Server({ name: 'synthetic-fixture', version: '1' }, { capabilities: { tools: { listChanged: true }, logging: {} } });
   sdk.setRequestHandler('tools/list', request => (options.list?.(request.params?.cursor) ?? { tools: [tool, writeTool] }) as never);
   sdk.setRequestHandler('tools/call', async () => {
     counter++;
@@ -349,4 +349,38 @@ test('explicit JSON-RPC error is a completed protocol-error, not unknown success
     assert('coverage' in result);
     assert.equal(result.coverage.remoteSideEffects, 'unverified');
   } finally { await adapter.close(); await f.close(); }
+});
+
+test('notification stream resource budget suspends authority; source refuses revoked egress before dispatch', async () => {
+  const f = await fixture(); const { adapter, registry } = setup(f.url, { responseBytes: 500 });
+  try {
+    await approve(adapter, registry);
+    await f.sdk.notification({ method: 'notifications/message', params: { level: 'info', data: 'x'.repeat(1000) } });
+    await adapter.whenSuspended('source');
+    assert.equal((await adapter.call(request)).state, 'refused'); assert.equal(f.counter, 0);
+    registry.denyEgress('source');
+    const before = f.observed.length;
+    assert.equal((await adapter.discover('source')).state, 'unavailable');
+    assert.equal(f.observed.length, before);
+  } finally { await adapter.close(); await f.close(); }
+});
+
+test('revocation across asynchronous credential resolution is refused before dispatch; pre-abort and account/resource mismatch send no call', async () => {
+  const f = await fixture(); const registry = new McpRegistry();
+  registry.register({ id: 'source', url: f.url, account: 'account-a', resource: 'resource-a', credentialRef: 'local-ref' }); registry.enable('source'); registry.allowEgress('source');
+  let block = false; let entered!: () => void; let release!: () => void;
+  const credentialStarted = new Promise<void>(resolve => { entered = resolve; }); const gate = new Promise<void>(resolve => { release = resolve; });
+  const adapter = createMcpAdapter({ registry, store: new MemoryResultStore(), resolveCredential: async reference => {
+    assert.equal(reference, 'local-ref'); if (block) { entered(); await gate; } return 'synthetic-token';
+  } });
+  try {
+    await approve(adapter, registry);
+    assert.equal((await adapter.call(request, AbortSignal.abort())).state, 'refused');
+    assert.equal((await adapter.call({ ...request, account: 'wrong' })).state, 'refused');
+    assert.equal((await adapter.call({ ...request, resource: 'wrong' })).state, 'refused');
+    block = true; const pending = adapter.call(request); await credentialStarted;
+    registry.revoke('source'); release();
+    assert.equal((await pending).state, 'refused'); assert.equal(f.counter, 0);
+    assert.equal(f.observed.filter(row => row.method === 'tools/call').length, 0);
+  } finally { release(); await adapter.close(); await f.close(); }
 });

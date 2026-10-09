@@ -24,7 +24,8 @@
     "dist/runtime",
     "dist/http",
     "dist/contracts",
-    "dist/adapters/mcp"
+    "dist/adapters/mcp",
+    "adapters/mcp/SDK-LICENSE.txt"
   ],
   "dependencies": {
     "@modelcontextprotocol/client": "2.3.1"

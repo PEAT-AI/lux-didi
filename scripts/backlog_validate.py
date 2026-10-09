@@ -68,6 +68,7 @@ import sys
 from pathlib import Path
 
 SCHEMA = "lux-didi.backlog/1"
+VERIFIER_ROOT = Path(__file__).resolve().parent.parent
 
 MILESTONES = {
     "M0": "Proof and contracts",
@@ -204,12 +205,73 @@ ALLOWED_PATHS = {
     "README.md",
     "README",
     "scripts/backlog_validate.py",
+    "scripts/backlog_render.py",
     "planning/backlog.json",
     "planning/backlog-validation.md",
     "planning/backlog-validation.json",
     "planning/issue-map.json",
 }
 ALLOWED_PATHS |= {f"docs/{name}" for name in DOCS}
+
+# The repository is code-bearing: accepted components publish their own source trees.
+# These are declared roots and named files, never an open wildcard.
+COMPONENT_ROOTS = ("server/", "Sources/", "Tests/", "Resources/", "web/")
+COMPONENT_FILES = (
+    "scripts/check-service.sh",
+    "docs/service-runtime.md",
+    "docs/mac-experience.md",
+)
+
+# Paths that must never be published, whatever else the tree contains. Applied to the
+# whole tree except the pruned artifact directories below, so a real credential file
+# fails even when it is gitignored.
+FORBIDDEN_PATH_RES = (
+    (re.compile(r"(^|/)\.env($|\.)"), "environment file"),
+    (re.compile(r"(^|/)(credentials?|secrets?)($|\.)", re.I), "credential file"),
+    (re.compile(r"\.(pem|key|p12|pfx|jks|keystore)$", re.I), "key material"),
+    (re.compile(r"(^|/)id_(rsa|dsa|ecdsa|ed25519)($|\.)"), "private key"),
+    (re.compile(r"(^|/)\.ssh/"), "ssh material"),
+    (re.compile(r"(^|/)\.github/workflows/"), "workflow file"),
+)
+
+# Directories excluded from publication-set validation because they are build or
+# dependency artifacts, not public source. They are pruned, never whitelisted.
+PRUNED_DIRS = {".git", "node_modules", "dist", "build", ".next", "target", "out",
+               "__pycache__", ".venv", "venv"}
+
+
+def is_forbidden_path(rel: str) -> str | None:
+    for pattern, label in FORBIDDEN_PATH_RES:
+        if pattern.search(rel):
+            return label
+    return None
+
+
+def is_publication_path(rel: str) -> bool:
+    if rel in ALLOWED_PATHS or rel in COMPONENT_FILES:
+        return True
+    return any(rel.startswith(prefix) for prefix in COMPONENT_ROOTS)
+
+
+def tracked_public_files(root: Path, exclude: set[str]) -> list[str] | None:
+    """Tracked files plus untracked-but-not-ignored files: what could be published.
+    Gitignored build artifacts are excluded here, exactly as the ruling requires."""
+    out = subprocess.run(
+        ["git", "-C", str(root), "ls-files", "--cached", "--others", "--exclude-standard"],
+        capture_output=True, text=True, check=False)
+    if out.returncode != 0:
+        return None
+    return sorted({line.strip() for line in out.stdout.splitlines() if line.strip()} - exclude)
+
+
+def scanned_paths(root: Path) -> list[str]:
+    """Every file outside the pruned artifact directories, for the forbidden-path scan."""
+    found: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in PRUNED_DIRS]
+        for name in filenames:
+            found.append((Path(dirpath) / name).relative_to(root).as_posix())
+    return sorted(found)
 
 
 class Report:
@@ -758,23 +820,32 @@ def check_v12(report: Report, nodes: list[dict] | None, docs_text: dict[str, str
 def check_v13(report: Report, root: Path, exclude: set[str]) -> None:
     failures: list[str] = []
     warnings: list[str] = []
-    walked = []
-    for path in sorted(root.rglob("*")):
-        rel = path.relative_to(root).as_posix()
-        if path.is_dir():
-            continue
-        if rel.startswith(".git/") or rel == ".git":
-            continue
-        walked.append(rel)
-        if rel in exclude:
-            continue
-        if rel not in ALLOWED_PATHS:
+    walked = tracked_public_files(root, exclude)
+    if walked is None:
+        report.add("V-13", "Repository hygiene and intended public set",
+                   ["git could not list the tracked public source"])
+        return
+
+    # Publication-set membership: the intended tracked public source only.
+    for rel in walked:
+        if is_forbidden_path(rel):
+            continue  # reported by the forbidden-path scan below
+        if not is_publication_path(rel):
             failures.append(f"unexpected published path: {rel}")
+
+    # Forbidden paths: scanned over the whole tree, pruned of build and dependency
+    # artifact directories, so a gitignored credential file still fails.
+    for rel in scanned_paths(root):
+        label = is_forbidden_path(rel)
+        if label:
+            failures.append(f"forbidden path ({label}): {rel}")
+
     for name in DOCS:
         rel = f"docs/{name}"
         if rel not in walked:
             failures.append(f"missing document {rel}")
-    for required in ["README.md", "scripts/backlog_validate.py", "planning/backlog.json"]:
+    for required in ["README.md", "scripts/backlog_validate.py", "scripts/backlog_render.py",
+                     "planning/backlog.json", "planning/issue-map.json"]:
         if required not in walked:
             failures.append(f"missing {required}")
     if (root / ".github" / "workflows").exists():
@@ -783,7 +854,53 @@ def check_v13(report: Report, root: Path, exclude: set[str]) -> None:
         base = os.path.basename(name).lower()
         if base.startswith(".env") or base in {"credentials.json", "secrets.json"} or base.endswith(".pem"):
             failures.append(f"credential-shaped file: {name}")
-    report.add("V-13", "Repository hygiene and intended public set", failures, warnings, details={"paths": walked})
+
+    # Negative and positive controls. A repair that accepts every path, or rejects
+    # every component path, must not pass.
+    controls = {
+        "forbidden_rejected": {
+            "server/.env": "environment file",
+            "Sources/secrets.json": "credential file",
+            "planning/credentials.json": "credential file",
+            "server/certs/tls.pem": "key material",
+            ".github/workflows/ci.yml": "workflow file",
+            "resources/id_ed25519": "private key",
+        },
+        "component_accepted": [
+            "server/index.ts", "server/runtime/store.ts", "Sources/LuxDidi/LuxDidiApp.swift",
+            "Tests/DidiMacTests/main.swift", "Resources/Info.plist", "web/src/app.ts",
+            "docs/service-runtime.md", "docs/mac-experience.md", "scripts/check-service.sh",
+            "planning/backlog.json", "README.md",
+        ],
+        "unrelated_rejected": ["notes/scratch.md", "planning/private-notes.json", "tmp/x.txt"],
+    }
+    controls_ok = 0
+    controls_total = len(controls["forbidden_rejected"]) + len(controls["component_accepted"]) \
+        + len(controls["unrelated_rejected"])
+    for rel, expected in controls["forbidden_rejected"].items():
+        got = is_forbidden_path(rel)
+        if got == expected:
+            controls_ok += 1
+        else:
+            failures.append(f"control: {rel} should be forbidden as {expected!r}, got {got!r}")
+    for rel in controls["component_accepted"]:
+        if is_publication_path(rel) and not is_forbidden_path(rel):
+            controls_ok += 1
+        else:
+            failures.append(f"control: accepted component path {rel} was not accepted")
+    for rel in controls["unrelated_rejected"]:
+        if not is_publication_path(rel):
+            controls_ok += 1
+        else:
+            failures.append(f"control: unrelated path {rel} was accepted")
+    if controls_ok != controls_total:
+        failures.append(f"controls: {controls_ok} of {controls_total} behaved as required")
+    if is_publication_path("anything/at/all.bin"):
+        failures.append("control: the publication set accepts arbitrary paths")
+
+    report.add("V-13", "Repository hygiene and intended public set", failures, warnings,
+               details={"paths": len(walked), "controls": f"{controls_ok}/{controls_total}",
+                        "scanned": len(scanned_paths(root))})
 
 
 def check_x01(report: Report, nodes: list[dict] | None) -> None:
@@ -887,7 +1004,7 @@ def check_x07(report: Report, backlog: dict | None, nodes: list[dict] | None, pa
     failures: list[str] = []
     details = {}
     if packets_mode or backlog is None:
-        report.add("X-07", "Snapshot body hashes and correction record", [])
+        report.add("X-07", "Snapshot body hashes, rendered hashes and correction record", [])
         return
     hashes = backlog.get("node_hashes")
     if not isinstance(hashes, dict):
@@ -910,7 +1027,43 @@ def check_x07(report: Report, backlog: dict | None, nodes: list[dict] | None, pa
         for index in range(1, 11):
             if f"PUB-R2:{index}" not in joined:
                 failures.append(f"corrections record does not name PUB-R2:{index}")
-    report.add("X-07", "Snapshot body hashes and correction record", failures, details=details)
+    renderer = VERIFIER_ROOT / "scripts" / "backlog_render.py"
+    if not renderer.exists():
+        failures.append("scripts/backlog_render.py is missing, so the render domain is unverified")
+    else:
+        run_env = dict(os.environ)
+        run_env["PYTHONDONTWRITEBYTECODE"] = "1"
+        run = subprocess.run([sys.executable, str(renderer), "--check", "--json"],
+                             capture_output=True, text=True, env=run_env,
+                             cwd=str(VERIFIER_ROOT))
+        if run.returncode != 0:
+            failures.append(f"renderer verification failed: {run.stdout.strip()[:200] or run.stderr.strip()[:200]}")
+        else:
+            try:
+                rendered = json.loads(run.stdout.strip().splitlines()[-1])
+            except (ValueError, IndexError):
+                rendered = None
+                failures.append("renderer verification did not print a JSON result")
+            if rendered is not None:
+                base = rendered.get("baseline") or {}
+                current = rendered.get("current") or {}
+                if not rendered.get("ok"):
+                    failures.append("renderer verification reported not ok")
+                if base.get("recorded", 0) < 101 or base.get("matched") != base.get("recorded"):
+                    failures.append(f"renderer reproduced {base.get('matched')} of {base.get('recorded')} baseline rendered hashes")
+                if current.get("mismatched"):
+                    failures.append(f"renderer mismatched current nodes: {current['mismatched'][:5]}")
+                if current.get("staged_number_collisions"):
+                    failures.append(f"staged numbers collide with observed: {current['staged_number_collisions']}")
+                if current.get("created_rendered", 0) < 1:
+                    failures.append("renderer produced no rendered body for a created node")
+                details["rendered_baseline"] = f"{base.get('matched')}/{base.get('recorded')}"
+                details["rendered_current"] = {
+                    k: current.get(k) for k in ("nodes", "unchanged_reproduced", "updated_changed",
+                                                "created_rendered", "observed_numbers",
+                                                "staged_numbers")}
+    report.add("X-07", "Snapshot body hashes, rendered hashes and correction record", failures,
+               details=details)
 
 
 def check_x08(report: Report, nodes: list[dict] | None) -> None:

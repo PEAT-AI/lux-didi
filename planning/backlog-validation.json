@@ -259,25 +259,9 @@
     },
     {
       "details": {
-        "paths": [
-          "README.md",
-          "docs/acceptance.md",
-          "docs/architecture.md",
-          "docs/client-service-contract.md",
-          "docs/cloud-deployment.md",
-          "docs/decisions.md",
-          "docs/overnight-execution.md",
-          "docs/parallel-masters.md",
-          "docs/privacy-and-authority.md",
-          "docs/research.md",
-          "docs/risks.md",
-          "docs/roadmap.md",
-          "planning/backlog-validation.json",
-          "planning/backlog-validation.md",
-          "planning/backlog.json",
-          "planning/issue-map.json",
-          "scripts/backlog_validate.py"
-        ]
+        "controls": "20/20",
+        "paths": 43,
+        "scanned": 46
       },
       "failures": [],
       "id": "V-13",
@@ -390,12 +374,21 @@
     },
     {
       "details": {
-        "hashed_nodes": 120
+        "hashed_nodes": 120,
+        "rendered_baseline": "101/101",
+        "rendered_current": {
+          "created_rendered": 19,
+          "nodes": 120,
+          "observed_numbers": 101,
+          "staged_numbers": 19,
+          "unchanged_reproduced": 81,
+          "updated_changed": 20
+        }
       },
       "failures": [],
       "id": "X-07",
       "status": "PASS",
-      "title": "Snapshot body hashes and correction record",
+      "title": "Snapshot body hashes, rendered hashes and correction record",
       "warnings": []
     },
     {
@@ -408,8 +401,8 @@
     }
   ],
   "failed": false,
-  "file_count": 15,
+  "file_count": 42,
   "packets_mode": false,
   "schema": "lux-didi.validation/1",
-  "tree_digest": "6fcbfcf6eb4916df827e91cd9d99d532dbe66619ba9e7ae273743981d329b97b"
+  "tree_digest": "b9cc4564d8c080a83a6bbf76aa7f2bac157a85158466ce5a7d8ba377414a8d3e"
 }

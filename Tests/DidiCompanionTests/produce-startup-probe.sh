@@ -12,5 +12,6 @@ cp Resources/Info.plist "$work/Didi.app/Contents/Info.plist"
 xcrun swiftc -whole-module-optimization -module-cache-path "$work/cache" -parse-as-library Sources/LuxDidi/*.swift -o "$work/Didi.app/Contents/MacOS/LuxDidi"
 codesign --force --sign - --entitlements Resources/LuxDidi.entitlements "$work/Didi.app"
 "$work/Didi.app/Contents/MacOS/LuxDidi" --ui-proof "$proof/native.png"
+python3 Tests/DidiCompanionTests/check-ax-thread.py "$proof/native.png.evidence.json"
 [ "${1:-}" != '--ax-only' ] || exit 0
 bash Tests/DidiCompanionTests/check-real-host.sh "$work/Didi.app" "$proof" "$(command -v node)"

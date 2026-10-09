@@ -99,7 +99,10 @@ try {
     await page.getByText('Host browser kestrel launch:', { exact: false }).first().waitFor();
     const recall = await api('/recall?q=kestrel&limit=10');
     assert.equal(recall.totalMatches, 1); assert.equal(recall.hits[0].entryId, entryId);
-    assert.ok(recall.hits[0].sourceRefs.some(source => source.availability === 'present' && source.label.length > 0));
+    // Plain UI captures have local conversation provenance, not an invented external SourceRef.
+    assert.equal(recall.hits[0].sessionId, sessionId);
+    const source = await api(`/sessions/${recall.hits[0].sessionId}`);
+    assert.ok(source.entries.some(entry => entry.id === recall.hits[0].entryId && entry.text === 'Host browser kestrel launch: review the release checklist before noon.'));
     await page.getByRole('button', { name: 'Open conversation source', exact: true }).first().click();
     await visible('Host browser kestrel launch: review the release checklist before noon.');
   });

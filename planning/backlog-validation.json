@@ -247,6 +247,7 @@
           "docs/acceptance.md",
           "docs/architecture.md",
           "docs/decisions.md",
+          "docs/overnight-execution.md",
           "docs/parallel-masters.md",
           "docs/privacy-and-authority.md",
           "docs/research.md",
@@ -255,6 +256,7 @@
           "planning/backlog-validation.json",
           "planning/backlog-validation.md",
           "planning/backlog.json",
+          "planning/issue-map.json",
           "scripts/backlog_validate.py"
         ]
       },
@@ -308,7 +310,7 @@
     },
     {
       "details": {
-        "assembly_digest": "e72d804c89322f4e6b7186a52d6395ea4124fd7dc8af7b286a285f1b711e0cd4"
+        "assembly_digest": "669648727adff01c327179c5631f0a816e34294f97d9273b0dea616812141c4a"
       },
       "failures": [],
       "id": "X-06",
@@ -339,5 +341,5 @@
   "file_count": 11,
   "packets_mode": false,
   "schema": "lux-didi.validation/1",
-  "tree_digest": "96dc07894926775c912d2edee64943d9526d45f31494cb97914c7d2fbe354c5c"
+  "tree_digest": "c0c0426879741b4b8009ffe28c78df25c28be935afeb2b95e05724b7854d41af"
 }

@@ -6,7 +6,7 @@ Lux Didi is the planning home for a Mac-first local assistant: a warm, direct an
 
 This repository holds a public plan, not a product. There is no application, no installable build, no dependency manifest and no workflow here yet. Every behavior described in these pages is proposed until an implementation issue records evidence for it.
 
-The build plan lives in [planning/backlog.json](planning/backlog.json) as 101 nodes: one program tracker, ten epics and ninety work items across five implementation lanes. When the plan is published as GitHub issues, the same material is browsable with stable IDs, labels and milestones, and the program tracker `P00` is the entry point. The published mapping from stable IDs to issue numbers is recorded in `planning/issue-map.json`. The published totals are 101 roadmap issues plus one separate plan-delivery issue referenced only by the documentation pull request, so `P00` is never auto-closed by it.
+The build plan lives in [planning/backlog.json](planning/backlog.json) as 101 nodes: one program tracker, ten epics and ninety work items across five implementation lanes. The plan is published as GitHub issues with stable IDs, labels, milestones and dependency links; the entry point is [the P00 program tracker](https://github.com/PEAT-AI/lux-didi/issues/1). The published mapping from stable IDs to issue numbers is recorded in [planning/issue-map.json](planning/issue-map.json), including the separate [plan-delivery record](https://github.com/PEAT-AI/lux-didi/issues/102), so `P00` is never auto-closed by the documentation pull request.
 
 The only executable artifact in this repository is the planning validator, which checks the backlog and the documents for internal consistency: unique IDs, acyclic dependencies, complete epic coverage, resolved relative links and publication hygiene.
 
@@ -42,10 +42,11 @@ The first real-user slice is deliberately small. A person installs an early buil
 - [docs/acceptance.md](docs/acceptance.md): synthetic acceptance scenarios and explicitly proposed budgets.
 - [docs/decisions.md](docs/decisions.md): adjudicated choices and deferred proof questions.
 - [docs/risks.md](docs/risks.md): material risks with triggers, mitigations and owners.
+- [docs/overnight-execution.md](docs/overnight-execution.md): the reviewed first-night execution plan (proposed; target selection pending).
 
 ## If you have five minutes
 
-Read this page, then the program tracker `P00` once the issues are published, then [docs/roadmap.md](docs/roadmap.md). The detail of any single work item lives in its issue, and the backlog file is the machine-readable source.
+Read this page, then [the P00 program tracker](https://github.com/PEAT-AI/lux-didi/issues/1), then [docs/roadmap.md](docs/roadmap.md). The detail of any single work item lives in its issue, and the backlog file is the machine-readable source.
 
 ## What this repository is not
 

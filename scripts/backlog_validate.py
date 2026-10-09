@@ -104,6 +104,7 @@ DOCS = [
     "acceptance.md",
     "decisions.md",
     "risks.md",
+    "overnight-execution.md",
 ]
 
 REQUIRED_KEYS = [

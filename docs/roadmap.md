@@ -79,4 +79,4 @@ The validator derives labels from node fields so the published issues cannot dri
 
 ## Where to start
 
-Read the program tracker P00 first: its body names the five lanes and the entry point for each milestone. Then [parallel-masters.md](parallel-masters.md) for ownership and start packets, [architecture.md](architecture.md) for the invariants, and [decisions.md](decisions.md) for the choices already made and the questions still open.
+Read [the P00 program tracker](https://github.com/PEAT-AI/lux-didi/issues/1) first: its body names the five lanes and the entry point for each milestone. Then [parallel-masters.md](parallel-masters.md) for ownership and start packets, [architecture.md](architecture.md) for the invariants, and [decisions.md](decisions.md) for the choices already made and the questions still open. The stable-ID to issue-number mapping is in [planning/issue-map.json](../planning/issue-map.json). The separate first-night execution plan is [overnight-execution.md](overnight-execution.md); it is proposed and does not change the issue scope.

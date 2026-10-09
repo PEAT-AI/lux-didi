@@ -88,6 +88,12 @@ test('CONNECTED actual adapter/HTTP atomic private enrollment and whole-turn con
     assert.equal(f.captured.length, 1); assert.equal(f.credentialCalls, 1);
     assert.match(f.captured[0]!.url, /^https:\/\/generativelanguage\.googleapis\.com\/v1beta\/models\/gemini-connected-test:streamGenerateContent\?alt=sse$/);
     const payload = JSON.parse(String(f.captured[0]!.init.body)); assert.ok(payload.systemInstruction); assert.match(JSON.stringify(payload), /small next step/); assert.doesNotMatch(JSON.stringify(payload), /EXCLUDED_/);
+    const policy = f.host.store.transaction(tx => tx.get('SELECT * FROM chat_run_policy WHERE run_id=?', [first.runId]))!;
+    const identity = JSON.parse(String(policy.route_identity)); assert.equal(identity.endpoint, f.captured[0]!.url); assert.equal(identity.apiVersion, 'v1beta'); assert.equal(identity.keyReference, 'gemini-primary');
+    assert.equal(policy.consent_revision, 1); assert.equal(policy.policy_version, 1);
+    const trace = JSON.parse(String(f.host.store.transaction(tx => tx.get('SELECT trace FROM chat_runs WHERE run_id=?', [first.runId]))!.trace));
+    assert.equal(trace.compileInput.persona, 'didi'); assert.deepEqual(trace.selectedHistoryIds, [first.userEntryId]); assert.deepEqual(trace.selectedSourceIds, []);
+    assert.ok(trace.policy.selectedLabels.every((label: { revision: number }) => label.revision === 1));
     const entries = (await (await f.call(`/sessions/${enrolled.sessionId}`)).json()).data.entries;
     assert.deepEqual(entries.map((e: { role: string }) => e.role), ['user', 'assistant']);
     for (const e of entries) assert.equal(f.host.store.transaction(tx => domain.getRoutingLabel(tx, { kind: 'entry', id: e.id })).dataClass, 'private');

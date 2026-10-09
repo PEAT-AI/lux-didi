@@ -73,7 +73,7 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
       const actor = principal(req);
       if (route.mutation) csrf(req, actor);
       if (route.kind === 'status') {
-        send(res, 200, success({ assistantId: store.assistantId, authorityEpoch: store.authorityEpoch, serviceMode: 'loopback', capabilities: { domain: !!domain, model: false, notification: false, nativeTools: false } })); return;
+        send(res, 200, success({ assistantId: store.assistantId, authorityEpoch: store.authorityEpoch, serviceMode: 'loopback', capabilities: { memory: !!domain, commitments: !!domain, notifications: false, model: false }, model: { configured: false }, sources: [], capabilityReasons: { ...(!domain ? { memory: 'DOMAIN_NOT_CONFIGURED', commitments: 'DOMAIN_NOT_CONFIGURED' } : {}), notifications: 'NOTIFICATION_NOT_CONFIGURED', model: 'MODEL_NOT_CONFIGURED' } })); return;
       }
       if (route.kind === 'session') { send(res, 200, success({ clientId: actor.clientId, csrfToken: actor.csrfToken ?? null })); return; }
       if (route.mutation) { const body = await readBody(req); route = resolveRoute(method, url, body); }

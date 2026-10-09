@@ -33,11 +33,13 @@ export const Outbox = {
     const row = tx.get("SELECT * FROM runtime_outbox WHERE id=? AND state='claimed' AND claim_token=?", [claim.event.id, claim.token]);
     if (!row) return false;
     const time = instant(now);
-    return Number(row.lease_until) > time && Number(row.expires_at) > time && row.authority_epoch === currentEpoch && Number(row.entity_revision) === currentRevision && policy.permits(String(row.required_grant));
+    const original = fromRow(row);
+    const unchanged = (Object.keys(original) as (keyof OutboxEvent)[]).every(key => original[key] === claim.event[key]);
+    return unchanged && Number(row.lease_until) > time && Number(row.expires_at) > time && row.authority_epoch === currentEpoch && Number(row.entity_revision) === currentRevision && policy.permits(String(row.required_grant));
   },
-  recordOutcome(tx: Transaction, claim: OutboxClaim, outcome: 'acknowledged' | 'failed' | 'unknown'): void {
+  recordOutcome(tx: Transaction, claim: OutboxClaim, outcome: 'acknowledged' | 'failed' | 'unknown', now: string = new Date().toISOString()): void {
     if (!['acknowledged', 'failed', 'unknown'].includes(outcome)) throw new Error('Invalid delivery outcome');
-    if (tx.run("UPDATE runtime_outbox SET state=?,claim_token=NULL,lease_until=NULL WHERE id=? AND state='claimed' AND claim_token=?", [outcome, claim.event.id, claim.token]) !== 1) throw new ServiceError('CONFLICT', 'Outbox claim is no longer live', 409);
+    if (tx.run("UPDATE runtime_outbox SET state=?,claim_token=NULL,lease_until=NULL WHERE id=? AND state='claimed' AND claim_token=? AND lease_until>? AND expires_at>?", [outcome, claim.event.id, claim.token, instant(now), instant(now)]) !== 1) throw new ServiceError('CONFLICT', 'Outbox claim is no longer live', 409);
   },
   state(tx: Transaction, id: string): OutboxState | undefined { return tx.get('SELECT state FROM runtime_outbox WHERE id=?', [id])?.state as OutboxState | undefined; },
 };

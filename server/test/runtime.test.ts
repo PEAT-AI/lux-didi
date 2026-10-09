@@ -34,11 +34,11 @@ test('bound values, rollback, expired handles and restart retain committed data'
 test('second process is refused; close releases writer ownership', () => {
   const f = fixture();
   try {
-    const script = `import { Store } from ${JSON.stringify(new URL('../runtime/store.js', import.meta.url).href)}; try { const s = new Store(process.env.TEST_DIR); s.close(); } catch(e) { if(e.code==='WRITER_LOCKED') process.exit(23); throw e; }`;
+    const script = `import { Store } from ${JSON.stringify(new URL('../runtime/store.js', import.meta.url).href)}; try { const s = new Store(process.env.TEST_DIR, [{owner:'test',version:1,statements:['CREATE TABLE records(id TEXT PRIMARY KEY, text TEXT NOT NULL)']}]); s.close(); } catch(e) { if(e.code==='WRITER_LOCKED') process.exit(23); throw e; }`;
     const child = () => spawnSync(process.execPath, ['--input-type=module', '-e', script], { env: { ...process.env, TEST_DIR: f.dir }, timeout: 5000, encoding: 'utf8' });
     assert.equal(child().status, 23);
     f.store.close();
-    assert.equal(child().status, 0);
+    const released = child(); assert.equal(released.status, 0, released.stderr);
   } finally { f.cleanup(); }
 });
 
@@ -88,8 +88,8 @@ test('outbox and domain changes roll back together; policy default denies and wr
     assert.equal(f.store.transaction(tx => Outbox.revalidate(tx, claim, 'epoch', 1, now, allow)), true);
     assert.equal(f.store.transaction(tx => Outbox.revalidate(tx, claim, 'other', 1, now, allow)), false);
     assert.equal(f.store.transaction(tx => Outbox.revalidate(tx, claim, 'epoch', 2, now, allow)), false);
-    assert.throws(() => f.store.transaction(tx => Outbox.recordOutcome(tx, { ...claim, token: 'wrong' }, 'acknowledged')), /claim/);
-    f.store.transaction(tx => Outbox.recordOutcome(tx, claim, 'acknowledged'));
+    assert.throws(() => f.store.transaction(tx => Outbox.recordOutcome(tx, { ...claim, token: 'wrong' }, 'acknowledged', now)), /claim/);
+    f.store.transaction(tx => Outbox.recordOutcome(tx, claim, 'acknowledged', now));
     assert.equal(f.store.transaction(tx => Outbox.state(tx, event.id)), 'acknowledged');
   } finally { f.cleanup(); }
 });
@@ -108,7 +108,7 @@ test('restart converts abandoned claims to unknown; no blind retry; supersede re
       const claim = reopened.transaction(tx => Outbox.claim(tx, now, 60_000))!;
       assert.equal(reopened.transaction(tx => Outbox.supersede(tx, event.entityId, 2)), 1);
       assert.equal(reopened.transaction(tx => Outbox.revalidate(tx, claim, 'epoch', 2, now, { permits: () => true })), false);
-      assert.throws(() => reopened.transaction(tx => Outbox.recordOutcome(tx, claim, 'acknowledged')));
+      assert.throws(() => reopened.transaction(tx => Outbox.recordOutcome(tx, claim, 'acknowledged', now)));
     } finally { reopened.close(); }
   } finally { f.cleanup(); }
 });
@@ -122,4 +122,28 @@ test('lease expiry becomes unknown instead of being claimed again', () => {
     assert.equal(f.store.transaction(tx => Outbox.claim(tx, '2026-01-01T01:00:02.000Z', 1000)), undefined);
     assert.equal(f.store.transaction(tx => Outbox.state(tx, event.id)), 'unknown');
   } finally { f.cleanup(); }
+});
+
+
+test('expired delivery token cannot acknowledge an effect', () => {
+  const f = fixture();
+  try {
+    f.store.transaction(tx => Outbox.insert(tx, event));
+    const claim = f.store.transaction(tx => Outbox.claim(tx, now, 1000))!;
+    assert.throws(() => f.store.transaction(tx => Outbox.recordOutcome(tx, claim, 'acknowledged', '2026-01-01T01:00:02.000Z')), /claim/);
+  } finally { f.cleanup(); }
+});
+
+test('unclean process exit releases writer and rolls back open transaction', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-crash-'));
+  try {
+    const script = `import { Store } from ${JSON.stringify(new URL('../runtime/store.js', import.meta.url).href)};
+      const s = new Store(process.env.TEST_DIR, [{owner:'crash',version:1,statements:['CREATE TABLE rows(id TEXT PRIMARY KEY)']}]);
+      s.transaction(tx => tx.run('INSERT INTO rows VALUES (?)', ['committed']));
+      s.transaction(tx => { tx.run('INSERT INTO rows VALUES (?)', ['uncommitted']); process.exit(17); });`;
+    const crashed = spawnSync(process.execPath, ['--input-type=module', '-e', script], { env: { ...process.env, TEST_DIR: dir }, timeout: 5000, encoding: 'utf8' });
+    assert.equal(crashed.status, 17, crashed.stderr);
+    const s = new Store(dir, [{owner:'crash',version:1,statements:['CREATE TABLE rows(id TEXT PRIMARY KEY)']}]);
+    try { assert.deepEqual(s.transaction(tx => tx.all('SELECT id FROM rows')).map(row => row.id), ['committed']); } finally { s.close(); }
+  } finally { rmSync(dir, {recursive:true,force:true}); }
 });

@@ -49,7 +49,7 @@ test('actual loopback health, status authentication and absent domain capabiliti
     const health = await fetch(`${f.service.origin}/health`); assert.equal(health.status, 200); assert.deepEqual(await health.json(), { status: 'ok', version: '0.1.0', serviceMode: 'loopback' });
     assert.equal((await fetch(`${f.service.origin}/api/v1/status`)).status, 401);
     const status = await (await fetch(`${f.service.origin}/api/v1/status`, { headers: f.auth })).json();
-    assert.equal(status.data.capabilities.domain, false); assert.equal(status.authorityEpoch, f.store.authorityEpoch);
+    assert.equal(status.data.capabilities.memory, false); assert.equal(status.authorityEpoch, f.store.authorityEpoch);
     const absent = await fetch(`${f.service.origin}/api/v1/sessions`, { headers: f.auth }); assert.equal(absent.status, 503); assert.equal((await absent.json()).error.code, 'DOMAIN_NOT_CONFIGURED');
     const chat = await fetch(`${f.service.origin}/api/v1/chat`, { method: 'POST', headers: { ...f.auth, 'Content-Type': 'application/json', 'Idempotency-Key': 'model', 'X-Didi-Authority-Epoch': f.store.authorityEpoch }, body: '{"sessionId":"00000000-0000-4000-8000-000000000001","text":"Synthetic","timeZone":"UTC"}' });
     assert.equal(chat.status, 503); assert.equal((await chat.json()).error.code, 'MODEL_NOT_CONFIGURED');

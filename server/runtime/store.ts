@@ -33,12 +33,13 @@ function singleStatement(sql: string): void {
 }
 class Tx implements Transaction {
   #active = true;
-  constructor(private readonly prepareStatement: (sql: string) => StatementSync) {}
+  #prepareStatement: (sql: string) => StatementSync;
+  constructor(prepareStatement: (sql: string) => StatementSync) { this.#prepareStatement = prepareStatement; }
   expire(): void { this.#active = false; }
   private prepare(sql: string): StatementSync {
     if (!this.#active) throw new ServiceError('TRANSACTION_EXPIRED', 'Transaction handle expired');
     singleStatement(sql);
-    return this.prepareStatement(sql);
+    return this.#prepareStatement(sql);
   }
   run(sql: string, params: readonly SQLValue[] = []): number { return Number(this.prepare(sql).run(...params).changes); }
   all(sql: string, params: readonly SQLValue[] = []): SQLRow[] {

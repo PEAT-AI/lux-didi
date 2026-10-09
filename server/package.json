@@ -24,6 +24,10 @@
     "dist/runtime",
     "dist/http",
     "dist/contracts",
+    "dist/domain",
+    "dist/host",
+    "dist/adapters/model",
+    "dist/prompt",
     "dist/adapters/mcp",
     "adapters/mcp/SDK-LICENSE.txt"
   ],

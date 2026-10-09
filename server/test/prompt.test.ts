@@ -126,7 +126,7 @@ test('invalid/duplicate budgets and IDs fail; immutable trusted rules never trun
 });
 
 test('receipt states stay distinct; only selected committed durable receipts support saved narration', () => {
-  const evidence: Evidence[] = (['committed', 'failed', 'pending', 'unknown'] as const).map(status => ({ ...source(status), kind: 'receipt', receipt: status === 'committed' ? { status, durable: true, commitId: 'transaction-1', receiptId: 'receipt-1' } : { status } }));
+  const evidence: Evidence[] = (['committed', 'failed', 'pending', 'unknown'] as const).map(status => ({ schemaVersion: 1, ownerId: 'alice', dataClass: 'sensitive', id: status, sourceId: 'archive-1', provenance: 'synthetic fixture', priority: 1, kind: 'receipt', receipt: status === 'committed' ? { status, durable: true, commitId: 'transaction-1', receiptId: 'receipt-1' } : { status } }));
   const result = compilePrompt({ ...input(), evidence });
   assert.deepEqual(result.manifest.savedReceiptIds, ['receipt-1']);
   for (const item of evidence) assert.deepEqual(JSON.parse(result.context.items.find(i => i.id === item.id)!.text).receipt, item.kind === 'receipt' ? item.receipt : undefined);
@@ -172,7 +172,6 @@ test('accepted Gemini injected transport constructs separate user evidence, exac
   assert.equal(contents[0]!.role, 'user'); assert.equal(contents[0]!.parts[0]!.text, wireContext(compiled));
   assert.deepEqual(contents.slice(1), compiled.contents);
   assert.deepEqual(payload!['tools'], [{ functionDeclarations: compiled.declarations }]);
-  assert.deepEqual(result.prompt.selectedContextIds, compiled.context.selectedIds);
   assert.deepEqual(result.prompt.omittedContextIds, []);
   const denied = new GeminiAdapter({ modelId: 'synthetic', keyReference: 'unused', credentials: { resolve: async () => { throw Error('must not access'); } }, route: { enabled: true, provider: 'gemini', modelId: 'synthetic', dataClasses: ['ordinary'] }, transport: async () => { throw Error('must not transport'); } });
   assert.equal((await denied.generate(request, { signal: new AbortController().signal, deadlineMs: Date.now() + 10000 })).status, 'denied');

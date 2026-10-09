@@ -75,3 +75,30 @@ The runtime (`server/runtime/`) and the wire fixtures come from the service
 pair; the domain test uses the real `Store` and `Outbox` against a temporary
 SQLite database. `fixtures/domain/` is synthetic (generic examples only), never
 private context.
+
+### Wiring the domain into the service
+
+The domain is a sibling package with no database of its own. The service:
+
+```ts
+import { createDomainPort } from './domain/facade.js';
+const domain = createDomainPort({ outbox: Outbox }); // runtime/outbox.js
+const store = new Store(dataDir, domain.migrations); // runtime/store.js
+// routes: store.transaction((tx) => domain.execute(tx, op, input, context))
+```
+
+`domain.migrations` are the contiguous domain owner versions the runtime
+applies. `createDomainPort` closes over the runtime outbox, so a route runs the
+mutation and the reminder insert/supersede in the one transaction the service
+opened. The service's TypeScript build must include `domain/**/*.ts` and
+`test/domain.test.ts` for a compiled run of the domain check.
+
+### Check-runtime note (integration decision for the service pair / root)
+
+The declared domain check runs a `.ts` file directly. The service's ESM source
+uses `.js` specifiers resolved from compiled `dist/`, and `contracts/errors.ts`
+uses a TypeScript parameter property, which Node's strip-only mode refuses
+(`ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`). So a direct source run cannot load the
+service contract graph. The resolved check must either run after
+`npm run build` against `dist/`, or the service contracts must become
+strip-compatible. This is owned by the service/root decision, not by the domain.

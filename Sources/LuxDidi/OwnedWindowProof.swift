@@ -14,11 +14,18 @@ import ApplicationServices
         guard status == .success, let windows = value as? [AXUIElement] else {
             return ["code": status.rawValue, "windowCount": (value as? [AXUIElement])?.count ?? 0]
         }
+        guard windows.count <= 8 else { return ["code": "own-window-limit", "windowCount": windows.count] }
+        var titleStatuses: [Int32] = []
         let matching = windows.filter { element in
             var title: CFTypeRef?
-            return AXUIElementCopyAttributeValue(element, kAXTitleAttribute as CFString, &title) == .success && title as? String == window.title
+            let status = AXUIElementCopyAttributeValue(element, kAXTitleAttribute as CFString, &title)
+            titleStatuses.append(status.rawValue)
+            return status == .success && title as? String == window.title
         }
-        guard matching.count == 1 else { return ["code": "own-title-not-unique", "windowCount": windows.count] }
+        guard matching.count == 1 else {
+            return ["code": "own-title-not-unique", "windowCount": windows.count,
+                    "titleStatuses": titleStatuses, "titleMatches": matching.count]
+        }
         let childStatus = AXUIElementCopyAttributeValue(matching[0], kAXChildrenAttribute as CFString, &value)
         return ["code": childStatus.rawValue, "windowCount": windows.count, "childCount": (value as? [AXUIElement])?.count ?? 0]
     }

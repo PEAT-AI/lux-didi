@@ -164,10 +164,10 @@ test('long archive selects contiguous whole-turn suffix using actual compiler ac
     for (let i = 0; i < 80; i++) f.store.transaction(tx => f.domain.execute(tx, 'appendEntry', { sessionId: f.session.id, text: `old-${i} ${'x'.repeat(70)}`, role: 'user', timeZone: 'UTC' }, f.context));
     const run = f.accept('Current'); await terminal(f, run);
     const request = f.model.calls[0]!; const contents = request.contents;
-    assert.equal(contents.at(-1)!.parts[0]!.text, 'Current'); assert.ok(contents.length < 81);
+    assert.equal(JSON.parse(contents.at(-1)!.parts[0]!.text!).text, 'Current'); assert.ok(contents.length < 81);
     const trace = f.store.transaction(tx => tx.get('SELECT trace FROM chat_runs WHERE run_id=?', [run.runId]));
     const parsed = JSON.parse(String(trace!.trace)); assert.equal(parsed.omittedHistoryCount, 81 - contents.length);
-    const texts = contents.slice(0, -1).map(c => c.parts[0]!.text!);
+    const texts = contents.slice(0, -1).map(c => JSON.parse(c.parts[0]!.text!).text);
     assert.deepEqual(texts, f.entries().slice(80 - texts.length, 80).map(e => e.text));
     assert.equal(f.entries().length, 82); assert.deepEqual(request.declarations, []);
     assert.equal(request.promptVersion, PROMPT_VERSION); assert.ok(request.system.includes('de-DE'));

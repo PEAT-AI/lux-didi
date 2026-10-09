@@ -332,44 +332,48 @@ test('complete cancels the reminder and does not resurrect; a new promise gets a
 test('timezone day boundaries: plan uses the IANA local day, incl. unscheduled and overdue', () => {
   const h = fixture();
   try {
-    // 2026-06-01 00:30 in Auckland (UTC+12) is 2026-05-31T12:30Z.
-    const aucklandEarly = h.store.transaction((tx) =>
+    // E: 2026-06-01 00:30 Auckland (NZST, UTC+12) = 2026-05-31T12:30Z.
+    // In the Auckland day 2026-06-01 it is due after the local start (not overdue);
+    // in the UTC day 2026-06-01 it is due before the local start (overdue).
+    const early = h.store.transaction((tx) =>
       h.port.execute(
         tx,
         'createCommitment',
-        { title: 'Auckland morning', dueAt: '2026-05-31T12:30:00.000Z', timeZone: 'Pacific/Auckland' },
+        { title: 'Auckland early', dueAt: '2026-05-31T12:30:00.000Z', timeZone: 'Pacific/Auckland' },
         context(nextNow()),
       ),
     ) as { id: string };
-    // 2026-06-01 23:30 in Auckland is 2026-06-01T11:30Z.
-    h.store.transaction((tx) =>
+    // D: 2026-06-02 01:00 Auckland = 2026-06-01T13:00Z. In the UTC day 2026-06-01
+    // it is included; in the Auckland day 2026-06-01 it is after the local end.
+    const late = h.store.transaction((tx) =>
       h.port.execute(
         tx,
         'createCommitment',
-        { title: 'Auckland night', dueAt: '2026-06-01T11:30:00.000Z', timeZone: 'Pacific/Auckland' },
+        { title: 'Auckland late', dueAt: '2026-06-01T13:00:00.000Z', timeZone: 'Pacific/Auckland' },
         context(nextNow()),
       ),
-    );
+    ) as { id: string };
     const unscheduled = h.store.transaction((tx) =>
       h.port.execute(tx, 'createCommitment', { title: 'No date', timeZone: 'UTC' }, context(nextNow())),
     ) as { id: string };
 
-    // A UTC-day plan for 2026-06-01 excludes the Auckland-morning item.
     const utcPlan = h.store.transaction((tx) =>
       h.port.execute(tx, 'plan', { date: '2026-06-01', timeZone: 'UTC' }, context(nextNow())),
-    ) as { items: { commitment: { id: string } }[] };
-    assert.ok(!utcPlan.items.some((i) => i.commitment.id === aucklandEarly.id));
+    ) as { items: { commitment: { id: string }; isOverdue: boolean }[] };
+    const utcIds = utcPlan.items.map((i) => i.commitment.id);
+    assert.ok(utcIds.includes(late.id), 'UTC day includes the 13:00Z item');
+    assert.equal(utcPlan.items.find((i) => i.commitment.id === early.id)!.isOverdue, true);
 
     const plan = h.store.transaction((tx) =>
       h.port.execute(tx, 'plan', { date: '2026-06-01', timeZone: 'Pacific/Auckland' }, context(nextNow())),
-    ) as { items: { commitment: { id: string; title: string }; isOverdue: boolean }[]; unscheduled: { id: string }[] };
-    assert.deepEqual(
-      plan.items.map((i) => i.commitment.title),
-      ['Auckland morning', 'Auckland night'],
-    );
-    // The morning item is due before the local day starts, so it is overdue.
-    assert.equal(plan.items[0]!.isOverdue, true);
-    assert.equal(plan.items[1]!.isOverdue, false);
+    ) as {
+      items: { commitment: { id: string; title: string }; isOverdue: boolean }[];
+      unscheduled: { id: string }[];
+    };
+    const aklIds = plan.items.map((i) => i.commitment.id);
+    assert.ok(aklIds.includes(early.id), 'Auckland day includes the 00:30 NZST item');
+    assert.ok(!aklIds.includes(late.id), 'Auckland day excludes the 01:00 NZST next-day item');
+    assert.equal(plan.items.find((i) => i.commitment.id === early.id)!.isOverdue, false);
     assert.ok(plan.unscheduled.some((c) => c.id === unscheduled.id));
   } finally {
     cleanup(h);

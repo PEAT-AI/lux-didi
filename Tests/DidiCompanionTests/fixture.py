@@ -4,6 +4,7 @@ import json
 import os
 import secrets
 import sys
+import threading
 import uuid
 
 credential = secrets.token_urlsafe(32)
@@ -50,6 +51,11 @@ class Fixture(http.server.BaseHTTPRequestHandler):
             return
         if self.path == "/":
             counts["root"] += 1
+            if mode == "stall":
+                mode = "normal"
+                threading.Event().wait(6)  # real unanswered HTTP; bounded, no CPU load
+                self.close_connection = True
+                return
             if mode == "redirect":
                 mode = "normal"
                 self.send_response(302)

@@ -11,7 +11,7 @@ import WebKit
         while !predicate() && Date() < deadline { try? await Task.sleep(nanoseconds: 20_000_000) }
         expect(predicate(), label)
     }
-    @MainActor static func js(_ web: WKWebView, _ source: String) async throws -> Any {
+    @MainActor static func js(_ web: WKWebView, _ source: String) async throws -> Any? {
         try await web.evaluateJavaScript(source)
     }
     static func fixture(_ origin: String, _ path: String) async throws -> [String: Any] {
@@ -93,13 +93,19 @@ import WebKit
             expect(shell.state == .unavailable, "clean logout clears scoped page")
             let bad = CompanionWeb(descriptor: try ServiceDescriptor(origin: "http://127.0.0.1:1", credentialService: "test", credentialAccount: "test"))
             await bad.load(cookie: cookie)
-            // Temporary R3 observation: original assertion deadline is 8s; observe
-            // the unchanged 12s product timer, then intentionally stop this red stage.
-            try await Task.sleep(nanoseconds: 8_000_000_000)
-            print("R3-DIAGNOSTIC at-original-8s state=\(bad.state) events=\(bad.diagnosticEvents)")
-            try await Task.sleep(nanoseconds: 5_000_000_000)
-            print("R3-DIAGNOSTIC after-product-12s state=\(bad.state) events=\(bad.diagnosticEvents)")
-            expect(false, "R3 diagnosis intentionally red; unavailable contract not fixed")
+            await waitFor("unavailable service not blank forever") { bad.state == .unavailable }
+            expect(bad.diagnosticEvents.contains(where: { $0.contains("did-finish-approved-false") }), "blocked-port internal completion is not accepted as service UI")
+            let refreshed = try await client.bootstrap()
+            _ = try await fixture(origin, "/fixture/mode/stall")
+            let stalledAt = Date()
+            await shell.load(cookie: refreshed)
+            await waitFor("unresponsive service has finite unavailable state") { shell.state == .unavailable }
+            expect(Date().timeIntervalSince(stalledAt) < CompanionWeb.loadTimeout + 1, "five-second product deadline bounds an unanswered HTTP response")
+            expect(shell.diagnosticEvents.contains(where: { $0.contains("deadline-expired") }), "unanswered response exercises product timeout, not callback failure")
+            // Reconnect is explicit; the fixture handles it independently of
+            // the first withheld request. No automatic retry is introduced.
+            await shell.load(cookie: try await client.bootstrap())
+            await waitFor("finite timeout recovers explicitly") { shell.state == .ready }
             let model = AppModel()
             model.draft = "Synthetic draft retained"
             await model.saveDraft()
@@ -109,6 +115,22 @@ import WebKit
             window.contentView = shell.webView
             await shell.load(cookie: try await client.bootstrap())
             await waitFor("screenshot document ready") { shell.state == .ready }
+            let renderer = try await js(shell.webView, """
+                (() => {
+                    const canvas = document.createElement('canvas');
+                    const gl = canvas.getContext('webgl2') || canvas.getContext('webgl');
+                    if (!gl) return JSON.stringify({probe: 'WebGL diagnostic', available: false, canvas2DAcceleration: 'not measurable through public API'});
+                    const info = gl.getExtension('WEBGL_debug_renderer_info');
+                    const result = {probe: 'WebGL diagnostic only, not UI backend', available: true,
+                        renderer: gl.getParameter(info ? info.UNMASKED_RENDERER_WEBGL : gl.RENDERER),
+                        vendor: gl.getParameter(info ? info.UNMASKED_VENDOR_WEBGL : gl.VENDOR),
+                        canvas2DAcceleration: 'not measurable through public API'};
+                    gl.getExtension('WEBGL_lose_context')?.loseContext();
+                    return JSON.stringify(result);
+                })()
+                """) as? String ?? "Renderer probe unavailable"
+            print("COMPANION-RENDERER \(renderer)")
+            try Data(renderer.utf8).write(to: URL(fileURLWithPath: CommandLine.arguments[2]).appendingPathComponent("webkit-renderer.json"))
             let image = try await shell.webView.takeSnapshot(configuration: nil)
             guard let tiff = image.tiffRepresentation, let bitmap = NSBitmapImageRep(data: tiff), let png = bitmap.representation(using: .png, properties: [:]) else { throw NSError(domain: "snapshot", code: 1) }
             try png.write(to: URL(fileURLWithPath: CommandLine.arguments[2]).appendingPathComponent("companion-webkit.png"))

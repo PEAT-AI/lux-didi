@@ -9,7 +9,7 @@ trap cleanup EXIT
 cd "$root"
 mkdir -p "$work/cache"
 start=$SECONDS
-xcrun swiftc -D COMPANION_TEST -parse-as-library -module-cache-path "$work/cache" Sources/LuxDidi/*.swift Tests/DidiCompanionTests/Runtime.swift -o "$work/runtime"
+xcrun swiftc -whole-module-optimization -D COMPANION_TEST -parse-as-library -module-cache-path "$work/cache" Sources/LuxDidi/*.swift Tests/DidiCompanionTests/Runtime.swift -o "$work/runtime"
 printf 'DURATION companion-compile=%ss\n' "$((SECONDS-start))"
 python3 Tests/DidiCompanionTests/fixture.py "$work/port" &
 fixture_pid=$!

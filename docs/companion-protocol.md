@@ -53,7 +53,12 @@ is nonpersistent. These policies do not claim to make WebKit an OS sandbox or
 prevent every same-origin page subresource; service CSP/Permissions-Policy and
 trusted shared web code remain their owners' responsibilities.
 
-Load failure, a bounded load deadline, rejected response, and simulated
+A local page attempt has a five-second deadline covering cookie preparation and
+document load. Ready requires an approved HTTP response AND canonical URL; a
+WebKit internal error document completing without a response is unavailable, not
+ready and not left loading. Withheld responses hit the finite deadline. Explicit
+reconnect starts a fresh attempt; stale navigation callbacks cannot finish it.
+Load failure, this bounded deadline, rejected response, and simulated
 WebContent termination yield a native unavailable/reconnect view. Reconnect is
 explicit, never an automatic authentication or mutation loop. Hide/show retains
 the same WKWebView, DOM and cookie store. Reconnect reboots a page session; it does

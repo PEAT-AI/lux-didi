@@ -11,7 +11,11 @@ enum PageState: Equatable { case loading, ready, unavailable }
     @Published private(set) var detail = "Connect to the approved service."
     private(set) var deniedNavigations = 0
     private(set) var deniedPopups = 0
+    static let loadTimeout: TimeInterval = 5
     private var deadline: Task<Void, Never>?
+    private var attempt = 0
+    private var approvedResponse = false
+    private var activeNavigation: WKNavigation?
     #if COMPANION_TEST
     private let diagnosticStart = Date()
     private(set) var diagnosticEvents: [String] = []
@@ -35,21 +39,34 @@ enum PageState: Equatable { case loading, ready, unavailable }
         webView.navigationDelegate = self; webView.uiDelegate = self
         webView.allowsBackForwardNavigationGestures = false
     }
+    private func startDeadline() {
+        deadline?.cancel()
+        let current = attempt
+        trace("deadline-armed-5s")
+        deadline = Task { [weak self] in
+            do { try await Task.sleep(nanoseconds: UInt64(Self.loadTimeout * 1_000_000_000)) }
+            catch { self?.trace("deadline-cancelled"); return }
+            guard let self, self.attempt == current, self.state == .loading else { return }
+            self.trace("deadline-expired")
+            self.fail("Service did not deliver an approved page within five seconds. Retry explicitly.")
+        }
+    }
     func load(cookie: HTTPCookie) async {
-        deadline?.cancel(); webView.stopLoading()
+        attempt += 1
+        let current = attempt
+        activeNavigation = nil; approvedResponse = false
+        webView.stopLoading()
         state = .loading; detail = "Connecting to shared UI…"
         trace("load-start")
+        // Deadline owns the entire attempt, including asynchronous cookie preparation.
+        startDeadline()
         await webView.configuration.websiteDataStore.httpCookieStore.setCookie(cookie)
+        guard attempt == current, state == .loading else { return }
         trace("cookie-installed")
         var request = URLRequest(url: descriptor.baseURL.appendingPathComponent("/"))
         request.cachePolicy = .reloadIgnoringLocalCacheData
-        webView.load(request)
-        trace("deadline-armed-12s")
-        deadline = Task { [weak self] in
-            do { try await Task.sleep(nanoseconds: 12_000_000_000) } catch { self?.trace("deadline-cancelled"); return }
-            self?.trace("deadline-expired")
-            self?.fail("Service did not finish loading. Retry explicitly.")
-        }
+        activeNavigation = webView.load(request)
+        if activeNavigation == nil { fail("Service navigation could not start. Retry explicitly.") }
     }
     func clear() {
         fail("Disconnected. Reconnect explicitly.")
@@ -62,6 +79,7 @@ enum PageState: Equatable { case loading, ready, unavailable }
     }
     private func fail(_ message: String) {
         trace("fail")
+        attempt += 1; activeNavigation = nil; approvedResponse = false
         deadline?.cancel(); deadline = nil; webView.stopLoading()
         state = .unavailable; detail = message
     }
@@ -79,21 +97,35 @@ enum PageState: Equatable { case loading, ready, unavailable }
             response.response.mimeType == "text/html" && http?.statusCode == 200 &&
             http?.value(forHTTPHeaderField: "Content-Disposition") == nil
         if !allowed { deniedNavigations += 1; fail("Service page response refused. Reconnect explicitly.") }
+        else { approvedResponse = true }
         decisionHandler(allowed ? .allow : .cancel)
     }
     func webView(_ webView: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {
         fail("Unexpected service redirect refused. Reconnect explicitly.")
     }
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        if state == .ready {
+            attempt += 1; approvedResponse = false; activeNavigation = navigation
+            state = .loading
+            startDeadline()
+        }
+    }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        trace("did-finish")
-        guard descriptor.page(webView.url), state == .loading else { return }
+        trace("did-finish-approved-\(approvedResponse)-page-\(descriptor.page(webView.url))")
+        guard state == .loading, navigation === activeNavigation else { return }
+        guard approvedResponse, descriptor.page(webView.url) else {
+            // WebKit can finish an internal error document (e.g. a prohibited port)
+            // without delivering an HTTP response. That is not a successful UI load.
+            fail("Service did not deliver the approved page. Retry explicitly.")
+            return
+        }
         deadline?.cancel(); deadline = nil
         webView.isHidden = false; state = .ready; detail = "Shared service UI"
     }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         trace("provisional-error-\((error as NSError).domain)-\((error as NSError).code)")
         // Cancelled hostile navigations do not replace a valid current page with an error screen.
-        if state == .loading { fail("Service unavailable. Your draft is retained; retry explicitly.") }
+        if state == .loading, navigation === activeNavigation { fail("Service unavailable. Your draft is retained; retry explicitly.") }
     }
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         trace("committed-error-\((error as NSError).domain)-\((error as NSError).code)")

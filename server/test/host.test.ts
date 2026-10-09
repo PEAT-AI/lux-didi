@@ -58,7 +58,7 @@ test('host serves the accepted build with security policy, never API or private 
     const { data: { csrfToken } } = await paired.json();
     const browserStatus = await fetch(service.origin + '/api/v1/status', { headers: { Cookie: cookie } });
     assert.equal(browserStatus.status, 200);
-    assert.equal((await browserStatus.json()).data.capabilities.domain, false);
+    assert.deepEqual((await browserStatus.json()).data.capabilities, { memory: false, commitments: false, notifications: false, model: false });
     for (const extra of [{}, { 'X-Didi-CSRF': csrfToken }, { Origin: service.origin }]) {
       const denied = await fetch(service.origin + '/api/v1/auth/logout', { method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/json', ...extra }, body: '{}' });
       assert.equal(denied.status, 403, 'static-enabled service must retain browser Origin/CSRF checks');

@@ -296,7 +296,8 @@ def tracked_public_files(root: Path, exclude: set[str]) -> list[str] | None:
 def read_docs_text(root: Path) -> dict[str, str]:
     """Load the explicit document corpus shared by the content checks."""
     texts = {}
-    for rel in ["README.md", *(f"docs/{name}" for name in DOCS)]:
+    for rel in ["README.md", *(f"docs/{name}" for name in DOCS),
+                "planning/publishing-validation.md"]:
         path = root / rel
         if path.exists():
             texts[rel] = path.read_text(encoding="utf-8")

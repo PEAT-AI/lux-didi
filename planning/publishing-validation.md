@@ -67,7 +67,7 @@ Root release desk evidence: `observed-publication.json`, `before-snapshot.json`,
 
 The validator admits only this required report plus these ten already accepted-main files: `docs/domain-contract.md`, `docs/mcp-adapter.md`, `docs/model-adapter.md`, `docs/prompt-composition.md`, `docs/web-client.md`, `fixtures/domain/library-basic.json`, `scripts/check-domain.sh`, `scripts/check-mcp.sh`, `scripts/check-model.sh` and `scripts/check-prompt.sh`. These ten files are unchanged from accepted main; no new directory wildcard or privacy-scan exclusion was added.
 
-The owning V-13 controls require admission of all eleven literal paths and continued rejection of neighboring arbitrary files in planning, docs, fixtures/domain and scripts. All prior forbidden-path, content/privacy and real Git-boundary controls remain intact. The failing test-first receipt and independent review evidence are retained at the root release desk; author success does not imply reviewer acceptance.
+The owning V-13 controls require admission of all eleven literal paths and continued rejection of neighboring arbitrary files in planning, docs, fixtures/domain and scripts. Real-file leaking and clean publication report controls exercise the shared document reader and unchanged V-11 scanner; the literal report is included in its content corpus. All prior forbidden-path, content/privacy and real Git-boundary controls remain intact. The failing test-first receipt and independent review evidence are retained at the root release desk; author success does not imply reviewer acceptance.
 
 ## Milestone counts (roadmap only)
 

@@ -117,6 +117,24 @@ async function launch(dataDir: string) {
   } catch (error) { await stopProcess(child); throw error; }
 }
 
+test('canonical compiler emits every published production unit and no unpublished unit', async () => {
+  const server = resolve(import.meta.dirname, '../..');
+  const config = JSON.parse(await readFile(join(server, 'tsconfig.json'), 'utf8')) as { include: string[] };
+  assert.deepEqual(config.include.filter(path => !path.startsWith('test/')).sort(), [
+    'index.ts', 'runtime/**/*.ts', 'http/**/*.ts', 'contracts/**/*.ts', 'domain/**/*.ts',
+    'host/**/*.ts', 'adapters/model/**/*.ts', 'adapters/mcp/**/*.ts', 'prompt/**/*.ts',
+  ].sort(), 'canonical production roots must include all accepted units, not CHAT/config globs');
+  for (const entry of ['index', 'runtime/store', 'http/server', 'contracts/index', 'domain/facade',
+    'host/index', 'adapters/model/index', 'adapters/mcp/adapter', 'prompt/index']) {
+    for (const suffix of ['.js', '.d.ts', '.js.map']) {
+      assert.ok((await stat(join(server, 'dist', entry + suffix))).size > 0, `Missing canonical output ${entry + suffix}`);
+    }
+  }
+  const producer = await readFile(resolve(server, '../scripts/run-local.sh'), 'utf8');
+  assert.match(producer, /tsc -p server\/tsconfig\.json/);
+  assert.doesNotMatch(producer, /\.host-build-|"extends"|"include"/, 'the wrapper must not substitute a divergent compiler config');
+});
+
 test('actual host connects durable domain, supersedes reminders, exposes conflicts and survives process restart', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'didi-host-domain-'));
   let host = await startHost({ dataDir: dir, webRoot, port: 0 });

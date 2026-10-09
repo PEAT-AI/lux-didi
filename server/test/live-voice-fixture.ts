@@ -8,7 +8,8 @@ export const request = (): LiveVoiceRequest => ({
   system: { text: 'Synthetic system', dataClass: 'ordinary' }, dataClasses: ['ordinary'], history: [],
 });
 export const control = (signal = new AbortController().signal) => ({ signal, deadlineMs: Date.now() + 5000 });
-export const pcm = new Uint8Array([0, 0, 1, 0, 255, 127, 0, 128]);
+// Silent PCM only: no microphone or playback is used by this fixture.
+export const pcm = new Uint8Array(8);
 export function options(overrides: Partial<GeminiLiveVoiceOptions> = {}): GeminiLiveVoiceOptions {
   return {
     modelId: 'models/explicit-live-test', voice: 'ExplicitVoice', keyReference: 'test-reference',

@@ -239,3 +239,25 @@ test('duplicate call IDs are not replayed, and unknown transport has no retry', 
   const failure = await adapter(async () => { transports++; throw Error('synthetic disconnect'); }).generate(request(), control());
   assert.equal(failure.status, 'error'); assert.equal(transports, 1);
 });
+
+test('host can explicitly reuse bounded tool continuation in a natural next turn', async () => {
+  let turns = 0;
+  const model = adapter(async (_url, init) => {
+    const body = JSON.parse(String(init.body));
+    turns++;
+    if (turns === 1) return sse([call()]);
+    if (turns === 2) return sse([stop('First answer')]);
+    assert.deepEqual(body.contents[1], call().candidates[0]!.content);
+    assert.equal(body.contents[2].parts[0].functionResponse.id, 'call-7');
+    assert.equal(body.contents[3].parts[0].text, 'First answer');
+    assert.equal(body.contents[4].parts[0].text, 'Synthetic followup');
+    return sse([stop('Second answer')]);
+  });
+  const first = await runTools({ model, request: request(), registry: [tool(async () => ({ status: 'completed', value: 'Synthetic result' }))],
+    host, authority: { isCurrent: async () => true }, maxSteps: 3, control: control() });
+  const next = request();
+  next.contents = [...first.continuation, { role: 'user', parts: [{ text: 'Synthetic followup' }] }];
+  const second = await runTools({ model, request: next, registry: [], host, authority: { isCurrent: async () => true }, maxSteps: 1, control: control() });
+  assert.equal(first.status, 'complete'); assert.equal(second.status, 'complete'); assert.equal(second.text, 'Second answer');
+  assert.equal(second.continuation.length, 6);
+});

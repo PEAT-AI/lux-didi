@@ -64,7 +64,7 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate {
                     newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
 }
 
-struct CaptureReceipt { let entryID: String }
+struct CaptureReceipt { let entryID: String; let sessionID: String }
 enum CaptureStatus: Equatable { case idle, sending, saved, cancelled, unknown, failed }
 
 @MainActor final class CompanionClient {
@@ -88,6 +88,7 @@ enum CaptureStatus: Equatable { case idle, sending, saved, cancelled, unknown, f
     }
     private var pending: Capture?
     private(set) var captureStatus: CaptureStatus = .idle
+    var captureReceipt: CaptureReceipt? { pending?.receipt }
     init(descriptor: ServiceDescriptor, credential: @escaping () throws -> String, expectedEpoch: String? = nil, connectionGuard: @escaping () -> Bool = { true }) {
         self.descriptor = descriptor; self.credential = credential
         self.expectedEpoch = expectedEpoch; self.connectionGuard = connectionGuard
@@ -105,11 +106,12 @@ enum CaptureStatus: Equatable { case idle, sending, saved, cancelled, unknown, f
         self.expectedEpoch = expectedEpoch; self.connectionGuard = connectionGuard
         cookie = nil; csrf = nil
     }
-    private func request(_ path: String, method: String = "GET", body: [String: Any]? = nil,
+    private func request(_ path: String, method: String = "GET", body: [String: Any]? = nil, query: [URLQueryItem] = [],
                          bearer: Bool = true, page: Bool = false, key: String? = nil, authority: String? = nil) async throws -> ([String: Any], HTTPURLResponse) {
         guard connectionGuard() else { throw CompanionError.unavailable }
-        let url = descriptor.baseURL.appendingPathComponent(path)
-        guard descriptor.allows(url) else { throw CompanionError.invalidConfiguration }
+        var parts = URLComponents(url: descriptor.baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false)!
+        if !query.isEmpty { parts.queryItems = query }
+        guard let url = parts.url, descriptor.allows(url) else { throw CompanionError.invalidConfiguration }
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -155,6 +157,23 @@ enum CaptureStatus: Equatable { case idle, sending, saved, cancelled, unknown, f
         csrf = token
         return scoped
     }
+    // Installed-proof observations use the authoritative APIs, never native SQL/state.
+    func proofRecords(prefix: String) async throws -> [SyntheticProofRecord] {
+        let (recall, _) = try await request("api/v1/recall", query: [URLQueryItem(name: "q", value: prefix), URLQueryItem(name: "limit", value: "20")])
+        guard recall["truncated"] as? Bool == false, let hits = recall["hits"] as? [[String: Any]] else { throw InstalledProofError.persistence }
+        var records: [SyntheticProofRecord] = []
+        var seen = Set<String>()
+        for hit in hits {
+            guard let sessionId = hit["sessionId"] as? String, let entryId = hit["entryId"] as? String,
+                  UUID(uuidString: sessionId) != nil, UUID(uuidString: entryId) != nil else { throw InstalledProofError.persistence }
+            if !seen.insert(entryId).inserted { continue }
+            let (detail, _) = try await request("api/v1/sessions/" + sessionId)
+            guard let entries = detail["entries"] as? [[String: Any]], let entry = entries.first(where: { $0["id"] as? String == entryId }),
+                  entry["role"] as? String == "user", let text = entry["text"] as? String, text.hasPrefix(prefix) else { throw InstalledProofError.persistence }
+            records.append(SyntheticProofRecord(sessionId: sessionId, entryId: entryId, text: text))
+        }
+        return records.sorted { $0.entryId < $1.entryId }
+    }
     func revokePageSession() async {
         if cookie != nil, csrf != nil { _ = try? await request("api/v1/auth/logout", method: "POST", body: [:], bearer: false, page: true) }
         cookie = nil; csrf = nil
@@ -178,7 +197,7 @@ enum CaptureStatus: Equatable { case idle, sending, saved, cancelled, unknown, f
             }
             let (entry, _) = try await request("api/v1/sessions/\(capture.sessionID!)/entries", method: "POST", body: ["text": capture.text, "role": "user", "timeZone": capture.timeZone], key: capture.entryKey, authority: capture.epoch)
             guard let id = entry["id"] as? String, UUID(uuidString: id) != nil, entry["sessionId"] as? String == capture.sessionID else { throw CompanionError.invalidResponse }
-            let receipt = CaptureReceipt(entryID: id)
+            let receipt = CaptureReceipt(entryID: id, sessionID: capture.sessionID!)
             capture.receipt = receipt; pending = capture; captureStatus = .saved
             return receipt
         } catch {

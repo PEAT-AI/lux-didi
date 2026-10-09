@@ -15,12 +15,15 @@ import Carbon
     private(set) var client: CompanionClient?
     private(set) var supervisor: NativeServiceSupervisor?
     private var submittedDraft: String?
-    init() {
+    private(set) var installedProof: PreparedInstalledProof?
+    init(proofRequest: InstalledProofRequest? = nil) {
         // A present but invalid installed resource is a blocker, never attach fallback.
         if let resources = Bundle.main.resourceURL {
             do {
                 if let runtime = try InstalledRuntime.load(resources: resources) {
-                    let owner = try NativeServiceSupervisor(runtime: runtime)
+                    let prepared = try proofRequest?.prepare(installId: runtime.installId)
+                    installedProof = prepared
+                    let owner = try NativeServiceSupervisor(runtime: runtime, proof: prepared)
                     supervisor = owner
                     owner.onUnavailable = { [weak self] in
                         self?.error = NativeServiceError.exited.localizedDescription
@@ -30,6 +33,7 @@ import Carbon
                 }
             } catch { self.error = NativeServiceError.invalidRuntime.localizedDescription; return }
         }
+        if proofRequest != nil { error = NativeServiceError.invalidRuntime.localizedDescription; return }
         do {
             let descriptor = try ServiceDescriptor.configured()
             shell = CompanionWeb(descriptor: descriptor)
@@ -116,10 +120,11 @@ struct RootView: View {
                     Button(model.captureStatus == .unknown ? "Retry Send" : "Send") { Task { await model.saveDraft() } }
                         .disabled(!Presentation.canSend(model.draft) || model.captureStatus == .sending || voice.state.phase == .recording)
                         .accessibilityLabel(model.captureStatus == .unknown ? "Retry same text capture" : "Send text")
-                    Button(voice.state.phase == .recording ? "Stop" : "Start") {
-                        if voice.state.phase == .recording { model.stopRecording("Stopped by user") } else { voice.start() }
-                    }.disabled(voice.state.phase != .recording && (voice.microphone != .granted || voice.speech != .granted || !voice.onDevice))
-                        .accessibilityLabel(voice.state.phase == .recording ? "Stop recording" : "Start recording")
+                    Button("Start") { voice.start() }
+                        .disabled(voice.state.phase == .recording || voice.microphone != .granted || voice.speech != .granted || !voice.onDevice)
+                        .accessibilityLabel("Start recording")
+                    Button("Stop") { model.stopRecording("Stopped by user") }
+                        .disabled(voice.state.phase != .recording).accessibilityLabel("Stop recording")
                     Menu("Settings") {
                         Button("Request microphone/speech permissions") { Task { await model.voice.requestPermissions() } }
                         Button("Reconnect service") { Task { await model.reconnect() } }
@@ -150,7 +155,12 @@ struct RootView: View {
 }
 
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
-    let model = AppModel()
+    let model: AppModel
+    private let proofRequest: InstalledProofRequest?
+    init(proofRequest: InstalledProofRequest? = nil) {
+        self.proofRequest = proofRequest; model = AppModel(proofRequest: proofRequest)
+        super.init()
+    }
     let hotkey = GlobalHotkey()
     private(set) var window: NSWindow!
     private var statusItem: NSStatusItem!
@@ -184,6 +194,7 @@ struct RootView: View {
         show()
         Task {
             await model.refresh()
+            if proofRequest != nil { await runInstalledProof(); return }
             if CommandLine.arguments.contains("--self-check") { await selfCheck(); return }
             if let index = CommandLine.arguments.firstIndex(of: "--ui-proof"), CommandLine.arguments.count > index + 1 {
                 uiProof(path: CommandLine.arguments[index + 1]); return
@@ -198,6 +209,12 @@ struct RootView: View {
     func windowShouldClose(_ sender: NSWindow) -> Bool { hide(); return false }
     @objc func quit() { NSApp.terminate(nil) }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+    private func runInstalledProof() async {
+        let okay = await InstalledProofRun.execute(model: model, window: window)
+        if !okay { exit(1) }
+        // Existing asynchronous termination path owns actual clean native Quit.
+        NSApplication.shared.terminate(self)
+    }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if cleanQuit { return .terminateNow }
         if !quitting {
@@ -251,8 +268,11 @@ struct RootView: View {
 #if !COMPANION_TEST
 @main enum LuxDidiApp {
     @MainActor static func main() {
+        let proof: InstalledProofRequest?
+        do { proof = try InstalledProofRequest.parse(arguments: Array(CommandLine.arguments.dropFirst())) }
+        catch { fputs("INSTALLED-PROOF INVALID: unsafe or malformed arguments\n", stderr); exit(2) }
         let app = NSApplication.shared
-        let delegate = AppDelegate(); app.delegate = delegate
+        let delegate = AppDelegate(proofRequest: proof); app.delegate = delegate
         withExtendedLifetime(delegate) { app.run() }
     }
 }

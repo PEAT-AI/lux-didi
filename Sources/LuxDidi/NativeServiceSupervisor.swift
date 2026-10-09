@@ -114,25 +114,40 @@ struct OwnedServiceConnection {
     let descriptor: ServiceDescriptor
     let authorityEpoch: String
     let pid: Int32
-    fileprivate let nonce: String
+    let nonce: String
+    let assistantId: String
 }
 
 @MainActor final class NativeServiceSupervisor: ObservableObject {
     let runtime: InstalledRuntime
     private let stateURL: URL
     private let credentialService: String
+    private let credentialAccount: String
     private var child: OwnedServiceChild?
     private var connection: OwnedServiceConnection?
     private var operation: UUID?
+    private(set) var credentialImported = false
+    private(set) var lastStop: [String: Any]?
+    var currentConnection: OwnedServiceConnection? {
+        guard let connection, isCurrent(connection) else { return nil }; return connection
+    }
+    private func observeStop(_ owned: OwnedServiceChild) {
+        guard owned.pid > 0, !owned.isRunning else { return }
+        lastStop = ["requested": true, "observedExited": true, "pid": Int(owned.pid),
+                    "exitStatus": Int(owned.process.terminationStatus),
+                    "terminationReason": owned.process.terminationReason == .exit ? "exit" : "uncaughtSignal",
+                    "procedure": "private-stdin-close-and-bounded-owned-escalation"]
+    }
     @Published private(set) var state: NativeServiceState = .stopped
     var onUnavailable: (() -> Void)?
     var isRunning: Bool { state == .running && child?.isRunning == true }
-    init(runtime: InstalledRuntime) throws {
-        self.runtime = runtime; stateURL = try InstalledRuntime.applicationState(); credentialService = NativeCredentialImport.service
+    init(runtime: InstalledRuntime, proof: PreparedInstalledProof? = nil) throws {
+        self.runtime = runtime; stateURL = try proof?.state ?? InstalledRuntime.applicationState()
+        credentialService = NativeCredentialImport.service; credentialAccount = proof?.credentialAccount ?? runtime.installId
     }
     #if COMPANION_TEST
     init(runtime: InstalledRuntime, proofState: URL, proofCredentialService: String) {
-        self.runtime = runtime; stateURL = proofState; credentialService = proofCredentialService
+        self.runtime = runtime; stateURL = proofState; credentialService = proofCredentialService; credentialAccount = runtime.installId
     }
     func closeLivenessForProof() { child?.closeInput() }
     #endif
@@ -161,7 +176,7 @@ struct OwnedServiceConnection {
         let ticket = UUID(); operation = ticket
         var launched: OwnedServiceChild?
         state = .starting; connection = nil
-        if let child { await child.stop(); self.child = nil }
+        if let child { await child.stop(); observeStop(child); self.child = nil }
         do {
             guard operation == ticket, state == .starting else { throw NativeServiceError.exited }
             try NativeCredentialImport.prepareState(stateURL)
@@ -187,15 +202,16 @@ struct OwnedServiceConnection {
                   ready["pid"] as? Int == Int(owned.pid), owned.isRunning, state == .starting,
                   let origin = ready["origin"] as? String, let epoch = ready["authorityEpoch"] as? String, UUID(uuidString: epoch) != nil,
                   let assistant = ready["assistantId"] as? String, UUID(uuidString: assistant) != nil else { throw NativeServiceError.invalidReady }
-            _ = try ServiceDescriptor(origin: origin, credentialService: credentialService, credentialAccount: runtime.installId)
-            let reference = try NativeCredentialImport.importCredential(state: stateURL, installId: runtime.installId, service: credentialService)
+            _ = try ServiceDescriptor(origin: origin, credentialService: credentialService, credentialAccount: credentialAccount)
+            let reference = try NativeCredentialImport.importCredential(state: stateURL, installId: credentialAccount, service: credentialService)
+            credentialImported = true
             guard owned.isRunning, state == .starting else { throw NativeServiceError.exited }
             let descriptor = try ServiceDescriptor(origin: origin, credentialService: reference.service, credentialAccount: reference.account)
-            let result = OwnedServiceConnection(descriptor: descriptor, authorityEpoch: epoch, pid: owned.pid, nonce: nonce)
+            let result = OwnedServiceConnection(descriptor: descriptor, authorityEpoch: epoch, pid: owned.pid, nonce: nonce, assistantId: assistant)
             connection = result; state = .running
             return result
         } catch {
-            if let launched { await launched.stop() }
+            if let launched { await launched.stop(); observeStop(launched) }
             if operation == ticket {
                 child = nil; state = .unavailable; connection = nil
             }
@@ -204,6 +220,6 @@ struct OwnedServiceConnection {
     }
     func stop() async {
         operation = nil; state = .stopped; connection = nil
-        if let child { await child.stop(); self.child = nil }
+        if let child { await child.stop(); observeStop(child); self.child = nil }
     }
 }

@@ -18,10 +18,18 @@ let host, browser, context, page, descriptor;
 const timings = [], requests = [], errors = [];
 const exec = resolve(root, 'server/dist/host/index.js');
 async function start(port = 0) {
-  const child = spawn(process.execPath, [exec, '--data-dir', state, '--web-root', join(root, 'web/dist'), '--port', String(port)], { stdio: ['ignore', 'pipe', 'pipe'] });
+  const args = ['--data-dir', state, '--web-root', join(root, 'web/dist'), '--port', String(port)];
+  // First start exercises the documented exact-build foreground producer; restart uses its compiled entry.
+  const child = descriptor === undefined
+    ? spawn('bash', [join(root, 'scripts/run-local.sh'), ...args], { stdio: ['ignore', 'pipe', 'pipe'] })
+    : spawn(process.execPath, [exec, ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
   host = child;
   let stderr = ''; child.stderr.on('data', chunk => { stderr += String(chunk); });
-  await Promise.race([once(child.stdout, 'data'), once(child, 'exit').then(([code]) => { throw Error(`Host startup exited ${code}: ${stderr}`); })]);
+  const ready = new Promise(resolve => {
+    let output = '';
+    child.stdout.on('data', chunk => { output += String(chunk); if (/Didi host http:\/\/127\.0\.0\.1:\d+;/.test(output)) resolve(); });
+  });
+  await Promise.race([ready, once(child, 'exit').then(([code]) => { throw Error(`Host startup exited ${code}: ${stderr}`); })]);
   descriptor = JSON.parse(await readFile(join(state, 'host-runtime.json'), 'utf8'));
   return descriptor.origin;
 }
@@ -138,7 +146,8 @@ try {
     const port = Number(new URL(origin).port); await stop(); await start(port);
     assert.equal(descriptor.authorityEpoch, originalEpoch); assert.equal(descriptor.assistantId, originalAssistant);
     await page.reload(); await page.locator('#message:not([disabled])').waitFor();
-    await page.locator('#conversation-select').selectOption(sessionId);
+    // Desktop uses the visible conversation list; the select is mobile-only.
+    await page.locator(`[data-session="${sessionId}"]`).click();
     await visible('Host browser kestrel launch: review the release checklist before noon.');
     const entries = (await api(`/sessions/${sessionId}`)).entries;
     assert.equal(entries.length, 1); assert.equal(entries[0].id, entryId);
@@ -163,7 +172,10 @@ try {
     await page.screenshot({ path: join(artifacts, 'mobile-375.png'), fullPage: true });
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), '375px must not overflow horizontally');
     const credential = (await readFile(join(state, 'admin-credential'), 'utf8')).trim();
-    assert.ok(!(await page.content()).includes(credential));
+    const rendered = await page.content();
+    const sessionToken = (await context.cookies()).find(cookie => cookie.name === 'didi_session').value;
+    assert.ok(!rendered.includes(credential) && !rendered.includes(sessionToken));
+    assert.equal(await page.evaluate(() => document.cookie), '');
     assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0);
     const privatePaths = await page.evaluate(async () => Promise.all(['/.env', '/admin-credential', '/server/runtime/store.ts'].map(async path => (await fetch(path)).status)));
     assert.ok(privatePaths.every(status => status >= 400));

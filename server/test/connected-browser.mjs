@@ -31,7 +31,7 @@ async function stop() {
   if (!child || child.exitCode !== null || child.signalCode !== null) return;
   const proc = child, exited = once(proc, 'exit'); proc.send('stop');
   let timer;
-  try { const result = await Promise.race([exited, new Promise((_, reject) => { timer = setTimeout(() => reject(Error('Fixture stop timeout')), 5000); })]); assert.equal(result[0], 0); }
+  try { const result = await Promise.race([exited, new Promise((_, reject) => { timer = setTimeout(() => reject(Error('Fixture stop timeout')), 5000); })]); assert.equal(result[0], 0, `Fixture exit: ${stderr.slice(-1500)}`); }
   finally { clearTimeout(timer); if (proc.exitCode === null && proc.signalCode === null) { proc.kill('SIGKILL'); await exited; } }
 }
 async function operator(path, body = {}) {
@@ -126,6 +126,6 @@ try {
   await writeFile(join(artifacts, `proof-${sha}.json`), JSON.stringify({ sha, steps, requests, errors, screenshots: [`desktop-${sha}.png`, `mobile-375-${sha}.png`, `truthful-errors-${sha}.png`], liveModel: false, nativeVoice: false }, null, 2));
   console.log(`PASS ${steps.length} actual connected browser checks at ${sha}; artifacts ${artifacts}`);
 } catch (error) {
-  if (page) { const visible = { run: await page.locator('#connected-run').textContent().catch(() => null), error: await page.locator('#connected-error').textContent().catch(() => null), pageErrors: errors }; console.error(JSON.stringify(visible)); await page.screenshot({ path: join(artifacts, `diagnostic-${sha}.png`), fullPage: true }).catch(() => {}); }
+  if (page) { const visible = { run: await page.locator('#connected-run').textContent().catch(() => null), error: await page.locator('#connected-error').textContent().catch(() => null), pageErrors: errors }; console.error(JSON.stringify({ ...visible, fixtureStderr: stderr.slice(-1500) })); await page.screenshot({ path: join(artifacts, `diagnostic-${sha}.png`), fullPage: true }).catch(() => {}); }
   throw error;
 } finally { await context?.close(); await browser?.close(); await stop(); await rm(state, { recursive: true, force: true }); }

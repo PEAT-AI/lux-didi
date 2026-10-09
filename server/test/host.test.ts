@@ -300,3 +300,24 @@ test('supervised malformed/oversized/incomplete frames fail before readiness or 
     }
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+test('canonical HOST symlink --help executes and ordinary module import never starts the host', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'didi-host-entry-'));
+  const entry = resolve(import.meta.dirname, '../host/index.js');
+  const alias = join(dir, 'canonical-host.js');
+  const run = async (args: string[]) => {
+    const child = spawn(process.execPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '', stderr = '';
+    child.stdout.on('data', chunk => { stdout += String(chunk); });
+    child.stderr.on('data', chunk => { stderr += String(chunk); });
+    const timer = setTimeout(() => child.kill('SIGTERM'), 3000);
+    try { const [code, signal] = await once(child, 'exit'); assert.equal(signal, null, 'Harmless invocation must exit without starting a listener'); assert.equal(code, 0, stderr); return stdout; }
+    finally { clearTimeout(timer); }
+  };
+  try {
+    await symlink(entry, alias);
+    assert.match(await run([alias, '--help']), /Usage: node server\/dist\/host\/index\.js/, 'Actual canonical host must execute --help through a symlink spelling');
+    const url = new URL('../host/index.js', import.meta.url).href;
+    assert.equal(await run(['--input-type=module', '--eval', `const host = await import(${JSON.stringify(url)}); if(typeof host.main!=='function') throw Error('Missing host export'); console.log('IMPORTED_WITHOUT_START');`]), 'IMPORTED_WITHOUT_START\n');
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});

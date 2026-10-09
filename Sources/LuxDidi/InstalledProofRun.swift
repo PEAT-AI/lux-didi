@@ -113,10 +113,8 @@ import CryptoKit
             guard Set(controls.compactMap({ $0["name"] as? String })) == ["Start recording", "Stop recording", "Send text"], controls.allSatisfy({ $0["visible"] as? Bool == true }) else { throw InstalledProofError.accessibility }
             var visual = report["visual"] as! [String: Any]; visual["accessibility"] = controls
             visual["pageSnapshot"] = try await pageImage(fresh, to: proof.report.appendingPathExtension("web-page.png"))
-            if permission {
-                do { visual["nativeChrome"] = try await OwnedWindowProof.capture(window, to: proof.screenshot); visual["nativeChromeLimitation"] = "Native chrome captured; root visual review required." }
-                catch { visual["nativeChromeLimitation"] = "Existing permission, but supported native-chrome capture failed; visual verification remains external." }
-            } else { visual["nativeChromeLimitation"] = "Screen-capture permission unavailable; native chrome not visually verified. Actual WK page and own AX states are supplied." }
+            do { visual["nativeChrome"] = try await OwnedWindowProof.capture(window, to: proof.screenshot); visual["nativeChromeLimitation"] = "Own-process native chrome captured without requesting grants; root visual review required." }
+            catch { visual["nativeChromeLimitation"] = "Bounded own-process capture failed or unavailable; native chrome not visually verified. Actual WK page and own AX states are supplied." }
             report["visual"] = visual
         } catch { failure = error }
         observations["credentialImported"] = owner.credentialImported; report["observations"] = observations

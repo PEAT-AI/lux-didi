@@ -177,10 +177,12 @@ driver must observe native exit0 and reject stale/running reports. Early
 argument/ownership/config rejection can exit without a new report; never read
 a previous successful report after a nonzero invocation.
 
-CGPreflightScreenCaptureAccess is probed, never requested. An existing grant
-permits supported capture of only the exact own window; otherwise actual WK
-page snapshot and actual own accessibility names/enabled/visible states are
-reported with an explicit native-chrome visual limitation. Missing capture
+CGPreflightScreenCaptureAccess is probed, never requested. SDK14.4 explicitly permits `SCShareableContent.currentProcess` content capture
+without TCC consent: only that API and the exact live own window are used,
+under a four-second one-shot deadline, even when the preflight is false.
+Failure/unavailability yields actual WK page snapshot and actual own
+accessibility names/enabled/visible states with an explicit native-chrome
+visual limitation; late results cannot create claimed artifacts. Missing capture
 permission does not block functional proof. Native chrome remains a separate
 visual review; an NSView cache image is not faithful evidence. The external
 producer owns the shared rendererlease; the public app does not depend on

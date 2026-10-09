@@ -20,18 +20,41 @@ import CryptoKit
         visit(window, depth: 0)
         return found.keys.sorted().compactMap { found[$0] }
     }
+    private static func bounded<T>(_ operation: @escaping @MainActor () async throws -> T) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
+            var settled = false
+            var deadline: Task<Void, Never>?
+            let work = Task { @MainActor in
+                do {
+                    let value = try await operation()
+                    guard !settled else { return }; settled = true; deadline?.cancel()
+                    continuation.resume(returning: value)
+                } catch {
+                    guard !settled else { return }; settled = true; deadline?.cancel()
+                    continuation.resume(throwing: error)
+                }
+            }
+            deadline = Task { @MainActor in
+                do { try await Task.sleep(nanoseconds: 4_000_000_000) } catch { return }
+                guard !settled else { return }; settled = true; work.cancel()
+                continuation.resume(throwing: InstalledProofError.captureRequired)
+            }
+        }
+    }
     static func capture(_ window: NSWindow, to output: URL) async throws -> [String: Any] {
-        guard CGPreflightScreenCaptureAccess(), #available(macOS 14.4, *), window.isVisible, window.windowNumber > 0 else { throw InstalledProofError.captureRequired }
+        guard #available(macOS 14.4, *), window.isVisible, window.windowNumber > 0 else { throw InstalledProofError.captureRequired }
         // The SDK explicitly limits currentProcess to content captureable without
         // TCC consent. Never enumerate general shareable content or request grants.
+        let image = try await bounded {
         let content = try await SCShareableContent.currentProcess
         guard let owned = content.windows.first(where: { $0.windowID == CGWindowID(window.windowNumber) }) else { throw InstalledProofError.captureRequired }
         let filter = SCContentFilter(desktopIndependentWindow: owned)
         let config = SCStreamConfiguration()
         config.width = Int(window.frame.width * 2); config.height = Int(window.frame.height * 2)
         config.showsCursor = false; config.ignoreShadowsSingleWindow = true
-        let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
-        guard image.width > 0, image.height > 0, let bytes = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else { throw InstalledProofError.captureRequired }
+        return try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+        }
+        guard window.isVisible, image.width > 0, image.height > 0, let bytes = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else { throw InstalledProofError.captureRequired }
         // The output parent is the caller-owned private proof directory.
         try bytes.write(to: output, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: output.path)

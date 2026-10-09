@@ -197,7 +197,7 @@ struct RootView: View {
             if proofRequest != nil { await runInstalledProof(); return }
             if CommandLine.arguments.contains("--self-check") { await selfCheck(); return }
             if let index = CommandLine.arguments.firstIndex(of: "--ui-proof"), CommandLine.arguments.count > index + 1 {
-                uiProof(path: CommandLine.arguments[index + 1]); return
+                await uiProof(path: CommandLine.arguments[index + 1]); return
             }
             await model.reconnect()
         }
@@ -243,7 +243,7 @@ struct RootView: View {
         print("MAC-RUNTIME PASS pid=\(ProcessInfo.processInfo.processIdentifier) hotkey=\(hotkeyCode) notifications=\(model.notificationStatus.rawValue) microphone=\(model.voice.microphone.rawValue) speech=\(model.voice.speech.rawValue) onDevice=\(model.voice.onDevice) audioCapture=not-started playback=muted-preparation-only service=unconfigured")
         NSApp.terminate(nil)
     }
-    func uiProof(path: String) {
+    func uiProof(path: String) async {
         model.draft = "Synthetic draft retained through close and Escape"
         guard !windowShouldClose(window), !window.isVisible else { failProof("close must retain agent"); return }
         hotkey.onToggle?()
@@ -251,13 +251,26 @@ struct RootView: View {
         escape()
         guard !window.isVisible, model.draft.contains("retained"), !applicationShouldTerminateAfterLastWindowClosed(NSApp) else { failProof("Escape/lifecycle retention"); return }
         show()
-        guard let view = window.contentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { failProof("render bitmap"); return }
-        view.layoutSubtreeIfNeeded(); view.cacheDisplay(in: view.bounds, to: bitmap)
-        guard let png = bitmap.representation(using: .png, properties: [:]) else { failProof("PNG encode"); return }
         do {
             let url = URL(fileURLWithPath: path)
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try png.write(to: url)
+            window.contentView?.layoutSubtreeIfNeeded()
+            try await Task.sleep(nanoseconds: 100_000_000)
+            let controls = OwnedWindowProof.accessibility(window)
+            let null = NSNull()
+            var evidence: [String: Any] = ["type": "DidiNativeWindowEvidence", "schemaVersion": 1,
+                "windowId": window.windowNumber, "screenCapturePermission": CGPreflightScreenCaptureAccess(),
+                "accessibility": controls, "nativeChrome": null, "limitation": null, "timeoutSeconds": 4]
+            do { evidence["nativeChrome"] = try await OwnedWindowProof.capture(window, to: url) }
+            catch {
+                evidence["limitation"] = "Own-process capture unavailable; legacy cache artifact is NOT faithful native-chrome evidence."
+                // Preserve the old PNG/lifecycle assertion, explicitly not visual proof.
+                guard let view = window.contentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { failProof("render bitmap"); return }
+                view.cacheDisplay(in: view.bounds, to: bitmap)
+                guard let png = bitmap.representation(using: .png, properties: [:]) else { failProof("PNG encode"); return }
+                try png.write(to: url)
+            }
+            try JSONSerialization.data(withJSONObject: evidence, options: [.prettyPrinted, .sortedKeys]).write(to: url.appendingPathExtension("evidence.json"))
             print("MAC-UI PASS screenshot=\(path) close=retains-agent escape=hides draft=retained hotkeyCallback=show quit=clean-no-session voiceEffects=none notificationEffects=none")
             NSApp.terminate(nil)
         } catch { failProof("Screenshot could not be written") }

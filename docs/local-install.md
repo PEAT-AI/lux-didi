@@ -120,8 +120,12 @@ native PID/exit status separately from the native report; report success or the
 renderer's exit status cannot certify native exit. Native must actually exit 0,
 its report PID must match, and fresh owned 0600 reports must be complete—not stale
 or running. The observer signals only its own child on a bounded timeout.
-The driver verifies snapshot file identity and retains explicit
-nativeChromeLimitation when capture permission is unavailable;
+The driver verifies snapshot file identity. `screenCapturePermission` remains
+the observed CGPreflight boolean, independent of image availability:
+`ScreenCaptureKit.currentProcess` may produce a real own-window image even when
+preflight is false. A null nativeChrome requires a nonempty
+nativeChromeLimitation; otherwise its truthful nullable limitation is retained.
+All image method/path/hash/source and boolean-type checks remain;
 rootVisualReviewRequired remains true. Matching functional fields is **not**
 separate root visual acceptance. Fixture reports/processes exercise these checks
 only as mechanics, not actual API/UI evidence. Accepted HOST/COMPANION sources

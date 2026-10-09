@@ -61,7 +61,6 @@ export function validateInstalledReport(report, context) {
   requireProof((visual.windowId === null || positive(visual.windowId)) && typeof visual.screenCapturePermission === 'boolean' && visual.rootVisualReviewRequired === true && (visual.nativeChromeLimitation === null || (typeof visual.nativeChromeLimitation === 'string' && visual.nativeChromeLimitation.length > 0)), 'separate root visual review');
   image(visual.pageSnapshot, 'actual-WKWebView.takeSnapshot');
   if (visual.nativeChrome !== null) {
-    requireProof(visual.screenCapturePermission === true, 'native chrome permission');
     image(visual.nativeChrome, 'ScreenCaptureKit.currentProcess');
   } else requireProof(typeof visual.nativeChromeLimitation === 'string' && visual.nativeChromeLimitation.length > 0, 'native chrome limitation');
   requireProof(Array.isArray(visual.accessibility), 'accessibility array');

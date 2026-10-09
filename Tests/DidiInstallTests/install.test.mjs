@@ -1,0 +1,158 @@
+import { test, before, after } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, copyFileSync, symlinkSync, chmodSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { execFileSync, spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { inventory, probeNode, validateArtifact, checkPrerequisites } from '../../scripts/package-local.mjs';
+import { installArtifact } from '../../scripts/install-local.mjs';
+
+const root = mkdtempSync(join(tmpdir(), 'didi-install-tests-'));
+const node = process.execPath;
+const commit = 'a'.repeat(40);
+let executable;
+before(() => {
+  writeFileSync(join(root, 'fixture.c'), '#include <unistd.h>\nint main(void){sleep(20);return 0;}\n');
+  executable = join(root, 'fixture');
+  execFileSync('/usr/bin/xcrun', ['clang', join(root, 'fixture.c'), '-o', executable]);
+});
+after(() => rmSync(root, { recursive: true, force: true }));
+
+function fixture() {
+  const dir = mkdtempSync(join(root, 'artifact-'));
+  const bundle = join(dir, 'LuxDidi.app');
+  const resources = join(bundle, 'Contents/Resources');
+  mkdirSync(join(bundle, 'Contents/MacOS'), { recursive: true });
+  mkdirSync(join(resources, 'server/dist/host'), { recursive: true });
+  mkdirSync(join(resources, 'web/dist'), { recursive: true });
+  copyFileSync(executable, join(bundle, 'Contents/MacOS/LuxDidi'));
+  copyFileSync(resolve('Resources/Info.plist'), join(bundle, 'Contents/Info.plist'));
+  copyFileSync(resolve('Resources/LuxDidi.entitlements'), join(resources, 'LuxDidi.entitlements'));
+  writeFileSync(join(resources, 'server/dist/host/index.js'), '// Test-only asset: never claims accepted HOST integration.\n');
+  writeFileSync(join(resources, 'web/dist/index.html'), '<p>test-only</p>');
+  const runtime = { schemaVersion: 1, installId: randomUUID(), releaseCommit: commit, nodePath: node, nodeMajor: 26, serverEntry: 'server/dist/host/index.js', webRoot: 'web/dist' };
+  writeFileSync(join(resources, 'didi-runtime.json'), JSON.stringify(runtime));
+  execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', '--entitlements', join(resources, 'LuxDidi.entitlements'), bundle], { stdio: 'pipe' });
+  const metadata = { schemaVersion: 1, artifactType: 'lux-didi-local-development', releaseCommit: commit, installId: runtime.installId, node: probeNode(node), signingIdentity: 'ad-hoc', inventory: inventory(bundle) };
+  writeFileSync(join(dir, 'artifact.json'), JSON.stringify(metadata));
+  return { dir, bundle, resources, runtime, metadata };
+}
+function destination() { return join(mkdtempSync(join(root, 'destination-')), 'LuxDidi.app'); }
+function resign(f) {
+  execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', '--entitlements', join(f.resources, 'LuxDidi.entitlements'), f.bundle], { stdio: 'pipe' });
+  f.metadata.inventory = inventory(f.bundle);
+  writeFileSync(join(f.dir, 'artifact.json'), JSON.stringify(f.metadata));
+}
+
+test('explicit Node is realpath-resolved, executable, exactly 26 with real SQLite and dylib process probe', () => {
+  const result = probeNode(node);
+  assert.equal(result.major, 26);
+  assert.match(result.version, /^v26\./);
+  assert.equal(result.path, node);
+  assert.equal(result.sqlite, true);
+  assert.ok(result.sha256);
+  assert.ok(result.linkage.length);
+  assert.throws(() => probeNode(join(root, 'missing-node')), /Node/i);
+  assert.throws(() => probeNode('/usr/bin/false'), /Node/i);
+  const fake = join(root, 'wrong-node');
+  writeFileSync(fake, '#!/bin/sh\nprintf \'{"version":"v25.0.0","major":25,"sqlite":true}\\n\'\n');
+  chmodSync(fake, 0o700);
+  assert.throws(() => probeNode(fake), /Node 26/);
+});
+
+test('accepted source capability gate refuses absent HOST or COMPANION rather than fake packaging', () => {
+  const source = mkdtempSync(join(root, 'no-runtime-'));
+  assert.throws(() => checkPrerequisites(source), /HOST/);
+  mkdirSync(join(source, 'server/host'), { recursive: true });
+  writeFileSync(join(source, 'server/host/index.ts'), '');
+  assert.throws(() => checkPrerequisites(source), /COMPANION/);
+});
+
+test('signed inventory rejects stale artifacts, source mismatch, missing assets and Node substitution', () => {
+  const f = fixture();
+  assert.equal(validateArtifact(f.dir).runtime.installId, f.runtime.installId);
+  assert.throws(() => validateArtifact(f.dir, { sourceCommit: 'b'.repeat(40) }), /source/i);
+  writeFileSync(join(f.resources, 'web/dist/index.html'), 'tampered');
+  assert.throws(() => validateArtifact(f.dir), /inventory|signature/i);
+  const missing = fixture();
+  rmSync(join(missing.resources, 'server/dist/host/index.js'));
+  resign(missing);
+  assert.throws(() => validateArtifact(missing.dir), /host|serverEntry/i);
+  const badNode = fixture();
+  badNode.metadata.node.sha256 = '0'.repeat(64);
+  writeFileSync(join(badNode.dir, 'artifact.json'), JSON.stringify(badNode.metadata));
+  assert.throws(() => validateArtifact(badNode.dir), /Node.*identity/i);
+});
+
+test('inventory forbids dotenv/private state and symlinks even inside signed bundle', () => {
+  for (const name of ['.env', 'private-state/admin-credential', 'web/dist/.env.local']) {
+    const f = fixture();
+    const path = join(f.resources, name);
+    mkdirSync(resolve(path, '..'), { recursive: true });
+    writeFileSync(path, 'arbitrary sentinel, not a real secret');
+    assert.throws(() => inventory(f.bundle), /forbidden/i);
+  }
+  const f = fixture();
+  symlinkSync('/etc', join(f.resources, 'escape'));
+  assert.throws(() => inventory(f.bundle), /symlink/i);
+});
+
+test('unrelated target refuses without modifying it', () => {
+  const f = fixture();
+  const target = destination();
+  mkdirSync(target);
+  writeFileSync(join(target, 'unrelated'), 'preserve');
+  assert.throws(() => installArtifact(f.dir, target), /UnrelatedTarget/);
+  assert.equal(readFileSync(join(target, 'unrelated'), 'utf8'), 'preserve');
+});
+
+test('reinstall preserves arbitrary appdata and install identity; previous release kept for rollback', () => {
+  const first = fixture();
+  const target = destination();
+  const data = join(root, 'arbitrary-appdata');
+  mkdirSync(data);
+  writeFileSync(join(data, 'sentinel'), 'never reseed or reset');
+  const initial = installArtifact(first.dir, target);
+  const second = fixture();
+  const updated = installArtifact(second.dir, target);
+  assert.equal(updated.installId, initial.installId);
+  assert.notEqual(updated.installId, second.runtime.installId);
+  assert.equal(readFileSync(join(data, 'sentinel'), 'utf8'), 'never reseed or reset');
+  assert.ok(existsSync(updated.previousRelease));
+  assert.equal(JSON.parse(readFileSync(join(target, 'Contents/Resources/didi-runtime.json'))).installId, initial.installId);
+  execFileSync('/usr/bin/codesign', ['--verify', '--strict', target]);
+});
+
+test('live actual owned native subprocess produces typed refusal; no force stop', async () => {
+  const f = fixture();
+  const target = destination();
+  installArtifact(f.dir, target);
+  const child = spawn(join(target, 'Contents/MacOS/LuxDidi'), [], { stdio: 'ignore' });
+  await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
+  try {
+    assert.throws(() => installArtifact(f.dir, target), /LiveInstance/);
+    assert.equal(child.exitCode, null);
+  } finally {
+    const exited = new Promise(resolve => child.once('exit', resolve));
+    child.kill('SIGTERM');
+    await exited;
+  }
+});
+
+test('real staged validation failure leaves prior target and receipt untouched', () => {
+  const f = fixture();
+  const target = destination();
+  installArtifact(f.dir, target);
+  const priorReceipt = readFileSync(`${target}.receipt.json`, 'utf8');
+  const priorRuntime = readFileSync(join(target, 'Contents/Resources/didi-runtime.json'), 'utf8');
+  const second = fixture();
+  // Signed candidate is valid, but its unsuitable entitlements make reinstall resign fail.
+  writeFileSync(join(second.resources, 'LuxDidi.entitlements'), 'not a plist');
+  execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', second.bundle], { stdio: 'pipe' });
+  second.metadata.inventory = inventory(second.bundle);
+  writeFileSync(join(second.dir, 'artifact.json'), JSON.stringify(second.metadata));
+  assert.throws(() => installArtifact(second.dir, target), /sign|entitlements/i);
+  assert.equal(readFileSync(`${target}.receipt.json`, 'utf8'), priorReceipt);
+  assert.equal(readFileSync(join(target, 'Contents/Resources/didi-runtime.json'), 'utf8'), priorRuntime);
+});

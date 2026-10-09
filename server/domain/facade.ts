@@ -120,6 +120,15 @@ class Domain implements DomainPort {
         );
         return dto.toEntryDTO(entry, memory.sourceReferences(tx, entry.id)) as DomainOperations[K]['output'];
       }
+      case 'appendAssistantEntry': {
+        const i = input as DomainOperations['appendAssistantEntry']['input'];
+        const clock = clockAt(context);
+        const entry = memory.appendEntry(tx, {
+          sessionId: i.sessionId, text: i.text, capturedAt: clock.now(),
+          timeZone: i.timeZone, role: 'assistant',
+        }, clock);
+        return dto.toEntryDTO(entry, memory.sourceReferences(tx, entry.id)) as DomainOperations[K]['output'];
+      }
       case 'recall': {
         const i = input as DomainOperations['recall']['input'];
         return dto.toRecallDTO(memory.recall(tx, i.q, i.limit)) as DomainOperations[K]['output'];

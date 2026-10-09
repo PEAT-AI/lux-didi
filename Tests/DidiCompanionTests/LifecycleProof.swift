@@ -128,6 +128,13 @@ import Darwin
             try expect(!stubborn.isRunning && Date().timeIntervalSince(stoppedAt) < 3, "bounded termination escalation targets stubborn owned child only")
             try expect(itemExists(valid.0.installId), "unrelated owner credential survives other stops")
         } catch {
+            // Only bounded nonsecret markers from this disposable fixture root.
+            for state in try fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) where state.lastPathComponent.hasPrefix("state-") {
+                let marker = state.appendingPathComponent("fixture-ready.json")
+                if let data = try? Data(contentsOf: marker), data.count <= 1024, let text = String(data: data, encoding: .utf8) {
+                    print("LIFECYCLE-DIAGNOSTIC ready-write=\(text)")
+                }
+            }
             for child in children { await child.stop() }
             throw error
         }

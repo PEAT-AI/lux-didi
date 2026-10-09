@@ -40,7 +40,9 @@ process.stdin.on('data', chunk => {
     if (mode === 'malformed') return process.stdout.write('not JSON\n');
     if (mode === 'oversize') return process.stdout.write('x'.repeat(1025) + '\n');
     const line = JSON.stringify(ready) + '\n';
-    process.stdout.write(mode === 'extra' ? line + line : line);
+    const frame = mode === 'extra' ? line + line : line;
+    process.stdout.write(frame, () => fs.writeFileSync(path.join(state, 'fixture-ready.json'), JSON.stringify({ pid: process.pid, bytes: Buffer.byteLength(frame), flushed: true })));
+
   });
 });
 process.stdin.on('end', () => { if (mode !== 'stubborn') close(); });

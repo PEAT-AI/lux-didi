@@ -150,8 +150,13 @@ try {
     assert.ok(await page.getByRole('button', { name: 'Save message', exact: true }).isDisabled());
     assert.ok(await page.locator('#ask-didi').isDisabled());
     assert.equal(requests.filter(req => req.method === 'POST').length, before);
-    await context.setOffline(false); await page.locator('#message:not([disabled])').waitFor();
+    await context.setOffline(false);
+    await page.waitForFunction(() => { const button = document.querySelector('#message-form button'); return button && !button.disabled; });
     assert.equal((await api(`/sessions/${sessionId}`)).entries.length, 1, 'offline refusal must not queue/replay');
+    await page.locator('#message').fill('Recovered online: save the next deliberate note.');
+    await page.getByRole('button', { name: 'Save message', exact: true }).click(); await visible('Message saved.');
+    const recovered = (await api(`/sessions/${sessionId}`)).entries;
+    assert.equal(recovered.length, 2); assert.equal(recovered[1].text, 'Recovered online: save the next deliberate note.');
   });
   await step('375px shipped UI and private-source/token refusal', async () => {
     await page.setViewportSize({ width: 375, height: 812 });

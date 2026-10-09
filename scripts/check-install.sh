@@ -13,5 +13,5 @@ bash -n scripts/check-install.sh
 "$node_tool" --test --test-timeout=30000 Tests/DidiInstallTests/*.test.mjs
 # This is an acceptance gate, not a fake-artifact success fallback.
 "$node_tool" scripts/package-local.mjs --check-prerequisites --source-commit "$(git rev-parse HEAD)"
-printf '%s\n' 'PACKAGE ACCEPTANCE NOT COMPLETE: accepted HOST/COMPANION and exact durable-record reread report contract are required; installed-proof wiring is prepared, not accepted integration.' >&2
+printf '%s\n' 'PACKAGE ACCEPTANCE NOT COMPLETE: root-delivered accepted HOST/COMPANION prerequisites and actual built installed-proof execution are required; R10 comparisons are mechanics only until those sources run.' >&2
 exit 1

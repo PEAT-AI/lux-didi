@@ -107,12 +107,25 @@ no data argument/responsibility to the installer.
 
 Full preservation acceptance requires the actual accepted native/service to
 write durable synthetic records on the first run and reopen/read the exact prior
-record IDs/text on the second run, then clean-stop. COMPANION's current API does
-not yet specify the exact durable reread report fields; an opaque JSON report or
-exit 0 is not enough. The prepared driver therefore returns a pending acceptance
-state, never fixture/record-preservation success. Accepted HOST/COMPANION and the
-owning durable-record reread report contract must arrive before that final gate
-can be completed. If native proof clears/reseeds instead of reopening, that is
+record IDs/text on the second run, then clean-stop. COMPANION's R10 exact v1 report consumer is implemented: literal type/version,
+complete+success, fresh runId, stable installId/proofId, exact pinned installed
+source/component hashes, full prior/new sessionId/entryId/text and canonical UI
+visibility, observed owned-service exit, cleanup and functional observations.
+The first report must have no prior records; the reopened second report must
+contain exactly the first new record, without truncation/reset/reseed.
+
+A private external observer runs under the shared renderer slot and directly
+spawns/awaits the normal installed native executable. It records the actual
+native PID/exit status separately from the native report; report success or the
+renderer's exit status cannot certify native exit. Native must actually exit 0,
+its report PID must match, and fresh owned 0600 reports must be complete—not stale
+or running. The observer signals only its own child on a bounded timeout.
+The driver verifies snapshot file identity and retains explicit
+nativeChromeLimitation when capture permission is unavailable;
+rootVisualReviewRequired remains true. Matching functional fields is **not**
+separate root visual acceptance. Fixture reports/processes exercise these checks
+only as mechanics, not actual API/UI evidence. Accepted HOST/COMPANION sources
+must still execute in the actual built artifact before final feature acceptance. If native proof clears/reseeds instead of reopening, that is
 an owning-native defect to report, not an installer workaround. UI proof, if later
 required, uses the shared renderer slot, silent only, with no microphone,
 notifications or OS dialogs. First user installation remains an explicit later

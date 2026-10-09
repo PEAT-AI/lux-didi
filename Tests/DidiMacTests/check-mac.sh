@@ -24,3 +24,7 @@ grep -q 'INSTALLED-PROOF INVALID' "$work/invalid-proof.log"
 "$app/Contents/MacOS/LuxDidi" --self-check
 "$app/Contents/MacOS/LuxDidi" --ui-proof "${LUX_MAC_SCREENSHOT:-$work/native-ui.png}"
 printf 'MAC-NATIVE PASS total=%ss\n' "$((SECONDS-start))"
+
+if [ -n "${LUX_REAL_HOST_PROOF_DIR:-}" ]; then
+  bash Tests/DidiCompanionTests/check-real-host.sh "$app" "$LUX_REAL_HOST_PROOF_DIR" "$LUX_REAL_HOST_NODE"
+fi

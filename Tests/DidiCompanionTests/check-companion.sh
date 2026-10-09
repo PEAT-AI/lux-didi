@@ -1,6 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
+export LUX_COMPANION_NPM_CACHE="${LUX_COMPANION_NPM_CACHE:-$HOME/.npm}"
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 work="$(mktemp -d "${TMPDIR:-/tmp}/didi-companion-check.XXXXXX")"
 fixture_pid=""
@@ -27,4 +28,4 @@ mkdir -p "$proof"
 export LUX_MAC_SCREENSHOT="$proof/native-setup-ui.png"
 # Shared installed helper only belongs to development checks, never public app runtime.
 if ! command -v lux-browser-slot >/dev/null; then echo 'CHECK BLOCKED: lux-browser-slot missing' >&2; exit 75; fi
-lux-browser-slot run --wait 120 -- bash -c 'set -e; "$1" "$2" "$3" "$4"; bash Tests/DidiMacTests/check-mac.sh' _ "$app/Contents/MacOS/LuxDidi" "$work/port" "$proof" "$node"
+lux-browser-slot run --wait 120 -- bash -c 'set -e; "$1" "$2" "$3" "$4"; export LUX_REAL_HOST_PROOF_DIR="$3" LUX_REAL_HOST_NODE="$4"; bash Tests/DidiMacTests/check-mac.sh' _ "$app/Contents/MacOS/LuxDidi" "$work/port" "$proof" "$node"

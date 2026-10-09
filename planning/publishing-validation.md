@@ -1,7 +1,7 @@
 # Observed roadmap publication validation
 
 Observed UTC: `2026-10-09T19:38:08.527975+00:00`.
-Accepted source ancestor: `a74ff1e955bb6ad3b7e29470e85f79c2d73f6cda`.
+Accepted source ancestor: `a74ff1e955bb` (verified unique Git citation; exact full SHA retained in `planning/issue-map.json` at `publication.source_commit`).
 
 ## Authorization and scope
 

@@ -5,7 +5,7 @@
 # then runs the domain tests against the real compiled runtime and a temporary
 # SQLite database. The build step is what keeps a clean checkout from passing
 # on stale dist artefacts. Mirrors scripts/check-service.sh; it runs only the
-# focused domain test file, never a broad suite.
+# focused domain and provenance test files, never a broad suite.
 set -euo pipefail
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 cd "$(dirname "$0")/../server"
@@ -25,5 +25,5 @@ done
 
 log=$(mktemp)
 trap 'rm -f "$log"' EXIT
-node --test --test-reporter=tap --test-timeout=15000 test/domain.test.ts | tee "$log"
+node --test --test-reporter=tap --test-timeout=15000 test/domain.test.ts test/provenance.test.ts | tee "$log"
 grep -Eq '^# tests [1-9][0-9]*$' "$log" || { echo 'check-domain: zero selected tests' >&2; exit 1; }

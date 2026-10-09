@@ -18,9 +18,13 @@ export function currentUid(): number {
   if (!process.getuid || !constants.O_NOFOLLOW || !constants.O_DIRECTORY) fail('unsupported_platform');
   return process.getuid();
 }
+/** Internal descriptor predicate. Production supplies only currentUid(), never configuration/request input. */
+export function validateOwner(stat: Stats, expectedUid: number, code: 'file_owner' | 'directory_owner'): void {
+  if (stat.uid !== expectedUid) fail(code);
+}
 export function validateFile(stat: Stats, limit: number): void {
   if (!stat.isFile()) fail('file_type');
-  if (stat.uid !== currentUid()) fail('file_owner');
+  validateOwner(stat, currentUid(), 'file_owner');
   if ((stat.mode & 0o7777) !== 0o600) fail('file_mode');
   if (stat.nlink !== 1) fail('file_links');
   if (stat.size > limit) fail('too_large');
@@ -38,7 +42,7 @@ export function validateRoot(path: string): boolean {
     fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
     const stat = fstatSync(fd);
     if (!stat.isDirectory() || stat.ino !== initial.ino || stat.dev !== initial.dev) fail('directory_type');
-    if (stat.uid !== uid) fail('directory_owner');
+    validateOwner(stat, uid, 'directory_owner');
     if ((stat.mode & 0o7777) !== 0o700) fail('directory_mode');
     return true;
   } catch (e) { throw safeError(e); }

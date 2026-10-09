@@ -10,7 +10,7 @@ import { bundleName, inventory, parseArguments, resourceRoot, run, signBundle, v
 export class InstallRefusal extends Error {
   constructor(kind, reason) { super(`${kind}: ${reason}`); this.name = kind; this.code = kind; }
 }
-function refuseLive(bundle) {
+export function refuseLive(bundle) {
   const executable = join(bundle, 'Contents/MacOS/LuxDidi');
   const entry = join(bundle, resourceRoot, 'server/dist/host/index.js');
   const native = run('/bin/ps', ['-axo', 'pid=,comm=']).split('\n');

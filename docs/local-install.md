@@ -91,11 +91,29 @@ and service supervision remain native/runtime responsibilities.
 
 `bash scripts/check-install.sh` is the declared check. It runs real filesystem,
 Node/SQLite/dylib and signed executable fixture tests with disposable roots,
-including refusal and preservation cases. The test fixture is **not** the accepted
+including refusal, install-identity preservation and unrelated-neighbor survival cases. The neighbor sentinel is not real Didi appdata and does not prove durable-record preservation. The test fixture is **not** the accepted
 Lux Didi app/service. The check fails explicitly on missing accepted HOST/native
 capabilities; no passing test-only run should be described as full installed
-integration. Relocated installed-mode native/service startup and any synthetic
-capture/recall await the exact accepted owning proof API. UI proof, if later
+integration. Same-state installed-proof/reinstall/relocation wiring is prepared in
+`Tests/DidiInstallTests/installed-proof.mjs`. COMPANION-R8 declares the normal
+executable proof arguments `--installed-proof --proof-state <absolute-owned-state>
+--proof-report <absolute-owned-report.json>`, wrapped in the installed shared
+`lux-browser-slot run --wait 120 -- ...` renderer slot. The driver runs the first
+installed bundle, requires actual app/service stop, reinstalls an independently
+built same-source artifact with a different incoming UUID, checks preserved
+installId, moves the bundle/receipt, and runs the relocated app with the **same**
+owned proof-state directory. It never clears or reseeds that directory and adds
+no data argument/responsibility to the installer.
+
+Full preservation acceptance requires the actual accepted native/service to
+write durable synthetic records on the first run and reopen/read the exact prior
+record IDs/text on the second run, then clean-stop. COMPANION's current API does
+not yet specify the exact durable reread report fields; an opaque JSON report or
+exit 0 is not enough. The prepared driver therefore returns a pending acceptance
+state, never fixture/record-preservation success. Accepted HOST/COMPANION and the
+owning durable-record reread report contract must arrive before that final gate
+can be completed. If native proof clears/reseeds instead of reopening, that is
+an owning-native defect to report, not an installer workaround. UI proof, if later
 required, uses the shared renderer slot, silent only, with no microphone,
 notifications or OS dialogs. First user installation remains an explicit later
 root action after acceptance.

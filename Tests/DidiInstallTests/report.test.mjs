@@ -41,6 +41,24 @@ test('exact complete v1 report validates, retaining root visual review and permi
   assert.match(report.visual.nativeChromeLimitation, /not visually verified/);
 });
 
+test('R11 currentProcess image is valid with permission false; types and image identity still enforced', () => {
+  for (const limitation of [null, 'CGPreflight false; current-process image observation is separate from grant state']) {
+    const report = sample();
+    report.visual.nativeChrome = { ...image, method: 'ScreenCaptureKit.currentProcess' };
+    report.visual.nativeChromeLimitation = limitation;
+    assert.equal(validate(report), report);
+    assert.equal(report.visual.screenCapturePermission, false);
+    assert.equal(report.visual.nativeChromeLimitation, limitation);
+    assert.equal(report.visual.rootVisualReviewRequired, true);
+  }
+  for (const change of [r => r.visual.screenCapturePermission = 'false', r => r.visual.nativeChrome.method = 'cached-white-button', r => r.visual.nativeChrome.path = 'relative-image', r => r.visual.nativeChrome.sha256 = '0'.repeat(64)]) {
+    const report = sample();
+    report.visual.nativeChrome = { ...image, method: 'ScreenCaptureKit.currentProcess' };
+    change(report);
+    assert.throws(() => validate(report), /Installed proof/);
+  }
+});
+
 test('strict schema refuses missing/extra/versioned/running/failed reports and self-certified native exit', () => {
   for (const change of [r => delete r.error, r => r.schemaVersion = 2, r => r.type = 'other', r => r.phase = 'running', r => r.phase = 'failed', r => r.success = false, r => r.extra = true, r => r.native.exitCode = 0, r => r.runId = 'invalid', r => r.service = null, r => r.newRecord = null, r => r.service.nonce = 1234567890123456, r => r.runId = [r.runId], r => r.newRecord.sessionId = [r.newRecord.sessionId]]) {
     const report = sample(); change(report);

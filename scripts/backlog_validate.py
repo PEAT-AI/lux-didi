@@ -248,6 +248,7 @@ PRODUCT_PATHS = (
     "scripts/check-provider-config.sh",
 )
 PRODUCT_DOCS = tuple(rel for rel in PRODUCT_PATHS if rel.startswith("docs/"))
+ALLOWED_PATHS |= set(PRODUCT_PATHS)
 
 # The repository is code-bearing: accepted components publish their own source trees.
 # These are declared roots and named files, never an open wildcard.

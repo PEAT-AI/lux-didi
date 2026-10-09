@@ -21,7 +21,7 @@ function fields(value: unknown, keys: string[]): Record<string, unknown> {
   return o;
 }
 function text(value: unknown, max = 256): string {
-  if (typeof value !== 'string' || !value.length || value.length > max || !value.isWellFormed()) fail('schema');
+  if (typeof value !== 'string' || !value.length || value.length > max || Buffer.from(value, 'utf8').toString('utf8') !== value) fail('schema');
   return value as string;
 }
 function enumeration(value: unknown, allowed: readonly string[]): void {

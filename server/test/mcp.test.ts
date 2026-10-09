@@ -24,6 +24,7 @@ interface FixtureOptions {
   location?: string;
   jsonResponse?: boolean;
   callStatus?: number;
+  malformedCall?: boolean;
 }
 async function fixture(options: FixtureOptions = {}) {
   const observed: { method: string; origin: string | undefined; host: string | undefined; auth: string | undefined; path: string }[] = [];
@@ -51,7 +52,14 @@ async function fixture(options: FixtureOptions = {}) {
       const headers = new Headers();
       for (const [key, value] of Object.entries(req.headers)) if (value !== undefined) headers.set(key, Array.isArray(value) ? value.join(',') : value);
       const request = new Request(`http://${req.headers.host}${req.url}`, { method: req.method ?? 'GET', headers, ...(bytes.length ? { body: new Uint8Array(bytes) } : {}) });
-      const response = await transport.handleRequest(request);
+      let response = await transport.handleRequest(request);
+      if (packet.method === 'tools/call' && options.malformedCall) {
+        // Deliberately corrupt one genuine SDK response after server execution.
+        // This is a negative wire fixture, never a fabricated success response.
+        const envelope = await response.json() as Record<string, unknown>;
+        envelope.result = { content: [{ type: 'unsupported', text: 'invalid wire result' }] };
+        response = new Response(JSON.stringify(envelope), { status: 200, headers: response.headers });
+      }
       if (packet.method === 'tools/call' && options.callStatus) {
         void response.body?.cancel().catch(() => {});
         res.writeHead(options.callStatus); res.end(); return;
@@ -326,14 +334,17 @@ test('store entry capacity, endpoint scope, independent caller bytes, and budget
 });
 
 test('malformed remote results and finite discovery page/tool budgets fail explicitly with no partial ready state', async () => {
-  const malformed = await fixture({ call: () => ({ content: [{ type: 'unsupported', text: 'not valid MCP' }] }) });
+  const malformed = await fixture({ malformedCall: true });
   const normal = await fixture();
   const a = setup(malformed.url);
   const registry = new McpRegistry(); registry.register({ id: 'source', url: normal.url, account: 'account-a', resource: 'resource-a' }); registry.enable('source'); registry.allowEgress('source');
   const b = createMcpAdapter({ registry, store: new MemoryResultStore(), budgets: { maxTools: 1 } });
   try {
     await approve(a.adapter, a.registry);
-    assert.equal((await a.adapter.call(request)).state, 'unknown'); assert.equal(malformed.counter, 1);
+    const result = await a.adapter.call(request);
+    const wire = JSON.parse(malformed.responseEntities[0]!.toString()) as Record<string, unknown>;
+    assert('result' in wire && !('error' in wire), 'actual malformed result, not official server validation error');
+    assert.equal(result.state, 'unknown'); assert.equal(malformed.counter, 1);
     assert.equal((await b.discover('source')).state, 'unavailable'); assert.deepEqual(b.visibleTools('source'), []);
   } finally { await a.adapter.close(); await b.close(); await malformed.close(); await normal.close(); }
 });
@@ -383,4 +394,13 @@ test('revocation across asynchronous credential resolution is refused before dis
     assert.equal((await pending).state, 'refused'); assert.equal(f.counter, 0);
     assert.equal(f.observed.filter(row => row.method === 'tools/call').length, 0);
   } finally { release(); await adapter.close(); await f.close(); }
+});
+
+test('explicit protocol rejection over SSE is SDK-observed and never replayed', async () => {
+  const f = await fixture({ jsonResponse: false, call: () => { throw new Error('synthetic SSE rejection'); } }); const { adapter, registry } = setup(f.url);
+  try {
+    await approve(adapter, registry);
+    const result = await adapter.call(request); assert.equal(result.state, 'protocol-error'); assert.equal(f.counter, 1);
+    assert('protocolErrorCode' in result); assert.equal(typeof result.protocolErrorCode, 'number');
+  } finally { await adapter.close(); await f.close(); }
 });

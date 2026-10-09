@@ -96,7 +96,10 @@ Source egress and read grants are checked again after asynchronous credential re
 The supported SDK `client.request` API is used for explicit single-page discovery and
 calls. This avoids high-level v2 `listTools` cache/aggregation/filtering and `callTool`
 automatic header-mismatch refresh/retry. The SDK still owns initialization, message
-validation, protocol version, sessions, notifications and parsing. The dispatch guard
+validation, protocol version, sessions, notifications and parsing. A supported
+transport `onmessage` observer forwards messages unchanged and uses the official
+`isJSONRPCErrorResponse` guard to distinguish actual remote rejections from SDK-local
+decode errors (both can otherwise be `ProtocolError`). The dispatch guard
 also rejects any second `tools/call` dispatch in one operation. Tool-schema header
 mirroring, OAuth, stdio and other transports are not supported in this slice.
 

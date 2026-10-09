@@ -1,4 +1,4 @@
-import { Client, ProtocolError, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { Client, ProtocolError, StreamableHTTPClientTransport, isJSONRPCErrorResponse } from '@modelcontextprotocol/client';
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/ajv';
 import { McpRegistry } from './registry.js';
 import type { CallRequest, CallResult, CompletedResult, DiscoveryResult, EndpointConfig, McpBudgets, McpPort, ResultScope, ResultStorePort, SliceRequest, SliceResult, StoredPayload, ToolDefinition } from './port.js';
@@ -10,7 +10,7 @@ export interface McpAdapterOptions {
   budgets?: Partial<McpBudgets>;
 }
 class PolicyError extends Error { constructor(readonly reason: string) { super(reason); } }
-interface Operation { scope: ResultScope; signal: AbortSignal; dispatched: boolean; bytes?: Uint8Array; requestId?: string | number }
+interface Operation { scope: ResultScope; signal: AbortSignal; dispatched: boolean; bytes?: Uint8Array; requestId?: string | number; explicitErrorCode?: number }
 interface Session { client: Client; config: EndpointConfig; operation?: Operation }
 const allowedHeaders = new Set(['accept', 'content-type', 'mcp-session-id', 'mcp-protocol-version', 'last-event-id', 'mcp-method', 'mcp-name']);
 
@@ -132,6 +132,14 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
     const transport = new StreamableHTTPClientTransport(new URL(config.url), { fetch: guardedFetch(session, options, budgets), redirectPolicy: 'follow', reconnectionOptions: { maxRetries: 0, initialReconnectionDelay: 1000, maxReconnectionDelay: 1000, reconnectionDelayGrowFactor: 1 } });
     sessions.set(config.id, session);
     await bounded(client.connect(transport, { timeout: budgets.timeoutMs }), AbortSignal.timeout(budgets.timeoutMs));
+    // Observe the SDK transport's parsed messages, then forward unchanged. A local
+    // decode/validation ProtocolError is not proof of an explicit remote rejection.
+    const onmessage = transport.onmessage;
+    transport.onmessage = (message, extra) => {
+      const operation = session.operation;
+      if (operation && isJSONRPCErrorResponse(message) && message.id === operation.requestId) operation.explicitErrorCode = message.error.code;
+      onmessage?.(message, extra);
+    };
     if (!client.getServerCapabilities()?.tools) throw new PolicyError('tools-unavailable');
     return session;
   }
@@ -197,7 +205,7 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
         return completed(scope, operation.bytes, result, result.isError ? 'tool-error' : 'completed');
       } catch (error) {
         if (operation.dispatched) {
-          if (error instanceof ProtocolError && operation.bytes && options.registry.authorizesScope(scope)) return completed(scope, operation.bytes, { error: { code: error.code } }, 'protocol-error', error.code);
+          if (error instanceof ProtocolError && operation.explicitErrorCode !== undefined && operation.bytes && options.registry.authorizesScope(scope)) return completed(scope, operation.bytes, { error: { code: operation.explicitErrorCode } }, 'protocol-error', operation.explicitErrorCode);
           // HTTP SDK cancellation aborts the request, rather than notifying. Use its
           // supported notification API with the SDK-owned id; never wait indefinitely.
           if (localSignal.aborted && operation.requestId !== undefined) await bounded(session.client.notification({ method: 'notifications/cancelled', params: { requestId: operation.requestId, reason: 'local cancellation' } }), AbortSignal.timeout(200)).catch(() => {});

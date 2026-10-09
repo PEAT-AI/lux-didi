@@ -127,7 +127,7 @@ import CryptoKit
         if failure == nil, owner.lastStop?["observedExited"] as? Bool != true { failure = InstalledProofError.unavailable }
         report["native"] = ["pid": Int(getpid()), "cleanQuitRequested": true, "exitEvidence": "external-driver-required"]
         report["phase"] = failure == nil ? "complete" : "failed"; report["success"] = failure == nil
-        if let failure { report["error"] = ["code": code(failure)] }
+        if let failure { report["error"] = ["code": model.bootstrapFailureCode ?? code(failure)] }
         do { try proof.write(report) } catch { fputs("INSTALLED-PROOF FAILED: report write refused\n", stderr); return false }
         return failure == nil
     }

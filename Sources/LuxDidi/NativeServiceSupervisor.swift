@@ -128,6 +128,7 @@ struct OwnedServiceConnection {
     private var operation: UUID?
     private(set) var credentialImported = false
     private(set) var lastStop: [String: Any]?
+    private(set) var startupFailureCode: String?
     var currentConnection: OwnedServiceConnection? {
         guard let connection, isCurrent(connection) else { return nil }; return connection
     }
@@ -175,11 +176,14 @@ struct OwnedServiceConnection {
         guard state != .starting else { throw NativeServiceError.alreadyStarting }
         let ticket = UUID(); operation = ticket
         var launched: OwnedServiceChild?
+        var stage = "state"
+        startupFailureCode = nil
         state = .starting; connection = nil
         if let child { await child.stop(); observeStop(child); self.child = nil }
         do {
             guard operation == ticket, state == .starting else { throw NativeServiceError.exited }
             try NativeCredentialImport.prepareState(stateURL)
+            stage = "node-probe"
             try await probeNode()
             guard operation == ticket, state == .starting, !Task.isCancelled else { throw NativeServiceError.exited }
             // Revalidate selected artifacts after the await; never attach a cached descriptor.
@@ -192,9 +196,11 @@ struct OwnedServiceConnection {
             let owned = OwnedServiceChild(); child = owned; launched = owned
             owned.onUnexpectedExit = { [weak self, weak owned] in if let owned { self?.unavailable(owned) } }
             owned.onInvalidOutput = { [weak self, weak owned] in if let owned { self?.unavailable(owned) } }
+            stage = "spawn"
             try owned.launch(executable: runtime.node, arguments: [runtime.serverEntry.path, "--supervised", "--data-dir", stateURL.path, "--web-root", runtime.webRoot.path, "--port", "0"])
             var start = try JSONSerialization.data(withJSONObject: ["type": "start", "schemaVersion": 1, "nonce": nonce])
             start.append(10); try owned.writeStart(start)
+            stage = "ready-frame"
             let readyData = try await owned.firstFrame(timeout: 6_000_000_000)
             guard let ready = try JSONSerialization.jsonObject(with: readyData) as? [String: Any],
                   Set(ready.keys) == ["type", "schemaVersion", "nonce", "pid", "origin", "authorityEpoch", "assistantId"],
@@ -203,6 +209,7 @@ struct OwnedServiceConnection {
                   let origin = ready["origin"] as? String, let epoch = ready["authorityEpoch"] as? String, UUID(uuidString: epoch) != nil,
                   let assistant = ready["assistantId"] as? String, UUID(uuidString: assistant) != nil else { throw NativeServiceError.invalidReady }
             _ = try ServiceDescriptor(origin: origin, credentialService: credentialService, credentialAccount: credentialAccount)
+            stage = "canonical-file-and-import"
             let reference = try NativeCredentialImport.importCredential(state: stateURL, installId: credentialAccount, service: credentialService)
             credentialImported = true
             guard owned.isRunning, state == .starting else { throw NativeServiceError.exited }
@@ -211,6 +218,7 @@ struct OwnedServiceConnection {
             connection = result; state = .running
             return result
         } catch {
+            startupFailureCode = stage + "/" + ((error as? NativeServiceError).map { String(describing: $0) } ?? "platformFailure")
             if let launched { await launched.stop(); observeStop(launched) }
             if operation == ticket {
                 child = nil; state = .unavailable; connection = nil

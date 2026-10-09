@@ -16,6 +16,7 @@ import Carbon
     private(set) var supervisor: NativeServiceSupervisor?
     private var submittedDraft: String?
     private(set) var installedProof: PreparedInstalledProof?
+    private(set) var bootstrapFailureCode: String?
     init(proofRequest: InstalledProofRequest? = nil) {
         // A present but invalid installed resource is a blocker, never attach fallback.
         if let resources = Bundle.main.resourceURL {
@@ -61,8 +62,12 @@ import Carbon
                 if shell?.descriptor.origin != descriptor.origin { shell = CompanionWeb(descriptor: descriptor) }
             }
             guard let client, let shell else { throw CompanionError.invalidConfiguration }
+            bootstrapFailureCode = nil
             await shell.load(cookie: try await client.bootstrap()); error = nil
-        } catch { self.error = error.localizedDescription; shell?.clear() }
+        } catch {
+            bootstrapFailureCode = supervisor?.startupFailureCode ?? "bootstrap/" + ((error as? CompanionError).map { String(describing: $0) } ?? "platformFailure")
+            self.error = error.localizedDescription; shell?.clear()
+        }
     }
     func saveDraft() async {
         guard captureStatus != .sending else { return }
@@ -260,10 +265,12 @@ struct RootView: View {
             let null = NSNull()
             var evidence: [String: Any] = ["type": "DidiNativeWindowEvidence", "schemaVersion": 1,
                 "windowId": window.windowNumber, "screenCapturePermission": CGPreflightScreenCaptureAccess(),
-                "accessibility": controls, "nativeChrome": null, "limitation": null, "timeoutSeconds": 4]
+                "accessibility": controls, "nativeChrome": null, "limitation": null, "timeoutSeconds": 4,
+                "axRootProtocol": window is NSAccessibilityProtocol,
+                "axRootChildren": window.accessibilityChildren()?.count ?? 0]
             do { evidence["nativeChrome"] = try await OwnedWindowProof.capture(window, to: url) }
             catch {
-                evidence["limitation"] = "Own-process capture unavailable; legacy cache artifact is NOT faithful native-chrome evidence."
+                evidence["limitation"] = "Own-process capture unavailable (platform code \((error as NSError).code)); legacy cache artifact is NOT faithful native-chrome evidence."
                 // Preserve the old PNG/lifecycle assertion, explicitly not visual proof.
                 guard let view = window.contentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { failProof("render bitmap"); return }
                 view.cacheDisplay(in: view.bounds, to: bitmap)

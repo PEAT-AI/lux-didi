@@ -96,7 +96,9 @@ function verify(base: string) {
   }
   assert.deepEqual(actualFiles.sort(),packed.files.map(file => file.path).sort(),'Changed archive inventory');
   for (const path of actualFiles) {
-    assert.ok(!path.split('/').some(part => part.startsWith('.') || /^(secrets?|credentials?|private)$/i.test(part)),`Private/hidden content: ${path}`);
+    // npm includes isexe's public .npmignore when bundling. It is legitimate
+    // upstream packaging metadata, verified byte-for-byte below, not dotenv.
+    assert.ok(!path.split('/').some(part => (part.startsWith('.') && !(path.startsWith('node_modules/') && part === '.npmignore')) || /^(secrets?|credentials?|private)$/i.test(part)),`Private/hidden content: ${path}`);
     assert.ok(!/\.node$/.test(path),`Unverified native runtime: ${path}`);
     if (path.startsWith('node_modules/')) assert.deepEqual(readFileSync(join(base,path)),readFileSync(join(root,path)),`Runtime byte mismatch: ${path}`);
   }

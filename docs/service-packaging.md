@@ -39,6 +39,8 @@ The focused tests verify:
   packed service/compiled builder bytes and every included runtime file match
   the clean production install. No development or extraneous package, hidden
   dotenv/private path, unexpected service file or native binary is accepted.
+  Bundled upstream `.npmignore` files are public packaging metadata, not secrets;
+  they are the sole allowed vendor dotfile and are also byte-verified.
 - Included upstream license/notice files match each clean runtime package, and
   the Didi-owned MCP SDK notice is included. This proves file inclusion, not a
   legal determination about redistribution.

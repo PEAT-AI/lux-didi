@@ -9,7 +9,7 @@ cd "$(dirname "$0")/.."
 git diff --check
 bash scripts/run-local.sh --build-only
 node server/dist/host/index.js --help | grep -q -- '--config-dir'
-for file in server/dist/test/native-conversation.test.js server/dist/test/connected.test.js server/dist/test/http.test.js; do
+for file in server/dist/test/native-conversation.test.js server/dist/test/connected.test.js server/dist/test/http.test.js server/dist/test/chat.test.js; do
   test -s "$file" || { echo "Missing selected test: $file" >&2; exit 1; }
 done
 log=$(mktemp)
@@ -18,7 +18,8 @@ status=0
 node --test --test-reporter=tap --test-timeout=20000 \
   server/dist/test/native-conversation.test.js \
   server/dist/test/connected.test.js \
-  server/dist/test/http.test.js | tee "$log" || status=$?
+  server/dist/test/http.test.js \
+  server/dist/test/chat.test.js | tee "$log" || status=$?
 grep -Eq '^# tests [1-9][0-9]*$' "$log" || { echo 'Zero selected tests' >&2; exit 1; }
 if [ "$status" -ne 0 ]; then exit "$status"; fi
 # Real GPU browser admission: a held slot is reported by the helper, never read as a pass.

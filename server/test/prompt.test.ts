@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { GeminiAdapter } from '../adapters/model/gemini.js';
 import type { ToolDefinition } from '../adapters/model/types.js';
-import { compilePrompt, createCapabilitySnapshot, validatePreferences, PUBLIC_PERSONA, PROMPT_VERSION, PromptCompileError, type CompileInput, type Evidence } from '../prompt/index.js';
+import { compilePrompt, compileVoiceInstruction, createCapabilitySnapshot, validatePreferences, PUBLIC_PERSONA, PROMPT_VERSION, PromptCompileError, type CompileInput, type Evidence } from '../prompt/index.js';
 
 const rawPreferences = { schemaVersion: 1, ownerId: 'alice', dataClass: 'private', language: 'en', register: 'plain', humor: 'dry', verbosity: 'brief' };
 const tool: ToolDefinition = { name: 'read_note', description: 'Read a note', parameters: { type: 'object', properties: { id: { type: 'string' } } }, effect: 'read', accountId: 'account', resourceId: 'notes', validate: () => true, execute: async () => ({ status: 'completed', value: null }) };
@@ -217,4 +217,17 @@ test('accepted Gemini injected transport constructs separate user evidence, exac
   assert.deepEqual(result.prompt.omittedContextIds, []);
   const denied = new GeminiAdapter({ modelId: 'gemini-synthetic', keyReference: 'unused', credentials: { resolve: async () => { throw Error('must not access'); } }, route: { enabled: true, provider: 'gemini', modelId: 'gemini-synthetic', dataClasses: ['ordinary'] }, transport: async () => { throw Error('must not transport'); } });
   assert.equal((await denied.generate(request, { signal: new AbortController().signal, deadlineMs: Date.now() + 10000 })).status, 'denied');
+});
+
+test('compileVoiceInstruction reuses the canonical assembly with no turns; empty history still fails', () => {
+  const instruction = compileVoiceInstruction({
+    ownerId: 'alice', promptVersion: PROMPT_VERSION,
+    preferences: validatePreferences(rawPreferences, 'alice'),
+    capabilities: createCapabilitySnapshot([], []), trustedChars: 20000,
+  });
+  assert.ok(instruction.system.includes(PUBLIC_PERSONA));
+  assert.ok(instruction.system.includes('[rules]'));
+  assert.ok(instruction.system.includes('[capabilities]'));
+  assert.equal(instruction.promptVersion, PROMPT_VERSION);
+  assert.throws(() => compilePrompt({ ...input(), history: [] }), (error: unknown) => error instanceof PromptCompileError && error.code === 'schema');
 });

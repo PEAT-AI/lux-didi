@@ -84,7 +84,7 @@ class UnconfiguredLive implements LiveService {
  */
 export function composeLive(store: Store, configDir: string, testing?: LiveTesting, now?: () => number): { service: LiveService; status: LiveStatusPayload } {
   const loaded = loadLiveConfig({ configDir, ownerId: store.assistantId });
-  const profile = testing?.profile;
+  const profile = testing?.profile ?? (loaded.status === 'configured' ? loaded.config.profile : undefined);
   const status = statusPayload(loaded, profile);
   if (!profile) return { service: new UnconfiguredLive(status), status };
   const credentials = testing?.credentials ?? credentialsFor(configDir);

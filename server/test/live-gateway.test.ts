@@ -10,20 +10,12 @@ import WebSocket from 'ws';
 import type { Data } from 'ws';
 import { composeLive } from '../host/live.js';
 import { listenService } from '../http/server.js';
-import { liveMigrations, validateLiveProfile, type LiveProfile } from '../live/index.js';
+import { liveMigrations, type LiveProfile } from '../live/index.js';
 import { Store } from '../runtime/store.js';
 import { CANARY, fixture, pcm } from './live-voice-fixture.js';
 
 const MODEL = 'models/live-gateway-test';
 const VOICE = 'LiveVoice';
-
-export function profile(): LiveProfile {
-  return validateLiveProfile({
-    provider: 'gemini', liveModelId: MODEL, voice: VOICE, keyReference: 'gemini-primary',
-    route: { enabled: true, provider: 'gemini', modelId: MODEL, dataClasses: ['ordinary'] },
-    prompt: { text: 'Synthetic system instruction', dataClass: 'ordinary' },
-  });
-}
 
 function configJson(enabled: boolean, extra: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -144,15 +136,15 @@ test('live status is local validation; absent, disabled and malformed files neve
   assert.equal(dupStatus.body.data.status, 'error');
   assert.equal(dupStatus.body.data.code, 'invalid_json');
 
-  // R1: a valid enabled file cannot yet build a turn-less voice prompt; it reports the blocked seam.
+  // R1 approved: a valid enabled file builds its profile through the shared turn-less assembly.
   const enabled = await harness(t, { config: configJson(true), withKey: false });
-  const blocked = await json(enabled.origin, '/api/v1/live/status', { headers: bearer(enabled) });
-  assert.equal(blocked.body.data.status, 'error');
-  assert.equal(blocked.body.data.code, 'invalid_prompt');
+  const ready = await json(enabled.origin, '/api/v1/live/status', { headers: bearer(enabled) });
+  assert.equal(ready.body.data.status, 'configured');
+  assert.equal(ready.body.data.model, MODEL);
 });
 
 test('live operator routes reject browsers, origins and duplicate headers before the owner', async t => {
-  const h = await harness(t, { profile: profile() });
+  const h = await harness(t, { config: configJson(true) });
   const status = await json(h.origin, '/api/v1/live/status', { headers: bearer(h) });
   assert.equal(status.status, 200);
   assert.equal(status.body.data.status, 'configured');
@@ -168,7 +160,7 @@ test('live operator routes reject browsers, origins and duplicate headers before
 });
 
 test('one ordered authenticated audio upgrade carries PCM, markers and the terminal fact', async t => {
-  const h = await harness(t, { profile: profile() });
+  const h = await harness(t, { config: configJson(true) });
   const created = await createBody(h, 'flow-1');
   assert.equal(created.status, 200);
   const snapshot = created.body.data;
@@ -209,7 +201,7 @@ test('one ordered authenticated audio upgrade carries PCM, markers and the termi
 });
 
 test('malformed handshakes never consume the grant or open a provider', async t => {
-  const h = await harness(t, { profile: profile() });
+  const h = await harness(t, { config: configJson(true) });
   const created = await createBody(h, 'neg-1');
   const id = created.body.data.liveSessionId;
 
@@ -223,4 +215,31 @@ test('malformed handshakes never consume the grant or open a provider', async t 
 
   const snapshot = await json(h.origin, `/api/v1/live-sessions/${id}`, { headers: bearer(h) });
   assert.equal(snapshot.body.data.lifecycle, 'accepted', 'grant is not consumed by a malformed handshake');
+});
+
+test('two simultaneous attaches open at most one provider, and revoke is isolated', async t => {
+  const h = await harness(t, { config: configJson(true) });
+  const created = await createBody(h, 'race-1');
+  const id = created.body.data.liveSessionId;
+  const results = await Promise.all([
+    attempt(h.origin, `/api/v1/live-sessions/${id}/audio`, bearer(h)),
+    attempt(h.origin, `/api/v1/live-sessions/${id}/audio`, bearer(h)),
+  ]);
+  assert.ok(results.every(status => status === 101 || status === 409), `unexpected statuses ${results}`);
+  assert.equal(h.f.connections, 1, 'two simultaneous attaches open at most one provider');
+
+  const a = await createBody(h, 'rev-a');
+  const b = await createBody(h, 'rev-b');
+  const idA = a.body.data.liveSessionId, idB = b.body.data.liveSessionId;
+  const revoked = await json(h.origin, `/api/v1/live-sessions/${idA}/revoke`, { method: 'POST', headers: bearer(h) });
+  assert.equal(revoked.status, 200);
+  const snapA = await json(h.origin, `/api/v1/live-sessions/${idA}`, { headers: bearer(h) });
+  assert.equal(snapA.body.data.lifecycle, 'terminal');
+  assert.equal(snapA.body.data.terminal.state, 'revoked');
+  const snapB = await json(h.origin, `/api/v1/live-sessions/${idB}`, { headers: bearer(h) });
+  assert.equal(snapB.body.data.lifecycle, 'accepted', 'revoke leaves other sessions unaffected');
+  const before = h.f.connections;
+  assert.equal(await attempt(h.origin, `/api/v1/live-sessions/${idA}/audio`, bearer(h)), 101);
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(h.f.connections, before, 'a revoked grant opens no provider');
 });

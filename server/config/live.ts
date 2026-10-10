@@ -1,8 +1,8 @@
 import { join } from 'node:path';
 import type { DataClass } from '../adapters/live-voice/index.js';
-import { validatePreferences, type ValidatedPreferences } from '../prompt/index.js';
-import { liveIdentityOf } from '../live/config.js';
-import { LiveConfigError } from '../live/types.js';
+import { compileVoiceInstruction, createCapabilitySnapshot, PROMPT_VERSION, validatePreferences, type ValidatedPreferences } from '../prompt/index.js';
+import { liveIdentityOf, validateLiveProfile } from '../live/config.js';
+import { LiveConfigError, type LiveProfile } from '../live/types.js';
 import { ConfigError, fail, fields, parseJson, readPrivate, safeError, validateRoot } from './files.js';
 import { reference } from './index.js';
 
@@ -21,10 +21,12 @@ export interface LiveConfiguredProfile {
   readonly dataClasses: readonly DataClass[];
   readonly profileIdentity: string;
 }
+export interface LiveReadyProfile extends LiveConfiguredProfile { readonly profile: LiveProfile }
 
 export type LiveConfigStatus =
   | { status: 'unconfigured' }
-  | { status: 'disabled' | 'configured'; config: LiveConfiguredProfile }
+  | { status: 'disabled'; config: LiveConfiguredProfile }
+  | { status: 'configured'; config: LiveReadyProfile }
   | { status: 'error'; code: string };
 
 function modelId(value: unknown): string {
@@ -44,11 +46,9 @@ function classList(value: unknown): readonly DataClass[] {
  * Strict owner-only live.json in the existing configDir. Works with no text profile.json, never borrows
  * text consent and never reads a secret (the credential is resolved lazily by the adapter).
  *
- * R1 (LIVE-GATEWAY-R1): a valid enabled file cannot yet produce a LiveProfile, because the canonical
- * `compilePrompt` requires at least one history turn and a voice session has none. Prompt construction
- * is blocked pending root authorization of a turn-less voice-instruction seam, so a valid enabled file
- * reports `error: invalid_prompt` until that seam lands. No turn is fabricated and no validation is
- * weakened: model/voice/classes/preferences are still validated here.
+ * R1 (LIVE-GATEWAY-R1, approved): a valid enabled file builds its LiveProfile through
+ * `compileVoiceInstruction`, the shared canonical system assembly with no conversation turns; the text
+ * path is unchanged and no turn is fabricated. The credential is never read here.
  */
 export function loadLiveConfig(options: { configDir: string; ownerId: string }): LiveConfigStatus {
   try {
@@ -79,7 +79,18 @@ export function loadLiveConfig(options: { configDir: string; ownerId: string }):
       profileIdentity: liveIdentityOf({ provider: 'gemini', liveModelId: model, voice: chosenVoice, keyReference: reference, modelId: model, dataClasses }),
     });
     if (input['enabled'] === false) return { status: 'disabled', config };
-    throw new LiveConfigError('invalid_prompt'); // R1: turn-less voice-instruction seam not yet authorized.
+    // R1 (approved): the shared canonical system assembly compiled for a session with no turns.
+    const instruction = compileVoiceInstruction({
+      ownerId: options.ownerId, promptVersion: PROMPT_VERSION, preferences,
+      capabilities: createCapabilitySnapshot([], []), trustedChars: 20000,
+    });
+    const profile = validateLiveProfile({
+      provider: input['provider'], liveModelId: model, voice: chosenVoice, keyReference: reference,
+      route: { enabled: true, provider: input['provider'], modelId: model, dataClasses },
+      prompt: { text: instruction.system, dataClass: preferences.dataClass },
+      ...(input['limits'] !== undefined ? { limits: input['limits'] } : {}),
+    });
+    return { status: 'configured', config: Object.freeze({ ...config, profile }) };
   } catch (error) {
     const code = error instanceof LiveConfigError ? error.code
       : error instanceof ConfigError ? error.code : safeError(error).code;

@@ -443,7 +443,7 @@ test('conditional intent is idempotent but stale predecessor, endpoint rebind an
   assert.equal(f.registry.currentGrant('endpoint'), undefined);
   const row = f.store.transaction(tx => tx.get('SELECT * FROM tool_connections'))!;
   assert.equal(row.policy_sha256, applied.sha256);
-  const raw = new DatabaseSync(join(f.dir, 'writer.sqlite'));
+  const raw = new DatabaseSync(join(f.dir, 'state.sqlite'));
   raw.exec('DROP TRIGGER tool_connections_update_guard');
   raw.prepare('UPDATE tool_connections SET policy_sha256=?').run('0'.repeat(64)); raw.close();
   assert.throws(() => owner.applyConnectionIntent({ expectedPolicySha256: applied.sha256, policy: revoked }), /corrupt/);

@@ -71,7 +71,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
     const row = tx.get('SELECT * FROM tool_connections WHERE owner_id=? AND connection_id=?', [ownerId, id]);
     if (!row || typeof row.policy_json !== 'string' || sha256(row.policy_json) !== row.policy_sha256) throw Error('connection_policy_missing_or_corrupt');
     const policy = validatePolicy(JSON.parse(row.policy_json) as ConnectionPolicy);
-    if (policy.ownerId !== ownerId || policy.connectionId !== id || policy.endpoint.id !== row.endpoint_id || policy.generation !== row.generation || Number(policy.enabled) !== row.enabled) throw Error('connection_policy_binding');
+    if (canonicalJSON(policy) !== row.policy_json || policy.ownerId !== ownerId || policy.connectionId !== id || policy.endpoint.id !== row.endpoint_id || policy.generation !== row.generation || Number(policy.enabled) !== row.enabled) throw Error('connection_policy_binding');
     return { connectionId: id, generation: policy.generation, sha256: String(row.policy_sha256), policy };
   };
   const readRun = (tx: Transaction, runId: string): { snapshot: RunSnapshot; hash: string } => {
@@ -240,7 +240,8 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
         if (!selected.policy.enabled || !endpointMatches(selected.policy)) return { state: 'refused', reason: 'connection-not-enabled' };
         assertCurrentBinding();
       } catch { return { state: 'refused', reason: 'binding-not-current' }; }
-      const discovered = await port.discover(selected.policy.endpoint.id);
+      let discovered: Awaited<ReturnType<typeof port.discover>>;
+      try { discovered = await port.discover(selected.policy.endpoint.id); } catch { return { state: 'unavailable', reason: 'discovery-unavailable' }; }
       if (discovered.state !== 'discovered') return { state: 'unavailable', reason: 'discovery-unavailable' };
       try {
         const current = store.transaction(tx => connection(tx, id));

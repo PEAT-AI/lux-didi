@@ -50,6 +50,11 @@ export class McpRegistry {
     if (!entry.enabled || !entry.egress) throw new Error('source-egress-not-approved');
     return structuredClone(entry.config);
   }
+  /** Identity-only check for startup composition; does not enable egress or expose credentials. */
+  matchesEndpoint(config: EndpointConfig): boolean {
+    const entry = this.entries.get(config.id); const registered = entry?.config;
+    return !!registered && registered.url === config.url && registered.account === config.account && registered.resource === config.resource && (registered.credentialRef ?? null) === (config.credentialRef ?? null);
+  }
   revision(id: string): number { return this.entry(id).revision; }
   suspend(id: string): void {
     const entry = this.entry(id); delete entry.grant; delete entry.digest; delete entry.tools; entry.revision++;

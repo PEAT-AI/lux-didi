@@ -249,6 +249,8 @@ ALLOWED_PATHS = {
     "scripts/check-tool-owner.sh",
     "scripts/check-api-response.sh",
     "scripts/check-credential-binding.sh",
+    "docs/mcp-configuration.md",
+    "scripts/check-mcp-config.sh",
 }
 ALLOWED_PATHS |= {f"docs/{name}" for name in DOCS}
 

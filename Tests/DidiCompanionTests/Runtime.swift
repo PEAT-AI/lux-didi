@@ -68,9 +68,9 @@ import Security
             // A connected WK subtree must never be consumed from a detached AX task:
             // WebKit aborts on its main-thread-only accessibility implementation.
             window.orderOut(nil)
-            let unavailable = await FixtureWindowReadiness.wait(window, timeout: 20_000_000) {}
+            let unavailable = await OwnedWindowReadiness.wait(window, timeout: 20_000_000) {}
             expect(!unavailable.ready && unavailable.events.last?["event"] as? String == "deadline", "hidden owned window fails readiness at finite deadline")
-            let readiness = await FixtureWindowReadiness.wait(window) {
+            let readiness = await OwnedWindowReadiness.wait(window) {
                 window.makeKeyAndOrderFront(nil)
                 NSApp.activate(ignoringOtherApps: true)
             }

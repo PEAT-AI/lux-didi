@@ -1,6 +1,6 @@
 import AppKit
 
-@MainActor enum FixtureWindowReadiness {
+@MainActor enum OwnedWindowReadiness {
     struct Outcome {
         let ready: Bool
         let events: [[String: Any]]
@@ -20,8 +20,9 @@ import AppKit
             var deadline: Task<Void, Never>?
             @MainActor func finish(_ ready: Bool) {
                 guard !settled else { return }; settled = true
-                deadline?.cancel()
+                deadline?.cancel(); deadline = nil
                 observers.forEach { NotificationCenter.default.removeObserver($0) }
+                observers.removeAll()
                 continuation.resume(returning: Outcome(ready: ready, events: events))
             }
             @MainActor func record(_ event: String, complete: Bool = true) {

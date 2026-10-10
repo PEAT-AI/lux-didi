@@ -129,10 +129,19 @@ import CryptoKit
             var visual = report["visual"] as! [String: Any]
             visual["pageSnapshot"] = try await pageImage(fresh, to: proof.report.appendingPathExtension("web-page.png"))
             report["visual"] = visual; report["observations"] = observations
-            report["axConsumer"] = ["stage": "before-connected-own-AX"]
+            let readiness = await OwnedWindowReadiness.wait(window) {
+                window.makeKeyAndOrderFront(nil)
+                NSApp.activate(ignoringOtherApps: true)
+            }
+            let readinessTrace: [String: Any] = ["nativePid": Int(getpid()), "windowId": window.windowNumber,
+                "ready": readiness.ready, "events": readiness.events]
+            report["axConsumer"] = ["stage": "before-connected-own-AX", "windowReadiness": readinessTrace]
             try proof.write(report)
+            guard readiness.ready else { throw InstalledProofError.accessibility }
             let observation = OwnedWindowProof.observe(window)
-            report["axConsumer"] = observation.trace
+            var consumerTrace = observation.trace
+            consumerTrace["windowReadiness"] = readinessTrace
+            report["axConsumer"] = consumerTrace
             let controls = observation.controls
             visual["accessibility"] = controls
             do { visual["nativeChrome"] = try await OwnedWindowProof.capture(window, to: proof.screenshot); visual["nativeChromeLimitation"] = "Own-process native chrome captured without requesting grants; root visual review required." }

@@ -116,8 +116,11 @@ if [ "${1:-}" = "--leased-run" ]; then
   chmod 0600 "$settings"
   echo 'MACOS-INSTALL: invalid store fails closed with a safe error'
 
-  # Real LaunchServices launch, restart, relocate and pre-move recall.
   export LUX_VERIFICATION_DRIVER
+  # Retain real gate negatives: no JSON-only evidence substitutes.
+  bash Tests/DidiCompanionTests/launch-probe/produce.sh --held-cases "$work/observer" "$app" "$proof/held-cases" "$real_home"
+
+  # Real LaunchServices launch, restart, relocate and pre-move recall.
   mkdir -p "$proof/launch-1"
   HOME="$real_home" CFFIXED_USER_HOME="$real_home" "$work/observer" --verification "$app" "$proof/launch-1" "$(uuidgen)" run --installed-proof --proof-state "$state" --proof-report "$proof/run-1.json"
   assistant="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["service"]["assistantId"])' "$proof/run-1.json")"

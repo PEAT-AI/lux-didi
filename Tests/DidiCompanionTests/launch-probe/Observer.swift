@@ -39,6 +39,8 @@ import AppKit
     var cancelSent = false
     var forced = false
     var released = false
+    var heldStage: [String: Any]?
+    var heldStimulusSent = false
     var settled = false
     var bundle: String { physicalPath(args[1]) }
     var expectedExecutable: String { bundle + "/Contents/MacOS/" + (verification ? "LuxDidi" : "LaunchProbe") }
@@ -53,7 +55,7 @@ import AppKit
         directory = open(root, O_EVTONLY)
         guard directory >= 0 else { fail("directory") ; return }
         watch = DispatchSource.makeFileSystemObjectSource(fileDescriptor: directory, eventMask: .write, queue: .main)
-        watch?.setEventHandler { [self] in MainActor.assumeIsolated { handshake(); bindServiceIfReady() } }
+        watch?.setEventHandler { [self] in MainActor.assumeIsolated { handshake(); bindServiceIfReady(); exerciseHeldProbe() } }
         watch?.resume()
         deadline = DispatchSource.makeTimerSource(queue: .main)
         deadline?.schedule(deadline: .now() + (verification ? 8 : 12))
@@ -66,6 +68,7 @@ import AppKit
         configuration.arguments = verification ? Array(args.dropFirst(5)) : [root, nonce, args[4]]
         var environment = ProcessInfo.processInfo.environment
         if verification { environment["LUX_VERIFICATION_GATE_ROOT"] = root; environment["LUX_VERIFICATION_GATE_NONCE"] = nonce }
+        if args[4].hasPrefix("held-") { environment["LUX_VERIFICATION_HOLD_OBSERVATION"] = "1" }
         configuration.environment = environment
         NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: bundle), configuration: configuration) { app, error in
             Task { @MainActor in
@@ -123,6 +126,7 @@ import AppKit
                 if args[4] == "cancel-pre" { send("cancel") }
                 else if args[4] == "eof-pre" { close(control); control = -1 }
                 else if args[4] == "bad-nonce" { send("release", nonce: UUID().uuidString) }
+                else if args[4] == "held-premature" { send("observe:premature") }
                 else { send("release"); released = true }
                 deadline?.schedule(deadline: .now() + 120)
             } else {
@@ -173,16 +177,35 @@ import AppKit
                 output["serviceIdentity"] = serviceRecord as Any? ?? NSNull(); output["serviceKernel"] = serviceKernel
                 output["pidReuseRefused"] = pidReuseRefused; output["driverMixupRefused"] = driverMixupRefused
                 output["forced"] = forced; output["cancelSent"] = cancelSent
+                output["heldStage"] = heldStage as Any? ?? NSNull()
+                output["heldStimulusSent"] = heldStimulusSent
                 output["releaseState"] = release?["state"] as Any? ?? [:]
                 output["nativeDisposed"] = nativeDisposition?["disposed"] as? Bool == true
             }
             try atomic(output, to: root + "/observer.json")
             if verification {
-                let expected = args[4] == "run" ? raw == 0 : raw == 256
+                let expected = ["run", "held-positive"].contains(args[4]) ? raw == 0 : raw == 256
                 guard expected, !forced, nativeDisposition?["disposed"] as? Bool == true else { exit(1) }
             }
             exit(0)
         } catch { fputs("probe report failure\n", stderr); exit(1) }
+    }
+    // Runtime negative stimuli, not substitutes fabricated from evidence JSON.
+    func exerciseHeldProbe() {
+        guard args[4].hasPrefix("held-"), !heldStimulusSent, control >= 0,
+              let data = try? Data(contentsOf: URL(fileURLWithPath: root + "/observation-stage.json")),
+              let notice = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let stage = notice["stage"] as? String else { return }
+        heldStage = notice; heldStimulusSent = true
+        switch args[4] {
+        case "held-positive": send("observe:" + stage)
+        case "held-wrong-stage": send("observe:" + UUID().uuidString)
+        case "held-stale": send("observe:" + stage, nonce: UUID().uuidString)
+        case "held-duplicate": send("observe:" + stage + "\n" + nonce + ":observe:" + stage)
+        case "held-cancel": send("cancel")
+        case "held-eof": close(control); control = -1
+        default: fail("unknown held probe")
+        }
     }
     func send(_ token: String, nonce: String? = nil) {
         guard control >= 0 else { return }

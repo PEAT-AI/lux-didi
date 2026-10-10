@@ -4,6 +4,32 @@ import signal
 import sys
 
 
+def verify_held(root):
+    modes = ('held-premature', 'held-wrong-stage', 'held-stale', 'held-duplicate',
+             'held-cancel', 'held-eof', 'held-positive')
+    for mode in modes:
+        directory = os.path.join(root, mode)
+        d = json.load(open(os.path.join(directory, 'observer.json')))
+        native = json.load(open(os.path.join(directory, 'native-disposed.json')))
+        assert d['identityVerified'] and d['registeredBeforeRelease']
+        assert d['nativeDisposed'] and not d['forced']
+        assert d['kernel']['statusRequested'] and d['kernel']['filter'] == -5
+        raw = d['kernel']['rawStatus']
+        assert os.WIFEXITED(raw) and os.WEXITSTATUS(raw) == (0 if mode == 'held-positive' else 1)
+        assert native['nonce'] == d['identity']['nonce'] and native['pid'] == d['identity']['pid']
+        assert native['observationRequested'] is True
+        if mode != 'held-premature':
+            stage = d['heldStage']
+            assert d['heldStimulusSent'] and native['observationPublished']
+            assert stage['nonce'] == native['nonce'] and stage['pid'] == native['pid']
+            assert stage['stage'] and stage['stage'] == native['observationStage']
+            assert d['serviceIdentity']['pid'] != native['pid']
+            assert d['serviceKernel']['statusRequested'] and d['serviceKernel']['filter'] == -5
+        assert native['observationAcknowledged'] == (mode == 'held-positive')
+        assert native['cancelled'] == (mode != 'held-positive')
+    print('PASS: actual native held gate accepts one bound ack; premature/wrong/stale/duplicate/cancel/EOF fail with owned cleanup')
+
+
 def verify(d, case):
     assert d['case'] == case and d['identityVerified'] is True
     assert d['registeredBeforeRelease'] is True and d['released'] is True
@@ -21,6 +47,10 @@ def verify(d, case):
         assert os.WIFEXITED(raw) and os.WEXITSTATUS(raw) == int(case)
     assert d['observerDisposed'] is True
 
+
+if __name__ == '__main__' and len(sys.argv) > 1 and sys.argv[1] == '--held':
+    verify_held(sys.argv[2])
+    sys.exit(0)
 
 if __name__ == '__main__':
     reports = []

@@ -4,6 +4,20 @@ umask 077
 src=Tests/DidiCompanionTests/launch-probe
 root="$(cd "$(dirname "$0")/../../.." && pwd)"
 
+# The production installer already owns the browser lease, app and observer.
+# Exercise the actual running native gate, including the owned real host where
+# applicable. Every failure must be observed by kernel exit, never JSON mutation.
+if [ "${1:-}" = "--held-cases" ]; then
+  observer="$2"; app="$3"; proof="$4"; real_home="$5"
+  mkdir -p "$proof"
+  for mode in held-premature held-wrong-stage held-stale held-duplicate held-cancel held-eof held-positive; do
+    mkdir "$proof/$mode"
+    HOME="$real_home" CFFIXED_USER_HOME="$real_home" "$observer" --verification "$app" "$proof/$mode" "$(uuidgen)" "$mode" --installed-proof --proof-state "$proof/$mode/state" --proof-report "$proof/$mode/report.json"
+  done
+  python3 "$root/$src/verify.py" --held "$proof"
+  exit
+fi
+
 # Leased run phase. Compilation and bundling already ran outside the browser
 # lease below; this phase receives explicit absolute artifact paths.
 if [ "${1:-}" = "--leased-run" ]; then

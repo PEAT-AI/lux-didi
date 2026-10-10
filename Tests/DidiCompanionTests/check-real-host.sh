@@ -48,6 +48,10 @@ for i,r in enumerate(reports):
  assert diagnostic['sourceSHA']==commit and diagnostic['proofId']==r['proofId']
  assert all(k in diagnostic for k in ('axConsumer','axDirectTrace','wkDiagnostics'))
  assert diagnostic['axConsumer']['queryOnMainThread'] is True
+ readiness=diagnostic['axConsumer']['windowReadiness']
+ assert readiness['ready'] is True
+ assert readiness['nativePid']==r['native']['pid'] and readiness['windowId']==r['visual']['windowId']
+ assert all(readiness['events'][-1]['state'].values()), 'native AppKit window was not ready before AX/SCK'
  assert r['type']=='LuxDidiInstalledProof' and r['schemaVersion']==1
  assert r['phase']=='complete' and r['success'] is True
  assert r['source']['releaseCommit']==commit

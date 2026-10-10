@@ -34,10 +34,27 @@ import CryptoKit
         }
         return false
     }
+    private static var latestPageDiagnostics: [String: Any] = [:]
+    private static func diagnosePage(_ shell: CompanionWeb) async {
+        let web = shell.webView
+        var value: [String: Any] = ["viewExists": true, "mounted": web.window != nil,
+            "nonzeroFrame": web.bounds.width > 0 && web.bounds.height > 0,
+            "state": String(describing: shell.state), "urlMatchesExpected": web.url == shell.descriptor.baseURL,
+            "rootPageApproved": shell.descriptor.page(web.url), "actualPath": web.url?.path ?? "",
+            "expectedPath": shell.descriptor.baseURL.path, "navigationStarts": shell.proofNavigationStarts,
+            "navigationFinishes": shell.proofNavigationFinishes, "mainFrameHTTPStatus": shell.proofMainFrameHTTPStatus as Any? ?? NSNull(),
+            "navigationFailureCode": shell.proofNavigationFailureCode as Any? ?? NSNull()]
+        do {
+            let result = try await js(web, "({readyState:document.readyState,app:!!document.querySelector('#app'),canvas:!!document.querySelector('#didi-orb'),bodyNonempty:!!document.body&&document.body.innerText.length>0,scriptCount:document.scripts.length})")
+            if let dom = result as? [String: Any] { value["dom"] = dom }
+        } catch { value["jsErrorCode"] = (error as NSError).code }
+        latestPageDiagnostics = value
+    }
     private static func pageReady(_ model: AppModel) async throws -> WKWebView {
         guard let shell = model.shell else { throw InstalledProofError.missingUI }
         let until = Date().addingTimeInterval(8)
         while Date() < until {
+            await diagnosePage(shell)
             if shell.state == .ready {
                 guard shell.webView.url == shell.descriptor.baseURL else { throw InstalledProofError.missingUI }
                 // Actual shared Naya implementation is Canvas2D/DOM, not the fixture div.
@@ -127,6 +144,7 @@ import CryptoKit
         if failure == nil, owner.lastStop?["observedExited"] as? Bool != true { failure = InstalledProofError.unavailable }
         report["native"] = ["pid": Int(getpid()), "cleanQuitRequested": true, "exitEvidence": "external-driver-required"]
         report["phase"] = failure == nil ? "complete" : "failed"; report["success"] = failure == nil
+        report["wkDiagnostics"] = latestPageDiagnostics
         if let failure { report["error"] = ["code": model.bootstrapFailureCode ?? code(failure)] }
         do { try proof.write(report) } catch { fputs("INSTALLED-PROOF FAILED: report write refused\n", stderr); return false }
         return failure == nil

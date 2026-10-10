@@ -15,6 +15,10 @@ enum PageState: Equatable { case loading, ready, unavailable }
     private var deadline: Task<Void, Never>?
     private var attempt = 0
     private var approvedResponse = false
+    private(set) var proofNavigationStarts = 0
+    private(set) var proofNavigationFinishes = 0
+    private(set) var proofNavigationFailureCode: Int?
+    private(set) var proofMainFrameHTTPStatus: Int?
     private var activeNavigation: WKNavigation?
     #if COMPANION_TEST
     private let diagnosticStart = Date()
@@ -92,6 +96,7 @@ enum PageState: Equatable { case loading, ready, unavailable }
     }
     func webView(_ webView: WKWebView, decidePolicyFor response: WKNavigationResponse, decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
         let http = response.response as? HTTPURLResponse
+        if response.isForMainFrame { proofMainFrameHTTPStatus = http?.statusCode }
         trace("response-\(http?.statusCode ?? 0)")
         let allowed = response.isForMainFrame && descriptor.page(response.response.url) && response.canShowMIMEType &&
             response.response.mimeType == "text/html" && http?.statusCode == 200 &&
@@ -104,6 +109,7 @@ enum PageState: Equatable { case loading, ready, unavailable }
         fail("Unexpected service redirect refused. Reconnect explicitly.")
     }
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        proofNavigationStarts += 1
         if state == .ready {
             attempt += 1; approvedResponse = false; activeNavigation = navigation
             state = .loading
@@ -111,6 +117,7 @@ enum PageState: Equatable { case loading, ready, unavailable }
         }
     }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        proofNavigationFinishes += 1
         trace("did-finish-approved-\(approvedResponse)-page-\(descriptor.page(webView.url))")
         guard state == .loading, navigation === activeNavigation else { return }
         guard approvedResponse, descriptor.page(webView.url) else {
@@ -123,11 +130,13 @@ enum PageState: Equatable { case loading, ready, unavailable }
         webView.isHidden = false; state = .ready; detail = "Shared service UI"
     }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        proofNavigationFailureCode = (error as NSError).code
         trace("provisional-error-\((error as NSError).domain)-\((error as NSError).code)")
         // Cancelled hostile navigations do not replace a valid current page with an error screen.
         if state == .loading, navigation === activeNavigation { fail("Service unavailable. Your draft is retained; retry explicitly.") }
     }
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        proofNavigationFailureCode = (error as NSError).code
         trace("committed-error-\((error as NSError).domain)-\((error as NSError).code)")
         fail("Shared page failed. Your draft is retained; retry explicitly.")
     }

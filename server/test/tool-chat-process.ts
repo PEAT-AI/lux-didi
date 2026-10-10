@@ -186,7 +186,7 @@ export async function fixture(options: FixtureOptions = {}) {
     tools.applyConnection(policy); tools.projectConnection(policy.connectionId);
     return conversation.sessionId;
   };
-  const accept = (sessionId: string, key = randomUUID(), connectionIds = ['synthetic-lux'], selectedMemoryEntryIds: string[] = [], text = 'Use synthetic insight 731.') =>
+  const accept = (sessionId: string, key: string = randomUUID(), connectionIds = ['synthetic-lux'], selectedMemoryEntryIds: string[] = [], text = 'Use synthetic insight 731.') =>
     chat.accept({ sessionId, text, idempotencyKey: key, selectedConnectionIds: connectionIds, selectedMemoryEntryIds }, context);
   const events: unknown[] = [];
   const terminal = async (run: RunSnapshot) => {

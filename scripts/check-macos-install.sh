@@ -195,8 +195,35 @@ PY
     mkdir -p "$proof/fx-$label"
     "$work/observer" --verification "$fixture" "$proof/fx-$label" "$(uuidgen)" run --installed-proof --proof-state "$fstate" --proof-report "$report"
   }
-  run_fixture p1 "$proof/fx-p1.json"
-  python3 - "$fstate/state.sqlite" "$proof/fx-triple.json" <<'PY'
+  # P1: launch the fixture host and drive one chat run through the protected API
+  # so the recording synthetic transport is invoked and the snapshot persists.
+  rm -f "$proof/fx-p1.json"
+  "$work/observer" --verification "$fixture" "$proof/fx-p1" "$(uuidgen)" run --installed-proof --proof-state "$fstate" --proof-report "$proof/fx-p1.json" &
+  fx_pid=$!
+  fx_origin=""
+  for _ in $(seq 1 200); do
+    fx_origin="$(python3 -c 'import json,sys
+try: print(json.load(open(sys.argv[1])).get("service",{}).get("origin",""))
+except Exception: print("")' "$proof/fx-p1.json" 2>/dev/null)"
+    [ -n "$fx_origin" ] && break
+    sleep 0.25
+  done
+  [ -n "$fx_origin" ] || { kill "$fx_pid" 2>/dev/null || true; echo 'MACOS-INSTALL FAIL: fixture host did not become ready' >&2; exit 1; }
+  fx_epoch="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["service"]["authorityEpoch"])' "$proof/fx-p1.json")"
+  fxtoken="$(tr -d '\n' < "$fstate/admin-credential")"
+  sid="$(curl -fsS -X POST "$fx_origin/api/v1/sessions" -H "Authorization: Bearer $fxtoken" -H "Origin: $fx_origin" -H "Content-Type: application/json" -H "X-Didi-Authority-Epoch: $fx_epoch" -H "Idempotency-Key: $(uuidgen)" --data '{"title":"synthetic fixture","timeZone":"UTC"}' | python3 -c 'import json,sys;d=json.load(sys.stdin).get("data") or {};print(d.get("sessionId") or d.get("id") or "")')"
+  [ -n "$sid" ] || sid="$(uuidgen)"
+  fkey="$(uuidgen)"
+  chat() { curl -fsS -X POST "$fx_origin/api/v1/chat" -H "Authorization: Bearer $fxtoken" -H "Origin: $fx_origin" -H "Content-Type: application/json" -H "X-Didi-Authority-Epoch: $fx_epoch" -H "Idempotency-Key: $1" --data "{\"sessionId\":\"$sid\",\"text\":\"synthetic fixture note\",\"timeZone\":\"UTC\"}"; }
+  callcount() { python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1]))))' "$fstate/fixture-calls.json" 2>/dev/null || echo 0; }
+  chat "$fkey" > "$proof/fx-chat-1.json"
+  calls1="$(callcount)"
+  chat "$fkey" > "$proof/fx-chat-replay.json"
+  calls2="$(callcount)"
+  wait "$fx_pid"
+  [ "$calls1" -ge 1 ] || { echo 'MACOS-INSTALL FAIL: synthetic transport was not invoked' >&2; exit 1; }
+  [ "$calls1" = "$calls2" ] || { echo 'MACOS-INSTALL FAIL: idempotent replay made extra transport calls' >&2; exit 1; }
+  python3 - "$fstate/state.sqlite" "$proof/fx-triple.json" "$fstate/fixture-calls.json" <<'PY'
 import hashlib, json, sqlite3, sys
 db = sqlite3.connect("file:%s?mode=ro" % sys.argv[1], uri=True)
 rows = db.execute("SELECT run_id, snapshot_json FROM chat_run_owner_profile ORDER BY rowid").fetchall()
@@ -204,8 +231,10 @@ assert rows, "no chat_run_owner_profile row produced by the fixture"
 run_id, snapshot = rows[-1]
 snap = json.loads(snapshot)
 assert snap.get("kind") == "profile" and snap.get("displayName") == "Synthetic Operator", snap
+calls = json.load(open(sys.argv[3]))
+assert calls and "synthetic fixture note" in json.dumps(calls[-1]["body"]), calls[-1] if calls else None
 json.dump({"run_id": run_id, "sha256": hashlib.sha256(snapshot.encode()).hexdigest(), "snapshot": snap}, open(sys.argv[2], "w"))
-print("FIXTURE-P1 run=%s sha256=%s" % (run_id, hashlib.sha256(snapshot.encode()).hexdigest()))
+print("FIXTURE-P1 run=%s sha256=%s calls=%d" % (run_id, hashlib.sha256(snapshot.encode()).hexdigest(), len(calls)))
 PY
   # P2: change only a non-label profile field, restart, and prove the persisted
   # P1 run/hash is preserved.

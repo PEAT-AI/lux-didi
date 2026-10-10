@@ -14,6 +14,10 @@ npm run build
 node --test --test-reporter=tap --test-timeout=30000 dist/test/live-gateway.test.js dist/test/live-session.test.js dist/test/live-voice.test.js dist/test/prompt.test.js | tee "$work/test.log"
 grep -Eq '^# tests [1-9][0-9]*$' "$work/test.log" || { echo 'Zero selected live gateway tests' >&2; exit 1; }
 grep -Eq '^# fail 0$' "$work/test.log" || { echo 'Selected live gateway tests failed' >&2; exit 1; }
+# Affected host composition/migration runtime rings (impact-selected; not the full host ring).
+node --test --test-reporter=tap --test-timeout=30000 dist/test/host.test.js server/test/host-entry.test.mjs | tee "$work/host.log"
+grep -Eq '^# tests [1-9][0-9]*$' "$work/host.log" || { echo 'Zero selected host runtime tests' >&2; exit 1; }
+grep -Eq '^# fail 0$' "$work/host.log" || { echo 'Selected host runtime tests failed' >&2; exit 1; }
 # The canonical files inventory must publish the gateway production roots, offline.
 npm pack --offline --ignore-scripts --pack-destination "$work" --json > "$work/pack.json"
 node --input-type=module - "$work/pack.json" <<'NODE'

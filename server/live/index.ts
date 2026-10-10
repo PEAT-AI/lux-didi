@@ -300,6 +300,11 @@ export class LiveSessionOwner {
       endAudioStream: () => { this.#guardHandle(handle); handle.session.endAudioStream(); },
       close: () => { handle.session.close(); },
       detach: () => this.#detach(handle),
+      overflow: () => {
+        if (handle.terminal) return;
+        handle.consumerState = 'backpressure';
+        this.#settle(handle, { state: 'consumer_backpressure' }, false, 'backpressure', null);
+      },
     };
   }
 

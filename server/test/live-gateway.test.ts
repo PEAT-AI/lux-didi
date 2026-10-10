@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { TestContext } from 'node:test';
 import { once } from 'node:events';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { fork } from 'node:child_process';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,6 +12,9 @@ import type { Data } from 'ws';
 import { composeLive } from '../host/live.js';
 import { listenService } from '../http/server.js';
 import { liveMigrations, type LiveProfile } from '../live/index.js';
+import { createDomainPort } from '../domain/facade.js';
+import { chatMigrations } from '../chat/index.js';
+import { Outbox } from '../runtime/outbox.js';
 import { Store } from '../runtime/store.js';
 import { CANARY, fixture, pcm } from './live-voice-fixture.js';
 
@@ -40,7 +44,7 @@ function writePrivate(dir: string, name: string, text: string): void {
   chmodSync(path, 0o600);
 }
 
-interface HarnessOptions { config?: unknown; rawLive?: string; profile?: LiveProfile; withKey?: boolean }
+interface HarnessOptions { config?: unknown; rawLive?: string; profile?: LiveProfile; withKey?: boolean; credentials?: { resolve(reference: string): Promise<string | undefined> } }
 
 interface Harness {
   f: Awaited<ReturnType<typeof fixture>>;
@@ -61,7 +65,7 @@ async function harness(t: TestContext, options: HarnessOptions = {}): Promise<Ha
   if (options.rawLive !== undefined) writePrivate(config, 'live.json', options.rawLive);
   else if (options.config !== undefined) writePrivate(config, 'live.json', `${JSON.stringify(options.config)}\n`);
   if (options.withKey !== false) writePrivate(config, 'gemini-primary.json', `${JSON.stringify({ schemaVersion: 1, keyReference: 'gemini-primary', key: CANARY })}\n`);
-  const { service: live } = composeLive(store, config, { socketFactory: f.socketFactory, ...(options.profile ? { profile: options.profile } : {}) });
+  const { service: live } = composeLive(store, config, { socketFactory: f.socketFactory, ...(options.profile ? { profile: options.profile } : {}), ...(options.credentials ? { credentials: options.credentials } : {}) });
   const running = await listenService({ store, live, port: 0 });
   t.after(async () => {
     await running.close();
@@ -186,8 +190,17 @@ test('one ordered authenticated audio upgrade carries PCM, markers and the termi
   await waitFor(() => frames.some(f => f.text && JSON.parse(f.text).type === 'outputTranscription'));
   assert.equal(JSON.parse(frames.find(f => f.text && JSON.parse(f.text).type === 'outputTranscription')!.text!).text, 'late fact');
 
+  h.f.send({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from(pcm).toString('base64') } }] } } });
+  await waitFor(() => frames.some(f => f.binary));
+  assert.deepEqual(frames.find(f => f.binary)!.binary, Buffer.from(pcm), 'binary frames are the ephemeral output PCM');
+
   h.f.send({ serverContent: { interrupted: true, turnComplete: true } });
   await waitFor(() => frames.some(f => f.text && JSON.parse(f.text).type === 'interrupted'));
+  const indexOf = (predicate: (f: { text?: string; binary?: Buffer }) => boolean): number => frames.findIndex(predicate);
+  const marker = indexOf(f => Boolean(f.text && JSON.parse(f.text).type === 'outputTranscription'));
+  const pcmIndex = indexOf(f => f.binary !== undefined);
+  const interrupted = indexOf(f => Boolean(f.text && JSON.parse(f.text).type === 'interrupted'));
+  assert.ok(marker < pcmIndex && pcmIndex < interrupted, 'one ordered stream: committed marker, PCM, committed marker');
 
   const closed = once(ws, 'close');
   h.f.remoteClose();
@@ -251,4 +264,69 @@ test('subprotocols and extensions are refused before the provider', async t => {
   const id = created.body.data.liveSessionId;
   assert.equal(await attempt(h.origin, `/api/v1/live-sessions/${id}/audio`, { ...bearer(h), 'sec-websocket-protocol': 'x' }), 400);
   assert.equal(h.f.attempts, 0, 'a subprotocol handshake opens no provider');
+});
+
+test('revoke during deferred credential resolution ends durably and opens no provider', async t => {
+  let release!: (value: string) => void;
+  const gate = new Promise<string>(resolve => { release = resolve; });
+  const deferredCredentials = { resolve: async (_reference: string): Promise<string> => gate };
+  const h = await harness(t, { config: configJson(true), credentials: deferredCredentials });
+  const a = await createBody(h, 'def-a');
+  const b = await createBody(h, 'def-b');
+  const idA = a.body.data.liveSessionId, idB = b.body.data.liveSessionId;
+
+  const ws = new WebSocket(`${h.origin.replace('http', 'ws')}/api/v1/live-sessions/${idA}/audio`, { headers: bearer(h) });
+  await once(ws, 'open');
+  await new Promise(resolve => setTimeout(resolve, 30)); // attachment is now parked on credential resolution
+  assert.equal(h.f.attempts, 0, 'credentials are still deferred');
+  assert.equal((await json(h.origin, `/api/v1/live-sessions/${idA}/revoke`, { method: 'POST', headers: bearer(h) })).status, 200);
+  release(CANARY);
+  await new Promise(resolve => setTimeout(resolve, 50));
+
+  assert.equal(h.f.attempts, 0, 'a revoked deferred credential opens no provider');
+  const snapA = await json(h.origin, `/api/v1/live-sessions/${idA}`, { headers: bearer(h) });
+  assert.equal(snapA.body.data.lifecycle, 'terminal');
+  assert.equal(snapA.body.data.terminal.state, 'revoked');
+  const snapB = await json(h.origin, `/api/v1/live-sessions/${idB}`, { headers: bearer(h) });
+  assert.equal(snapB.body.data.lifecycle, 'accepted', 'sessionB stays isolated');
+  ws.close();
+});
+
+test('supervised host composes Live, closes owned sockets on EOF, and the Store reopens', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-live-host-'));
+  const config = join(dir, 'provider-config'); mkdirSync(config, { recursive: true, mode: 0o700 }); chmodSync(config, 0o700);
+  writePrivate(config, 'live.json', `${JSON.stringify(configJson(true))}\n`);
+  writePrivate(config, 'gemini-primary.json', `${JSON.stringify({ schemaVersion: 1, keyReference: 'gemini-primary', key: CANARY })}\n`);
+  const web = join(dir, 'web'); mkdirSync(web, { recursive: true });
+
+  const child = fork(join(import.meta.dirname, 'live-gateway-process.js'), ['host', dir, config, web], { stdio: ['pipe', 'pipe', 'inherit', 'ipc'] });
+  t.after(() => { if (child.exitCode === null) child.kill('SIGKILL'); rmSync(dir, { recursive: true, force: true }); });
+  const ready = await new Promise<{ origin: string; authorityEpoch: string; assistantId: string }>((resolve, reject) => {
+    let buffer = '';
+    const timer = setTimeout(() => reject(new Error('host did not become ready')), 10000);
+    child.stdout!.on('data', (chunk: Buffer) => { buffer += chunk.toString(); const nl = buffer.indexOf('\n'); if (nl >= 0) { clearTimeout(timer); resolve(JSON.parse(buffer.slice(0, nl))); } });
+    child.once('exit', code => { clearTimeout(timer); reject(new Error(`host exited ${code}`)); });
+  });
+
+  const token = readFileSync(join(dir, 'admin-credential'), 'utf8').trim();
+  const headers = { authorization: `Bearer ${token}`, 'x-didi-authority-epoch': ready.authorityEpoch };
+  const status = await json(ready.origin, '/api/v1/live/status', { headers });
+  assert.equal(status.status, 200);
+  assert.equal(status.body.data.status, 'configured', 'host composes Live on the same Store with no text profile');
+
+  const created = await json(ready.origin, '/api/v1/live-sessions', { method: 'POST', headers: { ...headers, 'idempotency-key': 'proc-1', 'content-type': 'application/json' }, body: JSON.stringify({ inputClass: 'ordinary' }) });
+  assert.equal(created.status, 200);
+  const ws = new WebSocket(`${ready.origin.replace('http', 'ws')}/api/v1/live-sessions/${created.body.data.liveSessionId}/audio`, { headers });
+  await once(ws, 'open');
+  const closed = once(ws, 'close');
+
+  child.stdin!.end();
+  const exit = await new Promise<number | null>(resolve => child.once('exit', code => resolve(code)));
+  assert.equal(exit, 0, 'supervised host exits cleanly on stdin EOF');
+  await closed;
+  assert.equal(ws.readyState, ws.CLOSED, 'owned socket is closed on shutdown');
+  await assert.rejects(fetch(`${ready.origin}/api/v1/status`, { signal: AbortSignal.timeout(2000) }));
+
+  const store = new Store(dir, [...createDomainPort({ outbox: Outbox }).migrations, ...chatMigrations, ...liveMigrations]);
+  try { assert.equal(store.assistantId, ready.assistantId, 'the real Store reopens with stable identity'); } finally { store.close(); }
 });

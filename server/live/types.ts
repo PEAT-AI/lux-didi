@@ -106,6 +106,8 @@ export interface LiveAttachment {
   endAudioStream(): void;
   close(): void;
   detach(): void;
+  /** Durable consumer_backpressure settlement when the socket's bufferedAmount bound is exceeded. */
+  overflow(): void;
 }
 
 /** Safe operator-visible identity. Never carries key bytes or prompt text. */

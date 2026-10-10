@@ -88,7 +88,7 @@ export interface LiveUpgradeOptions {
  * no `await` and no user callback gap, so framing validation happens before any provider open.
  */
 export function createLiveUpgrader(options: LiveUpgradeOptions) {
-  const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false, clientTracking: false });
+  const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false, clientTracking: false, handleProtocols: () => false });
   const owned = new Set<WebSocket>();
 
   function refuse(socket: Duplex, status: number, code: string): void {
@@ -107,6 +107,7 @@ export function createLiveUpgrader(options: LiveUpgradeOptions) {
       const match = audioPath.exec(url.pathname);
       if (!match) throw new ServiceError('NOT_FOUND', 'Route not found', 404);
       if (url.search) throw new ServiceError('BAD_REQUEST', 'Query is not accepted', 400);
+      if (req.headers['sec-websocket-protocol'] !== undefined) throw new ServiceError('BAD_REQUEST', 'Subprotocols are not accepted', 400);
       sessionId = match[1]!;
       if (!sessionIdPattern.test(sessionId)) throw new ServiceError('BAD_REQUEST', 'Invalid Live session id', 400);
       const principal = operatorPrincipal(req, options.store, options.origin());
@@ -152,7 +153,7 @@ export function createLiveUpgrader(options: LiveUpgradeOptions) {
         if (ws.readyState !== ws.OPEN) { attachment.detach(); return; }
         if (chunk.kind === 'audio') ws.send(chunk.pcm, { binary: true });
         else if (chunk.marker.kind !== 'terminal') ws.send(JSON.stringify(markerFrame(chunk.marker)), { binary: false });
-        if (ws.bufferedAmount > options.maxBufferedBytes) { ws.close(1013, 'consumer_backpressure'); return; }
+        if (ws.bufferedAmount > options.maxBufferedBytes) { attachment.overflow(); ws.close(1013, 'consumer_backpressure'); return; }
       }
     } catch { /* transport failure never invents a delivered terminal or heard audio */ }
     let snapshot: LiveSessionSnapshot | null = null;

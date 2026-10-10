@@ -59,6 +59,11 @@ import Security
             // A connected WK subtree must never be consumed from a detached AX task:
             // WebKit aborts on its main-thread-only accessibility implementation.
             let connectedAX = await OwnedWindowProof.consumerTrace(window)
+            // Retain the exact fixture observation even when its identity gate fails.
+            let axReport = URL(fileURLWithPath: CommandLine.arguments[2]).appendingPathComponent("connected-wk-ax.json")
+            let axData = try JSONSerialization.data(withJSONObject: ["nativePid": Int(getpid()), "windowId": window.windowNumber, "axConsumer": connectedAX], options: [.prettyPrinted, .sortedKeys])
+            try axData.write(to: axReport, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: axReport.path)
             expect(connectedAX["queryOnMainThread"] as? Bool == true, "connected own-window AX traversal stays on AppKit thread")
             expect(connectedAX["geometryMatches"] as? Int == 1, "connected WK window uniquely identified by public own-PID geometry")
             expect(try await js(shell.webView, "typeof window.webkit?.messageHandlers") as? String == "undefined", "zero JavaScript authority handlers")

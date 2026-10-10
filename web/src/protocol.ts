@@ -7,7 +7,9 @@ export interface Plan { date: string; timeZone: string; items: { commitment: Com
 export interface Recall { hits: { sessionId: string; entryId?: string; snippet: string; sourceRefs: SourceRef[]; sourceTimestamp: string | null }[]; totalMatches: number; truncated: boolean; nextCursor: string | null }
 /** Safe per-run memory-selection metadata: ids, counts and omit reasons only, never note text. */
 export interface MemorySelectionSnapshot { schemaVersion: 1; requestedIds: string[]; usedIds: string[]; omitted: { id: string; reason: 'budget' | 'oversized' | 'not_included' }[]; counts: { requested: number; used: number; omitted: number }; frozen: boolean }
-export interface Status { ownerProfile: OwnerProfileStatus; assistantId: string; authorityEpoch: string; serviceMode: string; capabilities: { memory: boolean; commitments: boolean; notifications: boolean; model: boolean }; model: { configured: boolean; provider?: string; model?: string }; sources: SourceRef[] }
+export interface Status { ownerProfile: OwnerProfileStatus; assistantId: string; authorityEpoch: string; serviceMode: string; capabilities: { memory: boolean; commitments: boolean; notifications: boolean; model: boolean }; model: { configured: boolean; provider?: string; model?: string }; sources: SourceRef[]; connections?: ConnectionStatus[] }
+/** Safe, operator-asserted optional-integration status. Never a credential, account payload, secret path or catalog. */
+export interface ConnectionStatus { id: string; label: string; state: 'connected' | 'needs_setup' | 'unavailable'; lastKnown: boolean }
 export interface CommitmentDetail { commitment: Commitment; history: { revision: number; operation: string; recordedAt: string; title: string; notes: string; dueAt: string | null; timeZone: string; status: Commitment['status'] }[] }
 
 /** Safe current presentation only; no authored profile/version/path. */

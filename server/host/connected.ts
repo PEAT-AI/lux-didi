@@ -27,8 +27,38 @@ export interface ToolChatAssembly {
   registry: McpRegistry; port: McpPort; connections: readonly ConnectionPolicy[];
 }
 const baseEndpoint = 'https://generativelanguage.googleapis.com';
+/** Safe, operator-asserted optional-integration status; never a credential, account payload or catalog. */
+export interface ConnectionStatus { id: string; label: string; state: 'connected' | 'needs_setup' | 'unavailable'; lastKnown: boolean }
+function safeLabel(value: string): string { return value.replace(/[^\x20-\x7e]/g, '').slice(0, 64); }
+/**
+ * Actual owner state only: a connection is `connected` solely when the registry
+ * still holds a current grant whose generation/schema/tool set match the durable
+ * operator policy (a grant only exists after a real discover+approval). A
+ * configured-but-unapproved connection is `needs_setup`; a locally disabled or
+ * unreadable one is `unavailable`. Never inferred from a configured URL or a
+ * successful startup, and never carries credentials or a live catalog.
+ */
+function connectionStatus(store: Store, registry: McpRegistry, ownerId: string): ConnectionStatus[] {
+  let rows: { connection_id: unknown; endpoint_id: unknown; generation: unknown; enabled: unknown; policy_json: unknown }[];
+  try { rows = store.transaction(tx => tx.all('SELECT connection_id, endpoint_id, generation, enabled, policy_json FROM tool_connections WHERE owner_id=? ORDER BY connection_id', [ownerId])) as typeof rows; }
+  catch { return []; }
+  return rows.map(row => {
+    const id = String(row.connection_id);
+    let policy: ConnectionPolicy | null = null;
+    try { policy = JSON.parse(String(row.policy_json)) as ConnectionPolicy; } catch { policy = null; }
+    const label = safeLabel(policy ? policy.endpoint.id : id);
+    if (!policy || Number(row.enabled) !== 1) return { id, label, state: 'unavailable' as const, lastKnown: true };
+    let connected = false;
+    try {
+      const grant = registry.currentGrant(policy.endpoint.id);
+      connected = !!grant && grant.generation === policy.generation && grant.schemaDigest === policy.schemaDigest
+        && canonicalJSON([...grant.toolNames].sort()) === canonicalJSON([...policy.toolNames].sort());
+    } catch { connected = false; }
+    return { id, label, state: connected ? ('connected' as const) : ('needs_setup' as const), lastKnown: !connected };
+  });
+}
 
-export function composeChat(store: Store, domain: DomainPort, configDir: string, testing: ModelTesting | undefined, now: (() => number) | undefined, ownerProfile: OwnerProfileSnapshot | undefined, assembly: ToolChatAssembly): { chat: ChatService; status: ConnectedStatus; tools: ToolsOwner };
+export function composeChat(store: Store, domain: DomainPort, configDir: string, testing: ModelTesting | undefined, now: (() => number) | undefined, ownerProfile: OwnerProfileSnapshot | undefined, assembly: ToolChatAssembly): { chat: ChatService; status: ConnectedStatus; tools: ToolsOwner; connections: () => ConnectionStatus[] };
 export function composeChat(store: Store, domain: DomainPort, configDir: string, testing?: ModelTesting, now?: () => number, ownerProfile?: OwnerProfileSnapshot): { chat: ChatService; status: ConnectedStatus };
 export function composeChat(store: Store, domain: DomainPort, configDir: string, testing?: ModelTesting, now?: () => number, ownerProfile?: OwnerProfileSnapshot, assembly?: ToolChatAssembly) {
   const clock = now ?? Date.now;
@@ -139,6 +169,6 @@ export function composeChat(store: Store, domain: DomainPort, configDir: string,
     ...(now ? { now } : {})
   });
   chat.recover({ assistantId: store.assistantId, authorityEpoch: store.authorityEpoch });
-  return { chat, status, ...(owner ? { tools: owner } : {}) };
+  return { chat, status, ...(owner ? { tools: owner, connections: () => (assembly ? connectionStatus(store, assembly.registry, store.assistantId) : []) } : {}) };
 }
 export type { LoopResult };

@@ -27,7 +27,9 @@ async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> 
   try { return object(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } catch (error) { if (error instanceof ServiceError) throw error; throw new ServiceError('BAD_REQUEST', 'Malformed JSON'); }
 }
 interface Principal { clientId: string; mode: 'bearer' | 'browser'; tokenHash?: string; csrfToken?: string }
-export interface ServiceOptions { ownerProfileStatus?: { status: 'default' | 'configured'; displayName: string }; store: Store; domain?: DomainPort; port?: number; now?: () => number; webRoot?: string; chat?: ChatPort; modelStatus?: ConnectedStatus; live?: LiveService }
+export interface ServiceOptions { ownerProfileStatus?: { status: 'default' | 'configured'; displayName: string }; store: Store; domain?: DomainPort; port?: number; now?: () => number; webRoot?: string; chat?: ChatPort; modelStatus?: ConnectedStatus; connections?: () => ConnectionStatus[]; live?: LiveService }
+/** Safe, operator-asserted optional-integration status; never an authority or a catalog. */
+export interface ConnectionStatus { id: string; label: string; state: 'connected' | 'needs_setup' | 'unavailable'; lastKnown: boolean }
 export interface RunningService { server: Server; origin: string; close(): Promise<void> }
 export async function listenService(options: ServiceOptions): Promise<RunningService> {
   const { store, domain, chat, live } = options;
@@ -109,7 +111,7 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
       const actor = principal(req);
       if (route.mutation) csrf(req, actor);
       if (route.kind === 'status') {
-        send(res, 200, success({ ownerProfile: options.ownerProfileStatus ?? { status: 'default', displayName: 'Lux Didi' }, assistantId: store.assistantId, authorityEpoch: store.authorityEpoch, serviceMode: 'loopback', capabilities: { memory: !!domain, commitments: !!domain, notifications: false, model: modelStatus.status === 'configured' }, model: { configured: modelStatus.status === 'configured', ...modelStatus }, sources: [], capabilityReasons: { ...(!domain ? { memory: 'DOMAIN_NOT_CONFIGURED', commitments: 'DOMAIN_NOT_CONFIGURED' } : {}), notifications: 'NOTIFICATION_NOT_CONFIGURED', ...(modelStatus.status === 'configured' ? {} : { model: 'MODEL_NOT_CONFIGURED' }) } })); return;
+        send(res, 200, success({ ownerProfile: options.ownerProfileStatus ?? { status: 'default', displayName: 'Lux Didi' }, assistantId: store.assistantId, authorityEpoch: store.authorityEpoch, serviceMode: 'loopback', capabilities: { memory: !!domain, commitments: !!domain, notifications: false, model: modelStatus.status === 'configured' }, model: { configured: modelStatus.status === 'configured', ...modelStatus }, connections: options.connections?.() ?? [], sources: [], capabilityReasons: { ...(!domain ? { memory: 'DOMAIN_NOT_CONFIGURED', commitments: 'DOMAIN_NOT_CONFIGURED' } : {}), notifications: 'NOTIFICATION_NOT_CONFIGURED', ...(modelStatus.status === 'configured' ? {} : { model: 'MODEL_NOT_CONFIGURED' }) } })); return;
       }
       if (route.kind === 'session') { send(res, 200, success({ clientId: actor.clientId, csrfToken: actor.csrfToken ?? null })); return; }
       if (route.kind === 'connected' && ['enroll', 'accept'].includes(route.action) && (!chat || modelStatus.status !== 'configured')) throw new ServiceError('MODEL_NOT_CONFIGURED', 'Model route is not locally configured', 503);

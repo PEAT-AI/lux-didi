@@ -474,8 +474,10 @@ test('DIAG browser enrollment and selected tool accept reaches a real terminal r
     ...headers, 'Idempotency-Key': randomUUID()
   }, body: JSON.stringify({ title: 'Naya connected conversation', timeZone: 'UTC' }) });
   assert.equal(enrolled.status, 200);
-  const { data: { sessionId } } = await enrolled.json() as { data: { sessionId: string } };
-  await f.approveSession(sessionId);
+  const { data: { sessionId: browserEnrolledSessionId } } = await enrolled.json() as { data: { sessionId: string } };
+  await f.approveSession(browserEnrolledSessionId);
+  // The current hardware browser fixture resumes this locally pre-enrolled conversation.
+  const sessionId = await f.enroll();
   const key = randomUUID();
   const body = JSON.stringify({ sessionId, text: 'Use synthetic insight 731.', selectedConnectionIds: ['synthetic-lux'] });
   const accept = (idempotencyKey = key) => fetch(`${service.origin}/api/v1/chat`, { method: 'POST', headers: {

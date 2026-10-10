@@ -18,7 +18,25 @@ npm --prefix server ci --offline --ignore-scripts --no-audit --no-fund
 npm --prefix server run build
 npm --prefix web ci --offline --ignore-scripts --no-audit --no-fund
 npm --prefix web run build
-swiftc -swift-version 6 -warnings-as-errors -parse-as-library \
-  Tests/DidiLiveTests/Stage0.swift -o "$work/stage0"
-node Tests/DidiLiveTests/gateway.mjs "$work/stage0" "$work"
+swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
+  Tests/DidiLiveTests/Fixture.swift Tests/DidiLiveTests/Stage0.swift -o "$work/stage0"
+swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
+  Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \
+  Tests/DidiLiveTests/Fixture.swift Tests/DidiLiveTests/Runner.swift -o "$work/native-live"
+# Isolated mutation sensitivity: compile a scratch copy, never alter the committed source or weaken a gate.
+python3 - "$work/MutatedTransport.swift" <<'PY'
+import pathlib, sys
+source = pathlib.Path('Sources/LuxDidi/LiveSocketTransport.swift').read_text()
+needle = '["cookie", "origin", "sec-websocket-protocol", "proxy-authorization"]'
+assert source.count(needle) == 1
+pathlib.Path(sys.argv[1]).write_text(source.replace(needle, '["origin", "sec-websocket-protocol", "proxy-authorization"]'))
+PY
+swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
+  "$work/MutatedTransport.swift" Sources/LuxDidi/LiveSessionCoordinator.swift \
+  Tests/DidiLiveTests/Fixture.swift Tests/DidiLiveTests/Runner.swift -o "$work/native-live-mutated"
+# Accepted dependency tests exercise real one-attach races, durable 1013, isolated revoke, journal exclusion and supervised cleanup.
+node --test --test-reporter=tap --test-timeout=30000 \
+  server/dist/test/live-gateway.test.js server/dist/test/live-session.test.js
+node Tests/DidiLiveTests/process.mjs "$work/native-live" "$work"
+node Tests/DidiLiveTests/gateway.mjs "$work/stage0" "$work" "$work/native-live" "$work/native-live-mutated"
 echo 'NATIVE-LIVE CHECK PASS'

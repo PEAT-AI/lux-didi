@@ -38,6 +38,12 @@ done
 mv "$app" "$work/Moved Didi.app"
 mkdir -p "$proof/real-host/launch-3"
 "${LUX_VERIFICATION_DRIVER:?}" --verification "$work/Moved Didi.app" "$proof/real-host/launch-3" "$(uuidgen)" run --installed-proof --proof-state "$state" --proof-report "$proof/real-host/run-3.json"
+# Real native cancellation before release and after actual owned service start.
+# No SQL fixtures, sleeps or unchanged-source retries; same disposable marked identity.
+for mode in cancel-pre eof-pre bad-nonce cancel-service eof-service; do
+ mkdir -p "$proof/real-host/$mode"
+ "${LUX_VERIFICATION_DRIVER:?}" --verification "$work/Moved Didi.app" "$proof/real-host/$mode" "$(uuidgen)" "$mode" --installed-proof --proof-state "$state" --proof-report "$proof/real-host/$mode.json"
+done
 python3 - "$proof/real-host" "$commit" <<'PY'
 import json,sys,os
 root,commit=sys.argv[1:]
@@ -70,6 +76,8 @@ for i,r in enumerate(reports):
  assert launch['serviceIdentity']['pid']==r['service']['pid'] and launch['serviceIdentity']['pid']!=r['native']['pid']
  assert launch['serviceKernel']['flags'] & 0x84000000 == 0x84000000 and launch['serviceKernel']['rawStatus']==0
  assert launch['forced'] is False and launch['releaseState'] and launch['nativeDisposed'] is True
+ assert launch['pidReuseRefused'] and launch['driverMixupRefused']
+ assert launch['bundleURL']==os.path.realpath(r['source']['bundlePath'])
  assert r['source']['releaseCommit']==commit
  assert r['service']['readyVerified'] and r['serviceStop']['observedExited']
  assert r['serviceStop']['pid']==r['service']['pid']
@@ -88,4 +96,21 @@ for i,r in enumerate(reports):
 assert reports[0]['source']['nativeExecutableSHA256']==reports[2]['source']['nativeExecutableSHA256']
 assert reports[0]['source']['bundlePath']!=reports[2]['source']['bundlePath']
 print('REAL-HOST-NATIVE PASS dependency-base=76255fc6c2b3a0c75949e492f063884906852b84 source='+commit+' nativeExits=external-observed-0 runs=3 priorRecords=0,1,2 installId=preserved relocation=observed ordinaryData=untouched installChain=not-claimed')
+for mode in ('cancel-pre','eof-pre','bad-nonce','cancel-service','eof-service'):
+ negative=json.load(open(f'{root}/{mode}.json'))
+ launched=json.load(open(f'{root}/{mode}/observer.json'))
+ assert negative['success'] is False and negative['phase']=='failed' and negative['error']
+ assert launched['kernel']['rawStatus']==256 and launched['kernel']['flags'] & 0x84000000 == 0x84000000
+ assert launched['identity']['pid']==negative['native']['pid']
+ assert launched['observerDisposed'] and launched['nativeDisposed'] and launched['forced'] is False
+ if mode.endswith('service'):
+  assert launched['serviceIdentity']['pid']==negative['serviceStop']['pid']
+  assert launched['serviceKernel']['rawStatus']==0 and launched['serviceKernel']['flags'] & 0x84000000 == 0x84000000
+  assert negative['serviceStop']['exitObserved'] and negative['serviceStop']['terminationCode']==0
+  assert negative['credentialCleanup']['cleaned']
+ else:
+  assert launched['released'] is False and launched['serviceIdentity'] is None
+  assert negative['observations']['credentialImported'] is False
+print('PASS: real gate cancellation/EOF/nonce refusal, awaited Node/credential cleanup and listener disposal')
+
 PY

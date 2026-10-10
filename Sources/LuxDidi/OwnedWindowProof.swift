@@ -4,18 +4,20 @@ import CryptoKit
 import ApplicationServices
 
 @MainActor enum OwnedWindowProof {
+    private struct Control: Sendable { let name: String; let enabled: Bool; let visible: Bool }
     private struct ConsumerResult: Sendable {
         var code: String
         var windowCount = 0
         var titleStatuses: [Int32] = []
         var titleMatches = 0
         var childCount = 0
+        var controls: [Control] = []
         let queryOnMainThread: Bool
     }
     static func consumerTrace(_ window: NSWindow) async -> [String: Any] {
         guard NSApp.windows.contains(window), window.isVisible else { return ["code": "own-window-not-visible"] }
         // Capture primitive expected state on main; NSWindow/AX objects never cross actors.
-        let pid = getpid(), expectedTitle = window.title
+        let pid = getpid(), expectedTitle = ownIdentifier(window)
         let result = await Task.detached { consumerSnapshot(pid: pid, expectedTitle: expectedTitle) }.value
         return ["code": result.code, "windowCount": result.windowCount,
                 "titleStatuses": result.titleStatuses, "titleMatches": result.titleMatches,
@@ -34,15 +36,41 @@ import ApplicationServices
         guard windows.count <= 8 else { result.code = "own-window-limit"; return result }
         let matching = windows.filter { element in
             var title: CFTypeRef?
-            let status = AXUIElementCopyAttributeValue(element, kAXTitleAttribute as CFString, &title)
+            let status = AXUIElementCopyAttributeValue(element, kAXIdentifierAttribute as CFString, &title)
             result.titleStatuses.append(status.rawValue)
             return status == .success && title as? String == expectedTitle
         }
         result.titleMatches = matching.count
-        guard matching.count == 1 else { result.code = "own-title-not-unique"; return result }
+        guard matching.count == 1 else { result.code = "own-identifier-not-unique"; return result }
         let childStatus = AXUIElementCopyAttributeValue(matching[0], kAXChildrenAttribute as CFString, &value)
         result.code = String(childStatus.rawValue)
         result.childCount = (value as? [AXUIElement])?.count ?? 0
+        let expected: Set<String> = ["Start recording", "Stop recording", "Send text"]
+        func read(_ element: AXUIElement, _ attribute: String) -> CFTypeRef? {
+            var value: CFTypeRef?
+            return AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success ? value : nil
+        }
+        func rectangle(_ element: AXUIElement) -> CGRect? {
+            guard let position = read(element, kAXPositionAttribute) as! AXValue?,
+                  let size = read(element, kAXSizeAttribute) as! AXValue? else { return nil }
+            var point = CGPoint.zero; var dimensions = CGSize.zero
+            guard AXValueGetValue(position, .cgPoint, &point), AXValueGetValue(size, .cgSize, &dimensions) else { return nil }
+            return CGRect(origin: point, size: dimensions)
+        }
+        let windowFrame = rectangle(matching[0])
+        var visited = 0; var found: [String: Control] = [:]
+        func visit(_ element: AXUIElement, depth: Int) {
+            guard depth < 16, visited < 512 else { return }; visited += 1
+            let labels = [kAXTitleAttribute, kAXDescriptionAttribute].compactMap { read(element, $0) as? String }
+            if let name = labels.first(where: expected.contains), let frame = rectangle(element) {
+                let visible = frame.width > 0 && frame.height > 0 && (windowFrame?.intersects(frame) ?? false)
+                found[name] = Control(name: name, enabled: (read(element, kAXEnabledAttribute) as? Bool) ?? false, visible: visible)
+            }
+            for child in (read(element, kAXChildrenAttribute) as? [AXUIElement]) ?? [] { visit(child, depth: depth + 1) }
+        }
+        visit(matching[0], depth: 0)
+        result.controls = found.keys.sorted().compactMap { found[$0] }
+
         return result
     }
     // Private diagnostic: own-tree types/roles and exact native-control matches only.
@@ -63,22 +91,17 @@ import ApplicationServices
         visit(window, depth: 0)
         return trace
     }
-    static func accessibility(_ window: NSWindow) -> [[String: Any]] {
-        let expected: Set<String> = ["Start recording", "Stop recording", "Send text"]
-        var found: [String: [String: Any]] = [:]
-        var visited = 0
-        func visit(_ value: Any, depth: Int) {
-            guard depth < 16, visited < 512, let element = value as? NSAccessibilityProtocol else { return }
-            visited += 1
-            for name in [element.accessibilityLabel(), element.accessibilityTitle()].compactMap({ $0 }) where expected.contains(name) {
-                let frame = element.accessibilityFrame()
-                found[name] = ["name": name, "enabled": element.isAccessibilityEnabled(),
-                               "visible": window.isVisible && frame.width > 0 && frame.height > 0 && window.frame.intersects(frame)]
-            }
-            for child in element.accessibilityChildren() ?? [] { visit(child, depth: depth + 1) }
-        }
-        visit(window, depth: 0)
-        return found.keys.sorted().compactMap { found[$0] }
+    private static func ownIdentifier(_ window: NSWindow) -> String {
+        if let identifier = window.accessibilityIdentifier() { return identifier }
+        let identifier = "didi-owned-window-" + UUID().uuidString
+        window.setAccessibilityIdentifier(identifier)
+        return identifier
+    }
+    static func accessibility(_ window: NSWindow) async -> [[String: Any]] {
+        guard NSApp.windows.contains(window), window.isVisible else { return [] }
+        let pid = getpid(), identifier = ownIdentifier(window)
+        let result = await Task.detached { consumerSnapshot(pid: pid, expectedTitle: identifier) }.value
+        return result.controls.map { ["name": $0.name, "enabled": $0.enabled, "visible": $0.visible, "source": "public-own-PID-AX"] }
     }
     private static func bounded<T>(_ operation: @escaping @MainActor () async throws -> T) async throws -> T {
         try await withCheckedThrowingContinuation { continuation in

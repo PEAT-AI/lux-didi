@@ -436,29 +436,79 @@ test('B6 recovery does not repeat a terminal tool intent or unknown SDK effect',
   assert.equal(f.sdkCalls.length, 1); assert.equal(forbiddenContinuation(f.modelCalls), 0);
 });
 
-test('DIAG browser-actor HTTP accept surfaces the exact denial reason', async t => {
+test('DIAG browser enrollment and selected tool accept reaches a real terminal result', async t => {
   const f = await open(t);
+  const decisions: { state: string; reason: string | null; bindings: number; classes: readonly string[] }[] = [];
+  const authorize = f.tools.resultGate.authorize.bind(f.tools.resultGate);
+  f.tools.resultGate.authorize = async (...args) => {
+    const decision = await authorize(...args);
+    decisions.push({ state: decision.state, reason: decision.state === 'allowed' ? null : decision.reason,
+      bindings: args[1].length, classes: [...args[2]] });
+    return decision;
+  };
+  const authorityFailures: string[] = [];
+  const authority = f.chat.authority.bind(f.chat);
+  f.chat.authority = (...args) => {
+    try { return authority(...args); }
+    catch (error) { authorityFailures.push(error instanceof Error ? error.message : 'unknown'); throw error; }
+  };
   const service = await listenService({ store: f.store, domain: f.domain, chat: f.chat, modelStatus: f.status,
     ...(f.connections ? { connections: f.connections } : {}), port: 0 });
   t.after(() => service.close());
-  const pairing = await fetch(`${service.origin}/api/v1/auth/pairing`, { method: 'POST', headers: { Authorization: `Bearer ${f.store.adminCredential}`, Origin: service.origin, 'Content-Type': 'application/json' }, body: '{}' });
-  const pairingBody: any = await pairing.json();
-  const code = pairingBody?.data?.pairingCode ?? pairingBody?.pairingCode;
-  const paired: any = await (async () => { const r = await fetch(`${service.origin}/api/v1/auth/pair`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: service.origin }, body: JSON.stringify({ pairingCode: code }) }); return { status: r.status, body: await r.json(), cookie: (r.headers.get('set-cookie') ?? '').split(';')[0] }; })();
-  assert.equal(pairing.status, 200, `Diagnostic pairing must succeed: ${JSON.stringify(pairingBody)}`);
-  assert.equal(paired.status, 200, `Diagnostic pair must succeed: ${JSON.stringify(paired.body)}`);
-  const pairedBody: any = paired.body;
-  assert.ok(paired.cookie.startsWith('didi_session='), 'Pairing must issue the browser session cookie');
-  const csrf = pairedBody?.data?.csrfToken; const epoch = String(pairedBody?.authorityEpoch ?? '');
-  const sessionId = await f.enroll();
-  const headers = { 'Content-Type': 'application/json', Cookie: paired.cookie, 'X-Didi-CSRF': String(csrf), 'X-Didi-Authority-Epoch': epoch, Origin: service.origin };
-  const body = JSON.stringify({ sessionId, text: 'Use synthetic insight 731.', selectedConnectionIds: ['synthetic-lux'], selectedMemoryEntryIds: [] });
+  // Same existing browser pairing protocol: token is only the HttpOnly session cookie.
+  const pairing = await fetch(`${service.origin}/api/v1/auth/pairing`, { method: 'POST', headers: {
+    Authorization: `Bearer ${f.store.adminCredential}`, Origin: service.origin, 'Content-Type': 'application/json'
+  }, body: '{}' });
+  assert.equal(pairing.status, 200);
+  const pairingBody = await pairing.json() as { data: { pairingCode: string } };
+  const paired = await fetch(`${service.origin}/api/v1/auth/pair`, { method: 'POST', headers: {
+    'Content-Type': 'application/json', Origin: service.origin
+  }, body: JSON.stringify({ pairingCode: pairingBody.data.pairingCode }) });
+  assert.equal(paired.status, 200);
+  const pairedBody = await paired.json() as { data: { csrfToken: string }; authorityEpoch: string };
+  const cookie = paired.headers.get('set-cookie')!.split(';')[0]!;
+  assert.ok(cookie.startsWith('didi_session='));
+  const headers = { 'Content-Type': 'application/json', Cookie: cookie, Origin: service.origin,
+    'X-Didi-CSRF': pairedBody.data.csrfToken, 'X-Didi-Authority-Epoch': String(pairedBody.authorityEpoch) };
+  const enrolled = await fetch(`${service.origin}/api/v1/conversations`, { method: 'POST', headers: {
+    ...headers, 'Idempotency-Key': randomUUID()
+  }, body: JSON.stringify({ title: 'Naya connected conversation', timeZone: 'UTC' }) });
+  assert.equal(enrolled.status, 200);
+  const { data: { sessionId } } = await enrolled.json() as { data: { sessionId: string } };
+  await f.approveSession(sessionId);
   const key = randomUUID();
-  const accepted = await fetch(`${service.origin}/api/v1/chat`, { method: 'POST', headers: { ...headers, 'Idempotency-Key': key }, body });
-  const acceptedBody: any = await accepted.json();
-  const replay = await fetch(`${service.origin}/api/v1/chat`, { method: 'POST', headers: { ...headers, 'Idempotency-Key': key }, body });
-  const final: any = ((await replay.json()) as any)?.data;
-  console.log('DIAG_PAYLOAD ' + JSON.stringify({ acceptedStatus: accepted.status, accepted: acceptedBody, outcome: final?.outcome, reason: (final as any)?.reason ?? (acceptedBody as any)?.data?.reason ?? null, err: (acceptedBody as any)?.error ?? null }));
-  assert.equal(accepted.status, 200, `Diagnostic accept must succeed, not merely log an HTTP error: ${JSON.stringify(acceptedBody)}`);
-  assert.ok(final, 'Diagnostic captured the replayed run snapshot');
+  const body = JSON.stringify({ sessionId, text: 'Use synthetic insight 731.', selectedConnectionIds: ['synthetic-lux'] });
+  const accept = () => fetch(`${service.origin}/api/v1/chat`, { method: 'POST', headers: {
+    ...headers, 'Idempotency-Key': key
+  }, body });
+  const accepted = await accept(); assert.equal(accepted.status, 200);
+  const { data: run } = await accepted.json() as { data: RunSnapshot };
+  assert.ok(run.toolBindingHash, 'HTTP selection freezes a real owner binding');
+  // Observe the real Chat subscription through authenticated HTTP, not an accepted snapshot.
+  const stream = await fetch(`${service.origin}/api/v1/chat/${run.runId}/events`, { headers });
+  assert.equal(stream.status, 200); assert.ok(stream.body);
+  const reader = stream.body.getReader(); const decoder = new TextDecoder(); let pending = ''; let final: RunSnapshot | null = null;
+  try {
+    while (!final) {
+      const chunk = await reader.read(); assert.equal(chunk.done, false, 'Run stream must reach terminal');
+      pending += decoder.decode(chunk.value, { stream: true });
+      let end: number;
+      while ((end = pending.indexOf('\n\n')) >= 0) {
+        const packet = pending.slice(0, end); pending = pending.slice(end + 2);
+        const data = packet.split('\n').find(line => line.startsWith('data: '));
+        if (!data) continue;
+        const event = JSON.parse(data.slice(6)) as { type: string; run?: RunSnapshot };
+        if (event.type === 'snapshot' && event.run?.state === 'terminal') final = event.run;
+      }
+    }
+  } finally { await reader.cancel(); }
+  const replay = await accept(); assert.equal(replay.status, 200);
+  const { data: replayed } = await replay.json() as { data: RunSnapshot };
+  assert.equal(replayed.runId, run.runId); assert.equal(replayed.outcome, final.outcome);
+  console.log('DIAG_TERMINAL ' + JSON.stringify({ outcome: final.outcome, authorityFailures, decisions,
+    modelRequests: f.modelCalls.length, sdkCalls: f.sdkCalls.length, acceptedActor: f.tools.acceptedRun(run.runId)?.acceptance.actorId,
+    bindingPreserved: replayed.toolBindingHash === run.toolBindingHash, sourceIds: final.sourceIds, toolReferences: final.toolReferences.length }));
+  assert.equal(final.outcome, 'complete', 'Browser-equivalent run must complete, not merely accept');
+  assert.ok(f.modelCalls.length >= 2); assert.ok(f.sdkCalls.length > 0);
+  assert.ok(final.sourceIds.includes(sourceId)); assert.ok(final.toolReferences.length > 0);
 });

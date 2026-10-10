@@ -179,9 +179,8 @@ export async function fixture(options: FixtureOptions = {}) {
   const { chat } = composed;
   const tools: ToolsOwner = composed.tools;
   cleanups.push(() => chat.shutdown());
-  const enroll = async (title = 'Synthetic tool chat') => {
-    const conversation = chat.enroll({ title, timeZone: 'UTC', idempotencyKey: randomUUID() }, context);
-    const consent = store.transaction(tx => tx.get('SELECT route_identity FROM chat_consents WHERE session_id = ?', [conversation.sessionId]));
+  const approveSession = async (sessionId: string) => {
+    const consent = store.transaction(tx => tx.get('SELECT route_identity FROM chat_consents WHERE session_id = ?', [sessionId]));
     assert.equal(typeof consent?.route_identity, 'string');
     policy = { ...policy, route: { ...policy.route, identity: String(consent!.route_identity) } };
     tools.applyConnection(policy);
@@ -194,6 +193,10 @@ export async function fixture(options: FixtureOptions = {}) {
       assert.equal((await port.discover(endpoint.id)).state, 'discovered');
       tools.projectConnection(policy.connectionId);
     }
+  };
+  const enroll = async (title = 'Synthetic tool chat') => {
+    const conversation = chat.enroll({ title, timeZone: 'UTC', idempotencyKey: randomUUID() }, context);
+    await approveSession(conversation.sessionId);
     return conversation.sessionId;
   };
   const accept = (sessionId: string, key: string = randomUUID(), connectionIds = ['synthetic-lux'], selectedMemoryEntryIds: string[] = [], text = 'Use synthetic insight 731.') =>
@@ -240,7 +243,7 @@ export async function fixture(options: FixtureOptions = {}) {
     assert.ok(packet.result.tools.length > 0, 'Changed live catalog must be nonempty actual SDK data');
     return { tools: packet.result.tools, schemaDigest: canonicalToolDigest(packet.result.tools) };
   };
-  return { connections: composed.connections, dir, configDir, recordPath, writeRecord, store, domain, context, chat, tools, registry, port, enroll, accept, terminal, counts, updatePolicy,
+  return { connections: composed.connections, dir, configDir, recordPath, writeRecord, store, domain, context, chat, tools, registry, port, enroll, approveSession, accept, terminal, counts, updatePolicy,
     modelCalls, sdkCalls, events, status: composed.status, close, profile, scope, policy: () => policy, setLiveDefinitions: () => { liveDefinitions = []; },
     differentLiveCatalog, correctLabel, gateBarrier, resolutions: () => requestCount,
     receipt: () => credentialReceiptFor(configDir, scope), advance: (ms: number) => { clock += ms; } };

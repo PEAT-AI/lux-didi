@@ -103,6 +103,8 @@ export class LiveSessionOwner {
   readonly #voice: LiveVoicePort;
   readonly #profile: LiveProfile;
   readonly #now: () => number;
+  readonly #schedule: NonNullable<LiveOwnerConfig['schedule']>;
+  #expiryTimer: ReturnType<NonNullable<LiveOwnerConfig['schedule']>> | undefined;
   readonly #profileIdentity: string;
   readonly #promptIdentity: string;
   readonly #active = new Map<string, ActiveSession>();
@@ -115,7 +117,16 @@ export class LiveSessionOwner {
     this.#store = config.store;
     this.#voice = config.voice;
     this.#profile = validateLiveProfile(config.profile);
-    this.#now = config.now ?? Date.now;
+    const now = config.now ?? Date.now;
+    this.#now = () => {
+      const value = now();
+      if (!Number.isSafeInteger(value)) throw new LiveError('invalid_config', 'clock must return integer epoch milliseconds');
+      return value;
+    };
+    this.#schedule = config.schedule ?? ((callback, delayMs) => {
+      const timer = setTimeout(callback, delayMs);
+      return { unref: () => { timer.unref(); }, cancel: () => { clearTimeout(timer); } };
+    });
     this.#profileIdentity = liveProfileIdentity(this.#profile);
     this.#promptIdentity = identity({ text: this.#profile.prompt.text, dataClass: this.#profile.prompt.dataClass });
     this.recover();
@@ -135,7 +146,7 @@ export class LiveSessionOwner {
   /** Startup sweep: no intent means no possible egress; an intent means possible egress. */
   recover(): number {
     const now = this.#now();
-    return this.#store.transaction(tx => {
+    const recovered = this.#store.transaction(tx => {
       const rows = tx.all("SELECT live_session_id, dispatch_intent FROM live_sessions WHERE lifecycle IN ('accepted','opening','active')");
       for (const row of rows) {
         const outcome: LiveTerminalOutcome = Number(row['dispatch_intent']) === 1 ? { state: 'outcome_unknown' } : { state: 'not_started' };
@@ -143,6 +154,8 @@ export class LiveSessionOwner {
       }
       return rows.length;
     });
+    this.#armExpiry();
+    return recovered;
   }
 
   create(input: CreateLiveSession, context: LiveContext): LiveSessionSnapshot {
@@ -152,12 +165,12 @@ export class LiveSessionOwner {
     const fingerprint = identity({ inputClass: input.inputClass, profile: this.#profileIdentity, prompt: this.#promptIdentity });
     const now = this.#now();
     const assistantId = this.#store.assistantId;
-    return this.#store.transaction(tx => {
+    const snapshot = this.#store.transaction(tx => {
       // Same-key replay is decided on the normalized request meaning before any policy.
       const prior = tx.get('SELECT * FROM live_sessions WHERE owner_assistant_id=? AND idempotency_key=?', [assistantId, input.idempotencyKey]);
       if (prior) {
         if (String(prior['fingerprint']) !== fingerprint) throw new LiveError('idempotency_conflict');
-        return this.#snapshot(tx, prior);
+        return this.#snapshot(tx, this.#expireInTx(tx, prior, now));
       }
       if (context.authorityEpoch !== this.#store.authorityEpoch) throw new LiveError('stale_authority');
       if (!classes.includes(input.inputClass) || !this.#profile.route.dataClasses.includes(input.inputClass)) throw new LiveError('invalid_request');
@@ -169,15 +182,19 @@ export class LiveSessionOwner {
           JSON.stringify(this.#profile.route.dataClasses), input.inputClass, this.#revision, now]);
       return this.#snapshot(tx, tx.get('SELECT * FROM live_sessions WHERE live_session_id=?', [liveSessionId])!);
     });
+    this.#armExpiry();
+    return snapshot;
   }
 
   get(liveSessionId: string): LiveSessionSnapshot {
     this.#guardOpen();
-    return this.#store.transaction(tx => {
+    const snapshot = this.#store.transaction(tx => {
       const row = tx.get('SELECT * FROM live_sessions WHERE live_session_id=? AND owner_assistant_id=?', [liveSessionId, this.#store.assistantId]);
       if (!row) throw new LiveError('not_found');
-      return this.#snapshot(tx, row);
+      return this.#snapshot(tx, this.#expireInTx(tx, row, this.#now()));
     });
+    this.#armExpiry();
+    return snapshot;
   }
 
   listFragments(query: { liveSessionId: string; cursor?: number; limit?: number }): LiveFragmentPage {
@@ -187,11 +204,14 @@ export class LiveSessionOwner {
     const limit = query.limit === undefined ? 100 : query.limit;
     if (!Number.isSafeInteger(cursor) || cursor < 0) throw new LiveError('invalid_request');
     if (!Number.isSafeInteger(limit) || limit <= 0 || limit > maxPage) throw new LiveError('invalid_request');
-    return this.#store.transaction(tx => {
-      const row = tx.get('SELECT live_session_id FROM live_sessions WHERE live_session_id=? AND owner_assistant_id=?', [query.liveSessionId, this.#store.assistantId]);
+    const page = this.#store.transaction(tx => {
+      const row = tx.get('SELECT * FROM live_sessions WHERE live_session_id=? AND owner_assistant_id=?', [query.liveSessionId, this.#store.assistantId]);
       if (!row) throw new LiveError('not_found');
+      this.#expireInTx(tx, row, this.#now());
       return readFragmentPage(tx, query.liveSessionId, cursor, limit);
     });
+    this.#armExpiry();
+    return page;
   }
 
   attach(input: { liveSessionId: string }, context: LiveContext): LiveAttachment {
@@ -215,6 +235,7 @@ export class LiveSessionOwner {
       const grant = tx.get('SELECT chosen_input_class FROM live_grants WHERE live_session_id=?', [input.liveSessionId])!;
       return String(grant['chosen_input_class']) as DataClass;
     });
+    this.#armExpiry();
     if (prepared === 'expired') throw new LiveError('expired');
     return this.#open(input.liveSessionId, prepared, revision);
   }
@@ -242,6 +263,7 @@ export class LiveSessionOwner {
         if (!row) throw new LiveError('not_found');
         if (String(row['lifecycle']) !== 'terminal') this.#terminalInTx(tx, liveSessionId, { state: 'revoked' }, false, this.#now(), 'detached', null);
       });
+      this.#armExpiry();
       return;
     }
     handle.invalidated = true;
@@ -253,6 +275,8 @@ export class LiveSessionOwner {
   async shutdown(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    this.#expiryTimer?.cancel();
+    this.#expiryTimer = undefined;
     const handles = [...this.#active.values()];
     for (const handle of handles) {
       handle.consumer?.discard();
@@ -407,6 +431,41 @@ export class LiveSessionOwner {
     handle.consumer?.close();
     handle.abort.abort();
     handle.resolveDone();
+  }
+
+  /** The transaction/lifecycle guard makes attach and every expiry observation share one winner. */
+  #expireInTx(tx: Transaction, row: SQLRow, now: number): SQLRow {
+    if (row['owner_assistant_id'] !== this.#store.assistantId || row['lifecycle'] !== 'accepted'
+      || Number(row['dispatch_intent']) !== 0 || now - Number(row['created_at']) <= this.#profile.limits.unusedMs) return row;
+    const id = String(row['live_session_id']);
+    this.#terminalInTx(tx, id, { state: 'expired' }, false, now, 'ended', null);
+    return tx.get('SELECT * FROM live_sessions WHERE live_session_id=?', [id])!;
+  }
+
+  #armExpiry(): void {
+    if (this.#closed) return;
+    const next = this.#store.transaction(tx => tx.get(
+      "SELECT MIN(created_at) AS created_at FROM live_sessions WHERE owner_assistant_id=? AND lifecycle='accepted' AND dispatch_intent=0",
+      [this.#store.assistantId])!['created_at']);
+    this.#expiryTimer?.cancel();
+    this.#expiryTimer = undefined;
+    if (next === null) return;
+    // Integer milliseconds preserve age > unusedMs, even at equality or after a trusted clock jump.
+    // Node's maximum delay is capped to avoid its overflow-to-1ms behavior.
+    const delay = Math.min(2_147_483_647, Math.max(1, Number(next) + this.#profile.limits.unusedMs + 1 - this.#now()));
+    this.#expiryTimer = this.#schedule(() => {
+      if (this.#closed) return;
+      this.#expiryTimer = undefined;
+      const now = this.#now();
+      // Deliberately uncaught: Store rollback plus Node's fatal error seam, never silent retry/success.
+      this.#store.transaction(tx => {
+        const rows = tx.all("SELECT * FROM live_sessions WHERE owner_assistant_id=? AND lifecycle='accepted' AND dispatch_intent=0 AND created_at < ?",
+          [this.#store.assistantId, now - this.#profile.limits.unusedMs]);
+        for (const row of rows) this.#expireInTx(tx, row, now);
+      });
+      this.#armExpiry();
+    }, delay);
+    this.#expiryTimer.unref();
   }
 
   #terminalInTx(tx: Transaction, liveSessionId: string, outcome: LiveTerminalOutcome, complete: boolean, now: number, consumerState: LiveConsumerState, rejected: { kind: JournalKind; sequence: number } | null): number {

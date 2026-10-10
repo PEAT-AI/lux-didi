@@ -219,8 +219,8 @@ test('tool-result injection cannot widen grants and step bound is explicit', asy
 });
 
 test('ambiguous writes and thrown handlers are unknown, never replayed', async () => {
-  const f = fixture();
   for (const mode of ['unknown', 'throw']) {
+    const f = fixture();
     let executions = 0; let turns = 0;
     const r = await runTools({ journal: f.journal, resultGate: f.resultGate, model: adapter(async () => { turns++; return sse([call()]); }), request: request(),
       registry: [tool(async () => { executions++; if (mode === 'throw') throw Error(key); return { status: 'unknown' }; }, 'write')],
@@ -237,8 +237,9 @@ test('failed tools stay failed and cancelled execution cannot be success', async
     registry: [tool(async () => ({ status: 'failed' }))], host, authority: { isCurrent: async () => true }, maxSteps: 3, control: control() });
   assert.equal(result.tools[0]?.status, 'failed');
   const c = new AbortController();
-  const p = runTools({ journal: f.journal, resultGate: f.resultGate, model: adapter(async () => sse([call()])), request: request(),
-    registry: [tool(async (_args, execution) => { c.abort(); return f.complete(execution, null); })], host,
+  const cancelledFixture = fixture();
+  const p = runTools({ journal: cancelledFixture.journal, resultGate: cancelledFixture.resultGate, model: adapter(async () => sse([call()])), request: request(),
+    registry: [tool(async (_args, execution) => { c.abort(); return cancelledFixture.complete(execution, null); })], host,
     authority: { isCurrent: async () => true }, maxSteps: 3, control: { signal: c.signal, deadlineMs: Date.now() + 500 } });
   assert.equal((await p).status, 'cancelled');
 });

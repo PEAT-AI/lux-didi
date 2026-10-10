@@ -19,7 +19,7 @@ import Security
         let (data, _) = try await URLSession.shared.data(from: URL(string: origin + path)!)
         return (try JSONSerialization.jsonObject(with: data) as! [String: Any])["data"] as! [String: Any]
     }
-    @MainActor static func main() async {
+    @MainActor static func main() {
         let policy = NativeKeychainPolicy.establish()
         guard policy == errSecSuccess else {
             fputs("COMPANION POLICY: unavailable (\(policy))\n", stderr); exit(2)
@@ -30,9 +30,15 @@ import Security
                 exit(passed ? 0 : 1)
             } catch { fputs("KEYCHAIN-SDK child failed before completion\n", stderr); exit(1) }
         }
-        let started = Date()
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
+        // Publish the actual AppKit application/AX lifecycle, as production does.
+        // An async CLI main alone leaves own-PID AXWindows NotImplemented.
+        Task { await runFixtures() }
+        app.run()
+    }
+    @MainActor private static func runFixtures() async {
+        let started = Date()
         let ready = URL(fileURLWithPath: CommandLine.arguments[1])
         await waitFor("fixture ready") { FileManager.default.fileExists(atPath: ready.path) }
         do {
@@ -49,6 +55,7 @@ import Security
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 960, height: 700), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
             window.contentView = shell.webView
             window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
             expect(!shell.webView.configuration.websiteDataStore.isPersistent, "nonpersistent website store")
             let cookie = try await client.bootstrap()
             expect(cookie.isHTTPOnly, "service cookie is HttpOnly")

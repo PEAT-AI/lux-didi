@@ -64,6 +64,14 @@ test('B3/B5 built browser renders real trusted source identifiers and durable to
   const authorityEpoch = String(paired.body.authorityEpoch); assert.ok(authorityEpoch.length > 0 && authorityEpoch !== 'undefined', 'Pairing envelope carries the current authority epoch');
   await page.reload();
   await page.locator('#connected-history').selectOption(ready.sessionId);
+  // Visible, per-run selection: the run that actually reaches the model is started from the panel
+  // control, never from a bare fetch. Only the ready integration is selectable.
+  await panel.locator('#connected-selection input[data-connection="synthetic-lux"]').check();
+  assert.equal(await panel.locator('#connected-selection input[data-connection]:disabled').count(), 0);
+  if (!(await panel.locator('#connected-consent').isChecked())) await panel.locator('#connected-consent').check();
+  await panel.locator('#connected-draft').fill('Use synthetic insight 731.');
+  await panel.locator('#connected-send-form').evaluate(form => { if (form instanceof HTMLFormElement) form.requestSubmit(); });
+  await panel.getByText('synthetic-lux', { exact: false }).first().waitFor({ state: 'visible', timeout: 15000 });
   const key = randomUUID();
   const accept = () => page.evaluate(async ({ sessionId, key, csrfToken, authorityEpoch }) => {
     const response = await fetch('/api/v1/chat', { method: 'POST', headers: {

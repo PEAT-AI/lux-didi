@@ -117,6 +117,15 @@ export class ConnectedView {
     } catch (error) { if (this.#conversationController === controller) { this.#error = error instanceof Error ? error.message : 'Could not load the accepted run.'; this.attach(); } }
     finally { this.#attaching.delete(runId); }
   }
+  /** Minimal visible per-run selection. Only a ready connection is selectable; nothing is auto-selected. */
+  #selectionHtml() {
+    if (!this.#connections.length) return '';
+    const rows = this.#connections.map(connection => {
+      const ready = connection.state === 'ready';
+      return `<li><label class="connected-pick"><input type="checkbox" data-connection="${escape(connection.id)}" ${ready ? '' : 'disabled'}> <span class="connected-name">${escape(connection.label)}</span> <span class="connected-state connected-${escape(connection.state)}">${escape(connection.state.replace('_', ' '))}</span></label></li>`;
+    }).join('');
+    return `<div id="connected-selection" class="connected-selection"><p class="eyebrow">OPTIONAL INTEGRATIONS FOR THIS CONVERSATION</p><ul>${rows}</ul></div>`;
+  }
   /** Evidence provenance: which connection supplied the evidence plus stored receipt integrity. Never a model-supplied link. */
   #provenanceHtml() {
     const sources = this.#run?.sourceIds ?? [];
@@ -141,6 +150,7 @@ export class ConnectedView {
       <p class="eyebrow">EXPLICITLY CONNECTED · SEPARATE FROM LOCAL NOTES</p><h2>Talk with ${escape(this.#displayName)}</h2>
       <p id="connected-route" role="status">${available ? `Locally configured: ${escape(this.#status.provider)} / ${escape(this.#status.model)}. This is not a reachability check.` : `Model ${escape(this.#status.status)}${this.#status.code ? ` (${escape(this.#status.code)})` : ''}. Local notes, Today and recall still work.`}</p>
       ${this.#connectionsHtml()}
+      ${this.#selectionHtml()}
       ${this.#provenanceHtml()}
       <p class="connected-disclosure">Starting a connected conversation sends its current and earlier selected turns to <strong>${escape(this.#status.provider ?? 'the configured provider')} / ${escape(this.#status.model ?? 'no model')}</strong>. It does not send other sessions, Today, recall or tools. It sends stored local notes only when you explicitly select them for that message, under this connection's existing route and consent; no note is ever included silently and no new permission is granted. Only private conversation material and ordinary material you deliberately review here are permitted. Revocation cannot retract bytes already sent.</p>
       <label class="connected-consent"><input id="connected-consent" type="checkbox" ${this.#consent ? 'checked' : ''} ${!available ? 'disabled' : ''}> I agree to this route for a new conversation.</label>
@@ -218,6 +228,8 @@ export class ConnectedView {
   }
   #removeNote(id: string) { this.#memorySelected = this.#memorySelected.filter(hit => hit.entryId !== id); this.attach(); }
   async #send(c: Conversation) {
+    // The selection is read from the rendered control at send time: explicit, per run, and never inferred.
+    const selectedConnectionIds = [...document.querySelectorAll<HTMLInputElement>('#connected-selection input[data-connection]:checked')].map(input => input.dataset.connection!).filter(Boolean);
     const text = this.#draft.trim(); if (!text || c.state !== 'active' || this.#run && this.#run.state !== 'terminal') return;
     // Freeze the message now: later draft or selection edits affect only a future message.
     const selectedIds = [...new Set(this.#memorySelected.map(hit => hit.entryId).filter((id): id is string => !!id))].sort();
@@ -229,7 +241,7 @@ export class ConnectedView {
       this.#save();
       let run: Run;
       try {
-        run = await request<Run>('/chat', { method: 'POST', body: { sessionId: c.sessionId, text, ...(selectedIds.length ? { selectedMemoryEntryIds: selectedIds } : {}) }, idempotencyKey: pending.key, signal: AbortSignal.timeout(8000) });
+        run = await request<Run>('/chat', { method: 'POST', body: { sessionId: c.sessionId, text, ...(selectedIds.length ? { selectedMemoryEntryIds: selectedIds } : {}), ...(selectedConnectionIds.length ? { selectedConnectionIds } : {}) }, idempotencyKey: pending.key, signal: AbortSignal.timeout(8000) });
       } catch (error) {
         if (selectedIds.length && error instanceof ApiError && error.code === 'MODEL_NOT_CONFIGURED') throw new Error('A selected note could not be included: it has no stored classification for this connection, or its class is not permitted by the current grant. Nothing was sent; deselect it or pick another note.');
         throw error;

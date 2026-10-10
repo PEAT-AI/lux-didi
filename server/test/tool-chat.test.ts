@@ -444,13 +444,14 @@ test('DIAG browser-actor HTTP accept surfaces the exact denial reason', async t 
   const pairing = await fetch(`${service.origin}/api/v1/auth/pairing`, { method: 'POST', headers: { Authorization: `Bearer ${f.store.adminCredential}`, Origin: service.origin, 'Content-Type': 'application/json' }, body: '{}' });
   const pairingBody: any = await pairing.json();
   const code = pairingBody?.data?.pairingCode ?? pairingBody?.pairingCode;
-  const paired: any = await (async () => { const r = await fetch(`${service.origin}/api/v1/auth/pair`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: service.origin }, body: JSON.stringify({ pairingCode: code }) }); return { status: r.status, body: await r.json() }; })();
+  const paired: any = await (async () => { const r = await fetch(`${service.origin}/api/v1/auth/pair`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: service.origin }, body: JSON.stringify({ pairingCode: code }) }); return { status: r.status, body: await r.json(), cookie: (r.headers.get('set-cookie') ?? '').split(';')[0] }; })();
   assert.equal(pairing.status, 200, `Diagnostic pairing must succeed: ${JSON.stringify(pairingBody)}`);
   assert.equal(paired.status, 200, `Diagnostic pair must succeed: ${JSON.stringify(paired.body)}`);
   const pairedBody: any = paired.body;
-  const token = pairedBody?.data?.token; const csrf = pairedBody?.data?.csrfToken; const epoch = String(pairedBody?.authorityEpoch ?? '');
+  assert.ok(paired.cookie.startsWith('didi_session='), 'Pairing must issue the browser session cookie');
+  const csrf = pairedBody?.data?.csrfToken; const epoch = String(pairedBody?.authorityEpoch ?? '');
   const sessionId = await f.enroll();
-  const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, 'X-Didi-CSRF': String(csrf), 'X-Didi-Authority-Epoch': epoch, Origin: service.origin };
+  const headers = { 'Content-Type': 'application/json', Cookie: paired.cookie, 'X-Didi-CSRF': String(csrf), 'X-Didi-Authority-Epoch': epoch, Origin: service.origin };
   const body = JSON.stringify({ sessionId, text: 'Use synthetic insight 731.', selectedConnectionIds: ['synthetic-lux'], selectedMemoryEntryIds: [] });
   const key = randomUUID();
   const accepted = await fetch(`${service.origin}/api/v1/chat`, { method: 'POST', headers: { ...headers, 'Idempotency-Key': key }, body });

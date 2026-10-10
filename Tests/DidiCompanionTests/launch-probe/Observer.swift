@@ -18,6 +18,7 @@ import AppKit
     var deadline: DispatchSourceTimer?
     var directory: Int32 = -1
     var kernel: Int32 = -1
+    var failureIdentity: [String: Any] = [:]
     var released = false
     var settled = false
     var bundle: String { URL(fileURLWithPath: args[1]).resolvingSymlinksInPath().standardizedFileURL.path }
@@ -47,6 +48,9 @@ import AppKit
                 self.target = app
                 do {
                     let (facts, record) = try identity(app.processIdentifier, nonce: self.nonce, bundle: self.bundle)
+                    self.failureIdentity = ["observed": record, "expectedUID": Int(getuid()),
+                        "expectedExecutable": self.bundle + "/Contents/MacOS/LaunchProbe",
+                        "returnedPID": Int(app.processIdentifier), "returnedBundle": self.bundle]
                     guard facts.uid == getuid(), record["executable"] as? String == self.bundle + "/Contents/MacOS/LaunchProbe" else { self.fail("own kernel identity"); return }
                     self.record = record
                     self.kernel = probe_register(app.processIdentifier)
@@ -102,7 +106,7 @@ import AppKit
         guard !settled else { return }
         if let facts { _ = probe_cleanup(facts, bundle + "/Contents/MacOS/LaunchProbe") }
         dispose()
-        try? atomic(["error": reason, "released": released, "observerDisposed": true], to: root + "/observer.json")
+        try? atomic(["error": reason, "identityFailure": failureIdentity, "released": released, "observerDisposed": true], to: root + "/observer.json")
         fputs("LaunchServices probe FAIL: \(reason)\n", stderr); exit(1)
     }
 }

@@ -404,3 +404,34 @@ test('explicit protocol rejection over SSE is SDK-observed and never replayed', 
     assert('protocolErrorCode' in result); assert.equal(typeof result.protocolErrorCode, 'number');
   } finally { await adapter.close(); await f.close(); }
 });
+
+test('CURRENT locator mutation across credential await refuses before any tool HTTP; same-binding replacement stays authorized', async () => {
+  const f = await fixture(); const registry = new McpRegistry();
+  registry.register({ id: 'source', url: f.url, account: 'account-a', resource: 'resource-a', credentialRef: 'local-ref' }); registry.enable('source'); registry.allowEgress('source');
+  let current = true; let block = false; let entered!: () => void; let release!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; }); const gate = new Promise<void>(resolve => { release = resolve; });
+  // Structural extension is deliberately ignored on the baseline: observable zero-HTTP requirement fails.
+  const options = { registry, store: new MemoryResultStore(), resolveCredential: async () => { if (block) { entered(); await gate; } return 'synthetic-token'; },
+    assertCredentialCurrent: (reference: string) => { assert.equal(reference, 'local-ref'); if (!current) throw Error('credential-not-current'); } };
+  const adapter = createMcpAdapter(options);
+  try {
+    await approve(adapter, registry);
+    assert.equal((await adapter.call(request)).state, 'completed');
+    const before = f.observed.filter(row => row.method === 'tools/call').length;
+    block = true; const pending = adapter.call(request); await started; current = false; release();
+    assert.equal((await pending).state, 'refused');
+    assert.equal(f.observed.filter(row => row.method === 'tools/call').length, before);
+  } finally { release(); await adapter.close(); await f.close(); }
+});
+
+test('registry restoration is distinct from new approval and retains exact scope through suspension', () => {
+  const registry = new McpRegistry(); registry.register({ id: 'x', url: 'https://synthetic.invalid/mcp', account: 'a', resource: 'r' }); registry.enable('x'); registry.allowEgress('x');
+  const digest = registry.observed('x', [tool, writeTool], registry.revision('x'));
+  const grant = { endpointId: 'x', schemaDigest: digest, toolNames: ['read'], effect: 'read' as const, account: 'a', resource: 'r', generation: 1 };
+  registry.approve(grant); registry.suspend('x'); registry.observed('x', [tool, writeTool], registry.revision('x'));
+  const restorable = registry as McpRegistry & { restore(input: typeof grant): void };
+  assert.throws(() => restorable.restore({ ...grant, toolNames: ['read', 'write'] }));
+  restorable.restore(grant); assert.deepEqual(registry.currentGrant('x'), grant);
+  assert.throws(() => registry.approve(grant));
+  registry.revoke('x'); assert.throws(() => restorable.restore(grant));
+});

@@ -8,6 +8,7 @@ export interface McpAdapterOptions {
   store: ResultStorePort;
   resolveCredential?: (reference: string) => Promise<string>;
   budgets?: Partial<McpBudgets>;
+  assertCredentialCurrent?: (reference: string) => void;
 }
 class PolicyError extends Error { constructor(readonly reason: string) { super(reason); } }
 interface Operation { scope: ResultScope; signal: AbortSignal; dispatched: boolean; bytes?: Uint8Array; requestId?: string | number; explicitErrorCode?: number }
@@ -41,6 +42,7 @@ function guardedFetch(session: Session, options: McpAdapterOptions, budgets: Mcp
     // Recheck after asynchronous credential resolution; enablement never implies egress.
     options.registry.endpoint(config.id);
     if (operation && !options.registry.authorizesScope(operation.scope)) throw new PolicyError('grant-revoked-before-dispatch');
+    if (config.credentialRef) options.assertCredentialCurrent?.(config.credentialRef);
     if (operation) {
       operation.dispatched = true;
       if (typeof packet?.id === 'string' || typeof packet?.id === 'number') operation.requestId = packet.id;

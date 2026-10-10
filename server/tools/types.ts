@@ -26,9 +26,14 @@ export interface ToolsOwnerOptions {
   store: StorePort; ownerId: string; registry: McpRegistry; port: McpPort;
   lookupAuthority(runId: string, signal: AbortSignal): Promise<LiveAuthority | null>;
 }
+export interface ConnectionIntent { expectedPolicySha256: string | null; policy: ConnectionPolicy }
+export interface ConnectionApplyResult { state: 'applied' | 'unchanged'; sha256: string }
+export type ConnectionRestoreResult = { state: 'restored' } | { state: 'refused' | 'unavailable'; reason: string };
 export interface ToolsOwner {
   journal: ToolCallJournal; resultGate: ToolResultGate;
   applyConnection(policy: ConnectionPolicy): void;
+  applyConnectionIntent(intent: ConnectionIntent): ConnectionApplyResult;
+  restoreConnection(connectionId: string, assertCurrentBinding: () => void): Promise<ConnectionRestoreResult>;
   projectConnection(connectionId: string): void;
   snapshotRun(tx: Transaction, acceptance: RunAcceptance): { sha256: string };
   definitions(runId: string): ToolDefinition[];

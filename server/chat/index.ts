@@ -7,7 +7,7 @@ import { PROMPT_VERSION } from '../prompt/index.js';
 import { assemble, classify, ContextFailure, type ContextTrace } from './context.js';
 import { Subscription } from './subscription.js';
 import { memorySelectionSnapshot, normalizeSelectedMemory, selectedEvidenceId, MAX_SERIALIZED_SELECTION_BYTES, type RunSelection } from './memorySelection.js';
-import { ChatError, type AcceptInput, type ChatConfig, type ChatEvent, type ChatPort, type ChatRecoveryContext, type MemorySelectionSnapshot, type Outcome, type RunSnapshot, type EnrollInput, type ConversationStatus } from './types.js';
+import { ChatError, type AcceptInput, type ChatConfig, type ChatEvent, type ChatPort, type ChatRecoveryContext, type ConversationEvent, type MemorySelectionSnapshot, type Outcome, type RunSnapshot, type EnrollInput, type ConversationStatus } from './types.js';
 export * from './types.js';
 export { chatMigrations } from './schema.js';
 
@@ -33,7 +33,8 @@ export class ChatService implements ChatPort {
   readonly #now: () => number;
   readonly #workers = new Map<string, AbortController>();
   readonly #livePolicies = new Map<string, { session_id: string; selected_labels: string }>();
-  readonly #subscribers = new Map<string, Set<Subscription>>();
+  readonly #subscribers = new Map<string, Set<Subscription<ChatEvent>>>();
+  readonly #conversationSubscribers = new Map<string, Set<Subscription<ConversationEvent>>>();
   constructor(config: ChatConfig) {
     if (!Number.isFinite(config.deadlineMs ?? 60000) || (config.deadlineMs ?? 60000) <= 0
       || !Number.isSafeInteger(config.subscriberCapacity ?? 16) || (config.subscriberCapacity ?? 16) < 1
@@ -206,6 +207,7 @@ export class ChatService implements ChatPort {
   shutdown() {
     for (const controller of this.#workers.values()) controller.abort();
     for (const listeners of this.#subscribers.values()) for (const subscriber of [...listeners]) subscriber.close();
+    for (const listeners of this.#conversationSubscribers.values()) for (const subscriber of [...listeners]) subscriber.close();
   }
   recover(context: ChatRecoveryContext): RunSnapshot[] {
     this.#authorizeOwner(context);
@@ -269,6 +271,8 @@ export class ChatService implements ChatPort {
     if (result.fresh) {
       this.#workers.set(result.run.runId, new AbortController());
       this.#livePolicies.set(result.run.runId, { session_id: result.run.sessionId, selected_labels: result.policy });
+      // One notification follows the committed fresh run; a replay never reaches here.
+      this.#emitConversation(result.run.sessionId, { type: 'run', sessionId: result.run.sessionId, runId: result.run.runId });
       try { (this.#config.schedule ?? queueMicrotask)(() => { void this.#dispatch(result.run, context); }); }
       catch {
         try { this.#finish(result.run, context, 'not_dispatched'); }
@@ -293,14 +297,25 @@ export class ChatService implements ChatPort {
   }
   subscribe(runId: string, context: DomainContext): AsyncIterable<ChatEvent> {
     const run = this.get(runId, context);
-    const listeners = this.#subscribers.get(runId) ?? new Set<Subscription>();
+    const listeners = this.#subscribers.get(runId) ?? new Set<Subscription<ChatEvent>>();
     if (listeners.size >= 32) throw new ChatError('unavailable');
-    const subscription = new Subscription(this.#config.subscriberCapacity ?? 16, () => {
+    const subscription = new Subscription<ChatEvent>(this.#config.subscriberCapacity ?? 16, () => {
       listeners.delete(subscription); if (!listeners.size) this.#subscribers.delete(runId);
-    });
+    }, last => ({ type: 'resync_required', sequence: last.sequence, reason: 'backpressure' }));
     listeners.add(subscription); this.#subscribers.set(runId, listeners);
     subscription.push({ type: 'snapshot', sequence: run.sequence, run });
     if (run.state === 'terminal') subscription.close();
+    return subscription;
+  }
+  /** Conversation-scoped notification: register, then read the durable snapshot. No replay buffer. */
+  subscribeConversation(sessionId: string, context: DomainContext): AsyncIterable<ConversationEvent> {
+    this.conversation(sessionId, context);
+    const listeners = this.#conversationSubscribers.get(sessionId) ?? new Set<Subscription<ConversationEvent>>();
+    if (listeners.size >= 32) throw new ChatError('unavailable');
+    const subscription = new Subscription<ConversationEvent>(this.#config.subscriberCapacity ?? 16, () => {
+      listeners.delete(subscription); if (!listeners.size) this.#conversationSubscribers.delete(sessionId);
+    }, () => ({ type: 'resync_required', reason: 'backpressure' }));
+    listeners.add(subscription); this.#conversationSubscribers.set(sessionId, listeners);
     return subscription;
   }
   #emit(runId: string, event: ChatEvent) {
@@ -308,6 +323,12 @@ export class ChatService implements ChatPort {
     for (const subscriber of [...(this.#subscribers.get(runId) ?? [])]) {
       subscriber.push(event);
       if ((event.type === 'snapshot' && event.run.state === 'terminal') || event.type === 'resync_required') subscriber.close();
+    }
+  }
+  #emitConversation(sessionId: string, event: ConversationEvent) {
+    for (const subscriber of [...(this.#conversationSubscribers.get(sessionId) ?? [])]) {
+      subscriber.push(event);
+      if (event.type === 'resync_required') subscriber.close();
     }
   }
   #publish(run: RunSnapshot) { this.#emit(run.runId, { type: 'snapshot', sequence: run.sequence, run }); }

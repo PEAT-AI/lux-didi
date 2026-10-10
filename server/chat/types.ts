@@ -31,6 +31,9 @@ export interface RunSnapshot {
 export type ChatEvent = { type: 'snapshot'; sequence: number; run: RunSnapshot }
   | { type: 'text'; sequence: number; text: string; provisional: true }
   | { type: 'resync_required'; sequence: number; reason: 'backpressure' | 'storage_unavailable' };
+/** Conversation-scoped notification: durable run identifiers only, never transcript content. */
+export type ConversationEvent = { type: 'run'; sessionId: string; runId: string }
+  | { type: 'resync_required'; reason: 'backpressure' };
 export interface AcceptInput {
   sessionId: string; text: string; idempotencyKey: string; retryOf?: string;
   /** Explicit bounded local records selected for this turn; trusted in-process only. */
@@ -51,6 +54,7 @@ export interface ChatPort {
   get(runId: string, context: DomainContext): RunSnapshot;
   cancel(runId: string, context: DomainContext): RunSnapshot;
   subscribe(runId: string, context: DomainContext): AsyncIterable<ChatEvent>;
+  subscribeConversation(sessionId: string, context: DomainContext): AsyncIterable<ConversationEvent>;
 }
 export interface ClassificationSubject {
   kind: 'session' | 'entry' | 'recall' | 'commitment'; id: string;

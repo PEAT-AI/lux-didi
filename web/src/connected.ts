@@ -12,14 +12,17 @@ export class ConnectedView {
   #conversations: { title: string; conversation: Conversation }[] = []; #entries: Entry[] = [];
   #run: Run | undefined; #draft = ''; #pending: { key: string; text: string; sessionId: string } | undefined;
   #error = ''; #busy = false; #controller: AbortController | undefined; #generation = 0; #consent = false;
+  #conversationController: AbortController | undefined; #selectionToken = 0;
+  #opChain: Promise<void> = Promise.resolve(); #attaching = new Set<string>();
   #storage() { return `didi-connected:${this.#owner}`; }
   #save() {
     if (this.#owner) localStorage.setItem(this.#storage(), JSON.stringify({ sessionId: this.#conversation?.sessionId, draft: this.#draft, pending: this.#pending }));
   }
   detach() { this.#controller?.abort(); this.#controller = undefined; this.#generation++; }
-  reset() { this.detach(); this.#owner = ''; this.#conversation = undefined; this.#run = undefined; this.#entries = []; this.#conversations = []; this.#draft = ''; this.#pending = undefined; }
+  reset() { this.detach(); this.#closeConversationStream(); this.#owner = ''; this.#conversation = undefined; this.#run = undefined; this.#entries = []; this.#conversations = []; this.#draft = ''; this.#pending = undefined; }
   async refresh(owner: string) {
     if (owner !== this.#owner) { this.reset(); this.#owner = owner; }
+    const token = this.#selectionToken;
     try {
       this.#status = await request<RouteStatus>('/chat/status');
       const sessions = await request<{ items: Session[] }>('/sessions');
@@ -32,18 +35,80 @@ export class ConnectedView {
       this.#draft = typeof saved.draft === 'string' ? saved.draft : '';
       if (saved.pending && typeof saved.pending.key === 'string' && typeof saved.pending.text === 'string' && typeof saved.pending.sessionId === 'string') this.#pending = saved.pending;
       const selected = this.#conversations.find(c => c.conversation.sessionId === saved.sessionId) ?? this.#conversations[0];
-      if (selected) await this.select(selected.conversation.sessionId);
+      // A choice the user made while this refresh was loading always wins over the restored one.
+      if (token === this.#selectionToken) { if (selected) await this.select(selected.conversation.sessionId); else await this.clearSelection(); }
       this.#error = '';
     } catch (error) { this.#error = error instanceof Error ? error.message : 'Connected status could not be read.'; }
     this.attach();
   }
   async select(sessionId: string) {
-    this.detach(); this.#run = undefined;
-    this.#conversation = await request<Conversation>(`/conversations/${sessionId}`);
-    this.#entries = (await request<{ entries: Entry[] }>(`/sessions/${sessionId}`)).entries;
-    if (this.#conversation.latestRunId) this.#run = await request<Run>(`/chat/${this.#conversation.latestRunId}`);
+    this.detach(); this.#closeConversationStream(); this.#run = undefined;
+    const generation = this.#generation, token = ++this.#selectionToken;
+    // Establish the conversation subscription before the durable snapshot/gap fill.
+    await this.#openConversationStream(sessionId);
+    if (generation !== this.#generation) return;
+    const conversation = await request<Conversation>(`/conversations/${sessionId}`);
+    const entries = (await request<{ entries: Entry[] }>(`/sessions/${sessionId}`)).entries;
+    if (generation !== this.#generation) return;
+    this.#conversation = conversation; this.#entries = entries;
+    if (conversation.latestRunId) { const run = await request<Run>(`/chat/${conversation.latestRunId}`); if (generation !== this.#generation) return; this.#run = run; }
     this.#save(); this.attach();
+    await this.#publishSelection(sessionId, token);
+    if (generation !== this.#generation) return;
     if (this.#run?.state !== 'terminal' && this.#run) void this.#watch(this.#run.runId);
+  }
+  /** One FIFO chain for every run/selection application; a later user action always applies last. */
+  #enqueue(task: () => Promise<void>): Promise<void> {
+    const next = this.#opChain.then(task, task);
+    this.#opChain = next.catch(() => undefined);
+    return next;
+  }
+  /** Publish the last explicitly chosen conversation; a superseded write never reaches the service. */
+  async #publishSelection(sessionId: string, token: number) {
+    await this.#enqueue(async () => {
+      if (token !== this.#selectionToken) return;
+      const title = this.#conversations.find(item => item.conversation.sessionId === sessionId)?.title ?? sessionId;
+      try { await request('/conversation-selection', { method: 'POST', body: { sessionId, title } }); }
+      catch { /* a routing hint that could not be published never blocks the conversation */ }
+    });
+  }
+  /** Clear only this principal's record; a failed clear never blocks logout or history. */
+  async clearSelection() {
+    const token = ++this.#selectionToken;
+    await this.#enqueue(async () => {
+      if (token !== this.#selectionToken) return;
+      try { await request('/conversation-selection/clear', { method: 'POST', body: {} }); }
+      catch { /* logout/expiry drops the record server-side anyway */ }
+    });
+  }
+  #closeConversationStream() { this.#conversationController?.abort(); this.#conversationController = undefined; }
+  async #openConversationStream(sessionId: string): Promise<void> {
+    const controller = new AbortController(); this.#conversationController = controller;
+    let settle!: () => void; const subscribed = new Promise<void>(resolveOpen => { settle = resolveOpen; });
+    void stream(`/conversations/${sessionId}/events`, controller.signal, value => {
+      if (this.#conversationController !== controller) return;
+      const event = value as { type?: string; sessionId?: string; runId?: string };
+      if (event.type === 'run' && event.sessionId === sessionId && typeof event.runId === 'string') void this.#attachExternal(sessionId, event.runId, controller);
+    }, () => settle()).catch(() => { /* reconnection stays explicit; the durable snapshot closes any gap */ }).finally(() => settle());
+    await subscribed;
+  }
+  /** A durable run accepted elsewhere appears here without a refresh; page B is never retargeted to A. */
+  async #attachExternal(sessionId: string, runId: string, controller: AbortController) {
+    if (this.#run?.runId === runId || this.#attaching.has(runId)) return;
+    this.#attaching.add(runId);
+    try {
+      await this.#enqueue(async () => {
+        if (this.#conversationController !== controller || this.#conversation?.sessionId !== sessionId || this.#run?.runId === runId) return;
+        const run = await request<Run>(`/chat/${runId}`);
+        if (this.#conversationController !== controller || this.#conversation?.sessionId !== sessionId) return;
+        this.#run = run; this.#save();
+        this.#entries = (await request<{ entries: Entry[] }>(`/sessions/${sessionId}`)).entries;
+        if (this.#conversationController !== controller) return;
+        this.attach();
+        if (run.state !== 'terminal') void this.#watch(run.runId);
+      });
+    } catch (error) { if (this.#conversationController === controller) { this.#error = error instanceof Error ? error.message : 'Could not load the accepted run.'; this.attach(); } }
+    finally { this.#attaching.delete(runId); }
   }
   attach() {
     if (this.#lastActive !== this.active) { this.#lastActive = this.active; this.onState(); }
@@ -59,7 +124,7 @@ export class ConnectedView {
       ${this.#conversations.length ? `<label>Connected history<select id="connected-history">${this.#conversations.map(item => `<option value="${escape(item.conversation.sessionId)}" ${c?.sessionId === item.conversation.sessionId ? 'selected' : ''}>${escape(item.title)} · ${escape(item.conversation.model)} · ${escape(item.conversation.state)}</option>`).join('')}</select></label>` : ''}
       ${c ? `<div class="connected-state"><span class="tag">${escape(c.provider)} / ${escape(c.model)} · ${escape(c.state)}</span>${c.state !== 'active' ? '<p>This conversation is paused. History remains here. Start a new explicitly disclosed conversation to send again.</p>' : ''}<button id="connected-recover" class="quiet">Recover saved history</button><button id="connected-revoke" class="quiet" ${c.state === 'revoked' || this.#busy ? 'disabled' : ''}>Revoke conversation consent</button></div>
       <div id="connected-entries" class="connected-entries">${this.#entries.map(entry => `<article class="entry ${entry.role}"><header><strong>${entry.role === 'assistant' ? 'Naya · saved answer' : 'You · saved locally'}</strong></header><p>${escape(entry.text)}</p></article>`).join('')}</div>
-      ${r ? `<div id="connected-run" class="callout" role="status">${r.state === 'terminal' ? r.outcome === 'complete' ? 'Answer saved durably.' : `No saved answer: ${escape(r.outcome)}.${r.mayHaveBeenSent ? ' Content may have been sent.' : ''}` : 'User turn accepted durably; waiting for a saved answer.'}${r.partialText && r.outcome !== 'complete' ? `<p class="provisional"><strong>Provisional · not a saved answer</strong><br>${escape(r.partialText)}</p>` : ''}${r.state !== 'terminal' ? '<button id="connected-cancel" class="quiet">Cancel model run</button>' : ''}</div>` : ''}
+      ${r ? `<div id="connected-run" class="callout" role="status" data-run-id="${escape(r.runId)}">${r.state === 'terminal' ? r.outcome === 'complete' ? 'Answer saved durably.' : `No saved answer: ${escape(r.outcome)}.${r.mayHaveBeenSent ? ' Content may have been sent.' : ''}` : 'User turn accepted durably; waiting for a saved answer.'}${r.partialText && r.outcome !== 'complete' ? `<p class="provisional"><strong>Provisional · not a saved answer</strong><br>${escape(r.partialText)}</p>` : ''}${r.state !== 'terminal' ? '<button id="connected-cancel" class="quiet">Cancel model run</button>' : ''}</div>` : ''}
       <form id="connected-send-form"><label for="connected-draft">Message for this connected conversation</label><textarea id="connected-draft" rows="3" placeholder="One small next step…" ${c.state !== 'active' ? 'disabled' : ''}>${escape(this.#draft)}</textarea><button id="connected-send" ${c.state !== 'active' || this.#busy || (r && r.state !== 'terminal') ? 'disabled' : ''}>Send to ${escape(c.provider)} / ${escape(c.model)}</button><small>Send captures exactly one user turn. Local Save does not send. A failed acceptance keeps your draft; nothing is automatically retried.</small></form>` : ''}
       ${this.#error ? `<p id="connected-error" role="alert">${escape(this.#error)}</p>` : ''}
     </section>`;
@@ -70,7 +135,7 @@ export class ConnectedView {
       this.#consent = false; this.#draft = ''; this.#pending = undefined;
       this.#conversations.unshift({ title: 'Naya connected conversation', conversation: grant }); await this.select(grant.sessionId);
     }); });
-    panel.querySelector<HTMLSelectElement>('#connected-history')?.addEventListener('change', event => { void this.#action(() => this.select((event.target as HTMLSelectElement).value)); });
+    panel.querySelector<HTMLSelectElement>('#connected-history')?.addEventListener('change', event => { const next = (event.target as HTMLSelectElement).value; void this.select(next).catch(error => { this.#error = error instanceof Error ? error.message : 'Could not open that connected conversation.'; this.attach(); }); });
     panel.querySelector('#connected-recover')?.addEventListener('click', () => { if (c) void this.#action(() => this.select(c.sessionId)); });
     panel.querySelector('#connected-revoke')?.addEventListener('click', () => { if (c) void this.#action(async () => { await request(`/conversations/${c.sessionId}/revoke`, { method: 'POST', body: {} }); await this.select(c.sessionId); }); });
     panel.querySelector<HTMLTextAreaElement>('#connected-draft')?.addEventListener('input', event => { this.#draft = (event.target as HTMLTextAreaElement).value; this.#save(); });

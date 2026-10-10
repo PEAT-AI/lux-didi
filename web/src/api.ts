@@ -8,7 +8,7 @@ const pendingKeys = new Map<string, string>();
 let authorityChanged: (() => void) | undefined;
 export function onAuthorityChanged(callback: () => void) { authorityChanged = callback; }
 export function clearAuthority() { epoch = undefined; csrfToken = undefined; pendingKeys.clear(); }
-export async function request<T>(path: string, options: { method?: string; body?: unknown; signal?: AbortSignal; pairing?: boolean } = {}): Promise<T> {
+export async function request<T>(path: string, options: { method?: string; body?: unknown; signal?: AbortSignal; pairing?: boolean; idempotencyKey?: string } = {}): Promise<T> {
   if (!navigator.onLine) throw new ApiError('OFFLINE', 'You’re offline. Nothing was sent.', 0);
   const method = options.method ?? 'GET';
   if (method !== 'GET' && !options.pairing && !epoch) throw new ApiError('NOT_CONNECTED', 'Reconnect before making changes.', 0);
@@ -16,7 +16,7 @@ export async function request<T>(path: string, options: { method?: string; body?
   if (options.body !== undefined) headers['Content-Type'] = 'application/json';
   const fingerprint = JSON.stringify([epoch, method, path, options.body]);
   if (method !== 'GET') {
-    const key = pendingKeys.get(fingerprint) ?? crypto.randomUUID();
+    const key = options.idempotencyKey ?? pendingKeys.get(fingerprint) ?? crypto.randomUUID();
     pendingKeys.set(fingerprint, key);
     headers['Idempotency-Key'] = key;
     if (!options.pairing) {
@@ -46,4 +46,28 @@ export async function restoreSession() {
 export async function logout() {
   await request('/auth/logout', { method: 'POST', body: {} });
   clearAuthority();
+}
+
+/** Fetch SSE uses the same current browser authority; no URL tokens or resend. */
+export async function stream(path: string, signal: AbortSignal, onFrame: (value: unknown) => void): Promise<void> {
+  if (!epoch || !csrfToken) throw new ApiError('NOT_CONNECTED', 'Reconnect before subscribing.', 0);
+  const response = await fetch(`/api/v1${path}`, { method: 'POST', credentials: 'same-origin', cache: 'no-store', signal,
+    headers: { 'Content-Type': 'application/json', 'X-Didi-CSRF': csrfToken, 'X-Didi-Authority-Epoch': epoch }, body: '{}' });
+  if (!response.ok) { const body = await response.json(); throw new ApiError(body.error?.code ?? 'STREAM_ERROR', body.error?.message ?? 'Cannot subscribe to this run.', response.status); }
+  if (!response.body) throw new ApiError('STREAM_ERROR', 'No event stream was returned.', 0);
+  const reader = response.body.getReader(), decoder = new TextDecoder();
+  let pending = '';
+  try {
+    while (true) {
+      const { value, done } = await reader.read(); pending += decoder.decode(value, { stream: !done });
+      if (pending.length > 1024 * 1024) throw new ApiError('STREAM_ERROR', 'Event frame exceeded the client limit.', 0);
+      let end: number;
+      while ((end = pending.indexOf('\n\n')) >= 0) {
+        const frame = pending.slice(0, end); pending = pending.slice(end + 2);
+        const data = frame.split('\n').filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n');
+        if (data) onFrame(JSON.parse(data));
+      }
+      if (done) break;
+    }
+  } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
 }

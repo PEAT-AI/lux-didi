@@ -16,4 +16,16 @@ export const chatMigrations: readonly SchemaMigration[] = [{ owner: 'chat', vers
     CHECK((outcome='complete' AND final_entry_id IS NOT NULL) OR (outcome IS NULL OR outcome!='complete'))
   )`,
   `CREATE UNIQUE INDEX chat_one_active_session ON chat_runs(session_id) WHERE state!='terminal'`,
+] }, { owner: 'chat', version: 2, statements: [
+  `CREATE TABLE chat_consents (
+    session_id TEXT PRIMARY KEY, owner_assistant_id TEXT NOT NULL,
+    provider TEXT NOT NULL, model TEXT NOT NULL, route_identity TEXT NOT NULL,
+    revision INTEGER NOT NULL, permitted_classes TEXT NOT NULL,
+    granted_at TEXT NOT NULL, revoked_at TEXT,
+    idempotency_key TEXT NOT NULL, fingerprint TEXT NOT NULL,
+    UNIQUE(owner_assistant_id,idempotency_key))`,
+  `CREATE TABLE chat_run_policy (
+    run_id TEXT PRIMARY KEY REFERENCES chat_runs(run_id),
+    policy_version INTEGER NOT NULL, consent_revision INTEGER NOT NULL,
+    route_identity TEXT NOT NULL, selected_labels TEXT NOT NULL)`
 ] }];

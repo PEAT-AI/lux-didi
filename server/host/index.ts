@@ -5,7 +5,7 @@ import { supervise } from './supervision.js';
 
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (argv.length === 1 && argv[0] === '--help') {
-    console.log('Usage: node server/dist/host/index.js [pair] [--supervised] [--data-dir PATH] [--web-root BUILD] [--port 0..65535] [--descriptor PATH.json]\nForeground, loopback-only; no bearer argument. Defaults: platform application data, repository web/dist, port 8765.\npair verifies current local service identity and prints a single-use browser pairing code, never a bearer.\n--supervised requires one bounded nonce JSON line on stdin, emits ready JSON, and closes on stdin EOF.');
+    console.log('Usage: node server/dist/host/index.js [pair] [--supervised] [--data-dir PATH] [--web-root BUILD] [--port 0..65535] [--descriptor PATH.json] [--config-dir PATH]\nForeground, loopback-only; no bearer argument. Defaults: platform application data, repository web/dist, port 8765.\npair verifies current local service identity and prints a single-use browser pairing code, never a bearer.\n--supervised requires one bounded nonce JSON line on stdin, emits ready JSON, and closes on stdin EOF.');
     return;
   }
   const pairing = argv[0] === 'pair';
@@ -16,7 +16,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   const values = new Map<string, string>();
   for (let i = 0; i < argv.length; i += 2) {
     const key = argv[i]!, value = argv[i + 1];
-    if (!['--data-dir', '--web-root', '--port', '--descriptor'].includes(key) || values.has(key) || !value || value.startsWith('--')) throw new Error('Invalid host configuration; see --help');
+    if (!['--data-dir', '--web-root', '--port', '--descriptor', '--config-dir'].includes(key) || values.has(key) || !value || value.startsWith('--')) throw new Error('Invalid host configuration; see --help');
     values.set(key, value);
   }
   const rawPort = values.get('--port') ?? process.env.DIDI_PORT ?? '8765';
@@ -26,6 +26,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     webRoot: resolve(values.get('--web-root') ?? process.env.DIDI_WEB_ROOT ?? fileURLToPath(new URL('../../../web/dist', import.meta.url))),
     port: Number(rawPort),
   };
+  if (values.has('--config-dir')) config.configDir = resolve(values.get('--config-dir')!);
   const descriptor = values.get('--descriptor') ?? process.env.DIDI_DESCRIPTOR;
   if (descriptor) config.descriptor = resolve(descriptor);
   if (pairing) { console.log(await pairLocal(config.dataDir, config.descriptor)); return; }
@@ -50,6 +51,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     } else console.log(`Didi host ${host.descriptor.origin}; local memory/commitments available; model/notifications unavailable`);
   } catch (error) { supervision?.dispose(); throw error; }
 }
+// Node 26 main-module identity handles symlink spellings and stays false on import.
+// https://nodejs.org/api/esm.html#importmetamain
 if (import.meta.main) {
   void main().catch(error => { console.error(error instanceof Error ? error.message : 'Host startup failed'); process.exitCode = 1; });
 }

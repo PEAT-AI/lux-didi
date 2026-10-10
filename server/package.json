@@ -27,6 +27,8 @@
     "dist/contracts",
     "dist/domain",
     "dist/host",
+    "dist/chat",
+    "dist/config",
     "dist/adapters/model",
     "dist/prompt",
     "dist/adapters/mcp",

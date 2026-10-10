@@ -95,7 +95,8 @@ import ApplicationServices
         return trace
     }
     private static func ownIdentifier(_ window: NSWindow) -> String {
-        if let identifier = window.accessibilityIdentifier() { return identifier }
+        let existing = window.accessibilityIdentifier()
+        if !existing.isEmpty { return existing }
         let identifier = "didi-owned-window-" + UUID().uuidString
         window.setAccessibilityIdentifier(identifier)
         return identifier

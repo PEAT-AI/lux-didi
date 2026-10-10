@@ -298,6 +298,7 @@ test('supervised host composes Live, closes owned sockets on EOF, and the Store 
   writePrivate(config, 'live.json', `${JSON.stringify(configJson(true))}\n`);
   writePrivate(config, 'gemini-primary.json', `${JSON.stringify({ schemaVersion: 1, keyReference: 'gemini-primary', key: CANARY })}\n`);
   const web = join(dir, 'web'); mkdirSync(web, { recursive: true });
+  writeFileSync(join(web, 'index.html'), '<!doctype html><title>live gateway</title>\n', { mode: 0o644 });
 
   const child = fork(join(import.meta.dirname, 'live-gateway-process.js'), ['host', dir, config, web], { stdio: ['pipe', 'pipe', 'inherit', 'ipc'] });
   t.after(() => { if (child.exitCode === null) child.kill('SIGKILL'); rmSync(dir, { recursive: true, force: true }); });

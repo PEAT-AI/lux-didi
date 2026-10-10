@@ -1,6 +1,6 @@
 # Research: sources, options and evidence limits
 
-Status: public summary of the research base for the plan. Access date for every source below is 2026-10-09, the planning date. This page separates what a source says from what was observed and from what is still an assumption. Nothing here was measured by running a product, because no product exists.
+Status: public summary of the research base for the plan. Original planning-source access date: 2026-10-09. The Node and SQLite primary links were verified on 2026-10-10. This page separates what a source says from what was observed and from what is still an assumption. This is a source comparison, not a product benchmark or an installation proof.
 
 ## Evidence classes
 
@@ -95,6 +95,21 @@ An earlier internal draft overstated the licence position as "no obligation beyo
 - Whether a local notification scheduled by an agent app is delivered during sleep is not verified.
 - The private baseline for existing internal systems is intentionally not linked or quoted. Where a planning issue depends on it, the issue says the baseline is non-public and states what must be re-verified against real interfaces at implementation time.
 - Provider data protection arrangements are not verified by this project. The product states that the operator verifies their own agreement and never claims an arrangement on the user's behalf.
+
+## Node and SQLite primary-source traceability
+
+The existing portable-core decision above is supported by the primary sources named in
+issue #12: the [Node API documentation](https://nodejs.org/api/) and
+[SQLite documentation](https://www.sqlite.org/). More specifically,
+[Node's `node:sqlite` API](https://nodejs.org/api/sqlite.html) documents the SQLite
+interface used by the service in `server/runtime/`; `server/package.json` records
+its Node engine requirement. [SQLite WAL documentation](https://www.sqlite.org/wal.html)
+describes local database concurrency and same-machine constraints, not a shared
+cross-machine writer. Moving the single authoritative process to a Linux VM does
+not authorize two writers or a replicated authority. [SQLite's copyright statement](https://www.sqlite.org/copyright.html)
+records its public-domain basis; Node's own distribution notices remain separate.
+These are API, deployment-constraint and rights source claims, not measured speed,
+latency, portability or clean-machine installation results.
 
 ## Naya reuse and the shared web interface
 

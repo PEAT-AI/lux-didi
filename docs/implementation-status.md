@@ -1,12 +1,12 @@
 # Implementation status
 
-Observed at commit `6a66898a392e052a31b59ef009dcae03b1c5aae8` on 2026-10-10 (UTC). This page is a source cross-check of the committed tree. It is not a claim that the product is installed, that any provider is configured, or that any end-to-end path was exercised while writing it.
+This page cross-checks the committed service, web client and accepted Swift companion components. Component acceptance is not final combined-tree or permanent installed-product acceptance. It is not a claim that the product is installed, that any provider is configured, or that any end-to-end path was exercised while writing it.
 
-It separates four things: the components that are implemented in the service, the web client and the thin Mac shell; the behaviour the host integrates end to end; the surfaces the host deliberately leaves uncomposed; and the proofs that are still unresolved.
+It separates four things: the components that are implemented in the service, the web client and the Swift companion; the behaviour the host integrates end to end; the surfaces the host deliberately leaves uncomposed; and the proofs that are still unresolved.
 
-## 1. Implemented and accepted on main
+## 1. Implemented components
 
-The service, the web client and the thin Mac shell all have committed, buildable code.
+The service, the web client and the Swift companion all have committed, buildable code.
 
 **Service (`server/`)**, TypeScript for Node 26 or newer, built with `tsc` into `dist/`:
 
@@ -26,14 +26,19 @@ The `server/chat` and `server/config` modules are build roots. `server/tsconfig.
 - a same-origin progressive web app with `main.ts` for the shell and views, `api.ts` for the HTTP contract, `protocol.ts` for the wire types, `orb.ts` and `orb-classic.ts` for the canvas orb, and a generated service worker for the shell.
 - a content security policy in both the served headers and the document, a web app manifest, and a bundled orb icon. No external font, image, analytics or CDN request.
 
-**Mac shell (`Sources/LuxDidi/`)**, Swift, built with the Xcode Command Line Tools:
+**Swift companion (`Sources/LuxDidi/`)**, built with the Xcode Command Line Tools:
 
-- an AppKit menu-bar agent that hosts SwiftUI, with a Carbon global hotkey, a native notification seam and a native voice seam.
-- an `AppDomainPort` boundary that is deliberately supplied by `DisconnectedDomain`, so the shell shows an explicitly empty state rather than a simulated account. Drafts are ephemeral, and sending from the disconnected state reports failure.
+- an AppKit menu-bar agent hosting SwiftUI, with a Carbon global hotkey, notification and native speech/draft-review surfaces;
+- `CompanionWeb.swift` hosts the shared client in a real `WKWebView`; `CompanionClient.swift` supplies the authenticated HTTP client and draft-capture path to the same authoritative service;
+- `LuxDidiApp.swift` composes that client/webview and, when installed runtime resources are present, `NativeServiceSupervisor.swift` owns the child Node service and reports service loss. Invalid installed resources fail closed instead of silently attaching elsewhere.
+
+These accepted companion/client/webview/supervision components are more than an
+empty preview. They do not establish a permanent installer, notarization, real
+microphone-to-provider Live audio or playback, or a second native memory writer.
 
 **Planning (`planning/` and `scripts/`)**: the backlog of 120 nodes and the validator and renderer that check it for internal consistency. This is the plan, not product behaviour.
 
-## 2. Integrated behaviour on current main
+## 2. Integrated service behaviour
 
 The host entry composes the accepted service, the durable domain module and the built web client, and serves them on `127.0.0.1` only. From that origin a user can:
 
@@ -48,14 +53,12 @@ By default no provider profile exists, so the status the client reads reports th
 
 The host does **not** integrate: MCP tool execution, notifications, audio capture or playback, native web-view hosting, or any calendar, mail, chat or transcript connector. Model inference is composed only inside an explicitly granted connected conversation with a locally validated profile; nothing else in the host performs inference, and the loopback interface remains the only listener. The service HTTP layer applies the content security policy and related headers to the shell and assets it serves.
 
-## 3. What this tree does not contain
+## 3. Component presence is not release proof
 
-The following categories are not in this tree:
-
-- a local install and package path, including `scripts/package-local.mjs`, `scripts/install-local.mjs`, an install
-  check, install tests and a local-install document;
-- deeper native companion integration, including companion web, supervision and installed-proof sources and their
-  tests - `Sources/LuxDidi/CompanionClient.swift` is not in this tree.
+Companion web/client, native service supervision, installed-proof sources and
+asset-bundling paths are present. Their existence and scoped component acceptance
+do not certify the permanent installer or final installed product; those require
+separate combined-tree and installation evidence.
 
 The live-voice adapter (`server/adapters/live-voice`), the Lux Knowledge connector (`server/connectors`), the chat and
 config modules, the host-entry producer, the provider configuration source and the pending-request store are all part
@@ -64,7 +67,7 @@ verified for the public.
 
 ## 4. Unresolved end-to-end proofs
 
-- **Installation**: there is no packaged or notarized application on `main`, and Node must already be installed. No clean-machine installation has been proven.
+- **Installation**: service packaging, native asset bundling and installed-runtime supervision sources exist, but permanent installer acceptance, clean-machine installation and notarization remain unproved. The service tarball needs a compatible external Node; the separate native asset bundle has its own runtime inventory and validation. Neither source presence nor a disposable bundle certifies an installed product.
 - **Model**: with no provider profile the model is unconfigured and no inference is attempted. With a locally
   validated profile the host composes the Gemini adapter for an explicitly granted connected conversation, so
   inference is conditional on that configured, granted path and on nothing else. A configured profile has been validated locally, and that validation does not prove provider reachability; an unsupported adapter model ID is a sanitized configuration error rather
@@ -72,7 +75,7 @@ verified for the public.
 - **Voice**: no audio capture or playback is wired by the host, and the Mac shell voice seam is not exercised end to end.
 - **Accounts and connectors**: no Google account, calendar, mail, chat, transcript, email, Mattermost or harness connector runs on `main`. Those account and connector calls, and any transcript, email, chat, calendar or harness control, remain roadmap items until baseline code proves them.
 - **Portability**: macOS is the only verified host. Linux shares the code path but is untested, and there is no Windows package. There is no cloud deployment and no mobile pairing.
-- **Native surfaces**: Keychain setup, application lifecycle, notifications and web-view appearance remain the separate native installation gate; the disposable Mac check bundle is proof of compilation and an empty preview, not of an installed product.
+- **Native surfaces**: accepted Swift companion/webview/client/supervision evidence must not be reduced to an empty preview. Permanent Keychain/setup and OS-permission usability, final application lifecycle and installed-window proof remain separate installation gates. Native speech-to-reviewed-draft capture is not the Live audio path: microphone capture, provider socket delivery and speaker playback have not been proved end to end in the companion.
 
 ## 5. What this does not claim
 

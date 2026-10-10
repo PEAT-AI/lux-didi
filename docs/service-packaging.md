@@ -1,10 +1,21 @@
 # Self-contained service tarball
 
-The service has a runtime dependency: the pinned official MCP client. It is not
-zero-dependency. `server/package.json` lists that existing dependency in
-`bundleDependencies`; the committed npm lock identifies the bundled production
-closure. No dependency is newly introduced or copied into this repository.
-Node itself, the OS, and deployment configuration are not bundled.
+The service has two direct runtime dependencies: the pinned official MCP client
+and `ws`. It is not zero-dependency. `server/package.json` lists both existing
+packages in `bundleDependencies`; `server/package-lock.json` identifies their
+exact bundled production closure. This inventory introduces no new dependency.
+
+| Direct runtime package | Pin | Upstream licence | Runtime use |
+| --- | --- | --- | --- |
+| `@modelcontextprotocol/client` | `2.3.1` | Apache-2.0 | MCP client adapter |
+| `ws` | `8.22.0` | MIT | Live WebSocket transport and HTTP upgrade |
+
+Pins and licence identifiers come from the committed manifest/lock. The Didi-owned
+MCP SDK notice at `server/adapters/mcp/SDK-LICENSE.txt` and bundled upstream
+licence/notice files must be retained; the release verifier checks their bytes.
+The locked MCP server SDK is a development/test dependency, not a third direct
+production dependency. Node itself, the OS and deployment configuration are not
+bundled in this service tarball; native asset bundling is a separate artifact.
 
 ## Release proof
 

@@ -72,7 +72,7 @@ try {
       epoch: req.headers['x-didi-authority-epoch'], profile: req.headers['x-didi-live-profile'],
       cookie: req.headers.cookie !== undefined, origin: req.headers.origin !== undefined });
   });
-  const fixture = { ...host.descriptor, token, profileIdentity: status.profile.profileIdentity,
+  const fixture = { ...host.descriptor, token, profileIdentity: status.profileIdentity,
     redirectOrigin: `http://127.0.0.1:${redirector.address().port}` };
   const child = spawn(binary, [], { stdio: ['pipe', 'inherit', 'inherit'] });
   const timer = setTimeout(() => child.kill('SIGKILL'), 15000);
@@ -87,7 +87,7 @@ try {
   assert.equal(good.authorizationCount, 1);
   assert.equal(good.authorizationMatches, true);
   assert.equal(good.epoch, host.descriptor.authorityEpoch);
-  assert.equal(good.profile, status.profile.profileIdentity);
+  assert.equal(good.profile, status.profileIdentity);
   assert.equal(good.cookie, false);
   assert.equal(good.origin, false);
   assert.equal(credentialReads, 1, 'all invalid headers fail before credential access');

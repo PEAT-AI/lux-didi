@@ -71,10 +71,10 @@ default path or repeat `--build-only`.
 
 `--config-dir` (or `DIDI_CONFIG_DIR`) selects the provider profile directory; the portable default is
 `<dataDir>/provider-config`. The host validates the profile at startup and fixes it for the process, so restart to
-activate edits. The profile holds the provider, the model and a key reference; the key material lives in a separate secret file
-and is reread on each dispatch. The status line reports unconfigured, disabled, error (a safe code only), or
-configured with provider and model. Configured means the profile has been validated locally, and that validation does not prove provider reachability; an unsupported adapter model ID is a sanitized configuration error that
-never prevents the host from starting. With no profile the connected conversation stays unavailable and the old Ask
+activate edits. The profile holds the provider, the model and a key reference; the key material lives in a separate owner-only
+secret file (mode 0600) and is reread on each dispatch. The status line reports unconfigured, disabled, error (a safe code only), or
+configured with provider and model. Configured means the profile is locally validated; this does not prove provider reachability. An unsupported adapter
+model ID is a sanitized configuration error that never prevents the host from starting. With no profile the connected conversation stays unavailable and the old Ask
 Didi shortcut stays disabled.
 
 The host prints its origin, then the availability line, for example that local memory and commitments are available and that notifications are not. The model line reports the profile state: unconfigured, disabled, or error with a safe code when no usable profile is present, and configured with the provider and model once a profile validates. To see the command line:

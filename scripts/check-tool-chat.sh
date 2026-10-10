@@ -38,9 +38,6 @@ node "$deps/typescript/bin/tsc" --target ES2022 --module NodeNext --moduleResolu
   "$out/source/test/tool-chat.test.ts" "$out/source/test/tool-chat-process.ts" "$out/source/test/connected.test.ts"
 echo 'TOOL CHAT PHASE=focused-runtime'
 node --test --test-concurrency=1 --test-reporter=tap --test-timeout=15000 "$out/dist/test/tool-chat.test.js"
-# The real connected caller (R2): the actual composeChat/ownerProfile/P-snapshot callsite, not a fixture.
-echo 'TOOL CHAT PHASE=connected-runtime'
-node --test --test-concurrency=1 --test-reporter=tap --test-timeout=15000 "$out/dist/test/connected.test.js"
 # Build the actual current browser in isolation; never mutate another lane's
 # node_modules or dist, download a browser, or start the normal application.
 cp -R "$root/web/src" "$out/web/src"
@@ -52,6 +49,9 @@ ln -s "$webdeps" "$out/web/node_modules"
 echo 'TOOL CHAT PHASE=browser-build'
 node "$deps/typescript/bin/tsc" --noEmit --project "$out/web/tsconfig.json"
 node "$webdeps/vite/bin/vite.js" build "$out/web"
+# The real connected caller (R2): the actual composeChat/ownerProfile/P-snapshot callsite, not a fixture.
+echo 'TOOL CHAT PHASE=connected-runtime'
+node --test --test-concurrency=1 --test-reporter=tap --test-timeout=15000 "$out/dist/test/connected.test.js"
 node --check "$root/server/test/tool-chat-browser.mjs"
 export DIDI_TOOL_CHAT_DEPENDENCIES="$deps"
 export DIDI_TOOL_CHAT_PROCESS="$out/dist/test/tool-chat-process.js"

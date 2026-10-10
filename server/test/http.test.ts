@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { request } from 'node:http';
@@ -191,4 +191,64 @@ test('real domain HTTP client cannot forge assistant role or access trusted assi
     assert.equal(hidden.status, 404);
     assert.equal(f.store.transaction(tx => port.execute(tx, 'getSession', { id: session.id }, ctx)).entries.length, 0);
   } finally { await f.cleanup(); }
+});
+
+// Test-first seam: the existing assertion exposes only stderr.
+function packageFailure(stage: string, command: string, args: string[], result: {
+  status: number | null; signal: NodeJS.Signals | null; error?: Error; stdout: string; stderr: string;
+}, cache?: string): string {
+  void stage; void command; void args; void cache;
+  return result.stderr;
+}
+
+test('package diagnostics retain actual stdout-only exit failure and full owned npm debug evidence before cleanup', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-package-diagnostics-'));
+  const cache = join(dir, 'npm-cache');
+  const debug = join(cache, '_logs', 'synthetic-debug-0.log');
+  const stdout = 'synthetic stdout ' + 'x'.repeat(6000) + ' STDOUT-END';
+  const log = 'synthetic npm debug ' + 'y'.repeat(12000) + ' DEBUG-END';
+  try {
+    mkdirSync(join(cache, '_logs'), { recursive: true });
+    writeFileSync(debug, log);
+    const args = ['-e', `process.stdout.write(${JSON.stringify(stdout)}); process.exit(7)`];
+    const failed = spawnSync(process.execPath, args, { encoding: 'utf8' });
+    assert.equal(failed.status, 7);
+    assert.equal(failed.stderr, '');
+    const evidence = JSON.parse(packageFailure('synthetic offline install', process.execPath, ['-e', '<synthetic fixture>'], failed, cache));
+    assert.equal(evidence.stage, 'synthetic offline install');
+    assert.equal(evidence.command, process.execPath);
+    assert.deepEqual(evidence.args, ['-e', '<synthetic fixture>']);
+    assert.equal(evidence.status, 7);
+    assert.equal(evidence.signal, null);
+    assert.equal(evidence.error, null);
+    assert.equal(evidence.stdout, stdout);
+    assert.equal(evidence.stdoutBytes, Buffer.byteLength(stdout));
+    assert.equal(evidence.stderr, '');
+    assert.deepEqual(evidence.npmLogs, [{ path: debug, bytes: Buffer.byteLength(log), content: log }]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+  assert.equal(existsSync(dir), false);
+});
+
+test('package diagnostics distinguish actual spawn error and signal from install exit failure', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-package-diagnostics-'));
+  try {
+    const command = join(dir, 'missing-executable');
+    const missing = spawnSync(command, [], { encoding: 'utf8' });
+    assert.equal(missing.error?.code, 'ENOENT');
+    const spawnEvidence = JSON.parse(packageFailure('synthetic CLI spawn', command, [], missing, join(dir, 'npm-cache')));
+    assert.equal(spawnEvidence.status, null);
+    assert.equal(spawnEvidence.error.code, 'ENOENT');
+    assert.equal(spawnEvidence.error.message, missing.error!.message);
+    assert.equal(spawnEvidence.stdout, missing.stdout);
+    assert.equal(spawnEvidence.stderr, missing.stderr);
+    assert.deepEqual(spawnEvidence.npmLogs, []);
+    const signalled = spawnSync(process.execPath, ['-e', 'process.stderr.write("synthetic teardown stderr"); process.kill(process.pid, "SIGTERM")'], { encoding: 'utf8' });
+    assert.equal(signalled.signal, 'SIGTERM');
+    const signalEvidence = JSON.parse(packageFailure('synthetic CLI teardown', process.execPath, ['-e', '<synthetic fixture>'], signalled));
+    assert.equal(signalEvidence.status, null);
+    assert.equal(signalEvidence.signal, 'SIGTERM');
+    assert.equal(signalEvidence.stderr, 'synthetic teardown stderr');
+    assert.equal(signalEvidence.error, null);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+  assert.equal(existsSync(dir), false);
 });

@@ -73,7 +73,32 @@ import Darwin
             try expect(!fm.fileExists(atPath: marker.path), "ambient NODE_OPTIONS injection never executes")
             try expect(first.descriptor.credentialService == service && first.descriptor.credentialAccount == valid.0.installId, "credential reference derived from install identity")
             let canonical = try Data(contentsOf: valid.1.appendingPathComponent("admin-credential"))
-            try expect(Data(try first.descriptor.credential().utf8) == canonical, "actual noninteractive Keychain import matches canonical private file")
+            try expect(canonical.count == 44 && canonical.last == 10, "fixture matches canonical Store credential file framing")
+            let token = Data(canonical.dropLast())
+            try expect(Data(try first.descriptor.credential().utf8) == token, "actual noninteractive Keychain import matches canonical private token")
+            // Store writes an owner-only base64url token followed by one LF.
+            // Exercise canonical framing and retain the existing no-LF coverage too.
+            let framed = try setup("normal")
+            try NativeCredentialImport.prepareState(framed.1)
+            let framedFile = framed.1.appendingPathComponent("admin-credential")
+            try canonical.write(to: framedFile)
+            try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: framedFile.path)
+            let reference = try NativeCredentialImport.importCredential(state: framed.1, installId: framed.0.installId, service: service)
+            let descriptor = try ServiceDescriptor(origin: first.descriptor.origin, credentialService: reference.service, credentialAccount: reference.account)
+            try expect(Data(try descriptor.credential().utf8) == token, "canonical Store credential LF framing never enters bearer or Keychain")
+            _ = try NativeCredentialImport.importCredential(state: framed.1, installId: framed.0.installId, service: service)
+            try token.write(to: framedFile)
+            _ = try NativeCredentialImport.importCredential(state: framed.1, installId: framed.0.installId, service: service)
+            try expect(Data(try descriptor.credential().utf8) == token, "unframed token imports identically without rotation")
+            for suffix in [Data([10, 10]), Data([32]), Data([13, 10])] {
+                try (token + suffix).write(to: framedFile)
+                do {
+                    _ = try NativeCredentialImport.importCredential(state: framed.1, installId: framed.0.installId, service: service)
+                    try expect(false, "noncanonical credential whitespace must fail")
+                } catch NativeServiceError.unsafeCredential {
+                    print("PASS: noncanonical credential whitespace refused")
+                }
+            }
             let again = try await owned.start()
             try expect(again.pid == first.pid, "double Start retains one child")
             let second = supervisor(try setup("normal", state: valid.1))

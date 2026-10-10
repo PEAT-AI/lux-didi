@@ -28,7 +28,7 @@ process.stdin.on('data', chunk => {
     db.exec('BEGIN EXCLUSIVE'); // Actual second-writer exclusion, no business schema.
   } catch { return process.exit(4); }
   const credential = path.join(state, 'admin-credential');
-  if (!fs.existsSync(credential)) fs.writeFileSync(credential, crypto.randomBytes(32).toString('base64url'), { mode: 0o600 });
+  if (!fs.existsSync(credential)) fs.writeFileSync(credential, crypto.randomBytes(32).toString('base64url') + '\n', { mode: 0o600 });
   server = http.createServer((request, response) => { response.end('fixture'); });
   server.listen(0, '127.0.0.1', () => {
     const ready = { type: 'ready', schemaVersion: 1, nonce: input.nonce, pid: process.pid,

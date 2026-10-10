@@ -6,8 +6,8 @@ import { loadProviderConfig } from '../config/index.js';
 import { GeminiAdapter, type Credentials, type Transport } from '../adapters/model/index.js';
 import { validatePreferences } from '../prompt/index.js';
 
-export type ConnectedStatus = { displayName?: string } & ({ status: 'unconfigured' } | { status: 'error'; code: string }
-  | { status: 'disabled' | 'configured'; provider: 'gemini'; model: string });
+export type ConnectedStatus = { status: 'unconfigured' } | { status: 'error'; code: string }
+  | { status: 'disabled' | 'configured'; provider: 'gemini'; model: string };
 /** Trusted in-process construction seam only: never accepted by CLI/HTTP/env. */
 export interface ModelTesting { credentials?: Credentials; transport?: Transport; deadlineMs?: number }
 export function composeChat(store: Store, domain: DomainPort, configDir: string, testing?: ModelTesting, now?: () => number, ownerProfile?: OwnerProfileSnapshot) {
@@ -23,7 +23,6 @@ export function composeChat(store: Store, domain: DomainPort, configDir: string,
     catch { ready = null; status = { status: 'error', code: 'ADAPTER_CONFIGURATION_INVALID' }; }
   }
   const route = ready?.route;
-  if (ownerProfile?.kind === 'profile') status = { ...status, displayName: ownerProfile.displayName };
   const chat = new ChatService({
     ...(ownerProfile ? { ownerProfile } : {}), store, domain, model,
     route: { provider: 'gemini', model: ready?.profile.modelId ?? '', available: !!ready,

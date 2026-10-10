@@ -4,10 +4,11 @@ import Security
 import LocalAuthentication
 
 enum NativeServiceError: LocalizedError {
-    case invalidRuntime, invalidNode, unsafeState, unsafeCredential, credentialMismatch, keychain(OSStatus), invalidReady, exited, timeout, alreadyStarting
+    case invalidRuntime, invalidNode, invalidOperatorSettings, unsafeState, unsafeCredential, credentialMismatch, keychain(OSStatus), invalidReady, exited, timeout, alreadyStarting
     var errorDescription: String? {
         switch self {
         case .invalidRuntime, .invalidNode: return "Didi’s service files need attention. Check Settings, then try again."
+        case .invalidOperatorSettings: return "Didi’s settings need attention. Recheck the configuration, then try again."
         case .unsafeState, .unsafeCredential, .credentialMismatch: return "Didi couldn’t securely connect. Check Settings, then try again."
         case .keychain: return "Didi couldn’t access its saved connection. Check Settings, then try again."
         case .invalidReady: return "Didi couldn’t verify its service. Try connecting again."
@@ -52,7 +53,7 @@ struct InstalledRuntime {
         let value = try JSONDecoder().decode(Manifest.self, from: data)
         guard value.schemaVersion == 1, let install = UUID(uuidString: value.installId), value.nodeMajor == 26,
               value.releaseCommit.count == 40, value.releaseCommit.lowercased().allSatisfy({ "0123456789abcdef".contains($0) }),
-              value.nodePath.hasPrefix("/"), !value.nodePath.contains("\0") else { throw NativeServiceError.invalidRuntime }
+              !value.nodePath.hasPrefix("/"), !value.nodePath.isEmpty, !value.nodePath.contains("\0") else { throw NativeServiceError.invalidRuntime }
         func resource(_ relative: String, directory: Bool) throws -> URL {
             let parts = relative.split(separator: "/", omittingEmptySubsequences: false)
             guard !parts.isEmpty, !parts.contains(where: { $0.isEmpty || $0 == "." || $0 == ".." }), !relative.contains("\0") else { throw NativeServiceError.invalidRuntime }
@@ -62,10 +63,18 @@ struct InstalledRuntime {
                   entry.st_mode & S_IFMT == (directory ? S_IFDIR : S_IFREG), entry.st_mode & 0o022 == 0 else { throw NativeServiceError.invalidRuntime }
             return url
         }
-        let node = URL(fileURLWithPath: value.nodePath).resolvingSymlinksInPath()
+        // Production nodePath is relative to the app bundle root: Contents/MacOS/node,
+        // never the old absolute form and never relative to Contents.
+        let bundleRoot = root.deletingLastPathComponent().deletingLastPathComponent()
+        let canonicalRoot = bundleRoot.resolvingSymlinksInPath().standardizedFileURL
+        let node = bundleRoot.appendingPathComponent(value.nodePath).standardizedFileURL
+        var link = stat()
         var executable = stat()
-        guard stat(node.path, &executable) == 0, executable.st_mode & S_IFMT == S_IFREG,
-              executable.st_mode & 0o022 == 0, FileManager.default.isExecutableFile(atPath: node.path) else { throw NativeServiceError.invalidNode }
+        guard node.path.hasPrefix(bundleRoot.path + "/"),
+              node.resolvingSymlinksInPath().path.hasPrefix(canonicalRoot.path + "/"),
+              lstat(node.path, &link) == 0, link.st_mode & S_IFMT != S_IFLNK,
+              stat(node.path, &executable) == 0, executable.st_mode & S_IFMT == S_IFREG,
+              executable.st_mode & 0o100 != 0, executable.st_mode & 0o022 == 0 else { throw NativeServiceError.invalidNode }
         return InstalledRuntime(resources: root, installId: install.uuidString.lowercased(), releaseCommit: value.releaseCommit.lowercased(), node: node,
                                 nodeMajor: value.nodeMajor, serverEntry: try resource(value.serverEntry, directory: false), webRoot: try resource(value.webRoot, directory: true))
     }

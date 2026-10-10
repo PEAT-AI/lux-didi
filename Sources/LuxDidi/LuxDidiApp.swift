@@ -25,7 +25,10 @@ import Security
                 if let runtime = try InstalledRuntime.load(resources: resources) {
                     let prepared = try proofRequest?.prepare(installId: runtime.installId)
                     installedProof = prepared
-                    let owner = try NativeServiceSupervisor(runtime: runtime, proof: prepared)
+                    let operatorSettings: OperatorSettings?
+                    do { operatorSettings = try OperatorSettings.load() }
+                    catch { self.error = NativeServiceError.invalidOperatorSettings.localizedDescription; return }
+                    let owner = try NativeServiceSupervisor(runtime: runtime, proof: prepared, operatorSettings: operatorSettings)
                     supervisor = owner
                     owner.onUnavailable = { [weak self] in
                         self?.error = NativeServiceError.exited.localizedDescription
@@ -291,6 +294,11 @@ struct RootView: View {
 #if !COMPANION_TEST
 @main enum LuxDidiApp {
     @MainActor static func main() {
+        do {
+            if let configure = try ConfigureRequest.parse(arguments: Array(CommandLine.arguments.dropFirst())) {
+                exit(configure.run())
+            }
+        } catch { fputs("DIDI CONFIGURE: invalid arguments\n", stderr); exit(2) }
         let policy = NativeKeychainPolicy.establish()
         guard policy == errSecSuccess else {
             fputs("DIDI STARTUP: noninteractive credential policy unavailable (\(policy))\n", stderr); exit(2)

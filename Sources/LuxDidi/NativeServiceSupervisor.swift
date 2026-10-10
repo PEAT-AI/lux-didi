@@ -120,6 +120,7 @@ struct OwnedServiceConnection {
 
 @MainActor final class NativeServiceSupervisor: ObservableObject {
     let runtime: InstalledRuntime
+    private let operatorSettings: OperatorSettings?
     private let stateURL: URL
     private let credentialService: String
     private let credentialAccount: String
@@ -142,13 +143,14 @@ struct OwnedServiceConnection {
     @Published private(set) var state: NativeServiceState = .stopped
     var onUnavailable: (() -> Void)?
     var isRunning: Bool { state == .running && child?.isRunning == true }
-    init(runtime: InstalledRuntime, proof: PreparedInstalledProof? = nil) throws {
-        self.runtime = runtime; stateURL = try proof?.state ?? InstalledRuntime.applicationState()
+    init(runtime: InstalledRuntime, proof: PreparedInstalledProof? = nil, operatorSettings: OperatorSettings? = nil) throws {
+        self.runtime = runtime; self.operatorSettings = operatorSettings
+        stateURL = try proof?.state ?? InstalledRuntime.applicationState()
         credentialService = NativeCredentialImport.service; credentialAccount = proof?.credentialAccount ?? runtime.installId
     }
     #if COMPANION_TEST
     init(runtime: InstalledRuntime, proofState: URL, proofCredentialService: String) {
-        self.runtime = runtime; stateURL = proofState; credentialService = proofCredentialService; credentialAccount = runtime.installId
+        self.runtime = runtime; operatorSettings = nil; stateURL = proofState; credentialService = proofCredentialService; credentialAccount = runtime.installId
     }
     func closeLivenessForProof() { child?.closeInput() }
     #endif
@@ -197,7 +199,14 @@ struct OwnedServiceConnection {
             owned.onUnexpectedExit = { [weak self, weak owned] in if let owned { self?.unavailable(owned) } }
             owned.onInvalidOutput = { [weak self, weak owned] in if let owned { self?.unavailable(owned) } }
             stage = "spawn"
-            try owned.launch(executable: runtime.node, arguments: [runtime.serverEntry.path, "--supervised", "--data-dir", stateURL.path, "--web-root", runtime.webRoot.path, "--port", "0"])
+            // Native forwards only the two existing host path flags; the host entry
+            // owns credential/profile validation, snapshots and policy.
+            var hostArguments = [runtime.serverEntry.path, "--supervised", "--data-dir", stateURL.path, "--web-root", runtime.webRoot.path, "--port", "0"]
+            if let settings = operatorSettings {
+                if let configDir = settings.configDir { hostArguments.append(contentsOf: ["--config-dir", configDir.path]) }
+                if let ownerProfilePath = settings.ownerProfilePath { hostArguments.append(contentsOf: ["--owner-profile", ownerProfilePath.path]) }
+            }
+            try owned.launch(executable: runtime.node, arguments: hostArguments)
             var start = try JSONSerialization.data(withJSONObject: ["type": "start", "schemaVersion": 1, "nonce": nonce])
             start.append(10); try owned.writeStart(start)
             stage = "ready-frame"

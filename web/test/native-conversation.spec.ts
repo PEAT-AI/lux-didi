@@ -55,8 +55,11 @@ async function shot(name) {
   await panel.screenshot({ path: join(artifacts, `${name}-${sha}.png`) });
 }
 async function choose(label) {
+  const value = await page.locator('#connected-history').evaluate((element, wanted) => [...element.options].find(option => option.label === wanted)?.value, label);
   await page.selectOption('#connected-history', { label });
-  await page.waitForFunction(expected => document.querySelector('#connected-history')?.value === expected, await page.locator('#connected-history').evaluate((element, wanted) => [...element.options].find(option => option.label === wanted)?.value, label));
+  // Deterministic: return only once the service records this principal's chosen session.
+  await page.waitForFunction(async expected => { const response = await fetch('/api/v1/conversation-selection', { credentials: 'same-origin', cache: 'no-store' }); return (await response.json()).data.sessionId === expected; }, value);
+  return value;
 }
 async function step(name, action) { await action(); steps.push(name); console.log(`PASS ${name}`); }
 

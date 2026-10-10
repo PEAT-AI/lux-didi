@@ -90,13 +90,14 @@ import Darwin
             try token.write(to: framedFile)
             _ = try NativeCredentialImport.importCredential(state: framed.1, installId: framed.0.installId, service: service)
             try expect(Data(try descriptor.credential().utf8) == token, "unframed token imports identically without rotation")
-            for suffix in [Data([10, 10]), Data([32]), Data([13, 10])] {
-                try (token + suffix).write(to: framedFile)
+            for fileBytes in [token + Data([10, 10]), token + Data([32]), token + Data([13, 10]), Data([10]), Data([10]) + token,
+                              Data(token.dropLast()), token + Data([65]), Data(repeating: 33, count: 43)] {
+                try fileBytes.write(to: framedFile)
                 do {
                     _ = try NativeCredentialImport.importCredential(state: framed.1, installId: framed.0.installId, service: service)
-                    try expect(false, "noncanonical credential whitespace must fail")
+                    try expect(false, "noncanonical credential framing or token must fail")
                 } catch NativeServiceError.unsafeCredential {
-                    print("PASS: noncanonical credential whitespace refused")
+                    print("PASS: noncanonical credential framing or token refused")
                 }
             }
             let again = try await owned.start()

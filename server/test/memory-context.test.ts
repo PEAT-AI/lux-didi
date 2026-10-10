@@ -44,7 +44,15 @@ async function terminal(f: ReturnType<typeof fixture>, run: RunSnapshot) {
   throw Error('no durable terminal event');
 }
 async function started(f: ReturnType<typeof fixture>, n = 1) { await f.model.waitFor(n); assert.equal(f.model.calls.length, n); }
+function recordOf(request: ModelRequest, entryId: string) {
+  const item = request.context.items.find(i => i.id === `selected:${entryId}`);
+  assert.ok(item, 'selected evidence item present');
+  return JSON.parse(JSON.parse(item!.text).text);
+}
 function error(code: string) { return (e: unknown) => e instanceof ChatError && e.code === code && !e.localCapture; }
+function chatVersions(store: Store): number[] {
+  return store.transaction(tx => tx.all("SELECT version FROM runtime_migrations WHERE owner='chat' ORDER BY version", [])).map(r => Number(r.version));
+}
 function sourceRef(overrides: Partial<SourceRef> = {}): SourceRef {
   return { id: 'source-1', label: 'Inbox', provider: 'synthetic-mail', externalId: 'msg-1',
     sourceTimestamp: '2026-01-02T03:04:05.000Z', availability: 'present', note: 'imported', ...overrides };
@@ -65,13 +73,11 @@ test('cross-session selected record is resolved, frozen, classified and delivere
     assert.equal(run.memorySelection?.frozen, false);
     await started(f);
     const request = f.model.calls[0]!;
-    const item = request.context.items.find(i => i.id === `selected:${record.id}`);
-    assert.ok(item, 'selected evidence item present');
-    const parsed = JSON.parse(item!.text);
+    const parsed = recordOf(request, record.id);
     assert.equal(parsed.entryId, record.id); assert.equal(parsed.sessionId, source.id);
     assert.equal(parsed.text, 'Cross-session memory payload'); assert.equal(parsed.role, 'user');
     assert.equal(parsed.capturedAt, '1970-01-01T00:00:00.000Z');
-    assert.equal(parsed.sourceTimestamp, '2026-01-02T03:04:05.000Z');
+    assert.equal(parsed.sourceTimestamp, null);
     assert.deepEqual(parsed.sourceRefs, [{ id: 'source-1', label: 'Inbox', provider: 'synthetic-mail',
       externalId: 'msg-1', sourceTimestamp: '2026-01-02T03:04:05.000Z', availability: 'present', note: 'imported' }]);
     assert.deepEqual(request.declarations, []);
@@ -130,19 +136,19 @@ test('unknown, foreign, over-policy and unknown-parent selections fail with no c
     otherStore.close();
     assert.throws(() => accept(f, sending.id, 'x', 'u2', [foreign.id]), error('not_found'));
     const source = f.createSession('Source');
-    const record = f.append(source.id, 'Over policy', sourceRef());
+    const record = f.append(source.id, 'Over policy', sourceRef({ id: 'over-1' }));
     f.chat.correctRoutingLabel({ subject: { kind: 'entry', id: record.id }, expectedRevision: 1, dataClass: 'sensitive' }, f.context);
     assert.throws(() => accept(f, sending.id, 'x', 'u3', [record.id]), error('unavailable'));
     const unlabeled = f.createUnlabeledSession('Legacy');
-    const legacy = f.append(unlabeled.id, 'Legacy record', sourceRef());
+    const legacy = f.append(unlabeled.id, 'Legacy record', sourceRef({ id: 'legacy-1' }));
     assert.throws(() => accept(f, sending.id, 'x', 'u4', [legacy.id]), error('unavailable'));
     assert.equal(f.entries(sending.id).length, 0);
     assert.equal(Number(f.store.transaction(tx => tx.get('SELECT COUNT(*) c FROM chat_runs', []))!.c), 0);
   } finally { f.store.close(); rmSync(f.dir, { recursive: true, force: true }); rmSync(otherDir, { recursive: true, force: true }); }
 });
 
-// 3b. invalid shape and oversized frozen serialization are refused before capture.
-test('invalid selection shape and storage-bound overflow are refused before any capture', async () => {
+// 3b. invalid shape, UTF-8 byte-bound overflow and non-ASCII behaviour.
+test('invalid selection shape and UTF-8 byte overflow are refused before any capture', async () => {
   const f = fixture();
   try {
     const sending = f.enroll();
@@ -152,8 +158,36 @@ test('invalid selection shape and storage-bound overflow are refused before any 
     const source = f.createSession('Source');
     const huge = f.append(source.id, 'Q'.repeat(200000), sourceRef());
     assert.throws(() => accept(f, sending.id, 'x', 'big', [huge.id]), error('selection_too_large'));
+    // 40k UTF-16 code units but ~120k UTF-8 bytes: only the byte bound refuses it.
+    const multibyte = f.append(source.id, '\u20ac'.repeat(40000), sourceRef({ id: 's-euro' }));
+    assert.throws(() => accept(f, sending.id, 'x', 'big-mb', [multibyte.id]), error('selection_too_large'));
     assert.equal(f.entries(sending.id).length, 0);
     assert.equal(Number(f.store.transaction(tx => tx.get('SELECT COUNT(*) c FROM chat_runs', []))!.c), 0);
+    // A small non-ASCII selection fits: the bound is capacity, not a workload promise.
+    const small = f.append(source.id, 'caf\u00e9 \u2615', sourceRef({ id: 's-small' }));
+    const run = accept(f, sending.id, 'small', 'small-mb', [small.id]);
+    await started(f);
+    assert.equal(recordOf(f.model.calls[0]!, small.id).text, 'caf\u00e9 \u2615');
+    await terminal(f, run);
+  } finally { f.close(); }
+});
+
+// 3c. a missing source reference stays missing through frozen data and evidence.
+test('a missing source reference stays missing through frozen data and emitted evidence', async () => {
+  const f = fixture();
+  try {
+    const source = f.createSession('Source');
+    const record = f.append(source.id, 'Missing source record', sourceRef({ id: 'missing-1', availability: 'missing', sourceTimestamp: null }));
+    const sending = f.enroll();
+    const run = accept(f, sending.id, 'go', 'miss-1', [record.id]);
+    await started(f);
+    const parsed = recordOf(f.model.calls[0]!, record.id);
+    const expected = [{ id: 'missing-1', label: 'Inbox', provider: 'synthetic-mail', externalId: 'msg-1', sourceTimestamp: null, availability: 'missing', note: 'imported' }];
+    assert.equal(parsed.sourceTimestamp, null);
+    assert.deepEqual(parsed.sourceRefs, expected);
+    const stored = JSON.parse(String(f.store.transaction(tx => tx.get('SELECT resolved_records FROM chat_run_context WHERE run_id=?', [run.runId]))!.resolved_records));
+    assert.deepEqual(stored[0].sourceRefs, expected);
+    await terminal(f, run);
   } finally { f.close(); }
 });
 
@@ -167,8 +201,8 @@ test('frozen source snapshot stays byte-identical from acceptance to terminal', 
     const run = accept(f, sending.id, 'read it', 'snap-1', [record.id]);
     const before = String(f.store.transaction(tx => tx.get('SELECT resolved_records FROM chat_run_context WHERE run_id=?', [run.runId]))!.resolved_records);
     await started(f);
-    const sent = f.model.calls[0]!.context.items.find(i => i.id === `selected:${record.id}`)!.text;
-    assert.deepEqual(JSON.parse(sent), JSON.parse(before)[0]);
+    const sent = recordOf(f.model.calls[0]!, record.id);
+    assert.deepEqual(sent, JSON.parse(before)[0]);
     await terminal(f, run);
     const after = String(f.store.transaction(tx => tx.get('SELECT resolved_records FROM chat_run_context WHERE run_id=?', [run.runId]))!.resolved_records);
     assert.equal(after, before);
@@ -333,12 +367,12 @@ test('two client principals share one owner: a record under one principal is sel
 });
 
 // 12. Additive migration on a prior clean v1 schema preserves old hashes and consent.
-test('additive chat migration upgrades a prior v1 DB and preserves old fingerprint and consent', async () => {
+test('additive chat v3 migration upgrades a populated v1+v2 DB and preserves old records, fingerprint and consent', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'mem-migrate-'));
   const model = new CountingModel();
   try {
-    const f1 = openMemoryFixture(dir, model, {}, chatMigrations.filter(m => m.version === 1));
-    assert.equal(Number(f1.store.transaction(tx => tx.get("SELECT MAX(version) v FROM runtime_migrations WHERE owner='chat'"))!.v), 1);
+    const f1 = openMemoryFixture(dir, model, {}, chatMigrations.filter(m => m.version <= 2));
+    assert.deepEqual(chatVersions(f1.store), [1, 2]);
     const source = f1.createSession('Source');
     const record = f1.append(source.id, 'Old record', sourceRef());
     assert.equal(record.id.length > 0, true);
@@ -349,7 +383,9 @@ test('additive chat migration upgrades a prior v1 DB and preserves old fingerpri
     f1.store.close();
     const f2 = openMemoryFixture(dir, model, {}, chatMigrations);
     try {
-      assert.equal(Number(f2.store.transaction(tx => tx.get("SELECT MAX(version) v FROM runtime_migrations WHERE owner='chat'"))!.v), 2);
+      assert.deepEqual(chatVersions(f2.store), [1, 2, 3]);
+      assert.equal(f2.store.transaction(tx => tx.get("SELECT name FROM sqlite_master WHERE type='table' AND name='chat_run_context'"))!.name, 'chat_run_context');
+      assert.equal(Number(f2.store.transaction(tx => tx.get('SELECT COUNT(*) c FROM chat_run_context', []))!.c), 0);
       const after = f2.store.transaction(tx => tx.get('SELECT fingerprint,idempotency_key,session_id FROM chat_runs WHERE run_id=?', [run.runId]));
       assert.deepEqual({ ...after }, { fingerprint: before!.fingerprint, idempotency_key: before!.idempotency_key, session_id: before!.session_id });
       assert.deepEqual(f2.store.transaction(tx => tx.get('SELECT * FROM chat_consents WHERE session_id=?', [sending.id])), consentBefore);
@@ -359,6 +395,25 @@ test('additive chat migration upgrades a prior v1 DB and preserves old fingerpri
       assert.throws(() => f2.chat.accept({ sessionId: sending.id, text: 'Old turn', idempotencyKey: 'old', selectedMemoryEntryIds: [record.id] }, f2.context), error('idempotency_conflict'));
     } finally { f2.store.close(); }
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// 3d. resolution is isolated to entry-kind source references.
+test('resolution is isolated to entry-kind source references for a selected entry', async () => {
+  const f = fixture();
+  try {
+    const source = f.createSession('Source');
+    const record = f.append(source.id, 'Kind isolation', sourceRef({ id: 'entry-ref' }));
+    // Synthetic collision: a commitment-kind row that shares the selected entry id.
+    f.store.transaction(tx => tx.run(
+      `INSERT INTO source_references (id,owner_kind,owner_id,source_label,provider,account_id,external_id,source_timestamp,availability,note)\n       VALUES (?,?,?,?,?,?,?,?,?,?)`,
+      ['commitment-ref', 'commitment', record.id, 'Should not leak', null, null, null, null, 'present', null]));
+    const sending = f.enroll();
+    const run = accept(f, sending.id, 'go', 'kind-1', [record.id]);
+    await started(f);
+    const parsed = recordOf(f.model.calls[0]!, record.id);
+    assert.deepEqual(parsed.sourceRefs.map((r: { id: string }) => r.id), ['entry-ref']);
+    await terminal(f, run);
+  } finally { f.close(); }
 });
 
 // 13. Real SIGKILL: frozen selection survives, no provider redispatch.

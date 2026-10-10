@@ -67,7 +67,7 @@ export interface ChatConfig {
   now?: () => number; id?: () => string; schedule?: (work: () => void) => void;
   deadlineMs?: number; subscriberCapacity?: number; maxPartialChars?: number;
 }
-export type ChatErrorCode = 'invalid_input' | 'unauthorized' | 'epoch_mismatch' | 'not_found' | 'idempotency_conflict' | 'active_run' | 'unavailable' | 'recovery_required' | 'invalid_retry' | 'consent_required' | 'consent_revoked' | 'route_changed';
+export type ChatErrorCode = 'invalid_input' | 'unauthorized' | 'epoch_mismatch' | 'not_found' | 'idempotency_conflict' | 'active_run' | 'unavailable' | 'recovery_required' | 'invalid_retry' | 'consent_required' | 'consent_revoked' | 'route_changed' | 'selection_too_large';
 export class ChatError extends Error {
   readonly localCapture = false;
   constructor(readonly code: ChatErrorCode) { super(`Chat request rejected: ${code}; no local capture by this request`); this.name = 'ChatError'; }

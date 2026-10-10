@@ -1,8 +1,10 @@
 import type { DomainContext, Entry } from '../contracts/domain.js';
 import type { Transaction } from '../contracts/storage.js';
+import type { DataClass } from '../adapters/model/types.js';
 import { compilePrompt, createCapabilitySnapshot, PROMPT_VERSION, PromptCompileError,
   type CompileInput, type CompiledPrompt, type Evidence, type HistoryItem } from '../prompt/index.js';
 import { ChatError, type ChatConfig, type ClassificationSubject } from './types.js';
+import { selectedEvidenceId, type RunSelection } from './memorySelection.js';
 
 export class ContextFailure extends Error {
   constructor(readonly outcome: 'input_too_large' | 'compile_failed' | 'unavailable') { super(outcome); }
@@ -14,13 +16,17 @@ export function classify(config: ChatConfig, subject: ClassificationSubject, tx:
   if (!value || value.ownerId !== config.store.assistantId || !['ordinary', 'private', 'sensitive'].includes(value.dataClass) || !Number.isSafeInteger(value.revision) || value.revision < 1) throw new ChatError('unavailable');
   return { schemaVersion: 1 as const, ownerId: value.ownerId, dataClass: value.dataClass };
 }
+
+/** Ordinary < private < sensitive; a selected record never lowers a label. */
+const DATA_CLASS_ORDER: Record<DataClass, number> = { ordinary: 0, private: 1, sensitive: 2 };
+function maxDataClass(a: DataClass, b: DataClass): DataClass { return DATA_CLASS_ORDER[a] >= DATA_CLASS_ORDER[b] ? a : b; }
 export interface ContextTrace {
   compileInput: CompileInput; manifest: CompiledPrompt['manifest'];
   omittedHistoryCount: number; selectedHistoryIds: string[]; selectedSourceIds: string[];
   historyOmissionReason: 'compiler_budget_or_limit' | null;
 }
 /** Domain reads finish in one synchronous Store transaction before compilation. */
-export function assemble(config: ChatConfig, sessionId: string, currentId: string, context: DomainContext) {
+export function assemble(config: ChatConfig, sessionId: string, currentId: string, context: DomainContext, selection: RunSelection | null = null) {
   const configured = new Map([['session', true], ['recall', Boolean(config.context.recall)], ['today', Boolean(config.context.today)]]);
   for (const source of config.context.sources) {
     if (!configured.has(source.id) || (source.state === 'available') !== configured.get(source.id)) throw new ContextFailure('unavailable');
@@ -53,6 +59,14 @@ export function assemble(config: ChatConfig, sessionId: string, currentId: strin
     evidence.push({ ...config.store.transaction(tx => classify(config, { kind: 'commitment', id: item.id }, tx)), id: `today:${item.id}`,
       sourceId: item.id, provenance: `domain.plan:${read.today!.date}:${read.today!.timeZone}`, priority: 1,
       kind: 'source', text: JSON.stringify(item) });
+  }
+  for (const record of selection?.records ?? []) {
+    const entryLabel = config.store.transaction(tx => classify(config, { kind: 'entry', id: record.entryId }, tx));
+    const parentLabel = config.store.transaction(tx => classify(config, { kind: 'session', id: record.sessionId }, tx));
+    evidence.push({ schemaVersion: 1 as const, ownerId: config.store.assistantId,
+      dataClass: maxDataClass(entryLabel.dataClass, parentLabel.dataClass),
+      id: selectedEvidenceId(record.entryId), sourceId: record.entryId, provenance: 'memory.selection',
+      priority: 1, kind: 'source', text: JSON.stringify(record) });
   }
   const capabilities = createCapabilitySnapshot([], [...configured].map(([id, available]) => ({ id, state: available ? 'available' : 'missing' })));
   const base: CompileInput = { ownerId: config.store.assistantId, persona: 'didi', promptVersion: PROMPT_VERSION,

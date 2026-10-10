@@ -1,5 +1,6 @@
-import type { EntryRecord, RecallResult, SessionRecord, SourceRefRecord } from './memory.js';
+import type { EntryRecord, RecallResult, ResolvedEntryRecord, SessionRecord, SourceRefRecord } from './memory.js';
 import type { CommitmentRecord, CommitmentStatus, DailyPlan, HistoryRecord } from './commitments.js';
+import type { ResolvedEntry } from './contract.js';
 import { toIso } from './util.js';
 
 // Transport-blind DTO serializers. Shapes follow SERVICE-CONTRACT and
@@ -126,6 +127,18 @@ export function toEntryDTO(e: EntryRecord, sourceRefs: SourceRefRecord[]): Entry
     text: e.text,
     capturedAt: toIso(e.capturedAt)!,
     sourceRefs: sourceRefs.map(toSourceRefDTO),
+  };
+}
+
+export function toResolvedEntryDTO(r: ResolvedEntryRecord): ResolvedEntry {
+  return {
+    entryId: r.entryId,
+    sessionId: r.sessionId,
+    text: r.text,
+    role: r.role,
+    capturedAt: toIso(r.capturedAt)!,
+    sourceTimestamp: toIso(r.sourceTimestamp),
+    sourceRefs: r.sourceRefs.map(toSourceRefDTO),
   };
 }
 

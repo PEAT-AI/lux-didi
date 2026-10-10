@@ -1,10 +1,16 @@
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { fork, type ChildProcess } from 'node:child_process';
+import { once } from 'node:events';
+import { format } from 'node:util';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fixture, barrier, scope, syntheticKey, rotatedKey, answer, sourceId, type FixtureOptions } from './tool-chat-process.js';
-import type { ToolResultRef } from '../adapters/model/types.js';
+import type { ToolCallIntent, ToolResultRef } from '../adapters/model/types.js';
+import type { RunSnapshot } from '../chat/index.js';
+import { listenService } from '../http/server.js';
 
 async function open(t: TestContext, options: FixtureOptions = {}) {
   const f = await fixture(options); t.after(() => f.close()); return f;
@@ -12,10 +18,17 @@ async function open(t: TestContext, options: FixtureOptions = {}) {
 function forbiddenContinuation(calls: { body: string }[]) {
   return calls.filter(call => call.body.includes('functionResponse')).length;
 }
+function noSQLiteKeys(f: Awaited<ReturnType<typeof fixture>>) {
+  const files = readdirSync(f.dir).filter(name => /\.(?:db|sqlite|sqlite3)(?:-(?:wal|shm))?$/.test(name));
+  assert.ok(files.length > 0, 'Key-exclusion assertion must inspect an actual SQLite file, not an empty list');
+  for (const name of files) for (const key of [syntheticKey, rotatedKey]) {
+    assert.ok(!readFileSync(join(f.dir, name)).includes(Buffer.from(key)), `No synthetic key bytes in SQLite ${name}`);
+  }
+}
 function safeFailure(value: unknown) {
   assert.ok(value instanceof Error || (value && typeof value === 'object' && 'outcome' in value && value.outcome !== 'complete'),
     'A refused run must not look like completed synthetic evidence');
-  assert.doesNotMatch(JSON.stringify(value), /tool-chat-synthetic-key/);
+  assert.doesNotMatch(value instanceof Error ? `${value.name}: ${value.message}` : JSON.stringify(value), /tool-chat-synthetic-key/);
 }
 
 // B1: Fault the owning snapshot boundary AFTER it writes, inside the real
@@ -40,8 +53,15 @@ test('B1 missing protected binding captures nothing; replay preserves one run an
   assert.equal(replay.runId, accepted.runId); assert.deepEqual(f.counts(), counts);
   assert.equal(f.sdkCalls.length, calls);
   assert.throws(() => f.accept(session, key, []), /idempotency_conflict/);
-  const intents = f.store.transaction(tx => tx.all("SELECT name FROM sqlite_schema WHERE type='table' AND name LIKE '%intent%'"));
-  assert.ok(intents.length > 0, 'Durable tools dispatch journal must exist');
+  const journal = f.store.transaction(tx => tx.all('SELECT * FROM tool_calls WHERE owner_id = ? AND run_id = ?', [f.store.assistantId, accepted.runId]));
+  assert.equal(journal.length, 1, 'Actual owner journal must contain exactly one effect for this Chat run');
+  const intent = JSON.parse(String(journal[0]!.intent_json)) as ToolCallIntent;
+  assert.equal(intent.runId, accepted.runId); assert.equal(journal[0]!.owner_id, f.store.assistantId);
+  assert.equal(intent.actorId, f.context.clientId); assert.equal(intent.authorityEpoch, accepted.authorityEpoch);
+  assert.equal(intent.executionId, journal[0]!.execution_id); assert.equal(journal[0]!.state, 'completed');
+  assert.notEqual(intent.executionId, accepted.runId, 'Tool execution identity is not the Chat run UUID');
+  const durable = terminal.toolReferences[0]!;
+  assert.equal(durable.id, journal[0]!.result_id); assert.equal(durable.sha256, journal[0]!.result_sha256);
   assert.equal(terminal.toolReferences.length, 1, 'Replay must not invent another durable result reference');
 });
 
@@ -61,6 +81,28 @@ test('B2 accepted definitions/hash survive a changed live catalog and policy', a
   safeFailure(await done.catch(error => error));
   assert.equal(f.modelCalls.length, 0); assert.equal(f.sdkCalls.length, 0);
 });
+test('B2 permitted egress advertises only accepted definitions/hash despite a differing live SDK catalog', async t => {
+  const gate = barrier(); const f = await open(t, { beforeResolve: gate.pause });
+  const accepted = f.accept(f.enroll()); const done = f.terminal(accepted); await gate.entered;
+  let declarations: { name: string; description: string; parameters: unknown }[] = [];
+  try {
+    declarations = f.tools.definitions(accepted.runId).map(({ name, description, parameters }) => ({ name, description, parameters }));
+    assert.ok(declarations.length > 0);
+    const row = f.store.transaction(tx => tx.get('SELECT snapshot_sha256 FROM tool_runs WHERE owner_id = ? AND run_id = ?', [f.store.assistantId, accepted.runId]));
+    assert.equal(accepted.toolBindingHash, row?.snapshot_sha256);
+    const live = await f.differentLiveCatalog(); assert.notEqual(live.schemaDigest, f.policy().schemaDigest);
+    assert.ok(live.tools.every(tool => JSON.stringify(tool.inputSchema).includes('liveOnly')));
+    assert.deepEqual(f.tools.definitions(accepted.runId).map(({ name, description, parameters }) => ({ name, description, parameters })), declarations);
+  } finally { gate.release(); }
+  const final = await done; assert.equal(final.outcome, 'complete'); assert.equal(f.sdkCalls.length, 1);
+  assert.equal(f.modelCalls.length, 2); assert.equal(final.toolBindingHash, accepted.toolBindingHash);
+  for (const call of f.modelCalls) {
+    const body = JSON.parse(call.body) as { tools?: { functionDeclarations: unknown[] }[] };
+    assert.deepEqual(body.tools?.flatMap(tool => tool.functionDeclarations), declarations);
+    assert.ok(!call.body.includes('liveOnly'), 'Fresh catalog does not substitute the accepted function schema');
+  }
+});
+
 for (const kind of ['connection', 'schema', 'source', 'wrong-class', 'unmapped-class'] as const) {
   test(`B2/B4 later-step ${kind} denial prevents all result continuation egress`, async t => {
     const gate = barrier(); const f = await open(t, { beforeContinuation: gate.pause });
@@ -72,7 +114,7 @@ for (const kind of ['connection', 'schema', 'source', 'wrong-class', 'unmapped-c
       if (kind === 'connection') f.updatePolicy({ generation: 2, enabled: false });
       if (kind === 'schema') f.updatePolicy({ generation: 2, schemaDigest: '0'.repeat(64) });
       if (kind === 'source') f.updatePolicy({ generation: 2, sourcePolicy: { ...f.policy().sourcePolicy, revision: 2, allowedClasses: [] } });
-      if (kind === 'wrong-class') f.updatePolicy({ generation: 2, sourcePolicy: { ...f.policy().sourcePolicy, revision: 2, unknownClass: 'private', allowedClasses: ['private'] } });
+      if (kind === 'wrong-class') f.updatePolicy({ generation: 2, sourcePolicy: { ...f.policy().sourcePolicy, revision: 2, unknownClass: 'sensitive', allowedClasses: ['sensitive'] } });
       if (kind === 'unmapped-class') f.updatePolicy({ generation: 2, sourcePolicy: { ...f.policy().sourcePolicy, revision: 2, unknownClass: null } });
     } finally { gate.release(); }
     safeFailure(await done.catch(error => error));
@@ -95,6 +137,23 @@ test('B3 real SDK evidence reaches a model continuation and durable references',
 
 const mutations = ['consent-revoke', 'consent-revision', 'epoch', 'run', 'selected-label', 'exact-route',
   'credential-account', 'credential-scope', 'credential-generation', 'credential-delete', 'credential-malformed', 'abort', 'deadline'] as const;
+type Fixture = Awaited<ReturnType<typeof fixture>>;
+type Mutation = typeof mutations[number];
+function mutate(f: Fixture, accepted: RunSnapshot, session: string, mutation: Mutation) {
+  if (mutation === 'consent-revoke') f.chat.revoke(session, f.context);
+  if (mutation === 'consent-revision') f.store.transaction(tx => tx.run('UPDATE chat_consents SET revision = revision + 1 WHERE session_id = ?', [session]));
+  if (mutation === 'epoch') f.store.transaction(tx => tx.run('UPDATE chat_runs SET authority_epoch = ? WHERE run_id = ?', ['synthetic-obsolete-epoch', accepted.runId]));
+  if (mutation === 'run') f.store.transaction(tx => tx.run('UPDATE chat_runs SET owner_assistant_id = ? WHERE run_id = ?', ['synthetic-other-owner', accepted.runId]));
+  if (mutation === 'selected-label') assert.equal(f.correctLabel(accepted).dataClass, 'sensitive');
+  if (mutation === 'exact-route') writeFileSync(join(f.configDir, 'profile.json'), JSON.stringify({ ...f.profile, modelId: 'gemini-other-synthetic' }), { mode: 0o600 });
+  if (mutation === 'credential-account') f.writeRecord({ configuredAccount: 'operator-asserted-other-synthetic-account' });
+  if (mutation === 'credential-scope') f.writeRecord({ routeScope: { ...scope, allowedClasses: ['ordinary'] } });
+  if (mutation === 'credential-generation') f.writeRecord({ bindingGeneration: 'synthetic-generation-2' });
+  if (mutation === 'credential-delete') rmSync(f.recordPath);
+  if (mutation === 'credential-malformed') writeFileSync(f.recordPath, '{synthetic-malformed', { mode: 0o600 });
+  if (mutation === 'abort') f.chat.cancel(accepted.runId, f.context);
+  if (mutation === 'deadline') f.advance(5000);
+}
 // BOTH barrier positions are necessary. afterResolve changes the current
 // protected locator after key+receipt were parsed: receipt-only guards fail.
 for (const position of ['beforeResolve', 'afterResolve'] as const) for (const mutation of mutations) {
@@ -105,23 +164,31 @@ for (const position of ['beforeResolve', 'afterResolve'] as const) for (const mu
     try {
       assert.equal(f.modelCalls.length, 0, 'Barrier must be above the actual injected lower transport');
       if (position === 'afterResolve') assert.equal(f.receipt().bindingGeneration, 'synthetic-generation-1', 'Valid receipt exists before the mutation');
-      if (mutation === 'consent-revoke') f.chat.revoke(session, f.context);
-      if (mutation === 'consent-revision') f.store.transaction(tx => tx.run('UPDATE chat_consents SET revision = revision + 1 WHERE session_id = ?', [session]));
-      if (mutation === 'epoch') f.store.transaction(tx => tx.run('UPDATE chat_runs SET authority_epoch = ? WHERE run_id = ?', ['synthetic-obsolete-epoch', accepted.runId]));
-      if (mutation === 'run') f.store.transaction(tx => tx.run('UPDATE chat_runs SET owner_assistant_id = ? WHERE run_id = ?', ['synthetic-other-owner', accepted.runId]));
-      if (mutation === 'selected-label') f.store.transaction(tx => tx.run('UPDATE chat_run_policy SET selected_labels = ? WHERE run_id = ?', ['[]', accepted.runId]));
-      if (mutation === 'exact-route') writeFileSync(join(f.configDir, 'profile.json'), JSON.stringify({ ...f.profile, modelId: 'gemini-other-synthetic' }), { mode: 0o600 });
-      if (mutation === 'credential-account') f.writeRecord({ configuredAccount: 'operator-asserted-other-synthetic-account' });
-      if (mutation === 'credential-scope') f.writeRecord({ routeScope: { ...scope, allowedClasses: ['ordinary', 'private'] } });
-      if (mutation === 'credential-generation') f.writeRecord({ bindingGeneration: 'synthetic-generation-2' });
-      if (mutation === 'credential-delete') rmSync(f.recordPath);
-      if (mutation === 'credential-malformed') writeFileSync(f.recordPath, '{synthetic-malformed', { mode: 0o600 });
-      if (mutation === 'abort') f.chat.cancel(accepted.runId, f.context);
-      if (mutation === 'deadline') f.advance(5000);
+      mutate(f, accepted, session, mutation);
     } finally { gate.release(); }
     safeFailure(await done.catch(error => error));
     assert.equal(f.modelCalls.length, 0, 'Forbidden actual lower fetch count must be zero, including injected transports');
     assert.equal(f.sdkCalls.length, 0);
+  });
+}
+
+for (const interval of ['continuation-resolved', 'final-owner-return'] as const) for (const mutation of mutations) {
+  test(`B4 nonempty result ${interval}: ${mutation} denies continuation`, async t => {
+    const gate = barrier(); const f = await open(t, interval === 'continuation-resolved' ? { beforeContinuation: gate.pause } : {});
+    const gateCount = interval === 'final-owner-return' ? f.gateBarrier(gate.pause) : null;
+    const session = f.enroll(); const accepted = f.accept(session); const done = f.terminal(accepted);
+    await gate.entered;
+    try {
+      assert.equal(f.sdkCalls.length, 1); assert.equal(f.modelCalls.length, 1);
+      const result = f.store.transaction(tx => tx.get('SELECT state, result_json, result_id FROM tool_calls WHERE owner_id = ? AND run_id = ?', [f.store.assistantId, accepted.runId]));
+      assert.equal(result?.state, 'completed'); assert.ok(result?.result_id);
+      assert.match(String(result?.result_json), /Synthetic nonempty evidence/, 'A real nonempty completed SDK result precedes the revoked continuation');
+      if (gateCount) assert.equal(gateCount(), 2, 'Pause AFTER the second successful owner authorization, BEFORE final synchronous guards/lower fetch');
+      mutate(f, accepted, session, mutation);
+    } finally { gate.release(); }
+    safeFailure(await done.catch(error => error));
+    assert.equal(forbiddenContinuation(f.modelCalls), 0); assert.equal(f.modelCalls.length, 1);
+    assert.equal(f.sdkCalls.length, 1, 'Refused continuation never repeats the effect');
   });
 }
 
@@ -134,11 +201,40 @@ test('B5 same-binding rotation sends the new key only to the lower trusted trans
   const publicState = JSON.stringify({ final, bodies: f.modelCalls.map(call => call.body), sdk: f.sdkCalls, counts: f.counts() });
   for (const key of [syntheticKey, rotatedKey]) {
     assert.ok(!publicState.includes(key));
-    for (const name of readdirSync(f.dir)) if (/\.(?:db|sqlite|sqlite3)(?:-(?:wal|shm))?$/.test(name)) {
-      assert.ok(!readFileSync(join(f.dir, name)).includes(Buffer.from(key)), `No key in SQLite ${name}`);
-    }
   }
+  noSQLiteKeys(f);
 });
+for (const failure of ['credential', 'transport'] as const) {
+  test(`B5 bounded ${failure} failure/status/event/log sinks never contain resolved synthetic keys`, async t => {
+    const logs: string[] = []; let logBytes = 0;
+    for (const sink of ['error', 'warn', 'log'] as const) t.mock.method(console, sink, (...parts: unknown[]) => {
+      const line = format(...parts); logBytes += Buffer.byteLength(line);
+      assert.ok(logBytes <= 65536, 'Bounded synthetic log capture exceeded'); logs.push(line);
+    });
+    const f = await open(t, failure === 'credential' ? { credentialFailure: true } : { transportFailure: true });
+    const run = f.accept(f.enroll()); const final = await f.terminal(run);
+    assert.equal(final.state, 'terminal'); assert.notEqual(final.outcome, 'complete');
+    assert.ok(f.resolutions() > 0, 'Synthetic failing credential branch was actually exercised');
+    assert.equal(f.modelCalls.length, failure === 'transport' ? 1 : 0); assert.equal(f.sdkCalls.length, 0);
+    assert.ok(f.events.length > 0, 'Failure event sink has actual nonempty lifecycle evidence');
+    const service = await listenService({ store: f.store, domain: f.domain, chat: f.chat, modelStatus: f.status, port: 0 });
+    let status = '';
+    try {
+      const response = await fetch(`${service.origin}/api/v1/status`, { headers: { Authorization: `Bearer ${f.store.adminCredential}` } });
+      assert.equal(response.status, 200); status = await response.text();
+      assert.ok(status.length > 0); assert.ok(status.includes(scope.modelId), 'Inspect the actual configured Host HTTP status');
+    } finally { await service.close(); }
+    noSQLiteKeys(f);
+    const publicState = { final, events: f.events, status, bodies: f.modelCalls.map(call => call.body) };
+    await f.close(); // Include cleanup logging before checking the complete sinks.
+    const serialized = JSON.stringify(publicState);
+    for (const key of [syntheticKey, rotatedKey]) {
+      assert.ok(!serialized.includes(key), 'Key bytes absent from failure/status/event/model-body sinks');
+      assert.ok(logs.every(line => !line.includes(key)), 'Key bytes absent from actual console log/error/warn sinks');
+    }
+    assert.ok(Buffer.byteLength(serialized) <= 65536, 'Bounded synthetic public sink capture exceeded');
+  });
+}
 test('B5 simultaneous sessions cannot consume another invocation receipt/result handoff', async t => {
   const gate = barrier(); const f = await open(t, { beforeResolve: gate.pause });
   const first = f.accept(f.enroll('Synthetic first')); const firstDone = f.terminal(first); await gate.entered;
@@ -246,6 +342,71 @@ test('B6 provisional text stays provisional when the continuation is cancelled',
   } finally { gate.release(); }
   const final = await done; assert.equal(final.outcome, 'cancelled'); assert.equal(final.finalText, null);
   assert.equal(f.sdkCalls.length, 1); assert.equal(f.modelCalls.length, 2);
+});
+
+function childMessage(child: ChildProcess, phase: string): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => finish(Error(`Synthetic recovery ${phase} timeout`)), 5000);
+    const receive = (value: Record<string, unknown>) => { if (value.phase === phase) finish(null, value); };
+    const exited = () => finish(Error(`Synthetic recovery child exited before ${phase}`));
+    function finish(error: Error | null, value?: Record<string, unknown>) {
+      clearTimeout(timer); child.off('message', receive); child.off('exit', exited);
+      if (error) reject(error); else resolve(value!);
+    }
+    child.on('message', receive); child.on('exit', exited);
+  });
+}
+async function terminateChild(child: ChildProcess) {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  const exited = once(child, 'exit'); let timer: ReturnType<typeof setTimeout> | undefined;
+  child.kill('SIGTERM');
+  try { await Promise.race([exited, new Promise((_, reject) => { timer = setTimeout(() => reject(Error('Synthetic recovery child exit timeout')), 2000); })]); }
+  finally {
+    clearTimeout(timer);
+    if (child.exitCode === null && child.signalCode === null) {
+      const forcedExit = once(child, 'exit'); child.kill('SIGKILL');
+      try { await Promise.race([forcedExit, new Promise((_, reject) => { timer = setTimeout(() => reject(Error('Synthetic forced child exit timeout')), 2000); })]); }
+      finally { clearTimeout(timer); }
+    }
+  }
+}
+
+test('B6 process restart recovers a real durable nonterminal SDK-dispatched intent as unknown without repeating its effect', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-tool-chat-recovery-'));
+  const child = fork(join(import.meta.dirname, 'tool-chat-process.js'), ['recovery'], {
+    env: { ...process.env, DIDI_TOOL_CHAT_RECOVERY_DIR: dir }, stdio: ['ignore', 'ignore', 'ignore', 'ipc']
+  });
+  let reopened: Fixture | undefined;
+  t.after(async () => { try { await reopened?.close(); } finally { try { await terminateChild(child); } finally { rmSync(dir, { recursive: true, force: true }); } } });
+  const ready = await childMessage(child, 'ready'); const dispatchedPromise = childMessage(child, 'dispatched'); child.send('start');
+  const dispatched = await dispatchedPromise;
+  const interrupted = dispatched.run as RunSnapshot; const journal = dispatched.journal as { execution_id: string; run_id: string; owner_id: string; state: string }[];
+  assert.equal(interrupted.state, 'dispatch_intent'); assert.equal(interrupted.outcome, null);
+  assert.equal(dispatched.effects, 1); assert.equal(journal.length, 1); assert.equal(journal[0]!.state, 'intent');
+  assert.equal(journal[0]!.run_id, interrupted.runId);
+  await terminateChild(child); // Only this test's child process; no graceful completion.
+  reopened = await fixture({ dir, preserve: true });
+  const recovered = reopened.chat.get(interrupted.runId, reopened.context);
+  assert.equal(recovered.state, 'terminal'); assert.equal(recovered.outcome, 'outcome_unknown');
+  const receipt = reopened.store.transaction(tx => tx.get('SELECT * FROM tool_calls WHERE owner_id = ? AND run_id = ? AND execution_id = ?',
+    [reopened!.store.assistantId, interrupted.runId, journal[0]!.execution_id]));
+  assert.equal(receipt?.state, 'unknown'); assert.match(String(receipt?.result_json), /recovered_intent/);
+  assert.ok(receipt?.result_id); assert.ok(receipt?.result_sha256);
+  const counts = reopened.counts();
+  const replay = reopened.accept(String(ready.sessionId), String(ready.key));
+  assert.equal(replay.runId, interrupted.runId); assert.equal(replay.outcome, 'outcome_unknown');
+  assert.equal((await reopened.terminal(replay)).outcome, 'outcome_unknown');
+  reopened.chat.recover({ assistantId: reopened.store.assistantId, authorityEpoch: reopened.store.authorityEpoch });
+  // A real authenticated HTTP roundtrip settles the reopened host/event loop;
+  // do not assert zero immediately before an accidental queued replay can run.
+  const service = await listenService({ store: reopened.store, domain: reopened.domain, chat: reopened.chat, modelStatus: reopened.status, port: 0 });
+  try {
+    const status = await fetch(`${service.origin}/api/v1/status`, { headers: { Authorization: `Bearer ${reopened.store.adminCredential}` } });
+    assert.equal(status.status, 200); assert.ok((await status.arrayBuffer()).byteLength > 0);
+  } finally { await service.close(); }
+  assert.deepEqual(reopened.counts(), counts); assert.equal(reopened.sdkCalls.length, 0); assert.equal(reopened.modelCalls.length, 0);
+  assert.deepEqual(reopened.store.transaction(tx => tx.get('SELECT * FROM tool_calls WHERE owner_id = ? AND run_id = ? AND execution_id = ?',
+    [reopened!.store.assistantId, interrupted.runId, journal[0]!.execution_id])), receipt);
 });
 
 test('B6 recovery does not repeat a terminal tool intent or unknown SDK effect', async t => {

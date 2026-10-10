@@ -31,12 +31,21 @@ async function stop(child) {
       timer = setTimeout(() => reject(Error('Synthetic child did not stop')), 4000);
     })]);
     assert.equal(code, 0);
-  } finally { clearTimeout(timer); if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM'); }
+  } finally {
+    clearTimeout(timer);
+    if (child.exitCode === null && child.signalCode === null) {
+      const forcedExit = once(child, 'exit'); child.kill('SIGTERM');
+      try { await Promise.race([forcedExit, new Promise((_, reject) => { timer = setTimeout(() => reject(Error('Synthetic forced browser child exit timeout')), 2000); })]); }
+      finally { clearTimeout(timer); }
+    }
+  }
 }
 
 test('B3/B5 built browser renders real trusted source identifiers and durable tool refs, never model navigation', { timeout: 45000 }, async t => {
   const child = fork(resolve(process.env.DIDI_TOOL_CHAT_PROCESS), ['browser'], { stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
-  let output = ''; child.stdout.on('data', chunk => { output += chunk; }); child.stderr.on('data', chunk => { output += chunk; });
+  let output = ''; let outputBytes = 0;
+  const capture = chunk => { outputBytes += chunk.length; if (outputBytes <= 65536) output += chunk; };
+  child.stdout.on('data', capture); child.stderr.on('data', capture);
   t.after(() => stop(child));
   const ready = await message(child, 'ready');
   const browser = await chromium.launch({ headless: true }); t.after(() => browser.close());
@@ -78,6 +87,7 @@ test('B3/B5 built browser renders real trusted source identifiers and durable to
   const proofPromise = message(child, 'proof'); child.send('proof'); const proof = await proofPromise;
   assert.equal(proof.sdkCalls.length, 1); assert.equal(proof.modelCalls.length, 2);
   assert.match(proof.modelCalls[1].body, /functionResponse/); assert.match(proof.modelCalls[1].body, /Synthetic nonempty evidence/);
+  assert.ok(outputBytes <= 65536, 'Bounded synthetic process stdout/stderr capture exceeded; never silently discard overflow');
   const publicEvidence = JSON.stringify({ final, rendered, output, proof });
   assert.doesNotMatch(publicEvidence, /tool-chat-synthetic-key|synthetic-mcp-token/);
   console.log('CASE_RECORD B3 real Store HTTP SDK continuation built-browser trusted-id durable-ref counts=1,2');

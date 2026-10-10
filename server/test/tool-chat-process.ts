@@ -33,7 +33,7 @@ export const sourceId = 'lux-knowledge:731';
 export const scope = {
   provider: 'gemini' as const, modelId: 'gemini-tool-chat-synthetic',
   endpoint: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-tool-chat-synthetic:streamGenerateContent?alt=sse',
-  apiVersion: 'v1beta', keyReference: 'gemini-primary', allowedClasses: ['ordinary'] as DataClass[]
+  apiVersion: 'v1beta', keyReference: 'gemini-primary', allowedClasses: ['ordinary', 'private'] as DataClass[]
 };
 export function barrier() {
   let enter!: () => void; let release!: () => void;
@@ -42,7 +42,8 @@ export function barrier() {
   return { entered, release, pause: async () => { enter(); await released; } };
 }
 export interface FixtureOptions {
-  legacy?: boolean; deadlineMs?: number;
+  legacy?: boolean; deadlineMs?: number; dir?: string; preserve?: boolean;
+  afterSdkEffect?: () => Promise<void>; credentialFailure?: boolean; transportFailure?: boolean;
   beforeResolve?: () => Promise<void>; afterResolve?: () => Promise<void>;
   beforeContinuation?: () => Promise<void>; afterEachResolve?: (number: number) => Promise<void>;
   afterText?: () => Promise<void>; unknownEffect?: boolean; multiStep?: boolean;
@@ -53,11 +54,11 @@ async function body(req: IncomingMessage) {
   return Buffer.concat(chunks);
 }
 export async function fixture(options: FixtureOptions = {}) {
-  const dir = mkdtempSync(join(tmpdir(), 'didi-tool-chat-'));
-  const configDir = join(dir, 'provider-config'); mkdirSync(configDir, { mode: 0o700 });
+  const dir = options.dir ?? mkdtempSync(join(tmpdir(), 'didi-tool-chat-'));
+  const configDir = join(dir, 'provider-config'); mkdirSync(configDir, { mode: 0o700, recursive: true });
   const recordPath = join(configDir, 'gemini-primary.json');
   const profile = { schemaVersion: 1, enabled: true, provider: 'gemini', modelId: scope.modelId,
-    keyReference: scope.keyReference, dataClasses: ['ordinary'],
+    keyReference: scope.keyReference, dataClasses: [...scope.allowedClasses],
     preferences: { dataClass: 'ordinary', language: 'en-US', register: 'plain', humor: 'off', verbosity: 'balanced' } };
   const record = { schemaVersion: 2, keyReference: scope.keyReference, key: syntheticKey,
     configuredAccount: 'operator-asserted-synthetic-account', routeScope: scope, bindingGeneration: 'synthetic-generation-1' };
@@ -70,7 +71,7 @@ export async function fixture(options: FixtureOptions = {}) {
   const close = async () => {
     if (closed) return; closed = true; const errors: unknown[] = [];
     for (const cleanup of cleanups.reverse()) { try { await cleanup(); } catch (error) { errors.push(error); } }
-    rmSync(dir, { recursive: true, force: true });
+    if (!options.preserve) rmSync(dir, { recursive: true, force: true });
     if (errors.length) throw new AggregateError(errors, 'Synthetic fixture cleanup failed');
   };
   try {
@@ -90,13 +91,19 @@ export async function fixture(options: FixtureOptions = {}) {
   let liveDefinitions = structuredClone(definitions);
   const sdkCalls: unknown[] = [];
   sdk.setRequestHandler('tools/list', () => ({ tools: liveDefinitions }) as never);
-  sdk.setRequestHandler('tools/call', request => {
+  sdk.setRequestHandler('tools/call', async request => {
     sdkCalls.push(structuredClone(request.params));
+    await options.afterSdkEffect?.();
     const ids = (request.params.arguments as { ids?: number[] }).ids ?? [731];
     return { content: [{ type: 'text', text: `# Insight ${ids[0]}\nSynthetic nonempty evidence for one small next step.` }] } as never;
   });
   await sdk.connect(sdkTransport);
+  let sessionHeaders: Record<string, string> | null = null;
   const sdkServer = createServer((req, res) => { void (async () => {
+    if (typeof req.headers['mcp-session-id'] === 'string') sessionHeaders = {
+      'mcp-session-id': req.headers['mcp-session-id'],
+      ...(typeof req.headers['mcp-protocol-version'] === 'string' ? { 'mcp-protocol-version': req.headers['mcp-protocol-version'] } : {})
+    };
     const bytes = await body(req);
     const response = await sdkTransport.handleRequest(new Request(`http://127.0.0.1${req.url}`, {
       method: req.method ?? 'POST', headers: req.headers as Record<string, string>,
@@ -124,13 +131,14 @@ export async function fixture(options: FixtureOptions = {}) {
   let policy: ConnectionPolicy = { schemaVersion: 1, ownerId: store.assistantId, connectionId: 'synthetic-lux', generation: 1, enabled: true,
     endpoint, toolNames: ['search_knowledge', 'get_insight'], schemaDigest: canonicalToolDigest(definitions),
     sourcePolicy: { id: 'synthetic-source-policy', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
-    route: { identity: 'pending-enrollment', allowedClasses: ['ordinary'] },
+    route: { identity: 'pending-enrollment', allowedClasses: [...scope.allowedClasses] },
     bounds: { maxQueryChars: 300, maxSearchLimit: 3, maxGetIds: 3, maxEntityBytes: 8000, maxResultBytes: 16000 } };
   const modelCalls: { body: string; key: string | null }[] = [];
   let requestCount = 0; let clock = Date.now();
   const lowerTransport: Transport = async (_url, init) => {
     const key = new Headers(init.headers).get('x-goog-api-key');
     const requestBody = String(init.body); modelCalls.push({ body: requestBody, key });
+    if (options.transportFailure) throw Error(`Synthetic lower transport failure ${syntheticKey} ${rotatedKey}`);
     const continuation = requestBody.includes('functionResponse');
     if (!requestBody.includes('functionDeclarations') || (continuation && (!options.multiStep || (requestBody.match(/functionResponse/g)?.length ?? 0) >= 2))) {
       if (continuation) assert.match(requestBody, /Synthetic nonempty evidence/);
@@ -157,6 +165,7 @@ export async function fixture(options: FixtureOptions = {}) {
       return { resolvedReceipt: () => credentials.resolvedReceipt(), resolve: async (reference: string) => {
         const number = ++requestCount;
         if (number === 1) await options.beforeResolve?.();
+        if (options.credentialFailure) throw Error(`Synthetic resolver failure ${syntheticKey} ${rotatedKey}`);
         const key = await credentials.resolve(reference);
         assert.ok(credentials.resolvedReceipt(), 'Protected resolver parsed key and receipt before any post-resolve barrier');
         if (number === 1) await options.afterResolve?.();
@@ -179,8 +188,10 @@ export async function fixture(options: FixtureOptions = {}) {
   };
   const accept = (sessionId: string, key = randomUUID(), connectionIds = ['synthetic-lux'], selectedMemoryEntryIds: string[] = [], text = 'Use synthetic insight 731.') =>
     chat.accept({ sessionId, text, idempotencyKey: key, selectedConnectionIds: connectionIds, selectedMemoryEntryIds }, context);
+  const events: unknown[] = [];
   const terminal = async (run: RunSnapshot) => {
     for await (const event of chat.subscribe(run.runId, context)) {
+      events.push(structuredClone(event));
       if (event.type === 'snapshot' && event.run.state === 'terminal') return chat.get(run.runId, context);
     }
     const snapshot = chat.get(run.runId, context);
@@ -190,8 +201,38 @@ export async function fixture(options: FixtureOptions = {}) {
   const counts = () => store.transaction(tx => Object.fromEntries(tx.all("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'")
     .map(row => [String(row.name), Number(tx.get(`SELECT count(*) AS n FROM "${String(row.name).replaceAll('"', '""')}"`)!.n)])));
   const updatePolicy = (patch: Partial<ConnectionPolicy>) => { policy = { ...policy, ...patch }; tools.applyConnection(policy); };
-  return { dir, configDir, recordPath, writeRecord, store, context, chat, tools, registry, port, enroll, accept, terminal, counts, updatePolicy,
-    modelCalls, sdkCalls, close, profile, scope, policy: () => policy, setLiveDefinitions: () => { liveDefinitions = []; },
+  const correctLabel = (run: RunSnapshot) => {
+    const subject = { kind: 'entry' as const, id: run.userEntryId };
+    const label = store.transaction(tx => domain.getRoutingLabel(tx, subject));
+    assert.ok(label.revision > 0, 'Correct a real owning label, not an empty witness');
+    return chat.correctRoutingLabel({ subject, expectedRevision: label.revision, dataClass: 'sensitive' }, context);
+  };
+  const gateBarrier = (pause: () => Promise<void>) => {
+    const authorize = tools.resultGate.authorize.bind(tools.resultGate); let allowedNonempty = 0;
+    tools.resultGate.authorize = async (...args) => {
+      const decision = await authorize(...args);
+      if (args[1].length && decision.state === 'allowed' && ++allowedNonempty === 2) await pause();
+      return decision;
+    };
+    return () => allowedNonempty;
+  };
+  const differentLiveCatalog = async () => {
+    liveDefinitions = definitions.map(tool => ({ ...structuredClone(tool), inputSchema: { type: 'object', properties: { liveOnly: { type: 'string' } }, required: ['liveOnly'], additionalProperties: false } }));
+    // Observe a real SDK tools/list on its already initialized protocol session,
+    // WITHOUT rediscovering/revoking approvals in the accepted run's registry.
+    // No extra SDK initialization, registry policy, or owning authorization API.
+    assert.ok(sessionHeaders, 'Actual initialized MCP protocol session required');
+    const response = await fetch(endpoint.url, { method: 'POST', headers: {
+      ...sessionHeaders, 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', Authorization: 'Bearer synthetic-mcp-token'
+    }, body: JSON.stringify({ jsonrpc: '2.0', id: 'synthetic-live-catalog-observation', method: 'tools/list', params: {} }), signal: AbortSignal.timeout(1000) });
+    assert.equal(response.status, 200);
+    const packet = await response.json() as { result: { tools: McpTool[] } };
+    assert.ok(packet.result.tools.length > 0, 'Changed live catalog must be nonempty actual SDK data');
+    return { tools: packet.result.tools, schemaDigest: canonicalToolDigest(packet.result.tools) };
+  };
+  return { dir, configDir, recordPath, writeRecord, store, domain, context, chat, tools, registry, port, enroll, accept, terminal, counts, updatePolicy,
+    modelCalls, sdkCalls, events, status: composed.status, close, profile, scope, policy: () => policy, setLiveDefinitions: () => { liveDefinitions = []; },
+    differentLiveCatalog, correctLabel, gateBarrier, resolutions: () => requestCount,
     receipt: () => credentialReceiptFor(configDir, scope), advance: (ms: number) => { clock += ms; } };
   } catch (error) {
     try { await close(); } catch (cleanupError) { throw new AggregateError([error, cleanupError], 'Synthetic setup and cleanup failed'); }
@@ -220,6 +261,27 @@ async function browserProcess() {
   process.on('disconnect', () => { void stop(); });
   process.send?.({ phase: 'ready', origin: service.origin, sessionId, credential: f.store.adminCredential });
 }
-if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1]) && process.argv[2] === 'browser') {
-  void browserProcess().catch(() => { console.error('Synthetic tool-chat process setup failed'); process.exitCode = 1; });
+async function recoveryProcess() {
+  let run: RunSnapshot | undefined;
+  const f = await fixture({ dir: process.env.DIDI_TOOL_CHAT_RECOVERY_DIR!, preserve: true,
+    afterSdkEffect: async () => {
+      assert.ok(run);
+      const journal = f.store.transaction(tx => tx.all('SELECT * FROM tool_calls WHERE owner_id = ? AND run_id = ?', [f.store.assistantId, run!.runId]));
+      assert.equal(journal.length, 1); assert.equal(journal[0]!.state, 'intent');
+      const durableRun = f.chat.get(run.runId, f.context); assert.equal(durableRun.state, 'dispatch_intent');
+      process.send?.({ phase: 'dispatched', run: durableRun, journal, effects: f.sdkCalls.length });
+      // Deliberately interrupted while a real SDK effect has happened, but no
+      // SDK response or owner terminal receipt has been observed by Chat.
+      await new Promise<void>(() => {});
+    } });
+  const sessionId = f.enroll(); const key = 'synthetic-durable-recovery-key';
+  process.on('message', message => {
+    if (message === 'start') run = f.accept(sessionId, key);
+    if (message === 'stop') void f.close().then(() => process.disconnect?.());
+  });
+  process.send?.({ phase: 'ready', sessionId, key });
+}
+if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+  const task = process.argv[2] === 'browser' ? browserProcess : process.argv[2] === 'recovery' ? recoveryProcess : null;
+  if (task) void task().catch(() => { console.error('Synthetic tool-chat process setup failed'); process.exitCode = 1; process.disconnect?.(); });
 }

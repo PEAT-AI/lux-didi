@@ -28,9 +28,14 @@ export async function fixture(t: TestContext) {
   let destination = '';
   const frames: unknown[] = [];
   const waiters = new Map<number, () => void>();
+  let noteClosed: () => void = () => {};
+  const closed = new Promise<void>(resolve => { noteClosed = resolve; });
+  let connections = 0;
   const connected = new Promise<void>(resolve => server.on('connection', socket => {
+    connections += 1;
     peer = socket;
     socket.on('error', () => {});
+    socket.on('close', () => noteClosed());
     socket.on('message', bytes => {
       frames.push(JSON.parse(bytes.toString()));
       for (const [n, notify] of waiters) if (frames.length >= n) { waiters.delete(n); notify(); }
@@ -42,7 +47,7 @@ export async function fixture(t: TestContext) {
     await new Promise<void>(resolve => server.close(() => resolve()));
   });
   return {
-    server, frames, connected, get attempts() { return attempts; }, get destination() { return destination; },
+    server, frames, connected, closed, get attempts() { return attempts; }, get connections() { return connections; }, get destination() { return destination; },
     socketFactory: ((url, config) => {
       attempts++; destination = url;
       return new WebSocket(`ws://127.0.0.1:${address.port}`, config);

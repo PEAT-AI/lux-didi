@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
 import type { DataClass, HostContext, JsonObject, ToolCallIntent, ToolCallRefusal, ToolDefinition, ToolResultBinding, ToolResultGate, ToolResultRef } from '../adapters/model/types.js';
-import { validateEndpointUrl } from '../adapters/mcp/registry.js';
+import { validateEndpointUrl, validateApprovedStdioEnv } from '../adapters/mcp/registry.js';
 import { endpointBinding } from '../adapters/mcp/port.js';
 import { createLuxKnowledgeReader } from '../connectors/lux-knowledge.js';
 import { canonicalJSON, detached, sha256 } from './canonical.js';
@@ -38,8 +38,7 @@ export function validatePolicy(input: ConnectionPolicy): ConnectionPolicy {
     [e.id, e.command, e.account, e.resource].forEach(text);
     if (e.credentialRef !== null) throw Error('invalid_policy_version');
     if (!isAbsolute(e.command) || !Array.isArray(e.args) || e.args.some(arg => typeof arg !== 'string')) throw Error('invalid_policy_version');
-    const defaultKeys = ['HOME', 'PATH', 'LOGNAME', 'SHELL', 'TERM', 'USER'];
-    if (e.env === undefined || typeof e.env !== 'object' || e.env === null || Array.isArray(e.env) || Object.entries(e.env).some(([key, value]) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || typeof value !== 'string' || value.includes('\0')) || defaultKeys.some(key => typeof e.env[key] !== 'string') || !e.env['HOME'] || !e.env['PATH']) throw Error('invalid_policy_version');
+    if (!validateApprovedStdioEnv(e.env)) throw Error('invalid_policy_version');
   } else {
     const e = p.endpoint as HttpConnectionEndpoint;
     [e.id, e.account, e.resource, e.url].forEach(text); validateEndpointUrl(e.url);

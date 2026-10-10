@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { accessSync, constants } from 'node:fs';
 import { isAbsolute } from 'node:path';
+import { DEFAULT_INHERITED_ENV_VARS } from '@modelcontextprotocol/client/stdio';
 import { bindingDigestOf, endpointBinding, isStdioEndpoint, sourceBindingOf } from './port.js';
 import type { CallRequest, EndpointConfig, HttpEndpointConfig, ReadGrant, ResultScope, StdioEndpointConfig, ToolDefinition } from './port.js';
 
@@ -18,6 +19,23 @@ export function validateEndpointUrl(raw: string): URL {
   const literalLoopback = url.hostname === '[::1]' || /^127\.(?:\d{1,3}\.){2}\d{1,3}$/.test(url.hostname);
   if (url.protocol !== 'https:' && !(url.protocol === 'http:' && literalLoopback)) throw new Error('http-requires-literal-loopback');
   return url;
+}
+/**
+ * Single in-scope authority for the approved stdio environment. The SDK merges
+ * its platform inherited set into any supplied env, so every inherited key must
+ * be present in the approval identity (an explicit '' neutralizes a non-routing
+ * default). Reuses the SDK's own public DEFAULT_INHERITED_ENV_VARS so config,
+ * registry and owner cannot diverge. stdio fails closed on win32 until its
+ * adapter is implemented; HTTP/local features are unaffected.
+ */
+export const STDIO_ENV_KEYS: readonly string[] = Object.freeze([...DEFAULT_INHERITED_ENV_VARS]);
+export function validateApprovedStdioEnv(env: unknown): env is Record<string, string> {
+  if (process.platform === 'win32') return false;
+  if (env === null || typeof env !== 'object' || Array.isArray(env)) return false;
+  const record = env as Record<string, unknown>;
+  for (const [key, value] of Object.entries(record)) if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || typeof value !== 'string' || value.includes('\0')) return false;
+  for (const key of STDIO_ENV_KEYS) if (typeof record[key] !== 'string') return false;
+  return Boolean(record['HOME']) && Boolean(record['PATH']);
 }
 interface Entry {
   config: EndpointConfig;
@@ -49,9 +67,7 @@ export class McpRegistry {
     const allowed = new Set(['id', 'transport', 'command', 'args', 'env', 'account', 'resource']);
     if (Object.keys(config).some(key => !allowed.has(key)) || [config.id, config.command, config.account, config.resource].some(value => typeof value !== 'string' || !value) || config.transport !== 'stdio' || !isAbsolute(config.command) || !Array.isArray(config.args) || config.args.some(arg => typeof arg !== 'string')) throw new Error('invalid-endpoint-config');
     const env = config.env;
-    // The SDK merges its platform default inherited set into any supplied env, so every default key must be present in the approved env (empty string neutralizes); HOME/PATH keep their existing non-empty semantics.
-    const defaultKeys = ['HOME', 'PATH', 'LOGNAME', 'SHELL', 'TERM', 'USER'];
-    if (env === undefined || typeof env !== 'object' || env === null || Array.isArray(env) || Object.entries(env).some(([key, value]) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || typeof value !== 'string' || value.includes('\0')) || defaultKeys.some(key => typeof env[key] !== 'string') || !env['HOME'] || !env['PATH']) throw new Error('invalid-endpoint-config');
+    if (!validateApprovedStdioEnv(env)) throw new Error('invalid-endpoint-config');
     try { accessSync(config.command, constants.X_OK); } catch { throw new Error('invalid-endpoint-config'); }
     this.set(config);
   }

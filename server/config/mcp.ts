@@ -9,6 +9,7 @@ import { validatePolicy } from '../tools/index.js';
 import type { ConnectionEndpoint, ConnectionIntent, ConnectionPolicy, HttpConnectionEndpoint, StdioConnectionEndpoint } from '../tools/types.js';
 const stdioEndpoint = (e: ConnectionEndpoint): e is StdioConnectionEndpoint => (e as { transport?: unknown }).transport === 'stdio';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
+import { validateApprovedStdioEnv } from '../adapters/mcp/registry.js';
 import { ConfigError, fail, fields, parseJson, readPrivate, safeError, validateRoot } from './files.js';
 
 export interface McpProfile extends ConnectionIntent {
@@ -81,9 +82,8 @@ function stdioCredential(raw: unknown): StdioCredential {
   if (c['schemaVersion'] !== 1 || c['transport'] !== 'stdio' || typeof c['enabled'] !== 'boolean' || !Number.isSafeInteger(c['generation']) || Number(c['generation']) < 1) fail('invalid_secret');
   for (const key of ['ownerId', 'connectionId', 'endpointId', 'command', 'account', 'resource']) if (typeof c[key] !== 'string' || !(c[key] as string).length || (c[key] as string).length > 4096 || /[\x00-\x1f\x7f]/.test(c[key] as string)) fail('invalid_secret');
   if (!isAbsolute(c['command'] as string) || !Array.isArray(c['args']) || (c['args'] as unknown[]).some(arg => typeof arg !== 'string')) fail('invalid_secret');
-  const env = c['env'] as Record<string, unknown> | null;
-  const defaultKeys = ['HOME', 'PATH', 'LOGNAME', 'SHELL', 'TERM', 'USER'];
-  if (env === null || typeof env !== 'object' || Array.isArray(env) || defaultKeys.some(key => typeof env[key] !== 'string') || !env['HOME'] || !env['PATH']) fail('invalid_secret');
+  const env = c['env'];
+  if (!validateApprovedStdioEnv(env)) fail('invalid_secret');
   return c as unknown as StdioCredential;
 }
 function metadata(c: Credential): unknown {

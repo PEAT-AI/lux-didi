@@ -367,3 +367,15 @@ test('protected stdio configuration carries the binding through init/approve/loa
     await port.close(); store.close();
   } finally { rmSync(dir, { recursive: true, force: true }); rmSync(childDir, { recursive: true, force: true }); }
 });
+
+test('a stdio binding missing an inherited SDK env key, or HOME/PATH, is refused at registration', { skip: process.platform === 'win32' }, () => {
+  const registry = new McpRegistry();
+  // Every SDK platform-inherited key must be approval-bound; HOME/PATH stay non-empty.
+  const full = { HOME: '/tmp/didi-home', PATH: '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' };
+  const make = (id: string, env: Record<string, string>): EndpointConfig => ({ id, transport: 'stdio', command: process.execPath, args: [], env, account: ACCOUNT, resource: RESOURCE }) as unknown as EndpointConfig;
+  assert.doesNotThrow(() => registry.register(make('env-ok', full)));
+  assert.throws(() => registry.register(make('env-missing-user', { HOME: '/tmp/didi-home', PATH: '/usr/bin', LOGNAME: '', SHELL: '', TERM: '' })));
+  assert.throws(() => registry.register(make('env-missing-path', { HOME: '/tmp/didi-home', LOGNAME: '', SHELL: '', TERM: '', USER: '' })));
+  assert.throws(() => registry.register(make('env-empty-home', { ...full, HOME: '' })));
+  assert.throws(() => registry.register(make('env-empty-path', { ...full, PATH: '' })));
+});

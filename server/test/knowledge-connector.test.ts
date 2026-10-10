@@ -126,7 +126,10 @@ test('search round trip: exact arguments, opaque unknown/local-only evidence, ex
     assert.equal(result.capability, 'local-only');
     assert.equal(result.tool, 'search_knowledge');
     assert.equal(result.source.endpointId, 'source');
-    assert.equal('url' in result.source ? result.source.url : '', f.url);
+    const source = result.source;
+    assert.equal('transport' in source, false, 'expected an HTTP-transport source');
+    if ('transport' in source) throw new Error('wrong-transport-source');
+    assert.equal(source.url, f.url);
     assert.equal(result.coverage.completeCorpus, false);
     assert.equal(result.coverage.basis, 'single-tool-result');
     assert.equal(result.coverage.remoteSideEffects, 'unverified');

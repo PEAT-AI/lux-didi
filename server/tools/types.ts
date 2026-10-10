@@ -3,9 +3,13 @@ import type { McpPort } from '../adapters/mcp/port.js';
 import type { McpRegistry } from '../adapters/mcp/registry.js';
 import type { DataClass, JsonObject, ToolCallIntent, ToolCallJournal, ToolDefinition, ToolResultGate, ToolResultRef } from '../adapters/model/types.js';
 
+export interface HttpConnectionEndpoint { id: string; url: string; account: string; resource: string; credentialRef: string | null }
+/** Explicit operator-approved local executable binding; credentialRef is strictly null. */
+export interface StdioConnectionEndpoint { id: string; transport: 'stdio'; command: string; args: readonly string[]; env?: Readonly<Record<string, string>>; account: string; resource: string; credentialRef: null }
+export type ConnectionEndpoint = HttpConnectionEndpoint | StdioConnectionEndpoint;
 export interface ConnectionPolicy {
   schemaVersion: 1; ownerId: string; connectionId: string; generation: number; enabled: boolean;
-  endpoint: { id: string; url: string; account: string; resource: string; credentialRef: string | null };
+  endpoint: ConnectionEndpoint;
   toolNames: readonly ('search_knowledge' | 'get_insight')[]; schemaDigest: string;
   sourcePolicy: { id: string; revision: number; unknownClass: DataClass | null; allowedClasses: readonly DataClass[] };
   route: { identity: string; allowedClasses: readonly DataClass[] };

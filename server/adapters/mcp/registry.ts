@@ -1,5 +1,9 @@
 import { createHash } from 'node:crypto';
-import type { CallRequest, EndpointConfig, ReadGrant, ResultScope, ToolDefinition } from './port.js';
+import { accessSync, constants } from 'node:fs';
+import { isAbsolute } from 'node:path';
+import { DEFAULT_INHERITED_ENV_VARS } from '@modelcontextprotocol/client/stdio';
+import { bindingDigestOf, endpointBinding, isStdioEndpoint, sourceBindingOf } from './port.js';
+import type { CallRequest, EndpointConfig, HttpEndpointConfig, ReadGrant, ResultScope, StdioEndpointConfig, ToolDefinition } from './port.js';
 
 export function canonicalToolDigest(tools: readonly ToolDefinition[]): string {
   const canonical = (value: unknown): unknown => {
@@ -15,6 +19,23 @@ export function validateEndpointUrl(raw: string): URL {
   const literalLoopback = url.hostname === '[::1]' || /^127\.(?:\d{1,3}\.){2}\d{1,3}$/.test(url.hostname);
   if (url.protocol !== 'https:' && !(url.protocol === 'http:' && literalLoopback)) throw new Error('http-requires-literal-loopback');
   return url;
+}
+/**
+ * Single in-scope authority for the approved stdio environment. The SDK merges
+ * its platform inherited set into any supplied env, so every inherited key must
+ * be present in the approval identity (an explicit '' neutralizes a non-routing
+ * default). Reuses the SDK's own public DEFAULT_INHERITED_ENV_VARS so config,
+ * registry and owner cannot diverge. stdio fails closed on win32 until its
+ * adapter is implemented; HTTP/local features are unaffected.
+ */
+export const STDIO_ENV_KEYS: readonly string[] = Object.freeze([...DEFAULT_INHERITED_ENV_VARS]);
+export function validateApprovedStdioEnv(env: unknown): env is Record<string, string> {
+  if (process.platform === 'win32') return false;
+  if (env === null || typeof env !== 'object' || Array.isArray(env)) return false;
+  const record = env as Record<string, unknown>;
+  for (const [key, value] of Object.entries(record)) if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || typeof value !== 'string' || value.includes('\0')) return false;
+  for (const key of STDIO_ENV_KEYS) if (typeof record[key] !== 'string') return false;
+  return Boolean(record['HOME']) && Boolean(record['PATH']);
 }
 interface Entry {
   config: EndpointConfig;
@@ -32,9 +53,25 @@ interface Entry {
 export class McpRegistry {
   private readonly entries = new Map<string, Entry>();
   register(config: EndpointConfig): void {
+    if (isStdioEndpoint(config)) this.registerStdio(config);
+    else this.registerHttp(config);
+  }
+  private registerHttp(config: HttpEndpointConfig): void {
     const allowed = new Set(['id', 'url', 'account', 'resource', 'credentialRef']);
     if (Object.keys(config).some(key => !allowed.has(key)) || [config.id, config.url, config.account, config.resource].some(value => typeof value !== 'string' || !value) || (config.credentialRef !== undefined && (typeof config.credentialRef !== 'string' || !config.credentialRef))) throw new Error('invalid-endpoint-config');
     validateEndpointUrl(config.url);
+    this.set(config);
+  }
+  /** Explicit local executable binding: absolute installed command, ordered args, minimal explicit env. */
+  private registerStdio(config: StdioEndpointConfig): void {
+    const allowed = new Set(['id', 'transport', 'command', 'args', 'env', 'account', 'resource']);
+    if (Object.keys(config).some(key => !allowed.has(key)) || [config.id, config.command, config.account, config.resource].some(value => typeof value !== 'string' || !value) || config.transport !== 'stdio' || !isAbsolute(config.command) || !Array.isArray(config.args) || config.args.some(arg => typeof arg !== 'string')) throw new Error('invalid-endpoint-config');
+    const env = config.env;
+    if (!validateApprovedStdioEnv(env)) throw new Error('invalid-endpoint-config');
+    try { accessSync(config.command, constants.X_OK); } catch { throw new Error('invalid-endpoint-config'); }
+    this.set(config);
+  }
+  private set(config: EndpointConfig): void {
     if (this.entries.has(config.id)) throw new Error('duplicate-endpoint-id');
     this.entries.set(config.id, { config: structuredClone(config), enabled: false, egress: false, lastGeneration: 0, revokedGeneration: 0, revision: 0 });
   }
@@ -52,8 +89,8 @@ export class McpRegistry {
   }
   /** Identity-only check for startup composition; does not enable egress or expose credentials. */
   matchesEndpoint(config: EndpointConfig): boolean {
-    const entry = this.entries.get(config.id); const registered = entry?.config;
-    return !!registered && registered.url === config.url && registered.account === config.account && registered.resource === config.resource && (registered.credentialRef ?? null) === (config.credentialRef ?? null);
+    const entry = this.entries.get(config.id);
+    return !!entry && endpointBinding(entry.config) === endpointBinding(config);
   }
   revision(id: string): number { return this.entry(id).revision; }
   suspend(id: string): void {
@@ -89,12 +126,13 @@ export class McpRegistry {
   authorize(request: CallRequest): ResultScope {
     const entry = this.entry(request.endpointId); const config = this.endpoint(request.endpointId); const grant = entry.grant;
     if (!grant || !entry.digest || grant.schemaDigest !== entry.digest || grant.effect !== 'read' || !grant.toolNames.includes(request.toolName) || request.generation !== grant.generation || request.account !== grant.account || request.resource !== grant.resource) throw new Error('local-read-grant-refused');
+    if (isStdioEndpoint(config)) return { endpointId: config.id, transport: 'stdio', bindingDigest: bindingDigestOf(config), schemaDigest: grant.schemaDigest, toolName: request.toolName, generation: grant.generation, account: grant.account, resource: grant.resource };
     return { endpointId: config.id, url: config.url, schemaDigest: grant.schemaDigest, toolName: request.toolName, generation: grant.generation, account: grant.account, resource: grant.resource };
   }
   authorizesScope(scope: ResultScope): boolean {
     try {
       const current = this.authorize({ ...scope, arguments: {} });
-      return current.url === scope.url && current.schemaDigest === scope.schemaDigest;
+      return sourceBindingOf(current) === sourceBindingOf(scope) && current.schemaDigest === scope.schemaDigest;
     } catch { return false; }
   }
 }

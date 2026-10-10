@@ -1,6 +1,8 @@
 import { Client, ProtocolError, StreamableHTTPClientTransport, isJSONRPCErrorResponse } from '@modelcontextprotocol/client';
+import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/ajv';
 import { McpRegistry } from './registry.js';
+import { isStdioEndpoint } from './port.js';
 import type { CallRequest, CallResult, CompletedResult, DiscoveryResult, EndpointConfig, McpBudgets, McpPort, ResultScope, ResultStorePort, SliceRequest, SliceResult, StoredPayload, ToolDefinition } from './port.js';
 
 export interface McpAdapterOptions {
@@ -20,6 +22,7 @@ function guardedFetch(session: Session, options: McpAdapterOptions, budgets: Mcp
   return async (input, init) => {
     const request = new Request(input, init);
     const config = options.registry.endpoint(session.config.id);
+    if (isStdioEndpoint(config) || isStdioEndpoint(session.config)) throw new PolicyError('destination-refused');
     if (request.url !== config.url || config.url !== session.config.url) throw new PolicyError('destination-refused');
     for (const name of request.headers.keys()) if (!allowedHeaders.has(name)) throw new PolicyError('header-refused');
     if (!['GET', 'POST', 'DELETE'].includes(request.method)) throw new PolicyError('method-refused');
@@ -131,7 +134,9 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
     client.onerror = () => { suspend(config.id); }; // No remote error/header/body is logged.
     client.onclose = () => { suspend(config.id); };
     client.setNotificationHandler('notifications/tools/list_changed', async () => { suspend(config.id); });
-    const transport = new StreamableHTTPClientTransport(new URL(config.url), { fetch: guardedFetch(session, options, budgets), redirectPolicy: 'follow', reconnectionOptions: { maxRetries: 0, initialReconnectionDelay: 1000, maxReconnectionDelay: 1000, reconnectionDelayGrowFactor: 1 } });
+    const transport = isStdioEndpoint(config)
+      ? new StdioClientTransport({ command: config.command, args: [...config.args], ...(config.env ? { env: { ...config.env } } : {}), stderr: 'pipe' })
+      : new StreamableHTTPClientTransport(new URL(config.url), { fetch: guardedFetch(session, options, budgets), redirectPolicy: 'follow', reconnectionOptions: { maxRetries: 0, initialReconnectionDelay: 1000, maxReconnectionDelay: 1000, reconnectionDelayGrowFactor: 1 } });
     sessions.set(config.id, session);
     await bounded(client.connect(transport, { timeout: budgets.timeoutMs }), AbortSignal.timeout(budgets.timeoutMs));
     // Observe the SDK transport's parsed messages, then forward unchanged. A local
@@ -201,9 +206,14 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
       const operation: Operation = { scope, signal: localSignal, dispatched: false }; session.operation = operation;
       try {
         // Supported SDK request API avoids callTool's automatic header-mismatch refresh/retry.
+        if (isStdioEndpoint(session.config)) operation.dispatched = true;
         const result = await bounded(session.client.request({ method: 'tools/call', params: { name: request.toolName, arguments: request.arguments } }, { signal: localSignal, timeout: budgets.timeoutMs }), localSignal);
         if (!options.registry.authorizesScope(scope)) throw new PolicyError('grant-revoked-after-dispatch');
-        if (!operation.bytes) throw new PolicyError('original-response-unavailable');
+        if (!operation.bytes) {
+          // A stdio child has no HTTP response entity; the parsed JSON-RPC result is the entity.
+          if (!isStdioEndpoint(session.config)) throw new PolicyError('original-response-unavailable');
+          operation.bytes = new TextEncoder().encode(JSON.stringify(result));
+        }
         return completed(scope, operation.bytes, result, result.isError ? 'tool-error' : 'completed');
       } catch (error) {
         if (operation.dispatched) {

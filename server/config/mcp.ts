@@ -6,17 +6,25 @@ import { McpRegistry } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import type { EndpointConfig } from '../adapters/mcp/port.js';
 import { validatePolicy } from '../tools/index.js';
-import type { ConnectionIntent, ConnectionPolicy } from '../tools/types.js';
+import type { ConnectionEndpoint, ConnectionIntent, ConnectionPolicy, HttpConnectionEndpoint, StdioConnectionEndpoint } from '../tools/types.js';
+const stdioEndpoint = (e: ConnectionEndpoint): e is StdioConnectionEndpoint => (e as { transport?: unknown }).transport === 'stdio';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
+import { validateApprovedStdioEnv } from '../adapters/mcp/registry.js';
 import { ConfigError, fail, fields, parseJson, readPrivate, safeError, validateRoot } from './files.js';
 
 export interface McpProfile extends ConnectionIntent {
-  schemaVersion: 1; transport: 'streamable-http'; dataDir: string;
+  schemaVersion: 1; transport: 'streamable-http' | 'stdio'; dataDir: string;
 }
-interface Credential {
+interface HttpCredential {
   schemaVersion: 1; ownerId: string; connectionId: string; endpointId: string; url: string;
   account: string; resource: string; generation: number; credentialRef: string; token: string; enabled: boolean;
 }
+/** Protected locator arm for an explicit local executable; no HTTP-shaped fields. */
+interface StdioCredential {
+  schemaVersion: 1; ownerId: string; connectionId: string; endpointId: string; transport: 'stdio'; command: string; args: readonly string[];
+  env: Readonly<Record<string, string>>; account: string; resource: string; generation: number; enabled: boolean;
+}
+type Credential = HttpCredential | StdioCredential;
 interface Target { configDir: string; ownerId: string; dataDir: string }
 export interface McpConfiguration {
   intent: McpProfile;
@@ -39,29 +47,55 @@ function root(path: string): void { absolute(path); if (!validateRoot(path)) fai
 function privateJson(path: string, limit: number): unknown { absolute(path); return parseJson(readPrivate(path, limit)); }
 function profile(raw: unknown): McpProfile {
   const p = fields(raw, ['schemaVersion', 'transport', 'dataDir', 'expectedPolicySha256', 'policy'], 'invalid_profile');
-  if (p['schemaVersion'] !== 1 || p['transport'] !== 'streamable-http') fail('invalid_profile');
+  if (p['schemaVersion'] !== 1 || (p['transport'] !== 'streamable-http' && p['transport'] !== 'stdio')) fail('invalid_profile');
   absolute(p['dataDir']);
   if (p['expectedPolicySha256'] !== null && (typeof p['expectedPolicySha256'] !== 'string' || !/^[a-f0-9]{64}$/.test(p['expectedPolicySha256']))) fail('invalid_profile');
   let policy: ConnectionPolicy;
   try { policy = validatePolicy(p['policy'] as ConnectionPolicy); } catch { return fail('invalid_profile'); }
   identifier(policy.ownerId); identifier(policy.connectionId); identifier(policy.endpoint.id);
-  if (policy.endpoint.credentialRef === null || !refPattern.test(policy.endpoint.credentialRef)) fail('invalid_reference');
+  if (stdioEndpoint(policy.endpoint)) {
+    if (policy.endpoint.credentialRef !== null || policy.endpoint.transport !== p['transport']) fail('invalid_reference');
+  } else {
+    if (policy.endpoint.credentialRef === null || !refPattern.test(policy.endpoint.credentialRef) || p['transport'] !== 'streamable-http') fail('invalid_reference');
+  }
   if ([policy.endpoint.account, policy.endpoint.resource].some(value => /[\x00-\x1f\x7f]/.test(value))) fail('invalid_profile');
   if (policy.bounds.maxQueryChars > 16384 || policy.bounds.maxSearchLimit > 100 || policy.bounds.maxGetIds > 100 || policy.bounds.maxEntityBytes > 1048576 || policy.bounds.maxResultBytes > 1048576) fail('invalid_profile');
-  return { schemaVersion: 1, transport: 'streamable-http', dataDir: p['dataDir'], expectedPolicySha256: p['expectedPolicySha256'] as string | null, policy };
+  return { schemaVersion: 1, transport: p['transport'] as 'streamable-http' | 'stdio', dataDir: p['dataDir'], expectedPolicySha256: p['expectedPolicySha256'] as string | null, policy };
 }
+function isStdioCredential(c: Credential): c is StdioCredential { return (c as { transport?: unknown }).transport === 'stdio'; }
 function credential(raw: unknown): Credential {
+  const stdio = raw !== null && typeof raw === 'object' && !Array.isArray(raw) && (raw as { transport?: unknown }).transport === 'stdio';
+  return stdio ? stdioCredential(raw) : httpCredential(raw);
+}
+function httpCredential(raw: unknown): HttpCredential {
   const c = fields(raw, ['schemaVersion', 'ownerId', 'connectionId', 'endpointId', 'url', 'account', 'resource', 'generation', 'credentialRef', 'token', 'enabled'], 'invalid_secret');
   if (c['schemaVersion'] !== 1 || typeof c['enabled'] !== 'boolean' || !Number.isSafeInteger(c['generation']) || Number(c['generation']) < 1) fail('invalid_secret');
-  for (const key of ['ownerId', 'connectionId', 'endpointId', 'url', 'account', 'resource']) if (typeof c[key] !== 'string' || !(c[key] as string).length || (c[key] as string).length > 512 || /[\x00-\x1f\x7f]/.test(c[key] as string)) fail('invalid_secret');
-  if (typeof c['credentialRef'] !== 'string' || !refPattern.test(c['credentialRef'])) fail('invalid_reference');
+  for (const key of ['ownerId', 'connectionId', 'endpointId', 'account', 'resource']) if (typeof c[key] !== 'string' || !(c[key] as string).length || (c[key] as string).length > 512 || /[\x00-\x1f\x7f]/.test(c[key] as string)) fail('invalid_secret');
+  if (typeof c['url'] !== 'string' || (c['url'] as string).length > 4096 || /[\x00-\x1f\x7f]/.test(c['url'] as string)) fail('invalid_secret');
+  if (typeof c['credentialRef'] !== 'string' || !refPattern.test(c['credentialRef'] as string)) fail('invalid_reference');
   if (typeof c['token'] !== 'string' || !/^[A-Za-z0-9._~+/=-]{1,8192}$/.test(c['token'])) fail('invalid_secret');
-  return c as unknown as Credential;
+  return c as unknown as HttpCredential;
 }
-function metadata(c: Credential): Omit<Credential, 'token'> { const { token: _token, ...binding } = c; return binding; }
+/** Protected stdio locator arm: absolute command, ordered args, minimal env; no url/token/credentialRef. */
+function stdioCredential(raw: unknown): StdioCredential {
+  const c = fields(raw, ['schemaVersion', 'ownerId', 'connectionId', 'endpointId', 'transport', 'command', 'args', 'env', 'account', 'resource', 'generation', 'enabled'], 'invalid_secret');
+  if (c['schemaVersion'] !== 1 || c['transport'] !== 'stdio' || typeof c['enabled'] !== 'boolean' || !Number.isSafeInteger(c['generation']) || Number(c['generation']) < 1) fail('invalid_secret');
+  for (const key of ['ownerId', 'connectionId', 'endpointId', 'command', 'account', 'resource']) if (typeof c[key] !== 'string' || !(c[key] as string).length || (c[key] as string).length > 4096 || /[\x00-\x1f\x7f]/.test(c[key] as string)) fail('invalid_secret');
+  if (!isAbsolute(c['command'] as string) || !Array.isArray(c['args']) || (c['args'] as unknown[]).some(arg => typeof arg !== 'string')) fail('invalid_secret');
+  const env = c['env'];
+  if (!validateApprovedStdioEnv(env)) fail('invalid_secret');
+  return c as unknown as StdioCredential;
+}
+function metadata(c: Credential): unknown {
+  if (isStdioCredential(c)) return structuredClone(c);
+  const { token: _token, ...binding } = c; return binding;
+}
 function binding(p: McpProfile, c: Credential): void {
   const policy = p.policy; const e = policy.endpoint;
-  if (c.ownerId !== policy.ownerId || c.connectionId !== policy.connectionId || c.endpointId !== e.id || c.url !== e.url || c.account !== e.account || c.resource !== e.resource || c.credentialRef !== e.credentialRef || c.generation !== policy.generation || (c.enabled && !policy.enabled)) fail('invalid_secret');
+  if (c.ownerId !== policy.ownerId || c.connectionId !== policy.connectionId || c.endpointId !== e.id || c.account !== e.account || c.resource !== e.resource || c.generation !== policy.generation || (c.enabled && !policy.enabled)) fail('invalid_secret');
+  if (stdioEndpoint(e)) {
+    if (!isStdioCredential(c) || c.command !== e.command || JSON.stringify([...c.args]) !== JSON.stringify([...e.args]) || canonicalJSON(c.env) !== canonicalJSON(e.env ?? {})) fail('invalid_secret');
+  } else if (isStdioCredential(c) || c.url !== (e as HttpConnectionEndpoint).url || c.credentialRef !== (e as HttpConnectionEndpoint).credentialRef) fail('invalid_secret');
 }
 function readSelection(target: Target): { intent: McpProfile; secret: Credential } {
   identifier(target.ownerId); absolute(target.dataDir); root(target.configDir);
@@ -74,19 +108,22 @@ function readSelection(target: Target): { intent: McpProfile; secret: Credential
 function loaded(target: Target, allowDisabled: boolean): McpConfiguration {
   const selected = readSelection(target); const selectionHash = sha256(canonicalJSON(selected.intent));
   const selectedBinding = canonicalJSON(metadata(selected.secret));
-  const current = (reference: string): Credential => {
-    if (reference !== selected.secret.credentialRef) fail('invalid_reference');
+  const selectedCredentialRef = isStdioCredential(selected.secret) ? null : selected.secret.credentialRef;
+  const current = (reference: string | null): Credential => {
+    if (reference !== selectedCredentialRef) fail('invalid_reference');
     const now = readSelection(target);
     if (sha256(canonicalJSON(now.intent)) !== selectionHash || canonicalJSON(metadata(now.secret)) !== selectedBinding || (!allowDisabled && (!now.secret.enabled || !now.intent.policy.enabled))) fail('invalid_secret');
     return now.secret;
   };
   const endpoint = selected.intent.policy.endpoint;
   return {
-    intent: structuredClone(selected.intent), endpoint: { id: endpoint.id, url: endpoint.url, account: endpoint.account, resource: endpoint.resource, credentialRef: selected.secret.credentialRef },
+    intent: structuredClone(selected.intent), endpoint: stdioEndpoint(endpoint)
+      ? { id: endpoint.id, transport: 'stdio' as const, command: endpoint.command, args: [...endpoint.args], ...(endpoint.env ? { env: { ...endpoint.env } } : {}), account: endpoint.account, resource: endpoint.resource }
+      : { id: endpoint.id, url: (endpoint as HttpConnectionEndpoint).url, account: endpoint.account, resource: endpoint.resource, ...(selectedCredentialRef ? { credentialRef: selectedCredentialRef } : {}) },
     locallyDisabled: selected.intent.policy.enabled && !selected.secret.enabled,
-    resolveCredential: async reference => current(reference).token,
+    resolveCredential: async reference => { const c = current(reference); if (isStdioCredential(c)) fail('invalid_reference'); return c.token; },
     assertCredentialCurrent: reference => { current(reference); },
-    assertCurrentBinding: () => { current(selected.secret.credentialRef); },
+    assertCurrentBinding: () => { current(selectedCredentialRef); },
   };
 }
 /** No Store access. Locator checks are synchronous and compare only binding/selection, never token bytes. */

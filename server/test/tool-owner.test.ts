@@ -14,7 +14,7 @@ import { createLuxKnowledgeReader } from '../connectors/lux-knowledge.js';
 import type { McpPort, ToolDefinition as McpTool } from '../adapters/mcp/port.js';
 import { runTools } from '../adapters/model/loop.js';
 import type { HostContext, ModelPort, ModelRequest, ModelResult, ToolCallIntent, ToolResultBinding } from '../adapters/model/types.js';
-import { createToolsOwner, toolsMigrations } from '../tools/index.js';
+import { createToolsOwner, toolsMigrations, validatePolicy } from '../tools/index.js';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
 import { projectLuxResult } from '../tools/lux-knowledge.js';
 import type { ConnectionPolicy, LiveAuthority, RunAcceptance } from '../tools/types.js';
@@ -24,6 +24,8 @@ const tools: McpTool[] = [
   { name: 'get_insight', inputSchema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'integer' } }, include_links: { type: 'boolean' } }, required: ['ids', 'include_links'], additionalProperties: false } },
 ];
 const route = { identity: 'synthetic-route', provider: 'gemini' as const, modelId: 'synthetic-model', allowedClasses: ['ordinary', 'private'] as const };
+// This suite drives the HTTP arm; the union's stdio arm has no url.
+const policyUrl = (e: ConnectionPolicy['endpoint']): string => (e as { transport?: unknown }).transport === 'stdio' ? '' : (e as { url: string }).url;
 function policy(overrides: Partial<ConnectionPolicy> = {}): ConnectionPolicy {
   return { schemaVersion: 1, ownerId: 'owner', connectionId: 'lux', generation: 1, enabled: true,
     endpoint: { id: 'endpoint', url: 'https://synthetic.invalid/mcp', account: 'account', resource: 'resource', credentialRef: 'private:synthetic-reference' },
@@ -42,7 +44,7 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
   let store = new Store(dir, toolsMigrations);
   t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
   const registry = new McpRegistry(); const p = options.policy ?? policy();
-  const endpoint = { id: p.endpoint.id, url: p.endpoint.url, account: p.endpoint.account, resource: p.endpoint.resource, ...(p.endpoint.credentialRef ? { credentialRef: p.endpoint.credentialRef } : {}) };
+  const endpoint = { id: p.endpoint.id, url: policyUrl(p.endpoint), account: p.endpoint.account, resource: p.endpoint.resource, ...(p.endpoint.credentialRef ? { credentialRef: p.endpoint.credentialRef } : {}) };
   registry.register(endpoint); registry.enable(endpoint.id); registry.allowEgress(endpoint.id);
   const sdk = new Server({ name: 'synthetic-owner', version: '1' }, { capabilities: { tools: { listChanged: false } } });
   const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
@@ -54,7 +56,7 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
   await sdk.connect(transport);
   t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
     const req = new Request(input, init);
-    assert.equal(req.url, p.endpoint.url);
+    assert.equal(req.url, policyUrl(p.endpoint));
     if (req.method === 'GET') return new Response(null, { status: 405 });
     if (req.method === 'POST') {
       const packet = await req.clone().json() as { method: string; params?: { name: string; arguments: unknown } };
@@ -217,7 +219,7 @@ test('revoke while awaiting authority is caught by final synchronous persisted r
 test('all bound connections checked even zero refs from another connection', async t => {
   const f = await fixture(t);
   const second = policy({ connectionId: 'second', endpoint: { ...policy().endpoint, id: 'second-endpoint' } });
-  f.registry.register({ id: 'second-endpoint', url: second.endpoint.url, account: 'account', resource: 'resource' });
+  f.registry.register({ id: 'second-endpoint', url: policyUrl(second.endpoint), account: 'account', resource: 'resource' });
   f.owner.applyConnection(second);
   const acceptance = { ...f.acceptance, runId: 'two', connectionIds: ['lux', 'second'] };
   const accepted = f.store.transaction(tx => f.owner.snapshotRun(tx, acceptance));
@@ -497,4 +499,24 @@ test('fresh owner restores durable enabled consent at the same generation but di
   const other = await fixture(t, { policy: policy({ enabled: false }) });
   assert.equal((await standingOwner(other.owner).restoreConnection('lux', () => {})).state, 'refused');
   assert.equal(other.registry.currentGrant(p.endpoint.id), undefined);
+});
+
+// Added for MCP-STDIO-R2: the endpoint binding is a per-arm union. HTTP stays
+// byte-for-byte canonical (absent transport, credentialRef string|null);
+// stdio carries transport=stdio, absolute command, ordered args, minimal env,
+// credentialRef=null and no url.
+test('endpoint union: stdio arm validates; HTTP nullability and cross-arm rejection are enforced', () => {
+  const http = policy({ endpoint: { id: 'lux', url: 'https://example.invalid/mcp', account: 'a', resource: 'r', credentialRef: null } });
+  assert.doesNotThrow(() => validatePolicy(http));
+  const stdioEndpoint = { id: 'lux', transport: 'stdio', command: '/bin/echo', args: ['a', 'b'], env: { HOME: '/tmp/x', PATH: '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' }, account: 'a', resource: 'r', credentialRef: null } as unknown as ConnectionPolicy['endpoint'];
+  const asPolicy = (endpoint: unknown): ConnectionPolicy => ({ ...policy(), endpoint } as unknown as ConnectionPolicy);
+  assert.doesNotThrow(() => validatePolicy(asPolicy(stdioEndpoint)), 'stdio arm must validate');
+  // Strict stdio credentialRef: a non-null reference is a cross-arm value.
+  assert.throws(() => validatePolicy(asPolicy({ ...stdioEndpoint, credentialRef: 'token-ref' })), /invalid/);
+  // Cross-arm fields are refused on either arm.
+  assert.throws(() => validatePolicy(asPolicy({ ...stdioEndpoint, url: 'https://example.invalid/mcp' })));
+  assert.throws(() => validatePolicy(asPolicy({ ...http.endpoint, command: '/bin/echo', args: [] })));
+  // Unknown transport and a non-absolute command are refused.
+  assert.throws(() => validatePolicy(asPolicy({ ...http.endpoint, transport: 'sse' })));
+  assert.throws(() => validatePolicy(asPolicy({ ...stdioEndpoint, command: 'echo' })));
 });

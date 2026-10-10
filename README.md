@@ -46,7 +46,7 @@ A Mac-first local assistant that:
 - carries a specified, Naya-inspired character without copying any private persona or prompt;
 - acts on the user's own accounts under explicit, revocable grants, and reports honest uncertainty when an effect may already have happened;
 - treats model providers as replaceable ingredients, with Gemini preferred, not required;
-- integrates optionally with Lux Knowledge, Mongoose, Lux Coworker, Trello, Mattermost and an existing harness.
+- integrates optionally with Lux Knowledge, Mongoose, Lux Coworker, Trello and Mattermost, and with an existing harness only later, as an optional bridge.
 
 Local data and local control are the default. Local does not mean offline: approved cloud inference is part of the design.
 
@@ -54,7 +54,7 @@ One authority per assistant is the rule behind that list. There is a single cano
 
 ## First loop (target, not current state)
 
-The first real-user slice is the acceptance target for milestone M1. A person installs an early build from a clean account (Stage A, an ad-hoc local pilot), connects one Google account, presses the hotkey, and asks by text while voice is enabled as soon as the transport works. Didi reads the upcoming calendar, captures or infers one commitment with its evidence, schedules one useful reminder, opens the conversation from the notification, prepares an unsent reply, recalls the exchange in a later session, and, once resolved, never resurrects it. Lux, the harness and Trello are not required.
+The first real-user slice is the acceptance target for milestone M1. A person installs an early build from a clean account (Stage A, an ad-hoc local pilot), connects one Google account, presses the hotkey, and asks by text while voice is enabled as soon as the transport works. Didi reads the upcoming calendar, captures or infers one commitment with its evidence, schedules one useful reminder, opens the conversation from the notification, prepares an unsent reply, recalls the exchange in a later session, and, once resolved, never resurrects it. Lux, the harness and Trello are not required. **The first release is this local Mac app with its optional connection set** - the native companion, Lux Knowledge, and the mail and other providers each user chooses to connect - while the **harness bridge is optional and comes later**, after a usable app. There is **no web-only release**: no web-only tag and no web-only publication.
 
 None of that loop is complete on `main`. The part that runs today is the local store and commitment loop described in [docs/implementation-status.md](docs/implementation-status.md).
 

@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 /** Didi-owned public seam. No SDK types, model declarations, or persistence policy. */
 export interface ToolDefinition {
   name: string;
@@ -5,12 +7,53 @@ export interface ToolDefinition {
   inputSchema: Record<string, unknown>;
   [key: string]: unknown;
 }
-export interface EndpointConfig {
+export interface HttpEndpointConfig {
   id: string;
   url: string;
   account: string;
   resource: string;
   credentialRef?: string;
+}
+/** An explicit operator-approved local executable binding. Never a shell string. */
+export interface StdioEndpointConfig {
+  id: string;
+  transport: 'stdio';
+  command: string;
+  args: readonly string[];
+  env?: Readonly<Record<string, string>>;
+  account: string;
+  resource: string;
+}
+export type EndpointConfig = HttpEndpointConfig | StdioEndpointConfig;
+export function isStdioEndpoint(config: EndpointConfig): config is StdioEndpointConfig {
+  return (config as { transport?: unknown }).transport === 'stdio';
+}
+export interface EndpointBindingInput {
+  id: string;
+  account: string;
+  resource: string;
+  credentialRef?: string | null;
+  transport?: string;
+  url?: string;
+  command?: string;
+  args?: readonly string[];
+  env?: Readonly<Record<string, string>>;
+}
+/**
+ * Canonical full binding identity, shared by the registry, the owner policy and
+ * protected configuration. A missing URL is never evidence that two process
+ * bindings match, so the stdio arm is compared on command, ordered args and env.
+ */
+export function endpointBinding(config: EndpointBindingInput): string {
+  if (config.transport === 'stdio') {
+    const env = Object.entries(config.env ?? {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return JSON.stringify(['stdio', config.id, config.command ?? '', [...(config.args ?? [])], env, config.account, config.resource]);
+  }
+  return JSON.stringify(['streamable-http', config.id, config.url ?? '', config.account, config.resource, config.credentialRef ?? null]);
+}
+/** Owner-safe binding identity for public projections and diagnostics: a digest, never the raw locator. */
+export function bindingDigestOf(config: EndpointBindingInput): string {
+  return createHash('sha256').update(endpointBinding(config)).digest('hex');
 }
 export interface ReadGrant {
   endpointId: string;
@@ -29,7 +72,8 @@ export interface CallRequest {
   account: string;
   resource: string;
 }
-export interface ResultScope {
+/** Transport-specific result provenance. HTTP keeps the exact original url/bytes; stdio has transport=stdio + bindingDigest and no url. */
+export interface HttpResultScope {
   endpointId: string;
   url: string;
   schemaDigest: string;
@@ -37,6 +81,22 @@ export interface ResultScope {
   generation: number;
   account: string;
   resource: string;
+}
+export interface StdioResultScope {
+  endpointId: string;
+  transport: 'stdio';
+  bindingDigest: string;
+  schemaDigest: string;
+  toolName: string;
+  generation: number;
+  account: string;
+  resource: string;
+}
+export type ResultScope = HttpResultScope | StdioResultScope;
+export function isStdioScope(scope: ResultScope): scope is StdioResultScope { return 'transport' in scope; }
+/** Safe binding identity for a result source or scope: HTTP url, stdio digest; never a raw locator. */
+export function sourceBindingOf(source: { url?: string; transport?: string; bindingDigest?: string }): string {
+  return source.transport === 'stdio' ? (source.bindingDigest ?? '') : (source.url ?? '');
 }
 export type StoredPayload =
   | { state: 'available'; handle: string; sha256: string; byteLength: number; expiresAt: number; encoding: 'http-response-entity' }
@@ -63,7 +123,7 @@ export type DiscoveryResult =
 export interface CompletedResult {
   state: 'completed' | 'tool-error' | 'protocol-error';
   protocolErrorCode?: number;
-  source: { endpointId: string; url: string; account: string; resource: string; toolName: string; schemaDigest: string; generation: number };
+  source: ResultScope;
   coverage: { completeCorpus: false; basis: 'single-tool-result'; remoteSideEffects: 'unverified' };
   freshness: { receivedAt: number; sourceVersion: 'unknown' };
   projection: { text: string; omitted: boolean; originalCharacters: number; omittedCharacters: number };

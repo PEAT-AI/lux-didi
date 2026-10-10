@@ -4,12 +4,13 @@ import CryptoKit
 import ApplicationServices
 
 @MainActor enum OwnedWindowProof {
+    enum CaptureFailure: String, Error { case availability, notVisible, noWindowNumber, notInCurrentProcess }
     private struct Control: Sendable { let name: String; let enabled: Bool; let visible: Bool }
     private struct ConsumerResult: Sendable {
         var code: String
         var windowCount = 0
-        var titleStatuses: [Int32] = []
-        var titleMatches = 0
+        var identifierStatuses: [Int32] = []
+        var identifierMatches = 0
         var childCount = 0
         var controls: [Control] = []
         let queryOnMainThread: Bool
@@ -17,13 +18,13 @@ import ApplicationServices
     static func consumerTrace(_ window: NSWindow) async -> [String: Any] {
         guard NSApp.windows.contains(window), window.isVisible else { return ["code": "own-window-not-visible"] }
         // Capture primitive expected state on main; NSWindow/AX objects never cross actors.
-        let pid = getpid(), expectedTitle = ownIdentifier(window)
-        let result = await Task.detached { consumerSnapshot(pid: pid, expectedTitle: expectedTitle) }.value
+        let pid = getpid(), expectedIdentifier = ownIdentifier(window)
+        let result = await Task.detached { consumerSnapshot(pid: pid, expectedIdentifier: expectedIdentifier) }.value
         return ["code": result.code, "windowCount": result.windowCount,
-                "titleStatuses": result.titleStatuses, "titleMatches": result.titleMatches,
+                "identifierStatuses": result.identifierStatuses, "identifierMatches": result.identifierMatches,
                 "childCount": result.childCount, "queryOnMainThread": result.queryOnMainThread]
     }
-    nonisolated private static func consumerSnapshot(pid: pid_t, expectedTitle: String) -> ConsumerResult {
+    nonisolated private static func consumerSnapshot(pid: pid_t, expectedIdentifier: String) -> ConsumerResult {
         // Public consumer API, only our PID; never request trust or query another app.
         var result = ConsumerResult(code: "starting", queryOnMainThread: Thread.isMainThread)
         let app = AXUIElementCreateApplication(pid)
@@ -37,10 +38,10 @@ import ApplicationServices
         let matching = windows.filter { element in
             var title: CFTypeRef?
             let status = AXUIElementCopyAttributeValue(element, kAXIdentifierAttribute as CFString, &title)
-            result.titleStatuses.append(status.rawValue)
-            return status == .success && title as? String == expectedTitle
+            result.identifierStatuses.append(status.rawValue)
+            return status == .success && title as? String == expectedIdentifier
         }
-        result.titleMatches = matching.count
+        result.identifierMatches = matching.count
         guard matching.count == 1 else { result.code = "own-identifier-not-unique"; return result }
         let childStatus = AXUIElementCopyAttributeValue(matching[0], kAXChildrenAttribute as CFString, &value)
         result.code = String(childStatus.rawValue)
@@ -51,8 +52,10 @@ import ApplicationServices
             return AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success ? value : nil
         }
         func rectangle(_ element: AXUIElement) -> CGRect? {
-            guard let position = read(element, kAXPositionAttribute) as! AXValue?,
-                  let size = read(element, kAXSizeAttribute) as! AXValue? else { return nil }
+            guard let rawPosition = read(element, kAXPositionAttribute),
+                  let rawSize = read(element, kAXSizeAttribute),
+                  CFGetTypeID(rawPosition) == AXValueGetTypeID(), CFGetTypeID(rawSize) == AXValueGetTypeID() else { return nil }
+            let position = rawPosition as! AXValue; let size = rawSize as! AXValue
             var point = CGPoint.zero; var dimensions = CGSize.zero
             guard AXValueGetValue(position, .cgPoint, &point), AXValueGetValue(size, .cgSize, &dimensions) else { return nil }
             return CGRect(origin: point, size: dimensions)
@@ -100,7 +103,7 @@ import ApplicationServices
     static func accessibility(_ window: NSWindow) async -> [[String: Any]] {
         guard NSApp.windows.contains(window), window.isVisible else { return [] }
         let pid = getpid(), identifier = ownIdentifier(window)
-        let result = await Task.detached { consumerSnapshot(pid: pid, expectedTitle: identifier) }.value
+        let result = await Task.detached { consumerSnapshot(pid: pid, expectedIdentifier: identifier) }.value
         return result.controls.map { ["name": $0.name, "enabled": $0.enabled, "visible": $0.visible, "source": "public-own-PID-AX"] }
     }
     private static func bounded<T>(_ operation: @escaping @MainActor () async throws -> T) async throws -> T {
@@ -125,12 +128,14 @@ import ApplicationServices
         }
     }
     static func capture(_ window: NSWindow, to output: URL) async throws -> [String: Any] {
-        guard #available(macOS 14.4, *), window.isVisible, window.windowNumber > 0 else { throw InstalledProofError.captureRequired }
+        guard #available(macOS 14.4, *) else { throw CaptureFailure.availability }
+        guard window.isVisible else { throw CaptureFailure.notVisible }
+        guard window.windowNumber > 0 else { throw CaptureFailure.noWindowNumber }
         // The SDK explicitly limits currentProcess to content captureable without
         // TCC consent. Never enumerate general shareable content or request grants.
         let image = try await bounded {
         let content = try await SCShareableContent.currentProcess
-        guard let owned = content.windows.first(where: { $0.windowID == CGWindowID(window.windowNumber) }) else { throw InstalledProofError.captureRequired }
+        guard let owned = content.windows.first(where: { $0.windowID == CGWindowID(window.windowNumber) }) else { throw CaptureFailure.notInCurrentProcess }
         let filter = SCContentFilter(desktopIndependentWindow: owned)
         let config = SCStreamConfiguration()
         config.width = Int(window.frame.width * 2); config.height = Int(window.frame.height * 2)

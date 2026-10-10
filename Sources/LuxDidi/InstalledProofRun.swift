@@ -131,7 +131,7 @@ import CryptoKit
             var visual = report["visual"] as! [String: Any]; visual["accessibility"] = controls
             visual["pageSnapshot"] = try await pageImage(fresh, to: proof.report.appendingPathExtension("web-page.png"))
             do { visual["nativeChrome"] = try await OwnedWindowProof.capture(window, to: proof.screenshot); visual["nativeChromeLimitation"] = "Own-process native chrome captured without requesting grants; root visual review required." }
-            catch { visual["nativeChromeError"] = ["domain": (error as NSError).domain, "code": (error as NSError).code]; visual["nativeChromeLimitation"] = "Bounded own-process capture failed or unavailable; native chrome not visually verified. Actual WK page and own AX states are supplied." }
+            catch { visual["nativeChromeError"] = ["domain": (error as NSError).domain, "code": (error as NSError).code, "cause": (error as? OwnedWindowProof.CaptureFailure)?.rawValue ?? "sdk-or-bound"]; visual["nativeChromeLimitation"] = "Bounded own-process capture failed or unavailable; native chrome not visually verified. Actual WK page and own AX states are supplied." }
             report["axDirectTrace"] = OwnedWindowProof.accessibilityTrace(window)
             report["visual"] = visual
             guard Set(controls.compactMap({ $0["name"] as? String })) == ["Start recording", "Stop recording", "Send text"], controls.allSatisfy({ $0["visible"] as? Bool == true }) else { throw InstalledProofError.accessibility }

@@ -43,11 +43,13 @@ async function fixture() {
   const sensitiveLabel = { writer: 'model', dataClass: 'sensitive' };
   type WriteLabel = typeof privateLabel | typeof sensitiveLabel;
   const create = (title: string, label?: WriteLabel) => host.store.transaction(tx => domain.execute(tx, 'createSession', { title, timeZone: 'UTC' }, ctx(), label as never)) as { id: string };
-  const append = (sessionId: string, text: string, label?: WriteLabel) => host.store.transaction(tx => domain.execute(tx, 'appendEntry', { sessionId, text, role: 'user', timeZone: 'UTC' }, ctx(), label as never)) as { id: string };
-  const seed = (title: string, text: string, label: WriteLabel) => { const session = create(title, label); return { sessionId: session.id, entryId: append(session.id, text, label).id }; };
+  const append = (sessionId: string, text: string, label?: typeof privateLabel) => host.store.transaction(tx => domain.execute(tx, 'appendEntry', { sessionId, text, role: 'user', timeZone: 'UTC' }, ctx(), label as never)) as { id: string };
+  const appendAssistant = (sessionId: string, text: string, label: typeof sensitiveLabel) => host.store.transaction(tx => domain.execute(tx, 'appendAssistantEntry', { sessionId, text, timeZone: 'UTC' }, ctx(), label as never)) as { id: string };
+  const seed = (title: string, text: string, label: typeof privateLabel) => { const session = create(title, label); return { sessionId: session.id, entryId: append(session.id, text, label).id }; };
+  const seedAssistant = (title: string, text: string, label: typeof sensitiveLabel) => { const session = create(title, label); return { sessionId: session.id, entryId: appendAssistant(session.id, text, label).id }; };
   const ordinary = seed('Ordinary notes', ORDINARY, privateLabel);
   const privateNote = seed('Private notes', PRIVATE, privateLabel);
-  const sensitive = seed('Sensitive notes', SENSITIVE, sensitiveLabel);
+  const sensitive = seedAssistant('Sensitive notes', SENSITIVE, sensitiveLabel);
   const unknownSession = create('Unknown notes');
   const unknown = { sessionId: unknownSession.id, entryId: append(unknownSession.id, UNKNOWN).id };
   const canary = seed('Canary notes', CANARY, privateLabel);

@@ -53,21 +53,26 @@ async function main() {
   // Trusted in-process seeding of labelled and unclassified synthetic notes.
   const domain = createDomainPort({ outbox: Outbox });
   const ctx = () => ({ assistantId: host.store.assistantId, clientId: 'local-admin', authorityEpoch: host.store.authorityEpoch, now: new Date(0).toISOString() });
-  const seed = (title: string, text: string, label?: { writer: string; dataClass: string }) => {
-    const session = host.store.transaction(tx => domain.execute(tx, 'createSession', { title, timeZone: 'UTC' }, ctx(), label as never)) as { id: string };
-    const entry = host.store.transaction(tx => domain.execute(tx, 'appendEntry', { sessionId: session.id, text, role: 'user', timeZone: 'UTC' }, ctx(), label as never)) as { id: string };
-    return { sessionId: session.id, entryId: entry.id };
-  };
-  // The Domain accepts only capture/private or model/private|sensitive as trusted write labels.
+  const run = (operation: 'createSession' | 'appendEntry' | 'appendAssistantEntry', input: Record<string, unknown>, label?: { writer: string; dataClass: string }) => host.store.transaction(tx => domain.execute(tx, operation, input as never, ctx(), label as never)) as { id: string };
+  // The Domain accepts only capture/private or model/private|sensitive as trusted write labels,
+  // and requires capture for appendEntry and model for appendAssistantEntry.
   const privateLabel = { writer: 'capture', dataClass: 'private' };
   const sensitiveLabel = { writer: 'model', dataClass: 'sensitive' };
+  const seedUser = (title: string, text: string, label?: { writer: string; dataClass: string }) => {
+    const session = run('createSession', { title, timeZone: 'UTC' }, label);
+    return { sessionId: session.id, entryId: run('appendEntry', { sessionId: session.id, text, role: 'user', timeZone: 'UTC' }, label).id };
+  };
+  const seedAssistant = (title: string, text: string, label: { writer: string; dataClass: string }) => {
+    const session = run('createSession', { title, timeZone: 'UTC' }, label);
+    return { sessionId: session.id, entryId: run('appendAssistantEntry', { sessionId: session.id, text, timeZone: 'UTC' }, label).id };
+  };
   const seeded = {
-    ordinary: seed(notes.ordinary.title, notes.ordinary.text, privateLabel),
-    private: seed(notes.private.title, notes.private.text, privateLabel),
-    sensitive: seed(notes.sensitive.title, notes.sensitive.text, sensitiveLabel),
-    unknown: seed(notes.unknown.title, notes.unknown.text),
-    canary: seed(notes.canary.title, notes.canary.text, privateLabel),
-    oversized: seed(notes.oversized.title, notes.oversized.text, privateLabel),
+    ordinary: seedUser(notes.ordinary.title, notes.ordinary.text, privateLabel),
+    private: seedUser(notes.private.title, notes.private.text, privateLabel),
+    sensitive: seedAssistant(notes.sensitive.title, notes.sensitive.text, sensitiveLabel),
+    unknown: seedUser(notes.unknown.title, notes.unknown.text),
+    canary: seedUser(notes.canary.title, notes.canary.text, privateLabel),
+    oversized: seedUser(notes.oversized.title, notes.oversized.text, privateLabel),
   };
   let closing = false;
   async function stop() {

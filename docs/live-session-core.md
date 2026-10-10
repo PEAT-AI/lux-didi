@@ -48,9 +48,11 @@ const owner = createLiveSessionOwner({ store, voice: liveVoiceAdapter, profile, 
 
 const session = owner.create({ idempotencyKey: actionId, inputClass: 'ordinary' }, context);
 const attachment = owner.attach({ liveSessionId: session.liveSessionId }, context);
-await attachment.ready;                                            // no audio before ready
+await attachment.ready;                                            // no output before ready
 attachment.sendAudio({ pcm: pcm16LE16k });                         // caller-owned capture is out of scope here
-for await (const chunk of attachment.audio) { /* ephemeral model audio */ }
+for await (const chunk of attachment.output) {                     // ordered ephemeral PCM + committed markers
+  // chunk.kind === 'audio' -> chunk.pcm (PCM16LE mono 24k); chunk.kind === 'marker' -> a committed public marker
+}
 attachment.close();
 await attachment.done;
 await owner.shutdown();

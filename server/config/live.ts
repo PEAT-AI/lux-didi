@@ -37,7 +37,12 @@ export function loadLiveConfig(options: { configDir: string; ownerId: string }):
     let text: string;
     try { text = readPrivate(join(options.configDir, 'live.json'), liveLimit); }
     catch (error) { if (error instanceof ConfigError && error.code === 'file_missing') return { status: 'unconfigured' }; throw error; }
-    const input = fields(parseJson(text), liveKeys, 'invalid_profile');
+    const raw = parseJson(text);
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) fail('invalid_profile');
+    const input = raw as Record<string, unknown>;
+    const allowed = new Set(liveKeys);
+    for (const key of Object.keys(input)) if (!allowed.has(key)) fail('invalid_profile');
+    for (const key of ['schemaVersion', 'enabled', 'provider', 'modelId', 'voice', 'keyReference', 'dataClasses', 'preferences']) if (!(key in input)) fail('invalid_profile');
     if (input['schemaVersion'] !== 1) fail('invalid_profile');
     if (typeof input['enabled'] !== 'boolean') fail('invalid_profile');
     if (input['provider'] !== 'gemini') throw new LiveConfigError('invalid_provider');

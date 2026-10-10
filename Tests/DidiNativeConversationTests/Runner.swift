@@ -22,11 +22,13 @@ actor Page: ConnectedConversationTransport {
     var selectionCount = 0
     var held: [CheckedContinuation<Data, any Error>] = []
     var holdSelection = false
+    var holdSend = false
+    var sendHeld: [CheckedContinuation<Data, any Error>] = []
     var response: Data?
     let store: PendingRequestStore
     init(_ store: PendingRequestStore) { self.store = store }
-    func configure(selections: [Data] = [], response: Data? = nil, hold: Bool = false) {
-        self.selections = selections; self.response = response; holdSelection = hold
+    func configure(selections: [Data] = [], response: Data? = nil, hold: Bool = false, holdSend: Bool = false) {
+        self.selections = selections; self.response = response; holdSelection = hold; self.holdSend = holdSend
     }
     func selection() async throws -> Data {
         selectionCount += 1
@@ -34,6 +36,7 @@ actor Page: ConnectedConversationTransport {
         return selections.isEmpty ? Foundation.Data() : selections.removeFirst()
     }
     func release(_ index: Int, _ data: Data) { held.remove(at: index).resume(returning: data) }
+    func releaseSend(_ data: Data) { sendHeld.removeFirst().resume(returning: data) }
     func counts() -> (Int, Int) { (selectionCount, calls.count) }
     func requests() -> [ConnectedChatRequest] { calls }
     func send(_ request: ConnectedChatRequest) async throws -> Data {
@@ -41,6 +44,7 @@ actor Page: ConnectedConversationTransport {
         try require(saved.phase == .dispatchUnknown, "wire before durable markDispatchUnknown")
         try require(saved.frozenText.utf8.elementsEqual(request.text.utf8) && saved.identity.idempotencyKey == request.idempotencyKey, "wire changed frozen bytes/key")
         calls.append(request)
+        if holdSend { return try await withCheckedThrowingContinuation { sendHeld.append($0) } }
         return response ?? Data("lost response".utf8)
     }
 }
@@ -78,6 +82,57 @@ actor Page: ConnectedConversationTransport {
     await restored.replay(); try require(restored.pending == nil && restored.state == .accepted, "outcome_unknown not accepted")
     try require(try await store.load(assistantId: assistant, authorityEpoch: epoch) == .empty, "ack did not remove own record")
 }
+@MainActor func testLateAcceptance() async throws {
+    let (dir, store) = try tempStore(); defer { try? FileManager.default.removeItem(atPath: dir) }
+    let page = Page(store); await page.configure(selections: [selection()], holdSend: true)
+    let draft = ConnectedDraft(store: store)
+    let authority = ConnectedAuthority(assistantId: assistant, authorityEpoch: epoch)
+    await draft.connect(authority: authority, transport: page); await draft.beginDraft(); draft.setText("retained on disconnect")
+    let sending = Task { await draft.send() }
+    while await page.counts().1 < 1 { await Task.yield() }
+    let request = await page.requests()[0]
+    draft.disconnect(); await page.releaseSend(snapshot(request)); await sending.value
+    try require(draft.pending != nil && draft.text == "retained on disconnect", "late disconnected acceptance cleared request")
+    await draft.connect(authority: authority, transport: page)
+    await page.configure(holdSend: true)
+    let replaying = Task { await draft.replay() }
+    while await page.counts().1 < 2 { await Task.yield() }
+    replaying.cancel(); await page.releaseSend(snapshot(request)); await replaying.value
+    try require(draft.pending != nil, "cancelled replay acknowledged")
+    var malformed = try JSONSerialization.jsonObject(with: snapshot(request)) as! [String: Any]
+    var run = malformed["data"] as! [String: Any]; run.removeValue(forKey: "finalText"); malformed["data"] = run
+    await page.configure(response: try JSONSerialization.data(withJSONObject: malformed)); await draft.replay()
+    try require(draft.pending != nil, "missing nullable wire field acknowledged")
+    run["finalText"] = NSNull(); run["state"] = "accepted"; run["terminalAt"] = NSNull(); malformed["data"] = run
+    await page.configure(response: try JSONSerialization.data(withJSONObject: malformed)); await draft.replay()
+    try require(draft.pending != nil, "inconsistent nonterminal outcome acknowledged")
+    await page.configure(response: snapshot(request)); await draft.replay()
+    try require(draft.pending == nil, "valid replay failed after late/malformed responses")
+}
+#if PENDING_REQUEST_TESTING
+@MainActor func testWriteFailures() async throws {
+    for failMark in [false, true] {
+        let (dir, _) = try tempStore(); defer { try? FileManager.default.removeItem(atPath: dir) }
+        let store = PendingRequestStore(directory: dir) { checkpoint in
+            if checkpoint == .tempSynced {
+                let raw = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: dir + "/.pending-request.next"))) as! [String: Any]
+                if !failMark || raw["phase"] as? String == "dispatch-unknown" { throw PendingRequestError.io }
+            }
+        }
+        let page = Page(store); await page.configure(selections: [selection()])
+        let draft = ConnectedDraft(store: store)
+        await draft.connect(authority: .init(assistantId: assistant, authorityEpoch: epoch), transport: page)
+        await draft.beginDraft(); draft.setText("survives failed durable write"); await draft.send()
+        let calls = await page.counts()
+        try require(calls.1 == 0 && draft.state == .storageFailure && draft.text == "survives failed durable write", "persistence failure dispatched or lost draft")
+        let loaded = try await store.load(assistantId: assistant, authorityEpoch: epoch)
+        if failMark {
+            guard case .current(let envelope) = loaded else { throw Failure(message: "failed mark lost prepared envelope") }
+            try require(envelope.phase == .prepared && draft.pending?.identity == envelope.identity, "failed mark changed immutable envelope")
+        } else { try require(loaded == .empty && draft.pending == nil, "failed prepare committed a request") }
+    }
+}
+#endif
 @MainActor func testLateSelection() async throws {
     let (dir, store) = try tempStore(); defer { try? FileManager.default.removeItem(atPath: dir) }
     let page = Page(store); await page.configure(hold: true)
@@ -161,7 +216,10 @@ struct HTTPPage: ConnectedConversationTransport {
     @MainActor static func main() async {
         do {
             if CommandLine.arguments.count > 2 && CommandLine.arguments[1] == "--child" { try await child(CommandLine.arguments[2]); return }
-            let tests: [(String, @MainActor () async throws -> Void)] = [("barrier/exact replay/snapshot validation", testBarrierAndReplay), ("late selection/replacement/cancel/none", testLateSelection), ("persistence/orphan/corrupt/identity cleanup", testFailuresAndCleanup)]
+            var tests: [(String, @MainActor () async throws -> Void)] = [("barrier/exact replay/snapshot validation", testBarrierAndReplay), ("late selection/replacement/cancel/none", testLateSelection), ("persistence/orphan/corrupt/identity cleanup", testFailuresAndCleanup), ("disconnect/cancel/late acceptance/malformed shape", testLateAcceptance)]
+            #if PENDING_REQUEST_TESTING
+            tests.append(("prepare/mark write failure zero wire", testWriteFailures))
+            #endif
             var durations: [(String, Double)] = []
             for (name, test) in tests { let start = Date(); try await test(); durations.append((name, Date().timeIntervalSince(start))); print("PASS \(name)") }
             if CommandLine.arguments.contains("--durations=10") { for (name, duration) in durations.sorted(by: { $0.1 > $1.1 }) { print(String(format: "%.3fs %@", duration, name)) } }

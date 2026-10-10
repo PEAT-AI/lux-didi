@@ -200,7 +200,9 @@ private func acceptedSnapshot(_ data: Data, for envelope: PendingRequestEnvelope
           !run.provider.isEmpty, !run.model.isEmpty, !run.promptVersion.isEmpty, run.sequence >= 0,
           timestamp(run.acceptedAt), run.intentAt.map(timestamp) ?? true, run.terminalAt.map(timestamp) ?? true,
           ["accepted", "dispatch_intent", "terminal"].contains(run.state), run.outcome.map(outcomes.contains) ?? true,
-          (run.state == "terminal") == (run.outcome != nil && run.terminalAt != nil),
+          (run.state == "terminal" ? (run.outcome != nil && run.terminalAt != nil) : (run.outcome == nil && run.terminalAt == nil)),
+          run.mayHaveBeenSent == (run.intentAt != nil),
+          (run.state != "accepted" || run.intentAt == nil),
           (run.state != "dispatch_intent" || run.intentAt != nil),
           (run.finalEntryId == nil) == (run.finalText == nil) else { throw InvalidResponse.invalid }
     return run

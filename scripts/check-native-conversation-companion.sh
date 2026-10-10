@@ -8,6 +8,11 @@ trap 'rm -rf "$work"' EXIT
 cd "$root"
 git diff --check
 swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
+  -emit-module -module-name DidiConnectedDraft \
+  Sources/LuxDidi/PendingRequestStore.swift Sources/LuxDidi/ConnectedDraft.swift \
+  -emit-module-path "$work/DidiConnectedDraft.swiftmodule"
+swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
+  -D PENDING_REQUEST_TESTING \
   Sources/LuxDidi/PendingRequestStore.swift Sources/LuxDidi/ConnectedDraft.swift \
   Tests/DidiNativeConversationTests/Runner.swift -o "$work/conversation-tests"
 # A behavioral sensitivity check, not an absent-source/fixture-startup red:
@@ -20,6 +25,7 @@ assert source.count(needle) == 1, "sensitivity seam moved"
 open(sys.argv[2], "w").write(source.replace(needle, "let marked = saved"))
 PY_MUTANT
 swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
+  -D PENDING_REQUEST_TESTING \
   Sources/LuxDidi/PendingRequestStore.swift "$work/ConnectedDraft.swift" \
   Tests/DidiNativeConversationTests/Runner.swift -o "$work/sensitivity-tests"
 set +e

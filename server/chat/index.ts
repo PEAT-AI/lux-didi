@@ -1,23 +1,30 @@
 import { createHash, randomUUID } from 'node:crypto';
-import type { DomainContext, RoutingLabelCorrection, RoutingSubject } from '../contracts/domain.js';
+import type { DomainContext, ResolvedEntry, RoutingLabelCorrection, RoutingSubject } from '../contracts/domain.js';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
-import type { ModelResult } from '../adapters/model/types.js';
+import { ServiceError } from '../contracts/errors.js';
+import type { DataClass, ModelResult } from '../adapters/model/types.js';
 import { PROMPT_VERSION } from '../prompt/index.js';
-import { assemble, classify, ContextFailure } from './context.js';
+import { assemble, classify, ContextFailure, type ContextTrace } from './context.js';
 import { Subscription } from './subscription.js';
-import { ChatError, type AcceptInput, type ChatConfig, type ChatEvent, type ChatPort, type ChatRecoveryContext, type ConversationEvent, type Outcome, type RunSnapshot, type EnrollInput, type ConversationStatus } from './types.js';
+import { memorySelectionSnapshot, normalizeSelectedMemory, selectedEvidenceId, MAX_SERIALIZED_SELECTION_BYTES, type RunSelection } from './memorySelection.js';
+import { ChatError, type AcceptInput, type ChatConfig, type ChatEvent, type ChatPort, type ChatRecoveryContext, type ConversationEvent, type Outcome, type RunSnapshot, type EnrollInput, type ConversationStatus, type MemorySelectionSnapshot } from './types.js';
 export * from './types.js';
 export { chatMigrations } from './schema.js';
 
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
+/** Persisted policy subject: existing entry/session kinds only; revisions are authoritative. */
+type SelectedLabel = { kind: 'session' | 'entry'; id: string; schemaVersion: 1; ownerId: string; dataClass: DataClass; revision: number };
+/** The subset #checkPolicy reads back out of chat_run_policy.selected_labels. */
+type PolicyLabel = { kind: 'session' | 'entry'; id: string; revision: number; dataClass: string };
 function nullable(value: SQLRow[string] | undefined) { return value === null || value === undefined ? null : String(value); }
-function snapshot(row: SQLRow, finalText: string | null = null): RunSnapshot {
+function snapshot(row: SQLRow, finalText: string | null = null, memorySelection: MemorySelectionSnapshot | null = null): RunSnapshot {
   return { runId: String(row.run_id), sessionId: String(row.session_id), userEntryId: String(row.user_entry_id),
     finalEntryId: nullable(row.final_entry_id), finalText, retryOf: nullable(row.retry_of), authorityEpoch: String(row.authority_epoch),
     provider: String(row.provider), model: String(row.model), promptVersion: String(row.prompt_version),
     state: row.state as RunSnapshot['state'], outcome: nullable(row.outcome) as Outcome | null,
     sequence: Number(row.sequence), partialText: String(row.partial_text), partialTruncated: Boolean(row.partial_truncated),
-    acceptedAt: String(row.accepted_at), intentAt: nullable(row.intent_at), terminalAt: nullable(row.terminal_at), mayHaveBeenSent: row.intent_at !== null };
+    acceptedAt: String(row.accepted_at), intentAt: nullable(row.intent_at), terminalAt: nullable(row.terminal_at), mayHaveBeenSent: row.intent_at !== null,
+    memorySelection };
 }
 
 export class ChatService implements ChatPort {
@@ -50,11 +57,29 @@ export class ChatService implements ChatPort {
     return row;
   }
   #snapshot(tx: Transaction, row: SQLRow, context: DomainContext): RunSnapshot {
-    if (row.outcome !== 'complete') return snapshot(row);
+    const memorySelection = this.#memorySelection(tx, row);
+    if (row.outcome !== 'complete') return snapshot(row, null, memorySelection);
     const read = this.#config.domain.execute(tx, 'getSession', { id: String(row.session_id) }, this.#context(context));
     const entry = read.entries.find(item => item.id === row.final_entry_id && item.role === 'assistant');
     if (!entry) throw new ChatError('unavailable');
-    return snapshot(row, entry.text);
+    return snapshot(row, entry.text, memorySelection);
+  }
+  /** Safe requested/used/omitted metadata; no record text and no whole-archive claim. */
+  #memorySelection(tx: Transaction, row: SQLRow): MemorySelectionSnapshot | null {
+    // A database written before chat v3 carries no selection table: it means
+    // empty selection, exactly like a run with no chat_run_context row.
+    if (!tx.get("SELECT name FROM sqlite_master WHERE type='table' AND name='chat_run_context'", [])) return null;
+    const stored = tx.get('SELECT * FROM chat_run_context WHERE run_id=?', [String(row.run_id)]);
+    if (!stored) return null;
+    const requestedIds = JSON.parse(String(stored.requested_ids)) as string[];
+    let manifest: { selectedIds?: readonly string[]; omitted?: readonly { id: string; reason: string }[] } | null = null;
+    if (String(row.state) !== 'accepted' && row.trace !== null && row.trace !== undefined) {
+      try {
+        const parsed = JSON.parse(String(row.trace)) as { manifest?: { selectedIds?: string[]; omitted?: { id: string; reason: string }[] } };
+        manifest = parsed.manifest ?? null;
+      } catch { manifest = null; }
+    }
+    return memorySelectionSnapshot(requestedIds, manifest);
   }
   #identity() {
     const route = this.#config.route;
@@ -102,7 +127,7 @@ export class ChatService implements ChatPort {
     this.#authorize(context);
     return this.#config.store.transaction(tx => ({ ...this.#conversation(this.#consent(tx, sessionId, context)), latestRunId: nullable(tx.get('SELECT run_id FROM chat_runs WHERE session_id=? AND owner_assistant_id=? ORDER BY accepted_at DESC,rowid DESC LIMIT 1', [sessionId, context.assistantId])?.run_id) }));
   }
-  #labels(tx: Transaction, sessionId: string, context: DomainContext) {
+  #labels(tx: Transaction, sessionId: string, context: DomainContext): SelectedLabel[] {
     const consent = this.#liveConsent(tx, sessionId, context);
     const permitted: string[] = JSON.parse(String(consent.permitted_classes));
     if (!permitted.includes(this.#config.preferences.dataClass)) throw new ChatError('unavailable');
@@ -113,6 +138,31 @@ export class ChatService implements ChatPort {
       if (!permitted.includes(label.dataClass) || !this.#config.route.allows([label.dataClass])) throw new ChatError('unavailable');
       return { ...subject, ...label, revision: this.#config.classify(subject, tx)!.revision };
     });
+  }
+  /**
+   * Resolve, classify and freeze an explicit selection inside the accept
+   * transaction, before any user-entry or run write. Every record's entry label
+   * and parent-session label must be known, owned and permitted by the sending
+   * consent; the frozen serialization is bounded before any capture.
+   */
+  #resolveSelection(tx: Transaction, selected: readonly string[], labels: SelectedLabel[], consent: SQLRow, context: DomainContext): ResolvedEntry[] | null {
+    if (selected.length === 0) return null;
+    let resolved: { records: ResolvedEntry[] };
+    try { resolved = this.#config.domain.execute(tx, 'resolveEntries', { entryIds: [...selected] }, this.#context(context)); }
+    catch (error) {
+      if (error instanceof ServiceError && error.code === 'NOT_FOUND') throw new ChatError('not_found');
+      throw error;
+    }
+    const permitted: string[] = JSON.parse(String(consent.permitted_classes));
+    const add = (subject: { kind: 'session' | 'entry'; id: string }) => {
+      if (labels.some(existing => existing.kind === subject.kind && existing.id === subject.id)) return;
+      const label = classify(this.#config, subject, tx);
+      if (!permitted.includes(label.dataClass) || !this.#config.route.allows([label.dataClass])) throw new ChatError('unavailable');
+      labels.push({ ...subject, ...label, revision: this.#config.classify(subject, tx)!.revision });
+    };
+    for (const record of resolved.records) { add({ kind: 'entry', id: record.entryId }); add({ kind: 'session', id: record.sessionId }); }
+    if (Buffer.byteLength(JSON.stringify(resolved.records), 'utf8') > MAX_SERIALIZED_SELECTION_BYTES) throw new ChatError('selection_too_large');
+    return resolved.records;
   }
   #checkPolicy(runId: string, sessionId: string, context: DomainContext) {
     return this.#config.store.transaction(tx => {
@@ -181,9 +231,14 @@ export class ChatService implements ChatPort {
     if (!this.#ready) throw new ChatError('recovery_required');
     if (!input || typeof input.sessionId !== 'string' || !input.sessionId.trim() || typeof input.text !== 'string' || !input.text.trim()
       || typeof input.idempotencyKey !== 'string' || !input.idempotencyKey.trim() || input.idempotencyKey.length > 128
-      || Object.keys(input).some(key => !['sessionId', 'text', 'idempotencyKey', 'retryOf'].includes(key))
+      || Object.keys(input).some(key => !['sessionId', 'text', 'idempotencyKey', 'retryOf', 'selectedMemoryEntryIds'].includes(key))
       || (input.retryOf !== undefined && (typeof input.retryOf !== 'string' || !input.retryOf.trim()))) throw new ChatError('invalid_input');
-    const fingerprint = hash(JSON.stringify({ sessionId: input.sessionId, text: input.text, retryOf: input.retryOf ?? null }));
+    // Canonical selection: absent and [] are empty; duplicates coalesce and the
+    // order is canonical. The fingerprint key appears only for a non-empty list,
+    // so every stored empty-selection hash stays valid.
+    const selected = normalizeSelectedMemory(input.selectedMemoryEntryIds);
+    const fingerprint = hash(JSON.stringify({ sessionId: input.sessionId, text: input.text, retryOf: input.retryOf ?? null,
+      ...(selected.length ? { selectedMemoryEntryIds: selected } : {}) }));
     const result = this.#config.store.transaction(tx => {
       const prior = tx.get('SELECT * FROM chat_runs WHERE owner_assistant_id=? AND idempotency_key=?', [context.assistantId, input.idempotencyKey]);
       if (prior) {
@@ -195,6 +250,7 @@ export class ChatService implements ChatPort {
         || typeof route.allows !== 'function' || typeof this.#config.model?.generate !== 'function') throw new ChatError('unavailable');
       const consent = this.#liveConsent(tx, input.sessionId, context);
       const labels = this.#labels(tx, input.sessionId, context);
+      const frozen = this.#resolveSelection(tx, selected, labels, consent, context);
       const session = this.#config.domain.execute(tx, 'getSession', { id: input.sessionId }, this.#context(context)).session;
       if (tx.get("SELECT run_id FROM chat_runs WHERE session_id=? AND state!='terminal'", [input.sessionId])) throw new ChatError('active_run');
       if (input.retryOf) {
@@ -209,7 +265,8 @@ export class ChatService implements ChatPort {
       [runId, input.sessionId, entry.id, context.assistantId, context.clientId, input.idempotencyKey, fingerprint, context.authorityEpoch, route.provider, route.model, PROMPT_VERSION, input.retryOf ?? null, ctx.now]);
       labels.push({ kind: 'entry', id: entry.id, ...classify(this.#config, { kind: 'entry', id: entry.id }, tx), revision: this.#config.classify({ kind: 'entry', id: entry.id }, tx)!.revision });
       tx.run('INSERT INTO chat_run_policy VALUES (?,1,?,?,?)', [runId, Number(consent.revision), this.#identity(), JSON.stringify(labels)]);
-      return { run: snapshot(tx.get('SELECT * FROM chat_runs WHERE run_id=?', [runId])!), fresh: true, policy: JSON.stringify(labels) };
+      if (frozen) tx.run('INSERT INTO chat_run_context VALUES (?,?,?,?)', [runId, 1, JSON.stringify(selected), JSON.stringify(frozen)]);
+      return { run: this.#snapshot(tx, tx.get('SELECT * FROM chat_runs WHERE run_id=?', [runId])!, context), fresh: true, policy: JSON.stringify(labels) };
     });
     if (result.fresh) {
       this.#workers.set(result.run.runId, new AbortController());
@@ -311,6 +368,27 @@ export class ChatService implements ChatPort {
     });
     if (event) this.#emit(run.runId, event);
   }
+  #readRunContext(runId: string): RunSelection | null {
+    return this.#config.store.transaction(tx => {
+      const row = tx.get('SELECT * FROM chat_run_context WHERE run_id=?', [runId]);
+      if (!row) return null;
+      return { requestedIds: JSON.parse(String(row.requested_ids)) as string[], records: JSON.parse(String(row.resolved_records)) as ResolvedEntry[] };
+    });
+  }
+  /**
+   * After the prompt freezes, keep labels only for the sending session, the
+   * parent sessions of included records, the selected history entries and the
+   * included record entries. Omitted records and their parents drop out, so a
+   * later correction of an omitted-only record does not abort the run.
+   */
+  #dispatchLabels(accepted: RunSnapshot, labels: PolicyLabel[], frozen: RunSelection | null, trace: ContextTrace): PolicyLabel[] {
+    if (!frozen) return labels.filter(s => s.kind === 'session' || trace.selectedHistoryIds.includes(s.id));
+    const selectedIds = new Set(trace.selectedSourceIds);
+    const included = new Set(frozen.records.filter(r => selectedIds.has(selectedEvidenceId(r.entryId))).map(r => r.entryId));
+    const parents = new Set(frozen.records.filter(r => included.has(r.entryId)).map(r => r.sessionId));
+    return labels.filter(s => (s.kind === 'session' && (s.id === accepted.sessionId || parents.has(s.id)))
+      || (s.kind === 'entry' && (trace.selectedHistoryIds.includes(s.id) || included.has(s.id))));
+  }
   async #dispatch(accepted: RunSnapshot, context: DomainContext) {
     const controller = this.#workers.get(accepted.runId);
     if (!controller) return;
@@ -318,17 +396,18 @@ export class ChatService implements ChatPort {
     try {
       if (this.get(accepted.runId, context).state !== 'accepted') return;
       const acceptedPolicy = this.#checkPolicy(accepted.runId, accepted.sessionId, context);
-      const { request, trace } = assemble(this.#config, accepted.sessionId, accepted.userEntryId, this.#context(context));
+      const frozen = this.#readRunContext(accepted.runId);
+      const { request, trace } = assemble(this.#config, accepted.sessionId, accepted.userEntryId, this.#context(context), frozen);
       if (!this.#config.route.available || !this.#config.route.allows(request.dataClasses) || !this.#config.model) { this.#finish(accepted, context, 'unavailable'); return; }
       const permitted = this.conversation(accepted.sessionId, context).permittedClasses;
       if (request.dataClasses.some(c => !permitted.includes(c))) throw new ContextFailure('unavailable');
-      const policy = { ...acceptedPolicy, selectedLabels: acceptedPolicy.selectedLabels.filter(s => s.kind === 'session' || trace.selectedHistoryIds.includes(s.id)) };
+      const policy = { ...acceptedPolicy, selectedLabels: this.#dispatchLabels(accepted, acceptedPolicy.selectedLabels, frozen, trace) };
       this.#config.store.transaction(tx => tx.run('UPDATE chat_run_policy SET selected_labels=? WHERE run_id=?', [JSON.stringify(policy.selectedLabels), accepted.runId]));
       this.#livePolicies.set(accepted.runId, { session_id: accepted.sessionId, selected_labels: JSON.stringify(policy.selectedLabels) });
       const run = this.#config.store.transaction(tx => {
         const changed = tx.run("UPDATE chat_runs SET state='dispatch_intent',intent_at=?,trace=?,manifest_hash=?,sequence=sequence+1 WHERE run_id=? AND owner_assistant_id=? AND authority_epoch=? AND state='accepted'",
           [this.#context(context).now, JSON.stringify({ ...trace, policy }), hash(JSON.stringify(trace.manifest)), accepted.runId, context.assistantId, context.authorityEpoch]);
-        return changed === 1 ? snapshot(this.#row(tx, accepted.runId, context)) : null;
+        return changed === 1 ? this.#snapshot(tx, this.#row(tx, accepted.runId, context), context) : null;
       });
       if (!run) return;
       this.#publish(run);

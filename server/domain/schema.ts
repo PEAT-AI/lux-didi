@@ -96,4 +96,14 @@ export const domainMigrations: SchemaMigration[] = [
        )`,
     ],
   },
+  {
+    owner: 'domain',
+    version: 3,
+    statements: [
+      // Additive index (R8): leading owner_id serves the existing generic
+      // owner-only `sourceReferences` helper, and the trailing owner_kind serves
+      // the selected-entry batch resolver's fixed `owner_kind='entry'` predicate.
+      `CREATE INDEX ix_source_references_owner ON source_references(owner_id, owner_kind)`,
+    ],
+  },
 ];

@@ -28,4 +28,15 @@ export const chatMigrations: readonly SchemaMigration[] = [{ owner: 'chat', vers
     run_id TEXT PRIMARY KEY REFERENCES chat_runs(run_id),
     policy_version INTEGER NOT NULL, consent_revision INTEGER NOT NULL,
     route_identity TEXT NOT NULL, selected_labels TEXT NOT NULL)`
+] },
+// Additive v3: the frozen requested ids and resolved record content/source
+// references for an explicit per-turn memory selection. Empty/old runs have no
+// row, which means empty selection. v1 (chat_runs) and v2 (chat_consents,
+// chat_run_policy) are already applied on the accepted base and are unchanged.
+{ owner: 'chat', version: 3, statements: [
+  `CREATE TABLE chat_run_context (
+    run_id TEXT PRIMARY KEY REFERENCES chat_runs(run_id),
+    schema_version INTEGER NOT NULL,
+    requested_ids TEXT NOT NULL,
+    resolved_records TEXT NOT NULL)`
 ] }];

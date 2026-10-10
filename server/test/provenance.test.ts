@@ -129,7 +129,7 @@ test('actual baseline v1 upgrade preserves all values, starts unknown, labels pe
     h.store.transaction(tx => {
       assert.deepEqual(h.port.execute(tx, 'getSession', { id: original.session.id }, h.context), { session: original.session, entries: [original.entry], nextCursor: null });
       assert.deepEqual(h.port.execute(tx, 'getCommitment', { id: original.commitment.id }, h.context).commitment, original.commitment);
-      assert.deepEqual(tx.all("SELECT version FROM runtime_migrations WHERE owner='domain' ORDER BY version").map(r => r.version), [1, 2]);
+      assert.deepEqual(tx.all("SELECT version FROM runtime_migrations WHERE owner='domain' ORDER BY version").map(r => r.version), [1, 2, 3]);
       for (const subject of subjects(original)) {
         assert.deepEqual(h.port.getRoutingLabel(tx, subject), { subject, revision: 0, dataClass: 'unknown', writer: null, recordedAt: null });
         assert.deepEqual(h.port.getRoutingLabelHistory(tx, subject), []);

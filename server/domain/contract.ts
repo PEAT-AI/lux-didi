@@ -20,6 +20,7 @@ export type {
   RoutingLabel,
   RoutingLabelLookup,
   RoutingLabelCorrection,
+  ResolvedEntry,
 } from '../contracts/domain.js';
 export { ServiceError };
 

@@ -65,6 +65,8 @@ import Security
             expect(try await js(shell.webView, "document.cookie") as? String == "", "HttpOnly cookie invisible to document.cookie")
             // A connected WK subtree must never be consumed from a detached AX task:
             // WebKit aborts on its main-thread-only accessibility implementation.
+            expect(NSApp.isActive && window.isMainWindow && window.isKeyWindow && window.isVisible && window.occlusionState.contains(.visible),
+                   "owned connected fixture window active/main/key/unoccluded before AX")
             let connectedAX = await OwnedWindowProof.consumerTrace(window)
             // Retain the exact fixture observation even when its identity gate fails.
             let axReport = URL(fileURLWithPath: CommandLine.arguments[2]).appendingPathComponent("connected-wk-ax.json")

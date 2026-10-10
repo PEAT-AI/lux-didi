@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
@@ -146,14 +146,50 @@ test('symlink-addressed supervised host serves durable commands and closes on ow
 
 test('explicit missing owner-profile refuses canonical CLI without leaking the supplied path', async () => {
   await fixture(async ({ dir }) => {
-    await mkdir(join(dir, 'assets'));
+    const webRoot = join(dir, 'static');
+    await mkdir(join(webRoot, 'assets'), { recursive: true });
     for (const file of ['index.html', 'assets/fixture.js', 'assets/fixture.css', 'sw.js', 'manifest.webmanifest', 'icon.svg']) {
-      await writeFile(join(dir, file), file === 'index.html' ? '<script src="/assets/fixture.js"></script><link href="/assets/fixture.css" rel="stylesheet">' : 'synthetic');
+      await writeFile(join(webRoot, file), file === 'index.html' ? '<script src="/assets/fixture.js"></script><link href="/assets/fixture.css" rel="stylesheet">' : 'synthetic');
     }
     const privatePath = join(dir, 'synthetic-private-missing.json');
-    const outcome = await invoke([entry, '--owner-profile', privatePath, '--data-dir', join(dir, 'state'), '--web-root', dir, '--port', '0'], dir);
+    const outcome = await invoke([entry, '--owner-profile', privatePath, '--data-dir', join(dir, 'state'), '--web-root', webRoot, '--port', '0'], dir);
     assert.notEqual(outcome.code, 0);
     assert.ok(!outcome.stderr.includes(privatePath));
     assert.match(outcome.stderr, /invalid_profile/);
+  });
+});
+
+
+test('protected host snapshot has safe current label, restart reloads it and storage identity stays stable', async () => {
+  await fixture(async ({ dir }) => {
+    const webRoot = join(dir, 'static'), dataDir = join(dir, 'state'), path = join(dir, 'synthetic-owner.json');
+    await chmod(dir, 0o700); await mkdir(join(webRoot, 'assets'), { recursive: true });
+    for (const file of ['index.html', 'assets/fixture.js', 'assets/fixture.css', 'sw.js', 'manifest.webmanifest', 'icon.svg']) {
+      await writeFile(join(webRoot, file), file === 'index.html' ? '<script src="/assets/fixture.js"></script><link href="/assets/fixture.css" rel="stylesheet">' : 'synthetic');
+    }
+    const domain = createDomainPort({ outbox: Outbox });
+    const store = new Store(dataDir, [...domain.migrations, ...chatMigrations, ...liveMigrations]);
+    const ownerId = store.assistantId; store.close();
+    const profile = { schemaVersion: 1, kind: 'profile', ownerId, profileVersion: 'synthetic-private-version', displayName: 'Example A',
+      style: { text: 'SYNTHETIC hidden style', dataClass: 'private' }, lore: { text: 'SYNTHETIC hidden lore', dataClass: 'sensitive' } };
+    await writeFile(path, JSON.stringify(profile), { mode: 0o600 });
+    for (const label of ['Example A', 'Example B']) {
+      const process = launch([entry, '--supervised', '--owner-profile', path, '--data-dir', dataDir, '--web-root', webRoot, '--port', '0'], dir);
+      process.line.catch(() => {});
+      try {
+        process.child.stdin.write(`${JSON.stringify({ type: 'start', schemaVersion: 1, nonce: randomUUID() })}\n`);
+        const readyLine = await process.line; const ready = JSON.parse(readyLine);
+        const credential = (await readFile(join(dataDir, 'admin-credential'), 'utf8')).trim();
+        const status = async () => (await (await fetch(`${ready.origin}/api/v1/status`, { headers: { Authorization: `Bearer ${credential}` } })).json()).data;
+        const before = await status(); assert.equal(before.assistantId, ownerId);
+        assert.deepEqual(before.ownerProfile, { status: 'configured', displayName: label });
+        assert.equal(before.model.displayName, label);
+        for (const secret of [path, profile.profileVersion, profile.style.text, profile.lore.text]) {
+          assert.ok(!JSON.stringify(before).includes(secret)); assert.ok(!readyLine.includes(secret));
+        }
+        if (label === 'Example A') { profile.displayName = 'Example B'; await writeFile(path, JSON.stringify(profile)); }
+        assert.equal((await status()).ownerProfile.displayName, label);
+      } finally { await stop(process); }
+    }
   });
 });

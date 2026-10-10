@@ -467,3 +467,26 @@ test('real Store migration4 backfills only pre-profile runs with explicit public
     assert.throws(() => store!.transaction(tx => tx.run('INSERT INTO chat_run_owner_profile VALUES (?,?,?)', ['nonexistent-run', 1, String(row.snapshot_json)])), /FOREIGN KEY constraint failed/);
   } finally { store?.close(); rmSync(dir, { recursive: true, force: true }); f.close(); }
 });
+
+test('real Store restart retains accepted Chat A and explicit interrupted-run retry binds current B', async () => {
+  const f = fixture(); const tasks: (() => void)[] = []; let reopened: Store | null = null; let originalClosed = false;
+  try {
+    const a = { schemaVersion: 1 as const, kind: 'profile' as const, ownerId: f.store.assistantId, profileVersion: 'fixture-a', displayName: 'Example A',
+      style: { text: 'SYNTHETIC restart A', dataClass: 'ordinary' as const }, lore: { text: '', dataClass: 'ordinary' as const } };
+    const chat = new ChatService({ ...f.config, ownerProfile: a, schedule: task => tasks.push(task) }); chat.recover(f.context);
+    const run = chat.accept({ sessionId: f.session.id, text: 'Hello', idempotencyKey: 'restart-a' }, f.context);
+    chat.shutdown(); f.chat.shutdown(); f.store.close(); originalClosed = true; tasks.length = 0;
+    reopened = new Store(f.dir, [...f.domain.migrations, ...chatMigrations]);
+    const context = { ...f.context, assistantId: reopened.assistantId, authorityEpoch: reopened.authorityEpoch };
+    const b = { ...a, profileVersion: 'fixture-b', displayName: 'Example B', style: { ...a.style, text: 'SYNTHETIC restart B' } };
+    const restarted = new ChatService({ ...f.config, store: reopened, ownerProfile: b, schedule: task => tasks.push(task) }); restarted.recover(context);
+    assert.equal(restarted.get(run.runId, context).state, 'terminal'); assert.equal(f.model.calls.length, 0);
+    assert.equal(restarted.accept({ sessionId: f.session.id, text: 'Hello', idempotencyKey: 'restart-a' }, context).runId, run.runId);
+    assert.equal(JSON.parse(String(reopened.transaction(tx => tx.get('SELECT snapshot_json FROM chat_run_owner_profile WHERE run_id=?', [run.runId]))!.snapshot_json)).style.text, a.style.text);
+    const retry = restarted.accept({ sessionId: f.session.id, text: 'Hello', idempotencyKey: 'restart-b', retryOf: run.runId }, context);
+    assert.equal(JSON.parse(String(reopened.transaction(tx => tx.get('SELECT snapshot_json FROM chat_run_owner_profile WHERE run_id=?', [retry.runId]))!.snapshot_json)).style.text, b.style.text);
+    tasks.shift()!();
+    for await (const event of restarted.subscribe(retry.runId, context)) if (event.type === 'snapshot' && event.run.state === 'terminal') break;
+    assert.ok(f.model.calls[0]!.system.includes(b.style.text)); restarted.shutdown();
+  } finally { reopened?.close(); if (!originalClosed) f.store.close(); rmSync(f.dir, { recursive: true, force: true }); }
+});

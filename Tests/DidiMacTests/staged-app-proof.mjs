@@ -42,7 +42,10 @@ assert((nodeInfo.mode & 0o022) === 0, 'bundled node must not be group/world writ
 
 // One launcher, one Info.plist, no duplicate entitlements next to the app.
 const macos = readdirSync(join(app, 'Contents/MacOS')).sort();
-assert(JSON.stringify(macos) === JSON.stringify(['LuxDidi', 'node']), 'exactly one launcher plus bundled node');
+assert(macos.includes('LuxDidi') && macos.includes('node'), 'exactly one launcher plus bundled node');
+for (const entry of macos) {
+  assert(entry === 'LuxDidi' || entry === 'node' || entry.endsWith('.dylib'), `unexpected Contents/MacOS entry ${entry}`);
+}
 assert(!readdirSync(join(app, 'Contents')).includes('entitlements'), 'no entitlements copied into the bundle');
 
 // No developer home or build path may appear in the public artifact.

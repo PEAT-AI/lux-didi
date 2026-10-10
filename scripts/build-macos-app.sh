@@ -57,6 +57,12 @@ if [ -n "$assets" ]; then
   [ -d "$assets/web/dist" ] || { echo "build-macos-app.sh: asset web root missing" >&2; exit 2; }
 
   install -m 0755 "$assets/node" "$app/Contents/MacOS/node"
+  if [ -d "$assets/lib" ]; then
+    for dylib in "$assets/lib"/*.dylib; do
+      [ -e "$dylib" ] || continue
+      install -m 0755 "$dylib" "$app/Contents/MacOS/"
+    done
+  fi
   rm -rf "$app/Contents/Resources/server" "$app/Contents/Resources/web"
   cp -R "$assets/server" "$app/Contents/Resources/server"
   cp -R "$assets/web" "$app/Contents/Resources/web"
@@ -105,4 +111,4 @@ done < <(find "$app" -type f -print0)
 
 codesign --force --sign - --entitlements Resources/LuxDidi.entitlements "$app"
 codesign --verify --deep --strict "$app"
-printf 'BUILD-MACOS-APP PASS app=%s assets=%s\n' "$app" "${assets:-none}"
+printf 'BUILD-MACOS-APP PASS app=%s assets=%s libs=%s\n' "$app" "${assets:-none}" "$(ls "$app/Contents/MacOS"/*.dylib 2>/dev/null | wc -l | tr -d ' ')"

@@ -189,8 +189,8 @@ struct ConfigureRequest: Equatable {
     /// 0 saved, 2 refused. Both messages are safe: no path or content.
     func run() -> Int32 {
         do {
-            try OperatorSettings.update(configDir: configDir.map { URL(fileURLWithPath: $0) },
-                                        ownerProfilePath: ownerProfilePath.map { URL(fileURLWithPath: $0) })
+            _ = try OperatorSettings.update(configDir: configDir.map { URL(fileURLWithPath: $0) },
+                                            ownerProfilePath: ownerProfilePath.map { URL(fileURLWithPath: $0) })
             print("DIDI CONFIGURE: saved")
             return 0
         } catch {

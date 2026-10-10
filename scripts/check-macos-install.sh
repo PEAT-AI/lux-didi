@@ -177,21 +177,56 @@ assert data["assistantId"] == sys.argv[2], data["assistantId"]
 print("MACOS-INSTALL: protected API accepted label", profile["displayName"])
 PY
   python3 -c 'import json,sys;r=json.load(open(sys.argv[1]));assert r.get("success") is True and (r.get("error") in (None, {})), r.get("error")' "$proof/run-2.json"
-  # Read-only store seam: the immutable owner-profile snapshot persisted per run.
-  snapshot="$(python3 - "$state/state.sqlite" <<'PY'
-import sqlite3, sys
-try:
-    db = sqlite3.connect("file:%s?mode=ro" % sys.argv[1], uri=True)
-    rows = db.execute("SELECT snapshot_json FROM chat_run_owner_profile").fetchall()
-    print(rows[-1][0] if rows else "")
-except Exception:
-    print("")
+  # Fixture P0/P1/P2: the test-only host entry injects a recording synthetic
+  # transport so the per-run immutable snapshot is actually produced.
+  fstate="$proof/fixture-state"; fconfig="$HOME/fixture-provider-config"
+  mkdir -p "$fconfig"; chmod 0700 "$fconfig"
+  mkdir -p "$proof/fx-p0"
+  "$work/observer" --verification "$fixture" "$proof/fx-p0" "$(uuidgen)" run --installed-proof --proof-state "$fstate" --proof-report "$proof/fx-p0.json"
+  fx_assistant="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["service"]["assistantId"])' "$proof/fx-p0.json")"
+  pin="$work/profile-input.json"; senv="$work/source.env"
+  printf '{"schemaVersion":1,"enabled":true,"provider":"gemini","modelId":"synthetic-model","keyReference":"gemini-primary"}\n' > "$pin"
+  printf 'GEMINI_API_KEY=synthetic-NEVER-REAL\n' > "$senv"; chmod 0600 "$pin" "$senv"
+  svc_dist="$fixture/Contents/Resources/server/node_modules/@lux-didi/service/dist"
+  "$fixture/Contents/MacOS/node" --input-type=module -e 'import { initializeProviderConfig } from process.argv[1]; initializeProviderConfig({ configDir: process.argv[2], ownerId: process.argv[3], profileInputPath: process.argv[4], sourceEnvPath: process.argv[5] });' "file://$svc_dist/config/index.js" "$fconfig" "$fx_assistant" "$pin" "$senv"
+  "$fixture/Contents/MacOS/LuxDidi" --configure --config-dir "$fconfig" --owner-profile "$profileDir/owner-profile.json"
+  run_fixture() {
+    local label="$1" report="$2"
+    mkdir -p "$proof/fx-$label"
+    "$work/observer" --verification "$fixture" "$proof/fx-$label" "$(uuidgen)" run --installed-proof --proof-state "$fstate" --proof-report "$report"
+  }
+  run_fixture p1 "$proof/fx-p1.json"
+  python3 - "$fstate/state.sqlite" "$proof/fx-triple.json" <<'PY'
+import hashlib, json, sqlite3, sys
+db = sqlite3.connect("file:%s?mode=ro" % sys.argv[1], uri=True)
+rows = db.execute("SELECT run_id, snapshot_json FROM chat_run_owner_profile ORDER BY rowid").fetchall()
+assert rows, "no chat_run_owner_profile row produced by the fixture"
+run_id, snapshot = rows[-1]
+snap = json.loads(snapshot)
+assert snap.get("kind") == "profile" and snap.get("displayName") == "Synthetic Operator", snap
+json.dump({"run_id": run_id, "sha256": hashlib.sha256(snapshot.encode()).hexdigest(), "snapshot": snap}, open(sys.argv[2], "w"))
+print("FIXTURE-P1 run=%s sha256=%s" % (run_id, hashlib.sha256(snapshot.encode()).hexdigest()))
 PY
-)"
-  if [ -z "$snapshot" ]; then
-    echo 'MACOS-INSTALL FAIL: no immutable chat_run_owner_profile snapshot (needs the inert-run proof seam from R5/R6)' >&2; exit 1
-  fi
-  python3 -c 'import json,sys;d=json.loads(sys.argv[1]);assert d["kind"]=="profile" and d["displayName"]=="Synthetic Operator", d' "$snapshot"
+  # P2: change only a non-label profile field, restart, and prove the persisted
+  # P1 run/hash is preserved.
+  python3 - "$profileDir/owner-profile.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); d["profileVersion"] = "synthetic-2"
+json.dump(d, open(sys.argv[1], "w"))
+PY
+  "$fixture/Contents/MacOS/LuxDidi" --configure --owner-profile "$profileDir/owner-profile.json" > /dev/null
+  run_fixture p2 "$proof/fx-p2.json"
+  python3 - "$fstate/state.sqlite" "$proof/fx-triple.json" <<'PY'
+import hashlib, json, sqlite3, sys
+db = sqlite3.connect("file:%s?mode=ro" % sys.argv[1], uri=True)
+rows = db.execute("SELECT run_id, snapshot_json FROM chat_run_owner_profile ORDER BY rowid").fetchall()
+recorded = json.load(open(sys.argv[2]))
+assert recorded["run_id"] in [r[0] for r in rows], "P1 run lost after the P2 restart"
+p1 = json.loads([r[1] for r in rows if r[0] == recorded["run_id"]][0])
+assert p1.get("displayName") == "Synthetic Operator", p1
+print("FIXTURE-P2 preserved run=%s displayName=%s" % (recorded["run_id"], p1["displayName"]))
+PY
+  echo 'MACOS-INSTALL: fixture snapshot transport pass'
   # A profile for a foreign identity must fail closed at the actual host.
   python3 - "$profileDir/other.json" <<'PY'
 import json, sys

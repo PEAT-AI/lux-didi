@@ -42,7 +42,7 @@ const request: ModelRequest = { system: 'synthetic instruction', promptVersion: 
 function adapter(credentials: { resolve(reference: string): Promise<string | undefined> }, transport: Transport) {
   return new GeminiAdapter({ modelId: scope.modelId, keyReference: scope.keyReference, credentials, transport, route: { enabled: true, provider: 'gemini', modelId: scope.modelId, dataClasses: ['ordinary', 'private'] } });
 }
-const response = () => new Response('data: {"candidates":[{"content":{"parts":[{"text":"synthetic answer"}]},"finishReason":"STOP"}]}\n\n', { status: 200 });
+const response = () => new Response('data: {"candidates":[{"content":{"role":"model","parts":[{"text":"synthetic answer"}]},"finishReason":"STOP"}]}\n\n', { status: 200, headers: { 'content-type': 'text/event-stream' } });
 
 test('A1 actual CLI v2 import, protected load and string resolution; detached non-secret receipt', async t => {
   const f = fixture(t); const imported = f.init(); assert.equal(imported.status, 0, imported.stderr);

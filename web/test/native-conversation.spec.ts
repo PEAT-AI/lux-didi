@@ -58,10 +58,9 @@ try {
   await start();
   browser = await chromium.launch({ channel: 'chromium', headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
   context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, timezoneId: 'UTC' }); page = await context.newPage();
-  const errors = [];
-  const starts = [], responses = [];
-  page.on('request', request => { if (request.url().includes('/api/v1')) starts.push({ path: new URL(request.url()).pathname, method: request.method(), t: request.timing().startTime }); });
-  page.on('response', response => { const request = response.request(); if (request.url().includes('/api/v1')) responses.push({ path: new URL(request.url()).pathname, method: request.method(), t: request.timing().responseStart }); });
+  const errors = [], writes = [], observed = [];
+  page.on('request', request => { if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/v1/conversation-selection') writes.push(request.timing().startTime); });
+  page.on('response', response => { const request = response.request(); if (request.url().includes('/api/v1')) { const timing = request.timing(); observed.push({ path: new URL(request.url()).pathname, method: request.method(), start: timing.startTime, responseStart: timing.responseStart }); } });
   page.on('pageerror', error => errors.push(error.message));
 
   await step('actual headless hardware GPU without product fixture mode', async () => {
@@ -127,25 +126,24 @@ try {
 
   await step('the conversation subscription is established before the durable snapshot read', async () => {
     await choose('Native B · gemini-connected-test · active');
-    starts.length = 0; responses.length = 0;
+    observed.length = 0;
     // Deliberate response control: without awaiting the subscription the snapshot GET would be issued first.
     await page.route('**/conversations/*/events', async route => { await new Promise(resolve => setTimeout(resolve, 300)); await route.continue(); });
     try {
       await choose('Native A · gemini-connected-test · active');
       await page.waitForFunction(async expected => { const response = await fetch('/api/v1/conversation-selection', { credentials: 'same-origin', cache: 'no-store' }); return (await response.json()).data.sessionId === expected; }, a.sessionId);
     } finally { await page.unroute('**/conversations/*/events'); }
-    const events = responses.find(item => item.method === 'POST' && item.path.endsWith('/events'));
-    const snapshot = starts.find(item => item.method === 'GET' && item.path === `/api/v1/conversations/${a.sessionId}`);
+    const events = observed.find(item => item.method === 'POST' && item.path.endsWith('/events'));
+    const snapshot = observed.find(item => item.method === 'GET' && item.path === `/api/v1/conversations/${a.sessionId}`);
     assert.ok(events && snapshot, `events=${JSON.stringify(events)} snapshot=${JSON.stringify(snapshot)}`);
-    assert.ok(events.t <= snapshot.t, `subscription response ${events.t} must precede the snapshot request ${snapshot.t}`);
+    assert.ok(events.responseStart <= snapshot.start, `subscription response ${events.responseStart} must precede the snapshot request ${snapshot.start}`);
   });
 
   await step('a superseded selection write is never sent and the latest committed choice is the selection', async () => {
-    starts.length = 0;
+    writes.length = 0;
     await choose('Native B · gemini-connected-test · active');
     await choose('Native A · gemini-connected-test · active');
     await page.waitForFunction(async expected => { const response = await fetch('/api/v1/conversation-selection', { credentials: 'same-origin', cache: 'no-store' }); return (await response.json()).data.sessionId === expected; }, a.sessionId);
-    const writes = starts.filter(item => item.method === 'POST' && item.path === '/api/v1/conversation-selection');
     assert.equal(writes.length, 2, `one write per explicit choice: ${JSON.stringify(writes)}`);
     assert.equal((await api('/conversation-selection')).sessionId, a.sessionId);
   });

@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
@@ -56,7 +57,7 @@ test('stdio binding registers, discovers and calls a real child server, then cle
     assert.deepEqual(discovery.tools.map(tool => tool.name), ['echo']);
     registry.approve({ endpointId: 'local-stdio', schemaDigest: discovery.schemaDigest, toolNames: ['echo'], effect: 'read', account: ACCOUNT, resource: RESOURCE, generation: 1 });
     const result = await adapter.call(request('local-stdio'));
-    assert.equal(result.state, 'completed');
+    assert.equal(result.state, 'completed', JSON.stringify(result));
     if (result.state !== 'completed' || result.payload.state !== 'available') throw new Error('missing stdio payload');
     assert.equal(readPayload(adapter, request('local-stdio'), result.payload.handle, result.payload.byteLength), 'stdio-pong');
     const pid = Number(readFileSync(pidFile, 'utf8'));
@@ -202,7 +203,9 @@ test('explicit routing env merges with SDK defaults and the whole parent environ
 
 test('an absolute args path containing a space is accepted and used', async () => {
   const { dir, pidFile } = scratch();
-  const spaced = join(dir, 'child with space.mjs');
+  const spacedDir = join(here, 'fixtures', 'space dir');
+  mkdirSync(spacedDir, { recursive: true });
+  const spaced = join(spacedDir, 'child.mjs');
   copyFileSync(child, spaced);
   const registry = new McpRegistry();
   registry.register(config('local-stdio', 'ok', pidFile, 'stdio-pong', { args: [spaced, 'ok', pidFile, 'stdio-pong'] }));
@@ -331,12 +334,12 @@ test('protected stdio configuration carries the binding through init/approve/loa
   });
   const credentialFor = (generation: number, enabled: boolean) => ({ schemaVersion: 1, ownerId, connectionId: 'local', endpointId: 'local-endpoint', url: '', account: ACCOUNT, resource: RESOURCE, generation, credentialRef: null, token: '', enabled });
   const profileInput = join(dir, 'profile.json'); const credentialInput = join(dir, 'credential.json');
-  writeFileSync(credentialInput, JSON.stringify(credentialFor(1, false)));
-  writeFileSync(profileInput, JSON.stringify({ schemaVersion: 1, transport: 'stdio', dataDir, expectedPolicySha256: null, policy: policyFor(baseArgs, 1, false) }));
+  writeFileSync(credentialInput, JSON.stringify(credentialFor(1, false)), { mode: 0o600 }); chmodSync(credentialInput, 0o600);
+  writeFileSync(profileInput, JSON.stringify({ schemaVersion: 1, transport: 'stdio', dataDir, expectedPolicySha256: null, policy: policyFor(baseArgs, 1, false) }), { mode: 0o600 }); chmodSync(profileInput, 0o600);
   try {
     assert.equal(config.initMcpConfiguration({ configDir, ownerId, profileInput, credentialInput }).state, 'pending');
-    writeFileSync(credentialInput, JSON.stringify(credentialFor(2, true)));
-    writeFileSync(profileInput, JSON.stringify({ schemaVersion: 1, transport: 'stdio', dataDir, expectedPolicySha256: null, policy: policyFor(baseArgs, 2, true) }));
+    writeFileSync(credentialInput, JSON.stringify(credentialFor(2, true)), { mode: 0o600 }); chmodSync(credentialInput, 0o600);
+    writeFileSync(profileInput, JSON.stringify({ schemaVersion: 1, transport: 'stdio', dataDir, expectedPolicySha256: null, policy: policyFor(baseArgs, 2, true) }), { mode: 0o600 }); chmodSync(profileInput, 0o600);
     assert.equal(config.approveMcpConfiguration({ configDir, ownerId, dataDir, policyInput: profileInput }).state, 'pending');
     const selection = config.loadMcpConfiguration({ configDir, ownerId, dataDir });
     assert.equal(isStdioEndpoint(selection.endpoint), true, 'protected configuration must carry the stdio binding');

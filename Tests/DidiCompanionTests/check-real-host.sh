@@ -79,6 +79,7 @@ for i,r in enumerate(reports):
  assert launch['identityVerified'] and launch['registeredBeforeRelease'] and launch['released'] and launch['observerDisposed']
  assert launch['kernel']['filter']==-5 and launch['kernel']['flags'] & 0x84000000 == 0x84000000
  assert os.WIFEXITED(launch['kernel']['rawStatus']) and os.WEXITSTATUS(launch['kernel']['rawStatus'])==0
+ assert launch['serviceIdentity']['serviceNonce']==r['service']['nonce']
  assert launch['serviceIdentity']['pid']==r['service']['pid'] and launch['serviceIdentity']['pid']!=r['native']['pid']
  assert launch['serviceKernel']['flags'] & 0x84000000 == 0x84000000 and launch['serviceKernel']['rawStatus']==0
  assert launch['forced'] is False and launch['releaseState'] and launch['nativeDisposed'] is True

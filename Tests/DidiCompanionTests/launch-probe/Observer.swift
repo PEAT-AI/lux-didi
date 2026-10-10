@@ -174,8 +174,8 @@ import AppKit
             guard bound["nonce"] as? String == nonce, let pid = bound["pid"] as? Int, pid > 0,
                   pid != Int(target?.processIdentifier ?? -1), pid != Int(getpid()), let path = bound["executable"] as? String else { fail("service association"); return }
             let (facts, actual) = try identity(pid_t(pid), nonce: nonce, bundle: bundle)
-            guard facts.uid == getuid(), actual["executable"] as? String == physicalPath(path) else { fail("service identity"); return }
-            serviceFacts = facts; serviceRecord = actual; serviceFD = probe_register(pid_t(pid))
+            guard facts.uid == getuid(), facts.parent == target?.processIdentifier, actual["executable"] as? String == physicalPath(path) else { fail("service identity"); return }
+            serviceFacts = facts; serviceRecord = actual; serviceRecord?["serviceNonce"] = bound["serviceNonce"]; serviceFD = probe_register(pid_t(pid))
             guard serviceFD >= 0 else { fail("service registration"); return }
             if args[4] == "cancel-service" { send("cancel") }
             if args[4] == "eof-service" { close(control); control = -1 }

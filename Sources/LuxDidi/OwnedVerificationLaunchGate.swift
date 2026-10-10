@@ -81,8 +81,8 @@ import Darwin
             unlink(temporary); throw CocoaError(.fileWriteUnknown)
         }
     }
-    func bindService(pid: pid_t, executable: String) throws {
-        try write(["pid": Int(pid), "executable": executable, "nonce": nonce], name: "service.json")
+    func bindService(pid: pid_t, executable: String, serviceNonce: String) throws {
+        try write(["pid": Int(pid), "executable": executable, "nonce": nonce, "serviceNonce": serviceNonce], name: "service.json")
     }
     private func awaitRelease() async -> Bool {
         if cancelled || Task.isCancelled { return false }

@@ -109,7 +109,7 @@ import CryptoKit
             try proof.write(report)
             await model.reconnect()
             guard let connection = owner.currentConnection, let client = model.client else { throw InstalledProofError.unavailable }
-            try gate?.bindService(pid: connection.pid, executable: runtime.node.path)
+            try gate?.bindService(pid: connection.pid, executable: runtime.node.path, serviceNonce: connection.nonce)
             try Task.checkCancellation()
             observations["credentialImported"] = owner.credentialImported; observations["bootstrap"] = true
             report["service"] = ["pid": Int(connection.pid), "nonce": connection.nonce, "origin": connection.descriptor.origin,

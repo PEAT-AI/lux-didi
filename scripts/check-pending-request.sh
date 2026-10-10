@@ -11,4 +11,4 @@ swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-
   -D PENDING_REQUEST_TESTING \
   "$root/Sources/LuxDidi/PendingRequestStore.swift" \
   "$root/Tests/DidiPendingRequestTests/Runner.swift" -o "$work/pending-tests"
-"$work/pending-tests" --durations=10
+DIDI_PENDING_FIXTURE_PARENT="$root/Tests/DidiPendingRequestTests" "$work/pending-tests" --durations=10

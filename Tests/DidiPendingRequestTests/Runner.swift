@@ -30,7 +30,8 @@ final class Fixture: @unchecked Sendable {
     let root: URL
     let directory: String
     init() throws {
-        root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+        root = URL(fileURLWithPath: ProcessInfo.processInfo.environment["DIDI_PENDING_FIXTURE_PARENT"]
+            ?? FileManager.default.temporaryDirectory.path).resolvingSymlinksInPath()
             .appendingPathComponent("didi-pending-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false,
                                                attributes: [.posixPermissions: 0o700])
@@ -360,6 +361,7 @@ func processDeathAndContention() async throws {
             var durations: [(String, TimeInterval)] = []
             for (name, test) in tests {
                 let start = Date()
+                print("START \(name)")
                 try await test()
                 durations.append((name, Date().timeIntervalSince(start)))
                 print("PASS \(name)")

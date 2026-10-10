@@ -24,8 +24,8 @@ function firstLine(child) {
     child.once('exit', () => { clearTimeout(timer); reject(new Error('fixture exited before ready')); });
   });
 }
-async function host() {
-  const child = own(process.execPath, ['Tests/DidiLiveTests/host-child.mjs', state, config, resolve('web/dist')]);
+async function host(deadlineMode = 'idle') {
+  const child = own(process.execPath, ['Tests/DidiLiveTests/host-child.mjs', state, config, resolve('web/dist'), deadlineMode]);
   const ready = await firstLine(child);
   const token = readFileSync(join(state, 'admin-credential'), 'utf8').trim();
   return { child, ready, token };
@@ -87,11 +87,17 @@ try {
     const [message] = await once(socket, 'message'); assert.equal(JSON.parse(message.toString()).type, 'ready');
     return { socket, id: created.liveSessionId };
   }
+  // With idle forwarding repaired, use a separate frozen profile whose idle exceeds its hard deadline.
+  const beforeHard = once(current.child, 'exit'); current.child.stdin.end(); assert.equal((await beforeHard)[0], 0);
+  current = await host('hard');
   const socketClose = await attached('process-socket-close');
   const socketClosed = once(socketClose.socket, 'close'); socketClose.socket.close(); await socketClosed;
   const closed = await terminal(current, socketClose.id);
   assert.notEqual(closed.terminal.state, 'outcome_unknown');
+  assert.ok(['deadline', 'session_timeout'].includes(closed.terminal.code), 'separate hard deadline cannot pass on idle_timeout');
   console.log('PASS real socket-close cleanup at separate owner hard deadline durably terminal');
+  const afterHard = once(current.child, 'exit'); current.child.stdin.end(); assert.equal((await afterHard)[0], 0);
+  current = await host('idle');
 
   // Separate public-profile regression: idle must settle BEFORE sessionMs=1000, not be rescued by hard deadline.
   const idle = await attached('process-profile-idle');

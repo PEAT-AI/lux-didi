@@ -21,6 +21,10 @@ function instant(value: unknown): string | null {
   if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?Z$/.test(result) || !Number.isFinite(Date.parse(result)) || new Date(result).toISOString().replace('.000Z', 'Z') !== result.replace('.000Z', 'Z')) return bad('Invalid UTC instant');
   return result;
 }
+function memoryIds(value: unknown): void {
+  if (!Array.isArray(value) || value.length > 32) return bad('Selected notes must be a list of at most 32 stored note ids');
+  for (const id of value) if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(id)) return bad('Selected notes must be exact stored note ids');
+}
 function revision(value: unknown): number { if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) return bad('Invalid expectedRevision'); return value; }
 function source(value: unknown): void {
   const body = object(value);
@@ -78,7 +82,7 @@ export function resolveRoute(method: string, url: URL, body?: Record<string, unk
     matched([mutation ? 'POST' : 'GET']); query(url, []);
     if (body) {
       if (action === 'enroll') { fields(body, ['title', 'timeZone'], ['title', 'timeZone']); text(body.title, 500); zone(body.timeZone); }
-      else if (action === 'accept') { fields(body, ['sessionId', 'text', 'retryOf'], ['sessionId', 'text']); uuid(body.sessionId); text(body.text); if (body.retryOf !== undefined) uuid(body.retryOf); }
+      else if (action === 'accept') { fields(body, ['sessionId', 'text', 'retryOf', 'selectedMemoryEntryIds'], ['sessionId', 'text']); uuid(body.sessionId); text(body.text); if (body.retryOf !== undefined) uuid(body.retryOf); if (body.selectedMemoryEntryIds !== undefined) memoryIds(body.selectedMemoryEntryIds); }
       else fields(body, []);
     }
     return { kind: 'connected', action, id, mutation, input: body ?? {} };

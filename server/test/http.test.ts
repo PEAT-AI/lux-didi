@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { request } from 'node:http';
@@ -154,26 +154,36 @@ test('HTTP request keys and browser session survive service and database restart
 test('package installs offline and actual production CLI serves honest runtime-only status', async () => {
   const dir = mkdtempSync(join(tmpdir(),'didi-install-'));
   let child: ReturnType<typeof spawn> | undefined;
+  let cliStage = 'CLI spawn'; let cliStdout = ''; let cliStderr = ''; let cliError: Error | undefined;
   try {
     const cwd = new URL('../../',import.meta.url);
     const env = {...process.env,npm_config_cache:join(dir,'npm-cache')};
     const packed = spawnSync('npm',['pack','--json','--offline','--ignore-scripts','--pack-destination',dir],{cwd,env,encoding:'utf8',timeout:5000});
-    assert.equal(packed.status,0,packed.stderr);
+    assert.equal(packed.status,0,packed.status === 0 ? '' : packageFailure('npm pack', 'npm', ['pack','--json','--offline','--ignore-scripts','--pack-destination','<owned-temp>'], packed, env.npm_config_cache));
     const filename = (JSON.parse(packed.stdout) as {filename:string}[])[0]!.filename;
     const installed = spawnSync('npm',['install','--prefix',join(dir,'install'),'--offline','--ignore-scripts','--omit=dev','--no-audit','--no-fund',join(dir,filename)],{env,encoding:'utf8',timeout:5000});
-    assert.equal(installed.status,0,installed.stderr);
+    assert.equal(installed.status,0,installed.status === 0 ? '' : packageFailure('npm offline install', 'npm', ['install','--prefix','<owned-temp>/install','--offline','--ignore-scripts','--omit=dev','--no-audit','--no-fund','<owned-tarball>'], installed, env.npm_config_cache));
     const state = join(dir,'state');
     child = spawn(process.execPath,[join(dir,'install/node_modules/@lux-didi/service/dist/index.js')],{env:{...env,DIDI_STATE_DIR:state,DIDI_PORT:'0'},stdio:['ignore','pipe','pipe']});
+    child.stdout!.on('data', data => { cliStdout += data.toString(); });
+    child.stderr!.on('data', data => { cliStderr += data.toString(); });
+    child.on('error', error => { cliError = error; });
+    cliStage = 'CLI startup';
     const exit = once(child,'exit');
     const output = await Promise.race([once(child.stdout!,'data').then(([chunk])=>String(chunk)),exit.then(([code])=>{throw Error(`CLI exited ${String(code)}`);})]);
     const origin = /http:\/\/127\.0\.0\.1:\d+/.exec(output)?.[0]; assert.ok(origin,output);
+    cliStage = 'CLI runtime';
     const health = await fetch(`${origin}/health`); assert.equal(health.status,200);
     const token = readFileSync(join(state,'admin-credential'),'utf8').trim();
     const status = await (await fetch(`${origin}/api/v1/status`,{headers:{Authorization:`Bearer ${token}`}})).json();
     assert.equal(status.data.capabilities.memory,false); assert.equal(status.data.model.configured,false); assert.deepEqual(status.data.sources,[]);
     assert.ok(!output.includes(token));
+    cliStage = 'CLI teardown';
     child.kill('SIGTERM'); const [code] = await exit; assert.equal(code,0); child = undefined;
-  } finally { if (child && child.exitCode === null) { const exit = once(child,'exit'); child.kill('SIGTERM'); await exit; } rmSync(dir,{recursive:true,force:true}); }
+  } catch (error) {
+    if (child) packageFailure(cliStage, process.execPath, ['<installed-service>/dist/index.js'], { status: child.exitCode, signal: child.signalCode, ...(cliError ? { error: cliError } : {}), stdout: cliStdout, stderr: cliStderr });
+    throw error;
+  } finally { if (child && child.pid && child.exitCode === null) { const exit = once(child,'exit'); child.kill('SIGTERM'); await exit; } rmSync(dir,{recursive:true,force:true}); }
 });
 
 test('real domain HTTP client cannot forge assistant role or access trusted assistant append', async () => {
@@ -191,4 +201,86 @@ test('real domain HTTP client cannot forge assistant role or access trusted assi
     assert.equal(hidden.status, 404);
     assert.equal(f.store.transaction(tx => port.execute(tx, 'getSession', { id: session.id }, ctx)).entries.length, 0);
   } finally { await f.cleanup(); }
+});
+
+// Only caller-owned subprocess output/cache is captured; never the ambient npm cache or environment.
+function packageFailure(stage: string, command: string, args: string[], result: {
+  status: number | null; signal: NodeJS.Signals | null; error?: Error; stdout: string | null; stderr: string | null;
+}, cache?: string): string {
+  const error = result.error as NodeJS.ErrnoException | undefined;
+  const evidence = {
+    stage, command, args, status: result.status, signal: result.signal,
+    error: error ? { name: error.name, message: error.message, stack: error.stack, code: error.code, errno: error.errno, syscall: error.syscall, path: error.path } : null,
+    stdout: result.stdout ?? null, stdoutBytes: Buffer.byteLength(result.stdout ?? ''),
+    stderr: result.stderr ?? null, stderrBytes: Buffer.byteLength(result.stderr ?? ''),
+    npmLogs: [] as { path: string; bytes: number; content: string }[],
+  };
+  // Write identity/output first so an npm-log read error cannot erase the subprocess failure.
+  process.stderr.write(`PACKAGE_FAILURE ${JSON.stringify(evidence)}\n`);
+  const logs = cache && join(cache, '_logs');
+  if (logs && existsSync(logs)) {
+    for (const name of readdirSync(logs).filter(name => name.endsWith('-debug-0.log')).sort()) {
+      const path = join(logs, name);
+      const bytes = readFileSync(path);
+      const log = { path, bytes: bytes.length, content: bytes.toString('utf8') };
+      evidence.npmLogs.push(log);
+      process.stderr.write(`PACKAGE_NPM_DEBUG ${JSON.stringify(log)}\n`);
+    }
+  }
+  // No display bound: full output/debug text survives owned-temp cleanup in the canonical log.
+  return JSON.stringify(evidence);
+}
+
+test('package diagnostics retain actual stdout-only exit failure and full owned npm debug evidence before cleanup', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-package-diagnostics-'));
+  const cache = join(dir, 'npm-cache');
+  const debug = join(cache, '_logs', 'synthetic-debug-0.log');
+  const stdout = 'synthetic stdout ' + 'x'.repeat(6000) + ' STDOUT-END';
+  const log = 'synthetic npm debug ' + 'y'.repeat(12000) + ' DEBUG-END';
+  try {
+    mkdirSync(join(cache, '_logs'), { recursive: true });
+    writeFileSync(debug, log);
+    const args = ['-e', `process.stdout.write(${JSON.stringify(stdout)}); process.exit(7)`];
+    const failed = spawnSync(process.execPath, args, { encoding: 'utf8' });
+    assert.equal(failed.status, 7);
+    assert.equal(failed.stderr, '');
+    const evidence = JSON.parse(packageFailure('synthetic offline install', process.execPath, ['-e', '<synthetic fixture>'], failed, cache));
+    assert.equal(evidence.stage, 'synthetic offline install');
+    assert.equal(evidence.command, process.execPath);
+    assert.deepEqual(evidence.args, ['-e', '<synthetic fixture>']);
+    assert.equal(evidence.status, 7);
+    assert.equal(evidence.signal, null);
+    assert.equal(evidence.error, null);
+    assert.equal(evidence.stdout, stdout);
+    assert.equal(evidence.stdoutBytes, Buffer.byteLength(stdout));
+    assert.equal(evidence.stderr, '');
+    assert.deepEqual(evidence.npmLogs, [{ path: debug, bytes: Buffer.byteLength(log), content: log }]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+  assert.equal(existsSync(dir), false);
+});
+
+test('package diagnostics distinguish actual spawn error and signal from install exit failure', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-package-diagnostics-'));
+  try {
+    const command = join(dir, 'missing-executable');
+    const missing = spawnSync(command, [], { encoding: 'utf8' });
+    assert.equal((missing.error as NodeJS.ErrnoException | undefined)?.code, 'ENOENT');
+    const spawnEvidence = JSON.parse(packageFailure('synthetic CLI spawn', command, [], missing, join(dir, 'npm-cache')));
+    assert.equal(spawnEvidence.status, null);
+    assert.equal(spawnEvidence.error.code, 'ENOENT');
+    assert.equal(spawnEvidence.error.message, missing.error!.message);
+    assert.equal(spawnEvidence.stdout, missing.stdout ?? null);
+    assert.equal(spawnEvidence.stderr, missing.stderr ?? null);
+    assert.equal(spawnEvidence.stdoutBytes, 0);
+    assert.equal(spawnEvidence.stderrBytes, 0);
+    assert.deepEqual(spawnEvidence.npmLogs, []);
+    const signalled = spawnSync(process.execPath, ['-e', 'process.stderr.write("synthetic teardown stderr"); process.kill(process.pid, "SIGTERM")'], { encoding: 'utf8' });
+    assert.equal(signalled.signal, 'SIGTERM');
+    const signalEvidence = JSON.parse(packageFailure('synthetic CLI teardown', process.execPath, ['-e', '<synthetic fixture>'], signalled));
+    assert.equal(signalEvidence.status, null);
+    assert.equal(signalEvidence.signal, 'SIGTERM');
+    assert.equal(signalEvidence.stderr, 'synthetic teardown stderr');
+    assert.equal(signalEvidence.error, null);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+  assert.equal(existsSync(dir), false);
 });

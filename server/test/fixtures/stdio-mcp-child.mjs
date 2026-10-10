@@ -3,6 +3,7 @@
 // No real accounts, network access, credentials or application files are touched.
 // argv[2] = mode (ok | hang-call | malformed | silent | crash)
 // argv[3] = optional pid file; argv[4] = tools/call payload (default 'stdio-pong').
+// When argv[3] is given the child also dumps its resolved environment to "<pid>.env".
 import { writeFileSync } from 'node:fs';
 import { Server } from '@modelcontextprotocol/server';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
@@ -10,7 +11,10 @@ import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 const mode = process.argv[2] ?? 'ok';
 const pidFile = process.argv[3];
 const payload = process.argv[4] ?? 'stdio-pong';
-if (pidFile) writeFileSync(pidFile, String(process.pid));
+if (pidFile) {
+  writeFileSync(pidFile, String(process.pid));
+  writeFileSync(`${pidFile}.env`, JSON.stringify(process.env));
+}
 
 if (mode === 'crash') process.exit(7);
 if (mode === 'silent' || mode === 'malformed') {

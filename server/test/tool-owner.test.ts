@@ -14,7 +14,7 @@ import { createLuxKnowledgeReader } from '../connectors/lux-knowledge.js';
 import type { McpPort, ToolDefinition as McpTool } from '../adapters/mcp/port.js';
 import { runTools } from '../adapters/model/loop.js';
 import type { HostContext, ModelPort, ModelRequest, ModelResult, ToolCallIntent, ToolResultBinding } from '../adapters/model/types.js';
-import { createToolsOwner, toolsMigrations } from '../tools/index.js';
+import { createToolsOwner, toolsMigrations, validatePolicy } from '../tools/index.js';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
 import { projectLuxResult } from '../tools/lux-knowledge.js';
 import type { ConnectionPolicy, LiveAuthority, RunAcceptance } from '../tools/types.js';
@@ -497,4 +497,24 @@ test('fresh owner restores durable enabled consent at the same generation but di
   const other = await fixture(t, { policy: policy({ enabled: false }) });
   assert.equal((await standingOwner(other.owner).restoreConnection('lux', () => {})).state, 'refused');
   assert.equal(other.registry.currentGrant(p.endpoint.id), undefined);
+});
+
+// Added for MCP-STDIO-R2: the endpoint binding is a per-arm union. HTTP stays
+// byte-for-byte canonical (absent transport, credentialRef string|null);
+// stdio carries transport=stdio, absolute command, ordered args, minimal env,
+// credentialRef=null and no url.
+test('endpoint union: stdio arm validates; HTTP nullability and cross-arm rejection are enforced', () => {
+  const http = policy({ endpoint: { id: 'lux', url: 'https://example.invalid/mcp', account: 'a', resource: 'r', credentialRef: null } });
+  assert.doesNotThrow(() => validatePolicy(http));
+  const stdioEndpoint = { id: 'lux', transport: 'stdio', command: '/bin/echo', args: ['a', 'b'], env: { HOME: '/tmp/x' }, account: 'a', resource: 'r', credentialRef: null } as unknown as ConnectionPolicy['endpoint'];
+  const asPolicy = (endpoint: unknown): ConnectionPolicy => ({ ...policy(), endpoint } as unknown as ConnectionPolicy);
+  assert.doesNotThrow(() => validatePolicy(asPolicy(stdioEndpoint)), 'stdio arm must validate');
+  // Strict stdio credentialRef: a non-null reference is a cross-arm value.
+  assert.throws(() => validatePolicy(asPolicy({ ...stdioEndpoint, credentialRef: 'token-ref' })), /invalid/);
+  // Cross-arm fields are refused on either arm.
+  assert.throws(() => validatePolicy(asPolicy({ ...stdioEndpoint, url: 'https://example.invalid/mcp' })));
+  assert.throws(() => validatePolicy(asPolicy({ ...http.endpoint, command: '/bin/echo', args: [] })));
+  // Unknown transport and a non-absolute command are refused.
+  assert.throws(() => validatePolicy(asPolicy({ ...http.endpoint, transport: 'sse' })));
+  assert.throws(() => validatePolicy(asPolicy({ ...stdioEndpoint, command: 'echo' })));
 });

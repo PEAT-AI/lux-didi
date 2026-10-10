@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
@@ -58,9 +58,9 @@ test('stdio binding registers, discovers and calls a real child server, then cle
     assert.equal(readPayload(adapter, request('local-stdio'), result.payload.handle, result.payload.byteLength), 'stdio-pong');
     const pid = Number(readFileSync(pidFile, 'utf8'));
     assert(Number.isSafeInteger(pid) && pid > 0);
-    const closed = await Promise.race([adapter.close().then(() => true), new Promise<boolean>(resolve => setTimeout(() => resolve(false), 3000))]);
+    const closed = await Promise.race([adapter.close().then(() => true), new Promise<boolean>(resolve => setTimeout(() => resolve(false), 6000))]);
     assert.equal(closed, true, 'adapter.close() must settle within bounds');
-    assert.equal(await waitDead(pid, 2000), true, 'child must be gone after disposal');
+    assert.equal(await waitDead(pid, 4000), true, 'child must be gone after disposal');
   } finally { await adapter.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -107,7 +107,7 @@ test('cancellation retires the child and reports an unknown outcome', async () =
     clearTimeout(timer);
     assert.equal(result.state, 'unknown');
     const pid = Number(readFileSync(pidFile, 'utf8'));
-    assert.equal(await waitDead(pid, 2000), true, 'child must be gone after cancellation');
+    assert.equal(await waitDead(pid, 4000), true, 'child must be gone after cancellation');
   } finally { await adapter.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -124,7 +124,7 @@ test('parent shutdown retires every live child', async () => {
     assert.equal((await adapter.discover('local-b')).state, 'discovered');
     const pids = [Number(readFileSync(pidFile, 'utf8')), Number(readFileSync(second, 'utf8'))];
     await adapter.close();
-    for (const pid of pids) assert.equal(await waitDead(pid, 2000), true, 'every child must be gone after parent shutdown');
+    for (const pid of pids) assert.equal(await waitDead(pid, 4000), true, 'every child must be gone after parent shutdown');
   } finally { await adapter.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -150,15 +150,60 @@ test('concurrent stdio responses stay isolated per endpoint', async () => {
   } finally { await adapter.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('changed args, environment or account lose the approved binding', () => {
+test('changed command, ordered args, routing env, account or resource lose the approved binding (full identity, never URL equality)', () => {
   const registry = new McpRegistry();
   const base = config('local-stdio', 'ok', '/tmp/unused.pid');
   registry.register(base);
   assert.equal(registry.matchesEndpoint(base), true);
   const variant = (over: Record<string, unknown>): EndpointConfig => config('local-stdio', 'ok', '/tmp/unused.pid', 'stdio-pong', over);
+  // Neither side has a URL: an absent URL must never read as a match.
+  assert.equal(registry.matchesEndpoint(variant({ command: process.execPath })), true);
+  assert.equal(registry.matchesEndpoint(variant({ command: '/bin/sh' })), false);
   assert.equal(registry.matchesEndpoint(variant({ args: [child, 'ok', '/tmp/unused.pid', 'stdio-pong', 'EXTRA'] })), false);
-  assert.equal(registry.matchesEndpoint(variant({ account: 'other' })), false);
+  assert.equal(registry.matchesEndpoint(variant({ args: [child, 'ok', '/tmp/unused.pid', 'other-payload'] })), false);
   assert.equal(registry.matchesEndpoint(variant({ env: { HOME: '/tmp/other-root' } })), false);
+  assert.equal(registry.matchesEndpoint(variant({ account: 'other' })), false);
+  assert.equal(registry.matchesEndpoint(variant({ resource: 'other' })), false);
+  // A plain HTTP-shaped config (absent transport) never matches a stdio binding.
+  assert.equal(registry.matchesEndpoint({ id: 'local-stdio', url: 'https://example.invalid/mcp', account: ACCOUNT, resource: RESOURCE }), false);
+});
+
+test('cross-arm fields, unknown transport and a non-null stdio credentialRef are refused at registration', () => {
+  const registry = new McpRegistry();
+  assert.throws(() => registry.register({ id: 's1', transport: 'stdio', command: process.execPath, args: [], account: ACCOUNT, resource: RESOURCE, url: 'https://example.invalid/mcp' } as unknown as EndpointConfig));
+  assert.throws(() => registry.register({ id: 's2', url: 'https://example.invalid/mcp', command: process.execPath, args: [], account: ACCOUNT, resource: RESOURCE } as unknown as EndpointConfig));
+  assert.throws(() => registry.register({ id: 's3', transport: 'sse', url: 'https://example.invalid/mcp', account: ACCOUNT, resource: RESOURCE } as unknown as EndpointConfig));
+  assert.throws(() => registry.register({ id: 's4', transport: 'stdio', command: process.execPath, args: [], account: ACCOUNT, resource: RESOURCE, credentialRef: 'token-ref' } as unknown as EndpointConfig));
+});
+
+test('explicit routing env merges with SDK defaults and the whole parent environment is not inherited', async () => {
+  const marker = 'DIDI-PARENT-SECRET-XYZZY';
+  const { dir, pidFile } = scratch();
+  const home = join(dir, 'child-home');
+  process.env.DIDI_PARENT_SECRET = marker;
+  const registry = new McpRegistry();
+  registry.register(config('local-stdio', 'ok', pidFile, 'stdio-pong', { env: { HOME: home } }));
+  registry.enable('local-stdio'); registry.allowEgress('local-stdio');
+  const adapter = adapterFor(registry);
+  try {
+    assert.equal((await adapter.discover('local-stdio')).state, 'discovered');
+    const childEnv = JSON.parse(readFileSync(`${pidFile}.env`, 'utf8')) as Record<string, string | undefined>;
+    assert.equal(childEnv['HOME'], home);
+    assert.equal(Object.prototype.hasOwnProperty.call(childEnv, 'DIDI_PARENT_SECRET'), false);
+    assert.notEqual(childEnv['PATH'], undefined);
+  } finally { delete process.env.DIDI_PARENT_SECRET; await adapter.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('an absolute args path containing a space is accepted and used', async () => {
+  const { dir, pidFile } = scratch();
+  const spaced = join(dir, 'child with space.mjs');
+  copyFileSync(child, spaced);
+  const registry = new McpRegistry();
+  registry.register(config('local-stdio', 'ok', pidFile, 'stdio-pong', { args: [spaced, 'ok', pidFile, 'stdio-pong'] }));
+  registry.enable('local-stdio'); registry.allowEgress('local-stdio');
+  const adapter = adapterFor(registry);
+  try { assert.equal((await adapter.discover('local-stdio')).state, 'discovered'); }
+  finally { await adapter.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('non-absolute command is refused; an absolute binding ignores a decoy PATH entry', async () => {

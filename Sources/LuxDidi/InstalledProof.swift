@@ -100,6 +100,25 @@ struct PreparedInstalledProof {
         var value = outcomes
         value["type"] = "LuxDidiInstalledProof"; value["schemaVersion"] = 1
         value["installId"] = installId; value["proofId"] = proofId; value["reopened"] = reopened
+        // R10 has exact consumer key sets. Private diagnostics belong beside it,
+        // with the same-run identity, never in the versioned consumer wire.
+        var diagnostic: [String: Any] = ["type": "LuxDidiInstalledProofDiagnostics", "schemaVersion": 1,
+            "installId": installId, "proofId": proofId, "runId": value["runId"] ?? NSNull(),
+            "nativePid": (value["native"] as? [String: Any])?["pid"] ?? NSNull(),
+            "windowId": (value["visual"] as? [String: Any])?["windowId"] ?? NSNull(),
+            "sourceSHA": (value["source"] as? [String: Any])?["releaseCommit"] ?? NSNull(),
+            "phase": value["phase"] ?? NSNull()]
+        for key in ["axConsumer", "axDirectTrace", "wkDiagnostics"] {
+            if let item = value.removeValue(forKey: key) { diagnostic[key] = item }
+        }
+        if var visual = value["visual"] as? [String: Any] {
+            if let error = visual.removeValue(forKey: "nativeChromeError") { diagnostic["nativeChromeError"] = error }
+            value["visual"] = visual
+        }
+        try writeJSON(diagnostic, to: report.appendingPathExtension("diagnostics.json"))
+        try writeJSON(value, to: report)
+    }
+    private func writeJSON(_ value: [String: Any], to output: URL) throws {
         let data = try JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys])
         let parent = report.deletingLastPathComponent()
         let pending = parent.appendingPathComponent(".didi-proof-" + UUID().uuidString)
@@ -107,7 +126,7 @@ struct PreparedInstalledProof {
         guard file >= 0 else { throw InstalledProofError.unsafePath }
         defer { close(file); try? FileManager.default.removeItem(at: pending) }
         let count = data.withUnsafeBytes { Darwin.write(file, $0.baseAddress, $0.count) }
-        guard count == data.count, fsync(file) == 0, rename(pending.path, report.path) == 0 else { throw InstalledProofError.unsafePath }
+        guard count == data.count, fsync(file) == 0, rename(pending.path, output.path) == 0 else { throw InstalledProofError.unsafePath }
     }
     @MainActor func cleanCredential() throws {
         let policy = NativeKeychainPolicy.check()

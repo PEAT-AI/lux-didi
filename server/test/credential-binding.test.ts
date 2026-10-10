@@ -1,6 +1,6 @@
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, chownSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, chownSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -8,6 +8,8 @@ import { fileURLToPath } from 'node:url';
 import { ConfigError, credentialReceiptFor, credentialsFor, loadProviderConfig, requestCredentialsFor, type CredentialRouteScope } from '../config/index.js';
 import { GeminiAdapter } from '../adapters/model/gemini.js';
 import type { ModelRequest, Transport } from '../adapters/model/types.js';
+import { GeminiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
+import { fixture as liveFixture, options as liveOptions, request as liveRequest, control as liveControl, collect } from './live-voice-fixture.js';
 
 const key = 'synthetic_BINDING_SECRET_never_public';
 const nextKey = 'synthetic_ROTATED_SECRET_never_public';
@@ -33,7 +35,7 @@ function fixture(t: TestContext) {
     const current = JSON.parse(readFileSync(secretPath, 'utf8')) as Record<string, unknown>;
     const pending = join(dir, 'replacement.json'); put(pending, JSON.stringify({ ...current, ...change })); renameSync(pending, secretPath);
   };
-  return { root, dir, put, run, init, migrate, secretPath, bindingPath, profilePath, replace };
+  return { root, dir, put, run, init, migrate, secretPath, bindingPath, profilePath, sourcePath, replace };
 }
 function deferred() { let release!: () => void; const promise = new Promise<void>(resolve => { release = resolve; }); return { promise, release }; }
 const request: ModelRequest = { system: 'synthetic instruction', promptVersion: 'test', contents: [{ role: 'user', parts: [{ text: 'synthetic question' }] }], dataClasses: ['ordinary'], context: { items: [], selectedIds: [], maxChars: 100 } };
@@ -70,6 +72,12 @@ test('A1 rejected protected records yield sanitized errors and zero actual adapt
     () => f.replace({ key: key + '\n' }),
     () => f.replace({ extra: key }),
     () => f.replace({ schemaVersion: 3 }),
+    () => f.replace({ configuredAccount: '' }),
+    () => f.replace({ bindingGeneration: '' }),
+    () => f.replace({ keyReference: 'wrong' }),
+    () => f.replace({ routeScope: { ...scope, allowedClasses: ['ordinary', 'ordinary'] } }),
+    () => f.replace({ routeScope: { ...scope, endpoint: 'https://invalid.example' } }),
+    () => writeFileSync(f.secretPath, Buffer.from([0xff])),
   ];
   for (const corrupt of cases) {
     if (existsSync(f.secretPath)) unlinkSync(f.secretPath); f.put(f.secretPath, valid); corrupt();
@@ -81,7 +89,18 @@ test('A1 rejected protected records yield sanitized errors and zero actual adapt
   if (process.getuid?.() === 0) { // A non-root process cannot manufacture a foreign-owned inode.
     unlinkSync(f.secretPath); f.put(f.secretPath, valid); chownSync(f.secretPath, 1, 1);
     assert.throws(() => credentialReceiptFor(f.dir, scope), error);
-  }
+  } else t.diagnostic('Foreign-owned bound-record branch not executed: requires UID 0; selected provider-config tests verify real-descriptor ownership validation separately.');
+});
+
+test('A1 expected scope is detached and receipt mutation cannot alter binding', async t => {
+  const f = fixture(t); assert.equal(f.init().status, 0);
+  const expected = { ...scope, allowedClasses: [...scope.allowedClasses] };
+  const invocation = requestCredentialsFor(f.dir, expected); expected.allowedClasses.splice(0, 2, 'sensitive');
+  assert.equal(await invocation.credentials.resolve('gemini-primary'), key);
+  const receipt = invocation.resolvedReceipt()!;
+  assert.equal(Reflect.set(receipt, 'configuredAccount', 'different'), false);
+  assert.equal(Reflect.set(receipt.routeScope.allowedClasses, '0', 'sensitive'), false);
+  assert.deepEqual(receipt, credentialReceiptFor(f.dir, scope));
 });
 
 test('A2 keys and receipts share one record, concurrent invocations keep private receipts', async t => {
@@ -89,7 +108,11 @@ test('A2 keys and receipts share one record, concurrent invocations keep private
   const first = requestCredentialsFor(f.dir, scope); const second = requestCredentialsFor(f.dir, scope);
   const barrier = deferred(); const observed = deferred(); const sent: string[] = [];
   const delayed = { resolve: async (ref: string) => { const value = await first.credentials.resolve(ref); observed.release(); await barrier.promise; return value; } };
-  const transport: Transport = async (_url, init) => { sent.push(new Headers(init.headers).get('x-goog-api-key')!); return response(); };
+  const transport: Transport = async (url, init) => {
+    assert.ok(!url.includes(key) && !url.includes(nextKey));
+    assert.ok(!String(init.body).includes(key) && !String(init.body).includes(nextKey));
+    sent.push(new Headers(init.headers).get('x-goog-api-key')!); return response();
+  };
   const firstRun = adapter(delayed, transport).generate(request, { signal: new AbortController().signal, deadlineMs: Date.now() + 3000 });
   await observed.promise;
   f.replace({ key: nextKey, configuredAccount: 'operator-account-B', bindingGeneration: 'generation-B' });
@@ -131,6 +154,7 @@ test('A4 equal binding permits key rotation, account/scope/generation changes di
 
 test('A5 legacy remains readable, explicit migration retains exact sensitive legacy and profile bytes', async t => {
   const f = fixture(t); assert.equal(f.init(false).status, 0);
+  f.put(f.secretPath, '\uFEFF  ' + readFileSync(f.secretPath, 'utf8') + '\n');
   const original = readFileSync(f.secretPath); const oldProfile = readFileSync(join(f.dir, 'profile.json'));
   assert.equal(await credentialsFor(f.dir).resolve('gemini-primary'), key);
   assert.throws(() => credentialReceiptFor(f.dir, scope), error);
@@ -144,23 +168,76 @@ test('A5 legacy remains readable, explicit migration retains exact sensitive leg
   assert.notEqual(f.migrate().status, 0); assert.deepEqual(readFileSync(join(f.dir, 'gemini-primary.legacy.json')), original);
 });
 
-test('A5 migration validates before activation; backup collision and interrupted retry retain usable state', async t => {
+test('A5 migration validates before retention and corrected metadata retries successfully', t => {
   const f = fixture(t); assert.equal(f.init(false).status, 0); const original = readFileSync(f.secretPath);
+  const oldProfile = readFileSync(join(f.dir, 'profile.json'));
   for (const input of [{ ...binding(), unknown: key }, { ...binding(), configuredAccount: '' }, { ...binding(), bindingGeneration: '' }, { ...binding(), routeScope: { ...scope, modelId: 'wrong' } }, { ...binding(), routeScope: { ...scope, keyReference: 'wrong' } }, { ...binding(), routeScope: { ...scope, allowedClasses: ['ordinary'] } }]) {
     f.put(f.bindingPath, JSON.stringify(input)); const failed = f.migrate(); assert.notEqual(failed.status, 0); assert.ok(!JSON.stringify(failed).includes(key));
-    assert.deepEqual(readFileSync(f.secretPath), original); assert.equal(existsSync(join(f.dir, 'gemini-primary.legacy.json')), false);
+    assert.deepEqual(readFileSync(f.secretPath), original); assert.deepEqual(readFileSync(join(f.dir, 'profile.json')), oldProfile);
+    assert.equal(existsSync(join(f.dir, 'gemini-primary.legacy.json')), false);
+    assert.equal(existsSync(join(f.dir, '.binding.pending')), false);
   }
-  f.put(f.bindingPath, JSON.stringify(binding()));
-  const backup = join(f.dir, 'gemini-primary.legacy.json'); f.put(backup, original.toString());
-  assert.notEqual(f.migrate().status, 0); assert.deepEqual(readFileSync(backup), original); assert.deepEqual(readFileSync(f.secretPath), original);
-  unlinkSync(backup);
-  mkdirSync(join(f.dir, '.binding.pending'), { mode: 0o700 });
-  assert.notEqual(f.migrate().status, 0); assert.equal(await credentialsFor(f.dir).resolve('gemini-primary'), key);
-  rmSync(join(f.dir, '.binding.pending'), { recursive: true });
-  // A failure must not overwrite a retained backup; retry remains visibly blocked if one was already published.
-  const retried = f.migrate(); if (existsSync(backup) && retried.status !== 0) {
-    assert.deepEqual(readFileSync(backup), original); assert.equal(await credentialsFor(f.dir).resolve('gemini-primary'), key);
-  } else { assert.equal(retried.status, 0); assert.deepEqual(readFileSync(backup), original); }
+  f.put(f.bindingPath, JSON.stringify(binding())); assert.equal(f.migrate().status, 0);
+  assert.deepEqual(readFileSync(join(f.dir, 'gemini-primary.legacy.json')), original);
+  assert.deepEqual(readFileSync(join(f.dir, 'profile.json')), oldProfile);
+});
+
+test('A5 exclusive retained backup collision is untouched and active remains usable', async t => {
+  const f = fixture(t); assert.equal(f.init(false).status, 0);
+  const original = readFileSync(f.secretPath); const oldProfile = readFileSync(join(f.dir, 'profile.json'));
+  const backup = join(f.dir, 'gemini-primary.legacy.json'); const collision = 'synthetic retained collision bytes'; f.put(backup, collision);
+  const failed = f.migrate(); assert.notEqual(failed.status, 0); assert.match(failed.stderr, /destination_exists/);
+  assert.equal(readFileSync(backup, 'utf8'), collision); assert.deepEqual(readFileSync(f.secretPath), original);
+  assert.deepEqual(readFileSync(join(f.dir, 'profile.json')), oldProfile);
+  assert.equal(await credentialsFor(f.dir).resolve('gemini-primary'), key);
+  assert.equal(existsSync(join(f.dir, '.binding.pending')), false);
+});
+
+test('A5 actual pending-create failure AFTER retained backup leaves exact private legacy, valid active and explicit blocked retry', async t => {
+  const f = fixture(t); assert.equal(f.init(false).status, 0);
+  const original = readFileSync(f.secretPath); const oldProfile = readFileSync(join(f.dir, 'profile.json'));
+  const backup = join(f.dir, 'gemini-primary.legacy.json'); const pending = join(f.dir, '.binding.pending');
+  // This real O_EXCL collision is at the writer's documented pending seam AFTER retention.
+  // Reordering failure before retention cannot pass the backup assertions below.
+  mkdirSync(pending, { mode: 0o700 }); const sentinel = join(pending, 'fixture-owned'); f.put(sentinel, 'keep');
+  const failed = f.migrate(); assert.notEqual(failed.status, 0); assert.ok(!JSON.stringify(failed).includes(key));
+  assert.deepEqual(readFileSync(backup), original); assert.equal(statSync(backup).mode & 0o7777, 0o600);
+  assert.equal(statSync(f.dir).mode & 0o7777, 0o700); assert.equal(statSync(f.secretPath).mode & 0o7777, 0o600);
+  assert.deepEqual(readFileSync(f.secretPath), original); assert.deepEqual(readFileSync(join(f.dir, 'profile.json')), oldProfile);
+  assert.equal(await credentialsFor(f.dir).resolve('gemini-primary'), key);
+  assert.equal(loadProviderConfig({ configDir: f.dir, ownerId: 'owner' }).status, 'ready');
+  assert.equal(readFileSync(sentinel, 'utf8'), 'keep'); // Product cleanup cannot touch a preexisting pending path.
+  rmSync(pending, { recursive: true }); // Remove only this fixture's collision, never retained data.
+  const retried = f.migrate(); assert.notEqual(retried.status, 0); assert.match(retried.stderr, /destination_exists/);
+  assert.deepEqual(readFileSync(backup), original); assert.deepEqual(readFileSync(f.secretPath), original);
+  assert.deepEqual(readFileSync(join(f.dir, 'profile.json')), oldProfile);
+  assert.equal(existsSync(pending), false); assert.equal(await credentialsFor(f.dir).resolve('gemini-primary'), key);
+});
+
+test('A5 real process write limit fails pending output after retention without activating or losing legacy', async t => {
+  const f = fixture(t); const longModel = 'g' + 'x'.repeat(127); const writeKey = 'synthetic_write_boundary_' + 'x'.repeat(176);
+  const metadata = { ...binding(), configuredAccount: 'a'.repeat(256), bindingGeneration: 'b'.repeat(256), routeScope: { ...scope, modelId: longModel } };
+  f.put(f.profilePath, JSON.stringify({ ...profile(), modelId: longModel }));
+  f.put(f.sourcePath, `GEMINI_API_KEY=${writeKey}\n`); f.put(f.bindingPath, JSON.stringify(metadata));
+  assert.equal(f.init(false).status, 0);
+  const original = readFileSync(f.secretPath); const oldProfile = readFileSync(join(f.dir, 'profile.json'));
+  assert.ok(original.byteLength < 512);
+  assert.ok(Buffer.byteLength(JSON.stringify({ ...metadata, schemaVersion: 2, keyReference: 'gemini-primary', key: writeKey })) > 1024);
+  // Same real-process file limit convention as provider-config.test.ts; no load, privileges or monkeypatch.
+  // Legacy copy fits either POSIX block size; pending v2 cannot fit. Disable core dumps for the child.
+  const failed = spawnSync('bash', ['-c', 'ulimit -c 0; ulimit -f 1; exec "$@"', 'credential-binding-write-test', process.execPath, cli,
+    'migrate-binding', '--config-dir', f.dir, '--owner-id', 'owner', '--binding-input', f.bindingPath], { encoding: 'utf8', timeout: 10000 });
+  assert.notEqual(failed.status, 0); assert.ok(!JSON.stringify(failed).includes(writeKey));
+  const backup = join(f.dir, 'gemini-primary.legacy.json'); const pending = join(f.dir, '.binding.pending');
+  assert.deepEqual(readFileSync(backup), original); assert.equal(statSync(backup).mode & 0o7777, 0o600);
+  assert.equal(statSync(f.dir).mode & 0o7777, 0o700); assert.deepEqual(readFileSync(f.secretPath), original);
+  assert.deepEqual(readFileSync(join(f.dir, 'profile.json')), oldProfile); assert.equal(await credentialsFor(f.dir).resolve('gemini-primary'), writeKey);
+  const unfinished = existsSync(pending) ? readFileSync(pending) : undefined;
+  if (unfinished) assert.equal(statSync(pending).mode & 0o7777, 0o600);
+  const retried = f.migrate(); assert.notEqual(retried.status, 0); assert.match(retried.stderr, /destination_exists/);
+  assert.deepEqual(readFileSync(backup), original); assert.deepEqual(readFileSync(f.secretPath), original);
+  assert.deepEqual(readFileSync(join(f.dir, 'profile.json')), oldProfile);
+  if (unfinished) assert.deepEqual(readFileSync(pending), unfinished); else assert.equal(existsSync(pending), false);
 });
 
 test('A1 binding inputs and CLI reject duplicate/unknown metadata, wrong protections and implicit flags', t => {
@@ -189,4 +266,18 @@ test('A6 per-generate factory pre-abort/delayed-resolve abort never calls transp
   const pre = new AbortController(); pre.abort(); assert.equal((await generate(pre.signal)).result.status, 'cancelled');
   const abort = new AbortController(); const hold = deferred(); const entered = deferred(); const pending = generate(abort.signal, hold, entered);
   await entered.promise; abort.abort(); hold.release(); assert.equal((await pending).result.status, 'cancelled'); assert.equal(calls, 0);
+});
+
+test('A6 legacy/v2 string consumers open the real synthetic Live socket and cancel normally', async t => {
+  for (const bound of [false, true]) {
+    const f = fixture(t); assert.equal(f.init(bound).status, 0);
+    const wire = await liveFixture(t); const abort = new AbortController();
+    const session = new GeminiLiveVoiceAdapter(liveOptions({ socketFactory: wire.socketFactory,
+      credentials: credentialsFor(f.dir), keyReference: 'gemini-primary' })).open(liveRequest(), liveControl(abort.signal));
+    t.after(() => session.close()); const captured = collect(session);
+    await wire.frame(1); assert.equal(new URL(wire.destination).searchParams.get('key'), key);
+    wire.send({ setupComplete: {} }); await session.ready;
+    abort.abort(); assert.equal((await session.done).code, 'cancelled'); await captured.done;
+    assert.equal(wire.attempts, 1); assert.ok(!JSON.stringify(captured.events).includes(key));
+  }
 });

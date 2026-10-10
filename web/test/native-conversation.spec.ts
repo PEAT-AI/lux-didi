@@ -34,10 +34,11 @@ async function stop() {
   try { const result = await Promise.race([exited, new Promise((_, reject) => { timer = setTimeout(() => reject(Error('Fixture stop timeout')), 5000); })]); assert.equal(result[0], 0, `Fixture exit: ${stderr.slice(-1500)}`); }
   finally { clearTimeout(timer); if (proc.exitCode === null && proc.signalCode === null) { proc.kill('SIGKILL'); await exited; } }
 }
+let opSeq = 0;
 async function operator(path, body = {}) {
   const token = (await readFile(join(state, 'admin-credential'), 'utf8')).trim();
-  const response = await fetch(descriptor.origin + '/api/v1' + path, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'X-Didi-Authority-Epoch': descriptor.authorityEpoch, 'Idempotency-Key': `op-${path}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  return { status: response.status, data: await response.json().then(body => body.data).catch(() => undefined) };
+  const response = await fetch(descriptor.origin + '/api/v1' + path, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'X-Didi-Authority-Epoch': descriptor.authorityEpoch, 'Idempotency-Key': `op-${++opSeq}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  return { status: response.status, data: await response.json().then(value => value.data).catch(() => undefined) };
 }
 async function api(path) {
   return page.evaluate(async target => {
@@ -70,8 +71,10 @@ try {
   const pairing = await operator('/auth/pairing');
   await page.locator('#pair-code').fill(pairing.data.pairingCode); await page.locator('#pair-form').evaluate(form => form.requestSubmit());
   await page.waitForFunction(() => document.querySelector('#connected-route')?.textContent.includes('gemini-connected-test'));
-  const a = (await operator('/conversations', { title: 'Native A', timeZone: 'UTC' })).data;
-  const b = (await operator('/conversations', { title: 'Native B', timeZone: 'UTC' })).data;
+  const enrolledA = await operator('/conversations', { title: 'Native A', timeZone: 'UTC' });
+  const enrolledB = await operator('/conversations', { title: 'Native B', timeZone: 'UTC' });
+  assert.equal(enrolledA.status, 200, JSON.stringify(enrolledA.data)); assert.equal(enrolledB.status, 200, JSON.stringify(enrolledB.data));
+  const a = enrolledA.data, b = enrolledB.data;
   assert.ok(a.sessionId && b.sessionId);
   await page.reload();
   await page.locator('#connected-history').waitFor();

@@ -60,6 +60,14 @@ for i,r in enumerate(reports):
  assert (loop['firstUptimeNanoseconds'] is None and loop['lastUptimeNanoseconds'] is None) if loop['count']==0 else 0 < loop['firstUptimeNanoseconds'] <= loop['lastUptimeNanoseconds']
  assert r['type']=='LuxDidiInstalledProof' and r['schemaVersion']==1
  assert r['phase']=='complete' and r['success'] is True
+ launch=json.load(open(os.path.join(root,'launch-'+str(i+1),'observer.json')))
+ assert launch['identity']['pid']==r['native']['pid'] and launch['identity']['uid']==os.getuid()
+ assert launch['identityVerified'] and launch['registeredBeforeRelease'] and launch['released'] and launch['observerDisposed']
+ assert launch['kernel']['filter']==-5 and launch['kernel']['flags'] & 0x84000000 == 0x84000000
+ assert os.WIFEXITED(launch['kernel']['rawStatus']) and os.WEXITSTATUS(launch['kernel']['rawStatus'])==0
+ assert launch['serviceIdentity']['pid']==r['service']['pid'] and launch['serviceIdentity']['pid']!=r['native']['pid']
+ assert launch['serviceKernel']['flags'] & 0x84000000 == 0x84000000 and launch['serviceKernel']['rawStatus']==0
+ assert launch['forced'] is False and launch['releaseState'] and launch['nativeDisposed'] is True
  assert r['source']['releaseCommit']==commit
  assert r['service']['readyVerified'] and r['serviceStop']['observedExited']
  assert r['serviceStop']['pid']==r['service']['pid']

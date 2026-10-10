@@ -80,7 +80,11 @@ import CryptoKit
     static func execute(model: AppModel, window: NSWindow) async -> Bool {
         guard let proof = model.installedProof, let owner = model.supervisor else {
             _ = await OwnedVerificationLaunchGate.perform(window: window) { _ in false }
-            await Task { @MainActor in await model.shutdown() }.value; fputs("INSTALLED-PROOF FAILED: configuration or ownership rejected\n", stderr); return false
+            await Task { @MainActor in
+                await model.shutdown()
+                do { try model.installedProof?.cleanCredential() }
+                catch { fputs("INSTALLED-PROOF FAILED: configuration credential cleanup\n", stderr) }
+            }.value; fputs("INSTALLED-PROOF FAILED: configuration or ownership rejected\n", stderr); return false
         }
         let runtime = owner.runtime
         let permission = CGPreflightScreenCaptureAccess()

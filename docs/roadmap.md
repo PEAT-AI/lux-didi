@@ -1,6 +1,6 @@
 # Roadmap and backlog
 
-Status: proposed plan. The repository contains no application, and every capability described here is planned, not built. The structured plan is [planning/backlog.json](../planning/backlog.json): 119 nodes, one program tracker (P00), thirteen epics (E01 to E13) and one hundred and five work items (A, B, C, D and F leaves). When published, the same nodes are GitHub issues with stable IDs, labels and milestones; the mapping is recorded in `planning/issue-map.json`.
+Status: proposed plan. Every capability described here is planned work, not a built feature; a partially implemented baseline exists and is recorded in [implementation-status.md](implementation-status.md). The structured plan is [planning/backlog.json](../planning/backlog.json): 120 nodes, one program tracker (P00), thirteen epics (E01 to E13) and one hundred and six work items (A, B, C, D and F leaves). When published, the same nodes are GitHub issues with stable IDs, labels and milestones; the mapping is recorded in `planning/issue-map.json`.
 
 ## Numbering
 

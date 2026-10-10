@@ -1,6 +1,6 @@
 # Architecture (proposed)
 
-Status: proposed design on a decided stack. The service stack is recorded in A01 (PLAN-R1): one authoritative service in TypeScript on Node with a SQLite store, a Swift Mac companion for native operating-system surfaces, and a responsive progressive web application as the portable client. No application exists yet, and no behavior in this document has been verified by running code. Component names and directory seams are proposals to validate, not a description of a working system.
+Status: proposed design on a decided stack, partly built. The service stack is recorded in A01 (PLAN-R1): one authoritative service in TypeScript on Node with a SQLite store, a Swift Mac companion for native operating-system surfaces, and a responsive progressive web application as the portable client. A loopback service, a durable domain module, the web client and a thin Mac shell are implemented on main; [implementation-status.md](implementation-status.md) records exactly what is implemented, integrated, staged and unresolved. The components, data flow and directory seams described in this document are proposals to validate, not a description of a working system.
 
 ## Shape
 

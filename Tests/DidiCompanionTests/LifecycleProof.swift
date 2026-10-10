@@ -111,7 +111,7 @@ import Darwin
             try canonical.write(to: refusedFile)
             try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: refusedFile.path)
             var previousInteraction = DarwinBoolean(false)
-            try expect(SecKeychainGetUserInteractionAllowed(&previousInteraction) == errSecSuccess, "read actual process Keychain interaction policy")
+            try expect(SecKeychainGetUserInteractionAllowed(&previousInteraction) == errSecSuccess && !previousInteraction.boolValue, "actual lifetime Keychain policy disables optional interaction")
             var creationWasNoninteractive = false
             do {
                 _ = try NativeCredentialImport.importCredential(state: refused.1, installId: refused.0.installId, service: service, add: { _, _ in
@@ -125,8 +125,8 @@ import Darwin
             }
             try expect(creationWasNoninteractive, "legacy Keychain item creation cannot open login authorization UI")
             var restoredInteraction = DarwinBoolean(false)
-            try expect(SecKeychainGetUserInteractionAllowed(&restoredInteraction) == errSecSuccess && restoredInteraction.boolValue == previousInteraction.boolValue,
-                       "Keychain refusal restores prior process interaction policy")
+            try expect(SecKeychainGetUserInteractionAllowed(&restoredInteraction) == errSecSuccess && !restoredInteraction.boolValue,
+                       "Keychain refusal preserves lifetime policy without re-enabling interaction")
             try expect(!itemExists(refused.0.installId), "refused Keychain creation stores no item")
             let again = try await owned.start()
             try expect(again.pid == first.pid, "double Start retains one child")

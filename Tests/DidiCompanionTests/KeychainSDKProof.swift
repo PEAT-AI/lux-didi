@@ -20,6 +20,13 @@ import Darwin
             try bytes.write(to: output, options: .atomic)
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: output.path)
         }
+        var interaction = DarwinBoolean(true)
+        let readback = SecKeychainGetUserInteractionAllowed(&interaction)
+        report["policyReadbackStatus"] = Int(readback)
+        report["policyReadbackAllowed"] = interaction.boolValue
+        guard readback == errSecSuccess, !interaction.boolValue else {
+            report["stage"] = "lifetime-policy-not-established"; try write(); return false
+        }
         try NativeCredentialImport.prepareState(state)
         var random = [UInt8](repeating: 0, count: 32)
         let randomStatus = random.withUnsafeMutableBytes { SecRandomCopyBytes(kSecRandomDefault, $0.count, $0.baseAddress!) }

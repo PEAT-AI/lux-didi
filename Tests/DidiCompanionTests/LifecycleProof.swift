@@ -30,7 +30,8 @@ import Darwin
             let server = resources.appendingPathComponent("server/dist/host")
             try fm.createDirectory(at: server, withIntermediateDirectories: true)
             try fm.createDirectory(at: resources.appendingPathComponent("web/dist"), withIntermediateDirectories: true)
-            try Data(contentsOf: URL(fileURLWithPath: "Tests/DidiCompanionTests/supervised-fixture.js")).write(to: server.appendingPathComponent("index.js"))
+            let fixtureJS = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("supervised-fixture.js")
+            try Data(contentsOf: fixtureJS).write(to: server.appendingPathComponent("index.js"))
             try Data(mode.utf8).write(to: server.appendingPathComponent("mode"))
             var manifest: [String: Any] = ["schemaVersion": 1, "installId": id, "releaseCommit": String(repeating: "a", count: 40), "nodePath": node, "nodeMajor": 26, "serverEntry": "server/dist/host/index.js", "webRoot": "web/dist"]
             manifest.merge(changes) { _, new in new }

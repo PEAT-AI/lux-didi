@@ -505,7 +505,9 @@ for (const tool of ['search', 'get'] as const) {
         signal?.addEventListener('abort', () => { observedAbort = true; }, { once: true });
         return adapter.call(request, signal);
       },
-      slice: (...args) => adapter.slice(...args),
+      visibleTools: (...args) => adapter.visibleTools(...args),
+      readSlice: (...args) => adapter.readSlice(...args),
+      whenSuspended: (...args) => adapter.whenSuspended(...args),
       close: () => adapter.close(),
     };
     try {
@@ -535,7 +537,9 @@ for (const tool of ['search', 'get'] as const) {
         completed.release(); await deliver.promise;
         return result;
       },
-      slice: (...args) => adapter.slice(...args),
+      visibleTools: (...args) => adapter.visibleTools(...args),
+      readSlice: (...args) => adapter.readSlice(...args),
+      whenSuspended: (...args) => adapter.whenSuspended(...args),
       close: () => adapter.close(),
     };
     try {

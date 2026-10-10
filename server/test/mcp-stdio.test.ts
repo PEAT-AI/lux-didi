@@ -37,7 +37,9 @@ function readPayload(adapter: McpPort, req: CallRequest, handle: string, byteLen
   const slice = adapter.readSlice({ endpointId: req.endpointId, generation: req.generation, account: req.account, resource: req.resource, handle, offset: 0, length: byteLength });
   assert.equal(slice.state, 'available');
   const bytes = slice.state === 'available' ? slice.bytes : new Uint8Array();
-  return (JSON.parse(Buffer.from(bytes).toString()) as { result: { content: { text: string }[] } }).result.content[0]?.text ?? '';
+  const parsed = JSON.parse(Buffer.from(bytes).toString()) as { result?: { content: { text: string }[] }; content?: { text: string }[] };
+  const content = parsed.result?.content ?? parsed.content;
+  return content?.[0]?.text ?? '';
 }
 function adapterFor(registry: McpRegistry, timeoutMs = 4000): McpPort {
   return createMcpAdapter({ registry, store: new MemoryResultStore(), budgets: { timeoutMs } });

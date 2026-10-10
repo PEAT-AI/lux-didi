@@ -24,7 +24,7 @@ Two documents cover the detail:
 ## Package boundaries
 
 - One process is the only writer. The service owns the store and the durable domain. The web client calls it over the same origin and keeps no records of its own, and the Mac shell is not connected yet.
-- `server/` is a private npm package in the `lux-didi` scope, ESM only, Node 26 or newer, built with `tsc` into `dist/`. Its accepted build roots are the runtime, HTTP, contracts, domain, host, chat, config, prompt, the model and MCP adapters, the knowledge connector and the Live-voice adapter, and the shipped package includes the chat, config, connector and Live-voice outputs. The native app is not installed, and the Live session owner and the native conversation-routing component are not part of this release. The MCP client dependency is bundled into the package.
+- `server/` is a private npm package in the `lux-didi` scope, ESM only, Node 26 or newer, built with `tsc` into `dist/`. The package includes runtime, HTTP, contracts, domain, host, chat, configuration and prompt modules, model and MCP adapters, the knowledge connector and the Live voice adapter. The MCP client dependency is bundled into the package.
 - `web/` is a private package, `didi-web`, Node 26 or newer, pinned in its own lock file. It makes no external font, image, analytics or CDN request, and it applies its own content security policy.
 - The Mac shell is compiled from the Swift sources with the Xcode Command Line Tools. It is not domain integrated and it is not a packaged application.
 

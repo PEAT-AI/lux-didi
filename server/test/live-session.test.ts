@@ -716,3 +716,24 @@ test('trusted clock rejects fractional milliseconds and maximum timer delay stay
   assert.equal(max.owner.get(row.liveSessionId).terminal?.state, 'expired');
   assert.equal(scheduler.callbacks, 2);
 });
+
+test('Live persists the exact typed accepted instruction before intent and corrupt records fail before provider open', async t => {
+  const h = await harness(t);
+  let calls = 0;
+  const ownerProfile = { schemaVersion: 1, kind: 'profile', ownerId: h.store.assistantId, profileVersion: 'fixture-a', displayName: 'Example',
+    style: { text: 'SYNTHETIC A', dataClass: 'ordinary' }, lore: { text: 'SYNTHETIC lore', dataClass: 'ordinary' } };
+  const acceptedPrompt = { schemaVersion: 1, ownerProfile, compilerVersion: 'didi-v1', system: 'SYNTHETIC exact accepted A', dataClasses: ['ordinary'] };
+  const owner = createLiveSessionOwner({ store: h.store,
+    profile: validateLiveProfile({ ...profileInput(), acceptedPrompt }),
+    voice: { async open() { calls++; throw new Error('synthetic unavailable'); } }, now: () => NOW });
+  t.after(() => owner.shutdown());
+  const run = owner.create({ idempotencyKey: 'owner-frozen', inputClass: 'ordinary' }, h.ctx);
+  const row = h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot,dispatch_intent FROM live_sessions WHERE live_session_id=?', [run.liveSessionId]))!;
+  assert.equal(row.dispatch_intent, 0);
+  assert.deepEqual(JSON.parse(String(row.accepted_prompt_snapshot)), acceptedPrompt);
+  acceptedPrompt.system = 'SYNTHETIC B';
+  assert.equal(JSON.parse(String(h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [run.liveSessionId]))!.accepted_prompt_snapshot)).system, 'SYNTHETIC exact accepted A');
+  h.store.transaction(tx => tx.run('UPDATE live_sessions SET accepted_prompt_snapshot=? WHERE live_session_id=?', ['{"schemaVersion":999}', run.liveSessionId]));
+  assert.throws(() => owner.attach({ liveSessionId: run.liveSessionId }, h.ctx));
+  assert.equal(calls, 0);
+});

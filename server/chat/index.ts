@@ -372,10 +372,7 @@ export class ChatService implements ChatPort {
   }
   #readOwnerProfile(runId: string) {
     return this.#config.store.transaction(tx => {
-      // Only a genuinely pre-v4 Store may lack the table. Migration backfills explicit defaults.
-      if (!tx.get("SELECT name FROM sqlite_master WHERE type='table' AND name='chat_run_owner_profile'", [])) {
-        return publicOwnerProfile(this.#config.store.assistantId);
-      }
+      // Migration4 already backfills legacy runs; absence is corruption, never a default selection.
       const row = tx.get('SELECT schema_version,snapshot_json FROM chat_run_owner_profile WHERE run_id=?', [runId]);
       if (!row || row.schema_version !== 1) throw new ContextFailure('compile_failed');
       try { return validateOwnerProfile(JSON.parse(String(row.snapshot_json)), this.#config.store.assistantId); }

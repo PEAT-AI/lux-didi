@@ -7,6 +7,7 @@ import { ChatError, type ChatPort } from '../chat/index.js';
 import type { ConnectedStatus } from '../host/connected.js';
 import { ServiceError } from '../contracts/errors.js';
 import { object, resolveRoute } from './routes.js';
+import { ConversationSelection, NO_SELECTION } from './conversationSelection.js';
 import { createStaticHandler } from './static.js';
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 const secret = () => randomBytes(32).toString('base64url');
@@ -34,6 +35,8 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
   const now = options.now ?? Date.now;
   let origin = '';
   const pairing = new Map<string, number>();
+  const selection = new ConversationSelection();
+  const liveClients = () => new Set(store.transaction(tx => tx.all('SELECT DISTINCT client_id FROM runtime_sessions WHERE expires_at>?', [now()])).map(row => String(row.client_id)));
   const send = (res: ServerResponse, status: number, payload: unknown) => {
     res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' }); res.end(JSON.stringify(payload));
   };
@@ -97,8 +100,25 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
       if (route.kind === 'logout') {
         if (actor.mode !== 'browser') throw new ServiceError('BAD_REQUEST', 'Browser session required');
         store.transaction(tx => tx.run('DELETE FROM runtime_sessions WHERE token_hash=?', [actor.tokenHash!]));
+        selection.clear(actor.clientId);
         for (const close of [...(streamClosers.get(actor.clientId) ?? [])]) close();
         res.setHeader('Set-Cookie', 'didi_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'); send(res, 200, success({ revoked: true })); return;
+      }
+      if (route.kind === 'selection') {
+        if (actor.mode !== 'browser') throw new ServiceError('FORBIDDEN', 'Browser session required', 403);
+        if (route.mutation && req.headers['x-didi-authority-epoch'] !== store.authorityEpoch) throw new ServiceError('STALE_AUTHORITY', 'Authority epoch does not match', 409);
+        selection.prune(liveClients());
+        if (route.clear) { selection.clear(actor.clientId); send(res, 200, success({ ...NO_SELECTION })); return; }
+        if (!route.mutation) { send(res, 200, success(selection.get(actor.clientId) ?? { ...NO_SELECTION })); return; }
+        if (!chat) throw new ServiceError('MODEL_NOT_CONFIGURED', 'Model route is not locally configured', 503);
+        const sessionId = String(route.input.sessionId), title = String(route.input.title);
+        const context = { assistantId: store.assistantId, clientId: actor.clientId, authorityEpoch: store.authorityEpoch, now: new Date(now()).toISOString() };
+        let state: string;
+        try { state = chat.conversation(sessionId, context).state; }
+        catch { throw new ServiceError('NOT_FOUND', 'Conversation is not available for this client', 404); }
+        if (state !== 'active') throw new ServiceError('NOT_FOUND', 'Conversation is not available for this client', 404);
+        selection.set(actor.clientId, { sessionId, title });
+        send(res, 200, success({ sessionId, title })); return;
       }
       if (route.kind === 'connected') {
         const context = { assistantId: store.assistantId, clientId: actor.clientId, authorityEpoch: store.authorityEpoch, now: new Date(now()).toISOString() };
@@ -116,7 +136,8 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
         if (route.action === 'cancel') { send(res, 200, success(chat.cancel(route.id!, context))); return; }
         const closers = streamClosers.get(actor.clientId) ?? new Set<() => void>();
         if (streamCount >= 64 || closers.size >= 4) throw new ServiceError('CONFLICT', 'Subscriber limit reached', 429);
-        const iterator = chat.subscribe(route.id!, context)[Symbol.asyncIterator]();
+        const source: AsyncIterable<unknown> = route.action === 'events' ? chat.subscribe(route.id!, context) : chat.subscribeConversation(route.id!, context);
+        const iterator = source[Symbol.asyncIterator]();
         let closed = false, timer: ReturnType<typeof setInterval> | undefined;
         const close = () => {
           if (closed) return; closed = true;

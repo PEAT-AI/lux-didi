@@ -12,12 +12,13 @@ export class ConnectedView {
   #conversations: { title: string; conversation: Conversation }[] = []; #entries: Entry[] = [];
   #run: Run | undefined; #draft = ''; #pending: { key: string; text: string; sessionId: string } | undefined;
   #error = ''; #busy = false; #controller: AbortController | undefined; #generation = 0; #consent = false;
+  #conversationController: AbortController | undefined; #selectionToken = 0;
   #storage() { return `didi-connected:${this.#owner}`; }
   #save() {
     if (this.#owner) localStorage.setItem(this.#storage(), JSON.stringify({ sessionId: this.#conversation?.sessionId, draft: this.#draft, pending: this.#pending }));
   }
   detach() { this.#controller?.abort(); this.#controller = undefined; this.#generation++; }
-  reset() { this.detach(); this.#owner = ''; this.#conversation = undefined; this.#run = undefined; this.#entries = []; this.#conversations = []; this.#draft = ''; this.#pending = undefined; }
+  reset() { this.detach(); this.#closeConversationStream(); this.#owner = ''; this.#conversation = undefined; this.#run = undefined; this.#entries = []; this.#conversations = []; this.#draft = ''; this.#pending = undefined; }
   async refresh(owner: string) {
     if (owner !== this.#owner) { this.reset(); this.#owner = owner; }
     try {
@@ -33,17 +34,57 @@ export class ConnectedView {
       if (saved.pending && typeof saved.pending.key === 'string' && typeof saved.pending.text === 'string' && typeof saved.pending.sessionId === 'string') this.#pending = saved.pending;
       const selected = this.#conversations.find(c => c.conversation.sessionId === saved.sessionId) ?? this.#conversations[0];
       if (selected) await this.select(selected.conversation.sessionId);
+      else await this.clearSelection();
       this.#error = '';
     } catch (error) { this.#error = error instanceof Error ? error.message : 'Connected status could not be read.'; }
     this.attach();
   }
   async select(sessionId: string) {
-    this.detach(); this.#run = undefined;
+    this.detach(); this.#closeConversationStream(); this.#run = undefined;
+    const token = ++this.#selectionToken;
+    // Register the conversation subscription before the durable snapshot/gap fill.
+    this.#openConversationStream(sessionId);
     this.#conversation = await request<Conversation>(`/conversations/${sessionId}`);
     this.#entries = (await request<{ entries: Entry[] }>(`/sessions/${sessionId}`)).entries;
     if (this.#conversation.latestRunId) this.#run = await request<Run>(`/chat/${this.#conversation.latestRunId}`);
     this.#save(); this.attach();
+    await this.#publishSelection(sessionId, token);
     if (this.#run?.state !== 'terminal' && this.#run) void this.#watch(this.#run.runId);
+  }
+  /** Publish the last explicitly chosen conversation; a stale response never overwrites a newer choice. */
+  async #publishSelection(sessionId: string, token: number) {
+    if (token !== this.#selectionToken) return;
+    const title = this.#conversations.find(item => item.conversation.sessionId === sessionId)?.title ?? sessionId;
+    try { await request('/conversation-selection', { method: 'POST', body: { sessionId, title } }); }
+    catch { /* a routing hint that could not be published never blocks the conversation */ }
+  }
+  /** Clear only this principal's record; a failed clear never blocks logout or history. */
+  async clearSelection() {
+    this.#selectionToken++;
+    try { await request('/conversation-selection/clear', { method: 'POST', body: {} }); }
+    catch { /* logout/expiry drops the record server-side anyway */ }
+  }
+  #closeConversationStream() { this.#conversationController?.abort(); this.#conversationController = undefined; }
+  #openConversationStream(sessionId: string) {
+    const controller = new AbortController(); this.#conversationController = controller;
+    void stream(`/conversations/${sessionId}/events`, controller.signal, value => {
+      if (this.#conversationController !== controller) return;
+      const event = value as { type?: string; sessionId?: string; runId?: string };
+      if (event.type === 'run' && event.sessionId === sessionId && typeof event.runId === 'string') void this.#attachExternal(sessionId, event.runId, controller);
+    }).catch(() => { /* reconnection stays explicit; the durable snapshot closes any gap */ });
+  }
+  /** A durable run accepted elsewhere appears here without a refresh; page B is never retargeted to A. */
+  async #attachExternal(sessionId: string, runId: string, controller: AbortController) {
+    if (this.#run?.runId === runId) return;
+    try {
+      const run = await request<Run>(`/chat/${runId}`);
+      if (this.#conversationController !== controller || this.#conversation?.sessionId !== sessionId) return;
+      this.#run = run; this.#save();
+      this.#entries = (await request<{ entries: Entry[] }>(`/sessions/${sessionId}`)).entries;
+      if (this.#conversationController !== controller) return;
+      this.attach();
+      if (run.state !== 'terminal') void this.#watch(run.runId);
+    } catch (error) { if (this.#conversationController === controller) { this.#error = error instanceof Error ? error.message : 'Could not load the accepted run.'; this.attach(); } }
   }
   attach() {
     if (this.#lastActive !== this.active) { this.#lastActive = this.active; this.onState(); }

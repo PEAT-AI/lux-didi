@@ -1,8 +1,10 @@
 import { ServiceError } from '../contracts/errors.js';
 import type { DomainOperation, DomainOperations } from '../contracts/domain.js';
 export type DomainRoute = { kind: 'domain'; operation: DomainOperation; input: DomainOperations[DomainOperation]['input']; mutation: boolean };
-export type ConnectedRoute = { kind: 'connected'; action: 'status' | 'enroll' | 'conversation' | 'revoke' | 'accept' | 'run' | 'cancel' | 'events'; id: string | null; input: Record<string, unknown>; mutation: boolean };
-export type Route = DomainRoute | ConnectedRoute | { kind: 'health' | 'status' | 'pairing' | 'pair' | 'session' | 'logout' | 'chat'; mutation: boolean };
+export type ConnectedRoute = { kind: 'connected'; action: 'status' | 'enroll' | 'conversation' | 'revoke' | 'accept' | 'run' | 'cancel' | 'events' | 'conversationEvents'; id: string | null; input: Record<string, unknown>; mutation: boolean };
+export type SelectionRoute = { kind: 'selection'; clear: boolean; mutation: boolean; input: Record<string, unknown> };
+export type Route = DomainRoute | ConnectedRoute | SelectionRoute | { kind: 'health' | 'status' | 'pairing' | 'pair' | 'session' | 'logout' | 'chat'; mutation: boolean };
+type DirectKind = 'health' | 'status' | 'pairing' | 'pair' | 'session' | 'logout' | 'chat';
 const bad = (message: string): never => { throw new ServiceError('BAD_REQUEST', message); };
 export function object(value: unknown): Record<string, unknown> { if (!value || typeof value !== 'object' || Array.isArray(value)) return bad('JSON object required'); return value as Record<string, unknown>; }
 export function fields(body: Record<string, unknown>, allowed: readonly string[], required: readonly string[] = []): void {
@@ -38,9 +40,9 @@ export function resolveRoute(method: string, url: URL, body?: Record<string, unk
   else if (path === '/api/v1/conversations') action = 'enroll';
   else if (path === '/api/v1/chat') action = 'accept';
   else {
-    const conversation = /^\/api\/v1\/conversations\/([^/]+)(\/revoke)?$/.exec(path);
+    const conversation = /^\/api\/v1\/conversations\/([^/]+)(\/(revoke|events))?$/.exec(path);
     const run = /^\/api\/v1\/chat\/([^/]+)(\/(cancel|events))?$/.exec(path);
-    if (conversation) { id = conversation[1]!; action = conversation[2] ? 'revoke' : 'conversation'; }
+    if (conversation) { id = conversation[1]!; action = conversation[3] === 'events' ? 'conversationEvents' : conversation[2] ? 'revoke' : 'conversation'; }
     else if (run) { id = run[1]!; action = run[3] === 'cancel' ? 'cancel' : run[3] === 'events' ? 'events' : 'run'; }
     if (id !== null) uuid(id);
   }
@@ -54,7 +56,16 @@ export function resolveRoute(method: string, url: URL, body?: Record<string, unk
     }
     return { kind: 'connected', action, id, mutation, input: body ?? {} };
   }
-  const special: Record<string, [string, Route['kind']]> = { '/health': ['GET', 'health'], '/api/v1/status': ['GET', 'status'], '/api/v1/auth/pairing': ['POST', 'pairing'], '/api/v1/auth/pair': ['POST', 'pair'], '/api/v1/auth/session': ['GET', 'session'], '/api/v1/auth/logout': ['POST', 'logout'] };
+  if (path === '/api/v1/conversation-selection' || path === '/api/v1/conversation-selection/clear') {
+    const clear = path.endsWith('/clear');
+    matched(clear ? ['POST'] : ['GET', 'POST']); query(url, []);
+    if (body) {
+      if (clear) fields(body, []);
+      else { fields(body, ['sessionId', 'title'], ['sessionId', 'title']); uuid(body.sessionId); if (!text(body.title, 1000).trim()) bad('Invalid title'); }
+    }
+    return { kind: 'selection', clear, mutation: method === 'POST', input: body ?? {} };
+  }
+  const special: Record<string, [string, DirectKind]> = { '/health': ['GET', 'health'], '/api/v1/status': ['GET', 'status'], '/api/v1/auth/pairing': ['POST', 'pairing'], '/api/v1/auth/pair': ['POST', 'pair'], '/api/v1/auth/session': ['GET', 'session'], '/api/v1/auth/logout': ['POST', 'logout'] };
   const direct = special[path];
   if (direct) {
     matched([direct[0]]); query(url, []);
@@ -63,7 +74,7 @@ export function resolveRoute(method: string, url: URL, body?: Record<string, unk
       else if (direct[1] === 'chat') { fields(body, ['sessionId', 'text', 'timeZone'], ['sessionId', 'text', 'timeZone']); uuid(body.sessionId); text(body.text); zone(body.timeZone); }
       else fields(body, []);
     }
-    return { kind: direct[1] as Exclude<Route['kind'], 'domain' | 'connected'>, mutation: direct[0] !== 'GET' };
+    return { kind: direct[1] as DirectKind, mutation: direct[0] !== 'GET' };
   }
   let operation: DomainOperation;
   let input: Record<string, unknown> = body ? { ...body } : {};

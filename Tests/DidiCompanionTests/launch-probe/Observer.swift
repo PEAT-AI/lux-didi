@@ -22,6 +22,10 @@ import AppKit
     var kernel: Int32 = -1
     var failureIdentity: [String: Any] = [:]
     var control: Int32 = -1
+    // eof-pre closes the control socket on purpose (control = -1). Dialling is
+    // therefore tracked separately so a later directory write can never re-dial
+    // a gate that has already served its connection.
+    var dialed = false
     var serviceFD: Int32 = -1
     var serviceFacts: ProbeIdentity?
     var serviceRecord: [String: Any]?
@@ -83,7 +87,7 @@ import AppKit
         // LaunchServices completion callback (which sets target/record/kernel)
         // arrives after the app's own gate window, so they connect from here.
         let preRelease = ["cancel-pre", "eof-pre", "bad-nonce"].contains(args[4])
-        guard !settled, !released, control < 0,
+        guard !settled, !released, !dialed,
               FileManager.default.fileExists(atPath: root + "/identity.json"),
               (kernel >= 0 && record != nil) || preRelease else { return }
         do {
@@ -94,8 +98,8 @@ import AppKit
                   target == nil || Int(target!.processIdentifier) == reportedPID else { fail("identity changed or nonce mismatch"); return }
             let (current, actual) = try identity(pid_t(reportedPID), nonce: nonce, bundle: bundle)
             guard current.uid == getuid(), actual["executable"] as? String == expectedExecutable,
-                  record.map { NSDictionary(dictionary: actual).isEqual(to: $0) } ?? true,
-                  verification || (record.map { NSDictionary(dictionary: reported).isEqual(to: $0) } ?? false) else { fail("identity changed or nonce mismatch"); return }
+                  record.map({ NSDictionary(dictionary: actual).isEqual(to: $0) }) ?? true,
+                  verification || (record.map({ NSDictionary(dictionary: reported).isEqual(to: $0) }) ?? false) else { fail("identity changed or nonce mismatch"); return }
             if verification {
                 var reused = current; reused.microseconds ^= 1
                 var mixed = current; mixed.pid = getpid()
@@ -107,6 +111,7 @@ import AppKit
             if verification {
                 control = probe_connect("/tmp/didi-verification-" + nonce + ".sock")
                 guard control >= 0 else { fail("control connection errno=\(errno)"); return }
+                dialed = true
                 if args[4] == "cancel-pre" { send("cancel") }
                 else if args[4] == "eof-pre" { close(control); control = -1 }
                 else if args[4] == "bad-nonce" { send("release", nonce: UUID().uuidString) }

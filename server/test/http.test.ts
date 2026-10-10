@@ -158,10 +158,12 @@ test('package installs offline and actual production CLI serves honest runtime-o
   try {
     const cwd = new URL('../../',import.meta.url);
     const env = {...process.env,npm_config_cache:join(dir,'npm-cache')};
-    const packed = spawnSync('npm',['pack','--json','--offline','--ignore-scripts','--pack-destination',dir],{cwd,env,encoding:'utf8',timeout:5000});
+    // The harness --test-timeout is the single declared bound; a fixture-local wall clock
+    // measured host speed rather than the product and killed a still-progressing npm.
+    const packed = spawnSync('npm',['pack','--json','--offline','--ignore-scripts','--pack-destination',dir],{cwd,env,encoding:'utf8'});
     assert.equal(packed.status,0,packed.status === 0 ? '' : packageFailure('npm pack', 'npm', ['pack','--json','--offline','--ignore-scripts','--pack-destination','<owned-temp>'], packed, env.npm_config_cache));
     const filename = (JSON.parse(packed.stdout) as {filename:string}[])[0]!.filename;
-    const installed = spawnSync('npm',['install','--prefix',join(dir,'install'),'--offline','--ignore-scripts','--omit=dev','--no-audit','--no-fund',join(dir,filename)],{env,encoding:'utf8',timeout:5000});
+    const installed = spawnSync('npm',['install','--prefix',join(dir,'install'),'--offline','--ignore-scripts','--omit=dev','--no-audit','--no-fund',join(dir,filename)],{env,encoding:'utf8'});
     assert.equal(installed.status,0,installed.status === 0 ? '' : packageFailure('npm offline install', 'npm', ['install','--prefix','<owned-temp>/install','--offline','--ignore-scripts','--omit=dev','--no-audit','--no-fund','<owned-tarball>'], installed, env.npm_config_cache));
     const state = join(dir,'state');
     child = spawn(process.execPath,[join(dir,'install/node_modules/@lux-didi/service/dist/index.js')],{env:{...env,DIDI_STATE_DIR:state,DIDI_PORT:'0'},stdio:['ignore','pipe','pipe']});

@@ -160,7 +160,8 @@ try {
       try {
         await start(0, ownerState, mode);
         context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, timezoneId: 'UTC' });
-        const unexpected = [], ownerErrors = [], ownerRequests = [];
+        const unexpected = [], ownerErrors = [], ownerConsole = [], ownerRequests = [];
+        let paired = false;
         await context.route('**/*', route => {
           const url = new URL(route.request().url());
           if (/^https?:$/.test(url.protocol) && url.origin !== descriptor.origin) { unexpected.push(url.origin); return route.abort(); }
@@ -168,12 +169,12 @@ try {
         });
         page = await context.newPage();
         page.on('pageerror', error => ownerErrors.push(error.message));
-        page.on('console', message => { if (message.type() === 'error') ownerErrors.push(message.text()); });
+        page.on('console', message => { if (message.type() === 'error') ownerConsole.push({ text: message.text(), paired }); });
         page.on('request', request => { if (request.url().includes('/api/v1')) ownerRequests.push({ path: new URL(request.url()).pathname, method: request.method() }); });
         await page.goto(descriptor.origin); await page.locator('#pair-code').waitFor();
         const pairing = await operator('/auth/pairing', {}, ownerState);
         await page.locator('#pair-code').fill(pairing.pairingCode); await page.locator('#pair-form').evaluate(form => form.requestSubmit());
-        await page.locator('#connected-route').waitFor();
+        await page.locator('#connected-route').waitFor(); paired = true;
         const status = await api('/status'), route = await api('/chat/status');
         const label = 'Example <Owner> & Friend', configured = mode === 'owner-configured';
         assert.deepEqual(status.ownerProfile, { status: 'configured', displayName: label });
@@ -187,11 +188,13 @@ try {
         const profilePath = join(ownerState, 'owner-profile.json');
         const serialized = await readFile(profilePath, 'utf8'), owner = JSON.parse(serialized);
         assert.equal(status.assistantId, owner.ownerId);
-        const surfaces = [JSON.stringify({ status, route }), await page.content(), await page.locator('body').textContent()];
+        const surfaces = [JSON.stringify({ status, route }), await page.content(), await page.locator('body').textContent(), JSON.stringify({ ownerErrors, ownerConsole })];
         for (const value of [profilePath, owner.profileVersion, owner.style.text, owner.lore.text, createHash('sha256').update(serialized).digest('hex')]) {
           assert.ok(surfaces.every(surface => !surface.includes(value)), 'protected owner metadata must not reach status/UI');
         }
         assert.deepEqual(unexpected, []); assert.deepEqual(ownerErrors, []);
+        assert.ok(ownerConsole.filter(event => !event.paired).every(event => event.text.includes('401 (Unauthorized)')), 'only the expected unauthenticated pairing response is allowed before pairing');
+        assert.deepEqual(ownerConsole.filter(event => event.paired), []);
         assert.ok(ownerRequests.every(request => request.method !== 'POST' || request.path.startsWith('/api/v1/auth/')));
         const wireExists = await readFile(join(ownerState, 'wire.jsonl')).then(() => true, error => { if (error.code === 'ENOENT') return false; throw error; });
         assert.equal(wireExists, false, 'owner label proof must make zero model transport calls');

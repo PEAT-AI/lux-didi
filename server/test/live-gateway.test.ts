@@ -201,6 +201,11 @@ test('one ordered authenticated audio upgrade carries PCM, markers and the termi
   const pcmIndex = indexOf(f => f.binary !== undefined);
   const interrupted = indexOf(f => Boolean(f.text && JSON.parse(f.text).type === 'interrupted'));
   assert.ok(marker < pcmIndex && pcmIndex < interrupted, 'one ordered stream: committed marker, PCM, committed marker');
+  // R4: facts after interrupted keep their order; the interrupted marker precedes following audio.
+  h.f.send({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from(pcm).toString('base64') } }] } } });
+  await waitFor(() => frames.filter(f => f.binary !== undefined).length >= 2);
+  const followingAudio = frames.findIndex((f, i) => f.binary !== undefined && i > interrupted);
+  assert.ok(followingAudio > interrupted, 'the interrupted marker precedes following audio frames');
 
   const closed = once(ws, 'close');
   h.f.remoteClose();
@@ -335,4 +340,143 @@ test('supervised host composes Live, closes owned sockets on EOF, and the Store 
 
   const store = new Store(dir, [...createDomainPort({ outbox: Outbox }).migrations, ...chatMigrations, ...liveMigrations]);
   try { assert.equal(store.assistantId, ready.assistantId, 'the real Store reopens with stable identity'); } finally { store.close(); }
+});
+
+function nextClose(ws: WebSocket): Promise<{ code: number; reason: string }> {
+  return new Promise(resolve => ws.once('close', (code: number, reason: Buffer) => resolve({ code, reason: reason.toString() })));
+}
+function collect(ws: WebSocket): { frames: Array<{ text?: string; binary?: Buffer }> } {
+  const frames: Array<{ text?: string; binary?: Buffer }> = [];
+  ws.on('message', (data: Data, isBinary: boolean) => { frames.push(isBinary ? { binary: Buffer.from(data as Buffer) } : { text: data.toString() }); });
+  return { frames };
+}
+function rawMethod(origin: string, path: string, method: string, headers: Record<string, string | string[]>): Promise<number> {
+  const url = new URL(origin);
+  return new Promise((resolve, reject) => {
+    const req = request({ host: url.hostname, port: url.port, path, method, headers }, res => { res.resume(); resolve(res.statusCode ?? 0); });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+test('strict client controls: endAudioStream accepted, close and unknown controls fail visibly', async t => {
+  const h = await harness(t, { config: configJson(true) });
+  const id = (await createBody(h, 'ctl-1')).body.data.liveSessionId;
+  const ws = new WebSocket(`${h.origin.replace('http', 'ws')}/api/v1/live-sessions/${id}/audio`, { headers: bearer(h) });
+  const { frames } = collect(ws);
+  await once(ws, 'open');
+  await h.f.frame(1); h.f.send({ setupComplete: {} });
+  await waitFor(() => frames.some(f => f.text && JSON.parse(f.text).type === 'ready'));
+  const before = h.f.frames.length;
+  ws.send(JSON.stringify({ type: 'endAudioStream' }));
+  await waitFor(() => h.f.frames.length > before);
+  assert.deepEqual(h.f.frames.at(-1), { realtimeInput: { audioStreamEnd: true } });
+  const closed = nextClose(ws);
+  ws.send(JSON.stringify({ type: 'nope' }));
+  assert.deepEqual(await closed, { code: 1002, reason: 'invalid_control' });
+
+  const id2 = (await createBody(h, 'ctl-2')).body.data.liveSessionId;
+  const ws2 = new WebSocket(`${h.origin.replace('http', 'ws')}/api/v1/live-sessions/${id2}/audio`, { headers: bearer(h) });
+  await once(ws2, 'open');
+  const closed2 = nextClose(ws2);
+  ws2.send(JSON.stringify({ type: 'close' }));
+  assert.deepEqual(await closed2, { code: 1000, reason: 'client_close' });
+});
+
+test('malformed and oversize client frames fail visibly', async t => {
+  const h = await harness(t, { config: configJson(true) });
+  const id = (await createBody(h, 'frm-1')).body.data.liveSessionId;
+  const ws = new WebSocket(`${h.origin.replace('http', 'ws')}/api/v1/live-sessions/${id}/audio`, { headers: bearer(h) });
+  await once(ws, 'open');
+  const closed = nextClose(ws);
+  ws.send('not-json');
+  assert.deepEqual(await closed, { code: 1002, reason: 'invalid_control' });
+
+  const id2 = (await createBody(h, 'frm-2')).body.data.liveSessionId;
+  const ws2 = new WebSocket(`${h.origin.replace('http', 'ws')}/api/v1/live-sessions/${id2}/audio`, { headers: bearer(h) });
+  await once(ws2, 'open');
+  const closed2 = nextClose(ws2);
+  ws2.send(Buffer.alloc(64 * 1024 + 4));
+  assert.deepEqual(await closed2, { code: 1009, reason: 'frame_too_large' });
+});
+
+test('wrong Host and wrong method are refused on Live routes', async t => {
+  const h = await harness(t, { config: configJson(true) });
+  const id = (await createBody(h, 'host-1')).body.data.liveSessionId;
+  assert.equal(await attempt(h.origin, `/api/v1/live-sessions/${id}/audio`, { ...bearer(h), host: 'evil.example' }), 403);
+  assert.equal(await rawMethod(h.origin, `/api/v1/live-sessions/${id}/audio`, 'POST', bearer(h)), 405);
+  assert.equal(await rawMethod(h.origin, `/api/v1/live-sessions/${id}`, 'POST', bearer(h)), 405);
+  assert.equal(h.f.attempts, 0);
+});
+
+test('revoke sessionA preserves an active sessionB that still works', async t => {
+  const h = await harness(t, { config: configJson(true) });
+  const a = (await createBody(h, 'iso-a')).body.data.liveSessionId;
+  const b = (await createBody(h, 'iso-b')).body.data.liveSessionId;
+  const ws = new WebSocket(`${h.origin.replace('http', 'ws')}/api/v1/live-sessions/${b}/audio`, { headers: bearer(h) });
+  const { frames } = collect(ws);
+  await once(ws, 'open');
+  await h.f.frame(1); h.f.send({ setupComplete: {} });
+  await waitFor(() => frames.some(f => f.text && JSON.parse(f.text).type === 'ready'));
+  assert.equal((await json(h.origin, `/api/v1/live-sessions/${a}/revoke`, { method: 'POST', headers: bearer(h) })).status, 200);
+  const snapB = await json(h.origin, `/api/v1/live-sessions/${b}`, { headers: bearer(h) });
+  assert.equal(snapB.body.data.lifecycle, 'active', 'an attached B stays active across A revoke');
+  h.f.send({ serverContent: { outputTranscription: { text: 'still B' } } });
+  await waitFor(() => frames.some(f => f.text && JSON.parse(f.text).text === 'still B'));
+  ws.close();
+});
+
+test('socket backpressure persists consumer_backpressure before the 1013 close', async t => {
+  const h = await harness(t, { config: configJson(true, { limits: { consumerQueueEvents: 65536, consumerQueueBytes: 8 * 1024 * 1024, wsBufferedBytes: 1024 } }) });
+  const id = (await createBody(h, 'bp-1')).body.data.liveSessionId;
+  const ws = new WebSocket(`${h.origin.replace('http', 'ws')}/api/v1/live-sessions/${id}/audio`, { headers: bearer(h) });
+  await once(ws, 'open');
+  await h.f.frame(1); h.f.send({ setupComplete: {} });
+  await new Promise(resolve => setTimeout(resolve, 40));
+  const socket = (ws as unknown as { _socket: { pause(): void; resume(): void } })._socket;
+  socket.pause();
+  const audioFrame = { serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.alloc(4096).toString('base64') } }] } } };
+  const closed = nextClose(ws);
+  for (let i = 0; i < 40; i++) h.f.send(audioFrame);
+  await new Promise(resolve => setTimeout(resolve, 100));
+  socket.resume();
+  assert.equal((await closed).code, 1013);
+  const snap = await json(h.origin, `/api/v1/live-sessions/${id}`, { headers: bearer(h) });
+  assert.equal(snap.body.data.terminal.state, 'consumer_backpressure', 'the durable fact predates the close');
+});
+
+test('a client that disconnects after 101 records a truthful terminal and never retries', async t => {
+  const h = await harness(t, { config: configJson(true) });
+  const id = (await createBody(h, 'disc-1')).body.data.liveSessionId;
+  const ws = new WebSocket(`${h.origin.replace('http', 'ws')}/api/v1/live-sessions/${id}/audio`, { headers: bearer(h) });
+  await once(ws, 'open');
+  ws.terminate();
+  h.f.remoteClose();
+  const deadline = Date.now() + 5000;
+  let terminal: unknown = null;
+  while (!terminal && Date.now() < deadline) {
+    const s = await json(h.origin, `/api/v1/live-sessions/${id}`, { headers: bearer(h) });
+    if (s.body.data.terminal) terminal = s.body.data.terminal;
+    else await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  assert.ok(terminal, 'a truthful terminal is recorded');
+  assert.equal(h.f.attempts, 1, 'the one-shot session is never re-dispatched');
+});
+
+test('revoke while receiving output sends no later PCM on the wire', async t => {
+  const h = await harness(t, { config: configJson(true) });
+  const id = (await createBody(h, 'revout-1')).body.data.liveSessionId;
+  const ws = new WebSocket(`${h.origin.replace('http', 'ws')}/api/v1/live-sessions/${id}/audio`, { headers: bearer(h) });
+  const { frames } = collect(ws);
+  await once(ws, 'open');
+  await h.f.frame(1); h.f.send({ setupComplete: {} });
+  await waitFor(() => frames.some(f => f.text && JSON.parse(f.text).type === 'ready'));
+  const audioFrame = { serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from(pcm).toString('base64') } }] } } };
+  h.f.send(audioFrame);
+  await waitFor(() => frames.some(f => f.binary));
+  const before = frames.filter(f => f.binary).length;
+  assert.equal((await json(h.origin, `/api/v1/live-sessions/${id}/revoke`, { method: 'POST', headers: bearer(h) })).status, 200);
+  h.f.send(audioFrame);
+  await new Promise(resolve => setTimeout(resolve, 60));
+  assert.equal(frames.filter(f => f.binary).length, before, 'no later PCM egress after revoke');
 });

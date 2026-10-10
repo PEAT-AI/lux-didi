@@ -2,6 +2,7 @@
 set -euo pipefail
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 cd "$(dirname "$0")/.."
+root="$(pwd)"
 work=$(mktemp -d "${TMPDIR:-/tmp}/didi-live-gateway.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 # Distinct isolated configuration files; never inherit account npm configuration.
@@ -14,8 +15,9 @@ npm run build
 node --test --test-reporter=tap --test-timeout=30000 dist/test/live-gateway.test.js dist/test/live-session.test.js dist/test/live-voice.test.js dist/test/prompt.test.js | tee "$work/test.log"
 grep -Eq '^# tests [1-9][0-9]*$' "$work/test.log" || { echo 'Zero selected live gateway tests' >&2; exit 1; }
 grep -Eq '^# fail 0$' "$work/test.log" || { echo 'Selected live gateway tests failed' >&2; exit 1; }
-# Affected host-entry migration/reopen runtime ring (impact-selected; not the full host/web ring).
-node --test --test-reporter=tap --test-timeout=60000 test/host-entry.test.mjs | tee "$work/host.log"
+# Real web assets once for the changed host-composition assertion, then the bounded host file.
+(cd "$root" && npm --prefix web ci --ignore-scripts --no-audit --no-fund && npm --prefix web run build)
+node --test --test-reporter=tap --test-timeout=60000 test/host.test.js test/host-entry.test.mjs | tee "$work/host.log"
 grep -Eq '^# tests [1-9][0-9]*$' "$work/host.log" || { echo 'Zero selected host runtime tests' >&2; exit 1; }
 grep -Eq '^# fail 0$' "$work/host.log" || { echo 'Selected host runtime tests failed' >&2; exit 1; }
 # The canonical files inventory must publish the gateway production roots, offline.

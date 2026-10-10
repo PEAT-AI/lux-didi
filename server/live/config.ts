@@ -8,12 +8,12 @@ const maxTimer = 2_147_483_647;
 const limitBounds: Readonly<Record<keyof LiveLimits, number>> = {
   sessionMs: maxTimer, idleMs: maxTimer, unusedMs: maxTimer, handshakeMs: maxTimer, closeMs: maxTimer,
   journalMaxEvents: 1_000_000, journalMaxBytes: 1024 * 1024 * 1024,
-  consumerQueueEvents: 65_536, consumerQueueBytes: 64 * 1024 * 1024,
+  consumerQueueEvents: 65_536, consumerQueueBytes: 64 * 1024 * 1024, wsBufferedBytes: 64 * 1024 * 1024,
 };
 export const defaultLiveLimits: Readonly<LiveLimits> = Object.freeze({
   sessionMs: 900_000, idleMs: 60_000, unusedMs: 300_000, handshakeMs: 15_000, closeMs: 1_000,
   journalMaxEvents: 16_384, journalMaxBytes: 16 * 1024 * 1024,
-  consumerQueueEvents: 256, consumerQueueBytes: 2 * 1024 * 1024,
+  consumerQueueEvents: 256, consumerQueueBytes: 2 * 1024 * 1024, wsBufferedBytes: 4 * 1024 * 1024,
 });
 
 function object(value: unknown): value is Record<string, unknown> {
@@ -40,6 +40,7 @@ function limits(value: unknown): LiveLimits {
     journalMaxBytes: limit(source['journalMaxBytes'], 'journalMaxBytes'),
     consumerQueueEvents: limit(source['consumerQueueEvents'], 'consumerQueueEvents'),
     consumerQueueBytes: limit(source['consumerQueueBytes'], 'consumerQueueBytes'),
+    wsBufferedBytes: limit(source['wsBufferedBytes'], 'wsBufferedBytes'),
   });
 }
 function classList(value: unknown): DataClass[] {

@@ -46,7 +46,7 @@ class HostLiveService implements LiveService {
   readonly maxBufferedBytes: number;
   readonly profileIdentity: string;
   constructor(private readonly profile: LiveProfile, private readonly owner: LiveSessionOwner) {
-    this.maxBufferedBytes = profile.limits.consumerQueueBytes;
+    this.maxBufferedBytes = profile.limits.wsBufferedBytes;
     this.profileIdentity = liveProfileIdentity(profile);
   }
   status(): LiveStatusPayload { return statusFromProfile(this.profile); }
@@ -66,7 +66,7 @@ class UnconfiguredLive implements LiveService {
   readonly enabled = false;
   readonly profileIdentity = '';
   readonly maxIncomingBytes = maxIncomingBytes;
-  readonly maxBufferedBytes = defaultLiveLimits.consumerQueueBytes;
+  readonly maxBufferedBytes = defaultLiveLimits.wsBufferedBytes;
   constructor(private readonly payload: LiveStatusPayload) {}
   status(): LiveStatusPayload { return this.payload; }
   create(): never { return unavailable('LIVE_NOT_CONFIGURED'); }

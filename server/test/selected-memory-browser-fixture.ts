@@ -53,18 +53,21 @@ async function main() {
   // Trusted in-process seeding of labelled and unclassified synthetic notes.
   const domain = createDomainPort({ outbox: Outbox });
   const ctx = () => ({ assistantId: host.store.assistantId, clientId: 'local-admin', authorityEpoch: host.store.authorityEpoch, now: new Date(0).toISOString() });
-  const seed = (title: string, text: string, dataClass?: string) => {
-    const session = host.store.transaction(tx => domain.execute(tx, 'createSession', { title, timeZone: 'UTC' }, ctx(), dataClass ? { writer: 'capture', dataClass } as never : undefined)) as { id: string };
-    const entry = host.store.transaction(tx => domain.execute(tx, 'appendEntry', { sessionId: session.id, text, role: 'user', timeZone: 'UTC' }, ctx(), dataClass ? { writer: 'capture', dataClass } as never : undefined)) as { id: string };
+  const seed = (title: string, text: string, label?: { writer: string; dataClass: string }) => {
+    const session = host.store.transaction(tx => domain.execute(tx, 'createSession', { title, timeZone: 'UTC' }, ctx(), label as never)) as { id: string };
+    const entry = host.store.transaction(tx => domain.execute(tx, 'appendEntry', { sessionId: session.id, text, role: 'user', timeZone: 'UTC' }, ctx(), label as never)) as { id: string };
     return { sessionId: session.id, entryId: entry.id };
   };
+  // The Domain accepts only capture/private or model/private|sensitive as trusted write labels.
+  const privateLabel = { writer: 'capture', dataClass: 'private' };
+  const sensitiveLabel = { writer: 'model', dataClass: 'sensitive' };
   const seeded = {
-    ordinary: seed(notes.ordinary.title, notes.ordinary.text, 'ordinary'),
-    private: seed(notes.private.title, notes.private.text, 'private'),
-    sensitive: seed(notes.sensitive.title, notes.sensitive.text, 'sensitive'),
+    ordinary: seed(notes.ordinary.title, notes.ordinary.text, privateLabel),
+    private: seed(notes.private.title, notes.private.text, privateLabel),
+    sensitive: seed(notes.sensitive.title, notes.sensitive.text, sensitiveLabel),
     unknown: seed(notes.unknown.title, notes.unknown.text),
-    canary: seed(notes.canary.title, notes.canary.text, 'ordinary'),
-    oversized: seed(notes.oversized.title, notes.oversized.text, 'ordinary'),
+    canary: seed(notes.canary.title, notes.canary.text, privateLabel),
+    oversized: seed(notes.oversized.title, notes.oversized.text, privateLabel),
   };
   let closing = false;
   async function stop() {

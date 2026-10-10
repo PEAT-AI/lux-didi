@@ -26,18 +26,31 @@ async function fixture() {
   const config = { dataDir: dir, webRoot, port: 0, modelTesting: {
     credentials: { resolve: async () => syntheticKey },
     transport: async (url: string, init: RequestInit) => { captured.push({ url, init }); return sse(); } } };
+  const hosts: Awaited<ReturnType<typeof startHost>>[] = [];
   let host = await startHost(config);
+  hosts.push(host);
+  // Deterministic listener closure: destroy live sockets first so `server.close` can settle,
+  // then close the service and the store. Never relies on the process force-exiting.
+  async function closeHost(open: Awaited<ReturnType<typeof startHost>>) {
+    open.service.server.closeAllConnections();
+    await open.close();
+  }
+  try {
   const domain = createDomainPort({ outbox: Outbox });
   const ctx = () => ({ assistantId: host.store.assistantId, clientId: 'local-admin', authorityEpoch: host.store.authorityEpoch, now: new Date(0).toISOString() });
-  const create = (title: string, dataClass?: string) => host.store.transaction(tx => domain.execute(tx, 'createSession', { title, timeZone: 'UTC' }, ctx(), dataClass ? { writer: 'capture', dataClass } as never : undefined)) as { id: string };
-  const append = (sessionId: string, text: string, dataClass?: string) => host.store.transaction(tx => domain.execute(tx, 'appendEntry', { sessionId, text, role: 'user', timeZone: 'UTC' }, ctx(), dataClass ? { writer: 'capture', dataClass } as never : undefined)) as { id: string };
-  const seed = (title: string, text: string, dataClass: string) => { const session = create(title, dataClass); return { sessionId: session.id, entryId: append(session.id, text, dataClass).id }; };
-  const ordinary = seed('Ordinary notes', ORDINARY, 'ordinary');
-  const privateNote = seed('Private notes', PRIVATE, 'private');
-  const sensitive = seed('Sensitive notes', SENSITIVE, 'sensitive');
+  // Trusted canonical write labels: the Domain accepts only capture/private or model/private|sensitive.
+  const privateLabel = { writer: 'capture', dataClass: 'private' };
+  const sensitiveLabel = { writer: 'model', dataClass: 'sensitive' };
+  type WriteLabel = typeof privateLabel | typeof sensitiveLabel;
+  const create = (title: string, label?: WriteLabel) => host.store.transaction(tx => domain.execute(tx, 'createSession', { title, timeZone: 'UTC' }, ctx(), label as never)) as { id: string };
+  const append = (sessionId: string, text: string, label?: WriteLabel) => host.store.transaction(tx => domain.execute(tx, 'appendEntry', { sessionId, text, role: 'user', timeZone: 'UTC' }, ctx(), label as never)) as { id: string };
+  const seed = (title: string, text: string, label: WriteLabel) => { const session = create(title, label); return { sessionId: session.id, entryId: append(session.id, text, label).id }; };
+  const ordinary = seed('Ordinary notes', ORDINARY, privateLabel);
+  const privateNote = seed('Private notes', PRIVATE, privateLabel);
+  const sensitive = seed('Sensitive notes', SENSITIVE, sensitiveLabel);
   const unknownSession = create('Unknown notes');
   const unknown = { sessionId: unknownSession.id, entryId: append(unknownSession.id, UNKNOWN).id };
-  const canary = seed('Canary notes', CANARY, 'ordinary');
+  const canary = seed('Canary notes', CANARY, privateLabel);
   async function pair(): Promise<Auth> {
     const code = await pairLocal(dir);
     const response = await fetch(host.descriptor.origin + '/api/v1/auth/pair', { method: 'POST', headers: { Origin: host.descriptor.origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ pairingCode: code }) });
@@ -69,8 +82,12 @@ async function fixture() {
     throw Error('run never became terminal');
   }
   return { dir, captured, ordinary, privateNote, sensitive, unknown, canary, get host() { return host; }, pair, call, enroll, entries, terminal,
-    async restart() { await host.close(); host = await startHost(config); },
-    async close() { await host.close(); await rm(dir, { recursive: true, force: true }); } };
+    async restart() { await closeHost(host); hosts.splice(hosts.indexOf(host), 1); host = await startHost(config); hosts.push(host); },
+    async close() { for (const open of [...hosts].reverse()) await closeHost(open); await rm(dir, { recursive: true, force: true }); } };
+  } catch (setupError) {
+    await closeHost(host);
+    throw setupError;
+  }
 }
 
 test('HTTP carries an explicit selected-note field through both allowlists to ChatService.accept', async () => {

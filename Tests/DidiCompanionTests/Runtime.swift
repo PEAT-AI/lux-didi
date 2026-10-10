@@ -74,9 +74,9 @@ import Security
             expect((loop["count"] as? Int ?? 0) > 0 && loop["firstUptimeNanoseconds"] is UInt64 && loop["lastUptimeNanoseconds"] is UInt64,
                    "hidden-window deadline observes actual main run-loop liveness")
             expect(loop["disposed"] as? Bool == true, "deadline disposes readiness callbacks")
-            let cancelled = Task { await OwnedWindowReadiness.wait(window) {} }
-            cancelled.cancel()
-            let cancellation = await cancelled.value
+            let cancelledReadiness = Task { await OwnedWindowReadiness.wait(window) {} }
+            cancelledReadiness.cancel()
+            let cancellation = await cancelledReadiness.value
             expect(!cancellation.ready && cancellation.events.last?["event"] as? String == "cancelled" &&
                    (cancellation.diagnostics["runLoop"] as? [String: Any])?["disposed"] as? Bool == true,
                    "cancelled readiness disposes callbacks without claiming activation")

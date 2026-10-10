@@ -441,7 +441,7 @@ test('DIAG browser-actor HTTP accept surfaces the exact denial reason', async t 
   const service = await listenService({ store: f.store, domain: f.domain, chat: f.chat, modelStatus: f.status,
     ...(f.connections ? { connections: f.connections } : {}), port: 0 });
   t.after(() => service.close());
-  const pairing = await fetch(`${service.origin}/api/v1/auth/pairing`, { method: 'POST', headers: { Authorization: `Bearer ${f.store.adminCredential}`, Origin: service.origin } });
+  const pairing = await fetch(`${service.origin}/api/v1/auth/pairing`, { method: 'POST', headers: { Authorization: `Bearer ${f.store.adminCredential}`, Origin: service.origin, 'Content-Type': 'application/json' }, body: '{}' });
   const pairingBody: any = await pairing.json();
   const code = pairingBody?.data?.pairingCode ?? pairingBody?.pairingCode;
   const paired: any = await (async () => { const r = await fetch(`${service.origin}/api/v1/auth/pair`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: service.origin }, body: JSON.stringify({ pairingCode: code }) }); return { status: r.status, body: await r.json() }; })();

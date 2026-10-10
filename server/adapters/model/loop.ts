@@ -37,11 +37,11 @@ export async function runTools(options: LoopOptions): Promise<LoopResult> {
   }
   for (;;) {
     // Cover every response once, with no extra, duplicate or mispositioned binding.
-    const responses = contents.flatMap((content, contentIndex) => content.parts.flatMap((part, partIndex) =>
+    const coveredResponses = contents.flatMap((content, contentIndex) => content.parts.flatMap((part, partIndex) =>
       part.functionResponse ? [{ contentIndex, partIndex, response: part.functionResponse }] : []));
-    if (responses.length > bindings.length) return end('denied', 'tool_continuation_unbound');
-    if (responses.length !== bindings.length || bindings.some((binding, i) => {
-      const response = responses.find(r => r.contentIndex === binding.contentIndex && r.partIndex === binding.partIndex)?.response;
+    if (coveredResponses.length > bindings.length) return end('denied', 'tool_continuation_unbound');
+    if (coveredResponses.length !== bindings.length || bindings.some((binding, i) => {
+      const response = coveredResponses.find(r => r.contentIndex === binding.contentIndex && r.partIndex === binding.partIndex)?.response;
       return !response || response.name !== binding.name || response.id !== binding.callId || !binding.executionId || !validRef(binding.result) ||
         bindings.slice(0, i).some(b => b.contentIndex === binding.contentIndex && b.partIndex === binding.partIndex || b.executionId === binding.executionId);
     })) return end('denied', 'tool_continuation_mismatch');

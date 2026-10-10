@@ -506,5 +506,5 @@ test('accepted unused observations and same-key replay expire without attach, st
     await assert.rejects(h.owner.attach(row.liveSessionId, h.ctx), { code: 'terminal' });
   }
   assert.equal(resolutions, 0);
-  assert.equal(h.f.opens.length, 0);
+  assert.equal(h.f.attempts, 0);
 });

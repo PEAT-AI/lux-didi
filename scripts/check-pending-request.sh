@@ -1,0 +1,11 @@
+#!/bin/bash
+set -euo pipefail
+export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
+root="$(cd "$(dirname "$0")/.." && pwd)"
+work="$(mktemp -d "${TMPDIR:-/tmp}/didi-pending-check.XXXXXX")"
+trap 'rm -rf "$work"' EXIT
+swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
+  -D PENDING_REQUEST_TESTING \
+  "$root/Sources/LuxDidi/PendingRequestStore.swift" \
+  "$root/Tests/DidiPendingRequestTests/Runner.swift" -o "$work/pending-tests"
+"$work/pending-tests" --durations=10

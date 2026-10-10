@@ -218,11 +218,20 @@ ALLOWED_PATHS = {
     "docs/model-adapter.md",
     "docs/prompt-composition.md",
     "docs/web-client.md",
+    "docs/implementation-status.md",
+    "docs/live-voice-adapter.md",
+    "docs/local-development.md",
+    "docs/lux-knowledge-connector.md",
+    "docs/native-request-recovery.md",
     "fixtures/domain/library-basic.json",
     "scripts/check-domain.sh",
     "scripts/check-mcp.sh",
     "scripts/check-model.sh",
     "scripts/check-prompt.sh",
+    "scripts/check-host-entry.sh",
+    "scripts/check-knowledge-connector.sh",
+    "scripts/check-live-voice.sh",
+    "scripts/check-pending-request.sh",
 }
 ALLOWED_PATHS |= {f"docs/{name}" for name in DOCS}
 

@@ -2,7 +2,7 @@ import './style.css';
 import { ConnectedView } from './connected';
 import { Orb, type VoiceState } from './orb';
 import { ApiError, request, pair, demoMode, onAuthorityChanged, clearAuthority, restoreSession, logout } from './api';
-import type { Session, Entry, Commitment, CommitmentDetail, Plan, Recall, Status, Job } from './protocol';
+import type { Session, Entry, Commitment, CommitmentDetail, Plan, Recall, Status } from './protocol';
 
 type Tab = 'Conversation' | 'Today' | 'Memory' | 'Settings';
 const root = document.querySelector<HTMLDivElement>('#app')!;
@@ -22,8 +22,6 @@ let pairingRequired = false, sessionMore = false, entriesMore = false;
 let controller: AbortController | undefined;
 let pollTimer: ReturnType<typeof setTimeout> | undefined, backoff = 30000;
 let readGeneration = 0;
-let jobTimer: ReturnType<typeof setTimeout> | undefined;
-let jobId: string | undefined, jobStarted = 0, jobPaused = false;
 const e = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
 const datetime = (value: string | null) => value ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value)) : 'No due date';
 function localDate() { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
@@ -43,7 +41,7 @@ function entryMarkup(entry: Entry) { return `<article class="entry ${entry.role}
 function orbState(): VoiceState {
   if(connection==='Offline'||connection==='Disconnected'||pairingRequired)return 'DISCONNECTED';
   if(connection==='Connecting')return 'CONNECTING';
-  if(jobId&&!jobPaused||busy||connectedView.active)return 'PROCESSING';
+  if(busy||connectedView.active)return 'PROCESSING';
   if(error)return 'ERROR';
   return 'CONNECTED';
 }
@@ -58,7 +56,6 @@ function conversation() {
   <section class="panel thread" aria-label="Conversation">${sessions.length ? `<div class="mobile-conversations"><label for="conversation-select">Choose a conversation</label><select id="conversation-select"><option value="">Start a new conversation</option>${sessions.map(s=>`<option value="${e(s.id)}" ${session?.id===s.id?'selected':''}>${e(s.title)}</option>`).join('')}</select></div>` : ''}<div class="thread-heading"><span class="dot"></span><h2>${e(session?.title ?? 'Start where you are')}</h2></div>
   <div class="entries">${entries.length ? entries.map(entryMarkup).join('') : `<div class="empty"><span class="empty-icon" aria-hidden="true">✳</span><h3>What’s on your mind?</h3><p>Save a thought, make a plan, or pick up a conversation.</p></div>`}${entriesMore ? '<p class="muted">There are more messages in this conversation. This view shows the first page.</p>' : ''}</div>
   <form id="message-form" class="composer"><label for="message">Local note · not sent to a model</label><textarea id="message" rows="3" maxlength="12000" placeholder="A thought, a next step, a thing to remember…">${e(messageDraft)}</textarea><div class="composer-foot"><small>${status?.model.configured ? 'Save a message, or ask Didi for help.' : 'No model connected. You can still save messages and commitments.'}</small><div class="button-row"><button type="submit" ${disabled(!writable())}>${busy ? 'Working…' : 'Save message'}</button><button type="button" id="ask-didi" class="secondary" disabled title="Start an explicitly disclosed connected conversation below">Ask Didi</button></div></div></form>
-  ${jobId ? `<div class="callout">${jobPaused ? 'Stopped waiting for a reply. The service may still be working.' : 'Didi is working. You can stop waiting without losing your message.'}<button id="stop-job" class="quiet">Stop waiting</button></div>` : ''}
   </section></div><div id="connected-panel"></div>`;
 }
 function commitmentMarkup(c: Commitment, overdue = false) {
@@ -109,7 +106,7 @@ function bind() {
   root.querySelectorAll<HTMLElement>('[data-capture]').forEach(el=>el.onclick=()=>{const entry=entries.find(v=>v.id===el.dataset.capture);if(entry)void mutate(async signal=>{await request<Commitment>('/commitments',{method:'POST',body:{title:entry.text,notes:'',dueAt:null,timeZone:zone,sourceSessionId:entry.sessionId,sourceEntryId:entry.id},signal});notice='Commitment saved. Find it in Today.';});});
   document.getElementById('conversation-select')?.addEventListener('change',ev=>{const id=(ev.target as HTMLSelectElement).value;if(id)void openSession(id);else{session=undefined;entries=[];render();}});
   input('message',v=>messageDraft=v); input('commitment-title',v=>titleDraft=v);input('recall-query',v=>queryDraft=v);input('edit-title',v=>editTitle=v);input('edit-notes',v=>editNotes=v);input('edit-due',v=>editDue=v);
-  form('message-form',()=>void sendMessage(false));button('ask-didi',()=>document.getElementById('connected-panel')?.scrollIntoView());
+  form('message-form',()=>void saveLocalNote());button('ask-didi',()=>document.getElementById('connected-panel')?.scrollIntoView());
   form('commitment-form',()=>{if(!titleDraft.trim())return;void mutate(async signal=>{await request<Commitment>('/commitments',{method:'POST',body:{title:titleDraft.trim(),dueAt:null,timeZone:zone},signal});titleDraft='';await loadPlan();notice='Commitment saved.';});});
   form('edit-form',()=>{if(!editing || !editTitle.trim())return;void changeCommitment(editing,'edit');});
   form('recall-form',()=>void searchRecall());
@@ -118,7 +115,7 @@ function bind() {
   button('close-edit',()=>{editing=undefined;render();});button('close-history',()=>{detail=undefined;render();});
   button('refresh-plan',()=>void loadTab()); button('reconnect',()=>void connect());button('reconnect-top',()=>void connect());
   button('logout',()=>void mutate(async()=>{await logout();status=undefined;sessions=[];entries=[];session=undefined;plan=undefined;recall=undefined;recent=[];pairingRequired=true;connection='Pair this browser';notice='This browser is unpaired.';}));
-  button('cancel-request',()=>controller?.abort());button('stop-job',()=>{if(jobTimer)clearTimeout(jobTimer);jobPaused=true;render();});
+  button('cancel-request',()=>controller?.abort());
 }
 async function mutate(action: (signal: AbortSignal) => Promise<void>) {
   if(!writable())return;
@@ -130,13 +127,12 @@ async function ensureSession(signal: AbortSignal) {
   if(!session){session=await request<Session>('/sessions',{method:'POST',body:{title:'A new conversation',timeZone:zone},signal});sessions.unshift(session);entries=[];}
   return session;
 }
-async function sendMessage(model: boolean) {
+async function saveLocalNote() {
   if(!messageDraft.trim())return;
   const text=messageDraft.trim();
   await mutate(async signal=>{
     const current=await ensureSession(signal);
-    if(model){const accepted=await request<{jobId:string;status:string}>('/chat',{method:'POST',body:{sessionId:current.id,text,timeZone:zone},signal});jobId=accepted.jobId;jobStarted=Date.now();jobPaused=false;messageDraft='';notice='Message accepted. Waiting for the service reply.';void pollJob();}
-    else{const entry=await request<Entry>(`/sessions/${encodeURIComponent(current.id)}/entries`,{method:'POST',body:{text,role:'user',timeZone:zone},signal});if(!entries.some(e=>e.id===entry.id))entries.push(entry);messageDraft='';notice='Message saved.';}
+    const entry=await request<Entry>(`/sessions/${encodeURIComponent(current.id)}/entries`,{method:'POST',body:{text,role:'user',timeZone:zone},signal});if(!entries.some(e=>e.id===entry.id))entries.push(entry);messageDraft='';notice='Message saved.';
   });
 }
 async function changeCommitment(c: Commitment, action: 'edit'|'complete'|'reopen'|'cancel') {
@@ -186,15 +182,6 @@ async function connect(background=false) {
   render();schedulePoll();
 }
 function schedulePoll(){if(pollTimer)clearTimeout(pollTimer);if(!document.hidden&&!pairingRequired)pollTimer=setTimeout(()=>void connect(true),backoff);}
-async function pollJob(){
-  if(!jobId||jobPaused)return;
-  if(document.hidden||!navigator.onLine){jobTimer=setTimeout(()=>void pollJob(),10000);return;}
-  if(Date.now()-jobStarted>120000){jobPaused=true;notify('The reply is taking longer than expected. Reopen the conversation to check; no new message was queued.');return;}
-  try{const job=await request<Job>(`/jobs/${encodeURIComponent(jobId)}`,{signal:AbortSignal.timeout(8000)});
-    if(['completed','succeeded','failed','cancelled'].includes(job.status)){jobId=undefined;if(job.error){notify(job.error.message,true);}else if(session){await openSession(session.id);}return;}
-  }catch(err){notify(failure(err),true);jobPaused=true;return;}
-  jobTimer=setTimeout(()=>void pollJob(),2500);
-}
 onAuthorityChanged(()=>{connectedView.reset();status=undefined;sessions=[];entries=[];session=undefined;plan=undefined;recall=undefined;recent=[];connection='Disconnected';});
 window.addEventListener('offline',()=>{connectedView.detach();connection='Offline';if(pollTimer)clearTimeout(pollTimer);render();});
 window.addEventListener('online',()=>void connect());

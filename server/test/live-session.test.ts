@@ -551,7 +551,7 @@ test('one unref timer autonomously settles multiple deadlines and survives inval
   assert.equal(scheduler.callbacks, 0);
   h.advance(1); scheduler.runDue();
   const counts = () => h.store.transaction(tx => tx.all("SELECT live_session_id, COUNT(*) AS n FROM live_journal WHERE kind='terminal' GROUP BY live_session_id"));
-  assert.deepEqual(counts(), [{ live_session_id: first.liveSessionId, n: 1 }]);
+  assert.deepEqual(counts().map(row => ({ ...row })), [{ live_session_id: first.liveSessionId, n: 1 }]);
   assert.equal(scheduler.pending.size, 1);
   h.owner.invalidate('authority');
   h.advance(5); scheduler.runDue();
@@ -608,16 +608,27 @@ test('shutdown cancels the deadline synchronously and fences already queued call
 test('current deadline query plan measures unrelated terminal history without a cap', async t => {
   const scheduler = new DeadlineClock();
   const h = await harness(t, { scheduler, limits: { unusedMs: 20 } });
+  const measurements: Array<{ history: number; elapsedMs: number; accepted: number; due: number }> = [];
+  const measure = (history: number) => {
+    const start = performance.now();
+    const result = h.store.transaction(tx => ({
+      accepted: tx.all("SELECT live_session_id FROM live_sessions WHERE owner_assistant_id=? AND lifecycle='accepted' AND dispatch_intent=0", [h.store.assistantId]).length,
+      due: tx.all("SELECT live_session_id FROM live_sessions WHERE owner_assistant_id=? AND lifecycle='accepted' AND dispatch_intent=0 AND created_at < ?", [h.store.assistantId, scheduler.now - 20]).length,
+    }));
+    measurements.push({ history, elapsedMs: performance.now() - start, ...result });
+  };
+  measure(0);
   for (let i = 0; i < 1000; i++) {
     const row = h.owner.create({ idempotencyKey: `history-${i}`, inputClass: 'ordinary' }, h.ctx);
     h.owner.revoke(row.liveSessionId);
+    if (i === 99 || i === 999) measure(i + 1);
   }
   const accepted = h.owner.create({ idempotencyKey: 'plan-accepted', inputClass: 'ordinary' }, h.ctx);
   const plans = h.store.transaction(tx => ({
     next: tx.all("EXPLAIN QUERY PLAN SELECT MIN(created_at) AS created_at FROM live_sessions WHERE owner_assistant_id=? AND lifecycle='accepted' AND dispatch_intent=0", [h.store.assistantId]),
     due: tx.all("EXPLAIN QUERY PLAN SELECT * FROM live_sessions WHERE owner_assistant_id=? AND lifecycle='accepted' AND dispatch_intent=0 AND created_at < ?", [h.store.assistantId, scheduler.now - 20]),
   }));
-  t.diagnostic(JSON.stringify({ terminalHistory: 1000, plans }));
+  t.diagnostic(JSON.stringify({ terminalHistory: 1000, measurements, plans }));
   assert.ok(plans.next.every(row => String(row['detail']).includes('INDEX')));
   assert.ok(plans.due.every(row => String(row['detail']).includes('INDEX')));
   h.advance(21); scheduler.runDue();
@@ -687,5 +698,21 @@ test('attach wins before deadline including opening, and expiry wins after it wi
   assert.equal(h.f.attempts, 1);
   await h.owner.shutdown();
   assert.equal(scheduler.pending.size, 0);
-  assert.equal((await attachment.done).terminal?.state, 'outcome_unknown');
+  assert.equal((await attachment.done).terminal?.state, 'closed');
+});
+
+
+test('trusted clock rejects fractional milliseconds and maximum timer delay stays bounded', async t => {
+  const h = await harness(t);
+  assert.throws(() => createLiveSessionOwner({ store: h.store, voice: { open() { throw new Error('unexpected open'); } }, profile: validateLiveProfile(profileInput()), now: () => NOW + 0.5 }), { code: 'invalid_config' });
+  const scheduler = new DeadlineClock();
+  const max = await harness(t, { scheduler, limits: { unusedMs: 2_147_483_647 } });
+  const row = max.owner.create({ idempotencyKey: 'deadline-max', inputClass: 'ordinary' }, max.ctx);
+  assert.equal([...scheduler.pending][0]!.due - scheduler.now, 2_147_483_647);
+  max.advance(2_147_483_647); scheduler.runDue();
+  assert.equal(max.owner.get(row.liveSessionId).lifecycle, 'accepted');
+  assert.equal([...scheduler.pending][0]!.due - scheduler.now, 1);
+  max.advance(1); scheduler.runDue();
+  assert.equal(max.owner.get(row.liveSessionId).terminal?.state, 'expired');
+  assert.equal(scheduler.callbacks, 2);
 });

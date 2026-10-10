@@ -227,9 +227,9 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
   };
   const owner: ToolsOwner = {
     journal, resultGate, complete,
-    receipts(runId) {
+    receipts(tx, runId) {
       if (typeof runId !== 'string' || !runId || runId.length > 128) throw Error('invalid_run_id');
-      return store.transaction(tx => {
+      {
         const { snapshot } = readRun(tx, runId);
         return tx.all("SELECT execution_id,call_id,intent_json,result_id,result_sha256 FROM tool_calls WHERE owner_id=? AND run_id=? AND state='completed' ORDER BY rowid", [ownerId, runId])
           .map(row => {
@@ -241,6 +241,13 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
               result: { id: String(row.result_id), sha256: String(row.result_sha256) },
               connection: { connectionId: bound.connectionId, generation: bound.generation, sha256: bound.sha256 } };
           });
+      }
+    },
+    acceptedRun(runId) {
+      return store.transaction(tx => {
+        const row = tx.get('SELECT snapshot_json,snapshot_sha256 FROM tool_runs WHERE owner_id=? AND run_id=?', [ownerId, runId]);
+        if (!row) return null;
+        return { acceptance: (JSON.parse(String(row.snapshot_json)) as { acceptance: RunAcceptance }).acceptance, sha256: String(row.snapshot_sha256) };
       });
     },
     connections() {

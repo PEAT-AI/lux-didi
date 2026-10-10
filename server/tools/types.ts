@@ -52,8 +52,10 @@ export interface ToolsOwner {
   restoreConnection(connectionId: string, assertCurrentBinding: () => void): Promise<ConnectionRestoreResult>;
   projectConnection(connectionId: string): void;
   snapshotRun(tx: Transaction, acceptance: RunAcceptance): { sha256: string };
-  /** Immutable completed-call receipts for an accepted run; read-only, no authority. */
-  receipts(runId: string): OwnerReceipt[];
+  /** Immutable completed-call receipts for an accepted run; read inside the caller's transaction. */
+  receipts(tx: Transaction, runId: string): OwnerReceipt[];
+  /** Immutable accepted-run snapshot (acceptance + hash) read by the Host through the owner, never raw SQL. */
+  acceptedRun(runId: string): { acceptance: RunAcceptance; sha256: string } | null;
   /** Durable configured connections; read-only owner status projection, never downstream raw SQL. */
   connections(): OwnerConnection[];
   definitions(runId: string): ToolDefinition[];

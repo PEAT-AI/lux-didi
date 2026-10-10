@@ -50,11 +50,4 @@ export const chatMigrations: readonly SchemaMigration[] = [{ owner: 'chat', vers
     run_id TEXT PRIMARY KEY REFERENCES chat_runs(run_id),
     binding_hash TEXT NOT NULL,
     credential_json TEXT)`
-] }, { owner: 'chat', version: 6, statements: [
-  `CREATE TABLE chat_run_receipts (
-    run_id TEXT NOT NULL, ordinal INTEGER NOT NULL,
-    execution_id TEXT NOT NULL, name TEXT NOT NULL,
-    result_id TEXT NOT NULL, result_sha256 TEXT NOT NULL,
-    connection_id TEXT NOT NULL, connection_generation INTEGER NOT NULL, connection_sha256 TEXT NOT NULL,
-    PRIMARY KEY(run_id, ordinal))`
 ] }];

@@ -78,10 +78,9 @@ export function composeChat(store: Store, domain: DomainPort, configDir: string,
     lookupAuthority: async (runId, signal) => {
       if (signal.aborted) return null;
       chat.authority(runId); // Chat owns nonterminal/owner/epoch/consent/label/route; throws when stale.
-      const row = store.transaction(tx => tx.get('SELECT snapshot_json,snapshot_sha256 FROM tool_runs WHERE owner_id=? AND run_id=?', [store.assistantId, runId]));
-      if (!row) return null;
-      const snapshot = JSON.parse(String(row.snapshot_json)) as { acceptance: RunAcceptance };
-      return { ...snapshot.acceptance, acceptedRunHash: String(row.snapshot_sha256) } as LiveAuthority;
+      const accepted = owner!.acceptedRun(runId);
+      if (!accepted) return null;
+      return { ...accepted.acceptance, acceptedRunHash: accepted.sha256 } as LiveAuthority;
     } }) : null;
   if (owner) for (const connection of assembly!.connections) owner.applyConnection(connection);
   const allocate = testing?.requestCredentials ?? (() => {
@@ -102,10 +101,9 @@ export function composeChat(store: Store, domain: DomainPort, configDir: string,
       return { hash: sha256, credential };
     },
     definitions(runId: string) { return owner.definitions(runId); },
-    receipts(runId: string) { return owner.receipts(runId).map(receipt => ({ executionId: receipt.executionId, name: receipt.name, result: receipt.result, connection: receipt.connection })); },
+    receipts(tx: Transaction, runId: string) { return owner.receipts(tx, runId).map(receipt => ({ executionId: receipt.executionId, name: receipt.name, result: receipt.result, connection: receipt.connection })); },
     runner(runId: string, deadlineMs: number, current: () => CurrentAuthority): RunRunner {
-      const acceptedRow = store.transaction(tx => tx.get('SELECT snapshot_json FROM tool_runs WHERE owner_id=? AND run_id=?', [store.assistantId, runId]));
-      const acceptance = acceptedRow ? (JSON.parse(String(acceptedRow.snapshot_json)) as { acceptance: RunAcceptance }).acceptance : null;
+      const acceptance = owner.acceptedRun(runId)?.acceptance ?? null;
       const credentialLink = store.transaction(tx => tx.get('SELECT credential_json FROM chat_run_tools WHERE run_id=?', [runId]));
       const acceptedCredential = credentialLink?.credential_json ? JSON.parse(String(credentialLink.credential_json)) as CredentialBindingReceipt : null;
       const registry = owner.definitions(runId);

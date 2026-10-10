@@ -79,7 +79,7 @@ export interface ChatToolComposition {
   /** Detached accepted definitions after commit; never a fresh live catalog. */
   definitions(runId: string): ToolDefinition[];
   /** Read-only immutable completed-call receipts for the accepted run; no authority, no provider ids. */
-  receipts(runId: string): ToolReceipt[];
+  receipts(tx: Transaction, runId: string): ToolReceipt[];
   /** Per-run runner bound to the accepted run and its synchronous current-authority callback. */
   runner(runId: string, deadlineMs: number, current: () => CurrentAuthority): RunRunner;
 }

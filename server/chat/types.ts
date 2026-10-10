@@ -4,6 +4,19 @@ import type { DataClass, ModelPort, ModelStatus } from '../adapters/model/types.
 import type { CompileInput, SourceAvailability, ValidatedPreferences } from '../prompt/index.js';
 
 export type Outcome = ModelStatus | 'not_dispatched' | 'outcome_unknown' | 'unavailable' | 'input_too_large' | 'compile_failed' | 'persistence_failed';
+/**
+ * Safe local metadata about an explicit per-turn memory selection. Ids, counts
+ * and compiler omit reasons only; never record text and never a whole-archive
+ * claim. `frozen` is true only once the prompt has frozen for dispatch.
+ */
+export interface MemorySelectionSnapshot {
+  schemaVersion: 1;
+  requestedIds: string[];
+  usedIds: string[];
+  omitted: { id: string; reason: 'budget' | 'oversized' | 'not_included' }[];
+  counts: { requested: number; used: number; omitted: number };
+  frozen: boolean;
+}
 export interface RunSnapshot {
   runId: string; sessionId: string; userEntryId: string; finalEntryId: string | null;
   /** Read from the durable Domain entry, never the provisional buffer. */
@@ -13,11 +26,16 @@ export interface RunSnapshot {
   sequence: number; partialText: string; partialTruncated: boolean;
   acceptedAt: string; intentAt: string | null; terminalAt: string | null;
   mayHaveBeenSent: boolean;
+  memorySelection: MemorySelectionSnapshot | null;
 }
 export type ChatEvent = { type: 'snapshot'; sequence: number; run: RunSnapshot }
   | { type: 'text'; sequence: number; text: string; provisional: true }
   | { type: 'resync_required'; sequence: number; reason: 'backpressure' | 'storage_unavailable' };
-export interface AcceptInput { sessionId: string; text: string; idempotencyKey: string; retryOf?: string }
+export interface AcceptInput {
+  sessionId: string; text: string; idempotencyKey: string; retryOf?: string;
+  /** Explicit bounded local records selected for this turn; trusted in-process only. */
+  selectedMemoryEntryIds?: readonly string[];
+}
 /** Host startup authority, not an authenticated browser/client request. */
 export interface ChatRecoveryContext { assistantId: string; authorityEpoch: string }
 export interface EnrollInput { title: string; timeZone: string; idempotencyKey: string }

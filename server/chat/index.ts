@@ -17,7 +17,8 @@ function snapshot(row: SQLRow, finalText: string | null = null): RunSnapshot {
     provider: String(row.provider), model: String(row.model), promptVersion: String(row.prompt_version),
     state: row.state as RunSnapshot['state'], outcome: nullable(row.outcome) as Outcome | null,
     sequence: Number(row.sequence), partialText: String(row.partial_text), partialTruncated: Boolean(row.partial_truncated),
-    acceptedAt: String(row.accepted_at), intentAt: nullable(row.intent_at), terminalAt: nullable(row.terminal_at), mayHaveBeenSent: row.intent_at !== null };
+    acceptedAt: String(row.accepted_at), intentAt: nullable(row.intent_at), terminalAt: nullable(row.terminal_at), mayHaveBeenSent: row.intent_at !== null,
+    memorySelection: null };
 }
 
 export class ChatService implements ChatPort {

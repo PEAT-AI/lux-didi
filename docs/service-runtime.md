@@ -1,15 +1,21 @@
 # Single-user Didi service runtime
 
 This is the authoritative TypeScript/Node **runtime**, not a finished assistant.
-The standalone service entry (`server/dist/index.js`) composes the store and the
-HTTP API without the domain module, so memory/commitments are false and their
-routes return `DOMAIN_NOT_CONFIGURED` (503); models and notifications are also
-unavailable. The local host entry composes the domain module and serves the web
-client, so memory and commitments are available there. Neither entry runs
-inference, external send, a scheduler or a device executor.
-[implementation-status.md](implementation-status.md) records which parts are
-implemented, integrated, staged and unresolved. Domain integration and
-browser/native client proof are separate gates.
+The supported standalone service entry (`server/dist/index.js`, also `npm --prefix
+server start`) composes Store and HTTP without Domain, Chat or the browser shell.
+Memory/commitment routes return `DOMAIN_NOT_CONFIGURED` (503); models and
+notifications are unavailable. This runtime-only CLI remains supported, but is
+not the composed browser host.
+
+The supported composed host (`server/dist/host/index.js`) injects Domain and Chat
+and serves the built web client. Memory and commitments are available there;
+configured connected Chat can dispatch inference after explicit route consent.
+Local Save only records a user entry and never invokes a model. Host
+configuration/capability status, not the presence of a browser, determines which
+connected features are available. Neither entry is evidence of completed native
+installation, Live voice, account tools, a scheduler or a device executor.
+[implementation-status.md](implementation-status.md) records the broader gates;
+[web-client.md](web-client.md) describes the supported browser surface.
 
 ## Requirements and local install
 
@@ -18,9 +24,12 @@ Linux is **untested** because the available Docker CLI had no running engine.
 No VM, engine, provider or CI was provisioned. Node's built-in `node:sqlite` is
 release-candidate since25.7.0 ([official docs](https://nodejs.org/api/sqlite.html));
 `DatabaseSync`, bound statements and authorizer were verified on installed26.8.2.
-No native addons or runtime npm dependencies; `node:http` owns HTTP parsing.
+SQLite uses Node's built-in driver and `node:http` owns HTTP parsing. The service
+package does have pinned runtime npm dependencies: `@modelcontextprotocol/client`
+and `ws`. Their presence does not imply that account tools or Live voice have
+completed installation or live-provider proof.
 
-From this repository:
+From this repository, for the **runtime-only standalone CLI**:
 
 ```sh
 npm --prefix server ci --ignore-scripts --no-audit --no-fund
@@ -70,17 +79,19 @@ Pairing codes are hashed in process memory, capped at16 outstanding, consumed
 once and invalidated by restart; authentication does not grant native tools.
 
 `GET /health` is public and contains no private data. `GET /api/v1/status` needs
-authentication and exposes capability false/reasons, model configured false and
-empty sources. Explicit route allowlist denies arbitrary commands, unknown
+authentication. The standalone runtime exposes unavailable Domain/model
+capabilities and empty sources; the composed host reports its actual injected
+capabilities. Connected route availability is reported by `/api/v1/chat/status`. Explicit route allowlist denies arbitrary commands, unknown
 fields/query parameters, unsupported methods, invalid UUID/revision/timezone/
 UTC dates, non-JSON and >64KiB bodies. Request identifiers are UUIDs; responses
 never include SQL/errors/credentials/content in exception messages. No request
-logging. Jobs/events/device routes are not yet implemented and return404.
+logging. Generic jobs/device routes are not implemented and return404; they are
+not the connected Chat Run/event API supplied by the composed host.
 
 The root service contract is authoritative. Domain DTOs and generic typed
 `DomainPort.execute(tx, operation, input, context)` live in `server/contracts`.
 Domain tables are sibling-owned and never open a second DB. Runtime imports no
-domain implementation: production composition waits for explicit integration.
+Domain implementation; the composed host injects it into the same Store.
 
 ## Durable state invariants
 

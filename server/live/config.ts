@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { DataClass } from '../adapters/live-voice/index.js';
 import { LiveConfigError, type LiveLimits, type LiveProfile } from './types.js';
 
@@ -67,4 +68,13 @@ export function validateLiveProfile(input: unknown): LiveProfile {
     route: Object.freeze({ enabled: true, provider: 'gemini', modelId: liveModelId, dataClasses }),
     prompt: Object.freeze({ text: promptText, dataClass }), limits: limits(input['limits']),
   });
+}
+
+/** Canonical frozen identity of a validated profile. Shared by the owner and the config projection. */
+export function liveProfileIdentity(profile: LiveProfile): string {
+  return createHash('sha256').update(JSON.stringify({
+    provider: profile.provider, liveModelId: profile.liveModelId, voice: profile.voice,
+    keyReference: profile.keyReference,
+    route: { enabled: true, modelId: profile.route.modelId, dataClasses: profile.route.dataClasses },
+  })).digest('hex');
 }

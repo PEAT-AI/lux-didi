@@ -82,15 +82,39 @@ export interface LiveFragmentPage {
   terminal: { outcome: LiveTerminalOutcome; complete: boolean } | null;
 }
 
+/** One already-committed journal marker projected for the client. */
+export interface LivePublicMarker {
+  readonly kind: JournalKind;
+  readonly sequence: number | null;
+  readonly journalSequence: number;
+  readonly text: string | null;
+  readonly finished: boolean | null;
+  readonly value: boolean | null;
+}
+
+/** One ordered output element: ephemeral PCM or one committed public marker. */
+export type LiveOutputChunk =
+  | { readonly kind: 'audio'; readonly pcm: Uint8Array }
+  | { readonly kind: 'marker'; readonly marker: LivePublicMarker };
+
 export interface LiveAttachment {
   readonly liveSessionId: string;
   readonly ready: Promise<LiveSessionSnapshot>;
-  readonly audio: AsyncIterable<Uint8Array>;
+  readonly output: AsyncIterable<LiveOutputChunk>;
   readonly done: Promise<LiveSessionSnapshot>;
   sendAudio(input: { readonly pcm: Uint8Array }): void;
   endAudioStream(): void;
   close(): void;
   detach(): void;
+}
+
+/** Safe operator-visible identity. Never carries key bytes or prompt text. */
+export interface LiveProfileProjection {
+  readonly provider: LiveProvider;
+  readonly model: string;
+  readonly voice: string;
+  readonly dataClasses: readonly DataClass[];
+  readonly profileIdentity: string;
 }
 
 /** Adapter outcome narrowed to its fixed sanitized shape. */

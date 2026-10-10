@@ -5,7 +5,7 @@ import { validatePreferences, type ValidatedPreferences } from '../prompt/index.
 import { ConfigError, type ConfigErrorCode, currentUid, fail, fields, parseJson, readPrivate, safeError, validateFile, validateRoot } from './files.js';
 export { ConfigError, type ConfigErrorCode } from './files.js';
 
-const reference = 'gemini-primary';
+export const reference = 'gemini-primary';
 const profileLimit = 16 * 1024;
 const secretLimit = 8 * 1024;
 const sourceLimit = 64 * 1024;
@@ -56,7 +56,7 @@ function readKey(configDir: string): string {
   if (!validateRoot(configDir)) fail('file_missing');
   return secretFrom(readPrivate(join(configDir, 'gemini-primary.json'), secretLimit));
 }
-function credentialsFor(configDir: string): Credentials {
+export function credentialsFor(configDir: string): Credentials {
   // Capture only the trusted path, never key bytes or raw input.
   return Object.freeze({ resolve: async (requested: string): Promise<string | undefined> => {
     try {

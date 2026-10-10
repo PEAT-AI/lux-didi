@@ -435,3 +435,26 @@ test('B6 recovery does not repeat a terminal tool intent or unknown SDK effect',
   assert.equal(f.accept(session, key).runId, run.runId); assert.deepEqual(f.counts(), before);
   assert.equal(f.sdkCalls.length, 1); assert.equal(forbiddenContinuation(f.modelCalls), 0);
 });
+
+test('DIAG browser-actor HTTP accept surfaces the exact denial reason', async t => {
+  const f = await open(t);
+  const service = await listenService({ store: f.store, domain: f.domain, chat: f.chat, modelStatus: f.status,
+    ...(f.connections ? { connections: f.connections } : {}), port: 0 });
+  t.after(() => service.close());
+  const pairing = await fetch(`${service.origin}/api/v1/auth/pairing`, { method: 'POST', headers: { Authorization: `Bearer ${f.store.adminCredential}` } });
+  const pairingBody: any = await pairing.json();
+  const code = pairingBody?.data?.pairingCode ?? pairingBody?.pairingCode;
+  const paired = await fetch(`${service.origin}/api/v1/auth/pair`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pairingCode: code }) });
+  const pairedBody: any = await paired.json();
+  const token = pairedBody?.data?.token; const csrf = pairedBody?.data?.csrfToken; const epoch = String(pairedBody?.authorityEpoch ?? '');
+  const sessionId = await f.enroll();
+  const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, 'X-Didi-CSRF': String(csrf), 'X-Didi-Authority-Epoch': epoch };
+  const body = JSON.stringify({ sessionId, text: 'Use synthetic insight 731.', selectedConnectionIds: ['synthetic-lux'], selectedMemoryEntryIds: [] });
+  const key = randomUUID();
+  const accepted = await fetch(`${service.origin}/api/v1/chat`, { method: 'POST', headers: { ...headers, 'Idempotency-Key': key }, body });
+  const acceptedBody: any = await accepted.json();
+  const replay = await fetch(`${service.origin}/api/v1/chat`, { method: 'POST', headers: { ...headers, 'Idempotency-Key': key }, body });
+  const final: any = ((await replay.json()) as any)?.data;
+  console.log('DIAG_PAYLOAD ' + JSON.stringify({ pairStatus: paired.status, pairBody: pairedBody, acceptedStatus: accepted.status, accepted: acceptedBody, final }));
+  assert.ok(final ?? acceptedBody, 'diagnostic captured a response');
+});

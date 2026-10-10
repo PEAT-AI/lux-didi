@@ -5,16 +5,16 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { fork, execFileSync } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { createArtifactDir } from './artifacts.mjs';
 
 const { chromium } = createRequire(new URL('../../web/package.json', import.meta.url))('playwright');
 const root = resolve(import.meta.dirname, '../..');
 const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, env: { ...process.env, GIT_PAGER: 'cat', GIT_EDITOR: 'true' } }).toString().trim();
-const artifacts = '/Users/rob/.lux/reports/lux-didi-overnight-1009/memory-selection-ui/screenshots';
+const artifacts = await createArtifactDir('memory-selection-ui/screenshots');
 const state = await mkdtemp(join(tmpdir(), 'selected-memory-browser-'));
-await mkdir(artifacts, { recursive: true });
 let child, descriptor, seeded, browser, context, page, stderr = '';
 const steps = [];
 

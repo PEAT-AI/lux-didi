@@ -59,12 +59,6 @@ struct InstalledProofRequest {
     }
     func prepare(installId: String) throws -> PreparedInstalledProof {
         try NativeCredentialImport.prepareState(state)
-        // Marked proof mode only (reader-only B): derive the operator-settings store
-        // from the validated proof state, so proof reads resolve under the synthetic
-        // state/Library/Application Support/ai.peat.lux-didi-operator and never reach
-        // the real operator store, while the inherited real login HOME keeps the
-        // default Keychain reachable. Normal startup passes no override.
-        setenv("CFFIXED_USER_HOME", state.path, 1)
         let marker = state.appendingPathComponent(Self.markerName)
         let proofId: String; let reopened: Bool
         if let data = try Self.privateData(marker) {

@@ -26,7 +26,10 @@ import Security
                     let prepared = try proofRequest?.prepare(installId: runtime.installId)
                     installedProof = prepared
                     let operatorSettings: OperatorSettings?
-                    do { operatorSettings = try OperatorSettings.load() }
+                    do {
+                        if let prepared { operatorSettings = try OperatorSettings.load(directory: prepared.operatorSettingsDirectory) }
+                        else { operatorSettings = try OperatorSettings.load() }
+                    }
                     catch { self.error = NativeServiceError.invalidOperatorSettings.localizedDescription; return }
                     let owner = try NativeServiceSupervisor(runtime: runtime, proof: prepared, operatorSettings: operatorSettings)
                     supervisor = owner

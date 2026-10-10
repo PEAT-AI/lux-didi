@@ -36,8 +36,12 @@ struct OperatorSettings: Equatable {
 
     /// `nil` means deliberately absent: the launch keeps the public default.
     /// A present but invalid store throws before any child is spawned.
-    static func load() throws -> OperatorSettings? {
-        let dir = try directory()
+    static func load() throws -> OperatorSettings? { try load(directory: try directory()) }
+
+    /// Reader-only alternate root (marked proof mode): the same validators, an
+    /// explicit validated directory. Normal startup uses the canonical path.
+    static func load(directory: URL) throws -> OperatorSettings? {
+        let dir = directory
         var dirInfo = stat()
         if lstat(dir.path, &dirInfo) != 0 {
             if errno == ENOENT { return nil }

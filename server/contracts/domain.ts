@@ -2,6 +2,16 @@ import type { SchemaMigration, Transaction } from './storage.js';
 export interface SourceRef { id: string; label: string; provider?: string; accountId?: string; externalId?: string; sourceTimestamp: string | null; availability: 'present' | 'missing'; note?: string }
 export interface Session { id: string; title: string; startedAt: string; endedAt: string | null; timeZone: string; revision: number }
 export interface Entry { id: string; sessionId: string; sequence: number; role: 'user' | 'assistant' | 'system'; text: string; capturedAt: string; sourceRefs: SourceRef[] }
+/** Exact frozen record for an explicit local-memory selection; source metadata preserved verbatim. */
+export interface ResolvedEntry {
+  entryId: string;
+  sessionId: string;
+  text: string;
+  role: Entry['role'];
+  capturedAt: string;
+  sourceTimestamp: string | null;
+  sourceRefs: SourceRef[];
+}
 export interface Commitment { id: string; title: string; notes: string; dueAt: string | null; timeZone: string; status: 'active' | 'completed' | 'cancelled'; revision: number; sourceSessionId: string | null; sourceEntryId: string | null; createdAt: string; updatedAt: string }
 export interface CommitmentHistory { revision: number; operation: string; recordedAt: string; title: string; notes: string; dueAt: string | null; timeZone: string; status: Commitment['status'] }
 export interface DomainContext { assistantId: string; clientId: string; authorityEpoch: string; now: string }
@@ -13,6 +23,8 @@ export interface DomainOperations {
   /** Trusted in-process completion only; never routed from public append-entry HTTP. */
   appendAssistantEntry: { input: { sessionId: string; text: string; timeZone: string }; output: Entry };
   recall: { input: { q: string; limit: number }; output: { hits: { sessionId: string; entryId?: string; snippet: string; sourceRefs: SourceRef[]; sourceTimestamp: string | null }[]; totalMatches: number; truncated: boolean; nextCursor: string | null } };
+  /** Trusted in-process batch read by exact id; never a public route and never a full scan. */
+  resolveEntries: { input: { entryIds: string[] }; output: { records: ResolvedEntry[] } };
   createCommitment: { input: { title: string; notes?: string; dueAt: string | null; timeZone: string; sourceSessionId?: string | null; sourceEntryId?: string | null }; output: Commitment };
   listCommitments: { input: { status?: Commitment['status'] }; output: { items: Commitment[]; nextCursor: string | null } };
   getCommitment: { input: { id: string }; output: { commitment: Commitment; history: CommitmentHistory[] } };

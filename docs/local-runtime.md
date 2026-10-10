@@ -3,8 +3,9 @@
 This foreground Node 26+ process owns one SQLite Store and composes the accepted
 service, durable domain and shipped Vite client on **127.0.0.1 only**. It supports
 local capture, source-backed recall, commitments, corrections and Today without
-a configured model. Model, MCP execution, notifications, audio and native WK
-integration are **not** wired by this host. Browser pairing grants no device or
+a configured model. The optional connected conversation composes the real Gemini
+adapter with explicitly granted per-conversation consent. MCP execution,
+notifications, audio and native WK integration are **not** wired by this host. Browser pairing grants no device or
 notification permission. Unbound reminder needs are persisted but never delivered.
 
 ## Setup and foreground use
@@ -72,7 +73,8 @@ admin credential into the browser, URL, shell command, logs or JavaScript.
 Capture with **Save message**, search **Memory**, add a commitment under **Today**,
 and use **Edit** to correct its due date. Stale revisions display a conflict and
 load the latest state for explicit review; no overwrite retry is automatic.
-**Ask Didi** remains disabled because no model is configured. Offline edits are
+The old **Ask Didi** shortcut remains disabled; use the separate explicitly
+disclosed connected Start/Send flow when a model is locally configured. Offline edits are
 refused, not queued; reconnect restores current service state.
 
 ## State and shutdown
@@ -140,3 +142,43 @@ the shipped UI against the canonical host under `lux-browser-slot`. It never
 uses fixture routes or invokes unrelated component suites. Headless GPU output,
 desktop/375px screenshots and meaningful wire proof are retained in the printed
 artifact directory; `DIDI_HOST_ARTIFACTS` can specify a durable output directory.
+
+## Explicitly connected conversations
+
+The same canonical build includes CHAT and provider configuration. A single Store
+applies the accepted Domain and additive CHAT migrations; pending runs recover
+before listening. No pending turn is retried on restart. A dispatch interrupted by
+process loss is reported as outcome unknown, never as a saved answer.
+
+The host accepts `--config-dir PATH`; the portable default is
+`<dataDir>/provider-config`. See [provider configuration](provider-configuration.md)
+for the existing secure profile/key initialization. The validated profile is fixed
+for the process; restart to activate edits. Keys retain their secure per-dispatch
+read. Status is unconfigured, disabled, error (safe code only), or configured with
+provider/model. Configured means the profile is locally validated; this does not prove provider reachability. An
+unsupported adapter model ID is a sanitized configuration error and never prevents
+local notes, Today, recall or supervisor readiness.
+
+Start a new connected conversation explicitly. The UI names the actual provider
+and model and explains that current and earlier selected conversation turns go
+there. Existing local/imported sessions are never enrolled or relabeled. The route
+grant pins exact provider/model, fixed Gemini endpoint/API version/key reference,
+and class policy; edits to that identity pause old conversations on restart while
+preserving readable history. New routes require a new disclosed conversation.
+
+Connected Send atomically saves one private user entry and run. It does not use the
+legacy local Save path first. Context contains only selected whole turns of that
+session, compiled with the canonical persona/budgets; no recall, Today, other
+sessions, local archive or tools. Unknown or sensitive participating material
+blocks. Final answers appear only after atomic durable completion; partial text is
+provisional. Explicit cancel/revoke can abort ongoing work but cannot retract sent
+bytes. A may-have-been-sent status is deliberately conservative after dispatch
+intent. A failed acceptance keeps the draft; recover saved history before choosing
+to send again. Reconnect/focus/restart never sends or retries automatically.
+
+`bash scripts/check-connected.sh` is the focused canonical build, affected engine
+and host HTTP suite, real adapter over a controlled local transport, actual process
+restart/crash, and shared browser proof. `bash scripts/check-package.sh` remains the
+offline tarball gate. Neither proof makes live model, audio, OS permission or
+installed native claims. Test transport/resolver controls exist only as trusted
+in-process construction options, never as a public route, CLI or environment mode.

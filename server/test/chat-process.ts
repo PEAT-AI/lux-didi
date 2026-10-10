@@ -5,6 +5,7 @@ import { ChatService, chatMigrations, type ChatConfig } from '../chat/index.js';
 import { validatePreferences } from '../prompt/index.js';
 import type { ModelPort, ModelRequest, ModelResult } from '../adapters/model/types.js';
 import type { DomainContext } from '../contracts/domain.js';
+import { randomUUID } from 'node:crypto';
 import { appendFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -23,14 +24,21 @@ export function openFixture(dir: string, model: ModelPort, overrides: Partial<Ch
   const store = new Store(dir, [...domain.migrations, ...ownedMigrations]);
   const context: DomainContext = { assistantId: store.assistantId, clientId: 'test-actor', authorityEpoch: store.authorityEpoch, now: new Date(0).toISOString() };
   const config: ChatConfig = { store, domain, model,
-    route: { provider: 'synthetic', model: 'counting', available: true, allows: () => true },
+    route: { provider: 'synthetic', model: 'counting', available: true, allows: () => true, endpoint: 'https://generativelanguage.googleapis.com', apiVersion: 'v1beta', keyReference: 'gemini-primary', allowedClasses: ['ordinary', 'private'] },
     preferences: validatePreferences({ schemaVersion: 1, ownerId: store.assistantId, dataClass: 'ordinary', language: 'de-DE', register: 'plain', humor: 'off', verbosity: 'brief' }, store.assistantId),
-    classify: () => ({ ownerId: store.assistantId, dataClass: 'ordinary' }),
+    classify: () => ({ ownerId: store.assistantId, dataClass: 'ordinary', revision: 1 }),
     context: { budgets: { trustedChars: 20000, contextChars: 12000, historyChars: 12000 }, sources: [] },
     now: () => 0, ...overrides };
   const recoveryContext = { assistantId: store.assistantId, authorityEpoch: store.authorityEpoch };
   const chat = new ChatService(config); chat.recover(recoveryContext);
-  const createSession = () => store.transaction(tx => domain.execute(tx, 'createSession', { title: 'Synthetic', timeZone: 'UTC' }, context));
+  const createSession = () => {
+    // Enrollment is a valid setup action; availability tests subsequently use
+    // their deliberately unavailable dispatch route with the same identity.
+    const enrolling = new ChatService({ ...config, route: { ...config.route, available: true, allows: () => true } });
+    enrolling.recover(recoveryContext);
+    const grant = enrolling.enroll({ title: 'Synthetic', timeZone: 'UTC', idempotencyKey: randomUUID() }, context);
+    return store.transaction(tx => domain.execute(tx, 'getSession', { id: grant.sessionId }, context)).session;
+  };
   return { store, domain, context, recoveryContext, chat, config, createSession };
 }
 

@@ -177,8 +177,76 @@ test('literal source subset: plain/single/double quoted and ignored variables ne
   assert.equal(process.env['OTHER'], undefined);
 });
 
+test('mixed foreign punctuation and spaces import exactly the target through the real CLI', async t => {
+  for (const quote of ['', "'", '"']) {
+    const f = fixture(t);
+    writeFileSync(f.sourceEnvPath, `# mixed source\r\nFOREIGN_SINGLE='spaces ; | & $() "literal" \`literal\`'\r\nGEMINI_API_KEY=${quote}${synthetic}${quote}\r\nFOREIGN_DOUBLE="spaces ; | & $() 'literal'"\r\nFOREIGN_PLAIN=spaces ; | & $() # opaque\r\n`, { mode: 0o600 });
+    const result = f.run(); assert.equal(result.status, 0, result.stderr); safe(result);
+    assert.deepEqual(JSON.parse(readFileSync(join(f.configDir, 'gemini-primary.json'), 'utf8')), secret());
+    const status = f.load(); assert.equal(status.status, 'ready');
+    if (status.status === 'ready') assert.equal(await status.credentials.resolve('gemini-primary'), synthetic);
+  }
+});
+
+test('foreign shell-looking literals never execute or assign environment through the public importer', async t => {
+  const f = fixture(t); const marker = join(f.root, 'executed'); const env = { ...process.env };
+  writeFileSync(f.sourceEnvPath, `PROVIDER_IMPORT_FOREIGN_CANARY='\`touch ${marker}\` ; $(touch ${marker})'\nGEMINI_API_KEY=${synthetic}\nPROVIDER_IMPORT_DOUBLE="$(touch ${marker}) ; $HOME"\nOTHER=$(touch ${marker})\n`, { mode: 0o600 });
+  initializeProviderConfig(f.options);
+  assert.ok(JSON.stringify({ ...process.env }) === JSON.stringify(env), 'importer changed environment'); assert.equal(existsSync(marker), false);
+  const status = f.load(); assert.equal(status.status, 'ready');
+  if (status.status === 'ready') assert.equal(await status.credentials.resolve('gemini-primary'), synthetic);
+  const cliFixture = fixture(t); writeFileSync(cliFixture.sourceEnvPath, readFileSync(f.sourceEnvPath), { mode: 0o600 });
+  const result = cliFixture.run(); assert.equal(result.status, 0, result.stderr); safe(result);
+  assert.ok(JSON.stringify({ ...process.env }) === JSON.stringify(env), 'CLI changed environment'); assert.equal(existsSync(marker), false);
+  assert.deepEqual(JSON.parse(readFileSync(join(cliFixture.configDir, 'gemini-primary.json'), 'utf8')), secret());
+});
+
+test('foreign quote and continuation grammar fails closed without disclosing source content', t => {
+  const foreignName = 'PROVIDER_IMPORT_FOREIGN_CANARY'; const foreignValue = 'foreign_value_NEVER_PRINT_846';
+  const values = [
+    `'${foreignValue}`, `"${foreignValue}`, `'${foreignValue}"`,
+    `'${foreignValue}\nGEMINI_API_KEY=${synthetic}\n'`,
+    `"${foreignValue}\nGEMINI_API_KEY=${synthetic}\n"`,
+    `'${foreignValue}\\'`, `"${foreignValue}\\"`,
+    `'${foreignValue}'interior'`, `"${foreignValue}"interior"`,
+    `${foreignValue}'quote`, `${foreignValue}"quote`, `${foreignValue}\`tick`,
+    `"${foreignValue}\`tick\`"`, `${foreignValue}\\`,
+  ];
+  for (const value of values) {
+    const f = fixture(t);
+    writeFileSync(f.sourceEnvPath, `GEMINI_API_KEY=${synthetic}\n${foreignName}=${value}\n`, { mode: 0o600 });
+    assert.throws(() => initializeProviderConfig(f.options), e => {
+      assert.ok(e instanceof ConfigError); assert.equal(e.code, 'invalid_source'); safe(e);
+      assert.ok(!inspect(e).includes(foreignName) && !inspect(e).includes(foreignValue)); return true;
+    });
+    assert.deepEqual(readdirSync(f.configDir), []);
+    const cliFixture = fixture(t); writeFileSync(cliFixture.sourceEnvPath, readFileSync(f.sourceEnvPath), { mode: 0o600 });
+    const result = cliFixture.run(); assert.notEqual(result.status, 0); safe(result);
+    assert.equal(result.stdout, ''); assert.match(result.stderr, /invalid_source/);
+    assert.ok(!result.stderr.includes(foreignName) && !result.stderr.includes(foreignValue));
+    assert.deepEqual(readdirSync(cliFixture.configDir), []);
+  }
+});
+
+test('whole-file target cardinality and target charset stay strict around foreign lines', t => {
+  const foreign = 'FOREIGN="spaces ; $()"\n';
+  const targets = [
+    `GEMINI_API_KEY=${synthetic}\nGEMINI_API_KEY=${synthetic}`, 'OTHER=ignored',
+    'GEMINI_API_KEY=', `GEMINI_API_KEY=${'a'.repeat(1025)}`, 'GEMINI_API_KEY=has space',
+    'GEMINI_API_KEY="has space"', 'GEMINI_API_KEY="interior"quote"',
+    'GEMINI_API_KEY="punctuation$"', 'GEMINI_API_KEY=not!allowed',
+  ];
+  const sources = targets.flatMap(target => [foreign + target, target + '\n' + foreign]);
+  sources.push(`GEMINI_API_KEY=${synthetic}\n${foreign}GEMINI_API_KEY=${synthetic}`);
+  for (const source of sources) {
+    const f = fixture(t); writeFileSync(f.sourceEnvPath, source, { mode: 0o600 });
+    const result = f.run(); assert.notEqual(result.status, 0); safe(result);
+    assert.match(result.stderr, /invalid_source/); assert.deepEqual(readdirSync(f.configDir), []);
+  }
+});
+
 test('source duplicate/absent/malformed/oversized/malicious shell syntax rejected with no execution', t => {
-  const payloads = ['', 'OTHER=ignored', `GEMINI_API_KEY=${synthetic}\nGEMINI_API_KEY=other`, 'export GEMINI_API_KEY=abc', 'GEMINI_API_KEY =abc', 'GEMINI_API_KEY="unterminated', 'GEMINI_API_KEY="a\\nb"', 'GEMINI_API_KEY=${OTHER}', 'GEMINI_API_KEY=`touch MARKER`', 'GEMINI_API_KEY=$(touch MARKER)', 'GEMINI_API_KEY=abc;touch MARKER', "GEMINI_API_KEY='$(touch MARKER)'", 'GEMINI_API_KEY=abc # comment', 'GEMINI_API_KEY=abc\nOTHER=$(touch MARKER)', 'GEMINI_API_KEY=', ' '.repeat(65537)];
+  const payloads = ['', 'OTHER=ignored', `GEMINI_API_KEY=${synthetic}\nGEMINI_API_KEY=other`, 'export GEMINI_API_KEY=abc', 'GEMINI_API_KEY =abc', 'GEMINI_API_KEY="unterminated', 'GEMINI_API_KEY="a\\nb"', 'GEMINI_API_KEY=${OTHER}', 'GEMINI_API_KEY=`touch MARKER`', 'GEMINI_API_KEY=$(touch MARKER)', 'GEMINI_API_KEY=abc;touch MARKER', "GEMINI_API_KEY='$(touch MARKER)'", 'GEMINI_API_KEY=abc # comment', 'GEMINI_API_KEY=', ' '.repeat(65537)];
   for (const payload of payloads) {
     const f = fixture(t); const marker = join(f.root, 'executed'); writeFileSync(f.sourceEnvPath, payload.replaceAll('MARKER', marker), { mode: 0o600 });
     const result = f.run(); assert.notEqual(result.status, 0); safe(result); assert.equal(existsSync(marker), false); assert.equal(existsSync(join(f.configDir, 'profile.json')), false);

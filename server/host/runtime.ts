@@ -7,8 +7,12 @@ import { Outbox } from '../runtime/outbox.js';
 import { Store } from '../runtime/store.js';
 import { listenService } from '../http/server.js';
 import { createStaticHandler } from '../http/static.js';
+import { chatMigrations } from '../chat/index.js';
+import { liveMigrations } from '../live/index.js';
+import { composeChat, type ModelTesting } from './connected.js';
+import { composeLive, type LiveTesting } from './live.js';
 
-export interface HostConfig { dataDir: string; webRoot: string; port?: number; descriptor?: string }
+export interface HostConfig { dataDir: string; webRoot: string; port?: number; descriptor?: string; configDir?: string; modelTesting?: ModelTesting; liveTesting?: LiveTesting; now?: () => number }
 export function defaultDataDir(): string {
   if (platform() === 'darwin') return join(homedir(), 'Library', 'Application Support', 'Lux Didi');
   if (platform() === 'win32') return join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'), 'Lux Didi');
@@ -63,16 +67,20 @@ export async function startHost(config: HostConfig) {
   const descriptorRelative = relative(webRoot, descriptorPath);
   if (!descriptorPath.endsWith('.json') || (!isAbsolute(descriptorRelative) && descriptorRelative !== '..' && !descriptorRelative.startsWith(`..${sep}`))) throw new Error('Descriptor must be a JSON file outside the web build');
   const domain = createDomainPort({ outbox: Outbox }); // No authorized device/target: reminders remain unbound.
-  const store = new Store(dataDir, domain.migrations);
+  const store = new Store(dataDir, [...domain.migrations, ...chatMigrations, ...liveMigrations]);
   try {
-    const service = await listenService({ store, domain, webRoot, port });
+    const providerConfigDir = resolve(config.configDir ?? join(dataDir, 'provider-config'));
+    const { chat, status } = composeChat(store, domain, providerConfigDir, config.modelTesting, config.now);
+    const { service: live } = composeLive(store, providerConfigDir, config.liveTesting, config.now);
+    const service = await listenService({ store, domain, chat, live, modelStatus: status, webRoot, port, ...(config.now ? { now: config.now } : {}) });
     try {
       const descriptor: RuntimeDescriptor = { schemaVersion: 1, origin: service.origin, authorityEpoch: store.authorityEpoch, assistantId: store.assistantId, pid: process.pid, startedAt: new Date().toISOString() };
       await publish(descriptorPath, descriptor); // Never use a stale descriptor as authority or carry bearer material.
       let closed = false;
-      return { store, service, descriptor, descriptorPath, async close() {
+      return { store, chat, service, descriptor, descriptorPath, async close() {
         if (closed) return; closed = true;
-        try { await service.close(); } finally { store.close(); }
+        chat.shutdown();
+        try { await service.close(); await live.shutdown(); } finally { store.close(); }
       } };
     } catch (error) { await service.close(); throw error; }
   } catch (error) { store.close(); throw error; }

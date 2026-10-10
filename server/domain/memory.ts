@@ -241,6 +241,67 @@ export function sourceReferences(tx: Transaction, ownerId: string): SourceRefRec
     .map(mapSourceRef);
 }
 
+/** Upper bound on one trusted batch resolution request. */
+export const MAX_RESOLVE_ENTRIES = 32;
+
+export interface ResolvedEntryRecord {
+  entryId: string;
+  sessionId: string;
+  text: string;
+  role: EntryRole;
+  capturedAt: number;
+  sourceTimestamp: number | null;
+  sourceRefs: SourceRefRecord[];
+}
+
+/**
+ * Indexed batch resolution by exact id for one trusted in-process selection.
+ * Two `IN` reads plus one parent-session `IN` read: never a full entries scan and
+ * never a per-record transaction loop. A requested id is never dropped; an
+ * unknown entry id or a missing parent session is a typed NOT_FOUND.
+ */
+export function resolveEntries(tx: Transaction, ids: readonly string[]): ResolvedEntryRecord[] {
+  if (!Array.isArray(ids) || ids.length > MAX_RESOLVE_ENTRIES) badRequest('entryIds must be a bounded array');
+  if (ids.length === 0) return [];
+  const seen = new Set<string>();
+  for (const id of ids) {
+    if (typeof id !== 'string' || id.trim().length === 0) badRequest('entry ids must be non-empty strings');
+    if (seen.has(id)) badRequest('entry ids must be unique');
+    seen.add(id);
+  }
+  const marks = ids.map(() => '?').join(',');
+  const found = new Map(tx.all(`SELECT * FROM entries WHERE id IN (${marks})`, ids).map((r) => [String(r.id), mapEntry(r)] as const));
+  const missing = ids.filter((id) => !found.has(id));
+  if (missing.length) notFound('unknown entry ids', { ids: missing });
+  const sessionIds = [...new Set(ids.map((id) => found.get(id)!.sessionId))];
+  const sessionMarks = sessionIds.map(() => '?').join(',');
+  const sessions = new Set(tx.all(`SELECT id FROM sessions WHERE id IN (${sessionMarks})`, sessionIds).map((r) => String(r.id)));
+  const missingSessions = sessionIds.filter((id) => !sessions.has(id));
+  if (missingSessions.length) notFound('unknown parent sessions', { ids: missingSessions });
+  const refs = new Map<string, SourceRefRecord[]>();
+  for (const row of tx.all(`SELECT * FROM source_references WHERE owner_kind='entry' AND owner_id IN (${marks}) ORDER BY id ASC`, ids)) {
+    const ref = mapSourceRef(row);
+    const list = refs.get(ref.ownerId) ?? [];
+    list.push(ref);
+    refs.set(ref.ownerId, list);
+  }
+  return ids.map((id) => {
+    const entry = found.get(id)!;
+    const sourceRefs = refs.get(id) ?? [];
+    return {
+      entryId: entry.id,
+      sessionId: entry.sessionId,
+      text: entry.text,
+      role: entry.role,
+      capturedAt: entry.capturedAt,
+      // The Domain owns no single source timestamp; an aggregate is left null so
+      // an earliest source-ref time is never presented as the record's time.
+      sourceTimestamp: null,
+      sourceRefs,
+    };
+  });
+}
+
 function snippetFor(text: string, tokens: string[]): string {
   const folded = fold(text);
   let at = -1;

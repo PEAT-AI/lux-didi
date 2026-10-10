@@ -23,6 +23,13 @@ export interface CompileInput {
   evidence: readonly Evidence[]; history: readonly HistoryItem[];
   budgets: { trustedChars: number; contextChars: number; historyChars: number };
 }
+/** Input for the turn-less voice-instruction compiler. Same canonical assembly, no conversation turns. */
+export interface VoiceInstructionInput {
+  ownerId: string; promptVersion: string; preferences: ValidatedPreferences;
+  capabilities: CapabilitySnapshot; trustedChars: number;
+}
+export interface VoiceInstruction { system: string; promptVersion: string }
+
 export interface CompiledPrompt {
   system: string; promptVersion: string; dataClasses: DataClass[];
   context: ContextSelection; declarations: FunctionDeclaration[]; contents: Content[];

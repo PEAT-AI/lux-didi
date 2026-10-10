@@ -46,7 +46,7 @@ or portable owner identity is accepted. A disabled profile must still be valid.
 {"schemaVersion":1,"keyReference":"gemini-primary","key":"synthetic-example"}
 ```
 
-Exactly these fields. The only reference is `gemini-primary`, never a filename
+Legacy v1 accepts exactly these fields. Bound v2 is described below. The only reference is `gemini-primary`, never a filename
 or caller-selected path. Key length is 1 to 1024 bytes, visible ASCII without space
 (0x21 through 0x7e); whitespace, controls, CR/LF and non-ASCII are rejected. Examples
 are synthetic, not credentials. Secret bytes never appear in status/errors,
@@ -103,8 +103,9 @@ node <compiled-root>/config/cli.js init --config-dir <new-private-dir> --owner-i
 bash scripts/check-provider-config.sh
 ```
 
-The CLI accepts exactly those four flags once, no positional key, no key argument,
-no provider endpoint and no variable-selection flag. It prints a constant success
+The legacy `init` CLI accepts those four required flags once and optional explicit
+`--binding-input` once (see bound provisioning below). No positional key, key
+argument, provider endpoint flag or variable-selection flag is accepted. It prints a constant success
 message or a finite safe error code, not input paths/source lines. The source is
 read bounded (64 KiB) inside the process; only literal `GEMINI_API_KEY` is
 extracted, never loaded/exported to the environment. No shell, child credential
@@ -113,13 +114,21 @@ CLI, eval, source, command substitution, interpolation or execution is used.
 Supported source syntax: UTF-8, LF or CRLF, blank lines, full-line `#` comments,
 and one `NAME=literal` assignment per line (optional horizontal space around the
 line, not around `=`). Values are unquoted literals or whole single/double-quoted
-literals, without escapes, interpolation, inline comments or multiline strings.
-Only ASCII letters/digits and `_ . : / + , = @ % -` are supported inside literals.
-Thus `$`, backticks, backslash, semicolon, pipes, parentheses and spaces inside
-values are rejected even in quotes. This intentionally narrow dotenv subset is
-not a shell parser. Other simple assignments are ignored, not exported; unsupported
-syntax anywhere is rejected. GEMINI_API_KEY must appear exactly once, nonempty;
-duplicate, absent, malformed and malicious assignments fail without quoting input.
+literals. Quoted values require a matching closing delimiter and no interior
+occurrence of that delimiter; double-quoted content also rejects backticks.
+Unquoted content rejects single quotes, double quotes and backticks. Content
+ending in backslash is rejected, including an escaped closing delimiter. No
+multiline values, continuation, escape decoding or interpolation is supported.
+These are explicit one-line format constraints, not shell/dotenv equivalence.
+
+Other assignments are ignored only after those checks. Their values are opaque:
+punctuation, spaces and shell-looking text such as `$()` are literal data, never
+executed or exported; `#` inside a value is not an inline comment. Backticks are
+literal only inside single quotes. No foreign value is assigned to `process.env`.
+Only `GEMINI_API_KEY` retains the restricted charset: ASCII letters/digits and
+`_ . : / + , = @ % -`, at most 1024 characters, nonempty. It must appear exactly
+once; the whole file is scanned even after finding it. Duplicate, absent, invalid
+targets and unsupported syntax anywhere fail with finite content-free errors.
 
 All roots/files use explicit absolute paths (no relative-path or default-location resolution). Input profile and authorized source must be current
 UID, final non-symlink, regular, single-link 0600. Runtime config root is 0700,
@@ -149,3 +158,127 @@ under a temporary ESM marker, strictly compiles, and runs real filesystem and
 child-CLI tests with synthetic private temporary files. It does not install
 anything, read local credentials or call a provider. It prints Node TAP durations
 (Node's equivalent of the Python-specific `--durations=10` requirement).
+
+## Explicit operator-asserted binding (secret v2)
+
+Existing profile v1 and its strict validation are unchanged. Legacy secret v1
+remains readable through the string-only `credentialsFor` for text and Live;
+it cannot produce a receipt or authorize receipt-dependent tools/disclosure.
+There is no automatic migration, default account or generation, account inferred
+from reference/key bytes, key fingerprint, or provider identity verification.
+
+To create a bound record, independently supply a private regular 0600 UTF-8 JSON
+file (at most 8 KiB) to `init --binding-input /absolute/private/binding.json`.
+No environment/default discovery occurs. Binding input has exactly:
+
+```json
+{
+  "schemaVersion": 1,
+  "configuredAccount": "operator-asserted-account",
+  "routeScope": {
+    "provider": "gemini",
+    "modelId": "gemini-synthetic",
+    "endpoint": "https://generativelanguage.googleapis.com",
+    "apiVersion": "v1beta",
+    "keyReference": "gemini-primary",
+    "allowedClasses": ["ordinary", "private"]
+  },
+  "bindingGeneration": "operator-stable-generation-1"
+}
+```
+
+Account and generation are explicit, nonempty, trimmed labels of at most 256
+characters without control characters. They must not contain secrets. This text
+provider/endpoint/API version/reference are allowlisted exactly; model syntax
+matches profile v1. Classes must be nonempty, unique members of ordinary/private/
+sensitive, canonicalized into that order. The **whole** canonical scope must
+match the profile's provider/model/reference/classes and this adapter's fixed
+endpoint/API version, not merely its model or reference. Unknown or duplicate
+fields, unsafe input files and incomplete scope fail before activation.
+
+The active `gemini-primary.json` then has exactly `schemaVersion: 2`,
+`keyReference`, `key`, `configuredAccount`, `routeScope`, and
+`bindingGeneration`. Its key still obeys the v1 limits; protected storage modes,
+size bounds and descriptor validation are unchanged. Binding input is metadata,
+not another active database or a separately read receipt source.
+
+### Explicit retained migration
+
+For an already valid v1 configuration, run the compiled CLI explicitly:
+
+```sh
+node /absolute/compiled-root/config/cli.js migrate-binding \
+  --config-dir /absolute/private/didi-config \
+  --owner-id current-store-owner \
+  --binding-input /absolute/private/binding.json
+```
+
+`init` without binding input retains v1 behavior. `migrate-binding` requires all
+three flags exactly once and rejects v2 active records; it is not a rebind API.
+It validates existing profile/secret and independently supplied binding before
+activation. Existing profile, preferences and key are retained. The original
+secret's **exact bytes**, including whitespace/BOM, are copied into newly created
+0600 `gemini-primary.legacy.json` under the existing 0700 root. Copy is exclusive:
+a collision is a visible failure, never an overwrite. This backup is sensitive
+and remains there; never place it in a report, UI, browser, model content or
+SQLite. Loading does not migrate or delete it.
+
+A replacement v2 record is fully validated in memory, the exclusive legacy
+backup is validated/fsynced, then a private fsynced `.binding.pending` is created
+and atomically replaces the active secret. The retained backup must still be v1
+with the same key as the initially validated source; a concurrent key/version
+change fails visibly rather than activating a mismatched snapshot. On failure the active locator remains valid old or valid new,
+with a sanitized visible error; no profile is half-activated. Retained backup is
+never unlinked. The owner's unpublished pending file is cleaned on a later
+failure; a preexisting pending path is not touched. A process interruption or
+failed initial pending write can leave private incomplete pending data: preserve
+it for authorized inspection, not automatic recovery. If a backup was already
+retained before failure, retry refuses its collision: preserve it and obtain
+operator-directed recovery rather than blindly deleting/overwriting it. Inspect
+the current protected record after any failure; a post-activation durability
+error does not imply rollback.
+
+### Request-local resolver and receipt
+
+`CredentialRouteScope`, `CredentialBindingReceipt` and `RequestCredentials` are
+exported from `config/index.js`. Allocate `requestCredentialsFor(configDir,
+expectedScope)` **inside every generate invocation** and inject its
+`.credentials` into that invocation's new GeminiAdapter. ModelPort, Transport,
+and `Credentials.resolve(reference): Promise<string | undefined>` are unchanged.
+The factory captures a detached canonical expected scope, not a startup key or
+receipt. Each successful resolution reads/parses one validated v2 descriptor
+for both key and receipt. Its `.resolvedReceipt()` is invocation-private,
+initially undefined, and cleared by a failed resolve. Do not share the factory
+object across runs.
+
+Receipts are detached, recursively frozen non-secret objects with
+`schemaVersion: 1`, `keyReference`, `configuredAccount`, full canonical
+`routeScope`, and `bindingGeneration`. They may be serialized as metadata, but
+are only operator assertions. `credentialReceiptFor(configDir, expectedScope)`
+synchronously rereads the **current** active locator and validates the complete
+v2 record, including key validity; it returns only its receipt and discards the
+key. Legacy, missing/deleted, malformed, invalid-key or wrong-scope records throw
+a finite sanitized ConfigError. This is not the last resolve's cached receipt.
+Compare the complete canonical non-secret receipt (for example structural
+equality, or JSON serialization of these canonical receipts).
+
+Same-account/scope/generation key rotation is allowed: next invocation resolves
+the new key with equal binding. Changing account, scope or generation is
+rebinding and requires new acceptance by the consumer. Delete/invalidate the
+active record to revoke it; an old receipt or retained backup cannot authorize
+the current locator. A consumer must perform a fresh check before sensitive
+release, not merely validate an old receipt. This slice supplies the seam and
+adapter fixtures, **not** production Chat/Host authorization.
+
+The existing Live adapter still resolves the public string lazily and places
+it in its trusted provider connection URL. No Live receipt authorization or
+URL-free Live behavior is added. Never log, render or persist that URL. Trusted
+ancestors and exclusion of same-UID malicious path replacement remain the
+existing boundary; this feature does not claim to solve that limitation.
+
+`bash scripts/check-credential-binding.sh` compiles the actual relevant dependency
+closure in temporary output with installed Node >=26 and TypeScript (optional
+`DIDI_TYPESCRIPT_ROOT` pointing to installed dependencies), then requires nonzero
+credential-binding, provider-config, model, live-voice and prompt test selections.
+Synthetic protected files and local fake transport/socket fixtures make no
+private/production account or model calls.

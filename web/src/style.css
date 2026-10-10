@@ -14,3 +14,17 @@
 .orb-stage canvas{display:block;pointer-events:none;transition:filter .4s ease}
 .orb-stage canvas[data-posture=quiet]{filter:grayscale(.82) brightness(.96) opacity(.9)}
 @media(prefers-reduced-motion:reduce){.orb-stage canvas{transition:none}}
+
+.connected-conversation{margin-top:24px;overflow-wrap:anywhere}.connected-conversation h2{margin-bottom:12px}.connected-conversation label{display:block;margin:16px 0 8px}.connected-consent{display:flex!important;gap:10px;align-items:flex-start}.connected-consent input{width:auto;flex:none;margin-top:5px}.connected-conversation select,.connected-conversation textarea{width:100%;max-width:100%}.connected-disclosure,.connected-conversation small{color:var(--muted);line-height:1.6}.connected-state{margin:18px 0}.connected-state button{margin:8px 8px 0 0}.connected-entries{margin:18px 0}.connected-entries p,.provisional{white-space:pre-wrap}.provisional{border-left:3px solid #a781b5;padding-left:12px}.connected-conversation form button{margin:12px 0;max-width:100%;white-space:normal}.connected-conversation small{display:block}#connected-error{color:#a33d44}
+.connected-notes{margin:14px 0;border:1px solid var(--border);border-radius:10px;background:#fff;padding:10px 12px}
+.connected-notes summary{cursor:pointer;font-weight:600;color:var(--green)}
+.connected-notes .muted,.connected-notes p.muted{color:var(--muted);font-size:.9rem;margin:6px 0}
+.connected-notes .search-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.connected-notes .search-row input{flex:1 1 200px;min-height:44px;padding:8px 10px;border:1px solid #ced8ce;border-radius:9px}
+.notes-results,.notes-selected{list-style:none;margin:8px 0;padding:0;display:flex;flex-direction:column;gap:6px}
+.notes-results li,.notes-selected li{display:flex;gap:8px;align-items:center;flex-wrap:wrap;border-top:1px solid var(--border);padding-top:6px}
+.notes-results li span,.notes-selected li span{flex:1 1 180px;min-width:0;overflow-wrap:anywhere}
+.notes-results li small,.notes-selected li small{color:var(--muted);font-size:.8rem}
+.notes-usage{margin-top:8px;border-top:1px solid var(--border);padding-top:6px}
+.notes-usage p{margin:4px 0;font-size:.9rem;overflow-wrap:anywhere}
+@media (max-width:420px){.connected-notes .search-row input{flex-basis:100%}.notes-results li,.notes-selected li{align-items:flex-start}.notes-results li button,.notes-selected li button{min-height:44px}}

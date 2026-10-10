@@ -1,0 +1,572 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import type { TestContext } from 'node:test';
+import { once } from 'node:events';
+import { fork } from 'node:child_process';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { request } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { startHost } from '../host/runtime.js';
+import WebSocket from 'ws';
+import type { Data } from 'ws';
+import { composeLive } from '../host/live.js';
+import { listenService } from '../http/server.js';
+import { liveMigrations, type LiveProfile } from '../live/index.js';
+import { createDomainPort } from '../domain/facade.js';
+import { chatMigrations } from '../chat/index.js';
+import { Outbox } from '../runtime/outbox.js';
+import { Store } from '../runtime/store.js';
+import { CANARY, fixture, pcm } from './live-voice-fixture.js';
+
+const MODEL = 'models/live-gateway-test';
+const VOICE = 'LiveVoice';
+
+function configJson(enabled: boolean, extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    schemaVersion: 1, enabled, provider: 'gemini', modelId: MODEL, voice: VOICE, keyReference: 'gemini-primary',
+    dataClasses: ['ordinary'],
+    preferences: { dataClass: 'ordinary', language: 'en-US', register: 'plain', humor: 'dry', verbosity: 'balanced' },
+    ...extra,
+  };
+}
+
+async function waitFor(predicate: () => boolean, ms = 5000): Promise<void> {
+  const deadline = Date.now() + ms;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error('timed out waiting for condition');
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+}
+
+function writePrivate(dir: string, name: string, text: string): void {
+  const path = join(dir, name);
+  writeFileSync(path, text, { mode: 0o600 });
+  chmodSync(path, 0o600);
+}
+
+interface HarnessOptions { now?: () => number; config?: unknown; rawLive?: string; profile?: LiveProfile; withKey?: boolean; credentials?: { resolve(reference: string): Promise<string | undefined> } }
+
+interface Harness {
+  f: Awaited<ReturnType<typeof fixture>>;
+  store: Store;
+  origin: string;
+  token: string;
+  epoch: string;
+  close(): Promise<void>;
+}
+
+async function harness(t: TestContext, options: HarnessOptions = {}): Promise<Harness> {
+  const f = await fixture(t);
+  const dir = mkdtempSync(join(tmpdir(), 'didi-live-gateway-'));
+  const store = new Store(join(dir, 'state'), liveMigrations);
+  const config = join(dir, 'provider-config');
+  mkdirSync(config, { recursive: true, mode: 0o700 });
+  chmodSync(config, 0o700);
+  if (options.rawLive !== undefined) writePrivate(config, 'live.json', options.rawLive);
+  else if (options.config !== undefined) writePrivate(config, 'live.json', `${JSON.stringify(options.config)}\n`);
+  if (options.withKey !== false) writePrivate(config, 'gemini-primary.json', `${JSON.stringify({ schemaVersion: 1, keyReference: 'gemini-primary', key: CANARY })}\n`);
+  const { service: live } = composeLive(store, config, { socketFactory: f.socketFactory, ...(options.profile ? { profile: options.profile } : {}), ...(options.credentials ? { credentials: options.credentials } : {}) }, options.now);
+  const running = await listenService({ store, live, port: 0 });
+  t.after(async () => {
+    await running.close();
+    await live.shutdown();
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  return { f, store, origin: running.origin, token: store.adminCredential, epoch: store.authorityEpoch, close: () => running.close() };
+}
+
+function bearer(h: Harness): Record<string, string> {
+  return { authorization: `Bearer ${h.token}`, 'x-didi-authority-epoch': h.epoch };
+}
+
+async function json(origin: string, path: string, init: RequestInit = {}): Promise<{ status: number; body: any }> {
+  const response = await fetch(`${origin}${path}`, init);
+  const text = await response.text();
+  return { status: response.status, body: text ? JSON.parse(text) : null };
+}
+
+async function createBody(h: Harness, key: string, headers: Record<string, string | string[]> = {}): Promise<{ status: number; body: any }> {
+  const url = new URL(h.origin);
+  return new Promise((resolve, reject) => {
+    const req = request({ host: url.hostname, port: url.port, path: '/api/v1/live-sessions', method: 'POST', headers: { ...bearer(h), 'idempotency-key': key, 'content-type': 'application/json', ...headers } }, res => {
+      const chunks: Buffer[] = [];
+      res.on('data', chunk => chunks.push(chunk as Buffer));
+      res.on('end', () => { const text = Buffer.concat(chunks).toString('utf8'); resolve({ status: res.statusCode ?? 0, body: text ? JSON.parse(text) : null }); });
+    });
+    req.on('error', reject);
+    req.write(JSON.stringify({ inputClass: 'ordinary' }));
+    req.end();
+  });
+}
+
+function upgradeResponse(origin: string, path: string, headers: Record<string, string>): Promise<{ status: number; headers: Record<string, string | string[] | undefined> }> {
+  const url = new URL(origin);
+  return new Promise((resolve, reject) => {
+    const req = request({
+      host: url.hostname, port: url.port, path, method: 'GET',
+      headers: { connection: 'Upgrade', upgrade: 'websocket', 'sec-websocket-key': Buffer.alloc(16, 7).toString('base64'), 'sec-websocket-version': '13', ...headers },
+    });
+    req.on('upgrade', (res, socket) => { socket.destroy(); resolve({ status: 101, headers: res.headers }); });
+    req.on('response', res => { res.resume(); resolve({ status: res.statusCode ?? 0, headers: res.headers }); });
+    req.on('error', reject);
+    req.end();
+  });
+}
+function attempt(origin: string, path: string, headers: Record<string, string>): Promise<number> {
+  const url = new URL(origin);
+  return new Promise((resolve, reject) => {
+    const req = request({
+      host: url.hostname, port: url.port, path, method: 'GET',
+      headers: { connection: 'Upgrade', upgrade: 'websocket', 'sec-websocket-key': Buffer.alloc(16, 7).toString('base64'), 'sec-websocket-version': '13', ...headers },
+    });
+    req.on('upgrade', (_res, socket) => { socket.destroy(); resolve(101); });
+    req.on('response', res => { res.resume(); resolve(res.statusCode ?? 0); });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+test('live status is local validation; absent, disabled and malformed files never read a secret', async t => {
+  const missing = await harness(t, { withKey: false });
+  const status = await json(missing.origin, '/api/v1/live/status', { headers: bearer(missing) });
+  assert.equal(status.status, 200);
+  assert.deepEqual(status.body.data, { service: 'live', status: 'unconfigured' });
+  assert.equal((await createBody(missing, 'k1')).status, 503);
+
+  const off = await harness(t, { config: configJson(false), withKey: false });
+  const disabled = await json(off.origin, '/api/v1/live/status', { headers: bearer(off) });
+  assert.equal(disabled.body.data.status, 'disabled');
+  assert.equal(disabled.body.data.model, MODEL);
+  assert.equal((await createBody(off, 'k1')).status, 503);
+
+  const unknown = await harness(t, { config: configJson(true, { surprise: true }), withKey: false });
+  const errored = await json(unknown.origin, '/api/v1/live/status', { headers: bearer(unknown) });
+  assert.equal(errored.body.data.status, 'error');
+  assert.equal(errored.body.data.code, 'invalid_profile');
+  assert.equal(JSON.stringify(errored.body).includes('surprise'), false);
+
+  // Strict duplicate object keys: the canonical files.ts parseJson rejects them as invalid_json.
+  const duplicate = `{"schemaVersion":1,"schemaVersion":1,"enabled":false,"provider":"gemini","modelId":"${MODEL}","voice":"${VOICE}","keyReference":"gemini-primary","dataClasses":["ordinary"],"preferences":{"dataClass":"ordinary","language":"en-US","register":"plain","humor":"dry","verbosity":"balanced"}}`;
+  const dup = await harness(t, { rawLive: duplicate, withKey: false });
+  const dupStatus = await json(dup.origin, '/api/v1/live/status', { headers: bearer(dup) });
+  assert.equal(dupStatus.body.data.status, 'error');
+  assert.equal(dupStatus.body.data.code, 'invalid_json');
+
+  // R1 approved: a valid enabled file builds its profile through the shared turn-less assembly.
+  const enabled = await harness(t, { config: configJson(true), withKey: false });
+  const ready = await json(enabled.origin, '/api/v1/live/status', { headers: bearer(enabled) });
+  assert.equal(ready.body.data.status, 'configured');
+  assert.equal(ready.body.data.model, MODEL);
+});
+
+test('live operator routes reject browsers, origins and duplicate headers before the owner', async t => {
+  const h = await harness(t, { config: configJson(true) });
+  const status = await json(h.origin, '/api/v1/live/status', { headers: bearer(h) });
+  assert.equal(status.status, 200);
+  assert.equal(status.body.data.status, 'configured');
+  assert.equal(status.body.data.model, MODEL);
+  assert.equal(status.body.data.voice, VOICE);
+
+  assert.equal((await createBody(h, 'a', { authorization: '' })).status, 401);
+  assert.equal((await createBody(h, 'b', { cookie: `didi_session=${'x'.repeat(43)}` })).status, 403);
+  assert.equal((await createBody(h, 'c', { origin: h.origin })).status, 403);
+  assert.equal((await createBody(h, 'd', { 'x-didi-authority-epoch': 'stale' })).status, 409);
+  assert.equal((await createBody(h, 'e', { authorization: [`Bearer ${h.token}`, 'Bearer other'] })).status, 400);
+  assert.equal(h.f.attempts, 0, 'guards run before any provider open');
+});
+
+test('one ordered authenticated audio upgrade carries PCM, markers and the terminal fact', async t => {
+  const h = await harness(t, { config: configJson(true) });
+  const created = await createBody(h, 'flow-1');
+  assert.equal(created.status, 200);
+  const snapshot = created.body.data;
+  assert.equal(snapshot.grant.model, MODEL);
+  assert.equal(snapshot.grant.voice, VOICE);
+  assert.equal(snapshot.lifecycle, 'accepted');
+
+  const wsUrl = `${h.origin.replace('http', 'ws')}/api/v1/live-sessions/${snapshot.liveSessionId}/audio`;
+  const ws = new WebSocket(wsUrl, { headers: bearer(h) });
+  const frames: Array<{ text?: string; binary?: Buffer }> = [];
+  ws.on('message', (data: Data, isBinary: boolean) => { frames.push(isBinary ? { binary: Buffer.from(data as Buffer) } : { text: data.toString() }); });
+  await once(ws, 'open');
+
+  await h.f.frame(1); h.f.send({ setupComplete: {} });
+  await waitFor(() => frames.some(f => f.text && JSON.parse(f.text).type === 'ready'));
+
+  const before = h.f.frames.length;
+  ws.send(Buffer.from(pcm));
+  await waitFor(() => h.f.frames.length > before);
+  assert.deepEqual(h.f.frames.at(-1), { realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: Buffer.from(pcm).toString('base64') } } });
+
+  h.f.send({ serverContent: { outputTranscription: { text: 'late fact', finished: true } } });
+  await waitFor(() => frames.some(f => f.text && JSON.parse(f.text).type === 'outputTranscription'));
+  assert.equal(JSON.parse(frames.find(f => f.text && JSON.parse(f.text).type === 'outputTranscription')!.text!).text, 'late fact');
+
+  h.f.send({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from(pcm).toString('base64') } }] } } });
+  await waitFor(() => frames.some(f => f.binary));
+  assert.deepEqual(frames.find(f => f.binary)!.binary, Buffer.from(pcm), 'binary frames are the ephemeral output PCM');
+
+  h.f.send({ serverContent: { interrupted: true, turnComplete: true } });
+  await waitFor(() => frames.some(f => f.text && JSON.parse(f.text).type === 'interrupted'));
+  const indexOf = (predicate: (f: { text?: string; binary?: Buffer }) => boolean): number => frames.findIndex(predicate);
+  const marker = indexOf(f => Boolean(f.text && JSON.parse(f.text).type === 'outputTranscription'));
+  const pcmIndex = indexOf(f => f.binary !== undefined);
+  const interrupted = indexOf(f => Boolean(f.text && JSON.parse(f.text).type === 'interrupted'));
+  assert.ok(marker < pcmIndex && pcmIndex < interrupted, 'one ordered stream: committed marker, PCM, committed marker');
+  // R4: facts after interrupted keep their order; the interrupted marker precedes following audio.
+  h.f.send({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from(pcm).toString('base64') } }] } } });
+  await waitFor(() => frames.filter(f => f.binary !== undefined).length >= 2);
+  const followingAudio = frames.findIndex((f, i) => f.binary !== undefined && i > interrupted);
+  assert.ok(followingAudio > interrupted, 'the interrupted marker precedes following audio frames');
+
+  const closed = once(ws, 'close');
+  h.f.remoteClose();
+  await closed;
+  const terminal = frames.filter(f => f.text).map(f => JSON.parse(f.text!)).find(frame => frame.type === 'terminal');
+  assert.ok(terminal, 'terminal frame must be emitted');
+  assert.equal(terminal.state, 'failed', 'an unexpected transport close is a truthful failed terminal');
+  const journal = await json(h.origin, `/api/v1/live-sessions/${snapshot.liveSessionId}/journal`, { headers: bearer(h) });
+  assert.equal(journal.body.data.terminal.outcome.state, 'failed');
+  assert.ok(journal.body.data.fragments.some((f: { kind: string }) => f.kind === 'interrupted'));
+});
+
+test('malformed handshakes never consume the grant or open a provider', async t => {
+  const h = await harness(t, { config: configJson(true) });
+  const created = await createBody(h, 'neg-1');
+  const id = created.body.data.liveSessionId;
+
+  assert.equal(await attempt(h.origin, `/api/v1/live-sessions/${id}/audio?x=1`, bearer(h)), 400);
+  assert.equal(await attempt(h.origin, `/api/v1/live-sessions/${id}/other`, bearer(h)), 404);
+  assert.equal(await attempt(h.origin, `/api/v1/live-sessions/${id}/audio`, {}), 401);
+  assert.equal(await attempt(h.origin, `/api/v1/live-sessions/${id}/audio`, { ...bearer(h), cookie: `didi_session=${'x'.repeat(43)}` }), 403);
+  assert.equal(await attempt(h.origin, `/api/v1/live-sessions/${id}/audio`, { ...bearer(h), origin: h.origin }), 403);
+  assert.equal(await attempt(h.origin, `/api/v1/live-sessions/${id}/audio`, { ...bearer(h), 'x-didi-live-profile': 'stale' }), 403);
+  assert.equal(h.f.attempts, 0, 'no provider open before a valid handshake');
+
+  const snapshot = await json(h.origin, `/api/v1/live-sessions/${id}`, { headers: bearer(h) });
+  assert.equal(snapshot.body.data.lifecycle, 'accepted', 'grant is not consumed by a malformed handshake');
+});
+
+test('two simultaneous attaches open at most one provider, and revoke is isolated', async t => {
+  const h = await harness(t, { config: configJson(true) });
+  const created = await createBody(h, 'race-1');
+  const id = created.body.data.liveSessionId;
+  const results = await Promise.all([
+    attempt(h.origin, `/api/v1/live-sessions/${id}/audio`, bearer(h)),
+    attempt(h.origin, `/api/v1/live-sessions/${id}/audio`, bearer(h)),
+  ]);
+  assert.ok(results.every(status => status === 101 || status === 409), `unexpected statuses ${results}`);
+  await waitFor(() => h.f.attempts >= 1, 2000);
+  assert.equal(h.f.attempts, 1, 'two simultaneous attaches open at most one provider');
+
+  const a = await createBody(h, 'rev-a');
+  const b = await createBody(h, 'rev-b');
+  const idA = a.body.data.liveSessionId, idB = b.body.data.liveSessionId;
+  const revoked = await json(h.origin, `/api/v1/live-sessions/${idA}/revoke`, { method: 'POST', headers: bearer(h) });
+  assert.equal(revoked.status, 200);
+  const snapA = await json(h.origin, `/api/v1/live-sessions/${idA}`, { headers: bearer(h) });
+  assert.equal(snapA.body.data.lifecycle, 'terminal');
+  assert.equal(snapA.body.data.terminal.state, 'revoked');
+  const snapB = await json(h.origin, `/api/v1/live-sessions/${idB}`, { headers: bearer(h) });
+  assert.equal(snapB.body.data.lifecycle, 'accepted', 'revoke leaves other sessions unaffected');
+  const before = h.f.attempts;
+  assert.equal(await attempt(h.origin, `/api/v1/live-sessions/${idA}/audio`, bearer(h)), 101);
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(h.f.attempts, before, 'a revoked grant opens no provider');
+});
+
+test('an offered subprotocol is refused and an offered extension is never negotiated', async t => {
+  const h = await harness(t, { config: configJson(true) });
+  const created = await createBody(h, 'proto-1');
+  const id = created.body.data.liveSessionId;
+  assert.equal(await attempt(h.origin, `/api/v1/live-sessions/${id}/audio`, { ...bearer(h), 'sec-websocket-protocol': 'x' }), 400);
+  assert.equal(h.f.attempts, 0, 'a subprotocol handshake opens no provider');
+  const id2 = (await createBody(h, 'proto-2')).body.data.liveSessionId;
+  const accepted = await upgradeResponse(h.origin, `/api/v1/live-sessions/${id2}/audio`, { ...bearer(h), 'sec-websocket-extensions': 'permessage-deflate' });
+  assert.equal(accepted.status, 101, 'an extension offer leaves the accepted handshake intact');
+  assert.equal(accepted.headers['sec-websocket-extensions'], undefined, 'the fixed no-extensions contract negotiates none');
+});
+
+test('revoke during deferred credential resolution ends durably and opens no provider', async t => {
+  let release!: (value: string) => void;
+  const gate = new Promise<string>(resolve => { release = resolve; });
+  const deferredCredentials = { resolve: async (_reference: string): Promise<string> => gate };
+  const h = await harness(t, { config: configJson(true), credentials: deferredCredentials });
+  const a = await createBody(h, 'def-a');
+  const b = await createBody(h, 'def-b');
+  const idA = a.body.data.liveSessionId, idB = b.body.data.liveSessionId;
+
+  const ws = new WebSocket(`${h.origin.replace('http', 'ws')}/api/v1/live-sessions/${idA}/audio`, { headers: bearer(h) });
+  await once(ws, 'open');
+  await new Promise(resolve => setTimeout(resolve, 30)); // attachment is now parked on credential resolution
+  assert.equal(h.f.attempts, 0, 'credentials are still deferred');
+  assert.equal((await json(h.origin, `/api/v1/live-sessions/${idA}/revoke`, { method: 'POST', headers: bearer(h) })).status, 200);
+  release(CANARY);
+  await new Promise(resolve => setTimeout(resolve, 50));
+
+  assert.equal(h.f.attempts, 0, 'a revoked deferred credential opens no provider');
+  const snapA = await json(h.origin, `/api/v1/live-sessions/${idA}`, { headers: bearer(h) });
+  assert.equal(snapA.body.data.lifecycle, 'terminal');
+  assert.equal(snapA.body.data.terminal.state, 'revoked');
+  const snapB = await json(h.origin, `/api/v1/live-sessions/${idB}`, { headers: bearer(h) });
+  assert.equal(snapB.body.data.lifecycle, 'accepted', 'sessionB stays isolated');
+  ws.close();
+});
+
+test('supervised host composes Live, closes owned sockets on EOF, and the Store reopens', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-live-host-'));
+  const config = join(dir, 'provider-config'); mkdirSync(config, { recursive: true, mode: 0o700 }); chmodSync(config, 0o700);
+  writePrivate(config, 'live.json', `${JSON.stringify(configJson(true))}\n`);
+  writePrivate(config, 'gemini-primary.json', `${JSON.stringify({ schemaVersion: 1, keyReference: 'gemini-primary', key: CANARY })}\n`);
+  const web = join(dir, 'web'); mkdirSync(join(web, 'assets'), { recursive: true });
+  writeFileSync(join(web, 'index.html'), '<!doctype html><title>live gateway</title><link rel="stylesheet" href="/assets/app.css"><script src="/assets/app.js"></script>\n', { mode: 0o644 });
+  writeFileSync(join(web, 'sw.js'), 'self.addEventListener("install", () => {});\n', { mode: 0o644 });
+  writeFileSync(join(web, 'manifest.webmanifest'), '{"name":"live gateway"}\n', { mode: 0o644 });
+  writeFileSync(join(web, 'icon.svg'), '<svg xmlns="http://www.w3.org/2000/svg"></svg>\n', { mode: 0o644 });
+  writeFileSync(join(web, 'assets', 'app.js'), 'console.log("live");\n', { mode: 0o644 });
+  writeFileSync(join(web, 'assets', 'app.css'), 'body{}\n', { mode: 0o644 });
+
+  const child = fork(join(import.meta.dirname, 'live-gateway-process.js'), ['host', dir, config, web], { stdio: ['pipe', 'pipe', 'inherit', 'ipc'] });
+  t.after(() => { if (child.exitCode === null) child.kill('SIGKILL'); rmSync(dir, { recursive: true, force: true }); });
+  const ready = await new Promise<{ origin: string; authorityEpoch: string; assistantId: string }>((resolve, reject) => {
+    let buffer = '';
+    const timer = setTimeout(() => reject(new Error('host did not become ready')), 10000);
+    child.stdout!.on('data', (chunk: Buffer) => { buffer += chunk.toString(); const nl = buffer.indexOf('\n'); if (nl >= 0) { clearTimeout(timer); resolve(JSON.parse(buffer.slice(0, nl))); } });
+    child.once('exit', code => { clearTimeout(timer); reject(new Error(`host exited ${code}`)); });
+  });
+
+  const token = readFileSync(join(dir, 'admin-credential'), 'utf8').trim();
+  const headers = { authorization: `Bearer ${token}`, 'x-didi-authority-epoch': ready.authorityEpoch };
+  const status = await json(ready.origin, '/api/v1/live/status', { headers });
+  assert.equal(status.status, 200);
+  assert.equal(status.body.data.status, 'configured', 'host composes Live on the same Store with no text profile');
+
+  const created = await json(ready.origin, '/api/v1/live-sessions', { method: 'POST', headers: { ...headers, 'idempotency-key': 'proc-1', 'content-type': 'application/json' }, body: JSON.stringify({ inputClass: 'ordinary' }) });
+  assert.equal(created.status, 200);
+  const ws = new WebSocket(`${ready.origin.replace('http', 'ws')}/api/v1/live-sessions/${created.body.data.liveSessionId}/audio`, { headers });
+  await once(ws, 'open');
+  const closed = once(ws, 'close');
+
+  child.stdin!.end();
+  const exit = await new Promise<number | null>(resolve => child.once('exit', code => resolve(code)));
+  assert.equal(exit, 0, 'supervised host exits cleanly on stdin EOF');
+  await closed;
+  assert.equal(ws.readyState, ws.CLOSED, 'owned socket is closed on shutdown');
+  await assert.rejects(fetch(`${ready.origin}/api/v1/status`, { signal: AbortSignal.timeout(2000) }));
+
+  const store = new Store(dir, [...createDomainPort({ outbox: Outbox }).migrations, ...chatMigrations, ...liveMigrations]);
+  try { assert.equal(store.assistantId, ready.assistantId, 'the real Store reopens with stable identity'); } finally { store.close(); }
+});
+
+function nextClose(ws: WebSocket): Promise<{ code: number; reason: string }> {
+  return new Promise(resolve => ws.once('close', (code: number, reason: Buffer) => resolve({ code, reason: reason.toString() })));
+}
+function collect(ws: WebSocket): { frames: Array<{ text?: string; binary?: Buffer }> } {
+  const frames: Array<{ text?: string; binary?: Buffer }> = [];
+  ws.on('message', (data: Data, isBinary: boolean) => { frames.push(isBinary ? { binary: Buffer.from(data as Buffer) } : { text: data.toString() }); });
+  return { frames };
+}
+function rawMethod(origin: string, path: string, method: string, headers: Record<string, string | string[]>): Promise<number> {
+  const url = new URL(origin);
+  return new Promise((resolve, reject) => {
+    const req = request({ host: url.hostname, port: url.port, path, method, headers }, res => { res.resume(); resolve(res.statusCode ?? 0); });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+test('strict client controls: endAudioStream accepted, close and unknown controls fail visibly', async t => {
+  const h = await harness(t, { config: configJson(true) });
+  const id = (await createBody(h, 'ctl-1')).body.data.liveSessionId;
+  const ws = new WebSocket(`${h.origin.replace('http', 'ws')}/api/v1/live-sessions/${id}/audio`, { headers: bearer(h) });
+  const { frames } = collect(ws);
+  await once(ws, 'open');
+  await h.f.frame(1); h.f.send({ setupComplete: {} });
+  await waitFor(() => frames.some(f => f.text && JSON.parse(f.text).type === 'ready'));
+  const before = h.f.frames.length;
+  ws.send(JSON.stringify({ type: 'endAudioStream' }));
+  await waitFor(() => h.f.frames.length > before);
+  assert.deepEqual(h.f.frames.at(-1), { realtimeInput: { audioStreamEnd: true } });
+  const closed = nextClose(ws);
+  ws.send(JSON.stringify({ type: 'nope' }));
+  assert.deepEqual(await closed, { code: 1002, reason: 'invalid_control' });
+
+  const id2 = (await createBody(h, 'ctl-2')).body.data.liveSessionId;
+  const ws2 = new WebSocket(`${h.origin.replace('http', 'ws')}/api/v1/live-sessions/${id2}/audio`, { headers: bearer(h) });
+  await once(ws2, 'open');
+  const closed2 = nextClose(ws2);
+  ws2.send(JSON.stringify({ type: 'close' }));
+  assert.deepEqual(await closed2, { code: 1000, reason: 'client_close' });
+});
+
+test('malformed and oversize client frames fail visibly', async t => {
+  const h = await harness(t, { config: configJson(true) });
+  const id = (await createBody(h, 'frm-1')).body.data.liveSessionId;
+  const ws = new WebSocket(`${h.origin.replace('http', 'ws')}/api/v1/live-sessions/${id}/audio`, { headers: bearer(h) });
+  await once(ws, 'open');
+  const closed = nextClose(ws);
+  ws.send('not-json');
+  assert.deepEqual(await closed, { code: 1002, reason: 'invalid_control' });
+
+  const id2 = (await createBody(h, 'frm-2')).body.data.liveSessionId;
+  const ws2 = new WebSocket(`${h.origin.replace('http', 'ws')}/api/v1/live-sessions/${id2}/audio`, { headers: bearer(h) });
+  await once(ws2, 'open');
+  const closed2 = nextClose(ws2);
+  ws2.send(Buffer.alloc(64 * 1024 + 4));
+  assert.deepEqual(await closed2, { code: 1009, reason: 'frame_too_large' });
+});
+
+test('wrong Host and wrong method are refused on Live routes', async t => {
+  const h = await harness(t, { config: configJson(true) });
+  const id = (await createBody(h, 'host-1')).body.data.liveSessionId;
+  assert.equal(await attempt(h.origin, `/api/v1/live-sessions/${id}/audio`, { ...bearer(h), host: 'evil.example' }), 403);
+  assert.equal(await rawMethod(h.origin, `/api/v1/live-sessions/${id}/audio`, 'POST', bearer(h)), 405);
+  assert.equal(await rawMethod(h.origin, `/api/v1/live-sessions/${id}`, 'POST', bearer(h)), 405);
+  assert.equal(h.f.attempts, 0);
+});
+
+test('revoke sessionA preserves an active sessionB that still works', async t => {
+  const h = await harness(t, { config: configJson(true) });
+  const a = (await createBody(h, 'iso-a')).body.data.liveSessionId;
+  const b = (await createBody(h, 'iso-b')).body.data.liveSessionId;
+  const ws = new WebSocket(`${h.origin.replace('http', 'ws')}/api/v1/live-sessions/${b}/audio`, { headers: bearer(h) });
+  const { frames } = collect(ws);
+  await once(ws, 'open');
+  await h.f.frame(1); h.f.send({ setupComplete: {} });
+  await waitFor(() => frames.some(f => f.text && JSON.parse(f.text).type === 'ready'));
+  assert.equal((await json(h.origin, `/api/v1/live-sessions/${a}/revoke`, { method: 'POST', headers: bearer(h) })).status, 200);
+  const snapB = await json(h.origin, `/api/v1/live-sessions/${b}`, { headers: bearer(h) });
+  assert.equal(snapB.body.data.lifecycle, 'active', 'an attached B stays active across A revoke');
+  h.f.send({ serverContent: { outputTranscription: { text: 'still B' } } });
+  await waitFor(() => frames.some(f => f.text && JSON.parse(f.text).text === 'still B'));
+  ws.close();
+});
+
+test('socket backpressure persists consumer_backpressure before the 1013 close', async t => {
+  const h = await harness(t, { config: configJson(true, { limits: { consumerQueueEvents: 65536, consumerQueueBytes: 8 * 1024 * 1024, wsBufferedBytes: 1024 } }) });
+  const id = (await createBody(h, 'bp-1')).body.data.liveSessionId;
+  const ws = new WebSocket(`${h.origin.replace('http', 'ws')}/api/v1/live-sessions/${id}/audio`, { headers: bearer(h) });
+  await once(ws, 'open');
+  await h.f.connected;
+  await h.f.frame(1); h.f.send({ setupComplete: {} });
+  await new Promise(resolve => setTimeout(resolve, 40));
+  const socket = (ws as unknown as { _socket: { pause(): void; resume(): void } })._socket;
+  socket.pause();
+  const audioFrame = { serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.alloc(8192).toString('base64') } }] } } };
+  const closed = nextClose(ws);
+  for (let i = 0; i < 400; i++) h.f.send(audioFrame);
+  await new Promise(resolve => setTimeout(resolve, 200));
+  socket.resume();
+  assert.equal((await closed).code, 1013);
+  const snap = await json(h.origin, `/api/v1/live-sessions/${id}`, { headers: bearer(h) });
+  assert.equal(snap.body.data.terminal.state, 'consumer_backpressure', 'the durable fact predates the close');
+});
+
+test('a client that disconnects after 101 records a truthful terminal and never retries', async t => {
+  const h = await harness(t, { config: configJson(true) });
+  const id = (await createBody(h, 'disc-1')).body.data.liveSessionId;
+  const ws = new WebSocket(`${h.origin.replace('http', 'ws')}/api/v1/live-sessions/${id}/audio`, { headers: bearer(h) });
+  await once(ws, 'open');
+  await h.f.connected;
+  ws.terminate();
+  h.f.remoteClose();
+  const deadline = Date.now() + 5000;
+  let terminal: unknown = null;
+  while (!terminal && Date.now() < deadline) {
+    const s = await json(h.origin, `/api/v1/live-sessions/${id}`, { headers: bearer(h) });
+    if (s.body.data.terminal) terminal = s.body.data.terminal;
+    else await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  assert.ok(terminal, 'a truthful terminal is recorded');
+  assert.equal(h.f.attempts, 1, 'the one-shot session is never re-dispatched');
+});
+
+test('revoke while receiving output sends no later PCM on the wire', async t => {
+  const h = await harness(t, { config: configJson(true) });
+  const id = (await createBody(h, 'revout-1')).body.data.liveSessionId;
+  const ws = new WebSocket(`${h.origin.replace('http', 'ws')}/api/v1/live-sessions/${id}/audio`, { headers: bearer(h) });
+  const { frames } = collect(ws);
+  await once(ws, 'open');
+  await h.f.frame(1); h.f.send({ setupComplete: {} });
+  await waitFor(() => frames.some(f => f.text && JSON.parse(f.text).type === 'ready'));
+  const audioFrame = { serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from(pcm).toString('base64') } }] } } };
+  h.f.send(audioFrame);
+  await waitFor(() => frames.some(f => f.binary));
+  const before = frames.filter(f => f.binary).length;
+  assert.equal((await json(h.origin, `/api/v1/live-sessions/${id}/revoke`, { method: 'POST', headers: bearer(h) })).status, 200);
+  h.f.send(audioFrame);
+  await new Promise(resolve => setTimeout(resolve, 60));
+  assert.equal(frames.filter(f => f.binary).length, before, 'no later PCM egress after revoke');
+});
+
+
+test('HTTP snapshot and same-key replay expire accepted unused sessions without audio or credentials', async t => {
+  let now = 1_700_000_000_000, credentials = 0;
+  const h = await harness(t, { now: () => now, config: configJson(true, { limits: { unusedMs: 20 } }), credentials: { resolve: async () => { credentials++; return CANARY; } } });
+  const first = await createBody(h, 'http-unused-get');
+  const second = await createBody(h, 'http-unused-replay');
+  assert.equal(first.status, 200);
+  assert.equal(second.status, 200);
+  now += 20;
+  const boundary = await json(h.origin, `/api/v1/live-sessions/${first.body.data.liveSessionId}`, { headers: bearer(h) });
+  assert.equal(boundary.status, 200);
+  assert.equal(boundary.body.data.lifecycle, 'accepted');
+  now++;
+  const expired = await json(h.origin, `/api/v1/live-sessions/${first.body.data.liveSessionId}`, { headers: bearer(h) });
+  assert.equal(expired.status, 200);
+  assert.deepEqual(expired.body.data.terminal, { state: 'expired' });
+  const replay = await createBody(h, 'http-unused-replay');
+  assert.equal(replay.body.data.liveSessionId, second.body.data.liveSessionId);
+  assert.deepEqual(replay.body.data.terminal, { state: 'expired' });
+  assert.equal(credentials, 0);
+  assert.equal(h.f.attempts, 0);
+});
+
+
+test('canonical host applies configured idle deadline and persists idle_timeout across replay and restart', async t => {
+  const f = await fixture(t);
+  const dir = mkdtempSync(join(tmpdir(), 'didi-live-host-idle-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const configDir = join(dir, 'config'); mkdirSync(configDir, { mode: 0o700 });
+  writePrivate(configDir, 'live.json', `${JSON.stringify(configJson(true, { limits: { idleMs: 200, sessionMs: 10_000, handshakeMs: 1000, closeMs: 50, wsBufferedBytes: 1024 } }))}\n`);
+  const hostConfig = { dataDir: join(dir, 'state'), configDir, webRoot: fileURLToPath(new URL('../../../web/dist', import.meta.url)), port: 0,
+    liveTesting: { socketFactory: f.socketFactory, credentials: { resolve: async () => CANARY } } };
+  const host = await startHost(hostConfig);
+  t.after(() => host.close());
+  const headers = { authorization: `Bearer ${host.store.adminCredential}`, 'x-didi-authority-epoch': host.store.authorityEpoch };
+  const create = (origin: string) => json(origin, '/api/v1/live-sessions', { method: 'POST', headers: { ...headers, 'idempotency-key': 'host-idle', 'content-type': 'application/json' }, body: JSON.stringify({ inputClass: 'ordinary' }) });
+  const created = await create(host.service.origin);
+  assert.equal(created.status, 200);
+  const id = created.body.data.liveSessionId;
+  const ws = new WebSocket(`${host.service.origin.replace('http', 'ws')}/api/v1/live-sessions/${id}/audio`, { headers });
+  const frames: any[] = [];
+  ws.on('message', (data: Data, binary: boolean) => { if (!binary) frames.push(JSON.parse(data.toString())); });
+  const closed = once(ws, 'close');
+  await once(ws, 'open');
+  await f.frame(1);
+  t.diagnostic(`provider setup bytes=${Buffer.byteLength(JSON.stringify(f.frames[0]))}; gateway consumer bound=1024, independent adapter provider bound`);
+  f.send({ setupComplete: {} });
+  // Bounded observation of the actual terminal, not a sleep or the hard session deadline.
+  await waitFor(() => frames.some(frame => frame.type === 'terminal'), 1500);
+  await closed;
+  const snapshot = await json(host.service.origin, `/api/v1/live-sessions/${id}`, { headers });
+  assert.equal(snapshot.status, 200);
+  assert.deepEqual(snapshot.body.data.terminal, { state: 'failed', code: 'idle_timeout' });
+  assert.equal(f.attempts, 1);
+  const replay = await create(host.service.origin);
+  assert.deepEqual(replay.body.data.terminal, snapshot.body.data.terminal);
+  assert.equal(replay.body.data.liveSessionId, id);
+  assert.equal(f.attempts, 1);
+  await host.close();
+  const restarted = await startHost(hostConfig);
+  t.after(() => restarted.close());
+  const recovered = await create(restarted.service.origin);
+  assert.equal(recovered.status, 200);
+  assert.deepEqual(recovered.body.data.terminal, { state: 'failed', code: 'idle_timeout' });
+  assert.equal(recovered.body.data.liveSessionId, id);
+  assert.equal(f.attempts, 1, 'restart/replay never reopens the adapter');
+  t.diagnostic('actual host idleMs=200, sessionMs=10000: observed persisted idle_timeout; replay/restart opens remain1');
+});

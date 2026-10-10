@@ -26,6 +26,16 @@ writeFileSync(`${root}/tsconfig.package.json`, JSON.stringify({extends:'./tsconf
 NODE
 (cd "$builder" && npm exec --offline -- tsc -p tsconfig.package.json)
 diff -qr -x test "$work/exact-dist" "$builder/dist"
+# Retain the actual compiler's package assertion locations, not inferred offsets.
+node --input-type=module - "$builder/dist/test/http.test.js" <<'NODE'
+import {readFileSync} from 'node:fs';
+const file = process.argv[2];
+readFileSync(file, 'utf8').split('\n').forEach((line, index) => {
+  if (line.includes('assert.equal(installed.status') || line.includes('assert.equal(code, 0)')) {
+    console.log(`PACKAGE_COMPILED ${file}:${index + 1} ${line.trim()}`);
+  }
+});
+NODE
 cp "$builder/package.json" "$builder/package-lock.json" "$work/runtime/"
 cp -R "$builder/dist" "$work/runtime/dist"
 mkdir -p "$work/runtime/adapters/mcp"

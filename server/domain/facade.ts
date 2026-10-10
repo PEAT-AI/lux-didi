@@ -139,6 +139,10 @@ class Domain implements DomainPort {
         const i = input as DomainOperations['recall']['input'];
         return dto.toRecallDTO(memory.recall(tx, i.q, i.limit)) as DomainOperations[K]['output'];
       }
+      case 'resolveEntries': {
+        const i = input as DomainOperations['resolveEntries']['input'];
+        return { records: memory.resolveEntries(tx, i.entryIds).map(dto.toResolvedEntryDTO) } as DomainOperations[K]['output'];
+      }
       case 'createCommitment': {
         const i = input as DomainOperations['createCommitment']['input'];
         const clock = clockAt(context);

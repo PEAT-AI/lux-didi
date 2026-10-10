@@ -122,10 +122,11 @@ test('canonical compiler emits every published production unit and no unpublishe
   const config = JSON.parse(await readFile(join(server, 'tsconfig.json'), 'utf8')) as { include: string[] };
   assert.deepEqual(config.include.filter(path => !path.startsWith('test/')).sort(), [
     'index.ts', 'runtime/**/*.ts', 'http/**/*.ts', 'contracts/**/*.ts', 'domain/**/*.ts',
-    'host/**/*.ts', 'adapters/model/**/*.ts', 'adapters/mcp/**/*.ts', 'prompt/**/*.ts',
-  ].sort(), 'canonical production roots must include all accepted units, not CHAT/config globs');
+    'host/**/*.ts', 'chat/**/*.ts', 'config/**/*.ts', 'adapters/model/**/*.ts', 'adapters/mcp/**/*.ts',
+    'adapters/live-voice/**/*.ts', 'connectors/**/*.ts', 'prompt/**/*.ts', 'live/**/*.ts',
+  ].sort(), 'canonical production roots must include all accepted units and approved CHAT/config composition');
   for (const entry of ['index', 'runtime/store', 'http/server', 'contracts/index', 'domain/facade',
-    'host/index', 'adapters/model/index', 'adapters/mcp/adapter', 'prompt/index']) {
+    'host/index', 'chat/index', 'config/index', 'adapters/model/index', 'adapters/mcp/adapter', 'prompt/index', 'live/index']) {
     for (const suffix of ['.js', '.d.ts', '.js.map']) {
       assert.ok((await stat(join(server, 'dist', entry + suffix))).size > 0, `Missing canonical output ${entry + suffix}`);
     }
@@ -298,5 +299,26 @@ test('supervised malformed/oversized/incomplete frames fail before readiness or 
       assert.equal((await exited)[0], 1); assert.equal(stdout, ''); assert.match(stderr, /Supervision|supervision/);
       await assert.rejects(stat(dataDir), /ENOENT/);
     }
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('canonical HOST symlink --help executes and ordinary module import never starts the host', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'didi-host-entry-'));
+  const entry = resolve(import.meta.dirname, '../host/index.js');
+  const alias = join(dir, 'canonical-host.js');
+  const run = async (args: string[]) => {
+    const child = spawn(process.execPath, args, { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, DIDI_STATE_DIR: join(dir, 'unexpected-state'), DIDI_WEB_ROOT: webRoot, DIDI_PORT: '0' } });
+    let stdout = '', stderr = '';
+    child.stdout.on('data', chunk => { stdout += String(chunk); });
+    child.stderr.on('data', chunk => { stderr += String(chunk); });
+    const timer = setTimeout(() => child.kill('SIGTERM'), 3000);
+    try { const [code, signal] = await once(child, 'exit'); assert.equal(signal, null, 'Harmless invocation must exit without starting a listener'); assert.equal(code, 0, stderr); return stdout; }
+    finally { clearTimeout(timer); }
+  };
+  try {
+    await symlink(entry, alias);
+    const url = new URL('../host/index.js', import.meta.url).href;
+    assert.equal(await run(['--input-type=module', '--eval', `const host = await import(${JSON.stringify(url)}); if(typeof host.main!=='function') throw Error('Missing host export'); console.log('IMPORTED_WITHOUT_START');`]), 'IMPORTED_WITHOUT_START\n');
+    assert.match(await run([alias, '--help']), /Usage: node server\/dist\/host\/index\.js/, 'Actual canonical host must execute --help through a symlink spelling');
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

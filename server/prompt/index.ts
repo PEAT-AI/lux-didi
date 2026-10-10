@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { DataClass, FunctionDeclaration, ToolDefinition } from '../adapters/model/types.js';
-import { PromptCompileError, type CapabilitySnapshot, type CompileInput, type CompiledPrompt, type Evidence, type HistoryItem, type SourceAvailability, type ValidatedPreferences } from './types.js';
+import { PromptCompileError, type CapabilitySnapshot, type CompileInput, type CompiledPrompt, type Evidence, type HistoryItem, type SourceAvailability, type ValidatedPreferences, type VoiceInstruction, type VoiceInstructionInput } from './types.js';
 import { PUBLIC_PERSONA, PROMPT_VERSION, TRUSTED_RULES } from './template.js';
 export * from './types.js';
 export { PUBLIC_PERSONA, PROMPT_VERSION } from './template.js';
@@ -130,6 +130,37 @@ function history(raw: unknown, ownerId: string): HistoryItem {
 }
 
 /** Pure compilation of explicitly supplied material. No stores, clocks, env or egress. */
+/** The canonical trusted sections: persona + rules + preferences + capabilities. No turns. */
+function systemSections(prefs: ValidatedPreferences, caps: CapabilitySnapshot): Array<{ id: string; text: string }> {
+  const { ownerId: _preferenceOwner, ...trustedPrefs } = prefs;
+  return [
+    { id: 'persona', text: PUBLIC_PERSONA }, { id: 'rules', text: TRUSTED_RULES },
+    { id: 'preferences', text: JSON.stringify(trustedPrefs) },
+    { id: 'capabilities', text: JSON.stringify({ declarations: caps.declarations, sources: caps.sources }) },
+  ];
+}
+
+/** Shared canonical system assembly. No turns. */
+function assembleSystem(prefs: ValidatedPreferences, caps: CapabilitySnapshot, trustedLimit: number): string {
+  const system = systemSections(prefs, caps).map(s => `[${s.id}]\n${s.text}`).join('\n\n');
+  if (system.length > trustedLimit) fail('budget');
+  return system;
+}
+
+/**
+ * Voice-session instruction: the same canonical system assembly, produced for a session with no
+ * conversation turns. History/evidence/declarations-free by construction; the text path is unchanged.
+ */
+export function compileVoiceInstruction(input: VoiceInstructionInput): VoiceInstruction {
+  const i = fields(input, ['ownerId', 'promptVersion', 'preferences', 'capabilities', 'trustedChars']);
+  const ownerId = text(i['ownerId'], 128);
+  if (i['promptVersion'] !== PROMPT_VERSION) fail('version');
+  const prefs = validatePreferences(i['preferences'], ownerId);
+  const caps = validateSnapshot(i['capabilities']);
+  const trustedLimit = budget(i['trustedChars'], 100000);
+  return { system: assembleSystem(prefs, caps, trustedLimit), promptVersion: PROMPT_VERSION };
+}
+
 export function compilePrompt(input: CompileInput): CompiledPrompt {
   const i = fields(input, ['ownerId', 'persona', 'promptVersion', 'preferences', 'capabilities', 'evidence', 'history', 'budgets']);
   const ownerId = text(i['ownerId'], 128);
@@ -143,14 +174,8 @@ export function compilePrompt(input: CompileInput): CompiledPrompt {
   if (!turns.length) fail('schema');
   unique(material.map(v => v.id)); unique(turns.map(v => v.id));
   // Host identity enforces isolation; it is not model reasoning material.
-  const { ownerId: _preferenceOwner, ...trustedPrefs } = prefs;
-  const sections = [
-    { id: 'persona', text: PUBLIC_PERSONA }, { id: 'rules', text: TRUSTED_RULES },
-    { id: 'preferences', text: JSON.stringify(trustedPrefs) },
-    { id: 'capabilities', text: JSON.stringify({ declarations: caps.declarations, sources: caps.sources }) },
-  ];
-  const system = sections.map(s => `[${s.id}]\n${s.text}`).join('\n\n');
-  if (system.length > trustedLimit) fail('budget');
+  const sections = systemSections(prefs, caps);
+  const system = assembleSystem(prefs, caps, trustedLimit);
   const contents = turns.map(t => {
     const { ownerId: _owner, ...data } = t;
     return { role: t.role, parts: [{ text: JSON.stringify(data) }] };

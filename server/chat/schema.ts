@@ -16,4 +16,27 @@ export const chatMigrations: readonly SchemaMigration[] = [{ owner: 'chat', vers
     CHECK((outcome='complete' AND final_entry_id IS NOT NULL) OR (outcome IS NULL OR outcome!='complete'))
   )`,
   `CREATE UNIQUE INDEX chat_one_active_session ON chat_runs(session_id) WHERE state!='terminal'`,
+] }, { owner: 'chat', version: 2, statements: [
+  `CREATE TABLE chat_consents (
+    session_id TEXT PRIMARY KEY, owner_assistant_id TEXT NOT NULL,
+    provider TEXT NOT NULL, model TEXT NOT NULL, route_identity TEXT NOT NULL,
+    revision INTEGER NOT NULL, permitted_classes TEXT NOT NULL,
+    granted_at TEXT NOT NULL, revoked_at TEXT,
+    idempotency_key TEXT NOT NULL, fingerprint TEXT NOT NULL,
+    UNIQUE(owner_assistant_id,idempotency_key))`,
+  `CREATE TABLE chat_run_policy (
+    run_id TEXT PRIMARY KEY REFERENCES chat_runs(run_id),
+    policy_version INTEGER NOT NULL, consent_revision INTEGER NOT NULL,
+    route_identity TEXT NOT NULL, selected_labels TEXT NOT NULL)`
+] },
+// Additive v3: the frozen requested ids and resolved record content/source
+// references for an explicit per-turn memory selection. Empty/old runs have no
+// row, which means empty selection. v1 (chat_runs) and v2 (chat_consents,
+// chat_run_policy) are already applied on the accepted base and are unchanged.
+{ owner: 'chat', version: 3, statements: [
+  `CREATE TABLE chat_run_context (
+    run_id TEXT PRIMARY KEY REFERENCES chat_runs(run_id),
+    schema_version INTEGER NOT NULL,
+    requested_ids TEXT NOT NULL,
+    resolved_records TEXT NOT NULL)`
 ] }];

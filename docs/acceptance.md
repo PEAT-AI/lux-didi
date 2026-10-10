@@ -6,7 +6,10 @@ Status: proposed acceptance plan on the decided stack (PLAN-R1). No product exis
 
 Each scenario has a synthetic precondition, the action, the observable result that counts as acceptance, an adverse variant relevant to the same surface, and the issues that own the behavior. Fixtures are synthetic: identities use `example.invalid`, calendar and mail content is invented, and no real transcript, account or endpoint appears anywhere.
 
-The only currently runnable check in this repository is the planning integrity validator:
+The runnable checks in this repository are the canonical scripts under `scripts/` - the per-surface
+`scripts/check-*.sh` set, including `scripts/check-connected.sh` for the connected runtime, plus the service,
+domain, chat, prompt, model, MCP, host, host-entry, package, provider-config, knowledge-connector, live-voice and
+pending-request checks - together with the planning integrity validator:
 
     python3 scripts/backlog_validate.py --all --report planning/backlog-validation.md
 

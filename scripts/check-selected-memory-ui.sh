@@ -5,8 +5,15 @@
 # selected-memory HTTP tests plus the impacted MEMORY/NCS/CHAT/HTTP regressions, and
 # then drives the real GPU browser view of note selection. It never runs a broad
 # unrelated ring.
+#
+# The single host-wide renderer is acquired BEFORE any expensive work, through the
+# documented canonical wrapper, with one finite wait. A held admission therefore never
+# forces a repeated backend rebuild, and the browser step runs already holding the slot.
 set -euo pipefail
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
+if [[ "${1:-}" != '--renderer-held' ]]; then
+  exec lux-browser-slot run --priority worker --want 1 --wait 900 -- bash "$0" --renderer-held
+fi
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
 
@@ -54,5 +61,5 @@ timeout 1200 node --test --test-reporter=tap --test-timeout=30000 \
 grep -Eq '^# tests [1-9][0-9]*$' "$log" || { echo 'check-selected-memory-ui: zero selected server tests' >&2; exit 1; }
 if [ "$status" -ne 0 ]; then exit "$status"; fi
 
-# Real GPU browser admission: a held slot is reported by the helper, never read as a pass.
-lux-browser-slot run --priority worker --want 1 --wait 240 -- node web/test/selected-memory-browser.mjs
+# Already holding the one host-wide renderer through the wrapper above.
+node web/test/selected-memory-browser.mjs

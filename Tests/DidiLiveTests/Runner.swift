@@ -20,13 +20,19 @@ actor TestHTTP: LiveOperatorHTTP {
     var loseCreate = false
     var wrongGrant = false
     var wrongEpoch = false
+    var wrongStatus = false
+    var wrongScope = false
+    var failSnapshot = false
+    var snapshotGate: Gate?
     var statusGate: Gate?
     var lastCreated: LiveSnapshot?
     private(set) var keys: [String] = []
     private(set) var requests = 0
     init(_ fixture: Fixture) { self.fixture = fixture }
-    func configure(loss: Bool = false, grant: Bool = false, epoch: Bool = false, gate: Gate? = nil) {
+    func configure(loss: Bool = false, grant: Bool = false, epoch: Bool = false, gate: Gate? = nil,
+                   status: Bool = false, failRead: Bool = false, readGate: Gate? = nil, scope: Bool = false) {
         loseCreate = loss; wrongGrant = grant; wrongEpoch = epoch; statusGate = gate
+        wrongStatus = status; failSnapshot = failRead; snapshotGate = readGate; wrongScope = scope
     }
     func finish() { session.invalidateAndCancel() }
     func raw(_ path: String, method: String = "GET", key: String? = nil, body: Data? = nil) async throws -> Data {
@@ -51,7 +57,7 @@ actor TestHTTP: LiveOperatorHTTP {
         let gate = statusGate; statusGate = nil
         if let gate { await gate.wait() } // deliberately late response: generation fence must reject it
         return LiveOperatorStatus(origin: URL(string: fixture.origin)!, assistantID: host.assistantId,
-                                  authorityEpoch: host.authorityEpoch, provider: provider, model: model, voice: voice,
+                                  authorityEpoch: host.authorityEpoch, provider: provider, model: wrongStatus ? "wrong-model" : model, voice: voice,
                                   profileIdentity: profile, dataClasses: classes)
     }
     func create(for intent: LiveBeginIntent, key: String) async throws -> LiveSnapshot {
@@ -66,12 +72,16 @@ actor TestHTTP: LiveOperatorHTTP {
                             idempotencyKey: snapshot.idempotencyKey, profileIdentity: snapshot.profileIdentity,
                             grant: LiveGrant(provider: grant.provider, model: wrongGrant ? "wrong-model" : grant.model,
                                              voice: grant.voice, chosenInputClass: grant.chosenInputClass,
-                                             permittedClasses: grant.permittedClasses, revision: grant.revision),
+                                             permittedClasses: wrongScope ? grant.permittedClasses + ["sensitive"] : grant.permittedClasses, revision: grant.revision),
                             lifecycle: snapshot.lifecycle, dispatchIntent: snapshot.dispatchIntent,
                             consumerState: snapshot.consumerState, terminal: snapshot.terminal)
     }
     func snapshot(sessionID: String, for intent: LiveBeginIntent) async throws -> LiveSnapshot {
-        try JSONDecoder().decode(Envelope<LiveSnapshot>.self, from: await raw("/api/v1/live-sessions/" + sessionID)).data
+        if failSnapshot { throw LiveClientError.transport }
+        let snapshot = try JSONDecoder().decode(Envelope<LiveSnapshot>.self, from: await raw("/api/v1/live-sessions/" + sessionID)).data
+        let gate = snapshotGate; snapshotGate = nil
+        if let gate { await gate.wait() }
+        return snapshot
     }
     func journal(sessionID: String, cursor: Int?, for intent: LiveBeginIntent) async throws -> LiveJournalPage {
         let query = cursor.map { "?cursor=" + String($0) } ?? ""
@@ -215,8 +225,9 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             // Fresh coordinator does zero work. Loss happens AFTER actual server commit; explicit retry keeps exact key/meaning.
             let http = TestHTTP(fixture); let sockets = CountedSockets(fixture); let sink = SilentSink()
             let client = LiveSessionCoordinator(http: http, sockets: sockets, sink: sink)
+            await client.close(); await client.revoke()
             let initialState = await client.state
-            try require(await http.requests == 0 && initialState == .idle, "restart is inert")
+            try require(await http.requests == 0 && initialState == .idle, "restart and empty close/revoke are inert")
             await http.configure(loss: true)
             await client.begin(frozen)
             try require(await client.state == .createUnknown, "lost committed create response")
@@ -281,19 +292,33 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             try require(await consumed.state == .terminal(LiveTerminal(state: .revoked)), "terminal create replay truth")
             try require(await consumedSockets.attempts == 0, "terminal replay zero attach")
             await consumed.stop(); await consumedHTTP.finish()
-            print("PASS consumed/terminal replay zero attach")
+            let activeHTTP = TestHTTP(fixture); let activeSockets = CountedSockets(fixture)
+            let activeReplay = LiveSessionCoordinator(http: activeHTTP, sockets: activeSockets, sink: SilentSink())
+            await activeHTTP.configure(loss: true); await activeReplay.begin(frozen)
+            let activeSnapshot = await activeHTTP.lastCreated!
+            let external = try await LiveSocketTransport(requests: TestRequests(fixture: fixture, alteration: "")).connect(
+                LiveSocketBinding(origin: frozen.origin, sessionID: activeSnapshot.liveSessionId, authorityEpoch: frozen.authorityEpoch, profileIdentity: frozen.profileIdentity))
+            guard case .marker(let externalReady) = try await external.receive(), externalReady.kind == .ready else { throw ProbeError.assertion("external consumed snapshot") }
+            try await activeReplay.retryCreate()
+            try require(await activeReplay.state == .outcomeUnknown(.unavailable), "active consumed replay remains honest unknown")
+            try require(await activeSockets.attempts == 0, "active consumed replay zero automatic attach")
+            try await activeHTTP.revoke(sessionID: activeSnapshot.liveSessionId, for: frozen)
+            await external.cancel(); await activeReplay.stop(); await activeHTTP.finish()
+            print("PASS consumed/terminal and active replay zero coordinator attach")
             record("terminal-replay")
 
-            for mismatch in ["grant", "epoch"] {
+            for mismatch in ["grant", "epoch", "status", "scope"] {
                 let badHTTP = TestHTTP(fixture); let badSockets = CountedSockets(fixture)
                 let bad = LiveSessionCoordinator(http: badHTTP, sockets: badSockets, sink: SilentSink())
-                await badHTTP.configure(grant: mismatch == "grant", epoch: mismatch == "epoch")
+                await badHTTP.configure(grant: mismatch == "grant", epoch: mismatch == "epoch", status: mismatch == "status", scope: mismatch == "scope")
                 await bad.begin(frozen)
-                try require(await bad.state == .outcomeUnknown(.grantMismatch), "frozen returned grant/epoch pin")
+                let expected: LiveClientState = mismatch == "status" ? .failed(.statusMismatch) : .outcomeUnknown(.grantMismatch)
+                try require(await bad.state == expected, "frozen status/returned grant/epoch pin")
+                if mismatch == "status" { try require(await badHTTP.keys.isEmpty, "status drift refuses even create") }
                 try require(await badSockets.attempts == 0, "pin mismatch zero attach")
                 await bad.stop(); await badHTTP.finish()
             }
-            print("PASS grant + epoch mismatch zero real socket attempts")
+            print("PASS status/profile + grant/epoch/scope mismatch zero real socket attempts")
             record("pins")
 
             let lateHTTP = TestHTTP(fixture); let lateSockets = CountedSockets(fixture); let gate = Gate()
@@ -312,8 +337,39 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             try await until { if case .outcomeUnknown = await late.state { return true }; return false }
             _ = try await late.readSnapshot()
             try require(await lateSockets.attempts == 1, "explicit snapshot recovery does not reattach")
+            await lateHTTP.configure(failRead: true)
+            await late.revoke()
+            try require(await late.state == .outcomeUnknown(.unavailable), "failed revoke confirmation cannot invent a known terminal")
+            await lateHTTP.configure()
+            let recovered = try await late.readSnapshot()
+            try require(recovered.terminal?.state == .revoked, "explicit read recovers server outcome without attachment")
+            let readGate = Gate()
+            await lateHTTP.configure(readGate: readGate)
+            let oldRead = Task { try await late.readSnapshot() }
+            try await until { await readGate.arrivals == 1 }
+            await late.begin(frozen); try await until { await late.state == .active }
+            let newestID = await late.sessionID
+            await readGate.release()
+            var staleRead = false
+            do { _ = try await oldRead.value } catch LiveClientError.staleOperation { staleRead = true }
+            try require(staleRead, "late explicit read after new begin is fenced")
+            let newestState = await late.state
+            try require(await late.sessionID == newestID && newestState == .active, "old terminal snapshot cannot overwrite new active generation")
+            await late.close()
+            let closeState = await late.state
+            switch closeState {
+            case .terminal, .outcomeUnknown: break
+            default: throw ProbeError.assertion("close retains terminal/unknown distinction")
+            }
+            await late.revoke()
+            let known = try await late.readSnapshot()
+            try require(known.terminal != nil, "close/revoke explicit server truth")
+            let terminalRequests = await lateHTTP.requests
+            await late.close(); await late.revoke()
+            try require(await lateHTTP.requests == terminalRequests, "one terminal state, no outbound after known terminal")
+            try require(await lateSockets.attempts == 2, "only the new explicit begin reattaches")
             await late.stop(); await lateHTTP.finish()
-            print("PASS stale callback fencing + socket loss explicit snapshot no reconnect")
+            print("PASS status/read stale callback fencing + socket loss/revoke confirmation errors + close/recovery single terminal no reconnect")
             record("generation-recovery")
 
             let queueHTTP = TestHTTP(fixture); let queueSockets = CountedSockets(fixture); let sendGate = Gate()
@@ -353,7 +409,7 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
                     print(String(format: "DURATION %.3fs %@", seconds, name))
                 }
             }
-            print("NATIVE CLIENT PASS expectedAdditionalUpgrades=3")
+            print("NATIVE CLIENT PASS expectedAdditionalUpgrades=5")
         } catch {
             let message: String
             if case ProbeError.assertion(let text) = error { message = text }

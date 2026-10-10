@@ -127,8 +127,8 @@ try {
     const upgradeBaseline = upgrades.length;
     const openBaseline = opens;
     await runNative(nativeBinary, ['--durations=10'], 0);
-    assert.equal(upgrades.length - upgradeBaseline, 3, 'exact actual client attach count; all local guard/pin rejects have zero wire');
-    assert.equal(opens - openBaseline, 3, 'real controlled provider opens only for the three authorized attaches');
+    assert.equal(upgrades.length - upgradeBaseline, 5, 'exact actual client attach count; all local guard/pin rejects have zero wire');
+    assert.equal(opens - openBaseline, 5, 'real controlled provider opens only for the five explicit authorized attaches');
     const audio = upstreamFrames.filter(frame => frame.realtimeInput?.audio);
     assert.deepEqual(audio.map(frame => Buffer.from(frame.realtimeInput.audio.data, 'base64').length), [8, 2, 2], 'invalid/overflow/post-revoke inputs never reach wire');
     for (const frame of audio) assert.equal(frame.realtimeInput.audio.mimeType, 'audio/pcm;rate=16000');
@@ -137,7 +137,7 @@ try {
     if (mutatedBinary) {
       await runNative(mutatedBinary, ['--mutation'], 1);
       await runNative(nativeBinary, ['--mutation'], 0);
-      assert.equal(opens - openBaseline, 3, 'mutation never authorizes a provider');
+      assert.equal(opens - openBaseline, 5, 'mutation never authorizes a provider');
       console.log('PASS ISOLATED MUTATION SENSITIVITY: compiled cookie-guard removal is behavioral RED, restored unmodified transport baseline GREEN');
     }
   }

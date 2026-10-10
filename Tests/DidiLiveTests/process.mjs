@@ -91,7 +91,16 @@ try {
   const socketClosed = once(socketClose.socket, 'close'); socketClose.socket.close(); await socketClosed;
   const closed = await terminal(current, socketClose.id);
   assert.notEqual(closed.terminal.state, 'outcome_unknown');
-  console.log('PASS real socket-close cleanup durably terminal');
+  console.log('PASS real socket-close cleanup at separate owner hard deadline durably terminal');
+
+  // Separate public-profile regression: idle must settle BEFORE sessionMs=1000, not be rescued by hard deadline.
+  const idle = await attached('process-profile-idle');
+  const idleClosed = once(idle.socket, 'close'); idle.socket.close(); await idleClosed;
+  await new Promise(resolve => setTimeout(resolve, 300)); // bounded timer: configured idleMs=200, still before hard deadline
+  const idleSnapshot = await json(current, '/api/v1/live-sessions/' + idle.id);
+  const idleFailed = idleSnapshot.terminal?.code !== 'idle_timeout';
+  if (idleFailed) console.error('FAIL UPSTREAM: public profile idleMs=200 not applied before sessionMs=1000; no immediate-close terminal claimed');
+  else console.log('PASS public profile idleMs reaches owning adapter (idle_timeout before hard deadline)');
 
   const eof = await attached('process-host-eof');
   const exited = once(current.child, 'exit'); const audioClosed = once(eof.socket, 'close');
@@ -102,6 +111,7 @@ try {
   assert.equal(eofRecovered.lifecycle, 'terminal'); assert.notEqual(eofRecovered.terminal.state, 'outcome_unknown');
   console.log('PASS true supervised host stdin EOF cleanup survives reopen');
   const finished = once(current.child, 'exit'); current.child.stdin.end(); assert.equal((await finished)[0], 0);
+  if (idleFailed) throw new Error('UPSTREAM: profile idle propagation regression remains unsatisfied');
 } finally {
   for (const child of [...children]) {
     const exited = once(child, 'exit'); child.kill('SIGKILL'); await exited;

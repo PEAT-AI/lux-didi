@@ -18,13 +18,13 @@ import AppKit
             var events: [[String: Any]] = []
             var observers: [NSObjectProtocol] = []
             var deadline: Task<Void, Never>?
-            func finish(_ ready: Bool) {
+            @MainActor func finish(_ ready: Bool) {
                 guard !settled else { return }; settled = true
                 deadline?.cancel()
                 observers.forEach { NotificationCenter.default.removeObserver($0) }
                 continuation.resume(returning: Outcome(ready: ready, events: events))
             }
-            func record(_ event: String, complete: Bool = true) {
+            @MainActor func record(_ event: String, complete: Bool = true) {
                 guard !settled else { return }
                 let snapshot = state(window)
                 events.append(["event": event, "elapsedSeconds": Date().timeIntervalSince(started), "state": snapshot])

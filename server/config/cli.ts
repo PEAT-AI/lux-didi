@@ -33,7 +33,7 @@ if (process.argv.slice(2).length === 1 && process.argv[2] === '--help') {
     const parsed = argumentsFrom(process.argv.slice(2));
     if (parsed.command === 'init') initializeProviderConfig(parsed.options);
     else migrateProviderBinding(parsed.options);
-    process.stdout.write(parsed.command === 'init' ? 'Provider configuration initialized. Source file unchanged.\n' : 'Provider binding migrated. Sensitive legacy backup retained; profile and preferences unchanged.\n');
+    process.stdout.write(parsed.command === 'init' ? 'Provider configuration initialized.\n' : 'Provider binding migrated. Sensitive legacy backup retained; profile and preferences unchanged.\n');
   } catch (e) {
     const code = e instanceof ConfigError ? e.code : 'initialization_failed';
     process.stderr.write(`Provider configuration error: ${code}. Preserve protected configuration and any retained legacy backup for authorized inspection; failed migration may leave a valid old or new active record. Failed initialization requires a fresh destination.\n`);

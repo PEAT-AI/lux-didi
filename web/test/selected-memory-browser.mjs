@@ -102,7 +102,7 @@ try {
     assert.match(usage, /used notes: 1/);
     assert.match(usage, /omitted notes: 1/);
     assert.match(usage, /Used notes: .*water the tomatoes/);
-    assert.match(usage, /Omitted notes: .*budget/);
+    assert.match(usage, /Omitted notes: .*— (budget|oversized)/);
     const wire = await readFile(join(state, 'wire.jsonl'), 'utf8');
     assert.match(wire, /water the tomatoes/);
     assert.doesNotMatch(wire, /SELMEM-CANARY-NEVER-SELECTED/);

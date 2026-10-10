@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { accessSync, constants } from 'node:fs';
 import { isAbsolute } from 'node:path';
-import { bindingDigestOf, endpointBinding, isStdioEndpoint } from './port.js';
+import { bindingDigestOf, endpointBinding, isStdioEndpoint, sourceBindingOf } from './port.js';
 import type { CallRequest, EndpointConfig, HttpEndpointConfig, ReadGrant, ResultScope, StdioEndpointConfig, ToolDefinition } from './port.js';
 
 export function canonicalToolDigest(tools: readonly ToolDefinition[]): string {
@@ -49,8 +49,9 @@ export class McpRegistry {
     const allowed = new Set(['id', 'transport', 'command', 'args', 'env', 'account', 'resource']);
     if (Object.keys(config).some(key => !allowed.has(key)) || [config.id, config.command, config.account, config.resource].some(value => typeof value !== 'string' || !value) || config.transport !== 'stdio' || !isAbsolute(config.command) || !Array.isArray(config.args) || config.args.some(arg => typeof arg !== 'string')) throw new Error('invalid-endpoint-config');
     const env = config.env;
-    // The SDK merges its default inherited set into any supplied env; require the routing-affecting HOME and PATH explicitly so the effective child routing environment is approval-bound.
-    if (env === undefined || typeof env !== 'object' || env === null || Array.isArray(env) || Object.entries(env).some(([key, value]) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || typeof value !== 'string' || value.includes('\0')) || typeof env['HOME'] !== 'string' || !env['HOME'] || typeof env['PATH'] !== 'string' || !env['PATH']) throw new Error('invalid-endpoint-config');
+    // The SDK merges its platform default inherited set into any supplied env, so every default key must be present in the approved env (empty string neutralizes); HOME/PATH keep their existing non-empty semantics.
+    const defaultKeys = ['HOME', 'PATH', 'LOGNAME', 'SHELL', 'TERM', 'USER'];
+    if (env === undefined || typeof env !== 'object' || env === null || Array.isArray(env) || Object.entries(env).some(([key, value]) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || typeof value !== 'string' || value.includes('\0')) || defaultKeys.some(key => typeof env[key] !== 'string') || !env['HOME'] || !env['PATH']) throw new Error('invalid-endpoint-config');
     try { accessSync(config.command, constants.X_OK); } catch { throw new Error('invalid-endpoint-config'); }
     this.set(config);
   }
@@ -109,12 +110,13 @@ export class McpRegistry {
   authorize(request: CallRequest): ResultScope {
     const entry = this.entry(request.endpointId); const config = this.endpoint(request.endpointId); const grant = entry.grant;
     if (!grant || !entry.digest || grant.schemaDigest !== entry.digest || grant.effect !== 'read' || !grant.toolNames.includes(request.toolName) || request.generation !== grant.generation || request.account !== grant.account || request.resource !== grant.resource) throw new Error('local-read-grant-refused');
-    return { endpointId: config.id, url: isStdioEndpoint(config) ? '' : config.url, bindingDigest: bindingDigestOf(config), schemaDigest: grant.schemaDigest, toolName: request.toolName, generation: grant.generation, account: grant.account, resource: grant.resource };
+    if (isStdioEndpoint(config)) return { endpointId: config.id, transport: 'stdio', bindingDigest: bindingDigestOf(config), schemaDigest: grant.schemaDigest, toolName: request.toolName, generation: grant.generation, account: grant.account, resource: grant.resource };
+    return { endpointId: config.id, url: config.url, schemaDigest: grant.schemaDigest, toolName: request.toolName, generation: grant.generation, account: grant.account, resource: grant.resource };
   }
   authorizesScope(scope: ResultScope): boolean {
     try {
       const current = this.authorize({ ...scope, arguments: {} });
-      return current.url === scope.url && current.bindingDigest === scope.bindingDigest && current.schemaDigest === scope.schemaDigest;
+      return sourceBindingOf(current) === sourceBindingOf(scope) && current.schemaDigest === scope.schemaDigest;
     } catch { return false; }
   }
 }

@@ -126,7 +126,7 @@ test('search round trip: exact arguments, opaque unknown/local-only evidence, ex
     assert.equal(result.capability, 'local-only');
     assert.equal(result.tool, 'search_knowledge');
     assert.equal(result.source.endpointId, 'source');
-    assert.equal(result.source.url, f.url);
+    assert.equal('url' in result.source ? result.source.url : '', f.url);
     assert.equal(result.coverage.completeCorpus, false);
     assert.equal(result.coverage.basis, 'single-tool-result');
     assert.equal(result.coverage.remoteSideEffects, 'unverified');

@@ -508,7 +508,7 @@ test('fresh owner restores durable enabled consent at the same generation but di
 test('endpoint union: stdio arm validates; HTTP nullability and cross-arm rejection are enforced', () => {
   const http = policy({ endpoint: { id: 'lux', url: 'https://example.invalid/mcp', account: 'a', resource: 'r', credentialRef: null } });
   assert.doesNotThrow(() => validatePolicy(http));
-  const stdioEndpoint = { id: 'lux', transport: 'stdio', command: '/bin/echo', args: ['a', 'b'], env: { HOME: '/tmp/x', PATH: '/usr/bin' }, account: 'a', resource: 'r', credentialRef: null } as unknown as ConnectionPolicy['endpoint'];
+  const stdioEndpoint = { id: 'lux', transport: 'stdio', command: '/bin/echo', args: ['a', 'b'], env: { HOME: '/tmp/x', PATH: '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' }, account: 'a', resource: 'r', credentialRef: null } as unknown as ConnectionPolicy['endpoint'];
   const asPolicy = (endpoint: unknown): ConnectionPolicy => ({ ...policy(), endpoint } as unknown as ConnectionPolicy);
   assert.doesNotThrow(() => validatePolicy(asPolicy(stdioEndpoint)), 'stdio arm must validate');
   // Strict stdio credentialRef: a non-null reference is a cross-arm value.

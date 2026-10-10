@@ -82,7 +82,8 @@ function stdioCredential(raw: unknown): StdioCredential {
   for (const key of ['ownerId', 'connectionId', 'endpointId', 'command', 'account', 'resource']) if (typeof c[key] !== 'string' || !(c[key] as string).length || (c[key] as string).length > 4096 || /[\x00-\x1f\x7f]/.test(c[key] as string)) fail('invalid_secret');
   if (!isAbsolute(c['command'] as string) || !Array.isArray(c['args']) || (c['args'] as unknown[]).some(arg => typeof arg !== 'string')) fail('invalid_secret');
   const env = c['env'] as Record<string, unknown> | null;
-  if (env === null || typeof env !== 'object' || Array.isArray(env) || typeof env['HOME'] !== 'string' || !env['HOME'] || typeof env['PATH'] !== 'string' || !env['PATH']) fail('invalid_secret');
+  const defaultKeys = ['HOME', 'PATH', 'LOGNAME', 'SHELL', 'TERM', 'USER'];
+  if (env === null || typeof env !== 'object' || Array.isArray(env) || defaultKeys.some(key => typeof env[key] !== 'string') || !env['HOME'] || !env['PATH']) fail('invalid_secret');
   return c as unknown as StdioCredential;
 }
 function metadata(c: Credential): unknown {

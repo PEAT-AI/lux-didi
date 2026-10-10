@@ -24,7 +24,7 @@ export interface LuxKnowledgeConfig {
 export interface LuxKnowledgeSearchInput { query: string; limit: number }
 export interface LuxKnowledgeGetInput { ids: number[] }
 
-export interface LuxKnowledgeSource {
+export interface HttpLuxKnowledgeSource {
   endpointId: string;
   url: string;
   account: string;
@@ -32,6 +32,17 @@ export interface LuxKnowledgeSource {
   schemaDigest: string;
   generation: number;
 }
+/** Transport-specific provenance: stdio carries no url, only the safe binding digest. */
+export interface StdioLuxKnowledgeSource {
+  endpointId: string;
+  transport: 'stdio';
+  bindingDigest: string;
+  account: string;
+  resource: string;
+  schemaDigest: string;
+  generation: number;
+}
+export type LuxKnowledgeSource = HttpLuxKnowledgeSource | StdioLuxKnowledgeSource;
 
 /** Opaque local evidence. Classification is constant `unknown`; markdown can never change it. */
 export interface LuxKnowledgeEvidence {

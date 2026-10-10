@@ -72,17 +72,31 @@ export interface CallRequest {
   account: string;
   resource: string;
 }
-export interface ResultScope {
+/** Transport-specific result provenance. HTTP keeps the exact original url/bytes; stdio has transport=stdio + bindingDigest and no url. */
+export interface HttpResultScope {
   endpointId: string;
-  /** HTTP destination URL; empty for the stdio arm (never overloaded with a digest). */
   url: string;
-  /** Explicit discriminated binding identity digest, present for both arms. */
+  schemaDigest: string;
+  toolName: string;
+  generation: number;
+  account: string;
+  resource: string;
+}
+export interface StdioResultScope {
+  endpointId: string;
+  transport: 'stdio';
   bindingDigest: string;
   schemaDigest: string;
   toolName: string;
   generation: number;
   account: string;
   resource: string;
+}
+export type ResultScope = HttpResultScope | StdioResultScope;
+export function isStdioScope(scope: ResultScope): scope is StdioResultScope { return 'transport' in scope; }
+/** Safe binding identity for a result source or scope: HTTP url, stdio digest; never a raw locator. */
+export function sourceBindingOf(source: { url?: string; transport?: string; bindingDigest?: string }): string {
+  return source.transport === 'stdio' ? (source.bindingDigest ?? '') : (source.url ?? '');
 }
 export type StoredPayload =
   | { state: 'available'; handle: string; sha256: string; byteLength: number; expiresAt: number; encoding: 'http-response-entity' }

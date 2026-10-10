@@ -1,6 +1,6 @@
 import type { McpPort } from '../adapters/mcp/port.js';
-import { bindingDigestOf } from '../adapters/mcp/port.js';
-import type { LuxKnowledgeResult, LuxKnowledgeSource } from '../connectors/lux-knowledge.js';
+import { bindingDigestOf, sourceBindingOf } from '../adapters/mcp/port.js';
+import type { LuxKnowledgeResult } from '../connectors/lux-knowledge.js';
 import type { DataClass } from '../adapters/model/types.js';
 import type { ConnectionPolicy, ModelSnapshot, TrustedRestrictions } from './types.js';
 import { canonicalJSON, detached, sha256 } from './canonical.js';
@@ -8,10 +8,10 @@ import { canonicalJSON, detached, sha256 } from './canonical.js';
 /** Only a complete, integrity-checked text envelope becomes model-visible evidence. */
 export function projectLuxResult(evidence: LuxKnowledgeResult, policy: ConnectionPolicy, port: McpPort, restrictions?: TrustedRestrictions): ModelSnapshot {
   if (evidence.state !== 'completed') throw Error('result_not_completed');
-  // Explicit discriminated binding digest: the connector spreads the adapter scope, so the
-  // digest is present at runtime; the connector's public type is extended here (type-only).
-  const source = evidence.source as LuxKnowledgeSource & { bindingDigest: string };
-  if (source.endpointId !== policy.endpoint.id || source.bindingDigest !== bindingDigestOf(policy.endpoint) || source.account !== policy.endpoint.account || source.resource !== policy.endpoint.resource || source.schemaDigest !== policy.schemaDigest || source.generation !== policy.generation || !('toolName' in source) || source.toolName !== evidence.tool || !policy.toolNames.includes(evidence.tool)) throw Error('result_scope_mismatch');
+  const source = evidence.source;
+  // HTTP compares the exact url; stdio compares the owner-minted binding digest. No raw locator is read.
+  const expectedBinding = (policy.endpoint as { transport?: unknown }).transport === 'stdio' ? bindingDigestOf(policy.endpoint) : (policy.endpoint as { url: string }).url;
+  if (source.endpointId !== policy.endpoint.id || sourceBindingOf(source) !== expectedBinding || source.account !== policy.endpoint.account || source.resource !== policy.endpoint.resource || source.schemaDigest !== policy.schemaDigest || source.generation !== policy.generation || !('toolName' in source) || source.toolName !== evidence.tool || !policy.toolNames.includes(evidence.tool)) throw Error('result_scope_mismatch');
   const unknownClass = policy.sourcePolicy.unknownClass;
   if (!unknownClass || !policy.sourcePolicy.allowedClasses.includes(unknownClass) || !policy.route.allowedClasses.includes(unknownClass)) throw Error('unknown_source_denied');
   const dataClasses: DataClass[] = [unknownClass];

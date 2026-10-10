@@ -73,6 +73,7 @@ async function localSource(t: TestContext) {
   t.after(async () => { http.closeAllConnections(); await new Promise<void>(resolve => http.close(() => resolve())); for (const { sdk, transport } of sessions.values()) { await transport.close(); await sdk.close(); } });
   return { url: `http://127.0.0.1:${address.port}/mcp`, tokens, get toolHttp() { return toolHttp; }, get executed() { return executed; },
     changeCatalog: (changed: boolean) => { list = structuredClone(tools); if (changed) list[0]!.description = 'changed'; },
+    catalogNames: (names: string[]) => { list = structuredClone(tools); names.forEach((name, index) => { list[index]!.name = name; }); },
     repeat: (value: boolean) => { repeat = value; }, oversized: (value: boolean) => { oversized = value; }, beforeList: (value: (() => Promise<void>) | undefined) => { beforeList = value; } };
 }
 async function configFixture(t: TestContext, url = 'https://synthetic.invalid/mcp', account = 'alpha') {
@@ -265,4 +266,14 @@ test('durable revoke during actual authenticated discovery and after installatio
   assert.deepEqual(await next.restore(), { state: 'restored' });
   f.owner.applyConnectionIntent({ expectedPolicySha256: sha256(canonicalJSON(f.p)), policy: { ...f.p, generation: 4, enabled: false } });
   assert.equal((await next.restore()).state, 'refused'); assert.equal(f.registry.currentGrant('endpoint'), undefined); assert.equal(source.toolHttp, 0);
+});
+
+
+test('catalog never echoes arbitrary remote names containing protected token or reference', async t => {
+  const source = await localSource(t); const f = await configFixture(t, source.url);
+  source.catalogNames(['alpha-secret', 'mcp-credential']);
+  const result = await f.config.catalogMcpConfiguration({ configDir: f.configDir, ownerId: f.ownerId, allowEgress: true, limit: 2 });
+  assert.equal(result.total, 2); assert.equal(result.cursor, null);
+  assert.doesNotMatch(JSON.stringify(result), /alpha-secret|mcp-credential/);
+  assert.deepEqual(result.toolNames, ['<unapproved-tool>', '<unapproved-tool>']);
 });

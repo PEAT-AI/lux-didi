@@ -26,6 +26,11 @@ import AppKit
     // therefore tracked separately so a later directory write can never re-dial
     // a gate that has already served its connection.
     var dialed = false
+    // Measurement only (no behaviour): every dial attempt, its errno, and any
+    // would-be re-dial blocked by `dialed`, so a failure report states what
+    // actually happened instead of only which errno was seen.
+    let processStart = ProcessInfo.processInfo.systemUptime
+    var dialAttempts = 0, dialErrnos: [Int] = [], dialOffsets: [Int] = [], redialSuppressed = 0
     var serviceFD: Int32 = -1
     var serviceFacts: ProbeIdentity?
     var serviceRecord: [String: Any]?
@@ -87,6 +92,7 @@ import AppKit
         // LaunchServices completion callback (which sets target/record/kernel)
         // arrives after the app's own gate window, so they connect from here.
         let preRelease = ["cancel-pre", "eof-pre", "bad-nonce"].contains(args[4])
+        if dialed, !settled, !released, FileManager.default.fileExists(atPath: root + "/identity.json") { redialSuppressed += 1 }
         guard !settled, !released, !dialed,
               FileManager.default.fileExists(atPath: root + "/identity.json"),
               (kernel >= 0 && record != nil) || preRelease else { return }
@@ -109,8 +115,10 @@ import AppKit
             }
             facts = current // Cleanup authority only after complete kernel + bundle + nonce identity.
             if verification {
+                dialAttempts += 1
+                dialOffsets.append(Int((ProcessInfo.processInfo.systemUptime - processStart) * 1000))
                 control = probe_connect("/tmp/didi-verification-" + nonce + ".sock")
-                guard control >= 0 else { fail("control connection errno=\(errno)"); return }
+                guard control >= 0 else { dialErrnos.append(Int(errno)); fail("control connection errno=\(errno)"); return }
                 dialed = true
                 if args[4] == "cancel-pre" { send("cancel") }
                 else if args[4] == "eof-pre" { close(control); control = -1 }
@@ -244,7 +252,10 @@ import AppKit
     func writeFailure(_ reason: String, extra: [String: Any]) {
         var output: [String: Any] = ["case": args.count > 4 ? args[4] : "invalid", "bundleURL": bundle, "error": reason,
             "observerDisposed": true, "released": released, "cancelSent": cancelSent, "kernel": nativeResult as Any? ?? NSNull(),
-            "expectedExecutable": expectedExecutable, "observedIdentity": record as Any? ?? NSNull(), "expectedUid": Int(getuid())]
+            "expectedExecutable": expectedExecutable, "observedIdentity": record as Any? ?? NSNull(), "expectedUid": Int(getuid()),
+            "dialAttempts": dialAttempts, "dialErrnos": dialErrnos, "dialOffsetsMilliseconds": dialOffsets,
+            "redialSuppressed": redialSuppressed, "socketPath": "/tmp/didi-verification-" + nonce + ".sock",
+            "socketPresentAtFailure": FileManager.default.fileExists(atPath: "/tmp/didi-verification-" + nonce + ".sock")]
         output.merge(extra) { _, new in new }
         try? atomic(output, to: root + "/observer.json")
         fputs("LaunchServices probe FAIL: " + reason + "\n", stderr); exit(1)

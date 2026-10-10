@@ -119,7 +119,7 @@ if [ "${1:-}" = "--leased-run" ]; then
   # Real LaunchServices launch, restart, relocate and pre-move recall.
   export LUX_VERIFICATION_DRIVER
   mkdir -p "$proof/launch-1"
-  HOME="$real_home" CFFIXED_USER_HOME="$work/home" "$work/observer" --verification "$app" "$proof/launch-1" "$(uuidgen)" run --installed-proof --proof-state "$state" --proof-report "$proof/run-1.json"
+  HOME="$real_home" CFFIXED_USER_HOME="$real_home" "$work/observer" --verification "$app" "$proof/launch-1" "$(uuidgen)" run --installed-proof --proof-state "$state" --proof-report "$proof/run-1.json"
   assistant="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["service"]["assistantId"])' "$proof/run-1.json")"
   [ -n "$assistant" ] || { echo 'MACOS-INSTALL FAIL: no assistant identity in the proof report' >&2; exit 1; }
 
@@ -146,7 +146,7 @@ PY
   # pre-move content after relocation.
   mkdir -p "$proof/launch-2"
   rm -f "$proof/run-2.json"
-  HOME="$real_home" CFFIXED_USER_HOME="$work/home" "$work/observer" --verification "$app" "$proof/launch-2" "$(uuidgen)" run --installed-proof --proof-state "$state" --proof-report "$proof/run-2.json" &
+  HOME="$real_home" CFFIXED_USER_HOME="$real_home" "$work/observer" --verification "$app" "$proof/launch-2" "$(uuidgen)" run --installed-proof --proof-state "$state" --proof-report "$proof/run-2.json" &
   observer_pid=$!
   # Observe the accepted label over the existing protected loopback API while the
   # native-launched host is up (one bounded poll, no idle loop).
@@ -182,7 +182,7 @@ PY
   fstate="$proof/fixture-state"; fconfig="$HOME/fixture-provider-config"
   mkdir -p "$fconfig"; chmod 0700 "$fconfig"
   mkdir -p "$proof/fx-p0"
-  HOME="$real_home" CFFIXED_USER_HOME="$work/home" "$work/observer" --verification "$fixture" "$proof/fx-p0" "$(uuidgen)" run --installed-proof --proof-state "$fstate" --proof-report "$proof/fx-p0.json"
+  HOME="$real_home" CFFIXED_USER_HOME="$real_home" "$work/observer" --verification "$fixture" "$proof/fx-p0" "$(uuidgen)" run --installed-proof --proof-state "$fstate" --proof-report "$proof/fx-p0.json"
   fx_assistant="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["service"]["assistantId"])' "$proof/fx-p0.json")"
   pin="$work/profile-input.json"; senv="$work/source.env"
   printf '{"schemaVersion":1,"enabled":true,"provider":"gemini","modelId":"synthetic-model","keyReference":"gemini-primary"}\n' > "$pin"
@@ -193,12 +193,12 @@ PY
   run_fixture() {
     local label="$1" report="$2"
     mkdir -p "$proof/fx-$label"
-    HOME="$real_home" CFFIXED_USER_HOME="$work/home" "$work/observer" --verification "$fixture" "$proof/fx-$label" "$(uuidgen)" run --installed-proof --proof-state "$fstate" --proof-report "$report"
+    HOME="$real_home" CFFIXED_USER_HOME="$real_home" "$work/observer" --verification "$fixture" "$proof/fx-$label" "$(uuidgen)" run --installed-proof --proof-state "$fstate" --proof-report "$report"
   }
   # P1: launch the fixture host and drive one chat run through the protected API
   # so the recording synthetic transport is invoked and the snapshot persists.
   rm -f "$proof/fx-p1.json"
-  HOME="$real_home" CFFIXED_USER_HOME="$work/home" "$work/observer" --verification "$fixture" "$proof/fx-p1" "$(uuidgen)" run --installed-proof --proof-state "$fstate" --proof-report "$proof/fx-p1.json" &
+  HOME="$real_home" CFFIXED_USER_HOME="$real_home" "$work/observer" --verification "$fixture" "$proof/fx-p1" "$(uuidgen)" run --installed-proof --proof-state "$fstate" --proof-report "$proof/fx-p1.json" &
   fx_pid=$!
   fx_origin=""
   for _ in $(seq 1 200); do
@@ -256,7 +256,7 @@ json.dump(d, open(sys.argv[1], "w"))
 PY
   "$fixture/Contents/MacOS/LuxDidi" --configure --owner-profile "$profileDir/owner-profile.json" > /dev/null
   rm -f "$proof/fx-p2.json" "$fstate/fixture-calls.json"
-  HOME="$real_home" CFFIXED_USER_HOME="$work/home" "$work/observer" --verification "$fixture" "$proof/fx-p2" "$(uuidgen)" run --installed-proof --proof-state "$fstate" --proof-report "$proof/fx-p2.json" &
+  HOME="$real_home" CFFIXED_USER_HOME="$real_home" "$work/observer" --verification "$fixture" "$proof/fx-p2" "$(uuidgen)" run --installed-proof --proof-state "$fstate" --proof-report "$proof/fx-p2.json" &
   fx_pid=$!
   fx_origin=""
   for _ in $(seq 1 200); do
@@ -308,14 +308,14 @@ with open(sys.argv[1], 'w') as f:
 PY
   chmod 0600 "$profileDir/other.json"
   "$binary" --configure --owner-profile "$profileDir/other.json" > /dev/null 2>&1
-  if HOME="$real_home" CFFIXED_USER_HOME="$work/home" "$work/observer" --verification "$app" "$proof/launch-reject" "$(uuidgen)" run --installed-proof --proof-state "$state" --proof-report "$proof/run-reject.json" 2>/dev/null; then
+  if HOME="$real_home" CFFIXED_USER_HOME="$real_home" "$work/observer" --verification "$app" "$proof/launch-reject" "$(uuidgen)" run --installed-proof --proof-state "$state" --proof-report "$proof/run-reject.json" 2>/dev/null; then
     echo 'MACOS-INSTALL FAIL: host accepted a profile for a foreign identity' >&2; exit 1
   fi
   "$binary" --configure --owner-profile "$profileDir/owner-profile.json" > /dev/null 2>&1
 
   mv "$app" "$work/Moved Didi.app"
   mkdir -p "$proof/launch-3"
-  HOME="$real_home" CFFIXED_USER_HOME="$work/home" "$work/observer" --verification "$work/Moved Didi.app" "$proof/launch-3" "$(uuidgen)" run --installed-proof --proof-state "$state" --proof-report "$proof/run-3.json"
+  HOME="$real_home" CFFIXED_USER_HOME="$real_home" "$work/observer" --verification "$work/Moved Didi.app" "$proof/launch-3" "$(uuidgen)" run --installed-proof --proof-state "$state" --proof-report "$proof/run-3.json"
   app="$work/Moved Didi.app"
   echo 'MACOS-INSTALL: launch/profile/restart/relocate pass'
 

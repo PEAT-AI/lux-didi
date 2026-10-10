@@ -24,7 +24,7 @@ const child = join(here, 'fixtures', 'stdio-mcp-child.mjs');
 const ACCOUNT = 'local'; const RESOURCE = 'stdio-fixture';
 
 function config(id: string, mode: string, pidFile: string, payload = 'stdio-pong', over: Record<string, unknown> = {}): EndpointConfig {
-  return { id, transport: 'stdio', command: process.execPath, args: [child, mode, pidFile, payload], account: ACCOUNT, resource: RESOURCE, ...over } as unknown as EndpointConfig;
+  return { id, transport: 'stdio', command: process.execPath, args: [child, mode, pidFile, payload], env: { HOME: join(tmpdir(), 'didi-stdio-home'), PATH: process.env.PATH ?? '/usr/bin' }, account: ACCOUNT, resource: RESOURCE, ...over } as unknown as EndpointConfig;
 }
 function request(id: string): CallRequest { return { endpointId: id, toolName: 'echo', arguments: {}, generation: 1, account: ACCOUNT, resource: RESOURCE }; }
 function pidAlive(pid: number): boolean { try { process.kill(pid, 0); return true; } catch { return false; } }
@@ -189,17 +189,19 @@ test('explicit routing env merges with SDK defaults and the whole parent environ
   const marker = 'DIDI-PARENT-SECRET-XYZZY';
   const { dir, pidFile } = scratch();
   const home = join(dir, 'child-home');
+  const approvedPath = '/synthetic/approved/bin';
   process.env.DIDI_PARENT_SECRET = marker;
   const registry = new McpRegistry();
-  registry.register(config('local-stdio', 'ok', pidFile, 'stdio-pong', { env: { HOME: home } }));
+  registry.register(config('local-stdio', 'ok', pidFile, 'stdio-pong', { env: { HOME: home, PATH: approvedPath } }));
   registry.enable('local-stdio'); registry.allowEgress('local-stdio');
   const adapter = adapterFor(registry);
   try {
     assert.equal((await adapter.discover('local-stdio')).state, 'discovered');
     const childEnv = JSON.parse(readFileSync(`${pidFile}.env`, 'utf8')) as Record<string, string | undefined>;
+    // The effective routing values are the approved ones, not the parent's (PATH is missing under the SDK default merge only when unbound).
     assert.equal(childEnv['HOME'], home);
+    assert.equal(childEnv['PATH'], approvedPath);
     assert.equal(Object.prototype.hasOwnProperty.call(childEnv, 'DIDI_PARENT_SECRET'), false);
-    assert.notEqual(childEnv['PATH'], undefined);
   } finally { delete process.env.DIDI_PARENT_SECRET; await adapter.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -240,7 +242,7 @@ test('secret-marker env and locator paths never leak into refusals, discovery or
   const marker = 'DIDI-SECRET-MARKER-XYZZY';
   const { dir, pidFile } = scratch();
   const registry = new McpRegistry();
-  const crashBinding = config('local-stdio', 'crash', pidFile, 'stdio-pong', { env: { DIDI_MARKER: marker } });
+  const crashBinding = config('local-stdio', 'crash', pidFile, 'stdio-pong', { env: { HOME: join(dir, 'home'), PATH: process.env.PATH ?? '/usr/bin', DIDI_MARKER: marker } });
   let registered = false;
   try { registry.register(crashBinding); registered = true; }
   catch (error) { assert.equal(String(error).includes(marker), false); assert.equal(String(error).includes(child), false); }
@@ -257,7 +259,7 @@ test('secret-marker env and locator paths never leak into refusals, discovery or
     } finally { await adapter.close(); }
     // Public sink for a completed result: source/projection must carry no locator or secret marker.
     const okRegistry = new McpRegistry();
-    okRegistry.register(config('local-stdio', 'ok', pidFile, 'stdio-pong', { env: { DIDI_MARKER: marker } }));
+    okRegistry.register(config('local-stdio', 'ok', pidFile, 'stdio-pong', { env: { HOME: join(dir, 'home'), PATH: process.env.PATH ?? '/usr/bin', DIDI_MARKER: marker } }));
     okRegistry.enable('local-stdio'); okRegistry.allowEgress('local-stdio');
     const okAdapter = adapterFor(okRegistry);
     try {
@@ -328,13 +330,13 @@ test('protected stdio configuration carries the binding through init/approve/loa
   const baseArgs = [child, 'ok', pidFile, 'stdio-pong'];
   const policyFor = (args: readonly string[], generation: number, enabled: boolean) => ({
     schemaVersion: 1 as const, ownerId, connectionId: 'local', generation, enabled,
-    endpoint: { id: 'local-endpoint', transport: 'stdio' as const, command: process.execPath, args, env: { HOME: join(dir, 'home') }, account: ACCOUNT, resource: RESOURCE, credentialRef: null },
+    endpoint: { id: 'local-endpoint', transport: 'stdio' as const, command: process.execPath, args, env: { HOME: join(dir, 'home'), PATH: process.env.PATH ?? '/usr/bin' }, account: ACCOUNT, resource: RESOURCE, credentialRef: null },
     toolNames: ['search_knowledge'] as const, schemaDigest: '0'.repeat(64),
     sourcePolicy: { id: 'operator-reviewed', revision: 1, unknownClass: null, allowedClasses: ['ordinary'] as const },
     route: { identity: 'synthetic-route', allowedClasses: ['ordinary'] as const },
     bounds: { maxQueryChars: 80, maxSearchLimit: 3, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 },
   });
-  const credentialFor = (generation: number, enabled: boolean) => ({ schemaVersion: 1, ownerId, connectionId: 'local', endpointId: 'local-endpoint', url: '', account: ACCOUNT, resource: RESOURCE, generation, credentialRef: null, token: '', enabled });
+  const credentialFor = (generation: number, enabled: boolean) => ({ schemaVersion: 1, ownerId, connectionId: 'local', endpointId: 'local-endpoint', transport: 'stdio', command: process.execPath, args: baseArgs, env: { HOME: join(dir, 'home'), PATH: process.env.PATH ?? '/usr/bin' }, account: ACCOUNT, resource: RESOURCE, generation, enabled });
   const profileInput = join(dir, 'profile.json'); const credentialInput = join(dir, 'credential.json');
   writeFileSync(credentialInput, JSON.stringify(credentialFor(1, false)), { mode: 0o600 }); chmodSync(credentialInput, 0o600);
   writeFileSync(profileInput, JSON.stringify({ schemaVersion: 1, transport: 'stdio', dataDir, expectedPolicySha256: null, policy: policyFor(baseArgs, 1, false) }), { mode: 0o600 }); chmodSync(profileInput, 0o600);

@@ -74,7 +74,10 @@ export interface CallRequest {
 }
 export interface ResultScope {
   endpointId: string;
+  /** HTTP destination URL; empty for the stdio arm (never overloaded with a digest). */
   url: string;
+  /** Explicit discriminated binding identity digest, present for both arms. */
+  bindingDigest: string;
   schemaDigest: string;
   toolName: string;
   generation: number;

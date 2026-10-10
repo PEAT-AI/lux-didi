@@ -250,7 +250,8 @@ cp -R "$work/source/server/dist" "$work/source/server/node_modules" "$assets/ser
 cp "$work/source/server/package.json" "$assets/server/"
 cp -R "$work/source/web/dist" "$assets/web/"
 # Self-contained node: node plus its non-system dylib closure, each rewritten to
-# @loader_path, so the composed app never resolves a developer Homebrew path.
+# @loader_path. @rpath is resolved against the ORIGINAL binary (the Homebrew
+# Cellar), never the copy, so libnode.147.dylib and friends are bundled.
 python3 - "$node" "$assets" <<'PY'
 import os, shutil, subprocess, sys
 src, assets = sys.argv[1:]
@@ -264,38 +265,49 @@ def rpaths(path):
     lines = run("otool", "-l", path).splitlines(); out = []
     for i, l in enumerate(lines):
         if l.strip().startswith("cmd LC_RPATH"):
-            for j in range(i, min(i + 4, len(lines))):
+            for j in range(i + 1, min(i + 4, len(lines))):
                 s = lines[j].strip()
                 if s.startswith("path "):
-                    out.append(s.split("path ")[1].split(" ")[0]); break
+                    out.append(s[len("path "):].split(" ")[0]); break
     return out
-def resolve(dep, owner):
-    if dep.startswith("@rpath/"):
-        for rp in rpaths(owner):
-            cand = os.path.join(rp.replace("@loader_path", os.path.dirname(owner)), dep[len("@rpath/"):])
+def resolve(lib, base_dir, rps):
+    if lib.startswith("@rpath/"):
+        tail = lib[len("@rpath/"):]
+        for rp in rps:
+            cand = os.path.join(rp, tail)
             if os.path.exists(cand): return os.path.realpath(cand)
         return None
-    if dep.startswith("@loader_path/"):
-        cand = os.path.join(os.path.dirname(owner), dep[len("@loader_path/"):])
+    if lib.startswith("@loader_path/"):
+        cand = os.path.join(base_dir, lib[len("@loader_path/"):])
         return os.path.realpath(cand) if os.path.exists(cand) else None
-    return os.path.realpath(dep) if os.path.exists(dep) else None
-nodecopy = os.path.join(assets, "node")
-shutil.copy2(os.path.realpath(src), nodecopy); os.chmod(nodecopy, 0o755)
-done = set()
-def bundle(path):
-    if path in done: return
-    done.add(path)
-    for dep in deps(path):
-        if dep.startswith(system): continue
-        real = resolve(dep, path)
+    return os.path.realpath(lib) if os.path.exists(lib) else None
+def process(original, copy):
+    base_dir = os.path.dirname(original)
+    rps = [rp.replace("@loader_path", base_dir) for rp in rpaths(original)]
+    for lib in deps(original):
+        if lib.startswith(system): continue
+        real = resolve(lib, base_dir, rps)
         if real is None: continue
         base = os.path.basename(real)
         dest = os.path.join(libdir, base)
         if not os.path.exists(dest):
-            shutil.copy2(real, dest); os.chmod(dest, 0o755); bundle(dest)
+            shutil.copy2(real, dest); os.chmod(dest, 0o755)
             subprocess.run(["install_name_tool", "-id", "@loader_path/" + base, dest], check=True)
-        subprocess.run(["install_name_tool", "-change", dep, "@loader_path/" + base, path], check=True)
-bundle(nodecopy)
+            process(real, dest)
+        subprocess.run(["install_name_tool", "-change", lib, "@loader_path/" + base, copy], check=True)
+real_src = os.path.realpath(src)
+nodecopy = os.path.join(assets, "node")
+shutil.copy2(real_src, nodecopy); os.chmod(nodecopy, 0o755)
+process(real_src, nodecopy)
+unresolved = []
+def check(path):
+    for lib in deps(path):
+        if lib.startswith(system) or lib.startswith("@loader_path/"): continue
+        unresolved.append((path, lib))
+check(nodecopy)
+for name in os.listdir(libdir): check(os.path.join(libdir, name))
+if unresolved:
+    print("NODE-BUNDLE-UNRESOLVED %s" % unresolved[:5]); sys.exit(1)
 print("NODE-BUNDLE libs=%d" % len(os.listdir(libdir)))
 PY
 test -x "$assets/node" || { echo 'MACOS-INSTALL FAIL: bundled node missing' >&2; exit 1; }

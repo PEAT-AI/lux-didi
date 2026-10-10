@@ -63,6 +63,15 @@ if [ -n "$assets" ]; then
       install -m 0755 "$dylib" "$app/Contents/MacOS/"
     done
   fi
+  # The composed node must resolve every non-system dependency inside the bundle.
+  python3 - "$app/Contents/MacOS/node" <<'PY'
+import subprocess, sys
+def deps(p):
+    return [l.strip().split(" (")[0] for l in subprocess.run(["otool", "-L", p], capture_output=True, text=True, check=True).stdout.splitlines()[1:] if l.strip()]
+bad = [d for d in deps(sys.argv[1]) if not (d.startswith("/usr/lib/") or d.startswith("/System/") or d.startswith("@loader_path/"))]
+if bad:
+    print("BUILD-MACOS-APP FAIL: bundled node has unresolved deps", bad[:5]); sys.exit(1)
+PY
   rm -rf "$app/Contents/Resources/server" "$app/Contents/Resources/web"
   cp -R "$assets/server" "$app/Contents/Resources/server"
   cp -R "$assets/web" "$app/Contents/Resources/web"

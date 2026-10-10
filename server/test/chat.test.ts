@@ -386,3 +386,28 @@ test('clientless host recovery refuses foreign-owner orphan without mutating any
     assert.equal(f.model.calls.length, 0); assert.equal(f.entries().length, 1);
   } finally { f.close(); }
 });
+
+test('owner profile is bound durably on acceptance, replay never rewrites it, corruption prevents dispatch', async () => {
+  const scheduled: (() => void)[] = [];
+  const ownerProfile = { schemaVersion: 1, kind: 'profile', ownerId: 'placeholder', profileVersion: 'fixture-a', displayName: 'Example',
+    style: { text: 'SYNTHETIC owner A style', dataClass: 'private' }, lore: { text: 'SYNTHETIC owner A lore', dataClass: 'private' } };
+  const f = fixture({ schedule: task => scheduled.push(task) });
+  try {
+    ownerProfile.ownerId = f.store.assistantId;
+    const chat = new ChatService({ ...f.config, ownerProfile, schedule: task => scheduled.push(task) } as ChatConfig);
+    chat.recover(f.context);
+    const accepted = chat.accept({ sessionId: f.session.id, text: 'Hello owner', idempotencyKey: 'owner-a' }, f.context);
+    const row = f.store.transaction(tx => tx.get('SELECT * FROM chat_run_owner_profile WHERE run_id=?', [accepted.runId]));
+    assert.ok(row);
+    assert.equal(JSON.parse(String(row.snapshot_json)).style.text, ownerProfile.style.text);
+    ownerProfile.style.text = 'SYNTHETIC current B';
+    assert.equal(chat.accept({ sessionId: f.session.id, text: 'Hello owner', idempotencyKey: 'owner-a' }, f.context).runId, accepted.runId);
+    assert.equal(JSON.parse(String(f.store.transaction(tx => tx.get('SELECT * FROM chat_run_owner_profile WHERE run_id=?', [accepted.runId]))!.snapshot_json)).style.text, 'SYNTHETIC owner A style');
+    f.store.transaction(tx => tx.run('DELETE FROM chat_run_owner_profile WHERE run_id=?', [accepted.runId]));
+    scheduled.shift()!();
+    const stream = chat.subscribe(accepted.runId, f.context);
+    for await (const event of stream) if (event.type === 'snapshot' && event.run.state === 'terminal') break;
+    assert.equal(f.model.calls.length, 0);
+    chat.shutdown();
+  } finally { f.close(); }
+});

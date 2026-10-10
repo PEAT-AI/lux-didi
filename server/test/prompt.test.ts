@@ -231,3 +231,31 @@ test('compileVoiceInstruction reuses the canonical assembly with no turns; empty
   assert.equal(instruction.promptVersion, PROMPT_VERSION);
   assert.throws(() => compilePrompt({ ...input(), history: [] }), (error: unknown) => error instanceof PromptCompileError && error.code === 'schema');
 });
+
+const syntheticOwner = {
+  schemaVersion: 1 as const, kind: 'profile' as const, ownerId: 'alice', profileVersion: 'fixture-a', displayName: 'Example',
+  style: { text: 'SYNTHETIC exact warm style', dataClass: 'private' as const },
+  lore: { text: 'SYNTHETIC exact library lore', dataClass: 'sensitive' as const },
+};
+test('owner profile shares exact classified canonical text and turn-less voice assembly', () => {
+  const base = input();
+  const compiled = compilePrompt({ ...base, ownerProfile: syntheticOwner } as CompileInput);
+  const voice = compileVoiceInstruction({ ownerId: base.ownerId, promptVersion: base.promptVersion,
+    preferences: base.preferences, capabilities: base.capabilities, trustedChars: base.budgets.trustedChars,
+    ownerProfile: syntheticOwner } as Parameters<typeof compileVoiceInstruction>[0]);
+  assert.equal(voice.system, compiled.system);
+  assert.ok(compiled.system.includes(syntheticOwner.style.text));
+  assert.ok(compiled.system.includes(syntheticOwner.lore.text));
+  for (const section of ['[rules]', '[capabilities]', '[preferences]']) assert.ok(compiled.system.includes(section));
+  assert.deepEqual(compiled.dataClasses, ['ordinary', 'private', 'sensitive']);
+  assert.deepEqual((voice as unknown as { dataClasses: string[] }).dataClasses, ['private', 'sensitive']);
+});
+test('owner text is never truncated and unknown classes/fields and wrong owner are rejected', () => {
+  for (const ownerProfile of [
+    { ...syntheticOwner, ownerId: 'other' }, { ...syntheticOwner, hidden: 'override' },
+    { ...syntheticOwner, style: { text: 'x', dataClass: 'unknown' } },
+    { ...syntheticOwner, lore: { text: 'x'.repeat(4097), dataClass: 'ordinary' } },
+  ]) assert.throws(() => compilePrompt({ ...input(), ownerProfile } as CompileInput));
+  rejects('budget', () => compilePrompt({ ...input(), ownerProfile: syntheticOwner,
+    budgets: { ...input().budgets, trustedChars: 1 } } as CompileInput));
+});

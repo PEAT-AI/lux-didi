@@ -90,8 +90,13 @@ import Darwin
             try token.write(to: framedFile)
             _ = try NativeCredentialImport.importCredential(state: framed.1, installId: framed.0.installId, service: service)
             try expect(Data(try descriptor.credential().utf8) == token, "unframed token imports identically without rotation")
-            for fileBytes in [token + Data([10, 10]), token + Data([32]), token + Data([13, 10]), Data([10]), Data([10]) + token,
-                              Data(token.dropLast()), token + Data([65]), Data(repeating: 33, count: 43)] {
+            let suffixes: [Data] = [Data([10, 10]), Data([32]), Data([13, 10]), Data([65])]
+            var malformed = suffixes.map { token + $0 }
+            malformed.append(Data([10]))
+            malformed.append(Data([10]) + token)
+            malformed.append(Data(token.dropLast()))
+            malformed.append(Data(repeating: 33, count: 43))
+            for fileBytes in malformed {
                 try fileBytes.write(to: framedFile)
                 do {
                     _ = try NativeCredentialImport.importCredential(state: framed.1, installId: framed.0.installId, service: service)

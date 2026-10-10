@@ -19,6 +19,7 @@ import ApplicationServices
         var controls: [Control] = []
         var geometryMatches = 0
         var geometryStatuses: [Int32] = []
+        var windowAttempts: [[String: Any]] = []
         let queryOnMainThread: Bool
     }
     static func consumerTrace(_ window: NSWindow) async -> [String: Any] { observe(window).trace }
@@ -36,7 +37,8 @@ import ApplicationServices
         return Observation(trace: ["code": result.code, "windowCount": result.windowCount,
                 "identifierStatuses": result.identifierStatuses, "identifierMatches": result.identifierMatches,
                 "childCount": result.childCount, "geometryMatches": result.geometryMatches, "geometryStatuses": result.geometryStatuses,
-                "queryOnMainThread": result.queryOnMainThread, "appKitWindows": appKit, "axWindows": result.windowSnapshots],
+                "queryOnMainThread": result.queryOnMainThread, "appKitWindows": appKit, "axWindows": result.windowSnapshots,
+                "windowAttempts": result.windowAttempts],
                 controls: result.controls.map { ["name": $0.name, "enabled": $0.enabled, "visible": $0.visible, "source": "public-own-PID-AX"] })
     }
     private static func rect(_ frame: CGRect) -> [String: Double] {
@@ -47,8 +49,22 @@ import ApplicationServices
         var result = ConsumerResult(code: "starting", queryOnMainThread: Thread.isMainThread)
         let app = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(app, 0.5)
+        // The AX server registers a freshly launched process asynchronously, so a
+        // successful kAXWindowsAttribute read can legitimately return an empty
+        // list before our own AX window tree exists. Wait for it with a bounded
+        // pump, well inside the 8 s gate window, and record every attempt. The
+        // identity requirement below is unchanged: it still needs exactly one
+        // geometry match.
         var value: CFTypeRef?
-        let status = AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &value)
+        var status = AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &value)
+        result.windowAttempts.append(["status": Int(status.rawValue), "windows": (value as? [AXUIElement])?.count ?? -1])
+        let axDeadline = Date().addingTimeInterval(1.2)
+        while status == .success, (value as? [AXUIElement])?.isEmpty ?? false, Date() < axDeadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            value = nil
+            status = AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &value)
+            result.windowAttempts.append(["status": Int(status.rawValue), "windows": (value as? [AXUIElement])?.count ?? -1])
+        }
         result.code = String(status.rawValue)
         guard status == .success, let windows = value as? [AXUIElement] else { return result }
         result.windowCount = windows.count

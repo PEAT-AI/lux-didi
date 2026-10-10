@@ -274,7 +274,7 @@ for (const mode of ['unbound', 'stale'] as const) {
     const next = request();
     next.contents.push({ role: 'user', parts: [{ functionResponse: { id: 'call-7', name: 'lookup', response: { status: 'completed', value: 'raw private fixture' } } }] });
     const carriedResults = mode === 'stale' ? [{ executionId: 'old-execution', name: 'lookup', callId: 'call-7', contentIndex: 1, partIndex: 0, result: boundaryRef }] : [];
-    const result = await runTools({ ...boundaryPorts, carriedResults, model: adapter(async () => { providers++; return sse([stop()]); }),
+    const result = await runTools({ ...boundaryPorts, ...{ carriedResults }, model: adapter(async () => { providers++; return sse([stop()]); }),
       request: next, registry: [], host, authority: { isCurrent: async () => true }, maxSteps: 2, control: control() });
     assert.equal(result.status, 'denied'); assert.equal(providers, 0);
   });

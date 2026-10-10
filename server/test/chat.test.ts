@@ -419,7 +419,7 @@ test('private style alone and sensitive lore alone are denied before text model 
     try {
       const ownerProfile = { schemaVersion: 1 as const, kind: 'profile' as const, ownerId: f.store.assistantId, profileVersion: 'fixture', displayName: 'Example',
         style: { text: 'SYNTHETIC style', dataClass: styleClass }, lore: { text: 'SYNTHETIC lore', dataClass: loreClass } };
-      const chat = new ChatService({ ...f.config, ownerProfile, route: { ...f.config.route, allows: classes => classes.every(c => c === 'ordinary') }, schedule: task => tasks.push(task) });
+      const chat = new ChatService({ ...f.config, ...{ ownerProfile }, route: { ...f.config.route, allows: classes => classes.every(c => c === 'ordinary') }, schedule: task => tasks.push(task) });
       chat.recover(f.context);
       const run = chat.accept({ sessionId: f.session.id, text: 'Synthetic ordinary turn', idempotencyKey: 'owner-denied' }, f.context);
       tasks.shift()!();
@@ -435,13 +435,13 @@ test('accepted Chat A is used for actual dispatch; restart/replay keeps A while 
     const a = { schemaVersion: 1 as const, kind: 'profile' as const, ownerId: f.store.assistantId, profileVersion: 'fixture-a', displayName: 'Example A',
       style: { text: 'SYNTHETIC durable A style', dataClass: 'ordinary' as const }, lore: { text: 'SYNTHETIC durable A lore', dataClass: 'ordinary' as const } };
     const b = { ...a, profileVersion: 'fixture-b', displayName: 'Example B', style: { ...a.style, text: 'SYNTHETIC current B style' } };
-    const chat = new ChatService({ ...f.config, ownerProfile: a, schedule: task => tasks.push(task) }); chat.recover(f.context);
+    const chat = new ChatService({ ...f.config, ...{ ownerProfile: a }, schedule: task => tasks.push(task) }); chat.recover(f.context);
     const accepted = chat.accept({ sessionId: f.session.id, text: 'Hello', idempotencyKey: 'owner-original' }, f.context);
     a.style.text = 'SYNTHETIC mutable caller B'; tasks.shift()!();
     for await (const event of chat.subscribe(accepted.runId, f.context)) if (event.type === 'snapshot' && event.run.state === 'terminal') { assert.equal(event.run.outcome, 'complete'); break; }
     assert.ok(f.model.calls[0]!.system.includes('SYNTHETIC durable A style'));
     assert.ok(!f.model.calls[0]!.system.includes(a.style.text)); chat.shutdown();
-    const reopened = new ChatService({ ...f.config, ownerProfile: b, schedule: task => tasks.push(task) }); reopened.recover(f.context);
+    const reopened = new ChatService({ ...f.config, ...{ ownerProfile: b }, schedule: task => tasks.push(task) }); reopened.recover(f.context);
     assert.equal(reopened.accept({ sessionId: f.session.id, text: 'Hello', idempotencyKey: 'owner-original' }, f.context).runId, accepted.runId);
     const retry = reopened.accept({ sessionId: f.session.id, text: 'Hello', idempotencyKey: 'owner-retry', retryOf: accepted.runId }, f.context);
     assert.equal(JSON.parse(String(f.store.transaction(tx => tx.get('SELECT snapshot_json FROM chat_run_owner_profile WHERE run_id=?', [accepted.runId]))!.snapshot_json)).displayName, 'Example A');

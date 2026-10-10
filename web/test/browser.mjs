@@ -50,7 +50,7 @@ try {
   await step('failed local save preserves draft; capture never dispatches a model',async()=>{
     const requestStart=fixture.requests.length;
     await page.getByLabel('Local note · not sent to a model').fill('Remember the synthetic blue notebook'); fixture.failNextEntry();
-    await page.getByRole('button',{name:'Save message',exact:true}).click(); await page.getByRole('alert').filter({hasText:'Could not save'}).waitFor();assert.equal(await page.getByRole('alert').getAttribute('aria-live'),'assertive');
+    await page.getByRole('button',{name:'Save message',exact:true}).click(); await page.getByRole('alert').filter({hasText:'Could not save'}).waitFor();assert.equal(await page.getByRole('alert').filter({hasText:'Could not save'}).getAttribute('aria-live'),'assertive');
     assert.equal(await page.getByLabel('Local note · not sent to a model').inputValue(),'Remember the synthetic blue notebook');
     await page.getByRole('button',{name:'Save message',exact:true}).click(); await page.locator('.entry').filter({hasText:'Remember the synthetic blue notebook'}).waitFor();
     assert.equal(await page.getByLabel('Local note · not sent to a model').inputValue(),'');

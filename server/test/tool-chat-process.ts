@@ -185,10 +185,15 @@ export async function fixture(options: FixtureOptions = {}) {
     assert.equal(typeof consent?.route_identity, 'string');
     policy = { ...policy, route: { ...policy.route, identity: String(consent!.route_identity) } };
     tools.applyConnection(policy);
-    // The accepted owner suspends the registry projection on a durable apply, so the
-    // grant must be re-observed by an actual discover before it can be re-approved.
-    assert.equal((await port.discover(endpoint.id)).state, 'discovered');
-    tools.projectConnection(policy.connectionId);
+    // A durable apply suspends the registry projection, so an affected enabled connection must be
+    // re-observed by an actual discover before re-approval. A second enrollment of the SAME
+    // connection generation is already approved and must not re-approve it: approvals are
+    // per-generation (McpRegistry.approve), so re-approving would be refused, never relaxed.
+    const grant = registry.currentGrant(endpoint.id);
+    if (policy.enabled && (!grant || grant.generation !== policy.generation)) {
+      assert.equal((await port.discover(endpoint.id)).state, 'discovered');
+      tools.projectConnection(policy.connectionId);
+    }
     return conversation.sessionId;
   };
   const accept = (sessionId: string, key: string = randomUUID(), connectionIds = ['synthetic-lux'], selectedMemoryEntryIds: string[] = [], text = 'Use synthetic insight 731.') =>

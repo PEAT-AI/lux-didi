@@ -7,6 +7,7 @@ import { once } from 'node:events';
 import { format } from 'node:util';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { DatabaseSync } from 'node:sqlite';
 import { fixture, barrier, scope, syntheticKey, rotatedKey, answer, sourceId, type FixtureOptions } from './tool-chat-process.js';
 import type { ToolCallIntent, ToolResultRef } from '../adapters/model/types.js';
 import type { RunSnapshot } from '../chat/index.js';
@@ -70,11 +71,15 @@ test('B2 accepted definitions/hash survive a changed live catalog and policy', a
   const accepted = f.accept(await f.enroll()); const done = f.terminal(accepted);
   await gate.entered;
   try {
-    const definitions = f.tools.definitions(accepted.runId);
+    const modelFacing = (list: ReturnType<typeof f.tools.definitions>) => list.map(({ name, description, effect, accountId, resourceId, parameters }) => ({ name, description, effect, accountId, resourceId, parameters }));
+    const definitions = modelFacing(f.tools.definitions(accepted.runId));
     assert.ok(definitions.length > 0); assert.equal(typeof accepted.toolBindingHash, 'string');
     assert.match(accepted.toolBindingHash, /^[a-f0-9]{64}$/);
     f.setLiveDefinitions(); await f.port.discover(f.policy().endpoint.id);
-    assert.deepEqual(f.tools.definitions(accepted.runId), definitions, 'Live schema must not replace accepted declarations');
+    // Model-facing declarations only: definitions() allocates fresh execute/validate closures per
+    // call, so a strict reference compare failed on identity alone. Names, descriptions, canonical
+    // parameter schema and the accepted hash are still compared exactly (frozen-catalog proof).
+    assert.deepEqual(modelFacing(f.tools.definitions(accepted.runId)), definitions, 'Live schema must not replace accepted declarations');
     f.updatePolicy({ generation: 2, enabled: false });
     assert.equal(f.chat.get(accepted.runId, f.context).toolBindingHash, accepted.toolBindingHash);
   } finally { gate.release(); }
@@ -305,11 +310,19 @@ test('B6 explicit requested memory remains frozen beside durable tool references
   try {
     // A real owning record changes after prompt preparation; the detached
     // requested-memory snapshot, not a late live reread, must reach the model.
+    // The Store's transaction authorizer denies PRAGMA by design, so the schema is
+    // probed through a raw read-only connection while the run is mid-flight.
+    const raw = new DatabaseSync(join(f.dir, 'state.sqlite'), { readOnly: true });
+    let owned: { table: string; columns: string[] }[];
+    try {
+      owned = raw.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'").all().map(row => {
+        const table = `"${String(row.name).replaceAll('"', '""')}"`;
+        return { table, columns: raw.prepare(`PRAGMA table_info(${table})`).all().map(column => String(column.name)) };
+      });
+    } finally { raw.close(); }
     const changed = f.store.transaction(tx => {
       let changed = 0;
-      for (const row of tx.all("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'")) {
-        const table = `"${String(row.name).replaceAll('"', '""')}"`;
-        const columns = tx.all(`PRAGMA table_info(${table})`).map(column => String(column.name));
+      for (const { table, columns } of owned) {
         const id = columns.includes('entry_id') ? 'entry_id' : columns.includes('id') ? 'id' : null;
         if (id && columns.includes('text')) changed += tx.run(`UPDATE ${table} SET text = ? WHERE ${id} = ?`, ['Changed synthetic memory: red pencil.', note.userEntryId]);
       }
@@ -344,11 +357,12 @@ test('B6 provisional text stays provisional when the continuation is cancelled',
   assert.equal(f.sdkCalls.length, 1); assert.equal(f.modelCalls.length, 2);
 });
 
-function childMessage(child: ChildProcess, phase: string): Promise<Record<string, unknown>> {
+function childMessage(child: ChildProcess, phase: string, diagnostics: string[] = []): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => finish(Error(`Synthetic recovery ${phase} timeout`)), 5000);
+    const tail = () => diagnostics.length ? ` :: child stderr: ${diagnostics.join('').slice(-800)}` : '';
+    const timer = setTimeout(() => finish(Error(`Synthetic recovery ${phase} timeout${tail()}`)), 5000);
     const receive = (value: Record<string, unknown>) => { if (value.phase === phase) finish(null, value); };
-    const exited = () => finish(Error(`Synthetic recovery child exited before ${phase}`));
+    const exited = () => finish(Error(`Synthetic recovery child exited before ${phase}${tail()}`));
     function finish(error: Error | null, value?: Record<string, unknown>) {
       clearTimeout(timer); child.off('message', receive); child.off('exit', exited);
       if (error) reject(error); else resolve(value!);
@@ -373,12 +387,16 @@ async function terminateChild(child: ChildProcess) {
 
 test('B6 process restart recovers a real durable nonterminal SDK-dispatched intent as unknown without repeating its effect', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'didi-tool-chat-recovery-'));
+  const childErrors: string[] = [];
   const child = fork(join(import.meta.dirname, 'tool-chat-process.js'), ['recovery'], {
-    env: { ...process.env, DIDI_TOOL_CHAT_RECOVERY_DIR: dir }, stdio: ['ignore', 'ignore', 'ignore', 'ipc']
+    env: { ...process.env, DIDI_TOOL_CHAT_RECOVERY_DIR: dir }, stdio: ['ignore', 'ignore', 'pipe', 'ipc']
   });
+  // Bounded synthetic diagnostic: the recovery child's stderr is retained so a readiness
+  // stall names its own phase instead of failing opaquely (never a deadline change).
+  child.stderr?.on('data', chunk => { childErrors.push(String(chunk)); while (childErrors.join('').length > 4000) childErrors.shift(); });
   let reopened: Fixture | undefined;
   t.after(async () => { try { await reopened?.close(); } finally { try { await terminateChild(child); } finally { rmSync(dir, { recursive: true, force: true }); } } });
-  const ready = await childMessage(child, 'ready'); const dispatchedPromise = childMessage(child, 'dispatched'); child.send('start');
+  const ready = await childMessage(child, 'ready', childErrors); const dispatchedPromise = childMessage(child, 'dispatched', childErrors); child.send('start');
   const dispatched = await dispatchedPromise;
   const interrupted = dispatched.run as RunSnapshot; const journal = dispatched.journal as { execution_id: string; run_id: string; owner_id: string; state: string }[];
   assert.equal(interrupted.state, 'dispatch_intent'); assert.equal(interrupted.outcome, null);

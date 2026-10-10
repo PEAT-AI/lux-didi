@@ -49,7 +49,31 @@ export interface ExecutionContext {
   runId: string; actorId: string; authorityEpoch: string; revision: number;
   accountId: string; resourceId: string; executionId: string; signal: AbortSignal;
 }
-export type ToolOutcome = { status: 'completed'; value: unknown } | { status: 'failed' | 'unknown' };
+export type ToolResultRef = { id: string; sha256: string };
+export type ToolCallIntent = Omit<ExecutionContext, 'signal'> & {
+  toolName: string; argumentsHash: string; callId?: string;
+};
+export type ToolCallRefusal = Omit<ToolCallIntent, 'accountId' | 'resourceId'> & {
+  accountId?: string; resourceId?: string;
+};
+export type ToolOutcome = { status: 'completed'; result: ToolResultRef } | { status: 'failed' | 'unknown' };
+export interface ToolCallJournal {
+  intent(call: ToolCallIntent): 'fresh' | 'existing';
+  refuse(call: ToolCallRefusal, reason: string): ToolResultRef;
+  fail(call: ToolCallIntent, status: 'failed' | 'unknown', reason: string): ToolResultRef;
+}
+export interface ToolResultBinding {
+  executionId: string; name: string; callId?: string;
+  contentIndex: number; partIndex: number; result: ToolResultRef;
+}
+export interface ToolResultGate {
+  authorize(host: HostContext, bindings: readonly ToolResultBinding[],
+    baseClasses: readonly DataClass[], signal: AbortSignal): Promise<
+      | { state: 'allowed'; results: readonly {
+          binding: ToolResultBinding; response: JsonObject; dataClasses: readonly DataClass[];
+        }[] }
+      | { state: 'refused'; reason: string }>;
+}
 export interface ToolDefinition extends FunctionDeclaration {
   validate(args: unknown): boolean;
   effect: 'read' | 'write'; accountId: string; resourceId: string;
@@ -65,4 +89,5 @@ export interface LoopResult {
   steps: number; reason: string; modelResult?: ModelResult;
   /** Host-only history, including opaque signatures. Never serialize to UI. */
   continuation: Content[];
+  resultBindings: ToolResultBinding[];
 }

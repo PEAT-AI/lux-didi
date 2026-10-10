@@ -4,13 +4,53 @@ umask 077
 src=Tests/DidiCompanionTests/launch-probe
 root="$(cd "$(dirname "$0")/../../.." && pwd)"
 
+# Private shell/observer transport only: the installer remains HTTP scenario owner.
+if [ "${1:-}" = "--await-stage" ]; then
+  python3 - "$2" <<'PY'
+import json, os, select, sys, time
+root = sys.argv[1]
+fd = os.open(root, os.O_RDONLY)
+kq = select.kqueue()
+kq.control([select.kevent(fd, filter=select.KQ_FILTER_VNODE,
+                         flags=select.KQ_EV_ADD | select.KQ_EV_CLEAR,
+                         fflags=select.KQ_NOTE_WRITE)], 0, 0)
+end = time.monotonic() + 120
+while True:
+    path = root + '/observation-stage.json'
+    if os.path.exists(path):
+        d = json.load(open(path)); identity = json.load(open(root + '/identity.json'))
+        assert d['nonce'] == identity['nonce'] and d['pid'] == identity['pid'] and d['stage']
+        break
+    if os.path.exists(root + '/observer.json') or time.monotonic() >= end:
+        raise SystemExit('held observation unavailable')
+    kq.control(None, 1, max(0, end - time.monotonic()))
+kq.close(); os.close(fd)
+PY
+  exit
+fi
+if [ "${1:-}" = "--signal-stage" ]; then
+  python3 - "$2" "$3" <<'PY'
+import json, os, sys, uuid
+root, outcome = sys.argv[1:]
+assert outcome in ('completed', 'cancel')
+d = json.load(open(root + '/observation-stage.json'))
+d = {k: d[k] for k in ('nonce', 'pid', 'stage')}
+d.update(schemaVersion=1, outcome=outcome)
+path = root + '/observation-ack.json'; tmp = path + '.' + str(uuid.uuid4())
+fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(fd, 'w') as f: json.dump(d, f)
+os.rename(tmp, path)
+PY
+  exit
+fi
+
 # The production installer already owns the browser lease, app and observer.
 # Exercise the actual running native gate, including the owned real host where
 # applicable. Every failure must be observed by kernel exit, never JSON mutation.
 if [ "${1:-}" = "--held-cases" ]; then
   observer="$2"; app="$3"; proof="$4"; real_home="$5"
   mkdir -p "$proof"
-  for mode in held-premature held-wrong-stage held-stale held-duplicate held-cancel held-eof held-positive; do
+  for mode in held-premature held-premature-released held-wrong-stage held-stale held-duplicate held-cancel held-eof held-positive; do
     mkdir "$proof/$mode"
     HOME="$real_home" CFFIXED_USER_HOME="$real_home" "$observer" --verification "$app" "$proof/$mode" "$(uuidgen)" "$mode" --installed-proof --proof-state "$proof/$mode/state" --proof-report "$proof/$mode/report.json"
   done

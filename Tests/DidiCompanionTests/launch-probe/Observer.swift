@@ -127,6 +127,7 @@ import AppKit
                 else if args[4] == "eof-pre" { close(control); control = -1 }
                 else if args[4] == "bad-nonce" { send("release", nonce: UUID().uuidString) }
                 else if args[4] == "held-premature" { send("observe:premature") }
+                else if args[4] == "held-premature-released" { send("release\n" + nonce + ":observe:premature"); released = true }
                 else { send("release"); released = true }
                 deadline?.schedule(deadline: .now() + 120)
             } else {
@@ -192,7 +193,7 @@ import AppKit
     }
     // Runtime negative stimuli, not substitutes fabricated from evidence JSON.
     func exerciseHeldProbe() {
-        guard args[4].hasPrefix("held-"), !heldStimulusSent, control >= 0,
+        guard args[4].hasPrefix("held-"), !["held-http-failure", "held-driver"].contains(args[4]), !heldStimulusSent, control >= 0,
               let data = try? Data(contentsOf: URL(fileURLWithPath: root + "/observation-stage.json")),
               let notice = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let stage = notice["stage"] as? String else { return }

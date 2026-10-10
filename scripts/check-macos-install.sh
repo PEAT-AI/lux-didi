@@ -119,6 +119,48 @@ if [ "${1:-}" = "--leased-run" ]; then
   export LUX_VERIFICATION_DRIVER
   # Retain real gate negatives: no JSON-only evidence substitutes.
   bash Tests/DidiCompanionTests/launch-probe/produce.sh --held-cases "$work/observer" "$app" "$proof/held-cases" "$real_home"
+  # A real authenticated HTTP response followed by a deliberately failing
+  # assertion must cancel the held gate and retain the assertion's exit status.
+  held_http_failure() (
+    set -e
+    held_root="$proof/held-cases/held-http-failure"
+    mkdir "$held_root" || exit "$?"
+    HOME="$real_home" CFFIXED_USER_HOME="$real_home" "$work/observer" --verification "$app" "$held_root" "$(uuidgen)" held-http-failure --installed-proof --proof-state "$held_root/state" --proof-report "$held_root/report.json" &
+    held_pid=$!
+    cleanup_held_failure() {
+      result=$?; trap - EXIT
+      if [ "$result" -ne 0 ]; then
+        bash Tests/DidiCompanionTests/launch-probe/produce.sh --signal-stage "$held_root" cancel || { signal_result=$?; [ "$result" -ne 0 ] || result=$signal_result; }
+      fi
+      if wait "$held_pid"; then joined=0; else joined=$?; fi
+      [ "$result" -ne 0 ] || result=$joined
+      exit "$result"
+    }
+    trap cleanup_held_failure EXIT
+    bash Tests/DidiCompanionTests/launch-probe/produce.sh --await-stage "$held_root" || exit "$?"
+    held_origin="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["service"]["origin"])' "$held_root/report.json")"
+    held_token="$(tr -d '\n' < "$held_root/state/admin-credential")"
+    curl -fsS -H "Authorization: Bearer $held_token" "$held_origin/api/v1/status" > "$held_root/status.json" || exit "$?"
+    python3 - "$held_root/status.json" <<'PY'
+import json, sys
+status = json.load(open(sys.argv[1]))
+# Actual status is validated first; this intentionally impossible label is the
+# negative assertion, not a manufactured failed HTTP evidence record.
+assert status.get('data', {}).get('assistant', {}).get('id')
+if status['data']['assistant']['id'] != 'deliberately-impossible-held-negative':
+    sys.exit(23)
+raise AssertionError('negative fixture unexpectedly matched')
+PY
+    assertion_result=$?; [ "$assertion_result" -eq 0 ] || exit "$assertion_result"
+  )
+  if held_http_failure; then
+    echo 'MACOS-INSTALL FAIL: held HTTP assertion unexpectedly passed' >&2; exit 1
+  else
+    held_result=$?
+  fi
+  [ "$held_result" -eq 23 ] || { echo "MACOS-INSTALL FAIL: held failure lost original status ($held_result)" >&2; exit 1; }
+  printf '%s\n' "$held_result" > "$proof/held-cases/held-http-failure/script-status"
+  python3 Tests/DidiCompanionTests/launch-probe/verify.py --held-failure "$proof/held-cases/held-http-failure"
 
   # Real LaunchServices launch, restart, relocate and pre-move recall.
   mkdir -p "$proof/launch-1"

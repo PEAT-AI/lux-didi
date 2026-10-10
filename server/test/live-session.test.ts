@@ -12,6 +12,7 @@ import { chatMigrations } from '../chat/index.js';
 import { createDomainPort } from '../domain/facade.js';
 import { Outbox } from '../runtime/outbox.js';
 import { Store } from '../runtime/store.js';
+import type { Transaction } from '../contracts/storage.js';
 import { createLiveSessionOwner, LiveConfigError, LiveError, liveMigrations, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, fixture, options, pcm } from './live-voice-fixture.js';
 
@@ -44,6 +45,7 @@ async function harness(t: TestContext, overrides: {
   adapterLimits?: Partial<LiveVoiceLimits>;
   credentials?: { resolve(reference: string): Promise<string | undefined> };
   model?: string;
+  scheduler?: DeadlineClock;
 } = {}): Promise<Harness> {
   const f = await fixture(t);
   const dir = mkdtempSync(join(tmpdir(), 'didi-live-session-'));
@@ -57,9 +59,9 @@ async function harness(t: TestContext, overrides: {
     credentials: overrides.credentials ?? { resolve: async () => CANARY },
     limits: { handshakeMs: 1000, idleMs: 2000, sessionMs: 4000, closeMs: 50, ...overrides.adapterLimits },
   }));
-  const owner = createLiveSessionOwner({ store, voice, profile, now: () => clock });
+  const owner = createLiveSessionOwner({ store, voice, profile, now: () => overrides.scheduler?.now ?? clock, ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
   t.after(async () => { await owner.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
-  return { f, store, owner, ctx: context(store), dir, advance: ms => { clock += ms; } };
+  return { f, store, owner, ctx: context(store), dir, advance: ms => { if (overrides.scheduler) overrides.scheduler.now += ms; else clock += ms; } };
 }
 
 async function attached(h: Harness, key = 'k1') {
@@ -507,4 +509,119 @@ test('accepted unused observations and same-key replay expire without attach, st
   }
   assert.equal(resolutions, 0);
   assert.equal(h.f.attempts, 0);
+});
+
+
+/** Trusted scheduler: callbacks run only when the shared injected clock is advanced explicitly. */
+class DeadlineClock {
+  now = NOW;
+  unrefs = 0;
+  maxPending = 0;
+  callbacks = 0;
+  readonly pending = new Set<{ due: number; callback: () => void }>();
+  lastCallback: (() => void) | undefined;
+  schedule = (callback: () => void, delayMs: number) => {
+    assert.ok(delayMs > 0, 'strict boundary must not cause a zero-delay loop');
+    const entry = { due: this.now + delayMs, callback };
+    this.pending.add(entry);
+    this.maxPending = Math.max(this.maxPending, this.pending.size);
+    this.lastCallback = callback;
+    return { unref: () => { this.unrefs++; }, cancel: () => { this.pending.delete(entry); } };
+  };
+  runDue(): void {
+    for (;;) {
+      const entry = [...this.pending].find(item => item.due <= this.now);
+      if (!entry) return;
+      assert.ok(++this.callbacks < 100, 'bounded callbacks, no busy loop');
+      this.pending.delete(entry);
+      entry.callback();
+    }
+  }
+}
+
+test('one unref timer autonomously settles multiple deadlines and survives invalidation', async t => {
+  const scheduler = new DeadlineClock();
+  let credentials = 0;
+  const h = await harness(t, { scheduler, limits: { unusedMs: 20 }, credentials: { resolve: async () => { credentials++; return CANARY; } } });
+  const first = h.owner.create({ idempotencyKey: 'deadline-first', inputClass: 'ordinary' }, h.ctx);
+  h.advance(5);
+  const later = h.owner.create({ idempotencyKey: 'deadline-later', inputClass: 'ordinary' }, h.ctx);
+  assert.equal(scheduler.pending.size, 1);
+  h.advance(15); scheduler.runDue();
+  assert.equal(scheduler.callbacks, 0);
+  h.advance(1); scheduler.runDue();
+  const counts = () => h.store.transaction(tx => tx.all("SELECT live_session_id, COUNT(*) AS n FROM live_journal WHERE kind='terminal' GROUP BY live_session_id"));
+  assert.deepEqual(counts(), [{ live_session_id: first.liveSessionId, n: 1 }]);
+  assert.equal(scheduler.pending.size, 1);
+  h.owner.invalidate('authority');
+  h.advance(5); scheduler.runDue();
+  assert.equal(counts().length, 2);
+  assert.equal(h.owner.get(later.liveSessionId).terminalOutcome?.state, 'expired');
+  assert.equal(h.owner.get(first.liveSessionId).terminalOutcome?.state, 'expired');
+  assert.equal(scheduler.pending.size, 0);
+  assert.equal(scheduler.maxPending, 1);
+  assert.equal(scheduler.callbacks, 2);
+  assert.ok(scheduler.unrefs >= 2);
+  assert.equal(credentials, 0);
+  assert.equal(h.f.attempts, 0);
+});
+
+test('expiry transactions roll back real storage failure on observation and autonomous timer', async t => {
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, limits: { unusedMs: 20 } });
+  const row = h.owner.create({ idempotencyKey: 'deadline-fault', inputClass: 'ordinary' }, h.ctx);
+  const failure = new Error('synthetic transaction storage failure');
+  const original = h.store.transaction.bind(h.store);
+  let fail = true;
+  t.mock.method(h.store, 'transaction', (body: (tx: Transaction) => unknown) => original(tx => {
+    const result = body(tx);
+    if (fail) throw failure;
+    return result;
+  }));
+  h.advance(21);
+  assert.throws(() => h.owner.get(row.liveSessionId), error => error === failure);
+  assert.throws(() => scheduler.runDue(), error => error === failure);
+  assert.equal(scheduler.pending.size, 0, 'a failed callback must not silently retry');
+  fail = false;
+  assert.equal(original(tx => tx.get('SELECT lifecycle FROM live_sessions WHERE live_session_id=?', [row.liveSessionId]))?.['lifecycle'], 'accepted');
+  assert.equal(original(tx => tx.all("SELECT * FROM live_journal WHERE kind='terminal'")).length, 0);
+  assert.equal(h.owner.get(row.liveSessionId).terminalOutcome?.state, 'expired');
+  assert.equal(h.f.attempts, 0);
+});
+
+test('shutdown cancels the deadline synchronously and fences already queued callbacks after Store close', async t => {
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, limits: { unusedMs: 20 } });
+  h.owner.create({ idempotencyKey: 'deadline-shutdown', inputClass: 'ordinary' }, h.ctx);
+  assert.equal(scheduler.pending.size, 1);
+  const queued = scheduler.lastCallback!;
+  const closing = h.owner.shutdown();
+  assert.equal(scheduler.pending.size, 0);
+  await closing;
+  h.store.close();
+  h.advance(21);
+  assert.doesNotThrow(queued);
+  assert.equal(scheduler.pending.size, 0);
+  assert.equal(h.f.attempts, 0);
+});
+
+test('current deadline query plan measures unrelated terminal history without a cap', async t => {
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, limits: { unusedMs: 20 } });
+  for (let i = 0; i < 1000; i++) {
+    const row = h.owner.create({ idempotencyKey: `history-${i}`, inputClass: 'ordinary' }, h.ctx);
+    h.owner.revoke(row.liveSessionId);
+  }
+  const accepted = h.owner.create({ idempotencyKey: 'plan-accepted', inputClass: 'ordinary' }, h.ctx);
+  const plans = h.store.transaction(tx => ({
+    next: tx.all("EXPLAIN QUERY PLAN SELECT MIN(created_at) AS created_at FROM live_sessions WHERE owner_assistant_id=? AND lifecycle='accepted' AND dispatch_intent=0", [h.store.assistantId]),
+    due: tx.all("EXPLAIN QUERY PLAN SELECT * FROM live_sessions WHERE owner_assistant_id=? AND lifecycle='accepted' AND dispatch_intent=0 AND created_at < ?", [h.store.assistantId, scheduler.now - 20]),
+  }));
+  t.diagnostic(JSON.stringify({ terminalHistory: 1000, plans }));
+  assert.ok(plans.next.every(row => String(row['detail']).includes('INDEX')));
+  assert.ok(plans.due.every(row => String(row['detail']).includes('INDEX')));
+  h.advance(21); scheduler.runDue();
+  assert.equal(h.owner.get(accepted.liveSessionId).terminalOutcome?.state, 'expired');
+  assert.equal(h.store.transaction(tx => tx.all("SELECT live_session_id FROM live_sessions WHERE lifecycle='terminal'")).length, 1001);
+  assert.equal(scheduler.maxPending, 1);
 });

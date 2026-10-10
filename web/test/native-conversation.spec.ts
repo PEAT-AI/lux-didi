@@ -57,9 +57,9 @@ async function shot(name) {
 async function choose(label) {
   const value = await page.locator('#connected-history').evaluate((element, wanted) => [...element.options].find(option => option.label === wanted)?.value, label);
   await page.selectOption('#connected-history', { label });
-  // Deterministic: the service records the choice and the visible pane shows it.
+  // Deterministic: the service records the choice, the pane shows it and the page saved it.
   await page.waitForFunction(async expected => { const response = await fetch('/api/v1/conversation-selection', { credentials: 'same-origin', cache: 'no-store' }); return (await response.json()).data.sessionId === expected; }, value);
-  await page.waitForFunction(expected => document.querySelector('#connected-history')?.value === expected, value);
+  await page.waitForFunction(expected => { const key = Object.keys(localStorage).find(item => item.startsWith('didi-connected:')) ?? ''; return document.querySelector('#connected-history')?.value === expected && (key ? JSON.parse(localStorage.getItem(key) ?? '{}').sessionId === expected : false); }, value);
   return value;
 }
 async function step(name, action) { await action(); steps.push(name); console.log(`PASS ${name}`); }

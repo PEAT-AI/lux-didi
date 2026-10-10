@@ -22,6 +22,7 @@ export class ConnectedView {
   reset() { this.detach(); this.#closeConversationStream(); this.#owner = ''; this.#conversation = undefined; this.#run = undefined; this.#entries = []; this.#conversations = []; this.#draft = ''; this.#pending = undefined; }
   async refresh(owner: string) {
     if (owner !== this.#owner) { this.reset(); this.#owner = owner; }
+    const token = this.#selectionToken;
     try {
       this.#status = await request<RouteStatus>('/chat/status');
       const sessions = await request<{ items: Session[] }>('/sessions');
@@ -34,8 +35,8 @@ export class ConnectedView {
       this.#draft = typeof saved.draft === 'string' ? saved.draft : '';
       if (saved.pending && typeof saved.pending.key === 'string' && typeof saved.pending.text === 'string' && typeof saved.pending.sessionId === 'string') this.#pending = saved.pending;
       const selected = this.#conversations.find(c => c.conversation.sessionId === saved.sessionId) ?? this.#conversations[0];
-      if (selected) await this.select(selected.conversation.sessionId);
-      else await this.clearSelection();
+      // A choice the user made while this refresh was loading always wins over the restored one.
+      if (token === this.#selectionToken) { if (selected) await this.select(selected.conversation.sessionId); else await this.clearSelection(); }
       this.#error = '';
     } catch (error) { this.#error = error instanceof Error ? error.message : 'Connected status could not be read.'; }
     this.attach();

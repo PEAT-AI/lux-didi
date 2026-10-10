@@ -497,13 +497,13 @@ test('accepted unused observations and same-key replay expire without attach, st
   assert.equal(h.owner.get(read.liveSessionId).lifecycle, 'accepted');
   assert.equal(create('unused-replay').lifecycle, 'accepted');
   h.advance(1);
-  assert.equal(h.owner.get(read.liveSessionId).terminalOutcome?.state, 'expired');
-  assert.equal(create('unused-replay').terminalOutcome?.state, 'expired');
+  assert.equal(h.owner.get(read.liveSessionId).terminal?.state, 'expired');
+  assert.equal(create('unused-replay').terminal?.state, 'expired');
   assert.equal(h.owner.listFragments({ liveSessionId: fragments.liveSessionId }).fragments.length, 1);
-  assert.equal(h.owner.get(fragments.liveSessionId).terminalOutcome?.state, 'expired');
+  assert.equal(h.owner.get(fragments.liveSessionId).terminal?.state, 'expired');
   assert.throws(() => h.owner.create({ idempotencyKey: 'unused-replay', inputClass: 'private' }, h.ctx), { code: 'idempotency_conflict' });
   for (const row of [read, replay, fragments]) {
-    assert.equal(h.owner.get(row.liveSessionId).terminalOutcome?.state, 'expired');
+    assert.equal(h.owner.get(row.liveSessionId).terminal?.state, 'expired');
     assert.equal(h.owner.listFragments({ liveSessionId: row.liveSessionId }).fragments.length, 1);
     await assert.rejects(h.owner.attach(row.liveSessionId, h.ctx), { code: 'terminal' });
   }
@@ -556,8 +556,8 @@ test('one unref timer autonomously settles multiple deadlines and survives inval
   h.owner.invalidate('authority');
   h.advance(5); scheduler.runDue();
   assert.equal(counts().length, 2);
-  assert.equal(h.owner.get(later.liveSessionId).terminalOutcome?.state, 'expired');
-  assert.equal(h.owner.get(first.liveSessionId).terminalOutcome?.state, 'expired');
+  assert.equal(h.owner.get(later.liveSessionId).terminal?.state, 'expired');
+  assert.equal(h.owner.get(first.liveSessionId).terminal?.state, 'expired');
   assert.equal(scheduler.pending.size, 0);
   assert.equal(scheduler.maxPending, 1);
   assert.equal(scheduler.callbacks, 2);
@@ -585,7 +585,7 @@ test('expiry transactions roll back real storage failure on observation and auto
   fail = false;
   assert.equal(original(tx => tx.get('SELECT lifecycle FROM live_sessions WHERE live_session_id=?', [row.liveSessionId]))?.['lifecycle'], 'accepted');
   assert.equal(original(tx => tx.all("SELECT * FROM live_journal WHERE kind='terminal'")).length, 0);
-  assert.equal(h.owner.get(row.liveSessionId).terminalOutcome?.state, 'expired');
+  assert.equal(h.owner.get(row.liveSessionId).terminal?.state, 'expired');
   assert.equal(h.f.attempts, 0);
 });
 
@@ -621,7 +621,7 @@ test('current deadline query plan measures unrelated terminal history without a 
   assert.ok(plans.next.every(row => String(row['detail']).includes('INDEX')));
   assert.ok(plans.due.every(row => String(row['detail']).includes('INDEX')));
   h.advance(21); scheduler.runDue();
-  assert.equal(h.owner.get(accepted.liveSessionId).terminalOutcome?.state, 'expired');
+  assert.equal(h.owner.get(accepted.liveSessionId).terminal?.state, 'expired');
   assert.equal(h.store.transaction(tx => tx.all("SELECT live_session_id FROM live_sessions WHERE lifecycle='terminal'")).length, 1001);
   assert.equal(scheduler.maxPending, 1);
 });

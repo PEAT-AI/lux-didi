@@ -234,7 +234,7 @@ test('package diagnostics distinguish actual spawn error and signal from install
   try {
     const command = join(dir, 'missing-executable');
     const missing = spawnSync(command, [], { encoding: 'utf8' });
-    assert.equal(missing.error?.code, 'ENOENT');
+    assert.equal((missing.error as NodeJS.ErrnoException | undefined)?.code, 'ENOENT');
     const spawnEvidence = JSON.parse(packageFailure('synthetic CLI spawn', command, [], missing, join(dir, 'npm-cache')));
     assert.equal(spawnEvidence.status, null);
     assert.equal(spawnEvidence.error.code, 'ENOENT');

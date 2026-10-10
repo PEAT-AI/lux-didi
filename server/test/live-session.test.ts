@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { TestContext } from 'node:test';
-import { fork } from 'node:child_process';
+import { fork, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -624,4 +624,68 @@ test('current deadline query plan measures unrelated terminal history without a 
   assert.equal(h.owner.get(accepted.liveSessionId).terminal?.state, 'expired');
   assert.equal(h.store.transaction(tx => tx.all("SELECT live_session_id FROM live_sessions WHERE lifecycle='terminal'")).length, 1001);
   assert.equal(scheduler.maxPending, 1);
+});
+
+
+test('timer storage failure is a causal uncaught process failure with durable rollback', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-live-expiry-fault-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const source = `
+    import { Store } from ${JSON.stringify(new URL('../runtime/store.js', import.meta.url).href)};
+    import { createLiveSessionOwner, validateLiveProfile, liveMigrations } from ${JSON.stringify(new URL('../live/index.js', import.meta.url).href)};
+    const store = new Store(${JSON.stringify(dir)}, liveMigrations);
+    let clock = ${NOW}, callback;
+    const owner = createLiveSessionOwner({ store, profile: validateLiveProfile(${JSON.stringify(profileInput({ unusedMs: 20 }))}),
+      now: () => clock, voice: { open() { throw new Error('unexpected provider open'); } },
+      schedule(fn) { callback = fn; return { unref() {}, cancel() {} }; } });
+    const row = owner.create({ idempotencyKey: 'child-fault', inputClass: 'ordinary' }, { clientId: 'tester', auditId: 'fault', authorityEpoch: store.authorityEpoch });
+    process.stdout.write(row.liveSessionId);
+    const transaction = store.transaction.bind(store);
+    store.transaction = body => transaction(tx => { const result = body(tx); throw new Error('LIVE-EXPIRY-CAUSAL-STORAGE-FAILURE'); });
+    clock += 21;
+    setImmediate(() => callback());
+  `;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', source], { stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000 });
+  let stdout = '', stderr = '';
+  child.stdout.on('data', value => { stdout += value; });
+  child.stderr.on('data', value => { stderr += value; });
+  const [code, signal] = await once(child, 'close');
+  assert.equal(signal, null);
+  assert.equal(code, 1);
+  assert.match(stderr, /LIVE-EXPIRY-CAUSAL-STORAGE-FAILURE/);
+  assert.match(stdout, /^[a-f0-9-]{36}$/);
+  const store = new Store(dir, liveMigrations);
+  t.after(() => store.close());
+  assert.equal(store.transaction(tx => tx.get('SELECT lifecycle FROM live_sessions WHERE live_session_id=?', [stdout]))?.['lifecycle'], 'accepted');
+  assert.equal(store.transaction(tx => tx.all('SELECT * FROM live_journal')).length, 0);
+  t.diagnostic('isolated child exit=1 signal=null; causal storage error preserved; transaction rolled back');
+});
+
+test('attach wins before deadline including opening, and expiry wins after it without open', async t => {
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, limits: { unusedMs: 20 } });
+  const row = h.owner.create({ idempotencyKey: 'deadline-attach', inputClass: 'ordinary' }, h.ctx);
+  h.advance(20);
+  const original = GeminiLiveVoiceAdapter.prototype.open;
+  t.mock.method(GeminiLiveVoiceAdapter.prototype, 'open', function(this: GeminiLiveVoiceAdapter, ...args: Parameters<typeof original>) {
+    h.advance(1); scheduler.runDue();
+    assert.equal(h.owner.get(row.liveSessionId).lifecycle, 'opening');
+    return original.apply(this, args);
+  });
+  const attachment = await h.owner.attach(row.liveSessionId, h.ctx);
+  assert.equal(h.owner.get(row.liveSessionId).lifecycle, 'active');
+  await h.f.connected;
+  h.f.send({ setupComplete: {} });
+  await attachment.ready;
+  h.advance(100); scheduler.runDue();
+  assert.equal(h.owner.get(row.liveSessionId).lifecycle, 'active');
+  assert.equal(scheduler.pending.size, 0);
+  t.mock.restoreAll();
+  const past = h.owner.create({ idempotencyKey: 'deadline-attach-late', inputClass: 'ordinary' }, h.ctx);
+  h.advance(21);
+  await assert.rejects(h.owner.attach(past.liveSessionId, h.ctx), { code: 'expired' });
+  assert.equal(h.f.attempts, 1);
+  await h.owner.shutdown();
+  assert.equal(scheduler.pending.size, 0);
+  assert.equal((await attachment.done).terminal?.state, 'outcome_unknown');
 });

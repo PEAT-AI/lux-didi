@@ -54,7 +54,7 @@ An epic's phase is the milestone at which its stated outcome exits, not the earl
 - E12 Channels, authority epochs and device grants (master C, phase M3, leaves C19 to C23): the channel inbox and outbox, channel identity separate from account identity, one active authority epoch, device grants with pulled intents, and revocation with offline delivery.
 - E13 Responsive and mobile client surfaces (master E, phase M2, leaves F19 to F23): the responsive browser shell, the shared web UI host inside the Mac companion, the shell-only cache and offline policy, the Android access path and cross-breakpoint conformance.
 
-Phase counts: M0 has 12 work items, M1 has 40, M2 has 17, M3 has 19, and M4 has 2.
+Phase counts: M0 has 12 work items, M1 has 41, M2 has 22, M3 has 23, and M4 has 8.
 
 ## First slice
 
@@ -78,7 +78,7 @@ Key cross-track edges (all genuine completion dependencies):
 
 ## Labels and milestones
 
-The validator derives labels from node fields so the published issues cannot drift from the backlog: `kind:program`, `kind:epic` and `kind:task`; `master:A` to `master:E` on epics and leaves; `phase:M0` to `phase:M4`; `priority:P0` to `priority:P2`. Milestones carry the same five stage IDs with the descriptive titles above. The program tracker has no master label. Published totals are 119 roadmap issues plus one separate plan-delivery issue used only by the documentation pull request; the tracker `P00` is never auto-closed by it.
+The validator derives labels from node fields so the published issues cannot drift from the backlog: `kind:program`, `kind:epic` and `kind:task`; `master:A` to `master:E` on epics and leaves; `phase:M0` to `phase:M4`; `priority:P0` to `priority:P2`. Milestones carry the same five stage IDs with the descriptive titles above. The program tracker has no master label. Published totals are 120 roadmap issues plus one separate plan-delivery issue used only by the documentation pull request; the tracker `P00` is never auto-closed by it.
 
 ## Where to start
 

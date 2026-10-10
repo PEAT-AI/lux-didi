@@ -13,18 +13,21 @@ import ApplicationServices
         var identifierMatches = 0
         var childCount = 0
         var controls: [Control] = []
+        var geometryMatches = 0
+        var geometryStatuses: [Int32] = []
         let queryOnMainThread: Bool
     }
     static func consumerTrace(_ window: NSWindow) async -> [String: Any] {
         guard NSApp.windows.contains(window), window.isVisible else { return ["code": "own-window-not-visible"] }
         // Capture primitive expected state on main; NSWindow/AX objects never cross actors.
         let pid = getpid(), expectedIdentifier = ownIdentifier(window)
-        let result = await Task.detached { consumerSnapshot(pid: pid, expectedIdentifier: expectedIdentifier) }.value
+        let frame = ownFrame(window)
+        let result = await Task.detached { consumerSnapshot(pid: pid, expectedIdentifier: expectedIdentifier, expectedFrame: frame) }.value
         return ["code": result.code, "windowCount": result.windowCount,
                 "identifierStatuses": result.identifierStatuses, "identifierMatches": result.identifierMatches,
-                "childCount": result.childCount, "queryOnMainThread": result.queryOnMainThread]
+                "childCount": result.childCount, "geometryMatches": result.geometryMatches, "geometryStatuses": result.geometryStatuses, "queryOnMainThread": result.queryOnMainThread]
     }
-    nonisolated private static func consumerSnapshot(pid: pid_t, expectedIdentifier: String) -> ConsumerResult {
+    nonisolated private static func consumerSnapshot(pid: pid_t, expectedIdentifier: String, expectedFrame: CGRect) -> ConsumerResult {
         // Public consumer API, only our PID; never request trust or query another app.
         var result = ConsumerResult(code: "starting", queryOnMainThread: Thread.isMainThread)
         let app = AXUIElementCreateApplication(pid)
@@ -35,18 +38,6 @@ import ApplicationServices
         guard status == .success, let windows = value as? [AXUIElement] else { return result }
         result.windowCount = windows.count
         guard windows.count <= 8 else { result.code = "own-window-limit"; return result }
-        let matching = windows.filter { element in
-            var title: CFTypeRef?
-            let status = AXUIElementCopyAttributeValue(element, kAXIdentifierAttribute as CFString, &title)
-            result.identifierStatuses.append(status.rawValue)
-            return status == .success && title as? String == expectedIdentifier
-        }
-        result.identifierMatches = matching.count
-        guard matching.count == 1 else { result.code = "own-identifier-not-unique"; return result }
-        let childStatus = AXUIElementCopyAttributeValue(matching[0], kAXChildrenAttribute as CFString, &value)
-        result.code = String(childStatus.rawValue)
-        result.childCount = (value as? [AXUIElement])?.count ?? 0
-        let expected: Set<String> = ["Start recording", "Stop recording", "Send text"]
         func read(_ element: AXUIElement, _ attribute: String) -> CFTypeRef? {
             var value: CFTypeRef?
             return AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success ? value : nil
@@ -60,6 +51,27 @@ import ApplicationServices
             guard AXValueGetValue(position, .cgPoint, &point), AXValueGetValue(size, .cgSize, &dimensions) else { return nil }
             return CGRect(origin: point, size: dimensions)
         }
+        let identifierMatching = windows.filter { element in
+            var title: CFTypeRef?
+            let status = AXUIElementCopyAttributeValue(element, kAXIdentifierAttribute as CFString, &title)
+            result.identifierStatuses.append(status.rawValue)
+            return status == .success && title as? String == expectedIdentifier
+        }
+        result.identifierMatches = identifierMatching.count
+        let matching = windows.filter { element in
+            var position: CFTypeRef?; var size: CFTypeRef?
+            result.geometryStatuses.append(AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &position).rawValue)
+            result.geometryStatuses.append(AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &size).rawValue)
+            guard let frame = rectangle(element) else { return false }
+            return abs(frame.minX - expectedFrame.minX) <= 1 && abs(frame.minY - expectedFrame.minY) <= 1 &&
+                abs(frame.width - expectedFrame.width) <= 1 && abs(frame.height - expectedFrame.height) <= 1
+        }
+        result.geometryMatches = matching.count
+        guard matching.count == 1 else { result.code = "own-frame-not-unique"; return result }
+        let childStatus = AXUIElementCopyAttributeValue(matching[0], kAXChildrenAttribute as CFString, &value)
+        result.code = String(childStatus.rawValue)
+        result.childCount = (value as? [AXUIElement])?.count ?? 0
+        let expected: Set<String> = ["Start recording", "Stop recording", "Send text"]
         let windowFrame = rectangle(matching[0])
         var visited = 0; var found: [String: Control] = [:]
         func visit(_ element: AXUIElement, depth: Int) {
@@ -94,6 +106,11 @@ import ApplicationServices
         visit(window, depth: 0)
         return trace
     }
+    private static func ownFrame(_ window: NSWindow) -> CGRect {
+        let frame = window.frame
+        return CGRect(x: frame.minX, y: (NSScreen.screens.first?.frame.maxY ?? 0) - frame.maxY,
+                      width: frame.width, height: frame.height)
+    }
     private static func ownIdentifier(_ window: NSWindow) -> String {
         let existing = window.accessibilityIdentifier()
         if !existing.isEmpty { return existing }
@@ -104,7 +121,8 @@ import ApplicationServices
     static func accessibility(_ window: NSWindow) async -> [[String: Any]] {
         guard NSApp.windows.contains(window), window.isVisible else { return [] }
         let pid = getpid(), identifier = ownIdentifier(window)
-        let result = await Task.detached { consumerSnapshot(pid: pid, expectedIdentifier: identifier) }.value
+        let frame = ownFrame(window)
+        let result = await Task.detached { consumerSnapshot(pid: pid, expectedIdentifier: identifier, expectedFrame: frame) }.value
         return result.controls.map { ["name": $0.name, "enabled": $0.enabled, "visible": $0.visible, "source": "public-own-PID-AX"] }
     }
     private static func bounded<T>(_ operation: @escaping @MainActor () async throws -> T) async throws -> T {

@@ -183,7 +183,8 @@ test('protected host snapshot has safe current label, restart reloads it and sto
         const status = async () => (await (await fetch(`${ready.origin}/api/v1/status`, { headers: { Authorization: `Bearer ${credential}` } })).json()).data;
         const before = await status(); assert.equal(before.assistantId, ownerId);
         assert.deepEqual(before.ownerProfile, { status: 'configured', displayName: label });
-        assert.equal(before.model.displayName, label);
+        // Persona presentation is independent of provider/model identity, even when unconfigured.
+        assert.equal('displayName' in before.model, false);
         for (const secret of [path, profile.profileVersion, profile.style.text, profile.lore.text]) {
           assert.ok(!JSON.stringify(before).includes(secret)); assert.ok(!readyLine.includes(secret));
         }

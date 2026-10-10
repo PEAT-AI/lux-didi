@@ -56,6 +56,11 @@ import Security
             await waitFor("authenticated service page rendered") { shell.state == .ready }
             expect(try await js(shell.webView, "document.body.dataset.authenticated") as? String == "yes", "cookie authenticated document request")
             expect(try await js(shell.webView, "document.cookie") as? String == "", "HttpOnly cookie invisible to document.cookie")
+            // A connected WK subtree must never be consumed from a detached AX task:
+            // WebKit aborts on its main-thread-only accessibility implementation.
+            let connectedAX = await OwnedWindowProof.consumerTrace(window)
+            expect(connectedAX["queryOnMainThread"] as? Bool == true, "connected own-window AX traversal stays on AppKit thread")
+            expect(connectedAX["geometryMatches"] as? Int == 1, "connected WK window uniquely identified by public own-PID geometry")
             expect(try await js(shell.webView, "typeof window.webkit?.messageHandlers") as? String == "undefined", "zero JavaScript authority handlers")
             expect(try await shell.webView.callAsyncJavaScript("const r = await fetch('/api/v1/auth/session'); const x = await r.json(); return Boolean(x.data.csrfToken)", arguments: [:], in: nil, contentWorld: .page) as? Bool == true, "page reads CSRF through normal API")
             let initial = try await js(shell.webView, "document.body.dataset.instance") as? String

@@ -244,3 +244,11 @@ test('two simultaneous attaches open at most one provider, and revoke is isolate
   await new Promise(resolve => setTimeout(resolve, 50));
   assert.equal(h.f.attempts, before, 'a revoked grant opens no provider');
 });
+
+test('subprotocols and extensions are refused before the provider', async t => {
+  const h = await harness(t, { config: configJson(true) });
+  const created = await createBody(h, 'proto-1');
+  const id = created.body.data.liveSessionId;
+  assert.equal(await attempt(h.origin, `/api/v1/live-sessions/${id}/audio`, { ...bearer(h), 'sec-websocket-protocol': 'x' }), 400);
+  assert.equal(h.f.attempts, 0, 'a subprotocol handshake opens no provider');
+});

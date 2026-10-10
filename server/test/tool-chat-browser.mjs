@@ -59,15 +59,18 @@ test('B3/B5 built browser renders real trusted source identifiers and durable to
     return { status: response.status, body: await response.json() };
   }, pairingCode);
   assert.equal(paired.status, 200, JSON.stringify(paired.body)); const csrfToken = paired.body.data.csrfToken; assert.ok(csrfToken);
+  // The client reads the epoch from the response envelope (web/src/api.ts) and sends it on every
+  // mutation; server/http/server.ts rejects a mutation without it as STALE_AUTHORITY. Same view, not guessed.
+  const authorityEpoch = String(paired.body.authorityEpoch); assert.ok(authorityEpoch.length > 0 && authorityEpoch !== 'undefined', 'Pairing envelope carries the current authority epoch');
   await page.reload();
   await page.locator('#connected-history').selectOption(ready.sessionId);
   const key = randomUUID();
-  const accept = () => page.evaluate(async ({ sessionId, key, csrfToken }) => {
+  const accept = () => page.evaluate(async ({ sessionId, key, csrfToken, authorityEpoch }) => {
     const response = await fetch('/api/v1/chat', { method: 'POST', headers: {
-      'Content-Type': 'application/json', 'Idempotency-Key': key, 'X-Didi-CSRF': csrfToken
+      'Content-Type': 'application/json', 'Idempotency-Key': key, 'X-Didi-CSRF': csrfToken, 'X-Didi-Authority-Epoch': authorityEpoch
     }, body: JSON.stringify({ sessionId, text: 'Use synthetic insight 731.', selectedConnectionIds: ['synthetic-lux'] }) });
     return { status: response.status, body: await response.json() };
-  }, { sessionId: ready.sessionId, key, csrfToken });
+  }, { sessionId: ready.sessionId, key, csrfToken, authorityEpoch });
   const accepted = await accept(); assert.equal(accepted.status, 200, JSON.stringify(accepted.body)); assert.ok(accepted.body.data.runId);
   // Rendering must be based on the current real conversation/event stream,
   // never injected HTML, a mocked API response, or an empty payload.

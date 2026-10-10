@@ -121,10 +121,10 @@ test('symlink-addressed supervised host serves durable commands and closes on ow
       const title = 'Synthetic symlink entry session';
       const saved = await fetch(ready.origin + '/api/v1/sessions', {
         method: 'POST', headers: { ...headers, 'Content-Type': 'application/json', 'Idempotency-Key': randomUUID(), 'X-Didi-Authority-Epoch': ready.authorityEpoch },
-        body: JSON.stringify({ title }), signal: AbortSignal.timeout(3000),
+        body: JSON.stringify({ title, timeZone: 'UTC' }), signal: AbortSignal.timeout(3000),
       });
-      assert.equal(saved.status, 201);
-      const session = (await saved.json()).data.session;
+      assert.equal(saved.status, 200);
+      const session = (await saved.json()).data;
       const recalled = await fetch(`${ready.origin}/api/v1/sessions/${session.id}`, { headers, signal: AbortSignal.timeout(3000) });
       assert.equal(recalled.status, 200); assert.equal((await recalled.json()).data.session.title, title);
       process.child.stdin.end();
@@ -134,7 +134,7 @@ test('symlink-addressed supervised host serves durable commands and closes on ow
       // Reopening the real Store proves EOF releases the single-writer lease and preserves its identity.
       const store = new Store(dataDir);
       try { assert.equal(store.assistantId, ready.assistantId); } finally { store.close(); }
-      t.diagnostic('symlink start/ready nonce+pid matched; session POST201/GET200 with matching title; EOF exit0; listener refused; real Store reopened with stable identity');
+      t.diagnostic('symlink start/ready nonce+pid matched; session POST200/GET200 with matching title; EOF exit0; listener refused; real Store reopened with stable identity');
     } finally { await stop(process); }
   });
 });

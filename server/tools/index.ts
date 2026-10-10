@@ -5,11 +5,17 @@ import { validateEndpointUrl } from '../adapters/mcp/registry.js';
 import { createLuxKnowledgeReader } from '../connectors/lux-knowledge.js';
 import { canonicalJSON, detached, sha256 } from './canonical.js';
 import { projectLuxResult } from './lux-knowledge.js';
-import type { BoundConnection, ConnectionPolicy, ModelSnapshot, RunAcceptance, RunSnapshot, ToolsOwner, ToolsOwnerOptions } from './types.js';
+import type { BoundConnection, ConnectionApplyResult, ConnectionPolicy, ModelSnapshot, RunAcceptance, RunSnapshot, ToolsOwner, ToolsOwnerOptions } from './types.js';
 export { toolsMigrations } from './schema.js';
 export type * from './types.js';
 
 const ownedStores = new WeakSet<object>();
+const ownerBindings = new WeakMap<object, Pick<ToolsOwnerOptions, 'store' | 'registry' | 'ownerId'>>();
+/** Factory identity check: no second owner, port or registry may substitute for canonical authority. */
+export function assertToolsOwnerBinding(owner: ToolsOwner, expected: Pick<ToolsOwnerOptions, 'store' | 'registry' | 'ownerId'>): void {
+  const binding = ownerBindings.get(owner);
+  if (!binding || binding.store !== expected.store || binding.registry !== expected.registry || binding.ownerId !== expected.ownerId) throw Error('tools_owner_binding_mismatch');
+}
 const classes = ['ordinary', 'private', 'sensitive'];
 function exact(value: unknown, keys: readonly string[], optional: readonly string[] = []): asserts value is Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(k => !keys.includes(k) && !optional.includes(k)) || keys.some(k => !Object.hasOwn(value, k))) throw Error('invalid_policy_shape');
@@ -19,7 +25,7 @@ function positive(value: unknown): void { if (!Number.isSafeInteger(value) || (v
 function classSet(value: unknown): asserts value is DataClass[] {
   if (!Array.isArray(value) || new Set(value).size !== value.length || value.some(c => !classes.includes(c))) throw Error('invalid_classes');
 }
-function validatePolicy(input: ConnectionPolicy): ConnectionPolicy {
+export function validatePolicy(input: ConnectionPolicy): ConnectionPolicy {
   const p = detached(input);
   exact(p, ['schemaVersion', 'ownerId', 'connectionId', 'generation', 'enabled', 'endpoint', 'toolNames', 'schemaDigest', 'sourcePolicy', 'route', 'bounds']);
   if (p.schemaVersion !== 1 || typeof p.enabled !== 'boolean') throw Error('invalid_policy_version');
@@ -198,21 +204,56 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
       });
     },
   };
-  return {
+  const apply = (input: ConnectionPolicy, expected: string | null | undefined): ConnectionApplyResult => {
+    const p = validatePolicy(input); if (p.ownerId !== ownerId) throw Error('connection_owner_mismatch');
+    const bytes = canonicalJSON(p); const hash = sha256(bytes);
+    const changed = store.transaction(tx => {
+      const row = tx.get('SELECT * FROM tool_connections WHERE owner_id=? AND connection_id=?', [ownerId, p.connectionId]);
+      const current = row ? connection(tx, p.connectionId) : undefined;
+      if (current && canonicalJSON(current.policy) === bytes) return false;
+      if (expected !== undefined && expected !== (current?.sha256 ?? null)) throw Error('connection_predecessor_mismatch');
+      if (current && (p.generation <= current.generation || canonicalJSON(p.endpoint) !== canonicalJSON(current.policy.endpoint))) throw Error('connection_identity_or_generation');
+      if (row) tx.run('UPDATE tool_connections SET generation=?,enabled=?,policy_json=?,policy_sha256=? WHERE owner_id=? AND connection_id=?', [p.generation, Number(p.enabled), bytes, hash, ownerId, p.connectionId]);
+      else tx.run('INSERT INTO tool_connections VALUES (?,?,?,?,?,?,?)', [ownerId, p.connectionId, p.endpoint.id, p.generation, Number(p.enabled), bytes, hash]);
+      return true;
+    });
+    // Durable commit wins even when projection is unavailable.
+    if (changed || !p.enabled) { if (p.enabled) registry.suspend(p.endpoint.id); else registry.revoke(p.endpoint.id); }
+    return { state: changed ? 'applied' : 'unchanged', sha256: hash };
+  };
+  const endpointMatches = (p: ConnectionPolicy): boolean => {
+    const endpoint = registry.endpoint(p.endpoint.id);
+    return endpoint.url === p.endpoint.url && endpoint.account === p.endpoint.account && endpoint.resource === p.endpoint.resource && (endpoint.credentialRef ?? null) === p.endpoint.credentialRef;
+  };
+  const owner: ToolsOwner = {
     journal, resultGate, complete,
-    applyConnection(input) {
-      const p = validatePolicy(input); if (p.ownerId !== ownerId) throw Error('connection_owner_mismatch');
-      const bytes = canonicalJSON(p);
-      const changed = store.transaction(tx => {
-        const row = tx.get('SELECT * FROM tool_connections WHERE owner_id=? AND connection_id=?', [ownerId, p.connectionId]);
-        if (row?.policy_json === bytes) return false;
-        if (row && (p.generation <= Number(row.generation) || p.endpoint.id !== row.endpoint_id)) throw Error('connection_identity_or_generation');
-        if (row) tx.run('UPDATE tool_connections SET generation=?,enabled=?,policy_json=?,policy_sha256=? WHERE owner_id=? AND connection_id=?', [p.generation, Number(p.enabled), bytes, sha256(bytes), ownerId, p.connectionId]);
-        else tx.run('INSERT INTO tool_connections VALUES (?,?,?,?,?,?,?)', [ownerId, p.connectionId, p.endpoint.id, p.generation, Number(p.enabled), bytes, sha256(bytes)]);
-        return true;
-      });
-      // Commit revocation first. Projection failure cannot undo durable policy.
-      if (changed || !p.enabled) { if (p.enabled) registry.suspend(p.endpoint.id); else registry.revoke(p.endpoint.id); }
+    applyConnection(input) { apply(input, undefined); },
+    applyConnectionIntent(intent) {
+      exact(intent, ['expectedPolicySha256', 'policy']);
+      if (intent.expectedPolicySha256 !== null && (typeof intent.expectedPolicySha256 !== 'string' || !/^[a-f0-9]{64}$/.test(intent.expectedPolicySha256))) throw Error('invalid_predecessor');
+      return apply(intent.policy, intent.expectedPolicySha256);
+    },
+    async restoreConnection(id, assertCurrentBinding) {
+      let selected: BoundConnection;
+      try {
+        selected = store.transaction(tx => connection(tx, id));
+        if (!selected.policy.enabled || !endpointMatches(selected.policy)) return { state: 'refused', reason: 'connection-not-enabled' };
+        assertCurrentBinding();
+      } catch { return { state: 'refused', reason: 'binding-not-current' }; }
+      const discovered = await port.discover(selected.policy.endpoint.id);
+      if (discovered.state !== 'discovered') return { state: 'unavailable', reason: 'discovery-unavailable' };
+      try {
+        const current = store.transaction(tx => connection(tx, id));
+        if (!current.policy.enabled || current.sha256 !== selected.sha256 || discovered.endpointId !== current.policy.endpoint.id || discovered.schemaDigest !== current.policy.schemaDigest || !endpointMatches(current.policy)) return { state: 'refused', reason: 'authority-or-catalog-changed' };
+        assertCurrentBinding();
+        // Callback may synchronously mutate policy. Reread and install with no await gap.
+        return store.transaction(tx => {
+          const latest = connection(tx, id); const p = latest.policy;
+          if (!p.enabled || latest.sha256 !== selected.sha256 || !endpointMatches(p)) return { state: 'refused', reason: 'authority-changed' };
+          registry.restore({ endpointId: p.endpoint.id, schemaDigest: p.schemaDigest, generation: p.generation, account: p.endpoint.account, resource: p.endpoint.resource, toolNames: p.toolNames, effect: 'read' });
+          return { state: 'restored' };
+        });
+      } catch { return { state: 'refused', reason: 'binding-or-consent-not-current' }; }
     },
     projectConnection(id) {
       const p = store.transaction(tx => connection(tx, id).policy); if (!p.enabled) throw Error('connection_disabled');
@@ -278,4 +319,6 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
       return definitions;
     },
   };
+  ownerBindings.set(owner, { store, registry, ownerId });
+  return owner;
 }

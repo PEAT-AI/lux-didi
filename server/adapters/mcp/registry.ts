@@ -23,6 +23,8 @@ interface Entry {
   tools?: readonly ToolDefinition[];
   digest?: string;
   grant?: ReadGrant;
+  consent?: ReadGrant;
+  revokedGeneration: number;
   lastGeneration: number;
   revision: number;
 }
@@ -34,7 +36,7 @@ export class McpRegistry {
     if (Object.keys(config).some(key => !allowed.has(key)) || [config.id, config.url, config.account, config.resource].some(value => typeof value !== 'string' || !value) || (config.credentialRef !== undefined && (typeof config.credentialRef !== 'string' || !config.credentialRef))) throw new Error('invalid-endpoint-config');
     validateEndpointUrl(config.url);
     if (this.entries.has(config.id)) throw new Error('duplicate-endpoint-id');
-    this.entries.set(config.id, { config: structuredClone(config), enabled: false, egress: false, lastGeneration: 0, revision: 0 });
+    this.entries.set(config.id, { config: structuredClone(config), enabled: false, egress: false, lastGeneration: 0, revokedGeneration: 0, revision: 0 });
   }
   private entry(id: string): Entry {
     const entry = this.entries.get(id); if (!entry) throw new Error('unknown-endpoint'); return entry;
@@ -52,7 +54,7 @@ export class McpRegistry {
   suspend(id: string): void {
     const entry = this.entry(id); delete entry.grant; delete entry.digest; delete entry.tools; entry.revision++;
   }
-  revoke(id: string): void { const entry = this.entry(id); delete entry.grant; entry.revision++; }
+  revoke(id: string): void { const entry = this.entry(id); delete entry.grant; entry.revokedGeneration = Math.max(entry.revokedGeneration, entry.lastGeneration); entry.revision++; }
   observed(id: string, tools: readonly ToolDefinition[], revision: number): string {
     const entry = this.entry(id); this.endpoint(id);
     if (entry.revision !== revision) throw new Error('discovery-invalidated');
@@ -64,7 +66,14 @@ export class McpRegistry {
   approve(grant: ReadGrant): void {
     const entry = this.entry(grant.endpointId); this.endpoint(grant.endpointId);
     if (!entry.digest || grant.schemaDigest !== entry.digest || grant.effect !== 'read' || grant.account !== entry.config.account || grant.resource !== entry.config.resource || !Number.isSafeInteger(grant.generation) || grant.generation <= entry.lastGeneration || !Array.isArray(grant.toolNames) || new Set(grant.toolNames).size !== grant.toolNames.length || grant.toolNames.some(name => !entry.tools?.some(tool => tool.name === name))) throw new Error('invalid-local-read-grant');
-    entry.grant = structuredClone(grant); entry.lastGeneration = grant.generation;
+    entry.grant = structuredClone(grant); entry.consent = structuredClone(grant); entry.lastGeneration = grant.generation;
+  }
+  /** Trusted owner projection of durable consent; never a new operator approval. */
+  restore(grant: ReadGrant): void {
+    const entry = this.entry(grant.endpointId); this.endpoint(grant.endpointId);
+    if (!entry.digest || grant.schemaDigest !== entry.digest || grant.effect !== 'read' || grant.account !== entry.config.account || grant.resource !== entry.config.resource || !Number.isSafeInteger(grant.generation) || grant.generation < 1 || grant.generation <= entry.revokedGeneration || grant.generation < entry.lastGeneration || !Array.isArray(grant.toolNames) || new Set(grant.toolNames).size !== grant.toolNames.length || grant.toolNames.some(name => !entry.tools?.some(tool => tool.name === name))) throw new Error('invalid-standing-read-grant');
+    if (grant.generation === entry.lastGeneration && (!entry.consent || entry.consent.schemaDigest !== grant.schemaDigest || JSON.stringify(entry.consent.toolNames) !== JSON.stringify(grant.toolNames))) throw new Error('standing-consent-mismatch');
+    entry.grant = structuredClone(grant); entry.consent = structuredClone(grant); entry.lastGeneration = grant.generation;
   }
   currentGrant(id: string): ReadGrant | undefined { const grant = this.entry(id).grant; return grant ? structuredClone(grant) : undefined; }
   visibleTools(id: string): readonly ToolDefinition[] {

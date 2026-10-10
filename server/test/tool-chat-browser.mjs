@@ -64,6 +64,7 @@ test('B3/B5 built browser renders real trusted source identifiers and durable to
   const authorityEpoch = String(paired.body.authorityEpoch); assert.ok(authorityEpoch.length > 0 && authorityEpoch !== 'undefined', 'Pairing envelope carries the current authority epoch');
   await page.reload();
   await page.locator('#connected-history').selectOption(ready.sessionId);
+  const panel = page.locator('#connected-panel');
   // Visible, per-run selection: the run that actually reaches the model is started from the panel
   // control, never from a bare fetch. Only the ready integration is selectable.
   await panel.locator('#connected-selection input[data-connection="synthetic-lux"]').check();
@@ -82,7 +83,6 @@ test('B3/B5 built browser renders real trusted source identifiers and durable to
   const accepted = await accept(); assert.equal(accepted.status, 200, JSON.stringify(accepted.body)); assert.ok(accepted.body.data.runId);
   // Rendering must be based on the current real conversation/event stream,
   // never injected HTML, a mocked API response, or an empty payload.
-  const panel = page.locator('#connected-panel');
   await panel.getByText('synthetic-lux', { exact: false }).first().waitFor({ state: 'visible', timeout: 15000 });
   const rendered = await panel.innerText();
   assert.match(rendered, /Synthetic insight 731/); assert.match(rendered, /synthetic-lux/);

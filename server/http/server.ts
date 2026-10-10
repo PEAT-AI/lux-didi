@@ -29,7 +29,7 @@ async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> 
 interface Principal { clientId: string; mode: 'bearer' | 'browser'; tokenHash?: string; csrfToken?: string }
 export interface ServiceOptions { ownerProfileStatus?: { status: 'default' | 'configured'; displayName: string }; store: Store; domain?: DomainPort; port?: number; now?: () => number; webRoot?: string; chat?: ChatPort; modelStatus?: ConnectedStatus; connections?: () => ConnectionStatus[]; live?: LiveService }
 /** Safe, operator-asserted optional-integration status; never an authority or a catalog. */
-export interface ConnectionStatus { id: string; label: string; state: 'connected' | 'needs_setup' | 'unavailable'; lastKnown: boolean }
+export interface ConnectionStatus { id: string; label: string; state: 'ready' | 'needs_setup' | 'unavailable'; lastKnown: boolean }
 export interface RunningService { server: Server; origin: string; close(): Promise<void> }
 export async function listenService(options: ServiceOptions): Promise<RunningService> {
   const { store, domain, chat, live } = options;

@@ -68,17 +68,31 @@ export class ChatService implements ChatPort {
     if (!entry) throw new ChatError('unavailable');
     return snapshot(row, entry.text, memorySelection, tools);
   }
-  /** Durable tool references and trusted source ids read back from the accepted owner journal. */
+  /** Durable tool references and validated connection provenance read from Chat's own projection table. */
   #toolProjection(tx: Transaction, runId: string): ToolProjection {
     if (!tx.get("SELECT name FROM sqlite_master WHERE type='table' AND name='chat_run_tools'", [])) return noTools;
     const link = tx.get('SELECT binding_hash FROM chat_run_tools WHERE run_id=?', [runId]);
     if (!link) return noTools;
-    if (!tx.get("SELECT name FROM sqlite_master WHERE type='table' AND name='tool_calls'", [])) return { ...noTools, toolBindingHash: String(link.binding_hash) };
-    const rows = tx.all("SELECT result_id,result_sha256 FROM tool_calls WHERE owner_id=? AND run_id=? AND state='completed' ORDER BY rowid", [this.#config.store.assistantId, runId]);
+    // Chat reads only its own projected receipts (captured from the owner projection),
+    // never another owner's tables. No provider entity ids are invented.
+    const rows = tx.get("SELECT name FROM sqlite_master WHERE type='table' AND name='chat_run_receipts'", [])
+      ? tx.all('SELECT result_id,result_sha256,connection_id FROM chat_run_receipts WHERE run_id=? ORDER BY ordinal', [runId]) : [];
     const toolReferences: ToolResultRef[] = rows.map(row => ({ id: String(row.result_id), sha256: String(row.result_sha256) }));
-    // Trusted source ids are only projected when the owning connector/owner exposes a
-    // validated identifier; this lane never fabricates one from model text or a tool payload.
-    return { toolReferences, sourceIds: [], toolBindingHash: String(link.binding_hash) };
+    const connectionIds = rows.map(row => String(row.connection_id)).filter(id => id.length > 0);
+    return { toolReferences, sourceIds: [...new Set(connectionIds)], toolBindingHash: String(link.binding_hash) };
+  }
+  /** Snapshot the owner's immutable completed-call receipts into Chat's own table. Presentation only; no authority. */
+  #captureReceipts(runId: string): void {
+    if (!this.#config.tools) return;
+    try {
+      if (!this.#config.store.transaction(tx => tx.get('SELECT binding_hash FROM chat_run_tools WHERE run_id=?', [runId]))) return;
+      const receipts = this.#config.tools.receipts(runId);
+      this.#config.store.transaction(tx => {
+        tx.run('DELETE FROM chat_run_receipts WHERE run_id=?', [runId]);
+        receipts.forEach((receipt, ordinal) => tx.run('INSERT INTO chat_run_receipts(run_id,ordinal,execution_id,name,result_id,result_sha256,connection_id,connection_generation,connection_sha256) VALUES (?,?,?,?,?,?,?,?,?)',
+          [runId, ordinal, receipt.executionId, receipt.name, receipt.result.id, receipt.result.sha256, receipt.connection.connectionId, receipt.connection.generation, receipt.connection.sha256]));
+      });
+    } catch { /* projection is presentation only; never fail a run for it */ }
   }
   /** Safe requested/used/omitted metadata; no record text and no whole-archive claim. */
   #memorySelection(tx: Transaction, row: SQLRow): MemorySelectionSnapshot | null {
@@ -378,6 +392,7 @@ export class ChatService implements ChatPort {
   #publish(run: RunSnapshot) { this.#emit(run.runId, { type: 'snapshot', sequence: run.sequence, run }); }
   #finish(run: RunSnapshot, context: DomainContext, outcome: Outcome, text = ''): RunSnapshot {
     this.#authorize(context);
+    this.#captureReceipts(run.runId);
     const final = this.#config.store.transaction(tx => {
       const row = this.#row(tx, run.runId, context);
       if (row.state === 'terminal') return this.#snapshot(tx, row, context);

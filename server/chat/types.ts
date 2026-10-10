@@ -66,12 +66,20 @@ export interface CurrentAuthority {
 }
 /** A per-run loop runner over the accepted tool set; ordinary ModelPort semantics are preserved underneath. */
 export interface RunRunner { run(request: ModelRequest, control: ModelControl): Promise<LoopResult> }
+/** Immutable completed-call receipt projected from the owner: ref + call association + validated connection provenance. */
+export interface ToolReceipt {
+  executionId: string; name: string;
+  result: { id: string; sha256: string };
+  connection: { connectionId: string; generation: number; sha256: string };
+}
 /** Narrow trusted composition seam. The Host owns it; Chat only calls it and never parses model text for authority. */
 export interface ChatToolComposition {
   /** Inside the caller acceptance transaction: write the accepted snapshot/link atomically. */
   accept(tx: Transaction, binding: RunBinding): { hash: string; credential: CredentialBindingReceipt | null };
   /** Detached accepted definitions after commit; never a fresh live catalog. */
   definitions(runId: string): ToolDefinition[];
+  /** Read-only immutable completed-call receipts for the accepted run; no authority, no provider ids. */
+  receipts(runId: string): ToolReceipt[];
   /** Per-run runner bound to the accepted run and its synchronous current-authority callback. */
   runner(runId: string, deadlineMs: number, current: () => CurrentAuthority): RunRunner;
 }

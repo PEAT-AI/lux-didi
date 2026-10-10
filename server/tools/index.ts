@@ -227,6 +227,30 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
   };
   const owner: ToolsOwner = {
     journal, resultGate, complete,
+    receipts(runId) {
+      if (typeof runId !== 'string' || !runId || runId.length > 128) throw Error('invalid_run_id');
+      return store.transaction(tx => {
+        const { snapshot } = readRun(tx, runId);
+        return tx.all("SELECT execution_id,call_id,intent_json,result_id,result_sha256 FROM tool_calls WHERE owner_id=? AND run_id=? AND state='completed' ORDER BY rowid", [ownerId, runId])
+          .map(row => {
+            const intent = callDTO(JSON.parse(String(row.intent_json)) as ToolCallIntent);
+            const bound = target(snapshot, intent);
+            return { executionId: String(row.execution_id),
+              ...(row.call_id === null || row.call_id === undefined ? {} : { callId: String(row.call_id) }),
+              name: String(intent.toolName),
+              result: { id: String(row.result_id), sha256: String(row.result_sha256) },
+              connection: { connectionId: bound.connectionId, generation: bound.generation, sha256: bound.sha256 } };
+          });
+      });
+    },
+    connections() {
+      return store.transaction(tx => tx.all('SELECT policy_json FROM tool_connections WHERE owner_id=? ORDER BY connection_id', [ownerId])
+        .map(row => {
+          const policy = validatePolicy(JSON.parse(String(row.policy_json)) as ConnectionPolicy);
+          return { connectionId: policy.connectionId, endpointId: policy.endpoint.id, generation: policy.generation, enabled: policy.enabled,
+            schemaDigest: policy.schemaDigest, toolNames: [...policy.toolNames] };
+        }));
+    },
     applyConnection(input) { apply(input, undefined); },
     applyConnectionIntent(intent) {
       exact(intent, ['expectedPolicySha256', 'policy']);

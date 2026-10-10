@@ -18,7 +18,23 @@ export interface RunAcceptance {
 }
 export interface LiveAuthority extends RunAcceptance { acceptedRunHash: string }
 export interface BoundConnection { connectionId: string; generation: number; sha256: string; policy: ConnectionPolicy }
+/** Read-only owner projection of a durable configured connection; never a secret or a live catalog. */
+export interface OwnerConnection {
+  connectionId: string; endpointId: string; generation: number; enabled: boolean;
+  schemaDigest: string; toolNames: readonly string[];
+}
 export interface RunSnapshot { acceptance: RunAcceptance; connections: BoundConnection[] }
+/**
+ * Read-only projection of an immutable completed-call receipt for an accepted run:
+ * the existing result reference, its call/intent association, and the validated
+ * bound-connection provenance. No result text, secrets, paths, provider entity ids
+ * or new authority; provider record identity stays unknown.
+ */
+export interface OwnerReceipt {
+  executionId: string; callId?: string; name: string;
+  result: { id: string; sha256: string };
+  connection: { connectionId: string; generation: number; sha256: string };
+}
 /** Separate trusted metadata boundary, not parsed from reader markdown or arbitrary MCP fields. */
 export interface TrustedRestrictions { localOnly: boolean; nonDisclosure: boolean; dataClasses: readonly DataClass[] }
 export interface ModelSnapshot { response: JsonObject; dataClasses: readonly DataClass[] }
@@ -36,6 +52,10 @@ export interface ToolsOwner {
   restoreConnection(connectionId: string, assertCurrentBinding: () => void): Promise<ConnectionRestoreResult>;
   projectConnection(connectionId: string): void;
   snapshotRun(tx: Transaction, acceptance: RunAcceptance): { sha256: string };
+  /** Immutable completed-call receipts for an accepted run; read-only, no authority. */
+  receipts(runId: string): OwnerReceipt[];
+  /** Durable configured connections; read-only owner status projection, never downstream raw SQL. */
+  connections(): OwnerConnection[];
   definitions(runId: string): ToolDefinition[];
   complete(call: ToolCallIntent, response: JsonObject, dataClasses: readonly DataClass[]): ToolResultRef;
 }

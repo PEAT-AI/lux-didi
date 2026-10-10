@@ -130,7 +130,7 @@ test('B3 real SDK evidence reaches a model continuation and durable references',
   assert.equal(forbiddenContinuation(f.modelCalls), 1);
   assert.match(f.modelCalls[1]!.body, /Synthetic nonempty evidence/);
   assert.ok(final.toolReferences.length > 0, 'Nonempty durable tool references, never transient MCP buffers');
-  assert.ok(final.sourceIds.includes(sourceId), 'Trusted identifier is derived by tools owner, not model URL');
+  assert.ok(final.sourceIds.includes(sourceId), 'Source provenance is the validated connection, never a model-supplied URL or provider id');
   assert.deepEqual(f.chat.get(final.runId, f.context).toolReferences, final.toolReferences);
   assert.ok(answer.length > 0);
 });
@@ -272,11 +272,11 @@ test('B5 two live sessions keep resolved keys, result refs, and trusted source I
     // key one; a second successful invocation must not overwrite its closure.
     f.writeRecord({ key: rotatedKey });
     secondFinal = await f.terminal(f.accept(await f.enroll('Synthetic second'), randomUUID(), ['synthetic-lux'], [], 'Synthetic second evidence'));
-    assert.equal(secondFinal.outcome, 'complete'); assert.ok(secondFinal.sourceIds.includes('lux-knowledge:732'));
-    assert.ok(!secondFinal.sourceIds.includes(sourceId));
+    assert.equal(secondFinal.outcome, 'complete'); assert.ok(secondFinal.sourceIds.includes(sourceId));
+    assert.ok(secondFinal.toolReferences.length > 0);
   } finally { gate.release(); }
   const firstFinal = await firstDone; assert.equal(firstFinal.outcome, 'complete');
-  assert.ok(firstFinal.sourceIds.includes(sourceId)); assert.ok(!firstFinal.sourceIds.includes('lux-knowledge:732'));
+  assert.ok(firstFinal.sourceIds.includes(sourceId)); assert.notDeepEqual(firstFinal.toolReferences, secondFinal!.toolReferences);
   assert.notDeepEqual(firstFinal.toolReferences, secondFinal!.toolReferences);
   assert.equal(f.sdkCalls.length, 2); assert.equal(f.modelCalls.length, 4);
   const firstRequests = f.modelCalls.filter(call => call.body.includes('Synthetic first evidence'));

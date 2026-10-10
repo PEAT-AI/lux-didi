@@ -2,7 +2,7 @@ import { ApiError, request, stream } from './api';
 import type { Entry, Session, Recall, MemorySelectionSnapshot, ConnectedRouteStatus, ConnectionStatus, Status } from './protocol';
 interface RouteStatus extends ConnectedRouteStatus {}
 interface Conversation { sessionId: string; provider: string; model: string; state: 'active' | 'revoked' | 'route_changed'; revision: number; permittedClasses: string[]; latestRunId: string | null }
-interface Run { runId: string; sessionId: string; state: 'accepted' | 'dispatch_intent' | 'terminal'; outcome: string | null; finalText: string | null; partialText: string; mayHaveBeenSent: boolean; sequence: number; memorySelection: MemorySelectionSnapshot | null }
+interface Run { runId: string; sessionId: string; state: 'accepted' | 'dispatch_intent' | 'terminal'; outcome: string | null; finalText: string | null; partialText: string; mayHaveBeenSent: boolean; sequence: number; memorySelection: MemorySelectionSnapshot | null; toolReferences?: { id: string; sha256: string }[]; sourceIds?: string[] }
 type RecalledNote = Recall['hits'][number];
 const escape = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 export class ConnectedView {
@@ -117,6 +117,15 @@ export class ConnectedView {
     } catch (error) { if (this.#conversationController === controller) { this.#error = error instanceof Error ? error.message : 'Could not load the accepted run.'; this.attach(); } }
     finally { this.#attaching.delete(runId); }
   }
+  /** Evidence provenance: which connection supplied the evidence plus stored receipt integrity. Never a model-supplied link. */
+  #provenanceHtml() {
+    const sources = this.#run?.sourceIds ?? [];
+    const refs = this.#run?.toolReferences ?? [];
+    if (!sources.length && !refs.length) return '';
+    const chips = sources.map(id => `<li class="connected-source" data-source-connection="${escape(id)}">${escape(id)}</li>`).join('');
+    const receipts = refs.map(ref => `<li class="connected-ref" data-result-ref="${escape(ref.id)}">stored evidence \u00b7 ${escape(ref.sha256)}</li>`).join('');
+    return `<div id="connected-provenance"><p class="eyebrow">EVIDENCE PROVENANCE \u00b7 WHICH CONNECTION, NOT WHICH REMOTE RECORD</p>${sources.length ? `<ul id="connected-sources">${chips}</ul>` : ''}${refs.length ? `<ul id="connected-refs">${receipts}</ul>` : ''}</div>`;
+  }
   /** Gentle, escaped optional-integration status. Never a credential, account payload or catalog. */
   #connectionsHtml() {
     if (!this.#connections.length) return '<p id="connected-connections-empty" class="connected-connections">No optional integrations configured. Local notes, Today and recall still work.</p>';
@@ -132,6 +141,7 @@ export class ConnectedView {
       <p class="eyebrow">EXPLICITLY CONNECTED · SEPARATE FROM LOCAL NOTES</p><h2>Talk with ${escape(this.#displayName)}</h2>
       <p id="connected-route" role="status">${available ? `Locally configured: ${escape(this.#status.provider)} / ${escape(this.#status.model)}. This is not a reachability check.` : `Model ${escape(this.#status.status)}${this.#status.code ? ` (${escape(this.#status.code)})` : ''}. Local notes, Today and recall still work.`}</p>
       ${this.#connectionsHtml()}
+      ${this.#provenanceHtml()}
       <p class="connected-disclosure">Starting a connected conversation sends its current and earlier selected turns to <strong>${escape(this.#status.provider ?? 'the configured provider')} / ${escape(this.#status.model ?? 'no model')}</strong>. It does not send other sessions, Today, recall or tools. It sends stored local notes only when you explicitly select them for that message, under this connection's existing route and consent; no note is ever included silently and no new permission is granted. Only private conversation material and ordinary material you deliberately review here are permitted. Revocation cannot retract bytes already sent.</p>
       <label class="connected-consent"><input id="connected-consent" type="checkbox" ${this.#consent ? 'checked' : ''} ${!available ? 'disabled' : ''}> I agree to this route for a new conversation.</label>
       <button id="connected-start" class="secondary" ${!available || !this.#consent || this.#busy ? 'disabled' : ''}>Start connected conversation</button>

@@ -72,12 +72,12 @@ test('B3/B5 built browser renders real trusted source identifiers and durable to
   // Rendering must be based on the current real conversation/event stream,
   // never injected HTML, a mocked API response, or an empty payload.
   const panel = page.locator('#connected-panel');
-  await panel.getByText('lux-knowledge:731', { exact: false }).first().waitFor({ state: 'visible', timeout: 15000 });
+  await panel.getByText('synthetic-lux', { exact: false }).first().waitFor({ state: 'visible', timeout: 15000 });
   const rendered = await panel.innerText();
-  assert.match(rendered, /Synthetic insight 731/); assert.match(rendered, /lux-knowledge:731/);
+  assert.match(rendered, /Synthetic insight 731/); assert.match(rendered, /synthetic-lux/);
   const replay = await accept(); assert.equal(replay.status, 200);
   const final = replay.body.data; assert.equal(final.runId, accepted.body.data.runId); assert.equal(final.outcome, 'complete');
-  assert.ok(final.toolReferences.length > 0); assert.ok(final.sourceIds.includes('lux-knowledge:731'));
+  assert.ok(final.toolReferences.length > 0); assert.ok(final.sourceIds.includes('synthetic-lux'));
   for (const ref of final.toolReferences) {
     const strings = JSON.stringify(ref).match(/[a-f0-9]{64}|[a-zA-Z0-9_-]+:[a-zA-Z0-9_-]+/g) ?? [];
     assert.ok(strings.length > 0, 'Durable reference must have a stable visible identifier');

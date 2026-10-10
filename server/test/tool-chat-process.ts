@@ -29,7 +29,8 @@ export const syntheticKey = 'tool-chat-synthetic-key-one';
 export const rotatedKey = 'tool-chat-synthetic-key-two';
 export const answer = 'Synthetic insight 731 supports one small next step.';
 export const untrustedURL = 'https://model-link.invalid/not-a-source';
-export const sourceId = 'lux-knowledge:731';
+/** Validated connection provenance (which connection supplied the evidence), not a provider record id. */
+export const sourceId = 'synthetic-lux';
 export const scope: CredentialRouteScope = {
   provider: 'gemini', modelId: 'gemini-tool-chat-synthetic',
   endpoint: 'https://generativelanguage.googleapis.com',

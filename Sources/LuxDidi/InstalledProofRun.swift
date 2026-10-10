@@ -39,9 +39,9 @@ import CryptoKit
         let web = shell.webView
         var value: [String: Any] = ["viewExists": true, "mounted": web.window != nil,
             "nonzeroFrame": web.bounds.width > 0 && web.bounds.height > 0,
-            "state": String(describing: shell.state), "urlMatchesExpected": web.url == shell.descriptor.baseURL,
+            "state": String(describing: shell.state), "urlMatchesExpected": web.url == shell.descriptor.baseURL.appendingPathComponent("/"),
             "rootPageApproved": shell.descriptor.page(web.url), "actualPath": web.url?.path ?? "",
-            "expectedPath": shell.descriptor.baseURL.path, "navigationStarts": shell.proofNavigationStarts,
+            "expectedPath": shell.descriptor.baseURL.appendingPathComponent("/").path, "navigationStarts": shell.proofNavigationStarts,
             "navigationFinishes": shell.proofNavigationFinishes, "mainFrameHTTPStatus": shell.proofMainFrameHTTPStatus as Any? ?? NSNull(),
             "navigationFailureCode": shell.proofNavigationFailureCode as Any? ?? NSNull()]
         do {
@@ -56,7 +56,7 @@ import CryptoKit
         while Date() < until {
             await diagnosePage(shell)
             if shell.state == .ready {
-                guard shell.webView.url == shell.descriptor.baseURL else { throw InstalledProofError.missingUI }
+                guard shell.webView.url == shell.descriptor.baseURL.appendingPathComponent("/") else { throw InstalledProofError.missingUI }
                 // Actual shared Naya implementation is Canvas2D/DOM, not the fixture div.
                 if try await js(shell.webView, "!!document.querySelector('canvas')&&document.body.innerText.length>0") as? Bool == true { return shell.webView }
             }

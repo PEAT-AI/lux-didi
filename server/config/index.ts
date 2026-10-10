@@ -87,11 +87,14 @@ function sourceKey(text: string): string {
     if (!assignment) fail('invalid_source');
     let value = assignment[2]!;
     if (value.startsWith("'") || value.startsWith('"')) {
-      if (value.length < 2 || value[value.length - 1] !== value[0]) fail('invalid_source');
+      const quote = value[0]!;
+      if (value.length < 2 || value[value.length - 1] !== quote) fail('invalid_source');
       value = value.slice(1, -1);
-    }
-    if (!/^[A-Za-z0-9_.:/+,=@%\-]*$/.test(value)) fail('invalid_source');
+      if (value.includes(quote) || (quote === '"' && value.includes('`'))) fail('invalid_source');
+    } else if (/['"`]/.test(value)) fail('invalid_source');
+    if (value.endsWith('\\')) fail('invalid_source');
     if (assignment[1] !== 'GEMINI_API_KEY') continue;
+    if (!/^[A-Za-z0-9_.:/+,=@%\-]*$/.test(value)) fail('invalid_source');
     if (found !== undefined || !keyValid(value)) fail('invalid_source');
     found = value;
   }

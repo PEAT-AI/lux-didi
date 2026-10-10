@@ -113,13 +113,21 @@ CLI, eval, source, command substitution, interpolation or execution is used.
 Supported source syntax: UTF-8, LF or CRLF, blank lines, full-line `#` comments,
 and one `NAME=literal` assignment per line (optional horizontal space around the
 line, not around `=`). Values are unquoted literals or whole single/double-quoted
-literals, without escapes, interpolation, inline comments or multiline strings.
-Only ASCII letters/digits and `_ . : / + , = @ % -` are supported inside literals.
-Thus `$`, backticks, backslash, semicolon, pipes, parentheses and spaces inside
-values are rejected even in quotes. This intentionally narrow dotenv subset is
-not a shell parser. Other simple assignments are ignored, not exported; unsupported
-syntax anywhere is rejected. GEMINI_API_KEY must appear exactly once, nonempty;
-duplicate, absent, malformed and malicious assignments fail without quoting input.
+literals. Quoted values require a matching closing delimiter and no interior
+occurrence of that delimiter; double-quoted content also rejects backticks.
+Unquoted content rejects single quotes, double quotes and backticks. Content
+ending in backslash is rejected, including an escaped closing delimiter. No
+multiline values, continuation, escape decoding or interpolation is supported.
+These are explicit one-line format constraints, not shell/dotenv equivalence.
+
+Other assignments are ignored only after those checks. Their values are opaque:
+punctuation, spaces and shell-looking text such as `$()` are literal data, never
+executed or exported; `#` inside a value is not an inline comment. Backticks are
+literal only inside single quotes. No foreign value is assigned to `process.env`.
+Only `GEMINI_API_KEY` retains the restricted charset: ASCII letters/digits and
+`_ . : / + , = @ % -`, at most 1024 characters, nonempty. It must appear exactly
+once; the whole file is scanned even after finding it. Duplicate, absent, invalid
+targets and unsupported syntax anywhere fail with finite content-free errors.
 
 All roots/files use explicit absolute paths (no relative-path or default-location resolution). Input profile and authorized source must be current
 UID, final non-symlink, regular, single-link 0600. Runtime config root is 0700,

@@ -82,6 +82,25 @@ actor Page: ConnectedConversationTransport {
     await restored.replay(); try require(restored.pending == nil && restored.state == .accepted, "outcome_unknown not accepted")
     try require(try await store.load(assistantId: assistant, authorityEpoch: epoch) == .empty, "ack did not remove own record")
 }
+@MainActor func testOptionalRetryIdentity() async throws {
+    let (dir, store) = try tempStore(); defer { try? FileManager.default.removeItem(atPath: dir) }
+    let page = Page(store); await page.configure(selections: [selection()])
+    let draft = ConnectedDraft(store: store)
+    await draft.connect(authority: .init(assistantId: assistant, authorityEpoch: epoch), transport: page)
+    await draft.beginDraft(); draft.setText("explicit optional retry DTO"); await draft.send(retryOf: sessionB)
+    let first = await page.requests()[0]
+    let body = try JSONSerialization.jsonObject(with: first.body) as! [String: String]
+    try require(body == ["sessionId": sessionA, "text": "explicit optional retry DTO", "retryOf": sessionB], "present retryOf changed or omitted")
+    await draft.replay()
+    let requests = await page.requests()
+    try require(requests.count == 2 && requests[0].body == requests[1].body && requests[0].idempotencyKey == requests[1].idempotencyKey, "retryOf replay generated new request")
+    var response = try JSONSerialization.jsonObject(with: snapshot(first)) as! [String: Any]
+    var run = response["data"] as! [String: Any]; run["retryOf"] = NSNull(); response["data"] = run
+    await page.configure(response: try JSONSerialization.data(withJSONObject: response)); await draft.replay()
+    try require(draft.pending != nil, "mismatched retryOf acknowledged")
+    await page.configure(response: snapshot(first)); await draft.replay()
+    try require(draft.pending == nil, "matching optional retryOf not accepted")
+}
 @MainActor func testLateAcceptance() async throws {
     let (dir, store) = try tempStore(); defer { try? FileManager.default.removeItem(atPath: dir) }
     let page = Page(store); await page.configure(selections: [selection()], holdSend: true)
@@ -216,7 +235,7 @@ struct HTTPPage: ConnectedConversationTransport {
     @MainActor static func main() async {
         do {
             if CommandLine.arguments.count > 2 && CommandLine.arguments[1] == "--child" { try await child(CommandLine.arguments[2]); return }
-            var tests: [(String, @MainActor () async throws -> Void)] = [("barrier/exact replay/snapshot validation", testBarrierAndReplay), ("late selection/replacement/cancel/none", testLateSelection), ("persistence/orphan/corrupt/identity cleanup", testFailuresAndCleanup), ("disconnect/cancel/late acceptance/malformed shape", testLateAcceptance)]
+            var tests: [(String, @MainActor () async throws -> Void)] = [("barrier/exact replay/snapshot validation", testBarrierAndReplay), ("late selection/replacement/cancel/none", testLateSelection), ("persistence/orphan/corrupt/identity cleanup", testFailuresAndCleanup), ("disconnect/cancel/late acceptance/malformed shape", testLateAcceptance), ("present retryOf exact identity/replay", testOptionalRetryIdentity)]
             #if PENDING_REQUEST_TESTING
             tests.append(("prepare/mark write failure zero wire", testWriteFailures))
             #endif

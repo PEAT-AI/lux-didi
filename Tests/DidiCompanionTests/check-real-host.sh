@@ -41,6 +41,13 @@ import json,sys,os
 root,commit=sys.argv[1:]
 reports=[json.load(open(f'{root}/run-{n}.json')) for n in (1,2,3)]
 for i,r in enumerate(reports):
+ assert set(r)==set('type schemaVersion phase success runId installId proofId reopened source native service priorRecords newRecord observations visual serviceStop credentialCleanup error'.split())
+ assert set(r['visual'])==set('windowId screenCapturePermission pageSnapshot nativeChrome nativeChromeLimitation accessibility rootVisualReviewRequired'.split())
+ diagnostic=json.load(open(f'{root}/run-{i+1}.json.diagnostics.json'))
+ assert diagnostic['nativePid']==r['native']['pid'] and diagnostic['windowId']==r['visual']['windowId']
+ assert diagnostic['sourceSHA']==commit and diagnostic['proofId']==r['proofId']
+ assert all(k in diagnostic for k in ('axConsumer','axDirectTrace','wkDiagnostics'))
+ assert diagnostic['axConsumer']['queryOnMainThread'] is True
  assert r['type']=='LuxDidiInstalledProof' and r['schemaVersion']==1
  assert r['phase']=='complete' and r['success'] is True
  assert r['source']['releaseCommit']==commit
@@ -53,11 +60,12 @@ for i,r in enumerate(reports):
   expected=previous['newRecord']
   assert any(all(old[k]==expected[k] for k in ('sessionId','entryId','text')) and old['visibleInCanonicalUI'] for old in r['priorRecords'])
  assert r['proofId']==reports[0]['proofId'] and r['installId']==reports[0]['installId']
+ assert all(r['service'][k]==reports[0]['service'][k] for k in ('assistantId','authorityEpoch'))
  assert len(r['priorRecords'])==i and r['reopened']==(i>0)
  try: os.kill(r['service']['pid'],0)
  except ProcessLookupError: pass
  else: raise AssertionError('owned HOST survived Quit')
 assert reports[0]['source']['nativeExecutableSHA256']==reports[2]['source']['nativeExecutableSHA256']
 assert reports[0]['source']['bundlePath']!=reports[2]['source']['bundlePath']
-print('REAL-HOST-NATIVE PASS accepted-owner=2399f0369d69f9b753fea3e92d1063968f59d7c6 nativeExits=external-observed-0 runs=3 priorRecords=0,1,2 installId=preserved relocation=observed ordinaryData=untouched installChain=not-claimed')
+print('REAL-HOST-NATIVE PASS dependency-base=76255fc6c2b3a0c75949e492f063884906852b84 source='+commit+' nativeExits=external-observed-0 runs=3 priorRecords=0,1,2 installId=preserved relocation=observed ordinaryData=untouched installChain=not-claimed')
 PY

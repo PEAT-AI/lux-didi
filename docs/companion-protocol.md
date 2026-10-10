@@ -200,3 +200,7 @@ visual review; an NSView cache image is not faithful evidence. The external
 producer owns the shared rendererlease; the public app does not depend on
 private harness tooling. No microphone, playback, notifications, model calls
 or OS grant prompts are introduced by proof mode.
+
+
+### Private installed-proof diagnostics
+The consumer-facing `LuxDidiInstalledProof` schema 1 retains its exact R10 report and visual keys. AX consumer/direct-tree diagnostics, WebKit diagnostics, and a capture-error diagnostic are serialized only in a private sibling `<report>.diagnostics.json` (mode 0600). The sidecar binds `nativePid`, `windowId`, `sourceSHA`, `proofId`, `installId`, and `runId` to that same invocation. It never substitutes for truthful canonical `accessibility`, `nativeChrome`, `error`, or externally observed native exit. Connected same-process WebKit accessibility traversal runs on AppKit's thread; a single bounded own-window observation supplies both the report and the controls gate. Only the application's own PID/windows are inspected, with no permission requests.

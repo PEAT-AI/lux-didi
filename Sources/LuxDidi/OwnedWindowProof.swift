@@ -5,9 +5,12 @@ import ApplicationServices
 
 @MainActor enum OwnedWindowProof {
     private(set) static var captureStage = "unstarted"
+    private(set) static var captureEvidence: [String: Any] = [:]
+    struct Observation { let trace: [String: Any]; let controls: [[String: Any]] }
     enum CaptureFailure: String, Error { case availability, notVisible, noWindowNumber, notInCurrentProcess }
     private struct Control: Sendable { let name: String; let enabled: Bool; let visible: Bool }
-    private struct ConsumerResult: Sendable {
+    private struct ConsumerResult {
+        var windowSnapshots: [[String: Any]] = []
         var code: String
         var windowCount = 0
         var identifierStatuses: [Int32] = []
@@ -18,17 +21,28 @@ import ApplicationServices
         var geometryStatuses: [Int32] = []
         let queryOnMainThread: Bool
     }
-    static func consumerTrace(_ window: NSWindow) async -> [String: Any] {
-        guard NSApp.windows.contains(window), window.isVisible else { return ["code": "own-window-not-visible"] }
-        // Capture primitive expected state on main; NSWindow/AX objects never cross actors.
-        let pid = getpid(), expectedIdentifier = ownIdentifier(window)
-        let frame = ownFrame(window)
-        let result = await Task.detached { consumerSnapshot(pid: pid, expectedIdentifier: expectedIdentifier, expectedFrame: frame) }.value
-        return ["code": result.code, "windowCount": result.windowCount,
+    static func consumerTrace(_ window: NSWindow) async -> [String: Any] { observe(window).trace }
+    static func observe(_ window: NSWindow) -> Observation {
+        guard NSApp.windows.contains(window), window.isVisible else { return Observation(trace: ["code": "own-window-not-visible"], controls: []) }
+        // Same-process AX can synchronously enter WKWebView's implementation.
+        // WebKit explicitly aborts if its AX subtree is consumed off AppKit's thread.
+        let result = consumerSnapshot(pid: getpid(), expectedIdentifier: ownIdentifier(window), expectedFrame: ownFrame(window), expectedTitle: window.title)
+        let appKit = NSApp.windows.prefix(8).map { item -> [String: Any] in
+            ["windowId": item.windowNumber, "target": item === window, "main": item.isMainWindow,
+             "key": item.isKeyWindow, "visible": item.isVisible, "occludedVisible": item.occlusionState.contains(.visible),
+             "frame": rect(item.frame), "convertedFrame": rect(ownFrame(item)),
+             "role": item.accessibilityRole()?.rawValue ?? "none", "subrole": item.accessibilitySubrole()?.rawValue ?? "none"]
+        }
+        return Observation(trace: ["code": result.code, "windowCount": result.windowCount,
                 "identifierStatuses": result.identifierStatuses, "identifierMatches": result.identifierMatches,
-                "childCount": result.childCount, "geometryMatches": result.geometryMatches, "geometryStatuses": result.geometryStatuses, "queryOnMainThread": result.queryOnMainThread]
+                "childCount": result.childCount, "geometryMatches": result.geometryMatches, "geometryStatuses": result.geometryStatuses,
+                "queryOnMainThread": result.queryOnMainThread, "appKitWindows": appKit, "axWindows": result.windowSnapshots],
+                controls: result.controls.map { ["name": $0.name, "enabled": $0.enabled, "visible": $0.visible, "source": "public-own-PID-AX"] })
     }
-    nonisolated private static func consumerSnapshot(pid: pid_t, expectedIdentifier: String, expectedFrame: CGRect) -> ConsumerResult {
+    private static func rect(_ frame: CGRect) -> [String: Double] {
+        ["x": frame.minX, "y": frame.minY, "width": frame.width, "height": frame.height]
+    }
+    private static func consumerSnapshot(pid: pid_t, expectedIdentifier: String, expectedFrame: CGRect, expectedTitle: String) -> ConsumerResult {
         // Public consumer API, only our PID; never request trust or query another app.
         var result = ConsumerResult(code: "starting", queryOnMainThread: Thread.isMainThread)
         let app = AXUIElementCreateApplication(pid)
@@ -51,6 +65,21 @@ import ApplicationServices
             var point = CGPoint.zero; var dimensions = CGSize.zero
             guard AXValueGetValue(position, .cgPoint, &point), AXValueGetValue(size, .cgSize, &dimensions) else { return nil }
             return CGRect(origin: point, size: dimensions)
+        }
+        let main = read(app, kAXMainWindowAttribute), focused = read(app, kAXFocusedWindowAttribute)
+        result.windowSnapshots = windows.map { element in
+            var snapshot: [String: Any] = ["equalsMain": main.map { CFEqual(element, $0) } ?? false,
+                "equalsFocused": focused.map { CFEqual(element, $0) } ?? false]
+            for attribute in [kAXMainAttribute, kAXFocusedAttribute, kAXRoleAttribute, kAXSubroleAttribute, kAXTitleAttribute, kAXChildrenAttribute] {
+                var raw: CFTypeRef?
+                let status = AXUIElementCopyAttributeValue(element, attribute as CFString, &raw)
+                snapshot[attribute + "Status"] = status.rawValue
+                if attribute == kAXTitleAttribute { snapshot["titleMatches"] = raw as? String == expectedTitle }
+                else if attribute == kAXChildrenAttribute { snapshot["childCount"] = (raw as? [AXUIElement])?.count ?? 0 }
+                else { snapshot[attribute] = raw ?? NSNull() }
+            }
+            if let frame = rectangle(element) { snapshot["frame"] = rect(frame) }
+            return snapshot
         }
         let identifierMatching = windows.filter { element in
             var title: CFTypeRef?
@@ -121,10 +150,7 @@ import ApplicationServices
     }
     static func accessibility(_ window: NSWindow) async -> [[String: Any]] {
         guard NSApp.windows.contains(window), window.isVisible else { return [] }
-        let pid = getpid(), identifier = ownIdentifier(window)
-        let frame = ownFrame(window)
-        let result = await Task.detached { consumerSnapshot(pid: pid, expectedIdentifier: identifier, expectedFrame: frame) }.value
-        return result.controls.map { ["name": $0.name, "enabled": $0.enabled, "visible": $0.visible, "source": "public-own-PID-AX"] }
+        return observe(window).controls
     }
     private static func bounded<T>(_ operation: @escaping @MainActor () async throws -> T) async throws -> T {
         try await withCheckedThrowingContinuation { continuation in
@@ -148,6 +174,9 @@ import ApplicationServices
         }
     }
     static func capture(_ window: NSWindow, to output: URL) async throws -> [String: Any] {
+        let started = Date()
+        captureEvidence = ["windowId": window.windowNumber, "frame": rect(window.frame), "backingScaleFactor": window.backingScaleFactor]
+        defer { captureEvidence["stage"] = captureStage; captureEvidence["elapsedSeconds"] = Date().timeIntervalSince(started) }
         captureStage = "availability"
         guard #available(macOS 14.4, *) else { throw CaptureFailure.availability }
         captureStage = "visible"
@@ -161,10 +190,15 @@ import ApplicationServices
         let content = try await SCShareableContent.currentProcess
         guard let owned = content.windows.first(where: { $0.windowID == CGWindowID(window.windowNumber) }) else { throw CaptureFailure.notInCurrentProcess }
         captureStage = "owned-window-found"
+        captureEvidence["matchedWindow"] = ["windowId": owned.windowID, "onScreen": owned.isOnScreen,
+            "frame": rect(owned.frame), "layer": owned.windowLayer]
         let filter = SCContentFilter(desktopIndependentWindow: owned)
+        captureEvidence["filter"] = ["contentRect": rect(filter.contentRect), "pointPixelScale": filter.pointPixelScale]
         let config = SCStreamConfiguration()
         config.width = Int(window.frame.width * 2); config.height = Int(window.frame.height * 2)
         config.showsCursor = false; config.ignoreShadowsSingleWindow = true
+        captureEvidence["configuration"] = ["width": config.width, "height": config.height,
+            "showsCursor": config.showsCursor, "ignoreShadowsSingleWindow": config.ignoreShadowsSingleWindow]
         captureStage = "filter-built-capture-requested"
         let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
         captureStage = "image-returned"

@@ -123,7 +123,7 @@ export type DiscoveryResult =
 export interface CompletedResult {
   state: 'completed' | 'tool-error' | 'protocol-error';
   protocolErrorCode?: number;
-  source: { endpointId: string; url: string; account: string; resource: string; toolName: string; schemaDigest: string; generation: number };
+  source: ResultScope;
   coverage: { completeCorpus: false; basis: 'single-tool-result'; remoteSideEffects: 'unverified' };
   freshness: { receivedAt: number; sourceVersion: 'unknown' };
   projection: { text: string; omitted: boolean; originalCharacters: number; omittedCharacters: number };

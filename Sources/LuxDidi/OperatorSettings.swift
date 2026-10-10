@@ -135,14 +135,16 @@ struct OperatorSettings: Equatable {
     }
 
     private static func prepareDirectory(_ dir: URL) throws {
-        if mkdir(dir.path, 0o700) != 0 && errno != EEXIST { throw NativeServiceError.invalidOperatorSettings }
+        // Create the whole per-user support path; the final component must be 0700.
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let fd = open(dir.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard fd >= 0 else { throw NativeServiceError.invalidOperatorSettings }
         defer { close(fd) }
         var info = stat()
-        guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFDIR, info.st_uid == geteuid(), info.st_mode & 0o777 == 0o700 else {
+        guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFDIR, info.st_uid == geteuid() else {
             throw NativeServiceError.invalidOperatorSettings
         }
+        if info.st_mode & 0o777 != 0o700, fchmod(fd, 0o700) != 0 { throw NativeServiceError.invalidOperatorSettings }
     }
 }
 

@@ -19,7 +19,7 @@ execution, notifications, audio capture and playback, and native web-view integr
 - macOS. This is the only verified development host. The service code avoids Mac-only APIs and is intended to run on Linux, but the Linux path has not been exercised.
 - Node 26.0.0 or newer, and npm. Both packages declare `"engines": {"node": ">=26.0.0"}`. Node is not bundled; you must install it yourself. The host used to write this page reported Node 26.8.2 and npm 11.19.1. The service relies on the built-in `node:sqlite`, which is release-candidate upstream, and on `node:http` for HTTP parsing, so there is no native add-on to compile.
 - The Xcode Command Line Tools, only if you build the Mac shell. It is compiled with `xcrun swiftc` and ad-hoc signed with `codesign`.
-- An installed Playwright Chromium, only for the isolated web browser check. On the managed host that check runs through `lux-browser-slot`; on a plain workstation it needs the browser revision that the web lock file pins.
+- An installed Playwright Chromium and the managed-host `lux-browser-slot` lease tool, only for browser-backed checks. The lease tool is not an npm dependency. A public unmanaged browser-proof path is not implemented; see [browser proof prerequisites](#browser-proof-prerequisites-and-artifact-destinations). Neither prerequisite is needed to build or start the local host.
 
 ## Install
 
@@ -126,7 +126,19 @@ Each check lives under `scripts/` and names in its own comments what it covers:
 - `scripts/check-knowledge-connector.sh`, `scripts/check-live-voice.sh`, `scripts/check-host-entry.sh`, `scripts/check-pending-request.sh`, `scripts/check-provider-config.sh` and `scripts/check-connected.sh`: the per-surface producers of the knowledge connector, live voice, host entry, pending-request store, provider configuration and connected conversation components; each builds the exact sources it covers in a disposable tree and names what it covers in its own comments.
 - `Tests/DidiMacTests/check-mac.sh`: compiles the Mac shell into a disposable bundle in a temporary directory, signs it ad hoc, verifies the signature, and runs its self-check and an empty-app preview. Installation of a real app is owned by integration; the disposable bundle is proof, not an installed product.
 
-On a managed host, lanes run their own declared checks through the controller; the browser-backed check needs `lux-browser-slot` on the host. On a plain workstation the service and domain checks need only Node and the two `npm ci` steps above.
+`npm --prefix server test` is baseline coverage of the runtime and HTTP tests, not acceptance of every feature. The connected conversation, native conversation discovery and selected-memory UI have separate focused producers: `scripts/check-connected.sh`, `scripts/check-native-conversation.sh` and `scripts/check-selected-memory-ui.sh`. Each includes its affected server regressions and the real browser proof; a passing baseline does not replace them. The native-conversation browser proof is a web/service proof, not proof of an installed Mac application.
+
+On a managed host, lanes run their own declared checks through the controller. On a plain workstation the headless service and domain checks need only Node and the two `npm ci` steps above.
+
+### Browser proof prerequisites and artifact destinations
+
+Browser-backed checks currently require installed Playwright Chromium and `lux-browser-slot`, the existing managed-host tool that serializes the shared GPU renderer. The connected, native-conversation and selected-memory producers retain that lease and their real screenshot assertions. Installing npm dependencies does not install the lease tool. An unmanaged public proof interface is future work; do not bypass the managed lease or assume a bare workstation can run these browser gates.
+
+Those three proofs use the test-only `web/test/artifacts.mjs` helper. Optionally set the nonsecret `DIDI_ARTIFACT_DIR` to an **absolute directory path** before running a producer. The directory is created if absent, and each invocation creates a fresh `didi-proof-*` run directory underneath it, so even repeated checks of the same commit cannot overwrite prior evidence. With the variable absent, each invocation instead creates a new isolated run directory in the operating system's temporary directory. An empty, relative, malformed or unwritable supplied path fails loudly rather than silently falling back.
+
+The helper prints the exact run root and screenshot directory before browser startup. Each proof retains its existing relative directory (`connected/screenshots`, `native-conversation-service/screenshots` or `memory-selection-ui/screenshots`) and commit-bound filenames. Screenshots and existing renderer metadata are retained for inspection; the helper never deletes a caller's existing root or prior evidence. Temporary storage may be reclaimed by the operating system, so choose an explicit root when durable retention is needed. This setting selects proof output only; it does not change application state or provider configuration.
+
+The focused filesystem test is `node --test web/test/artifacts.test.mjs`. It verifies supplied/default root isolation and invalid/unwritable roots using only newly created test fixtures; it does not replace the real browser gates.
 
 The planning validator is separate from product checks:
 

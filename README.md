@@ -86,9 +86,23 @@ It validates the plan. It does not test the product; product verification is car
 - [docs/cloud-deployment.md](docs/cloud-deployment.md): the designed path from the loopback service to a Linux virtual machine, with runbook, credential, backup and hosting-boundary rules.
 - [docs/client-service-contract.md](docs/client-service-contract.md): the contract the Mac companion, the browser client and the channel adapters share.
 
+## Run the local developer baseline
+
+Prerequisites: Node **26 or newer** and npm installed on macOS (the currently verified development host). From the repository root, install the locked dependencies, build the service and web client, and start the composed product host in the foreground:
+
+```sh
+npm --prefix server ci && npm --prefix web ci && bash scripts/run-local.sh --port 0
+```
+
+The existing wrapper builds both packages before starting one loopback host on an available port. It prints the origin and availability status; use the local pairing flow in [local development](docs/local-development.md) to open the web client. That page also covers explicit state/config directories, separate builds, baseline versus feature checks, and stopping the host with Ctrl-C. `npm --prefix server start` remains the supported lower-level standalone service, not this composed product bootstrap.
+
+This is a source-checked developer command, not a freshly exercised clean-install walkthrough or an installed application. It does not bundle Node, configure a model/provider, grant OS permissions or install a Mac app. With no provider profile, inference remains disabled. See [provider configuration](docs/provider-configuration.md) for the separately authorized setup.
+
+Build/runtime do not require the managed browser harness. Browser-backed feature proofs currently require an installed Playwright Chromium **and the managed-host `lux-browser-slot` lease tool**; npm dependencies alone do not provide that tool. An unmanaged public browser-proof alternative is future work, not an implemented fallback. See [browser proof prerequisites and artifact destinations](docs/local-development.md#browser-proof-prerequisites-and-artifact-destinations).
+
 ## If you have five minutes
 
-Read this page, then [the P00 program tracker](https://github.com/PEAT-AI/lux-didi/issues/1), then [docs/roadmap.md](docs/roadmap.md). The detail of any single work item lives in its issue, and the backlog file is the machine-readable source.
+Start with the developer baseline above, then [the P00 program tracker](https://github.com/PEAT-AI/lux-didi/issues/1) and [docs/roadmap.md](docs/roadmap.md). The detail of any single work item lives in its issue, and the backlog file is the machine-readable source.
 
 ## What this repository is not
 

@@ -24,6 +24,18 @@ import Foundation
         let request = try InstalledProofRequest.parse(arguments: valid)!
         let first = try request.prepare(installId: install)
         try LifecycleProof.expect(!first.reopened, "new proof state has exact owned marker")
+        try first.write(["phase": "running", "native": ["pid": 42], "source": ["releaseCommit": String(repeating: "a", count: 40)],
+                         "visual": ["windowId": 7, "nativeChrome": NSNull(), "nativeChromeError": ["code": -3811]],
+                         "axConsumer": ["code": "0"], "axDirectTrace": [["knownLabel": true]], "wkDiagnostics": ["ready": true]])
+        let wire = try JSONSerialization.jsonObject(with: Data(contentsOf: report)) as! [String: Any]
+        let visual = wire["visual"] as! [String: Any]
+        try LifecycleProof.expect(wire["axConsumer"] == nil && wire["axDirectTrace"] == nil && wire["wkDiagnostics"] == nil && visual["nativeChromeError"] == nil,
+                                  "R10 wire excludes private diagnostic extensions")
+        let diagnosticURL = report.appendingPathExtension("diagnostics.json")
+        let diagnostic = try JSONSerialization.jsonObject(with: Data(contentsOf: diagnosticURL)) as! [String: Any]
+        try LifecycleProof.expect(diagnostic["proofId"] as? String == first.proofId && diagnostic["nativePid"] as? Int == 42 && diagnostic["windowId"] as? Int == 7 && diagnostic["sourceSHA"] as? String == String(repeating: "a", count: 40), "diagnostic sidecar binds same run and source")
+        try LifecycleProof.expect(diagnostic["axConsumer"] != nil && diagnostic["axDirectTrace"] != nil && diagnostic["wkDiagnostics"] != nil && diagnostic["nativeChromeError"] != nil && visual["nativeChrome"] is NSNull, "sidecar preserves every diagnostic and truthful canonical capture")
+        try LifecycleProof.expect((try FileManager.default.attributesOfItem(atPath: diagnosticURL.path)[.posixPermissions] as? NSNumber)?.intValue == 0o600, "diagnostic sidecar is private")
         let sentinel = state.appendingPathComponent("preservation-sentinel")
         try Data("Synthetic filesystem sentinel, not a business record".utf8).write(to: sentinel)
         let second = try request.prepare(installId: install)

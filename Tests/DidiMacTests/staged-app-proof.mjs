@@ -30,7 +30,7 @@ assert(manifest.schemaVersion === 1, 'schemaVersion must be 1');
 assert(manifest.nodeMajor === 26, 'nodeMajor must be validated 26');
 assert(manifest.nodePath === 'Contents/MacOS/node', 'nodePath must be bundle-relative Contents/MacOS/node');
 assert(!manifest.nodePath.startsWith('/'), 'nodePath must never be absolute');
-assert(manifest.serverEntry === 'server/dist/host/index.js', 'serverEntry is Resources-relative');
+assert(manifest.serverEntry === 'server/node_modules/@lux-didi/service/dist/host/index.js', 'serverEntry is the accepted Resources-relative host entry');
 assert(manifest.webRoot === 'web/dist', 'webRoot is Resources-relative');
 assert(/^[0-9a-f]{40}$/.test(manifest.releaseCommit), 'releaseCommit must be 40 lowercase hex');
 

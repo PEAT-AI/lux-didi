@@ -10,13 +10,13 @@
 #   scripts/build-macos-app.sh <app-dir> [--assets DIR] [--install-id UUID]
 #                              [--release-commit SHA] [--cache DIR]
 #
-# Asset bundle layout (accepted producer output):
-#   DIR/node                     -> Contents/MacOS/node
-#   DIR/server/                  -> Contents/Resources/server
-#   DIR/web/                     -> Contents/Resources/web
+# Asset bundle layout (accepted producer output, scripts/build-asset-bundle.sh):
+#   DIR/Resources/node/bin/node                                  -> Contents/MacOS/node
+#   DIR/server/node_modules/@lux-didi/service                    -> Contents/Resources/server/node_modules/@lux-didi/service
+#   DIR/Resources/web/dist                                       -> Contents/Resources/web/dist
 # Runtime manifest (Contents/Resources/didi-runtime.json) is written here with
-# nodePath "Contents/MacOS/node", serverEntry "server/dist/host/index.js" and
-# webRoot "web/dist". The native app validates it on every launch.
+# nodePath "Contents/MacOS/node", serverEntry
+# "server/node_modules/@lux-didi/service/dist/host/index.js" and webRoot "web/dist". The native app validates it on every launch.
 set -euo pipefail
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -52,18 +52,17 @@ cp Resources/Info.plist "$app/Contents/Info.plist"
   -o "$app/Contents/MacOS/LuxDidi"
 
 if [ -n "$assets" ]; then
-  [ -f "$assets/node" ] || { echo "build-macos-app.sh: asset node binary missing" >&2; exit 2; }
-  [ -f "$assets/server/dist/host/index.js" ] || { echo "build-macos-app.sh: asset server entry missing" >&2; exit 2; }
-  [ -d "$assets/web/dist" ] || { echo "build-macos-app.sh: asset web root missing" >&2; exit 2; }
+  # Accepted asset-bundle layout (scripts/build-asset-bundle.sh @8b548fc).
+  [ -f "$assets/Resources/node/bin/node" ] || { echo "build-macos-app.sh: accepted asset node missing" >&2; exit 2; }
+  [ -f "$assets/server/node_modules/@lux-didi/service/dist/host/index.js" ] || { echo "build-macos-app.sh: accepted service host entry missing" >&2; exit 2; }
+  [ -f "$assets/Resources/web/dist/index.html" ] || { echo "build-macos-app.sh: accepted web shell missing" >&2; exit 2; }
 
-  install -m 0755 "$assets/node" "$app/Contents/MacOS/node"
-  if [ -d "$assets/lib" ]; then
-    for dylib in "$assets/lib"/*.dylib; do
-      [ -e "$dylib" ] || continue
-      install -m 0755 "$dylib" "$app/Contents/MacOS/"
-    done
-  fi
-  # The composed node must resolve every non-system dependency inside the bundle.
+  install -m 0755 "$assets/Resources/node/bin/node" "$app/Contents/MacOS/node"
+  rm -rf "$app/Contents/Resources/server" "$app/Contents/Resources/web"
+  mkdir -p "$app/Contents/Resources/server/node_modules/@lux-didi" "$app/Contents/Resources/web"
+  cp -R "$assets/server/node_modules/@lux-didi/service" "$app/Contents/Resources/server/node_modules/@lux-didi/service"
+  cp -R "$assets/Resources/web/dist" "$app/Contents/Resources/web/dist"
+  # The official node is self-contained; assert no unresolved non-system dependency.
   python3 - "$app/Contents/MacOS/node" <<'PY'
 import subprocess, sys
 def deps(p):
@@ -72,9 +71,6 @@ bad = [d for d in deps(sys.argv[1]) if not (d.startswith("/usr/lib/") or d.start
 if bad:
     print("BUILD-MACOS-APP FAIL: bundled node has unresolved deps", bad[:5]); sys.exit(1)
 PY
-  rm -rf "$app/Contents/Resources/server" "$app/Contents/Resources/web"
-  cp -R "$assets/server" "$app/Contents/Resources/server"
-  cp -R "$assets/web" "$app/Contents/Resources/web"
 
   # Real Node major validation against the bundled binary, never a claim.
   major="$("$app/Contents/MacOS/node" -p 'process.versions.node.split(".")[0]')"
@@ -95,7 +91,7 @@ document = {
     "releaseCommit": release_commit,
     "nodePath": "Contents/MacOS/node",
     "nodeMajor": 26,
-    "serverEntry": "server/dist/host/index.js",
+    "serverEntry": "server/node_modules/@lux-didi/service/dist/host/index.js",
     "webRoot": "web/dist",
 }
 with open(path, "w") as handle:

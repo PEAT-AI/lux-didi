@@ -163,9 +163,10 @@ public actor LiveSessionCoordinator {
 
     private func performCreate(_ token: UInt64, _ op: UInt64) async {
         guard current(token, op), let frozen = intent, let key = createKey else { return }
+        let status: LiveOperatorStatus
         do {
             try validateIntent(frozen)
-            let status = try await http.status(for: frozen)
+            status = try await http.status(for: frozen)
             guard current(token, op), !Task.isCancelled else { return }
             try validate(status, frozen)
         } catch {
@@ -185,6 +186,7 @@ public actor LiveSessionCoordinator {
         guard current(token, op), !Task.isCancelled else { return }
         do {
             try validate(snapshot, frozen, key)
+            guard snapshot.grant.permittedClasses.sorted() == status.dataClasses.sorted() else { throw LiveClientError.grantMismatch }
             sessionID = snapshot.liveSessionId; grant = snapshot.grant
             if let terminal = snapshot.terminal { state = .terminal(terminal); return }
             guard snapshot.lifecycle == "accepted", snapshot.consumerState == "detached", !snapshot.dispatchIntent else {
@@ -275,7 +277,7 @@ public actor LiveSessionCoordinator {
     }
 
     public func close() async {
-        guard !settled else { return }
+        guard state != .idle, !settled else { return }
         guard let frozen = intent, let id = sessionID else {
             operation &+= 1; operationTask?.cancel(); receiveTask?.cancel()
             state = .outcomeUnknown(.unavailable); return
@@ -295,7 +297,7 @@ public actor LiveSessionCoordinator {
     }
 
     public func revoke() async {
-        guard !settled else { return }
+        guard state != .idle, !settled else { return }
         operation &+= 1; operationTask?.cancel(); receiveTask?.cancel()
         let token = generation, op = operation
         let connection = socket; socket = nil; state = .closing
@@ -314,7 +316,7 @@ public actor LiveSessionCoordinator {
     }
 
     public func readSnapshot() async throws -> LiveSnapshot {
-        guard !reading, state != .attaching, let frozen = intent, let id = sessionID, let key = createKey else { throw LiveClientError.unavailable }
+        guard !reading, state != .attaching, state != .closing, let frozen = intent, let id = sessionID, let key = createKey else { throw LiveClientError.unavailable }
         operation &+= 1
         let token = generation, op = operation
         reading = true
@@ -327,7 +329,7 @@ public actor LiveSessionCoordinator {
     }
 
     public func readJournal(cursor: Int? = nil) async throws -> LiveJournalPage {
-        guard !reading, state != .attaching, let frozen = intent, let id = sessionID, cursor == nil || cursor! >= 0 else { throw LiveClientError.unavailable }
+        guard !reading, state != .attaching, state != .closing, let frozen = intent, let id = sessionID, cursor == nil || cursor! >= 0 else { throw LiveClientError.unavailable }
         operation &+= 1
         let token = generation, op = operation
         reading = true
@@ -374,5 +376,9 @@ public actor LiveSessionCoordinator {
               snapshot.grant.chosenInputClass == frozen.inputClass, snapshot.grant.permittedClasses.contains(frozen.inputClass),
               snapshot.grant.revision > 0, ["accepted", "opening", "active", "terminal"].contains(snapshot.lifecycle),
               (snapshot.lifecycle == "terminal") == (snapshot.terminal != nil) else { throw LiveClientError.grantMismatch }
+        if let grant {
+            guard snapshot.grant.revision == grant.revision,
+                  snapshot.grant.permittedClasses.sorted() == grant.permittedClasses.sorted() else { throw LiveClientError.grantMismatch }
+        }
     }
 }

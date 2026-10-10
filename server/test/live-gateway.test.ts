@@ -100,6 +100,19 @@ async function createBody(h: Harness, key: string, headers: Record<string, strin
   });
 }
 
+function upgradeResponse(origin: string, path: string, headers: Record<string, string>): Promise<{ status: number; headers: Record<string, string | string[] | undefined> }> {
+  const url = new URL(origin);
+  return new Promise((resolve, reject) => {
+    const req = request({
+      host: url.hostname, port: url.port, path, method: 'GET',
+      headers: { connection: 'Upgrade', upgrade: 'websocket', 'sec-websocket-key': Buffer.alloc(16, 7).toString('base64'), 'sec-websocket-version': '13', ...headers },
+    });
+    req.on('upgrade', (res, socket) => { socket.destroy(); resolve({ status: 101, headers: res.headers }); });
+    req.on('response', res => { res.resume(); resolve({ status: res.statusCode ?? 0, headers: res.headers }); });
+    req.on('error', reject);
+    req.end();
+  });
+}
 function attempt(origin: string, path: string, headers: Record<string, string>): Promise<number> {
   const url = new URL(origin);
   return new Promise((resolve, reject) => {
@@ -263,12 +276,16 @@ test('two simultaneous attaches open at most one provider, and revoke is isolate
   assert.equal(h.f.attempts, before, 'a revoked grant opens no provider');
 });
 
-test('subprotocols and extensions are refused before the provider', async t => {
+test('an offered subprotocol is refused and an offered extension is never negotiated', async t => {
   const h = await harness(t, { config: configJson(true) });
   const created = await createBody(h, 'proto-1');
   const id = created.body.data.liveSessionId;
   assert.equal(await attempt(h.origin, `/api/v1/live-sessions/${id}/audio`, { ...bearer(h), 'sec-websocket-protocol': 'x' }), 400);
   assert.equal(h.f.attempts, 0, 'a subprotocol handshake opens no provider');
+  const id2 = (await createBody(h, 'proto-2')).body.data.liveSessionId;
+  const accepted = await upgradeResponse(h.origin, `/api/v1/live-sessions/${id2}/audio`, { ...bearer(h), 'sec-websocket-extensions': 'permessage-deflate' });
+  assert.equal(accepted.status, 101, 'an extension offer leaves the accepted handshake intact');
+  assert.equal(accepted.headers['sec-websocket-extensions'], undefined, 'the fixed no-extensions contract negotiates none');
 });
 
 test('revoke during deferred credential resolution ends durably and opens no provider', async t => {

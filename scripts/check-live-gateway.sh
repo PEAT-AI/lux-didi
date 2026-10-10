@@ -11,12 +11,13 @@ printf '# isolated global config\n' > "$work/npm-global"
 export npm_config_userconfig="$work/npm-user" npm_config_globalconfig="$work/npm-global"
 cd server
 npm run build
-# The new gateway suite runs with the accepted Live owner and adapter regression suites.
-node --test --test-reporter=tap --test-timeout=30000 dist/test/live-gateway.test.js dist/test/live-session.test.js dist/test/live-voice.test.js dist/test/prompt.test.js | tee "$work/test.log"
+# Real web assets once for the affected host-composition assertion (asset build only; no browser is launched).
+(cd "$root" && npm --prefix web ci --ignore-scripts --no-audit --no-fund && npm --prefix web run build)
+# The gateway suite runs with the accepted Live owner/adapter and the affected HTTP/chat authorization regressions.
+node --test --test-reporter=tap --test-timeout=30000 dist/test/live-gateway.test.js dist/test/live-session.test.js dist/test/live-voice.test.js dist/test/prompt.test.js dist/test/http.test.js dist/test/chat.test.js | tee "$work/test.log"
 grep -Eq '^# tests [1-9][0-9]*$' "$work/test.log" || { echo 'Zero selected live gateway tests' >&2; exit 1; }
 grep -Eq '^# fail 0$' "$work/test.log" || { echo 'Selected live gateway tests failed' >&2; exit 1; }
-# Real web assets once for the changed host-composition assertion, then the bounded host file.
-(cd "$root" && npm --prefix web ci --ignore-scripts --no-audit --no-fund && npm --prefix web run build)
+# Bounded host runtime file; no browser is launched.
 node --test --test-reporter=tap --test-timeout=60000 test/host.test.js test/host-entry.test.mjs | tee "$work/host.log"
 grep -Eq '^# tests [1-9][0-9]*$' "$work/host.log" || { echo 'Zero selected host runtime tests' >&2; exit 1; }
 grep -Eq '^# fail 0$' "$work/host.log" || { echo 'Selected host runtime tests failed' >&2; exit 1; }

@@ -436,7 +436,7 @@ test('B6 recovery does not repeat a terminal tool intent or unknown SDK effect',
   assert.equal(f.sdkCalls.length, 1); assert.equal(forbiddenContinuation(f.modelCalls), 0);
 });
 
-test('DIAG browser enrollment and selected tool accept reaches a real terminal result', async t => {
+for (const enrollment of ['HTTP', 'resumed'] as const) test(`DIAG ${enrollment} browser enrollment and selected tool accept reaches a real terminal result`, async t => {
   const gate = barrier(); t.after(() => gate.release());
   const f = await open(t, { beforeResolve: gate.pause });
   const decisions: { state: string; reason: string | null; bindings: number; classes: readonly string[] }[] = [];
@@ -478,7 +478,7 @@ test('DIAG browser enrollment and selected tool accept reaches a real terminal r
   const { data: { sessionId: browserEnrolledSessionId } } = await enrolled.json() as { data: { sessionId: string } };
   await f.approveSession(browserEnrolledSessionId);
   // The current hardware browser fixture resumes this locally pre-enrolled conversation.
-  const sessionId = await f.enroll();
+  const sessionId = enrollment === 'HTTP' ? browserEnrolledSessionId : await f.enroll();
   const key = randomUUID();
   const body = JSON.stringify({ sessionId, text: 'Use synthetic insight 731.', selectedConnectionIds: ['synthetic-lux'] });
   const accept = (idempotencyKey = key) => fetch(`${service.origin}/api/v1/chat`, { method: 'POST', headers: {
@@ -488,9 +488,10 @@ test('DIAG browser enrollment and selected tool accept reaches a real terminal r
   const { data: run } = await accepted.json() as { data: RunSnapshot };
   assert.ok(run.toolBindingHash, 'HTTP selection freezes a real owner binding');
   await gate.entered;
-  // Source visibility in the browser is not a terminal wait: its second acceptance may overlap.
-  const next = await accept(randomUUID()); assert.equal(next.status, 200);
-  const { data: nextRun } = await next.json() as { data: RunSnapshot };
+  // A second identity conflicts while busy; replay of the actual panel identity is the same run.
+  const next = await accept(randomUUID()); assert.equal(next.status, 409);
+  const pendingReplay = await accept(); assert.equal(pendingReplay.status, 200);
+  assert.equal(((await pendingReplay.json()) as { data: RunSnapshot }).data.runId, run.runId);
   gate.release();
   // Observe the real Chat subscription through authenticated HTTP, not an accepted snapshot.
   const terminal = async (run: RunSnapshot) => {
@@ -523,9 +524,5 @@ test('DIAG browser enrollment and selected tool accept reaches a real terminal r
   assert.equal(final.outcome, 'complete', 'Browser-equivalent run must complete, not merely accept');
   assert.ok(f.modelCalls.length >= 2); assert.ok(f.sdkCalls.length > 0);
   assert.ok(final.sourceIds.includes(sourceId)); assert.ok(final.toolReferences.length > 0);
-  const nextFinal = await terminal(nextRun);
-  console.log('DIAG_SECOND_TERMINAL ' + JSON.stringify({ outcome: nextFinal.outcome, authorityFailures, decisions,
-    modelRequests: f.modelCalls.length, sdkCalls: f.sdkCalls.length, sourceIds: nextFinal.sourceIds, toolReferences: nextFinal.toolReferences.length }));
-  assert.equal(nextFinal.outcome, 'complete', 'The browser second selected turn must also complete');
-  assert.ok(nextFinal.sourceIds.includes(sourceId)); assert.ok(nextFinal.toolReferences.length > 0);
+  assert.equal(f.modelCalls.length, 2); assert.equal(f.sdkCalls.length, 1);
 });

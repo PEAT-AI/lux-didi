@@ -21,7 +21,7 @@ export function composeMcpConnection(options: { store: Store; owner: ToolsOwner;
     if (!registry.matchesEndpoint(selected.endpoint)) return refused('endpoint-binding-mismatch');
     if (selected.locallyDisabled) { registry.disable(p.endpoint.id); registry.denyEgress(p.endpoint.id); return refused('local-disable-durable-revocation-pending', 'pending'); }
     if (p.enabled) selected.assertCurrentBinding();
-    const applied = owner.applyConnectionIntent(selected.intent);
+    const applied = owner.applyConnectionIntent({ expectedPolicySha256: selected.intent.expectedPolicySha256, policy: p });
     if (!p.enabled) { registry.disable(p.endpoint.id); registry.denyEgress(p.endpoint.id); return { ...applied, restore: async () => ({ state: 'refused', reason: 'connection-disabled' }) }; }
     // Separate, explicit protected selection authorizes both operations; neither grants tools.
     registry.enable(p.endpoint.id); registry.allowEgress(p.endpoint.id);

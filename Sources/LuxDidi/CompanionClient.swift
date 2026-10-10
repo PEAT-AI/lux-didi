@@ -29,13 +29,15 @@ struct ServiceDescriptor: Codable {
     func page(_ url: URL?) -> Bool {
         allows(url) && url?.path == "/" && url?.query == nil && url?.fragment == nil
     }
-    func credential() throws -> String {
+    @MainActor func credential() throws -> String {
+        guard NativeKeychainPolicy.check() == errSecSuccess else { throw CompanionError.credentialUnavailable }
         let context = LAContext()
         context.interactionNotAllowed = true
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: credentialService, kSecAttrAccount as String: credentialAccount,
             kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne,
-            kSecUseAuthenticationContext as String: context]
+            kSecUseAuthenticationContext as String: context,
+            kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail]
         var result: CFTypeRef?
         guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
               let data = result as? Data, let token = String(data: data, encoding: .utf8), !token.isEmpty,

@@ -105,6 +105,29 @@ import Darwin
                     print("PASS: noncanonical credential framing or token refused")
                 }
             }
+            // Fake statuses prove failure handling only, never real SDK efficacy.
+            var getCalls = 0
+            let setterFailure = NativeKeychainPolicy.evaluate(set: { errSecNotAvailable }, get: { _ in
+                getCalls += 1; return errSecSuccess
+            })
+            try expect(setterFailure == errSecNotAvailable && getCalls == 0, "failed policy setter never proceeds to readback")
+            let getterFailure = NativeKeychainPolicy.evaluate(set: { errSecSuccess }, get: { _ in errSecNotAvailable })
+            let enabledReadback = NativeKeychainPolicy.evaluate(set: { errSecSuccess }, get: { value in
+                value.pointee = DarwinBoolean(true); return errSecSuccess
+            })
+            for failure in [setterFailure, getterFailure, enabledReadback] {
+                let blocked = try setup("normal")
+                var addCalls = 0
+                do {
+                    _ = try NativeCredentialImport.importCredential(state: blocked.1, installId: blocked.0.installId,
+                        add: { _, _ in addCalls += 1; return errSecSuccess }, policyCheck: { failure })
+                    try expect(false, "failed establishment/readback must refuse import")
+                } catch NativeServiceError.keychain(let status) {
+                    try expect(status == failure && addCalls == 0 && !itemExists(blocked.0.installId),
+                               "policy failure refuses before token/SDK add dispatch and stores no item")
+                }
+            }
+            print("PASS: test-only policy failure injection, not SDK proof")
             let refused = try setup("normal")
             try NativeCredentialImport.prepareState(refused.1)
             let refusedFile = refused.1.appendingPathComponent("admin-credential")

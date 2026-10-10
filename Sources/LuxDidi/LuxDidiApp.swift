@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import Carbon
+import Security
 
 @MainActor final class AppModel: ObservableObject {
     @Published var draft = ""
@@ -290,6 +291,10 @@ struct RootView: View {
 #if !COMPANION_TEST
 @main enum LuxDidiApp {
     @MainActor static func main() {
+        let policy = NativeKeychainPolicy.establish()
+        guard policy == errSecSuccess else {
+            fputs("DIDI STARTUP: noninteractive credential policy unavailable (\(policy))\n", stderr); exit(2)
+        }
         let proof: InstalledProofRequest?
         do { proof = try InstalledProofRequest.parse(arguments: Array(CommandLine.arguments.dropFirst())) }
         catch { fputs("INSTALLED-PROOF INVALID: unsafe or malformed arguments\n", stderr); exit(2) }

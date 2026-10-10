@@ -109,10 +109,13 @@ struct PreparedInstalledProof {
         let count = data.withUnsafeBytes { Darwin.write(file, $0.baseAddress, $0.count) }
         guard count == data.count, fsync(file) == 0, rename(pending.path, report.path) == 0 else { throw InstalledProofError.unsafePath }
     }
-    func cleanCredential() throws {
+    @MainActor func cleanCredential() throws {
+        let policy = NativeKeychainPolicy.check()
+        guard policy == errSecSuccess else { throw NativeServiceError.keychain(policy) }
         let context = LAContext(); context.interactionNotAllowed = true
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: NativeCredentialImport.service,
-                                   kSecAttrAccount as String: credentialAccount, kSecUseAuthenticationContext as String: context]
+                                   kSecAttrAccount as String: credentialAccount, kSecUseAuthenticationContext as String: context,
+                                   kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail]
         let status = SecItemDelete(query as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else { throw NativeServiceError.keychain(status) }
     }

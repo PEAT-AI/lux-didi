@@ -90,8 +90,11 @@ enum NativeCredentialImport {
         defer { close(fd) }
         guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFDIR, info.st_uid == geteuid(), info.st_mode & 0o777 == 0o700 else { throw NativeServiceError.unsafeState }
     }
-    static func importCredential(state: URL, installId: String, service: String = NativeCredentialImport.service,
-                                 add: (CFDictionary, UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus = SecItemAdd) throws -> NativeCredentialReference {
+    @MainActor static func importCredential(state: URL, installId: String, service: String = NativeCredentialImport.service,
+                                 add: (CFDictionary, UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus = SecItemAdd,
+                                 policyCheck: @MainActor () -> OSStatus = NativeKeychainPolicy.check) throws -> NativeCredentialReference {
+        let policy = policyCheck()
+        guard policy == errSecSuccess else { throw NativeServiceError.keychain(policy) }
         let directory = open(state.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard directory >= 0 else { throw NativeServiceError.unsafeState }
         defer { close(directory) }
@@ -112,10 +115,13 @@ enum NativeCredentialImport {
         let data = Data(bytes)
         let context = LAContext(); context.interactionNotAllowed = true
         let base: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
-                                  kSecAttrAccount as String: installId, kSecUseAuthenticationContext as String: context]
+                                  kSecAttrAccount as String: installId, kSecUseAuthenticationContext as String: context,
+                                        kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail]
         var query = base
         query[kSecReturnData as String] = true; query[kSecMatchLimit as String] = kSecMatchLimitOne
         var existing: CFTypeRef?
+        let readPolicy = policyCheck()
+        guard readPolicy == errSecSuccess else { throw NativeServiceError.keychain(readPolicy) }
         let status = SecItemCopyMatching(query as CFDictionary, &existing)
         if status == errSecSuccess {
             guard existing as? Data == data else { throw NativeServiceError.credentialMismatch }
@@ -123,6 +129,8 @@ enum NativeCredentialImport {
             var item = base
             item[kSecValueData as String] = data
             item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+            let addPolicy = policyCheck()
+            guard addPolicy == errSecSuccess else { throw NativeServiceError.keychain(addPolicy) }
             let added = add(item as CFDictionary, nil)
             guard added == errSecSuccess else { throw NativeServiceError.keychain(added) }
         } else { throw NativeServiceError.keychain(status) }

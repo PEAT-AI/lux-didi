@@ -12,7 +12,8 @@ import Darwin
         let account = UUID().uuidString.lowercased() + ".proof.sdk"
         var report: [String: Any] = ["type": "RealKeychainSDKDiscriminator", "mode": mode, "pid": Int(getpid()),
             "stage": "starting", "success": false, "service": service, "account": account,
-            "globalPolicyChanged": false, "bootstrapAttempted": false, "credentialReturned": false,
+            "globalPolicyChanged": NativeKeychainPolicy.installationStatus == errSecSuccess,
+                                     "policyInstallationStatus": Int(NativeKeychainPolicy.installationStatus ?? errSecInteractionNotAllowed), "bootstrapAttempted": false, "credentialReturned": false,
             "addCalls": 0, "addStatus": NSNull(), "typedRefusal": NSNull(), "equalReimport": false,
             "cleanupStatus": NSNull(), "absentStatus": NSNull()]
         func write() throws {

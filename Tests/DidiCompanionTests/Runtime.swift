@@ -1,5 +1,6 @@
 import AppKit
 import WebKit
+import Security
 
 @main enum CompanionRuntime {
     @MainActor static func expect(_ value: Bool, _ label: String) {
@@ -19,6 +20,10 @@ import WebKit
         return (try JSONSerialization.jsonObject(with: data) as! [String: Any])["data"] as! [String: Any]
     }
     @MainActor static func main() async {
+        let policy = NativeKeychainPolicy.establish()
+        guard policy == errSecSuccess else {
+            fputs("COMPANION POLICY: unavailable (\(policy))\n", stderr); exit(2)
+        }
         if CommandLine.arguments.count == 5, CommandLine.arguments[1] == "--keychain-sdk-child" {
             do {
                 let passed = try KeychainSDKProof.run(mode: CommandLine.arguments[2], state: URL(fileURLWithPath: CommandLine.arguments[3]), output: URL(fileURLWithPath: CommandLine.arguments[4]))

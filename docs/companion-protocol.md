@@ -128,8 +128,16 @@ validated private directory FD using O_NOFOLLOW, checking regular/current-owner
 native removes that LF before validation, Keychain comparison/import and bearer
 use; only the canonical 43-character base64url token is accepted. Interior or
 repeated LF, CR, whitespace and malformed tokens remain rejected. An unframed
-canonical token remains compatible. It imports via noninteractive Keychain API to
-fixed service ai.peat.lux-didi.admin/account lowercase installId. A differing
+canonical token remains compatible. At earliest executable entry, before AppKit,
+WebKit or credential work, native establishes its own-process lifetime legacy
+Keychain policy with Set(false) and checked Get(false), never restoring/re-enabling
+it. Failed establishment/readback refuses credential work/bootstrap. Each native
+Keychain boundary checks established policy and current false readback, retaining
+LAContext and per-call authentication-UI fail. The deprecated public lifetime
+policy covers legacy login-keychain creation UI that per-call flags do not.
+Framework-internal flag changes/compatibility and an existing locked login keychain
+remain untested residuals, not a blanket no-UI guarantee. It imports to fixed
+service ai.peat.lux-didi.admin/account lowercase installId. A differing
 existing item is an explicit blocker, never silent credential rotation/deletion
 or ACL broadening. The canonical service file remains. Synthetic unique Keychain
 services exist only in proof builds and are removed by their test owner.

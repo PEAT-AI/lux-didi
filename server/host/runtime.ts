@@ -11,6 +11,7 @@ import { listenService } from '../http/server.js';
 import { createStaticHandler } from '../http/static.js';
 import { chatMigrations } from '../chat/index.js';
 import { liveMigrations } from '../live/index.js';
+import { toolsMigrations } from '../tools/index.js';
 import { composeChat, type ModelTesting, type ToolChatAssembly } from './connected.js';
 import { composeLive, type LiveTesting } from './live.js';
 import { composeMcpConnection } from './mcp.js';
@@ -74,7 +75,7 @@ export async function startHost(config: HostConfig) {
   const descriptorRelative = relative(webRoot, descriptorPath);
   if (!descriptorPath.endsWith('.json') || (!isAbsolute(descriptorRelative) && descriptorRelative !== '..' && !descriptorRelative.startsWith(`..${sep}`))) throw new Error('Descriptor must be a JSON file outside the web build');
   const domain = createDomainPort({ outbox: Outbox }); // No authorized device/target: reminders remain unbound.
-  const store = new Store(dataDir, [...domain.migrations, ...chatMigrations, ...liveMigrations]);
+  const store = new Store(dataDir, [...domain.migrations, ...chatMigrations, ...liveMigrations, ...toolsMigrations]);
   try {
     const owner = loadOwnerProfile({ ...(config.ownerProfilePath !== undefined ? { path: config.ownerProfilePath } : {}), ownerId: store.assistantId });
     if (owner.status === 'error') throw new ConfigError('invalid_profile');

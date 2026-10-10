@@ -56,7 +56,7 @@ fi
 if ! command -v lux-browser-slot >/dev/null; then echo 'CHECK BLOCKED: lux-browser-slot missing' >&2; exit 75; fi
 
 if [ "${1:-}" = "--leased-run" ]; then
-  work="$2"; proof="$3"; node="$4"; app="$5"
+  work="$2"; proof="$3"; node="$4"; app="$5"; fixture="$6"; payload_sha="$7"
   export LUX_VERIFICATION_DRIVER="$work/observer"
   export LUX_COMPANION_SOURCE_ROOT="$(pwd)"
   real_home="$HOME"
@@ -248,10 +248,24 @@ fi
 app="$work/Lux Didi.app"
 bash scripts/build-macos-app.sh "$app" --assets "$assets" --release-commit "$(git rev-parse HEAD)"
 
+# Separately composed signed fixture app: the SAME compiled native payload with the
+# accepted service host entry replaced by the test-only fixture entry (R8/R10).
+# Record the pre-sign native payload identity; re-signing may alter signature bytes.
+fixture="$work/Fixture Didi.app"
+ditto "$app" "$fixture"
+payload_sha="$(shasum -a 256 "$fixture/Contents/MacOS/LuxDidi" | awk '{print $1}')"
+host_dir="$fixture/Contents/Resources/server/node_modules/@lux-didi/service/dist/host"
+cp "$host_dir/index.js" "$host_dir/canonical.js"
+cp Tests/DidiCompanionTests/fixture-host-entry.mjs "$host_dir/index.js"
+cp Tests/DidiCompanionTests/fixture-host-runtime.mjs "$host_dir/fixture-host-runtime.mjs"
+codesign --force --sign - --entitlements Resources/LuxDidi.entitlements "$fixture"
+codesign --verify --deep --strict "$fixture"
+printf 'FIXTURE-APP payload_sha256=%s\n' "$payload_sha"
+
 # External LaunchServices observer (the existing verification driver), built here
 # so no compile happens inside the lease.
 src=Tests/DidiCompanionTests/launch-probe
 /usr/bin/nice -n 10 xcrun clang -c "$src/Kernel.c" -o "$work/Kernel.o"
 /usr/bin/nice -n 10 xcrun swiftc -j 1 -num-threads 1 -parse-as-library -import-objc-header "$src/Kernel.h" "$src/Identity.swift" "$src/Observer.swift" "$work/Kernel.o" -o "$work/observer"
 
-lux-browser-slot run --wait 120 -- bash "$0" --leased-run "$work" "$proof" "$node" "$app"
+lux-browser-slot run --wait 120 -- bash "$0" --leased-run "$work" "$proof" "$node" "$app" "$fixture" "$payload_sha"

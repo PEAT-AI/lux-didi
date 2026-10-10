@@ -161,7 +161,7 @@ except Exception: print("")
 PY
 )"
     if [ -n "$origin" ]; then
-      status_json="$(curl -fsS -H "Authorization: Bearer $token" "$origin/api/v1/status" 2>/dev/null)" || status_json=""
+      status_json="$(curl -fsS -H "Authorization: Bearer $token" "$origin/api/v1/status" 2>"$proof/status-curl.err")" || { status_json=""; last_curl="$(head -c 200 "$proof/status-curl.err" 2>/dev/null)"; }
       [ -n "$status_json" ] && break
     fi
     sleep 0.2
@@ -169,7 +169,7 @@ PY
   wait "$observer_pid" 2>/dev/null || true
   if [ -z "$status_json" ]; then
     kill "$observer_pid" 2>/dev/null || true
-    echo 'MACOS-INSTALL FAIL: protected status not observed while the native host was up' >&2; exit 1
+    echo "MACOS-INSTALL FAIL: protected status not observed while the native host was up; last curl: ${last_curl:-none}" >&2; exit 1
   fi
   python3 - "$status_json" "$assistant" <<'PY'
 import json, sys

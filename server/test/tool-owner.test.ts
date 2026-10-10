@@ -140,8 +140,10 @@ test('exclusive Store composition rejects duplicate owner; reopen seals only mat
   });
   const reopened = f.reopen();
   const rows = f.store.transaction(tx => tx.all('SELECT owner_id,state,result_json FROM tool_calls ORDER BY owner_id'));
-  assert.equal(rows[0]!.state, 'unknown'); assert.equal(rows[1]!.state, 'intent');
-  const bytes = rows[0]!.result_json;
+  const own = rows.find(row => row.owner_id === 'owner')!;
+  const unrelated = rows.find(row => row.owner_id === 'other')!;
+  assert.equal(own.state, 'unknown'); assert.equal(unrelated.state, 'intent');
+  const bytes = own.result_json;
   assert.throws(() => reopened.complete(f.intent(), { text: 'late' }, ['private']), /terminal/);
   assert.equal(f.store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE owner_id=?', ['owner']))?.result_json, bytes);
   assert.equal(f.calls.length, 0);

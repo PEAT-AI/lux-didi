@@ -32,9 +32,9 @@ printf 'PROBE-DIR=%s\n' "$proof"
 app="$work/LaunchProbe.app"
 mkdir -p "$app/Contents/MacOS"
 cd "$root"
-xcrun clang -c "$src/Kernel.c" -o "$work/Kernel.o"
-xcrun swiftc -parse-as-library -import-objc-header "$src/Kernel.h" "$src/Identity.swift" "$src/App.swift" "$work/Kernel.o" -o "$app/Contents/MacOS/LaunchProbe"
-xcrun swiftc -parse-as-library -import-objc-header "$src/Kernel.h" "$src/Identity.swift" "$src/Observer.swift" "$work/Kernel.o" -o "$work/observer"
+/usr/bin/nice -n 10 xcrun clang -c "$src/Kernel.c" -o "$work/Kernel.o"
+/usr/bin/nice -n 10 xcrun swiftc -j 1 -num-threads 1 -parse-as-library -import-objc-header "$src/Kernel.h" "$src/Identity.swift" "$src/App.swift" "$work/Kernel.o" -o "$app/Contents/MacOS/LaunchProbe"
+/usr/bin/nice -n 10 xcrun swiftc -j 1 -num-threads 1 -parse-as-library -import-objc-header "$src/Kernel.h" "$src/Identity.swift" "$src/Observer.swift" "$work/Kernel.o" -o "$work/observer"
 python3 - "$app" <<'PY'
 import plistlib,sys,uuid
 with open(sys.argv[1]+'/Contents/Info.plist','wb') as f:

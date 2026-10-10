@@ -12,12 +12,12 @@ if [ "${1:-}" = "--prepare" ]; then
   cd "$root"
   app="$artifacts/Lux Didi.app"
   start=$SECONDS
-  xcrun swiftc -whole-module-optimization -module-cache-path "$artifacts/cache" Sources/LuxDidi/AppPorts.swift Sources/LuxDidi/NativeKeychainPolicy.swift Sources/LuxDidi/CompanionClient.swift Tests/DidiMacTests/main.swift -o "$artifacts/seams"
+  /usr/bin/nice -n 10 xcrun swiftc -j 1 -num-threads 1 -whole-module-optimization -module-cache-path "$artifacts/cache" Sources/LuxDidi/AppPorts.swift Sources/LuxDidi/NativeKeychainPolicy.swift Sources/LuxDidi/CompanionClient.swift Tests/DidiMacTests/main.swift -o "$artifacts/seams"
   "$artifacts/seams"
   printf 'DURATION seam-compile-and-run=%ss (test-only duration above)\n' "$((SECONDS-start))"
   mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
   cp Resources/Info.plist "$app/Contents/Info.plist"
-  xcrun swiftc -whole-module-optimization -module-cache-path "$artifacts/cache" -parse-as-library Sources/LuxDidi/*.swift -o "$app/Contents/MacOS/LuxDidi"
+  /usr/bin/nice -n 10 xcrun swiftc -j 1 -num-threads 1 -whole-module-optimization -module-cache-path "$artifacts/cache" -parse-as-library Sources/LuxDidi/*.swift -o "$app/Contents/MacOS/LuxDidi"
   codesign --force --sign - --entitlements Resources/LuxDidi.entitlements "$app"
   codesign --verify --strict "$app"
   exit 0

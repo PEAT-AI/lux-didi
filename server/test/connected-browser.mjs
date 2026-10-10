@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { fork, execFileSync } from 'node:child_process';
@@ -8,7 +9,7 @@ import { join, resolve } from 'node:path';
 const { chromium } = createRequire(new URL('../../web/package.json', import.meta.url))('playwright');
 const root = resolve(import.meta.dirname, '../..');
 const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, env: { ...process.env, GIT_PAGER: 'cat', GIT_EDITOR: 'true' } }).toString().trim();
-const artifacts = '/Users/rob/.lux/reports/lux-didi-overnight-1009/connected/screenshots';
+const artifacts = await mkdtemp(join(tmpdir(), 'connected-browser-artifacts-'));
 const state = await mkdtemp(join(tmpdir(), 'connected-browser-'));
 await mkdir(artifacts, { recursive: true });
 let child, descriptor, browser, context, page;
@@ -22,8 +23,8 @@ const waitPhase = (name, afterCalls = 0) => new Promise((resolvePhase, reject) =
   const exited = () => { cleanup(); reject(Error(`Fixture exited before ${name}: ${stderr.slice(-1200)}`)); };
   proc.on('message', listener); proc.once('exit', exited);
 });
-async function start(port = 0) {
-  child = fork(join(root, 'server/dist/test/connected-process.js'), [state, join(root, 'web/dist'), String(port)], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
+async function start(port = 0, dir = state, mode) {
+  child = fork(join(root, 'server/dist/test/connected-process.js'), [dir, join(root, 'web/dist'), String(port), ...(mode ? [mode] : [])], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
   child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-4000); });
   descriptor = (await waitPhase('ready')).descriptor;
 }
@@ -34,8 +35,8 @@ async function stop() {
   try { const result = await Promise.race([exited, new Promise((_, reject) => { timer = setTimeout(() => reject(Error('Fixture stop timeout')), 5000); })]); assert.equal(result[0], 0, `Fixture exit: ${stderr.slice(-1500)}`); }
   finally { clearTimeout(timer); if (proc.exitCode === null && proc.signalCode === null) { proc.kill('SIGKILL'); await exited; } }
 }
-async function operator(path, body = {}) {
-  const token = (await readFile(join(state, 'admin-credential'), 'utf8')).trim();
+async function operator(path, body = {}, dir = state) {
+  const token = (await readFile(join(dir, 'admin-credential'), 'utf8')).trim();
   const response = await fetch(descriptor.origin + '/api/v1' + path, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'X-Didi-Authority-Epoch': descriptor.authorityEpoch, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   assert.equal(response.status, 200, await response.clone().text()); return (await response.json()).data;
 }
@@ -147,7 +148,58 @@ try {
     await page.screenshot({ path: join(artifacts, `truthful-errors-${sha}.png`), fullPage: true });
   });
   assert.deepEqual(errors, []);
-  await writeFile(join(artifacts, `proof-${sha}.json`), JSON.stringify({ sha, steps, requests, errors, screenshots: [`desktop-${sha}.png`, `mobile-375-${sha}.png`, `truthful-errors-${sha}.png`], liveModel: false, nativeVoice: false }, null, 2));
+  await step('default owner projection remains explicit public Lux Didi', async () => {
+    assert.deepEqual((await api('/status')).ownerProfile, { status: 'default', displayName: 'Lux Didi' });
+    await page.getByRole('heading', { name: 'Talk with Lux Didi', exact: true }).waitFor();
+  });
+  for (const mode of ['owner-unconfigured', 'owner-configured']) {
+    await step(`${mode}: independent safe owner label on the actual host and GPU browser`, async () => {
+      await stop(); await context.close();
+      const ownerState = await mkdtemp(join(tmpdir(), 'connected-owner-browser-'));
+      try {
+        await start(0, ownerState, mode);
+        context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, timezoneId: 'UTC' });
+        const unexpected = [], ownerErrors = [], ownerRequests = [];
+        await context.route('**/*', route => {
+          const url = new URL(route.request().url());
+          if (/^https?:$/.test(url.protocol) && url.origin !== descriptor.origin) { unexpected.push(url.origin); return route.abort(); }
+          return route.continue();
+        });
+        page = await context.newPage();
+        page.on('pageerror', error => ownerErrors.push(error.message));
+        page.on('console', message => { if (message.type() === 'error') ownerErrors.push(message.text()); });
+        page.on('request', request => { if (request.url().includes('/api/v1')) ownerRequests.push({ path: new URL(request.url()).pathname, method: request.method() }); });
+        await page.goto(descriptor.origin); await page.locator('#pair-code').waitFor();
+        const pairing = await operator('/auth/pairing', {}, ownerState);
+        await page.locator('#pair-code').fill(pairing.pairingCode); await page.locator('#pair-form').evaluate(form => form.requestSubmit());
+        await page.locator('#connected-route').waitFor();
+        const status = await api('/status'), route = await api('/chat/status');
+        const label = 'Example <Owner> & Friend', configured = mode === 'owner-configured';
+        assert.deepEqual(status.ownerProfile, { status: 'configured', displayName: label });
+        assert.equal(status.model.configured, configured);
+        assert.equal(route.status, configured ? 'configured' : 'unconfigured');
+        assert.equal('displayName' in status.model, false); assert.equal('displayName' in route, false);
+        const heading = page.getByRole('heading', { name: `Talk with ${label}`, exact: true });
+        await heading.waitFor(); assert.equal(await heading.evaluate(node => node.childElementCount), 0);
+        assert.match(await page.title(), /Lux Didi/);
+        assert.equal(await page.locator('#connected-consent').isDisabled(), !configured);
+        const profilePath = join(ownerState, 'owner-profile.json');
+        const serialized = await readFile(profilePath, 'utf8'), owner = JSON.parse(serialized);
+        assert.equal(status.assistantId, owner.ownerId);
+        const surfaces = [JSON.stringify({ status, route }), await page.content(), await page.locator('body').textContent()];
+        for (const value of [profilePath, owner.profileVersion, owner.style.text, owner.lore.text, createHash('sha256').update(serialized).digest('hex')]) {
+          assert.ok(surfaces.every(surface => !surface.includes(value)), 'protected owner metadata must not reach status/UI');
+        }
+        assert.deepEqual(unexpected, []); assert.deepEqual(ownerErrors, []);
+        assert.ok(ownerRequests.every(request => request.method !== 'POST' || request.path.startsWith('/api/v1/auth/')));
+        const wireExists = await readFile(join(ownerState, 'wire.jsonl')).then(() => true, error => { if (error.code === 'ENOENT') return false; throw error; });
+        assert.equal(wireExists, false, 'owner label proof must make zero model transport calls');
+        await page.screenshot({ path: join(artifacts, `${mode}-${sha}.png`), fullPage: true });
+        steps.push(`${mode} configured=${configured} escaped-label=true status-ui-no-leak=true transport-calls=0`);
+      } finally { await stop(); await rm(ownerState, { recursive: true, force: true }); }
+    });
+  }
+  await writeFile(join(artifacts, `proof-${sha}.json`), JSON.stringify({ sha, steps, requests, errors, screenshots: [`desktop-${sha}.png`, `mobile-375-${sha}.png`, `truthful-errors-${sha}.png`, `owner-unconfigured-${sha}.png`, `owner-configured-${sha}.png`], liveModel: false, nativeVoice: false }, null, 2));
   console.log(`PASS ${steps.length} actual connected browser checks at ${sha}; artifacts ${artifacts}`);
 } catch (error) {
   if (page) { const visible = { run: await page.locator('#connected-run').textContent().catch(() => null), error: await page.locator('#connected-error').textContent().catch(() => null), pageErrors: errors }; console.error(JSON.stringify({ ...visible, fixtureStderr: stderr.slice(-1500) })); await page.screenshot({ path: join(artifacts, `diagnostic-${sha}.png`), fullPage: true }).catch(() => {}); }

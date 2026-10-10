@@ -78,12 +78,24 @@ import AppKit
         }
     }
     func handshake() {
-        guard !settled, !released, let target, let record, kernel >= 0,
-              FileManager.default.fileExists(atPath: root + "/identity.json") else { return }
+        // The app's gate listens as soon as it writes identity.json. The
+        // pre-release cancellation modes must reach that gate even when the
+        // LaunchServices completion callback (which sets target/record/kernel)
+        // arrives after the app's own gate window, so they connect from here.
+        let preRelease = ["cancel-pre", "eof-pre", "bad-nonce"].contains(args[4])
+        guard !settled, !released, control < 0,
+              FileManager.default.fileExists(atPath: root + "/identity.json"),
+              (kernel >= 0 && record != nil) || preRelease else { return }
         do {
             let reported = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: root + "/identity.json"))) as! [String: Any]
-            let (current, actual) = try identity(target.processIdentifier, nonce: nonce, bundle: bundle)
-            guard (verification ? (reported["pid"] as? Int == Int(target.processIdentifier) && reported["nonce"] as? String == nonce && physicalPath(reported["bundleURL"] as? String ?? "") == bundle) : NSDictionary(dictionary: reported).isEqual(to: record)), NSDictionary(dictionary: actual).isEqual(to: record) else { fail("identity changed or nonce mismatch"); return }
+            let reportedPID = target.map { Int($0.processIdentifier) } ?? (reported["pid"] as? Int ?? 0)
+            guard reportedPID > 0, reported["nonce"] as? String == nonce,
+                  physicalPath(reported["bundleURL"] as? String ?? "") == bundle,
+                  target == nil || Int(target!.processIdentifier) == reportedPID else { fail("identity changed or nonce mismatch"); return }
+            let (current, actual) = try identity(pid_t(reportedPID), nonce: nonce, bundle: bundle)
+            guard current.uid == getuid(), actual["executable"] as? String == expectedExecutable,
+                  record.map { NSDictionary(dictionary: actual).isEqual(to: $0) } ?? true,
+                  verification || (record.map { NSDictionary(dictionary: reported).isEqual(to: $0) } ?? false) else { fail("identity changed or nonce mismatch"); return }
             if verification {
                 var reused = current; reused.microseconds ^= 1
                 var mixed = current; mixed.pid = getpid()
@@ -94,7 +106,7 @@ import AppKit
             facts = current // Cleanup authority only after complete kernel + bundle + nonce identity.
             if verification {
                 control = probe_connect("/tmp/didi-verification-" + nonce + ".sock")
-                guard control >= 0 else { fail("control connection"); return }
+                guard control >= 0 else { fail("control connection errno=\(errno)"); return }
                 if args[4] == "cancel-pre" { send("cancel") }
                 else if args[4] == "eof-pre" { close(control); control = -1 }
                 else if args[4] == "bad-nonce" { send("release", nonce: UUID().uuidString) }

@@ -9,11 +9,12 @@ const dependencyRoot = process.env.DIDI_TOOL_CHAT_DEPENDENCIES;
 assert.ok(dependencyRoot, 'Producer must supply the verified dependency root');
 const require = createRequire(resolve(dependencyRoot, '../../web/package.json'));
 const { chromium } = require('playwright');
-function message(child, phase) {
+function message(child, phase, diagnostics = () => '') {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => finish(Error(`Synthetic process ${phase} timeout`)), 10000);
+    const detail = () => diagnostics().replace(/tool-chat-synthetic-key-(?:one|two)|synthetic-mcp-token/g, '[redacted]').slice(-1000);
+    const timer = setTimeout(() => finish(Error(`Synthetic process ${phase} timeout :: ${detail()}`)), 10000);
     const receive = value => { if (value.phase === phase) finish(null, value); };
-    const exited = () => finish(Error(`Synthetic process exited before ${phase}`));
+    const exited = (code, signal) => finish(Error(`Synthetic process exited before ${phase} (code=${code}, signal=${signal}) :: ${detail()}`));
     function finish(error, value) {
       clearTimeout(timer); child.off('message', receive); child.off('exit', exited);
       if (error) reject(error); else resolve(value);
@@ -46,9 +47,14 @@ test('B3/B5 built browser renders real trusted source identifiers and durable to
   const capture = chunk => { outputBytes += chunk.length; if (outputBytes <= 65536) output += chunk; };
   child.stdout.on('data', capture); child.stderr.on('data', capture);
   t.after(() => stop(child));
-  const ready = await message(child, 'ready');
+  const ready = await message(child, 'ready', () => output);
   const browser = await chromium.launch({ headless: true }); t.after(() => browser.close());
   const context = await browser.newContext(); const page = await context.newPage();
+  const httpOperations = [];
+  page.on('request', request => {
+    const path = new URL(request.url()).pathname;
+    if (path.startsWith('/api/v1/')) httpOperations.push({ method: request.method(), path });
+  });
   const pairing = await fetch(`${ready.origin}/api/v1/auth/pairing`, { method: 'POST',
     headers: { Authorization: `Bearer ${ready.credential}`, 'Content-Type': 'application/json' }, body: '{}' });
   assert.equal(pairing.status, 200); const { data: { pairingCode } } = await pairing.json();
@@ -104,7 +110,11 @@ test('B3/B5 built browser renders real trusted source identifiers and durable to
       }
     } finally { await reader.cancel(); }
   }, { runId: accepted.body.data.runId, csrfToken, authorityEpoch });
-  assert.equal(terminal.outcome, 'complete', JSON.stringify(terminal));
+  const observation = message(child, 'observations', () => output);
+  child.send({ type: 'observations', runId: terminal.runId });
+  const boundary = await observation;
+  console.log('TOOL_CHAT_BROWSER_BOUNDARY ' + JSON.stringify({ runId: terminal.runId, outcome: terminal.outcome, httpOperations, boundary }));
+  assert.equal(terminal.outcome, 'complete', JSON.stringify({ terminal, boundary }));
   const accept = () => page.evaluate(async ({ body, key, csrfToken, authorityEpoch }) => {
     const response = await fetch('/api/v1/chat', { method: 'POST', headers: {
       'Content-Type': 'application/json', 'Idempotency-Key': key, 'X-Didi-CSRF': csrfToken, 'X-Didi-Authority-Epoch': authorityEpoch

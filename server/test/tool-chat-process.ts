@@ -257,6 +257,21 @@ export async function fixture(options: FixtureOptions = {}) {
 // IPC is test-local parent/child communication, not the orchestration bus.
 async function browserProcess() {
   const f = await fixture();
+  // Same observational owning seams as the HTTP diagnostic; decisions are returned unchanged.
+  const decisions: { runId: string; state: string; reason: string | null; bindings: number; classes: readonly string[] }[] = [];
+  const authorize = f.tools.resultGate.authorize.bind(f.tools.resultGate);
+  f.tools.resultGate.authorize = async (...args) => {
+    const decision = await authorize(...args);
+    decisions.push({ runId: args[0].runId, state: decision.state, reason: decision.state === 'allowed' ? null : decision.reason,
+      bindings: args[1].length, classes: [...args[2]] });
+    return decision;
+  };
+  const authorityFailures: string[] = [];
+  const authority = f.chat.authority.bind(f.chat);
+  f.chat.authority = (...args) => {
+    try { return authority(...args); }
+    catch (error) { authorityFailures.push(error instanceof Error ? error.message : 'unknown'); throw error; }
+  };
   const sessionId = await f.enroll();
   const service = await listenService({ store: f.store, domain: createDomainPort({ outbox: Outbox }), chat: f.chat,
     modelStatus: { status: 'configured', provider: 'gemini', model: scope.modelId }, port: 0,
@@ -269,6 +284,14 @@ async function browserProcess() {
   };
   process.on('message', message => { void (async () => {
     if (message === 'stop') { await stop(); return; }
+    if (typeof message === 'object' && message !== null && 'type' in message && message.type === 'observations'
+      && 'runId' in message && typeof message.runId === 'string') {
+      const accepted = f.tools.acceptedRun(message.runId);
+      process.send?.({ phase: 'observations', decisions, authorityFailures, modelRequests: f.modelCalls.length,
+        sdkCalls: f.sdkCalls.length, acceptance: accepted?.acceptance ?? null,
+        currentPolicy: { generation: f.policy().generation, enabled: f.policy().enabled,
+          route: f.policy().route, sourcePolicy: f.policy().sourcePolicy, schemaDigest: f.policy().schemaDigest } });
+    }
     if (message === 'proof') process.send?.({ phase: 'proof', modelCalls: f.modelCalls.map(c => ({ body: c.body })), sdkCalls: f.sdkCalls,
       counts: f.counts() });
   })().catch(() => { process.exitCode = 1; void stop(); }); });
@@ -297,5 +320,10 @@ async function recoveryProcess() {
 }
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
   const task = process.argv[2] === 'browser' ? browserProcess : process.argv[2] === 'recovery' ? recoveryProcess : null;
-  if (task) void task().catch(() => { console.error('Synthetic tool-chat process setup failed'); process.exitCode = 1; process.disconnect?.(); });
+  if (task) void task().catch(error => {
+    // This process only owns synthetic fixtures; redact their keys and bound startup evidence.
+    const detail = error instanceof Error ? error.message.replace(/tool-chat-synthetic-key-(?:one|two)|synthetic-mcp-token/g, '[redacted]').slice(-500) : 'unknown';
+    console.error('Synthetic tool-chat process setup failed:', detail);
+    process.exitCode = 1; process.disconnect?.();
+  });
 }

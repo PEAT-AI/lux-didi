@@ -105,6 +105,29 @@ import Darwin
                     print("PASS: noncanonical credential framing or token refused")
                 }
             }
+            let refused = try setup("normal")
+            try NativeCredentialImport.prepareState(refused.1)
+            let refusedFile = refused.1.appendingPathComponent("admin-credential")
+            try canonical.write(to: refusedFile)
+            try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: refusedFile.path)
+            var previousInteraction = DarwinBoolean(false)
+            try expect(SecKeychainGetUserInteractionAllowed(&previousInteraction) == errSecSuccess, "read actual process Keychain interaction policy")
+            var creationWasNoninteractive = false
+            do {
+                _ = try NativeCredentialImport.importCredential(state: refused.1, installId: refused.0.installId, service: service, add: { _, _ in
+                    var allowed = DarwinBoolean(true)
+                    creationWasNoninteractive = SecKeychainGetUserInteractionAllowed(&allowed) == errSecSuccess && !allowed.boolValue
+                    return errSecInteractionNotAllowed
+                })
+                try expect(false, "Keychain creation refusal must not succeed")
+            } catch NativeServiceError.keychain(let status) {
+                try expect(status == errSecInteractionNotAllowed, "Keychain creation refusal is explicit before credential dispatch")
+            }
+            try expect(creationWasNoninteractive, "legacy Keychain item creation cannot open login authorization UI")
+            var restoredInteraction = DarwinBoolean(false)
+            try expect(SecKeychainGetUserInteractionAllowed(&restoredInteraction) == errSecSuccess && restoredInteraction.boolValue == previousInteraction.boolValue,
+                       "Keychain refusal restores prior process interaction policy")
+            try expect(!itemExists(refused.0.installId), "refused Keychain creation stores no item")
             let again = try await owned.start()
             try expect(again.pid == first.pid, "double Start retains one child")
             let second = supervisor(try setup("normal", state: valid.1))

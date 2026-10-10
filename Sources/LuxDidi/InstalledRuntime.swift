@@ -90,7 +90,8 @@ enum NativeCredentialImport {
         defer { close(fd) }
         guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFDIR, info.st_uid == geteuid(), info.st_mode & 0o777 == 0o700 else { throw NativeServiceError.unsafeState }
     }
-    static func importCredential(state: URL, installId: String, service: String = NativeCredentialImport.service) throws -> NativeCredentialReference {
+    static func importCredential(state: URL, installId: String, service: String = NativeCredentialImport.service,
+                                 add: (CFDictionary, UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus = SecItemAdd) throws -> NativeCredentialReference {
         let directory = open(state.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard directory >= 0 else { throw NativeServiceError.unsafeState }
         defer { close(directory) }
@@ -122,7 +123,7 @@ enum NativeCredentialImport {
             var item = base
             item[kSecValueData as String] = data
             item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-            let added = SecItemAdd(item as CFDictionary, nil)
+            let added = add(item as CFDictionary, nil)
             guard added == errSecSuccess else { throw NativeServiceError.keychain(added) }
         } else { throw NativeServiceError.keychain(status) }
         return NativeCredentialReference(service: service, account: installId)

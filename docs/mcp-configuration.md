@@ -64,4 +64,4 @@ A connection may bind an operator-approved local executable instead of an HTTP U
 
 Child stdout/stderr are never forwarded to the parent's sinks, and neither command, args, env nor any secret marker appears in status payloads, diagnostics or model-visible projections.
 
-**Platform support.** The stdio arm is supported and verified on macOS/POSIX only; on Windows it fails closed (`validateApprovedStdioEnv` rejects any stdio binding) until its adapter is implemented, while HTTP and local features are unaffected. This is a source-level guarantee; no Windows runtime behaviour is claimed or proven.
+**Platform support.** The stdio arm is supported and verified on macOS/POSIX only. On win32 a stdio binding is **refused** (`validateApprovedStdioEnv` returns false there) because the platform's inherited-environment set differs and its adapter is not implemented, while HTTP and local features are unaffected. This is a source-level guarantee; no Windows runtime behaviour is claimed or proven.

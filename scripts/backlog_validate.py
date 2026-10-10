@@ -223,6 +223,11 @@ ALLOWED_PATHS = {
     "docs/local-development.md",
     "docs/lux-knowledge-connector.md",
     "docs/native-request-recovery.md",
+    "docs/live-gateway.md",
+    "docs/live-session-core.md",
+    "docs/native-conversation-protocol.md",
+    "docs/selected-memory-context.md",
+    "docs/selected-memory-interface.md",
     "fixtures/domain/library-basic.json",
     "scripts/check-domain.sh",
     "scripts/check-mcp.sh",
@@ -232,6 +237,11 @@ ALLOWED_PATHS = {
     "scripts/check-knowledge-connector.sh",
     "scripts/check-live-voice.sh",
     "scripts/check-pending-request.sh",
+    "scripts/check-live-gateway.sh",
+    "scripts/check-live-session.sh",
+    "scripts/check-memory-context.sh",
+    "scripts/check-native-conversation.sh",
+    "scripts/check-selected-memory-ui.sh",
 }
 ALLOWED_PATHS |= {f"docs/{name}" for name in DOCS}
 

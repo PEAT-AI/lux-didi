@@ -99,7 +99,31 @@ try {
     await page.screenshot({ path: join(artifacts, `desktop-${sha}.png`), fullPage: true });
     await page.setViewportSize({ width: 375, height: 900 });
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
-    await page.screenshot({ path: join(artifacts, `mobile-375-${sha}.png`), fullPage: true });
+    const counts = await page.evaluate(() => Object.fromEntries(['#app', '#message-form', '#connected-panel', '#connected-entries', '#connected-draft', '#connected-send', 'canvas'].map(selector => [selector, document.querySelectorAll(selector).length])));
+    for (const [selector, count] of Object.entries(counts)) assert.equal(count, 1, `Unique rendered DOM ${selector}`);
+    assert.equal(await page.locator('#connected-entries .assistant').count(), 2);
+    const savedTurns = await page.locator('#connected-entries article').count(); assert.equal(savedTurns, 4);
+    const positions = [];
+    const viewport = async (name, target) => {
+      if (target) await page.locator(target).evaluate(element => element.scrollIntoView({ block: 'center', behavior: 'instant' }));
+      else await page.evaluate(() => window.scrollTo(0, 0));
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      positions.push(await page.evaluate(({ name, target }) => {
+        const box = selector => { const element = document.querySelector(selector); const r = element.getBoundingClientRect(); const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2); return { x: r.x, y: r.y, width: r.width, height: r.height, visible: r.x >= 0 && r.right <= innerWidth && r.y >= 0 && r.bottom <= innerHeight, unoccluded: element === hit || element.contains(hit) }; };
+        return { name, target, scrollY, viewport: { width: innerWidth, height: innerHeight }, document: { width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight }, send: box('#connected-send'), draft: box('#connected-draft'), turns: document.querySelectorAll('#connected-entries article').length };
+      }, { name, target }));
+      await page.screenshot({ path: join(artifacts, `mobile-375-${name}-${sha}.png`), fullPage: false });
+    };
+    // Preserve an unmodified full-page discriminator, but acceptance uses real viewports.
+    await page.screenshot({ path: join(artifacts, `mobile-fullpage-discriminator-${sha}.png`), fullPage: true });
+    await viewport('top', null);
+    await viewport('history', '#connected-entries');
+    await page.locator('#connected-draft').fill('Unsent synthetic mobile viewport proof; do not send automatically.');
+    await viewport('composer', '#connected-draft');
+    assert.ok(positions.at(-1).send.visible && positions.at(-1).send.unoccluded, 'Actual Send control fully visible and unoccluded at375px');
+    assert.ok(positions.at(-1).draft.visible && positions.at(-1).draft.unoccluded, 'Actual composer fully visible and unoccluded at375px');
+    assert.equal(await page.locator('#connected-send').isEnabled(), true);
+    await writeFile(join(artifacts, `mobile-dom-${sha}.json`), JSON.stringify({ sha, counts, positions, savedTurns, source: 'actual shipped DOM and hardware-rendered unstitched viewport captures' }, null, 2));
   });
   await step('failed acceptance preserves draft with no capture, credential send or automatic retry', async () => {
     const sessions = await api('/sessions'); const enrolled = sessions.items.find(item => item.title === 'Naya connected conversation');

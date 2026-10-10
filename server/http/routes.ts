@@ -3,7 +3,8 @@ import type { DomainOperation, DomainOperations } from '../contracts/domain.js';
 export type DomainRoute = { kind: 'domain'; operation: DomainOperation; input: DomainOperations[DomainOperation]['input']; mutation: boolean };
 export type ConnectedRoute = { kind: 'connected'; action: 'status' | 'enroll' | 'conversation' | 'revoke' | 'accept' | 'run' | 'cancel' | 'events' | 'conversationEvents'; id: string | null; input: Record<string, unknown>; mutation: boolean };
 export type SelectionRoute = { kind: 'selection'; clear: boolean; mutation: boolean; input: Record<string, unknown> };
-export type Route = DomainRoute | ConnectedRoute | SelectionRoute | { kind: 'health' | 'status' | 'pairing' | 'pair' | 'session' | 'logout' | 'chat'; mutation: boolean };
+export type LiveRoute = { kind: 'live'; action: 'status' | 'create' | 'snapshot' | 'journal' | 'revoke' | 'audio'; id: string | null; input: Record<string, unknown>; mutation: boolean };
+export type Route = DomainRoute | ConnectedRoute | SelectionRoute | LiveRoute | { kind: 'health' | 'status' | 'pairing' | 'pair' | 'session' | 'logout' | 'chat'; mutation: boolean };
 type DirectKind = 'health' | 'status' | 'pairing' | 'pair' | 'session' | 'logout' | 'chat';
 const bad = (message: string): never => { throw new ServiceError('BAD_REQUEST', message); };
 export function object(value: unknown): Record<string, unknown> { if (!value || typeof value !== 'object' || Array.isArray(value)) return bad('JSON object required'); return value as Record<string, unknown>; }
@@ -35,6 +36,32 @@ export function resolveRoute(method: string, url: URL, body?: Record<string, unk
   const path = url.pathname;
   let expected: string[] = [];
   const matched = (methods: string[]) => { expected = methods; if (!methods.includes(method)) throw new ServiceError('METHOD_NOT_ALLOWED', 'Method is not allowed', 405); };
+  if (path === '/api/v1/live/status') { matched(['GET']); query(url, []); return { kind: 'live', action: 'status', id: null, input: {}, mutation: false }; }
+  if (path === '/api/v1/live-sessions') {
+    matched(['POST']); query(url, []);
+    const input = body ? object(body) : {};
+    if (body) {
+      fields(input, ['inputClass'], ['inputClass']);
+      if (!['ordinary', 'private', 'sensitive'].includes(String(input['inputClass']))) bad('Invalid inputClass');
+    }
+    return { kind: 'live', action: 'create', id: null, input, mutation: true };
+  }
+  const liveSession = /^\/api\/v1\/live-sessions\/([^/]+)(?:\/(journal|revoke|audio))?$/.exec(path);
+  if (liveSession) {
+    const id = liveSession[1]!; const sub = liveSession[2];
+    if (!/^[0-9a-fA-F-]{36}$/.test(id)) bad('Invalid Live session id');
+    if (sub === 'journal') {
+      matched(['GET']); query(url, ['cursor', 'limit']);
+      const input: Record<string, unknown> = {};
+      const cursor = url.searchParams.get('cursor'), limit = url.searchParams.get('limit');
+      if (cursor !== null) { if (!/^\d+$/.test(cursor)) bad('Invalid cursor'); input['cursor'] = Number(cursor); }
+      if (limit !== null) { if (!/^\d+$/.test(limit)) bad('Invalid limit'); input['limit'] = Number(limit); }
+      return { kind: 'live', action: 'journal', id, input, mutation: false };
+    }
+    if (sub === 'revoke') { matched(['POST']); query(url, []); return { kind: 'live', action: 'revoke', id, input: {}, mutation: true }; }
+    if (sub === 'audio') { matched(['GET']); query(url, []); return { kind: 'live', action: 'audio', id, input: {}, mutation: false }; }
+    matched(['GET']); query(url, []); return { kind: 'live', action: 'snapshot', id, input: {}, mutation: false };
+  }
   let action: ConnectedRoute['action'] | undefined, id: string | null = null;
   if (path === '/api/v1/chat/status') action = 'status';
   else if (path === '/api/v1/conversations') action = 'enroll';

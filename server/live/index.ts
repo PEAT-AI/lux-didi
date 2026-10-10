@@ -1,13 +1,14 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { DataClass, LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort, LiveVoiceSession } from '../adapters/live-voice/index.js';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
-import { validateLiveProfile } from './config.js';
+import { liveProfileIdentity, validateLiveProfile } from './config.js';
 import { parseTerminal, persistedKinds, readFragmentPage, retainedBytes } from './journal.js';
 import {
   LiveError,
   type CreateLiveSession, type JournalKind, type LiveAttachment, type LiveConsumerState, type LiveContext,
-  type LiveFragmentPage, type LiveInvalidationReason, type LiveOwnerConfig, type LiveProfile,
-  type LiveSessionSnapshot, type LiveStorePort, type LiveTerminalOutcome,
+  type LiveFragmentPage, type LiveInvalidationReason, type LiveOutputChunk, type LiveOwnerConfig,
+  type LiveProfile, type LiveProfileProjection, type LivePublicMarker, type LiveSessionSnapshot, type LiveStorePort,
+  type LiveTerminalOutcome,
 } from './types.js';
 
 interface ActiveSession {
@@ -19,7 +20,7 @@ interface ActiveSession {
   ready: boolean;
   invalidated: boolean;
   terminal: boolean;
-  consumer: AudioChannel;
+  consumer: OutputChannel;
   consumerState: LiveConsumerState;
   journalEvents: number;
   journalBytes: number;
@@ -32,7 +33,7 @@ interface ActiveSession {
 
 export { liveMigrations } from './schema.js';
 export * from './types.js';
-export { validateLiveProfile, defaultLiveLimits } from './config.js';
+export { liveProfileIdentity, validateLiveProfile, defaultLiveLimits } from './config.js';
 
 const keyPattern = /^[A-Za-z0-9_.:-]{1,128}$/;
 const classes: readonly DataClass[] = ['ordinary', 'private', 'sensitive'];
@@ -40,40 +41,58 @@ const maxPage = 500;
 
 function identity(value: unknown): string { return createHash('sha256').update(JSON.stringify(value)).digest('hex'); }
 function journalKind(type: string): JournalKind | null { return (persistedKinds as readonly string[]).includes(type) ? type as JournalKind : null; }
+function markerOf(event: LiveVoiceEvent, kind: JournalKind, journalSequence: number): LivePublicMarker {
+  return {
+    kind, sequence: event.sequence, journalSequence,
+    text: 'text' in event ? event.text : null,
+    finished: 'finished' in event && event.finished !== undefined ? event.finished : null,
+    value: event.type === 'waitingForInput' ? event.value : null,
+  };
+}
 function deferred<T>() {
   let resolve!: (value: T) => void, reject!: (error: unknown) => void;
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
   return { promise, resolve, reject };
 }
-/** Bounded single-consumer audio channel. Overflow is reported, never silently dropped. */
-class AudioChannel {
-  #queue: Uint8Array[] = [];
+/** Bounded single-consumer output channel: ephemeral PCM plus committed public markers, in order. */
+class OutputChannel {
+  #queue: LiveOutputChunk[] = [];
   #bytes = 0;
-  #waiter: ((result: IteratorResult<Uint8Array>) => void) | undefined;
+  #waiter: ((result: IteratorResult<LiveOutputChunk>) => void) | undefined;
   #closed = false;
   constructor(private readonly maxEvents: number, private readonly maxBytes: number) {}
-  push(pcm: Uint8Array): 'ok' | 'backpressure' {
+  push(chunk: LiveOutputChunk): 'ok' | 'backpressure' {
     if (this.#closed) return 'ok';
-    if (this.#queue.length + 1 > this.maxEvents || this.#bytes + pcm.length > this.maxBytes) return 'backpressure';
+    const size = chunk.kind === 'audio' ? chunk.pcm.length : 0;
+    if (this.#queue.length + 1 > this.maxEvents || this.#bytes + size > this.maxBytes) return 'backpressure';
     const waiter = this.#waiter;
-    if (waiter) { this.#waiter = undefined; waiter({ value: pcm, done: false }); return 'ok'; }
-    this.#queue.push(pcm); this.#bytes += pcm.length; return 'ok';
+    if (waiter) { this.#waiter = undefined; waiter({ value: chunk, done: false }); return 'ok'; }
+    this.#queue.push(chunk); this.#bytes += size; return 'ok';
   }
+  /** Graceful end: already queued committed markers are still delivered, then done. */
   close(): void {
+    if (this.#closed) return;
+    this.#closed = true;
+    if (this.#queue.length) return;
+    const waiter = this.#waiter; this.#waiter = undefined;
+    waiter?.({ value: undefined, done: true });
+  }
+  /** Immediate end for detach/shutdown: drop anything still queued. */
+  discard(): void {
     if (this.#closed) return;
     this.#closed = true; this.#queue = []; this.#bytes = 0;
     const waiter = this.#waiter; this.#waiter = undefined;
     waiter?.({ value: undefined, done: true });
   }
-  [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
+  [Symbol.asyncIterator](): AsyncIterator<LiveOutputChunk> {
     return {
       next: () => this.#next(),
-      return: () => { this.close(); return Promise.resolve({ value: undefined, done: true }); },
+      return: () => { this.discard(); return Promise.resolve({ value: undefined, done: true }); },
     };
   }
-  #next(): Promise<IteratorResult<Uint8Array>> {
+  #next(): Promise<IteratorResult<LiveOutputChunk>> {
     const item = this.#queue.shift();
-    if (item) { this.#bytes -= item.length; return Promise.resolve({ value: item, done: false }); }
+    if (item) { this.#bytes -= item.kind === 'audio' ? item.pcm.length : 0; return Promise.resolve({ value: item, done: false }); }
     if (this.#closed) return Promise.resolve({ value: undefined, done: true });
     return new Promise(resolve => { this.#waiter = resolve; });
   }
@@ -97,16 +116,21 @@ export class LiveSessionOwner {
     this.#voice = config.voice;
     this.#profile = validateLiveProfile(config.profile);
     this.#now = config.now ?? Date.now;
-    this.#profileIdentity = identity({
-      provider: this.#profile.provider, liveModelId: this.#profile.liveModelId, voice: this.#profile.voice,
-      keyReference: this.#profile.keyReference,
-      route: { enabled: true, modelId: this.#profile.route.modelId, dataClasses: this.#profile.route.dataClasses },
-    });
+    this.#profileIdentity = liveProfileIdentity(this.#profile);
     this.#promptIdentity = identity({ text: this.#profile.prompt.text, dataClass: this.#profile.prompt.dataClass });
     this.recover();
   }
 
   get revision(): number { return this.#revision; }
+
+  /** Safe operator-visible identity. Never carries key bytes or prompt text. */
+  get profileIdentity(): string { return this.#profileIdentity; }
+  profileProjection(): LiveProfileProjection {
+    return {
+      provider: this.#profile.provider, model: this.#profile.liveModelId, voice: this.#profile.voice,
+      dataClasses: this.#profile.route.dataClasses, profileIdentity: this.#profileIdentity,
+    };
+  }
 
   /** Startup sweep: no intent means no possible egress; an intent means possible egress. */
   recover(): number {
@@ -202,10 +226,28 @@ export class LiveSessionOwner {
     this.#revision += 1;
     for (const handle of [...this.#active.values()]) {
       handle.invalidated = true;
-      handle.consumer?.close();
       if (!handle.terminal) this.#settle(handle, { state: 'revoked' }, false, 'ended', null);
+      else handle.consumer?.close();
       handle.abort.abort();
     }
+  }
+
+  /** Targeted termination: ends exactly this session/grant durably; other sessions unaffected. */
+  revoke(liveSessionId: string): void {
+    if (typeof liveSessionId !== 'string' || !liveSessionId) throw new LiveError('invalid_request');
+    const handle = this.#active.get(liveSessionId);
+    if (!handle) {
+      this.#store.transaction(tx => {
+        const row = tx.get('SELECT lifecycle FROM live_sessions WHERE live_session_id=? AND owner_assistant_id=?', [liveSessionId, this.#store.assistantId]);
+        if (!row) throw new LiveError('not_found');
+        if (String(row['lifecycle']) !== 'terminal') this.#terminalInTx(tx, liveSessionId, { state: 'revoked' }, false, this.#now(), 'detached', null);
+      });
+      return;
+    }
+    handle.invalidated = true;
+    if (!handle.terminal) this.#settle(handle, { state: 'revoked' }, false, 'ended', null);
+    else handle.consumer?.close();
+    handle.abort.abort();
   }
 
   async shutdown(): Promise<void> {
@@ -213,7 +255,7 @@ export class LiveSessionOwner {
     this.#closed = true;
     const handles = [...this.#active.values()];
     for (const handle of handles) {
-      handle.consumer?.close();
+      handle.consumer?.discard();
       handle.session.close();
     }
     await Promise.all(handles.map(handle => handle.loopDone.promise));
@@ -234,7 +276,7 @@ export class LiveSessionOwner {
     this.#store.transaction(tx => tx.run("UPDATE live_sessions SET lifecycle='active', updated_at=? WHERE live_session_id=?", [this.#now(), liveSessionId]));
     const handle: ActiveSession = {
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
-      consumer: new AudioChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
+      consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
       consumerState: 'attached', journalEvents: 0, journalBytes: 0, adapterOutcome: undefined,
       loopDone: deferred<void>(), done: deferred<LiveSessionSnapshot>(), resolveDone: () => {}, persistFailure: undefined,
     };
@@ -252,12 +294,17 @@ export class LiveSessionOwner {
     return {
       liveSessionId,
       ready,
-      audio: handle.consumer,
+      output: handle.consumer,
       done: handle.done.promise,
       sendAudio: ({ pcm }) => this.#sendAudio(handle, pcm),
       endAudioStream: () => { this.#guardHandle(handle); handle.session.endAudioStream(); },
       close: () => { handle.session.close(); },
       detach: () => this.#detach(handle),
+      overflow: () => {
+        if (handle.terminal) return;
+        handle.consumerState = 'backpressure';
+        this.#settle(handle, { state: 'consumer_backpressure' }, false, 'backpressure', null);
+      },
     };
   }
 
@@ -265,6 +312,15 @@ export class LiveSessionOwner {
     this.#guardHandle(handle);
     if (!(pcm instanceof Uint8Array) || !pcm.length || pcm.length % 2 !== 0) throw new LiveError('invalid_audio');
     handle.session.sendAudio({ pcm, dataClass: handle.inputClass });
+  }
+
+  /** Ordered output admission. Overflow is settled as a durable fact, never silently shed. */
+  #pushChunk(handle: ActiveSession, chunk: LiveOutputChunk): void {
+    if (handle.consumerState !== 'attached') return;
+    if (handle.consumer?.push(chunk) === 'backpressure') {
+      handle.consumerState = 'backpressure';
+      this.#settle(handle, { state: 'consumer_backpressure' }, false, 'backpressure', null);
+    }
   }
 
   #guardHandle(handle: ActiveSession): void {
@@ -276,7 +332,7 @@ export class LiveSessionOwner {
   #detach(handle: ActiveSession): void {
     if (handle.consumerState !== 'attached') return;
     handle.consumerState = 'ended';
-    handle.consumer?.close();
+    handle.consumer?.discard();
     try { this.#store.transaction(tx => tx.run("UPDATE live_sessions SET consumer_state='ended', updated_at=? WHERE live_session_id=?", [this.#now(), handle.liveSessionId])); }
     catch { /* detach is best-effort; the store may already be closing */ }
   }
@@ -285,22 +341,16 @@ export class LiveSessionOwner {
     try {
       for await (const event of handle.session.events) {
         if (this.#settled(handle)) break;
-        if (event.type === 'audio') {
-          if (handle.consumerState === 'attached' && handle.consumer?.push(event.pcm) === 'backpressure') {
-            handle.consumerState = 'backpressure';
-            this.#settle(handle, { state: 'consumer_backpressure' }, false, 'backpressure', null);
-            break;
-          }
-          continue;
-        }
+        if (event.type === 'audio') { this.#pushChunk(handle, { kind: 'audio', pcm: event.pcm }); continue; }
         if (event.type === 'outcome') { handle.adapterOutcome = event.outcome; continue; }
         const kind = journalKind(event.type);
         if (kind === null) continue;
-        const decision = this.#persist(handle, event, kind);
-        if (decision === 'overflow') {
+        const persisted = this.#persist(handle, event, kind);
+        if (persisted === 'overflow') {
           this.#settle(handle, { state: 'journal_limit' }, false, 'ended', { kind, sequence: event.sequence });
           break;
         }
+        this.#pushChunk(handle, { kind: 'marker', marker: markerOf(event, kind, persisted) });
       }
     } catch (error) { handle.persistFailure = error; }
     if (!handle.terminal) {
@@ -315,7 +365,7 @@ export class LiveSessionOwner {
     handle.loopDone.resolve();
   }
 
-  #persist(handle: ActiveSession, event: LiveVoiceEvent, kind: JournalKind): 'ok' | 'overflow' {
+  #persist(handle: ActiveSession, event: LiveVoiceEvent, kind: JournalKind): number | 'overflow' {
     const text = 'text' in event ? event.text : null;
     const finished = 'finished' in event && event.finished !== undefined ? (event.finished ? 1 : 0) : null;
     const value = event.type === 'waitingForInput' ? (event.value ? 1 : 0) : null;
@@ -325,15 +375,16 @@ export class LiveSessionOwner {
     const now = this.#now();
     const events = handle.journalEvents + 1;
     const total = handle.journalBytes + bytes;
-    this.#store.transaction(tx => {
+    const journalSequence = this.#store.transaction(tx => {
       tx.run('INSERT INTO live_journal(live_session_id, provider_sequence, kind, text, finished, value, terminal_outcome, rejected_kind, rejected_sequence, payload_bytes, arrived_at) VALUES (?,?,?,?,?,?,NULL,NULL,NULL,?,?)',
         [handle.liveSessionId, event.sequence, kind, text, finished, value, bytes, now]);
       tx.run('UPDATE live_sessions SET journal_events=?, journal_bytes=?, ready=CASE WHEN ?=1 THEN 1 ELSE ready END, updated_at=? WHERE live_session_id=?',
         [events, total, kind === 'ready' ? 1 : 0, now, handle.liveSessionId]);
+      return Number(tx.get('SELECT journal_id FROM live_journal WHERE live_session_id=? ORDER BY journal_id DESC LIMIT 1', [handle.liveSessionId])!['journal_id']);
     });
     handle.journalEvents = events;
     handle.journalBytes = total;
-    return 'ok';
+    return journalSequence;
   }
 
   #settled(handle: ActiveSession): boolean { return handle.terminal || handle.invalidated; }
@@ -341,24 +392,29 @@ export class LiveSessionOwner {
   #settle(handle: ActiveSession, outcome: LiveTerminalOutcome, complete: boolean, consumerState: LiveConsumerState, rejected: { kind: JournalKind; sequence: number } | null): void {
     if (handle.terminal) return;
     handle.terminal = true;
-    handle.consumer?.close();
+    let journalSequence: number;
     try {
-      this.#store.transaction(tx => this.#terminalInTx(tx, handle.liveSessionId, outcome, complete, this.#now(), consumerState, rejected));
+      journalSequence = this.#store.transaction(tx => this.#terminalInTx(tx, handle.liveSessionId, outcome, complete, this.#now(), consumerState, rejected));
     } catch (error) {
       handle.persistFailure = error;
+      handle.consumer?.close();
       handle.abort.abort();
       handle.done.reject(error);
       return;
     }
+    // The terminal fact is durable before it is emitted; committed markers stay queued on overflow.
+    this.#pushChunk(handle, { kind: 'marker', marker: { kind: 'terminal', sequence: null, journalSequence, text: null, finished: null, value: null } });
+    handle.consumer?.close();
     handle.abort.abort();
     handle.resolveDone();
   }
 
-  #terminalInTx(tx: Transaction, liveSessionId: string, outcome: LiveTerminalOutcome, complete: boolean, now: number, consumerState: LiveConsumerState, rejected: { kind: JournalKind; sequence: number } | null): void {
+  #terminalInTx(tx: Transaction, liveSessionId: string, outcome: LiveTerminalOutcome, complete: boolean, now: number, consumerState: LiveConsumerState, rejected: { kind: JournalKind; sequence: number } | null): number {
     tx.run('INSERT INTO live_journal(live_session_id, provider_sequence, kind, text, finished, value, terminal_outcome, rejected_kind, rejected_sequence, payload_bytes, arrived_at) VALUES (?,NULL,?,NULL,NULL,NULL,?,?,?,0,?)',
       [liveSessionId, 'terminal', JSON.stringify(outcome), rejected?.kind ?? null, rejected?.sequence ?? null, now]);
     tx.run("UPDATE live_sessions SET lifecycle='terminal', journal_complete=?, terminal_outcome=?, terminal_at=?, consumer_state=?, updated_at=? WHERE live_session_id=?",
       [complete ? 1 : 0, JSON.stringify(outcome), now, consumerState, now, liveSessionId]);
+    return Number(tx.get('SELECT journal_id FROM live_journal WHERE live_session_id=? ORDER BY journal_id DESC LIMIT 1', [liveSessionId])!['journal_id']);
   }
 
   #contextShape(context: LiveContext): void {

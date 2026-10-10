@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { DataClass } from '../adapters/live-voice/index.js';
 import { LiveConfigError, type LiveLimits, type LiveProfile } from './types.js';
 
@@ -7,12 +8,12 @@ const maxTimer = 2_147_483_647;
 const limitBounds: Readonly<Record<keyof LiveLimits, number>> = {
   sessionMs: maxTimer, idleMs: maxTimer, unusedMs: maxTimer, handshakeMs: maxTimer, closeMs: maxTimer,
   journalMaxEvents: 1_000_000, journalMaxBytes: 1024 * 1024 * 1024,
-  consumerQueueEvents: 65_536, consumerQueueBytes: 64 * 1024 * 1024,
+  consumerQueueEvents: 65_536, consumerQueueBytes: 64 * 1024 * 1024, wsBufferedBytes: 64 * 1024 * 1024,
 };
 export const defaultLiveLimits: Readonly<LiveLimits> = Object.freeze({
   sessionMs: 900_000, idleMs: 60_000, unusedMs: 300_000, handshakeMs: 15_000, closeMs: 1_000,
   journalMaxEvents: 16_384, journalMaxBytes: 16 * 1024 * 1024,
-  consumerQueueEvents: 256, consumerQueueBytes: 2 * 1024 * 1024,
+  consumerQueueEvents: 256, consumerQueueBytes: 2 * 1024 * 1024, wsBufferedBytes: 4 * 1024 * 1024,
 });
 
 function object(value: unknown): value is Record<string, unknown> {
@@ -39,6 +40,7 @@ function limits(value: unknown): LiveLimits {
     journalMaxBytes: limit(source['journalMaxBytes'], 'journalMaxBytes'),
     consumerQueueEvents: limit(source['consumerQueueEvents'], 'consumerQueueEvents'),
     consumerQueueBytes: limit(source['consumerQueueBytes'], 'consumerQueueBytes'),
+    wsBufferedBytes: limit(source['wsBufferedBytes'], 'wsBufferedBytes'),
   });
 }
 function classList(value: unknown): DataClass[] {
@@ -66,5 +68,22 @@ export function validateLiveProfile(input: unknown): LiveProfile {
     provider: 'gemini', liveModelId, voice, keyReference,
     route: Object.freeze({ enabled: true, provider: 'gemini', modelId: liveModelId, dataClasses }),
     prompt: Object.freeze({ text: promptText, dataClass }), limits: limits(input['limits']),
+  });
+}
+
+/** Canonical frozen identity from sanitized fields. Shared by the owner, config and status projection. */
+export function liveIdentityOf(input: { provider: 'gemini'; liveModelId: string; voice: string; keyReference: string; modelId: string; dataClasses: readonly DataClass[] }): string {
+  return createHash('sha256').update(JSON.stringify({
+    provider: input.provider, liveModelId: input.liveModelId, voice: input.voice,
+    keyReference: input.keyReference,
+    route: { enabled: true, modelId: input.modelId, dataClasses: input.dataClasses },
+  })).digest('hex');
+}
+
+/** Canonical frozen identity of a validated profile. */
+export function liveProfileIdentity(profile: LiveProfile): string {
+  return liveIdentityOf({
+    provider: profile.provider, liveModelId: profile.liveModelId, voice: profile.voice,
+    keyReference: profile.keyReference, modelId: profile.route.modelId, dataClasses: profile.route.dataClasses,
   });
 }

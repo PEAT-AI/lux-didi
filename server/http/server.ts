@@ -82,6 +82,27 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
         res.setHeader('Set-Cookie', `didi_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200`);
         send(res, 200, success({ csrfToken })); return;
       }
+      // Live is operator-bearer only and must run before the generic cookie/Bearer principal so a
+      // browser cookie/CSRF or any Origin gets 403 before the owner or credentials are touched.
+      if (route.kind === 'live') {
+        if (!live) throw new ServiceError('MODEL_NOT_CONFIGURED', 'Live route is not locally configured', 503);
+        const principal = operatorPrincipal(req, store, origin);
+        const context = authorityContext(req, store, principal);
+        if (route.action === 'status') { send(res, 200, success(live.status())); return; }
+        if (!live.enabled) throw new ServiceError('MODEL_NOT_CONFIGURED', 'Live is not locally configured', 503);
+        if (route.action === 'create') {
+          const body = await readBody(req);
+          const resolved = resolveRoute(method, url, body);
+          if (resolved.kind !== 'live') throw new ServiceError('BAD_REQUEST', 'Invalid Live request');
+          const key = req.headers['idempotency-key'];
+          if (typeof key !== 'string' || !/^[A-Za-z0-9_.:-]{1,128}$/.test(key)) throw new ServiceError('BAD_REQUEST', 'Idempotency-Key required');
+          send(res, 200, success(live.create(String(resolved.input['inputClass']) as DataClass, key, context))); return;
+        }
+        if (route.action === 'snapshot') { send(res, 200, success(live.snapshot(route.id!))); return; }
+        if (route.action === 'journal') { send(res, 200, success(live.journal(route.id!, route.input['cursor'] as number | undefined, route.input['limit'] as number | undefined))); return; }
+        if (route.action === 'revoke') { live.revoke(route.id!); send(res, 200, success({ liveSessionId: route.id!, revoked: true })); return; }
+        throw new ServiceError('METHOD_NOT_ALLOWED', 'Audio requires a WebSocket upgrade', 405);
+      }
       const actor = principal(req);
       if (route.mutation) csrf(req, actor);
       if (route.kind === 'status') {
@@ -102,22 +123,6 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
         store.transaction(tx => tx.run('DELETE FROM runtime_sessions WHERE token_hash=?', [actor.tokenHash!]));
         for (const close of [...(streamClosers.get(actor.clientId) ?? [])]) close();
         res.setHeader('Set-Cookie', 'didi_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'); send(res, 200, success({ revoked: true })); return;
-      }
-      if (route.kind === 'live') {
-        if (!live) throw new ServiceError('MODEL_NOT_CONFIGURED', 'Live route is not locally configured', 503);
-        const principal = operatorPrincipal(req, store, origin);
-        const context = authorityContext(req, store, principal);
-        if (route.action === 'status') { send(res, 200, success(live.status())); return; }
-        if (!live.enabled) throw new ServiceError('MODEL_NOT_CONFIGURED', 'Live is not locally configured', 503);
-        if (route.action === 'create') {
-          const key = req.headers['idempotency-key'];
-          if (typeof key !== 'string' || !/^[A-Za-z0-9_.:-]{1,128}$/.test(key)) throw new ServiceError('BAD_REQUEST', 'Idempotency-Key required');
-          send(res, 200, success(live.create(String(route.input['inputClass']) as DataClass, key, context))); return;
-        }
-        if (route.action === 'snapshot') { send(res, 200, success(live.snapshot(route.id!))); return; }
-        if (route.action === 'journal') { send(res, 200, success(live.journal(route.id!, route.input['cursor'] as number | undefined, route.input['limit'] as number | undefined))); return; }
-        if (route.action === 'revoke') { live.revoke(route.id!); send(res, 200, success({ liveSessionId: route.id!, revoked: true })); return; }
-        throw new ServiceError('METHOD_NOT_ALLOWED', 'Audio requires a WebSocket upgrade', 405);
       }
       if (route.kind === 'connected') {
         const context = { assistantId: store.assistantId, clientId: actor.clientId, authorityEpoch: store.authorityEpoch, now: new Date(now()).toISOString() };

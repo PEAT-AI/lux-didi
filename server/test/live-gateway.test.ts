@@ -202,9 +202,9 @@ test('one ordered authenticated audio upgrade carries PCM, markers and the termi
   await closed;
   const terminal = frames.filter(f => f.text).map(f => JSON.parse(f.text!)).find(frame => frame.type === 'terminal');
   assert.ok(terminal, 'terminal frame must be emitted');
-  assert.equal(terminal.state, 'closed');
+  assert.equal(terminal.state, 'failed', 'an unexpected transport close is a truthful failed terminal');
   const journal = await json(h.origin, `/api/v1/live-sessions/${snapshot.liveSessionId}/journal`, { headers: bearer(h) });
-  assert.equal(journal.body.data.terminal.outcome.state, 'closed');
+  assert.equal(journal.body.data.terminal.outcome.state, 'failed');
   assert.ok(journal.body.data.fragments.some((f: { kind: string }) => f.kind === 'interrupted'));
 });
 

@@ -25,6 +25,8 @@ import AppKit
     var serviceFD: Int32 = -1
     var serviceFacts: ProbeIdentity?
     var serviceRecord: [String: Any]?
+    var nativeResult: [String: Any]?
+    var pidReuseRefused = false, driverMixupRefused = false
     var cancelSent = false
     var forced = false
     var released = false
@@ -82,6 +84,13 @@ import AppKit
             let reported = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: root + "/identity.json"))) as! [String: Any]
             let (current, actual) = try identity(target.processIdentifier, nonce: nonce, bundle: bundle)
             guard (verification ? (reported["pid"] as? Int == Int(target.processIdentifier) && reported["nonce"] as? String == nonce && physicalPath(reported["bundleURL"] as? String ?? "") == bundle) : NSDictionary(dictionary: reported).isEqual(to: record)), NSDictionary(dictionary: actual).isEqual(to: record) else { fail("identity changed or nonce mismatch"); return }
+            if verification {
+                var reused = current; reused.microseconds ^= 1
+                var mixed = current; mixed.pid = getpid()
+                pidReuseRefused = probe_cleanup(reused, expectedExecutable) != 0
+                driverMixupRefused = probe_cleanup(mixed, expectedExecutable) != 0
+                guard pidReuseRefused, driverMixupRefused else { fail("cleanup identity negative controls"); return }
+            }
             facts = current // Cleanup authority only after complete kernel + bundle + nonce identity.
             if verification {
                 control = probe_connect("/tmp/didi-verification-" + nonce + ".sock")
@@ -130,13 +139,14 @@ import AppKit
         }
         let release = (try? JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: root + "/release.json")))) as? [String: Any]
         let nativeDisposition = (try? JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: root + "/native-disposed.json")))) as? [String: Any]
-        dispose()
+        settled = true; dispose()
         do {
             var output: [String: Any] = ["case": args[4], "bundleURL": bundle, "identity": record, "observerPid": Int(getpid()),
                 "identityVerified": true, "registeredBeforeRelease": true, "released": released, "observerDisposed": true,
                 "kernel": ["rawStatus": raw, "flags": flags, "filter": filter, "statusRequested": true]]
             if verification {
                 output["serviceIdentity"] = serviceRecord as Any? ?? NSNull(); output["serviceKernel"] = serviceKernel
+                output["pidReuseRefused"] = pidReuseRefused; output["driverMixupRefused"] = driverMixupRefused
                 output["forced"] = forced; output["cancelSent"] = cancelSent
                 output["releaseState"] = release?["state"] as Any? ?? [:]
                 output["nativeDisposed"] = nativeDisposition?["disposed"] as? Bool == true
@@ -182,11 +192,12 @@ import AppKit
             send("cancel")
             let nativeFD = kernel, nodeFD = serviceFD, nodeFacts = serviceFacts
             let nativePath = expectedExecutable, nodePath = serviceRecord?["executable"] as? String
+            let nativeAlreadyObserved = nativeResult != nil
             DispatchQueue.global().async { [self] in
                 var nativeStatus: Int64 = -1, nativeFlags: UInt32 = 0, nativeFilter: Int16 = 0
                 var nodeStatus: Int64 = -1, nodeFlags: UInt32 = 0, nodeFilter: Int16 = 0
                 var forced = false
-                var nativeObserved = probe_wait(nativeFD, 6, &nativeStatus, &nativeFlags, &nativeFilter) == 0
+                var nativeObserved = nativeAlreadyObserved || probe_wait(nativeFD, 6, &nativeStatus, &nativeFlags, &nativeFilter) == 0
                 if !nativeObserved {
                     forced = true
                     _ = probe_cleanup(nativeFacts, nativePath)
@@ -215,7 +226,7 @@ import AppKit
     }
     func writeFailure(_ reason: String, extra: [String: Any]) {
         var output: [String: Any] = ["case": args.count > 4 ? args[4] : "invalid", "bundleURL": bundle, "error": reason,
-            "observerDisposed": true, "released": released, "cancelSent": cancelSent,
+            "observerDisposed": true, "released": released, "cancelSent": cancelSent, "kernel": nativeResult as Any? ?? NSNull(),
             "expectedExecutable": expectedExecutable, "observedIdentity": record as Any? ?? NSNull(), "expectedUid": Int(getuid())]
         output.merge(extra) { _, new in new }
         try? atomic(output, to: root + "/observer.json")

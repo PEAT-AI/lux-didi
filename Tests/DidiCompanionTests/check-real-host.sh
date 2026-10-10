@@ -48,6 +48,12 @@ python3 - "$proof/real-host" "$commit" <<'PY'
 import json,sys,os
 root,commit=sys.argv[1:]
 reports=[json.load(open(f'{root}/run-{n}.json')) for n in (1,2,3)]
+def valid_launch(launch, native_pid, node_pid):
+ assert launch['identity']['pid']==native_pid and launch['observerPid']!=native_pid
+ assert launch['registeredBeforeRelease'] and launch['identityVerified'] and launch['released']
+ assert launch['kernel']['flags'] & 0x84000000 == 0x84000000 and launch['kernel']['rawStatus']==0
+ assert launch['serviceIdentity']['pid']==node_pid and node_pid not in (native_pid,launch['observerPid'])
+ assert launch['serviceKernel']['rawStatus']==0 and launch['nativeDisposed'] and launch['observerDisposed'] and not launch['forced']
 for i,r in enumerate(reports):
  assert set(r)==set('type schemaVersion phase success runId installId proofId reopened source native service priorRecords newRecord observations visual serviceStop credentialCleanup error'.split())
  assert set(r['visual'])==set('windowId screenCapturePermission pageSnapshot nativeChrome nativeChromeLimitation accessibility rootVisualReviewRequired'.split())
@@ -78,6 +84,19 @@ for i,r in enumerate(reports):
  assert launch['forced'] is False and launch['releaseState'] and launch['nativeDisposed'] is True
  assert launch['pidReuseRefused'] and launch['driverMixupRefused']
  assert launch['bundleURL']==os.path.realpath(r['source']['bundlePath'])
+ valid_launch(launch,r['native']['pid'],r['service']['pid'])
+ # Consumer refusal controls use copies of actual evidence, never fake durable state.
+ import copy
+ for key,value in [('registration',False),('status',None),('flag',0),('native-node',r['service']['pid']),('driver-native',launch['observerPid']),('cleanup',False)]:
+  rejected=copy.deepcopy(launch)
+  if key=='registration': rejected['registeredBeforeRelease']=value
+  elif key=='status': rejected['kernel']['rawStatus']=value
+  elif key=='flag': rejected['kernel']['flags']=value
+  elif key in ('native-node','driver-native'): rejected['identity']['pid']=value
+  else: rejected['nativeDisposed']=value
+  try: valid_launch(rejected,r['native']['pid'],r['service']['pid'])
+  except AssertionError: pass
+  else: raise AssertionError('accepted invalid '+key+' evidence')
  assert r['source']['releaseCommit']==commit
  assert r['service']['readyVerified'] and r['serviceStop']['observedExited']
  assert r['serviceStop']['pid']==r['service']['pid']

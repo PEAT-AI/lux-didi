@@ -48,5 +48,7 @@ int probe_connect(const char *path) {
     if (strlen(path) >= sizeof(address.sun_path)) { close(fd); errno = ENAMETOOLONG; return -1; }
     strcpy(address.sun_path, path);
     if (connect(fd, (struct sockaddr *)&address, sizeof(address)) < 0) { int e = errno; close(fd); errno = e; return -1; }
+    int enabled = 1;
+    if (setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled)) < 0) { int e = errno; close(fd); errno = e; return -1; }
     return fd;
 }

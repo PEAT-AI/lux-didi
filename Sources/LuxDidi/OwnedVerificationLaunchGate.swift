@@ -71,8 +71,15 @@ import Darwin
     }
     private func write(_ value: [String: Any], name: String) throws {
         let path = root + "/" + name
-        try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]).write(to: URL(fileURLWithPath: path), options: .atomic)
-        guard chmod(path, 0o600) == 0 else { throw CocoaError(.fileWriteUnknown) }
+        let data = try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
+        let temporary = path + "." + UUID().uuidString
+        let fd = open(temporary, O_WRONLY | O_CREAT | O_EXCL, 0o600)
+        guard fd >= 0 else { throw CocoaError(.fileWriteUnknown) }
+        let count = data.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, $0.count) }
+        let closed = close(fd)
+        guard count == data.count, closed == 0, rename(temporary, path) == 0 else {
+            unlink(temporary); throw CocoaError(.fileWriteUnknown)
+        }
     }
     func bindService(pid: pid_t, executable: String) throws {
         try write(["pid": Int(pid), "executable": executable, "nonce": nonce], name: "service.json")

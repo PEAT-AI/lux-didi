@@ -1,3 +1,4 @@
+import type { OwnerProfileSnapshot } from '../prompt/types.js';
 import { credentialsFor } from '../config/index.js';
 import { loadLiveConfig, type LiveConfiguredProfile, type LiveConfigStatus } from '../config/live.js';
 import { GeminiLiveVoiceAdapter, type DataClass, type LiveSocketFactory } from '../adapters/live-voice/index.js';
@@ -82,8 +83,8 @@ class UnconfiguredLive implements LiveService {
  * startup; recovery completes before the listener announces readiness. No secret is read unless a
  * profile exists, and then only lazily through the credentialsFor seam.
  */
-export function composeLive(store: Store, configDir: string, testing?: LiveTesting, now?: () => number): { service: LiveService; status: LiveStatusPayload } {
-  const loaded = loadLiveConfig({ configDir, ownerId: store.assistantId });
+export function composeLive(store: Store, configDir: string, testing?: LiveTesting, now?: () => number, ownerProfile?: OwnerProfileSnapshot): { service: LiveService; status: LiveStatusPayload } {
+  const loaded = loadLiveConfig({ configDir, ownerId: store.assistantId, ...(ownerProfile ? { ownerProfile } : {}) });
   const profile = testing?.profile ?? (loaded.status === 'configured' ? loaded.config.profile : undefined);
   const status = statusPayload(loaded, profile);
   if (!profile) return { service: new UnconfiguredLive(status), status };

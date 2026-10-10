@@ -1,3 +1,4 @@
+import type { OwnerProfileSnapshot } from '../prompt/types.js';
 import type { DataClass, LiveVoiceOutcome, LiveVoicePort } from '../adapters/live-voice/index.js';
 import type { StorePort } from '../contracts/storage.js';
 
@@ -29,7 +30,12 @@ export interface LiveLimits {
   wsBufferedBytes: number;
 }
 
+export interface AcceptedPromptSnapshot {
+  readonly schemaVersion: 1; readonly ownerProfile: OwnerProfileSnapshot;
+  readonly compilerVersion: string; readonly system: string; readonly dataClasses: readonly DataClass[];
+}
 export interface LiveProfile {
+  readonly acceptedPrompt?: AcceptedPromptSnapshot;
   readonly provider: 'gemini';
   readonly liveModelId: string;
   readonly voice: string;

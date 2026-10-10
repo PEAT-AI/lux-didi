@@ -1,3 +1,4 @@
+import type { OwnerProfileSnapshot } from '../prompt/types.js';
 import type { StorePort, Transaction } from '../contracts/storage.js';
 import type { DomainContext, DomainPort, SourceRef, RoutingLabel, RoutingLabelCorrection } from '../contracts/domain.js';
 import type { DataClass, ModelPort, ModelStatus } from '../adapters/model/types.js';
@@ -61,6 +62,7 @@ export interface ClassificationSubject {
   sourceRefs?: readonly SourceRef[];
 }
 export interface ChatConfig {
+  ownerProfile?: OwnerProfileSnapshot;
   store: StorePort & { readonly assistantId: string }; domain: DomainPort; model: ModelPort | null;
   route: { provider: string; model: string; available: boolean; allows(classes: readonly DataClass[]): boolean;
     endpoint: string; apiVersion: string; keyReference: string; allowedClasses: readonly DataClass[] }; 

@@ -1,3 +1,4 @@
+import type { OwnerProfileSnapshot } from '../prompt/types.js';
 import type { DomainContext, Entry } from '../contracts/domain.js';
 import type { Transaction } from '../contracts/storage.js';
 import type { DataClass } from '../adapters/model/types.js';
@@ -26,7 +27,7 @@ export interface ContextTrace {
   historyOmissionReason: 'compiler_budget_or_limit' | null;
 }
 /** Domain reads finish in one synchronous Store transaction before compilation. */
-export function assemble(config: ChatConfig, sessionId: string, currentId: string, context: DomainContext, selection: RunSelection | null = null) {
+export function assemble(config: ChatConfig, sessionId: string, currentId: string, context: DomainContext, selection: RunSelection | null = null, ownerProfile?: OwnerProfileSnapshot) {
   const configured = new Map([['session', true], ['recall', Boolean(config.context.recall)], ['today', Boolean(config.context.today)]]);
   for (const source of config.context.sources) {
     if (!configured.has(source.id) || (source.state === 'available') !== configured.get(source.id)) throw new ContextFailure('unavailable');
@@ -70,7 +71,7 @@ export function assemble(config: ChatConfig, sessionId: string, currentId: strin
   }
   const capabilities = createCapabilitySnapshot([], [...configured].map(([id, available]) => ({ id, state: available ? 'available' : 'missing' })));
   const base: CompileInput = { ownerId: config.store.assistantId, persona: 'didi', promptVersion: PROMPT_VERSION,
-    preferences: config.preferences, capabilities, evidence, history: [current], budgets: config.context.budgets };
+    ...(ownerProfile ? { ownerProfile } : {}), preferences: config.preferences, capabilities, evidence, history: [current], budgets: config.context.budgets };
   let compiled: CompiledPrompt;
   try { compiled = compilePrompt(base); }
   catch (error) {

@@ -1,3 +1,8 @@
+import { Store } from '../runtime/store.js';
+import { createDomainPort } from '../domain/index.js';
+import { Outbox } from '../runtime/outbox.js';
+import { chatMigrations } from '../chat/index.js';
+import { liveMigrations } from '../live/index.js';
 import { createServer } from 'node:http';
 import { mkdir, writeFile, access, appendFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
@@ -30,7 +35,23 @@ export function sse(text = answer, finish = 'STOP') {
 async function main() {
   const [dir, webRoot, rawPort, mode] = process.argv.slice(2);
   if (!dir || !webRoot) throw Error('Connected fixture needs state and built web paths');
-  try { await access(join(dir, 'provider-config')); } catch { await profile(dir); }
+  const ownerCase = mode === 'owner-unconfigured' || mode === 'owner-configured';
+  let ownerProfilePath: string | undefined;
+  if (ownerCase) {
+    // Synthetic protected file only. Bind to the actual canonical Store before host activation.
+    const domain = createDomainPort({ outbox: Outbox });
+    const seed = new Store(resolve(dir), [...domain.migrations, ...chatMigrations, ...liveMigrations]);
+    const ownerId = seed.assistantId; seed.close();
+    ownerProfilePath = join(dir, 'owner-profile.json');
+    await writeFile(ownerProfilePath, JSON.stringify({ schemaVersion: 1, kind: 'profile', ownerId,
+      profileVersion: 'synthetic-fixture-v1', displayName: 'Example <Owner> & Friend',
+      style: { text: 'SYNTHETIC_OWNER_STYLE_PRIVATE_SENTINEL', dataClass: 'private' },
+      lore: { text: 'SYNTHETIC_OWNER_LORE_SENSITIVE_SENTINEL', dataClass: 'sensitive' },
+    }), { mode: 0o600 });
+    if (mode === 'owner-configured') await profile(dir);
+  } else {
+    try { await access(join(dir, 'provider-config')); } catch { await profile(dir); }
+  }
   let calls = 0, aborted = 0, nextMode = '';
   const completions = new Set<() => void>();
   process.on('message', value => { if (value === 'hold-next' || value === 'fail-next' || value === 'stream-next') nextMode = value; if (value === 'finish-stream') for (const finish of [...completions]) finish(); });
@@ -53,7 +74,8 @@ async function main() {
   });
   await new Promise<void>(resolveListen => transportServer.listen(0, '127.0.0.1', resolveListen));
   const addr = transportServer.address(); if (!addr || typeof addr === 'string') throw Error('Missing capturing transport address');
-  const host = await startHost({ dataDir: resolve(dir), webRoot: resolve(webRoot), port: Number(rawPort ?? 0), modelTesting: {
+  const host = await startHost({ dataDir: resolve(dir), webRoot: resolve(webRoot), port: Number(rawPort ?? 0),
+    ...(ownerProfilePath ? { ownerProfilePath } : {}), modelTesting: {
     credentials: { resolve: async reference => { if (reference !== 'gemini-primary') throw Error('bad fixture reference'); return syntheticKey; } },
     transport: async (url, init) => { if (!url.startsWith('https://generativelanguage.googleapis.com/v1beta/models/gemini-')) throw Error('Wrong actual adapter URL'); const response = await fetch(`http://127.0.0.1:${addr.port}/capture`, init);
       // Trusted synthetic provider transport: stream the actual local HTTP body,

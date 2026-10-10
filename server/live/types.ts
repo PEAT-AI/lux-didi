@@ -43,7 +43,10 @@ export interface LiveOwnerConfig {
   readonly store: LiveStorePort;
   readonly voice: LiveVoicePort;
   readonly profile: LiveProfile;
+  /** Trusted clock in safe integer Unix epoch milliseconds, shared with schedule in tests. */
   readonly now?: () => number;
+  /** Trusted in-process timer seam; not a transport or an error callback. */
+  readonly schedule?: (callback: () => void, delayMs: number) => { unref(): void; cancel(): void };
 }
 
 export interface LiveContext { readonly clientId: string; readonly auditId: string; readonly authorityEpoch: string }

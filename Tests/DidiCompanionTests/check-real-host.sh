@@ -36,15 +36,6 @@ for n in 1 2; do
 done
 # Same exact signed artifact moved, same installId and marked actual domain data.
 mv "$app" "$work/Moved Didi.app"
-# The relocated copy keeps the same bundle identifier as the in-place one, and
-# every run leaves its own ad-hoc-signed registration for that identifier, so
-# LaunchServices can refuse the moved instance's own activate() request: run-3
-# then reports active=false and activation.requestSent=false until the app's 8 s
-# readiness deadline expires (InstalledProofRun.swift:147 -> accessibility).
-# Re-registering the moved path at its new location lets activation resolve to
-# this instance. No deadline, bound, assertion, identity or cleanup control
-# changes; the exact moved artifact and all of its proofs are untouched.
-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$work/Moved Didi.app"
 mkdir -p "$proof/real-host/launch-3"
 "${LUX_VERIFICATION_DRIVER:?}" --verification "$work/Moved Didi.app" "$proof/real-host/launch-3" "$(uuidgen)" run --installed-proof --proof-state "$state" --proof-report "$proof/real-host/run-3.json"
 # Real native cancellation before release and after actual owned service start.

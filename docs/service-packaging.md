@@ -75,10 +75,12 @@ no cache warming or network fallback is allowed in any target installation.
 
 ## Boundaries
 
-The current production lock has no peer or optional dependency edges and no
-native addon. npm 11's installed `npm-packlist` implementation traverses bundled
-production/optional dependencies but explicitly excludes peer/dev edges; bundling
-must not be assumed to cover future peers. A future dependency graph change
+The committed `ws` 8.22.0 lock entry declares `bufferutil` and `utf-8-validate`
+as optional peers. Neither has an installed package entry in the committed lock,
+so neither peer is part of the realized locked/install closure, which has no
+bundled native addon. npm 11's installed `npm-packlist` implementation traverses
+bundled production/optional dependencies but explicitly excludes peer/dev edges;
+bundling must not be assumed to cover declared or future peers. A future dependency graph change
 must pass the same artifact and empty-cache gate or receive a separate packaging
 decision. Platform-conditional optional packages and additional platforms are
 not certified by a run on one host.

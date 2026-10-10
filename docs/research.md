@@ -127,5 +127,8 @@ hidden view, and whether two views can break the single-writer rule are all list
 The council explicitly rejected the claims that a hidden view always loses its context and that
 termination always clears cookies, and it rejected any broad termination of web content processes.
 
-Evidence limits are unchanged: none of this was exercised for this product, no web view was
-embedded, no measurement was taken, and the deployment path remains a design.
+Evidence limits for the original planning/research exercise are unchanged: none of this was
+exercised for this product in that exercise, no web view was embedded and no measurement was
+taken. The later accepted companion embeds a real `WKWebView`, as recorded in
+[implementation-status.md](implementation-status.md). That source correction does not establish
+final installation or end-to-end native Live audio; the deployment path here remains a design.

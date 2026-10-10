@@ -64,7 +64,7 @@ test('B3/B5 built browser renders real trusted source identifiers and durable to
   const key = randomUUID();
   const accept = () => page.evaluate(async ({ sessionId, key, csrfToken }) => {
     const response = await fetch('/api/v1/chat', { method: 'POST', headers: {
-      'Content-Type': 'application/json', 'Idempotency-Key': key, 'X-CSRF-Token': csrfToken
+      'Content-Type': 'application/json', 'Idempotency-Key': key, 'X-Didi-CSRF': csrfToken
     }, body: JSON.stringify({ sessionId, text: 'Use synthetic insight 731.', selectedConnectionIds: ['synthetic-lux'] }) });
     return { status: response.status, body: await response.json() };
   }, { sessionId: ready.sessionId, key, csrfToken });

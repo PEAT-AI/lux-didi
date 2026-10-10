@@ -261,3 +261,29 @@ test('host can explicitly reuse bounded tool continuation in a natural next turn
   assert.equal(first.status, 'complete'); assert.equal(second.status, 'complete'); assert.equal(second.text, 'Second answer');
   assert.equal(second.continuation.length, 6);
 });
+
+// These first reproduce disclosure through raw handler values and carried JSON.
+const boundaryRef = { id: 'synthetic-result', sha256: 'a'.repeat(64) };
+const boundaryPorts = {
+  journal: { intent: () => 'fresh' as const, refuse: () => boundaryRef, fail: () => boundaryRef },
+  resultGate: { authorize: async () => ({ state: 'refused' as const, reason: 'synthetic_stale_result' }) },
+};
+for (const mode of ['unbound', 'stale'] as const) {
+  test(`boundary denies ${mode} carried result before any provider call`, async () => {
+    let providers = 0;
+    const next = request();
+    next.contents.push({ role: 'user', parts: [{ functionResponse: { id: 'call-7', name: 'lookup', response: { status: 'completed', value: 'raw private fixture' } } }] });
+    const carriedResults = mode === 'stale' ? [{ executionId: 'old-execution', name: 'lookup', callId: 'call-7', contentIndex: 1, partIndex: 0, result: boundaryRef }] : [];
+    const result = await runTools({ ...boundaryPorts, carriedResults, model: adapter(async () => { providers++; return sse([stop()]); }),
+      request: next, registry: [], host, authority: { isCurrent: async () => true }, maxSteps: 2, control: control() });
+    assert.equal(result.status, 'denied'); assert.equal(providers, 0);
+  });
+}
+
+test('boundary never discloses legacy raw completed values', async () => {
+  let providers = 0;
+  const result = await runTools({ ...boundaryPorts, model: adapter(async () => { providers++; return sse([providers === 1 ? call() : stop()]); }),
+    request: request(), registry: [tool(async () => ({ status: 'completed', value: 'raw private fixture' }))],
+    host, authority: { isCurrent: async () => true }, maxSteps: 3, control: control() });
+  assert.equal(result.status, 'denied'); assert.ok(providers <= 1);
+});

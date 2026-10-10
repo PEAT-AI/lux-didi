@@ -5,9 +5,43 @@ import type { ModelResult } from '../adapters/model/types.js';
 import { PROMPT_VERSION } from '../prompt/index.js';
 import { assemble, classify, ContextFailure } from './context.js';
 import { Subscription } from './subscription.js';
-import { ChatError, type AcceptInput, type ChatConfig, type ChatEvent, type ChatPort, type ChatRecoveryContext, type ConversationEvent, type Outcome, type RunSnapshot, type EnrollInput, type ConversationStatus } from './types.js';
+import { ChatError, type AcceptInput, type ChatConfig, type ChatEvent, type ChatPort, type ChatRecoveryContext, type Outcome, type RunSnapshot, type EnrollInput, type ConversationStatus } from './types.js';
 export * from './types.js';
 export { chatMigrations } from './schema.js';
+
+/** Conversation-scoped notification: durable run identifiers only, never transcript content. */
+export type ConversationEvent = { type: 'run'; sessionId: string; runId: string }
+  | { type: 'resync_required'; reason: 'backpressure' };
+/** The service's chat port plus the conversation notification seam this increment adds. */
+export interface ConversationChatPort extends ChatPort {
+  subscribeConversation(sessionId: string, context: DomainContext): AsyncIterable<ConversationEvent>;
+}
+/** One bounded queue per conversation subscriber; mirrors the run-stream discipline with no replay. */
+class ConversationQueue<T> implements AsyncIterableIterator<T> {
+  #queue: T[] = [];
+  #waiting: ((value: IteratorResult<T>) => void) | undefined;
+  #closed = false;
+  constructor(readonly capacity: number, readonly detach: () => void, readonly overflow: () => T) {}
+  [Symbol.asyncIterator]() { return this; }
+  push(event: T) {
+    if (this.#closed) return;
+    if (this.#waiting) { const resolve = this.#waiting; this.#waiting = undefined; resolve({ value: event, done: false }); }
+    else if (this.#queue.length < this.capacity) this.#queue.push(event);
+    else { this.#queue = [this.overflow()]; this.close(); }
+  }
+  close() {
+    if (this.#closed) return;
+    this.#closed = true; this.detach();
+    if (this.#waiting) { this.#waiting({ value: undefined, done: true }); this.#waiting = undefined; }
+  }
+  next(): Promise<IteratorResult<T>> {
+    const value = this.#queue.shift();
+    if (value) return Promise.resolve({ value, done: false });
+    if (this.#closed) return Promise.resolve({ value: undefined, done: true });
+    return new Promise(resolve => { this.#waiting = resolve; });
+  }
+  return(): Promise<IteratorResult<T>> { this.#queue = []; this.close(); return Promise.resolve({ value: undefined, done: true }); }
+}
 
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 function nullable(value: SQLRow[string] | undefined) { return value === null || value === undefined ? null : String(value); }
@@ -26,8 +60,8 @@ export class ChatService implements ChatPort {
   readonly #now: () => number;
   readonly #workers = new Map<string, AbortController>();
   readonly #livePolicies = new Map<string, { session_id: string; selected_labels: string }>();
-  readonly #subscribers = new Map<string, Set<Subscription<ChatEvent>>>();
-  readonly #conversationSubscribers = new Map<string, Set<Subscription<ConversationEvent>>>();
+  readonly #subscribers = new Map<string, Set<Subscription>>();
+  readonly #conversationSubscribers = new Map<string, Set<ConversationQueue<ConversationEvent>>>();
   constructor(config: ChatConfig) {
     if (!Number.isFinite(config.deadlineMs ?? 60000) || (config.deadlineMs ?? 60000) <= 0
       || !Number.isSafeInteger(config.subscriberCapacity ?? 16) || (config.subscriberCapacity ?? 16) < 1
@@ -240,11 +274,11 @@ export class ChatService implements ChatPort {
   }
   subscribe(runId: string, context: DomainContext): AsyncIterable<ChatEvent> {
     const run = this.get(runId, context);
-    const listeners = this.#subscribers.get(runId) ?? new Set<Subscription<ChatEvent>>();
+    const listeners = this.#subscribers.get(runId) ?? new Set<Subscription>();
     if (listeners.size >= 32) throw new ChatError('unavailable');
-    const subscription = new Subscription<ChatEvent>(this.#config.subscriberCapacity ?? 16, () => {
+    const subscription = new Subscription(this.#config.subscriberCapacity ?? 16, () => {
       listeners.delete(subscription); if (!listeners.size) this.#subscribers.delete(runId);
-    }, last => ({ type: 'resync_required', sequence: last.sequence, reason: 'backpressure' }));
+    });
     listeners.add(subscription); this.#subscribers.set(runId, listeners);
     subscription.push({ type: 'snapshot', sequence: run.sequence, run });
     if (run.state === 'terminal') subscription.close();
@@ -253,9 +287,9 @@ export class ChatService implements ChatPort {
   /** Conversation-scoped notification: register, then read the durable snapshot. No replay buffer. */
   subscribeConversation(sessionId: string, context: DomainContext): AsyncIterable<ConversationEvent> {
     this.conversation(sessionId, context);
-    const listeners = this.#conversationSubscribers.get(sessionId) ?? new Set<Subscription<ConversationEvent>>();
+    const listeners = this.#conversationSubscribers.get(sessionId) ?? new Set<ConversationQueue<ConversationEvent>>();
     if (listeners.size >= 32) throw new ChatError('unavailable');
-    const subscription = new Subscription<ConversationEvent>(this.#config.subscriberCapacity ?? 16, () => {
+    const subscription = new ConversationQueue<ConversationEvent>(this.#config.subscriberCapacity ?? 16, () => {
       listeners.delete(subscription); if (!listeners.size) this.#conversationSubscribers.delete(sessionId);
     }, () => ({ type: 'resync_required', reason: 'backpressure' }));
     listeners.add(subscription); this.#conversationSubscribers.set(sessionId, listeners);

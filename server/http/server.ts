@@ -3,7 +3,7 @@ import type { IncomingMessage, ServerResponse, Server } from 'node:http';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { Store } from '../runtime/store.js';
 import type { DomainPort } from '../contracts/domain.js';
-import { ChatError, type ChatPort } from '../chat/index.js';
+import { ChatError, type ConversationChatPort } from '../chat/index.js';
 import type { ConnectedStatus } from '../host/connected.js';
 import { ServiceError } from '../contracts/errors.js';
 import { object, resolveRoute } from './routes.js';
@@ -24,7 +24,7 @@ async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> 
   try { return object(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } catch (error) { if (error instanceof ServiceError) throw error; throw new ServiceError('BAD_REQUEST', 'Malformed JSON'); }
 }
 interface Principal { clientId: string; mode: 'bearer' | 'browser'; tokenHash?: string; csrfToken?: string }
-export interface ServiceOptions { store: Store; domain?: DomainPort; port?: number; now?: () => number; webRoot?: string; chat?: ChatPort; modelStatus?: ConnectedStatus }
+export interface ServiceOptions { store: Store; domain?: DomainPort; port?: number; now?: () => number; webRoot?: string; chat?: ConversationChatPort; modelStatus?: ConnectedStatus }
 export interface RunningService { server: Server; origin: string; close(): Promise<void> }
 export async function listenService(options: ServiceOptions): Promise<RunningService> {
   const { store, domain, chat } = options;

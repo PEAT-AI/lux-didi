@@ -241,11 +241,12 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
         assertCurrentBinding();
       } catch { return { state: 'refused', reason: 'binding-not-current' }; }
       let discovered: Awaited<ReturnType<typeof port.discover>>;
-      try { discovered = await port.discover(selected.policy.endpoint.id); } catch { return { state: 'unavailable', reason: 'discovery-unavailable' }; }
-      if (discovered.state !== 'discovered') return { state: 'unavailable', reason: 'discovery-unavailable' };
+      try { discovered = await port.discover(selected.policy.endpoint.id); } catch { discovered = { state: 'unavailable', reason: 'discovery-unavailable' }; }
       try {
         const current = store.transaction(tx => connection(tx, id));
-        if (!current.policy.enabled || current.sha256 !== selected.sha256 || discovered.endpointId !== current.policy.endpoint.id || discovered.schemaDigest !== current.policy.schemaDigest || !endpointMatches(current.policy)) return { state: 'refused', reason: 'authority-or-catalog-changed' };
+        if (!current.policy.enabled || current.sha256 !== selected.sha256 || !endpointMatches(current.policy)) return { state: 'refused', reason: 'authority-changed' };
+        if (discovered.state !== 'discovered') return { state: 'unavailable', reason: 'discovery-unavailable' };
+        if (discovered.endpointId !== current.policy.endpoint.id || discovered.schemaDigest !== current.policy.schemaDigest) return { state: 'refused', reason: 'catalog-changed' };
         assertCurrentBinding();
         // Callback may synchronously mutate policy. Reread and install with no await gap.
         return store.transaction(tx => {

@@ -1,6 +1,6 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, chmodSync, symlinkSync, linkSync, readdirSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, chmodSync, lstatSync, symlinkSync, linkSync, readdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -26,14 +26,14 @@ const tools: ToolDefinition[] = [
 ];
 function privateJSON(path: string, value: unknown) { writeFileSync(path, JSON.stringify(value), { mode: 0o600 }); chmodSync(path, 0o600); }
 async function localSource(t: TestContext) {
-  const accounts = ['alpha', 'beta'] as const;
   const tokens = new Map([['alpha-secret', 'alpha'], ['alpha-rotated-secret', 'alpha'], ['beta-secret', 'beta']]);
-  const sessions = new Map<string, { sdk: Server; transport: WebStandardStreamableHTTPServerTransport }>();
+  const sessions = new Map<string, { account: string; sdk: Server; transport: WebStandardStreamableHTTPServerTransport }>();
   let list: ToolDefinition[] = structuredClone(tools); let repeat = false; let oversized = false; let toolHttp = 0; let executed = 0;
   let beforeList: (() => Promise<void>) | undefined;
-  for (const account of accounts) {
+  async function newSession(account: string) {
+    const id = randomUUID();
     const sdk = new Server({ name: `synthetic-${account}`, version: '1' }, { capabilities: { tools: {} } });
-    const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
+    const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => id, enableJsonResponse: true });
     sdk.setRequestHandler('tools/list', async req => {
       await beforeList?.();
       if (oversized) return { tools: [{ name: 'big', inputSchema: { type: 'object' }, description: 'x'.repeat(200000) }] } as never;
@@ -48,7 +48,7 @@ async function localSource(t: TestContext) {
       const text = req.params.name === 'search_knowledge' ? `${ownId}: nonempty ${account} synthetic search` : ids?.includes(ownId) ? `${ownId}: nonempty ${account} synthetic insight` : 'not found in selected account';
       return { content: [{ type: 'text', text }] } as never;
     });
-    await sdk.connect(transport); sessions.set(account, { sdk, transport });
+    await sdk.connect(transport); const session = { account, sdk, transport }; sessions.set(id, session); return session;
   }
   const http = createServer(async (req, res) => {
     try {
@@ -58,8 +58,12 @@ async function localSource(t: TestContext) {
       if (bytes.length) { const packet = JSON.parse(bytes.toString()) as { method?: string }; if (packet.method === 'tools/call') toolHttp++; }
       const account = tokens.get((headers.get('authorization') ?? '').replace(/^Bearer /, ''));
       if (!account) { res.writeHead(401); res.end('synthetic remote rejection'); return; }
+      if (req.method === 'GET') { res.writeHead(405); res.end(); return; }
+      const sessionId = headers.get('mcp-session-id');
+      const session = sessionId ? sessions.get(sessionId) : await newSession(account);
+      if (!session || session.account !== account) { res.writeHead(401); res.end(); return; }
       const request = new Request(`http://${req.headers.host}${req.url}`, { method: req.method ?? 'GET', headers, ...(bytes.length ? { body: new Uint8Array(bytes) } : {}) });
-      const response = await sessions.get(account)!.transport.handleRequest(request);
+      const response = await session.transport.handleRequest(request);
       res.writeHead(response.status, Object.fromEntries(response.headers));
       if (response.body) { const reader = response.body.getReader(); while (true) { const chunk = await reader.read(); if (chunk.done) break; res.write(chunk.value); } }
       res.end();
@@ -106,6 +110,8 @@ test('protected init is disabled/pending; strict binding and canonical owner com
   assert.throws(() => f.config.loadMcpConfiguration({ configDir: f.configDir, ownerId: 'wrong', dataDir: f.dataDir }));
   assert.throws(() => f.config.loadMcpConfiguration({ configDir: f.configDir, ownerId: f.ownerId, dataDir: join(f.dir, 'wrong') }));
   assert.throws(() => f.host.composeMcpConnection({ store: f.store, owner: f.owner, registry: new McpRegistry(), configDir: f.configDir }));
+  const alternate = new Store(join(f.dir, 'other'), toolsMigrations);
+  assert.throws(() => f.host.composeMcpConnection({ store: alternate, owner: f.owner, registry: f.registry, configDir: f.configDir })); alternate.close();
   assert.equal(f.approve().state, 'pending');
   const bundle = f.compose(); assert.equal(bundle.state, 'applied'); assert.equal(f.registry.currentGrant('endpoint'), undefined);
   assert.equal(f.compose().state, 'unchanged');
@@ -164,6 +170,14 @@ test('CURRENT protected rebind and credential-await local revoke send zero HTTP;
   const before = source.toolHttp; assert.equal((await f.port.call(request(f.p, 'search_knowledge', { query: 'synthetic', limit: 1 }))).state, 'refused'); assert.equal(source.toolHttp, before);
   writeFileSync(join(f.configDir, 'credential.json'), original);
   await bundle.restore();
+  let enter!: () => void; let release!: () => void;
+  const started = new Promise<void>(resolve => { enter = resolve; }); const gate = new Promise<void>(resolve => { release = resolve; });
+  const resolveCredential = f.selection.resolveCredential;
+  t.mock.method(f.selection, 'resolveCredential', async (reference: string) => { const token = await resolveCredential(reference); enter(); await gate; return token; });
+  const localBefore = source.toolHttp; const localPending = f.port.call(request(f.p, 'search_knowledge', { query: 'synthetic', limit: 1 }));
+  await started; f.config.disableMcpConfiguration({ configDir: f.configDir, ownerId: f.ownerId, dataDir: f.dataDir }); release();
+  assert.equal((await localPending).state, 'refused'); assert.equal(source.toolHttp, localBefore);
+  t.mock.restoreAll(); writeFileSync(join(f.configDir, 'credential.json'), original); await bundle.restore();
   source.tokens.delete('alpha-secret');
   const executed = source.executed; const rejected = await f.port.call(request(f.p, 'search_knowledge', { query: 'synthetic', limit: 1 }));
   assert.notEqual(rejected.state, 'completed'); assert.equal(source.executed, executed); assert.ok(source.toolHttp > before);
@@ -194,6 +208,17 @@ test('strict protected JSON/modes/links/references/fields and bounded redacted s
   assert.throws(() => f.config.initMcpConfiguration({ configDir: f.configDir, ownerId: f.ownerId, profileInput: f.profileInput, credentialInput: f.credentialInput }));
   assert.equal(readdirSync(f.configDir).sort().join(','), 'credential.json,profile.json');
   const profileBytes = readFileSync(join(f.configDir, 'profile.json'), 'utf8'); assert.doesNotMatch(profileBytes, /alpha-secret|"token"/);
+  const profilePath = join(f.configDir, 'profile.json'); const profileObject = JSON.parse(profileBytes);
+  for (const value of [ { ...profileObject, token: 'alpha-secret' }, { ...profileObject, dataDir: 'relative' },
+    { ...profileObject, policy: { ...profileObject.policy, unexpected: true } },
+    { ...profileObject, policy: { ...profileObject.policy, endpoint: { ...profileObject.policy.endpoint, credentialRef: null } } },
+    { ...profileObject, policy: { ...profileObject.policy, endpoint: { ...profileObject.policy.endpoint, url: 'https://synthetic.invalid/mcp#secret' } } } ]) {
+    privateJSON(profilePath, value); assert.throws(load);
+  }
+  writeFileSync(profilePath, profileBytes); chmodSync(f.configDir, 0o755); assert.throws(load); chmodSync(f.configDir, 0o700);
+  const alias = join(f.dir, 'config-alias'); symlinkSync(f.configDir, alias); assert.throws(() => f.config.loadMcpConfiguration({ configDir: alias, ownerId: f.ownerId, dataDir: f.dataDir }));
+  for (const file of [path, profilePath]) { const stat = lstatSync(file); assert.equal(stat.uid, process.getuid!()); assert.equal(stat.mode & 0o7777, 0o600); assert.equal(stat.nlink, 1); }
+
   assert.equal(existsSync(join(f.configDir, 'writer.sqlite')), false);
   f.approve(); f.compose();
   const policies = f.store.transaction(tx => tx.all('SELECT policy_json FROM tool_connections')); assert.doesNotMatch(JSON.stringify(policies), /alpha-secret|alpha-rotated-secret/);
@@ -214,4 +239,21 @@ test('actual CLI help/strict flags/init/approve/disable are pending and never op
   assert.equal(existsSync(join(configDir, 'writer.sqlite')), false);
   assert.equal(f.store.transaction(tx => tx.get('SELECT count(*) AS n FROM tool_connections'))?.n, 0);
   assert.doesNotMatch(approved.stdout + disabled.stdout + approved.stderr + disabled.stderr, /alpha-secret|synthetic.invalid|mcp-credential/);
+});
+
+
+test('durable revoke during actual authenticated discovery and after installation wins; higher exact approval restores', async t => {
+  const source = await localSource(t); const f = await configFixture(t, source.url); f.approve(); const bundle = f.compose();
+  let enter!: () => void; let release!: () => void;
+  const started = new Promise<void>(resolve => { enter = resolve; }); const gate = new Promise<void>(resolve => { release = resolve; });
+  source.beforeList(() => { enter(); return gate; });
+  const pending = bundle.restore(); await started;
+  const revoked = { ...f.p, generation: 2, enabled: false }; const hash = sha256(canonicalJSON(f.p));
+  f.owner.applyConnectionIntent({ expectedPolicySha256: hash, policy: revoked }); release();
+  assert.equal((await pending).state, 'refused'); assert.equal(f.registry.currentGrant('endpoint'), undefined);
+  source.beforeList(undefined);
+  f.approve(3, sha256(canonicalJSON(revoked))); const next = f.compose(); assert.equal(next.state, 'applied');
+  assert.deepEqual(await next.restore(), { state: 'restored' });
+  f.owner.applyConnectionIntent({ expectedPolicySha256: sha256(canonicalJSON(f.p)), policy: { ...f.p, generation: 4, enabled: false } });
+  assert.equal((await next.restore()).state, 'refused'); assert.equal(f.registry.currentGrant('endpoint'), undefined); assert.equal(source.toolHttp, 0);
 });

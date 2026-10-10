@@ -240,7 +240,7 @@ export async function fixture(options: FixtureOptions = {}) {
     assert.ok(packet.result.tools.length > 0, 'Changed live catalog must be nonempty actual SDK data');
     return { tools: packet.result.tools, schemaDigest: canonicalToolDigest(packet.result.tools) };
   };
-  return { dir, configDir, recordPath, writeRecord, store, domain, context, chat, tools, registry, port, enroll, accept, terminal, counts, updatePolicy,
+  return { connections: composed.connections, dir, configDir, recordPath, writeRecord, store, domain, context, chat, tools, registry, port, enroll, accept, terminal, counts, updatePolicy,
     modelCalls, sdkCalls, events, status: composed.status, close, profile, scope, policy: () => policy, setLiveDefinitions: () => { liveDefinitions = []; },
     differentLiveCatalog, correctLabel, gateBarrier, resolutions: () => requestCount,
     receipt: () => credentialReceiptFor(configDir, scope), advance: (ms: number) => { clock += ms; } };
@@ -257,6 +257,7 @@ async function browserProcess() {
   const sessionId = await f.enroll();
   const service = await listenService({ store: f.store, domain: createDomainPort({ outbox: Outbox }), chat: f.chat,
     modelStatus: { status: 'configured', provider: 'gemini', model: scope.modelId }, port: 0,
+    ...(f.connections ? { connections: f.connections } : {}),
     webRoot: resolve(process.env.DIDI_TOOL_CHAT_WEB_ROOT!) });
   let stopping = false;
   const stop = async () => {

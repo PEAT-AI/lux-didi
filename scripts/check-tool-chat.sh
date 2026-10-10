@@ -67,5 +67,5 @@ export DIDI_TOOL_CHAT_DEPENDENCIES="$deps"
 export DIDI_TOOL_CHAT_PROCESS="$out/server/dist/test/tool-chat-process.js"
 export DIDI_TOOL_CHAT_WEB_ROOT="$out/web/dist"
 echo 'TOOL CHAT PHASE=browser-runtime'
-lux-browser-slot run --priority worker --want 1 --wait 120 -- \
+lux-browser-slot run --priority worker --want 1 --wait 1800 -- \
   node --test --test-reporter=tap --test-timeout=45000 "$root/server/test/tool-chat-browser.mjs"

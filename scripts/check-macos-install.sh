@@ -150,24 +150,27 @@ PY
   observer_pid=$!
   # Observe the accepted label over the existing protected loopback API while the
   # native-launched host is up (one bounded poll, no idle loop).
-  origin=""
-  for _ in $(seq 1 120); do
+  token="$(tr -d '\n' < "$state/admin-credential")"
+  status_json=""
+  for _ in $(seq 1 300); do
+    kill -0 "$observer_pid" 2>/dev/null || break
     origin="$(python3 - "$proof/run-2.json" <<'PY'
 import json, sys
 try: print(json.load(open(sys.argv[1])).get("service", {}).get("origin", ""))
 except Exception: print("")
 PY
 )"
-    [ -n "$origin" ] && break
-    sleep 0.25
+    if [ -n "$origin" ]; then
+      status_json="$(curl -fsS -H "Authorization: Bearer $token" "$origin/api/v1/status" 2>/dev/null)" || status_json=""
+      [ -n "$status_json" ] && break
+    fi
+    sleep 0.2
   done
-  if [ -z "$origin" ]; then
+  wait "$observer_pid" 2>/dev/null || true
+  if [ -z "$status_json" ]; then
     kill "$observer_pid" 2>/dev/null || true
-    echo 'MACOS-INSTALL FAIL: no host origin observed during the native launch' >&2; exit 1
+    echo 'MACOS-INSTALL FAIL: protected status not observed while the native host was up' >&2; exit 1
   fi
-  token="$(tr -d '\n' < "$state/admin-credential")"
-  status_json="$(curl -fsS -H "Authorization: Bearer $token" "$origin/api/v1/status")"
-  wait "$observer_pid"
   python3 - "$status_json" "$assistant" <<'PY'
 import json, sys
 data = json.loads(sys.argv[1])["data"]

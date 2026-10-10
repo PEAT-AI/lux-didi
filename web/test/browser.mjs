@@ -102,7 +102,25 @@ try {
         }
       }
       await proofPage.screenshot({path:join(artifacts,`orb-measured-side-by-side-${width}-dpr${dpr}.png`),fullPage:true});
-      Object.assign(record,{status:'pass',layout,gpu,metadata,appAssets,sampleCount:samples.length,
+      await proofPage.evaluate(()=>{globalThis.connectingProof=globalThis.orbProof.connecting();});
+      const composition=async()=>proofPage.evaluate(async()=>{
+        for(const canvas of [document.querySelector('#reference-a'),document.querySelector('#port')]){
+          const target=canvas.id==='port'?canvas:canvas.parentElement;
+          for(const animation of target.getAnimations()){animation.pause();animation.currentTime=750;}
+        }
+        await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+        return ['reference-a','port'].map(id=>{const c=document.getElementById(id),wrapper=c.parentElement,container=wrapper.parentElement;
+          return {canvasOpacity:Number(getComputedStyle(c).opacity),wrapperOpacity:Number(getComputedStyle(wrapper).opacity),containerOpacity:Number(getComputedStyle(container).opacity),effectiveOpacity:Number(getComputedStyle(c).opacity)*Number(getComputedStyle(wrapper).opacity)*Number(getComputedStyle(container).opacity)};});
+      });
+      const animatedConnecting=await composition();
+      assert(Math.abs(animatedConnecting[0].effectiveOpacity-.45)<.0001,'original disabled parent x processing midpoint');
+      assert(Math.abs(animatedConnecting[1].effectiveOpacity-animatedConnecting[0].effectiveOpacity)<.0001,'actual shipped Orb disabled/pulse composition');
+      await proofPage.screenshot({path:join(artifacts,`orb-connecting-composition-${width}-dpr${dpr}.png`),fullPage:true});
+      await proofPage.emulateMedia({reducedMotion:'reduce'});
+      const staticConnecting=await composition();
+      assert.equal(staticConnecting[0].effectiveOpacity,.5);assert.equal(staticConnecting[1].effectiveOpacity,.5);
+      await proofPage.evaluate(()=>globalThis.connectingProof.dispose());
+      Object.assign(record,{status:'pass',layout,gpu,metadata,appAssets,sampleCount:samples.length,animatedConnecting,staticConnecting,
         judgment:'Measured only. Noise differences reported against original self-variation; no invented tolerance, pixel-identity or visual-equivalence claim. Original chat host/entrance is not this isolated adapter.'});
       }catch(error){record.status='failed';record.failedTraceAttempts=record.traceAttempts-record.samples.length;record.error=String(error.message);throw error;}
       finally {await proofContext.close();await writeFile(join(artifacts,'orb-reference-measurements.json'),JSON.stringify(measurements,null,2));}

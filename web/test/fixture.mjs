@@ -129,16 +129,19 @@ async function orbProofAssets(){
   const classic=await readFile(join(import.meta.dirname,'../src/orb-classic.ts'),'utf8');
   const frame=await readFile(join(import.meta.dirname,'../src/orb-frame.ts'),'utf8');
   const portCSS=await readFile(join(import.meta.dirname,'../src/style.css'),'utf8');
+  const lifecycle=await readFile(join(import.meta.dirname,'../src/orb.ts'),'utf8');
   const assets={
     '/orb-proof/reference.js':transpile(`const Sentry={addBreadcrumb(){}};${originalNoise}\nexport {SimplexNoise};\n${referenceSource(fixture)}`),
     '/orb-proof/classic.js':transpile(classic).replace("from 'simplex-noise'","from '/orb-proof/noise.js'"),
     '/orb-proof/frame.js':transpile(frame).replace("from './orb-classic'","from '/orb-proof/classic.js'"),
+    '/orb-proof/lifecycle.js':transpile(lifecycle).replace("from './orb-classic'","from '/orb-proof/classic.js'").replace("from './orb-frame'","from '/orb-proof/frame.js'"),
     '/orb-proof/noise.js':await readFile(join(import.meta.dirname,'../node_modules/simplex-noise/dist/esm/simplex-noise.js'),'utf8'),
-    '/orb-proof/':`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/orb-proof/style.css"></head><body><h1>Pinned classic reference / self-variation / Didi</h1><div class="proof"><section><h2>Vicuna seed 23</h2><div class="voice-blob-container"><div class="blob-wrapper"><canvas class="blob-canvas" id="reference-a"></canvas></div></div></section><section><h2>Vicuna seed 187</h2><div class="voice-blob-container"><div class="blob-wrapper"><canvas class="blob-canvas" id="reference-b"></canvas></div></div></section><section><h2>Didi simplex-noise 4.0.3</h2><div class="orb-stage"><canvas id="port"></canvas></div></section></div><script type="module" src="/orb-proof/page.js"></script></body></html>`,
+    '/orb-proof/':`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/orb-proof/style.css"></head><body><h1>Pinned classic reference / self-variation / Didi</h1><div class="proof"><section><h2>Vicuna seed 23</h2><div class="voice-blob-container"><div class="blob-wrapper"><canvas class="blob-canvas" id="reference-a"></canvas></div></div></section><section><h2>Vicuna seed 187</h2><div class="voice-blob-container"><div class="blob-wrapper"><canvas class="blob-canvas" id="reference-b"></canvas></div></div></section><section><h2>Didi simplex-noise 4.0.3</h2><div class="orb-stage"><div class="orb-visual"><canvas id="port"></canvas></div></div></section></div><script type="module" src="/orb-proof/page.js"></script></body></html>`,
     '/orb-proof/style.css':fixture.wrapperCSS+portCSS+`body{margin:0;background:#071315;color:white;font:14px system-ui}.proof{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}canvas{display:block;width:100%;max-width:600px;height:auto;aspect-ratio:1}section{min-width:0}.proof .orb-stage{display:flex;min-height:0;margin:0;border:0;background:none;overflow:visible}.voice-blob-container{padding:0}h1,h2{font-size:14px}`,
     '/orb-proof/page.js':`
       import {Reference,SimplexNoise} from './reference.js';
       import {ClassicRenderer} from './classic.js';
+      import {Orb} from './lifecycle.js';
       import {initialOrbFrame,stepOrbFrame} from './frame.js';
       const size=innerWidth<=767?400:600;
       const canvases=['reference-a','reference-b','port'].map(id=>document.getElementById(id));
@@ -156,6 +159,7 @@ async function orbProofAssets(){
         }
         canvases[2].dataset.state=input.state;canvases[2].dataset.posture=speaking?'speaking':listening?'listening':processing?'thinking':neutral?'quiet':input.state==='ERROR'?'error':'idle';
         if(input.state==='ERROR')delete canvases[2].dataset.disabled;else canvases[2].dataset.disabled=String(disabled);
+        if(input.state==='ERROR')delete canvases[2].parentElement.dataset.disabled;else canvases[2].parentElement.dataset.disabled=String(disabled);
         contexts.forEach(ctx=>ctx.clearRect(0,0,size,size));
         refs.forEach(ref=>{const frame=ref.step(dt,input.state,input.audio,input.audible,input.microphoneLevel,size);ref.draw({...frame,status:input.state,audible:input.audible});});
         temporal=stepOrbFrame(temporal,input,dt,size);port.draw(temporal);steps++;
@@ -171,13 +175,14 @@ async function orbProofAssets(){
           frames:refs.map(ref=>({time:ref.time,ambientTime:ref.ambientTime,hue:ref.smoothedHue})).concat({time:temporal.time,ambientTime:temporal.ambientTime,hue:temporal.hue})};
       }
       globalThis.orbProof={pause(){cancelAnimationFrame(raf);raf=undefined;},resume(){last=0;deadline=0;raf=requestAnimationFrame(tick);},
-        set(value){input=value;},step(dt){advance(dt);return measures();},measure:measures};
+        set(value){input=value;},step(dt){advance(dt);return measures();},measure:measures,
+        connecting(){this.pause();input={...input,state:'CONNECTING',audible:false};advance(0);const orb=new Orb(canvases[2],'CONNECTING');return {dispose:()=>orb.destroy()};}};
       advance(0);raf=requestAnimationFrame(tick);
     `
   };
   const metadata={referenceCommit:fixture.referenceCommit,referenceSourceSha256:hash(original),originalNoiseSha256:hash(originalNoise),
     portCommit:git(['rev-parse','HEAD'],join(import.meta.dirname,'../..')).trim(),
-    portSourceSha256:{classic:hash(classic),frame:hash(frame),css:hash(portCSS)},pixelDomain:'unfiltered backing Canvas2D pixels; original and actual port CSS/filter/motion are separate screenshot/video evidence; ERROR recoverability unavailable',noise:{reference:'original inline implementation, test-only in memory, seeds 23/187',port:'shipped MIT simplex-noise4.0.3 xorshift32 seed20261009'},
+    portSourceSha256:{classic:hash(classic),frame:hash(frame),lifecycle:hash(lifecycle),css:hash(portCSS)},pixelDomain:'unfiltered backing Canvas2D pixels; original and actual port CSS/filter/motion are separate screenshot/video evidence; ERROR recoverability unavailable',noise:{reference:'original inline implementation, test-only in memory, seeds 23/187',port:'shipped MIT simplex-noise4.0.3 xorshift32 seed20261009'},
     producer:'original-source standalone classic adapter, not the Angular chat application; original geometry/dispatch/state loop; matched controlled high-tier12idle60active trace, not the original lifecycle scheduler',
     servedAssets:Object.fromEntries(Object.entries(assets).map(([path,body])=>[path,hash(body)]))};
   assets['/orb-proof/metadata.json']=JSON.stringify(metadata);

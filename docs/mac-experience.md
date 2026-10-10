@@ -41,7 +41,10 @@ notification delivery remain untested without explicit user authorization.
 
 Run `bash Tests/DidiCompanionTests/check-companion.sh` for disposable signed native
 WebKit proof and the retained `Tests/DidiMacTests/check-mac.sh` checks. The producer
-uses the installed shared `lux-browser-slot` renderer lease. It has no role in
+uses the installed shared `lux-browser-slot` renderer lease. Compilation and
+bundling run before the lease is taken; only the single leased run phase does
+the LaunchServices registration, native launch, UI/AX capture and browser work.
+It has no role in
 public app runtime. `LUX_DIDI_PROOF_DIR` may select the output directory for the
 actual WKWebView screenshot; otherwise a portable, run-unique temporary proof
 directory is printed as `PROOF-DIR` and retained for inspection. Remove that

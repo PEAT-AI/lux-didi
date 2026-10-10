@@ -15,7 +15,7 @@ provider.on('connection', socket => {
 const profile = { provider: 'gemini', liveModelId: 'models/native-live-synthetic', voice: 'SyntheticVoice', keyReference: 'fixture-only',
   route: { enabled: true, provider: 'gemini', modelId: 'models/native-live-synthetic', dataClasses: ['ordinary', 'private'] },
   prompt: { text: 'Synthetic silent protocol test', dataClass: 'ordinary' },
-  limits: { ...defaultLiveLimits, unusedMs: 10000, handshakeMs: 2000, closeMs: 100, sessionMs: 20000, idleMs: 10000 } };
+  limits: { ...defaultLiveLimits, unusedMs: 10000, handshakeMs: 2000, closeMs: 100, sessionMs: 20000, idleMs: 200 } };
 const host = await startHost({ dataDir, configDir, webRoot, port: 0, liveTesting: { profile,
   credentials: { resolve: async () => 'SYNTHETIC-NONACCOUNT-NATIVE-LIVE' },
   socketFactory: () => new WebSocket(`ws://127.0.0.1:${provider.address().port}`),

@@ -236,16 +236,18 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
                 do { try await client.sendPCM(invalid) } catch LiveClientError.invalidAudio { refused = true }
                 try require(refused, "invalid input rejected before wire")
             }
+            try await client.sendPCM(Data([1, 0]))
+            try await until { await sink.queued.last?.first == 1 }
             let interruptionGate = Gate()
             await sink.gateFlush(interruptionGate)
-            try await client.sendPCM(Data([1, 0]))
+            try await client.sendPCM(Data([2, 0]))
             try await until { await interruptionGate.arrivals == 1 }
             try require(await sink.queued.last?.first != 3, "later PCM held until interrupted flush completes")
             await interruptionGate.release()
             try await until { await sink.queued.last?.first == 3 }
             let events = await sink.events
             guard let flush = events.lastIndex(of: "flush"), let newPCM = events.firstIndex(of: "pcm:3") else { throw ProbeError.assertion("interruption markers") }
-            try require(flush < newPCM, "interruption awaits flush before new PCM")
+            try require(events.firstIndex(of: "pcm:1")! < flush && flush < newPCM, "old queued audio exists and interruption awaits flush before new PCM")
             try require(await sink.queued.allSatisfy { $0.first == 3 }, "old queued PCM invalidated, new PCM valid")
             try await client.endAudioStream()
             await client.revoke()

@@ -29,9 +29,9 @@ upstream.on('connection', socket => {
     const value = JSON.parse(raw.toString());
     upstreamFrames.push(value);
     if (value.setup) socket.send(JSON.stringify({ setupComplete: {} }));
-    if (value.realtimeInput?.audio?.data === Buffer.from([1, 0]).toString('base64')) {
-      const audio = first => ({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from([first, 0]).toString('base64') } }] } } });
-      socket.send(JSON.stringify(audio(1)));
+    const audio = first => ({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from([first, 0]).toString('base64') } }] } } });
+    if (value.realtimeInput?.audio?.data === Buffer.from([1, 0]).toString('base64')) socket.send(JSON.stringify(audio(1)));
+    if (value.realtimeInput?.audio?.data === Buffer.from([2, 0]).toString('base64')) {
       socket.send(JSON.stringify(audio(2)));
       socket.send(JSON.stringify({ serverContent: { interrupted: true } }));
       socket.send(JSON.stringify(audio(3)));
@@ -130,13 +130,15 @@ try {
     assert.equal(upgrades.length - upgradeBaseline, 3, 'exact actual client attach count; all local guard/pin rejects have zero wire');
     assert.equal(opens - openBaseline, 3, 'real controlled provider opens only for the three authorized attaches');
     const audio = upstreamFrames.filter(frame => frame.realtimeInput?.audio);
-    assert.deepEqual(audio.map(frame => Buffer.from(frame.realtimeInput.audio.data, 'base64').length), [8, 2], 'invalid/overflow/post-revoke inputs never reach wire');
+    assert.deepEqual(audio.map(frame => Buffer.from(frame.realtimeInput.audio.data, 'base64').length), [8, 2, 2], 'invalid/overflow/post-revoke inputs never reach wire');
     for (const frame of audio) assert.equal(frame.realtimeInput.audio.mimeType, 'audio/pcm;rate=16000');
     console.log('PASS native real-gateway wire accounting invalid/overflow zero-wire PCM16LE mono16k');
     await runNative(nativeBinary, ['--mutation'], 0);
     if (mutatedBinary) {
       await runNative(mutatedBinary, ['--mutation'], 1);
-      console.log('PASS ISOLATED MUTATION SENSITIVITY: compiled cookie-guard removal is behavioral RED, unmodified transport baseline GREEN');
+      await runNative(nativeBinary, ['--mutation'], 0);
+      assert.equal(opens - openBaseline, 3, 'mutation never authorizes a provider');
+      console.log('PASS ISOLATED MUTATION SENSITIVITY: compiled cookie-guard removal is behavioral RED, restored unmodified transport baseline GREEN');
     }
   }
 

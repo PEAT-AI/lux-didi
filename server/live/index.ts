@@ -227,10 +227,7 @@ export class LiveSessionOwner {
       if (String(row['profile_identity']) !== this.#profileIdentity || String(row['prompt_identity']) !== this.#promptIdentity) throw new LiveError('invalidated');
       if (String(row['lifecycle']) === 'terminal') throw new LiveError('terminal');
       if (String(row['lifecycle']) !== 'accepted') throw new LiveError('already_attached');
-      if (now - Number(row['created_at']) > this.#profile.limits.unusedMs) {
-        this.#terminalInTx(tx, input.liveSessionId, { state: 'expired' }, false, now, 'detached', null);
-        return 'expired' as const;
-      }
+      if (this.#expireInTx(tx, row, now) !== row) return 'expired' as const;
       tx.run("UPDATE live_sessions SET lifecycle='opening', dispatch_intent=1, consumer_state='attached', updated_at=? WHERE live_session_id=?", [now, input.liveSessionId]);
       const grant = tx.get('SELECT chosen_input_class FROM live_grants WHERE live_session_id=?', [input.liveSessionId])!;
       return String(grant['chosen_input_class']) as DataClass;
@@ -438,7 +435,7 @@ export class LiveSessionOwner {
     if (row['owner_assistant_id'] !== this.#store.assistantId || row['lifecycle'] !== 'accepted'
       || Number(row['dispatch_intent']) !== 0 || now - Number(row['created_at']) <= this.#profile.limits.unusedMs) return row;
     const id = String(row['live_session_id']);
-    this.#terminalInTx(tx, id, { state: 'expired' }, false, now, 'ended', null);
+    this.#terminalInTx(tx, id, { state: 'expired' }, false, now, 'detached', null);
     return tx.get('SELECT * FROM live_sessions WHERE live_session_id=?', [id])!;
   }
 

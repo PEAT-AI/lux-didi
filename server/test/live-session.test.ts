@@ -103,7 +103,7 @@ test('many-turn journal preserves provider order, late input, and an interrupted
   h.f.send({ serverContent: { outputTranscription: { text: 'cut off' } } });
   h.f.send({ serverContent: { interrupted: true, turnComplete: true } });
   h.f.send({ serverContent: { inputTranscription: { text: 'late final input', finished: true } } });
-  const live = await drain(h, session.liveSessionId, 1 + turns * 4 + 3);
+  const live = await drain(h, session.liveSessionId, 1 + turns * 4 + 4);
   assert.equal(live.lifecycle, 'active');
   assert.ok(live.journal.events > 128, 'the adapter 128-event queue is not a lifetime journal cap');
   assert.equal(h.f.attempts, 1);
@@ -114,10 +114,10 @@ test('many-turn journal preserves provider order, late input, and an interrupted
   assert.equal(page.fragments[1]?.text, 'out-0');
   assert.equal(page.fragments[4]?.text, 'in-0');
   assert.equal(page.fragments[4]?.finished, null);
-  const tail = h.owner.listFragments({ liveSessionId: session.liveSessionId, cursor: 1 + turns * 4 });
-  assert.deepEqual(tail.fragments.map(fragment => fragment.kind), ['interrupted', 'turnComplete', 'inputTranscription']);
-  assert.equal(tail.fragments[2]?.text, 'late final input');
-  assert.equal(tail.fragments[2]?.finished, true);
+  const tail = h.owner.listFragments({ liveSessionId: session.liveSessionId, cursor: 2 + turns * 4 });
+  assert.deepEqual(tail.fragments.map(fragment => fragment.kind), ['outputTranscription', 'interrupted', 'turnComplete', 'inputTranscription']);
+  assert.equal(tail.fragments[3]?.text, 'late final input');
+  assert.equal(tail.fragments[3]?.finished, true);
   assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).interruptions, 1);
   const keys = ['arrivedAt', 'finished', 'journalSequence', 'kind', 'liveSessionId', 'providerSequence', 'rejectedKind', 'rejectedSequence', 'text'].sort();
   for (const fragment of page.fragments) assert.deepEqual(Object.keys(fragment).sort(), keys);
@@ -131,11 +131,11 @@ test('excluded transport facts and raw secrets never persist; Domain and CHAT st
   const h = await harness(t);
   const { session, attachment } = await attached(h);
   h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [audio(), { text: 'unspoken thought', thought: true }] }, outputTranscription: { text: 'Spoken text' }, turnComplete: true } });
-  await drain(h, session.liveSessionId, 4);
+  await drain(h, session.liveSessionId, 3);
   h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: CANARY } });
   await tick();
   h.f.send({ serverContent: { inputTranscription: { text: 'synced' } } });
-  await drain(h, session.liveSessionId, 5);
+  await drain(h, session.liveSessionId, 4);
   attachment.close();
   await attachment.done;
 

@@ -223,6 +223,15 @@ except Exception: print("")' "$proof/fx-p1.json" 2>/dev/null)"
   wait "$fx_pid"
   [ "$calls1" -ge 1 ] || { echo 'MACOS-INSTALL FAIL: synthetic transport was not invoked' >&2; exit 1; }
   [ "$calls1" = "$calls2" ] || { echo 'MACOS-INSTALL FAIL: idempotent replay made extra transport calls' >&2; exit 1; }
+  python3 - "$proof/fx-chat-1.json" "$proof/fx-chat-replay.json" <<'PY'
+import json, sys
+def runid(path):
+    data = (json.load(open(path)) or {}).get("data") or {}
+    return data.get("runId") or data.get("id")
+first, replay = runid(sys.argv[1]), runid(sys.argv[2])
+assert first and first == replay, (first, replay)
+print("FIXTURE-P1 replay run_id=%s" % first)
+PY
   python3 - "$fstate/state.sqlite" "$proof/fx-triple.json" "$fstate/fixture-calls.json" <<'PY'
 import hashlib, json, sqlite3, sys
 db = sqlite3.connect("file:%s?mode=ro" % sys.argv[1], uri=True)
@@ -236,24 +245,56 @@ assert calls and "synthetic fixture note" in json.dumps(calls[-1]["body"]), call
 json.dump({"run_id": run_id, "sha256": hashlib.sha256(snapshot.encode()).hexdigest(), "snapshot": snap}, open(sys.argv[2], "w"))
 print("FIXTURE-P1 run=%s sha256=%s calls=%d" % (run_id, hashlib.sha256(snapshot.encode()).hexdigest(), len(calls)))
 PY
-  # P2: change only a non-label profile field, restart, and prove the persisted
-  # P1 run/hash is preserved.
+  # P2: change only a non-label profile field, restart, then (a) replay the P1
+  # chat with the SAME idempotency key and prove the same P1 run/hash with zero
+  # added transport calls, and (b) issue a NEW key and prove a P2 run/snapshot and
+  # P2 prompt in the recorded transport.
   python3 - "$profileDir/owner-profile.json" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1])); d["profileVersion"] = "synthetic-2"
 json.dump(d, open(sys.argv[1], "w"))
 PY
   "$fixture/Contents/MacOS/LuxDidi" --configure --owner-profile "$profileDir/owner-profile.json" > /dev/null
-  run_fixture p2 "$proof/fx-p2.json"
-  python3 - "$fstate/state.sqlite" "$proof/fx-triple.json" <<'PY'
+  rm -f "$proof/fx-p2.json" "$fstate/fixture-calls.json"
+  "$work/observer" --verification "$fixture" "$proof/fx-p2" "$(uuidgen)" run --installed-proof --proof-state "$fstate" --proof-report "$proof/fx-p2.json" &
+  fx_pid=$!
+  fx_origin=""
+  for _ in $(seq 1 200); do
+    fx_origin="$(python3 -c 'import json,sys
+try: print(json.load(open(sys.argv[1])).get("service",{}).get("origin",""))
+except Exception: print("")' "$proof/fx-p2.json" 2>/dev/null)"
+    [ -n "$fx_origin" ] && break
+    sleep 0.25
+  done
+  [ -n "$fx_origin" ] || { kill "$fx_pid" 2>/dev/null || true; echo 'MACOS-INSTALL FAIL: fixture host did not become ready after P2' >&2; exit 1; }
+  fx_epoch="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["service"]["authorityEpoch"])' "$proof/fx-p2.json")"
+  # (a) same idempotency key must replay the P1 run with zero new transport calls.
+  chat "$fkey" > "$proof/fx-p2-replay.json"
+  replay_calls="$(callcount)"
+  [ "$replay_calls" = "0" ] || { kill "$fx_pid" 2>/dev/null || true; echo "MACOS-INSTALL FAIL: idempotent replay added $replay_calls transport calls" >&2; exit 1; }
+  # (b) a new key runs against the P2 profile and invokes the transport once.
+  newkey="$(uuidgen)"
+  newtext="synthetic fixture note two"
+  curl -fsS -X POST "$fx_origin/api/v1/chat" -H "Authorization: Bearer $fxtoken" -H "Origin: $fx_origin" -H "Content-Type: application/json" -H "X-Didi-Authority-Epoch: $fx_epoch" -H "Idempotency-Key: $newkey" --data "{\"sessionId\":\"$sid\",\"text\":\"$newtext\",\"timeZone\":\"UTC\"}" > "$proof/fx-p2-new.json"
+  new_calls="$(callcount)"
+  [ "$new_calls" = "1" ] || { kill "$fx_pid" 2>/dev/null || true; echo "MACOS-INSTALL FAIL: new P2 run made $new_calls transport calls" >&2; exit 1; }
+  wait "$fx_pid"
+  python3 - "$fstate/state.sqlite" "$proof/fx-triple.json" "$fstate/fixture-calls.json" <<'PY'
 import hashlib, json, sqlite3, sys
 db = sqlite3.connect("file:%s?mode=ro" % sys.argv[1], uri=True)
 rows = db.execute("SELECT run_id, snapshot_json FROM chat_run_owner_profile ORDER BY rowid").fetchall()
 recorded = json.load(open(sys.argv[2]))
-assert recorded["run_id"] in [r[0] for r in rows], "P1 run lost after the P2 restart"
-p1 = json.loads([r[1] for r in rows if r[0] == recorded["run_id"]][0])
-assert p1.get("displayName") == "Synthetic Operator", p1
-print("FIXTURE-P2 preserved run=%s displayName=%s" % (recorded["run_id"], p1["displayName"]))
+by_id = {r[0]: r[1] for r in rows}
+assert recorded["run_id"] in by_id, "P1 run lost after the P2 restart"
+p1 = by_id[recorded["run_id"]]
+assert hashlib.sha256(p1.encode()).hexdigest() == recorded["sha256"], "P1 snapshot hash changed after replay"
+assert json.loads(p1).get("displayName") == "Synthetic Operator", p1
+p2 = [json.loads(r[1]) for r in rows if r[0] != recorded["run_id"]]
+assert p2 and p2[-1].get("profileVersion") == "synthetic-2", p2
+assert p2[-1].get("displayName") == "Synthetic Operator", p2[-1]
+calls = json.load(open(sys.argv[3]))
+assert calls and "synthetic fixture note two" in json.dumps(calls[-1]["body"]), calls[-1] if calls else None
+print("FIXTURE-P2 p1_preserved=%s p2_profile=%s p2_prompt_ok=1" % (recorded["run_id"], p2[-1]["profileVersion"]))
 PY
   echo 'MACOS-INSTALL: fixture snapshot transport pass'
   # A profile for a foreign identity must fail closed at the actual host.

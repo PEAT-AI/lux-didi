@@ -12,7 +12,9 @@ mkdir -p "$work/source" "$work/runtime/test"
 git archive HEAD server | tar -xf - -C "$work/source"
 builder="$work/source/server"
 # Never read a developer's npm profile or write to the shared dependency cache.
-export npm_config_userconfig=/dev/null npm_config_globalconfig=/dev/null
+> "$work/npm-userconfig"
+: > "$work/npm-globalconfig"
+export npm_config_userconfig="$work/npm-userconfig" npm_config_globalconfig="$work/npm-globalconfig"
 export npm_config_cache="$work/builder-cache"
 printf 'HOST_ENTRY_SOURCE=%s NODE=%s NPM=%s PLATFORM=%s\n' "$(git rev-parse HEAD)" "$(node --version)" "$(npm --version)" "$(node -p 'process.platform+"/"+process.arch')"
 (cd "$builder" && npm ci --ignore-scripts --no-audit --no-fund && npm run typecheck && npm run build)

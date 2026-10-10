@@ -47,14 +47,19 @@ try {
     await page.emulateMedia({reducedMotion:'no-preference'});
     await page.waitForFunction(()=>document.querySelector('#didi-orb').dataset.motion==='animated');
   });
-  await step('failed send preserves draft; capture uses real HTTP',async()=>{
+  await step('failed local save preserves draft; capture never dispatches a model',async()=>{
+    const requestStart=fixture.requests.length;
     await page.getByLabel('Your message').fill('Remember the synthetic blue notebook'); fixture.failNextEntry();
     await page.getByRole('button',{name:'Save message',exact:true}).click(); await page.getByRole('alert').filter({hasText:'Could not save'}).waitFor();assert.equal(await page.getByRole('alert').getAttribute('aria-live'),'assertive');
     assert.equal(await page.getByLabel('Your message').inputValue(),'Remember the synthetic blue notebook');
     await page.getByRole('button',{name:'Save message',exact:true}).click(); await page.locator('.entry').filter({hasText:'Remember the synthetic blue notebook'}).waitFor();
     assert.equal(await page.getByLabel('Your message').inputValue(),'');
     assert.equal(await page.getByRole('status').filter({hasText:'Message saved.'}).getAttribute('aria-live'),'polite');
-    const entry=fixture.requests.find(r=>r.path.endsWith('/entries')&&r.method==='POST'); assert.equal(entry.body.role,'user');
+    const writes=fixture.requests.slice(requestStart).filter(r=>r.method==='POST');
+    const entry=writes.find(r=>r.path.endsWith('/entries')); assert.equal(entry.body.role,'user');
+    assert.equal(entry.body.text,'Remember the synthetic blue notebook');
+    assert(writes.every(r=>r.path==='/api/v1/sessions'||/^\/api\/v1\/sessions\/[^/]+\/entries$/.test(r.path)),
+      'Local Save must only create a session or user entry, never dispatch a model');
   });
   await step('stop waiting preserves draft without claiming saved',async()=>{
     const release=fixture.holdNextEntry();

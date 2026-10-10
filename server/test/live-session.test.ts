@@ -401,7 +401,7 @@ test('live migrations preserve a populated accepted Store byte-for-byte', async 
   }));
   assert.deepEqual(current, prior, 'accepted CHAT and Domain rows stay meaningful');
   const owners = migrated.transaction(tx => tx.all('SELECT owner, MAX(version) AS version FROM runtime_migrations GROUP BY owner ORDER BY owner'));
-  assert.deepEqual(owners.map(row => [String(row['owner']), Number(row['version'])]), [['chat', 3], ['domain', 3], ['live', 1]]);
+  assert.deepEqual(owners.map(row => [String(row['owner']), Number(row['version'])]), [['chat', 4], ['domain', 3], ['live', 2]]);
 });
 
 test('a failed store write aborts visibly and never fabricates a durable outcome', async t => {
@@ -767,7 +767,8 @@ test('Live emits exact accepted A setup, not a changed caller B instruction', as
   const accepted = owner.create({ idempotencyKey: 'wire-a', inputClass: 'ordinary' }, h.ctx);
   acceptedPrompt.system = 'SYNTHETIC current B';
   const attachment = owner.attach({ liveSessionId: accepted.liveSessionId }, h.ctx);
-  const frame = JSON.parse(JSON.stringify(await h.f.frame(1)));
+  await h.f.frame(1);
+  const frame = JSON.parse(JSON.stringify(h.f.frames[0]));
   assert.equal(frame.setup.systemInstruction.parts[0].text, 'SYNTHETIC exact wire A');
   attachment.close();
 });

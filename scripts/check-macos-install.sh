@@ -373,4 +373,4 @@ src=Tests/DidiCompanionTests/launch-probe
 /usr/bin/nice -n 10 xcrun clang -c "$src/Kernel.c" -o "$work/Kernel.o"
 /usr/bin/nice -n 10 xcrun swiftc -j 1 -num-threads 1 -parse-as-library -import-objc-header "$src/Kernel.h" "$src/Identity.swift" "$src/Observer.swift" "$work/Kernel.o" -o "$work/observer"
 
-lux-browser-slot run --wait 120 -- bash "$0" --leased-run "$work" "$proof" "$node" "$app" "$fixture" "$payload_sha"
+lux-browser-slot run --wait 1800 -- bash "$0" --leased-run "$work" "$proof" "$node" "$app" "$fixture" "$payload_sha"

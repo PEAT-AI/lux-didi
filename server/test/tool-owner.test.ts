@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { Store } from '../runtime/store.js';
+import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
@@ -297,6 +298,61 @@ test('abort before dispatch is zero calls; forwarded abort after remote dispatch
   assert.equal(f.calls.length, 1); assert.equal(f.calls[0]!.signal.aborted, true);
   f.owner.journal.fail(call, 'unknown', 'cancelled');
   assert.throws(() => f.owner.complete(call, { text: 'late' }, ['private']), /terminal/);
+});
+
+// Native binding evidence only: this deliberately does not repair/bypass the Store guard.
+test('SQLite binding probe preserves compound trigger consumed prefix and ignores SELECT DDL COMMIT tails', t => {
+  const prefix = `/* leading α; 'END' */\nCREATE TRIGGER "END; α" AFTER INSERT ON events BEGIN
+    INSERT INTO trace VALUES(CASE WHEN NEW.value='α; END' THEN 'quoted ''END;'' α' ELSE 'else;END' END);
+    UPDATE trace SET note=note || ' β 😀;'; /* END; 'quoted' */
+  END;`;
+  const tails = [' SELECT 99 AS ignored;', ' CREATE TABLE forbidden_tail(x);', ' COMMIT;', ' -- tail α; END\n SELECT 2;', ' /* trailing quote \'END;\' */ CREATE TABLE forbidden_tail(x);', ' THIS IS NOT SQL'];
+  for (const tail of tails) {
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec('CREATE TABLE events(value TEXT); CREATE TABLE trace(note TEXT); BEGIN;');
+      const stmt: StatementSync = db.prepare(prefix + tail);
+      assert.equal(stmt.sourceSQL, prefix, `exact consumed prefix for ${tail}`);
+      assert.equal(Buffer.byteLength(stmt.sourceSQL, 'utf8'), Buffer.byteLength(prefix, 'utf8'));
+      stmt.run();
+      assert.equal(db.isTransaction, true, 'trailing COMMIT must not run');
+      assert.equal(db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE name='forbidden_tail'").get()!['n'], 0);
+      db.prepare('INSERT INTO events VALUES (?)').run('α; END');
+      assert.equal(db.prepare('SELECT note FROM trace').get()!['note'], "quoted 'END;' α β 😀;");
+      assert.equal(stmt.sourceSQL, prefix, 'execution does not rewrite sourceSQL');
+      db.exec('ROLLBACK');
+    } finally { db.close(); }
+  }
+  t.diagnostic(`BINDING-PROBE node=${process.version}; compound trigger/CASE/comments/quotes/Unicode exact prefix; six tails ignored, including SELECT/DDL/COMMIT/malformed`);
+});
+
+test('SQLite binding probe NUL truncates SQL input or rejects an incomplete first statement', t => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    const prefix = "SELECT 'α 😀' AS value;";
+    for (const first of [prefix, prefix.slice(0, -1)]) {
+      const stmt: StatementSync = db.prepare(first + '\0 CREATE TABLE nul_tail(x);');
+      assert.equal(stmt.sourceSQL, first);
+      assert.equal(stmt.get()!['value'], 'α 😀');
+      assert.equal(db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE name='nul_tail'").get()!['n'], 0);
+    }
+    assert.throws(() => db.prepare("SELECT 'α\0β' AS value;"), 'NUL inside literal leaves incomplete first statement');
+    assert.throws(() => db.prepare('\0SELECT 1'), 'NUL before SQL produces no statement');
+    t.diagnostic(`BINDING-PROBE sqlite=${db.prepare('SELECT sqlite_version() AS version').get()!['version']}; embedded NUL terminates input; incomplete/empty first statements rejected`);
+  } finally { db.close(); }
+});
+
+test('SQLite binding probe sourceSQL retains parameters while expandedSQL substitutes bindings', t => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    const prefix = '/* α */ SELECT $value AS value;';
+    const stmt: StatementSync = db.prepare(prefix + ' SELECT 2;');
+    assert.equal(stmt.sourceSQL, prefix);
+    assert.equal(stmt.get({ '$value': "α'😀" })!['value'], "α'😀");
+    assert.equal(stmt.sourceSQL, prefix);
+    assert.equal(stmt.expandedSQL, "/* α */ SELECT 'α''😀' AS value;");
+    t.diagnostic('BINDING-PROBE sourceSQL is original consumed text, not expandedSQL; no normalizedSQL API claim');
+  } finally { db.close(); }
 });
 
 test('canonical UTF8 JSON rejects unsupported data without accessors; array order and sorted keys preserved', () => {

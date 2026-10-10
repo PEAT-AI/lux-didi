@@ -36,7 +36,7 @@ async function localSource(t: TestContext) {
     const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => id, enableJsonResponse: true });
     sdk.setRequestHandler('tools/list', async req => {
       await beforeList?.();
-      if (oversized) return { tools: [{ name: 'big', inputSchema: { type: 'object' }, description: 'x'.repeat(200000) }] } as never;
+      if (oversized) return { tools: [{ name: 'big', inputSchema: { type: 'object' }, description: 'x'.repeat(2 * 1024 * 1024) }] } as never;
       const index = req.params?.cursor === 'second' ? 1 : 0;
       return { tools: [list[index]!], ...(index === 0 || repeat ? { nextCursor: 'second' } : {}) } as never;
     });

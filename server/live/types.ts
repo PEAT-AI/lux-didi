@@ -72,7 +72,7 @@ export type JournalKind =
 
 export interface LiveFragment {
   liveSessionId: string; journalSequence: number; providerSequence: number | null; kind: JournalKind;
-  text: string | null; finished: boolean | null; rejectedKind: JournalKind | null;
+  text: string | null; finished: boolean | null; value: boolean | null; rejectedKind: JournalKind | null;
   rejectedSequence: number | null; arrivedAt: number;
 }
 

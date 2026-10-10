@@ -124,17 +124,19 @@ export class LiveSessionOwner {
   create(input: CreateLiveSession, context: LiveContext): LiveSessionSnapshot {
     this.#guardOpen();
     if (!input || typeof input !== 'object' || typeof input.idempotencyKey !== 'string' || !keyPattern.test(input.idempotencyKey)) throw new LiveError('invalid_request');
-    if (!classes.includes(input.inputClass) || !this.#profile.route.dataClasses.includes(input.inputClass)) throw new LiveError('invalid_request');
-    this.#authorize(context);
+    this.#contextShape(context);
     const fingerprint = identity({ inputClass: input.inputClass, profile: this.#profileIdentity, prompt: this.#promptIdentity });
     const now = this.#now();
     const assistantId = this.#store.assistantId;
     return this.#store.transaction(tx => {
+      // Same-key replay is decided on the normalized request meaning before any policy.
       const prior = tx.get('SELECT * FROM live_sessions WHERE owner_assistant_id=? AND idempotency_key=?', [assistantId, input.idempotencyKey]);
       if (prior) {
         if (String(prior['fingerprint']) !== fingerprint) throw new LiveError('idempotency_conflict');
         return this.#snapshot(tx, prior);
       }
+      if (context.authorityEpoch !== this.#store.authorityEpoch) throw new LiveError('stale_authority');
+      if (!classes.includes(input.inputClass) || !this.#profile.route.dataClasses.includes(input.inputClass)) throw new LiveError('invalid_request');
       const liveSessionId = randomUUID();
       tx.run('INSERT INTO live_sessions(live_session_id, owner_assistant_id, authority_epoch, idempotency_key, fingerprint, client_id, audit_id, profile_identity, prompt_identity, lifecycle, dispatch_intent, ready, journal_events, journal_bytes, journal_complete, consumer_state, terminal_outcome, terminal_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,0,0,0,0,0,?,NULL,NULL,?,?)',
         [liveSessionId, assistantId, context.authorityEpoch, input.idempotencyKey, fingerprint, context.clientId, context.auditId, this.#profileIdentity, this.#promptIdentity, 'accepted', 'detached', now, now]);
@@ -359,10 +361,14 @@ export class LiveSessionOwner {
       [complete ? 1 : 0, JSON.stringify(outcome), now, consumerState, now, liveSessionId]);
   }
 
-  #authorize(context: LiveContext): void {
+  #contextShape(context: LiveContext): void {
     if (!context || typeof context !== 'object' || typeof context.clientId !== 'string' || !context.clientId.trim()
       || typeof context.auditId !== 'string' || !context.auditId.trim()
       || typeof context.authorityEpoch !== 'string' || !context.authorityEpoch.length) throw new LiveError('invalid_context');
+  }
+
+  #authorize(context: LiveContext): void {
+    this.#contextShape(context);
     if (context.authorityEpoch !== this.#store.authorityEpoch) throw new LiveError('stale_authority');
   }
 

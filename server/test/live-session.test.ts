@@ -105,6 +105,7 @@ test('many-turn journal preserves provider order, late input, and an interrupted
   h.f.send({ serverContent: { inputTranscription: { text: 'late final input', finished: true } } });
   const live = await drain(h, session.liveSessionId, 1 + turns * 4 + 4);
   assert.equal(live.lifecycle, 'active');
+  assert.equal(live.ready, true, 'the durable ready fact survives later journal writes');
   assert.ok(live.journal.events > 128, 'the adapter 128-event queue is not a lifetime journal cap');
   assert.equal(h.f.attempts, 1);
 
@@ -119,7 +120,7 @@ test('many-turn journal preserves provider order, late input, and an interrupted
   assert.equal(tail.fragments[3]?.text, 'late final input');
   assert.equal(tail.fragments[3]?.finished, true);
   assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).interruptions, 1);
-  const keys = ['arrivedAt', 'finished', 'journalSequence', 'kind', 'liveSessionId', 'providerSequence', 'rejectedKind', 'rejectedSequence', 'text'].sort();
+  const keys = ['arrivedAt', 'finished', 'journalSequence', 'kind', 'liveSessionId', 'providerSequence', 'rejectedKind', 'rejectedSequence', 'text', 'value'].sort();
   for (const fragment of page.fragments) assert.deepEqual(Object.keys(fragment).sort(), keys);
   attachment.close();
   const terminal = await attachment.done;
@@ -182,7 +183,8 @@ test('single attach, idempotent create replay, conflict, and a terminal session 
   const replay = h.owner.create({ idempotencyKey: 'dup', inputClass: 'ordinary' }, h.ctx);
   assert.equal(replay.liveSessionId, first.liveSessionId);
   assert.equal(h.store.transaction(tx => Number(tx.get('SELECT COUNT(*) AS n FROM live_sessions')!['n'])), 1);
-  assert.throws(() => h.owner.create({ idempotencyKey: 'dup', inputClass: 'private' }, h.ctx), (error: unknown) => error instanceof LiveError && error.code === 'invalid_request');
+  assert.throws(() => h.owner.create({ idempotencyKey: 'dup', inputClass: 'private' }, h.ctx), (error: unknown) => error instanceof LiveError && error.code === 'idempotency_conflict');
+  assert.throws(() => h.owner.create({ idempotencyKey: 'class', inputClass: 'private' }, h.ctx), (error: unknown) => error instanceof LiveError && error.code === 'invalid_request');
 
   const attachment = h.owner.attach({ liveSessionId: first.liveSessionId }, h.ctx);
   assert.throws(() => h.owner.attach({ liveSessionId: first.liveSessionId }, h.ctx), (error: unknown) => error instanceof LiveError && error.code === 'already_attached');
@@ -241,6 +243,24 @@ test('profile validation rejects text-model fallback and bounds, and validation 
   assert.throws(() => h.owner.create({ idempotencyKey: 'class', inputClass: 'private' }, h.ctx), (error: unknown) => error instanceof LiveError && error.code === 'invalid_request');
 });
 
+test('waitingForInput keeps its boolean and ready stays a durable fact', async t => {
+  const h = await harness(t);
+  const { session, attachment } = await attached(h);
+  h.f.send({ serverContent: { waitingForInput: true, turnComplete: true } });
+  await drain(h, session.liveSessionId, 3);
+  assert.equal(h.owner.get(session.liveSessionId).ready, true);
+  const page = h.owner.listFragments({ liveSessionId: session.liveSessionId, limit: 10 });
+  assert.equal(page.fragments.find(fragment => fragment.kind === 'waitingForInput')?.value, true);
+  h.f.send({ serverContent: { waitingForInput: false } });
+  await drain(h, session.liveSessionId, 4);
+  const later = h.owner.listFragments({ liveSessionId: session.liveSessionId, cursor: 4, limit: 10 });
+  assert.equal(later.fragments[0]?.value, false);
+  attachment.close();
+  const terminal = await attachment.done;
+  assert.equal(terminal.ready, true);
+  assert.equal(terminal.journal.complete, true);
+});
+
 test('returned snapshots and fragments are mutation-proof copies', async t => {
   const h = await harness(t);
   const session = h.owner.create({ idempotencyKey: 'frozen', inputClass: 'ordinary' }, h.ctx);
@@ -295,7 +315,8 @@ test('attach after invalidation is refused, and both journal limits terminate du
   assert.equal(limit.journal.complete, false);
   assert.equal(limit.journal.events, 3, 'committed fragments are preserved');
   const page = counted.owner.listFragments({ liveSessionId: countedSession.session.liveSessionId, limit: 100 });
-  assert.equal(page.counts.total, 3);
+  assert.equal(page.counts.total, 4, 'the terminal record is counted so pages reconcile');
+  assert.ok(page.counts.returned <= page.counts.total);
   const terminalRow = page.fragments.at(-1)!;
   assert.equal(terminalRow.kind, 'terminal');
   assert.equal(terminalRow.rejectedKind, 'turnComplete');

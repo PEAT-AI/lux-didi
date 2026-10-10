@@ -92,7 +92,6 @@ async function runCase(browser, id) {
     proof.sessionId = sessions.items[0]?.id;
     assert.ok(proof.sessionId, 'Nonempty real session');
     const readPath = `/sessions/${proof.sessionId}`;
-    const path = `${readPath}/entries`;
     proof.setup = await get(readPath);
     assert.equal(proof.setup.session.id, proof.sessionId);
     assert.equal(proof.setup.entries.length, 1);
@@ -116,11 +115,11 @@ async function runCase(browser, id) {
       finally { await cdp.send('Debugger.resume').catch(error => proof.browserErrors.push(`Debugger resume: ${error.message}`)); }
     });
     await cdp.send('Debugger.setPauseOnExceptions', { state: 'all' });
-    await page.route(`**/api/v1${path}`, async route => {
+    await page.route('**/api/v1/sessions/*/entries', async route => {
       if (route.request().method() !== 'POST') return route.continue();
       const genuine = await route.fetch({ timeout: 6000, maxRetries: 0 });
       const envelope = await genuine.json();
-      const attempt = { key: route.request().headers()['idempotency-key'], status: genuine.status(), envelope };
+      const attempt = { path: new URL(route.request().url()).pathname, key: route.request().headers()['idempotency-key'], status: genuine.status(), envelope };
       proof.attempts.push(attempt);
       assert.equal(genuine.status(), 200, 'Real mutation commits before browser-visible anomaly');
       if (proof.attempts.length !== 1 || id === 'C8') return route.fulfill({ response: genuine });
@@ -150,8 +149,15 @@ async function runCase(browser, id) {
     await page.locator('#message-form button[type="submit"]').waitFor();
     await save(probeText);
     proof.afterRetry = await get(readPath);
-    proof.probeEntries = proof.afterRetry.entries.filter(entry => entry.text === probeText);
-    proof.setupEntries = proof.afterRetry.entries.filter(entry => entry.text === setupText);
+    // Authority-change callback clears the selected session; actual Local Save
+    // then creates a new one. Count durable notes across both genuine sessions.
+    const retrySessionId = proof.attempts[1]?.envelope.data.sessionId;
+    proof.retrySessionId = retrySessionId;
+    proof.newSession = retrySessionId && retrySessionId !== proof.sessionId ? await get(`/sessions/${retrySessionId}`) : null;
+    const durableEntries = [...proof.afterRetry.entries, ...(proof.newSession?.entries ?? [])];
+    proof.totalEntryCount = durableEntries.length;
+    proof.probeEntries = durableEntries.filter(entry => entry.text === probeText);
+    proof.setupEntries = durableEntries.filter(entry => entry.text === setupText);
     await page.screenshot({ path: join(dir, 'local-save.png') });
 
     // Collect original/replayed receipts, keys and durable counts BEFORE any
@@ -169,9 +175,10 @@ async function runCase(browser, id) {
       assert.notEqual(second.envelope.requestId, first.envelope.requestId);
       assert.notEqual(second.envelope.data.id, first.envelope.data.id);
       assert.equal(proof.probeEntries.length, 2);
-      assert.equal(proof.afterRetry.entries.length, 3);
+      assert.equal(proof.totalEntryCount, 3);
       if (id === 'C7') {
         assert.ok(proof.firstDisconnected, 'Authority callback disconnects the real UI');
+        assert.notEqual(proof.retrySessionId, proof.sessionId, 'Authority callback clears the selected session');
         assert.ok(proof.firstExceptions.some(error => error.code === 'AUTHORITY_CHANGED' && error.status === 409));
       }
       else { assert.deepEqual(proof.firstExceptions, []); assert.equal(proof.firstDraft, ''); }
@@ -180,7 +187,7 @@ async function runCase(browser, id) {
       assert.equal(second.envelope.requestId, first.envelope.requestId, 'Same durable receipt');
       assert.equal(second.envelope.data.id, first.envelope.data.id, 'Same durable entry');
       assert.equal(proof.probeEntries.length, 1, 'Exactly one durable probe entry');
-      assert.equal(proof.afterRetry.entries.length, 2, 'Probe plus setup entry only');
+      assert.equal(proof.totalEntryCount, 2, 'Probe plus setup entry only');
       if (['C1', 'C2', 'C3'].includes(id)) {
         assert.ok(proof.firstExceptions.some(error => error.isError && error.name !== 'TypeError' && error.code === 'INVALID_RESPONSE' && error.status === 200), 'Malformed parsed success throws ApiError INVALID_RESPONSE (200)');
         assert.ok(!proof.firstExceptions.some(error => error.name === 'TypeError'), 'No accidental TypeError');

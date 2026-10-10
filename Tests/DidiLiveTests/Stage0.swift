@@ -99,7 +99,7 @@ struct ProbeHTTP {
             let frame = try await socket.receive()
             guard case .string(let marker) = frame else { throw ProbeError.assertion("expected ready marker") }
             let object = try JSONSerialization.jsonObject(with: Data(marker.utf8)) as? [String: Any]
-            try require(object?["type"] as? String == "marker" && object?["kind"] as? String == "ready", "actual ready grammar")
+            try require(object?["type"] as? String == "ready", "actual ready grammar")
             try await socket.send(.data(Data(repeating: 0, count: 8)))
             try await socket.send(.string("{\"type\":\"endAudioStream\"}"))
             try await socket.send(.string("{\"type\":\"close\"}"))

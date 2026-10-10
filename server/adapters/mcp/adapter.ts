@@ -206,9 +206,14 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
       const operation: Operation = { scope, signal: localSignal, dispatched: false }; session.operation = operation;
       try {
         // Supported SDK request API avoids callTool's automatic header-mismatch refresh/retry.
+        if (isStdioEndpoint(session.config)) operation.dispatched = true;
         const result = await bounded(session.client.request({ method: 'tools/call', params: { name: request.toolName, arguments: request.arguments } }, { signal: localSignal, timeout: budgets.timeoutMs }), localSignal);
         if (!options.registry.authorizesScope(scope)) throw new PolicyError('grant-revoked-after-dispatch');
-        if (!operation.bytes) throw new PolicyError('original-response-unavailable');
+        if (!operation.bytes) {
+          // A stdio child has no HTTP response entity; the parsed JSON-RPC result is the entity.
+          if (!isStdioEndpoint(session.config)) throw new PolicyError('original-response-unavailable');
+          operation.bytes = new TextEncoder().encode(JSON.stringify(result));
+        }
         return completed(scope, operation.bytes, result, result.isError ? 'tool-error' : 'completed');
       } catch (error) {
         if (operation.dispatched) {

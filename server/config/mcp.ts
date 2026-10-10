@@ -53,7 +53,7 @@ function profile(raw: unknown): McpProfile {
   }
   if ([policy.endpoint.account, policy.endpoint.resource].some(value => /[\x00-\x1f\x7f]/.test(value))) fail('invalid_profile');
   if (policy.bounds.maxQueryChars > 16384 || policy.bounds.maxSearchLimit > 100 || policy.bounds.maxGetIds > 100 || policy.bounds.maxEntityBytes > 1048576 || policy.bounds.maxResultBytes > 1048576) fail('invalid_profile');
-  return { schemaVersion: 1, transport: 'streamable-http', dataDir: p['dataDir'], expectedPolicySha256: p['expectedPolicySha256'] as string | null, policy };
+  return { schemaVersion: 1, transport: p['transport'] as 'streamable-http' | 'stdio', dataDir: p['dataDir'], expectedPolicySha256: p['expectedPolicySha256'] as string | null, policy };
 }
 function credential(raw: unknown): Credential {
   const c = fields(raw, ['schemaVersion', 'ownerId', 'connectionId', 'endpointId', 'url', 'account', 'resource', 'generation', 'credentialRef', 'token', 'enabled'], 'invalid_secret');

@@ -69,3 +69,13 @@ from native-chrome visual review, and leaves native exit to the external driver.
 No real appdata, permission prompt, live microphone, playback or notification
 is involved. See [the companion protocol](companion-protocol.md) for rejection,
 reinstall/relocation and versioned reporting semantics.
+
+## Protected operator configuration
+
+An operator may select an existing absolute provider config directory and owner
+profile file through the app executable's configure mode, which validates and
+writes the per-user `ai.peat.lux-didi-operator` store (directory 0700, file
+0600) using the same Swift validator the launch reads. Absent settings keep the
+public default; a configured invalid store refuses before the host is spawned.
+Launch only forwards the two existing host path flags. See
+[building and installing the Mac app](macos-install.md).

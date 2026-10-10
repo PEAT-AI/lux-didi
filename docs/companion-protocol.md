@@ -103,7 +103,8 @@ service+web integration and measurable hardware rendering are separate root gate
 
 A build-generated `Contents/Resources/didi-runtime.json` selects installed mode.
 The native schema uses `schemaVersion: 1`, installId UUID, releaseCommit40hex,
-absolute nodePath, nodeMajor26 and resource-relative serverEntry/webRoot. The
+bundle-relative nodePath (`Contents/MacOS/node` inside the app bundle, never an
+absolute path), nodeMajor26 and resource-relative serverEntry/webRoot. The
 installer owns the actual machine path and release identity; no machine paths or
 runtime credentials are committed. A present invalid manifest never falls back
 to explicit attach mode. Relative paths cannot traverse or escape resources by

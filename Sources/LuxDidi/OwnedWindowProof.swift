@@ -4,6 +4,7 @@ import CryptoKit
 import ApplicationServices
 
 @MainActor enum OwnedWindowProof {
+    private(set) static var captureStage = "unstarted"
     enum CaptureFailure: String, Error { case availability, notVisible, noWindowNumber, notInCurrentProcess }
     private struct Control: Sendable { let name: String; let enabled: Bool; let visible: Bool }
     private struct ConsumerResult: Sendable {
@@ -147,19 +148,27 @@ import ApplicationServices
         }
     }
     static func capture(_ window: NSWindow, to output: URL) async throws -> [String: Any] {
+        captureStage = "availability"
         guard #available(macOS 14.4, *) else { throw CaptureFailure.availability }
+        captureStage = "visible"
         guard window.isVisible else { throw CaptureFailure.notVisible }
+        captureStage = "window-number"
         guard window.windowNumber > 0 else { throw CaptureFailure.noWindowNumber }
         // The SDK explicitly limits currentProcess to content captureable without
         // TCC consent. Never enumerate general shareable content or request grants.
         let image = try await bounded {
+        captureStage = "shareable-content"
         let content = try await SCShareableContent.currentProcess
         guard let owned = content.windows.first(where: { $0.windowID == CGWindowID(window.windowNumber) }) else { throw CaptureFailure.notInCurrentProcess }
+        captureStage = "owned-window-found"
         let filter = SCContentFilter(desktopIndependentWindow: owned)
         let config = SCStreamConfiguration()
         config.width = Int(window.frame.width * 2); config.height = Int(window.frame.height * 2)
         config.showsCursor = false; config.ignoreShadowsSingleWindow = true
-        return try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+        captureStage = "filter-built-capture-requested"
+        let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+        captureStage = "image-returned"
+        return image
         }
         guard window.isVisible, image.width > 0, image.height > 0, let bytes = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else { throw InstalledProofError.captureRequired }
         // The output parent is the caller-owned private proof directory.

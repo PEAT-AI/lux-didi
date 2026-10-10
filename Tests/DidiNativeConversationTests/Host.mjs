@@ -10,7 +10,8 @@ try { await access(join(dir, 'provider-config')); } catch { await profile(dir); 
 let holdProvider = false;
 let responseMode = 'normal';
 let wire = [];
-const host = await startHost({ dataDir: dir, webRoot: new URL(".", import.meta.url).pathname, port: 0, modelTesting: {
+const requests = [];
+const host = await startHost({ dataDir: dir, webRoot: new URL("../../web/dist", import.meta.url).pathname, port: 0, modelTesting: {
   credentials: { resolve: async () => syntheticKey },
   transport: async () => {
     appendFileSync(join(dir, 'provider-attempts'), 'attempt\n');
@@ -21,6 +22,7 @@ const host = await startHost({ dataDir: dir, webRoot: new URL(".", import.meta.u
 } });
 const proxy = createServer(async (req, res) => {
   try {
+    requests.push({ method: req.method, path: req.url });
     const chunks = []; for await (const chunk of req) chunks.push(chunk);
     const body = Buffer.concat(chunks);
     const headers = { ...req.headers }; delete headers.host; delete headers.connection; delete headers['content-length'];
@@ -57,7 +59,7 @@ process.on('message', async message => {
       const rows = host.store.transaction(tx => tx.all('SELECT run_id, session_id, state, outcome FROM chat_runs'));
       const captures = host.store.transaction(tx => tx.get("SELECT count(*) AS count FROM entries WHERE role='user'"));
       let attempts = 0; try { attempts = (await readFile(join(dir, 'provider-attempts'), 'utf8')).trim().split('\n').length; } catch {}
-      result = { wire, rows, captures: Number(captures.count), attempts };
+      result = { requests, wire, rows, captures: Number(captures.count), attempts };
     }
     process.send({ id: message.id, result });
   } catch (error) { process.send({ id: message.id, error: String(error) }); }

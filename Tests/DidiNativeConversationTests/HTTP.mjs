@@ -68,7 +68,8 @@ try {
     const saved = await record(pending); assert.equal(saved.phase, 'dispatch-unknown'); assert.equal(saved.sessionId, a);
     assert.equal((await stats(f)).wire.length, 0, 'wire preceded persistence');
     await select(f, b, 'B'); await stop(child.child); await child.done;
-    assert.equal((await run(f, pending, 'restore')).state, 'unknown'); assert.equal((await stats(f)).wire.length, 0);
+    const requestCount = (await stats(f)).requests.length;
+    assert.equal((await run(f, pending, 'restore')).state, 'unknown'); assert.equal((await stats(f)).requests.length, requestCount, 'restore made HTTP requests');
     assert.equal((await run(f, pending, 'replay')).state, 'accepted'); await absent(pending);
     const s = await stats(f); assert.equal(s.rows.length, 1); assert.equal(s.rows[0].session_id, a); assert.equal(s.captures, 1); assert.equal(s.attempts, 1);
     const wire = s.wire[0]; assert.equal(wire.key, saved.idempotencyKey); assert.equal(wire.epoch, saved.authorityEpoch); assert.equal(wire.authorization, null);
@@ -85,8 +86,9 @@ try {
     await stop(child.child); await child.done; await stop(f.child);
     f = await fixture(dir); assert.equal(saved.authorityEpoch, f.config.epoch);
     const before = await stats(f); assert.equal(before.rows[0].outcome, 'outcome_unknown'); assert.equal(before.attempts, 1);
-    const restored = await run(f, pending, 'restore'); assert.equal(restored.pending, true); assert.equal((await stats(f)).wire.length, 0);
-    const orphan = await run(f, pending, 'replay', { assistant: crypto.randomUUID() }); assert.equal(orphan.state, 'orphan'); assert.equal((await stats(f)).wire.length, 0); assert.deepEqual(await record(pending), saved);
+    const restored = await run(f, pending, 'restore'); assert.equal(restored.pending, true); assert.equal((await stats(f)).requests.length, 0, 'restart restore made HTTP requests');
+    const orphan = await run(f, pending, 'replay', { assistant: crypto.randomUUID() }); assert.equal(orphan.state, 'orphan'); assert.equal((await stats(f)).requests.length, 0); assert.deepEqual(await record(pending), saved);
+    const epochOrphan = await run(f, pending, 'replay', { epoch: crypto.randomUUID() }); assert.equal(epochOrphan.state, 'orphan'); assert.equal((await stats(f)).requests.length, 0); assert.deepEqual(await record(pending), saved);
     assert.equal((await run(f, pending, 'replay')).state, 'accepted'); await absent(pending);
     const after = await stats(f); assert.equal(after.rows.length, 1); assert.equal(after.rows[0].outcome, 'outcome_unknown'); assert.equal(after.captures, 1); assert.equal(after.attempts, 1); assert.equal(after.wire[0].key, saved.idempotencyKey);
     await stop(f.child);
@@ -97,7 +99,8 @@ try {
       const a = await enroll(f, mode); await select(f, a, mode); await f.command('mode', { response: mode });
       const sent = await run(f, pending, 'send'); assert.equal(sent.state, 'unknown'); assert.equal(sent.pending, true);
       const saved = await record(pending); assert.equal(saved.frozenText, sent.text);
-      await run(f, pending, 'restore'); assert.equal((await stats(f)).wire.length, 1);
+      const requestCount = (await stats(f)).requests.length;
+      await run(f, pending, 'restore'); assert.equal((await stats(f)).requests.length, requestCount, 'unknown restore made HTTP requests');
       await f.command('mode'); assert.equal((await run(f, pending, 'replay')).state, 'accepted'); await absent(pending);
       const s = await stats(f); assert.equal(s.wire.length, 2); assert.deepEqual(s.wire[0], s.wire[1]); assert.equal(s.rows.length, 1); assert.equal(s.captures, 1); assert.equal(s.attempts, 1);
       await stop(f.child);

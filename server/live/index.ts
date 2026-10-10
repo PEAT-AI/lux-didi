@@ -92,7 +92,6 @@ export class LiveSessionOwner {
   #closed = false;
 
   constructor(config: LiveOwnerConfig) {
-    throw new LiveError('invalid_config', 'live session owner not implemented yet');
     if (!config || typeof config !== 'object' || !config.store || !config.voice) throw new LiveError('invalid_config');
     this.#store = config.store;
     this.#voice = config.voice;

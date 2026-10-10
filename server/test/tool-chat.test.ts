@@ -478,30 +478,34 @@ test('DIAG browser enrollment and selected tool accept reaches a real terminal r
   await f.approveSession(sessionId);
   const key = randomUUID();
   const body = JSON.stringify({ sessionId, text: 'Use synthetic insight 731.', selectedConnectionIds: ['synthetic-lux'] });
-  const accept = () => fetch(`${service.origin}/api/v1/chat`, { method: 'POST', headers: {
-    ...headers, 'Idempotency-Key': key
+  const accept = (idempotencyKey = key) => fetch(`${service.origin}/api/v1/chat`, { method: 'POST', headers: {
+    ...headers, 'Idempotency-Key': idempotencyKey
   }, body });
   const accepted = await accept(); assert.equal(accepted.status, 200);
   const { data: run } = await accepted.json() as { data: RunSnapshot };
   assert.ok(run.toolBindingHash, 'HTTP selection freezes a real owner binding');
   // Observe the real Chat subscription through authenticated HTTP, not an accepted snapshot.
-  const stream = await fetch(`${service.origin}/api/v1/chat/${run.runId}/events`, { method: 'POST', headers, body: '{}' });
-  assert.equal(stream.status, 200); assert.ok(stream.body);
-  const reader = stream.body.getReader(); const decoder = new TextDecoder(); let pending = ''; let final: RunSnapshot | null = null;
-  try {
-    while (!final) {
-      const chunk = await reader.read(); assert.equal(chunk.done, false, 'Run stream must reach terminal');
-      pending += decoder.decode(chunk.value, { stream: true });
-      let end: number;
-      while ((end = pending.indexOf('\n\n')) >= 0) {
-        const packet = pending.slice(0, end); pending = pending.slice(end + 2);
-        const data = packet.split('\n').find(line => line.startsWith('data: '));
-        if (!data) continue;
-        const event = JSON.parse(data.slice(6)) as { type: string; run?: RunSnapshot };
-        if (event.type === 'snapshot' && event.run?.state === 'terminal') final = event.run;
+  const terminal = async (run: RunSnapshot) => {
+    const stream = await fetch(`${service.origin}/api/v1/chat/${run.runId}/events`, { method: 'POST', headers, body: '{}' });
+    assert.equal(stream.status, 200); assert.ok(stream.body);
+    const reader = stream.body.getReader(); const decoder = new TextDecoder(); let pending = ''; let final: RunSnapshot | null = null;
+    try {
+      while (!final) {
+        const chunk = await reader.read(); assert.equal(chunk.done, false, 'Run stream must reach terminal');
+        pending += decoder.decode(chunk.value, { stream: true });
+        let end: number;
+        while ((end = pending.indexOf('\n\n')) >= 0) {
+          const packet = pending.slice(0, end); pending = pending.slice(end + 2);
+          const data = packet.split('\n').find(line => line.startsWith('data: '));
+          if (!data) continue;
+          const event = JSON.parse(data.slice(6)) as { type: string; run?: RunSnapshot };
+          if (event.type === 'snapshot' && event.run?.state === 'terminal') final = event.run;
+        }
       }
-    }
-  } finally { await reader.cancel(); }
+    } finally { await reader.cancel(); }
+    return final;
+  };
+  const final = await terminal(run);
   const replay = await accept(); assert.equal(replay.status, 200);
   const { data: replayed } = await replay.json() as { data: RunSnapshot };
   assert.equal(replayed.runId, run.runId); assert.equal(replayed.outcome, final.outcome);
@@ -511,4 +515,13 @@ test('DIAG browser enrollment and selected tool accept reaches a real terminal r
   assert.equal(final.outcome, 'complete', 'Browser-equivalent run must complete, not merely accept');
   assert.ok(f.modelCalls.length >= 2); assert.ok(f.sdkCalls.length > 0);
   assert.ok(final.sourceIds.includes(sourceId)); assert.ok(final.toolReferences.length > 0);
+  // The browser acceptance test sends another selected message after the panel's first run.
+  // Reproduce that same-conversation history, not only a fresh single-turn fixture.
+  const next = await accept(randomUUID()); assert.equal(next.status, 200);
+  const { data: nextRun } = await next.json() as { data: RunSnapshot };
+  const nextFinal = await terminal(nextRun);
+  console.log('DIAG_SECOND_TERMINAL ' + JSON.stringify({ outcome: nextFinal.outcome, authorityFailures, decisions,
+    modelRequests: f.modelCalls.length, sdkCalls: f.sdkCalls.length, sourceIds: nextFinal.sourceIds, toolReferences: nextFinal.toolReferences.length }));
+  assert.equal(nextFinal.outcome, 'complete', 'The browser second selected turn must also complete');
+  assert.ok(nextFinal.sourceIds.includes(sourceId)); assert.ok(nextFinal.toolReferences.length > 0);
 });

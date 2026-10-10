@@ -65,7 +65,19 @@ import Security
             expect(try await js(shell.webView, "document.cookie") as? String == "", "HttpOnly cookie invisible to document.cookie")
             // A connected WK subtree must never be consumed from a detached AX task:
             // WebKit aborts on its main-thread-only accessibility implementation.
-            expect(NSApp.isActive && window.isMainWindow && window.isKeyWindow && window.isVisible && window.occlusionState.contains(.visible),
+            window.orderOut(nil)
+            let unavailable = await FixtureWindowReadiness.wait(window, timeout: 20_000_000) {}
+            expect(!unavailable.ready && unavailable.events.last?["event"] as? String == "deadline", "hidden owned window fails readiness at finite deadline")
+            let readiness = await FixtureWindowReadiness.wait(window) {
+                window.makeKeyAndOrderFront(nil)
+                NSApp.activate(ignoringOtherApps: true)
+            }
+            let readinessReport = URL(fileURLWithPath: CommandLine.arguments[2]).appendingPathComponent("connected-wk-readiness.json")
+            let readinessData = try JSONSerialization.data(withJSONObject: ["nativePid": Int(getpid()), "windowId": window.windowNumber,
+                "ready": readiness.ready, "events": readiness.events, "hiddenDeadline": unavailable.events], options: [.prettyPrinted, .sortedKeys])
+            try readinessData.write(to: readinessReport, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: readinessReport.path)
+            expect(readiness.ready && NSApp.isActive && window.isMainWindow && window.isKeyWindow && window.isVisible && window.occlusionState.contains(.visible),
                    "owned connected fixture window active/main/key/unoccluded before AX")
             let connectedAX = await OwnedWindowProof.consumerTrace(window)
             // Retain the exact fixture observation even when its identity gate fails.

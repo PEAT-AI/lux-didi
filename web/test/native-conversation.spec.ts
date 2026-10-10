@@ -57,8 +57,9 @@ async function shot(name) {
 async function choose(label) {
   const value = await page.locator('#connected-history').evaluate((element, wanted) => [...element.options].find(option => option.label === wanted)?.value, label);
   await page.selectOption('#connected-history', { label });
-  // Deterministic: return only once the service records this principal's chosen session.
+  // Deterministic: the service records the choice and the visible pane shows it.
   await page.waitForFunction(async expected => { const response = await fetch('/api/v1/conversation-selection', { credentials: 'same-origin', cache: 'no-store' }); return (await response.json()).data.sessionId === expected; }, value);
+  await page.waitForFunction(expected => document.querySelector('#connected-history')?.value === expected, value);
   return value;
 }
 async function step(name, action) { await action(); steps.push(name); console.log(`PASS ${name}`); }

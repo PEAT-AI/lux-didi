@@ -12,23 +12,15 @@ function privateFile(path: string): void {
   if (!lstatSync(path).isFile() || lstatSync(path).isSymbolicLink()) throw new Error('State file must be a regular non-symlink file');
   chmodSync(path, 0o600);
 }
-// SQLite prepare accepts only the first statement. Reject hidden trailing statements,
-// respecting SQL strings, quoted identifiers and comments (not an HTTP parser).
-function singleStatement(sql: string): void {
-  let quote = '', ended = false;
-  for (let i = 0; i < sql.length; i++) {
-    const c = sql[i]!;
-    if (quote) {
-      const end = quote === '[' ? ']' : quote;
-      if (c === end) { if (sql[i + 1] === end && quote !== '[') i++; else quote = ''; }
-      continue;
-    }
-    if (c === '-' && sql[i + 1] === '-') { const n = sql.indexOf('\n', i + 2); i = n < 0 ? sql.length : n; continue; }
-    if (c === '/' && sql[i + 1] === '*') { const n = sql.indexOf('*/', i + 2); if (n < 0) throw new Error('Unterminated SQL comment'); i = n + 1; continue; }
-    if (/\s/.test(c)) continue;
-    if (ended) throw new Error('Exactly one SQL statement is allowed');
-    if (c === ';') ended = true;
-    else if (['\'', '"', '`', '['].includes(c)) quote = c;
+// SQLite parses the first statement (including compound triggers); sourceSQL is
+// its exact original consumed prefix, not parameter-expanded/normalized SQL.
+function singleStatement(sql: string, sourceSQL: string): void {
+  if (!sourceSQL || !sql.startsWith(sourceSQL)) throw new Error('Invalid SQL source prefix');
+  for (let i = sourceSQL.length; i < sql.length;) {
+    if (' \t\n\f\r'.includes(sql[i]!)) { i++; continue; }
+    if (sql.startsWith('--', i)) { const n = sql.indexOf('\n', i + 2); i = n < 0 ? sql.length : n + 1; continue; }
+    if (sql.startsWith('/*', i)) { const n = sql.indexOf('*/', i + 2); if (n < 0) throw new Error('Unterminated SQL comment'); i = n + 2; continue; }
+    throw new Error('Exactly one SQL statement is allowed');
   }
 }
 class Tx implements Transaction {
@@ -38,8 +30,11 @@ class Tx implements Transaction {
   expire(): void { this.#active = false; }
   private prepare(sql: string): StatementSync {
     if (!this.#active) throw new ServiceError('TRANSACTION_EXPIRED', 'Transaction handle expired');
-    singleStatement(sql);
-    return this.#prepareStatement(sql);
+    if (sql.includes('\0')) throw new Error('Embedded NUL in SQL');
+    if (Buffer.from(sql, 'utf8').toString('utf8') !== sql) throw new Error('Non-roundtripping Unicode in SQL');
+    const statement = this.#prepareStatement(sql);
+    singleStatement(sql, statement.sourceSQL);
+    return statement;
   }
   run(sql: string, params: readonly SQLValue[] = []): number { return Number(this.prepare(sql).run(...params).changes); }
   all(sql: string, params: readonly SQLValue[] = []): SQLRow[] {

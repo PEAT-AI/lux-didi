@@ -6,7 +6,7 @@ import type { ToolDefinition } from '../adapters/model/types.js';
 import { compilePrompt, compileVoiceInstruction, createCapabilitySnapshot, validatePreferences, PUBLIC_PERSONA, PROMPT_VERSION, PromptCompileError, type CompileInput, type Evidence } from '../prompt/index.js';
 
 const rawPreferences = { schemaVersion: 1, ownerId: 'alice', dataClass: 'private', language: 'en', register: 'plain', humor: 'dry', verbosity: 'brief' };
-const tool: ToolDefinition = { name: 'read_note', description: 'Read a note', parameters: { type: 'object', properties: { id: { type: 'string' } } }, effect: 'read', accountId: 'account', resourceId: 'notes', validate: () => true, execute: async () => ({ status: 'completed', value: null }) };
+const tool: ToolDefinition = { name: 'read_note', description: 'Read a note', parameters: { type: 'object', properties: { id: { type: 'string' } } }, effect: 'read', accountId: 'account', resourceId: 'notes', validate: () => true, execute: async () => ({ status: 'completed', result: { id: 'read_note', sha256: createHash('sha256').update('read_note synthetic result').digest('hex') } }) };
 function source(id: string, text = 'A synthetic note', priority = 1): Evidence {
   return { schemaVersion: 1, ownerId: 'alice', dataClass: 'sensitive', id, sourceId: 'archive-1', provenance: 'synthetic fixture', priority, kind: 'source', text };
 }

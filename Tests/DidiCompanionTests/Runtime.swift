@@ -1,11 +1,24 @@
 import AppKit
 import WebKit
 import Security
+import Darwin
 
 @main enum CompanionRuntime {
     @MainActor static func expect(_ value: Bool, _ label: String) {
-        guard value else { fputs("COMPANION FAIL: \(label)\n", stderr); exit(1) }
+        guard value else { recordFailure("expect: \(label)"); fputs("COMPANION FAIL: \(label)\n", stderr); exit(1) }
         print("PASS: \(label)")
+    }
+    // Synthetic private diagnostic: LaunchServices does not inherit stderr, so the
+    // failing fixture phase is otherwise lost. First writer wins; the record is a
+    // 0600 file next to the other proof artifacts and never replaces a recorded phase.
+    @MainActor static func recordFailure(_ phase: String) {
+        guard CommandLine.arguments.count > 2 else { return }
+        let path = CommandLine.arguments[2] + "/companion-failure.json"
+        guard let data = try? JSONSerialization.data(withJSONObject: ["phase": phase, "pid": Int(getpid())], options: [.sortedKeys]) else { return }
+        let fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { return }
+        _ = data.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, $0.count) }
+        close(fd)
     }
     @MainActor static func waitFor(_ label: String, _ predicate: () -> Bool) async {
         let deadline = Date().addingTimeInterval(8)
@@ -38,6 +51,7 @@ import Security
         // An async CLI main alone leaves own-PID AXWindows NotImplemented.
         Task {
             let passed = await OwnedVerificationLaunchGate.perform { _ in await runFixtures() }
+            if !passed { recordFailure("gate: returned false before any fixture phase") }
             exit(passed ? 0 : 1)
         }
         app.run()
@@ -199,6 +213,7 @@ import Security
             await client.revokePageSession()
             return true
         } catch {
+            recordFailure("thrown: \(error)")
             fputs("COMPANION FAIL: \(error)\n", stderr)
             return false
         }

@@ -10,7 +10,7 @@ try { await access(join(dir, 'provider-config')); } catch { await profile(dir); 
 let holdProvider = false;
 let responseMode = 'normal';
 let wire = [];
-const host = await startHost({ dataDir: dir, webRoot: dir, port: 0, modelTesting: {
+const host = await startHost({ dataDir: dir, webRoot: new URL(".", import.meta.url).pathname, port: 0, modelTesting: {
   credentials: { resolve: async () => syntheticKey },
   transport: async () => {
     appendFileSync(join(dir, 'provider-attempts'), 'attempt\n');

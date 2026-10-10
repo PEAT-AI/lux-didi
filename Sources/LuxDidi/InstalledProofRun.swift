@@ -126,6 +126,7 @@ import CryptoKit
             guard let record = recalled.first(where: { $0.entryId == saved.entryID && $0.sessionId == saved.sessionID && $0.text == text }) else { throw InstalledProofError.persistence }
             let shown = try await visible(record, web: fresh); report["newRecord"] = record.report(visible: shown)
             guard shown else { throw InstalledProofError.missingUI }
+            report["axConsumer"] = await OwnedWindowProof.consumerTrace(window)
             let controls = OwnedWindowProof.accessibility(window)
             guard Set(controls.compactMap({ $0["name"] as? String })) == ["Start recording", "Stop recording", "Send text"], controls.allSatisfy({ $0["visible"] as? Bool == true }) else { throw InstalledProofError.accessibility }
             var visual = report["visual"] as! [String: Any]; visual["accessibility"] = controls

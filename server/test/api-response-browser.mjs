@@ -105,12 +105,12 @@ async function runCase(browser, id) {
     await cdp.send('Debugger.enable');
     cdp.on('Debugger.paused', async event => {
       try {
-        if (event.reason === 'exception' && event.data?.objectId) {
+        if (['exception', 'promiseRejection'].includes(event.reason) && event.data?.objectId) {
           const result = await cdp.send('Runtime.callFunctionOn', {
             objectId: event.data.objectId, returnByValue: true,
             functionDeclaration: 'function() { return {name: this.name, code: this.code, status: this.status, message: this.message, isError: this instanceof Error}; }',
           });
-          proof.exceptions.push(result.result.value);
+          proof.exceptions.push({ ...result.result.value, pauseReason: event.reason });
         }
       } catch (error) { proof.browserErrors.push(`Exception observation: ${error.message}`); }
       finally { await cdp.send('Debugger.resume').catch(error => proof.browserErrors.push(`Debugger resume: ${error.message}`)); }
@@ -141,9 +141,12 @@ async function runCase(browser, id) {
     proof.firstDraft = await page.locator('#message').inputValue();
     // C2/C5/C6 and C7 may disconnect. Reconnect through the actual UI, retaining
     // the existing request module state, rather than reload/rebootstrap the page.
-    const reconnect = page.getByRole('button', { name: 'Reconnect', exact: true });
-    proof.firstDisconnected = (await reconnect.count()) > 0;
-    if (proof.firstDisconnected) await reconnect.click();
+    proof.firstConnection = await page.locator('#connection-state').innerText();
+    proof.firstDisconnected = proof.firstConnection === 'Disconnected';
+    if (proof.firstDisconnected) {
+      await page.getByRole('button', { name: 'Refresh connection', exact: true }).click();
+      await page.waitForFunction(() => document.querySelector('#connection-state')?.textContent === 'Connected');
+    }
     await page.locator('#message-form button[type="submit"]').waitFor();
     await save(probeText);
     proof.afterRetry = await get(readPath);

@@ -451,3 +451,19 @@ test('accepted Chat A is used for actual dispatch; restart/replay keeps A while 
     assert.ok(f.model.calls[1]!.system.includes(b.style.text)); reopened.shutdown();
   } finally { f.close(); }
 });
+
+test('real Store migration4 backfills only pre-profile runs with explicit public default and run FK', () => {
+  const f = fixture(); const dir = mkdtempSync(join(tmpdir(), 'owner-legacy-chat-'));
+  let store: Store | undefined;
+  try {
+    store = new Store(dir, [...f.domain.migrations, ...chatMigrations.filter(m => m.version < 4)]);
+    const ownerId = store.assistantId;
+    store.transaction(tx => tx.run(`INSERT INTO chat_runs(run_id,session_id,user_entry_id,owner_assistant_id,accepting_client_id,idempotency_key,fingerprint,authority_epoch,provider,model,prompt_version,state,accepted_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,'accepted',?)`, ['legacy-run', 'legacy-session', 'legacy-entry', ownerId, 'synthetic-client', 'legacy-key', 'synthetic', store!.authorityEpoch, 'synthetic', 'counting', PROMPT_VERSION, new Date(0).toISOString()]));
+    store.close(); store = new Store(dir, [...f.domain.migrations, ...chatMigrations]);
+    const row = store.transaction(tx => tx.get('SELECT * FROM chat_run_owner_profile WHERE run_id=?', ['legacy-run']))!;
+    assert.equal(row.schema_version, 1);
+    assert.deepEqual(JSON.parse(String(row.snapshot_json)), { schemaVersion: 1, kind: 'default', ownerId, displayName: 'Lux Didi' });
+    assert.equal(store.transaction(tx => tx.get('PRAGMA foreign_key_list(chat_run_owner_profile)'))!.table, 'chat_runs');
+  } finally { store?.close(); rmSync(dir, { recursive: true, force: true }); f.close(); }
+});

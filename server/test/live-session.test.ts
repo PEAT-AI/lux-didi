@@ -772,3 +772,15 @@ test('Live emits exact accepted A setup, not a changed caller B instruction', as
   assert.equal(frame.setup.systemInstruction.parts[0].text, 'SYNTHETIC exact wire A');
   attachment.close();
 });
+
+test('legacy null and unsupported accepted Live bindings refuse honestly before dispatch intent', async t => {
+  const h = await harness(t);
+  for (const snapshot of [null, JSON.stringify({ schemaVersion: 1, compilerVersion: 'unsupported', system: 'synthetic', dataClasses: ['ordinary'],
+    ownerProfile: { schemaVersion: 1, kind: 'default', ownerId: h.store.assistantId, displayName: 'Lux Didi' } })]) {
+    const accepted = h.owner.create({ idempotencyKey: `legacy-${snapshot === null}`, inputClass: 'ordinary' }, h.ctx);
+    h.store.transaction(tx => tx.run('UPDATE live_sessions SET accepted_prompt_snapshot=? WHERE live_session_id=?', [snapshot, accepted.liveSessionId]));
+    assert.throws(() => h.owner.attach({ liveSessionId: accepted.liveSessionId }, h.ctx), { code: 'invalidated' });
+    assert.equal(h.owner.get(accepted.liveSessionId).dispatchIntent, false);
+    assert.equal(h.f.frames.length, 0);
+  }
+});

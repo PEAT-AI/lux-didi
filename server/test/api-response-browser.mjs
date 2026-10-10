@@ -91,11 +91,13 @@ async function runCase(browser, id) {
     const sessions = await get('/sessions');
     proof.sessionId = sessions.items[0]?.id;
     assert.ok(proof.sessionId, 'Nonempty real session');
-    const path = `/sessions/${proof.sessionId}/entries`;
-    proof.setup = await get(path);
-    assert.equal(proof.setup.items.length, 1);
-    assert.ok(proof.setup.items[0].id, 'Nonempty setup entry');
-    assert.equal(proof.setup.items[0].text, setupText);
+    const readPath = `/sessions/${proof.sessionId}`;
+    const path = `${readPath}/entries`;
+    proof.setup = await get(readPath);
+    assert.equal(proof.setup.session.id, proof.sessionId);
+    assert.equal(proof.setup.entries.length, 1);
+    assert.ok(proof.setup.entries[0].id, 'Nonempty setup entry');
+    assert.equal(proof.setup.entries[0].text, setupText);
 
     // Observe the actual thrown object from the built application's request boundary.
     // No module substitution, global fetch stub or injected request implementation.
@@ -134,7 +136,7 @@ async function runCase(browser, id) {
     });
     await save(probeText);
     proof.firstExceptions = [...proof.exceptions];
-    proof.afterFirst = await get(path);
+    proof.afterFirst = await get(readPath);
     proof.firstAttemptCount = proof.attempts.length;
     proof.firstDraft = await page.locator('#message').inputValue();
     // C2/C5/C6 and C7 may disconnect. Reconnect through the actual UI, retaining
@@ -144,9 +146,9 @@ async function runCase(browser, id) {
     if (proof.firstDisconnected) await reconnect.click();
     await page.locator('#message-form button[type="submit"]').waitFor();
     await save(probeText);
-    proof.afterRetry = await get(path);
-    proof.probeEntries = proof.afterRetry.items.filter(entry => entry.text === probeText);
-    proof.setupEntries = proof.afterRetry.items.filter(entry => entry.text === setupText);
+    proof.afterRetry = await get(readPath);
+    proof.probeEntries = proof.afterRetry.entries.filter(entry => entry.text === probeText);
+    proof.setupEntries = proof.afterRetry.entries.filter(entry => entry.text === setupText);
     await page.screenshot({ path: join(dir, 'local-save.png') });
 
     // Collect original/replayed receipts, keys and durable counts BEFORE any
@@ -164,7 +166,7 @@ async function runCase(browser, id) {
       assert.notEqual(second.envelope.requestId, first.envelope.requestId);
       assert.notEqual(second.envelope.data.id, first.envelope.data.id);
       assert.equal(proof.probeEntries.length, 2);
-      assert.equal(proof.afterRetry.items.length, 3);
+      assert.equal(proof.afterRetry.entries.length, 3);
       if (id === 'C7') {
         assert.ok(proof.firstDisconnected, 'Authority callback disconnects the real UI');
         assert.ok(proof.firstExceptions.some(error => error.code === 'AUTHORITY_CHANGED' && error.status === 409));
@@ -175,7 +177,7 @@ async function runCase(browser, id) {
       assert.equal(second.envelope.requestId, first.envelope.requestId, 'Same durable receipt');
       assert.equal(second.envelope.data.id, first.envelope.data.id, 'Same durable entry');
       assert.equal(proof.probeEntries.length, 1, 'Exactly one durable probe entry');
-      assert.equal(proof.afterRetry.items.length, 2, 'Probe plus setup entry only');
+      assert.equal(proof.afterRetry.entries.length, 2, 'Probe plus setup entry only');
       if (['C1', 'C2', 'C3'].includes(id)) {
         assert.ok(proof.firstExceptions.some(error => error.isError && error.name !== 'TypeError' && error.code === 'INVALID_RESPONSE' && error.status === 200), 'Malformed parsed success throws ApiError INVALID_RESPONSE (200)');
         assert.ok(!proof.firstExceptions.some(error => error.name === 'TypeError'), 'No accidental TypeError');

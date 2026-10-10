@@ -1,4 +1,4 @@
-# Native pending request recovery (optional component, not integrated)
+# Native pending request recovery
 
 `PendingRequestStore` preserves **one frozen connected request identity** across native
 process termination. It does not send, retry, resolve, or render a conversation. There

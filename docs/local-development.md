@@ -1,6 +1,6 @@
 # Local development (current baseline)
 
-This page describes the supported developer path for the code that is on `main`. It is a source cross-check, not a freshly exercised walkthrough: every command below was read from the repository's own scripts and manifests at commit `ff4637c4b9fa84ea38ab58e32bf89198eb7feb2c`, observed on 2026-10-10, and the source files remain the authority if this page drifts.
+This page describes the supported developer path for the code that is on `main`. It is a source cross-check, not a freshly exercised walkthrough: every command below was read from the repository's own scripts and manifests at commit `6a66898a392e052a31b59ef009dcae03b1c5aae8`, observed on 2026-10-10, and the source files remain the authority if this page drifts.
 
 It covers the service, the web client and the thin Mac shell. It does not describe a packaged installation, because there is none.
 
@@ -8,7 +8,11 @@ It covers the service, the web client and the thin Mac shell. It does not descri
 
 One process is the only writer. The host entry at `server/dist/host/index.js` opens the SQLite store, composes the durable domain module for memory and commitments, serves the HTTP API and serves the built web client, all on the loopback interface. The wrapper `scripts/run-local.sh` builds the web client and the service and then starts that host in the foreground.
 
-The host does not wire model inference, MCP execution, notifications, audio or native web-view integration. Attempting to ask Didi a question therefore stays disabled until a model is configured, which this baseline does not do.
+The host composes the service, the durable domain module and the built web client. With no provider profile, asking
+Didi a question stays disabled: the status the client reads reports the model as unconfigured, and the old Ask Didi
+shortcut remains disabled. With a profile validated locally the host also composes the real Gemini adapter behind an
+explicitly granted connected conversation, which the web client starts through its own Start/Send flow. MCP
+execution, notifications, audio capture and playback, and native web-view integration are still not wired.
 
 ## Prerequisites
 
@@ -38,7 +42,12 @@ That removes `server/dist`, runs `npm --prefix web run build` (a `tsc --noEmit` 
 
 The same steps are available directly in each package: `npm --prefix web run build`, `npm --prefix server run build` and `npm --prefix server run typecheck`.
 
-The service build roots are enumerated in `server/tsconfig.json`: the runtime, HTTP, contracts, domain, host, model and MCP adapters, and prompt modules, plus the runtime, HTTP, MCP and host tests. The `server/chat` and `server/config` directories exist in the tree but are outside that accepted build.
+The service build roots are enumerated in `server/tsconfig.json`: the runtime, HTTP, contracts, domain, host,
+chat, config, prompt sources and the model and MCP adapters, the knowledge connectors and the live-voice adapter,
+together with the test files those surfaces own (runtime, HTTP, MCP, host, chat, connected, knowledge-connector and
+live-voice). The `server/chat` and `server/config` directories are build roots: the chat module owns the conversation
+subscription and its durable accepted-turn schema, and the config module owns the provider profile the host validates
+at startup.
 
 ## Start
 
@@ -46,19 +55,28 @@ Start the host in the foreground, against a private state directory of your choo
 
 ```sh
 DIDI_STATE_DIR="$PWD/.local-state"
-bash scripts/run-local.sh --data-dir "$DIDI_STATE_DIR" --web-root "$PWD/web/dist" --port 0
+DIDI_CONFIG_DIR="$PWD/.local-config"
+bash scripts/run-local.sh --data-dir "$DIDI_STATE_DIR" --web-root "$PWD/web/dist" --port 0 --config-dir "$DIDI_CONFIG_DIR"
 ```
 
 The wrapper builds and then runs, so it is safe on its own. For a two-stage launch that skips the rebuild:
 
 ```sh
 bash scripts/run-local.sh --build-only
-bash scripts/run-local.sh --run-built --data-dir "$DIDI_STATE_DIR" --web-root "$PWD/web/dist" --port 0
+bash scripts/run-local.sh --run-built --data-dir "$DIDI_STATE_DIR" --web-root "$PWD/web/dist" --port 0 --config-dir "$DIDI_CONFIG_DIR"
 ```
 
-`--run-built` reuses the previous build and does not check whether sources changed. After any source edit, use the default path or repeat `--build-only`.
+`--run-built` reuses the previous build and does not check whether sources changed. After any source edit, use the
+default path or repeat `--build-only`.
 
-The host prints its origin, then the availability line, for example that local memory and commitments are available and that model and notifications are not. To see the command line:
+`--config-dir` (or `DIDI_CONFIG_DIR`) selects the provider profile directory; the portable default is
+`<dataDir>/provider-config`. The host validates the profile at startup and fixes it for the process, so restart to
+activate edits. The profile holds the provider, model and key material, keys are read per dispatch, and the status line
+reports unconfigured, disabled, error (a safe code only), or configured with provider and model. Configured means the profile has been validated locally, and that validation does not prove provider reachability; an unsupported adapter model ID is a sanitized configuration error that
+never prevents the host from starting. With no profile the connected conversation stays unavailable and the old Ask
+Didi shortcut stays disabled.
+
+The host prints its origin, then the availability line, for example that local memory and commitments are available and that notifications are not. The model line reports the profile state: unconfigured, disabled, or error with a safe code when no usable profile is present, and configured with the provider and model once a profile validates. To see the command line:
 
 ```sh
 node server/dist/host/index.js --help
@@ -72,6 +90,9 @@ The low-level service entry, `npm --prefix server start`, runs `node dist/index.
 - `DIDI_WEB_ROOT` or `--web-root` selects the built web client; the default is a `web/dist` directory beside the checkout.
 - `DIDI_PORT` or `--port` selects the port; the default is 8765, and `--port 0` asks the operating system for a free loopback port. Command-line options take precedence over the environment.
 - `DIDI_DESCRIPTOR` or `--descriptor` selects the descriptor path.
+- `DIDI_CONFIG_DIR` or `--config-dir` selects the provider profile directory; the portable default is
+  `<dataDir>/provider-config`. See [provider configuration](provider-configuration.md) for the profile and key
+  initialization and for the status values it reports.
 - The store creates and uses a private `0700` data directory. The owner-only `admin-credential` file is `0600`, and the SQLite store keeps a single-writer lock. A competing writer fails loudly; there is no seed, reset or overwrite fallback.
 - The host writes `host-runtime.json` (or the descriptor you named) as atomic `0600` metadata: `schemaVersion`, `origin`, `authorityEpoch`, `assistantId`, `pid` and `startedAt`. It contains no bearer. A descriptor may remain on disk after shutdown; it is not proof that the process is still running.
 
@@ -101,6 +122,7 @@ Each check lives under `scripts/` and names in its own comments what it covers:
 - `scripts/check-prompt.sh`, `scripts/check-model.sh`, `scripts/check-provider-config.sh` and `scripts/check-mcp.sh`: compile the exact sources they cover into a disposable directory and run their focused tests. Some of them expect an installed TypeScript toolchain under `server/node_modules`.
 - `scripts/check-chat.sh`: the affected HTTP boundary regression. Its own comments state that it deliberately excludes package-installation and CLI tests.
 - `scripts/check-package.sh`: requires committed package source, then builds the service package from a clean `git archive` in a disposable directory.
+- `scripts/check-knowledge-connector.sh`, `scripts/check-live-voice.sh`, `scripts/check-host-entry.sh`, `scripts/check-pending-request.sh`, `scripts/check-provider-config.sh` and `scripts/check-connected.sh`: the per-surface producers of the knowledge connector, live voice, host entry, pending-request store, provider configuration and connected conversation components; each builds the exact sources it covers in a disposable tree and names what it covers in its own comments.
 - `Tests/DidiMacTests/check-mac.sh`: compiles the Mac shell into a disposable bundle in a temporary directory, signs it ad hoc, verifies the signature, and runs its self-check and an empty-app preview. Installation of a real app is owned by integration; the disposable bundle is proof, not an installed product.
 
 On a managed host, lanes run their own declared checks through the controller; the browser-backed check needs `lux-browser-slot` on the host. On a plain workstation the service and domain checks need only Node and the two `npm ci` steps above.
@@ -116,8 +138,11 @@ python3 scripts/backlog_validate.py --all --report planning/backlog-validation.m
 - macOS is the only verified platform. Linux shares the code path but is untested; there is no Windows package.
 - Node must already be installed. This baseline ships no bundled runtime, no installer, no notarized application, no cloud deployment and no mobile pairing.
 - The Vite development server (`npm --prefix web run dev`) is useful for UI work, but it does not apply the production security headers, so use the host entry for real end-to-end behaviour.
-- The host does not deliver reminder notifications, capture or play audio, or drive native web views, and it does not run inference. Those are open proofs, listed in [implementation-status.md](implementation-status.md).
+- The host does not deliver reminder notifications, capture or play audio, or drive native web views. It runs model
+  inference only when a provider profile is configured locally and the user grants an explicitly connected
+  conversation; with no profile, and outside that granted conversation, no inference runs. Those are open proofs,
+  listed in [implementation-status.md](implementation-status.md).
 
 ## How this page was verified
 
-Every command above was cross-checked against the current sources at the baseline commit: `scripts/run-local.sh`, `server/package.json`, `web/package.json`, `server/tsconfig.json`, `server/host/index.ts`, `server/host/runtime.ts`, `server/index.ts`, the `scripts/check-*.sh` producers, `Tests/DidiMacTests/check-mac.sh`, and the existing runtime records in [local-runtime.md](local-runtime.md) and [service-runtime.md](service-runtime.md). The commands were not re-executed for this document.
+Every command above was cross-checked against the current sources of this tree at `6a66898a392e052a31b59ef009dcae03b1c5aae8`: `scripts/run-local.sh`, `server/package.json`, `web/package.json`, `server/tsconfig.json`, `server/host/index.ts`, `server/host/runtime.ts`, `server/index.ts`, the `scripts/check-*.sh` producers, `Tests/DidiMacTests/check-mac.sh`, and the existing runtime records in [local-runtime.md](local-runtime.md) and [service-runtime.md](service-runtime.md). The commands were not re-executed for this document.

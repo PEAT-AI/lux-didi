@@ -1,8 +1,8 @@
 # Implementation status
 
-Observed at commit `ff4637c4b9fa84ea38ab58e32bf89198eb7feb2c` on 2026-10-10 (UTC). This page is a source cross-check of the committed tree. It is not a claim that the product is installed, that any provider is configured, or that any end-to-end path was exercised while writing it.
+Observed at commit `6a66898a392e052a31b59ef009dcae03b1c5aae8` on 2026-10-10 (UTC). This page is a source cross-check of the committed tree. It is not a claim that the product is installed, that any provider is configured, or that any end-to-end path was exercised while writing it.
 
-It separates four things: components that are implemented and accepted on `main`, behaviour that current `main` integrates end to end, work that exists only on branches outside `main`, and proofs that are still unresolved.
+It separates four things: the components that are implemented in the service, the web client and the thin Mac shell; the behaviour the host integrates end to end; the surfaces the host deliberately leaves uncomposed; and the proofs that are still unresolved.
 
 ## 1. Implemented and accepted on main
 
@@ -19,7 +19,7 @@ The service, the web client and the thin Mac shell all have committed, buildable
 - `server/adapters/model`: the Gemini adapter, the tool loop and its control types.
 - `server/adapters/mcp`: the MCP port, registry, store and adapter, with the SDK licence notice.
 
-The `server/chat` and `server/config` modules are present in the tree but are outside the accepted service build. `server/tsconfig.json` enumerates its build roots and does not include them; the chat module has its own check and is compiled into a disposable tree by `scripts/check-chat.sh`.
+The `server/chat` and `server/config` modules are build roots. `server/tsconfig.json` lists both, the chat module owns the conversation subscription and its durable accepted-turn schema, and the config module owns the provider profile the host validates at startup. The host applies the domain migrations and the additive chat migrations before it listens, and a dispatch interrupted by process loss is reported as outcome unknown rather than as a saved answer.
 
 **Web client (`web/`)**, Vite and TypeScript, pinned in its own lock file:
 
@@ -44,27 +44,33 @@ The host entry composes the accepted service, the durable domain module and the 
 - correct a record, where the store retains commitment history and superseded reminder state;
 - restart against the same state and keep authority, messages, commitment history and superseded reminder state.
 
-The status the client reads reports that no model is configured, so Ask Didi stays disabled while saving messages and commitments still works. Stored reminder needs that have no delivery path are persisted but never delivered.
+By default no provider profile exists, so the status the client reads reports the model as unconfigured and the old Ask Didi shortcut stays disabled, while saving messages and commitments still works. When a profile is validated locally the host also composes the real Gemini adapter for an explicitly granted connected conversation, which the web client starts through its own Start/Send flow; the grant pins the exact provider and model. Stored reminder needs that have no delivery path are persisted but never delivered.
 
-The host does **not** integrate: model inference, MCP tool execution, notifications, audio capture or playback, native web-view hosting, or any calendar, mail, chat or transcript connector. The service HTTP layer applies the content security policy and related headers to the shell and assets it serves.
+The host does **not** integrate: MCP tool execution, notifications, audio capture or playback, native web-view hosting, or any calendar, mail, chat or transcript connector. Model inference is composed only inside an explicitly granted connected conversation with a locally validated profile; nothing else in the host performs inference, and the loopback interface remains the only listener. The service HTTP layer applies the content security policy and related headers to the shell and assets it serves.
 
-## 3. Staged outside main
+## 3. What this tree does not contain
 
-Local branch tips were compared with `main` to find work that is not in the accepted baseline. The following categories exist on branches that are ahead of `main` and are not merged into it:
+The following categories are not in this tree:
 
-- a live-voice adapter under `server/adapters/live-voice`, with its own document and check;
-- a Lux Knowledge connector under `server/connectors`;
-- a local install and package path, including `scripts/package-local.mjs`, `scripts/install-local.mjs`, an install check, install tests and a local-install document;
-- deeper native companion integration, including companion web, supervision and installed-proof sources and their tests.
+- a local install and package path, including `scripts/package-local.mjs`, `scripts/install-local.mjs`, an install
+  check, install tests and a local-install document;
+- deeper native companion integration, including companion web, supervision and installed-proof sources and their
+  tests - `Sources/LuxDidi/CompanionClient.swift` is not in this tree.
 
-These are listed by category because they are not part of `main`. Nothing here should be read as installed, released or verified for the public. Merge of any of them is a separate decision.
+The live-voice adapter (`server/adapters/live-voice`), the Lux Knowledge connector (`server/connectors`), the chat and
+config modules, the host-entry producer, the provider configuration source and the pending-request store are all part
+of this tree, each with its own document and check. Nothing outside this tree should be read as installed, released or
+verified for the public.
 
 ## 4. Unresolved end-to-end proofs
 
 - **Installation**: there is no packaged or notarized application on `main`, and Node must already be installed. No clean-machine installation has been proven.
-- **Model**: no provider is configured or composed by the host, and there is no live inference proof on `main`. The Gemini adapter is present as code only.
+- **Model**: with no provider profile the model is unconfigured and no inference is attempted. With a locally
+  validated profile the host composes the Gemini adapter for an explicitly granted connected conversation, so
+  inference is conditional on that configured, granted path and on nothing else. A configured profile has been validated locally, and that validation does not prove provider reachability; an unsupported adapter model ID is a sanitized configuration error rather
+  than a startup failure.
 - **Voice**: no audio capture or playback is wired by the host, and the Mac shell voice seam is not exercised end to end.
-- **Accounts and connectors**: no Google account, calendar, mail, chat, transcript, email, Mattermost or harness connector runs on `main`. External calls, and any transcript, email, chat, calendar or harness control, remain roadmap items until baseline code proves them.
+- **Accounts and connectors**: no Google account, calendar, mail, chat, transcript, email, Mattermost or harness connector runs on `main`. Those account and connector calls, and any transcript, email, chat, calendar or harness control, remain roadmap items until baseline code proves them.
 - **Portability**: macOS is the only verified host. Linux shares the code path but is untested, and there is no Windows package. There is no cloud deployment and no mobile pairing.
 - **Native surfaces**: Keychain setup, application lifecycle, notifications and web-view appearance remain the separate native installation gate; the disposable Mac check bundle is proof of compilation and an empty preview, not of an installed product.
 
@@ -73,8 +79,8 @@ These are listed by category because they are not part of `main`. Nothing here s
 - No blanket claim of full computer autonomy. Tool execution is scoped to explicit grants and is not wired by the host today.
 - No complete cross-session memory across devices. There is one canonical conversation and memory authority, the service store; adapters are optional, and no cloud or multi-device synchronisation is implemented.
 - No claim that account access is simulated. Importing or connecting a real account is a setup step under explicit, revocable grants; this repository ships no fake demo data in its place.
-- No claim that any staged branch, future integration or roadmap milestone is present, installed or verified.
+- No claim that any future integration or roadmap milestone is present, installed or verified.
 
 ## How this page was verified
 
-Statements were cross-checked against the committed sources at the baseline commit: the `server/` module list in `server/tsconfig.json`, `server/host/index.ts`, `server/host/runtime.ts`, `server/index.ts`, `server/package.json` and `web/package.json`, the runtime records in [local-runtime.md](local-runtime.md) and [service-runtime.md](service-runtime.md), the web and Mac records in [web-client.md](web-client.md) and [mac-experience.md](mac-experience.md), and a read-only comparison of local branch tips against `main` for the staged category. The build and run paths were not re-executed for this page.
+Statements were cross-checked against the committed sources of this tree at `6a66898a392e052a31b59ef009dcae03b1c5aae8`: the `server/` module list in `server/tsconfig.json`, `server/host/index.ts`, `server/host/runtime.ts`, `server/index.ts`, `server/package.json` and `web/package.json`, the runtime records in [local-runtime.md](local-runtime.md) and [service-runtime.md](service-runtime.md), the web and Mac records in [web-client.md](web-client.md) and [mac-experience.md](mac-experience.md). The build and run paths were not re-executed for this page.

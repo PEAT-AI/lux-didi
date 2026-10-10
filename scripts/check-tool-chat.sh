@@ -27,17 +27,20 @@ for name in adapters chat config connectors contracts domain host http live prom
   cp -R "$root/server/$name" "$out/source/$name"
 done
 cp "$root/server/package.json" "$out/source/package.json"
-cp "$root/server/test/tool-chat.test.ts" "$root/server/test/tool-chat-process.ts" "$out/source/test/"
+cp -R "$root/server/test/." "$out/source/test/"
 ln -s "$deps" "$out/source/node_modules"
 ln -s "$deps" "$out/node_modules"
 printf '{"type":"module"}\n' > "$out/package.json"
-echo 'TOOL CHAT PHASE=compile roots=tool-chat.test.ts,tool-chat-process.ts'
+echo 'TOOL CHAT PHASE=compile roots=tool-chat.test.ts,tool-chat-process.ts,connected.test.ts'
 node "$deps/typescript/bin/tsc" --target ES2022 --module NodeNext --moduleResolution NodeNext \
   --strict --noUncheckedIndexedAccess --exactOptionalPropertyTypes --noUnusedLocals --noUnusedParameters \
   --skipLibCheck --types node --typeRoots "$deps/@types" --rootDir "$out/source" --outDir "$out/dist" \
-  "$out/source/test/tool-chat.test.ts" "$out/source/test/tool-chat-process.ts"
+  "$out/source/test/tool-chat.test.ts" "$out/source/test/tool-chat-process.ts" "$out/source/test/connected.test.ts"
 echo 'TOOL CHAT PHASE=focused-runtime'
 node --test --test-reporter=tap --test-timeout=15000 "$out/dist/test/tool-chat.test.js"
+# The real connected caller (R2): the actual composeChat/ownerProfile/P-snapshot callsite, not a fixture.
+echo 'TOOL CHAT PHASE=connected-runtime'
+node --test --test-reporter=tap --test-timeout=15000 "$out/dist/test/connected.test.js"
 # Build the actual current browser in isolation; never mutate another lane's
 # node_modules or dist, download a browser, or start the normal application.
 cp -R "$root/web/src" "$out/web/src"

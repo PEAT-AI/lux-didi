@@ -91,7 +91,7 @@ export async function startHost(config: HostConfig) {
     const { chat, status, tools, connections } = composeChat(store, domain, providerConfigDir, config.modelTesting, config.now, owner.snapshot, assembly);
     if (tools) composeMcpConnection({ store, owner: tools, registry, configDir: mcpConfigDir });
     const { service: live } = composeLive(store, providerConfigDir, config.liveTesting, config.now, owner.snapshot);
-    const service = await listenService({ store, domain, chat, live, modelStatus: status, connections, ownerProfileStatus: { status: owner.status, displayName: owner.snapshot.displayName }, webRoot, port, ...(config.now ? { now: config.now } : {}) });
+    const service = await listenService({ store, domain, chat, live, modelStatus: status, connections, ownerProfileStatus: { status: owner.status, displayName: owner.snapshot.displayName }, webRoot, ...(config.now ? { now: config.now } : {}) });
     try {
       const descriptor: RuntimeDescriptor = { schemaVersion: 1, origin: service.origin, authorityEpoch: store.authorityEpoch, assistantId: store.assistantId, pid: process.pid, startedAt: new Date().toISOString() };
       await publish(descriptorPath, descriptor); // Never use a stale descriptor as authority or carry bearer material.

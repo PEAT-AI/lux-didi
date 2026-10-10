@@ -145,12 +145,14 @@ import Darwin
             catch { try expect(credentialReads == 0, "dead owned connection refuses before credential lookup/dispatch") }
             let restarted = try await owned.start()
             try expect(restarted.pid != first.pid && restarted.descriptor.origin != first.descriptor.origin, "explicit restart uses fresh child readiness not stale port")
-            try expect(Data(try restarted.descriptor.credential().utf8) == canonical, "restart retains canonical credential without silent rotation")
+            try expect(Data(try restarted.descriptor.credential().utf8) == token, "restart retains canonical credential without silent rotation")
+            try expect(Data(contentsOf: valid.1.appendingPathComponent("admin-credential")) == canonical, "restart preserves canonical credential file bytes")
             await owned.stop()
             try expect(!owned.isRunning, "bounded clean stop releases own child")
-            try Data(UUID().uuidString.utf8).write(to: valid.1.appendingPathComponent("admin-credential"))
+            var changed = token; changed[0] = token[0] == 65 ? 66 : 65
+            try (changed + Data([10])).write(to: valid.1.appendingPathComponent("admin-credential"))
             do { _ = try await owned.start(); try expect(false, "credential mismatch must not rotate Keychain") }
-            catch { try expect(!owned.isRunning && Data(try first.descriptor.credential().utf8) == canonical, "canonical mismatch leaves existing Keychain value untouched") }
+            catch NativeServiceError.credentialMismatch { try expect(!owned.isRunning && Data(try first.descriptor.credential().utf8) == token, "canonical mismatch leaves existing Keychain value untouched") }
             try canonical.write(to: valid.1.appendingPathComponent("admin-credential"))
             let stubborn = supervisor(try setup("stubborn"))
             _ = try await stubborn.start()

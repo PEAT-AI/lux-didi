@@ -52,6 +52,12 @@ for i,r in enumerate(reports):
  assert readiness['ready'] is True
  assert readiness['nativePid']==r['native']['pid'] and readiness['windowId']==r['visual']['windowId']
  assert all(readiness['events'][-1]['state'].values()), 'native AppKit window was not ready before AX/SCK'
+ context=readiness['diagnostics']['context']; activation=readiness['diagnostics']['activation']; loop=readiness['diagnostics']['runLoop']
+ assert isinstance(context['frontmostIsSelf'],bool) and context['parentPid']>0
+ assert activation['api']=='NSRunningApplication.activate(options:[])' and activation['semantics']=='request-sent-not-readiness'
+ assert isinstance(activation['attempted'],bool) and (isinstance(activation['requestSent'],bool) if activation['attempted'] else activation['requestSent'] is None)
+ assert loop['disposed'] is True and loop['count']>=0
+ assert (loop['firstUptimeNanoseconds'] is None and loop['lastUptimeNanoseconds'] is None) if loop['count']==0 else 0 < loop['firstUptimeNanoseconds'] <= loop['lastUptimeNanoseconds']
  assert r['type']=='LuxDidiInstalledProof' and r['schemaVersion']==1
  assert r['phase']=='complete' and r['success'] is True
  assert r['source']['releaseCommit']==commit

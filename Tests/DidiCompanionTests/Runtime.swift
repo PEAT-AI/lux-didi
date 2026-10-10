@@ -70,6 +70,16 @@ import Security
             window.orderOut(nil)
             let unavailable = await OwnedWindowReadiness.wait(window, timeout: 20_000_000) {}
             expect(!unavailable.ready && unavailable.events.last?["event"] as? String == "deadline", "hidden owned window fails readiness at finite deadline")
+            let loop = unavailable.diagnostics["runLoop"] as! [String: Any]
+            expect((loop["count"] as? Int ?? 0) > 0 && loop["firstUptimeNanoseconds"] is UInt64 && loop["lastUptimeNanoseconds"] is UInt64,
+                   "hidden-window deadline observes actual main run-loop liveness")
+            expect(loop["disposed"] as? Bool == true, "deadline disposes readiness callbacks")
+            let cancelled = Task { await OwnedWindowReadiness.wait(window) {} }
+            cancelled.cancel()
+            let cancellation = await cancelled.value
+            expect(!cancellation.ready && cancellation.events.last?["event"] as? String == "cancelled" &&
+                   (cancellation.diagnostics["runLoop"] as? [String: Any])?["disposed"] as? Bool == true,
+                   "cancelled readiness disposes callbacks without claiming activation")
             let readiness = await OwnedWindowReadiness.wait(window) {
                 window.makeKeyAndOrderFront(nil)
                 NSApp.activate(ignoringOtherApps: true)

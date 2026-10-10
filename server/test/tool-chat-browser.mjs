@@ -58,7 +58,7 @@ test('B3/B5 built browser renders real trusted source identifiers and durable to
     const response = await fetch('/api/v1/auth/pair', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pairingCode }) });
     return { status: response.status, body: await response.json() };
   }, pairingCode);
-  assert.equal(paired.status, 200); const csrfToken = paired.body.data.csrfToken; assert.ok(csrfToken);
+  assert.equal(paired.status, 200, JSON.stringify(paired.body)); const csrfToken = paired.body.data.csrfToken; assert.ok(csrfToken);
   await page.reload();
   await page.locator('#connected-history').selectOption(ready.sessionId);
   const key = randomUUID();
@@ -68,14 +68,14 @@ test('B3/B5 built browser renders real trusted source identifiers and durable to
     }, body: JSON.stringify({ sessionId, text: 'Use synthetic insight 731.', selectedConnectionIds: ['synthetic-lux'] }) });
     return { status: response.status, body: await response.json() };
   }, { sessionId: ready.sessionId, key, csrfToken });
-  const accepted = await accept(); assert.equal(accepted.status, 200); assert.ok(accepted.body.data.runId);
+  const accepted = await accept(); assert.equal(accepted.status, 200, JSON.stringify(accepted.body)); assert.ok(accepted.body.data.runId);
   // Rendering must be based on the current real conversation/event stream,
   // never injected HTML, a mocked API response, or an empty payload.
   const panel = page.locator('#connected-panel');
   await panel.getByText('synthetic-lux', { exact: false }).first().waitFor({ state: 'visible', timeout: 15000 });
   const rendered = await panel.innerText();
   assert.match(rendered, /Synthetic insight 731/); assert.match(rendered, /synthetic-lux/);
-  const replay = await accept(); assert.equal(replay.status, 200);
+  const replay = await accept(); assert.equal(replay.status, 200, JSON.stringify(replay.body));
   const final = replay.body.data; assert.equal(final.runId, accepted.body.data.runId); assert.equal(final.outcome, 'complete');
   assert.ok(final.toolReferences.length > 0); assert.ok(final.sourceIds.includes('synthetic-lux'));
   for (const ref of final.toolReferences) {

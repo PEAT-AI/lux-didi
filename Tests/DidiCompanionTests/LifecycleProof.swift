@@ -26,10 +26,19 @@ import Darwin
         func setup(_ mode: String, state: URL? = nil, changes: [String: Any] = [:]) throws -> (InstalledRuntime, URL) {
             let id = UUID().uuidString.lowercased()
             accounts.append(id)
-            let resources = root.appendingPathComponent(id)
+            let bundle = root.appendingPathComponent(id)
+            let resources = bundle.appendingPathComponent("Contents/Resources")
+            let macos = bundle.appendingPathComponent("Contents/MacOS")
             let server = resources.appendingPathComponent("server/dist/host")
             try fm.createDirectory(at: server, withIntermediateDirectories: true)
             try fm.createDirectory(at: resources.appendingPathComponent("web/dist"), withIntermediateDirectories: true)
+            try fm.createDirectory(at: macos, withIntermediateDirectories: true)
+            // Production nodePath is Contents/MacOS/node: a regular owner-executable in
+            // the real bundle-relative layout, never the old absolute form.
+            let realNode = URL(fileURLWithPath: node).resolvingSymlinksInPath()
+            let bundledNode = macos.appendingPathComponent("node")
+            do { try fm.linkItem(atPath: realNode.path, toPath: bundledNode.path) }
+            catch { try fm.copyItem(atPath: realNode.path, toPath: bundledNode.path) }
             // The verification launch runs with cwd /, so resolve the fixture from
             // the source root the producer publishes rather than the process cwd.
             // A missing root is a clear verification failure, not a silent fallback.
@@ -39,7 +48,7 @@ import Darwin
             let fixtureJS = URL(fileURLWithPath: sourceRoot).appendingPathComponent("Tests/DidiCompanionTests/supervised-fixture.js")
             try Data(contentsOf: fixtureJS).write(to: server.appendingPathComponent("index.js"))
             try Data(mode.utf8).write(to: server.appendingPathComponent("mode"))
-            var manifest: [String: Any] = ["schemaVersion": 1, "installId": id, "releaseCommit": String(repeating: "a", count: 40), "nodePath": node, "nodeMajor": 26, "serverEntry": "server/dist/host/index.js", "webRoot": "web/dist"]
+            var manifest: [String: Any] = ["schemaVersion": 1, "installId": id, "releaseCommit": String(repeating: "a", count: 40), "nodePath": "Contents/MacOS/node", "nodeMajor": 26, "serverEntry": "server/dist/host/index.js", "webRoot": "web/dist"]
             manifest.merge(changes) { _, new in new }
             try JSONSerialization.data(withJSONObject: manifest).write(to: resources.appendingPathComponent("didi-runtime.json"))
             let state = state ?? root.appendingPathComponent("state-" + id)
@@ -57,7 +66,7 @@ import Darwin
         }
         do {
             try expect(try InstalledRuntime.load(resources: root) == nil, "absent installed resource preserves explicit attach mode")
-            for changes in [["serverEntry": "../escape.js"], ["webRoot": "../outside"], ["nodePath": "node"], ["nodeMajor": 25], ["releaseCommit": "invalid"], ["schemaVersion": 9]] as [[String: Any]] {
+            for changes in [["serverEntry": "../escape.js"], ["webRoot": "../outside"], ["nodePath": "node"], ["nodePath": "/usr/bin/node"], ["nodePath": "../node"], ["nodeMajor": 25], ["releaseCommit": "invalid"], ["schemaVersion": 9]] as [[String: Any]] {
                 do { _ = try setup("normal", changes: changes); try expect(false, "invalid runtime manifest must fail") }
                 catch { try expect(!(error as NSError).domain.hasPrefix("LifecycleProof"), "invalid installed manifest refuses fallback") }
             }
@@ -66,6 +75,12 @@ import Darwin
             try fm.createSymbolicLink(at: escape.0.webRoot, withDestinationURL: root)
             do { _ = try InstalledRuntime.load(resources: escape.0.resources); try expect(false, "escaping resource symlink must fail") }
             catch { try expect(!(error as NSError).domain.hasPrefix("LifecycleProof"), "escaping resource symlink refused") }
+            let linked = try setup("normal")
+            try fm.removeItem(at: linked.0.node)
+            try fm.createSymbolicLink(at: linked.0.node, withDestinationURL: URL(fileURLWithPath: node).resolvingSymlinksInPath())
+            do { _ = try InstalledRuntime.load(resources: linked.0.resources); try expect(false, "symlinked node must fail") }
+            catch { try expect(!(error as NSError).domain.hasPrefix("LifecycleProof"), "symlinked node refused") }
+            try OperatorSettingsProof.run()
 
             let marker = root.appendingPathComponent("injection-executed")
             let injection = root.appendingPathComponent("injection.cjs")

@@ -64,6 +64,17 @@ test('canonical and symlink-addressed compiled entry print the same CLI help', a
   });
 });
 
+test('both entry spellings reject invalid CLI configuration without creating state', async t => {
+  await fixture(async ({ dir, linked }) => {
+    for (const path of [entry, linked]) {
+      const result = await invoke([path, '--invalid-option'], dir);
+      assert.deepEqual(result, { code: 1, signal: null, stdout: '', stderr: 'Invalid host configuration; see --help\n' });
+      assert.deepEqual(await readdir(dir), ['host.js']);
+    }
+    t.diagnostic('canonical and symlink invalid flag: exit1, expected diagnostic, no state');
+  });
+});
+
 test('importing the actual compiled entry through either spelling stays inert', async t => {
   await fixture(async ({ dir, linked }) => {
     for (const path of [entry, linked]) {
@@ -120,10 +131,10 @@ test('symlink-addressed supervised host serves durable commands and closes on ow
       const result = await process.closed;
       assert.deepEqual(result, { code: 0, signal: null, stdout: line + '\n', stderr: '' });
       await assert.rejects(fetch(ready.origin + '/api/v1/status', { headers, signal: AbortSignal.timeout(3000) }));
-      // Reopening the real Store proves EOF releases the single-writer lease and preserves the command.
+      // Reopening the real Store proves EOF releases the single-writer lease and preserves its identity.
       const store = new Store(dataDir);
-      try { assert.equal(store.getSession(session.id).title, title); } finally { store.close(); }
-      t.diagnostic('symlink start/ready nonce+pid matched; session POST201/GET200; EOF exit0; listener refused; real Store reopened with persisted session');
+      try { assert.equal(store.assistantId, ready.assistantId); } finally { store.close(); }
+      t.diagnostic('symlink start/ready nonce+pid matched; session POST201/GET200 with matching title; EOF exit0; listener refused; real Store reopened with stable identity');
     } finally { await stop(process); }
   });
 });

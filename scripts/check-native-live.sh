@@ -37,6 +37,9 @@ swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-
 # Accepted dependency tests exercise real one-attach races, durable 1013, isolated revoke, journal exclusion and supervised cleanup.
 node --test --test-reporter=tap --test-timeout=30000 \
   server/dist/test/live-gateway.test.js server/dist/test/live-session.test.js
-node Tests/DidiLiveTests/process.mjs "$work/native-live" "$work"
-node Tests/DidiLiveTests/gateway.mjs "$work/stage0" "$work" "$work/native-live" "$work/native-live-mutated"
+# Independent gates all run even when an upstream owner defect fails one; any failure remains producer failure.
+status=0
+node Tests/DidiLiveTests/process.mjs "$work/native-live" "$work" || status=1
+node Tests/DidiLiveTests/gateway.mjs "$work/stage0" "$work" "$work/native-live" "$work/native-live-mutated" || status=1
+if [ "$status" -ne 0 ]; then exit "$status"; fi
 echo 'NATIVE-LIVE CHECK PASS'

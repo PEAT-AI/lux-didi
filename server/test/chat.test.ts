@@ -464,6 +464,6 @@ test('real Store migration4 backfills only pre-profile runs with explicit public
     const row = store.transaction(tx => tx.get('SELECT * FROM chat_run_owner_profile WHERE run_id=?', ['legacy-run']))!;
     assert.equal(row.schema_version, 1);
     assert.deepEqual(JSON.parse(String(row.snapshot_json)), { schemaVersion: 1, kind: 'default', ownerId, displayName: 'Lux Didi' });
-    assert.equal(store.transaction(tx => tx.get('PRAGMA foreign_key_list(chat_run_owner_profile)'))!.table, 'chat_runs');
+    assert.throws(() => store!.transaction(tx => tx.run('INSERT INTO chat_run_owner_profile VALUES (?,?,?)', ['nonexistent-run', 1, String(row.snapshot_json)])), /FOREIGN KEY constraint failed/);
   } finally { store?.close(); rmSync(dir, { recursive: true, force: true }); f.close(); }
 });

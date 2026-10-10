@@ -275,7 +275,6 @@ test('explicit owner activation is closed, protected, immutable and never falls 
   assert.equal(load().status, 'error');
   writeFileSync(path, JSON.stringify(raw), { mode: 0o600 });
   const accepted = load(); assert.equal(accepted.status, 'configured');
-  if (accepted.status === 'error') throw Error('fixture failed');
   assert.deepEqual(accepted.snapshot, raw);
   assert.ok(Object.isFrozen(accepted.snapshot));
   if (accepted.snapshot.kind === 'profile') assert.ok(Object.isFrozen(accepted.snapshot.style));

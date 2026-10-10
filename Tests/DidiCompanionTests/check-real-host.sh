@@ -45,7 +45,7 @@ for mode in cancel-pre eof-pre bad-nonce cancel-service eof-service; do
  "${LUX_VERIFICATION_DRIVER:?}" --verification "$work/Moved Didi.app" "$proof/real-host/$mode" "$(uuidgen)" "$mode" --installed-proof --proof-state "$state" --proof-report "$proof/real-host/$mode.json"
 done
 python3 - "$proof/real-host" "$commit" <<'PY'
-import json,sys,os
+import json,sys,os,hashlib,math
 root,commit=sys.argv[1:]
 reports=[json.load(open(f'{root}/run-{n}.json')) for n in (1,2,3)]
 def valid_launch(launch, native_pid, node_pid):
@@ -104,6 +104,22 @@ for i,r in enumerate(reports):
  assert r['credentialCleanup']['cleaned'] and r['newRecord']['visibleInCanonicalUI']
  assert r['native']['exitEvidence']=='external-driver-required' and 'exited' not in r['native']
  assert r['visual']['pageSnapshot'] and len(r['visual']['accessibility'])==3
+ orb=r['visual']['orb']
+ assert orb['renderer']=='classic-eleven-f27bca7' and orb['nativePid']==r['native']['pid']
+ assert len(orb['frames'])==3 and len({f['pixelSha256'] for f in orb['frames']})==3
+ for frame in orb['frames']:
+  assert frame['visibility']=='visible' and 0<frame['paintedPixels']<=frame['pixelCount']
+  stats=frame['stats']; assert stats['renderer']==orb['renderer'] and stats['failedDraws']==0
+  assert stats['logicalSize'] in (400,600) and 0<stats['dpr']<=2 and stats['tier']=='high'
+  assert frame['rect']['width']>0 and abs(frame['rect']['width']-frame['rect']['height'])<1
+  snapshot=frame['snapshot']; assert snapshot['method']=='actual-WKWebView.takeSnapshot'
+  data=open(snapshot['path'],'rb').read()
+  assert hashlib.sha256(data).hexdigest()==snapshot['sha256'] and data[:8]==bytes((137,80,78,71,13,10,26,10))
+ timing=orb['timing']; assert timing['windowRequestedMs']==2000 and timing['elapsedMs']>=2000
+ assert timing['sampleCount']>=2 and timing['observedPaints']>=2
+ assert len(timing['paintTimes'])==len(timing['drawMs'])==timing['sampleCount']
+ assert all(math.isfinite(v) and v>=0 for v in timing['drawMs'])
+ print('ORB-WK renderer=%s samples=%s attempts=%s elapsedMs=%.3f targetFps=%s meanDrawMs=%.3f' % (orb['renderer'],timing['sampleCount'],timing['observedPaints'],timing['elapsedMs'],timing['after']['targetFps'],sum(timing['drawMs'])/timing['sampleCount']))
  for previous in reports[:i]:
   expected=previous['newRecord']
   assert any(all(old[k]==expected[k] for k in ('sessionId','entryId','text')) and old['visibleInCanonicalUI'] for old in r['priorRecords'])

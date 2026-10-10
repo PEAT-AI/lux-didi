@@ -37,8 +37,9 @@ try {
     const hasPaint=await canvas.evaluate(el=>{const pixels=el.getContext('2d').getImageData(0,0,el.width,el.height).data;return pixels.some((v,i)=>i%4===3&&v>0);});assert(hasPaint);
     await page.waitForFunction(()=>document.querySelector('#didi-orb').didiFrameStats().frames>=12);
     const budget=await canvas.evaluate(el=>el.didiFrameStats());
-    await writeFile(`${artifacts}/orb-frame-budget.json`,JSON.stringify({mode:'normal host idle animation, 24fps draw budget; no artificial load',...budget},null,2));
-    assert(budget.meanDrawMs<1000/24,`Idle mean draw ${budget.meanDrawMs}ms exceeds 24fps budget`);
+    await writeFile(`${artifacts}/orb-frame-budget.json`,JSON.stringify({mode:'normal host connected classic, source high-tier cadence; no artificial load',...budget},null,2));
+    assert.equal(budget.failedDraws,0);
+    assert(budget.meanDrawMs<1000/budget.targetFps,`Idle mean draw ${budget.meanDrawMs}ms exceeds source ${budget.targetFps}fps interval`);
     await page.emulateMedia({reducedMotion:'reduce'});await page.waitForFunction(()=>document.querySelector('#didi-orb').dataset.motion==='still');
     const first=await canvas.evaluate(el=>el.toDataURL());
     await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
@@ -55,6 +56,50 @@ try {
     const after=await original.evaluate(el=>el.didiFrameStats());
     assert(after.frameTime>=before.frameTime,'ordinary render must not restart temporal state');
     await original.dispose();
+  });
+  await step('pinned original animated reference, real-noise self-variation and DPR/layout geometry',async()=>{
+    const measurements=[];
+    for(const width of [1440,390])for(const dpr of [1,2]){
+      const proofContext=await browser.newContext({viewport:{width,height:1000},deviceScaleFactor:dpr,
+        ...(width===1440&&dpr===1?{recordVideo:{dir:join(artifacts,'orb-animation'),size:{width:1440,height:1000}}}:{})});
+      const proofPage=await proofContext.newPage();
+      await proofPage.goto(fixture.url);
+      await proofPage.locator('#didi-orb').waitFor();
+      const layout=await proofPage.locator('#didi-orb').evaluate(c=>({width:c.width,height:c.height,
+        rect:{width:c.getBoundingClientRect().width,height:c.getBoundingClientRect().height},stats:c.didiFrameStats(),
+        filter:getComputedStyle(c).filter,clip:getComputedStyle(c.parentElement).overflow,
+        viewportWidth:innerWidth,scrollWidth:document.documentElement.scrollWidth}));
+      assert.equal(layout.width,(width<=767?400:600)*dpr);assert.equal(layout.height,layout.width);
+      assert(Math.abs(layout.rect.width-layout.rect.height)<1,'full square logical field must display without aspect distortion');
+      assert(layout.rect.width>0&&layout.rect.width<=width,'visible canvas framing');
+      assert(layout.scrollWidth<=width,'orb geometry must not introduce horizontal clipping/scroll');
+      await proofPage.screenshot({path:join(artifacts,`orb-layout-${width}-dpr${dpr}.png`),fullPage:true});
+      await proofPage.goto(`${fixture.url}/orb-proof/`);
+      await proofPage.waitForFunction(()=>globalThis.orbProof?.measure().steps>=25);
+      const metadata=await (await proofPage.request.get(`${fixture.url}/orb-proof/metadata.json`)).json();
+      const gpu=await proofPage.evaluate(()=>{const gl=document.createElement('canvas').getContext('webgl');const e=gl?.getExtension('WEBGL_debug_renderer_info');return gl&&e?{vendor:gl.getParameter(e.UNMASKED_VENDOR_WEBGL),renderer:gl.getParameter(e.UNMASKED_RENDERER_WEBGL)}:null;});
+      assert(gpu&&!/swiftshader|llvmpipe|software/i.test(gpu.renderer),'hardware GPU identity required');
+      await proofPage.screenshot({path:join(artifacts,`orb-animated-side-by-side-${width}-dpr${dpr}.png`),fullPage:true});
+      await proofPage.evaluate(()=>globalThis.orbProof.pause());
+      const samples=[];
+      for(const state of ['IDLE','DISCONNECTED','LISTENING','SPEAKING','PROCESSING','CONNECTING','CONNECTED','RECONNECTING','ERROR']){
+        for(const audible of [false,true])for(let frame=0;frame<4;frame++){
+          const sample=await proofPage.evaluate(({state,audible})=>{
+            globalThis.orbProof.set({state,audible,microphoneLevel:state==='LISTENING'?.45:0,audio:audible?{level:.6,low:.7,mid:.4,high:.2,flux:.9}:{level:0,low:0,mid:0,high:0,flux:0}});
+            return globalThis.orbProof.step(1/30);
+          },{state,audible});
+          assert(sample.shapes.every(s=>s.paintedPixels>0),'all original/port frames must paint meaningful pixels');
+          assert.deepEqual(sample.frames[0],sample.frames[1]);assert.deepEqual(sample.frames[0],sample.frames[2]);
+          assert(Number.isFinite(sample.portVsReference.meanAbsoluteRGBA));
+          samples.push({traceFrame:frame,...sample});
+        }
+      }
+      await proofPage.screenshot({path:join(artifacts,`orb-measured-side-by-side-${width}-dpr${dpr}.png`),fullPage:true});
+      measurements.push({viewportWidth:width,dpr,layout,gpu,metadata,sampleCount:samples.length,samples,
+        judgment:'Measured only. Noise differences reported against original self-variation; no invented tolerance, pixel-identity or visual-equivalence claim. Original chat host/entrance is not this isolated adapter.'});
+      await proofContext.close();
+    }
+    await writeFile(join(artifacts,'orb-reference-measurements.json'),JSON.stringify(measurements,null,2));
   });
   await step('failed local save preserves draft; capture never dispatches a model',async()=>{
     const requestStart=fixture.requests.length;

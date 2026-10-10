@@ -192,12 +192,12 @@ test('foreign shell-looking literals never execute or assign environment through
   const f = fixture(t); const marker = join(f.root, 'executed'); const env = { ...process.env };
   writeFileSync(f.sourceEnvPath, `PROVIDER_IMPORT_FOREIGN_CANARY='\`touch ${marker}\` ; $(touch ${marker})'\nGEMINI_API_KEY=${synthetic}\nPROVIDER_IMPORT_DOUBLE="$(touch ${marker}) ; $HOME"\nOTHER=$(touch ${marker})\n`, { mode: 0o600 });
   initializeProviderConfig(f.options);
-  assert.deepEqual(process.env, env); assert.equal(existsSync(marker), false);
+  assert.ok(JSON.stringify({ ...process.env }) === JSON.stringify(env), 'importer changed environment'); assert.equal(existsSync(marker), false);
   const status = f.load(); assert.equal(status.status, 'ready');
   if (status.status === 'ready') assert.equal(await status.credentials.resolve('gemini-primary'), synthetic);
   const cliFixture = fixture(t); writeFileSync(cliFixture.sourceEnvPath, readFileSync(f.sourceEnvPath), { mode: 0o600 });
   const result = cliFixture.run(); assert.equal(result.status, 0, result.stderr); safe(result);
-  assert.deepEqual(process.env, env); assert.equal(existsSync(marker), false);
+  assert.ok(JSON.stringify({ ...process.env }) === JSON.stringify(env), 'CLI changed environment'); assert.equal(existsSync(marker), false);
   assert.deepEqual(JSON.parse(readFileSync(join(cliFixture.configDir, 'gemini-primary.json'), 'utf8')), secret());
 });
 

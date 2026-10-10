@@ -31,11 +31,13 @@ codesign --force --sign - --entitlements Resources/LuxDidi.entitlements "$app"
 codesign --verify --strict "$app"
 state="$proof/real-host/state"
 for n in 1 2; do
- "$app/Contents/MacOS/LuxDidi" --installed-proof --proof-state "$state" --proof-report "$proof/real-host/run-$n.json"
+ mkdir -p "$proof/real-host/launch-$n"
+ "${LUX_VERIFICATION_DRIVER:?}" --verification "$app" "$proof/real-host/launch-$n" "$(uuidgen)" run --installed-proof --proof-state "$state" --proof-report "$proof/real-host/run-$n.json"
 done
 # Same exact signed artifact moved, same installId and marked actual domain data.
 mv "$app" "$work/Moved Didi.app"
-"$work/Moved Didi.app/Contents/MacOS/LuxDidi" --installed-proof --proof-state "$state" --proof-report "$proof/real-host/run-3.json"
+mkdir -p "$proof/real-host/launch-3"
+"${LUX_VERIFICATION_DRIVER:?}" --verification "$work/Moved Didi.app" "$proof/real-host/launch-3" "$(uuidgen)" run --installed-proof --proof-state "$state" --proof-report "$proof/real-host/run-3.json"
 python3 - "$proof/real-host" "$commit" <<'PY'
 import json,sys,os
 root,commit=sys.argv[1:]

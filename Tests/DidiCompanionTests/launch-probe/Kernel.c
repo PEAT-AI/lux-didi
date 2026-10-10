@@ -4,6 +4,9 @@
 #include <sys/event.h>
 #include <errno.h>
 #include <signal.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <fcntl.h>
 #include <string.h>
 #include <unistd.h>
 int probe_identity(pid_t pid, ProbeIdentity *identity, char *path, int length) {
@@ -21,9 +24,9 @@ int probe_register(pid_t pid) {
     if (kevent(fd, &event, 1, NULL, 0, NULL) < 0) { int error = errno; close(fd); errno = error; return -1; }
     return fd;
 }
-int probe_wait(int fd, int64_t *status, uint32_t *flags, int16_t *filter) {
+int probe_wait(int fd, int seconds, int64_t *status, uint32_t *flags, int16_t *filter) {
     struct kevent event;
-    struct timespec deadline = {10, 0};
+    struct timespec deadline = {seconds, 0};
     int count = kevent(fd, NULL, 0, &event, 1, &deadline);
     if (count != 1) { if (count == 0) errno = ETIMEDOUT; return -1; }
     if (event.flags & EV_ERROR || event.filter != EVFILT_PROC || !(event.fflags & NOTE_EXIT)) { errno = EIO; return -1; }
@@ -36,4 +39,14 @@ int probe_cleanup(ProbeIdentity identity, const char *path) {
     if (current.uid != getuid() || current.seconds != identity.seconds ||
         current.microseconds != identity.microseconds || strcmp(path, actual)) { errno = EPERM; return -1; }
     return kill(identity.pid, SIGTERM);
+}
+
+int probe_connect(const char *path) {
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    struct sockaddr_un address = {0}; address.sun_family = AF_UNIX;
+    if (strlen(path) >= sizeof(address.sun_path)) { close(fd); errno = ENAMETOOLONG; return -1; }
+    strcpy(address.sun_path, path);
+    if (connect(fd, (struct sockaddr *)&address, sizeof(address)) < 0) { int e = errno; close(fd); errno = e; return -1; }
+    return fd;
 }

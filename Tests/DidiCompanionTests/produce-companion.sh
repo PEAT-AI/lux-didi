@@ -32,6 +32,11 @@ export LUX_MAC_SCREENSHOT="$proof/native-setup-ui.png"
 otool -Iv "$app/Contents/MacOS/LuxDidi" | grep -E 'SecItem(Add|CopyMatching|Delete)|SecKeychain(Set|Get)UserInteractionAllowed' > "$proof/keychain-binary-imports.txt"
 # Real SDK discriminator precedes native fixtures; same declared producer.
 python3 Tests/DidiCompanionTests/keychain-sdk.py "$app/Contents/MacOS/LuxDidi" "$proof"
-"$app/Contents/MacOS/LuxDidi" "$work/port" "$proof" "$node"
+# Reuse the single external kernel/LaunchServices observer under renderer admission.
+xcrun clang -Wall -Wextra -Werror -c Tests/DidiCompanionTests/launch-probe/Kernel.c -o "$work/VerificationKernel.o"
+xcrun swiftc -parse-as-library -import-objc-header Tests/DidiCompanionTests/launch-probe/Kernel.h Tests/DidiCompanionTests/launch-probe/Identity.swift Tests/DidiCompanionTests/launch-probe/Observer.swift "$work/VerificationKernel.o" -o "$work/verification-observer"
+export LUX_VERIFICATION_DRIVER="$work/verification-observer"
+mkdir -p "$proof/fixture-launch"
+"$LUX_VERIFICATION_DRIVER" --verification "$app" "$proof/fixture-launch" "$(uuidgen)" run "$work/port" "$proof" "$node"
 export LUX_REAL_HOST_PROOF_DIR="$proof" LUX_REAL_HOST_NODE="$node"
 bash Tests/DidiMacTests/check-mac.sh

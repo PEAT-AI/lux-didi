@@ -36,10 +36,13 @@ import Security
         expect(app.setActivationPolicy(.regular), "foreground fixture activation policy accepted")
         // Publish the actual AppKit application/AX lifecycle, as production does.
         // An async CLI main alone leaves own-PID AXWindows NotImplemented.
-        Task { await runFixtures() }
+        Task {
+            let passed = await OwnedVerificationLaunchGate.perform { _ in await runFixtures() }
+            exit(passed ? 0 : 1)
+        }
         app.run()
     }
-    @MainActor private static func runFixtures() async {
+    @MainActor private static func runFixtures() async -> Bool {
         let started = Date()
         let ready = URL(fileURLWithPath: CommandLine.arguments[1])
         await waitFor("fixture ready") { FileManager.default.fileExists(atPath: ready.path) }
@@ -194,10 +197,10 @@ import Security
             print("COMPANION-RUNTIME PASS duration=\(Date().timeIntervalSince(started))s renderer=actual-WKWebView snapshot=companion-webkit.png audioCapture=not-started playback=not-started notifications=not-sent")
             window.orderOut(nil)
             await client.revokePageSession()
-            exit(0)
+            return true
         } catch {
             fputs("COMPANION FAIL: \(error)\n", stderr)
-            exit(1)
+            return false
         }
     }
 }

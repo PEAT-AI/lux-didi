@@ -10,7 +10,9 @@ import AppKit
     }
 }
 @MainActor final class Observer {
-    let args = CommandLine.arguments
+    let original = CommandLine.arguments
+    var verification: Bool { original.count > 1 && original[1] == "--verification" }
+    var args: [String] { verification ? [original[0]] + Array(original.dropFirst(2)) : original }
     var target: NSRunningApplication?
     var facts: ProbeIdentity?
     var record: [String: Any]?
@@ -19,28 +21,41 @@ import AppKit
     var directory: Int32 = -1
     var kernel: Int32 = -1
     var failureIdentity: [String: Any] = [:]
+    var control: Int32 = -1
+    var serviceFD: Int32 = -1
+    var serviceFacts: ProbeIdentity?
+    var serviceRecord: [String: Any]?
+    var cancelSent = false
+    var forced = false
     var released = false
     var settled = false
     var bundle: String { physicalPath(args[1]) }
+    var expectedExecutable: String { bundle + "/Contents/MacOS/" + (verification ? "LuxDidi" : "LaunchProbe") }
     var root: String { args[2] }
     var nonce: String { args[3] }
     func start() {
-        guard args.count == 5 else { exit(1) }
+        guard verification ? args.count >= 5 : args.count == 5 else { exit(1) }
+        if verification {
+            do { try Data(nonce.utf8).write(to: URL(fileURLWithPath: root + "/nonce")); chmod(root + "/nonce", 0o600) }
+            catch { fail("nonce marker"); return }
+        }
         directory = open(root, O_EVTONLY)
         guard directory >= 0 else { fail("directory") ; return }
         watch = DispatchSource.makeFileSystemObjectSource(fileDescriptor: directory, eventMask: .write, queue: .main)
-        watch?.setEventHandler { [self] in MainActor.assumeIsolated { handshake() } }
+        watch?.setEventHandler { [self] in MainActor.assumeIsolated { handshake(); bindServiceIfReady() } }
         watch?.resume()
         deadline = DispatchSource.makeTimerSource(queue: .main)
-        deadline?.schedule(deadline: .now() + 12)
-        deadline?.setEventHandler { [self] in MainActor.assumeIsolated { fail("deadline") } }
+        deadline?.schedule(deadline: .now() + (verification ? 8 : 12))
+        deadline?.setEventHandler { [self] in MainActor.assumeIsolated { timeout() } }
         deadline?.resume()
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.createsNewApplicationInstance = true
         configuration.promptsUserIfNeeded = false
         configuration.addsToRecentItems = false
-        configuration.arguments = [root, nonce, args[4]]
-        configuration.environment = ProcessInfo.processInfo.environment
+        configuration.arguments = verification ? Array(args.dropFirst(5)) : [root, nonce, args[4]]
+        var environment = ProcessInfo.processInfo.environment
+        if verification { environment["LUX_VERIFICATION_GATE_ROOT"] = root; environment["LUX_VERIFICATION_GATE_NONCE"] = nonce }
+        configuration.environment = environment
         NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: bundle), configuration: configuration) { app, error in
             Task { @MainActor in
                 guard !self.settled else { return }
@@ -49,9 +64,9 @@ import AppKit
                 do {
                     let (facts, record) = try identity(app.processIdentifier, nonce: self.nonce, bundle: self.bundle)
                     self.failureIdentity = ["observed": record, "expectedUID": Int(getuid()),
-                        "expectedExecutable": self.bundle + "/Contents/MacOS/LaunchProbe",
+                        "expectedExecutable": self.expectedExecutable,
                         "returnedPID": Int(app.processIdentifier), "returnedBundle": self.bundle]
-                    guard facts.uid == getuid(), record["executable"] as? String == self.bundle + "/Contents/MacOS/LaunchProbe" else { self.fail("own kernel identity"); return }
+                    guard facts.uid == getuid(), record["executable"] as? String == self.expectedExecutable else { self.fail("own kernel identity"); return }
                     self.record = record
                     self.kernel = probe_register(app.processIdentifier)
                     guard self.kernel >= 0 else { self.fail("kernel registration errno=\(errno)"); return }
@@ -66,19 +81,30 @@ import AppKit
         do {
             let reported = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: root + "/identity.json"))) as! [String: Any]
             let (current, actual) = try identity(target.processIdentifier, nonce: nonce, bundle: bundle)
-            guard NSDictionary(dictionary: reported).isEqual(to: record), NSDictionary(dictionary: actual).isEqual(to: record) else { fail("identity changed or nonce mismatch"); return }
+            guard (verification ? (reported["pid"] as? Int == Int(target.processIdentifier) && reported["nonce"] as? String == nonce && physicalPath(reported["bundleURL"] as? String ?? "") == bundle) : NSDictionary(dictionary: reported).isEqual(to: record)), NSDictionary(dictionary: actual).isEqual(to: record) else { fail("identity changed or nonce mismatch"); return }
             facts = current // Cleanup authority only after complete kernel + bundle + nonce identity.
-            let fd = open(root + "/release.fifo", O_WRONLY | O_NONBLOCK)
-            guard fd >= 0 else { fail("release gate"); return }
-            released = true
-            let bytes = Array(nonce.utf8)
-            let count = bytes.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
-            close(fd)
-            guard count == bytes.count else { fail("partial release"); return }
+            if verification {
+                control = probe_connect("/tmp/didi-verification-" + nonce + ".sock")
+                guard control >= 0 else { fail("control connection"); return }
+                if args[4] == "cancel-pre" { send("cancel") }
+                else if args[4] == "eof-pre" { close(control); control = -1 }
+                else if args[4] == "bad-nonce" { send("release", nonce: UUID().uuidString) }
+                else { send("release"); released = true }
+                deadline?.schedule(deadline: .now() + 120)
+            } else {
+                let fd = open(root + "/release.fifo", O_WRONLY | O_NONBLOCK)
+                guard fd >= 0 else { fail("release gate"); return }
+                let bytes = Array(nonce.utf8)
+                let count = bytes.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
+                close(fd)
+                guard count == bytes.count else { fail("partial release"); return }
+                released = true
+            }
             let kernelFD = kernel
+            let waitSeconds: Int32 = verification ? 130 : 10
             DispatchQueue.global().async {
                 var raw: Int64 = -1, flags: UInt32 = 0, filter: Int16 = 0
-                let result = probe_wait(kernelFD, &raw, &flags, &filter)
+                let result = probe_wait(kernelFD, waitSeconds, &raw, &flags, &filter)
                 let error = errno
                 Task { @MainActor in
                     guard result == 0 else { self.fail("kernel event errno=\(error)"); return }
@@ -91,22 +117,109 @@ import AppKit
         settled = true; deadline?.cancel(); watch?.cancel()
         if directory >= 0 { close(directory); directory = -1 }
         if kernel >= 0 { close(kernel); kernel = -1 }
+        if serviceFD >= 0 { close(serviceFD); serviceFD = -1 }
+        if control >= 0 { close(control); control = -1 }
     }
     func complete(_ raw: Int64, flags: UInt32, filter: Int16) {
         guard !settled, let record else { return }
+        var serviceKernel: [String: Any] = [:]
+        if verification, serviceFD >= 0 {
+            var status: Int64 = -1, serviceFlags: UInt32 = 0, serviceFilter: Int16 = 0
+            guard probe_wait(serviceFD, 10, &status, &serviceFlags, &serviceFilter) == 0 else { fail("service kernel exit"); return }
+            serviceKernel = ["rawStatus": status, "flags": serviceFlags, "filter": serviceFilter, "statusRequested": true]
+        }
+        let release = (try? JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: root + "/release.json")))) as? [String: Any]
+        let nativeDisposition = (try? JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: root + "/native-disposed.json")))) as? [String: Any]
         dispose()
         do {
-            try atomic(["case": args[4], "bundleURL": bundle, "identity": record, "observerPid": Int(getpid()),
+            var output: [String: Any] = ["case": args[4], "bundleURL": bundle, "identity": record, "observerPid": Int(getpid()),
                 "identityVerified": true, "registeredBeforeRelease": true, "released": released, "observerDisposed": true,
-                "kernel": ["rawStatus": raw, "flags": flags, "filter": filter, "statusRequested": true]], to: root + "/observer.json")
-            exit(0) // Only the validator decides whether the external raw status matches the requested case.
+                "kernel": ["rawStatus": raw, "flags": flags, "filter": filter, "statusRequested": true]]
+            if verification {
+                output["serviceIdentity"] = serviceRecord as Any? ?? NSNull(); output["serviceKernel"] = serviceKernel
+                output["forced"] = forced; output["cancelSent"] = cancelSent
+                output["releaseState"] = release?["state"] as Any? ?? [:]
+                output["nativeDisposed"] = nativeDisposition?["disposed"] as? Bool == true
+            }
+            try atomic(output, to: root + "/observer.json")
+            if verification {
+                let expected = args[4] == "run" ? raw == 0 : raw == 256
+                guard expected, !forced, nativeDisposition?["disposed"] as? Bool == true else { exit(1) }
+            }
+            exit(0)
         } catch { fputs("probe report failure\n", stderr); exit(1) }
     }
-    func fail(_ reason: String) {
-        guard !settled else { return }
-        if let facts { _ = probe_cleanup(facts, bundle + "/Contents/MacOS/LaunchProbe") }
-        dispose()
-        try? atomic(["error": reason, "identityFailure": failureIdentity, "released": released, "observerDisposed": true], to: root + "/observer.json")
-        fputs("LaunchServices probe FAIL: \(reason)\n", stderr); exit(1)
+    func send(_ token: String, nonce: String? = nil) {
+        guard control >= 0 else { return }
+        let bytes = Array(((nonce ?? self.nonce) + ":" + token + "\n").utf8)
+        let count = bytes.withUnsafeBytes { write(control, $0.baseAddress, $0.count) }
+        if token == "cancel" { cancelSent = true }
+        if count != bytes.count { fail("control write"); }
     }
+    func bindServiceIfReady() {
+        guard verification, serviceFD < 0, !settled,
+              FileManager.default.fileExists(atPath: root + "/service.json") else { return }
+        do {
+            let bound = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: root + "/service.json"))) as! [String: Any]
+            guard bound["nonce"] as? String == nonce, let pid = bound["pid"] as? Int, pid > 0,
+                  pid != Int(target?.processIdentifier ?? -1), pid != Int(getpid()), let path = bound["executable"] as? String else { fail("service association"); return }
+            let (facts, actual) = try identity(pid_t(pid), nonce: nonce, bundle: bundle)
+            guard facts.uid == getuid(), actual["executable"] as? String == physicalPath(path) else { fail("service identity"); return }
+            serviceFacts = facts; serviceRecord = actual; serviceFD = probe_register(pid_t(pid))
+            guard serviceFD >= 0 else { fail("service registration"); return }
+            if args[4] == "cancel-service" { send("cancel") }
+            if args[4] == "eof-service" { close(control); control = -1 }
+        } catch { fail("service binding") }
+    }
+    func timeout() {
+        guard verification, !cancelSent else { fail("cleanup deadline"); return }
+        send("cancel"); deadline?.schedule(deadline: .now() + 10)
+    }
+    func fail(_ reason: String) {
+        guard !settled else { return }; settled = true
+        if verification, let nativeFacts = facts, kernel >= 0 {
+            // Normal nonce cancellation first; only bound, rechecked owned identities may be forced.
+            send("cancel")
+            let nativeFD = kernel, nodeFD = serviceFD, nodeFacts = serviceFacts
+            let nativePath = expectedExecutable, nodePath = serviceRecord?["executable"] as? String
+            DispatchQueue.global().async { [self] in
+                var nativeStatus: Int64 = -1, nativeFlags: UInt32 = 0, nativeFilter: Int16 = 0
+                var nodeStatus: Int64 = -1, nodeFlags: UInt32 = 0, nodeFilter: Int16 = 0
+                var forced = false
+                var nativeObserved = probe_wait(nativeFD, 6, &nativeStatus, &nativeFlags, &nativeFilter) == 0
+                if !nativeObserved {
+                    forced = true
+                    _ = probe_cleanup(nativeFacts, nativePath)
+                    nativeObserved = probe_wait(nativeFD, 2, &nativeStatus, &nativeFlags, &nativeFilter) == 0
+                }
+                var nodeObserved = nodeFD < 0
+                if nodeFD >= 0 {
+                    nodeObserved = probe_wait(nodeFD, 1, &nodeStatus, &nodeFlags, &nodeFilter) == 0
+                    if !nodeObserved, let nodeFacts, let nodePath {
+                        forced = true; _ = probe_cleanup(nodeFacts, nodePath)
+                        nodeObserved = probe_wait(nodeFD, 1, &nodeStatus, &nodeFlags, &nodeFilter) == 0
+                    }
+                }
+                Task { @MainActor in
+                    self.forced = forced; self.dispose()
+                    self.writeFailure(reason, extra: ["forced": forced, "cleanupNativeObserved": nativeObserved,
+                        "cleanupNativeRawStatus": nativeStatus, "cleanupNodeObserved": nodeObserved,
+                        "cleanupNodeRawStatus": nodeStatus, "serviceIdentity": self.serviceRecord as Any? ?? NSNull()])
+                }
+            }
+        } else {
+            dispose()
+            if let facts { _ = probe_cleanup(facts, expectedExecutable) }
+            writeFailure(reason, extra: ["forced": facts != nil, "cleanupObserved": false])
+        }
+    }
+    func writeFailure(_ reason: String, extra: [String: Any]) {
+        var output: [String: Any] = ["case": args.count > 4 ? args[4] : "invalid", "bundleURL": bundle, "error": reason,
+            "observerDisposed": true, "released": released, "cancelSent": cancelSent,
+            "expectedExecutable": expectedExecutable, "observedIdentity": record as Any? ?? NSNull(), "expectedUid": Int(getuid())]
+        output.merge(extra) { _, new in new }
+        try? atomic(output, to: root + "/observer.json")
+        fputs("LaunchServices probe FAIL: " + reason + "\n", stderr); exit(1)
+    }
+
 }

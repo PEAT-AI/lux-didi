@@ -79,7 +79,8 @@ import CryptoKit
     }
     static func execute(model: AppModel, window: NSWindow) async -> Bool {
         guard let proof = model.installedProof, let owner = model.supervisor else {
-            await model.shutdown(); fputs("INSTALLED-PROOF FAILED: configuration or ownership rejected\n", stderr); return false
+            _ = await OwnedVerificationLaunchGate.perform(window: window) { _ in false }
+            await Task { @MainActor in await model.shutdown() }.value; fputs("INSTALLED-PROOF FAILED: configuration or ownership rejected\n", stderr); return false
         }
         let runtime = owner.runtime
         let permission = CGPreflightScreenCaptureAccess()
@@ -93,6 +94,7 @@ import CryptoKit
             "serviceStop": ["requested": false, "observedExited": false, "pid": null, "exitStatus": null, "terminationReason": null, "procedure": "private-stdin-close-and-bounded-owned-escalation"],
             "credentialCleanup": ["scope": "synthetic-proof-only", "attempted": false, "cleaned": false, "errorCode": null], "error": null]
         var failure: Error?
+        let gated = await OwnedVerificationLaunchGate.perform(window: window) { gate in
         do {
             let resources = Bundle.main.resourceURL!
             report["source"] = ["appIdentifier": Bundle.main.bundleIdentifier ?? "", "bundlePath": Bundle.main.bundleURL.path,
@@ -103,6 +105,8 @@ import CryptoKit
             try proof.write(report)
             await model.reconnect()
             guard let connection = owner.currentConnection, let client = model.client else { throw InstalledProofError.unavailable }
+            try gate?.bindService(pid: connection.pid, executable: runtime.node.path)
+            try Task.checkCancellation()
             observations["credentialImported"] = owner.credentialImported; observations["bootstrap"] = true
             report["service"] = ["pid": Int(connection.pid), "nonce": connection.nonce, "origin": connection.descriptor.origin,
                                   "authorityEpoch": connection.authorityEpoch, "assistantId": connection.assistantId, "readyVerified": true]
@@ -152,7 +156,12 @@ import CryptoKit
             report["visual"] = visual
             guard Set(controls.compactMap({ $0["name"] as? String })) == ["Start recording", "Stop recording", "Send text"], controls.allSatisfy({ $0["visible"] as? Bool == true }) else { throw InstalledProofError.accessibility }
         } catch { failure = error }
+        return failure == nil
+        }
+        if !gated { failure = failure ?? InstalledProofError.unavailable }
         observations["credentialImported"] = owner.credentialImported; report["observations"] = observations
+        // Joined, cancellation-independent finalization on every work/gate outcome.
+        await Task { @MainActor in
         await model.shutdown()
         if let stopped = owner.lastStop { report["serviceStop"] = stopped }
         if owner.credentialImported {
@@ -161,6 +170,7 @@ import CryptoKit
         }
         if failure == nil, owner.lastStop?["observedExited"] as? Bool != true { failure = InstalledProofError.unavailable }
         report["native"] = ["pid": Int(getpid()), "cleanQuitRequested": true, "exitEvidence": "external-driver-required"]
+        }.value
         report["phase"] = failure == nil ? "complete" : "failed"; report["success"] = failure == nil
         report["wkDiagnostics"] = latestPageDiagnostics
         if let failure { report["error"] = ["code": model.bootstrapFailureCode ?? code(failure)] }

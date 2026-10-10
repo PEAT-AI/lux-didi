@@ -441,14 +441,14 @@ test('DIAG browser-actor HTTP accept surfaces the exact denial reason', async t 
   const service = await listenService({ store: f.store, domain: f.domain, chat: f.chat, modelStatus: f.status,
     ...(f.connections ? { connections: f.connections } : {}), port: 0 });
   t.after(() => service.close());
-  const pairing = await fetch(`${service.origin}/api/v1/auth/pairing`, { method: 'POST', headers: { Authorization: `Bearer ${f.store.adminCredential}` } });
+  const pairing = await fetch(`${service.origin}/api/v1/auth/pairing`, { method: 'POST', headers: { Authorization: `Bearer ${f.store.adminCredential}`, Origin: service.origin } });
   const pairingBody: any = await pairing.json();
   const code = pairingBody?.data?.pairingCode ?? pairingBody?.pairingCode;
-  const paired = await fetch(`${service.origin}/api/v1/auth/pair`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pairingCode: code }) });
+  const paired = await fetch(`${service.origin}/api/v1/auth/pair`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: service.origin }, body: JSON.stringify({ pairingCode: code }) });
   const pairedBody: any = await paired.json();
   const token = pairedBody?.data?.token; const csrf = pairedBody?.data?.csrfToken; const epoch = String(pairedBody?.authorityEpoch ?? '');
   const sessionId = await f.enroll();
-  const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, 'X-Didi-CSRF': String(csrf), 'X-Didi-Authority-Epoch': epoch };
+  const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, 'X-Didi-CSRF': String(csrf), 'X-Didi-Authority-Epoch': epoch, Origin: service.origin };
   const body = JSON.stringify({ sessionId, text: 'Use synthetic insight 731.', selectedConnectionIds: ['synthetic-lux'], selectedMemoryEntryIds: [] });
   const key = randomUUID();
   const accepted = await fetch(`${service.origin}/api/v1/chat`, { method: 'POST', headers: { ...headers, 'Idempotency-Key': key }, body });

@@ -37,10 +37,10 @@ node "$deps/typescript/bin/tsc" --target ES2022 --module NodeNext --moduleResolu
   --skipLibCheck --types node --typeRoots "$deps/@types" --rootDir "$out/source" --outDir "$out/dist" \
   "$out/source/test/tool-chat.test.ts" "$out/source/test/tool-chat-process.ts" "$out/source/test/connected.test.ts"
 echo 'TOOL CHAT PHASE=focused-runtime'
-node --test --test-reporter=tap --test-timeout=15000 "$out/dist/test/tool-chat.test.js"
+node --test --test-concurrency=1 --test-reporter=tap --test-timeout=15000 "$out/dist/test/tool-chat.test.js"
 # The real connected caller (R2): the actual composeChat/ownerProfile/P-snapshot callsite, not a fixture.
 echo 'TOOL CHAT PHASE=connected-runtime'
-node --test --test-reporter=tap --test-timeout=15000 "$out/dist/test/connected.test.js"
+node --test --test-concurrency=1 --test-reporter=tap --test-timeout=15000 "$out/dist/test/connected.test.js"
 # Build the actual current browser in isolation; never mutate another lane's
 # node_modules or dist, download a browser, or start the normal application.
 cp -R "$root/web/src" "$out/web/src"

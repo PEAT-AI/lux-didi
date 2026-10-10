@@ -33,7 +33,7 @@ async function fixture(dir) {
     const id = ++sequence;
     return deadline(new Promise((resolve, reject) => { pending.set(id, { resolve, reject }); child.send({ id, command, ...fields }); }), command);
   }
-  const { config } = await event('ready');
+  const { config } = await Promise.race([event('ready'), new Promise((_, reject) => child.once('exit', (code, signal) => reject(Error(`host startup exit ${code}/${signal}: ${stderr}`))))]);
   return { child, config, event, command, call: async (path, body, key) => command('call', { path, body, key }) };
 }
 function native(f, dir, mode, config = {}, text = 'e\u0301\r\n synthetic 🎙️ ') {

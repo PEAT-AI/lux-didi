@@ -485,3 +485,26 @@ test('the owner disposes before Store.close and refuses work afterwards', async 
   assert.throws(() => h.owner.get('missing'), (error: unknown) => error instanceof LiveError);
   await h.owner.shutdown();
 });
+
+test('accepted unused observations and same-key replay expire without attach, strictly past the boundary', async t => {
+  let resolutions = 0;
+  const h = await harness(t, { limits: { unusedMs: 20 }, credentials: { resolve: async () => { resolutions++; return CANARY; } } });
+  const create = (key: string) => h.owner.create({ idempotencyKey: key, inputClass: 'ordinary' }, h.ctx);
+  const read = create('unused-read'), replay = create('unused-replay'), fragments = create('unused-fragments');
+  h.advance(20);
+  assert.equal(h.owner.get(read.liveSessionId).lifecycle, 'accepted');
+  assert.equal(create('unused-replay').lifecycle, 'accepted');
+  h.advance(1);
+  assert.equal(h.owner.get(read.liveSessionId).terminalOutcome?.state, 'expired');
+  assert.equal(create('unused-replay').terminalOutcome?.state, 'expired');
+  assert.equal(h.owner.listFragments({ liveSessionId: fragments.liveSessionId }).fragments.length, 1);
+  assert.equal(h.owner.get(fragments.liveSessionId).terminalOutcome?.state, 'expired');
+  assert.throws(() => h.owner.create({ idempotencyKey: 'unused-replay', inputClass: 'private' }, h.ctx), { code: 'idempotency_conflict' });
+  for (const row of [read, replay, fragments]) {
+    assert.equal(h.owner.get(row.liveSessionId).terminalOutcome?.state, 'expired');
+    assert.equal(h.owner.listFragments({ liveSessionId: row.liveSessionId }).fragments.length, 1);
+    await assert.rejects(h.owner.attach(row.liveSessionId, h.ctx), { code: 'terminal' });
+  }
+  assert.equal(resolutions, 0);
+  assert.equal(h.f.opens.length, 0);
+});

@@ -124,7 +124,11 @@ manifest/resource release boundary; same-UID malicious code is not a sandbox cla
 
 Only after readiness, native opens canonical admin-credential relative to a
 validated private directory FD using O_NOFOLLOW, checking regular/current-owner
-0600 and bounded/header-safe bytes. It imports via noninteractive Keychain API to
+0600 and bounded/header-safe bytes. Store's single terminal LF is file framing:
+native removes that LF before validation, Keychain comparison/import and bearer
+use; only the canonical 43-character base64url token is accepted. Interior or
+repeated LF, CR, whitespace and malformed tokens remain rejected. An unframed
+canonical token remains compatible. It imports via noninteractive Keychain API to
 fixed service ai.peat.lux-didi.admin/account lowercase installId. A differing
 existing item is an explicit blocker, never silent credential rotation/deletion
 or ACL broadening. The canonical service file remains. Synthetic unique Keychain

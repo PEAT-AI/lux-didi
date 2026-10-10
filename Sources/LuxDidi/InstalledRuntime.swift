@@ -103,7 +103,11 @@ enum NativeCredentialImport {
               info.st_size > 0, info.st_size <= 4096 else { throw NativeServiceError.unsafeCredential }
         var bytes = [UInt8](repeating: 0, count: Int(info.st_size))
         let count = bytes.withUnsafeMutableBytes { read(file, $0.baseAddress, $0.count) }
-        guard count == bytes.count, bytes.allSatisfy({ (33...126).contains($0) }), String(bytes: bytes, encoding: .utf8) != nil else { throw NativeServiceError.unsafeCredential }
+        guard count == bytes.count else { throw NativeServiceError.unsafeCredential }
+        // Canonical Store serializes its token with one terminal LF, not bearer data.
+        if bytes.last == 10 { bytes.removeLast() }
+        guard bytes.count == 43, bytes.allSatisfy({ (48...57).contains($0) || (65...90).contains($0) ||
+            (97...122).contains($0) || $0 == 45 || $0 == 95 }) else { throw NativeServiceError.unsafeCredential }
         let data = Data(bytes)
         let context = LAContext(); context.interactionNotAllowed = true
         let base: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,

@@ -173,7 +173,12 @@ try {
         page.on('request', request => { if (request.url().includes('/api/v1')) ownerRequests.push({ path: new URL(request.url()).pathname, method: request.method() }); });
         await page.goto(descriptor.origin); await page.locator('#pair-code').waitFor();
         const pairing = await operator('/auth/pairing', {}, ownerState);
+        // Observe exact real lifecycle responses before submitting: no late-listener race.
+        const pairResponse = page.waitForResponse(response => response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/v1/auth/pair');
+        const clearResponse = page.waitForResponse(response => response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/v1/conversation-selection/clear');
         await page.locator('#pair-code').fill(pairing.pairingCode); await page.locator('#pair-form').evaluate(form => form.requestSubmit());
+        const lifecycle = await Promise.all([pairResponse, clearResponse]);
+        for (const response of lifecycle) assert.equal(response.status(), 200, 'expected real pairing/selection-clear route success');
         await page.locator('#connected-route').waitFor(); paired = true;
         const status = await api('/status'), route = await api('/chat/status');
         const label = 'Example <Owner> & Friend', configured = mode === 'owner-configured';
@@ -195,7 +200,10 @@ try {
         assert.deepEqual(unexpected, []); assert.deepEqual(ownerErrors, []);
         assert.ok(ownerConsole.filter(event => !event.paired).every(event => event.text.includes('401 (Unauthorized)')), 'only the expected unauthenticated pairing response is allowed before pairing');
         assert.deepEqual(ownerConsole.filter(event => event.paired), []);
-        assert.ok(ownerRequests.every(request => request.method !== 'POST' || request.path.startsWith('/api/v1/auth/')));
+        const posts = ownerRequests.filter(request => request.method === 'POST');
+        assert.deepEqual(posts.map(request => request.path).sort(), ['/api/v1/auth/pair', '/api/v1/conversation-selection/clear'], JSON.stringify(posts));
+        assert.deepEqual((await api('/sessions')).items, [], 'owner presentation must not save a local session or entry');
+        steps.push(`${mode} observed-posts=${JSON.stringify(posts)} pairing-clear-status=200 no-saved-sessions=true`);
         const wireExists = await readFile(join(ownerState, 'wire.jsonl')).then(() => true, error => { if (error.code === 'ENOENT') return false; throw error; });
         assert.equal(wireExists, false, 'owner label proof must make zero model transport calls');
         await page.screenshot({ path: join(artifacts, `${mode}-${sha}.png`), fullPage: true });

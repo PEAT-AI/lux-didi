@@ -25,13 +25,12 @@ export interface RequestCredentialAllocation { resolve(reference: string): Promi
  */
 export interface ToolChatAssembly {
   registry: McpRegistry; port: McpPort; connections: readonly ConnectionPolicy[];
-  ownerProfile?: OwnerProfileSnapshot;
 }
 const baseEndpoint = 'https://generativelanguage.googleapis.com';
 
-export function composeChat(store: Store, domain: DomainPort, configDir: string, testing: ModelTesting | undefined, now: (() => number) | undefined, assembly: ToolChatAssembly): { chat: ChatService; status: ConnectedStatus; tools: ToolsOwner };
-export function composeChat(store: Store, domain: DomainPort, configDir: string, testing?: ModelTesting, now?: () => number): { chat: ChatService; status: ConnectedStatus };
-export function composeChat(store: Store, domain: DomainPort, configDir: string, testing?: ModelTesting, now?: () => number, assembly?: ToolChatAssembly) {
+export function composeChat(store: Store, domain: DomainPort, configDir: string, testing: ModelTesting | undefined, now: (() => number) | undefined, ownerProfile: OwnerProfileSnapshot | undefined, assembly: ToolChatAssembly): { chat: ChatService; status: ConnectedStatus; tools: ToolsOwner };
+export function composeChat(store: Store, domain: DomainPort, configDir: string, testing?: ModelTesting, now?: () => number, ownerProfile?: OwnerProfileSnapshot): { chat: ChatService; status: ConnectedStatus };
+export function composeChat(store: Store, domain: DomainPort, configDir: string, testing?: ModelTesting, now?: () => number, ownerProfile?: OwnerProfileSnapshot, assembly?: ToolChatAssembly) {
   const clock = now ?? Date.now;
   const loaded = loadProviderConfig({ configDir, ownerId: store.assistantId });
   let ready = loaded.status === 'ready' ? loaded : null;
@@ -123,7 +122,7 @@ export function composeChat(store: Store, domain: DomainPort, configDir: string,
   } : undefined;
 
   chat = new ChatService({
-    ...(assembly?.ownerProfile ? { ownerProfile: assembly.ownerProfile } : {}), store, domain, model,
+    ...(ownerProfile ? { ownerProfile } : {}), store, domain, model,
     ...(tools ? { tools } : {}),
     route: { provider: 'gemini', model: ready?.profile.modelId ?? '', available: !!ready,
       endpoint: `${baseEndpoint}/v1beta/models/${ready?.profile.modelId ?? ''}:streamGenerateContent?alt=sse`, apiVersion: 'v1beta', keyReference: 'gemini-primary',

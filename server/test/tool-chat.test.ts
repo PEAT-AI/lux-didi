@@ -35,7 +35,7 @@ function safeFailure(value: unknown) {
 // Store transaction. Counting every owned table catches orphan user/policy/run
 // (and, once imported by root, persona) rows, not only an HTTP success code.
 test('B1 snapshot failure rolls back every acceptance write', async t => {
-  const f = await open(t); const session = f.enroll(); const before = f.counts();
+  const f = await open(t); const session = await f.enroll(); const before = f.counts();
   const original = f.tools.snapshotRun;
   f.tools.snapshotRun = (tx, input) => { original(tx, input); throw Error('synthetic snapshot failure'); };
   assert.throws(() => f.accept(session), /synthetic snapshot failure|unavailable|persistence/);
@@ -43,7 +43,7 @@ test('B1 snapshot failure rolls back every acceptance write', async t => {
   assert.equal(f.sdkCalls.length, 0); assert.equal(f.modelCalls.length, 0);
 });
 test('B1 missing protected binding captures nothing; replay preserves one run and one SDK effect', async t => {
-  const f = await open(t); const session = f.enroll(); const before = f.counts();
+  const f = await open(t); const session = await f.enroll(); const before = f.counts();
   writeFileSync(f.recordPath, '{malformed synthetic binding', { mode: 0o600 });
   assert.throws(() => f.accept(session)); assert.deepEqual(f.counts(), before);
   f.writeRecord(); const key = randomUUID(); const accepted = f.accept(session, key);
@@ -67,7 +67,7 @@ test('B1 missing protected binding captures nothing; replay preserves one run an
 
 test('B2 accepted definitions/hash survive a changed live catalog and policy', async t => {
   const gate = barrier(); const f = await open(t, { beforeResolve: gate.pause });
-  const accepted = f.accept(f.enroll()); const done = f.terminal(accepted);
+  const accepted = f.accept(await f.enroll()); const done = f.terminal(accepted);
   await gate.entered;
   try {
     const definitions = f.tools.definitions(accepted.runId);
@@ -83,7 +83,7 @@ test('B2 accepted definitions/hash survive a changed live catalog and policy', a
 });
 test('B2 permitted egress advertises only accepted definitions/hash despite a differing live SDK catalog', async t => {
   const gate = barrier(); const f = await open(t, { beforeResolve: gate.pause });
-  const accepted = f.accept(f.enroll()); const done = f.terminal(accepted); await gate.entered;
+  const accepted = f.accept(await f.enroll()); const done = f.terminal(accepted); await gate.entered;
   let declarations: { name: string; description: string; parameters: unknown }[] = [];
   try {
     declarations = f.tools.definitions(accepted.runId).map(({ name, description, parameters }) => ({ name, description, parameters }));
@@ -106,7 +106,7 @@ test('B2 permitted egress advertises only accepted definitions/hash despite a di
 for (const kind of ['connection', 'schema', 'source', 'wrong-class', 'unmapped-class'] as const) {
   test(`B2/B4 later-step ${kind} denial prevents all result continuation egress`, async t => {
     const gate = barrier(); const f = await open(t, { beforeContinuation: gate.pause });
-    const accepted = f.accept(f.enroll()); const done = f.terminal(accepted);
+    const accepted = f.accept(await f.enroll()); const done = f.terminal(accepted);
     await gate.entered;
     try {
       assert.equal(f.sdkCalls.length, 1, 'Denied continuation must start with a real completed SDK result');
@@ -124,7 +124,7 @@ for (const kind of ['connection', 'schema', 'source', 'wrong-class', 'unmapped-c
 }
 
 test('B3 real SDK evidence reaches a model continuation and durable references', async t => {
-  const f = await open(t); const accepted = f.accept(f.enroll()); const final = await f.terminal(accepted);
+  const f = await open(t); const accepted = f.accept(await f.enroll()); const final = await f.terminal(accepted);
   assert.equal(final.outcome, 'complete'); assert.match(final.finalText!, /Synthetic insight 731/);
   assert.equal(f.sdkCalls.length, 1); assert.equal(f.modelCalls.length, 2);
   assert.equal(forbiddenContinuation(f.modelCalls), 1);
@@ -159,7 +159,7 @@ function mutate(f: Fixture, accepted: RunSnapshot, session: string, mutation: Mu
 for (const position of ['beforeResolve', 'afterResolve'] as const) for (const mutation of mutations) {
   test(`B4 ${position}: ${mutation} produces zero lower transport calls`, async t => {
     const gate = barrier(); const f = await open(t, { [position]: gate.pause });
-    const session = f.enroll(); const accepted = f.accept(session); const done = f.terminal(accepted);
+    const session = await f.enroll(); const accepted = f.accept(session); const done = f.terminal(accepted);
     await gate.entered;
     try {
       assert.equal(f.modelCalls.length, 0, 'Barrier must be above the actual injected lower transport');
@@ -176,7 +176,7 @@ for (const interval of ['continuation-resolved', 'final-owner-return'] as const)
   test(`B4 nonempty result ${interval}: ${mutation} denies continuation`, async t => {
     const gate = barrier(); const f = await open(t, interval === 'continuation-resolved' ? { beforeContinuation: gate.pause } : {});
     const gateCount = interval === 'final-owner-return' ? f.gateBarrier(gate.pause) : null;
-    const session = f.enroll(); const accepted = f.accept(session); const done = f.terminal(accepted);
+    const session = await f.enroll(); const accepted = f.accept(session); const done = f.terminal(accepted);
     await gate.entered;
     try {
       assert.equal(f.sdkCalls.length, 1); assert.equal(f.modelCalls.length, 1);
@@ -194,7 +194,7 @@ for (const interval of ['continuation-resolved', 'final-owner-return'] as const)
 
 test('B5 same-binding rotation sends the new key only to the lower trusted transport', async t => {
   const gate = barrier(); const f = await open(t, { beforeResolve: gate.pause });
-  const accepted = f.accept(f.enroll()); const done = f.terminal(accepted); await gate.entered;
+  const accepted = f.accept(await f.enroll()); const done = f.terminal(accepted); await gate.entered;
   try { f.writeRecord({ key: rotatedKey }); } finally { gate.release(); }
   const final = await done; assert.equal(final.outcome, 'complete'); assert.equal(f.sdkCalls.length, 1);
   assert.ok(f.modelCalls.length >= 2); assert.ok(f.modelCalls.every(call => call.key === rotatedKey));
@@ -212,7 +212,7 @@ for (const failure of ['credential', 'transport'] as const) {
       assert.ok(logBytes <= 65536, 'Bounded synthetic log capture exceeded'); logs.push(line);
     });
     const f = await open(t, failure === 'credential' ? { credentialFailure: true } : { transportFailure: true });
-    const run = f.accept(f.enroll()); const final = await f.terminal(run);
+    const run = f.accept(await f.enroll()); const final = await f.terminal(run);
     assert.equal(final.state, 'terminal'); assert.notEqual(final.outcome, 'complete');
     assert.ok(f.resolutions() > 0, 'Synthetic failing credential branch was actually exercised');
     assert.equal(f.modelCalls.length, failure === 'transport' ? 1 : 0); assert.equal(f.sdkCalls.length, 0);
@@ -237,11 +237,11 @@ for (const failure of ['credential', 'transport'] as const) {
 }
 test('B5 simultaneous sessions cannot consume another invocation receipt/result handoff', async t => {
   const gate = barrier(); const f = await open(t, { beforeResolve: gate.pause });
-  const first = f.accept(f.enroll('Synthetic first')); const firstDone = f.terminal(first); await gate.entered;
+  const first = f.accept(await f.enroll('Synthetic first')); const firstDone = f.terminal(first); await gate.entered;
   try {
     f.chat.cancel(first.runId, f.context);
     f.writeRecord({ key: rotatedKey, configuredAccount: 'operator-asserted-synthetic-second' });
-    const second = f.accept(f.enroll('Synthetic second')); const final = await f.terminal(second);
+    const second = f.accept(await f.enroll('Synthetic second')); const final = await f.terminal(second);
     assert.equal(final.outcome, 'complete'); assert.equal(f.sdkCalls.length, 1);
     assert.equal(f.modelCalls.length, 2); assert.ok(f.modelCalls.every(call => call.key === rotatedKey));
     assert.ok(final.sourceIds.includes(sourceId)); assert.ok(final.toolReferences.length > 0);
@@ -252,7 +252,7 @@ test('B5 simultaneous sessions cannot consume another invocation receipt/result 
 });
 
 test('B6 legacy text credentials advertise no tools and never resnapshot on replay', async t => {
-  const f = await open(t, { legacy: true }); const session = f.enroll();
+  const f = await open(t, { legacy: true }); const session = await f.enroll();
   // Explicit tool selection cannot silently upgrade a legacy credential.
   const before = f.counts(); assert.throws(() => f.accept(session)); assert.deepEqual(f.counts(), before);
   const key = randomUUID(); const run = f.accept(session, key, []); const final = await f.terminal(run);
@@ -264,14 +264,14 @@ test('B6 legacy text credentials advertise no tools and never resnapshot on repl
 });
 test('B5 two live sessions keep resolved keys, result refs, and trusted source IDs invocation-local', async t => {
   const gate = barrier(); const f = await open(t, { afterResolve: gate.pause });
-  const first = f.accept(f.enroll('Synthetic first'), randomUUID(), ['synthetic-lux'], [], 'Synthetic first evidence');
+  const first = f.accept(await f.enroll('Synthetic first'), randomUUID(), ['synthetic-lux'], [], 'Synthetic first evidence');
   const firstDone = f.terminal(first); await gate.entered;
   let secondFinal;
   try {
     // Same binding, different key bytes. The first invocation already resolved
     // key one; a second successful invocation must not overwrite its closure.
     f.writeRecord({ key: rotatedKey });
-    secondFinal = await f.terminal(f.accept(f.enroll('Synthetic second'), randomUUID(), ['synthetic-lux'], [], 'Synthetic second evidence'));
+    secondFinal = await f.terminal(f.accept(await f.enroll('Synthetic second'), randomUUID(), ['synthetic-lux'], [], 'Synthetic second evidence'));
     assert.equal(secondFinal.outcome, 'complete'); assert.ok(secondFinal.sourceIds.includes('lux-knowledge:732'));
     assert.ok(!secondFinal.sourceIds.includes(sourceId));
   } finally { gate.release(); }
@@ -287,7 +287,7 @@ test('B5 two live sessions keep resolved keys, result refs, and trusted source I
 });
 
 test('B5 sequential continuations consume a fresh result handoff for each generation', async t => {
-  const f = await open(t, { multiStep: true }); const final = await f.terminal(f.accept(f.enroll()));
+  const f = await open(t, { multiStep: true }); const final = await f.terminal(f.accept(await f.enroll()));
   assert.equal(final.outcome, 'complete'); assert.equal(f.sdkCalls.length, 2);
   assert.equal(f.modelCalls.length, 3); assert.equal(forbiddenContinuation(f.modelCalls), 2);
   assert.equal(final.toolReferences.length, 2);
@@ -297,7 +297,7 @@ test('B5 sequential continuations consume a fresh result handoff for each genera
 
 test('B6 explicit requested memory remains frozen beside durable tool references', async t => {
   const gate = barrier(); const f = await open(t, { afterEachResolve: async number => { if (number === 2) await gate.pause(); } });
-  const session = f.enroll();
+  const session = await f.enroll();
   const note = f.accept(session, randomUUID(), [], [], 'Frozen synthetic memory: green pencil.');
   assert.equal((await f.terminal(note)).outcome, 'complete');
   const selected = f.accept(session, randomUUID(), ['synthetic-lux'], [note.userEntryId]); const done = f.terminal(selected);
@@ -327,7 +327,7 @@ test('B6 explicit requested memory remains frozen beside durable tool references
 });
 
 test('B6 provisional text stays provisional when the continuation is cancelled', async t => {
-  const gate = barrier(); const f = await open(t, { afterText: gate.pause }); const run = f.accept(f.enroll());
+  const gate = barrier(); const f = await open(t, { afterText: gate.pause }); const run = f.accept(await f.enroll());
   const done = f.terminal(run);
   const provisional = (async () => {
     for await (const event of f.chat.subscribe(run.runId, f.context)) {
@@ -410,7 +410,7 @@ test('B6 process restart recovers a real durable nonterminal SDK-dispatched inte
 });
 
 test('B6 recovery does not repeat a terminal tool intent or unknown SDK effect', async t => {
-  const f = await open(t, { unknownEffect: true }); const key = randomUUID(); const session = f.enroll();
+  const f = await open(t, { unknownEffect: true }); const key = randomUUID(); const session = await f.enroll();
   const run = f.accept(session, key); const final = await f.terminal(run);
   assert.notEqual(final.outcome, 'complete'); assert.equal(f.sdkCalls.length, 1);
   const before = f.counts(); f.chat.recover({ assistantId: f.store.assistantId, authorityEpoch: f.store.authorityEpoch });

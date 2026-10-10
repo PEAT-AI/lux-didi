@@ -19,23 +19,6 @@ type PolicyLabel = { kind: 'session' | 'entry'; id: string; revision: number; da
 function nullable(value: SQLRow[string] | undefined) { return value === null || value === undefined ? null : String(value); }
 type ToolProjection = { toolReferences: ToolResultRef[]; sourceIds: string[]; toolBindingHash: string };
 const noTools: ToolProjection = { toolReferences: [], sourceIds: [], toolBindingHash: '' };
-/**
- * Plain trusted source identifiers for a completed owner result. The owner stores
- * the already-projected evidence envelope; ids come from the connector's verified
- * requested-entity namespace, never from model text or a model-supplied URL.
- */
-function sourceIdsFor(intentJson: string | null, resultJson: string | null): string[] {
-  if (!resultJson) return [];
-  let toolName: unknown;
-  try { toolName = (JSON.parse(intentJson ?? '{}') as { toolName?: unknown }).toolName; } catch { return []; }
-  if (toolName !== 'get_insight') return [];
-  try {
-    const response = (JSON.parse(resultJson) as { response?: { requestedIds?: unknown } }).response;
-    const ids = response?.requestedIds;
-    if (!Array.isArray(ids)) return [];
-    return ids.filter((id): id is number => Number.isSafeInteger(id) && (id as number) > 0).map(id => `lux-knowledge:${id}`);
-  } catch { return []; }
-}
 function snapshot(row: SQLRow, finalText: string | null = null, memorySelection: MemorySelectionSnapshot | null = null, tools: ToolProjection = noTools): RunSnapshot {
   return { runId: String(row.run_id), sessionId: String(row.session_id), userEntryId: String(row.user_entry_id),
     finalEntryId: nullable(row.final_entry_id), finalText, retryOf: nullable(row.retry_of), authorityEpoch: String(row.authority_epoch),
@@ -91,10 +74,11 @@ export class ChatService implements ChatPort {
     const link = tx.get('SELECT binding_hash FROM chat_run_tools WHERE run_id=?', [runId]);
     if (!link) return noTools;
     if (!tx.get("SELECT name FROM sqlite_master WHERE type='table' AND name='tool_calls'", [])) return { ...noTools, toolBindingHash: String(link.binding_hash) };
-    const rows = tx.all("SELECT result_id,result_sha256,intent_json,result_json FROM tool_calls WHERE owner_id=? AND run_id=? AND state='completed' ORDER BY rowid", [this.#config.store.assistantId, runId]);
+    const rows = tx.all("SELECT result_id,result_sha256 FROM tool_calls WHERE owner_id=? AND run_id=? AND state='completed' ORDER BY rowid", [this.#config.store.assistantId, runId]);
     const toolReferences: ToolResultRef[] = rows.map(row => ({ id: String(row.result_id), sha256: String(row.result_sha256) }));
-    const sourceIds = [...new Set(rows.flatMap(row => sourceIdsFor(String(row.intent_json), nullable(row.result_json))))];
-    return { toolReferences, sourceIds, toolBindingHash: String(link.binding_hash) };
+    // Trusted source ids are only projected when the owning connector/owner exposes a
+    // validated identifier; this lane never fabricates one from model text or a tool payload.
+    return { toolReferences, sourceIds: [], toolBindingHash: String(link.binding_hash) };
   }
   /** Safe requested/used/omitted metadata; no record text and no whole-archive claim. */
   #memorySelection(tx: Transaction, row: SQLRow): MemorySelectionSnapshot | null {

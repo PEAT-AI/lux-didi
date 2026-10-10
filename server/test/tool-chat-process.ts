@@ -174,16 +174,20 @@ export async function fixture(options: FixtureOptions = {}) {
         return key;
       } };
     } } : {})
-  }, () => clock, assembly);
+  }, () => clock, undefined, assembly);
   const { chat } = composed;
   const tools: ToolsOwner = composed.tools;
   cleanups.push(() => chat.shutdown());
-  const enroll = (title = 'Synthetic tool chat') => {
+  const enroll = async (title = 'Synthetic tool chat') => {
     const conversation = chat.enroll({ title, timeZone: 'UTC', idempotencyKey: randomUUID() }, context);
     const consent = store.transaction(tx => tx.get('SELECT route_identity FROM chat_consents WHERE session_id = ?', [conversation.sessionId]));
     assert.equal(typeof consent?.route_identity, 'string');
     policy = { ...policy, route: { ...policy.route, identity: String(consent!.route_identity) } };
-    tools.applyConnection(policy); tools.projectConnection(policy.connectionId);
+    tools.applyConnection(policy);
+    // The accepted owner suspends the registry projection on a durable apply, so the
+    // grant must be re-observed by an actual discover before it can be re-approved.
+    assert.equal((await port.discover(endpoint.id)).state, 'discovered');
+    tools.projectConnection(policy.connectionId);
     return conversation.sessionId;
   };
   const accept = (sessionId: string, key: string = randomUUID(), connectionIds = ['synthetic-lux'], selectedMemoryEntryIds: string[] = [], text = 'Use synthetic insight 731.') =>
@@ -244,7 +248,7 @@ export async function fixture(options: FixtureOptions = {}) {
 // IPC is test-local parent/child communication, not the orchestration bus.
 async function browserProcess() {
   const f = await fixture();
-  const sessionId = f.enroll();
+  const sessionId = await f.enroll();
   const service = await listenService({ store: f.store, domain: createDomainPort({ outbox: Outbox }), chat: f.chat,
     modelStatus: { status: 'configured', provider: 'gemini', model: scope.modelId }, port: 0,
     webRoot: resolve(process.env.DIDI_TOOL_CHAT_WEB_ROOT!) });
@@ -274,7 +278,7 @@ async function recoveryProcess() {
       // SDK response or owner terminal receipt has been observed by Chat.
       await new Promise<void>(() => {});
     } });
-  const sessionId = f.enroll(); const key = 'synthetic-durable-recovery-key';
+  const sessionId = await f.enroll(); const key = 'synthetic-durable-recovery-key';
   process.on('message', message => {
     if (message === 'start') run = f.accept(sessionId, key);
     if (message === 'stop') void f.close().then(() => process.disconnect?.());

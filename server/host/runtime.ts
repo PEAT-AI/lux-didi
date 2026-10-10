@@ -87,8 +87,8 @@ export async function startHost(config: HostConfig) {
     const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 16384, maxEntries: 8, ttlMs: 300000, maxSliceBytes: 4096 }),
       resolveCredential: async (reference: string) => loadMcpConfiguration({ configDir: mcpConfigDir, ownerId: store.assistantId, dataDir }).resolveCredential(reference),
       budgets: { timeoutMs: 8000, maxResponseBytes: 16384, maxPages: 4, maxTools: 32, projectionChars: 4096 } });
-    const assembly: ToolChatAssembly = { registry, port, connections: [], ownerProfile: owner.snapshot };
-    const { chat, status, tools } = composeChat(store, domain, providerConfigDir, config.modelTesting, config.now, assembly);
+    const assembly: ToolChatAssembly = { registry, port, connections: [] };
+    const { chat, status, tools } = composeChat(store, domain, providerConfigDir, config.modelTesting, config.now, owner.snapshot, assembly);
     if (tools) composeMcpConnection({ store, owner: tools, registry, configDir: mcpConfigDir });
     const { service: live } = composeLive(store, providerConfigDir, config.liveTesting, config.now, owner.snapshot);
     const service = await listenService({ store, domain, chat, live, modelStatus: status, ownerProfileStatus: { status: owner.status, displayName: owner.snapshot.displayName }, webRoot, port, ...(config.now ? { now: config.now } : {}) });

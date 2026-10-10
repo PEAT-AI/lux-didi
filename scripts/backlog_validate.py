@@ -247,6 +247,7 @@ ALLOWED_PATHS = {
     "scripts/check-archive-scale.sh",
     "scripts/check-native-live.sh",
     "scripts/check-tool-owner.sh",
+    "scripts/check-api-response.sh",
 }
 ALLOWED_PATHS |= {f"docs/{name}" for name in DOCS}
 

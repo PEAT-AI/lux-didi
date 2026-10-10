@@ -12,7 +12,8 @@ def verify(d, case):
     assert d['observerPid'] != d['identity']['pid'] and d['identity']['uid'] == os.getuid()
     assert d['identity']['startSeconds'] > 0 and d['identity']['nonce']
     assert d['identity']['bundleURL'] == d['bundleURL']
-    assert d['identity']['executable'] == d['bundleURL'] + '/Contents/MacOS/LaunchProbe'
+    assert d['identity']['executable'] == os.path.realpath(d['bundleURL'] + '/Contents/MacOS/LaunchProbe')
+    assert os.path.realpath(d['identity']['rawExecutable']) == d['identity']['executable']
     raw = d['kernel']['rawStatus']
     if case == 'signal':
         assert os.WIFSIGNALED(raw) and os.WTERMSIG(raw) == signal.SIGTERM

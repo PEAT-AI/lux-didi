@@ -421,3 +421,80 @@ test('targetless refusal is durable only for a fresh identity; mismatched comple
   assert.throws(() => f.owner.journal.refuse({ ...fresh, toolName: 'changed' }, 'unknown_tool'), /collision/);
 });
 
+
+// Runtime contract casts let the baseline execute the assertions (rather than fail compilation).
+function standingOwner(owner: ReturnType<typeof createToolsOwner>) {
+  return owner as typeof owner & {
+    applyConnectionIntent(intent: { expectedPolicySha256: string | null; policy: ConnectionPolicy }): { state: string; sha256: string };
+    restoreConnection(id: string, assertCurrentBinding: () => void): Promise<{ state: string; reason?: string }>;
+  };
+}
+test('conditional intent is idempotent but stale predecessor, endpoint rebind and corruption never mutate durable consent', async t => {
+  const f = await fixture(t); const owner = standingOwner(f.owner); const p = policy(); const hash = sha256(canonicalJSON(p));
+  assert.deepEqual(owner.applyConnectionIntent({ expectedPolicySha256: null, policy: p }), { state: 'unchanged', sha256: hash });
+  const next = policy({ generation: 2 });
+  assert.throws(() => owner.applyConnectionIntent({ expectedPolicySha256: null, policy: next }), /predecessor/);
+  assert.throws(() => owner.applyConnectionIntent({ expectedPolicySha256: hash, policy: policy({ generation: 2, endpoint: { ...p.endpoint, account: 'other' } }) }), /identity/);
+  const revoked = policy({ generation: 2, enabled: false });
+  const applied = owner.applyConnectionIntent({ expectedPolicySha256: hash, policy: revoked });
+  assert.equal(applied.state, 'applied');
+  assert.throws(() => owner.applyConnectionIntent({ expectedPolicySha256: hash, policy: policy({ generation: 3 }) }), /predecessor/);
+  assert.equal((await owner.restoreConnection('lux', () => {})).state, 'refused');
+  assert.equal(f.registry.currentGrant('endpoint'), undefined);
+  const row = f.store.transaction(tx => tx.get('SELECT * FROM tool_connections'))!;
+  assert.equal(row.policy_sha256, applied.sha256);
+  const raw = new DatabaseSync(join(f.dir, 'writer.sqlite'));
+  raw.exec('DROP TRIGGER tool_connections_update_guard');
+  raw.prepare('UPDATE tool_connections SET policy_sha256=?').run('0'.repeat(64)); raw.close();
+  assert.throws(() => owner.applyConnectionIntent({ expectedPolicySha256: applied.sha256, policy: revoked }), /corrupt/);
+});
+test('standing consent restores same generation after transient and changed-to-original catalog, not after revoke', async t => {
+  const f = await fixture(t); const owner = standingOwner(f.owner);
+  f.registry.suspend('endpoint');
+  assert.deepEqual(await owner.restoreConnection('lux', () => {}), { state: 'restored' });
+  assert.equal(f.registry.currentGrant('endpoint')?.generation, 1);
+  const original = tools[0]!.description;
+  tools[0]!.description = 'changed synthetic schema';
+  try {
+    assert.equal((await owner.restoreConnection('lux', () => {})).state, 'refused');
+    assert.equal(f.registry.currentGrant('endpoint'), undefined);
+  } finally { if (original === undefined) delete tools[0]!.description; else tools[0]!.description = original; }
+  assert.deepEqual(await owner.restoreConnection('lux', () => {}), { state: 'restored' });
+  f.registry.revoke('endpoint');
+  assert.equal((await owner.restoreConnection('lux', () => {})).state, 'refused');
+  f.owner.applyConnection(policy({ generation: 2 }));
+  assert.deepEqual(await owner.restoreConnection('lux', () => {}), { state: 'restored' });
+});
+test('restoration rereads durable revoke after discovery await; synchronous guard revoke also wins', async t => {
+  const f = await fixture(t); const owner = standingOwner(f.owner);
+  let enter!: () => void; let release!: () => void;
+  const started = new Promise<void>(resolve => { enter = resolve; }); const gate = new Promise<void>(resolve => { release = resolve; });
+  const discover = f.port.discover.bind(f.port);
+  t.mock.method(f.port, 'discover', async (id: string) => { enter(); await gate; return discover(id); });
+  const pending = owner.restoreConnection('lux', () => {}); await started;
+  f.owner.applyConnection(policy({ generation: 2, enabled: false })); release();
+  assert.equal((await pending).state, 'refused');
+  assert.equal(f.registry.currentGrant('endpoint'), undefined);
+  f.owner.applyConnection(policy({ generation: 3 }));
+  assert.equal((await owner.restoreConnection('lux', () => { f.owner.applyConnection(policy({ generation: 4, enabled: false })); })).state, 'refused');
+  assert.equal(f.registry.currentGrant('endpoint'), undefined);
+});
+test('restore then revoke and restart never lose revocation; old snapshot/result stays gated', async t => {
+  const f = await fixture(t); const owner = standingOwner(f.owner); f.owner.journal.intent(f.intent()); const result = await f.execute();
+  assert.equal(result.status, 'completed'); if (result.status !== 'completed') return;
+  assert.deepEqual(await owner.restoreConnection('lux', () => {}), { state: 'restored' });
+  f.owner.applyConnection(policy({ generation: 2, enabled: false }));
+  assert.equal(f.registry.visibleTools('endpoint').length, 0);
+  assert.equal((await f.owner.resultGate.authorize(f.host, [f.binding(result.result)], ['ordinary'], f.signal)).state, 'refused');
+  const reopened = standingOwner(f.reopen());
+  assert.equal((await reopened.restoreConnection('lux', () => {})).state, 'refused');
+  assert.equal(f.registry.currentGrant('endpoint'), undefined);
+});
+test('fresh owner restores durable enabled consent at the same generation but disabled before first projection refuses', async t => {
+  const f = await fixture(t); const p = policy();
+  f.registry.suspend('endpoint');
+  assert.deepEqual(await standingOwner(f.reopen()).restoreConnection('lux', () => {}), { state: 'restored' });
+  const other = await fixture(t, { policy: policy({ enabled: false }) });
+  assert.equal((await standingOwner(other.owner).restoreConnection('lux', () => {})).state, 'refused');
+  assert.equal(other.registry.currentGrant(p.endpoint.id), undefined);
+});

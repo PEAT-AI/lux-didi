@@ -3,7 +3,7 @@
 // it as `canonical.js`. Never shipped and never imported by production.
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { installRuntimeHook } from './runtime-hook.mjs';
+import { installRuntimeHook } from './fixture-host-runtime.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const canonicalURL = pathToFileURL(join(here, 'canonical.js')).href;

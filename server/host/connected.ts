@@ -16,7 +16,6 @@ export function composeChat(store: Store, domain: DomainPort, configDir: string,
   let status: ConnectedStatus = ready ? { status: 'configured', provider: 'gemini', model: ready.profile.modelId }
     : loaded.status === 'disabled' ? { status: 'disabled', provider: 'gemini', model: loaded.profile.modelId }
     : loaded.status === 'error' ? { status: 'error', code: loaded.code } : { status: 'unconfigured' };
-  if (ownerProfile) status = { ...status, displayName: ownerProfile.displayName };
   let model: GeminiAdapter | null = null;
   if (ready) {
     try { model = new GeminiAdapter({ modelId: ready.profile.modelId, keyReference: ready.profile.keyReference,
@@ -24,6 +23,7 @@ export function composeChat(store: Store, domain: DomainPort, configDir: string,
     catch { ready = null; status = { status: 'error', code: 'ADAPTER_CONFIGURATION_INVALID' }; }
   }
   const route = ready?.route;
+  if (ownerProfile?.kind === 'profile') status = { ...status, displayName: ownerProfile.displayName };
   const chat = new ChatService({
     ...(ownerProfile ? { ownerProfile } : {}), store, domain, model,
     route: { provider: 'gemini', model: ready?.profile.modelId ?? '', available: !!ready,

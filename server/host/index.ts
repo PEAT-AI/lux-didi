@@ -50,6 +50,6 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     } else console.log(`Didi host ${host.descriptor.origin}; local memory/commitments available; model/notifications unavailable`);
   } catch (error) { supervision?.dispose(); throw error; }
 }
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (import.meta.main) {
   void main().catch(error => { console.error(error instanceof Error ? error.message : 'Host startup failed'); process.exitCode = 1; });
 }

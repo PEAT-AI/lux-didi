@@ -485,7 +485,7 @@ test('DIAG browser enrollment and selected tool accept reaches a real terminal r
   const { data: run } = await accepted.json() as { data: RunSnapshot };
   assert.ok(run.toolBindingHash, 'HTTP selection freezes a real owner binding');
   // Observe the real Chat subscription through authenticated HTTP, not an accepted snapshot.
-  const stream = await fetch(`${service.origin}/api/v1/chat/${run.runId}/events`, { headers });
+  const stream = await fetch(`${service.origin}/api/v1/chat/${run.runId}/events`, { method: 'POST', headers, body: '{}' });
   assert.equal(stream.status, 200); assert.ok(stream.body);
   const reader = stream.body.getReader(); const decoder = new TextDecoder(); let pending = ''; let final: RunSnapshot | null = null;
   try {

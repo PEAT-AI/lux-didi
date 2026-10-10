@@ -1,3 +1,4 @@
+import {createHash} from 'node:crypto';
 import {chromium} from 'playwright';
 import assert from 'node:assert/strict';
 import {mkdir,writeFile} from 'node:fs/promises';
@@ -62,6 +63,8 @@ try {
     for(const width of [1440,390])for(const dpr of [1,2]){
       const proofContext=await browser.newContext({viewport:{width,height:1000},deviceScaleFactor:dpr,
         ...(width===1440&&dpr===1?{recordVideo:{dir:join(artifacts,'orb-animation'),size:{width:1440,height:1000}}}:{})});
+      const record={viewportWidth:width,dpr,status:'running',traceAttempts:0,failedTraceAttempts:0,samples:[]};measurements.push(record);
+      try {
       const proofPage=await proofContext.newPage();
       await proofPage.goto(fixture.url);
       await proofPage.locator('#didi-orb').waitFor();
@@ -73,6 +76,9 @@ try {
       assert(Math.abs(layout.rect.width-layout.rect.height)<1,'full square logical field must display without aspect distortion');
       assert(layout.rect.width>0&&layout.rect.width<=width,'visible canvas framing');
       assert(layout.scrollWidth<=width,'orb geometry must not introduce horizontal clipping/scroll');
+      const assetURLs=await proofPage.evaluate(()=>[...Array.from(document.scripts,s=>s.src),...Array.from(document.querySelectorAll('link[rel=stylesheet]'),l=>l.href)].filter(Boolean));
+      const appAssets=[];
+      for(const url of assetURLs){const response=await proofPage.request.get(url);assert(response.ok());const bytes=await response.body();appAssets.push({path:new URL(url).pathname,sha256:createHash('sha256').update(bytes).digest('hex'),bytes:bytes.length});}
       await proofPage.screenshot({path:join(artifacts,`orb-layout-${width}-dpr${dpr}.png`),fullPage:true});
       await proofPage.goto(`${fixture.url}/orb-proof/`);
       await proofPage.waitForFunction(()=>globalThis.orbProof?.measure().steps>=25);
@@ -81,9 +87,10 @@ try {
       assert(gpu&&!/swiftshader|llvmpipe|software/i.test(gpu.renderer),'hardware GPU identity required');
       await proofPage.screenshot({path:join(artifacts,`orb-animated-side-by-side-${width}-dpr${dpr}.png`),fullPage:true});
       await proofPage.evaluate(()=>globalThis.orbProof.pause());
-      const samples=[];
+      const samples=record.samples;
       for(const state of ['IDLE','DISCONNECTED','LISTENING','SPEAKING','PROCESSING','CONNECTING','CONNECTED','RECONNECTING','ERROR']){
         for(const audible of [false,true])for(let frame=0;frame<4;frame++){
+          record.traceAttempts++;
           const sample=await proofPage.evaluate(({state,audible})=>{
             globalThis.orbProof.set({state,audible,microphoneLevel:state==='LISTENING'?.45:0,audio:audible?{level:.6,low:.7,mid:.4,high:.2,flux:.9}:{level:0,low:0,mid:0,high:0,flux:0}});
             return globalThis.orbProof.step(1/30);
@@ -95,11 +102,11 @@ try {
         }
       }
       await proofPage.screenshot({path:join(artifacts,`orb-measured-side-by-side-${width}-dpr${dpr}.png`),fullPage:true});
-      measurements.push({viewportWidth:width,dpr,layout,gpu,metadata,sampleCount:samples.length,samples,
+      Object.assign(record,{status:'pass',layout,gpu,metadata,appAssets,sampleCount:samples.length,
         judgment:'Measured only. Noise differences reported against original self-variation; no invented tolerance, pixel-identity or visual-equivalence claim. Original chat host/entrance is not this isolated adapter.'});
-      await proofContext.close();
+      }catch(error){record.status='failed';record.failedTraceAttempts=record.traceAttempts-record.samples.length;record.error=String(error.message);throw error;}
+      finally {await proofContext.close();await writeFile(join(artifacts,'orb-reference-measurements.json'),JSON.stringify(measurements,null,2));}
     }
-    await writeFile(join(artifacts,'orb-reference-measurements.json'),JSON.stringify(measurements,null,2));
   });
   await step('failed local save preserves draft; capture never dispatches a model',async()=>{
     const requestStart=fixture.requests.length;
@@ -182,7 +189,13 @@ try {
   await step('locally authored install shell and logout revoke cookie',async()=>{
     const manifest=await (await page.request.get(fixture.url+'/manifest.webmanifest')).json();assert.equal(manifest.display,'standalone');assert.equal(manifest.icons[0].src,'/icon.svg');
     assert.match(await (await page.request.get(fixture.url+'/icon.svg')).text(),/<svg/);
+    const retained=await page.locator('#didi-orb').elementHandle();
     await page.getByRole('button',{name:'Settings',exact:true}).click();await page.getByRole('button',{name:'Unpair this browser',exact:true}).click();
+    await page.waitForFunction(()=>document.querySelector('#didi-orb')?.dataset.state==='DISCONNECTED');
+    assert(await retained.evaluate(c=>c.isConnected&&c===document.querySelector('#didi-orb')),'auth disconnect retains mounted Orb, not stale ownership or detached canvas');
+    assert.equal(await page.locator('#didi-orb').getAttribute('data-posture'),'quiet');
+    assert.equal(await page.locator('#didi-orb').getAttribute('data-disabled'),'true');
+    await retained.dispose();
     await page.getByLabel('One-time pairing code').waitFor();assert.equal((await context.cookies()).length,0);
   });
   for(const request of fixture.requests.filter(r=>r.method!=='GET'&&!r.path.endsWith('/auth/pair'))){assert(request.headers['idempotency-key']);assert.equal(request.headers['x-didi-csrf'],'synthetic-csrf');assert.equal(request.headers['x-didi-authority-epoch'],'synthetic-authority-1');}

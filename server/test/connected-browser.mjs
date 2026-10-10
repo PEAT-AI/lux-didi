@@ -152,6 +152,7 @@ try {
     assert.deepEqual((await api('/status')).ownerProfile, { status: 'default', displayName: 'Lux Didi' });
     await page.getByRole('heading', { name: 'Talk with Lux Didi', exact: true }).waitFor();
   });
+  const productTitle = await page.title();
   for (const mode of ['owner-unconfigured', 'owner-configured']) {
     await step(`${mode}: independent safe owner label on the actual host and GPU browser`, async () => {
       await stop(); await context.close();
@@ -181,7 +182,7 @@ try {
         assert.equal('displayName' in status.model, false); assert.equal('displayName' in route, false);
         const heading = page.getByRole('heading', { name: `Talk with ${label}`, exact: true });
         await heading.waitFor(); assert.equal(await heading.evaluate(node => node.childElementCount), 0);
-        assert.match(await page.title(), /Lux Didi/);
+        assert.equal(await page.title(), productTitle, 'owner label must not rename the public product');
         assert.equal(await page.locator('#connected-consent').isDisabled(), !configured);
         const profilePath = join(ownerState, 'owner-profile.json');
         const serialized = await readFile(profilePath, 'utf8'), owner = JSON.parse(serialized);

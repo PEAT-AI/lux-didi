@@ -34,7 +34,8 @@
     "dist/adapters/mcp",
     "dist/connectors",
     "adapters/mcp/SDK-LICENSE.txt",
-    "dist/adapters/live-voice"
+    "dist/adapters/live-voice",
+    "dist/live"
   ],
   "dependencies": {
     "@modelcontextprotocol/client": "2.3.1",

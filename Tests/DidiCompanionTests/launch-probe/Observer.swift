@@ -21,7 +21,7 @@ import AppKit
     var failureIdentity: [String: Any] = [:]
     var released = false
     var settled = false
-    var bundle: String { URL(fileURLWithPath: args[1]).resolvingSymlinksInPath().standardizedFileURL.path }
+    var bundle: String { physicalPath(args[1]) }
     var root: String { args[2] }
     var nonce: String { args[3] }
     func start() {
@@ -44,7 +44,7 @@ import AppKit
         NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: bundle), configuration: configuration) { app, error in
             Task { @MainActor in
                 guard !self.settled else { return }
-                guard error == nil, let app, app.bundleURL?.resolvingSymlinksInPath().standardizedFileURL.path == self.bundle else { self.fail("own launch identity"); return }
+                guard error == nil, let app, app.bundleURL.map({ physicalPath($0.path) }) == self.bundle else { self.fail("own launch identity"); return }
                 self.target = app
                 do {
                     let (facts, record) = try identity(app.processIdentifier, nonce: self.nonce, bundle: self.bundle)

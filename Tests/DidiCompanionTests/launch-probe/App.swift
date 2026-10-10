@@ -36,7 +36,7 @@ import AppKit
             deadline?.schedule(deadline: .now() + 8)
             deadline?.setEventHandler { exit(124) }
             deadline?.resume()
-            let (_, record) = try identity(getpid(), nonce: nonce, bundle: Bundle.main.bundleURL.resolvingSymlinksInPath().standardizedFileURL.path)
+            let (_, record) = try identity(getpid(), nonce: nonce, bundle: physicalPath(Bundle.main.bundleURL.path))
             // Identity only: the external kernel observer alone supplies exit status.
             try atomic(record, to: root + "/identity.json")
         } catch { fputs("probe app identity failure\n", stderr); exit(125) }

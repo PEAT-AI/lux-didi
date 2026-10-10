@@ -47,6 +47,15 @@ try {
     await page.emulateMedia({reducedMotion:'no-preference'});
     await page.waitForFunction(()=>document.querySelector('#didi-orb').dataset.motion==='animated');
   });
+  await step('unrelated UI render retains the live canvas and temporal renderer',async()=>{
+    const original=await page.locator('#didi-orb').elementHandle();
+    const before=await original.evaluate(el=>el.didiFrameStats());
+    await page.getByRole('button',{name:'Today',exact:true}).click();
+    assert(await original.evaluate(el=>el.isConnected&&el===document.querySelector('#didi-orb')),'ordinary render must retain the exact live canvas');
+    const after=await original.evaluate(el=>el.didiFrameStats());
+    assert(after.frameTime>=before.frameTime,'ordinary render must not restart temporal state');
+    await original.dispose();
+  });
   await step('failed local save preserves draft; capture never dispatches a model',async()=>{
     const requestStart=fixture.requests.length;
     await page.getByLabel('Local note · not sent to a model').fill('Remember the synthetic blue notebook'); fixture.failNextEntry();

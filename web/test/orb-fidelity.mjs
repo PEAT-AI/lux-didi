@@ -8,10 +8,10 @@ import ts from 'typescript';
 const require = createRequire(import.meta.url);
 const fixture = JSON.parse(readFileSync(new URL('./fixtures/orb-reference.json', import.meta.url)));
 const commonNoise = (x,y) => Math.sin(x * 1.7 + y * 0.3) * Math.cos(y * 0.9) * 0.5;
-function compile(source, filename, local = {}) {
+function compile(source, filename, local = {}, globals = {}) {
   const js = ts.transpileModule(source, {compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
   const module = {exports:{}};
-  vm.runInNewContext(js, {module,exports:module.exports,require:name=>local[name] ?? require(name), Math, Sentry:{addBreadcrumb(){}}, performance}, {filename});
+  vm.runInNewContext(js, {module,exports:module.exports,require:name=>local[name] ?? require(name), Math, Sentry:{addBreadcrumb(){}}, performance, ...globals}, {filename});
   return module.exports;
 }
 const classic = compile(readFileSync(new URL('../src/orb-classic.ts', import.meta.url),'utf8'), 'orb-classic.ts');
@@ -52,10 +52,20 @@ export class Reference {
   ${fixture.classic}
 }`, 'pinned-vicuna-classic.ts').Reference;
 function recordingContext() {
-  const calls=[];
-  const gradient = () => ({addColorStop:(...args)=>calls.push(['addColorStop',...args])});
-  const ctx=new Proxy({}, {set(target,key,value){calls.push(['set',key,value]);target[key]=value;return true;},
-    get(target,key){if(key in target)return target[key];return (...args)=>{calls.push([key,...args]);if(String(key).startsWith('create'))return gradient();};}});
+  const calls=[], gradients=new Map(); let nextGradient=0;
+  const operand=value=>{
+    if(typeof value==='number')assert(Number.isFinite(value),'nonfinite canvas operand');
+    return gradients.has(value)?{gradient:gradients.get(value)}:value;
+  };
+  const ctx=new Proxy({}, {set(target,key,value){calls.push(['set',key,operand(value)]);target[key]=value;return true;},
+    get(target,key){if(key in target)return target[key];return (...args)=>{
+      const operands=args.map(operand);
+      if(String(key).startsWith('create')){
+        const id=nextGradient++, gradient={addColorStop:(...stops)=>calls.push(['addColorStop',id,...stops.map(operand)])};
+        gradients.set(gradient,id);calls.push([key,...operands,{gradient:id}]);return gradient;
+      }
+      calls.push([key,...operands]);
+    };}});
   return {ctx,calls};
 }
 const silence={level:0,low:0,mid:0,high:0,flux:0};
@@ -101,4 +111,56 @@ test('complete geometry and canvas calls match original methods under common inj
     actual.calls.length=0; renderer.draw(frame);
     assert.deepEqual(plain(actual.calls),plain(expected.calls),'same frame does not advance painter clocks');
   }
+});
+
+test('recorder discriminates wrong existing gradient assignments and rejects nonfinite operands',()=>{
+  const a=recordingContext(),b=recordingContext();
+  const gradients=ctx=>[ctx.createRadialGradient(0,0,0,0,0,1),ctx.createRadialGradient(0,0,0,0,0,2)];
+  const aa=gradients(a.ctx),bb=gradients(b.ctx);
+  a.ctx.fillStyle=aa[0];b.ctx.fillStyle=bb[1];
+  assert.notDeepEqual(plain(a.calls),plain(b.calls),'wrong already-created gradient must remain distinguishable');
+  assert.throws(()=>a.ctx.arc(NaN,0,1,0,1),/nonfinite/);
+  assert.throws(()=>a.ctx.lineWidth=Infinity,/nonfinite/);
+});
+
+function lifecycle(state='CONNECTED') {
+  let now=0,nextId=0;const raf=new Map(),listeners=new Map(),motionListeners=new Set();
+  const document={hidden:false,addEventListener:(name,fn)=>listeners.set(name,fn),removeEventListener:(name,fn)=>{if(listeners.get(name)===fn)listeners.delete(name);}};
+  const motion={matches:false,addEventListener:(_,fn)=>motionListeners.add(fn),removeEventListener:(_,fn)=>motionListeners.delete(fn)};
+  const observer={active:false,observe(){this.active=true;},disconnect(){this.active=false;}};
+  const record=recordingContext(),canvas={dataset:{},clientWidth:600,width:600,height:600,getContext:()=>record.ctx};
+  const globals={performance:{now:()=>now},document,devicePixelRatio:2,matchMedia:query=>query.includes('prefers-reduced')?motion:{matches:false},
+    ResizeObserver:function(){return observer;},requestAnimationFrame:fn=>{const id=++nextId;raf.set(id,fn);return id;},cancelAnimationFrame:id=>raf.delete(id)};
+  const module=compile(readFileSync(new URL('../src/orb.ts',import.meta.url),'utf8'),'orb.ts',{'./orb-classic':classic,'./orb-frame':frameModule},globals);
+  const orb=new module.Orb(canvas,state);
+  return {orb,canvas,record,raf,listeners,motionListeners,observer,document,motion,
+    advance(time){now=time;const current=[...raf.values()];raf.clear();for(const fn of current)fn(time);},
+    visibility(hidden){document.hidden=hidden;listeners.get('visibilitychange')?.();},
+    reduce(){motion.matches=true;for(const fn of motionListeners)fn();}};
+}
+
+test('lifecycle drift scheduler honors source high-tier 60fps without half-refresh cadence loss',()=>{
+  const h=lifecycle('SPEAKING'),before=h.canvas.didiFrameStats().frames;
+  for(let i=1;i<=120;i++)h.advance(i*1000/120);
+  const frames=h.canvas.didiFrameStats().frames-before;
+  assert(frames>=59&&frames<=61,`high-tier 60fps over 1s / 120 refresh attempts: ${frames} paints`);
+  h.orb.destroy();
+});
+
+test('hidden stops all painting; resume delta is bounded; reduced motion is static; disposal removes work',()=>{
+  const h=lifecycle();h.advance(100);const calls=h.record.calls.length;
+  h.visibility(true);assert.equal(h.record.calls.length,calls,'hidden transition must not paint');assert.equal(h.raf.size,0);
+  h.advance(60000);assert.equal(h.record.calls.length,calls);
+  h.visibility(false);h.advance(60016);h.advance(60100);
+  const stats=h.canvas.didiFrameStats();assert(stats.lastDelta<=.1,`resume delta ${stats.lastDelta}`);
+  h.reduce();const still=h.record.calls.length;h.advance(60200);assert.equal(h.record.calls.length,still);assert.equal(h.raf.size,0);
+  h.orb.destroy();assert.equal(h.raf.size,0);assert.equal(h.listeners.size,0);assert.equal(h.motionListeners.size,0);assert.equal(h.observer.active,false);
+  const disposed=h.record.calls.length;h.advance(70000);assert.equal(h.record.calls.length,disposed);
+});
+
+test('disconnect clears live input; stale audio is silent without manufacturing a voice path',()=>{
+  const h=lifecycle('SPEAKING');h.orb.audio.push({...voice,timestamp:0});
+  assert.equal(h.orb.audio.read(501).level,0,'500ms stale input');
+  h.orb.setState('DISCONNECTED');assert.equal(h.orb.audio.read(100).level,0,'disconnect must clear even nonstale frames');
+  h.orb.destroy();
 });

@@ -32,8 +32,11 @@ import Darwin
             try fm.createDirectory(at: resources.appendingPathComponent("web/dist"), withIntermediateDirectories: true)
             // The verification launch runs with cwd /, so resolve the fixture from
             // the source root the producer publishes rather than the process cwd.
-            let sourceRoot = URL(fileURLWithPath: ProcessInfo.processInfo.environment["LUX_COMPANION_SOURCE_ROOT"] ?? ".")
-            let fixtureJS = sourceRoot.appendingPathComponent("Tests/DidiCompanionTests/supervised-fixture.js")
+            // A missing root is a clear verification failure, not a silent fallback.
+            guard let sourceRoot = ProcessInfo.processInfo.environment["LUX_COMPANION_SOURCE_ROOT"], !sourceRoot.isEmpty else {
+                throw NSError(domain: "LifecycleProof: producer must publish LUX_COMPANION_SOURCE_ROOT", code: 1)
+            }
+            let fixtureJS = URL(fileURLWithPath: sourceRoot).appendingPathComponent("Tests/DidiCompanionTests/supervised-fixture.js")
             try Data(contentsOf: fixtureJS).write(to: server.appendingPathComponent("index.js"))
             try Data(mode.utf8).write(to: server.appendingPathComponent("mode"))
             var manifest: [String: Any] = ["schemaVersion": 1, "installId": id, "releaseCommit": String(repeating: "a", count: 40), "nodePath": node, "nodeMajor": 26, "serverEntry": "server/dist/host/index.js", "webRoot": "web/dist"]

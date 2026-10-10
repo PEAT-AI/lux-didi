@@ -226,7 +226,8 @@ test('two simultaneous attaches open at most one provider, and revoke is isolate
     attempt(h.origin, `/api/v1/live-sessions/${id}/audio`, bearer(h)),
   ]);
   assert.ok(results.every(status => status === 101 || status === 409), `unexpected statuses ${results}`);
-  assert.equal(h.f.connections, 1, 'two simultaneous attaches open at most one provider');
+  await waitFor(() => h.f.attempts >= 1, 2000);
+  assert.equal(h.f.attempts, 1, 'two simultaneous attaches open at most one provider');
 
   const a = await createBody(h, 'rev-a');
   const b = await createBody(h, 'rev-b');
@@ -238,8 +239,8 @@ test('two simultaneous attaches open at most one provider, and revoke is isolate
   assert.equal(snapA.body.data.terminal.state, 'revoked');
   const snapB = await json(h.origin, `/api/v1/live-sessions/${idB}`, { headers: bearer(h) });
   assert.equal(snapB.body.data.lifecycle, 'accepted', 'revoke leaves other sessions unaffected');
-  const before = h.f.connections;
+  const before = h.f.attempts;
   assert.equal(await attempt(h.origin, `/api/v1/live-sessions/${idA}/audio`, bearer(h)), 101);
   await new Promise(resolve => setTimeout(resolve, 50));
-  assert.equal(h.f.connections, before, 'a revoked grant opens no provider');
+  assert.equal(h.f.attempts, before, 'a revoked grant opens no provider');
 });

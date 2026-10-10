@@ -1,3 +1,4 @@
+import { PROMPT_VERSION } from '../prompt/index.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { TestContext } from 'node:test';
@@ -400,7 +401,7 @@ test('live migrations preserve a populated accepted Store byte-for-byte', async 
   }));
   assert.deepEqual(current, prior, 'accepted CHAT and Domain rows stay meaningful');
   const owners = migrated.transaction(tx => tx.all('SELECT owner, MAX(version) AS version FROM runtime_migrations GROUP BY owner ORDER BY owner'));
-  assert.deepEqual(owners.map(row => [String(row['owner']), Number(row['version'])]), [['chat', 3], ['domain', 3], ['live', 1]]);
+  assert.deepEqual(owners.map(row => [String(row['owner']), Number(row['version'])]), [['chat', 4], ['domain', 3], ['live', 2]]);
 });
 
 test('a failed store write aborts visibly and never fabricates a durable outcome', async t => {
@@ -715,4 +716,71 @@ test('trusted clock rejects fractional milliseconds and maximum timer delay stay
   max.advance(1); scheduler.runDue();
   assert.equal(max.owner.get(row.liveSessionId).terminal?.state, 'expired');
   assert.equal(scheduler.callbacks, 2);
+});
+
+test('Live persists the exact typed accepted instruction before intent and corrupt records fail before provider open', async t => {
+  const h = await harness(t);
+  let calls = 0;
+  const ownerProfile = { schemaVersion: 1, kind: 'profile', ownerId: h.store.assistantId, profileVersion: 'fixture-a', displayName: 'Example',
+    style: { text: 'SYNTHETIC A', dataClass: 'ordinary' }, lore: { text: 'SYNTHETIC lore', dataClass: 'ordinary' } };
+  const acceptedPrompt = { schemaVersion: 1, ownerProfile, compilerVersion: PROMPT_VERSION, system: 'SYNTHETIC exact accepted A', dataClasses: ['ordinary'] };
+  const owner = createLiveSessionOwner({ store: h.store,
+    profile: validateLiveProfile({ ...profileInput(), acceptedPrompt }),
+    voice: { open() { calls++; throw new Error('synthetic unavailable'); } }, now: () => NOW });
+  t.after(() => owner.shutdown());
+  const run = owner.create({ idempotencyKey: 'owner-frozen', inputClass: 'ordinary' }, h.ctx);
+  const row = h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot,dispatch_intent FROM live_sessions WHERE live_session_id=?', [run.liveSessionId]))!;
+  assert.equal(row.dispatch_intent, 0);
+  assert.deepEqual(JSON.parse(String(row.accepted_prompt_snapshot)), acceptedPrompt);
+  acceptedPrompt.system = 'SYNTHETIC B';
+  assert.equal(JSON.parse(String(h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [run.liveSessionId]))!.accepted_prompt_snapshot)).system, 'SYNTHETIC exact accepted A');
+  h.store.transaction(tx => tx.run('UPDATE live_sessions SET accepted_prompt_snapshot=? WHERE live_session_id=?', ['{"schemaVersion":999}', run.liveSessionId]));
+  assert.throws(() => owner.attach({ liveSessionId: run.liveSessionId }, h.ctx));
+  assert.equal(calls, 0);
+});
+
+
+test('private style alone and sensitive lore alone deny voice before adapter or socket creation', async t => {
+  const h = await harness(t);
+  for (const [styleClass, loreClass] of [['private', 'ordinary'], ['ordinary', 'sensitive']] as const) {
+    let calls = 0;
+    const ownerProfile = { schemaVersion: 1 as const, kind: 'profile' as const, ownerId: h.store.assistantId, profileVersion: 'fixture', displayName: 'Example',
+      style: { text: 'SYNTHETIC style', dataClass: styleClass }, lore: { text: 'SYNTHETIC lore', dataClass: loreClass } };
+    const owner = createLiveSessionOwner({ store: h.store, profile: validateLiveProfile({ ...profileInput(),
+      acceptedPrompt: { schemaVersion: 1, ownerProfile, compilerVersion: PROMPT_VERSION, system: 'SYNTHETIC instruction', dataClasses: ['ordinary', styleClass, loreClass].filter((c, i, cs) => cs.indexOf(c) === i) } }),
+      voice: { open() { calls++; throw Error('must not open'); } }, now: () => NOW });
+    assert.throws(() => owner.create({ idempotencyKey: `denied-${styleClass}-${loreClass}`, inputClass: 'ordinary' }, h.ctx));
+    assert.equal(calls, 0); await owner.shutdown();
+  }
+});
+
+test('Live emits exact accepted A setup, not a changed caller B instruction', async t => {
+  const h = await harness(t);
+  const acceptedPrompt = { schemaVersion: 1, ownerProfile: { schemaVersion: 1, kind: 'default', ownerId: h.store.assistantId, displayName: 'Lux Didi' },
+    compilerVersion: PROMPT_VERSION, system: 'SYNTHETIC exact wire A', dataClasses: ['ordinary'] };
+  const profile = validateLiveProfile({ ...profileInput(), acceptedPrompt });
+  const voice = new GeminiLiveVoiceAdapter(options({ socketFactory: h.f.socketFactory,
+    modelId: profile.liveModelId, voice: profile.voice, keyReference: profile.keyReference,
+    route: { enabled: true, provider: 'gemini', modelId: profile.liveModelId, dataClasses: profile.route.dataClasses },
+    credentials: { resolve: async () => CANARY } }));
+  const owner = createLiveSessionOwner({ store: h.store, profile, voice, now: () => NOW }); t.after(() => owner.shutdown());
+  const accepted = owner.create({ idempotencyKey: 'wire-a', inputClass: 'ordinary' }, h.ctx);
+  acceptedPrompt.system = 'SYNTHETIC current B';
+  const attachment = owner.attach({ liveSessionId: accepted.liveSessionId }, h.ctx);
+  await h.f.frame(1);
+  const frame = JSON.parse(JSON.stringify(h.f.frames[0]));
+  assert.equal(frame.setup.systemInstruction.parts[0].text, 'SYNTHETIC exact wire A');
+  attachment.close();
+});
+
+test('legacy null and unsupported accepted Live bindings refuse honestly before dispatch intent', async t => {
+  const h = await harness(t);
+  for (const snapshot of [null, JSON.stringify({ schemaVersion: 1, compilerVersion: 'unsupported', system: 'synthetic', dataClasses: ['ordinary'],
+    ownerProfile: { schemaVersion: 1, kind: 'default', ownerId: h.store.assistantId, displayName: 'Lux Didi' } })]) {
+    const accepted = h.owner.create({ idempotencyKey: `legacy-${snapshot === null}`, inputClass: 'ordinary' }, h.ctx);
+    h.store.transaction(tx => tx.run('UPDATE live_sessions SET accepted_prompt_snapshot=? WHERE live_session_id=?', [snapshot, accepted.liveSessionId]));
+    assert.throws(() => h.owner.attach({ liveSessionId: accepted.liveSessionId }, h.ctx), { code: 'invalidated' });
+    assert.equal(h.owner.get(accepted.liveSessionId).dispatchIntent, false);
+    assert.equal(h.f.frames.length, 0);
+  }
 });

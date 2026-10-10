@@ -1,3 +1,4 @@
+import type { OwnerProfileSnapshot } from '../prompt/types.js';
 import type { DomainPort } from '../contracts/domain.js';
 import type { Store } from '../runtime/store.js';
 import { ChatService } from '../chat/index.js';
@@ -9,7 +10,7 @@ export type ConnectedStatus = { status: 'unconfigured' } | { status: 'error'; co
   | { status: 'disabled' | 'configured'; provider: 'gemini'; model: string };
 /** Trusted in-process construction seam only: never accepted by CLI/HTTP/env. */
 export interface ModelTesting { credentials?: Credentials; transport?: Transport; deadlineMs?: number }
-export function composeChat(store: Store, domain: DomainPort, configDir: string, testing?: ModelTesting, now?: () => number) {
+export function composeChat(store: Store, domain: DomainPort, configDir: string, testing?: ModelTesting, now?: () => number, ownerProfile?: OwnerProfileSnapshot) {
   const loaded = loadProviderConfig({ configDir, ownerId: store.assistantId });
   let ready = loaded.status === 'ready' ? loaded : null;
   let status: ConnectedStatus = ready ? { status: 'configured', provider: 'gemini', model: ready.profile.modelId }
@@ -22,7 +23,8 @@ export function composeChat(store: Store, domain: DomainPort, configDir: string,
     catch { ready = null; status = { status: 'error', code: 'ADAPTER_CONFIGURATION_INVALID' }; }
   }
   const route = ready?.route;
-  const chat = new ChatService({ store, domain, model,
+  const chat = new ChatService({
+    ...(ownerProfile ? { ownerProfile } : {}), store, domain, model,
     route: { provider: 'gemini', model: ready?.profile.modelId ?? '', available: !!ready,
       endpoint: `https://generativelanguage.googleapis.com/v1beta/models/${ready?.profile.modelId ?? ''}:streamGenerateContent?alt=sse`, apiVersion: 'v1beta', keyReference: 'gemini-primary',
       allowedClasses: route?.dataClasses ?? [], allows: classes => !!route && classes.every(c => route.dataClasses.includes(c)) },

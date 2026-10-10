@@ -1,3 +1,5 @@
+import { publicOwnerProfile, PROMPT_VERSION } from '../prompt/index.js';
+import { validateAcceptedPrompt } from './config.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type { DataClass, LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort, LiveVoiceSession } from '../adapters/live-voice/index.js';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
@@ -7,7 +9,7 @@ import {
   LiveError,
   type CreateLiveSession, type JournalKind, type LiveAttachment, type LiveConsumerState, type LiveContext,
   type LiveFragmentPage, type LiveInvalidationReason, type LiveOutputChunk, type LiveOwnerConfig,
-  type LiveProfile, type LiveProfileProjection, type LivePublicMarker, type LiveSessionSnapshot, type LiveStorePort,
+  type AcceptedPromptSnapshot, type LiveProfile, type LiveProfileProjection, type LivePublicMarker, type LiveSessionSnapshot, type LiveStorePort,
   type LiveTerminalOutcome,
 } from './types.js';
 
@@ -174,9 +176,15 @@ export class LiveSessionOwner {
       }
       if (context.authorityEpoch !== this.#store.authorityEpoch) throw new LiveError('stale_authority');
       if (!classes.includes(input.inputClass) || !this.#profile.route.dataClasses.includes(input.inputClass)) throw new LiveError('invalid_request');
+      const acceptedPrompt = validateAcceptedPrompt(this.#profile.acceptedPrompt ?? {
+        schemaVersion: 1, ownerProfile: publicOwnerProfile(assistantId), compilerVersion: PROMPT_VERSION,
+        system: this.#profile.prompt.text, dataClasses: [this.#profile.prompt.dataClass],
+      }, assistantId);
+      if (acceptedPrompt.dataClasses.some(c => !this.#profile.route.dataClasses.includes(c))) throw new LiveError('invalid_request');
       const liveSessionId = randomUUID();
       tx.run('INSERT INTO live_sessions(live_session_id, owner_assistant_id, authority_epoch, idempotency_key, fingerprint, client_id, audit_id, profile_identity, prompt_identity, lifecycle, dispatch_intent, ready, journal_events, journal_bytes, journal_complete, consumer_state, terminal_outcome, terminal_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,0,0,0,0,0,?,NULL,NULL,?,?)',
         [liveSessionId, assistantId, context.authorityEpoch, input.idempotencyKey, fingerprint, context.clientId, context.auditId, this.#profileIdentity, this.#promptIdentity, 'accepted', 'detached', now, now]);
+      tx.run('UPDATE live_sessions SET accepted_prompt_snapshot=? WHERE live_session_id=?', [JSON.stringify(acceptedPrompt), liveSessionId]);
       tx.run('INSERT INTO live_grants(grant_id, live_session_id, provider, model, voice, key_reference, permitted_classes, chosen_input_class, revision, granted_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
         [randomUUID(), liveSessionId, 'gemini', this.#profile.liveModelId, this.#profile.voice, this.#profile.keyReference,
           JSON.stringify(this.#profile.route.dataClasses), input.inputClass, this.#revision, now]);
@@ -228,13 +236,20 @@ export class LiveSessionOwner {
       if (String(row['lifecycle']) === 'terminal') throw new LiveError('terminal');
       if (String(row['lifecycle']) !== 'accepted') throw new LiveError('already_attached');
       if (this.#expireInTx(tx, row, now) !== row) return 'expired' as const;
+      let acceptedPrompt: AcceptedPromptSnapshot;
+      // Null is a pre-v2 legacy record. Refuse honestly rather than recompile private current state.
+      try { acceptedPrompt = validateAcceptedPrompt(JSON.parse(String(row['accepted_prompt_snapshot'])), this.#store.assistantId); }
+      catch { throw new LiveError('invalidated'); }
+      const grantClasses = tx.get('SELECT permitted_classes FROM live_grants WHERE live_session_id=?', [input.liveSessionId]);
+      const permitted: DataClass[] = JSON.parse(String(grantClasses?.['permitted_classes']));
+      if (acceptedPrompt.dataClasses.some(c => !permitted.includes(c) || !this.#profile.route.dataClasses.includes(c))) throw new LiveError('invalidated');
       tx.run("UPDATE live_sessions SET lifecycle='opening', dispatch_intent=1, consumer_state='attached', updated_at=? WHERE live_session_id=?", [now, input.liveSessionId]);
       const grant = tx.get('SELECT chosen_input_class FROM live_grants WHERE live_session_id=?', [input.liveSessionId])!;
-      return String(grant['chosen_input_class']) as DataClass;
+      return { inputClass: String(grant['chosen_input_class']) as DataClass, acceptedPrompt };
     });
     this.#armExpiry();
     if (prepared === 'expired') throw new LiveError('expired');
-    return this.#open(input.liveSessionId, prepared, revision);
+    return this.#open(input.liveSessionId, prepared.inputClass, revision, prepared.acceptedPrompt);
   }
 
   /** Explicit host entry point: synchronous in-memory invalidation and adapter abort. */
@@ -283,9 +298,10 @@ export class LiveSessionOwner {
     for (const handle of handles) handle.resolveDone();
   }
 
-  #open(liveSessionId: string, inputClass: DataClass, revision: number): LiveAttachment {
+  #open(liveSessionId: string, inputClass: DataClass, revision: number, acceptedPrompt: AcceptedPromptSnapshot): LiveAttachment {
     const abort = new AbortController();
-    const request = { system: { text: this.#profile.prompt.text, dataClass: this.#profile.prompt.dataClass }, history: [], dataClasses: [inputClass] };
+    const dataClasses = classes.filter(c => c === inputClass || acceptedPrompt.dataClasses.includes(c));
+    const request = { system: { text: acceptedPrompt.system, dataClass: dataClasses[dataClasses.length - 1]! }, history: [], dataClasses };
     let session: LiveVoiceSession;
     try {
       // Absolute wall clock for the adapter; the injected clock is the owner's own durable order.

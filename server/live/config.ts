@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { DataClass } from '../adapters/live-voice/index.js';
-import { LiveConfigError, type LiveLimits, type LiveProfile } from './types.js';
+import { ownerProfileClasses, PROMPT_VERSION, validateOwnerProfile } from '../prompt/index.js';
+import { LiveConfigError, type AcceptedPromptSnapshot, type LiveLimits, type LiveProfile } from './types.js';
 
 const classes: readonly DataClass[] = ['ordinary', 'private', 'sensitive'];
 const modelPattern = /^models\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
@@ -49,6 +50,22 @@ function classList(value: unknown): DataClass[] {
 }
 
 /** Trusted typed in-process validation. No file loader, no environment convention. */
+/** Closed accepted wire record; unsupported, corrupt or under-classified records fail closed. */
+export function validateAcceptedPrompt(input: unknown, ownerId?: string): AcceptedPromptSnapshot {
+  if (!object(input) || Object.keys(input).length !== 5
+    || Object.keys(input).some(k => !['schemaVersion','ownerProfile','compilerVersion','system','dataClasses'].includes(k))
+    || input['schemaVersion'] !== 1 || input['compilerVersion'] !== PROMPT_VERSION) fail('invalid_prompt');
+  try {
+    const raw = input['ownerProfile'];
+    if (!object(raw) || typeof raw['ownerId'] !== 'string') fail('invalid_prompt');
+    const ownerProfile = validateOwnerProfile(raw, ownerId ?? raw['ownerId']);
+    const dataClasses = classList(input['dataClasses']);
+    if (ownerProfileClasses(ownerProfile).some(c => !dataClasses.includes(c))) fail('invalid_prompt');
+    return Object.freeze({ schemaVersion: 1, ownerProfile, compilerVersion: PROMPT_VERSION,
+      system: text(input['system'], 'invalid_prompt'), dataClasses: Object.freeze(dataClasses) });
+  } catch { fail('invalid_prompt'); }
+}
+
 export function validateLiveProfile(input: unknown): LiveProfile {
   if (!object(input)) fail('invalid_object');
   if (input['provider'] !== 'gemini') fail('invalid_provider');
@@ -65,6 +82,7 @@ export function validateLiveProfile(input: unknown): LiveProfile {
   if (!classes.includes(prompt['dataClass'] as DataClass) || !dataClasses.includes(prompt['dataClass'] as DataClass)) fail('invalid_prompt');
   const dataClass = prompt['dataClass'] as DataClass;
   return Object.freeze({
+    ...(input['acceptedPrompt'] !== undefined ? { acceptedPrompt: validateAcceptedPrompt(input['acceptedPrompt']) } : {}),
     provider: 'gemini', liveModelId, voice, keyReference,
     route: Object.freeze({ enabled: true, provider: 'gemini', modelId: liveModelId, dataClasses }),
     prompt: Object.freeze({ text: promptText, dataClass }), limits: limits(input['limits']),

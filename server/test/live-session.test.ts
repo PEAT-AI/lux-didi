@@ -505,7 +505,7 @@ test('accepted unused observations and same-key replay expire without attach, st
   for (const row of [read, replay, fragments]) {
     assert.equal(h.owner.get(row.liveSessionId).terminal?.state, 'expired');
     assert.equal(h.owner.listFragments({ liveSessionId: row.liveSessionId }).fragments.length, 1);
-    await assert.rejects(h.owner.attach(row.liveSessionId, h.ctx), { code: 'terminal' });
+    assert.throws(() => h.owner.attach({ liveSessionId: row.liveSessionId }, h.ctx), { code: 'terminal' });
   }
   assert.equal(resolutions, 0);
   assert.equal(h.f.attempts, 0);
@@ -672,7 +672,7 @@ test('attach wins before deadline including opening, and expiry wins after it wi
     assert.equal(h.owner.get(row.liveSessionId).lifecycle, 'opening');
     return original.apply(this, args);
   });
-  const attachment = await h.owner.attach(row.liveSessionId, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: row.liveSessionId }, h.ctx);
   assert.equal(h.owner.get(row.liveSessionId).lifecycle, 'active');
   await h.f.connected;
   h.f.send({ setupComplete: {} });
@@ -683,7 +683,7 @@ test('attach wins before deadline including opening, and expiry wins after it wi
   t.mock.restoreAll();
   const past = h.owner.create({ idempotencyKey: 'deadline-attach-late', inputClass: 'ordinary' }, h.ctx);
   h.advance(21);
-  await assert.rejects(h.owner.attach(past.liveSessionId, h.ctx), { code: 'expired' });
+  assert.throws(() => h.owner.attach({ liveSessionId: past.liveSessionId }, h.ctx), { code: 'expired' });
   assert.equal(h.f.attempts, 1);
   await h.owner.shutdown();
   assert.equal(scheduler.pending.size, 0);

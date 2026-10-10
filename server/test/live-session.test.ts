@@ -94,6 +94,8 @@ async function waitTerminal(h: Harness, liveSessionId: string): Promise<LiveSess
 test('many-turn journal preserves provider order, late input, and an interrupted turn without generationComplete', async t => {
   const h = await harness(t);
   const { session, attachment } = await attached(h);
+  // Ordered output consumer: committed markers must not accumulate and trip unified backpressure.
+  void (async () => { for await (const chunk of attachment.output) { void chunk; } })();
   const turns = 140;
   for (let i = 0; i < turns; i++) {
     h.f.send({ serverContent: { outputTranscription: { text: `out-${i}`, finished: true }, generationComplete: true, turnComplete: true } });

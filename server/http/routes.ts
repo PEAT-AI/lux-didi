@@ -37,9 +37,11 @@ export function resolveRoute(method: string, url: URL, body?: Record<string, unk
   if (path === '/api/v1/live/status') { matched(['GET']); query(url, []); return { kind: 'live', action: 'status', id: null, input: {}, mutation: false }; }
   if (path === '/api/v1/live-sessions') {
     matched(['POST']); query(url, []);
-    const input = object(body ?? {});
-    fields(input, ['inputClass'], ['inputClass']);
-    if (!['ordinary', 'private', 'sensitive'].includes(String(input['inputClass']))) bad('Invalid inputClass');
+    const input = body ? object(body) : {};
+    if (body) {
+      fields(input, ['inputClass'], ['inputClass']);
+      if (!['ordinary', 'private', 'sensitive'].includes(String(input['inputClass']))) bad('Invalid inputClass');
+    }
     return { kind: 'live', action: 'create', id: null, input, mutation: true };
   }
   const liveSession = /^\/api\/v1\/live-sessions\/([^/]+)(?:\/(journal|revoke|audio))?$/.exec(path);

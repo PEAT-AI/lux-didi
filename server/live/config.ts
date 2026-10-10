@@ -70,11 +70,19 @@ export function validateLiveProfile(input: unknown): LiveProfile {
   });
 }
 
-/** Canonical frozen identity of a validated profile. Shared by the owner and the config projection. */
-export function liveProfileIdentity(profile: LiveProfile): string {
+/** Canonical frozen identity from sanitized fields. Shared by the owner, config and status projection. */
+export function liveIdentityOf(input: { provider: 'gemini'; liveModelId: string; voice: string; keyReference: string; modelId: string; dataClasses: readonly DataClass[] }): string {
   return createHash('sha256').update(JSON.stringify({
-    provider: profile.provider, liveModelId: profile.liveModelId, voice: profile.voice,
-    keyReference: profile.keyReference,
-    route: { enabled: true, modelId: profile.route.modelId, dataClasses: profile.route.dataClasses },
+    provider: input.provider, liveModelId: input.liveModelId, voice: input.voice,
+    keyReference: input.keyReference,
+    route: { enabled: true, modelId: input.modelId, dataClasses: input.dataClasses },
   })).digest('hex');
+}
+
+/** Canonical frozen identity of a validated profile. */
+export function liveProfileIdentity(profile: LiveProfile): string {
+  return liveIdentityOf({
+    provider: profile.provider, liveModelId: profile.liveModelId, voice: profile.voice,
+    keyReference: profile.keyReference, modelId: profile.route.modelId, dataClasses: profile.route.dataClasses,
+  });
 }

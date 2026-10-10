@@ -57,4 +57,6 @@ export const liveMigrations: readonly SchemaMigration[] = [{
      )`,
     `CREATE INDEX live_journal_order ON live_journal(live_session_id, journal_id)`,
   ],
-}];
+}, { owner: 'live', version: 2, statements: [
+  `ALTER TABLE live_sessions ADD COLUMN accepted_prompt_snapshot TEXT`
+]}];

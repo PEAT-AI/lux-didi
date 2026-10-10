@@ -1,6 +1,6 @@
 import { ApiError, request, stream } from './api';
-import type { Entry, Session, Recall, MemorySelectionSnapshot } from './protocol';
-interface RouteStatus { status: 'unconfigured' | 'disabled' | 'error' | 'configured'; provider?: string; model?: string; code?: string }
+import type { Entry, Session, Recall, MemorySelectionSnapshot, ConnectedRouteStatus } from './protocol';
+interface RouteStatus extends ConnectedRouteStatus {}
 interface Conversation { sessionId: string; provider: string; model: string; state: 'active' | 'revoked' | 'route_changed'; revision: number; permittedClasses: string[]; latestRunId: string | null }
 interface Run { runId: string; sessionId: string; state: 'accepted' | 'dispatch_intent' | 'terminal'; outcome: string | null; finalText: string | null; partialText: string; mayHaveBeenSent: boolean; sequence: number; memorySelection: MemorySelectionSnapshot | null }
 type RecalledNote = Recall['hits'][number];
@@ -118,7 +118,7 @@ export class ConnectedView {
     if (!panel) { this.detach(); return; }
     const c = this.#conversation, r = this.#run, available = this.#status.status === 'configured';
     panel.innerHTML = `<section class="panel connected-conversation" aria-label="Connected Naya conversation">
-      <p class="eyebrow">EXPLICITLY CONNECTED · SEPARATE FROM LOCAL NOTES</p><h2>Talk with Naya</h2>
+      <p class="eyebrow">EXPLICITLY CONNECTED · SEPARATE FROM LOCAL NOTES</p><h2>Talk with ${escape(this.#status.displayName ?? 'Lux Didi')}</h2>
       <p id="connected-route" role="status">${available ? `Locally configured: ${escape(this.#status.provider)} / ${escape(this.#status.model)}. This is not a reachability check.` : `Model ${escape(this.#status.status)}${this.#status.code ? ` (${escape(this.#status.code)})` : ''}. Local notes, Today and recall still work.`}</p>
       <p class="connected-disclosure">Starting a connected conversation sends its current and earlier selected turns to <strong>${escape(this.#status.provider ?? 'the configured provider')} / ${escape(this.#status.model ?? 'no model')}</strong>. It does not send other sessions, Today, recall or tools. It sends stored local notes only when you explicitly select them for that message, under this connection's existing route and consent; no note is ever included silently and no new permission is granted. Only private conversation material and ordinary material you deliberately review here are permitted. Revocation cannot retract bytes already sent.</p>
       <label class="connected-consent"><input id="connected-consent" type="checkbox" ${this.#consent ? 'checked' : ''} ${!available ? 'disabled' : ''}> I agree to this route for a new conversation.</label>

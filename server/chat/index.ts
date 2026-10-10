@@ -3,7 +3,7 @@ import type { DomainContext, ResolvedEntry, RoutingLabelCorrection, RoutingSubje
 import type { SQLRow, Transaction } from '../contracts/storage.js';
 import { ServiceError } from '../contracts/errors.js';
 import type { DataClass, ModelResult } from '../adapters/model/types.js';
-import { PROMPT_VERSION } from '../prompt/index.js';
+import { publicOwnerProfile, validateOwnerProfile, PROMPT_VERSION } from '../prompt/index.js';
 import { assemble, classify, ContextFailure, type ContextTrace } from './context.js';
 import { Subscription } from './subscription.js';
 import { memorySelectionSnapshot, normalizeSelectedMemory, selectedEvidenceId, MAX_SERIALIZED_SELECTION_BYTES, type RunSelection } from './memorySelection.js';
@@ -39,7 +39,8 @@ export class ChatService implements ChatPort {
     if (!Number.isFinite(config.deadlineMs ?? 60000) || (config.deadlineMs ?? 60000) <= 0
       || !Number.isSafeInteger(config.subscriberCapacity ?? 16) || (config.subscriberCapacity ?? 16) < 1
       || !Number.isSafeInteger(config.maxPartialChars ?? 100000) || (config.maxPartialChars ?? 100000) < 1) throw new ChatError('invalid_input');
-    this.#config = { ...config, route: { ...config.route }, context: structuredClone(config.context) };
+    this.#config = { ...config, route: { ...config.route }, context: structuredClone(config.context),
+      ownerProfile: validateOwnerProfile(config.ownerProfile ?? publicOwnerProfile(config.store.assistantId), config.store.assistantId) };
     this.#now = config.now ?? Date.now;
   }
   #authorizeOwner(context: ChatRecoveryContext) {
@@ -263,6 +264,7 @@ export class ChatService implements ChatPort {
       tx.run(`INSERT INTO chat_runs(run_id,session_id,user_entry_id,owner_assistant_id,accepting_client_id,idempotency_key,fingerprint,authority_epoch,provider,model,prompt_version,state,retry_of,accepted_at)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,'accepted',?,?)`,
       [runId, input.sessionId, entry.id, context.assistantId, context.clientId, input.idempotencyKey, fingerprint, context.authorityEpoch, route.provider, route.model, PROMPT_VERSION, input.retryOf ?? null, ctx.now]);
+      tx.run('INSERT INTO chat_run_owner_profile VALUES (?,?,?)', [runId, 1, JSON.stringify(this.#config.ownerProfile)]);
       labels.push({ kind: 'entry', id: entry.id, ...classify(this.#config, { kind: 'entry', id: entry.id }, tx), revision: this.#config.classify({ kind: 'entry', id: entry.id }, tx)!.revision });
       tx.run('INSERT INTO chat_run_policy VALUES (?,1,?,?,?)', [runId, Number(consent.revision), this.#identity(), JSON.stringify(labels)]);
       if (frozen) tx.run('INSERT INTO chat_run_context VALUES (?,?,?,?)', [runId, 1, JSON.stringify(selected), JSON.stringify(frozen)]);
@@ -368,6 +370,18 @@ export class ChatService implements ChatPort {
     });
     if (event) this.#emit(run.runId, event);
   }
+  #readOwnerProfile(runId: string) {
+    return this.#config.store.transaction(tx => {
+      // Only a genuinely pre-v4 Store may lack the table. Migration backfills explicit defaults.
+      if (!tx.get("SELECT name FROM sqlite_master WHERE type='table' AND name='chat_run_owner_profile'", [])) {
+        return publicOwnerProfile(this.#config.store.assistantId);
+      }
+      const row = tx.get('SELECT schema_version,snapshot_json FROM chat_run_owner_profile WHERE run_id=?', [runId]);
+      if (!row || row.schema_version !== 1) throw new ContextFailure('compile_failed');
+      try { return validateOwnerProfile(JSON.parse(String(row.snapshot_json)), this.#config.store.assistantId); }
+      catch { throw new ContextFailure('compile_failed'); }
+    });
+  }
   #readRunContext(runId: string): RunSelection | null {
     return this.#config.store.transaction(tx => {
       const row = tx.get('SELECT * FROM chat_run_context WHERE run_id=?', [runId]);
@@ -397,7 +411,7 @@ export class ChatService implements ChatPort {
       if (this.get(accepted.runId, context).state !== 'accepted') return;
       const acceptedPolicy = this.#checkPolicy(accepted.runId, accepted.sessionId, context);
       const frozen = this.#readRunContext(accepted.runId);
-      const { request, trace } = assemble(this.#config, accepted.sessionId, accepted.userEntryId, this.#context(context), frozen);
+      const { request, trace } = assemble(this.#config, accepted.sessionId, accepted.userEntryId, this.#context(context), frozen, this.#readOwnerProfile(accepted.runId));
       if (!this.#config.route.available || !this.#config.route.allows(request.dataClasses) || !this.#config.model) { this.#finish(accepted, context, 'unavailable'); return; }
       const permitted = this.conversation(accepted.sessionId, context).permittedClasses;
       if (request.dataClasses.some(c => !permitted.includes(c))) throw new ContextFailure('unavailable');

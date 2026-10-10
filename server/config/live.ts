@@ -1,3 +1,4 @@
+import { publicOwnerProfile, type OwnerProfileSnapshot } from '../prompt/index.js';
 import { join } from 'node:path';
 import type { DataClass } from '../adapters/live-voice/index.js';
 import { compileVoiceInstruction, createCapabilitySnapshot, PROMPT_VERSION, validatePreferences, type ValidatedPreferences } from '../prompt/index.js';
@@ -50,7 +51,7 @@ function classList(value: unknown): readonly DataClass[] {
  * `compileVoiceInstruction`, the shared canonical system assembly with no conversation turns; the text
  * path is unchanged and no turn is fabricated. The credential is never read here.
  */
-export function loadLiveConfig(options: { configDir: string; ownerId: string }): LiveConfigStatus {
+export function loadLiveConfig(options: { configDir: string; ownerId: string; ownerProfile?: OwnerProfileSnapshot }): LiveConfigStatus {
   try {
     if (!options || typeof options !== 'object' || typeof options.configDir !== 'string' || typeof options.ownerId !== 'string') fail('invalid_arguments');
     if (!validateRoot(options.configDir)) return { status: 'unconfigured' };
@@ -80,14 +81,21 @@ export function loadLiveConfig(options: { configDir: string; ownerId: string }):
     });
     if (input['enabled'] === false) return { status: 'disabled', config };
     // R1 (approved): the shared canonical system assembly compiled for a session with no turns.
-    const instruction = compileVoiceInstruction({
+    const publicInstruction = compileVoiceInstruction({
       ownerId: options.ownerId, promptVersion: PROMPT_VERSION, preferences,
+      capabilities: createCapabilitySnapshot([], []), trustedChars: 20000,
+    });
+    const ownerProfile = options.ownerProfile ?? publicOwnerProfile(options.ownerId);
+    const instruction = compileVoiceInstruction({
+      ownerId: options.ownerId, ownerProfile, promptVersion: PROMPT_VERSION, preferences,
       capabilities: createCapabilitySnapshot([], []), trustedChars: 20000,
     });
     const profile = validateLiveProfile({
       provider: input['provider'], liveModelId: model, voice: chosenVoice, keyReference: reference,
       route: { enabled: true, provider: input['provider'], modelId: model, dataClasses },
-      prompt: { text: instruction.system, dataClass: preferences.dataClass },
+      prompt: { text: publicInstruction.system, dataClass: preferences.dataClass },
+      acceptedPrompt: { schemaVersion: 1, ownerProfile, compilerVersion: instruction.promptVersion,
+        system: instruction.system, dataClasses: instruction.dataClasses },
       ...(input['limits'] !== undefined ? { limits: input['limits'] } : {}),
     });
     return { status: 'configured', config: Object.freeze({ ...config, profile }) };

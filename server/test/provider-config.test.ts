@@ -1,3 +1,4 @@
+import { loadOwnerProfile } from '../config/owner-profile.js';
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmodSync, closeSync, constants, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
@@ -260,4 +261,36 @@ test('CLI rejects unknown/duplicate/missing flags and input/source insecure file
     const g = fixture(t); chmodSync(g[field], 0o644); const r = g.run(); assert.notEqual(r.status, 0); safe(r); assert.equal(existsSync(join(g.configDir, 'profile.json')), false);
   }
   const d = fixture(t); writeFileSync(d.profileInputPath, JSON.stringify({ ...profile(), enabled: false })); assert.notEqual(d.run().status, 0); assert.equal(existsSync(join(d.configDir, 'profile.json')), false);
+});
+
+
+test('explicit owner activation is closed, protected, immutable and never falls back', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'owner-profile-test-')); chmodSync(dir, 0o700);
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, 'synthetic.json');
+  const raw = { schemaVersion: 1, kind: 'profile', ownerId: 'synthetic-owner', profileVersion: 'fixture-a', displayName: 'Example',
+    style: { text: 'SYNTHETIC style', dataClass: 'private' }, lore: { text: 'SYNTHETIC lore', dataClass: 'sensitive' } };
+  const load = () => loadOwnerProfile({ path, ownerId: 'synthetic-owner' });
+  assert.deepEqual(loadOwnerProfile({ ownerId: 'synthetic-owner' }), { status: 'default', snapshot: { schemaVersion: 1, kind: 'default', ownerId: 'synthetic-owner', displayName: 'Lux Didi' } });
+  assert.equal(load().status, 'error');
+  writeFileSync(path, JSON.stringify(raw), { mode: 0o600 });
+  const accepted = load(); assert.equal(accepted.status, 'configured');
+  if (accepted.status === 'error') throw Error('fixture failed');
+  assert.deepEqual(accepted.snapshot, raw);
+  assert.ok(Object.isFrozen(accepted.snapshot));
+  if (accepted.snapshot.kind === 'profile') assert.ok(Object.isFrozen(accepted.snapshot.style));
+  writeFileSync(path, JSON.stringify({ ...raw, style: { text: 'SYNTHETIC B', dataClass: 'ordinary' } }));
+  assert.deepEqual(accepted.snapshot, raw);
+  for (const invalid of [{ ...raw, ownerId: 'other' }, { ...raw, extra: true },
+    { ...raw, style: { text: 'x', dataClass: 'unknown' } }, { ...raw, displayName: 'unsafe\nlabel' },
+    { ...raw, lore: { text: 'x'.repeat(4097), dataClass: 'ordinary' } }]) {
+    writeFileSync(path, JSON.stringify(invalid));
+    assert.equal(load().status, 'error');
+    assert.ok(!JSON.stringify(load()).includes(path));
+  }
+  writeFileSync(path, 'x'.repeat(65537)); assert.deepEqual(load(), { status: 'error', code: 'too_large' });
+  writeFileSync(path, JSON.stringify(raw)); chmodSync(path, 0o644); assert.equal(load().status, 'error');
+  chmodSync(path, 0o600); const link = join(dir, 'symlink.json'); symlinkSync(path, link);
+  assert.equal(loadOwnerProfile({ path: link, ownerId: 'synthetic-owner' }).status, 'error');
+  chmodSync(dir, 0o755); assert.equal(load().status, 'error');
 });

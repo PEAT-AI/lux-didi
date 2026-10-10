@@ -738,3 +738,36 @@ test('Live persists the exact typed accepted instruction before intent and corru
   assert.throws(() => owner.attach({ liveSessionId: run.liveSessionId }, h.ctx));
   assert.equal(calls, 0);
 });
+
+
+test('private style alone and sensitive lore alone deny voice before adapter or socket creation', async t => {
+  const h = await harness(t);
+  for (const [styleClass, loreClass] of [['private', 'ordinary'], ['ordinary', 'sensitive']] as const) {
+    let calls = 0;
+    const ownerProfile = { schemaVersion: 1 as const, kind: 'profile' as const, ownerId: h.store.assistantId, profileVersion: 'fixture', displayName: 'Example',
+      style: { text: 'SYNTHETIC style', dataClass: styleClass }, lore: { text: 'SYNTHETIC lore', dataClass: loreClass } };
+    const owner = createLiveSessionOwner({ store: h.store, profile: validateLiveProfile({ ...profileInput(),
+      acceptedPrompt: { schemaVersion: 1, ownerProfile, compilerVersion: PROMPT_VERSION, system: 'SYNTHETIC instruction', dataClasses: ['ordinary', styleClass, loreClass].filter((c, i, cs) => cs.indexOf(c) === i) } }),
+      voice: { open() { calls++; throw Error('must not open'); } }, now: () => NOW });
+    assert.throws(() => owner.create({ idempotencyKey: `denied-${styleClass}-${loreClass}`, inputClass: 'ordinary' }, h.ctx));
+    assert.equal(calls, 0); await owner.shutdown();
+  }
+});
+
+test('Live emits exact accepted A setup, not a changed caller B instruction', async t => {
+  const h = await harness(t);
+  const acceptedPrompt = { schemaVersion: 1, ownerProfile: { schemaVersion: 1, kind: 'default', ownerId: h.store.assistantId, displayName: 'Lux Didi' },
+    compilerVersion: PROMPT_VERSION, system: 'SYNTHETIC exact wire A', dataClasses: ['ordinary'] };
+  const profile = validateLiveProfile({ ...profileInput(), acceptedPrompt });
+  const voice = new GeminiLiveVoiceAdapter(options({ socketFactory: h.f.socketFactory,
+    modelId: profile.liveModelId, voice: profile.voice, keyReference: profile.keyReference,
+    route: { enabled: true, provider: 'gemini', modelId: profile.liveModelId, dataClasses: profile.route.dataClasses },
+    credentials: { resolve: async () => CANARY } }));
+  const owner = createLiveSessionOwner({ store: h.store, profile, voice, now: () => NOW }); t.after(() => owner.shutdown());
+  const accepted = owner.create({ idempotencyKey: 'wire-a', inputClass: 'ordinary' }, h.ctx);
+  acceptedPrompt.system = 'SYNTHETIC current B';
+  const attachment = owner.attach({ liveSessionId: accepted.liveSessionId }, h.ctx);
+  const frame = JSON.parse(JSON.stringify(await h.f.frame(1)));
+  assert.equal(frame.setup.systemInstruction.parts[0].text, 'SYNTHETIC exact wire A');
+  attachment.close();
+});

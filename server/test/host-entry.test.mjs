@@ -143,3 +143,17 @@ test('symlink-addressed supervised host serves durable commands and closes on ow
     } finally { await stop(process); }
   });
 });
+
+test('explicit missing owner-profile refuses canonical CLI without leaking the supplied path', async () => {
+  await fixture(async ({ dir }) => {
+    await mkdir(join(dir, 'assets'));
+    for (const file of ['index.html', 'assets/fixture.js', 'assets/fixture.css', 'sw.js', 'manifest.webmanifest', 'icon.svg']) {
+      await writeFile(join(dir, file), file === 'index.html' ? '<script src="/assets/fixture.js"></script><link href="/assets/fixture.css" rel="stylesheet">' : 'synthetic');
+    }
+    const privatePath = join(dir, 'synthetic-private-missing.json');
+    const outcome = await invoke([entry, '--owner-profile', privatePath, '--data-dir', join(dir, 'state'), '--web-root', dir, '--port', '0'], dir);
+    assert.notEqual(outcome.code, 0);
+    assert.ok(!outcome.stderr.includes(privatePath));
+    assert.match(outcome.stderr, /invalid_profile/);
+  });
+});

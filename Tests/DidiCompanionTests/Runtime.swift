@@ -31,7 +31,9 @@ import Security
             } catch { fputs("KEYCHAIN-SDK child failed before completion\n", stderr); exit(1) }
         }
         let app = NSApplication.shared
-        app.setActivationPolicy(.accessory)
+        // This foreground WK fixture needs regular activation semantics; the
+        // actual companion remains an accessory/menu-bar app in its own proof.
+        expect(app.setActivationPolicy(.regular), "foreground fixture activation policy accepted")
         // Publish the actual AppKit application/AX lifecycle, as production does.
         // An async CLI main alone leaves own-PID AXWindows NotImplemented.
         Task { await runFixtures() }

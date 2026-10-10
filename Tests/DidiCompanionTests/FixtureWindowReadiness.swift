@@ -27,7 +27,10 @@ import AppKit
             @MainActor func record(_ event: String, complete: Bool = true) {
                 guard !settled else { return }
                 let snapshot = state(window)
-                events.append(["event": event, "elapsedSeconds": Date().timeIntervalSince(started), "state": snapshot])
+                events.append(["event": event, "elapsedSeconds": Date().timeIntervalSince(started), "state": snapshot,
+                    "diagnostic": ["activationPolicy": NSApp.activationPolicy().rawValue, "hidden": NSApp.isHidden,
+                        "onActiveSpace": window.isOnActiveSpace, "canBecomeKey": window.canBecomeKey,
+                        "canBecomeMain": window.canBecomeMain]])
                 if complete && snapshot.values.allSatisfy({ $0 }) { finish(true) }
             }
             // Observe only our application and this exact owned window. Register

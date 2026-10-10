@@ -211,8 +211,8 @@ function packageFailure(stage: string, command: string, args: string[], result: 
   const evidence = {
     stage, command, args, status: result.status, signal: result.signal,
     error: error ? { name: error.name, message: error.message, stack: error.stack, code: error.code, errno: error.errno, syscall: error.syscall, path: error.path } : null,
-    stdout: result.stdout, stdoutBytes: Buffer.byteLength(result.stdout ?? ''),
-    stderr: result.stderr, stderrBytes: Buffer.byteLength(result.stderr ?? ''),
+    stdout: result.stdout ?? null, stdoutBytes: Buffer.byteLength(result.stdout ?? ''),
+    stderr: result.stderr ?? null, stderrBytes: Buffer.byteLength(result.stderr ?? ''),
     npmLogs: [] as { path: string; bytes: number; content: string }[],
   };
   // Write identity/output first so an npm-log read error cannot erase the subprocess failure.
@@ -269,8 +269,10 @@ test('package diagnostics distinguish actual spawn error and signal from install
     assert.equal(spawnEvidence.status, null);
     assert.equal(spawnEvidence.error.code, 'ENOENT');
     assert.equal(spawnEvidence.error.message, missing.error!.message);
-    assert.equal(spawnEvidence.stdout, missing.stdout);
-    assert.equal(spawnEvidence.stderr, missing.stderr);
+    assert.equal(spawnEvidence.stdout, missing.stdout ?? null);
+    assert.equal(spawnEvidence.stderr, missing.stderr ?? null);
+    assert.equal(spawnEvidence.stdoutBytes, 0);
+    assert.equal(spawnEvidence.stderrBytes, 0);
     assert.deepEqual(spawnEvidence.npmLogs, []);
     const signalled = spawnSync(process.execPath, ['-e', 'process.stderr.write("synthetic teardown stderr"); process.kill(process.pid, "SIGTERM")'], { encoding: 'utf8' });
     assert.equal(signalled.signal, 'SIGTERM');

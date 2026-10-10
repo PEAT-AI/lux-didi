@@ -78,7 +78,7 @@ async function runCase(browser, id) {
       await page.locator('#message').fill(text);
       await page.locator('#message-form button[type="submit"]').click();
       // The current form is replaced by render; wait until mutation finally releases it.
-      await page.waitForFunction(() => !document.querySelector('#message')?.disabled);
+      await page.waitForFunction(() => document.querySelector('#message-form button[type="submit"]')?.textContent === 'Save message');
     }
     async function get(path) {
       const response = await context.request.get(descriptor.origin + '/api/v1' + path, { timeout: 6000 });

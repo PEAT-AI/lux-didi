@@ -7,6 +7,7 @@ import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { Store } from '../dist/runtime/store.js';
+import { createDomainPort } from '../dist/domain/index.js';
 
 const entry = resolve(import.meta.dirname, '../dist/host/index.js');
 
@@ -132,7 +133,7 @@ test('symlink-addressed supervised host serves durable commands and closes on ow
       assert.deepEqual(result, { code: 0, signal: null, stdout: line + '\n', stderr: '' });
       await assert.rejects(fetch(ready.origin + '/api/v1/status', { headers, signal: AbortSignal.timeout(3000) }));
       // Reopening the real Store proves EOF releases the single-writer lease and preserves its identity.
-      const store = new Store(dataDir);
+      const store = new Store(dataDir, createDomainPort().migrations);
       try { assert.equal(store.assistantId, ready.assistantId); } finally { store.close(); }
       t.diagnostic('symlink start/ready nonce+pid matched; session POST200/GET200 with matching title; EOF exit0; listener refused; real Store reopened with stable identity');
     } finally { await stop(process); }

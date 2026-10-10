@@ -28,6 +28,8 @@ proof="$(mktemp -d "$proof_parent/didi-companion-proof-${LUX_WORKER_RUN_ID:-$$}.
 printf 'PROOF-DIR=%s\n' "$proof"
 mkdir -p "$proof"
 export LUX_MAC_SCREENSHOT="$proof/native-setup-ui.png"
+# Real SDK discriminator precedes the retained policy red; same declared producer.
+python3 Tests/DidiCompanionTests/keychain-sdk.py "$app/Contents/MacOS/LuxDidi" "$proof"
 "$app/Contents/MacOS/LuxDidi" "$work/port" "$proof" "$node"
 export LUX_REAL_HOST_PROOF_DIR="$proof" LUX_REAL_HOST_NODE="$node"
 bash Tests/DidiMacTests/check-mac.sh

@@ -19,6 +19,12 @@ import WebKit
         return (try JSONSerialization.jsonObject(with: data) as! [String: Any])["data"] as! [String: Any]
     }
     @MainActor static func main() async {
+        if CommandLine.arguments.count == 5, CommandLine.arguments[1] == "--keychain-sdk-child" {
+            do {
+                let passed = try KeychainSDKProof.run(mode: CommandLine.arguments[2], state: URL(fileURLWithPath: CommandLine.arguments[3]), output: URL(fileURLWithPath: CommandLine.arguments[4]))
+                exit(passed ? 0 : 1)
+            } catch { fputs("KEYCHAIN-SDK child failed before completion\n", stderr); exit(1) }
+        }
         let started = Date()
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)

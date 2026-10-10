@@ -1,11 +1,13 @@
 import { randomUUID } from 'node:crypto';
+import { isAbsolute } from 'node:path';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
 import type { DataClass, HostContext, JsonObject, ToolCallIntent, ToolCallRefusal, ToolDefinition, ToolResultBinding, ToolResultGate, ToolResultRef } from '../adapters/model/types.js';
 import { validateEndpointUrl } from '../adapters/mcp/registry.js';
+import { endpointBinding } from '../adapters/mcp/port.js';
 import { createLuxKnowledgeReader } from '../connectors/lux-knowledge.js';
 import { canonicalJSON, detached, sha256 } from './canonical.js';
 import { projectLuxResult } from './lux-knowledge.js';
-import type { BoundConnection, ConnectionApplyResult, ConnectionPolicy, ModelSnapshot, RunAcceptance, RunSnapshot, ToolsOwner, ToolsOwnerOptions } from './types.js';
+import type { BoundConnection, ConnectionApplyResult, ConnectionPolicy, HttpConnectionEndpoint, ModelSnapshot, RunAcceptance, RunSnapshot, StdioConnectionEndpoint, ToolsOwner, ToolsOwnerOptions } from './types.js';
 export { toolsMigrations } from './schema.js';
 export type * from './types.js';
 
@@ -30,9 +32,20 @@ export function validatePolicy(input: ConnectionPolicy): ConnectionPolicy {
   exact(p, ['schemaVersion', 'ownerId', 'connectionId', 'generation', 'enabled', 'endpoint', 'toolNames', 'schemaDigest', 'sourcePolicy', 'route', 'bounds']);
   if (p.schemaVersion !== 1 || typeof p.enabled !== 'boolean') throw Error('invalid_policy_version');
   [p.ownerId, p.connectionId].forEach(text); positive(p.generation);
-  exact(p.endpoint, ['id', 'url', 'account', 'resource', 'credentialRef']);
-  [p.endpoint.id, p.endpoint.account, p.endpoint.resource, p.endpoint.url].forEach(text); validateEndpointUrl(p.endpoint.url);
-  if (p.endpoint.credentialRef !== null) text(p.endpoint.credentialRef);
+  exact(p.endpoint, (p.endpoint as { transport?: unknown }).transport === 'stdio' ? ['id', 'transport', 'command', 'args', 'env', 'account', 'resource', 'credentialRef'] : ['id', 'url', 'account', 'resource', 'credentialRef']);
+  if ((p.endpoint as { transport?: unknown }).transport === 'stdio') {
+    const e = p.endpoint as StdioConnectionEndpoint;
+    [e.id, e.command, e.account, e.resource].forEach(text);
+    if (e.credentialRef !== null) throw Error('invalid_policy_version');
+    if (!isAbsolute(e.command) || !Array.isArray(e.args) || e.args.some(arg => typeof arg !== 'string')) throw Error('invalid_policy_version');
+    if (e.env !== undefined) {
+      if (typeof e.env !== 'object' || e.env === null || Array.isArray(e.env) || Object.entries(e.env).some(([key, value]) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || typeof value !== 'string' || value.includes('\0'))) throw Error('invalid_policy_version');
+    }
+  } else {
+    const e = p.endpoint as HttpConnectionEndpoint;
+    [e.id, e.account, e.resource, e.url].forEach(text); validateEndpointUrl(e.url);
+    if (e.credentialRef !== null) text(e.credentialRef);
+  }
   if (!Array.isArray(p.toolNames) || p.toolNames.length < 1 || p.toolNames.length > 2 || new Set(p.toolNames).size !== p.toolNames.length || p.toolNames.some(n => !['search_knowledge', 'get_insight'].includes(n)) || !/^[a-f0-9]{64}$/.test(p.schemaDigest)) throw Error('invalid_read_tools');
   exact(p.sourcePolicy, ['id', 'revision', 'unknownClass', 'allowedClasses']); text(p.sourcePolicy.id); positive(p.sourcePolicy.revision); classSet(p.sourcePolicy.allowedClasses);
   if (p.sourcePolicy.unknownClass !== null && !classes.includes(p.sourcePolicy.unknownClass)) throw Error('invalid_unknown_class');
@@ -95,7 +108,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
   const currentProjection = (snapshot: RunSnapshot): boolean => snapshot.connections.every(({ policy: p }) => {
     try {
       const endpoint = registry.endpoint(p.endpoint.id); const grant = registry.currentGrant(p.endpoint.id);
-      return !!grant && endpoint.url === p.endpoint.url && endpoint.account === p.endpoint.account && endpoint.resource === p.endpoint.resource && (endpoint.credentialRef ?? null) === p.endpoint.credentialRef &&
+      return !!grant && endpointBinding(endpoint) === endpointBinding(p.endpoint) &&
         grant.generation === p.generation && grant.schemaDigest === p.schemaDigest && grant.account === p.endpoint.account && grant.resource === p.endpoint.resource && canonicalJSON(grant.toolNames) === canonicalJSON(p.toolNames);
     } catch { return false; }
   });
@@ -223,7 +236,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
   };
   const endpointMatches = (p: ConnectionPolicy): boolean => {
     const endpoint = registry.endpoint(p.endpoint.id);
-    return endpoint.url === p.endpoint.url && endpoint.account === p.endpoint.account && endpoint.resource === p.endpoint.resource && (endpoint.credentialRef ?? null) === p.endpoint.credentialRef;
+    return endpointBinding(endpoint) === endpointBinding(p.endpoint);
   };
   const owner: ToolsOwner = {
     journal, resultGate, complete,
@@ -260,7 +273,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
     projectConnection(id) {
       const p = store.transaction(tx => connection(tx, id).policy); if (!p.enabled) throw Error('connection_disabled');
       const endpoint = registry.endpoint(p.endpoint.id);
-      if (endpoint.url !== p.endpoint.url || endpoint.account !== p.endpoint.account || endpoint.resource !== p.endpoint.resource || (endpoint.credentialRef ?? null) !== p.endpoint.credentialRef) throw Error('projection_endpoint_mismatch');
+      if (endpointBinding(endpoint) !== endpointBinding(p.endpoint)) throw Error('projection_endpoint_mismatch');
       const grant = registry.currentGrant(p.endpoint.id);
       if (grant && grant.generation === p.generation && grant.schemaDigest === p.schemaDigest && canonicalJSON(grant.toolNames) === canonicalJSON(p.toolNames)) return;
       registry.approve({ endpointId: p.endpoint.id, schemaDigest: p.schemaDigest, generation: p.generation, account: p.endpoint.account, resource: p.endpoint.resource, toolNames: p.toolNames, effect: 'read' });

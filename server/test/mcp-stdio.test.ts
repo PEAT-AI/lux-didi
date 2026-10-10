@@ -8,9 +8,12 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
+import { Store } from '../runtime/store.js';
+import { createToolsOwner, toolsMigrations } from '../tools/index.js';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
+import { isStdioEndpoint } from '../adapters/mcp/port.js';
 import type { CallRequest, EndpointConfig, McpPort } from '../adapters/mcp/port.js';
 
 // Synthetic local stdio/HTTP bindings only: no real account, network or credential.
@@ -170,10 +173,13 @@ test('changed command, ordered args, routing env, account or resource lose the a
 
 test('cross-arm fields, unknown transport and a non-null stdio credentialRef are refused at registration', () => {
   const registry = new McpRegistry();
+  // A valid stdio binding registers (red on base, which rejects the transport key).
+  assert.doesNotThrow(() => registry.register(config('stdio-valid', 'ok', '/tmp/unused.pid')));
   assert.throws(() => registry.register({ id: 's1', transport: 'stdio', command: process.execPath, args: [], account: ACCOUNT, resource: RESOURCE, url: 'https://example.invalid/mcp' } as unknown as EndpointConfig));
   assert.throws(() => registry.register({ id: 's2', url: 'https://example.invalid/mcp', command: process.execPath, args: [], account: ACCOUNT, resource: RESOURCE } as unknown as EndpointConfig));
   assert.throws(() => registry.register({ id: 's3', transport: 'sse', url: 'https://example.invalid/mcp', account: ACCOUNT, resource: RESOURCE } as unknown as EndpointConfig));
   assert.throws(() => registry.register({ id: 's4', transport: 'stdio', command: process.execPath, args: [], account: ACCOUNT, resource: RESOURCE, credentialRef: 'token-ref' } as unknown as EndpointConfig));
+  assert.throws(() => registry.register({ id: 's5', transport: 'stdio', command: 'node', args: [], account: ACCOUNT, resource: RESOURCE } as unknown as EndpointConfig));
 });
 
 test('explicit routing env merges with SDK defaults and the whole parent environment is not inherited', async () => {
@@ -225,13 +231,13 @@ test('non-absolute command is refused; an absolute binding ignores a decoy PATH 
   } finally { process.env.PATH = original; await adapter.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('secret-marker env never leaks into refusals or diagnostics', async () => {
+test('secret-marker env and locator paths never leak into refusals, discovery or completed results', async () => {
   const marker = 'DIDI-SECRET-MARKER-XYZZY';
   const { dir, pidFile } = scratch();
   const registry = new McpRegistry();
-  const binding = config('local-stdio', 'crash', pidFile, 'stdio-pong', { env: { DIDI_MARKER: marker } });
+  const crashBinding = config('local-stdio', 'crash', pidFile, 'stdio-pong', { env: { DIDI_MARKER: marker } });
   let registered = false;
-  try { registry.register(binding); registered = true; }
+  try { registry.register(crashBinding); registered = true; }
   catch (error) { assert.equal(String(error).includes(marker), false); assert.equal(String(error).includes(child), false); }
   try {
     if (!registered) return;
@@ -244,6 +250,23 @@ test('secret-marker env never leaks into refusals or diagnostics', async () => {
       assert.equal(serialized.includes(child), false);
       assert.equal(serialized.includes(process.execPath), false);
     } finally { await adapter.close(); }
+    // Public sink for a completed result: source/projection must carry no locator or secret marker.
+    const okRegistry = new McpRegistry();
+    okRegistry.register(config('local-stdio', 'ok', pidFile, 'stdio-pong', { env: { DIDI_MARKER: marker } }));
+    okRegistry.enable('local-stdio'); okRegistry.allowEgress('local-stdio');
+    const okAdapter = adapterFor(okRegistry);
+    try {
+      const discovery = await okAdapter.discover('local-stdio');
+      assert.equal(discovery.state, 'discovered');
+      if (discovery.state !== 'discovered') return;
+      okRegistry.approve({ endpointId: 'local-stdio', schemaDigest: discovery.schemaDigest, toolNames: ['echo'], effect: 'read', account: ACCOUNT, resource: RESOURCE, generation: 1 });
+      const result = await okAdapter.call(request('local-stdio'));
+      assert.equal(result.state, 'completed');
+      const serialized = JSON.stringify(result);
+      assert.equal(serialized.includes(marker), false);
+      assert.equal(serialized.includes(child), false);
+      assert.equal(serialized.includes(process.execPath), false);
+    } finally { await okAdapter.close(); }
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -289,4 +312,48 @@ test('existing HTTP endpoint behavior is unchanged and still registers without a
     if (result.state !== 'completed' || result.payload.state !== 'available') throw new Error('missing http payload');
     assert.equal(readPayload(adapter, request('source'), result.payload.handle, result.payload.byteLength), 'http-pong');
   } finally { await adapter.close(); await fixture.close(); }
+});
+
+test('protected stdio configuration carries the binding through init/approve/load/compose and refuses a rebinding without spawning', async () => {
+  const config = await import('../config/mcp.js'); const host = await import('../host/mcp.js');
+  const dir = mkdtempSync(join(tmpdir(), 'didi-stdio-config-'));
+  const configDir = join(dir, 'config'); const dataDir = join(dir, 'data');
+  const store = new Store(dataDir, toolsMigrations); const ownerId = store.assistantId;
+  const { dir: childDir, pidFile } = scratch();
+  const baseArgs = [child, 'ok', pidFile, 'stdio-pong'];
+  const policyFor = (args: readonly string[], generation: number, enabled: boolean) => ({
+    schemaVersion: 1 as const, ownerId, connectionId: 'local', generation, enabled,
+    endpoint: { id: 'local-endpoint', transport: 'stdio' as const, command: process.execPath, args, env: { HOME: join(dir, 'home') }, account: ACCOUNT, resource: RESOURCE, credentialRef: null },
+    toolNames: ['search_knowledge'] as const, schemaDigest: '0'.repeat(64),
+    sourcePolicy: { id: 'operator-reviewed', revision: 1, unknownClass: null, allowedClasses: ['ordinary'] as const },
+    route: { identity: 'synthetic-route', allowedClasses: ['ordinary'] as const },
+    bounds: { maxQueryChars: 80, maxSearchLimit: 3, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 },
+  });
+  const credentialFor = (generation: number, enabled: boolean) => ({ schemaVersion: 1, ownerId, connectionId: 'local', endpointId: 'local-endpoint', url: '', account: ACCOUNT, resource: RESOURCE, generation, credentialRef: null, token: '', enabled });
+  const profileInput = join(dir, 'profile.json'); const credentialInput = join(dir, 'credential.json');
+  writeFileSync(credentialInput, JSON.stringify(credentialFor(1, false)));
+  writeFileSync(profileInput, JSON.stringify({ schemaVersion: 1, transport: 'stdio', dataDir, expectedPolicySha256: null, policy: policyFor(baseArgs, 1, false) }));
+  try {
+    assert.equal(config.initMcpConfiguration({ configDir, ownerId, profileInput, credentialInput }).state, 'pending');
+    writeFileSync(credentialInput, JSON.stringify(credentialFor(2, true)));
+    writeFileSync(profileInput, JSON.stringify({ schemaVersion: 1, transport: 'stdio', dataDir, expectedPolicySha256: null, policy: policyFor(baseArgs, 2, true) }));
+    assert.equal(config.approveMcpConfiguration({ configDir, ownerId, dataDir, policyInput: profileInput }).state, 'pending');
+    const selection = config.loadMcpConfiguration({ configDir, ownerId, dataDir });
+    assert.equal(isStdioEndpoint(selection.endpoint), true, 'protected configuration must carry the stdio binding');
+    if (!isStdioEndpoint(selection.endpoint)) return;
+    assert.equal(selection.endpoint.command, process.execPath);
+    assert.deepEqual([...selection.endpoint.args], baseArgs);
+    const registry = new McpRegistry(); registry.register(selection.endpoint); registry.enable('local-endpoint'); registry.allowEgress('local-endpoint');
+    const port = createMcpAdapter({ registry, store: new MemoryResultStore(), budgets: { timeoutMs: 3000 } });
+    const owner = createToolsOwner({ store, ownerId, registry, port, lookupAuthority: async () => null });
+    assert.equal(host.composeMcpConnection({ store, owner, registry, configDir }).state, 'applied');
+    // A changed executable binding is a different identity: the approved binding must not be reusable and nothing spawns.
+    const changed = config.loadMcpConfiguration({ configDir, ownerId, dataDir });
+    if (!isStdioEndpoint(changed.endpoint)) throw new Error('expected stdio binding');
+    const altered = { ...changed.endpoint, args: [...changed.endpoint.args, 'EXTRA'] };
+    const rebindRegistry = new McpRegistry(); rebindRegistry.register(altered);
+    assert.equal(rebindRegistry.matchesEndpoint(changed.endpoint), false);
+    assert.equal(existsSync(pidFile), false, 'no child may spawn for a changed binding');
+    await port.close(); store.close();
+  } finally { rmSync(dir, { recursive: true, force: true }); rmSync(childDir, { recursive: true, force: true }); }
 });

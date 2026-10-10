@@ -24,6 +24,8 @@ const tools: McpTool[] = [
   { name: 'get_insight', inputSchema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'integer' } }, include_links: { type: 'boolean' } }, required: ['ids', 'include_links'], additionalProperties: false } },
 ];
 const route = { identity: 'synthetic-route', provider: 'gemini' as const, modelId: 'synthetic-model', allowedClasses: ['ordinary', 'private'] as const };
+// This suite drives the HTTP arm; the union's stdio arm has no url.
+const policyUrl = (e: ConnectionPolicy['endpoint']): string => (e as { transport?: unknown }).transport === 'stdio' ? '' : (e as { url: string }).url;
 function policy(overrides: Partial<ConnectionPolicy> = {}): ConnectionPolicy {
   return { schemaVersion: 1, ownerId: 'owner', connectionId: 'lux', generation: 1, enabled: true,
     endpoint: { id: 'endpoint', url: 'https://synthetic.invalid/mcp', account: 'account', resource: 'resource', credentialRef: 'private:synthetic-reference' },
@@ -42,7 +44,7 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
   let store = new Store(dir, toolsMigrations);
   t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
   const registry = new McpRegistry(); const p = options.policy ?? policy();
-  const endpoint = { id: p.endpoint.id, url: p.endpoint.url, account: p.endpoint.account, resource: p.endpoint.resource, ...(p.endpoint.credentialRef ? { credentialRef: p.endpoint.credentialRef } : {}) };
+  const endpoint = { id: p.endpoint.id, url: policyUrl(p.endpoint), account: p.endpoint.account, resource: p.endpoint.resource, ...(p.endpoint.credentialRef ? { credentialRef: p.endpoint.credentialRef } : {}) };
   registry.register(endpoint); registry.enable(endpoint.id); registry.allowEgress(endpoint.id);
   const sdk = new Server({ name: 'synthetic-owner', version: '1' }, { capabilities: { tools: { listChanged: false } } });
   const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
@@ -54,7 +56,7 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
   await sdk.connect(transport);
   t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
     const req = new Request(input, init);
-    assert.equal(req.url, p.endpoint.url);
+    assert.equal(req.url, policyUrl(p.endpoint));
     if (req.method === 'GET') return new Response(null, { status: 405 });
     if (req.method === 'POST') {
       const packet = await req.clone().json() as { method: string; params?: { name: string; arguments: unknown } };
@@ -217,7 +219,7 @@ test('revoke while awaiting authority is caught by final synchronous persisted r
 test('all bound connections checked even zero refs from another connection', async t => {
   const f = await fixture(t);
   const second = policy({ connectionId: 'second', endpoint: { ...policy().endpoint, id: 'second-endpoint' } });
-  f.registry.register({ id: 'second-endpoint', url: second.endpoint.url, account: 'account', resource: 'resource' });
+  f.registry.register({ id: 'second-endpoint', url: policyUrl(second.endpoint), account: 'account', resource: 'resource' });
   f.owner.applyConnection(second);
   const acceptance = { ...f.acceptance, runId: 'two', connectionIds: ['lux', 'second'] };
   const accepted = f.store.transaction(tx => f.owner.snapshotRun(tx, acceptance));

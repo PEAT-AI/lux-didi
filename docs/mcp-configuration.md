@@ -55,3 +55,11 @@ After awaited credential resolution and current registry checks, the adapter per
 The focused managed gates are `scripts/check-mcp-config.sh`, existing `scripts/check-mcp.sh` and `scripts/check-tool-owner.sh`, with the declared verified TypeScript/official SDK assembly root. The new producer isolates its output and removes it after execution; no dependency installation is performed. Tests use fabricated alpha/beta accounts, real local official SDK servers and real Store. Nonempty authenticated reads and account exclusion—not HTTP 200 or empty data—are the evidence.
 
 Production activation remains separate: explicit production config/account/resource/catalog/classes/route approval; B startup/runtime composition using accepted tools migrations; then authorized nonempty read, revoke and restart verification. This seam does not claim deployed activation, full provider swap or six-state roadmap closure.
+
+## Locally approved stdio bindings (optional)
+
+A connection may bind an operator-approved local executable instead of an HTTP URL. The stdio arm is `{ id, transport: 'stdio', command, args, env?, account, resource }` with `credentialRef` absent; the HTTP arm is unchanged and an absent `transport` still means HTTP (no discriminator is injected into existing records or their canonical hashes). Unknown transport values and cross-arm fields (stdio with `url`, HTTP with `command`/`args`, stdio with a non-null credential) are refused.
+
+`command` must be an absolute installed executable (no PATH lookup, `shell: false`); `args` is an ordered immutable string list; `env` is a minimal explicit record, merged by the SDK with its default inherited set (`HOME`, `LOGNAME`, `PATH`, `SHELL`, `TERM`, `USER`) and never the whole parent environment. Paths containing spaces are valid. Approval identity covers the whole executable binding (command, ordered args, routing env, account, resource), so a changed binding requires new approval; a token rotation within an unchanged binding is not a new account. A missing executable is a typed unavailable, and no child is spawned before approval.
+
+Child stdout/stderr are never forwarded to the parent's sinks, and neither command, args, env nor any secret marker appears in status payloads, diagnostics or model-visible projections.

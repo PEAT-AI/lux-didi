@@ -18,10 +18,10 @@ import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import type { ToolDefinition as McpTool } from '../adapters/mcp/port.js';
 import { composeChat, type ToolChatAssembly } from '../host/connected.js';
-import { requestCredentialsFor, credentialReceiptFor } from '../config/index.js';
+import { requestCredentialsFor, credentialReceiptFor, type CredentialRouteScope } from '../config/index.js';
 import { listenService } from '../http/server.js';
 import type { DomainContext } from '../contracts/domain.js';
-import type { DataClass, Transport } from '../adapters/model/types.js';
+import type { Transport } from '../adapters/model/types.js';
 
 // These are proposed narrow Host integration pins, not an implementation or a
 // replacement tools authorization service. Missing exports are baseline RED.
@@ -30,10 +30,10 @@ export const rotatedKey = 'tool-chat-synthetic-key-two';
 export const answer = 'Synthetic insight 731 supports one small next step.';
 export const untrustedURL = 'https://model-link.invalid/not-a-source';
 export const sourceId = 'lux-knowledge:731';
-export const scope = {
-  provider: 'gemini' as const, modelId: 'gemini-tool-chat-synthetic',
-  endpoint: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-tool-chat-synthetic:streamGenerateContent?alt=sse',
-  apiVersion: 'v1beta', keyReference: 'gemini-primary', allowedClasses: ['ordinary', 'private'] as DataClass[]
+export const scope: CredentialRouteScope = {
+  provider: 'gemini', modelId: 'gemini-tool-chat-synthetic',
+  endpoint: 'https://generativelanguage.googleapis.com',
+  apiVersion: 'v1beta', keyReference: 'gemini-primary', allowedClasses: ['ordinary', 'private']
 };
 export function barrier() {
   let enter!: () => void; let release!: () => void;
@@ -161,13 +161,13 @@ export async function fixture(options: FixtureOptions = {}) {
   const composed = composeChat(store, domain, configDir, {
     transport: lowerTransport, deadlineMs: options.deadlineMs ?? 4000,
     ...(!options.legacy ? { requestCredentials: () => {
-      const credentials = requestCredentialsFor(configDir, scope);
-      return { resolvedReceipt: () => credentials.resolvedReceipt(), resolve: async (reference: string) => {
+      const allocation = requestCredentialsFor(configDir, scope);
+      return { resolvedReceipt: () => allocation.resolvedReceipt(), resolve: async (reference: string) => {
         const number = ++requestCount;
         if (number === 1) await options.beforeResolve?.();
         if (options.credentialFailure) throw Error(`Synthetic resolver failure ${syntheticKey} ${rotatedKey}`);
-        const key = await credentials.resolve(reference);
-        assert.ok(credentials.resolvedReceipt(), 'Protected resolver parsed key and receipt before any post-resolve barrier');
+        const key = await allocation.credentials.resolve(reference);
+        assert.ok(allocation.resolvedReceipt(), 'Protected resolver parsed key and receipt before any post-resolve barrier');
         if (number === 1) await options.afterResolve?.();
         await options.afterEachResolve?.(number);
         if (number === 2) await options.beforeContinuation?.();

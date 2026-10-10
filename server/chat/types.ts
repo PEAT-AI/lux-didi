@@ -1,7 +1,9 @@
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
 import type { StorePort, Transaction } from '../contracts/storage.js';
 import type { DomainContext, DomainPort, SourceRef, RoutingLabel, RoutingLabelCorrection } from '../contracts/domain.js';
-import type { DataClass, ModelPort, ModelStatus } from '../adapters/model/types.js';
+import type { DataClass, ModelControl, ModelPort, ModelRequest, ModelStatus, ToolDefinition, ToolResultRef } from '../adapters/model/types.js';
+import type { LoopResult } from '../adapters/model/types.js';
+import type { CredentialBindingReceipt } from '../config/index.js';
 import type { CompileInput, SourceAvailability, ValidatedPreferences } from '../prompt/index.js';
 
 export type Outcome = ModelStatus | 'not_dispatched' | 'outcome_unknown' | 'unavailable' | 'input_too_large' | 'compile_failed' | 'persistence_failed';
@@ -28,6 +30,12 @@ export interface RunSnapshot {
   acceptedAt: string; intentAt: string | null; terminalAt: string | null;
   mayHaveBeenSent: boolean;
   memorySelection: MemorySelectionSnapshot | null;
+  /** Durable tool result references projected from the accepted owner journal; never transient MCP buffers. */
+  toolReferences: ToolResultRef[];
+  /** Plain trusted source identifiers derived by the owning projection, never a model-supplied URL. */
+  sourceIds: string[];
+  /** Accepted tool binding hash for this run, or '' when the run advertised no tools. */
+  toolBindingHash: string;
 }
 export type ChatEvent = { type: 'snapshot'; sequence: number; run: RunSnapshot }
   | { type: 'text'; sequence: number; text: string; provisional: true }
@@ -39,6 +47,33 @@ export interface AcceptInput {
   sessionId: string; text: string; idempotencyKey: string; retryOf?: string;
   /** Explicit bounded local records selected for this turn; trusted in-process only. */
   selectedMemoryEntryIds?: readonly string[];
+  /** Explicit bounded connection selection for this turn; trusted in-process only, never model text or HTTP-supplied authority. */
+  selectedConnectionIds?: readonly string[];
+}
+/** Immutable accepted-run binding passed to the trusted owner assembly. */
+export interface RunBinding {
+  runId: string; sessionId: string; actorId: string; authorityEpoch: string; revision: number;
+  connectionIds: readonly string[];
+  route: { identity: string; provider: string; model: string; allowedClasses: readonly DataClass[] };
+  /** Absolute deadline on the injected clock; set at dispatch, absent at acceptance. */
+  deadlineMs?: number;
+}
+/** Chat-owned synchronous current-authority snapshot reused by the final-egress guard. */
+export interface CurrentAuthority {
+  policyVersion: number; consentRevision: number; routeIdentity: string;
+  selectedLabels: { kind: 'session' | 'entry'; id: string; revision: number; dataClass: string }[];
+  bindingHash: string;
+}
+/** A per-run loop runner over the accepted tool set; ordinary ModelPort semantics are preserved underneath. */
+export interface RunRunner { run(request: ModelRequest, control: ModelControl): Promise<LoopResult> }
+/** Narrow trusted composition seam. The Host owns it; Chat only calls it and never parses model text for authority. */
+export interface ChatToolComposition {
+  /** Inside the caller acceptance transaction: write the accepted snapshot/link atomically. */
+  accept(tx: Transaction, binding: RunBinding): { hash: string; credential: CredentialBindingReceipt | null };
+  /** Detached accepted definitions after commit; never a fresh live catalog. */
+  definitions(runId: string): ToolDefinition[];
+  /** Per-run runner bound to the accepted run and its synchronous current-authority callback. */
+  runner(runId: string, deadlineMs: number, current: () => CurrentAuthority): RunRunner;
 }
 /** Host startup authority, not an authenticated browser/client request. */
 export interface ChatRecoveryContext { assistantId: string; authorityEpoch: string }
@@ -70,6 +105,8 @@ export interface ChatConfig {
   classify(subject: ClassificationSubject, tx: Transaction): { ownerId: string; dataClass: DataClass; revision: number } | null;
   context: { budgets: CompileInput['budgets']; sources: readonly SourceAvailability[];
     recall?: { q: string; limit: number }; today?: { date: string; timeZone: string } };
+  /** Trusted Host composition seam. Absent means a text-only turn with no tool capability. */
+  tools?: ChatToolComposition;
   now?: () => number; id?: () => string; schedule?: (work: () => void) => void;
   deadlineMs?: number; subscriberCapacity?: number; maxPartialChars?: number;
 }

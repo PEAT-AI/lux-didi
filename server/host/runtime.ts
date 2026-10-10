@@ -11,8 +11,13 @@ import { listenService } from '../http/server.js';
 import { createStaticHandler } from '../http/static.js';
 import { chatMigrations } from '../chat/index.js';
 import { liveMigrations } from '../live/index.js';
-import { composeChat, type ModelTesting } from './connected.js';
+import { composeChat, type ModelTesting, type ToolChatAssembly } from './connected.js';
 import { composeLive, type LiveTesting } from './live.js';
+import { composeMcpConnection } from './mcp.js';
+import { McpRegistry } from '../adapters/mcp/registry.js';
+import { createMcpAdapter } from '../adapters/mcp/adapter.js';
+import { MemoryResultStore } from '../adapters/mcp/store.js';
+import { loadMcpConfiguration } from '../config/mcp.js';
 
 export interface HostConfig { dataDir: string; webRoot: string; port?: number; descriptor?: string; configDir?: string; ownerProfilePath?: string; modelTesting?: ModelTesting; liveTesting?: LiveTesting; now?: () => number }
 export function defaultDataDir(): string {
@@ -74,7 +79,17 @@ export async function startHost(config: HostConfig) {
     const owner = loadOwnerProfile({ ...(config.ownerProfilePath !== undefined ? { path: config.ownerProfilePath } : {}), ownerId: store.assistantId });
     if (owner.status === 'error') throw new ConfigError('invalid_profile');
     const providerConfigDir = resolve(config.configDir ?? join(dataDir, 'provider-config'));
-    const { chat, status } = composeChat(store, domain, providerConfigDir, config.modelTesting, config.now, owner.snapshot);
+    // Trusted host composition: the actual MCP registry/MCP HTTP port and the accepted
+    // owner are built here (not CLI/HTTP/env). Missing or refused configuration means
+    // text-only turns; an unconfigured optional connection never blocks app launch.
+    const mcpConfigDir = resolve(join(providerConfigDir, 'mcp'));
+    const registry = new McpRegistry();
+    const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 16384, maxEntries: 8, ttlMs: 300000, maxSliceBytes: 4096 }),
+      resolveCredential: async (reference: string) => loadMcpConfiguration({ configDir: mcpConfigDir, ownerId: store.assistantId, dataDir }).resolveCredential(reference),
+      budgets: { timeoutMs: 8000, maxResponseBytes: 16384, maxPages: 4, maxTools: 32, projectionChars: 4096 } });
+    const assembly: ToolChatAssembly = { registry, port, connections: [], ownerProfile: owner.snapshot };
+    const { chat, status, tools } = composeChat(store, domain, providerConfigDir, config.modelTesting, config.now, assembly);
+    if (tools) composeMcpConnection({ store, owner: tools, registry, configDir: mcpConfigDir });
     const { service: live } = composeLive(store, providerConfigDir, config.liveTesting, config.now, owner.snapshot);
     const service = await listenService({ store, domain, chat, live, modelStatus: status, ownerProfileStatus: { status: owner.status, displayName: owner.snapshot.displayName }, webRoot, port, ...(config.now ? { now: config.now } : {}) });
     try {

@@ -2,12 +2,12 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { DomainContext, ResolvedEntry, RoutingLabelCorrection, RoutingSubject } from '../contracts/domain.js';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
 import { ServiceError } from '../contracts/errors.js';
-import type { DataClass, ModelResult } from '../adapters/model/types.js';
+import type { DataClass, ModelEvent, ModelResult, ModelStatus, LoopResult, ToolResultRef } from '../adapters/model/types.js';
 import { publicOwnerProfile, validateOwnerProfile, PROMPT_VERSION } from '../prompt/index.js';
 import { assemble, classify, ContextFailure, type ContextTrace } from './context.js';
 import { Subscription } from './subscription.js';
 import { memorySelectionSnapshot, normalizeSelectedMemory, selectedEvidenceId, MAX_SERIALIZED_SELECTION_BYTES, type RunSelection } from './memorySelection.js';
-import { ChatError, type AcceptInput, type ChatConfig, type ChatEvent, type ChatPort, type ChatRecoveryContext, type ConversationEvent, type Outcome, type RunSnapshot, type EnrollInput, type ConversationStatus, type MemorySelectionSnapshot } from './types.js';
+import { ChatError, type AcceptInput, type ChatConfig, type ChatEvent, type ChatPort, type ChatRecoveryContext, type ConversationEvent, type CurrentAuthority, type Outcome, type RunSnapshot, type EnrollInput, type ConversationStatus, type MemorySelectionSnapshot } from './types.js';
 export * from './types.js';
 export { chatMigrations } from './schema.js';
 
@@ -17,14 +17,33 @@ type SelectedLabel = { kind: 'session' | 'entry'; id: string; schemaVersion: 1; 
 /** The subset #checkPolicy reads back out of chat_run_policy.selected_labels. */
 type PolicyLabel = { kind: 'session' | 'entry'; id: string; revision: number; dataClass: string };
 function nullable(value: SQLRow[string] | undefined) { return value === null || value === undefined ? null : String(value); }
-function snapshot(row: SQLRow, finalText: string | null = null, memorySelection: MemorySelectionSnapshot | null = null): RunSnapshot {
+type ToolProjection = { toolReferences: ToolResultRef[]; sourceIds: string[]; toolBindingHash: string };
+const noTools: ToolProjection = { toolReferences: [], sourceIds: [], toolBindingHash: '' };
+/**
+ * Plain trusted source identifiers for a completed owner result. The owner stores
+ * the already-projected evidence envelope; ids come from the connector's verified
+ * requested-entity namespace, never from model text or a model-supplied URL.
+ */
+function sourceIdsFor(intentJson: string | null, resultJson: string | null): string[] {
+  if (!resultJson) return [];
+  let toolName: unknown;
+  try { toolName = (JSON.parse(intentJson ?? '{}') as { toolName?: unknown }).toolName; } catch { return []; }
+  if (toolName !== 'get_insight') return [];
+  try {
+    const response = (JSON.parse(resultJson) as { response?: { requestedIds?: unknown } }).response;
+    const ids = response?.requestedIds;
+    if (!Array.isArray(ids)) return [];
+    return ids.filter((id): id is number => Number.isSafeInteger(id) && (id as number) > 0).map(id => `lux-knowledge:${id}`);
+  } catch { return []; }
+}
+function snapshot(row: SQLRow, finalText: string | null = null, memorySelection: MemorySelectionSnapshot | null = null, tools: ToolProjection = noTools): RunSnapshot {
   return { runId: String(row.run_id), sessionId: String(row.session_id), userEntryId: String(row.user_entry_id),
     finalEntryId: nullable(row.final_entry_id), finalText, retryOf: nullable(row.retry_of), authorityEpoch: String(row.authority_epoch),
     provider: String(row.provider), model: String(row.model), promptVersion: String(row.prompt_version),
     state: row.state as RunSnapshot['state'], outcome: nullable(row.outcome) as Outcome | null,
     sequence: Number(row.sequence), partialText: String(row.partial_text), partialTruncated: Boolean(row.partial_truncated),
     acceptedAt: String(row.accepted_at), intentAt: nullable(row.intent_at), terminalAt: nullable(row.terminal_at), mayHaveBeenSent: row.intent_at !== null,
-    memorySelection };
+    memorySelection, toolReferences: tools.toolReferences, sourceIds: tools.sourceIds, toolBindingHash: tools.toolBindingHash };
 }
 
 export class ChatService implements ChatPort {
@@ -59,11 +78,23 @@ export class ChatService implements ChatPort {
   }
   #snapshot(tx: Transaction, row: SQLRow, context: DomainContext): RunSnapshot {
     const memorySelection = this.#memorySelection(tx, row);
-    if (row.outcome !== 'complete') return snapshot(row, null, memorySelection);
+    const tools = this.#toolProjection(tx, String(row.run_id));
+    if (row.outcome !== 'complete') return snapshot(row, null, memorySelection, tools);
     const read = this.#config.domain.execute(tx, 'getSession', { id: String(row.session_id) }, this.#context(context));
     const entry = read.entries.find(item => item.id === row.final_entry_id && item.role === 'assistant');
     if (!entry) throw new ChatError('unavailable');
-    return snapshot(row, entry.text, memorySelection);
+    return snapshot(row, entry.text, memorySelection, tools);
+  }
+  /** Durable tool references and trusted source ids read back from the accepted owner journal. */
+  #toolProjection(tx: Transaction, runId: string): ToolProjection {
+    if (!tx.get("SELECT name FROM sqlite_master WHERE type='table' AND name='chat_run_tools'", [])) return noTools;
+    const link = tx.get('SELECT binding_hash FROM chat_run_tools WHERE run_id=?', [runId]);
+    if (!link) return noTools;
+    if (!tx.get("SELECT name FROM sqlite_master WHERE type='table' AND name='tool_calls'", [])) return { ...noTools, toolBindingHash: String(link.binding_hash) };
+    const rows = tx.all("SELECT result_id,result_sha256,intent_json,result_json FROM tool_calls WHERE owner_id=? AND run_id=? AND state='completed' ORDER BY rowid", [this.#config.store.assistantId, runId]);
+    const toolReferences: ToolResultRef[] = rows.map(row => ({ id: String(row.result_id), sha256: String(row.result_sha256) }));
+    const sourceIds = [...new Set(rows.flatMap(row => sourceIdsFor(String(row.intent_json), nullable(row.result_json))))];
+    return { toolReferences, sourceIds, toolBindingHash: String(link.binding_hash) };
   }
   /** Safe requested/used/omitted metadata; no record text and no whole-archive claim. */
   #memorySelection(tx: Transaction, row: SQLRow): MemorySelectionSnapshot | null {
@@ -178,6 +209,21 @@ export class ChatService implements ChatPort {
       return { version: 1, consentRevision: Number(consent.revision), routeIdentity: String(policy.route_identity), selectedLabels: labels };
     });
   }
+  /**
+   * Chat-owned synchronous current-authority check reused by the final-egress guard:
+   * a nonterminal run of this owner/epoch with the current consent revision, label
+   * revisions and exact route plus the accepted tool link. Throws when any is stale.
+   */
+  authority(runId: string): CurrentAuthority {
+    const context: DomainContext = { assistantId: this.#config.store.assistantId, clientId: '', authorityEpoch: this.#config.store.authorityEpoch, now: new Date(this.#now()).toISOString() };
+    const row = this.#config.store.transaction(tx => tx.get('SELECT * FROM chat_runs WHERE run_id=? AND owner_assistant_id=?', [runId, context.assistantId]));
+    if (!row || row.state !== 'dispatch_intent' || String(row.authority_epoch) !== context.authorityEpoch) throw new ChatError('unavailable');
+    context.clientId = String(row.accepting_client_id);
+    const policy = this.#checkPolicy(runId, String(row.session_id), context);
+    const link = this.#config.store.transaction(tx => tx.get('SELECT binding_hash FROM chat_run_tools WHERE run_id=?', [runId]));
+    return { policyVersion: policy.version, consentRevision: policy.consentRevision, routeIdentity: policy.routeIdentity,
+      selectedLabels: policy.selectedLabels, bindingHash: link ? String(link.binding_hash) : '' };
+  }
   #invalidate(matches: (row: SQLRow) => boolean, context: DomainContext) {
     for (const [id, policy] of this.#livePolicies) if (matches(policy)) this.#workers.get(id)?.abort();
     const runs = this.#config.store.transaction(tx => tx.all(`SELECT r.*,p.selected_labels FROM chat_runs r JOIN chat_run_policy p ON r.run_id=p.run_id WHERE r.owner_assistant_id=? AND r.state!='terminal'`, [context.assistantId]).filter(matches).map(row => snapshot(row)));
@@ -232,14 +278,19 @@ export class ChatService implements ChatPort {
     if (!this.#ready) throw new ChatError('recovery_required');
     if (!input || typeof input.sessionId !== 'string' || !input.sessionId.trim() || typeof input.text !== 'string' || !input.text.trim()
       || typeof input.idempotencyKey !== 'string' || !input.idempotencyKey.trim() || input.idempotencyKey.length > 128
-      || Object.keys(input).some(key => !['sessionId', 'text', 'idempotencyKey', 'retryOf', 'selectedMemoryEntryIds'].includes(key))
-      || (input.retryOf !== undefined && (typeof input.retryOf !== 'string' || !input.retryOf.trim()))) throw new ChatError('invalid_input');
+      || Object.keys(input).some(key => !['sessionId', 'text', 'idempotencyKey', 'retryOf', 'selectedMemoryEntryIds', 'selectedConnectionIds'].includes(key))
+      || (input.retryOf !== undefined && (typeof input.retryOf !== 'string' || !input.retryOf.trim()))
+      || (input.selectedConnectionIds !== undefined && (!Array.isArray(input.selectedConnectionIds)
+        || input.selectedConnectionIds.some(id => typeof id !== 'string' || !id.trim() || id.length > 128)))) throw new ChatError('invalid_input');
     // Canonical selection: absent and [] are empty; duplicates coalesce and the
     // order is canonical. The fingerprint key appears only for a non-empty list,
     // so every stored empty-selection hash stays valid.
     const selected = normalizeSelectedMemory(input.selectedMemoryEntryIds);
+    // Trusted in-process connection selection only; canonical, deduplicated, order-preserving.
+    const connections = [...new Set(input.selectedConnectionIds ?? [])].filter(id => id.trim());
     const fingerprint = hash(JSON.stringify({ sessionId: input.sessionId, text: input.text, retryOf: input.retryOf ?? null,
-      ...(selected.length ? { selectedMemoryEntryIds: selected } : {}) }));
+      ...(selected.length ? { selectedMemoryEntryIds: selected } : {}),
+      ...(connections.length ? { selectedConnectionIds: connections } : {}) }));
     const result = this.#config.store.transaction(tx => {
       const prior = tx.get('SELECT * FROM chat_runs WHERE owner_assistant_id=? AND idempotency_key=?', [context.assistantId, input.idempotencyKey]);
       if (prior) {
@@ -268,6 +319,13 @@ export class ChatService implements ChatPort {
       labels.push({ kind: 'entry', id: entry.id, ...classify(this.#config, { kind: 'entry', id: entry.id }, tx), revision: this.#config.classify({ kind: 'entry', id: entry.id }, tx)!.revision });
       tx.run('INSERT INTO chat_run_policy VALUES (?,1,?,?,?)', [runId, Number(consent.revision), this.#identity(), JSON.stringify(labels)]);
       if (frozen) tx.run('INSERT INTO chat_run_context VALUES (?,?,?,?)', [runId, 1, JSON.stringify(selected), JSON.stringify(frozen)]);
+      // Atomic acceptance: the accepted tools snapshot and its Chat link/hash land in the SAME transaction.
+      if (this.#config.tools && connections.length) {
+        const accepted = this.#config.tools.accept(tx, { runId, sessionId: input.sessionId, actorId: context.clientId,
+          authorityEpoch: context.authorityEpoch, revision: Number(consent.revision), connectionIds: connections,
+          route: { identity: this.#identity(), provider: route.provider, model: route.model, allowedClasses: [...route.allowedClasses] } });
+        tx.run('INSERT INTO chat_run_tools VALUES (?,?,?)', [runId, accepted.hash, accepted.credential ? JSON.stringify(accepted.credential) : null]);
+      }
       return { run: this.#snapshot(tx, tx.get('SELECT * FROM chat_runs WHERE run_id=?', [runId])!, context), fresh: true, policy: JSON.stringify(labels) };
     });
     if (result.fresh) {
@@ -430,8 +488,11 @@ export class ChatService implements ChatPort {
       const deadlineMs = this.#now() + duration;
       const deadline = new Promise<'deadline'>(resolve => { timeout = setTimeout(() => resolve('deadline'), duration); });
       if (!this.#config.model) throw new ContextFailure('unavailable');
-      const generation = this.#config.model.generate(request, { signal: controller.signal, deadlineMs,
-        onEvent: event => { if (event.type === 'text') this.#partial(run, context, event.text); } });
+      const control = { signal: controller.signal, deadlineMs,
+        onEvent: (event: ModelEvent) => { if (event.type === 'text') this.#partial(run, context, event.text); } };
+      const generation = this.#config.tools && run.toolBindingHash
+        ? this.#config.tools.runner(run.runId, deadlineMs, () => this.authority(run.runId)).run(request, control).then(result => this.#toolResult(result))
+        : this.#config.model.generate(request, control);
       const aborted = new Promise<'aborted'>(resolve => {
         if (controller.signal.aborted) resolve('aborted');
         else controller.signal.addEventListener('abort', () => resolve('aborted'), { once: true });
@@ -449,4 +510,10 @@ export class ChatService implements ChatPort {
     } finally { if (timeout !== undefined) clearTimeout(timeout); this.#workers.delete(accepted.runId); }
   }
   #outcome(result: ModelResult): Outcome { return result.status === 'complete' && !result.text.trim() ? 'empty' : result.status; }
+  /** Map the accepted tools loop result onto the ordinary model result surface. */
+  #toolResult(result: LoopResult): ModelResult {
+    const status: ModelStatus = result.status === 'limit' ? 'truncated' : result.status === 'uncertain' ? 'error' : result.status;
+    return { status, text: result.text, providerContent: { role: 'model', parts: [] }, reason: result.reason,
+      prompt: { version: PROMPT_VERSION, hash: '', omittedContextIds: [] }, timings: { kind: 'synthetic', totalMs: 0, firstTextMs: null } };
+  }
 }

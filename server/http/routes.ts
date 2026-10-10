@@ -25,6 +25,10 @@ function memoryIds(value: unknown): void {
   if (!Array.isArray(value) || value.length > 32) return bad('Selected notes must be a list of at most 32 stored note ids');
   for (const id of value) if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(id)) return bad('Selected notes must be exact stored note ids');
 }
+function connectionIds(value: unknown): void {
+  if (!Array.isArray(value) || value.length > 32) return bad('Selected connections must be a list of at most 32 connection ids');
+  for (const id of value) if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(id)) return bad('Selected connections must be exact configured connection ids');
+}
 function revision(value: unknown): number { if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) return bad('Invalid expectedRevision'); return value; }
 function source(value: unknown): void {
   const body = object(value);
@@ -82,7 +86,7 @@ export function resolveRoute(method: string, url: URL, body?: Record<string, unk
     matched([mutation ? 'POST' : 'GET']); query(url, []);
     if (body) {
       if (action === 'enroll') { fields(body, ['title', 'timeZone'], ['title', 'timeZone']); text(body.title, 500); zone(body.timeZone); }
-      else if (action === 'accept') { fields(body, ['sessionId', 'text', 'retryOf', 'selectedMemoryEntryIds'], ['sessionId', 'text']); uuid(body.sessionId); text(body.text); if (body.retryOf !== undefined) uuid(body.retryOf); if (body.selectedMemoryEntryIds !== undefined) memoryIds(body.selectedMemoryEntryIds); }
+      else if (action === 'accept') { fields(body, ['sessionId', 'text', 'retryOf', 'selectedMemoryEntryIds', 'selectedConnectionIds'], ['sessionId', 'text']); uuid(body.sessionId); text(body.text); if (body.retryOf !== undefined) uuid(body.retryOf); if (body.selectedMemoryEntryIds !== undefined) memoryIds(body.selectedMemoryEntryIds); if (body.selectedConnectionIds !== undefined) connectionIds(body.selectedConnectionIds); }
       else fields(body, []);
     }
     return { kind: 'connected', action, id, mutation, input: body ?? {} };

@@ -12,7 +12,7 @@ import { Outbox } from '../runtime/outbox.js';
 import { createDomainPort } from '../domain/facade.js';
 import { chatMigrations, type RunSnapshot } from '../chat/index.js';
 import { toolsMigrations } from '../tools/index.js';
-import type { ConnectionPolicy } from '../tools/types.js';
+import type { ConnectionPolicy, ToolsOwner } from '../tools/types.js';
 import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
@@ -166,7 +166,8 @@ export async function fixture(options: FixtureOptions = {}) {
       } };
     } } : {})
   }, () => clock, assembly);
-  const { chat, tools } = composed;
+  const { chat } = composed;
+  const tools: ToolsOwner = composed.tools;
   cleanups.push(() => chat.shutdown());
   const enroll = (title = 'Synthetic tool chat') => {
     const conversation = chat.enroll({ title, timeZone: 'UTC', idempotencyKey: randomUUID() }, context);

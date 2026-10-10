@@ -4,6 +4,7 @@ import { readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fixture, barrier, scope, syntheticKey, rotatedKey, answer, sourceId, type FixtureOptions } from './tool-chat-process.js';
+import type { ToolResultRef } from '../adapters/model/types.js';
 
 async function open(t: TestContext, options: FixtureOptions = {}) {
   const f = await fixture(options); t.after(() => f.close()); return f;
@@ -194,7 +195,7 @@ test('B5 sequential continuations consume a fresh result handoff for each genera
   assert.equal(final.outcome, 'complete'); assert.equal(f.sdkCalls.length, 2);
   assert.equal(f.modelCalls.length, 3); assert.equal(forbiddenContinuation(f.modelCalls), 2);
   assert.equal(final.toolReferences.length, 2);
-  assert.equal(new Set(final.toolReferences.map(ref => JSON.stringify(ref))).size, 2);
+  assert.equal(new Set(final.toolReferences.map((ref: ToolResultRef) => JSON.stringify(ref))).size, 2);
   assert.match(f.modelCalls[2]!.body, /731/); assert.match(f.modelCalls[2]!.body, /732/);
 });
 

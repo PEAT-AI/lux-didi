@@ -23,7 +23,7 @@ trap 'rm -rf "$out"' EXIT
 mkdir -p "$out/source/test" "$out/web"
 # Compile only the two new TS roots and their actual import graph. Copying
 # dependency directories does not select or execute their existing tests.
-for name in adapters chat config connectors contracts domain host http prompt runtime tools; do
+for name in adapters chat config connectors contracts domain host http live prompt runtime tools; do
   cp -R "$root/server/$name" "$out/source/$name"
 done
 cp "$root/server/package.json" "$out/source/package.json"

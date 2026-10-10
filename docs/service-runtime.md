@@ -1,10 +1,15 @@
 # Single-user Didi service runtime
 
 This is the authoritative TypeScript/Node **runtime**, not a finished assistant.
-Production composition currently has no domain module: memory/commitments are
-false, their routes return `DOMAIN_NOT_CONFIGURED` (503); models/notifications
-are also unavailable. No inference, external send, scheduler or device executor
-exists. Domain integration and browser/native client proof are separate gates.
+The standalone service entry (`server/dist/index.js`) composes the store and the
+HTTP API without the domain module, so memory/commitments are false and their
+routes return `DOMAIN_NOT_CONFIGURED` (503); models and notifications are also
+unavailable. The local host entry composes the domain module and serves the web
+client, so memory and commitments are available there. Neither entry runs
+inference, external send, a scheduler or a device executor.
+[implementation-status.md](implementation-status.md) records which parts are
+implemented, integrated, staged and unresolved. Domain integration and
+browser/native client proof are separate gates.
 
 ## Requirements and local install
 

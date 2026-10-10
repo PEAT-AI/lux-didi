@@ -60,7 +60,7 @@ export class Orb {
     const raw=this.audio.read(now);
     const unit=(v:number)=>Number.isFinite(v)?Math.min(1,Math.max(0,v)):0;
     const audio={level:unit(raw.level),low:unit(raw.low),mid:unit(raw.mid),high:unit(raw.high),flux:unit(raw.flux)};
-    return {state:this.state,audio,audible:audio.level>.02,microphoneLevel:0};
+    return {state:this.state,audio,audible:audio.level>.01,microphoneLevel:0};
   }
   clearAudio(){this.audio.clear();this.frame={...this.frame,smoothedAudioLevel:0,smoothedPlaybackLevel:0,smoothedLow:0,smoothedMid:0,smoothedHigh:0,smoothedFlux:0,smoothedActivity:1};}
   setState(state:VoiceState){
@@ -83,6 +83,9 @@ export class Orb {
     this.animation=undefined;this.lastTime=0;this.nextPaint=performance.now();this.settleDeadline=this.nextPaint+300;
     this.canvas.dataset.motion=this.motion.matches?'still':'animated';
     this.canvas.dataset.state=this.state;
+    // ERROR's recoverability is not emitted by this app; do not invent it.
+    if(this.state==='ERROR')delete this.canvas.dataset.disabled;
+    else this.canvas.dataset.disabled=String(['IDLE','DISCONNECTED','CONNECTING'].includes(this.state));
     if(document.hidden)return;
     this.paint(this.nextPaint);
     if(!this.motion.matches&&this.context)this.animation=requestAnimationFrame(this.tick);

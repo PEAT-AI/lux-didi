@@ -77,6 +77,51 @@ import CryptoKit
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: output.path)
         return ["method": "actual-WKWebView.takeSnapshot", "path": output.path, "width": bitmap.pixelsWide, "height": bitmap.pixelsHigh, "sha256": SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()]
     }
+    // Owned WK inspection is available only inside the existing marked synthetic
+    // installed proof. No runtime JavaScript/native authority bridge is added.
+    private static func orbEvidence(_ web: WKWebView, reportURL: URL) async throws -> [String: Any] {
+        var frames: [[String: Any]] = []
+        var previous = -1
+        for index in 0..<3 {
+            let script = """
+            const canvas=document.querySelector('#didi-orb');
+            if(!canvas||typeof canvas.didiFrameStats!=='function')throw Error('orb missing');
+            const deadline=performance.now()+8000;
+            await new Promise((resolve,reject)=>{function check(){
+              if(canvas.didiFrameStats().frames>\(previous)){resolve();return;}
+              if(performance.now()>deadline){reject(Error('orb frame observation expired'));return;}
+              requestAnimationFrame(check);
+            }check();});
+            const stats=canvas.didiFrameStats(),data=canvas.getContext('2d').getImageData(0,0,canvas.width,canvas.height).data;
+            let paintedPixels=0;for(let i=3;i<data.length;i+=4)if(data[i])paintedPixels++;
+            const digest=new Uint8Array(await crypto.subtle.digest('SHA-256',data));
+            const pixelSha256=Array.from(digest,b=>b.toString(16).padStart(2,'0')).join('');
+            const rect=canvas.getBoundingClientRect();
+            return {stats,paintedPixels,pixelCount:canvas.width*canvas.height,pixelSha256,
+              rect:{x:rect.x,y:rect.y,width:rect.width,height:rect.height},visibility:document.visibilityState};
+            """
+            guard var measured = try await web.callAsyncJavaScript(script, arguments: [:], in: nil, contentWorld: .page) as? [String: Any],
+                  let stats = measured["stats"] as? [String: Any], let count = stats["frames"] as? Int,
+                  let pixels = measured["paintedPixels"] as? Int, pixels > 0,
+                  stats["renderer"] as? String == "classic-eleven-f27bca7" else { throw InstalledProofError.missingUI }
+            previous = count
+            measured["snapshot"] = try await pageImage(web, to: reportURL.appendingPathExtension("orb-\(index).png"))
+            frames.append(measured)
+        }
+        let timingScript = """
+        const canvas=document.querySelector('#didi-orb'),start=performance.now(),before=canvas.didiFrameStats();
+        await new Promise(resolve=>{function sample(){if(performance.now()-start>=2000){resolve();return;}requestAnimationFrame(sample);}requestAnimationFrame(sample);});
+        const end=performance.now(),after=canvas.didiFrameStats();
+        const indices=after.paintTimes.map((time,index)=>({time,index})).filter(v=>v.time>=start&&v.time<=end);
+        return {method:'owned-WKWebView/Canvas2D normal-host observation',windowRequestedMs:2000,
+          elapsedMs:end-start,refreshObservation:'requestAnimationFrame',before,after,
+          observedPaints:after.frames-before.frames,sampleCount:indices.length,
+          paintTimes:indices.map(v=>v.time),drawMs:indices.map(v=>after.drawMs[v.index]),
+          baseline:'source high-tier12idle60active; no artificial load, budget concession or frame dropping for proof'};
+        """
+        guard let timing = try await web.callAsyncJavaScript(timingScript, arguments: [:], in: nil, contentWorld: .page) as? [String: Any] else { throw InstalledProofError.missingUI }
+        return ["frames": frames, "timing": timing, "renderer": "classic-eleven-f27bca7", "nativePid": Int(getpid())]
+    }
     static func execute(model: AppModel, window: NSWindow) async -> Bool {
         guard let proof = model.installedProof, let owner = model.supervisor else {
             _ = await OwnedVerificationLaunchGate.perform(window: window) { _ in false }
@@ -136,6 +181,7 @@ import CryptoKit
             guard shown else { throw InstalledProofError.missingUI }
             var visual = report["visual"] as! [String: Any]
             visual["pageSnapshot"] = try await pageImage(fresh, to: proof.report.appendingPathExtension("web-page.png"))
+            visual["orb"] = try await orbEvidence(fresh, reportURL: proof.report)
             report["visual"] = visual; report["observations"] = observations
             let readiness = await OwnedWindowReadiness.wait(window) {
                 window.makeKeyAndOrderFront(nil)

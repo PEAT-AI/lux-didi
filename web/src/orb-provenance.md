@@ -1,36 +1,53 @@
 # Classic orb provenance
 
-Source: PEAT-AI/Vicuna, immutable main revision
-`f27bca7bcbc77a77e3401da2683abf2f1aaf023c`.
-First-party reuse explicitly authorized by user/master ruling WEB-R4. This note
-records provenance, not an invented public license for the original repository.
+First-party source: PEAT-AI/Vicuna immutable revision
+`f27bca7bcbc77a77e3401da2683abf2f1aaf023c`. Reuse is explicitly authorized by
+WEB-R4 and the full-classic follow-on decision. Source provenance is not visual
+parity, a release approval, or a claim that absent voice events exist.
 
-From `src/app/features/assistant/components/voice-blob/voice-blob.component.ts`:
-- Lines 174–227: clampFrameDelta, smoothingAlpha, ORB_SMOOTHING_TAU,
-  speakingActivityTarget, speakingTentacleOffsets.
-- Lines 1123–1297: drawLuminousGlow, drawRadialFlares, getTentacleParams,
-  drawTentacle.
-- Lines 1529–1665: drawWobblyCore, drawWobblyBlobLayer.
+## Retained closure
 
-Only these bounded procedural extracts are retained. The required excerpts were
-under 64KB each. Angular/Sentry/signals/configuration/private persona and optional
-visage/assets/entrance/application transport were excluded. No historical
-screenshot is shipped. Wrapper fields/methods are Didi-owned. The same
-framework-independent module serves the PWA and proposed WKWebView host.
+- Original reachable painter/helper bodies from `voice-blob.component.ts`
+  987–1932: eleven actual paint calls plus tentacle/blob-layer subhelpers.
+  Unreachable bright-core, blob-shape and energy-mote helpers are not ported.
+- Original dispatch956–985, complete high-tier budget10. Actual paint order is
+  corona / glow / radial flares / dancing sparkles / bright flares / prominences /
+  tech rings / wobbly core / sparkle burst / twinkling ring / hot core. Numeric
+  admission ranks do not reorder these calls.
+- State loop744–890, hue529–551, original smoothing/time helpers: copied as
+  explicit pure `stepOrbFrame` state and immutable painter inputs. This retains
+  status-owned hue, per-frame easing/pulse, independent main/ambient clocks,
+  asymmetric EMAs, source state branches, previous-ambient breathing, and
+  audible PROCESSING's speaking geometry without changing its195 hue.
+- Known source host filters, processing/listening/speaking/resting pulses and
+  known disabled predicates. ERROR recoverability and greeting/entrance are
+  not emitted by Didi, so they remain named gaps, not invented events.
 
-The inline SimplexNoise class was **not copied**: its individual upstream notice
-was not established. `simplex-noise` 4.0.3 is a documented MIT dependency from
-https://github.com/jwagner/simplex-noise.js; its complete license notice is retained
-at `/third-party-notices.txt`. Its official package README documents createNoise2D.
-A Didi-owned seeded RNG makes geometry deterministic.
+## Deliberate boundaries
 
-Orb-only style adaptation: source `voice-blob.component.css` lines 61–75:
-block canvas, pointer-events none, filter transition, neutral grayscale/brightness/
-opacity. Didi supplies wrapper sizing/labels/layout and static reduced-motion.
+`ClassicRenderer` and `Orb` remain the integration names. The renderer's `draw`
+now receives the explicit frame; `paintClassic` is the stateless canvas/noise
+boundary. No DOM, clock, provider or Angular dependency lives in the painter.
+The owning wrapper retains canvas/phase/noise through unrelated app renders,
+clears stale/session/disconnect inputs, and disposes on actual unmount.
 
-Deliberate adaptations: classic subset rather than the 133KB Angular component;
-no corona/prominence/tech-ring/visage effects; fixed injected idle24/active30 fps
-budget (not a claim to copy device-tier service); silent production audio frame;
-current low/playback/activity asymmetric smoothing constants, current >0.01
-speaking distinction, current state palette and neutral filter. Source feasibility
-and real browser rendering are separate from exact pixel parity or WKWebView proof.
+Logical dimensions are600 desktop /400 narrow rather than scaling radius alone:
+absolute line widths, dash patterns and sparkles remain in original unit space.
+DPR is capped at2. Complete high-tier source cadence is12idle /60active, with a
+drift-preserving deadline scheduler instead of the reference no-tolerance gate.
+Reduced-motion remains static (including CSS); hidden tabs stop; resumed deltas
+are clamped. These safeguards are intentional, not a silent layer reduction.
+
+The product retains MIT `simplex-noise`4.0.3, existing xorshift32 seed20261009 and
+`public/third-party-notices.txt`; no dependency/version/lock/notice changes.
+The inline reference noise has unestablished licensing and is **not copied into
+product or fixture data**. Test-only reference execution reads the pinned original
+in memory and records its hash; it is never written to the served product bundle.
+Different noise fields require measured comparison against original self-variation,
+not pixel identity or an invented tolerance. Original fixture methods/parameters
+and common injected noise provide a separate structural oracle.
+
+No microphone, native Live or playback path is added. Current app audio remains
+silent; synthetic test inputs never grant runtime authority. Guarded owned native
+proof may inspect its WKWebView only in the existing marked installed proof mode.
+Source/build/static images alone do not prove appearance, cadence or native fidelity.

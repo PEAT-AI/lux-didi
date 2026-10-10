@@ -36,3 +36,9 @@
 @keyframes orb-breathe{0%,100%{transform:scale(1)}50%{transform:scale(1.03)}}
 @keyframes orb-speak-pulse{0%,100%{transform:scale(1.3)}50%{transform:scale(1.34)}}
 @media(prefers-reduced-motion:reduce){.orb-stage canvas{animation:none!important;transition:none}}
+.orb-stage canvas[data-disabled=true]{opacity:.5}
+.orb-stage canvas[data-posture=thinking]{animation:orb-pulse-slow 1.5s ease-in-out infinite}
+.orb-stage canvas[data-state=IDLE],.orb-stage canvas[data-state=DISCONNECTED]{animation:orb-rest-breathe 8s ease-in-out infinite}
+@keyframes orb-pulse-slow{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.05);opacity:.9}}
+@keyframes orb-rest-breathe{0%,100%{transform:scale(1)}50%{transform:scale(1.015)}}
+@media(prefers-reduced-motion:reduce){.orb-stage canvas{animation:none!important}}

@@ -51,6 +51,7 @@ export function stepOrbFrame(previous: Readonly<OrbFrame>, input: Readonly<OrbIn
   // baseHue is status-owned: audible PROCESSING has speaking geometry but hue 195.
   const targetHue=listening?45:state==='SPEAKING'?160:state==='PROCESSING'||state==='CONNECTING'?195:state==='CONNECTED'?174:state==='ERROR'?0:210;
   const hue=previous.hue===null?targetHue:previous.hue+(targetHue-previous.hue)*.15;
+  if(state==='IDLE'||state==='CONNECTED'||state==='DISCONNECTED')activityMultiplier+=Math.sin(previous.ambientTime*.6)*.015;
   const currentPulse=previous.currentPulse+(targetPulse-previous.currentPulse)*.1;
   const time=previous.time+dt, ambientTime=previous.ambientTime+dt*.75;
   return {size,time,ambientTime,ambientNoiseOffset:{x:Math.sin(ambientTime*.3)*2,y:Math.cos(ambientTime*.25)*2},

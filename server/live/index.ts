@@ -124,19 +124,17 @@ export class LiveSessionOwner {
   create(input: CreateLiveSession, context: LiveContext): LiveSessionSnapshot {
     this.#guardOpen();
     if (!input || typeof input !== 'object' || typeof input.idempotencyKey !== 'string' || !keyPattern.test(input.idempotencyKey)) throw new LiveError('invalid_request');
-    this.#contextShape(context);
+    if (!classes.includes(input.inputClass) || !this.#profile.route.dataClasses.includes(input.inputClass)) throw new LiveError('invalid_request');
+    this.#authorize(context);
     const fingerprint = identity({ inputClass: input.inputClass, profile: this.#profileIdentity, prompt: this.#promptIdentity });
     const now = this.#now();
     const assistantId = this.#store.assistantId;
     return this.#store.transaction(tx => {
-      // Same-key replay is decided on the normalized request meaning before any policy.
       const prior = tx.get('SELECT * FROM live_sessions WHERE owner_assistant_id=? AND idempotency_key=?', [assistantId, input.idempotencyKey]);
       if (prior) {
         if (String(prior['fingerprint']) !== fingerprint) throw new LiveError('idempotency_conflict');
         return this.#snapshot(tx, prior);
       }
-      if (context.authorityEpoch !== this.#store.authorityEpoch) throw new LiveError('stale_authority');
-      if (!classes.includes(input.inputClass) || !this.#profile.route.dataClasses.includes(input.inputClass)) throw new LiveError('invalid_request');
       const liveSessionId = randomUUID();
       tx.run('INSERT INTO live_sessions(live_session_id, owner_assistant_id, authority_epoch, idempotency_key, fingerprint, client_id, audit_id, profile_identity, prompt_identity, lifecycle, dispatch_intent, ready, journal_events, journal_bytes, journal_complete, consumer_state, terminal_outcome, terminal_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,0,0,0,0,0,?,NULL,NULL,?,?)',
         [liveSessionId, assistantId, context.authorityEpoch, input.idempotencyKey, fingerprint, context.clientId, context.auditId, this.#profileIdentity, this.#promptIdentity, 'accepted', 'detached', now, now]);
@@ -328,7 +326,7 @@ export class LiveSessionOwner {
     this.#store.transaction(tx => {
       tx.run('INSERT INTO live_journal(live_session_id, provider_sequence, kind, text, finished, value, terminal_outcome, rejected_kind, rejected_sequence, payload_bytes, arrived_at) VALUES (?,?,?,?,?,?,NULL,NULL,NULL,?,?)',
         [handle.liveSessionId, event.sequence, kind, text, finished, value, bytes, now]);
-      tx.run('UPDATE live_sessions SET journal_events=?, journal_bytes=?, ready=CASE WHEN ?=1 THEN 1 ELSE ready END, updated_at=? WHERE live_session_id=?',
+      tx.run('UPDATE live_sessions SET journal_events=?, journal_bytes=?, ready=?, updated_at=? WHERE live_session_id=?',
         [events, total, kind === 'ready' ? 1 : 0, now, handle.liveSessionId]);
     });
     handle.journalEvents = events;

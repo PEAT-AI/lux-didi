@@ -22,7 +22,7 @@ export function rowToFragment(row: SQLRow): LiveFragment {
     kind: String(row['kind']) as JournalKind,
     text: row['text'] === null || row['text'] === undefined ? null : String(row['text']),
     finished: row['finished'] === null || row['finished'] === undefined ? null : Number(row['finished']) === 1,
-    value: row['value'] === null || row['value'] === undefined ? null : Number(row['value']) === 1,
+    value: null,
     rejectedKind: row['rejected_kind'] === null || row['rejected_kind'] === undefined ? null : String(row['rejected_kind']) as JournalKind,
     rejectedSequence: row['rejected_sequence'] === null || row['rejected_sequence'] === undefined ? null : Number(row['rejected_sequence']),
     arrivedAt: Number(row['arrived_at']),
@@ -40,7 +40,7 @@ export function parseTerminal(value: unknown): LiveTerminalOutcome | null {
 export function readFragmentPage(tx: Transaction, liveSessionId: string, cursor: number, limit: number): LiveFragmentPage {
   const session = tx.get('SELECT lifecycle, journal_complete, terminal_outcome FROM live_sessions WHERE live_session_id=?', [liveSessionId]);
   if (!session) throw new Error('Journal owner session missing');
-  const total = Number(tx.get('SELECT COUNT(*) AS n FROM live_journal WHERE live_session_id=?', [liveSessionId])!['n']);
+  const total = Number(tx.get('SELECT COUNT(*) AS n FROM live_journal WHERE live_session_id=? AND kind<>?', [liveSessionId, 'terminal'])!['n']);
   const interruptions = Number(tx.get('SELECT COUNT(*) AS n FROM live_journal WHERE live_session_id=? AND kind=?', [liveSessionId, 'interrupted'])!['n']);
   const rows = tx.all('SELECT * FROM live_journal WHERE live_session_id=? AND journal_id>=? ORDER BY journal_id ASC LIMIT ?', [liveSessionId, cursor, limit]);
   const fragments = rows.map(rowToFragment);

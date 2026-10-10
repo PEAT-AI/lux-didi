@@ -285,6 +285,22 @@ test('CONNECTED actual adapter failure, empty, truncated, deadline and explicit 
   }
 });
 
+test('CONNECTED fixture startup failure exits its owned child and surfaces the error instead of hanging', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'didi-connected-startup-'));
+  const child = fork(new URL('./connected-process.js', import.meta.url), [dir, join(dir, 'missing-web-root'), '0', 'hold'], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
+  try {
+    const outcome = await new Promise<string>(resolveOutcome => {
+      child.once('exit', (code, signal) => resolveOutcome(`exit:${code}:${signal ?? 'none'}`));
+      child.once('error', error => resolveOutcome(`error:${error.message}`));
+    });
+    assert.ok(outcome.startsWith('error:') || outcome.startsWith('exit:'), `A startup failure must terminate the owned child: ${outcome}`);
+    assert.ok(!outcome.startsWith('exit:0:'), `A startup failure must not exit successfully: ${outcome}`);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) { const done = once(child, 'exit'); child.kill('SIGKILL'); await done; }
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('CONNECTED actual in-flight host process crash recovers unknown with no provider retry', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'didi-connected-crash-'));
   const child = fork(new URL('./connected-process.js', import.meta.url), [dir, webRoot, '0', 'hold'], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
@@ -292,7 +308,8 @@ test('CONNECTED actual in-flight host process crash recovers unknown with no pro
   const phase = (name: string) => new Promise<Record<string, unknown>>((resolvePhase, reject) => {
     const listener = (value: unknown) => { if (value && typeof value === 'object' && 'phase' in value && value.phase === name) { child.off('message', listener); child.off('exit', exited); resolvePhase(value as Record<string, unknown>); } };
     const exited = () => { child.off('message', listener); reject(Error('Fixture exited before ' + name)); };
-    child.on('message', listener); child.once('exit', exited);
+    const errored = (error: Error) => { child.off('message', listener); reject(error); };
+    child.on('message', listener); child.once('exit', exited); child.once('error', errored);
   });
   try {
     const ready = await phase('ready'); const descriptor = ready.descriptor as { origin: string; authorityEpoch: string };

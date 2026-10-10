@@ -93,4 +93,11 @@ async function main() {
   process.on('disconnect', () => { void stop(); });
   process.send?.({ phase: 'ready', descriptor: host.descriptor });
 }
-if (process.argv[1] === fileURLToPath(import.meta.url)) void main().catch(error => { console.error(error); process.exitCode = 1; });
+if (process.argv[1] === fileURLToPath(import.meta.url)) void main().catch(error => {
+  // A startup failure must fail fast and keep its original error: release the IPC channel and
+  // terminate, so the owned transport server cannot keep this child alive with inherited pipes.
+  console.error(error);
+  process.exitCode = 1;
+  try { process.disconnect?.(); } catch { /* no channel */ }
+  process.exit(1);
+});

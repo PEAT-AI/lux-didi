@@ -45,7 +45,8 @@ actor Page: ConnectedConversationTransport {
     }
 }
 @MainActor func tempStore() throws -> (String, PendingRequestStore) {
-    let dir = NSTemporaryDirectory() + "didi-coordinator-" + UUID().uuidString
+    let parent = URL(fileURLWithPath: ProcessInfo.processInfo.environment["DIDI_TEST_FIXTURE_PARENT"] ?? NSTemporaryDirectory()).resolvingSymlinksInPath()
+    let dir = parent.appendingPathComponent("didi-coordinator-" + UUID().uuidString).path
     return (dir, PendingRequestStore(directory: dir))
 }
 @MainActor func testBarrierAndReplay() async throws {

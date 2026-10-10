@@ -91,10 +91,10 @@ export function composeLive(store: Store, configDir: string, testing?: LiveTesti
   const voice = new GeminiLiveVoiceAdapter({
     modelId: profile.liveModelId, voice: profile.voice, keyReference: profile.keyReference, credentials,
     route: { enabled: true, provider: 'gemini', modelId: profile.liveModelId, dataClasses: [...profile.route.dataClasses] },
+    // wsBufferedBytes belongs to the gateway consumer socket, not this provider socket.
     limits: {
       handshakeMs: profile.limits.handshakeMs, idleMs: profile.limits.idleMs,
       sessionMs: profile.limits.sessionMs, closeMs: profile.limits.closeMs,
-      maxBufferedBytes: profile.limits.wsBufferedBytes,
     },
     ...(testing?.socketFactory ? { socketFactory: testing.socketFactory } : {}),
   });

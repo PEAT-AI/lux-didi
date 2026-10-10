@@ -531,7 +531,7 @@ test('canonical host applies configured idle deadline and persists idle_timeout 
   const dir = mkdtempSync(join(tmpdir(), 'didi-live-host-idle-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const configDir = join(dir, 'config'); mkdirSync(configDir, { mode: 0o700 });
-  writePrivate(configDir, 'live.json', `${JSON.stringify(configJson(true, { limits: { idleMs: 200, sessionMs: 10_000, handshakeMs: 1000, closeMs: 50, wsBufferedBytes: 4096 } }))}\n`);
+  writePrivate(configDir, 'live.json', `${JSON.stringify(configJson(true, { limits: { idleMs: 200, sessionMs: 10_000, handshakeMs: 1000, closeMs: 50, wsBufferedBytes: 1024 } }))}\n`);
   const hostConfig = { dataDir: join(dir, 'state'), configDir, webRoot: fileURLToPath(new URL('../../../web/dist', import.meta.url)), port: 0,
     liveTesting: { socketFactory: f.socketFactory, credentials: { resolve: async () => CANARY } } };
   const host = await startHost(hostConfig);
@@ -546,7 +546,9 @@ test('canonical host applies configured idle deadline and persists idle_timeout 
   ws.on('message', (data: Data, binary: boolean) => { if (!binary) frames.push(JSON.parse(data.toString())); });
   const closed = once(ws, 'close');
   await once(ws, 'open');
-  await f.frame(1); f.send({ setupComplete: {} });
+  await f.frame(1);
+  t.diagnostic(`provider setup bytes=${Buffer.byteLength(JSON.stringify(f.frames[0]))}; gateway consumer bound=1024, independent adapter provider bound`);
+  f.send({ setupComplete: {} });
   // Bounded observation of the actual terminal, not a sleep or the hard session deadline.
   await waitFor(() => frames.some(frame => frame.type === 'terminal'), 1500);
   await closed;

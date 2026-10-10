@@ -10,6 +10,9 @@ const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 const tabs: Tab[] = ['Conversation', 'Today', 'Memory', 'Settings'];
 let tab: Tab = 'Conversation';
 let orb: Orb | undefined;
+let orbOwner: string | undefined;
+window.addEventListener('pagehide',()=>{orb?.destroy();orb=undefined;orbOwner=undefined;});
+window.addEventListener('pageshow',event=>{if(event.persisted)render();});
 let status: Status | undefined;
 const connectedView = new ConnectedView(() => orb?.setState(orbState()));
 let connection: 'Connecting' | 'Connected' | 'Disconnected' | 'Offline' | 'Pair this browser' = 'Connecting';
@@ -84,12 +87,17 @@ function render() {
   // Keep cursor and unsent text stable across connection checks and action completion.
   const focus = document.activeElement as HTMLInputElement | HTMLTextAreaElement | null;
   const focusId = focus?.id; const selection = focus && (focus.tagName === 'TEXTAREA' || ['text','search','password'].includes(focus.type)) ? [focus.selectionStart,focus.selectionEnd] : null;
-  orb?.destroy();orb=undefined;
+  const retainedCanvas=orb?document.getElementById('didi-orb') as HTMLCanvasElement|null:null;
   root.innerHTML = `<a class="skip" href="#main">Skip to content</a><div class="app-shell"><aside class="sidebar"><a class="brand" href="/" aria-label="Didi home"><img src="/icon.svg" alt="" width="38" height="38"><span>didi<span class="brand-dot">.</span></span></a><p class="brand-note">A little clarity.<br>A little follow-through.</p><nav aria-label="Main navigation">${tabs.map((t,i)=>`<button data-tab="${t}" aria-current="${tab===t?'page':'false'}"><span aria-hidden="true">${['◌','✓','↗','⚙'][i]}</span>${t}</button>`).join('')}</nav><div class="sidebar-foot">Here for the next step.<br><small>No rush. No pretending.</small></div></aside><div class="workspace"><header class="topbar"><span>YOUR SPACE</span><div class="connection"><span class="connection-dot ${connection==='Connected'?'online':''}"></span><span id="connection-state" role="status" aria-live="polite" aria-atomic="true">${e(connection)}</span><button id="reconnect-top" class="quiet" aria-label="Refresh connection">↻</button></div></header>${demoMode || status?.serviceMode==='synthetic-test' ? '<div class="demo-banner"><strong>Demo test mode</strong><span>Isolated synthetic data · not your personal service</span></div>' : ''}<main id="main" tabindex="-1">${error ? `<div class="alert" role="alert" aria-live="assertive">${e(error)}</div>` : ''}${notice ? `<div class="notice" role="status" aria-live="polite" aria-atomic="true">${e(notice)}</div>` : ''}${readBusy ? '<p class="loading" role="status" aria-live="polite" aria-atomic="true">Loading your records…</p>' : ''}${busy ? '<button id="cancel-request" class="quiet">Stop waiting</button>' : ''}${pairingRequired ? pairing() : ({Conversation:conversation,Today:today,Memory:memory,Settings:settings}[tab])()}</main><footer>Small steps count. <span>Your service is the source of truth.</span></footer></div></div>`;
   bind();
   connectedView.attach();
   const canvas=document.getElementById('didi-orb') as HTMLCanvasElement | null;
-  if(canvas)orb=new Orb(canvas,orbState());
+  if(canvas){
+    if(orb&&retainedCanvas){canvas.replaceWith(retainedCanvas);orb.setState(orbState());}
+    else {orb?.destroy();orb=new Orb(canvas,orbState());}
+    if(orbOwner!==session?.id)orb.clearAudio();
+    orbOwner=session?.id;
+  }else {orb?.destroy();orb=undefined;orbOwner=undefined;}
   if (focusId) { const next=document.getElementById(focusId) as HTMLInputElement | HTMLTextAreaElement | null; next?.focus({preventScroll:true}); if(selection && next && selection[0]!==null) next.setSelectionRange(selection[0],selection[1]); }
 }
 function button(id: string, action: () => void) { document.getElementById(id)?.addEventListener('click', action); }

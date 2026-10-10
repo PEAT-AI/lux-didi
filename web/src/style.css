@@ -8,7 +8,7 @@
 
 .mobile-conversations{display:none}select{font:inherit;width:100%;padding:10px;border:1px solid #ced8ce;border-radius:8px;background:white;color:#263c36;min-height:44px}select:focus-visible{outline:3px solid #b27d35;outline-offset:3px}@media(max-width:850px){.mobile-conversations{display:block;padding:18px 20px;border-bottom:1px solid var(--border)}}
 
-.orb-stage{display:flex;align-items:center;justify-content:center;gap:25px;margin:-12px 0 24px;min-height:180px;border:1px solid #e8e4d9;border-radius:18px;background:linear-gradient(110deg,#fbf8f0,#f5f6ee);overflow:hidden}.orb-stage canvas{width:190px;height:190px;display:block;flex-shrink:0}.orb-caption{max-width:310px;padding:18px 22px 18px 0}.orb-label{font-family:Georgia,serif;font-size:1.4rem;margin-bottom:9px;color:#63472e}.voice-honesty{font-size:.76rem;color:#765e43;margin:0}.voice-honesty span{display:block;font-size:.7rem;color:#8c7b68;line-height:1.6;margin-top:4px}@media(max-width:600px){.orb-stage{gap:0;margin:0 0 22px;min-height:155px}.orb-stage canvas{width:145px;height:145px}.orb-caption{padding:12px 14px 12px 0}.orb-label{font-size:1.05rem}.voice-honesty span{font-size:.63rem}}@media(prefers-reduced-motion:reduce){button{transition:none}}
+.orb-stage{display:grid;grid-template-columns:minmax(0,600px) minmax(0,310px);align-items:center;justify-content:center;gap:25px;margin:-12px 0 24px;min-height:0;border:1px solid #e8e4d9;border-radius:18px;background:linear-gradient(110deg,#fbf8f0,#f5f6ee);overflow:visible}.orb-stage canvas{width:100%;max-width:600px;height:auto;aspect-ratio:1;display:block}.orb-caption{max-width:310px;padding:18px 22px 18px 0}.orb-label{font-family:Georgia,serif;font-size:1.4rem;margin-bottom:9px;color:#63472e}.voice-honesty{font-size:.76rem;color:#765e43;margin:0}.voice-honesty span{display:block;font-size:.7rem;color:#8c7b68;line-height:1.6;margin-top:4px}@media(max-width:767px){.orb-stage{grid-template-columns:minmax(0,400px);gap:0;margin:0 0 22px;min-height:0}.orb-stage canvas{max-width:400px}.orb-caption{padding:12px 14px;text-align:center}.orb-label{font-size:1.05rem}.voice-honesty span{font-size:.63rem}}@media(prefers-reduced-motion:reduce){button{transition:none}}
 
 /* Orb-only style adapted from authorized Vicuna voice-blob.component.css :61-75. */
 .orb-stage canvas{display:block;pointer-events:none;transition:filter .4s ease}
@@ -28,3 +28,11 @@
 .notes-usage{margin-top:8px;border-top:1px solid var(--border);padding-top:6px}
 .notes-usage p{margin:4px 0;font-size:.9rem;overflow-wrap:anywhere}
 @media (max-width:420px){.connected-notes .search-row input{flex-basis:100%}.notes-results li,.notes-selected li{align-items:flex-start}.notes-results li button,.notes-selected li button{min-height:44px}}
+
+/* Known classic host events only; entrance/greeting have no Didi event. */
+.orb-stage canvas[data-state=RECONNECTING]{filter:grayscale(.94) brightness(.84) opacity(.85)}
+.orb-stage canvas[data-posture=listening]{animation:orb-breathe 2s ease-in-out infinite}
+.orb-stage canvas[data-posture=speaking]{transform:scale(1.3);animation:orb-speak-pulse 1.2s ease-in-out infinite}
+@keyframes orb-breathe{0%,100%{transform:scale(1)}50%{transform:scale(1.03)}}
+@keyframes orb-speak-pulse{0%,100%{transform:scale(1.3)}50%{transform:scale(1.34)}}
+@media(prefers-reduced-motion:reduce){.orb-stage canvas{animation:none!important;transition:none}}

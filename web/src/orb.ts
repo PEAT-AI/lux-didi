@@ -1,95 +1,117 @@
-/** Didi lifecycle/state adapter for the authorized first-party Canvas renderer.
- * See orb-provenance.md for bounded extraction and MIT noise dependency.
- */
-import { ClassicRenderer, clampFrameDelta, smoothingAlpha, ORB_SMOOTHING_TAU, speakingActivityTarget } from './orb-classic';
+/** Lifecycle/state adapter. No microphone, playback or native voice channel is manufactured. */
+import {ClassicRenderer} from './orb-classic';
+import {initialOrbFrame,stepOrbFrame} from './orb-frame';
 export type VoiceState = 'IDLE' | 'CONNECTING' | 'CONNECTED' | 'LISTENING' | 'PROCESSING' | 'SPEAKING' | 'RECONNECTING' | 'ERROR' | 'DISCONNECTED' | 'INTERRUPTED';
-export interface AudioFrame { level: number; low: number; mid: number; high: number; flux: number; timestamp: number }
-export const silentFrame = (): AudioFrame => ({level:0,low:0,mid:0,high:0,flux:0,timestamp:performance.now()});
+export interface AudioFrame {level:number;low:number;mid:number;high:number;flux:number;timestamp:number}
+export const silentFrame = (timestamp=performance.now()): AudioFrame => ({level:0,low:0,mid:0,high:0,flux:0,timestamp});
 export class LatestFrame {
-  private frame = silentFrame();
-  push(frame: AudioFrame) { this.frame = {...frame}; }
-  read(now: number): AudioFrame { return now-this.frame.timestamp>500 ? silentFrame() : this.frame; }
+  private frame=silentFrame();
+  push(frame:AudioFrame){this.frame={...frame};}
+  clear(){this.frame=silentFrame();}
+  read(now:number):AudioFrame{return now-this.frame.timestamp>500?silentFrame(now):this.frame;}
 }
-export function posture(state: VoiceState, audible: boolean) {
-  if(state === 'SPEAKING' || state === 'PROCESSING' && audible) return 'speaking';
-  if(state === 'LISTENING') return 'listening';
-  if(state === 'CONNECTING' || state === 'PROCESSING') return 'thinking';
-  if(['ERROR','DISCONNECTED','INTERRUPTED'].includes(state)) return 'quiet';
+export function posture(state:VoiceState,audible:boolean){
+  if(state==='SPEAKING'||(state==='PROCESSING'&&audible))return 'speaking';
+  if(state==='LISTENING')return 'listening';
+  if(state==='PROCESSING'||state==='CONNECTING')return 'thinking';
+  if(['DISCONNECTED','IDLE','RECONNECTING','INTERRUPTED'].includes(state))return 'quiet';
+  if(state==='ERROR')return 'error';
   return 'idle';
 }
+/** Absolute deadlines retain refresh quantization remainder instead of losing drift every paint. */
+export function advanceOrbDeadline(deadline:number,now:number,interval:number):number {
+  return deadline+(Math.floor(Math.max(0,now-deadline)/interval)+1)*interval;
+}
+const animatedStates=new Set<VoiceState>(['LISTENING','SPEAKING','PROCESSING','CONNECTING','CONNECTED','RECONNECTING']);
 export class Orb {
-  private context: CanvasRenderingContext2D | null;
-  private classic: ClassicRenderer | undefined;
-  private low = 0;
-  private activity = 1;
-  private durations: number[] = [];
-  private lastPaint = 0;
-  private motion = matchMedia('(prefers-reduced-motion: reduce)');
-  private animation: number | undefined;
-  private size = 220;
-  private observer: ResizeObserver;
-  private lastTime = 0;
-  private level = 0;
-  private phase = 0;
-  private destroyed = false;
-  readonly audio = new LatestFrame();
-  constructor(private canvas: HTMLCanvasElement, private state: VoiceState) {
-    this.context=canvas.getContext('2d');
-    if(this.context)this.classic=new ClassicRenderer(this.context);
-    Object.defineProperty(canvas,'didiFrameStats',{value:()=>({frames:this.durations.length,maxDrawMs:Math.max(0,...this.durations),meanDrawMs:this.durations.reduce((a,b)=>a+b,0)/Math.max(1,this.durations.length)}),configurable:true});
+  private context:CanvasRenderingContext2D|null;
+  private classic:ClassicRenderer|undefined;
+  private frame=initialOrbFrame();
+  private durations:number[]=[];
+  private paintTimes:number[]=[];
+  private frames=0;
+  private failedDraws=0;
+  private started=performance.now();
+  private motion=matchMedia('(prefers-reduced-motion: reduce)');
+  private animation:number|undefined;
+  private observer:ResizeObserver;
+  private lastTime=0;
+  private nextPaint=0;
+  private settleDeadline=0;
+  private size=600;
+  private ratio=1;
+  private destroyed=false;
+  readonly audio=new LatestFrame();
+  constructor(private canvas:HTMLCanvasElement,private state:VoiceState){
+    this.context=canvas.getContext('2d');if(this.context)this.classic=new ClassicRenderer(this.context);
+    Object.defineProperty(canvas,'didiFrameStats',{value:()=>({
+      renderer:'classic-eleven-f27bca7',tier:'high',logicalSize:this.size,displaySize:this.canvas.clientWidth,dpr:this.ratio,
+      targetFps:this.fps(),frames:this.frames,sampleCount:this.durations.length,failedDraws:this.failedDraws,
+      maxDrawMs:Math.max(0,...this.durations),meanDrawMs:this.durations.reduce((a,b)=>a+b,0)/Math.max(1,this.durations.length),
+      drawMs:[...this.durations],paintTimes:[...this.paintTimes],elapsedMs:performance.now()-this.started,
+      frameTime:this.frame.time,ambientTime:this.frame.ambientTime,lastDelta:this.lastDelta,destroyed:this.destroyed
+    }),configurable:true});
     this.observer=new ResizeObserver(()=>this.resize());this.observer.observe(canvas);
-    this.motion.addEventListener('change',this.reset);
-    document.addEventListener('visibilitychange',this.reset);
-    this.resize();
+    this.motion.addEventListener('change',this.reset);document.addEventListener('visibilitychange',this.reset);
+    this.frame=stepOrbFrame(this.frame,this.input(performance.now()),0,this.size);this.resize();
   }
-  setState(state: VoiceState) { this.state=state; this.reset(); }
-  private resize() {
-    this.size=Math.max(1,this.canvas.clientWidth);
-    const ratio=Math.min(devicePixelRatio||1,2);
-    this.canvas.width=Math.round(this.size*ratio);this.canvas.height=Math.round(this.size*ratio);
-    this.context?.setTransform(ratio,0,0,ratio,0,0);this.reset();
+  private lastDelta=0;
+  private input(now:number){
+    const raw=this.audio.read(now);
+    const unit=(v:number)=>Number.isFinite(v)?Math.min(1,Math.max(0,v)):0;
+    const audio={level:unit(raw.level),low:unit(raw.low),mid:unit(raw.mid),high:unit(raw.high),flux:unit(raw.flux)};
+    return {state:this.state,audio,audible:audio.level>.02,microphoneLevel:0};
   }
-  private reset = () => {
+  clearAudio(){this.audio.clear();this.frame={...this.frame,smoothedAudioLevel:0,smoothedPlaybackLevel:0,smoothedLow:0,smoothedMid:0,smoothedHigh:0,smoothedFlux:0,smoothedActivity:1};}
+  setState(state:VoiceState){
+    if(this.destroyed||state===this.state)return;
+    if(['DISCONNECTED','IDLE','RECONNECTING','INTERRUPTED','ERROR'].includes(state))this.clearAudio();
+    this.state=state;this.frame=stepOrbFrame(this.frame,this.input(performance.now()),0,this.size);this.reset();
+  }
+  private fps(){return ['LISTENING','SPEAKING','PROCESSING','CONNECTING'].includes(this.state)?60:12;}
+  private resize(){
+    if(this.destroyed)return;
+    this.size=matchMedia('(max-width: 767px)').matches?400:600;
+    this.ratio=Math.min(devicePixelRatio||1,2);
+    this.canvas.width=this.size*this.ratio;this.canvas.height=this.size*this.ratio;
+    this.context?.setTransform(this.ratio,0,0,this.ratio,0,0);
+    this.frame={...this.frame,size:this.size};this.reset();
+  }
+  private reset=()=>{
     if(this.destroyed)return;
     if(this.animation!==undefined)cancelAnimationFrame(this.animation);
-    this.animation=undefined;this.lastTime=0;
+    this.animation=undefined;this.lastTime=0;this.nextPaint=performance.now();this.settleDeadline=this.nextPaint+300;
     this.canvas.dataset.motion=this.motion.matches?'still':'animated';
     this.canvas.dataset.state=this.state;
-    this.draw(performance.now(),true);
-    if(!this.motion.matches&&!document.hidden&&this.context)this.animation=requestAnimationFrame(this.tick);
+    if(document.hidden)return;
+    this.paint(this.nextPaint);
+    if(!this.motion.matches&&this.context)this.animation=requestAnimationFrame(this.tick);
   };
-  private tick = (time: number) => {
-    if(this.destroyed||this.motion.matches||document.hidden){this.animation=undefined;return;}
-    // Small injected budget: 24fps idle, 30fps active; never a synthetic load.
-    const fps=['CONNECTING','PROCESSING','LISTENING','SPEAKING'].includes(this.state)?30:24;
-    if(time-this.lastPaint>=1000/fps){
-      const start=performance.now();this.draw(time,false);this.lastPaint=time;
-      this.durations.push(performance.now()-start);if(this.durations.length>60)this.durations.shift();
+  private tick=(time:number)=>{
+    this.animation=undefined;
+    if(this.destroyed||this.motion.matches||document.hidden)return;
+    if(time>=this.nextPaint){
+      this.lastDelta=this.lastTime===0?0:Math.min(.1,Math.max(0,(time-this.lastTime)/1000));this.lastTime=time;
+      this.frame=stepOrbFrame(this.frame,this.input(time),this.lastDelta,this.size);
+      this.paint(time);this.nextPaint=advanceOrbDeadline(this.nextPaint,time,1000/this.fps());
     }
-    this.animation=requestAnimationFrame(this.tick);
+    if(animatedStates.has(this.state)||time<this.settleDeadline)this.animation=requestAnimationFrame(this.tick);
   };
-  private draw(time: number, still: boolean) {
-    const ctx=this.context;if(!ctx)return;
-    const dt=this.lastTime?clampFrameDelta((time-this.lastTime)/1000):0.016;
-    this.lastTime=time;
-    const frame=this.audio.read(time), audible=frame.level>0.01;
-    const active=posture(this.state,audible);
-    const target=Math.min(1,Math.max(0,frame.level));
-    this.level+=(target-this.level)*smoothingAlpha(dt,target>this.level?ORB_SMOOTHING_TAU.playbackAttack:ORB_SMOOTHING_TAU.playbackDecay);
-    const low=Math.min(1,Math.max(0,frame.low));
-    this.low+=(low-this.low)*smoothingAlpha(dt,low>this.low?ORB_SMOOTHING_TAU.lowAttack:ORB_SMOOTHING_TAU.lowDecay);
-    const activityTarget=active==='speaking'?speakingActivityTarget(this.low):active==='thinking'?0.75:active==='listening'?1:0.3;
-    this.activity+=(activityTarget-this.activity)*smoothingAlpha(dt,activityTarget>this.activity?ORB_SMOOTHING_TAU.activityAttack:ORB_SMOOTHING_TAU.activityDecay);
-    if(!still)this.phase+=dt;
-    if(this.canvas.dataset.posture!==active)this.canvas.dataset.posture=active;
-    const s=this.size,c=s/2;
-    ctx.clearRect(0,0,s,s);
-    const hue=this.state==='ERROR'?0:active==='listening'?45:active==='speaking'?160:active==='thinking'?195:active==='quiet'?210:174;
-    this.classic?.draw(c,c,s*0.22,hue,still?0.8:this.phase,active,this.level,still?0.3:this.activity);
+  private paint(time:number){
+    if(!this.context||!this.classic)return;
+    const start=performance.now();
+    try {
+      this.context.clearRect(0,0,this.size,this.size);
+      this.canvas.dataset.posture=posture(this.state,this.input(time).audible);
+      this.classic.draw(this.frame);
+      this.frames++;this.durations.push(performance.now()-start);this.paintTimes.push(time);
+      if(this.durations.length>240){this.durations.shift();this.paintTimes.shift();}
+    }catch(error){this.failedDraws++;throw error;}
   }
-
-  destroy() {
-    this.destroyed=true;if(this.animation!==undefined)cancelAnimationFrame(this.animation);
+  destroy(){
+    if(this.destroyed)return;
+    this.destroyed=true;if(this.animation!==undefined)cancelAnimationFrame(this.animation);this.animation=undefined;
     this.observer.disconnect();this.motion.removeEventListener('change',this.reset);document.removeEventListener('visibilitychange',this.reset);
+    this.audio.clear();this.classic=undefined;this.context=null;
   }
 }

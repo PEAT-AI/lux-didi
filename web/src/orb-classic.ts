@@ -1,9 +1,14 @@
-// First-party procedural extraction authorized by WEB-R4.
-// PEAT-AI/Vicuna f27bca7bcbc77a77e3401da2683abf2f1aaf023c
-// voice-blob.component.ts lines 174-227, 1123-1297, 1529-1665.
-// Framework wrapper intentionally excluded. See orb-provenance.md.
-import { createNoise2D } from 'simplex-noise';
-
+// Authorized first-party classic painter, Vicuna f27bca7 (987–1932, dispatch 956–985).
+// Original reachable geometry is retained; inline reference noise is NOT copied.
+import {createNoise2D} from 'simplex-noise';
+import type {OrbFrame} from './orb-frame';
+export type OrbNoise = (x:number,y:number)=>number;
+export function createOrbNoise(seed=20261009): OrbNoise {
+  return createNoise2D(()=>{
+    seed^=seed<<13;seed^=seed>>>17;seed^=seed<<5;
+    return (seed>>>0)/4294967296;
+  });
+}
 export const MAX_FRAME_DELTA_S = 0.1;
 
 export function clampFrameDelta(seconds: number): number {
@@ -60,26 +65,180 @@ export function speakingTentacleOffsets(motion: number): {
 }
 
 export class ClassicRenderer {
-  private seed = 20261009;
-  private noise = {noise2D: createNoise2D(() => {
-    // Fixed seed gives reproducible geometry without a third-party RNG.
-    this.seed ^= this.seed << 13; this.seed ^= this.seed >>> 17; this.seed ^= this.seed << 5;
-    return (this.seed >>> 0) / 4294967296;
-  })};
-  private ambientNoiseOffset = {x: 0, y: 0};
-  private ambientTime = 0;
-  private state = 'idle';
-  private smoothedPlaybackLevel = 0;
-  constructor(private ctx: CanvasRenderingContext2D) {}
-  private isSpeaking() { return this.state === 'speaking'; }
-  private isListening() { return this.state === 'listening'; }
-  private isProcessing() { return this.state === 'thinking'; }
-  draw(cx: number, cy: number, radius: number, hue: number, time: number, state: string, level: number, activity: number) {
-    this.ambientTime = time; this.state = state; this.smoothedPlaybackLevel = level;
-    this.drawLuminousGlow(cx, cy, radius, hue, state === 'quiet' ? 0.1 : 0.35);
-    this.drawRadialFlares(cx, cy, radius, hue, state === 'quiet' ? 0.12 : 0.3, activity);
-    this.drawWobblyCore(cx, cy, radius, hue, activity);
+  private frame!: Readonly<OrbFrame>;
+  private noise: {noise2D:OrbNoise};
+  constructor(private ctx: CanvasRenderingContext2D, noise: OrbNoise=createOrbNoise()) {this.noise={noise2D:noise};}
+  private get time(){return this.frame.time;}
+  private get ambientTime(){return this.frame.ambientTime;}
+  private get ambientNoiseOffset(){return this.frame.ambientNoiseOffset;}
+  private get smoothedPlaybackLevel(){return this.frame.smoothedPlaybackLevel;}
+  private isSpeaking(){return this.frame.speaking;}
+  private isListening(){return this.frame.listening;}
+  private isProcessing(){return this.frame.processing;}
+  draw(frame: Readonly<OrbFrame>) {
+    this.frame=frame;
+    this.dispatchLayers(frame.size/2,frame.size/2,frame.size*.05,frame.hue??210,
+      frame.activityMultiplier,frame.glowIntensity,frame.flareIntensity);
   }
+  private dispatchLayers(
+    cx: number,
+    cy: number,
+    baseRadius: number,
+    hue: number,
+    activity: number,
+    glowIntensity: number,
+    flareIntensity: number,
+    coreScale = 1,
+    coreLiftY = 0,
+    coreAlpha = 1,
+    coronaMul = 1,
+    prominenceMul = 1,
+  ): void {
+    const budget = 10; // Complete high-tier classic: all eleven reachable calls.
+
+    this.drawAmbientCorona(cx, cy, baseRadius, hue, activity, coronaMul); // rank 1 — essential
+    if (2 <= budget) this.drawLuminousGlow(cx, cy, baseRadius, hue, glowIntensity); // rank 2
+    if (3 <= budget) this.drawRadialFlares(cx, cy, baseRadius, hue, flareIntensity, activity); // rank 3
+    if (7 <= budget) this.drawDancingSparkles(cx, cy, baseRadius, hue, activity); // rank 7 — optional
+    if (6 <= budget) this.drawBrightFlares(cx, cy, baseRadius, hue, flareIntensity, activity); // rank 6
+    if (5 <= budget) this.drawLuminousProminences(cx, cy, baseRadius, hue, activity, prominenceMul); // rank 5
+    if (4 <= budget) this.drawTechRings(cx, cy, baseRadius, hue, activity); // rank 4
+    // The two solid cores accept an optional transform (default identity) so the visage theme can
+    // shrink/lift/dim them into a "third eye" glow. Classic passes (1,0,1) → byte-identical.
+    this.drawWobblyCore(cx, cy - coreLiftY, baseRadius * coreScale, hue, activity, coreAlpha); // core — always
+    if (9 <= budget) this.drawSparkleBurst(cx, cy, baseRadius, hue, activity); // rank 9 — optional
+    if (8 <= budget) this.drawTwinklingRing(cx, cy, baseRadius, hue, activity); // rank 8 — optional
+    this.drawHotCore(cx, cy - coreLiftY, baseRadius * 0.5 * coreScale, hue, activity, coreAlpha); // core — always
+  }
+  private drawAmbientCorona(cx: number, cy: number, radius: number, hue: number, activity: number, presenceMul = 1): void {
+    if (!this.ctx) return;
+    const ctx = this.ctx;
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    // Visage yield: pull the whole corona back behind the face. Guarded so the classic path
+    // (presenceMul === 1) never touches globalAlpha and stays byte-identical to main.
+    if (presenceMul !== 1) ctx.globalAlpha *= presenceMul;
+
+    // === LAYER 1: Outer slow-moving flame tendrils ===
+    const outerFlameCount = 12;
+    for (let i = 0; i < outerFlameCount; i++) {
+      // Base angle with slow constant rotation
+      const baseAngle = (i / outerFlameCount) * Math.PI * 2;
+      const slowRotation = this.ambientTime * 0.15;
+
+      // Wobble using noise for organic movement (ALWAYS animating)
+      const noiseX = Math.cos(baseAngle) + this.ambientNoiseOffset.x;
+      const noiseY = Math.sin(baseAngle) + this.ambientNoiseOffset.y;
+      const wobble = this.noise.noise2D(noiseX * 0.5, noiseY * 0.5 + this.ambientTime * 0.3) * 0.4;
+
+      const angle = baseAngle + slowRotation + wobble;
+
+      // Flame length: BASE length (always visible) + BOOST from activity
+      const baseLength = radius * 0.4; // Reduced from 0.8
+      const activityBoost = radius * 0.8 * (activity - 0.5); // Reduced from 1.5
+      const lengthPulse = 0.7 + Math.sin(this.ambientTime * 2 + i * 0.7) * 0.3;
+      const flameLength = (baseLength + Math.max(0, activityBoost)) * lengthPulse;
+
+      // Start from orb edge
+      const startDist = radius * 0.95;
+      const startX = cx + Math.cos(angle) * startDist;
+      const startY = cy + Math.sin(angle) * startDist;
+
+      // Control point for bezier curve (makes flame curl)
+      const ctrlAngle = angle + Math.sin(this.ambientTime * 1.5 + i) * 0.5;
+      const ctrlDist = startDist + flameLength * 0.6;
+      const ctrlX = cx + Math.cos(ctrlAngle) * ctrlDist;
+      const ctrlY = cy + Math.sin(ctrlAngle) * ctrlDist;
+
+      // End point
+      const endAngle = angle + Math.sin(this.ambientTime * 2.5 + i * 1.3) * 0.3;
+      const endX = cx + Math.cos(endAngle) * (startDist + flameLength);
+      const endY = cy + Math.sin(endAngle) * (startDist + flameLength);
+
+      // Gradient: white-yellow core fading to orange-red tips
+      const grad = ctx.createLinearGradient(startX, startY, endX, endY);
+      const baseAlpha = 0.5; // Always visible base
+      const activityAlpha = 0.3 * (activity - 0.5); // Extra when active
+      const alpha = baseAlpha + Math.max(0, activityAlpha);
+
+      grad.addColorStop(0, `hsla(${hue}, 90%, 28%, ${alpha})`);
+      grad.addColorStop(0.2, `hsla(${hue}, 85%, 24%, ${alpha * 0.9})`);
+      grad.addColorStop(0.5, `hsla(${hue}, 80%, 20%, ${alpha * 0.6})`);
+      grad.addColorStop(0.8, `hsla(${hue}, 75%, 16%, ${alpha * 0.3})`);
+      grad.addColorStop(1, 'rgba(0, 151, 136, 0)');
+
+      // Draw curved flame
+      ctx.beginPath();
+      ctx.moveTo(startX, startY);
+      ctx.quadraticCurveTo(ctrlX, ctrlY, endX, endY);
+      ctx.strokeStyle = grad;
+      ctx.lineWidth = 6 + activity * 8;
+      ctx.lineCap = 'round';
+      ctx.stroke();
+    }
+
+    // === LAYER 2: Fast-moving inner flames (more turbulent) ===
+    const innerFlameCount = 18;
+    for (let i = 0; i < innerFlameCount; i++) {
+      const baseAngle = (i / innerFlameCount) * Math.PI * 2;
+      const fastRotation = this.ambientTime * 0.4; // Faster rotation
+
+      // More aggressive noise for turbulent look
+      const noiseVal = this.noise.noise2D(
+        Math.cos(baseAngle) * 2 + this.ambientTime * 0.8,
+        Math.sin(baseAngle) * 2 + this.ambientTime * 0.6
+      );
+      const wobble = noiseVal * 0.6;
+
+      const angle = baseAngle + fastRotation + wobble;
+
+      // Shorter, more flickery flames
+      const baseLength = radius * 0.4;
+      const activityBoost = radius * 0.8 * (activity - 0.5);
+      const flicker = 0.5 + Math.sin(this.ambientTime * 8 + i * 2) * 0.5;
+      const flameLength = (baseLength + Math.max(0, activityBoost)) * flicker;
+
+      const startDist = radius * 0.9;
+      const startX = cx + Math.cos(angle) * startDist;
+      const startY = cy + Math.sin(angle) * startDist;
+      const endX = cx + Math.cos(angle) * (startDist + flameLength);
+      const endY = cy + Math.sin(angle) * (startDist + flameLength);
+
+      const alpha = 0.4 + Math.max(0, 0.4 * (activity - 0.5));
+
+      const grad = ctx.createLinearGradient(startX, startY, endX, endY);
+      grad.addColorStop(0, `hsla(${hue}, 85%, 28%, ${alpha})`);
+      grad.addColorStop(0.3, `hsla(${hue}, 80%, 24%, ${alpha * 0.7})`);
+      grad.addColorStop(0.7, `hsla(${hue}, 75%, 20%, ${alpha * 0.3})`);
+      grad.addColorStop(1, 'rgba(0, 151, 136, 0)');
+
+      ctx.beginPath();
+      ctx.moveTo(startX, startY);
+      ctx.lineTo(endX, endY);
+      ctx.strokeStyle = grad;
+      ctx.lineWidth = 3 + activity * 4;
+      ctx.lineCap = 'round';
+      ctx.stroke();
+    }
+
+    // === LAYER 3: Glowing halo ring that pulses ===
+    const haloRadius = radius * (1.1 + Math.sin(this.ambientTime * 1.5) * 0.05);
+    const haloGrad = ctx.createRadialGradient(cx, cy, radius * 0.8, cx, cy, haloRadius * 1.4);
+    const haloAlpha = 0.3 + Math.max(0, 0.3 * (activity - 0.5));
+    haloGrad.addColorStop(0, 'rgba(0, 0, 0, 0)');
+    haloGrad.addColorStop(0.6, `hsla(${hue}, 100%, 70%, ${haloAlpha * 0.3})`);
+    haloGrad.addColorStop(0.8, `hsla(${hue - 10}, 100%, 60%, ${haloAlpha * 0.5})`);
+    haloGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+
+    ctx.fillStyle = haloGrad;
+    ctx.beginPath();
+    ctx.arc(cx, cy, haloRadius * 1.4, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.restore();
+  }
+
   private drawLuminousGlow(cx: number, cy: number, radius: number, hue: number, intensity: number): void {
     if (!this.ctx) return;
     const ctx = this.ctx;
@@ -255,6 +414,237 @@ export class ClassicRenderer {
     ctx.stroke();
   }
 
+  private drawDancingSparkles(cx: number, cy: number, radius: number, hue: number, activity: number): void {
+    if (!this.ctx) return;
+    const ctx = this.ctx;
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+
+    // ALWAYS VISIBLE dancing sparkles around the orb
+    // Base animation runs constantly, activity makes them bigger/brighter
+    // Increase sparkle count when active (speaking)
+    const sparkleCount = activity > 0.9 ? 16 : 8;  // More sparkles when speaking
+
+    for (let i = 0; i < sparkleCount; i++) {
+      // Each sparkle has its own orbit - uses ambientTime for constant motion
+      const orbitRadius = radius * (1.1 + (i % 5) * 0.15); // Tighter orbit
+      const orbitSpeed = 0.3 + (i % 3) * 0.15;
+      const angle = (i / sparkleCount) * Math.PI * 2 + this.ambientTime * orbitSpeed * (i % 2 === 0 ? 1 : -1);
+
+      // Twinkle effect - brightness oscillates (uses ambientTime)
+      const twinkle = Math.sin(this.ambientTime * 8 + i * 1.7) * 0.5 + 0.5;
+
+      // Size: BASE (always visible) + BOOST (from activity)
+      const baseSize = 1.5 + twinkle * 1.5;
+      const activityBoost = twinkle * 1.5 * Math.max(0, activity - 0.5);
+      const size = baseSize + activityBoost;
+
+      const x = cx + Math.cos(angle) * orbitRadius;
+      const y = cy + Math.sin(angle) * orbitRadius;
+
+      // Alpha: BASE (always visible) + BOOST (from activity)
+      const baseAlpha = 0.3 + twinkle * 0.3;
+      const activityAlphaBoost = twinkle * 0.4 * Math.max(0, activity - 0.5);
+      const alpha = baseAlpha + activityAlphaBoost;
+
+      // Glow around sparkle - teal
+      const sparkleGrad = ctx.createRadialGradient(x, y, 0, x, y, size * 4);
+      sparkleGrad.addColorStop(0, `hsla(${hue}, 85%, 34%, ${alpha * 0.12})`);
+      sparkleGrad.addColorStop(0.3, `hsla(${hue}, 80%, 30%, ${alpha * 0.08})`);
+      sparkleGrad.addColorStop(0.6, `hsla(${hue}, 75%, 26%, ${alpha * 0.04})`);
+      sparkleGrad.addColorStop(1, 'rgba(0, 151, 136, 0)');
+
+      ctx.fillStyle = sparkleGrad;
+      ctx.beginPath();
+      ctx.arc(x, y, size * 4, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Bright teal center
+      ctx.fillStyle = `hsla(${hue}, 90%, 36%, ${alpha * 0.1})`;
+      ctx.beginPath();
+      ctx.arc(x, y, size * 0.8, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    ctx.restore();
+  }
+
+  private drawBrightFlares(
+    cx: number,
+    cy: number,
+    radius: number,
+    hue: number,
+    intensity: number,
+    activity: number
+  ): void {
+    if (!this.ctx) return;
+    const ctx = this.ctx;
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+
+    // Multiple bright flares with organic movement
+    const flares = [
+      { baseAngle: 0, widthMult: 1.2, heightMult: 1.0, phase: 0 },
+      { baseAngle: Math.PI / 2, widthMult: 0.9, heightMult: 0.9, phase: 0.5 },
+      { baseAngle: Math.PI / 4, widthMult: 0.6, heightMult: 0.7, phase: 1.0 },
+      { baseAngle: -Math.PI / 4, widthMult: 0.6, heightMult: 0.7, phase: 1.5 },
+      { baseAngle: Math.PI / 6, widthMult: 0.4, heightMult: 0.5, phase: 2.0 },
+      { baseAngle: -Math.PI / 6, widthMult: 0.4, heightMult: 0.5, phase: 2.5 },
+      { baseAngle: Math.PI / 3, widthMult: 0.35, heightMult: 0.4, phase: 3.0 },
+      { baseAngle: -Math.PI / 3, widthMult: 0.35, heightMult: 0.4, phase: 3.5 },
+    ];
+
+    for (const flare of flares) {
+      // Organic oscillation - angle wobbles slightly
+      const angleWobble = Math.sin(this.ambientTime * 2 + flare.phase) * 0.03;
+      const angle = flare.baseAngle + angleWobble;
+
+      // Organic size pulsation - each flare breathes independently
+      const sizePulse = 0.85 + Math.sin(this.ambientTime * 3 + flare.phase * 2) * 0.15;
+      const lengthPulse = 0.9 + Math.sin(this.ambientTime * 2.5 + flare.phase) * 0.1;
+
+      // Reduced multipliers to ensure flares stay completely within the canvas bounds
+      const flareLength = radius * (2 + activity * 3) * flare.widthMult * lengthPulse;
+      const flareThickness = radius * 0.06 * flare.heightMult * (1 + activity * 0.6) * sizePulse;
+
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate(angle);
+
+      // Draw POINTY diamond/lens shape instead of ellipse
+      // Tapered from center to sharp points at both ends
+      const grad = ctx.createLinearGradient(-flareLength, 0, flareLength, 0);
+      grad.addColorStop(0, 'rgba(0, 151, 136, 0)');
+      grad.addColorStop(0.1, `hsla(${hue}, 80%, 28%, ${intensity * 0.2})`);
+      grad.addColorStop(0.3, `hsla(${hue}, 85%, 32%, ${intensity * 0.5})`);
+      grad.addColorStop(0.5, `hsla(${hue}, 90%, 36%, ${intensity * 0.7})`);
+      grad.addColorStop(0.7, `hsla(${hue}, 85%, 32%, ${intensity * 0.5})`);
+      grad.addColorStop(0.9, `hsla(${hue}, 80%, 28%, ${intensity * 0.2})`);
+      grad.addColorStop(1, 'rgba(0, 151, 136, 0)');
+
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      // Sharp diamond shape - straight lines to needle-sharp points
+      ctx.moveTo(-flareLength, 0);  // Left sharp point
+      ctx.lineTo(0, -flareThickness);  // Top center
+      ctx.lineTo(flareLength, 0);  // Right sharp point
+      ctx.lineTo(0, flareThickness);  // Bottom center
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.restore();
+    }
+
+    ctx.restore();
+  }
+
+  private drawLuminousProminences(cx: number, cy: number, radius: number, hue: number, activity: number, presenceMul = 1): void {
+    if (!this.ctx) return;
+    const ctx = this.ctx;
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    // Visage yield: the sunburst arcs go fully dark behind the face. Guarded so the classic path
+    // (presenceMul === 1) never touches globalAlpha and stays byte-identical to main.
+    if (presenceMul !== 1) ctx.globalAlpha *= presenceMul;
+
+    // ALWAYS VISIBLE curved arcs shooting out (uses ambientTime)
+    const numProminences = 10;
+    for (let i = 0; i < numProminences; i++) {
+      const baseAngle = (i / numProminences) * Math.PI * 2;
+      const angleOffset = Math.sin(this.ambientTime * 1.5 + i * 0.7) * 0.25;
+      const angle = baseAngle + angleOffset + this.ambientTime * 0.08;
+
+      const extensionPhase = Math.sin(this.ambientTime * 2.5 + i * 1.3);
+
+      // Length: BASE (always visible) + activity BOOST
+      const baseLength = radius * (0.4 + extensionPhase * 0.3);
+      const activityBoost = radius * extensionPhase * 0.5 * Math.max(0, activity - 0.5);
+      const length = baseLength + activityBoost;
+
+      // Alpha: BASE + activity BOOST
+      const baseAlpha = 0.35 + extensionPhase * 0.2;
+      const alphaBoost = extensionPhase * 0.3 * Math.max(0, activity - 0.5);
+      const alpha = baseAlpha + alphaBoost;
+
+      const startX = cx + Math.cos(angle) * radius * 0.85;
+      const startY = cy + Math.sin(angle) * radius * 0.85;
+      const endX = cx + Math.cos(angle) * (radius + length);
+      const endY = cy + Math.sin(angle) * (radius + length);
+
+      const ctrlAngle = angle + Math.sin(this.ambientTime * 3.5 + i) * 0.35;
+      const ctrlDist = radius * (1.1 + extensionPhase * 0.5);
+      const ctrlX = cx + Math.cos(ctrlAngle) * ctrlDist;
+      const ctrlY = cy + Math.sin(ctrlAngle) * ctrlDist;
+
+      // Teal gradient for prominences
+      const grad = ctx.createLinearGradient(startX, startY, endX, endY);
+      grad.addColorStop(0, `hsla(${hue}, 90%, 30%, ${alpha})`);
+      grad.addColorStop(0.3, `hsla(${hue}, 85%, 26%, ${alpha * 0.7})`);
+      grad.addColorStop(0.7, `hsla(${hue}, 80%, 22%, ${alpha * 0.3})`);
+      grad.addColorStop(1, 'rgba(0, 151, 136, 0)');
+
+      // Line width: BASE + activity BOOST
+      const baseWidth = 3;
+      const widthBoost = 6 * Math.max(0, activity - 0.5);
+
+      ctx.beginPath();
+      ctx.moveTo(startX, startY);
+      ctx.quadraticCurveTo(ctrlX, ctrlY, endX, endY);
+      ctx.strokeStyle = grad;
+      ctx.lineWidth = baseWidth + widthBoost;
+      ctx.lineCap = 'round';
+      ctx.stroke();
+    }
+
+    ctx.restore();
+  }
+
+  private drawTechRings(cx: number, cy: number, radius: number, hue: number, activity: number): void {
+    if (!this.ctx) return;
+    const ctx = this.ctx;
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+
+    // Bright white-yellow tech rings
+    const rings = [
+      { radiusMult: 1.6, speed: 0.3, dash: [30, 40, 15, 50], width: 2, alpha: 0.6 },
+      { radiusMult: 2.1, speed: -0.22, dash: [55, 30, 12, 65], width: 1.5, alpha: 0.5 },
+      { radiusMult: 2.6, speed: 0.15, dash: [25, 75, 35, 55], width: 2.5, alpha: 0.4 },
+    ];
+
+    for (const ring of rings) {
+      const ringRadius = radius * ring.radiusMult * (0.9 + activity * 0.2);
+      const rotation = this.time * ring.speed;
+
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate(rotation);
+
+      ctx.setLineDash(ring.dash);
+      ctx.strokeStyle = `hsla(${hue}, 80%, 80%, ${ring.alpha * (0.6 + activity * 0.4)})`;
+      ctx.lineWidth = ring.width;
+
+      ctx.beginPath();
+      ctx.arc(0, 0, ringRadius, 0, Math.PI * 2);
+      ctx.stroke();
+
+      ctx.restore();
+    }
+
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+
+  /**
+   * WOBBLY BLOB CORE - Constant organic edge deformation
+   * The "Wobbly Blob" technique: noise-deformed polygon that ALWAYS animates
+   * Activity boosts the amplitude, but there's always visible movement
+   * Updated for light background - uses solid teal colors
+   */
   private drawWobblyCore(cx: number, cy: number, radius: number, hue: number, activity: number, coreAlpha = 1): void {
     if (!this.ctx) return;
     const ctx = this.ctx;
@@ -274,7 +664,7 @@ export class ClassicRenderer {
     this.drawWobblyBlobLayer(ctx, cx, cy, outerRadius, {
       hue: hue,
       saturation: 85,
-      lightness: 24,
+      lightness: 24, 
       alpha: 0.3, // Reduced from 0.6
       noiseScale: 1.2,
       noiseSpeed: 0.4,
@@ -288,7 +678,7 @@ export class ClassicRenderer {
     this.drawWobblyBlobLayer(ctx, cx, cy, midRadius, {
       hue: hue,
       saturation: 90,
-      lightness: 30,
+      lightness: 30, 
       alpha: 0.4, // Reduced from 0.75
       noiseScale: 0.9,
       noiseSpeed: 0.35,
@@ -302,7 +692,7 @@ export class ClassicRenderer {
     this.drawWobblyBlobLayer(ctx, cx, cy, innerRadius, {
       hue: hue,
       saturation: 95,
-      lightness: 36,
+      lightness: 36, 
       alpha: 0.5, // Reduced from 0.85
       noiseScale: 0.7,
       noiseSpeed: 0.3,
@@ -316,7 +706,7 @@ export class ClassicRenderer {
     this.drawWobblyBlobLayer(ctx, cx, cy, coreRadius, {
       hue: hue,
       saturation: 80,
-      lightness: 42,
+      lightness: 42, 
       alpha: 0.6, // Reduced from 0.95
       noiseScale: 0.5,
       noiseSpeed: 0.25,
@@ -392,4 +782,164 @@ export class ClassicRenderer {
     ctx.fill();
   }
 
+  private drawSparkleBurst(cx: number, cy: number, radius: number, hue: number, activity: number): void {
+    if (!this.ctx) return;
+    const ctx = this.ctx;
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+
+    // ALWAYS VISIBLE sparkles shooting outward
+    // Base count (always visible) + activity burst (more when active)
+    // More particles when speaking
+    const particleCount = 8 + Math.floor(activity * 10);  // 8-18 based on activity
+    const sparkleCount = particleCount;
+
+    for (let i = 0; i < sparkleCount; i++) {
+      const baseAngle = (i / sparkleCount) * Math.PI * 2;
+      const angleJitter = Math.sin(this.ambientTime * 3.5 + i * 2.3) * 0.35;
+      const angle = baseAngle + angleJitter + this.ambientTime * 0.25;
+
+      const phase = (this.ambientTime * 1.8 + i * 0.12) % 2.5;
+      const dist = radius * (0.9 + phase * 0.8); // Reduced from 1.8 to 0.8 - sparks stay closer
+
+      // Size: BASE + activity BOOST
+      const baseSize = 2 + Math.sin(this.ambientTime * 7 + i) * 1.5;
+      const activityBoost = (2 + Math.sin(this.ambientTime * 7 + i) * 1.0) * Math.max(0, activity - 0.5);
+      const size = (baseSize + activityBoost) * (1 - phase * 0.25);
+
+      const x = cx + Math.cos(angle) * dist;
+      const y = cy + Math.sin(angle) * dist;
+
+      // Alpha: BASE + activity BOOST
+      const baseAlpha = Math.max(0, 0.4 - phase * 0.15);
+      const alphaBoost = Math.max(0, 0.5 - phase * 0.2) * Math.max(0, activity - 0.5);
+      const alpha = baseAlpha + alphaBoost;
+
+      // Teal sparkle
+      const sparkleGrad = ctx.createRadialGradient(x, y, 0, x, y, size * 3);
+      sparkleGrad.addColorStop(0, `hsla(${hue}, 90%, 34%, ${alpha * 0.12})`);
+      sparkleGrad.addColorStop(0.2, `hsla(${hue}, 85%, 30%, ${alpha * 0.08})`);
+      sparkleGrad.addColorStop(0.5, `hsla(${hue}, 80%, 26%, ${alpha * 0.04})`);
+      sparkleGrad.addColorStop(1, 'rgba(0, 151, 136, 0)');
+
+      ctx.fillStyle = sparkleGrad;
+      ctx.beginPath();
+      ctx.arc(x, y, size * 3, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Bright teal center
+      ctx.fillStyle = `hsla(${hue}, 90%, 36%, ${alpha * 0.1})`;
+      ctx.beginPath();
+      ctx.arc(x, y, size * 0.6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    ctx.restore();
+  }
+
+  private drawTwinklingRing(cx: number, cy: number, radius: number, hue: number, activity: number): void {
+    if (!this.ctx) return;
+    const ctx = this.ctx;
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+
+    // ALWAYS VISIBLE twinkling sparkles in a ring (uses ambientTime)
+    const count = 12;
+    const ringRadius = radius * 1.15;
+
+    for (let i = 0; i < count; i++) {
+      const angle = (i / count) * Math.PI * 2 + this.ambientTime * 0.4;
+      const wobble = Math.sin(this.ambientTime * 5 + i * 2) * radius * 0.15;
+      const dist = ringRadius + wobble;
+
+      // Fast twinkle
+      const twinkle = Math.sin(this.ambientTime * 12 + i * 3.1) * 0.5 + 0.5;
+
+      // Size: BASE + activity BOOST
+      const baseSize = 2 + twinkle * 2;
+      const sizeBoost = twinkle * 2 * Math.max(0, activity - 0.5);
+      const size = baseSize + sizeBoost;
+
+      const x = cx + Math.cos(angle) * dist;
+      const y = cy + Math.sin(angle) * dist;
+
+      // Alpha: BASE + activity BOOST
+      const baseAlpha = 0.3 + twinkle * 0.35;
+      const alphaBoost = twinkle * 0.35 * Math.max(0, activity - 0.5);
+      const alpha = baseAlpha + alphaBoost;
+
+      // Teal twinkle
+      ctx.fillStyle = `hsla(${hue}, 90%, 32%, ${alpha * 0.12})`;
+      ctx.beginPath();
+      ctx.arc(x, y, size, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Small teal glow
+      const glowGrad = ctx.createRadialGradient(x, y, 0, x, y, size * 3);
+      glowGrad.addColorStop(0, `hsla(${hue}, 85%, 34%, ${alpha * 0.1})`);
+      glowGrad.addColorStop(0.5, `hsla(${hue}, 80%, 30%, ${alpha * 0.06})`);
+      glowGrad.addColorStop(1, 'rgba(0, 151, 136, 0)');
+
+      ctx.fillStyle = glowGrad;
+      ctx.beginPath();
+      ctx.arc(x, y, size * 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    ctx.restore();
+  }
+
+  private drawHotCore(cx: number, cy: number, radius: number, hue: number, activity: number, coreAlpha = 1): void {
+    if (!this.ctx) return;
+    const ctx = this.ctx;
+
+    ctx.save();
+    // Use source-over for solid teal core visible on light backgrounds
+    ctx.globalCompositeOperation = 'source-over';
+    // coreAlpha defaults to 1 (classic → no-op, byte-identical); the visage theme dims the core.
+    ctx.globalAlpha = coreAlpha;
+
+    // Pulsing teal center
+    const pulse = 1 + Math.sin(this.time * 3) * 0.1 * activity;
+    const coreRadius = radius * pulse;
+
+    // Solid teal core gradient (visible on white background)
+    // DELICATE TUNING: Reduced alphas so it looks more like light/energy and less like a solid rock
+    const innerGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, coreRadius);
+    // Plantix teal: hsl(174, 100%, 30%) = #009788
+    innerGrad.addColorStop(0, `hsla(${hue}, 100%, 28%, 0.75)`);  // Reduced from 0.95
+    innerGrad.addColorStop(0.3, `hsla(${hue}, 95%, 34%, 0.6)`);  // Reduced from 0.85
+    innerGrad.addColorStop(0.6, `hsla(${hue}, 90%, 40%, 0.4)`);  // Reduced from 0.6
+    innerGrad.addColorStop(0.85, `hsla(${hue}, 85%, 46%, 0.15)`); // Reduced from 0.3
+    innerGrad.addColorStop(1, 'rgba(0, 151, 136, 0)'); // Fade to transparent teal
+
+    ctx.fillStyle = innerGrad;
+    ctx.beginPath();
+    ctx.arc(cx, cy, coreRadius, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Bright center spot (lighter teal) when active
+    if (activity > 0.4) {
+      const spotAlpha = Math.min(1, (activity - 0.4) * 1.2);
+      const spotGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, coreRadius * 0.4);
+      spotGrad.addColorStop(0, `hsla(${hue}, 70%, 48%, ${spotAlpha * 0.5})`);  // Reduced from 0.7
+      spotGrad.addColorStop(0.5, `hsla(${hue}, 80%, 40%, ${spotAlpha * 0.2})`); // Reduced from 0.4
+      spotGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+
+      ctx.fillStyle = spotGrad;
+      ctx.beginPath();
+      ctx.arc(cx, cy, coreRadius * 0.4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    ctx.restore();
+  }
+
+
+}
+/** Stateless canvas boundary: identical frame/noise yields identical calls, with no clock or DOM access. */
+export function paintClassic(ctx: CanvasRenderingContext2D, frame: Readonly<OrbFrame>, noise: OrbNoise): void {
+  new ClassicRenderer(ctx,noise).draw(frame);
 }

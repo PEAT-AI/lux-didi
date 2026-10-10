@@ -150,7 +150,7 @@ export async function catalogMcpConfiguration(options: CatalogOptions): Promise<
       offset = Number(cursor['offset']);
     }
     const next = offset + options.limit;
-    return { state: 'catalog', schemaDigest: discovery.schemaDigest, toolNames: names.slice(offset, next), total: names.length,
+    return { state: 'catalog', schemaDigest: discovery.schemaDigest, toolNames: names.slice(offset, next).map(name => name === 'search_knowledge' || name === 'get_insight' ? name : '<unapproved-tool>'), total: names.length,
       cursor: next < names.length ? Buffer.from(canonicalJSON({ digest: discovery.schemaDigest, selection, offset: next })).toString('base64url') : null,
       coverage: 'complete-tool-catalog-not-source-corpus' };
   } finally { await adapter.close(); }

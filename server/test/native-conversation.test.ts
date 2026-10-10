@@ -139,15 +139,14 @@ test('NATIVE selection is service memory only: restart loses it and no selection
   } finally { await f.close(); }
 });
 
-test('NATIVE latest same-principal selection wins over an earlier in-flight write', async () => {
+test('NATIVE selection writes apply in arrival order; the last committed write is the selection', async () => {
   const f = await fixture();
   try {
     const auth = await f.pair();
     const a = await f.enroll(auth, 'Conversation A', 'enroll-a');
     const b = await f.enroll(auth, 'Conversation B', 'enroll-b');
-    const first = f.call(auth, '/conversation-selection', { sessionId: a.sessionId, title: 'Conversation A' }, 'sel-a');
-    const second = f.call(auth, '/conversation-selection', { sessionId: b.sessionId, title: 'Conversation B' }, 'sel-b');
-    assert.equal((await first).status, 200); assert.equal((await second).status, 200);
+    assert.equal((await f.call(auth, '/conversation-selection', { sessionId: a.sessionId, title: 'Conversation A' }, 'sel-a')).status, 200);
+    assert.equal((await f.call(auth, '/conversation-selection', { sessionId: b.sessionId, title: 'Conversation B' }, 'sel-b')).status, 200);
     assert.deepEqual(await f.read(auth, '/conversation-selection'), { sessionId: b.sessionId, title: 'Conversation B' });
   } finally { await f.close(); }
 });

@@ -59,6 +59,9 @@ try {
   browser = await chromium.launch({ channel: 'chromium', headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
   context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, timezoneId: 'UTC' }); page = await context.newPage();
   const errors = [];
+  const starts = [], responses = [];
+  page.on('request', request => { if (request.url().includes('/api/v1')) starts.push({ path: new URL(request.url()).pathname, method: request.method(), t: request.timing().startTime }); });
+  page.on('response', response => { const request = response.request(); if (request.url().includes('/api/v1')) responses.push({ path: new URL(request.url()).pathname, method: request.method(), t: request.timing().responseStart }); });
   page.on('pageerror', error => errors.push(error.message));
 
   await step('actual headless hardware GPU without product fixture mode', async () => {
@@ -120,6 +123,45 @@ try {
     await page.getByText(answer, { exact: true }).waitFor();
     await page.screenshot({ path: join(artifacts, `reload-restores-selection-${sha}.png`) });
     assert.deepEqual(errors, []);
+  });
+
+  await step('the conversation subscription is established before the durable snapshot read', async () => {
+    starts.length = 0; responses.length = 0;
+    // Deliberate response control: without awaiting the subscription the snapshot GET would be issued first.
+    await page.route('**/conversations/*/events', async route => { await new Promise(resolve => setTimeout(resolve, 300)); await route.continue(); });
+    try {
+      await choose('Native A · gemini-connected-test · active');
+      await page.waitForFunction(async expected => { const response = await fetch('/api/v1/conversation-selection', { credentials: 'same-origin', cache: 'no-store' }); return (await response.json()).data.sessionId === expected; }, a.sessionId);
+    } finally { await page.unroute('**/conversations/*/events'); }
+    const events = responses.find(item => item.method === 'POST' && item.path.endsWith('/events'));
+    const snapshot = starts.find(item => item.method === 'GET' && item.path === `/api/v1/conversations/${a.sessionId}`);
+    assert.ok(events && snapshot, `events=${JSON.stringify(events)} snapshot=${JSON.stringify(snapshot)}`);
+    assert.ok(events.t <= snapshot.t, `subscription response ${events.t} must precede the snapshot request ${snapshot.t}`);
+  });
+
+  await step('a superseded selection write is never sent and the latest committed choice is the selection', async () => {
+    starts.length = 0;
+    await choose('Native B · gemini-connected-test · active');
+    await choose('Native A · gemini-connected-test · active');
+    await page.waitForFunction(async expected => { const response = await fetch('/api/v1/conversation-selection', { credentials: 'same-origin', cache: 'no-store' }); return (await response.json()).data.sessionId === expected; }, a.sessionId);
+    const writes = starts.filter(item => item.method === 'POST' && item.path === '/api/v1/conversation-selection');
+    assert.equal(writes.length, 2, `one write per explicit choice: ${JSON.stringify(writes)}`);
+    assert.equal((await api('/conversation-selection')).sessionId, a.sessionId);
+  });
+
+  await step('an older run response cannot replace a newer committed run', async () => {
+    let delayed = false;
+    await page.route(/\/api\/v1\/chat\/[0-9a-f-]{36}$/, async route => { if (route.request().method() === 'GET' && !delayed) { delayed = true; await new Promise(resolve => setTimeout(resolve, 500)); } await route.continue(); });
+    try {
+      const older = (await operator('/chat', { sessionId: a.sessionId, text: 'First ordering turn for the native page.' })).data.runId;
+      // The page's snapshot fetch for the older run is the first GET and is delayed.
+      await page.waitForFunction(expected => { const element = document.querySelector('#connected-run'); return element?.getAttribute('data-run-id') === expected && !element.textContent.includes('waiting for a saved answer'); }, older);
+      const newer = (await operator('/chat', { sessionId: a.sessionId, text: 'Second ordering turn for the native page.' })).data.runId;
+      assert.notEqual(newer, older);
+      await page.waitForFunction(expected => document.querySelector('#connected-run')?.getAttribute('data-run-id') === expected, newer);
+      assert.equal(await page.locator('#connected-run').getAttribute('data-run-id'), newer);
+      await page.screenshot({ path: join(artifacts, `ordering-newer-run-wins-${sha}.png`) });
+    } finally { await page.unroute(/\/api\/v1\/chat\/[0-9a-f-]{36}$/); }
   });
 
   console.log(`NATIVE-BROWSER PASS steps=${steps.length} sha=${sha} images=${artifacts}`);

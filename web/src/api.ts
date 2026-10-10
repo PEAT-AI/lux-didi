@@ -49,12 +49,14 @@ export async function logout() {
 }
 
 /** Fetch SSE uses the same current browser authority; no URL tokens or resend. */
-export async function stream(path: string, signal: AbortSignal, onFrame: (value: unknown) => void): Promise<void> {
+export async function stream(path: string, signal: AbortSignal, onFrame: (value: unknown) => void, onOpen?: () => void): Promise<void> {
   if (!epoch || !csrfToken) throw new ApiError('NOT_CONNECTED', 'Reconnect before subscribing.', 0);
   const response = await fetch(`/api/v1${path}`, { method: 'POST', credentials: 'same-origin', cache: 'no-store', signal,
     headers: { 'Content-Type': 'application/json', 'X-Didi-CSRF': csrfToken, 'X-Didi-Authority-Epoch': epoch }, body: '{}' });
   if (!response.ok) { const body = await response.json(); throw new ApiError(body.error?.code ?? 'STREAM_ERROR', body.error?.message ?? 'Cannot subscribe to this run.', response.status); }
   if (!response.body) throw new ApiError('STREAM_ERROR', 'No event stream was returned.', 0);
+  // The subscription is established on the service before any durable snapshot read.
+  onOpen?.();
   const reader = response.body.getReader(), decoder = new TextDecoder();
   let pending = '';
   try {

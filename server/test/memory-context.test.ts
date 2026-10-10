@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { fork } from 'node:child_process';
 import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
@@ -11,6 +12,7 @@ import { Store } from '../runtime/store.js';
 import { Outbox } from '../runtime/outbox.js';
 import { createDomainPort } from '../domain/facade.js';
 import { chatMigrations, ChatError, type ChatConfig, type RunSnapshot } from '../chat/index.js';
+import { domainMigrations } from '../domain/schema.js';
 import type { ModelPort, ModelRequest, ModelControl, ModelResult } from '../adapters/model/types.js';
 import type { DomainContext, SourceRef } from '../contracts/domain.js';
 
@@ -52,6 +54,23 @@ function recordOf(request: ModelRequest, entryId: string) {
 function error(code: string) { return (e: unknown) => e instanceof ChatError && e.code === code && !e.localCapture; }
 function chatVersions(store: Store): number[] {
   return store.transaction(tx => tx.all("SELECT version FROM runtime_migrations WHERE owner='chat' ORDER BY version", [])).map(r => Number(r.version));
+}
+function domainVersions(store: Store): number[] {
+  return store.transaction(tx => tx.all("SELECT version FROM runtime_migrations WHERE owner='domain' ORDER BY version", [])).map(r => Number(r.version));
+}
+// A raw read-only connection: the Store's transaction authorizer denies PRAGMA by design.
+function rawRead(dir: string): DatabaseSync {
+  return new DatabaseSync(join(dir, 'state.sqlite'), { readOnly: true });
+}
+function seedSourceRefs(f: ReturnType<typeof fixture>, n: number) {
+  f.store.transaction(tx => {
+    tx.run('INSERT INTO sessions (id,title,started_at,ended_at,time_zone,revision,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)', ['seed', 'synthetic', 0, null, 'UTC', 1, 0, 0]);
+    for (let i = 0; i < n; i++) {
+      const eid = `e${String(i).padStart(5, '0')}`;
+      tx.run('INSERT INTO entries (id,session_id,sequence,role,text,captured_at,time_zone,revision) VALUES (?,?,?,?,?,?,?,1)', [eid, 'seed', i, 'user', 'x', 0, 'UTC']);
+      tx.run(`INSERT INTO source_references (id,owner_kind,owner_id,source_label,provider,account_id,external_id,source_timestamp,availability,note) VALUES (?,?,?,?,?,?,?,?,?,?)`, [`r${i}`, 'entry', eid, 'L', null, null, null, null, 'present', null]);
+    }
+  });
 }
 function sourceRef(overrides: Partial<SourceRef> = {}): SourceRef {
   return { id: 'source-1', label: 'Inbox', provider: 'synthetic-mail', externalId: 'msg-1',
@@ -413,6 +432,86 @@ test('resolution is isolated to entry-kind source references for a selected entr
     const parsed = recordOf(f.model.calls[0]!, record.id);
     assert.deepEqual(parsed.sourceRefs.map((r: { id: string }) => r.id), ['entry-ref']);
     await terminal(f, run);
+  } finally { f.close(); }
+});
+
+// 12b. Domain v3 (R8) adds the source_references owner index on upgrade; rows, refs and prior
+// table bytes are untouched, index_info is exact, integrity_check passes and reopen is idempotent.
+test('domain v3 owner index upgrades a populated schema preserving rows, refs and prior migrations', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mem-idx-upgrade-'));
+  const model = new CountingModel();
+  const prior = domainMigrations.filter(m => m.version <= 2);
+  try {
+    const f1 = openMemoryFixture(dir, model, {}, chatMigrations, prior);
+    assert.deepEqual(domainVersions(f1.store), [1, 2]);
+    const source = f1.createSession('Source');
+    const record = f1.append(source.id, 'Indexed record', sourceRef({ id: 'idx-ref' }));
+    f1.enroll();
+    const entriesBefore = f1.store.transaction(tx => tx.all('SELECT * FROM entries ORDER BY id', []));
+    const refsBefore = f1.store.transaction(tx => tx.all('SELECT * FROM source_references ORDER BY id', []));
+    const tableBefore = String(f1.store.transaction(tx => tx.get("SELECT sql FROM sqlite_master WHERE type='table' AND name='source_references'", []))!.sql);
+    f1.store.close();
+    const f2 = openMemoryFixture(dir, model, {}, chatMigrations, domainMigrations);
+    try {
+      assert.deepEqual(domainVersions(f2.store), [1, 2, 3]);
+      const indexSql = String(f2.store.transaction(tx => tx.get("SELECT sql FROM sqlite_master WHERE type='index' AND name='ix_source_references_owner'", []))!.sql);
+      assert.match(indexSql, /source_references\(owner_id, owner_kind\)/);
+      assert.deepEqual(f2.store.transaction(tx => tx.all('SELECT * FROM entries ORDER BY id', [])), entriesBefore);
+      assert.deepEqual(f2.store.transaction(tx => tx.all('SELECT * FROM source_references ORDER BY id', [])), refsBefore);
+      assert.equal(String(f2.store.transaction(tx => tx.get("SELECT sql FROM sqlite_master WHERE type='table' AND name='source_references'", []))!.sql), tableBefore);
+      assert.equal(record.id.length > 0, true);
+    } finally { f2.store.close(); }
+    const raw = rawRead(dir);
+    try {
+      assert.deepEqual(raw.prepare('PRAGMA index_info(ix_source_references_owner)').all().map(r => String(r.name)), ['owner_id', 'owner_kind']);
+      assert.equal(String(raw.prepare('PRAGMA integrity_check').get()!.integrity_check), 'ok');
+    } finally { raw.close(); }
+    const f3 = openMemoryFixture(dir, model, {}, chatMigrations, domainMigrations);
+    try {
+      assert.deepEqual(domainVersions(f3.store), [1, 2, 3]);
+      assert.deepEqual(f3.store.transaction(tx => tx.all('SELECT * FROM source_references ORDER BY id', [])), refsBefore);
+    } finally { f3.store.close(); }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// 12c. A name collision makes the v3 migration fail and roll back with no partial metadata.
+test('a name-collision on the v3 index rolls back leaving no partial migration metadata', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mem-idx-collision-'));
+  const model = new CountingModel();
+  const prior = domainMigrations.filter(m => m.version <= 2);
+  try {
+    const f1 = openMemoryFixture(dir, model, {}, chatMigrations, prior);
+    f1.store.transaction(tx => tx.run('CREATE INDEX ix_source_references_owner ON source_references(source_label)', []));
+    f1.store.close();
+    assert.throws(() => openMemoryFixture(dir, model, {}, chatMigrations, domainMigrations));
+    const f2 = openMemoryFixture(dir, model, {}, chatMigrations, prior);
+    try {
+      assert.deepEqual(domainVersions(f2.store), [1, 2]);
+      const sql = String(f2.store.transaction(tx => tx.get("SELECT sql FROM sqlite_master WHERE type='index' AND name='ix_source_references_owner'", []))!.sql);
+      assert.match(sql, /source_label/);
+    } finally { f2.store.close(); }
+    const raw = rawRead(dir);
+    try { assert.equal(String(raw.prepare('PRAGMA integrity_check').get()!.integrity_check), 'ok'); } finally { raw.close(); }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// 12d. Both exact reader queries SEARCH the v3 index on 5000 synthetic refs (IN size 1 and 32).
+test('the v3 owner index serves both exact reader queries on 5000 refs (IN 1 and 32)', async () => {
+  const f = fixture();
+  try {
+    seedSourceRefs(f, 5000);
+    const marks = (n: number) => Array.from({ length: n }, () => '?').join(',');
+    const in32 = Array.from({ length: 32 }, (_, i) => `e${String(i).padStart(5, '0')}`);
+    const plans = f.store.transaction(tx => ({
+      helper: tx.all('EXPLAIN QUERY PLAN SELECT * FROM source_references WHERE owner_id=? ORDER BY id ASC', ['e00000']).map(r => String(r.detail)),
+      helperAbsent: tx.all('EXPLAIN QUERY PLAN SELECT * FROM source_references WHERE owner_id=? ORDER BY id ASC', ['absent']).map(r => String(r.detail)),
+      batch1: tx.all(`EXPLAIN QUERY PLAN SELECT * FROM source_references WHERE owner_kind='entry' AND owner_id IN (${marks(1)}) ORDER BY id ASC`, ['e00000']).map(r => String(r.detail)),
+      batch32: tx.all(`EXPLAIN QUERY PLAN SELECT * FROM source_references WHERE owner_kind='entry' AND owner_id IN (${marks(32)}) ORDER BY id ASC`, in32).map(r => String(r.detail)),
+    }));
+    for (const [name, plan] of Object.entries(plans)) {
+      assert.ok(plan.some(d => d.includes('SEARCH source_references USING INDEX ix_source_references_owner')), `${name}: ${JSON.stringify(plan)}`);
+      assert.ok(!plan.some(d => d.includes('SCAN source_references')), `${name}: ${JSON.stringify(plan)}`);
+    }
   } finally { f.close(); }
 });
 

@@ -1,6 +1,7 @@
 import { Store } from '../runtime/store.js';
 import { Outbox } from '../runtime/outbox.js';
 import { createDomainPort } from '../domain/facade.js';
+import { domainMigrations } from '../domain/schema.js';
 import { ChatService, chatMigrations, type ChatConfig } from '../chat/index.js';
 import { validatePreferences } from '../prompt/index.js';
 import type { ModelPort, ModelRequest, ModelResult, DataClass } from '../adapters/model/types.js';
@@ -24,9 +25,9 @@ export const ROUTE_CLASSES: readonly DataClass[] = ['ordinary', 'private'];
  * Classification reads the actual stored routing label (entry/session), exactly
  * like the connected host, so unknown or corrected labels are observable.
  */
-export function openMemoryFixture(dir: string, model: ModelPort, overrides: Partial<ChatConfig> = {}, migrations: readonly SchemaMigration[] = chatMigrations) {
+export function openMemoryFixture(dir: string, model: ModelPort, overrides: Partial<ChatConfig> = {}, migrations: readonly SchemaMigration[] = chatMigrations, domainSchema: readonly SchemaMigration[] = domainMigrations) {
   const domain = createDomainPort({ outbox: Outbox });
-  const store = new Store(dir, [...domain.migrations, ...migrations]);
+  const store = new Store(dir, [...domainSchema, ...migrations]);
   const context: DomainContext = { assistantId: store.assistantId, clientId: 'principal-a', authorityEpoch: store.authorityEpoch, now: new Date(0).toISOString() };
   const config: ChatConfig = { store, domain, model,
     route: { provider: 'synthetic', model: 'counting', available: true,

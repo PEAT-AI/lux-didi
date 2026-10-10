@@ -88,11 +88,15 @@ continues. Already-sent bytes stay `mayHaveBeenSent`.
 `scripts/check-memory-context.sh`, this file. HTTP, web, Swift, installer, manifests, prompt/persona
 and the model adapter are untouched.
 
-## Known gap (root-gated)
+## Index (Domain v3)
 
-The `entries`/`sessions` reads are indexed. `source_references` has **no** index on
-`(owner_kind, owner_id)`, so that one read is a bounded scan (EXPLAIN QUERY PLAN: `SCAN
-source_references`). A genuinely indexed ref read needs a minimal additive Domain index (likely
-`(owner_id, owner_kind)`, so the existing owner-only `sourceReferences` helper and the new
-kind-filtered batch can share it). No index and no new migration are added here; that schema scope
-extension is owned by the root.
+The `source_references` reads are indexed. Domain migration **v3** adds
+`CREATE INDEX ix_source_references_owner ON source_references(owner_id, owner_kind)`: the leading
+`owner_id` serves the existing generic owner-only `sourceReferences` helper and the trailing
+`owner_kind` serves the selected-entry batch resolver's fixed `owner_kind='entry'` predicate.
+Bounded EXPLAIN QUERY PLAN over 5000 synthetic refs shows `SEARCH source_references USING INDEX
+ix_source_references_owner` for the helper (`owner_id=?`) and the batch resolver
+(`owner_id=? AND owner_kind=?`) at IN size 1 and 32 (a temporary B-tree for `ORDER BY id` is
+expected). The upgrade is additive on the populated v1+v2 schema: rows, source refs and prior
+table bytes are unchanged, `index_info` is exactly `[owner_id, owner_kind]`, `integrity_check` is
+`ok`, reopen is idempotent, and a name collision rolls back with no partial metadata.

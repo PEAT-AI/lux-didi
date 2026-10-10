@@ -135,7 +135,7 @@ for mode in ('cancel-pre','eof-pre','bad-nonce','cancel-service','eof-service'):
  if mode.endswith('service'):
   assert launched['serviceIdentity']['pid']==negative['serviceStop']['pid']
   assert launched['serviceKernel']['rawStatus']==0 and launched['serviceKernel']['flags'] & 0x84000000 == 0x84000000
-  assert negative['serviceStop']['exitObserved'] and negative['serviceStop']['terminationCode']==0
+  assert negative['serviceStop']['observedExited'] and negative['serviceStop']['exitStatus']==0
   assert negative['credentialCleanup']['cleaned']
  else:
   assert launched['released'] is False and launched['serviceIdentity'] is None

@@ -140,9 +140,11 @@ function lifecycle(state='CONNECTED') {
 }
 
 test('lifecycle drift scheduler honors source high-tier 60fps without half-refresh cadence loss',()=>{
-  const h=lifecycle('SPEAKING'),before=h.canvas.didiFrameStats().frames;
-  for(let i=1;i<=120;i++)h.advance(i*1000/120);
-  const frames=h.canvas.didiFrameStats().frames-before;
+  const h=lifecycle('SPEAKING');
+  const paints=()=>h.record.calls.filter(call=>call[0]==='clearRect').length;
+  const before=paints();
+  for(let i=1;i<=120;i++){h.advance(i*1000/120);assert(h.raf.size<=1,'one scheduler');}
+  const frames=paints()-before;
   assert(frames>=59&&frames<=61,`high-tier 60fps over 1s / 120 refresh attempts: ${frames} paints`);
   h.orb.destroy();
 });
@@ -161,6 +163,7 @@ test('hidden stops all painting; resume delta is bounded; reduced motion is stat
 test('disconnect clears live input; stale audio is silent without manufacturing a voice path',()=>{
   const h=lifecycle('SPEAKING');h.orb.audio.push({...voice,timestamp:0});
   assert.equal(h.orb.audio.read(501).level,0,'500ms stale input');
+  h.orb.audio.push({...voice,timestamp:100});assert.equal(h.orb.audio.read(100).level,voice.level,'demonstrably fresh input before disconnect');
   h.orb.setState('DISCONNECTED');assert.equal(h.orb.audio.read(100).level,0,'disconnect must clear even nonstale frames');
   h.orb.destroy();
 });

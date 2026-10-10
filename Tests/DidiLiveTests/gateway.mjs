@@ -80,6 +80,7 @@ try {
   const [code, signal] = await once(child, 'exit');
   clearTimeout(timer);
   assert.equal(signal, null, 'bounded Swift child completed without timeout');
+  console.log(`Stage0 safe counters upgrades=${upgrades.length} credentialReads=${credentialReads} controlledOpens=${opens} redirects=${redirects} trapRequests=${trapRequests}`);
   assert.equal(code, 0, 'actual Foundation Stage0');
   assert.equal(upgrades.length, 6, 'five rejects then one valid attach');
   const good = upgrades.at(-1);

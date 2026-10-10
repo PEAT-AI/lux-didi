@@ -74,12 +74,14 @@ struct ProbeHTTP {
 
 @main struct Stage0 {
     static func main() async {
+        var phase = "bootstrap"
         do {
             let fixture = try JSONDecoder().decode(Fixture.self, from: FileHandle.standardInput.readDataToEndOfFile())
             let session = isolatedSession()
             defer { session.invalidateAndCancel() }
             let http = ProbeHTTP(fixture: fixture, session: session)
             for header in ["Cookie", "Origin", "Host", "x-didi-authority-epoch", "x-didi-live-profile"] {
+                phase = "reject " + header
                 let id = try await http.create("stage0-bad-" + header)
                 var request = http.request(id)
                 request.setValue("synthetic-invalid", forHTTPHeaderField: header)
@@ -90,6 +92,7 @@ struct ProbeHTTP {
                 socket.cancel(with: .goingAway, reason: nil)
                 try require(rejected, "bad header was not rejected")
             }
+            phase = "valid attach"
             let id = try await http.create("stage0-good")
             let socket = session.webSocketTask(with: http.request(id))
             socket.resume()
@@ -102,6 +105,7 @@ struct ProbeHTTP {
             try await socket.send(.string("{\"type\":\"close\"}"))
             socket.cancel(with: .normalClosure, reason: nil)
             print("PASS Stage0 actual URLSession request + five rejected headers")
+            phase = "redirect"
             let redirectSocket = session.webSocketTask(with: http.request(id, origin: fixture.redirectOrigin))
             redirectSocket.resume()
             var redirectRejected = false
@@ -111,7 +115,11 @@ struct ProbeHTTP {
             print("PASS Stage0 redirect rejected (trap counter verified by parent fixture)")
         } catch {
             // No raw URLSession/HTTP error or response payload is printed.
-            FileHandle.standardError.write(Data("FAIL Stage0 controlled assertion or transport failure\n".utf8))
+            let reason: String
+            if case ProbeError.assertion(let message) = error { reason = message }
+            else if let failure = error as? URLError { reason = "URLSession code " + String(failure.code.rawValue) }
+            else { reason = "controlled transport failure" }
+            FileHandle.standardError.write(Data(("FAIL Stage0 " + phase + ": " + reason + "\n").utf8))
             exit(1)
         }
     }

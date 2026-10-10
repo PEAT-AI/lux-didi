@@ -9,6 +9,6 @@ import sys
 with open(sys.argv[1], encoding="utf-8") as report:
     evidence = json.load(report)["axConsumer"]
 assert evidence.get("queryOnMainThread") is False, "own-PID AX query must run off AppKit thread"
-assert isinstance(evidence.get("titleStatuses"), list), "retain exact title AXError statuses"
-assert isinstance(evidence.get("titleMatches"), int), "retain known-title match count"
+assert isinstance(evidence.get("identifierStatuses"), list), "retain exact identifier AXError statuses"
+assert isinstance(evidence.get("identifierMatches"), int), "retain owned-identifier match count"
 print("AX-DIAGNOSTIC-THREAD PASS (not feature acceptance)")

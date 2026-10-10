@@ -262,7 +262,7 @@ struct RootView: View {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             window.contentView?.layoutSubtreeIfNeeded()
             try await Task.sleep(nanoseconds: 100_000_000)
-            let controls = OwnedWindowProof.accessibility(window)
+            let controls = await OwnedWindowProof.accessibility(window)
             let null = NSNull()
             var evidence: [String: Any] = ["type": "DidiNativeWindowEvidence", "schemaVersion": 1,
                 "windowId": window.windowNumber, "screenCapturePermission": CGPreflightScreenCaptureAccess(),

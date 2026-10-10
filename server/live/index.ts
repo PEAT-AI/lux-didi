@@ -220,11 +220,11 @@ export class LiveSessionOwner {
 
   #open(liveSessionId: string, inputClass: DataClass, revision: number): LiveAttachment {
     const abort = new AbortController();
-    const now = this.#now();
     const request = { system: { text: this.#profile.prompt.text, dataClass: this.#profile.prompt.dataClass }, history: [], dataClasses: [inputClass] };
     let session: LiveVoiceSession;
     try {
-      session = this.#voice.open(request, { signal: abort.signal, deadlineMs: now + this.#profile.limits.sessionMs });
+      // Absolute wall clock for the adapter; the injected clock is the owner's own durable order.
+      session = this.#voice.open(request, { signal: abort.signal, deadlineMs: Date.now() + this.#profile.limits.sessionMs });
     } catch (error) {
       this.#store.transaction(tx => this.#terminalInTx(tx, liveSessionId, { state: 'not_started' }, false, this.#now(), 'ended', null));
       throw error;
@@ -326,7 +326,7 @@ export class LiveSessionOwner {
     this.#store.transaction(tx => {
       tx.run('INSERT INTO live_journal(live_session_id, provider_sequence, kind, text, finished, value, terminal_outcome, rejected_kind, rejected_sequence, payload_bytes, arrived_at) VALUES (?,?,?,?,?,?,NULL,NULL,NULL,?,?)',
         [handle.liveSessionId, event.sequence, kind, text, finished, value, bytes, now]);
-      tx.run('UPDATE live_sessions SET journal_events=?, journal_bytes=?, ready=?, updated_at=? WHERE live_session_id=?',
+      tx.run('UPDATE live_sessions SET journal_events=?, journal_bytes=?, ready=CASE WHEN ?=1 THEN 1 ELSE ready END, updated_at=? WHERE live_session_id=?',
         [events, total, kind === 'ready' ? 1 : 0, now, handle.liveSessionId]);
     });
     handle.journalEvents = events;

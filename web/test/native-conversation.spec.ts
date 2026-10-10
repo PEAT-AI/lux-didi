@@ -126,6 +126,7 @@ try {
   });
 
   await step('the conversation subscription is established before the durable snapshot read', async () => {
+    await choose('Native B · gemini-connected-test · active');
     starts.length = 0; responses.length = 0;
     // Deliberate response control: without awaiting the subscription the snapshot GET would be issued first.
     await page.route('**/conversations/*/events', async route => { await new Promise(resolve => setTimeout(resolve, 300)); await route.continue(); });

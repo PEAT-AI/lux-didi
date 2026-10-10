@@ -48,6 +48,12 @@ async function api(path) {
 }
 const selectValue = () => page.locator('#connected-history').inputValue();
 const entryText = () => page.locator('#connected-entries').innerText();
+/** Screenshot the connected panel itself so the transcript, title and answer are the subject of the image. */
+async function shot(name) {
+  const panel = page.locator('#connected-panel');
+  await panel.scrollIntoViewIfNeeded();
+  await panel.screenshot({ path: join(artifacts, `${name}-${sha}.png`) });
+}
 async function choose(label) {
   await page.selectOption('#connected-history', { label });
   await page.waitForFunction(expected => document.querySelector('#connected-history')?.value === expected, await page.locator('#connected-history').evaluate((element, wanted) => [...element.options].find(option => option.label === wanted)?.value, label));
@@ -58,8 +64,7 @@ try {
   await start();
   browser = await chromium.launch({ channel: 'chromium', headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
   context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, timezoneId: 'UTC' }); page = await context.newPage();
-  const errors = [], writes = [], observed = [];
-  page.on('request', request => { if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/v1/conversation-selection') writes.push(request.timing().startTime); });
+  const errors = [], observed = [];
   page.on('response', response => { const request = response.request(); if (request.url().includes('/api/v1')) { const timing = request.timing(); observed.push({ path: new URL(request.url()).pathname, method: request.method(), start: timing.startTime, responseStart: timing.responseStart }); } });
   page.on('pageerror', error => errors.push(error.message));
 
@@ -86,7 +91,7 @@ try {
     await page.waitForFunction(() => document.querySelector('#connected-history')?.value !== '');
     assert.equal((await api('/conversation-selection')).sessionId, a.sessionId);
     assert.equal(await selectValue(), a.sessionId);
-    await page.screenshot({ path: join(artifacts, `selected-a-${sha}.png`) });
+    await shot('selected-a');
   });
 
   await step('an externally accepted run appears on the displayed conversation without a refresh', async () => {
@@ -94,7 +99,7 @@ try {
     assert.equal(accepted.status, 200, JSON.stringify(accepted.data));
     await page.getByText(answer, { exact: true }).first().waitFor();
     assert.equal(await selectValue(), a.sessionId);
-    await page.screenshot({ path: join(artifacts, `external-run-on-a-${sha}.png`) });
+    await shot('external-run-on-a');
   });
 
   await step('page B stays B while the external run commits to A, and reselecting A recovers the saved answer', async () => {
@@ -107,11 +112,11 @@ try {
     await page.waitForFunction(async target => { const response = await fetch('/api/v1/chat/' + target, { credentials: 'same-origin', cache: 'no-store' }); return (await response.json()).data.state === 'terminal'; }, runId);
     assert.equal(await selectValue(), b.sessionId);
     assert.doesNotMatch(await entryText(), /Let us choose one small next step/);
-    await page.screenshot({ path: join(artifacts, `page-b-no-jump-${sha}.png`) });
+    await shot('page-b-no-jump');
     await choose('Native A · gemini-connected-test · active');
     await page.getByText(answer, { exact: true }).first().waitFor();
     assert.equal((await api('/conversation-selection')).sessionId, a.sessionId);
-    await page.screenshot({ path: join(artifacts, `reselect-a-recovered-${sha}.png`) });
+    await shot('reselect-a-recovered');
   });
 
   await step('a fresh reload restores and republishes the saved selection', async () => {
@@ -120,7 +125,7 @@ try {
     await page.waitForFunction(expected => document.querySelector('#connected-history')?.value === expected, a.sessionId);
     await page.waitForFunction(async expected => { const response = await fetch('/api/v1/conversation-selection', { credentials: 'same-origin', cache: 'no-store' }); return (await response.json()).data.sessionId === expected; }, a.sessionId);
     await page.getByText(answer, { exact: true }).first().waitFor();
-    await page.screenshot({ path: join(artifacts, `reload-restores-selection-${sha}.png`) });
+    await shot('reload-restores-selection');
     assert.deepEqual(errors, []);
   });
 
@@ -139,13 +144,25 @@ try {
     assert.ok(events.responseStart <= snapshot.start, `subscription response ${events.responseStart} must precede the snapshot request ${snapshot.start}`);
   });
 
-  await step('a superseded selection write is never sent and the latest committed choice is the selection', async () => {
-    writes.length = 0;
-    await choose('Native B · gemini-connected-test · active');
-    await choose('Native A · gemini-connected-test · active');
-    await page.waitForFunction(async expected => { const response = await fetch('/api/v1/conversation-selection', { credentials: 'same-origin', cache: 'no-store' }); return (await response.json()).data.sessionId === expected; }, a.sessionId);
-    assert.equal(writes.length, 2, `one write per explicit choice: ${JSON.stringify(writes)}`);
-    assert.equal((await api('/conversation-selection')).sessionId, a.sessionId);
+  await step('a held older publication cannot overwrite a newer selection', async () => {
+    let heldOnce = false, release = () => {}, arrived = () => {};
+    const released = new Promise<void>(resolve => { release = resolve; });
+    const seen = new Promise<void>(resolve => { arrived = resolve; });
+    await page.route('**/api/v1/conversation-selection', async route => {
+      if (route.request().method() === 'POST' && !heldOnce) { heldOnce = true; arrived(); await released; }
+      await route.continue();
+    });
+    try {
+      await page.selectOption('#connected-history', { label: 'Native B · gemini-connected-test · active' });
+      await seen;                                  // the older publication is in flight and held
+      await page.selectOption('#connected-history', { label: 'Native A · gemini-connected-test · active' });
+      await page.waitForFunction(expected => document.querySelector('#connected-history')?.value === expected, a.sessionId);
+      release();
+      await page.waitForFunction(async expected => { const response = await fetch('/api/v1/conversation-selection', { credentials: 'same-origin', cache: 'no-store' }); return (await response.json()).data.sessionId === expected; }, a.sessionId);
+      assert.equal(await selectValue(), a.sessionId);
+      assert.equal((await api('/conversation-selection')).sessionId, a.sessionId);
+      await shot('held-publication-newer-wins');
+    } finally { release(); await page.unroute('**/api/v1/conversation-selection'); }
   });
 
   await step('an older run response cannot replace a newer committed run', async () => {
@@ -159,7 +176,7 @@ try {
       assert.notEqual(newer, older);
       await page.waitForFunction(expected => document.querySelector('#connected-run')?.getAttribute('data-run-id') === expected, newer);
       assert.equal(await page.locator('#connected-run').getAttribute('data-run-id'), newer);
-      await page.screenshot({ path: join(artifacts, `ordering-newer-run-wins-${sha}.png`) });
+      await shot('ordering-newer-run-wins');
     } finally { await page.unroute(/\/api\/v1\/chat\/[0-9a-f-]{36}$/); }
   });
 

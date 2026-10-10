@@ -59,10 +59,13 @@ struct OperatorSettings: Equatable {
         guard resolved.path.hasPrefix(canonicalDir.path + "/"), resolved.path.hasSuffix("/" + fileName) else {
             throw NativeServiceError.invalidOperatorSettings
         }
-        let data = try Data(contentsOf: resolved)
-        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+        let data: Data
+        do { data = try Data(contentsOf: resolved) } catch { throw NativeServiceError.invalidOperatorSettings }
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               closedKeys.contains(Set(object.keys)) else { throw NativeServiceError.invalidOperatorSettings }
-        let document = try JSONDecoder().decode(Document.self, from: data)
+        let document: Document
+        do { document = try JSONDecoder().decode(Document.self, from: data) }
+        catch { throw NativeServiceError.invalidOperatorSettings }
         guard document.schemaVersion == schemaVersion else { throw NativeServiceError.invalidOperatorSettings }
         return OperatorSettings(
             configDir: try document.configDir.map { try validatedTarget($0, directory: true) },

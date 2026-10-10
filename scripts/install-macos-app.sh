@@ -52,7 +52,7 @@ if [ -e "$target" ]; then
 fi
 
 mv "$stage" "$target"
-if ! codesign --verify --deep --strict "$target" || [ ! -x "$target/Contents/MacOS/LuxLidi" ]; then
+if ! codesign --verify --deep --strict "$target" || [ ! -x "$target/Contents/MacOS/LuxDidi" ]; then
   rm -rf "$target"
   if [ -n "$rollback" ]; then mv "$rollback" "$target"; fi
   echo "install-macos-app.sh: post-swap validation failed; prior app restored" >&2

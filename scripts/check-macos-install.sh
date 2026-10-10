@@ -76,7 +76,7 @@ if [ "${1:-}" = "--leased-run" ]; then
   configDir="$HOME/provider-config"
   mkdir -p "$configDir"
   chmod 0700 "$configDir"
-  binary="$app/Contents/MacOS/LuxLidi"
+  binary="$app/Contents/MacOS/LuxDidi"
 
   if "$binary" --configure --config-dir relative 2>"$proof/configure-invalid.log"; then
     echo 'MACOS-INSTALL FAIL: relative configure target accepted' >&2; exit 1
@@ -84,7 +84,7 @@ if [ "${1:-}" = "--leased-run" ]; then
   if "$binary" --configure --config-dir "$app/Contents/Resources" 2>>"$proof/configure-invalid.log"; then
     echo 'MACOS-INSTALL FAIL: in-bundle configure target accepted' >&2; exit 1
   fi
-  grep -q 'DIDI CONFIGURE: invalid' "$proof/configure-invalid.log"
+  grep -qx 'DIDI CONFIGURE: invalid target' "$proof/configure-invalid.log"
   if grep -q "$configDir" "$proof/configure-invalid.log"; then
     echo 'MACOS-INSTALL FAIL: safe configure error leaked a private path' >&2; exit 1
   fi
@@ -106,7 +106,7 @@ if [ "${1:-}" = "--leased-run" ]; then
   if "$binary" --configure --config-dir "$configDir" >"$proof/invalid-store.log" 2>&1; then
     echo 'MACOS-INSTALL FAIL: invalid operator store accepted' >&2; exit 1
   fi
-  grep -q 'DIDI CONFIGURE: invalid' "$proof/invalid-store.log"
+  grep -qx 'DIDI CONFIGURE: invalid target' "$proof/invalid-store.log"
   if grep -q "$configDir" "$proof/invalid-store.log"; then
     echo 'MACOS-INSTALL FAIL: invalid-store error leaked a private path' >&2; exit 1
   fi
@@ -139,11 +139,57 @@ PY
   # The configDir from the earlier update must survive: update, not replacement.
   python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));assert d.get("configDir"), d' "$settings"
 
-  # Restart: the native-launched host must accept the label/snapshot for the
-  # actual identity, then still recall the pre-move content after relocation.
+  # Restart: the native-launched host must accept the label and the immutable
+  # prompt/session snapshot for the actual identity, then still recall the
+  # pre-move content after relocation.
   mkdir -p "$proof/launch-2"
-  "$work/observer" --verification "$app" "$proof/launch-2" "$(uuidgen)" run --installed-proof --proof-state "$state" --proof-report "$proof/run-2.json"
+  rm -f "$proof/run-2.json"
+  "$work/observer" --verification "$app" "$proof/launch-2" "$(uuidgen)" run --installed-proof --proof-state "$state" --proof-report "$proof/run-2.json" &
+  observer_pid=$!
+  # Observe the accepted label over the existing protected loopback API while the
+  # native-launched host is up (one bounded poll, no idle loop).
+  origin=""
+  for _ in $(seq 1 120); do
+    origin="$(python3 - "$proof/run-2.json" <<'PY'
+import json, sys
+try: print(json.load(open(sys.argv[1])).get("service", {}).get("origin", ""))
+except Exception: print("")
+PY
+)"
+    [ -n "$origin" ] && break
+    sleep 0.25
+  done
+  if [ -z "$origin" ]; then
+    kill "$observer_pid" 2>/dev/null || true
+    echo 'MACOS-INSTALL FAIL: no host origin observed during the native launch' >&2; exit 1
+  fi
+  token="$(tr -d '\n' < "$state/admin-credential")"
+  status_json="$(curl -fsS -H "Authorization: Bearer $token" "$origin/api/v1/status")"
+  wait "$observer_pid"
+  python3 - "$status_json" "$assistant" <<'PY'
+import json, sys
+data = json.loads(sys.argv[1])["data"]
+profile = data["ownerProfile"]
+assert profile["status"] == "configured" and profile["displayName"] == "Synthetic Operator", profile
+assert data["assistantId"] == sys.argv[2], data["assistantId"]
+print("MACOS-INSTALL: protected API accepted label", profile["displayName"])
+PY
   python3 -c 'import json,sys;r=json.load(open(sys.argv[1]));assert r.get("success") is True and (r.get("error") in (None, {})), r.get("error")' "$proof/run-2.json"
+  # Read-only store seam: the immutable owner-profile snapshot persisted per run.
+  snapshot="$(python3 - "$state/state.sqlite" <<'PY'
+import sqlite3, sys
+try:
+    db = sqlite3.connect("file:%s?mode=ro" % sys.argv[1], uri=True)
+    rows = db.execute("SELECT snapshot_json FROM chat_run_owner_profile").fetchall()
+    print(rows[-1][0] if rows else "")
+except Exception:
+    print("")
+PY
+)"
+  if [ -z "$snapshot" ]; then
+    echo 'MACOS-INSTALL FAIL: no immutable chat_run_owner_profile snapshot (needs the inert-run proof seam from R5/R6)' >&2; exit 1
+  fi
+  python3 -c 'import json,sys;d=json.loads(sys.argv[1]);assert d["kind"]=="profile" and d["displayName"]=="Synthetic Operator", d' "$snapshot"
   # A profile for a foreign identity must fail closed at the actual host.
   python3 - "$profileDir/other.json" <<'PY'
 import json, sys

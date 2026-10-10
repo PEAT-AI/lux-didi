@@ -50,7 +50,7 @@ Configure the existing native executable; there is no second writer language,
 no new UI and no in-app editor.
 
 ```
-"/Applications/Lux Didi.app/Contents/MacOS/LuxLidi" --configure \
+"/Applications/Lux Didi.app/Contents/MacOS/LuxDidi" --configure \
   [--config-dir /abs/dir] [--owner-profile /abs/file.json]
 ```
 

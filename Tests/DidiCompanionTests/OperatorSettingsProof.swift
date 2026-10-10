@@ -13,7 +13,10 @@ import Darwin
 
         func refuses(_ label: String, _ body: () throws -> Void) throws {
             do { try body(); try LifecycleProof.expect(false, label) }
-            catch let error as NSError { try LifecycleProof.expect(!error.domain.hasPrefix("LifecycleProof"), label) }
+            catch let error as NativeServiceError {
+                guard case .invalidOperatorSettings = error else { throw error }
+                try LifecycleProof.expect(error.localizedDescription == NativeServiceError.invalidOperatorSettings.localizedDescription, label)
+            }
         }
 
         let configDir = base.appendingPathComponent("provider-config")
@@ -90,13 +93,18 @@ import Darwin
         try LifecycleProof.expect(lstat(storeFile.path, &storeInfo) == 0 && storeInfo.st_mode & 0o777 == 0o600, "settings file is 0600")
         print("PASS: isolated operator settings round-trip")
 
-        // A closed store with an extra key, or the wrong mode, fails closed with a
-        // safe error that carries neither a path nor a value.
+        // A closed store with an extra key, or the wrong mode, fails closed with the
+        // actual thrown safe error, whose message carries neither a path nor a value.
         try Data("{\"schemaVersion\":1,\"configDir\":\"\(configDir.path)\",\"extra\":true}\n".utf8).write(to: storeFile)
         try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: storeFile.path)
+        try refuses("extra key refused") { _ = try OperatorSettings.load() }
         do { _ = try OperatorSettings.load(); try LifecycleProof.expect(false, "extra key must fail") }
-        catch let error as NSError {
-            try LifecycleProof.expect(error.domain != "NSCocoaErrorDomain" || !error.localizedDescription.contains(configDir.path), "closed-key failure leaks no path")
+        catch let error as NativeServiceError {
+            guard case .invalidOperatorSettings = error else { throw error }
+            let message = error.localizedDescription
+            try LifecycleProof.expect(message == NativeServiceError.invalidOperatorSettings.localizedDescription
+                                      && !message.contains(configDir.path) && !message.contains(isolated.path),
+                                      "safe operator error exposes no private path")
         }
         try Data("{\"schemaVersion\":9}\n".utf8).write(to: storeFile)
         try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: storeFile.path)

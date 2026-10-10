@@ -2,6 +2,15 @@
 set -euo pipefail
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 root="$(cd "$(dirname "$0")/.." && pwd)"
+# Diagnostic mode (R51): compile + focused real-runtime phase only, then exit with its real result.
+# Default invocation (no argument) runs every phase exactly as before. Unknown flags are refused.
+mode=""
+for arg in "$@"; do
+  case "$arg" in
+    --diagnostic-http) mode="diagnostic-http" ;;
+    *) echo "TOOL CHAT CHECK: unknown argument: $arg" >&2; exit 2 ;;
+  esac
+done
 deps=/Users/rob/GitHub/lux-didi-runtime-release/server/node_modules
 webdeps=/Users/rob/GitHub/lux-didi-runtime-release/web/node_modules
 for path in "$deps/typescript/bin/tsc" "$deps/@types/node/package.json" "$deps/@types/ws/package.json" "$deps/@modelcontextprotocol/server/package.json" "$webdeps/vite/bin/vite.js" "$webdeps/playwright/package.json"; do
@@ -38,9 +47,7 @@ node "$deps/typescript/bin/tsc" --target ES2022 --module NodeNext --moduleResolu
   "$out/source/test/tool-chat.test.ts" "$out/source/test/tool-chat-process.ts" "$out/source/test/connected.test.ts"
 echo 'TOOL CHAT PHASE=focused-runtime'
 node --test --test-concurrency=1 --test-reporter=tap --test-timeout=15000 "$out/server/dist/test/tool-chat.test.js"
-# Renderer-free focused mode (R50): stop after the compile and focused rings so the loopback
-# diagnostic is observable without acquiring the shared browser slot. Default path unchanged.
-if [[ "${1:-}" == 'focused-only' ]]; then exit 0; fi
+if [[ "$mode" == 'diagnostic-http' ]]; then exit 0; fi
 # Build the actual current browser in isolation; never mutate another lane's
 # node_modules or dist, download a browser, or start the normal application.
 cp -R "$root/web/src" "$out/web/src"

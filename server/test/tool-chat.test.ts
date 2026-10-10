@@ -444,8 +444,10 @@ test('DIAG browser-actor HTTP accept surfaces the exact denial reason', async t 
   const pairing = await fetch(`${service.origin}/api/v1/auth/pairing`, { method: 'POST', headers: { Authorization: `Bearer ${f.store.adminCredential}`, Origin: service.origin } });
   const pairingBody: any = await pairing.json();
   const code = pairingBody?.data?.pairingCode ?? pairingBody?.pairingCode;
-  const paired = await fetch(`${service.origin}/api/v1/auth/pair`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: service.origin }, body: JSON.stringify({ pairingCode: code }) });
-  const pairedBody: any = await paired.json();
+  const paired: any = await (async () => { const r = await fetch(`${service.origin}/api/v1/auth/pair`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: service.origin }, body: JSON.stringify({ pairingCode: code }) }); return { status: r.status, body: await r.json() }; })();
+  assert.equal(pairing.status, 200, `Diagnostic pairing must succeed: ${JSON.stringify(pairingBody)}`);
+  assert.equal(paired.status, 200, `Diagnostic pair must succeed: ${JSON.stringify(paired.body)}`);
+  const pairedBody: any = paired.body;
   const token = pairedBody?.data?.token; const csrf = pairedBody?.data?.csrfToken; const epoch = String(pairedBody?.authorityEpoch ?? '');
   const sessionId = await f.enroll();
   const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, 'X-Didi-CSRF': String(csrf), 'X-Didi-Authority-Epoch': epoch, Origin: service.origin };
@@ -455,6 +457,7 @@ test('DIAG browser-actor HTTP accept surfaces the exact denial reason', async t 
   const acceptedBody: any = await accepted.json();
   const replay = await fetch(`${service.origin}/api/v1/chat`, { method: 'POST', headers: { ...headers, 'Idempotency-Key': key }, body });
   const final: any = ((await replay.json()) as any)?.data;
-  console.log('DIAG_PAYLOAD ' + JSON.stringify({ pairStatus: paired.status, pairBody: pairedBody, acceptedStatus: accepted.status, accepted: acceptedBody, final }));
-  assert.ok(final ?? acceptedBody, 'diagnostic captured a response');
+  console.log('DIAG_PAYLOAD ' + JSON.stringify({ acceptedStatus: accepted.status, accepted: acceptedBody, outcome: final?.outcome, reason: (final as any)?.reason ?? (acceptedBody as any)?.data?.reason ?? null, err: (acceptedBody as any)?.error ?? null }));
+  assert.equal(accepted.status, 200, `Diagnostic accept must succeed, not merely log an HTTP error: ${JSON.stringify(acceptedBody)}`);
+  assert.ok(final, 'Diagnostic captured the replayed run snapshot');
 });

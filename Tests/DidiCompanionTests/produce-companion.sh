@@ -3,6 +3,10 @@ set -euo pipefail
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 export LUX_COMPANION_NPM_CACHE="${LUX_COMPANION_NPM_CACHE:-$HOME/.npm}"
 root="$(cd "$(dirname "$0")/../.." && pwd)"
+# The verification launch runs the fixture with cwd /, so a launched app cannot
+# resolve repo-relative paths. Publish the source root explicitly; the observer
+# forwards its environment to the launched bundle.
+export LUX_COMPANION_SOURCE_ROOT="$root"
 work="$(mktemp -d "${TMPDIR:-/tmp}/didi-companion-check.XXXXXX")"
 fixture_pid=""
 cleanup() { if [ -n "$fixture_pid" ]; then kill "$fixture_pid" 2>/dev/null || true; wait "$fixture_pid" 2>/dev/null || true; fi; rm -rf "$work"; }

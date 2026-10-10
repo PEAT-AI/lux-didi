@@ -30,7 +30,10 @@ import Darwin
             let server = resources.appendingPathComponent("server/dist/host")
             try fm.createDirectory(at: server, withIntermediateDirectories: true)
             try fm.createDirectory(at: resources.appendingPathComponent("web/dist"), withIntermediateDirectories: true)
-            let fixtureJS = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("supervised-fixture.js")
+            // The verification launch runs with cwd /, so resolve the fixture from
+            // the source root the producer publishes rather than the process cwd.
+            let sourceRoot = URL(fileURLWithPath: ProcessInfo.processInfo.environment["LUX_COMPANION_SOURCE_ROOT"] ?? ".")
+            let fixtureJS = sourceRoot.appendingPathComponent("Tests/DidiCompanionTests/supervised-fixture.js")
             try Data(contentsOf: fixtureJS).write(to: server.appendingPathComponent("index.js"))
             try Data(mode.utf8).write(to: server.appendingPathComponent("mode"))
             var manifest: [String: Any] = ["schemaVersion": 1, "installId": id, "releaseCommit": String(repeating: "a", count: 40), "nodePath": node, "nodeMajor": 26, "serverEntry": "server/dist/host/index.js", "webRoot": "web/dist"]

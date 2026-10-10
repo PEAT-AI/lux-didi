@@ -1,3 +1,4 @@
+import { PROMPT_VERSION } from '../prompt/index.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { TestContext } from 'node:test';
@@ -722,10 +723,10 @@ test('Live persists the exact typed accepted instruction before intent and corru
   let calls = 0;
   const ownerProfile = { schemaVersion: 1, kind: 'profile', ownerId: h.store.assistantId, profileVersion: 'fixture-a', displayName: 'Example',
     style: { text: 'SYNTHETIC A', dataClass: 'ordinary' }, lore: { text: 'SYNTHETIC lore', dataClass: 'ordinary' } };
-  const acceptedPrompt = { schemaVersion: 1, ownerProfile, compilerVersion: 'didi-v1', system: 'SYNTHETIC exact accepted A', dataClasses: ['ordinary'] };
+  const acceptedPrompt = { schemaVersion: 1, ownerProfile, compilerVersion: PROMPT_VERSION, system: 'SYNTHETIC exact accepted A', dataClasses: ['ordinary'] };
   const owner = createLiveSessionOwner({ store: h.store,
     profile: validateLiveProfile({ ...profileInput(), acceptedPrompt }),
-    voice: { async open() { calls++; throw new Error('synthetic unavailable'); } }, now: () => NOW });
+    voice: { open() { calls++; throw new Error('synthetic unavailable'); } }, now: () => NOW });
   t.after(() => owner.shutdown());
   const run = owner.create({ idempotencyKey: 'owner-frozen', inputClass: 'ordinary' }, h.ctx);
   const row = h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot,dispatch_intent FROM live_sessions WHERE live_session_id=?', [run.liveSessionId]))!;

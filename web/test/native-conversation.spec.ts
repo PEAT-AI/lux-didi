@@ -93,7 +93,7 @@ try {
   await step('an externally accepted run appears on the displayed conversation without a refresh', async () => {
     const accepted = await operator('/chat', { sessionId: a.sessionId, text: 'Choose one small next step for the native conversation.' });
     assert.equal(accepted.status, 200, JSON.stringify(accepted.data));
-    await page.getByText(answer, { exact: true }).waitFor();
+    await page.getByText(answer, { exact: true }).first().waitFor();
     assert.equal(await selectValue(), a.sessionId);
     await page.screenshot({ path: join(artifacts, `external-run-on-a-${sha}.png`) });
   });
@@ -110,7 +110,7 @@ try {
     assert.doesNotMatch(await entryText(), /Let us choose one small next step/);
     await page.screenshot({ path: join(artifacts, `page-b-no-jump-${sha}.png`) });
     await choose('Native A · gemini-connected-test · active');
-    await page.getByText(answer, { exact: true }).waitFor();
+    await page.getByText(answer, { exact: true }).first().waitFor();
     assert.equal((await api('/conversation-selection')).sessionId, a.sessionId);
     await page.screenshot({ path: join(artifacts, `reselect-a-recovered-${sha}.png`) });
   });
@@ -120,7 +120,7 @@ try {
     await page.locator('#connected-history').waitFor();
     await page.waitForFunction(expected => document.querySelector('#connected-history')?.value === expected, a.sessionId);
     await page.waitForFunction(async expected => { const response = await fetch('/api/v1/conversation-selection', { credentials: 'same-origin', cache: 'no-store' }); return (await response.json()).data.sessionId === expected; }, a.sessionId);
-    await page.getByText(answer, { exact: true }).waitFor();
+    await page.getByText(answer, { exact: true }).first().waitFor();
     await page.screenshot({ path: join(artifacts, `reload-restores-selection-${sha}.png`) });
     assert.deepEqual(errors, []);
   });

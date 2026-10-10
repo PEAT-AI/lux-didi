@@ -77,6 +77,8 @@ if [ "${1:-}" = "--leased-run" ]; then
   mkdir -p "$configDir"
   chmod 0700 "$configDir"
   binary="$app/Contents/MacOS/LuxDidi"
+  [ "$("$app/Contents/MacOS/node" -p 'typeof require("node:module").registerHooks')" = "function" ] || { echo 'MACOS-INSTALL FAIL: bundled node lacks module.registerHooks' >&2; exit 1; }
+  echo "MACOS-INSTALL: bundled node supports module.registerHooks"
 
   if "$binary" --configure --config-dir relative 2>"$proof/configure-invalid.log"; then
     echo 'MACOS-INSTALL FAIL: relative configure target accepted' >&2; exit 1
@@ -236,81 +238,13 @@ mkdir -p "$parent"
 proof="$(mktemp -d "$parent/macos-install-proof-${LUX_WORKER_RUN_ID:-$$}.XXXXXX")"
 printf 'PROOF-DIR=%s\n' "$proof"
 node="$(command -v node)"
-mkdir "$work/source"
-git archive HEAD server web | tar -x -C "$work/source"
-export npm_config_userconfig=/dev/null npm_config_globalconfig="$work/absent-global-config"
-cache="${LUX_COMPANION_NPM_CACHE:-$HOME/.npm}"
-npm --prefix "$work/source/server" ci --offline --ignore-scripts --no-audit --no-fund --cache "$cache"
-npm --prefix "$work/source/web" ci --offline --ignore-scripts --no-audit --no-fund --cache "$cache"
-"$node" "$work/source/server/node_modules/typescript/bin/tsc" -p "$work/source/server/tsconfig.json"
-npm --prefix "$work/source/web" run build
-assets="$work/assets"
-mkdir -p "$assets/server" "$assets/web"
-cp -R "$work/source/server/dist" "$work/source/server/node_modules" "$assets/server/"
-cp "$work/source/server/package.json" "$assets/server/"
-cp -R "$work/source/web/dist" "$assets/web/"
-# Self-contained node: node plus its non-system dylib closure, each rewritten to
-# @loader_path. @rpath is resolved against the ORIGINAL binary (the Homebrew
-# Cellar), never the copy, so libnode.147.dylib and friends are bundled.
-python3 - "$node" "$assets" <<'PY'
-import os, shutil, subprocess, sys
-src, assets = sys.argv[1:]
-libdir = os.path.join(assets, "lib")
-os.makedirs(libdir, exist_ok=True)
-system = ("/usr/lib/", "/System/")
-def run(*a): return subprocess.run(a, capture_output=True, text=True, check=True).stdout
-def deps(path):
-    return [l.strip().split(" (")[0] for l in run("otool", "-L", path).splitlines()[1:] if l.strip()]
-def rpaths(path):
-    lines = run("otool", "-l", path).splitlines(); out = []
-    for i, l in enumerate(lines):
-        if l.strip().startswith("cmd LC_RPATH"):
-            for j in range(i + 1, min(i + 4, len(lines))):
-                s = lines[j].strip()
-                if s.startswith("path "):
-                    out.append(s[len("path "):].split(" ")[0]); break
-    return out
-def resolve(lib, base_dir, rps):
-    if lib.startswith("@rpath/"):
-        tail = lib[len("@rpath/"):]
-        for rp in rps:
-            cand = os.path.join(rp, tail)
-            if os.path.exists(cand): return os.path.realpath(cand)
-        return None
-    if lib.startswith("@loader_path/"):
-        cand = os.path.join(base_dir, lib[len("@loader_path/"):])
-        return os.path.realpath(cand) if os.path.exists(cand) else None
-    return os.path.realpath(lib) if os.path.exists(lib) else None
-def process(original, copy):
-    base_dir = os.path.dirname(original)
-    rps = [rp.replace("@loader_path", base_dir) for rp in rpaths(original)]
-    for lib in deps(original):
-        if lib.startswith(system): continue
-        real = resolve(lib, base_dir, rps)
-        if real is None: continue
-        base = os.path.basename(real)
-        dest = os.path.join(libdir, base)
-        if not os.path.exists(dest):
-            shutil.copy2(real, dest); os.chmod(dest, 0o755)
-            subprocess.run(["install_name_tool", "-id", "@loader_path/" + base, dest], check=True)
-            process(real, dest)
-        subprocess.run(["install_name_tool", "-change", lib, "@loader_path/" + base, copy], check=True)
-real_src = os.path.realpath(src)
-nodecopy = os.path.join(assets, "node")
-shutil.copy2(real_src, nodecopy); os.chmod(nodecopy, 0o755)
-process(real_src, nodecopy)
-unresolved = []
-def check(path):
-    for lib in deps(path):
-        if lib.startswith(system) or lib.startswith("@loader_path/"): continue
-        unresolved.append((path, lib))
-check(nodecopy)
-for name in os.listdir(libdir): check(os.path.join(libdir, name))
-if unresolved:
-    print("NODE-BUNDLE-UNRESOLVED %s" % unresolved[:5]); sys.exit(1)
-print("NODE-BUNDLE libs=%d" % len(os.listdir(libdir)))
-PY
-test -x "$assets/node" || { echo 'MACOS-INSTALL FAIL: bundled node missing' >&2; exit 1; }
+# Compose the real accepted asset bundle (official Node + built service/web) via
+# its canonical producer; network is authorized for that producer only.
+assets="${LUX_ASSET_BUNDLE:-}"
+if [ -z "$assets" ]; then
+  assets="$work/assets"
+  bash scripts/build-asset-bundle.sh "$assets"
+fi
 app="$work/Lux Didi.app"
 bash scripts/build-macos-app.sh "$app" --assets "$assets" --release-commit "$(git rev-parse HEAD)"
 

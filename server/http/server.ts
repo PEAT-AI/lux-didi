@@ -131,7 +131,7 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
         if (route.action === 'enroll') { send(res, 200, success(chat.enroll({ title: String(input.title), timeZone: String(input.timeZone), idempotencyKey: String(key) }, context))); return; }
         if (route.action === 'conversation') { send(res, 200, success(chat.conversation(route.id!, context))); return; }
         if (route.action === 'revoke') { send(res, 200, success(chat.revoke(route.id!, context))); return; }
-        if (route.action === 'accept') { send(res, 200, success(chat.accept({ sessionId: String(input.sessionId), text: String(input.text), idempotencyKey: String(key), ...(input.retryOf === undefined ? {} : { retryOf: String(input.retryOf) }) }, context))); return; }
+        if (route.action === 'accept') { send(res, 200, success(chat.accept({ sessionId: String(input.sessionId), text: String(input.text), idempotencyKey: String(key), ...(input.retryOf === undefined ? {} : { retryOf: String(input.retryOf) }), ...(input.selectedMemoryEntryIds === undefined ? {} : { selectedMemoryEntryIds: input.selectedMemoryEntryIds as string[] }) }, context))); return; }
         if (route.action === 'run') { send(res, 200, success(chat.get(route.id!, context))); return; }
         if (route.action === 'cancel') { send(res, 200, success(chat.cancel(route.id!, context))); return; }
         const closers = streamClosers.get(actor.clientId) ?? new Set<() => void>();

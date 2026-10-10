@@ -160,10 +160,11 @@ try {
       await page.selectOption('#connected-history', { label: 'Native B · gemini-connected-test · active' });
       await seen;                                  // the older publication is in flight and held
       await page.selectOption('#connected-history', { label: 'Native A · gemini-connected-test · active' });
-      await page.waitForFunction(expected => document.querySelector('#connected-history')?.value === expected, a.sessionId);
+      // The newer choice is committed in the page while the older write is still held.
+      await page.waitForFunction(expected => { const key = Object.keys(localStorage).find(item => item.startsWith('didi-connected:')) ?? ''; return key ? JSON.parse(localStorage.getItem(key) ?? '{}').sessionId === expected : false; }, a.sessionId);
       release();
       await page.waitForFunction(async expected => { const response = await fetch('/api/v1/conversation-selection', { credentials: 'same-origin', cache: 'no-store' }); return (await response.json()).data.sessionId === expected; }, a.sessionId);
-      assert.equal(await selectValue(), a.sessionId);
+      await page.waitForFunction(expected => { const key = Object.keys(localStorage).find(item => item.startsWith('didi-connected:')) ?? ''; return document.querySelector('#connected-history')?.value === expected && (key ? JSON.parse(localStorage.getItem(key) ?? '{}').sessionId === expected : false); }, a.sessionId);
       assert.equal((await api('/conversation-selection')).sessionId, a.sessionId);
       await shot('held-publication-newer-wins');
     } finally { release(); await page.unroute('**/api/v1/conversation-selection'); }

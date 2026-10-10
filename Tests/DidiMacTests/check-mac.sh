@@ -4,6 +4,7 @@ export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 work="$(mktemp -d "${TMPDIR:-/tmp}/didi-mac-check.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
+keychain_home="${CFFIXED_USER_HOME:-$HOME}"
 export HOME="$work/home" CFFIXED_USER_HOME="$work/home"
 mkdir -p "$HOME" "$work/cache"
 cd "$root"
@@ -26,5 +27,8 @@ grep -q 'INSTALLED-PROOF INVALID' "$work/invalid-proof.log"
 printf 'MAC-NATIVE PASS total=%ss\n' "$((SECONDS-start))"
 
 if [ -n "${LUX_REAL_HOST_PROOF_DIR:-}" ]; then
-  bash Tests/DidiCompanionTests/check-real-host.sh "$app" "$LUX_REAL_HOST_PROOF_DIR" "$LUX_REAL_HOST_NODE"
+  # Installed proof keeps explicit private state and an install-derived synthetic
+  # account. Only that invocation retains the inherited login-Keychain HOME;
+  # an invented HOME has no login keychain and enters legacy creation UI.
+  HOME="$keychain_home" CFFIXED_USER_HOME="$keychain_home" bash Tests/DidiCompanionTests/check-real-host.sh "$app" "$LUX_REAL_HOST_PROOF_DIR" "$LUX_REAL_HOST_NODE"
 fi

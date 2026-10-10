@@ -111,7 +111,16 @@ test('protected init is disabled/pending; strict binding and canonical owner com
   assert.throws(() => f.config.loadMcpConfiguration({ configDir: f.configDir, ownerId: f.ownerId, dataDir: join(f.dir, 'wrong') }));
   assert.throws(() => f.host.composeMcpConnection({ store: f.store, owner: f.owner, registry: new McpRegistry(), configDir: f.configDir }));
   const alternate = new Store(join(f.dir, 'other'), toolsMigrations);
-  assert.throws(() => f.host.composeMcpConnection({ store: alternate, owner: f.owner, registry: f.registry, configDir: f.configDir })); alternate.close();
+  const alternateRegistry = new McpRegistry(); alternateRegistry.register(f.selection.endpoint);
+  const alternateOwner = createToolsOwner({ store: alternate, ownerId: alternate.assistantId, registry: alternateRegistry, port: f.port, lookupAuthority: async () => null });
+  // Distinct cases: wrong Store with original owner; wrong owner with original Store/registry.
+  assert.throws(() => f.host.composeMcpConnection({ store: alternate, owner: f.owner, registry: f.registry, configDir: f.configDir }), /binding/);
+  assert.throws(() => f.host.composeMcpConnection({ store: f.store, owner: alternateOwner, registry: f.registry, configDir: f.configDir }), /binding/);
+  assert.equal(f.store.transaction(tx => tx.get('SELECT count(*) AS n FROM tool_connections'))?.n, 0);
+  assert.equal(alternate.transaction(tx => tx.get('SELECT count(*) AS n FROM tool_connections'))?.n, 0);
+  assert.throws(() => f.registry.endpoint('endpoint'), /egress/);
+  assert.throws(() => alternateRegistry.endpoint('endpoint'), /egress/);
+  alternate.close();
   assert.equal(f.approve().state, 'pending');
   const bundle = f.compose(); assert.equal(bundle.state, 'applied'); assert.equal(f.registry.currentGrant('endpoint'), undefined);
   assert.equal(f.compose().state, 'unchanged');

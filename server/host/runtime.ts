@@ -85,14 +85,14 @@ export async function startHost(config: HostConfig) {
     // text-only turns; an unconfigured optional connection never blocks app launch.
     const mcpConfigDir = resolve(join(providerConfigDir, 'mcp'));
     const registry = new McpRegistry();
-    const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 16384, maxEntries: 8, ttlMs: 300000, maxSliceBytes: 4096 }),
+    const mcpPort = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 16384, maxEntries: 8, ttlMs: 300000, maxSliceBytes: 4096 }),
       resolveCredential: async (reference: string) => loadMcpConfiguration({ configDir: mcpConfigDir, ownerId: store.assistantId, dataDir }).resolveCredential(reference),
       budgets: { timeoutMs: 8000, maxResponseBytes: 16384, maxPages: 4, maxTools: 32, projectionChars: 4096 } });
-    const assembly: ToolChatAssembly = { registry, port, connections: [] };
+    const assembly: ToolChatAssembly = { registry, port: mcpPort, connections: [] };
     const { chat, status, tools, connections } = composeChat(store, domain, providerConfigDir, config.modelTesting, config.now, owner.snapshot, assembly);
     if (tools) composeMcpConnection({ store, owner: tools, registry, configDir: mcpConfigDir });
     const { service: live } = composeLive(store, providerConfigDir, config.liveTesting, config.now, owner.snapshot);
-    const service = await listenService({ store, domain, chat, live, modelStatus: status, connections, ownerProfileStatus: { status: owner.status, displayName: owner.snapshot.displayName }, webRoot, ...(config.now ? { now: config.now } : {}) });
+    const service = await listenService({ store, domain, chat, live, modelStatus: status, connections, ownerProfileStatus: { status: owner.status, displayName: owner.snapshot.displayName }, webRoot, port, ...(config.now ? { now: config.now } : {}) });
     try {
       const descriptor: RuntimeDescriptor = { schemaVersion: 1, origin: service.origin, authorityEpoch: store.authorityEpoch, assistantId: store.assistantId, pid: process.pid, startedAt: new Date().toISOString() };
       await publish(descriptorPath, descriptor); // Never use a stale descriptor as authority or carry bearer material.

@@ -136,7 +136,7 @@ with open(path, 'w') as f:
                "lore": {"text": "local only", "dataClass": "private"}}, f)
 PY
   chmod 0600 "$profileDir/owner-profile.json"
-  "$binary" --configure --owner-profile "$profileDir/owner-profile.json" > "$proof/configure-profile.log" 2>&1
+  HOME="$state" CFFIXED_USER_HOME="$state" "$binary" --configure --owner-profile "$profileDir/owner-profile.json" > "$proof/configure-profile.log" 2>&1
   grep -q 'DIDI CONFIGURE: saved' "$proof/configure-profile.log"
   # The configDir from the earlier update must survive: update, not replacement.
   python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));assert d.get("configDir"), d' "$settings"
@@ -189,7 +189,7 @@ PY
   printf 'GEMINI_API_KEY=synthetic-NEVER-REAL\n' > "$senv"; chmod 0600 "$pin" "$senv"
   svc_dist="$fixture/Contents/Resources/server/node_modules/@lux-didi/service/dist"
   "$fixture/Contents/MacOS/node" --input-type=module -e 'import { initializeProviderConfig } from process.argv[1]; initializeProviderConfig({ configDir: process.argv[2], ownerId: process.argv[3], profileInputPath: process.argv[4], sourceEnvPath: process.argv[5] });' "file://$svc_dist/config/index.js" "$fconfig" "$fx_assistant" "$pin" "$senv"
-  "$fixture/Contents/MacOS/LuxDidi" --configure --config-dir "$fconfig" --owner-profile "$profileDir/owner-profile.json"
+  HOME="$fstate" CFFIXED_USER_HOME="$fstate" "$fixture/Contents/MacOS/LuxDidi" --configure --config-dir "$fconfig" --owner-profile "$profileDir/owner-profile.json"
   run_fixture() {
     local label="$1" report="$2"
     mkdir -p "$proof/fx-$label"
@@ -254,7 +254,7 @@ import json, sys
 d = json.load(open(sys.argv[1])); d["profileVersion"] = "synthetic-2"
 json.dump(d, open(sys.argv[1], "w"))
 PY
-  "$fixture/Contents/MacOS/LuxDidi" --configure --owner-profile "$profileDir/owner-profile.json" > /dev/null
+  HOME="$fstate" CFFIXED_USER_HOME="$fstate" "$fixture/Contents/MacOS/LuxDidi" --configure --owner-profile "$profileDir/owner-profile.json" > /dev/null
   rm -f "$proof/fx-p2.json" "$fstate/fixture-calls.json"
   HOME="$real_home" CFFIXED_USER_HOME="$real_home" "$work/observer" --verification "$fixture" "$proof/fx-p2" "$(uuidgen)" run --installed-proof --proof-state "$fstate" --proof-report "$proof/fx-p2.json" &
   fx_pid=$!
@@ -307,11 +307,11 @@ with open(sys.argv[1], 'w') as f:
                "lore": {"text": "local only", "dataClass": "private"}}, f)
 PY
   chmod 0600 "$profileDir/other.json"
-  "$binary" --configure --owner-profile "$profileDir/other.json" > /dev/null 2>&1
+  HOME="$state" CFFIXED_USER_HOME="$state" "$binary" --configure --owner-profile "$profileDir/other.json" > /dev/null 2>&1
   if HOME="$real_home" CFFIXED_USER_HOME="$real_home" "$work/observer" --verification "$app" "$proof/launch-reject" "$(uuidgen)" run --installed-proof --proof-state "$state" --proof-report "$proof/run-reject.json" 2>/dev/null; then
     echo 'MACOS-INSTALL FAIL: host accepted a profile for a foreign identity' >&2; exit 1
   fi
-  "$binary" --configure --owner-profile "$profileDir/owner-profile.json" > /dev/null 2>&1
+  HOME="$state" CFFIXED_USER_HOME="$state" "$binary" --configure --owner-profile "$profileDir/owner-profile.json" > /dev/null 2>&1
 
   mv "$app" "$work/Moved Didi.app"
   mkdir -p "$proof/launch-3"

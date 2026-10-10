@@ -431,14 +431,15 @@ test('socket backpressure persists consumer_backpressure before the 1013 close',
   const id = (await createBody(h, 'bp-1')).body.data.liveSessionId;
   const ws = new WebSocket(`${h.origin.replace('http', 'ws')}/api/v1/live-sessions/${id}/audio`, { headers: bearer(h) });
   await once(ws, 'open');
+  await h.f.connected;
   await h.f.frame(1); h.f.send({ setupComplete: {} });
   await new Promise(resolve => setTimeout(resolve, 40));
   const socket = (ws as unknown as { _socket: { pause(): void; resume(): void } })._socket;
   socket.pause();
-  const audioFrame = { serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.alloc(4096).toString('base64') } }] } } };
+  const audioFrame = { serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.alloc(8192).toString('base64') } }] } } };
   const closed = nextClose(ws);
-  for (let i = 0; i < 40; i++) h.f.send(audioFrame);
-  await new Promise(resolve => setTimeout(resolve, 100));
+  for (let i = 0; i < 400; i++) h.f.send(audioFrame);
+  await new Promise(resolve => setTimeout(resolve, 200));
   socket.resume();
   assert.equal((await closed).code, 1013);
   const snap = await json(h.origin, `/api/v1/live-sessions/${id}`, { headers: bearer(h) });
@@ -450,6 +451,7 @@ test('a client that disconnects after 101 records a truthful terminal and never 
   const id = (await createBody(h, 'disc-1')).body.data.liveSessionId;
   const ws = new WebSocket(`${h.origin.replace('http', 'ws')}/api/v1/live-sessions/${id}/audio`, { headers: bearer(h) });
   await once(ws, 'open');
+  await h.f.connected;
   ws.terminate();
   h.f.remoteClose();
   const deadline = Date.now() + 5000;

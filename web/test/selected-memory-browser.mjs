@@ -128,8 +128,8 @@ try {
   await step('an unclassified note is refused with a local explanation and captures nothing', async () => {
     const before = (await wireLines()).length;
     await page.locator('#connected-notes summary').click();
-    await find('unfiled');
-    await selectNote('unfiled');
+    await find('classified');
+    await selectNote('classified');
     await page.locator('#connected-draft').fill('Try to use an unclassified note.');
     await page.locator('#connected-send').click();
     await page.locator('#connected-error').waitFor();

@@ -82,7 +82,7 @@ function readSelection(target: Target): { intent: McpProfile; secret: Credential
 function loaded(target: Target, allowDisabled: boolean): McpConfiguration {
   const selected = readSelection(target); const selectionHash = sha256(canonicalJSON(selected.intent));
   const selectedBinding = canonicalJSON(metadata(selected.secret));
-  const current = (reference: string): Credential => {
+  const current = (reference: string | null): Credential => {
     if (reference !== selected.secret.credentialRef) fail('invalid_reference');
     const now = readSelection(target);
     if (sha256(canonicalJSON(now.intent)) !== selectionHash || canonicalJSON(metadata(now.secret)) !== selectedBinding || (!allowDisabled && (!now.secret.enabled || !now.intent.policy.enabled))) fail('invalid_secret');
@@ -92,7 +92,7 @@ function loaded(target: Target, allowDisabled: boolean): McpConfiguration {
   return {
     intent: structuredClone(selected.intent), endpoint: stdioEndpoint(endpoint)
       ? { id: endpoint.id, transport: 'stdio' as const, command: endpoint.command, args: [...endpoint.args], ...(endpoint.env ? { env: { ...endpoint.env } } : {}), account: endpoint.account, resource: endpoint.resource }
-      : { id: endpoint.id, url: (endpoint as HttpConnectionEndpoint).url, account: endpoint.account, resource: endpoint.resource, credentialRef: selected.secret.credentialRef ?? undefined },
+      : { id: endpoint.id, url: (endpoint as HttpConnectionEndpoint).url, account: endpoint.account, resource: endpoint.resource, ...(selected.secret.credentialRef ? { credentialRef: selected.secret.credentialRef } : {}) },
     locallyDisabled: selected.intent.policy.enabled && !selected.secret.enabled,
     resolveCredential: async reference => current(reference).token,
     assertCredentialCurrent: reference => { current(reference); },

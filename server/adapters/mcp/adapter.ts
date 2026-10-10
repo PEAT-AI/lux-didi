@@ -22,7 +22,7 @@ function guardedFetch(session: Session, options: McpAdapterOptions, budgets: Mcp
   return async (input, init) => {
     const request = new Request(input, init);
     const config = options.registry.endpoint(session.config.id);
-    if (config.transport === 'stdio' || session.config.transport === 'stdio') throw new PolicyError('destination-refused');
+    if (isStdioEndpoint(config) || isStdioEndpoint(session.config)) throw new PolicyError('destination-refused');
     if (request.url !== config.url || config.url !== session.config.url) throw new PolicyError('destination-refused');
     for (const name of request.headers.keys()) if (!allowedHeaders.has(name)) throw new PolicyError('header-refused');
     if (!['GET', 'POST', 'DELETE'].includes(request.method)) throw new PolicyError('method-refused');
@@ -134,7 +134,7 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
     client.onerror = () => { suspend(config.id); }; // No remote error/header/body is logged.
     client.onclose = () => { suspend(config.id); };
     client.setNotificationHandler('notifications/tools/list_changed', async () => { suspend(config.id); });
-    const transport = config.transport === 'stdio'
+    const transport = isStdioEndpoint(config)
       ? new StdioClientTransport({ command: config.command, args: [...config.args], ...(config.env ? { env: { ...config.env } } : {}), stderr: 'pipe' })
       : new StreamableHTTPClientTransport(new URL(config.url), { fetch: guardedFetch(session, options, budgets), redirectPolicy: 'follow', reconnectionOptions: { maxRetries: 0, initialReconnectionDelay: 1000, maxReconnectionDelay: 1000, reconnectionDelayGrowFactor: 1 } });
     sessions.set(config.id, session);

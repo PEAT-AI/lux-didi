@@ -107,12 +107,12 @@ export class McpRegistry {
   authorize(request: CallRequest): ResultScope {
     const entry = this.entry(request.endpointId); const config = this.endpoint(request.endpointId); const grant = entry.grant;
     if (!grant || !entry.digest || grant.schemaDigest !== entry.digest || grant.effect !== 'read' || !grant.toolNames.includes(request.toolName) || request.generation !== grant.generation || request.account !== grant.account || request.resource !== grant.resource) throw new Error('local-read-grant-refused');
-    return { endpointId: config.id, url: isStdioEndpoint(config) ? 'stdio' : config.url, bindingDigest: bindingDigestOf(config), schemaDigest: grant.schemaDigest, toolName: request.toolName, generation: grant.generation, account: grant.account, resource: grant.resource };
+    return { endpointId: config.id, url: isStdioEndpoint(config) ? bindingDigestOf(config) : config.url, schemaDigest: grant.schemaDigest, toolName: request.toolName, generation: grant.generation, account: grant.account, resource: grant.resource };
   }
   authorizesScope(scope: ResultScope): boolean {
     try {
       const current = this.authorize({ ...scope, arguments: {} });
-      return current.url === scope.url && current.bindingDigest === scope.bindingDigest && current.schemaDigest === scope.schemaDigest;
+      return current.url === scope.url && current.schemaDigest === scope.schemaDigest;
     } catch { return false; }
   }
 }

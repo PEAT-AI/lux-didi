@@ -75,7 +75,6 @@ export interface CallRequest {
 export interface ResultScope {
   endpointId: string;
   url: string;
-  bindingDigest: string;
   schemaDigest: string;
   toolName: string;
   generation: number;

@@ -26,6 +26,11 @@ npm --prefix web run check
 at `http://127.0.0.1:4317`. The service must accept the browser's exact origin for
 pairing and writes. Prefer serving `web/dist` from the service origin for real
 use; the service pair owns static serving and permitted-origin configuration.
+The supported composed host is `server/dist/host/index.js`: it injects Domain
+and Chat and serves the built browser shell. The supported standalone
+`server/dist/index.js` / `npm --prefix server start` is runtime-only and does not
+supply that shell or those Domain/Chat capabilities. See
+[service-runtime.md](service-runtime.md); the two entries are not interchangeable.
 No tunnel, public deployment, or scheduled task is provided. Production requests
 always go to same-origin `/api/v1`, never a hard-coded remote service.
 
@@ -49,8 +54,13 @@ loaded records. No offline writer exists.
 ## What you can do
 
 - **Conversation:** save your own words, reopen conversations, make a
-  source-linked commitment from a message. Local Save never sends to a model.
-  The separate connected Start/Send flow requires explicit route consent; its
+  source-linked commitment from a message. Local Save posts a user entry to
+  `/api/v1/sessions/:id/entries`, creating a session if needed; it never sends to
+  a model. A successful Save clears the draft; failure or Stop waiting retains
+  it without claiming that an ambiguous request was not saved.
+  **Ask Didi** scrolls to the separate connected composer; it does not send the
+  local-note draft. Connected Start/Send uses `/api/v1/chat` and a durable Chat
+  Run, not a generic job ID or `/jobs/:id` polling. It requires explicit route consent; its
   Cancel model run action cancels durable work, not merely subscription waiting.
   Neither cancel nor revoke can retract bytes already sent.
 - **Today:** server-defined due/overdue and unscheduled commitments; correct a
@@ -93,7 +103,7 @@ there is no browser route mock or private service storage. The fixture begins
 empty and adds a visible **Demo test mode** banner only in its own served HTML.
 The production shell never contains that marker or synthetic credentials.
 
-Focused acceptance covers capture, failed send preserving the draft, stop
+Focused acceptance covers local Save without model dispatch, failed Save preserving the draft, stop
 waiting, loading, stale revision, date correction, complete/reopen, source
 recall, denied/offline behavior, CSRF/cookie transport, private cache isolation,
 keyboard skip/focus/live regions, locally authored manifest/icon, and overflow

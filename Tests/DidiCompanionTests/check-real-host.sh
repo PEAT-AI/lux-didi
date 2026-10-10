@@ -16,19 +16,23 @@ npm --prefix "$work/source/web" ci --offline --ignore-scripts --no-audit --no-fu
 "$node" "$work/source/server/node_modules/typescript/bin/tsc" -p "$work/source/server/tsconfig.json"
 npm --prefix "$work/source/web" run build
 resources="$app/Contents/Resources"
-mkdir -p "$resources/server" "$resources/web"
+mkdir -p "$app/Contents/MacOS" "$resources/server" "$resources/web"
+install -m 0755 "$node" "$app/Contents/MacOS/node"
 cp -R "$work/source/server/dist" "$work/source/server/node_modules" "$resources/server/"
 cp "$work/source/server/package.json" "$resources/server/"
 cp -R "$work/source/web/dist" "$resources/web/"
 commit="$(git rev-parse HEAD)"
-python3 - "$resources" "$node" "$commit" <<'PY'
-import json,sys,uuid,os
-resources,node,commit=sys.argv[1:]
+# Production nodePath is bundle-relative Contents/MacOS/node, never the old absolute form.
+python3 - "$resources" "$commit" <<'PY'
+import json,sys,uuid
+resources,commit=sys.argv[1:]
 with open(resources+'/didi-runtime.json','w') as f:
- json.dump(dict(schemaVersion=1,installId=str(uuid.uuid4()),releaseCommit=commit,nodePath=os.path.realpath(node),nodeMajor=26,serverEntry='server/dist/host/index.js',webRoot='web/dist'),f)
+ json.dump(dict(schemaVersion=1,installId=str(uuid.uuid4()),releaseCommit=commit,nodePath='Contents/MacOS/node',nodeMajor=26,serverEntry='server/dist/host/index.js',webRoot='web/dist'),f)
 PY
+# Sign nested Mach-O first (bundled Node), the completed app last (TN2206).
+codesign --force --sign - "$app/Contents/MacOS/node"
 codesign --force --sign - --entitlements Resources/LuxDidi.entitlements "$app"
-codesign --verify --strict "$app"
+codesign --verify --deep --strict "$app"
 state="$proof/real-host/state"
 for n in 1 2; do
  mkdir -p "$proof/real-host/launch-$n"

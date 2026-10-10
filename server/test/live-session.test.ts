@@ -248,9 +248,9 @@ test('waitingForInput keeps its boolean and ready stays a durable fact', async t
   const { session, attachment } = await attached(h);
   h.f.send({ serverContent: { waitingForInput: true, turnComplete: true } });
   await drain(h, session.liveSessionId, 3);
-  assert.equal(h.owner.get(session.liveSessionId).ready, true);
   const page = h.owner.listFragments({ liveSessionId: session.liveSessionId, limit: 10 });
   assert.equal(page.fragments.find(fragment => fragment.kind === 'waitingForInput')?.value, true);
+  assert.equal(h.owner.get(session.liveSessionId).ready, true);
   h.f.send({ serverContent: { waitingForInput: false } });
   await drain(h, session.liveSessionId, 4);
   const later = h.owner.listFragments({ liveSessionId: session.liveSessionId, cursor: 4, limit: 10 });

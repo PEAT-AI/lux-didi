@@ -297,10 +297,13 @@ test('supervised host composes Live, closes owned sockets on EOF, and the Store 
   const config = join(dir, 'provider-config'); mkdirSync(config, { recursive: true, mode: 0o700 }); chmodSync(config, 0o700);
   writePrivate(config, 'live.json', `${JSON.stringify(configJson(true))}\n`);
   writePrivate(config, 'gemini-primary.json', `${JSON.stringify({ schemaVersion: 1, keyReference: 'gemini-primary', key: CANARY })}\n`);
-  const web = join(dir, 'web'); mkdirSync(web, { recursive: true });
-  writeFileSync(join(web, 'index.html'), '<!doctype html><title>live gateway</title>\n', { mode: 0o644 });
+  const web = join(dir, 'web'); mkdirSync(join(web, 'assets'), { recursive: true });
+  writeFileSync(join(web, 'index.html'), '<!doctype html><title>live gateway</title><link rel="stylesheet" href="/assets/app.css"><script src="/assets/app.js"></script>\n', { mode: 0o644 });
   writeFileSync(join(web, 'sw.js'), 'self.addEventListener("install", () => {});\n', { mode: 0o644 });
   writeFileSync(join(web, 'manifest.webmanifest'), '{"name":"live gateway"}\n', { mode: 0o644 });
+  writeFileSync(join(web, 'icon.svg'), '<svg xmlns="http://www.w3.org/2000/svg"></svg>\n', { mode: 0o644 });
+  writeFileSync(join(web, 'assets', 'app.js'), 'console.log("live");\n', { mode: 0o644 });
+  writeFileSync(join(web, 'assets', 'app.css'), 'body{}\n', { mode: 0o644 });
 
   const child = fork(join(import.meta.dirname, 'live-gateway-process.js'), ['host', dir, config, web], { stdio: ['pipe', 'pipe', 'inherit', 'ipc'] });
   t.after(() => { if (child.exitCode === null) child.kill('SIGKILL'); rmSync(dir, { recursive: true, force: true }); });

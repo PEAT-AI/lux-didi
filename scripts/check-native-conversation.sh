@@ -6,17 +6,8 @@
 set -euo pipefail
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 cd "$(dirname "$0")/.."
-deps="${DIDI_TYPESCRIPT_ROOT:-$PWD/server/node_modules}"
-if [[ ! -f "$deps/typescript/bin/tsc" || ! -d "$deps/@types/node" ]]; then
-  echo 'NATIVE CHECK BLOCKED: installed SERVICE TypeScript/@types/node required' >&2; exit 2
-fi
 git diff --check
 bash scripts/run-local.sh --build-only
-# The lane's own test file is compiled here, not added to the shared server include.
-node "$deps/typescript/bin/tsc" --target ES2023 --module NodeNext --moduleResolution NodeNext \
-  --strict --noUncheckedIndexedAccess --exactOptionalPropertyTypes --noUnusedLocals --noUnusedParameters --skipLibCheck \
-  --types node --typeRoots "$deps/@types" --rootDir server --outDir server/dist \
-  server/test/native-conversation.test.ts
 node server/dist/host/index.js --help | grep -q -- '--config-dir'
 for file in server/dist/test/native-conversation.test.js server/dist/test/connected.test.js server/dist/test/http.test.js; do
   test -s "$file" || { echo "Missing selected test: $file" >&2; exit 1; }

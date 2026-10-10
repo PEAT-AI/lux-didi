@@ -36,7 +36,7 @@ function recordingContext() {
       }
       calls.push([key,...operands]);
     };}});
-  return {ctx,calls};
+  return {ctx,calls,reset(){calls.length=0;gradients.clear();nextGradient=0;}};
 }
 const silence={level:0,low:0,mid:0,high:0,flux:0};
 const voice={level:.6,low:.7,mid:.4,high:.2,flux:.9};
@@ -78,7 +78,7 @@ test('complete geometry and canvas calls match original methods under common inj
     const before=JSON.stringify(frame);renderer.draw(frame);
     assert.equal(JSON.stringify(frame),before,'painter must not mutate its frame');
     assert.deepEqual(plain(actual.calls),plain(expected.calls),`${size} ${status} audible=${audible}: original geometry/colors/canvas calls`);
-    actual.calls.length=0; renderer.draw(frame);
+    actual.reset(); renderer.draw(frame);
     assert.deepEqual(plain(actual.calls),plain(expected.calls),'same frame does not advance painter clocks');
   }
 });
@@ -158,7 +158,7 @@ test('known host pulses/resting and neutral/disabled semantics retain original s
     const start=source.indexOf(`@keyframes ${name}`);assert(start>=0,`missing ${name}`);
     const open=source.indexOf('{',start);let depth=1,index=open+1;
     while(depth&&index<source.length){if(source[index]==='{')depth++;if(source[index]==='}')depth--;index++;}
-    assert.equal(depth,0);return source.slice(open,index).replace(/\s+/g,'').replace(/0\./g,'.');
+    assert.equal(depth,0);return source.slice(open,index).replace(/\s+/g,'').replace(/0\./g,'.').replace(/;}/g,'}');
   };
   for(const [original,port] of [['breathe','orb-breathe'],['speak-pulse','orb-speak-pulse'],['pulse-slow','orb-pulse-slow'],['rest-breathe','orb-rest-breathe']])
     assert.equal(keyframe(css,port),keyframe(fixture.wrapperCSS,original),`original ${original} compositor motion`);

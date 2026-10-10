@@ -82,11 +82,11 @@ import Security
                    "cancelled readiness disposes callbacks without claiming activation")
             let readiness = await OwnedWindowReadiness.wait(window) {
                 window.makeKeyAndOrderFront(nil)
-                NSApp.activate(ignoringOtherApps: true)
             }
             let readinessReport = URL(fileURLWithPath: CommandLine.arguments[2]).appendingPathComponent("connected-wk-readiness.json")
             let readinessData = try JSONSerialization.data(withJSONObject: ["nativePid": Int(getpid()), "windowId": window.windowNumber,
-                "ready": readiness.ready, "events": readiness.events, "hiddenDeadline": unavailable.events], options: [.prettyPrinted, .sortedKeys])
+                "ready": readiness.ready, "events": readiness.events, "diagnostics": readiness.diagnostics,
+                "hiddenDeadline": unavailable.events, "hiddenDiagnostics": unavailable.diagnostics, "cancelDiagnostics": cancellation.diagnostics], options: [.prettyPrinted, .sortedKeys])
             try readinessData.write(to: readinessReport, options: .atomic)
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: readinessReport.path)
             expect(readiness.ready && NSApp.isActive && window.isMainWindow && window.isKeyWindow && window.isVisible && window.occlusionState.contains(.visible),

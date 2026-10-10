@@ -131,10 +131,9 @@ import CryptoKit
             report["visual"] = visual; report["observations"] = observations
             let readiness = await OwnedWindowReadiness.wait(window) {
                 window.makeKeyAndOrderFront(nil)
-                NSApp.activate(ignoringOtherApps: true)
             }
             let readinessTrace: [String: Any] = ["nativePid": Int(getpid()), "windowId": window.windowNumber,
-                "ready": readiness.ready, "events": readiness.events]
+                "ready": readiness.ready, "events": readiness.events, "diagnostics": readiness.diagnostics]
             report["axConsumer"] = ["stage": "before-connected-own-AX", "windowReadiness": readinessTrace]
             try proof.write(report)
             guard readiness.ready else { throw InstalledProofError.accessibility }

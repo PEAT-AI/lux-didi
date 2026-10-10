@@ -57,7 +57,7 @@ if ! command -v lux-browser-slot >/dev/null; then echo 'CHECK BLOCKED: lux-brows
 
 if [ "${1:-}" = "--leased-run" ]; then
   work="$2"; proof="$3"; node="$4"; app="$5"; fixture="$6"; payload_sha="$7"
-  export LUX_VERIFICATION_DRIVER=HOME="$real_home" CFFIXED_USER_HOME="$work/home" "$work/observer"
+  export LUX_VERIFICATION_DRIVER="$work/observer"
   export LUX_COMPANION_SOURCE_ROOT="$(pwd)"
   real_home="$HOME"
   real_store="$real_home/Library/Application Support/ai.peat.lux-didi-operator/settings.json"
@@ -371,6 +371,6 @@ printf 'FIXTURE-APP payload_sha256=%s\n' "$payload_sha"
 # so no compile happens inside the lease.
 src=Tests/DidiCompanionTests/launch-probe
 /usr/bin/nice -n 10 xcrun clang -c "$src/Kernel.c" -o "$work/Kernel.o"
-/usr/bin/nice -n 10 xcrun swiftc -j 1 -num-threads 1 -parse-as-library -import-objc-header "$src/Kernel.h" "$src/Identity.swift" "$src/Observer.swift" "$work/Kernel.o" -o HOME="$real_home" CFFIXED_USER_HOME="$work/home" "$work/observer"
+/usr/bin/nice -n 10 xcrun swiftc -j 1 -num-threads 1 -parse-as-library -import-objc-header "$src/Kernel.h" "$src/Identity.swift" "$src/Observer.swift" "$work/Kernel.o" -o "$work/observer"
 
 lux-browser-slot run --wait 120 -- bash "$0" --leased-run "$work" "$proof" "$node" "$app" "$fixture" "$payload_sha"

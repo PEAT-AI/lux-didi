@@ -122,7 +122,8 @@ test('canonical compiler emits every published production unit and no unpublishe
   const config = JSON.parse(await readFile(join(server, 'tsconfig.json'), 'utf8')) as { include: string[] };
   assert.deepEqual(config.include.filter(path => !path.startsWith('test/')).sort(), [
     'index.ts', 'runtime/**/*.ts', 'http/**/*.ts', 'contracts/**/*.ts', 'domain/**/*.ts',
-    'host/**/*.ts', 'chat/**/*.ts', 'config/**/*.ts', 'adapters/model/**/*.ts', 'adapters/mcp/**/*.ts', 'prompt/**/*.ts',
+    'host/**/*.ts', 'chat/**/*.ts', 'config/**/*.ts', 'adapters/model/**/*.ts', 'adapters/mcp/**/*.ts',
+    'adapters/live-voice/**/*.ts', 'connectors/**/*.ts', 'prompt/**/*.ts',
   ].sort(), 'canonical production roots must include all accepted units and approved CHAT/config composition');
   for (const entry of ['index', 'runtime/store', 'http/server', 'contracts/index', 'domain/facade',
     'host/index', 'chat/index', 'config/index', 'adapters/model/index', 'adapters/mcp/adapter', 'prompt/index']) {

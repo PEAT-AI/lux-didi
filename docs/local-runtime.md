@@ -155,7 +155,7 @@ The host accepts `--config-dir PATH`; the portable default is
 for the existing secure profile/key initialization. The validated profile is fixed
 for the process; restart to activate edits. Keys retain their secure per-dispatch
 read. Status is unconfigured, disabled, error (safe code only), or configured with
-provider/model. Configured means locally validated, not remotely reachable. An
+provider/model. Configured means the profile is locally validated; this does not prove provider reachability. An
 unsupported adapter model ID is a sanitized configuration error and never prevents
 local notes, Today, recall or supervisor readiness.
 

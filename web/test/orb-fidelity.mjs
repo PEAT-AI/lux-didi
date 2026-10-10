@@ -1,3 +1,4 @@
+import {referenceSource} from './fixture.mjs';
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {readFileSync, existsSync} from 'node:fs';
@@ -19,38 +20,7 @@ const frameModule = existsSync(new URL('../src/orb-frame.ts', import.meta.url))
   ? compile(readFileSync(new URL('../src/orb-frame.ts', import.meta.url),'utf8'), 'orb-frame.ts', {'./orb-classic':classic}) : undefined;
 // This shell only supplies the Angular/service boundaries. Methods below are
 // verbatim original source, not formulas or pixels produced by the port.
-const reference = compile(`${fixture.helpers}
-export class Reference {
-  time=0; ambientTime=0; ambientNoiseOffset={x:0,y:0}; smoothedAudioLevel=0;
-  smoothedPlaybackLevel=0; smoothedHue=null; targetPulse=0; currentPulse=0;
-  smoothedLow=0; smoothedMid=0; smoothedHigh=0; smoothedFlux=0; smoothedActivity=1;
-  wasSpeaking=false; state={status:'IDLE'}; microphone=0; playback={level:0,low:0,mid:0,high:0,flux:0}; audible=false;
-  deviceTier={capabilities:()=>({maxAnimationLayers:10})}; ctx; noise;
-  constructor(ctx, noise){this.ctx=ctx;this.noise={noise2D:noise};}
-  _voiceState(){return this.state;} awaitingGreeting(){return false;}
-  audioLevel(){return this.state.status==='LISTENING'?this.microphone:0;}
-  playbackMeter={read:()=>this.playback,audible:()=>this.audible};
-  isListening(){return this.state.status==='LISTENING';}
-  isProcessing(){return this.state.status==='CONNECTING'||(this.state.status==='PROCESSING'&&!this.audible);}
-  isSpeaking(){return this.state.status==='SPEAKING'||(this.state.status==='PROCESSING'&&this.audible);}
-  baseHue(){${fixture.hueBody}}
-  ease(current,target,attack,decay,dt){return current+(target-current)*smoothingAlpha(dt,target>current?attack:decay);}
-  step(dt,status,playback,audible,microphone=0,size=600){
-    this.state={status}; this.playback=playback; this.audible=audible; this.microphone=microphone;
-    const state=this.state;
-    ${fixture.frameBody}
-    return {size,time:this.time,ambientTime:this.ambientTime,ambientNoiseOffset:{...this.ambientNoiseOffset},
-      hue:primaryHue,activityMultiplier,glowIntensity,flareIntensity,
-      smoothedAudioLevel:this.smoothedAudioLevel,smoothedPlaybackLevel:this.smoothedPlaybackLevel,
-      smoothedLow:this.smoothedLow,smoothedMid:this.smoothedMid,smoothedHigh:this.smoothedHigh,smoothedFlux:this.smoothedFlux,
-      smoothedActivity:this.smoothedActivity,targetPulse:this.targetPulse,currentPulse:this.currentPulse,
-      listening:this.isListening(),speaking:this.isSpeaking(),processing:this.isProcessing()};
-  }
-  draw(frame){Object.assign(this,frame); this.state={status:frame.status}; this.audible=frame.audible;
-    this.dispatchLayers(frame.size/2,frame.size/2,frame.size*.05,frame.hue,frame.activityMultiplier,frame.glowIntensity,frame.flareIntensity);}
-  ${fixture.dispatch}
-  ${fixture.classic}
-}`, 'pinned-vicuna-classic.ts').Reference;
+const reference = compile(referenceSource(fixture), 'pinned-vicuna-classic.ts').Reference;
 function recordingContext() {
   const calls=[], gradients=new Map(); let nextGradient=0;
   const operand=value=>{
@@ -165,5 +135,37 @@ test('disconnect clears live input; stale audio is silent without manufacturing 
   assert.equal(h.orb.audio.read(501).level,0,'500ms stale input');
   h.orb.audio.push({...voice,timestamp:100});assert.equal(h.orb.audio.read(100).level,voice.level,'demonstrably fresh input before disconnect');
   h.orb.setState('DISCONNECTED');assert.equal(h.orb.audio.read(100).level,0,'disconnect must clear even nonstale frames');
+  h.orb.destroy();
+});
+
+
+test('idle/connected/disconnected breathing uses the previous independent ambient clock',()=>{
+  assert(frameModule);
+  for(const status of ['IDLE','CONNECTED','DISCONNECTED']){
+    const oracle=new reference(recordingContext().ctx,commonNoise);
+    let temporal=frameModule.initialOrbFrame();
+    for(let frame=0;frame<3;frame++){
+      const expected=oracle.step(1/30,status,silence,false);
+      temporal=frameModule.stepOrbFrame(temporal,{state:status,audio:silence,audible:false,microphoneLevel:0},1/30,600);
+      assert.equal(temporal.activityMultiplier,expected.activityMultiplier,`${status} ambient breathing frame${frame}`);
+    }
+  }
+});
+
+test('known host pulses/resting and neutral/disabled semantics retain original source CSS',()=>{
+  const css=readFileSync(new URL('../src/style.css',import.meta.url),'utf8');
+  const keyframe=(source,name)=>{
+    const start=source.indexOf(`@keyframes ${name}`);assert(start>=0,`missing ${name}`);
+    const open=source.indexOf('{',start);let depth=1,index=open+1;
+    while(depth&&index<source.length){if(source[index]==='{')depth++;if(source[index]==='}')depth--;index++;}
+    assert.equal(depth,0);return source.slice(open,index).replace(/\s+/g,'').replace(/0\./g,'.');
+  };
+  for(const [original,port] of [['breathe','orb-breathe'],['speak-pulse','orb-speak-pulse'],['pulse-slow','orb-pulse-slow'],['rest-breathe','orb-rest-breathe']])
+    assert.equal(keyframe(css,port),keyframe(fixture.wrapperCSS,original),`original ${original} compositor motion`);
+  const h=lifecycle('CONNECTED');
+  for(const state of ['IDLE','DISCONNECTED','CONNECTING','PROCESSING','RECONNECTING','SPEAKING']){
+    h.orb.setState(state);
+    assert.equal(h.canvas.dataset.disabled,String(['IDLE','DISCONNECTED','CONNECTING'].includes(state)),`${state} known disabled predicate`);
+  }
   h.orb.destroy();
 });

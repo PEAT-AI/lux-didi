@@ -113,7 +113,11 @@ export function createLiveUpgrader(options: LiveUpgradeOptions) {
       const principal = operatorPrincipal(req, options.store, options.origin());
       context = authorityContext(req, options.store, principal);
       const pin = req.headers['x-didi-live-profile'];
-      if (pin !== undefined && (typeof pin !== 'string' || pin !== options.live.profileIdentity)) throw new ServiceError('FORBIDDEN', 'Live profile pin is stale', 403);
+      if (pin !== undefined) {
+        if (typeof pin !== 'string') throw new ServiceError('FORBIDDEN', 'Live profile pin is stale', 403);
+        // Nonsecret staleness pin: must match BOTH the frozen grant identity and the current profile.
+        if (pin !== options.live.snapshot(sessionId).profileIdentity || pin !== options.live.profileIdentity) throw new ServiceError('FORBIDDEN', 'Live profile pin is stale', 403);
+      }
       if (!options.live.enabled) throw new ServiceError('MODEL_NOT_CONFIGURED', 'Live is not locally configured', 503);
     } catch (error) {
       const typed = liveServiceError(error);

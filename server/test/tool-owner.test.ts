@@ -42,14 +42,14 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
   t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
   const registry = new McpRegistry(); const p = options.policy ?? policy();
   const endpoint = { id: p.endpoint.id, url: p.endpoint.url, account: p.endpoint.account, resource: p.endpoint.resource, ...(p.endpoint.credentialRef ? { credentialRef: p.endpoint.credentialRef } : {}) };
-  registry.add(endpoint); registry.enable(endpoint.id); registry.allowEgress(endpoint.id);
+  registry.register(endpoint); registry.enable(endpoint.id); registry.allowEgress(endpoint.id);
   const sdk = new Server({ name: 'synthetic-owner', version: '1' }, { capabilities: { tools: { listChanged: false } } });
   const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
   const calls: { name: string; arguments: unknown; signal: AbortSignal }[] = [];
   let onDispatch: (() => void) | undefined;
   let result: unknown = options.result ?? { content: [{ type: 'text', text: 'nonempty synthetic α insight' }] };
   sdk.setRequestHandler('tools/list', () => ({ tools }) as never);
-  sdk.setRequestHandler('tools/call', req => { onDispatch?.(); return result as never; });
+  sdk.setRequestHandler('tools/call', () => { onDispatch?.(); return result as never; });
   await sdk.connect(transport);
   t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
     const req = new Request(input, init);
@@ -168,7 +168,7 @@ test('persisted disable survives reopen and stale projected registry grants cann
   f.owner.applyConnection(policy({ generation: 2, enabled: false }));
   assert.equal(f.registry.currentGrant('endpoint'), undefined);
   // Even a stale external projection restored after revoke is not authority.
-  f.registry.enable('endpoint'); f.registry.observe('endpoint', tools);
+  f.registry.enable('endpoint'); f.registry.observed('endpoint', tools, f.registry.revision('endpoint'));
   f.registry.approve({ ...oldGrant, generation: 3 });
   assert.throws(() => f.owner.journal.intent(f.intent()), /policy/);
   assert.equal(f.calls.length, 0);
@@ -214,7 +214,7 @@ test('revoke while awaiting authority is caught by final synchronous persisted r
 test('all bound connections checked even zero refs from another connection', async t => {
   const f = await fixture(t);
   const second = policy({ connectionId: 'second', endpoint: { ...policy().endpoint, id: 'second-endpoint' } });
-  f.registry.add({ id: 'second-endpoint', url: second.endpoint.url, account: 'account', resource: 'resource' });
+  f.registry.register({ id: 'second-endpoint', url: second.endpoint.url, account: 'account', resource: 'resource' });
   f.owner.applyConnection(second);
   const acceptance = { ...f.acceptance, runId: 'two', connectionIds: ['lux', 'second'] };
   const accepted = f.store.transaction(tx => f.owner.snapshotRun(tx, acceptance));

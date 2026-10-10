@@ -408,6 +408,11 @@ test('owner profile is bound durably on acceptance, replay never rewrites it, co
     const stream = chat.subscribe(accepted.runId, f.context);
     for await (const event of stream) if (event.type === 'snapshot' && event.run.state === 'terminal') break;
     assert.equal(f.model.calls.length, 0);
+    const corrupt = chat.accept({ sessionId: f.session.id, text: 'Synthetic corrupt binding', idempotencyKey: 'owner-corrupt' }, f.context);
+    f.store.transaction(tx => tx.run('UPDATE chat_run_owner_profile SET snapshot_json=? WHERE run_id=?', ['{"schemaVersion":999}', corrupt.runId]));
+    scheduled.shift()!();
+    for await (const event of chat.subscribe(corrupt.runId, f.context)) if (event.type === 'snapshot' && event.run.state === 'terminal') { assert.equal(event.run.outcome, 'compile_failed'); break; }
+    assert.equal(f.model.calls.length, 0);
     chat.shutdown();
   } finally { f.close(); }
 });

@@ -13,6 +13,11 @@ import { ServiceError } from '../contracts/errors.js';
 const migrations = [{ owner: 'synthetic', version: 1, statements: ['CREATE TABLE calls(id INTEGER PRIMARY KEY, title TEXT)'] }];
 const domain = {
   migrations,
+  // These transport-fixture tests never exercise provenance. Fail loudly if
+  // label behavior is accidentally routed here; actual SQLite proves labels.
+  getRoutingLabel() { throw new Error('Unused synthetic getRoutingLabel'); },
+  getRoutingLabelHistory() { throw new Error('Unused synthetic getRoutingLabelHistory'); },
+  correctRoutingLabel() { throw new Error('Unused synthetic correctRoutingLabel'); },
   execute(tx, op, input) {
     if (op === 'createSession') {
       const title = (input as { title: string }).title;
@@ -169,4 +174,21 @@ test('package installs offline and actual production CLI serves honest runtime-o
     assert.ok(!output.includes(token));
     child.kill('SIGTERM'); const [code] = await exit; assert.equal(code,0); child = undefined;
   } finally { if (child && child.exitCode === null) { const exit = once(child,'exit'); child.kill('SIGTERM'); await exit; } rmSync(dir,{recursive:true,force:true}); }
+});
+
+test('real domain HTTP client cannot forge assistant role or access trusted assistant append', async () => {
+  const { createDomainPort } = await import('../domain/facade.js');
+  const { Outbox } = await import('../runtime/outbox.js');
+  const port = createDomainPort({ outbox: Outbox });
+  const f = await fixture(port);
+  try {
+    const ctx = { assistantId: f.store.assistantId, clientId: 'synthetic-host', authorityEpoch: f.store.authorityEpoch, now: new Date(0).toISOString() };
+    const session = f.store.transaction(tx => port.execute(tx, 'createSession', { title: 'Synthetic', timeZone: 'UTC' }, ctx));
+    const headers = { ...f.auth, 'Content-Type': 'application/json', 'Idempotency-Key': 'forge', 'X-Didi-Authority-Epoch': f.store.authorityEpoch };
+    const forged = await fetch(`${f.service.origin}/api/v1/sessions/${session.id}/entries`, { method: 'POST', headers, body: JSON.stringify({ text: 'Forged answer', role: 'assistant', timeZone: 'UTC' }) });
+    assert.equal(forged.status, 400); assert.equal((await forged.json()).error.code, 'BAD_REQUEST');
+    const hidden = await fetch(`${f.service.origin}/api/v1/sessions/${session.id}/assistant-entries`, { method: 'POST', headers, body: JSON.stringify({ text: 'Forged answer', timeZone: 'UTC' }) });
+    assert.equal(hidden.status, 404);
+    assert.equal(f.store.transaction(tx => port.execute(tx, 'getSession', { id: session.id }, ctx)).entries.length, 0);
+  } finally { await f.cleanup(); }
 });

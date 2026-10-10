@@ -33,11 +33,13 @@ bash scripts/run-local.sh --run-built --data-dir "$DIDI_STATE_DIR" --web-root "$
 
 The leased browser proof defaults to headless GPU rendering. `DIDI_HOST_HEADED=1` requests a bounded headed GPU run for root visual inspection; `DIDI_HOST_ARTIFACTS` chooses the proof directory. Its `browser-proof.json` records the exact source commit, mode, runtime origin, compiled entry/web-index hashes and screenshot hashes, never a credential. The producer closes its browser and disposable service/state before returning.
 
-Set `DIDI_STATE_DIR` to a private application-data directory first. If `--data-dir`
-is omitted, defaults are macOS `~/Library/Application Support/Lux Didi`, Linux
-`$XDG_DATA_HOME/lux-didi` or `~/.local/share/lux-didi`, and Windows
-`%LOCALAPPDATA%/Lux Didi` (fallback `~/AppData/Local/Lux Didi`). Explicit paths keep
-the topology portable; this is not a Windows package or remote-device install.
+Set `DIDI_STATE_DIR` to a private application-data directory first. Without
+`--data-dir`, macOS uses the `Lux Didi` subdirectory of the user's Application
+Support directory. Linux uses `$XDG_DATA_HOME/lux-didi`, or the `lux-didi`
+subdirectory of the standard XDG user-data directory. Windows uses
+`%LOCALAPPDATA%/Lux Didi`, with the user's standard local application-data
+directory as fallback. Explicit paths keep the topology portable; this is not
+a Windows package or remote-device install.
 Default web root is the checkout/artifact's `web/dist`, port 8765. Environment
 alternatives: `DIDI_STATE_DIR`, `DIDI_WEB_ROOT`, `DIDI_PORT`, `DIDI_DESCRIPTOR`.
 CLI options take precedence. Port 0 requests an OS-assigned loopback port.

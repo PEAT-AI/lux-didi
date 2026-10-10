@@ -1,16 +1,16 @@
 # Roadmap and backlog
 
-Status: proposed plan. The repository contains no application, and every capability described here is planned, not built. The structured plan is [planning/backlog.json](../planning/backlog.json): 101 nodes, one program tracker (P00), ten epics (E01 to E10) and ninety work items (A, B, C, D and F leaves). When published, the same nodes are GitHub issues with stable IDs, labels and milestones; the mapping is recorded in `planning/issue-map.json`.
+Status: proposed plan. The repository contains no application, and every capability described here is planned, not built. The structured plan is [planning/backlog.json](../planning/backlog.json): 119 nodes, one program tracker (P00), thirteen epics (E01 to E13) and one hundred and five work items (A, B, C, D and F leaves). When published, the same nodes are GitHub issues with stable IDs, labels and milestones; the mapping is recorded in `planning/issue-map.json`.
 
 ## Numbering
 
 - P00: program tracker with the five lanes and the milestone entry points.
-- E01 to E10: epics with outcomes and exit criteria, no direct work.
-- A01 to A18: runtime and local execution leaves (master A).
+- E01 to E13: epics with outcomes and exit criteria, no direct work.
+- A01 to A24: runtime and local execution and portable service leaves (master A).
 - B01 to B18: evidence, memory and persona leaves (master B).
-- C01 to C18: accounts, connectors and trust leaves (master C).
+- C01 to C23: accounts, connectors, trust and channel leaves (master C).
 - D01 to D18: commitments and proactivity leaves (master D).
-- F01 to F18: native experience leaves (master E, prefix F so leaves never collide with epic IDs).
+- F01 to F22: native experience and client surface leaves (master E, prefix F so leaves never collide with epic IDs).
 
 ## Milestones
 
@@ -18,7 +18,7 @@ Milestones are delivery stages, not dates. No completion date or effort estimate
 
 ### M0, proof and contracts
 
-Turn the open host and evidence questions into contracts the other lanes can build against. Entry points: A01 (host and licence feasibility, with a measured spike and an architecture decision record), A02 (versioned cross-track contracts and fixtures), A03, A04, B01 (evidence and source identity model), B07 (preference authority), B12 (persona specification), B17 (evidence classes), C01 (multi-account identity map), C02 (Google installed-app OAuth), C14 (tool capability registry), D01 (commitment lifecycle schema). Exit criteria: the host is chosen by a measured spike and recorded in an ADR, the contract package and fixtures exist and are consumed by concrete storage, provider and domain contract consumers, and no task asserts a measured figure it has not recorded. MCP transport is deferred to M3 and is not part of this exit.
+Turn the open evidence and interface questions into contracts the other lanes can build against. The service stack itself is already decided. Entry points: A01 (service stack, client roles and licence boundary record, decided under PLAN-R1), A02 (versioned cross-track contracts and fixtures), A03, A04, B01 (evidence and source identity model), B07 (preference authority), B12 (persona specification), B17 (evidence classes), C01 (multi-account identity map), C02 (Google installed-app OAuth), C14 (tool capability registry), D01 (commitment lifecycle schema). Exit criteria: the service stack record is implemented by the loopback service seam (A19), the contract package and fixtures exist and are consumed by concrete storage, provider and domain contract consumers, and no task asserts a measured figure it has not recorded. MCP transport is deferred to M3 and is not part of this exit.
 
 ### M1, useful daily loop
 
@@ -40,7 +40,7 @@ Close the seams that need evidence or a decision. Entry points: F14 (optional wa
 
 An epic's phase is the milestone at which its stated outcome exits, not the earliest or the latest child leaf. A later extended or optional leaf can sit in a later milestone without moving the epic: E05 exits at M1 while its action leaves extend to M3, E09 exits at M2 with the minimal notification baseline pulled into M1, and E02 exits at M3 with its reliability baseline in M1.
 
-- E01 Runtime and local execution (master A, phase M0, leaves A01 to A08): the host decision, shared contracts, service, store, jobs, providers, tool turns and receipts.
+- E01 Runtime and local execution (master A, phase M0, leaves A01 to A08): the service stack record, shared contracts, service, store, jobs, providers, tool turns and receipts.
 - E02 Harness supervision and operational reliability (master A, phase M3, leaves A09 to A18): supervise existing harness sessions safely, plus diagnostics, the first daily-loop integration gate and measurement.
 - E03 Evidence and durable recall (master B, phase M1, leaves B01 to B09): source identity, transcript originals and resolution, gists, recall, preferences, suppression, export and forget.
 - E04 Evolving personality and memory quality (master B, phase M2, leaves B10 to B18): consolidation, context compilation, the public persona spec, private customization, learning with provenance and evaluation.
@@ -50,6 +50,9 @@ An epic's phase is the milestone at which its stated outcome exits, not the earl
 - E08 Proactive follow-through (master D, phase M2, leaves D10 to D18): interruption policy, asynchronous progress, replanning, follow-ups, calibration, sleep and offline behavior.
 - E09 Mac conversation surface (master E, phase M2, leaves F01 to F09): hotkey, text and voice conversation, barge-in, reconnection, voice character and notifications.
 - E10 Installability, computer control and companion portability (master E, phase M3, leaves F10 to F18): onboarding and grants, review surfaces, computer control, lifecycle, wake word, packaging, companion and portability.
+- E11 Portable assistant service and cloud deployment (master A, phase M4, leaves A19 to A24): the command, query and progress seam, the container and runbook, secret references, backup, restore and rehearsal, suite endpoints and the hosting boundary.
+- E12 Channels, authority epochs and device grants (master C, phase M3, leaves C19 to C23): the channel inbox and outbox, channel identity separate from account identity, one active authority epoch, device grants with pulled intents, and revocation with offline delivery.
+- E13 Responsive and mobile client surfaces (master E, phase M2, leaves F19 to F23): the responsive browser shell, the shared web UI host inside the Mac companion, the shell-only cache and offline policy, the Android access path and cross-breakpoint conformance.
 
 Phase counts: M0 has 12 work items, M1 has 40, M2 has 17, M3 has 19, and M4 has 2.
 
@@ -75,8 +78,28 @@ Key cross-track edges (all genuine completion dependencies):
 
 ## Labels and milestones
 
-The validator derives labels from node fields so the published issues cannot drift from the backlog: `kind:program`, `kind:epic` and `kind:task`; `master:A` to `master:E` on epics and leaves; `phase:M0` to `phase:M4`; `priority:P0` to `priority:P2`. Milestones carry the same five stage IDs with the descriptive titles above. The program tracker has no master label. Published totals are 101 roadmap issues plus one separate plan-delivery issue used only by the documentation pull request; the tracker `P00` is never auto-closed by it.
+The validator derives labels from node fields so the published issues cannot drift from the backlog: `kind:program`, `kind:epic` and `kind:task`; `master:A` to `master:E` on epics and leaves; `phase:M0` to `phase:M4`; `priority:P0` to `priority:P2`. Milestones carry the same five stage IDs with the descriptive titles above. The program tracker has no master label. Published totals are 119 roadmap issues plus one separate plan-delivery issue used only by the documentation pull request; the tracker `P00` is never auto-closed by it.
 
 ## Where to start
 
 Read [the P00 program tracker](https://github.com/PEAT-AI/lux-didi/issues/1) first: its body names the five lanes and the entry point for each milestone. Then [parallel-masters.md](parallel-masters.md) for ownership and start packets, [architecture.md](architecture.md) for the invariants, and [decisions.md](decisions.md) for the choices already made and the questions still open. The stable-ID to issue-number mapping is in [planning/issue-map.json](../planning/issue-map.json). The separate first-night execution plan is [overnight-execution.md](overnight-execution.md); it is proposed and does not change the issue scope.
+
+## Revision record
+
+- PLAN-R1 (2026-10-09): the service stack is recorded as TypeScript on Node with SQLite, a Swift Mac
+  companion and a responsive browser client, with the same service running on loopback now and on a
+  Linux virtual machine later. New work: E11 portable assistant service and cloud deployment (A19 to
+  A24), E12 channels, authority epochs and device grants (C19 to C23), E13 responsive and mobile client surfaces (F19 to F23). Existing IDs, titles where already published and every existing
+  dependency edge are preserved. A01 now records the stack and the superseded Swift prototype instead
+  of an open comparison. Totals move from 101 nodes to 119, from 10 epics to 13, and from 90 work
+  items to 105. The validator derives those totals from the node set rather than from a literal, and
+  V-14 proves the derived checks still reject a broken plan.
+
+- PLAN-R3 (2026-10-09): the four review findings are adopted. Observed publication metadata and
+  milestone identifiers are preserved while the staged projection stays separate; the phone proof is
+  scoped to a phone-width laptop proof tonight with no physical-phone connectivity claim; an
+  unavailable old host never triggers an automatic authority transfer, which now requires a
+  demonstrated fence plus a separate-store partition and resume acceptance. The ruling also records
+  first-party Naya reuse, one shared web UI hosted in a web view with a native-only control surface,
+  and the concise source-linked context economy. New leaf: F23. Totals move to 120 nodes and 106 work
+  items.

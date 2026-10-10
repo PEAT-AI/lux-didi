@@ -2,10 +2,10 @@
   "checks": [
     {
       "details": {
-        "epics": 10,
+        "epics": 13,
         "program": 1,
-        "tasks": 90,
-        "total": 101
+        "tasks": 106,
+        "total": 120
       },
       "failures": [],
       "id": "V-01",
@@ -31,8 +31,8 @@
     },
     {
       "details": {
-        "count": 101,
-        "expected": 101
+        "count": 120,
+        "expected": 120
       },
       "failures": [],
       "id": "V-04",
@@ -50,7 +50,7 @@
     },
     {
       "details": {
-        "edges": 206
+        "edges": 245
       },
       "failures": [],
       "id": "V-06",
@@ -61,10 +61,10 @@
     {
       "details": {
         "M0": 14,
-        "M1": 44,
-        "M2": 20,
-        "M3": 21,
-        "M4": 2
+        "M1": 45,
+        "M2": 26,
+        "M3": 26,
+        "M4": 9
       },
       "failures": [],
       "id": "V-07",
@@ -75,12 +75,12 @@
     {
       "details": {
         "max": 834,
-        "median": 522,
-        "min": 326,
+        "median": 477,
+        "min": 303,
         "values": {
-          "A01": 435,
+          "A01": 509,
           "A02": 412,
-          "A03": 477,
+          "A03": 487,
           "A04": 459,
           "A05": 472,
           "A06": 470,
@@ -91,23 +91,29 @@
           "A11": 406,
           "A12": 415,
           "A13": 440,
-          "A14": 481,
+          "A14": 523,
           "A15": 413,
           "A16": 466,
           "A17": 439,
-          "A18": 402,
+          "A18": 406,
+          "A19": 374,
+          "A20": 405,
+          "A21": 311,
+          "A22": 303,
+          "A23": 306,
+          "A24": 309,
           "B01": 473,
           "B02": 460,
           "B03": 478,
-          "B04": 384,
+          "B04": 411,
           "B05": 405,
           "B06": 432,
           "B07": 362,
           "B08": 382,
           "B09": 375,
           "B10": 333,
-          "B11": 350,
-          "B12": 370,
+          "B11": 380,
+          "B12": 405,
           "B13": 348,
           "B14": 363,
           "B15": 326,
@@ -116,7 +122,7 @@
           "B18": 352,
           "C01": 647,
           "C02": 737,
-          "C03": 658,
+          "C03": 689,
           "C04": 664,
           "C05": 658,
           "C06": 628,
@@ -127,11 +133,16 @@
           "C11": 579,
           "C12": 671,
           "C13": 623,
-          "C14": 667,
+          "C14": 701,
           "C15": 814,
           "C16": 834,
           "C17": 677,
           "C18": 665,
+          "C19": 315,
+          "C20": 320,
+          "C21": 401,
+          "C22": 341,
+          "C23": 311,
           "D01": 522,
           "D02": 672,
           "D03": 588,
@@ -150,24 +161,29 @@
           "D16": 589,
           "D17": 653,
           "D18": 685,
-          "F01": 430,
-          "F02": 544,
-          "F03": 374,
-          "F04": 621,
+          "F01": 477,
+          "F02": 580,
+          "F03": 420,
+          "F04": 654,
           "F05": 383,
           "F06": 386,
           "F07": 564,
-          "F08": 396,
+          "F08": 428,
           "F09": 650,
           "F10": 538,
           "F11": 505,
-          "F12": 407,
+          "F12": 434,
           "F13": 533,
           "F14": 349,
           "F15": 633,
-          "F16": 584,
-          "F17": 593,
-          "F18": 472
+          "F16": 635,
+          "F17": 600,
+          "F18": 472,
+          "F19": 412,
+          "F20": 317,
+          "F21": 306,
+          "F22": 305,
+          "F23": 458
         }
       },
       "failures": [],
@@ -176,12 +192,12 @@
       "title": "Required section concepts and body size",
       "warnings": [
         "C02: 737 words, outside the 300 to 650 target band",
-        "C03: 658 words, outside the 300 to 650 target band",
+        "C03: 689 words, outside the 300 to 650 target band",
         "C04: 664 words, outside the 300 to 650 target band",
         "C05: 658 words, outside the 300 to 650 target band",
         "C08: 738 words, outside the 300 to 650 target band",
         "C12: 671 words, outside the 300 to 650 target band",
-        "C14: 667 words, outside the 300 to 650 target band",
+        "C14: 701 words, outside the 300 to 650 target band",
         "C15: 814 words, outside the 300 to 650 target band",
         "C16: 834 words, outside the 300 to 650 target band",
         "C17: 677 words, outside the 300 to 650 target band",
@@ -193,7 +209,8 @@
         "D10: 715 words, outside the 300 to 650 target band",
         "D15: 675 words, outside the 300 to 650 target band",
         "D17: 653 words, outside the 300 to 650 target band",
-        "D18: 685 words, outside the 300 to 650 target band"
+        "D18: 685 words, outside the 300 to 650 target band",
+        "F04: 654 words, outside the 300 to 650 target band"
       ]
     },
     {
@@ -242,23 +259,11 @@
     },
     {
       "details": {
-        "paths": [
-          "README.md",
-          "docs/acceptance.md",
-          "docs/architecture.md",
-          "docs/decisions.md",
-          "docs/overnight-execution.md",
-          "docs/parallel-masters.md",
-          "docs/privacy-and-authority.md",
-          "docs/research.md",
-          "docs/risks.md",
-          "docs/roadmap.md",
-          "planning/backlog-validation.json",
-          "planning/backlog-validation.md",
-          "planning/backlog.json",
-          "planning/issue-map.json",
-          "scripts/backlog_validate.py"
-        ]
+        "boundary_fixture": "tracked=2 scan=1 findings=1 rejected_once=True ignored_build_allowed=True",
+        "controls": "72/72",
+        "forbidden": 0,
+        "paths": 109,
+        "scanned": 112
       },
       "failures": [],
       "id": "V-13",
@@ -268,7 +273,58 @@
     },
     {
       "details": {
-        "references": 778
+        "controls": 10,
+        "dash code point is rejected": {
+          "broken_rejected": true,
+          "pristine_rejected": false
+        },
+        "dependency cycle is rejected": {
+          "broken_rejected": true,
+          "pristine_rejected": false
+        },
+        "duplicate id is rejected": {
+          "broken_rejected": true,
+          "pristine_rejected": false
+        },
+        "epic child mismatch is rejected": {
+          "broken_rejected": true,
+          "pristine_rejected": false
+        },
+        "missing baseline is rejected": {
+          "broken_rejected": true,
+          "pristine_rejected": false
+        },
+        "numbering gap is rejected": {
+          "broken_rejected": true,
+          "pristine_rejected": false
+        },
+        "private path shape is rejected": {
+          "broken_rejected": true,
+          "pristine_rejected": false
+        },
+        "rejected": 10,
+        "stale body hash is rejected": {
+          "broken_rejected": true,
+          "pristine_rejected": false
+        },
+        "tracker total drift is rejected": {
+          "broken_rejected": true,
+          "pristine_rejected": false
+        },
+        "wrong master prefix is rejected": {
+          "broken_rejected": true,
+          "pristine_rejected": false
+        }
+      },
+      "failures": [],
+      "id": "V-14",
+      "status": "PASS",
+      "title": "Negative-control self-test",
+      "warnings": []
+    },
+    {
+      "details": {
+        "references": 951
       },
       "failures": [],
       "id": "X-01",
@@ -310,7 +366,7 @@
     },
     {
       "details": {
-        "assembly_digest": "669648727adff01c327179c5631f0a816e34294f97d9273b0dea616812141c4a"
+        "assembly_digest": "2fa06914d85db3a06b1d27364350c545ed1b20f9ce629d3f1618c6e520968a6b"
       },
       "failures": [],
       "id": "X-06",
@@ -320,12 +376,27 @@
     },
     {
       "details": {
-        "hashed_nodes": 101
+        "hashed_nodes": 120,
+        "numbering_controls": {
+          "duplicate_observed_rejected": true,
+          "duplicate_staged_rejected": true,
+          "missing_number_rejected": true,
+          "negative_number_rejected": true
+        },
+        "rendered_baseline": "101/101",
+        "rendered_current": {
+          "created_rendered": 19,
+          "nodes": 120,
+          "observed_numbers": 101,
+          "staged_numbers": 19,
+          "unchanged_reproduced": 81,
+          "updated_changed": 20
+        }
       },
       "failures": [],
       "id": "X-07",
       "status": "PASS",
-      "title": "Snapshot body hashes and correction record",
+      "title": "Snapshot body hashes, rendered hashes and correction record",
       "warnings": []
     },
     {
@@ -338,8 +409,8 @@
     }
   ],
   "failed": false,
-  "file_count": 13,
+  "file_count": 109,
   "packets_mode": false,
   "schema": "lux-didi.validation/1",
-  "tree_digest": "08f1f554e105137116ff7c6296002cd77e0a5817d180f1817d7ed8092d0fb8b5"
+  "tree_digest": "58b30000d066f1f21600e1d97dbdf374c5ad47072e8ae129cec8141265ff8119"
 }

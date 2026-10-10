@@ -9,14 +9,32 @@ Status: accepted design directions with named owners. These decisions were taken
 - D-03 Every source reference carries provider, account, source identity, revision or hash where available, span where available, and coverage, freshness and availability. A cached authorized source is an explicitly versioned cache, never a new source authority. Owners: B01, B03.
 - D-04 Resolved, cancelled and forgotten items are suppressed before planning, and background extraction cannot silently reopen them. Due dates are not deletion times. Correction and forgetting track derived projections and report pending propagation honestly; deleting a Didi memory does not claim deletion of an external source it does not own. Owners: B08, B09, D03.
 - D-05 Storage origin (manual, user, automatic) is not factual authority. Explicit user statements, direct source observations and derived inferences are separate evidence classes, and an inferred item may enter a labelled queue under standing policy without an interrupt per item. Consequential external effects still require their own authorization. Owners: B17, D03.
-- D-06 A host-owned deterministic action broker with per user, account, tool, action and resource grants, durable intents and receipts, credential references, and destination and data-class egress policy. Model or tool-discovery text creates no authority. Read, prepare and remind can run under standing grants; send, delete, pay and broad local execution need explicit user-granted capability. Outbound effects default to draft-only. Owners: C12, C15, A08.
+- D-06 A service-owned deterministic action broker with per user, account, tool, action and resource grants, durable intents and receipts, credential references, and destination and data-class egress policy. Model or tool-discovery text creates no authority. Read, prepare and remind can run under standing grants; send, delete, pay and broad local execution need explicit user-granted capability. Outbound effects default to draft-only. Owners: C12, C15, A08.
 - D-07 Cancellation is layered: stop playback, cancel a model turn, abort a running job, cancel queued jobs, end a session. Already-dispatched effects may have an unknown outcome and are reconciled. The product does not mark a possibly completed action as canceled or no-effect, does not blind-retry, does not promise exactly-once where the upstream lacks it, and treats undo as a separate compensating action. Owners: A05, A08.
 - D-08 Mac sleep, closed and offline states are explicit product states. While the Mac is asleep nothing executes and nothing is sent. The product does not promise urgent alerts that bypass Focus without an entitlement it may not hold, and notification display is not proof the user saw anything. Owners: D10, D18, F09.
 - D-09 Full transcripts are not assumed available from the private retrieval service; retrieval returns claims, spans and source metadata. Transcript originals are resolved through their providers when authorized, and missing coverage is reported rather than papered over with a summary. Owners: B03, B06.
 - D-10 No model call on a blind heartbeat. Synchronization is incremental, due processing is event-driven or coalesced, and context is precomputed. Performance budgets are proposed targets to validate, never measured facts until a measurement issue records them. Owners: D07, A18.
 - D-11 The existing harness owns delegated coding-worker lifecycle and admission. Didi owns simple durable product work queues and due timers, not a universal workflow engine. Ordinary calendar reads never route through a coding master. Owners: A09, A11, A12.
 - D-12 No reuse assumption for any pre-existing private code, prompt or fixture. The public repository is not a licence grant. Any retained component carries a recorded licence and notice basis pinned to the release used, and review happens before reuse, not after. Owner: A01.
-- D-13 MCP is an interoperability adapter, not the only internal API and not a permission system. Internal seams are local versioned contracts shared by host, core and adapters. A process split buys an authorization chokepoint, not isolation. Owners: A02, A14, C14.
+- D-20 One authoritative single-user service, written in TypeScript on Node with a SQLite store,
+  exposed as REST JSON commands and queries plus a server-sent progress stream. A Swift companion
+  owns the native operating-system surfaces and a responsive progressive web application is the
+  portable client. The same process runs on loopback now and on a Linux virtual machine later, with
+  no contract change. A WebSocket framework is not required. Owner: A01, A19, F19.
+- D-21 One active authority epoch per assistant, and no cloud and local multi-writer
+  synchronisation. A stale epoch token is refused rather than merged. Owner: C21.
+- D-22 Devices pull scoped, expiring intents outbound and independently enforce their own local
+  grants; an intent is single-use and a device refusal wins. Owner: C22.
+- D-23 Channels (Signal, email, Mattermost) are transports, not identity proof and not an
+  administrative bypass; a channel identity binds to a source account only by explicit user action.
+  Owner: C20.
+- D-24 The browser client caches the shell only through its serviceworker, and private records are
+  read-only and unavailable while the service is unreachable. Owner: F20.
+- D-25 One database per assistant initially; instance isolation and multi-assistant hosting are later
+  questions. Owner: A04, A21.
+- D-26 Hosting this assistant is a separate decision from migrating any other repository or service,
+  and no host is provisioned without an explicit authorization. Owner: A23, A24.
+- D-13 MCP is an interoperability adapter, not the only internal API and not a permission system. Internal seams are versioned contracts shared by the service, the companion and the adapters. A process split buys an authorization chokepoint, not isolation. Owners: A02, A14, C14.
 - D-14 User interface belongs to the native experience lane. Other lanes expose services and view models. Shared contract changes are proposed to the runtime lane, which sequences migration files; other lanes use fixtures and never race a shared migration. Owners: E master, A02.
 - D-15 Single safe model-call entry. No model call receives source content until its route policy resolves; the entry default-denies while policy is missing, and completion of source-content cloud paths waits for C15. Data handling must be decided before content moves, and availability is not a policy. Owners: A06, C15.
 - D-16 Completion graph semantics. Every `depends_on` edge is a completion or integration prerequisite, never a prohibition on starting; lanes may begin against fixtures (see [parallel-masters.md](parallel-masters.md)), and there is exactly one graph. Owners: A02, A17.
@@ -26,7 +44,21 @@ Status: accepted design directions with named owners. These decisions were taken
 
 ## Deferred proof questions
 
-- Q-01 Which host shell wins: a thin native host with a local sidecar, a lighter web-shell host, or integrating the current pinned third-party host as a carrier? Owner A01, open; decided by the measured spike and the architecture decision record.
+- D-27 One shared web interface, not two. The same responsive orb and conversation page serves a
+  browser (F19) and is hosted inside the Mac companion in its own web view (F23). Native surfaces
+  stay native: hotkey, menu bar and lifecycle, on-device speech, notifications, credentials and the
+  outbound service client. There is no inbound JavaScript-to-native handler, no generic native RPC
+  and no injected bearer; speech starts from a native control; the web view uses a nonpersistent data
+  store, an exact configured origin and main-frame navigation only. Owner: F23, F19, F01.
+- D-28 First-party reuse is authorized. The Vicuna orb and interaction surface, the generic
+  personality and system-prompt structure and the verified memory patterns may be cloned from the
+  Naya codebase. Asset and dependency rights are verified before public source reuse, third-party
+  attribution and licence notices are preserved, and private persona payloads, family details and
+  real transcripts remain private and are never published. Owner: A01, B12, F08.
+- D-29 Context economy. A turn receives a concise source-linked digest, and originals are retrieved
+  on demand. Full logs, mail archives and long transcripts are never placed in a model prompt
+  wholesale. Owner: B11, B05, C03.
+- Q-01 Which host shell wins? Resolved by PLAN-R1 into D-20: one TypeScript and Node service, a Swift Mac companion and a responsive browser client, with the pinned third-party host retained only as a design reference.
 - Q-02 Is any third-party component retained, and under which licence and notice terms? Owner A01, open; per-component licence review before reuse.
 - Q-03 Will the existing harness grant a scoped companion-controller contract for steer and cancel, or must a master delegate? Owner A11, blocked on that contract; observation-only until then.
 - Q-04 Do persistent memory leaves declare their own storage dependency edges, or inherit coverage through the recall chain? Owners A04, B05. Resolved: persistent memory leaves now carry explicit A04 completion edges, and the integration validator checks phase order after the change.

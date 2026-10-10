@@ -37,7 +37,7 @@ actor Page: ConnectedConversationTransport {
     func counts() -> (Int, Int) { (selectionCount, calls.count) }
     func requests() -> [ConnectedChatRequest] { calls }
     func send(_ request: ConnectedChatRequest) async throws -> Data {
-        guard case .matching(let saved) = try await store.load(assistantId: assistant, authorityEpoch: epoch) else { throw Failure(message: "wire before prepare") }
+        guard case .current(let saved) = try await store.load(assistantId: assistant, authorityEpoch: epoch) else { throw Failure(message: "wire before prepare") }
         try require(saved.phase == .dispatchUnknown, "wire before durable markDispatchUnknown")
         try require(saved.frozenText.utf8.elementsEqual(request.text.utf8) && saved.identity.idempotencyKey == request.idempotencyKey, "wire changed frozen bytes/key")
         calls.append(request)
@@ -95,14 +95,14 @@ actor Page: ConnectedConversationTransport {
     try require(draft.target == nil && draft.state == .idle, "cancelled resolution became editable")
     await page.configure(selections: [selection(nil, nil)])
     await draft.beginDraft(); draft.setText("blocked"); await draft.send()
-    try require(draft.state == .unavailable && await page.counts().1 == 0, "none selection allowed send")
+    let noneCalls = await page.counts(); try require(draft.state == .unavailable && noneCalls.1 == 0, "none selection allowed send")
 }
 @MainActor func testFailuresAndCleanup() async throws {
     let (dir, store) = try tempStore(); defer { try? FileManager.default.removeItem(atPath: dir) }
     let page = Page(store); let authority = ConnectedAuthority(assistantId: assistant, authorityEpoch: epoch)
     await page.configure(selections: [selection()]); let draft = ConnectedDraft(store: store)
     await draft.connect(authority: authority, transport: page); await draft.beginDraft(); draft.setText(String(repeating: "x", count: 16001)); await draft.send()
-    try require(draft.state == .storageFailure && await page.counts().1 == 0, "oversized text dispatched")
+    let failedCalls = await page.counts(); try require(draft.state == .storageFailure && failedCalls.1 == 0, "oversized text dispatched")
     draft.setText("recovered text"); await draft.send()
     guard let saved = draft.pending else { throw Failure(message: "send recovery missing") }
     let wrong = PendingRequestIdentity(assistantId: assistant, authorityEpoch: epoch, sessionId: sessionB, idempotencyKey: saved.identity.idempotencyKey)
@@ -110,11 +110,11 @@ actor Page: ConnectedConversationTransport {
     let other = ConnectedDraft(store: store)
     await other.connect(authority: .init(assistantId: sessionB, authorityEpoch: epoch), transport: page)
     let before = await page.counts(); await other.replay()
-    try require(other.state == .orphan && await page.counts() == before, "orphan dispatched")
+    let orphanCalls = await page.counts(); try require(other.state == .orphan && orphanCalls == before, "orphan dispatched")
     await draft.discard(saved.identity); try require(draft.pending == nil, "own explicit discard failed")
     try Data("{broken".utf8).write(to: URL(fileURLWithPath: dir + "/pending-request.json")); chmod(dir + "/pending-request.json", 0o600)
     await draft.connect(authority: authority, transport: page); await draft.beginDraft(); await draft.send(); await draft.replay()
-    try require(draft.state == .storageFailure && await page.counts() == before, "corrupt pending dispatched")
+    let corruptCalls = await page.counts(); try require(draft.state == .storageFailure && corruptCalls == before, "corrupt pending dispatched")
     try Data(repeating: 65, count: 131073).write(to: URL(fileURLWithPath: dir + "/pending-request.json"))
     await draft.connect(authority: authority, transport: page)
     try require(draft.state == .storageFailure, "oversized pending allowed")
@@ -125,7 +125,7 @@ struct HTTPPage: ConnectedConversationTransport {
     let config: [String: String]
     func call(_ path: String, body: Data? = nil, request: ConnectedChatRequest? = nil) async throws -> Data {
         if request != nil && config["barrier"] == "before-wire" {
-            print("BARRIER"); fflush(stdout)
+            FileHandle.standardOutput.write(Data("BARRIER\n".utf8))
             _ = readLine() // orchestrator kills this actual child after inspecting durable storage
         }
         var wire = URLRequest(url: URL(string: config["base"]! + "/api/v1" + path)!)

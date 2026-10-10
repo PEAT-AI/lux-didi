@@ -460,3 +460,94 @@ test('F1/F2: a search withheld count and by-ID sensitivity-shaped markdown are n
     assert.match(fetched.projection.text, /compensation/);
   } finally { await adapter.close(); await f.close(); }
 });
+
+// Structural typing permits the optional parameter before the implementation adds it,
+// so the red stage proves behavior rather than failing TypeScript compilation.
+type CancellableReader = {
+  search(input: { query: string; limit: number }, signal?: AbortSignal): Promise<LuxKnowledgeResult>;
+  get(input: { ids: number[] }, signal?: AbortSignal): Promise<LuxKnowledgeResult>;
+};
+function cancellableCall(reader: CancellableReader, tool: 'search' | 'get', signal: AbortSignal) {
+  return tool === 'search'
+    ? reader.search({ query: 'synthetic cancellation query', limit: 5 }, signal)
+    : reader.get({ ids: [7] }, signal);
+}
+function gate() {
+  let release!: () => void;
+  const promise = new Promise<void>(resolve => { release = resolve; });
+  return { promise, release };
+}
+
+for (const tool of ['search', 'get'] as const) {
+  test(`${tool}: pre-abort refuses without a remote call`, async () => {
+    const f = await fixture(); const { adapter, registry } = setup(f.url);
+    try {
+      const { reader } = await readerFor(adapter, registry);
+      const result = await cancellableCall(reader, tool, AbortSignal.abort());
+      assert.equal(result.state, 'refused');
+      assert.equal(f.calls.length, 0);
+    } finally { await adapter.close(); await f.close(); }
+  });
+
+  test(`${tool}: in-flight abort reaches the real adapter and a late endpoint result is unusable`, async () => {
+    const entered = gate(); const finish = gate();
+    const f = await fixture({ call: async () => {
+      entered.release(); await finish.promise;
+      return { content: [{ type: 'text', text: 'synthetic late endpoint result' }] };
+    } });
+    const { adapter, registry } = setup(f.url);
+    let observedSignal: AbortSignal | undefined;
+    let observedAbort = false;
+    const port: McpPort = {
+      discover: (...args) => adapter.discover(...args),
+      call: (request, signal) => {
+        observedSignal = signal;
+        signal?.addEventListener('abort', () => { observedAbort = true; }, { once: true });
+        return adapter.call(request, signal);
+      },
+      slice: (...args) => adapter.slice(...args),
+      close: () => adapter.close(),
+    };
+    try {
+      const { reader } = await readerFor(port, registry);
+      const controller = new AbortController();
+      const pending = cancellableCall(reader, tool, controller.signal);
+      await entered.promise;
+      controller.abort();
+      assert.equal(observedSignal, controller.signal);
+      assert.equal(observedAbort, true);
+      finish.release();
+      const result = await pending;
+      assert.equal(result.state, 'unknown');
+      assert.equal('response' in result, false);
+      assert.equal(f.calls.length, 1);
+    } finally { finish.release(); await adapter.close(); await f.close(); }
+  });
+
+  test(`${tool}: completed real adapter evidence delivered after abort is not usable`, async () => {
+    const f = await fixture(); const { adapter, registry } = setup(f.url);
+    const completed = gate(); const deliver = gate();
+    const port: McpPort = {
+      discover: (...args) => adapter.discover(...args),
+      call: async (request, signal) => {
+        const result = await adapter.call(request, signal);
+        assert.equal(result.state, 'completed');
+        completed.release(); await deliver.promise;
+        return result;
+      },
+      slice: (...args) => adapter.slice(...args),
+      close: () => adapter.close(),
+    };
+    try {
+      const { reader } = await readerFor(port, registry);
+      const controller = new AbortController();
+      const pending = cancellableCall(reader, tool, controller.signal);
+      await completed.promise;
+      controller.abort(); deliver.release();
+      const result = await pending;
+      assert.equal(result.state, 'unknown');
+      assert.equal('response' in result, false);
+      assert.equal(f.calls.length, 1);
+    } finally { deliver.release(); await adapter.close(); await f.close(); }
+  });
+}

@@ -127,6 +127,12 @@ export function composeChat(store: Store, domain: DomainPort, configDir: string,
           }
           // From here to the lower transport there is NO await: every authority is re-read synchronously.
           current();
+          // The accepted run's tool connections are part of its acceptance: a connection disabled or
+          // removed after acceptance blocks egress, not merely the later tool step. Read-only owner
+          // projections only, and still synchronous, so the no-await egress property is preserved.
+          const acceptedRun = owner.acceptedRun(runId);
+          const enabledConnections = new Map(owner.connections().map(connection => [connection.connectionId, connection.enabled]));
+          if (!acceptedRun || !acceptedRun.acceptance.connectionIds.every(id => enabledConnections.get(id) === true)) throw Error('connection_not_current');
           const fresh = loadProviderConfig({ configDir, ownerId: store.assistantId });
           if (!acceptance || fresh.status !== 'ready' || fresh.route.modelId !== acceptance.route.modelId || !fresh.route.enabled
             || canonicalJSON([...fresh.route.dataClasses].sort()) !== canonicalJSON([...acceptance.route.allowedClasses].sort())) throw Error('route_changed');

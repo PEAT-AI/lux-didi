@@ -84,7 +84,7 @@ test('B2 accepted definitions/hash survive a changed live catalog and policy', a
     assert.equal(f.chat.get(accepted.runId, f.context).toolBindingHash, accepted.toolBindingHash);
   } finally { gate.release(); }
   safeFailure(await done.catch(error => error));
-  assert.equal(f.modelCalls.length, 0); assert.equal(f.sdkCalls.length, 0);
+  assert.equal(f.modelCalls.length, 0, 'revoking the accepted tool connection before resolve must block model egress'); assert.equal(f.sdkCalls.length, 0, 'revoking the accepted tool connection must block the SDK call');
 });
 test('B2 permitted egress advertises only accepted definitions/hash despite a differing live SDK catalog', async t => {
   const gate = barrier(); const f = await open(t, { beforeResolve: gate.pause });

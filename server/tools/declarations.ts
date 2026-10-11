@@ -24,7 +24,7 @@ export interface ToolCallsContext {
 }
 const validRef = (ref: ToolResultRef | undefined): ref is ToolResultRef =>
   !!ref && typeof ref.id === 'string' && !!ref.id && typeof ref.sha256 === 'string' && /^[a-f0-9]{64}$/.test(ref.sha256);
-export interface ToolBatch { tools: ToolRecord[]; bindings: ToolResultBinding[]; responses: Part[]; error: { status: LoopResult['status']; reason: string } | undefined; accepted: { binding: ToolResultBinding; response: JsonObject }[] }
+export interface ToolBatch { tools: ToolRecord[]; bindings: ToolResultBinding[]; responses: Part[]; error: { status: LoopResult['status']; reason: string } | undefined; accepted: readonly { binding: ToolResultBinding; response: JsonObject; dataClasses?: readonly DataClass[] }[] }
 export async function runToolCalls(owner: { journal: ToolCallJournal; resultGate: ToolResultGate }, calls: readonly { id?: string; name: string; args: JsonObject }[], ctx: ToolCallsContext): Promise<ToolBatch> {
   const { registry, host, seenIds } = ctx;
   const tools: ToolRecord[] = [], bindings: ToolResultBinding[] = [], responses: Part[] = [];

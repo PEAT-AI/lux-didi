@@ -380,7 +380,7 @@ export class LiveSessionOwner {
     const text = accepted.length ? accepted.map(result => JSON.stringify({ tool: result.binding.name, result: result.response })).join('\n')
       : job.state === 'completed' ? 'The tool finished, but its result could not be authorized for delivery. Report this delivery failure, not success.'
       : `The background job ${job.id} ${job.state === 'unknown' ? 'has an unknown outcome after interruption; it was not replayed' : 'failed'}. Do not invent a successful result.`;
-    const classes = accepted.flatMap(result => (result as typeof result & { dataClasses?: DataClass[] }).dataClasses ?? [inputClass]);
+    const classes = accepted.flatMap(result => result.dataClasses ?? [inputClass]);
     const dataClass: DataClass = classes.includes('sensitive') ? 'sensitive' : classes.includes('private') ? 'private' : inputClass;
     return [{ role: 'user', text: `I am picking up your background call. Explain this actual job outcome first, then resume our conversation.\n${text}`, dataClass }];
   }

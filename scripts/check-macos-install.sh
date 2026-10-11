@@ -317,7 +317,7 @@ PY
   sid="$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1])).get("data") or {};print(d.get("sessionId") or "")' "$proof/fx-enroll.json")"
   [ -n "$sid" ] || { echo "MACOS-INSTALL FAIL: session creation returned no actual sessionId" >&2; exit 1; }
   fkey="$(uuidgen)"
-  chat() { curl --fail-with-body -sS -X POST "$fx_origin/api/v1/chat" -H "Authorization: Bearer $fxtoken" -H "Origin: $fx_origin" -H "Content-Type: application/json" -H "X-Didi-Authority-Epoch: $fx_epoch" -H "Idempotency-Key: $1" --data "{\"sessionId\":\"$sid\",\"text\":\"synthetic fixture note\",\"timeZone\":\"UTC\"}"; }
+  chat() { curl --fail-with-body -sS -X POST "$fx_origin/api/v1/chat" -H "Authorization: Bearer $fxtoken" -H "Origin: $fx_origin" -H "Content-Type: application/json" -H "X-Didi-Authority-Epoch: $fx_epoch" -H "Idempotency-Key: $1" --data "{\"sessionId\":\"$sid\",\"text\":\"synthetic fixture note\"}"; }
   callcount() { python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1]))))' "$fstate/fixture-calls.json" 2>/dev/null || echo 0; }
   chat "$fkey" > "$proof/fx-chat-1.json"
   await_fixture_run "$proof/fx-chat-1.json"
@@ -375,7 +375,7 @@ PY_REPLAY
   # (b) a new key runs against the P2 profile and invokes the transport once.
   newkey="$(uuidgen)"
   newtext="synthetic fixture note two"
-  curl -fsS -X POST "$fx_origin/api/v1/chat" -H "Authorization: Bearer $fxtoken" -H "Origin: $fx_origin" -H "Content-Type: application/json" -H "X-Didi-Authority-Epoch: $fx_epoch" -H "Idempotency-Key: $newkey" --data "{\"sessionId\":\"$sid\",\"text\":\"$newtext\",\"timeZone\":\"UTC\"}" > "$proof/fx-p2-new.json"
+  curl -fsS -X POST "$fx_origin/api/v1/chat" -H "Authorization: Bearer $fxtoken" -H "Origin: $fx_origin" -H "Content-Type: application/json" -H "X-Didi-Authority-Epoch: $fx_epoch" -H "Idempotency-Key: $newkey" --data "{\"sessionId\":\"$sid\",\"text\":\"$newtext\"}" > "$proof/fx-p2-new.json"
   await_fixture_run "$proof/fx-p2-new.json"
   new_calls="$(callcount)"
   [ "$new_calls" = "1" ] || { echo "MACOS-INSTALL FAIL: new P2 run made $new_calls transport calls" >&2; exit 1; }

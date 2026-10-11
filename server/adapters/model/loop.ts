@@ -94,8 +94,8 @@ export async function runTools(options: LoopOptions): Promise<LoopResult> {
     const batch = await runToolCalls(options, calls, { registry, host, authority: options.authority, control: options.control,
       step: steps, contentIndex: contents.length, seenIds, baseClasses: request.dataClasses });
     tools.push(...batch.tools);
-    if (batch.error) return end(batch.error.status, batch.error.reason);
     for (const binding of batch.bindings) { bindings.push(binding); fresh.add(binding); }
+    if (batch.error) return end(batch.error.status, batch.error.reason);
     responses.push(...batch.responses);
     contents.push({ role: 'user', parts: responses });
   }

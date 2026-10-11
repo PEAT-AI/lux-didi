@@ -39,7 +39,7 @@ await session.done;
 await consume;
 ```
 
-System, text-only whole initial history, declared classes, settings and deadlines are copied/validated before credentials or networking. Empty history is valid for initial audio; no fabricated user turn is sent. Initial history uses `clientContent` with `turnComplete:false`, after actual `setupComplete`. `ready` is not socket-open: exactly one setup requests AUDIO, configured voice and input/output transcription. Automatic activity detection is provider-owned and left at its documented default. The adapter provides no manual activity or per-turn cancel API.
+System, text-only whole initial history, declared classes, settings and deadlines are copied/validated before credentials or networking. Empty history is valid for initial audio; no fabricated user turn is sent. Initial history uses `clientContent` with `turnComplete:false`, after actual `setupComplete`. `ready` is not socket-open: exactly one setup requests AUDIO, configured voice and input/output transcription. Automatic activity detection is provider-owned with `START_SENSITIVITY_LOW`. Continuous input supports full duplex; `endAudioStream()` is optional and is never required for each turn. The adapter provides no manual activity or per-turn cancel API.
 
 Input is nonempty even-byte PCM16 little-endian 16 kHz. Output requires `audio/pcm;rate=24000` and valid even-byte PCM16 little-endian data. No resampling is performed. Early audio is refused with `not_ready`, never buffered. Each accepted audio frame is sent once, without reconnect, retry, resend or tool replay. A malformed audio argument or disallowed class fails the call without silently writing it. Frame or socket congestion limits terminate the session explicitly.
 
@@ -89,3 +89,12 @@ No live account, provider call, microphone, speaker, browser, permission prompt 
 - Type release metadata: <https://registry.npmjs.org/@types%2Fws/8.18.2>
 
 These references document transport behavior. Local offline tests do not establish provider availability, model fluency, playback or an installed voice experience.
+
+
+## Tool batches and setup parity
+
+`LiveVoiceRequest.tools` accepts the frozen host-generated function declarations. Setup sends one `tools: [{functionDeclarations}]` array when nonempty. The shared declarations helper derives provider-compatible schemas while retaining the original tool-definition schemas; provider schemas never become grant identities or validation authority.
+
+Optional `languageCode` is a bare ISO 639-1 code (`ar` becomes `ar-XA`). Setup includes `historyConfig.initialHistoryInClientContent`, sliding-window compression with `targetTokens: 32000` and no trigger threshold, and LOW start-of-speech sensitivity. Models other than 3.8 Live receive `thinkingConfig: {thinkingLevel: 'minimal'}`.
+
+A `toolCall` event carries the entire provider batch, and `toolCallCancellation` carries cancelled ids. The host answers all outstanding ids in exactly one `sendToolResponse({responses})` call, producing one `toolResponse.functionResponses` frame. Microphone frames while a batch is unanswered are dropped, not queued, and counted by `session.droppedAudioFrames`. Once answered, continuous input resumes. Tool authorization and execution remain outside the adapter; the fixed endpoint, transport headers, limits, credential scrubbing and no-reconnect behavior are unchanged.

@@ -225,7 +225,7 @@ test('socket bufferedAmount backpressure is checked before any audio write', asy
   const session = new GeminiLiveVoiceAdapter(options({ socketFactory: (url, config) => { client = f.socketFactory(url, config); return client; }, limits: { maxBufferedBytes: 1024, closeMs: 30 } })).open(request(), control());
   await f.frame(1); f.send({ setupComplete: {} }); await session.ready;
   // Deterministic congestion seam on the actual ws instance; no synthetic host load.
-  Object.defineProperty(client, 'bufferedAmount', { get: () => 513 });
+  Object.defineProperty(client, 'bufferedAmount', { get: () => 1025 });
   assert.throws(() => session.sendAudio({ pcm, dataClass: 'ordinary' }), code('backpressure'));
   assert.equal((await session.done).code, 'backpressure'); assert.equal(f.frames.length, 1);
 });

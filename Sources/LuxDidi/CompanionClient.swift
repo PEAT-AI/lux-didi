@@ -63,7 +63,7 @@ enum CompanionError: LocalizedError {
     }
 }
 
-private final class NoRedirect: NSObject, URLSessionTaskDelegate {
+private final class CompanionNoRedirect: NSObject, URLSessionTaskDelegate {
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
 }
@@ -107,7 +107,7 @@ enum CaptureStatus: Equatable { case idle, sending, saved, cancelled, unknown, f
         config.httpCookieStorage = nil; config.httpShouldSetCookies = false
         config.urlCache = nil; config.requestCachePolicy = .reloadIgnoringLocalCacheData
         config.timeoutIntervalForRequest = 8; config.timeoutIntervalForResource = 12
-        session = URLSession(configuration: config, delegate: NoRedirect(), delegateQueue: nil)
+        session = URLSession(configuration: config, delegate: CompanionNoRedirect(), delegateQueue: nil)
     }
     // Only after new owned readiness. Keep pending UUID/body/epoch on restart;
     // transport replacement must never silently turn an uncertain send into a new one.

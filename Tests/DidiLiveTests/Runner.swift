@@ -265,9 +265,9 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             let pickedHTTP = await MainActor.run {
                 NativeLiveOperatorHTTP(authority: companion.authenticatedRequestBuilder(), pickupJobID: pickupID)
             }
-            let firstPickup = try JSONDecoder().decode([String: String].self, from: await pickedHTTP.createBody(for: nativeIntent, key: "pickup-key"))
-            let pickupRetry = try JSONDecoder().decode([String: String].self, from: await pickedHTTP.createBody(for: nativeIntent, key: "pickup-key"))
-            let laterStart = try JSONDecoder().decode([String: String].self, from: await pickedHTTP.createBody(for: nativeIntent, key: "later-start-key"))
+            let firstPickup = try JSONDecoder().decode([String: String].self, from: pickedHTTP.createBody(for: nativeIntent, key: "pickup-key"))
+            let pickupRetry = try JSONDecoder().decode([String: String].self, from: pickedHTTP.createBody(for: nativeIntent, key: "pickup-key"))
+            let laterStart = try JSONDecoder().decode([String: String].self, from: pickedHTTP.createBody(for: nativeIntent, key: "later-start-key"))
             try require(firstPickup["pickupJobId"] == pickupID && pickupRetry["pickupJobId"] == pickupID, "pickup and its idempotent retry select the same job")
             try require(laterStart["pickupJobId"] == nil && laterStart["inputClass"] == nativeIntent.inputClass, "a later Start cannot reuse the consumed pickup ID")
             let nativeStatus = try await nativeHTTP.status(for: nativeIntent)

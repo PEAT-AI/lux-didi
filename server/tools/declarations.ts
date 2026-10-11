@@ -24,7 +24,8 @@ export interface ToolCallsContext {
 }
 const validRef = (ref: ToolResultRef | undefined): ref is ToolResultRef =>
   !!ref && typeof ref.id === 'string' && !!ref.id && typeof ref.sha256 === 'string' && /^[a-f0-9]{64}$/.test(ref.sha256);
-export async function runToolCalls(owner: { journal: ToolCallJournal; resultGate: ToolResultGate }, calls: readonly { id?: string; name: string; args: JsonObject }[], ctx: ToolCallsContext) {
+export interface ToolBatch { tools: ToolRecord[]; bindings: ToolResultBinding[]; responses: Part[]; error: { status: LoopResult['status']; reason: string } | undefined; accepted: { binding: ToolResultBinding; response: JsonObject }[] }
+export async function runToolCalls(owner: { journal: ToolCallJournal; resultGate: ToolResultGate }, calls: readonly { id?: string; name: string; args: JsonObject }[], ctx: ToolCallsContext): Promise<ToolBatch> {
   const { registry, host, seenIds } = ctx;
   const tools: ToolRecord[] = [], bindings: ToolResultBinding[] = [], responses: Part[] = [];
   const fatal = (status: LoopResult['status'], reason: string) => ({ tools, bindings, responses, error: { status, reason }, accepted: [] as { binding: ToolResultBinding; response: JsonObject }[] });
@@ -93,18 +94,27 @@ export async function runToolCalls(owner: { journal: ToolCallJournal; resultGate
       bindings.push(binding);
       responses.push({ functionResponse: { ...(call.id !== undefined ? { id: call.id } : {}), name: call.name, response: {} } });
     }
-  if (ctx.authorize) {
-    try {
-      const gate = await controlled(ctx.control, signal => owner.resultGate.authorize(structuredClone(host), structuredClone(bindings), ctx.baseClasses, signal));
-      if (gate.state !== 'allowed' || gate.results.length !== bindings.length) return fatal('denied', 'tool_result_denied');
-      const checked = new Set<ToolResultBinding>();
-      for (const result of gate.results) {
-        const binding = bindings.find(b => isDeepStrictEqual(b, result.binding));
-        if (!binding || checked.has(binding) || !result.response || typeof result.response !== 'object' || Array.isArray(result.response)) return fatal('denied', 'tool_result_denied');
-        checked.add(binding);
-      }
-      return { tools, bindings, responses, error: undefined, accepted: gate.results };
-    } catch { return fatal('denied', 'tool_result_denied'); }
-  }
-  return { tools, bindings, responses, error: undefined, accepted: [] as { binding: ToolResultBinding; response: JsonObject }[] };
+  const batch: ToolBatch = { tools, bindings, responses, error: undefined, accepted: [] };
+  return ctx.authorize ? authorizeToolBatch(owner, batch, ctx) : batch;
+}
+
+/** The same result reconstruction boundary serves inline and explicitly picked-up jobs. */
+export async function authorizeToolBatch(owner: { resultGate: ToolResultGate }, batch: ToolBatch,
+  ctx: Pick<ToolCallsContext, 'host' | 'control' | 'baseClasses'>): Promise<ToolBatch> {
+  const { tools, bindings, responses } = batch, { host } = ctx;
+  const fatal = (): ToolBatch => ({ tools, bindings, responses, error: { status: 'denied', reason: 'tool_result_denied' }, accepted: [] });
+  try {
+    const gate = await controlled(ctx.control, signal => owner.resultGate.authorize(structuredClone(host), structuredClone(bindings), ctx.baseClasses, signal));
+    if (gate.state !== 'allowed' || gate.results.length !== bindings.length) return fatal();
+    const checked = new Set<ToolResultBinding>();
+    for (const result of gate.results) {
+      const binding = bindings.find(b => b.executionId === result.binding.executionId);
+      if (!binding || checked.has(binding) || !isDeepStrictEqual(binding, result.binding)
+          || !result.response || typeof result.response !== 'object' || Array.isArray(result.response)) return fatal();
+      const bytes = JSON.stringify(result.response);
+      if (!bytes || createHash('sha256').update(bytes).digest('hex') !== binding.result.sha256) return fatal();
+      checked.add(binding);
+    }
+    return { tools, bindings, responses, error: batch.error, accepted: gate.results };
+  } catch { return fatal(); }
 }

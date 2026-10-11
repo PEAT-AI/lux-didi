@@ -1,4 +1,5 @@
-import { declarationsFor, runToolCalls } from '../tools/declarations.js';
+import { LiveToolJobs } from '../tools/jobs.js';
+import { declarationsFor, runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
 import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection } from './types.js';
@@ -112,6 +113,7 @@ class OutputChannel {
 }
 
 export class LiveSessionOwner {
+  readonly #jobs: LiveToolJobs;
   readonly #tools: LiveToolsComposition | undefined;
   readonly #store: LiveStorePort;
   readonly #voice: LiveVoicePort;
@@ -142,6 +144,7 @@ export class LiveSessionOwner {
       const timer = setTimeout(callback, delayMs);
       return { unref: () => { timer.unref(); }, cancel: () => { clearTimeout(timer); } };
     });
+    this.#jobs = new LiveToolJobs(this.#store, this.#now);
     this.#profileIdentity = liveProfileIdentity(this.#profile);
     this.#promptIdentity = identity({ text: this.#profile.prompt.text, dataClass: this.#profile.prompt.dataClass });
     this.recover();
@@ -489,13 +492,34 @@ export class LiveSessionOwner {
     let responses = event.calls.map(call => ({ id: call.id, name: call.name, response: { error: 'Tool not granted' } as JsonObject }));
     let projections: LiveToolProjection[] = event.calls.map(call => ({ name: call.name, status: 'error', markdown: 'Tool not granted', sources: [] }));
     if (this.#tools && handle.host) {
-      const batch = await runToolCalls(this.#tools.owner, event.calls, { registry: handle.registry, host: handle.host,
-        authority: { isCurrent: async (host, _tool, signal) => {
-          if (!this.lookupAuthority(host.runId)) return false;
-          const gate = await this.#tools!.owner.resultGate.authorize(host, [], [handle.inputClass], signal);
-          return gate.state === 'allowed' && !!this.lookupAuthority(host.runId);
-        } }, control: { signal: handle.abort.signal, deadlineMs: Date.now() + this.#profile.limits.sessionMs },
-        step: ++handle.toolStep, contentIndex: 0, seenIds: handle.seenIds, baseClasses: [handle.inputClass], authorize: true });
+      const authority = this.lookupAuthority(handle.host.runId);
+      if (!authority) return;
+      const host = structuredClone(handle.host), step = ++handle.toolStep;
+      const jobAbort = new AbortController();
+      const control = { signal: jobAbort.signal, deadlineMs: Date.now() + this.#profile.limits.sessionMs };
+      const execution = await this.#jobs.run(host, authority, this.#profile.limits.toolDeferralMs, this.#schedule, async () => {
+        const raw = await runToolCalls(this.#tools!.owner, event.calls, { registry: handle.registry, host,
+          authority: { isCurrent: async (_host, _tool, signal) => !signal.aborted }, control,
+          step, contentIndex: 0, seenIds: handle.seenIds, baseClasses: [handle.inputClass] });
+        // Completion never sends to the old transport. With no active authority, retain references for pickup.
+        if (!this.lookupAuthority(host.runId)) return raw;
+        const gated = await authorizeToolBatch(this.#tools!.owner, raw, { host, control, baseClasses: [handle.inputClass] });
+        return gated.error?.reason === 'tool_result_denied' ? raw : gated;
+      });
+      if (!execution.result) {
+        if (!this.#settled(handle)) {
+          const status = execution.job.state === 'in_progress' ? 'in progress' : execution.job.state;
+          for (const call of event.calls) publish('toolResult', { name: call.name, status: 'error',
+            markdown: status === 'in progress' ? "I'm on it, I'll call you when it's done." : `Background job ${status}.`, sources: [] });
+          const responses = event.calls.filter(call => handle.pendingCallIds.has(call.id)).map(call => ({ id: call.id, name: call.name,
+            response: { jobId: execution.job.id, status, message: status === 'in progress' ? "I'm on it, I'll call you when it's done." : `Background job ${status}.` } }));
+          try { if (responses.length) handle.session.sendToolResponse({ responses }); } catch { /* cancelled provider batch */ }
+          for (const call of event.calls) handle.pendingCallIds.delete(call.id);
+          handle.thinking = false;
+        }
+        return;
+      }
+      const batch = execution.result;
       if (this.#settled(handle)) return;
       responses = event.calls.map((call, index) => {
         const accepted = batch.accepted.find(result => result.binding.callId === call.id && result.binding.name === call.name);

@@ -1,4 +1,4 @@
-import { LiveToolJobs } from '../tools/jobs.js';
+import { LiveToolJobs, type ToolJob } from '../tools/jobs.js';
 import { declarationsFor, runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
 import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';
@@ -528,6 +528,10 @@ export class LiveSessionOwner {
 
   async #toolBatch(handle: ActiveSession, event: Extract<LiveVoiceEvent, { type: 'toolCall' }>): Promise<void> {
     handle.thinking = true;
+    let inlineJob: ToolJob | undefined;
+    const retainUndelivered = () => {
+      if (inlineJob) { inlineJob.deferred = true; this.#jobs.save(inlineJob); }
+    };
     const publish = (kind: 'toolCall' | 'toolResult', tool: LiveToolProjection) => {
       if (this.#settled(handle)) return;
       const sequence = this.#persist(handle, { type: kind, sequence: event.sequence, tool }, kind);
@@ -567,8 +571,9 @@ export class LiveSessionOwner {
         }
         return;
       }
+      inlineJob = execution.job;
       const batch = execution.result;
-      if (this.#settled(handle)) return;
+      if (this.#settled(handle)) { retainUndelivered(); return; }
       responses = event.calls.map((call, index) => {
         const accepted = batch.accepted.find(result => result.binding.callId === call.id && result.binding.name === call.name);
         const record = batch.tools[index];
@@ -584,11 +589,20 @@ export class LiveSessionOwner {
         return { id: call.id, name: call.name, response: completed ? accepted.response : { error: reason } };
       });
     }
-    if (this.#settled(handle)) return;
+    if (this.#settled(handle)) { retainUndelivered(); return; }
     for (const [index, projection] of projections.entries()) if (handle.pendingCallIds.has(event.calls[index]!.id)) publish('toolResult', projection);
     responses = responses.filter(response => handle.pendingCallIds.has(response.id));
     if (!this.#settled(handle)) {
-      try { if (responses.length) handle.session.sendToolResponse({ responses }); } catch { /* A cancelled provider batch or terminal transport cannot receive late answers. */ }
+      try {
+        if (responses.length) {
+          handle.session.sendToolResponse({ responses });
+          if (inlineJob) inlineJob.delivered = true;
+        }
+      } catch { /* A cancelled provider batch or terminal transport cannot receive late answers. */ }
+    }
+    if (inlineJob) {
+      inlineJob.deferred = !inlineJob.delivered;
+      this.#jobs.save(inlineJob);
     }
     for (const call of event.calls) handle.pendingCallIds.delete(call.id);
     handle.thinking = handle.pendingCallIds.size > 0;

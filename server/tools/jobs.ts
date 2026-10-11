@@ -73,9 +73,8 @@ export class LiveToolJobs {
     const timeout = new Promise<undefined>(resolve => { timer = schedule(() => resolve(undefined), budgetMs); timer.unref(); });
     const result = await Promise.race([completion, timeout]);
     timer?.cancel();
-    if (result) job.delivered = true;
-    else job.deferred = true;
-    this.save(job);
+    if (!result) { job.deferred = true; this.save(job); }
+    // Returning a batch is not delivery; the Live owner acknowledges the transport handoff.
     // Observe persistence failures even after deferral; the durable claim then remains unknown on reopen.
     void completion.catch(() => undefined);
     return { job, ...(result ? { result } : {}) };

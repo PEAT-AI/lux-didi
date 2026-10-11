@@ -3,6 +3,7 @@ import type { DataClass, FunctionDeclaration, ToolDefinition } from '../adapters
 import { PromptCompileError, type OwnerProfileSnapshot, type CapabilitySnapshot, type CompileInput, type CompiledPrompt, type Evidence, type HistoryItem, type SourceAvailability, type ValidatedPreferences, type VoiceInstruction, type VoiceInstructionInput } from './types.js';
 import { PUBLIC_PERSONA, PROMPT_VERSION, TRUSTED_RULES } from './template.js';
 export * from './types.js';
+export * from './live-persona.js';
 export { PUBLIC_PERSONA, PROMPT_VERSION } from './template.js';
 
 const classes: DataClass[] = ['ordinary', 'private', 'sensitive'];

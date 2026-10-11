@@ -16,7 +16,7 @@ export type LiveErrorCode =
   | 'expired' | 'invalid_audio' | 'persistence_failed';
 export type LiveConfigErrorCode =
   | 'invalid_object' | 'invalid_provider' | 'invalid_model' | 'invalid_voice' | 'invalid_key_reference'
-  | 'invalid_route' | 'invalid_classes' | 'invalid_prompt' | 'invalid_limit';
+  | 'invalid_route' | 'invalid_classes' | 'invalid_prompt' | 'invalid_limit' | 'invalid_language';
 
 export class LiveError extends Error {
   constructor(readonly code: LiveErrorCode, message: string = code) { super(message); this.name = 'LiveError'; }
@@ -41,6 +41,7 @@ export interface LiveProfile {
   readonly liveModelId: string;
   readonly voice: string;
   readonly keyReference: string;
+  readonly language?: string;
   readonly route: { readonly enabled: true; readonly provider: 'gemini'; readonly modelId: string; readonly dataClasses: readonly DataClass[] };
   readonly prompt: { readonly text: string; readonly dataClass: DataClass };
   readonly limits: LiveLimits;

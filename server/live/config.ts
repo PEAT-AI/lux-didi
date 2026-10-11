@@ -73,6 +73,8 @@ export function validateLiveProfile(input: unknown): LiveProfile {
   if (!modelPattern.test(liveModelId)) fail('invalid_model');
   const voice = text(input['voice'], 'invalid_voice');
   const keyReference = text(input['keyReference'], 'invalid_key_reference');
+  const language = input['language'];
+  if (language !== undefined && (typeof language !== 'string' || !/^[a-z]{2}$/.test(language))) fail('invalid_language');
   const route = input['route'];
   if (!object(route) || route['enabled'] !== true || route['provider'] !== 'gemini' || route['modelId'] !== liveModelId) fail('invalid_route');
   const dataClasses = Object.freeze(classList(route['dataClasses']));
@@ -84,6 +86,7 @@ export function validateLiveProfile(input: unknown): LiveProfile {
   return Object.freeze({
     ...(input['acceptedPrompt'] !== undefined ? { acceptedPrompt: validateAcceptedPrompt(input['acceptedPrompt']) } : {}),
     provider: 'gemini', liveModelId, voice, keyReference,
+    ...(language !== undefined ? { language } : {}),
     route: Object.freeze({ enabled: true, provider: 'gemini', modelId: liveModelId, dataClasses }),
     prompt: Object.freeze({ text: promptText, dataClass }), limits: limits(input['limits']),
   });

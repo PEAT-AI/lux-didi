@@ -59,4 +59,17 @@ if ! codesign --verify --deep --strict "$target" || [ ! -x "$target/Contents/Mac
   exit 1
 fi
 
+# Seed the provider Live voice profile once, if absent. Owner data (model/voice/preferences), never a secret.
+data_dir="${HOME}/Library/Application Support/ai.peat.lux-didi"
+config_dir="${data_dir}/provider-config"
+if [ ! -e "${config_dir}/live.json" ]; then
+  [ -d "${config_dir}" ] || { mkdir -p "${config_dir}"; chmod 700 "${config_dir}"; }
+  tmp_file="${config_dir}/.live.json.tmp.$$"
+  cat > "$tmp_file" <<'JSON'
+{"schemaVersion":1,"enabled":true,"provider":"gemini","modelId":"models/gemini-3.1-flash-live-preview","voice":"Aoede","keyReference":"gemini-primary","dataClasses":["ordinary"],"preferences":{"dataClass":"ordinary","language":"en","register":"plain","humor":"dry","verbosity":"brief"}}
+JSON
+  chmod 600 "$tmp_file"
+  mv "$tmp_file" "${config_dir}/live.json"
+fi
+
 printf 'INSTALL-MACOS-APP PASS target=%s rollback=%s\n' "$target" "${rollback:-none}"

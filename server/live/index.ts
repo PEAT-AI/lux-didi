@@ -361,6 +361,7 @@ export class LiveSessionOwner {
         grants: registry.map(tool => ({ tool: tool.name, effect: tool.effect, accountId: tool.accountId, resourceId: tool.resourceId })) };
     }
     const request = { system: { text: acceptedPrompt.system, dataClass: dataClasses[dataClasses.length - 1]! }, history: [], dataClasses,
+      ...(this.#profile.language !== undefined ? { languageCode: this.#profile.language } : {}),
       ...(registry.length ? { tools: declarationsFor(registry).declarations } : {}) };
     let session: LiveVoiceSession;
     try {

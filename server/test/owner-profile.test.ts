@@ -161,3 +161,84 @@ test('post-replacement directory-sync failure reports uncertain durability, read
   assert.deepEqual(actual.active, before.active); assert.equal(actual.pendingActivation, true);
   assert.deepEqual((await readdir(f.dataDir)).filter(n => n.endsWith('.tmp')), []);
 }));
+
+test('genuinely paired browser cannot GET or PUT private owner state with cookie alone or cookie plus operator bearer', async () => fixture(async f => {
+  const raw = JSON.stringify({ schemaVersion: 1, kind: 'profile', ownerId: f.host.store.assistantId,
+    profileVersion: 'synthetic-browser-isolation', ...editable('Private synthetic profile') });
+  await writeFile(f.path, raw, { mode: 0o600 });
+  const pairing = await fetch(f.host.service.origin + '/api/v1/auth/pairing', {
+    method: 'POST', headers: { Authorization: `Bearer ${f.token}`, 'Content-Type': 'application/json' }, body: '{}',
+  });
+  assert.equal(pairing.status, 200);
+  const pairingCode = (await pairing.json() as { data: { pairingCode: string } }).data.pairingCode;
+  const paired = await fetch(f.host.service.origin + '/api/v1/auth/pair', {
+    method: 'POST', headers: { Origin: f.host.service.origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ pairingCode }),
+  });
+  assert.equal(paired.status, 200);
+  const cookie = paired.headers.get('set-cookie')?.split(';')[0]; assert.ok(cookie);
+  const csrf = (await paired.json() as { data: { csrfToken: string } }).data.csrfToken;
+  const session = await fetch(f.host.service.origin + '/api/v1/auth/session', { headers: { Cookie: cookie } });
+  assert.equal(session.status, 200, 'cookie must be a real ordinarily authorized browser session');
+  assert.equal((await session.json() as { data: { csrfToken: string } }).data.csrfToken, csrf);
+  for (const authorization of ['', `Bearer ${f.token}`]) {
+    const get = await f.request('GET', undefined, { Cookie: cookie, Authorization: authorization });
+    assert.equal(get.status, 403); assert.equal(get.headers.get('cache-control'), 'no-store');
+    assert.ok(!(await get.text()).includes('SYNTHETIC'));
+    const put = await f.request('PUT', { expectedRevision: 'synthetic-unread-revision', ...editable('Browser forbidden') }, {
+      Cookie: cookie, Authorization: authorization, Origin: f.host.service.origin, 'X-Didi-CSRF': csrf,
+    });
+    assert.equal(put.status, 403); assert.equal(put.headers.get('cache-control'), 'no-store');
+    assert.ok(!(await put.text()).includes('SYNTHETIC'));
+    assert.equal(await readFile(f.path, 'utf8'), raw, 'ordinary session cannot replace private profile');
+  }
+  assert.equal((await fetch(f.host.service.origin + '/api/v1/auth/session', { headers: { Cookie: cookie } })).status, 200,
+    'profile isolation must not change pairing authority');
+}));
+
+test('explicit profile wins competing managed file, prepopulates actual content and PUT replaces only explicit target', async () => fixture(async f => {
+  await f.host.close();
+  const explicit = join(f.dataDir, 'synthetic-explicit.json');
+  const make = (name: string) => ({ schemaVersion: 1, kind: 'profile', ownerId: f.host.descriptor.assistantId,
+    profileVersion: 'synthetic-' + name, ...editable(name) });
+  const managed = JSON.stringify(make('Managed must lose')), selected = make('Explicit wins');
+  selected.style.text = 'SYNTHETIC selected character'; selected.lore.text = 'SYNTHETIC selected about me';
+  await writeFile(f.path, managed, { mode: 0o600 }); await writeFile(explicit, JSON.stringify(selected), { mode: 0o600 });
+  const host = await startHost({ ...f.config, ownerProfilePath: explicit });
+  try {
+    const token = (await readFile(join(f.dataDir, 'admin-credential'), 'utf8')).trim();
+    const headers = { Authorization: `Bearer ${token}` };
+    const status = await fetch(host.service.origin + '/api/v1/status', { headers }); assert.equal(status.status, 200);
+    assert.deepEqual((await status.json() as { data: { ownerProfile: unknown } }).data.ownerProfile,
+      { status: 'configured', displayName: selected.displayName });
+    const get = await fetch(host.service.origin + '/api/v1/owner-profile', { headers }); assert.equal(get.status, 200);
+    const document = (await get.json() as { data: EditorDocument }).data;
+    assert.deepEqual(document.active.profile, selected); assert.deepEqual(document.saved.profile, selected);
+    const edits = editable('Explicit edited');
+    const put = await fetch(host.service.origin + '/api/v1/owner-profile', {
+      method: 'PUT', headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ expectedRevision: document.saved.revision, ...edits }),
+    });
+    assert.equal(put.status, 200); assert.equal(await readFile(f.path, 'utf8'), managed);
+    const saved = JSON.parse(await readFile(explicit, 'utf8')) as Record<string, unknown>;
+    assert.equal(saved['displayName'], edits.displayName); assert.deepEqual(saved['style'], edits.style); assert.deepEqual(saved['lore'], edits.lore);
+    const again = await fetch(host.service.origin + '/api/v1/owner-profile', { headers }); assert.equal(again.status, 200);
+    const after = (await again.json() as { data: EditorDocument }).data;
+    assert.deepEqual(after.active.profile, selected); assert.equal(after.saved.profile.displayName, edits.displayName);
+    assert.equal(after.pendingActivation, true);
+  } finally { await host.close(); }
+}));
+
+test('valid competing managed profile never rescues a missing, malformed or unsafe explicit selection', async () => fixture(async f => {
+  await f.host.close();
+  const managed = JSON.stringify({ schemaVersion: 1, kind: 'profile', ownerId: f.host.descriptor.assistantId,
+    profileVersion: 'synthetic-managed-fallback-forbidden', ...editable('Managed cannot rescue') });
+  await writeFile(f.path, managed, { mode: 0o600 });
+  const explicit = join(f.dataDir, 'synthetic-invalid-explicit.json');
+  const missing = join(f.dataDir, 'synthetic-missing-explicit.json');
+  await assert.rejects(startHost({ ...f.config, ownerProfilePath: missing }), /invalid_profile/);
+  await writeFile(explicit, '{', { mode: 0o600 });
+  await assert.rejects(startHost({ ...f.config, ownerProfilePath: explicit }), /invalid_profile/);
+  await writeFile(explicit, managed); await chmod(explicit, 0o644);
+  await assert.rejects(startHost({ ...f.config, ownerProfilePath: explicit }), /invalid_profile/);
+  assert.equal(await readFile(f.path, 'utf8'), managed);
+}));

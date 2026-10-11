@@ -2,7 +2,8 @@
 // Synthetic stdio MCP child for check-google-connector.sh.
 // No real account, network, credential or application file is touched. It exposes the five
 // Gmail/Calendar read tools plus a decoy write tool so a test can prove the write is never granted.
-// argv[2] = mode (ok | credential), argv[3] = optional pid file.
+// argv[2] = mode (ok | credential | flaky), argv[3] = optional pid file.
+// flaky fails the first gcal_list call with the credential error and succeeds afterwards.
 import { writeFileSync } from 'node:fs';
 import { Server } from '@modelcontextprotocol/server';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
@@ -49,11 +50,13 @@ function envelopeFor(name, args) {
 }
 
 const server = new Server({ name: 'synthetic-google-mcp', version: '0.0.1' }, { capabilities: { tools: {} } });
+let calendarCalls = 0;
 server.setRequestHandler('tools/list', () => ({ tools: TOOLS }));
 server.setRequestHandler('tools/call', request => {
   const name = request.params?.name;
   const args = request.params?.arguments ?? {};
-  if (mode === 'credential' && name === 'gcal_list') {
+  const failsFirst = mode === 'flaky' && name === 'gcal_list' && calendarCalls++ === 0;
+  if (name === 'gcal_list' && (mode === 'credential' || failsFirst)) {
     return { content: [{ type: 'text', text: 'credential-missing: no calendar token is available; run the interactive login once' }], isError: true };
   }
   const envelope = envelopeFor(name, args);

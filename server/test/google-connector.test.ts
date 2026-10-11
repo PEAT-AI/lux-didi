@@ -245,3 +245,65 @@ test('the owner composes the google tool table and a Live-shaped gmail_list call
     rmSync(childDir, { recursive: true, force: true });
   }
 });
+
+test('a credential-failing call flips the calendar endpoint to configured/auth-needed and a later success clears it', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-google-status-'));
+  const { dir: childDir, pidFile } = scratch();
+  const configDir = join(dir, 'provider-config');
+  const store = new Store(join(dir, 'data'), toolsMigrations);
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  const env = { HOME: join(tmpdir(), 'didi-google-home'), PATH: process.env.PATH ?? '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' };
+  const command = process.execPath;
+  const args = [child, 'flaky', pidFile];
+  const entry = { id: 'calendar', transport: 'stdio', command, args, env, connector: 'google', account: ACCOUNT, resource: RESOURCE, credentialRef: null, enabled: true, allowEgress: true };
+  writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [entry] }), { mode: 0o600 });
+  let live: LiveAuthority | null = null;
+  const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => live });
+  try {
+    const first = await runtime.port.discover('calendar');
+    assert.equal(first.state, 'discovered');
+    if (first.state !== 'discovered') throw new Error('not discovered');
+    const policy: ConnectionPolicy = {
+      schemaVersion: 1, ownerId: store.assistantId, connectionId: 'calendar', generation: 2, enabled: true, connector: 'google',
+      endpoint: { id: 'calendar', transport: 'stdio', command, args, env, account: ACCOUNT, resource: RESOURCE, credentialRef: null },
+      toolNames: [...GOOGLE_TOOLS], schemaDigest: first.schemaDigest,
+      sourcePolicy: { id: 'google-read', revision: 1, unknownClass: 'private', allowedClasses: ['private'] },
+      route: { identity: 'voice', allowedClasses: ['private'] },
+      bounds: { maxQueryChars: 80, maxSearchLimit: 3, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 },
+    };
+    runtime.owner.applyConnection(policy);
+    const second = await runtime.port.discover('calendar');
+    assert.equal(second.state, 'discovered');
+    runtime.owner.projectConnection('calendar');
+    const acceptance: RunAcceptance = { ownerId: store.assistantId, actorId: 'actor', runId: 'run', authorityEpoch: store.authorityEpoch, revision: 1, route: { identity: 'voice', provider: 'gemini', modelId: 'gemini-2.5-flash', allowedClasses: ['private'] }, allowedClasses: ['private'], connectionIds: ['calendar'] };
+    const accepted = store.transaction(tx => runtime.owner.snapshotRun(tx, acceptance));
+    live = { ...acceptance, acceptedRunHash: accepted.sha256 };
+
+    const definition = runtime.owner.definitions('run').find(candidate => candidate.name === 'gcal_list');
+    assert(definition?.execute);
+    const callArgs = {};
+    const intent: ToolCallIntent = { runId: 'run', actorId: 'actor', authorityEpoch: store.authorityEpoch, revision: 1, executionId: 'run:1:0', toolName: 'gcal_list', argumentsHash: sha256(JSON.stringify(callArgs)), callId: 'call', accountId: ACCOUNT, resourceId: RESOURCE };
+    assert.equal(runtime.owner.journal.intent(intent), 'fresh');
+    const failed = await definition!.execute!(callArgs, { ...intent, signal: new AbortController().signal });
+    assert.equal(failed.status, 'completed');
+    const flipped = runtime.status().endpoints.find(endpoint => endpoint.id === 'calendar');
+    assert.equal(flipped?.state, 'configured');
+    assert.equal(flipped?.error, 'auth needed: run gcal --auth');
+    const row = store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE execution_id=?', ['run:1:0']));
+    const stored = JSON.parse(String(row?.result_json)) as { response: Record<string, unknown> };
+    assert.match(String(stored.response['text']), /auth needed: run gcal --auth/);
+
+    const intentTwo: ToolCallIntent = { ...intent, executionId: 'run:1:1', callId: 'call-2' };
+    assert.equal(runtime.owner.journal.intent(intentTwo), 'fresh');
+    const succeeded = await definition!.execute!(callArgs, { ...intentTwo, signal: new AbortController().signal });
+    assert.equal(succeeded.status, 'completed');
+    const cleared = runtime.status().endpoints.find(endpoint => endpoint.id === 'calendar');
+    assert.equal(cleared?.state, 'connected');
+    assert.equal(cleared?.error, undefined);
+  } finally {
+    await runtime.close();
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(childDir, { recursive: true, force: true });
+  }
+});

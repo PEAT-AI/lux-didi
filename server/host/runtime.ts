@@ -15,10 +15,16 @@ import { toolsMigrations } from '../tools/index.js';
 import { composeChat, type ModelTesting } from './connected.js';
 import { composeLive, type LiveTesting } from './live.js';
 import { composeMcpRuntime } from './mcp.js';
-import type { ToolsOwner } from '../tools/types.js';
+import type { LiveAuthority, ToolsOwner } from '../tools/types.js';
 
-/** Structural match for W-B's LiveToolsComposition; kept local until its signature lands on the train. */
-interface LiveToolsComposition { owner: ToolsOwner; connectionIds(): string[] }
+/** Structural match for W-B's LiveToolsComposition; kept local and additive until its signature lands. */
+export type AuthoritySource = (runId: string, signal: AbortSignal) => Promise<LiveAuthority | null>;
+export interface LiveToolsComposition {
+  owner: ToolsOwner;
+  connectionIds(): string[];
+  registerAuthoritySource(source: AuthoritySource): void;
+  lookupAuthority(runId: string, signal: AbortSignal): Promise<LiveAuthority | null>;
+}
 
 export interface HostConfig { dataDir: string; webRoot: string; port?: number; descriptor?: string; configDir?: string; ownerProfilePath?: string; modelTesting?: ModelTesting; liveTesting?: LiveTesting; now?: () => number }
 export function defaultDataDir(): string {
@@ -80,8 +86,19 @@ export async function startHost(config: HostConfig) {
     const owner = loadOwnerProfile({ ...(config.ownerProfilePath !== undefined ? { path: config.ownerProfilePath } : {}), ownerId: store.assistantId });
     if (owner.status === 'error') throw new ConfigError('invalid_profile');
     const providerConfigDir = resolve(config.configDir ?? join(dataDir, 'provider-config'));
-    const mcp = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir: providerConfigDir, lookupAuthority: async () => null });
-    const liveTools: LiveToolsComposition = { owner: mcp.owner, connectionIds: () => mcp.connectionIds() };
+    // R3: authority is pluggable; sources are consulted in registration order and never fabricated.
+    const authoritySources: AuthoritySource[] = [];
+    const lookupAuthority: AuthoritySource = async (runId, signal) => {
+      for (const source of authoritySources) { const value = await source(runId, signal); if (value) return value; }
+      return null;
+    };
+    const mcp = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir: providerConfigDir, lookupAuthority });
+    const liveTools: LiveToolsComposition = {
+      owner: mcp.owner,
+      connectionIds: () => mcp.connectionIds(),
+      registerAuthoritySource: source => { authoritySources.push(source); },
+      lookupAuthority,
+    };
     const { chat, status } = composeChat(store, domain, providerConfigDir, config.modelTesting, config.now, owner.snapshot);
     const composeLiveWithTools = composeLive as unknown as (...args: unknown[]) => ReturnType<typeof composeLive>;
     const { service: live } = composeLiveWithTools(store, providerConfigDir, config.liveTesting, config.now, owner.snapshot, liveTools);

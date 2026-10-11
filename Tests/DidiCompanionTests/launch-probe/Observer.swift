@@ -76,7 +76,13 @@ import AppKit
         NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: bundle), configuration: configuration) { app, error in
             Task { @MainActor in
                 guard !self.settled else { return }
-                guard error == nil, let app, app.bundleURL.map({ physicalPath($0.path) }) == self.bundle else { self.fail("own launch identity"); return }
+                guard error == nil, let app, app.bundleURL.map({ physicalPath($0.path) }) == self.bundle else {
+                    let failure = error as NSError?
+                    self.fail("own launch identity", extra: ["launchErrorDomain": failure?.domain as Any? ?? NSNull(),
+                        "launchErrorCode": failure?.code as Any? ?? NSNull(), "launchReturnedApplication": app != nil,
+                        "launchBundleMatches": app?.bundleURL.map({ physicalPath($0.path) }) == self.bundle])
+                    return
+                }
                 self.target = app
                 do {
                     let (facts, record) = try identity(app.processIdentifier, nonce: self.nonce, bundle: self.bundle)

@@ -24,7 +24,7 @@ import { Outbox } from '../runtime/outbox.js';
 import { Store } from '../runtime/store.js';
 import type { Transaction } from '../contracts/storage.js';
 import { createLiveSessionOwner, LiveConfigError, LiveError, liveMigrations, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
-import { CANARY, fixture, options, pcm } from './live-voice-fixture.js';
+import { CANARY, control, deferred, fixture, options, pcm } from './live-voice-fixture.js';
 
 const MODEL = 'models/live-session-test';
 const NOW = 1_700_000_000_000;
@@ -881,7 +881,7 @@ test('Live revocation invalidates authority and discards an in-flight result', a
   const { session, attachment } = await attached(h);
   h.f.send({ toolCall: { functionCalls: [{ id: 'late', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
   await started.promise; assert.equal(h.owner.current().state, 'thinking');
-  h.owner.revoke(session.liveSessionId, h.ctx); assert.equal(h.owner.lookupAuthority(session.liveSessionId), null);
+  h.owner.revoke(session.liveSessionId); assert.equal(h.owner.lookupAuthority(session.liveSessionId), null);
   finish.resolve(); await attachment.done;
   assert.equal(h.f.frames.length, 1);
   assert.equal(h.owner.current().entries.filter(e => e.kind === 'toolResult').length, 0);

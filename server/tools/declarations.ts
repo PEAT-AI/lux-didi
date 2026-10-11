@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import { createHash } from 'node:crypto';
 import { controlled, Interrupted } from '../adapters/model/control.js';
 import type { Authority, DataClass, FunctionDeclaration, HostContext, JsonObject, ModelControl, Part, ToolCallIntent, ToolCallJournal, ToolCallRefusal, ToolDefinition, ToolOutcome, ToolRecord, ToolResultBinding, ToolResultGate, ToolResultRef, LoopResult } from '../adapters/model/types.js';
@@ -96,6 +97,12 @@ export async function runToolCalls(owner: { journal: ToolCallJournal; resultGate
     try {
       const gate = await controlled(ctx.control, signal => owner.resultGate.authorize(structuredClone(host), structuredClone(bindings), ctx.baseClasses, signal));
       if (gate.state !== 'allowed' || gate.results.length !== bindings.length) return fatal('denied', 'tool_result_denied');
+      const checked = new Set<ToolResultBinding>();
+      for (const result of gate.results) {
+        const binding = bindings.find(b => isDeepStrictEqual(b, result.binding));
+        if (!binding || checked.has(binding) || !result.response || typeof result.response !== 'object' || Array.isArray(result.response)) return fatal('denied', 'tool_result_denied');
+        checked.add(binding);
+      }
       return { tools, bindings, responses, error: undefined, accepted: gate.results };
     } catch { return fatal('denied', 'tool_result_denied'); }
   }

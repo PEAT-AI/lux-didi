@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { TestContext } from 'node:test';
@@ -569,4 +570,48 @@ test('canonical host applies configured idle deadline and persists idle_timeout 
   assert.equal(recovered.body.data.liveSessionId, id);
   assert.equal(f.attempts, 1, 'restart/replay never reopens the adapter');
   t.diagnostic('actual host idleMs=200, sessionMs=10000: observed persisted idle_timeout; replay/restart opens remain1');
+});
+
+test('page Live projection is cookie-only, same-origin, read-only and no-store', async t => {
+  const h = await harness(t, { config: configJson(true) });
+  const token = 'synthetic-page-cookie';
+  h.store.transaction(tx => tx.run('INSERT INTO runtime_sessions VALUES (?,?,?,?)', [createHash('sha256').update(token).digest('hex'), 'page-client', 'csrf', Date.now() + 60_000]));
+  const headers = { cookie: `didi_session=${token}` };
+  const response = await fetch(`${h.origin}/api/v1/live/current`, { headers });
+  assert.equal(response.status, 200); assert.equal(response.headers.get('cache-control'), 'no-store');
+  assert.equal(response.headers.get('access-control-allow-origin'), null);
+  const body = await response.json() as { data: { state: string; entries: unknown[]; cursor: number } };
+  assert.deepEqual(body.data, { state: 'idle', since: null, entries: [], cursor: 0 });
+  assert.equal((await fetch(`${h.origin}/api/v1/live/current`, { headers: bearer(h) })).status, 403);
+  assert.equal((await fetch(`${h.origin}/api/v1/live/current`, { headers: { ...headers, origin: 'https://other.test' } })).status, 403);
+  assert.equal((await fetch(`${h.origin}/api/v1/live/current`, { headers: { ...headers, 'sec-fetch-site': 'cross-site' } })).status, 403);
+  assert.equal((await fetch(`${h.origin}/api/v1/live/current?cursor=-1`, { headers })).status, 400);
+  for (const name of ['liveSessionId', 'args', 'key', 'grants', 'pcm', 'thoughts']) assert.equal(JSON.stringify(body).includes(name), false);
+});
+
+test('gateway forwards safe tool-call/result markers and keeps a refused tool batch alive', async t => {
+  const h = await harness(t, { config: configJson(true) });
+  const created = await createBody(h, 'tool-markers');
+  const ws = new WebSocket(`${h.origin.replace('http:', 'ws:')}/api/v1/live-sessions/${created.body.data.liveSessionId}/audio`, { headers: bearer(h) });
+  t.after(() => ws.terminate());
+  const markers: Record<string, any>[] = [];
+  let readyResolve!: () => void, resultResolve!: () => void;
+  const ready = new Promise<void>(resolve => { readyResolve = resolve; });
+  const result = new Promise<void>(resolve => { resultResolve = resolve; });
+  ws.on('message', (data, binary) => {
+    if (binary) return;
+    const frame = JSON.parse(data.toString()) as Record<string, any>; markers.push(frame);
+    if (frame.type === 'ready') readyResolve();
+    if (frame.type === 'toolResult') resultResolve();
+  });
+  await once(ws, 'open'); await h.f.frame(1); h.f.send({ setupComplete: {} }); await ready;
+  h.f.send({ toolCall: { functionCalls: [{ id: 'refused', name: 'not_granted', args: { secret: CANARY } }] } });
+  await h.f.frame(2); await result;
+  assert.equal(markers.some(marker => marker.type === 'toolCall'), true);
+  const projected = markers.find(marker => marker.type === 'toolResult')!;
+  assert.equal(projected.tool.status, 'error'); assert.equal(projected.tool.markdown, 'Tool not granted');
+  assert.deepEqual(projected.tool.sources, []);
+  assert.equal(JSON.stringify(markers).includes(CANARY), false); assert.equal(JSON.stringify(markers).includes('args'), false);
+  assert.equal(ws.readyState, WebSocket.OPEN);
+  ws.send(JSON.stringify({ type: 'close' })); await once(ws, 'close');
 });

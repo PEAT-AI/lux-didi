@@ -75,6 +75,10 @@ func audioRequire(_ value: Bool, _ message: String) throws {
             let conversation = NativeLiveConversation(authority: (origin, { url, epoch in
                 try authority.request(url, epoch)
             }), dictationIsCapturing: { true })
+            conversation.offerPendingCall(NativePendingLiveJob(id: "job1", state: "completed", markdown: "Actual result"))
+            try audioRequire(conversation.state == .idle && !conversation.device.hasEngine && !conversation.isCapturing,
+                             "a quiet incoming call never starts audio or microphone capture")
+            try audioRequire(authority.attempts == 0, "offering a call does not begin a Live session")
             conversation.start()
             try audioRequire(conversation.state == .failed && conversation.failure != nil, "active dictation visibly refuses Live Start")
             try audioRequire(!conversation.device.hasEngine && !conversation.isCapturing, "dictation refusal creates no engine or second capture")

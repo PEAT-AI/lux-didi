@@ -52,10 +52,21 @@ try {
   await step('unrelated UI render retains the live canvas and temporal renderer',async()=>{
     const original=await page.locator('#didi-orb').elementHandle();
     const before=await original.evaluate(el=>el.didiFrameStats());
-    await page.getByRole('button',{name:'Today',exact:true}).click();
-    assert(await original.evaluate(el=>el.isConnected&&el===document.querySelector('#didi-orb')),'ordinary render must retain the exact live canvas');
+    await page.getByRole('button',{name:'Refresh connection',exact:true}).click();
+    await page.waitForFunction(()=>document.querySelector('#didi-orb')?.dataset.state==='CONNECTED');
+    assert(await original.evaluate(el=>el.isConnected&&el===document.querySelector('#didi-orb')),'same-view connection refresh must retain the exact live canvas');
     const after=await original.evaluate(el=>el.didiFrameStats());
     assert(after.frameTime>=before.frameTime,'ordinary render must not restart temporal state');
+    try {
+      await context.setOffline(true);
+      await page.waitForFunction(()=>document.querySelector('#didi-orb')?.dataset.state==='DISCONNECTED');
+      assert(await original.evaluate(c=>c.isConnected&&c===document.querySelector('#didi-orb')&&!c.didiFrameStats().destroyed),'same-view network failure must preserve the mounted disconnected orb');
+      assert.equal(await page.locator('#didi-orb').getAttribute('data-posture'),'quiet');
+      assert.equal(await page.locator('#didi-orb').getAttribute('data-disabled'),'true');
+      await page.screenshot({path:join(artifacts,'orb-disconnected-mounted.png'),fullPage:true});
+    }finally {await context.setOffline(false);}
+    await page.waitForFunction(()=>document.querySelector('#didi-orb')?.dataset.state==='CONNECTED');
+    assert(await original.evaluate(c=>c===document.querySelector('#didi-orb')),'same-view reconnect retains temporal owner');
     await original.dispose();
   });
   await step('pinned original animated reference, real-noise self-variation and DPR/layout geometry',async()=>{
@@ -207,13 +218,17 @@ try {
   await step('locally authored install shell and logout revoke cookie',async()=>{
     const manifest=await (await page.request.get(fixture.url+'/manifest.webmanifest')).json();assert.equal(manifest.display,'standalone');assert.equal(manifest.icons[0].src,'/icon.svg');
     assert.match(await (await page.request.get(fixture.url+'/icon.svg')).text(),/<svg/);
+    await page.getByRole('button',{name:'Conversation',exact:true}).click();
+    await page.locator('#didi-orb').waitFor();
     const retained=await page.locator('#didi-orb').elementHandle();
-    await page.getByRole('button',{name:'Settings',exact:true}).click();await page.getByRole('button',{name:'Unpair this browser',exact:true}).click();
-    await page.waitForFunction(()=>document.querySelector('#didi-orb')?.dataset.state==='DISCONNECTED');
-    assert(await retained.evaluate(c=>c.isConnected&&c===document.querySelector('#didi-orb')),'auth disconnect retains mounted Orb, not stale ownership or detached canvas');
-    assert.equal(await page.locator('#didi-orb').getAttribute('data-posture'),'quiet');
-    assert.equal(await page.locator('#didi-orb').getAttribute('data-disabled'),'true');
+    await page.getByRole('button',{name:'Settings',exact:true}).click();
+    assert(await retained.evaluate(c=>!c.isConnected&&c.didiFrameStats().destroyed),'real tab unmount must dispose, not retain a detached renderer');
+    const stopped=await retained.evaluate(c=>c.didiFrameStats().frames);
+    await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+    assert.equal(await retained.evaluate(c=>c.didiFrameStats().frames),stopped,'unmounted canvas must stop painting');
     await retained.dispose();
+    await page.getByRole('button',{name:'Unpair this browser',exact:true}).click();
+    assert.equal(await page.locator('#didi-orb').count(),0,'pairing view is an actual orb unmount, not a disconnected orb mount');
     await page.getByLabel('One-time pairing code').waitFor();assert.equal((await context.cookies()).length,0);
   });
   for(const request of fixture.requests.filter(r=>r.method!=='GET'&&!r.path.endsWith('/auth/pair'))){assert(request.headers['idempotency-key']);assert.equal(request.headers['x-didi-csrf'],'synthetic-csrf');assert.equal(request.headers['x-didi-authority-epoch'],'synthetic-authority-1');}

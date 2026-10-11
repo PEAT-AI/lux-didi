@@ -66,6 +66,11 @@ try {
     assert.equal(await sourceLink.count(),1);
     assert.equal(await sourceLink.getAttribute('rel'),'noopener noreferrer');
     assert.match(await page.locator('#live-panel .live-result strong').first().textContent(),/Answer/);
+    fixture.setLive({state:'listening',since:'2026-10-11T16:00:01Z',cursor:4,entries:[]});
+    await page.waitForFunction(()=>document.querySelector('#didi-orb').dataset.state==='LISTENING',{timeout:8000});
+    assert.equal(await page.locator('#didi-orb').getAttribute('data-posture'),'listening');
+    await page.getByText('Listening',{exact:true}).waitFor();
+    assert.equal(await page.getByRole('button',{name:/record|microphone|mute/i}).count(),0);
     await page.screenshot({path:`${artifacts}/desktop-live-naya.png`,fullPage:true});
     fixture.setLive({state:'idle',since:'2026-10-11T16:00:00Z',entries:[],cursor:0});
   });

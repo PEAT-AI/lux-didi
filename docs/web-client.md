@@ -202,8 +202,14 @@ claims.
 
 The shared page keeps the Vicuna-derived default orb visible in every conversation
 state and now reflects the read-only live projection. `src/live-view.ts` renders a
-truthful state label in an `aria-live` region (idle, recording, thinking, speaking,
-ended, error), the input and output transcription lines as they arrive, and the
+truthful state label in an `aria-live` region (idle, listening, speaking,
+thinking, ended, error) and never says "recording"; the thinking label names
+the tool in flight, for example "Thinking (search)", and a muted indicator
+appears only when the projection reports it. The page has no record button and
+no mute control: there is nothing to press, the orb reflects listening, speaking
+and thinking continuously, and typing stays the secondary input. The section also
+renders the input and output
+transcription lines as they arrive, and the
 newest accepted `toolResult` as sanitized Markdown with clickable source links.
 The label never claims that speech was heard or a task finished beyond what the
 projection says; an error state says only that Naya reported an error.
@@ -215,7 +221,7 @@ only `http:` and `https:` links become anchors (`target="_blank"`,
 `src/protocol.ts` add the typed client for `GET /api/v1/live/current[?cursor=n]`
 (same-origin cookie, no bearer). `src/main.ts` polls at 1 Hz while the projection
 is active and every 4 s while idle, and pauses while the document is hidden; the
-orb maps recording/thinking/speaking to its listening/thinking/speaking postures
+orb maps listening/thinking/speaking to its listening/thinking/speaking postures
 through the existing orb API and honours `prefers-reduced-motion`.
 
 The projection route is provided by the live service wagon. Until it exists the

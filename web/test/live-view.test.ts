@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { liveStateLabel, liveVoiceState, liveDelay, mergeLive, liveTranscript, liveResult, liveMarkup } from '../src/live-view.ts';
+import { liveStateLabel, liveVoiceState, liveToolName, liveDelay, mergeLive, liveTranscript, liveResult, liveMarkup } from '../src/live-view.ts';
 import type { LiveCurrent } from '../src/protocol.ts';
 
 const speaking: LiveCurrent = {
@@ -16,16 +16,35 @@ const speaking: LiveCurrent = {
 
 test('maps each projection state to a truthful label', () => {
   assert.equal(liveStateLabel('idle'), 'Ready when you are');
-  assert.equal(liveStateLabel('recording'), 'Listening');
+  assert.equal(liveStateLabel('listening'), 'Listening');
   assert.equal(liveStateLabel('thinking'), 'Thinking');
   assert.equal(liveStateLabel('speaking'), 'Speaking');
   assert.equal(liveStateLabel('ended'), 'Session ended');
   assert.equal(liveStateLabel('error'), 'Something went wrong');
 });
 
+test('the label vocabulary never says recording', () => {
+  for (const state of ['idle', 'listening', 'thinking', 'speaking', 'ended', 'error'] as const) {
+    assert.equal(/record/i.test(liveStateLabel(state)), false);
+  }
+  assert.equal(/record/i.test(liveMarkup({ state: 'listening', cursor: 0, entries: [] })), false);
+});
+
+test('the thinking label names the tool in flight', () => {
+  const thinking: LiveCurrent = { state: 'thinking', cursor: 1, entries: [{ seq: 1, kind: 'toolCall', tool: { name: 'search', status: 'called' } }] };
+  assert.equal(liveToolName(thinking), 'search');
+  assert.match(liveMarkup(thinking), /Thinking \(search\)/);
+  assert.match(liveMarkup({ state: 'thinking', cursor: 0, entries: [] }), /Thinking<\/p>/);
+});
+
+test('a muted indicator appears only when the projection reports it', () => {
+  assert.match(liveMarkup({ state: 'listening', muted: true, cursor: 0, entries: [] }), /Microphone muted/);
+  assert.equal(/Microphone muted/.test(liveMarkup({ state: 'listening', cursor: 0, entries: [] })), false);
+});
+
 test('maps live state to the orb VoiceState', () => {
   assert.equal(liveVoiceState('idle'), 'CONNECTED');
-  assert.equal(liveVoiceState('recording'), 'LISTENING');
+  assert.equal(liveVoiceState('listening'), 'LISTENING');
   assert.equal(liveVoiceState('thinking'), 'PROCESSING');
   assert.equal(liveVoiceState('speaking'), 'SPEAKING');
   assert.equal(liveVoiceState('ended'), 'DISCONNECTED');
@@ -36,7 +55,7 @@ test('poll interval is 1 s when active and 4 s when idle, paused when hidden', (
   assert.equal(liveDelay('idle', false), 4000);
   assert.equal(liveDelay(undefined, false), 4000);
   assert.equal(liveDelay('speaking', false), 1000);
-  assert.equal(liveDelay('recording', false), 1000);
+  assert.equal(liveDelay('listening', false), 1000);
   assert.equal(liveDelay('speaking', true), undefined);
 });
 

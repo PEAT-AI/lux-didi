@@ -6,19 +6,28 @@ import type { LiveCurrent, LiveEntry, LiveSource, LiveState } from './protocol.t
 
 const LABELS: Record<LiveState, string> = {
   idle: 'Ready when you are',
-  recording: 'Listening',
-  thinking: 'Thinking',
+  listening: 'Listening',
   speaking: 'Speaking',
+  thinking: 'Thinking',
   ended: 'Session ended',
   error: 'Something went wrong',
 };
 export function liveStateLabel(state: LiveState): string { return LABELS[state] ?? LABELS.idle; }
 
 const VOICE: Record<LiveState, VoiceState> = {
-  idle: 'CONNECTED', recording: 'LISTENING', thinking: 'PROCESSING',
-  speaking: 'SPEAKING', ended: 'DISCONNECTED', error: 'ERROR',
+  idle: 'CONNECTED', listening: 'LISTENING', speaking: 'SPEAKING',
+  thinking: 'PROCESSING', ended: 'DISCONNECTED', error: 'ERROR',
 };
 export function liveVoiceState(state: LiveState): VoiceState { return VOICE[state] ?? 'CONNECTED'; }
+
+/** The tool whose call is in flight, so the thinking label can name it. */
+export function liveToolName(live: LiveCurrent): string | undefined {
+  for (let index = live.entries.length - 1; index >= 0; index--) {
+    const entry = live.entries[index]!;
+    if (entry.kind === 'toolCall' && entry.tool?.name) return entry.tool.name;
+  }
+  return undefined;
+}
 
 /** 1 Hz while the projection is active, 4 s while idle, paused while the document is hidden. */
 export function liveDelay(state: LiveState | undefined, hidden: boolean): number | undefined {
@@ -67,15 +76,19 @@ function sourcesMarkup(sources: LiveSource[]): string {
 /** Full section markup, id="live-panel" so the poller can replace it in place. */
 export function liveMarkup(live: LiveCurrent | undefined): string {
   const state = live?.state;
-  const label = liveStateLabel(state ?? 'idle');
+  const label = state === 'thinking'
+    ? (live && liveToolName(live) ? `Thinking (${liveToolName(live)})` : liveStateLabel('thinking'))
+    : liveStateLabel(state ?? 'idle');
   const lines = live ? liveTranscript(live) : [];
   const result = live ? liveResult(live) : undefined;
-  const error = state === 'error' ? '<p class="muted" role="status">Naya reported an error. Nothing is being recorded or sent now.</p>' : '';
+  const error = state === 'error' ? '<p class="muted" role="status">Naya reported an error. The live session has stopped.</p>' : '';
+  const muted = live?.muted ? '<p class="muted live-muted" role="status">Microphone muted</p>' : '';
   const transcript = lines.length
     ? lines.map(line => `<li class="entry"><strong>${line.role === 'user' ? 'You' : 'Naya'}</strong><p>${escapeHtml(line.text)}</p></li>`).join('')
     : '<li class="empty"><p class="muted">No live transcription yet.</p></li>';
   return `<section class="panel live" id="live-panel" aria-label="Naya live conversation">
     <p class="live-state" role="status" aria-live="polite">${escapeHtml(label)}</p>
+    ${muted}
     <ol class="entries live-transcript">${transcript}</ol>
     ${error}
     ${result ? `<div class="live-result"><h2>Latest answer</h2>${renderMarkdown(result.markdown)}${sourcesMarkup(result.sources)}</div>` : ''}

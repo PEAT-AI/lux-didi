@@ -17,9 +17,9 @@ export interface ConnectedRouteStatus {
 export interface OwnerProfileStatus { status: 'default' | 'configured'; displayName: string }
 
 /** Interface 3 live projection (W-B route). Read-only, cookie-authenticated, no session ids or raw results. */
-export type LiveState = 'idle' | 'recording' | 'thinking' | 'speaking' | 'ended' | 'error';
+export type LiveState = 'idle' | 'listening' | 'speaking' | 'thinking' | 'ended' | 'error';
 export type LiveKind = 'inputTranscription' | 'outputTranscription' | 'toolCall' | 'toolResult' | 'interrupted' | 'turnComplete' | 'terminal';
 export interface LiveSource { title: string; url?: string }
 export interface LiveTool { name: string; status: 'called' | 'completed' | 'error'; markdown?: string; sources?: LiveSource[] }
 export interface LiveEntry { seq: number; kind: LiveKind; text?: string; tool?: LiveTool }
-export interface LiveCurrent { state: LiveState; since?: string; entries: LiveEntry[]; cursor: string | number }
+export interface LiveCurrent { state: LiveState; since?: string; muted?: boolean; entries: LiveEntry[]; cursor: string | number }

@@ -322,7 +322,8 @@ async function browserProcess() {
     if (typeof message === 'object' && message !== null && 'type' in message && message.type === 'observations'
       && 'runId' in message && typeof message.runId === 'string') {
       const accepted = f.tools.acceptedRun(message.runId);
-      process.send?.({ phase: 'observations', decisions, authorityFailures, modelRequests: f.modelCalls.length,
+      process.send?.({ phase: 'observations', decisions, grantObservations, grantObservationOverflow,
+        authorityFailures, modelRequests: f.modelCalls.length,
         sdkCalls: f.sdkCalls.length, acceptance: accepted?.acceptance ?? null, persisted: f.boundaryState(message.runId),
         currentPolicy: { generation: f.policy().generation, enabled: f.policy().enabled,
           route: f.policy().route, sourcePolicy: f.policy().sourcePolicy, schemaDigest: f.policy().schemaDigest } });

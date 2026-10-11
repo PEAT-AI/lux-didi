@@ -6,7 +6,7 @@ import type { LiveToolsComposition, LivePageProjection, LiveToolProjection } fro
 import { publicOwnerProfile, PROMPT_VERSION } from '../prompt/index.js';
 import { validateAcceptedPrompt } from './config.js';
 import { createHash, randomUUID } from 'node:crypto';
-import type { DataClass, LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort, LiveVoiceSession } from '../adapters/live-voice/index.js';
+import type { DataClass, LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort, LiveVoiceSession, LiveVoiceRequest } from '../adapters/live-voice/index.js';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
 import { liveProfileIdentity, validateLiveProfile } from './config.js';
 import { parseTerminal, persistedKinds, readFragmentPage, retainedBytes } from './journal.js';
@@ -384,7 +384,7 @@ export class LiveSessionOwner {
       : `The background job ${job.id} ${job.state === 'unknown' ? 'has an unknown outcome after interruption; it was not replayed' : 'failed'}. Do not invent a successful result.`;
     const classes = accepted.flatMap(result => result.dataClasses ?? [inputClass]);
     const dataClass: DataClass = classes.includes('sensitive') ? 'sensitive' : classes.includes('private') ? 'private' : inputClass;
-    return [{ role: 'user', text: `I am picking up your background call. Explain this actual job outcome first, then resume our conversation.\n${text}`, dataClass }];
+    return [{ role: 'user', text, dataClass }];
   }
 
   #open(liveSessionId: string, inputClass: DataClass, revision: number, acceptedPrompt: AcceptedPromptSnapshot, context: LiveContext): LiveAttachment {
@@ -403,7 +403,10 @@ export class LiveSessionOwner {
       host = { runId: liveSessionId, actorId: context.clientId, authorityEpoch: context.authorityEpoch, revision,
         grants: registry.map(tool => ({ tool: tool.name, effect: tool.effect, accountId: tool.accountId, resourceId: tool.resourceId })) };
     }
-    const request = { system: { text: acceptedPrompt.system, dataClass: dataClasses[dataClasses.length - 1]! }, history: this.#jobHistory(liveSessionId, inputClass) ?? [], dataClasses,
+    const history = this.#jobHistory(liveSessionId, inputClass);
+    const system = acceptedPrompt.system + (history ? '\n\nThe user has just picked up. Deliver the pending job result first, briefly, then resume the conversation. If the outcome failed or is unknown, state that truthfully.' : '');
+    const request: LiveVoiceRequest = { opening: history ? 'model_first' : 'user_first',
+      system: { text: system, dataClass: dataClasses[dataClasses.length - 1]! }, history: history ?? [], dataClasses,
       ...(this.#profile.language !== undefined ? { languageCode: this.#profile.language } : {}),
       ...(registry.length ? { tools: declarationsFor(registry).declarations } : {}) };
     let session: LiveVoiceSession;

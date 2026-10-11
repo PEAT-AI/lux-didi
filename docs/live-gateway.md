@@ -125,6 +125,11 @@ classes. Failed or unknown work primes a truthful failure, not a fabricated
 answer. Pending work is consumed only after that new session becomes ready;
 ignoring a call leaves its outcome in the page and outbox.
 
-History priming uses the existing adapter protocol. It supplies context, not a
-new forced-generation command; audible output still uses the normal Live turn
-and explicit user-started audio path.
+Callback sessions use `opening: 'model_first'`: after setup, the adapter sends
+the actual primed history as `clientContent` with `turnComplete: true`, opening
+Gemini's first spoken turn without microphone input or a separate nudge message.
+The callback's system instruction states that the user has just picked up and
+asks for the pending outcome first, briefly. Normal starts use `user_first`
+(the adapter default), preserving `turnComplete: false` history and waiting for
+the user. No completion or notification switches an existing session to
+model-first; only the user's explicit pickup or callback opens this new session.

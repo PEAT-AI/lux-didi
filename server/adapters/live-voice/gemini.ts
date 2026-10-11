@@ -62,6 +62,8 @@ export class GeminiLiveVoiceAdapter implements LiveVoicePort {
     if (!settings.enabled) fail('route_denied');
     if (!object(request) || !object(request.system) || typeof request.system.text !== 'string' || !request.system.text.length
       || (request.history !== undefined && !Array.isArray(request.history))) fail('invalid_request');
+    if (request.opening !== undefined && request.opening !== 'user_first' && request.opening !== 'model_first') fail('invalid_request');
+    const opening = request.opening ?? 'user_first';
     const declared = classList(request.dataClasses, 'invalid_request');
     if (declared.some(c => !settings.allowed.includes(c))) fail('route_denied');
     const checkClass = (value: unknown) => {
@@ -90,7 +92,7 @@ export class GeminiLiveVoiceAdapter implements LiveVoicePort {
       realtimeInputConfig: { automaticActivityDetection: { startOfSpeechSensitivity: 'START_SENSITIVITY_LOW' } },
       systemInstruction: { parts: [{ text: system }] }, inputAudioTranscription: {}, outputAudioTranscription: {},
     } });
-    const initial = history.length ? JSON.stringify({ clientContent: { turns: history, turnComplete: false } }) : undefined;
+    const initial = history.length || opening === 'model_first' ? JSON.stringify({ clientContent: { turns: history, turnComplete: opening === 'model_first' } }) : undefined;
     if (Buffer.byteLength(setup) > settings.limits.maxOutgoingBytes || (initial && Buffer.byteLength(initial) > settings.limits.maxOutgoingBytes)) fail('outgoing_limit');
     if (!object(control) || !(control.signal instanceof AbortSignal) || !Number.isSafeInteger(control.deadlineMs)
       || control.deadlineMs <= 0 || control.deadlineMs - Date.now() > 2_147_483_647) fail('invalid_request');

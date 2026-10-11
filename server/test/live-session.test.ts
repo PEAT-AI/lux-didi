@@ -86,19 +86,19 @@ async function harness(t: TestContext, overrides: {
     registry.register(endpoint); registry.enable(endpoint.id); registry.allowEgress(endpoint.id);
     const sdk = new Server({ name: 'live-tools-fixture', version: '1' }, { capabilities: { tools: { listChanged: false } } });
     const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
-    sdk.setRequestHandler('tools/list', async () => ({ tools: structuredClone(schemas) }));
+    sdk.setRequestHandler('tools/list', () => ({ tools: structuredClone(schemas) }) as never);
     sdk.setRequestHandler('tools/call', async req => {
       calls.push({ name: req.params.name, args: req.params.arguments });
       await overrides.beforeTool?.();
       return { content: [{ type: 'text', text: '#123: Synthetic insight\n[Evidence](https://example.test/evidence)' }], ...(overrides.toolError ? { isError: true } : {}) };
     });
     await sdk.connect(transport);
-    registry.bindFetch(endpoint.id, async (input, init) => {
+    t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
       const request = new Request(input, init);
       if (request.method === 'GET') return new Response(null, { status: 405 });
       return transport.handleRequest(request);
     });
-    const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 10000, maxSliceBytes: 512 }), resolveCredential: async () => undefined, budgets: { maxResponseBytes: 12000, projectionChars: 10, timeoutMs: 1000 } });
+    const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic-token', budgets: { maxResponseBytes: 12000, projectionChars: 10, timeoutMs: 1000 } });
     const toolOwner = createToolsOwner({ store, ownerId: store.assistantId, registry, port, lookupAuthority: async runId => owner?.lookupAuthority(runId) ?? null });
     toolOwner.applyConnection({ schemaVersion: 1, ownerId: store.assistantId, connectionId: 'lux', generation: 1, enabled: true,
       endpoint: { ...endpoint, credentialRef: null }, toolNames: ['search_knowledge', 'get_insight'], schemaDigest: canonicalToolDigest(schemas),

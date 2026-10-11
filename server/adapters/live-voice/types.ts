@@ -20,6 +20,7 @@ export interface GeminiLiveVoiceOptions {
 export interface LiveToolCall { id: string; name: string; args: JsonObject }
 export interface LiveToolResponse { id: string; name: string; response: JsonObject }
 export interface LiveVoiceRequest {
+  opening?: 'user_first' | 'model_first';
   tools?: FunctionDeclaration[];
   languageCode?: string;
   system: { text: string; dataClass: DataClass };

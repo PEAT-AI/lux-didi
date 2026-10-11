@@ -26,6 +26,7 @@ export class LiveConfigError extends Error {
 }
 
 export interface LiveLimits {
+  toolDeferralMs: number;
   sessionMs: number; idleMs: number; unusedMs: number; handshakeMs: number; closeMs: number;
   journalMaxEvents: number; journalMaxBytes: number; consumerQueueEvents: number; consumerQueueBytes: number;
   wsBufferedBytes: number;
@@ -52,7 +53,16 @@ export type LiveToolsComposition = {
   registerAuthoritySource?(source: (runId: string, signal: AbortSignal) => Promise<import('../tools/types.js').LiveAuthority | null>): void;
 };
 export interface LiveToolProjection { name: string; status: 'completed' | 'error'; markdown: string; sources: { title: string; url?: string }[] }
+export interface PendingLiveJob {
+  id: string; originSessionId: string; state: 'in_progress' | 'completed' | 'failed' | 'unknown';
+  createdAt: number; markdown: string; delivered: boolean;
+}
+export interface LivePendingService {
+  pendingJobs(): PendingLiveJob[];
+  createWithPending(inputClass: DataClass, idempotencyKey: string, context: LiveContext, pickupJobId?: string): LiveSessionSnapshot;
+}
 export interface LivePageProjection {
+  jobs?: PendingLiveJob[];
   state: 'idle' | 'listening' | 'thinking' | 'speaking' | 'ended' | 'error'; since: number | null;
   entries: { seq: number; kind: 'inputTranscription' | 'outputTranscription' | 'toolCall' | 'toolResult' | 'interrupted' | 'turnComplete' | 'terminal'; text?: string; tool?: { name: string; status: 'called' | 'completed' | 'error'; markdown?: string; sources?: { title: string; url?: string }[] } }[];
   cursor: number;
@@ -69,7 +79,7 @@ export interface LiveOwnerConfig {
 }
 
 export interface LiveContext { readonly clientId: string; readonly auditId: string; readonly authorityEpoch: string }
-export interface CreateLiveSession { readonly idempotencyKey: string; readonly inputClass: DataClass }
+export interface CreateLiveSession { readonly idempotencyKey: string; readonly inputClass: DataClass; readonly pickupJobId?: string }
 
 export interface LiveGrantSnapshot {
   grantId: string; provider: LiveProvider; model: string; voice: string; keyReference: string;

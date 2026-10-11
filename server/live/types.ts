@@ -59,7 +59,7 @@ export interface PendingLiveJob {
 }
 export interface LivePendingService {
   pendingJobs(): PendingLiveJob[];
-  createWithPending(inputClass: DataClass, idempotencyKey: string, context: LiveContext): LiveSessionSnapshot;
+  createWithPending(inputClass: DataClass, idempotencyKey: string, context: LiveContext, pickupJobId?: string): LiveSessionSnapshot;
 }
 export interface LivePageProjection {
   jobs?: PendingLiveJob[];
@@ -79,7 +79,7 @@ export interface LiveOwnerConfig {
 }
 
 export interface LiveContext { readonly clientId: string; readonly auditId: string; readonly authorityEpoch: string }
-export interface CreateLiveSession { readonly idempotencyKey: string; readonly inputClass: DataClass }
+export interface CreateLiveSession { readonly idempotencyKey: string; readonly inputClass: DataClass; readonly pickupJobId?: string }
 
 export interface LiveGrantSnapshot {
   grantId: string; provider: LiveProvider; model: string; voice: string; keyReference: string;

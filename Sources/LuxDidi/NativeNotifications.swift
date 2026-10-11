@@ -5,6 +5,7 @@ import UserNotifications
 final class NativeNotifications: NSObject, UNUserNotificationCenterDelegate {
     private let center = UNUserNotificationCenter.current()
     var onOpen: ((ReminderLink) -> Void)?
+    var onLiveCall: ((String) -> Void)?
     override init() { super.init(); center.delegate = self }
     func capability() async -> NotificationCapability {
         switch await center.notificationSettings().authorizationStatus {
@@ -33,13 +34,26 @@ final class NativeNotifications: NSObject, UNUserNotificationCenterDelegate {
             return .acknowledged
         } catch { return .failed(error.localizedDescription) }
     }
+    func submitLiveCall(jobID: String) async -> AdapterResult {
+        guard await capability().canSchedule else { return .failed("Notification permission is not granted") }
+        let content = UNMutableNotificationContent()
+        content.title = "Naya is calling"
+        content.body = "Your background task is ready. Pick up when you want."
+        content.sound = nil
+        content.userInfo = ["liveJobId": jobID]
+        do {
+            try await center.add(UNNotificationRequest(identifier: "live-call:" + jobID, content: content, trigger: nil))
+            return .acknowledged
+        } catch { return .failed(error.localizedDescription) }
+    }
     func cancel(identifier: String) { center.removePendingNotificationRequests(withIdentifiers: [identifier]) }
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
         let info = response.notification.request.content.userInfo.reduce(into: [String: String]()) { result, pair in
             if let key = pair.key as? String, let value = pair.value as? String { result[key] = value }
         }
-        if let link = ReminderEnvelope.decode(info) { DispatchQueue.main.async { self.onOpen?(link) } }
+        if let jobID = info["liveJobId"] { DispatchQueue.main.async { self.onLiveCall?(jobID) } }
+        else if let link = ReminderEnvelope.decode(info) { DispatchQueue.main.async { self.onOpen?(link) } }
         completionHandler()
     }
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,

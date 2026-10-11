@@ -180,7 +180,7 @@ export class LiveSessionOwner {
     this.#guardOpen();
     if (!input || typeof input !== 'object' || typeof input.idempotencyKey !== 'string' || !keyPattern.test(input.idempotencyKey)) throw new LiveError('invalid_request');
     this.#contextShape(context);
-    const fingerprint = identity({ inputClass: input.inputClass, profile: this.#profileIdentity, prompt: this.#promptIdentity });
+    const fingerprint = identity({ inputClass: input.inputClass, profile: this.#profileIdentity, prompt: this.#promptIdentity, pickupJobId: input.pickupJobId ?? null });
     const now = this.#now();
     const assistantId = this.#store.assistantId;
     const snapshot = this.#store.transaction(tx => {
@@ -238,9 +238,11 @@ export class LiveSessionOwner {
   pendingJobs(): import('./types.js').PendingLiveJob[] { return this.#jobProjection(true); }
 
   createWithPending(input: CreateLiveSession, context: LiveContext): LiveSessionSnapshot {
+    const selected = input.pickupJobId ? this.#jobs.pending().find(job => job.id === input.pickupJobId && job.state !== 'in_progress') : undefined;
+    if (input.pickupJobId && !selected) throw new LiveError('invalid_request');
     const session = this.create(input, context);
     if (this.#jobs.forSession(session.liveSessionId)) return session;
-    const job = this.#jobs.pending().find(job => job.state !== 'in_progress');
+    const job = selected ?? this.#jobs.pending().find(job => job.state !== 'in_progress');
     if (job) { job.deliverySessionId = session.liveSessionId; this.#jobs.save(job); }
     return session;
   }

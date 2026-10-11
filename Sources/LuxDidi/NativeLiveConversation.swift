@@ -8,6 +8,7 @@ import DidiOwner
     enum State: String { case idle, connecting, listening, speaking, muted, ended, failed, outcomeUnknown }
     @Published private(set) var state: State = .idle
     @Published private(set) var failure: String?
+    @Published private(set) var pendingCall: NativePendingLiveJob?
     let device: NativeLiveAudioDevice
     private let coordinator: LiveSessionCoordinator
     private let http: NativeLiveOperatorHTTP
@@ -17,8 +18,8 @@ import DidiOwner
     private var generation: UInt64 = 0
     private var muted = false, speaking = false
     var isCapturing: Bool { state == .connecting || device.isCapturing }
-    init(authority: (origin: URL, request: NativeLiveRequestBuilder), dictationIsCapturing: @escaping () -> Bool) {
-        self.http = NativeLiveOperatorHTTP(authority: authority)
+    init(authority: (origin: URL, request: NativeLiveRequestBuilder), dictationIsCapturing: @escaping () -> Bool, pickupJobID: String? = nil) {
+        self.http = NativeLiveOperatorHTTP(authority: authority, pickupJobID: pickupJobID)
         self.dictationIsCapturing = dictationIsCapturing
         let device = NativeLiveAudioDevice(); self.device = device
         coordinator = LiveSessionCoordinator(http: http, sockets: LiveSocketTransport(requests: http), sink: device)
@@ -36,6 +37,8 @@ import DidiOwner
             self.state = .failed
         }
     }
+    // Presentation only: an offer never opens a session, an audio engine or the microphone.
+    func offerPendingCall(_ job: NativePendingLiveJob?) { pendingCall = job }
     func start() {
         guard !isCapturing else { return }
         guard !dictationIsCapturing() else {

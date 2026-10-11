@@ -57,8 +57,8 @@ class HostLiveService implements LiveService {
     return this.owner.create({ inputClass, idempotencyKey }, context);
   }
   pendingJobs() { return this.owner.pendingJobs(); }
-  createWithPending(inputClass: DataClass, idempotencyKey: string, context: LiveContext): LiveSessionSnapshot {
-    return this.owner.createWithPending({ inputClass, idempotencyKey }, context);
+  createWithPending(inputClass: DataClass, idempotencyKey: string, context: LiveContext, pickupJobId?: string): LiveSessionSnapshot {
+    return this.owner.createWithPending({ inputClass, idempotencyKey, ...(pickupJobId ? { pickupJobId } : {}) }, context);
   }
   snapshot(liveSessionId: string): LiveSessionSnapshot { return this.owner.get(liveSessionId); }
   journal(liveSessionId: string, cursor: number | undefined, limit: number | undefined): LiveFragmentPage {

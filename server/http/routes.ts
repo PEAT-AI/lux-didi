@@ -52,7 +52,8 @@ export function resolveRoute(method: string, url: URL, body?: Record<string, unk
     matched(['POST']); query(url, []);
     const input = body ? object(body) : {};
     if (body) {
-      fields(input, ['inputClass'], ['inputClass']);
+      fields(input, ['inputClass', 'pickupJobId'], ['inputClass']);
+      if (input['pickupJobId'] !== undefined && (typeof input['pickupJobId'] !== 'string' || !/^[a-f0-9-]{36}$/.test(input['pickupJobId']))) bad('Invalid pickupJobId');
       if (!['ordinary', 'private', 'sensitive'].includes(String(input['inputClass']))) bad('Invalid inputClass');
     }
     return { kind: 'live', action: 'create', id: null, input, mutation: true };

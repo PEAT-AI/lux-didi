@@ -398,19 +398,30 @@ PY
   complete_observation
   echo 'MACOS-INSTALL: fixture snapshot transport pass'
   # A profile for a foreign identity must fail closed at the actual host.
-  python3 - "$profileDir/other.json" <<'PY'
+  python3 - "$profileDir/owner-profile.json" "$profileDir/other.json" <<'PY'
 import json, sys
-with open(sys.argv[1], 'w') as f:
-    json.dump({"schemaVersion": 1, "kind": "profile", "ownerId": "99999999-9999-9999-9999-999999999999",
-               "profileVersion": "synthetic-1", "displayName": "Other",
-               "style": {"text": "concise", "dataClass": "ordinary"},
-               "lore": {"text": "local only", "dataClass": "private"}}, f)
+original = json.load(open(sys.argv[1]))
+foreign = dict(original, ownerId="99999999-9999-9999-9999-999999999999")
+assert foreign["ownerId"] != original["ownerId"]
+assert {k: v for k, v in foreign.items() if k != "ownerId"} == {k: v for k, v in original.items() if k != "ownerId"}
+with open(sys.argv[2], "x") as f:
+    json.dump(foreign, f)
 PY
   chmod 0600 "$profileDir/other.json"
   HOME="$state" CFFIXED_USER_HOME="$state" "$binary" --configure --owner-profile "$profileDir/other.json" > /dev/null 2>&1
+  mkdir -m 700 "$proof/launch-reject"
   if HOME="$real_home" CFFIXED_USER_HOME="$real_home" "$work/observer" --verification "$app" "$proof/launch-reject" "$(uuidgen)" run --installed-proof --proof-state "$state" --proof-report "$proof/run-reject.json" 2>/dev/null; then
     echo 'MACOS-INSTALL FAIL: host accepted a profile for a foreign identity' >&2; exit 1
   fi
+  python3 - "$proof/run-reject.json" "$proof/launch-reject/observer.json" <<'PY_REJECT'
+import json, sys
+native, observer = (json.load(open(path)) for path in sys.argv[1:])
+assert native["success"] is False and native["error"]["code"] == "ready-frame/exited", "foreign-owner input did not reject the owned host before readiness"
+assert observer["released"] is True and observer["observedIdentity"], "foreign-owner negative never reached the actual native verification"
+assert observer["observerDisposed"] is True and observer["forced"] is False, "foreign-owner negative required forced cleanup"
+assert observer["kernel"]["statusRequested"] is True and observer["kernel"]["rawStatus"] == 256, "actual native failure/owned kernel exit missing"
+print("MACOS-INSTALL: controlled foreign-owner host rejection and owned native disposal")
+PY_REJECT
   HOME="$state" CFFIXED_USER_HOME="$state" "$binary" --configure --owner-profile "$profileDir/owner-profile.json" > /dev/null 2>&1
 
   mv "$app" "$work/Moved Didi.app"

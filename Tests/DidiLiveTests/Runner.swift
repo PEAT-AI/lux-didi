@@ -261,6 +261,15 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
                 return (companion, NativeLiveOperatorHTTP(authority: companion.authenticatedRequestBuilder()))
             }
             let nativeIntent = try await nativeHTTP.beginIntent()
+            let pickupID = "10000000-0000-4000-8000-000000000001"
+            let pickedHTTP = await MainActor.run {
+                NativeLiveOperatorHTTP(authority: companion.authenticatedRequestBuilder(), pickupJobID: pickupID)
+            }
+            let firstPickup = try JSONDecoder().decode([String: String].self, from: await pickedHTTP.createBody(for: nativeIntent, key: "pickup-key"))
+            let pickupRetry = try JSONDecoder().decode([String: String].self, from: await pickedHTTP.createBody(for: nativeIntent, key: "pickup-key"))
+            let laterStart = try JSONDecoder().decode([String: String].self, from: await pickedHTTP.createBody(for: nativeIntent, key: "later-start-key"))
+            try require(firstPickup["pickupJobId"] == pickupID && pickupRetry["pickupJobId"] == pickupID, "pickup and its idempotent retry select the same job")
+            try require(laterStart["pickupJobId"] == nil && laterStart["inputClass"] == nativeIntent.inputClass, "a later Start cannot reuse the consumed pickup ID")
             let nativeStatus = try await nativeHTTP.status(for: nativeIntent)
             try require(nativeStatus.authorityEpoch == fixture.authorityEpoch, "native status freezes authority epoch")
             let nativeKey = UUID().uuidString.lowercased()

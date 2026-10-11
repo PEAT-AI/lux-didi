@@ -613,5 +613,21 @@ test('gateway forwards safe tool-call/result markers and keeps a refused tool ba
   assert.deepEqual(projected.tool.sources, []);
   assert.equal(JSON.stringify(markers).includes(CANARY), false); assert.equal(JSON.stringify(markers).includes('args'), false);
   assert.equal(ws.readyState, WebSocket.OPEN);
+  const token = 'active-page-cookie';
+  h.store.transaction(tx => tx.run('INSERT INTO runtime_sessions VALUES (?,?,?,?)', [createHash('sha256').update(token).digest('hex'), 'active-page-client', 'csrf', Date.now() + 60_000]));
+  const headers = { cookie: `didi_session=${token}` };
+  const page = await json(h.origin, '/api/v1/live/current', { headers });
+  assert.equal(page.body.data.state, 'listening');
+  assert.equal(page.body.data.entries.some((entry: any) => entry.kind === 'toolResult' && entry.tool.status === 'error'), true);
+  for (const forbidden of ['liveSessionId', 'args', 'key', 'grants', 'pcm', 'thoughts']) assert.equal(JSON.stringify(page.body).includes(forbidden), false);
+  // Input resumes without requiring an audioStreamEnd turn boundary.
+  ws.send(pcm, { binary: true }); await h.f.frame(3);
+  const modelAudio = once(ws, 'message');
+  h.f.send({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from(pcm).toString('base64') } }] } } });
+  const [, binary] = await modelAudio; assert.equal(binary, true);
+  assert.equal((await json(h.origin, '/api/v1/live/current', { headers })).body.data.state, 'speaking');
+  const interruption = once(ws, 'message'); h.f.send({ serverContent: { interrupted: true } });
+  const [boundary] = await interruption; assert.equal(JSON.parse(boundary.toString()).type, 'interrupted');
+  assert.equal((await json(h.origin, '/api/v1/live/current', { headers })).body.data.state, 'listening');
   ws.send(JSON.stringify({ type: 'close' })); await once(ws, 'close');
 });

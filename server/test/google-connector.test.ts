@@ -5,7 +5,10 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Store } from '../runtime/store.js';
-import { toolsMigrations } from '../tools/index.js';
+import { createToolsOwner, toolsMigrations } from '../tools/index.js';
+import { sha256 } from '../tools/canonical.js';
+import type { ConnectionPolicy, LiveAuthority, RunAcceptance } from '../tools/types.js';
+import type { ToolCallIntent } from '../adapters/model/types.js';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
@@ -181,5 +184,64 @@ test('an ungranted tool name is refused before dispatch even when the remote lis
   } finally {
     await adapter.close();
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the owner composes the google tool table and a Live-shaped gmail_list call reaches the fixture and returns projected Markdown', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-google-owner-'));
+  const { dir: childDir, pidFile } = scratch();
+  const store = new Store(join(dir, 'data'), toolsMigrations);
+  const registry = new McpRegistry();
+  const env = { HOME: join(tmpdir(), 'didi-google-home'), PATH: process.env.PATH ?? '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' };
+  const command = process.execPath;
+  const args = [child, 'ok', pidFile];
+  registry.register({ id: 'gmail', transport: 'stdio', command, args, env, account: ACCOUNT, resource: RESOURCE } as unknown as EndpointConfig);
+  registry.enable('gmail'); registry.allowEgress('gmail');
+  const adapter = adapterFor(registry);
+  try {
+    const first = await adapter.discover('gmail');
+    assert.equal(first.state, 'discovered');
+    if (first.state !== 'discovered') throw new Error('not discovered');
+    let live: LiveAuthority | null = null;
+    const owner = createToolsOwner({ store, ownerId: store.assistantId, registry, port: adapter, lookupAuthority: async () => live });
+    const policy: ConnectionPolicy = {
+      schemaVersion: 1, ownerId: store.assistantId, connectionId: 'gmail', generation: 1, enabled: true, connector: 'google',
+      endpoint: { id: 'gmail', transport: 'stdio', command, args, env, account: ACCOUNT, resource: RESOURCE, credentialRef: null },
+      toolNames: [...GOOGLE_TOOLS], schemaDigest: first.schemaDigest,
+      sourcePolicy: { id: 'google-read', revision: 1, unknownClass: 'private', allowedClasses: ['private'] },
+      route: { identity: 'voice', allowedClasses: ['private'] },
+      bounds: { maxQueryChars: 80, maxSearchLimit: 3, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 },
+    };
+    owner.applyConnection(policy);
+    // applyConnection suspends the grant; the owner rediscovery re-observed digest, then projects the grant.
+    const second = await adapter.discover('gmail');
+    assert.equal(second.state, 'discovered');
+    owner.projectConnection('gmail');
+    assert.throws(() => owner.applyConnection({ ...policy, toolNames: [...GOOGLE_TOOLS, 'gmail_send'] }), /invalid_read_tools/);
+    const acceptance: RunAcceptance = { ownerId: store.assistantId, actorId: 'actor', runId: 'run', authorityEpoch: store.authorityEpoch, revision: 1, route: { identity: 'voice', provider: 'gemini', modelId: 'gemini-2.5-flash', allowedClasses: ['private'] }, allowedClasses: ['private'], connectionIds: ['gmail'] };
+    const accepted = store.transaction(tx => owner.snapshotRun(tx, acceptance));
+    live = { ...acceptance, acceptedRunHash: accepted.sha256 };
+
+    const definitions = owner.definitions('run');
+    assert.deepEqual(definitions.map(definition => definition.name).sort(), [...GOOGLE_TOOLS].sort());
+    assert.equal(definitions.some(definition => definition.name === 'gmail_send'), false);
+
+    const callArgs = {};
+    const intent: ToolCallIntent = { runId: 'run', actorId: 'actor', authorityEpoch: store.authorityEpoch, revision: 1, executionId: 'run:1:0', toolName: 'gmail_list', argumentsHash: sha256(JSON.stringify(callArgs)), callId: 'call', accountId: ACCOUNT, resourceId: RESOURCE };
+    assert.equal(owner.journal.intent(intent), 'fresh');
+    const definition = definitions.find(candidate => candidate.name === 'gmail_list');
+    assert(definition?.execute);
+    const outcome = await definition!.execute!(callArgs, { ...intent, signal: new AbortController().signal });
+    assert.equal(outcome.status, 'completed');
+    const row = store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE execution_id=?', ['run:1:0']));
+    const stored = JSON.parse(String(row?.result_json)) as { response: Record<string, unknown> };
+    assert.equal(stored.response['tool'], 'gmail_list');
+    assert.match(String(stored.response['text']), /Synthetic subject line, Synthetic Sender, Mon, 1 Jan 2024/);
+    assert.match(String(stored.response['text']), /source: https:\/\/mail\.google\.com\/mail\/u\/0\/#inbox\/m1/);
+  } finally {
+    await adapter.close();
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(childDir, { recursive: true, force: true });
   }
 });

@@ -102,7 +102,6 @@ function preflight(registry: McpRegistry, settings: Settings, tool: GoogleTool):
   if (grant.effect !== 'read') return 'grant-not-read';
   const visible = registry.visibleTools(settings.endpointId).map(definition => definition.name);
   if (visible.some(name => !ELIGIBLE.has(name))) return 'ineligible-tool-granted';
-  if (!GOOGLE_FAMILIES[settings.family].includes(tool)) return 'tool-outside-family';
   if (!grant.toolNames.includes(tool)) return 'tool-not-granted';
   if (!visible.includes(tool)) return 'required-definition-absent';
   return undefined;

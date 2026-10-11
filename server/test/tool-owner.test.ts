@@ -27,7 +27,7 @@ const route = { identity: 'synthetic-route', provider: 'gemini' as const, modelI
 // This suite drives the HTTP arm; the union's stdio arm has no url.
 const policyUrl = (e: ConnectionPolicy['endpoint']): string => (e as { transport?: unknown }).transport === 'stdio' ? '' : (e as { url: string }).url;
 function policy(overrides: Partial<ConnectionPolicy> = {}): ConnectionPolicy {
-  return { schemaVersion: 1, ownerId: 'owner', connectionId: 'lux', generation: 1, enabled: true,
+  return { schemaVersion: 1, ownerId: 'owner', connectionId: 'lux', generation: 1, enabled: true, connector: 'lux-knowledge',
     endpoint: { id: 'endpoint', url: 'https://synthetic.invalid/mcp', account: 'account', resource: 'resource', credentialRef: 'private:synthetic-reference' },
     toolNames: ['search_knowledge', 'get_insight'], schemaDigest: canonicalToolDigest(tools),
     sourcePolicy: { id: 'synthetic-policy', revision: 1, unknownClass: 'private', allowedClasses: ['private'] },

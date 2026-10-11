@@ -9,8 +9,10 @@ export interface StdioConnectionEndpoint { id: string; transport: 'stdio'; comma
 export type ConnectionEndpoint = HttpConnectionEndpoint | StdioConnectionEndpoint;
 export interface ConnectionPolicy {
   schemaVersion: 1; ownerId: string; connectionId: string; generation: number; enabled: boolean;
+  /** The Didi connector that owns this connection's read envelope, tool table and projector. */
+  connector: string;
   endpoint: ConnectionEndpoint;
-  toolNames: readonly ('search_knowledge' | 'get_insight')[]; schemaDigest: string;
+  toolNames: readonly string[]; schemaDigest: string;
   sourcePolicy: { id: string; revision: number; unknownClass: DataClass | null; allowedClasses: readonly DataClass[] };
   route: { identity: string; allowedClasses: readonly DataClass[] };
   bounds: { maxQueryChars: number; maxSearchLimit: number; maxGetIds: number; maxEntityBytes: number; maxResultBytes: number };

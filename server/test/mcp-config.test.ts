@@ -81,7 +81,7 @@ async function configFixture(t: TestContext, url = 'https://synthetic.invalid/mc
   const dir = mkdtempSync(join(tmpdir(), 'didi-mcp-config-test-')); chmodSync(dir, 0o700);
   const dataDir = join(dir, 'data'); const store = new Store(dataDir, toolsMigrations); const ownerId = store.assistantId;
   t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
-  const p: ConnectionPolicy = { schemaVersion: 1, ownerId, connectionId: 'knowledge', generation: 1, enabled: false,
+  const p: ConnectionPolicy = { schemaVersion: 1, ownerId, connectionId: 'knowledge', generation: 1, enabled: false, connector: 'lux-knowledge',
     endpoint: { id: 'endpoint', url, account, resource: 'synthetic-corpus', credentialRef: 'mcp-credential' }, toolNames: ['search_knowledge', 'get_insight'], schemaDigest: canonicalToolDigest(tools),
     sourcePolicy: { id: 'operator-reviewed', revision: 1, unknownClass: null, allowedClasses: ['ordinary'] }, route: { identity: 'synthetic-route', allowedClasses: ['ordinary'] },
     bounds: { maxQueryChars: 80, maxSearchLimit: 3, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 } };

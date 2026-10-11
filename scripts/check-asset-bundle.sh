@@ -20,6 +20,9 @@ if test -n "$(git status --porcelain -- server web scripts/build-asset-bundle.sh
 fi
 work=$(mktemp -d "${TMPDIR:-/tmp}/didi-asset-check.XXXXXX")
 trap 'rm -rf "$work"' EXIT
+physical_work=$(CDPATH= cd -- "$work" && pwd -P) || { echo 'asset check: physical temporary root resolution failed' >&2; exit 1; }
+printf 'ASSET_WORK_ROOT original=%s physical=%s\n' "$work" "$physical_work"
+work="$physical_work"
 bundle="$work/bundle"
 state="$work/state"
 mkdir -p "$bundle" "$state"

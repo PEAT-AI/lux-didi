@@ -50,7 +50,7 @@ export async function startFixture() {
     if (req.method !== 'GET' && req.headers['x-didi-csrf'] !== 'synthetic-csrf') return error('CSRF_INVALID','Missing CSRF token.',403);
     if (req.method !== 'GET' && (req.headers['x-didi-authority-epoch'] !== epoch || !req.headers['idempotency-key'])) return error('INVALID_HEADERS','Missing authority or idempotency key');
     if(path === '/api/v1/auth/logout') { paired=false; res.setHeader('Set-Cookie','didi=; Max-Age=0; HttpOnly; SameSite=Strict; Path=/'); return ok({loggedOut:true}); }
-    if (path === '/api/v1/status') return ok({assistantId:'synthetic-didi',authorityEpoch:epoch,serviceMode:'synthetic-test',capabilities:{memory:true,commitments:true,notifications:false,model:false},model:{configured:false},sources:[]});
+    if (path === '/api/v1/status') return ok({ownerProfile:{status:'default',displayName:'Lux Didi'},assistantId:'synthetic-didi',authorityEpoch:epoch,serviceMode:'synthetic-test',capabilities:{memory:true,commitments:true,notifications:false,model:false},model:{configured:false},sources:[]});
     if (path === '/api/v1/sessions' && req.method==='GET') return ok({items:all('session'),nextCursor:null});
     if (path === '/api/v1/sessions' && req.method==='POST') return ok(put('session',{id:randomUUID(),...body,startedAt:new Date().toISOString(),endedAt:null,revision:1}));
     const sessionPath=path.match(/^\/api\/v1\/sessions\/([^/]+)(\/entries)?$/);
@@ -137,7 +137,7 @@ async function orbProofAssets(){
     '/orb-proof/lifecycle.js':transpile(lifecycle).replace("from './orb-classic'","from '/orb-proof/classic.js'").replace("from './orb-frame'","from '/orb-proof/frame.js'"),
     '/orb-proof/noise.js':await readFile(join(import.meta.dirname,'../node_modules/simplex-noise/dist/esm/simplex-noise.js'),'utf8'),
     '/orb-proof/':`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/orb-proof/style.css"></head><body><h1>Pinned classic reference / self-variation / Didi</h1><div class="proof"><section><h2>Vicuna seed 23</h2><div class="voice-blob-container"><div class="blob-wrapper"><canvas class="blob-canvas" id="reference-a"></canvas></div></div></section><section><h2>Vicuna seed 187</h2><div class="voice-blob-container"><div class="blob-wrapper"><canvas class="blob-canvas" id="reference-b"></canvas></div></div></section><section><h2>Didi simplex-noise 4.0.3</h2><div class="orb-stage"><div class="orb-visual"><canvas id="port"></canvas></div></div></section></div><script type="module" src="/orb-proof/page.js"></script></body></html>`,
-    '/orb-proof/style.css':fixture.wrapperCSS+portCSS+`body{margin:0;background:#071315;color:white;font:14px system-ui}.proof{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}canvas{display:block;width:100%;max-width:600px;height:auto;aspect-ratio:1}section{min-width:0}.proof .orb-stage{display:flex;min-height:0;margin:0;border:0;background:none;overflow:visible}.voice-blob-container{padding:0}h1,h2{font-size:14px}`,
+    '/orb-proof/style.css':fixture.wrapperCSS+portCSS+`body{margin:0;background:#071315;color:white;font:14px system-ui}.proof{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}canvas{display:block;width:100%;max-width:600px;height:auto;aspect-ratio:1}section{min-width:0}.proof h2{height:4.5em;line-height:1.25;margin:0}.proof .orb-stage{display:flex;min-height:0;margin:0;border:0;background:none;overflow:visible}.voice-blob-container{padding:0}h1,h2{font-size:14px}`,
     '/orb-proof/page.js':`
       import {Reference,SimplexNoise} from './reference.js';
       import {ClassicRenderer} from './classic.js';
@@ -176,13 +176,22 @@ async function orbProofAssets(){
       }
       globalThis.orbProof={pause(){cancelAnimationFrame(raf);raf=undefined;},resume(){last=0;deadline=0;raf=requestAnimationFrame(tick);},
         set(value){input=value;},step(dt){advance(dt);return measures();},measure:measures,
-        connecting(){this.pause();input={...input,state:'CONNECTING',audible:false};advance(0);const orb=new Orb(canvases[2],'CONNECTING');return {dispose:()=>orb.destroy()};}};
+        connecting(){
+          this.pause();
+          // Compare constructor frames, not the reference's preceding ERROR history against a fresh Orb.
+          input={state:'CONNECTING',audible:false,microphoneLevel:0,audio:{level:0,low:0,mid:0,high:0,flux:0}};
+          refs[0]=new Reference(contexts[0],(x,y)=>a.noise2D(x,y));refs[1]=new Reference(contexts[1],(x,y)=>b.noise2D(x,y));
+          temporal=initialOrbFrame();advance(0);
+          const orb=new Orb(canvases[2],'CONNECTING');
+          // Freeze every painter at the same initial source clock; CSS pulse remains independently observable.
+          orb.destroy();return {dispose:()=>orb.destroy()};
+        }};
       advance(0);raf=requestAnimationFrame(tick);
     `
   };
   const metadata={referenceCommit:fixture.referenceCommit,referenceSourceSha256:hash(original),originalNoiseSha256:hash(originalNoise),
     portCommit:git(['rev-parse','HEAD'],join(import.meta.dirname,'../..')).trim(),
-    portSourceSha256:{classic:hash(classic),frame:hash(frame),lifecycle:hash(lifecycle),css:hash(portCSS)},pixelDomain:'unfiltered backing Canvas2D pixels; original and actual port CSS/filter/motion are separate screenshot/video evidence; ERROR recoverability unavailable',noise:{reference:'original inline implementation, test-only in memory, seeds 23/187',port:'shipped MIT simplex-noise4.0.3 xorshift32 seed20261009'},
+    portSourceSha256:{classic:hash(classic),frame:hash(frame),lifecycle:hash(lifecycle),css:hash(portCSS)},pixelDomain:'unfiltered backing Canvas2D pixels; original and actual port CSS/filter/motion are separate screenshot/video evidence; ERROR recoverability unavailable',connectingComparison:'matching fresh CONNECTING constructor frames, time/ambientTime0 hue195; all painter clocks frozen, original and actual shipped CSS pulse independently observed',noise:{reference:'original inline implementation, test-only in memory, seeds 23/187',port:'shipped MIT simplex-noise4.0.3 xorshift32 seed20261009'},
     producer:'original-source standalone classic adapter, not the Angular chat application; original geometry/dispatch/state loop; matched controlled high-tier12idle60active trace, not the original lifecycle scheduler',
     servedAssets:Object.fromEntries(Object.entries(assets).map(([path,body])=>[path,hash(body)]))};
   assets['/orb-proof/metadata.json']=JSON.stringify(metadata);

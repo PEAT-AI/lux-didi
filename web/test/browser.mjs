@@ -78,6 +78,9 @@ try {
       try {
       const proofPage=await proofContext.newPage();
       await proofPage.goto(fixture.url);
+      // Each isolated context must obtain its own synthetic-fixture pairing cookie.
+      await proofPage.getByLabel('One-time pairing code').fill('synthetic-only');
+      await proofPage.getByRole('button',{name:'Pair this browser',exact:true}).click();
       await proofPage.locator('#didi-orb').waitFor();
       const layout=await proofPage.locator('#didi-orb').evaluate(c=>({width:c.width,height:c.height,
         rect:{width:c.getBoundingClientRect().width,height:c.getBoundingClientRect().height},stats:c.didiFrameStats(),

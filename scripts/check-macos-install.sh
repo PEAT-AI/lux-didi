@@ -234,6 +234,51 @@ print("MACOS-INSTALL: protected API accepted label", profile["displayName"])
 PY
   complete_observation
   python3 -c 'import json,sys;r=json.load(open(sys.argv[1]));assert r.get("success") is True and (r.get("error") in (None, {})), r.get("error")' "$proof/run-2.json"
+  await_fixture_run() {
+    DIDI_PROOF_ORIGIN="$fx_origin" DIDI_PROOF_TOKEN="$fxtoken" DIDI_PROOF_EPOCH="$fx_epoch" "$fixture/Contents/MacOS/node" --input-type=module - "$1" <<'JS'
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+const initial = JSON.parse(readFileSync(process.argv[2], 'utf8')).data;
+assert.equal(typeof initial?.runId, 'string');
+assert.ok(initial.runId, 'missing actual runId');
+const complete = run => {
+  assert.equal(run.runId, initial.runId);
+  if (run.state !== 'terminal') return false;
+  assert.equal(run.outcome, 'complete', `actual run ended with ${run.outcome}`);
+  return true;
+};
+if (!complete(initial)) {
+  const origin = process.env.DIDI_PROOF_ORIGIN;
+  const response = await fetch(`${origin}/api/v1/chat/${initial.runId}/events`, {
+    method: 'POST', body: '{}', headers: {
+      Authorization: `Bearer ${process.env.DIDI_PROOF_TOKEN}`, Origin: origin,
+      'Content-Type': 'application/json', 'X-Didi-Authority-Epoch': process.env.DIDI_PROOF_EPOCH
+    }
+  });
+  assert.equal(response.status, 200, 'actual run event subscription rejected');
+  const reader = response.body.getReader(), decoder = new TextDecoder();
+  let buffer = '';
+  // Existing native/observer held deadline closes this stream on expiry.
+  // No polling, artificial delay or additional/widened deadline.
+  events: while (true) {
+    const { value, done } = await reader.read();
+    assert.equal(done, false, 'actual run event stream ended before terminal inference');
+    buffer += decoder.decode(value, { stream: true });
+    let boundary;
+    while ((boundary = buffer.indexOf('\n\n')) >= 0) {
+      const frame = buffer.slice(0, boundary); buffer = buffer.slice(boundary + 2);
+      const data = frame.split('\n').filter(line => line.startsWith('data:')).map(line => line.slice(5).trim()).join('\n');
+      if (!data) continue;
+      const event = JSON.parse(data);
+      assert.notEqual(event.type, 'resync_required', 'actual run event stream requires resync');
+      if (event.type === 'snapshot' && complete(event.run)) { await reader.cancel(); break events; }
+    }
+  }
+}
+console.log('MACOS-INSTALL: actual inference reached terminal complete');
+JS
+  }
+
   # Fixture P0/P1/P2: the test-only host entry injects a recording synthetic
   # transport so the per-run immutable snapshot is actually produced.
   fstate="$proof/fixture-state"; fconfig="$HOME/fixture-provider-config"
@@ -274,6 +319,7 @@ PY
   chat() { curl --fail-with-body -sS -X POST "$fx_origin/api/v1/chat" -H "Authorization: Bearer $fxtoken" -H "Origin: $fx_origin" -H "Content-Type: application/json" -H "X-Didi-Authority-Epoch: $fx_epoch" -H "Idempotency-Key: $1" --data "{\"sessionId\":\"$sid\",\"text\":\"synthetic fixture note\",\"timeZone\":\"UTC\"}"; }
   callcount() { python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1]))))' "$fstate/fixture-calls.json" 2>/dev/null || echo 0; }
   chat "$fkey" > "$proof/fx-chat-1.json"
+  await_fixture_run "$proof/fx-chat-1.json"
   calls1="$(callcount)"
   chat "$fkey" > "$proof/fx-chat-replay.json"
   calls2="$(callcount)"
@@ -318,12 +364,18 @@ PY
   fx_epoch="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["service"]["authorityEpoch"])' "$proof/fx-p2.json")"
   # (a) same idempotency key must replay the P1 run with zero new transport calls.
   chat "$fkey" > "$proof/fx-p2-replay.json"
+  python3 - "$proof/fx-chat-1.json" "$proof/fx-p2-replay.json" <<'PY_REPLAY'
+import json, sys
+first, replay = (json.load(open(path))["data"] for path in sys.argv[1:])
+assert first["runId"] and replay["runId"] == first["runId"], "P2 replay did not identify the actual original P1 run"
+PY_REPLAY
   replay_calls="$(callcount)"
   [ "$replay_calls" = "0" ] || { echo "MACOS-INSTALL FAIL: idempotent replay added $replay_calls transport calls" >&2; exit 1; }
   # (b) a new key runs against the P2 profile and invokes the transport once.
   newkey="$(uuidgen)"
   newtext="synthetic fixture note two"
   curl -fsS -X POST "$fx_origin/api/v1/chat" -H "Authorization: Bearer $fxtoken" -H "Origin: $fx_origin" -H "Content-Type: application/json" -H "X-Didi-Authority-Epoch: $fx_epoch" -H "Idempotency-Key: $newkey" --data "{\"sessionId\":\"$sid\",\"text\":\"$newtext\",\"timeZone\":\"UTC\"}" > "$proof/fx-p2-new.json"
+  await_fixture_run "$proof/fx-p2-new.json"
   new_calls="$(callcount)"
   [ "$new_calls" = "1" ] || { echo "MACOS-INSTALL FAIL: new P2 run made $new_calls transport calls" >&2; exit 1; }
   python3 - "$fstate/state.sqlite" "$proof/fx-triple.json" "$fstate/fixture-calls.json" <<'PY'

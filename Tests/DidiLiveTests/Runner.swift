@@ -367,8 +367,8 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             let lateState = await late.state
             try require(await late.sessionID == newID && lateState == .active, "late canceled operation cannot replace new explicit begin")
             try require(await lateSockets.attempts == 1, "old canceled begin has zero create/attach")
-            try await late.sendPCM(Data([1, 0]))
-            try await until { await lateSink.queued.last?.first == 1 }
+            // Seed the sink boundary without changing the parent fixture's exact wire-input budget.
+            await lateSink.write(Data([1, 0]))
             await lateSockets.disconnect()
             try await until { if case .outcomeUnknown = await late.state { return true }; return false }
             try await until { await lateSink.queued.isEmpty }
@@ -392,8 +392,7 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             try require(staleRead, "late explicit read after new begin is fenced")
             let newestState = await late.state
             try require(await late.sessionID == newestID && newestState == .active, "old terminal snapshot cannot overwrite new active generation")
-            try await late.sendPCM(Data([1, 0]))
-            try await until { await lateSink.queued.last?.first == 1 }
+            await lateSink.write(Data([1, 0]))
             await late.close()
             try require(await lateSink.queued.isEmpty, "close invalidates queued playback before returning")
             let closeState = await late.state

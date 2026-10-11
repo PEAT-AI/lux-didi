@@ -574,12 +574,13 @@ function mcpEndpointFile(configDir: string, url: string, grantMode: 'explicit' |
 
 test('owner-trusted-reads grants exactly the connector envelope; explicit grants nothing and writes stay unapproved', async t => {
   let catalog: ToolDefinition[] = [searchTool, getTool, writerTool];
+  const explicitFixture = await fixture();
   const f = await fixture({ list: () => ({ tools: catalog }) });
   const dir = mkdtempSync(join(tmpdir(), 'didi-mcp-runtime-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
   const configDir = join(dir, 'provider-config');
   try {
     // Explicit mode discovers but never grants authority; nothing is fabricated in its place.
-    mcpEndpointFile(configDir, f.url, 'explicit');
+    mcpEndpointFile(configDir, explicitFixture.url, 'explicit');
     const explicitStore = new Store(join(dir, 'explicit-data'), toolsMigrations);
     const explicit = await composeMcpRuntime({ store: explicitStore, ownerId: explicitStore.assistantId, configDir, lookupAuthority: async () => null });
     try {
@@ -608,7 +609,7 @@ test('owner-trusted-reads grants exactly the connector envelope; explicit grants
       assert.deepEqual([...after.toolNames].sort(), ['get_insight', 'search_knowledge']);
       assert.equal(after.toolNames.includes('list_topics'), false);
     } finally { await trusted.close(); trustedStore.close(); }
-  } finally { await f.close(); }
+  } finally { await explicitFixture.close(); await f.close(); }
 });
 
 test('an unavailable endpoint reports a sanitized error and a connector read is refused, never an empty success', async t => {

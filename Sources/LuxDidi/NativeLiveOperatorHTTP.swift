@@ -90,11 +90,15 @@ struct NativePendingLiveJob: Decodable, Equatable, Sendable {
         return try JSONDecoder().decode(Envelope<[NativePendingLiveJob]>.self,
             from: await fetch("/api/v1/live/jobs/pending", epoch: host.authorityEpoch)).data
     }
-    func create(for intent: LiveBeginIntent, key: String) async throws -> LiveSnapshot {
-        guard intent.origin == origin else { throw LiveClientError.invalidIntent }
+    // Serialized create input is a testable boundary; authentication and transport stay in fetch.
+    func createBody(for intent: LiveBeginIntent, key: String) throws -> Data {
         var input = ["inputClass": intent.inputClass]
         if let pickupJobID { input["pickupJobId"] = pickupJobID }
-        let body = try JSONEncoder().encode(input)
+        return try JSONEncoder().encode(input)
+    }
+    func create(for intent: LiveBeginIntent, key: String) async throws -> LiveSnapshot {
+        guard intent.origin == origin else { throw LiveClientError.invalidIntent }
+        let body = try createBody(for: intent, key: key)
         return try JSONDecoder().decode(Envelope<LiveSnapshot>.self, from: await fetch("/api/v1/live-sessions", epoch: intent.authorityEpoch, method: "POST", body: body, key: key)).data
     }
     func snapshot(sessionID: String, for intent: LiveBeginIntent) async throws -> LiveSnapshot {

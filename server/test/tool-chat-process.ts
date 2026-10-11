@@ -279,6 +279,20 @@ export async function fixture(options: FixtureOptions = {}) {
 async function browserProcess() {
   const f = await fixture();
   // Same observational owning seams as the HTTP diagnostic; decisions are returned unchanged.
+  const grantObservations: { provenance: string; present?: boolean; generation?: number; schemaDigest?: string; accountMatches?: boolean; resourceMatches?: boolean; toolNames?: readonly string[]; threw?: boolean }[] = [];
+  let grantObservationOverflow = 0;
+  const currentGrant = f.registry.currentGrant.bind(f.registry);
+  f.registry.currentGrant = (...args) => {
+    const provenance = new Error().stack?.includes('at currentProjection') ? 'owner-currentProjection' : 'other';
+    const record = (value: (typeof grantObservations)[number]) => { if (grantObservations.length < 32) grantObservations.push(value); else grantObservationOverflow++; };
+    try {
+      const grant = currentGrant(...args);
+      record({ provenance, present: !!grant, ...(grant ? { generation: grant.generation, schemaDigest: grant.schemaDigest,
+        accountMatches: grant.account === f.policy().endpoint.account, resourceMatches: grant.resource === f.policy().endpoint.resource,
+        toolNames: grant.toolNames.slice(0, 16) } : {}) });
+      return grant;
+    } catch (error) { record({ provenance, threw: true }); throw error; }
+  };
   const decisions: { runId: string; state: string; reason: string | null; bindings: number; classes: readonly string[]; host: { actorId: string; authorityEpoch: string; revision: number } }[] = [];
   const authorize = f.tools.resultGate.authorize.bind(f.tools.resultGate);
   f.tools.resultGate.authorize = async (...args) => {

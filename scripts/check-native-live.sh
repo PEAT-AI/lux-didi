@@ -23,6 +23,12 @@ swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-
 swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
   Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \
   Tests/DidiLiveTests/Fixture.swift Tests/DidiLiveTests/Runner.swift -o "$work/native-live"
+swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
+  Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \
+  Sources/LuxDidi/NativeKeychainPolicy.swift Sources/LuxDidi/CompanionClient.swift \
+  Sources/LuxDidi/NativeLiveOperatorHTTP.swift Sources/LuxDidi/NativeLiveAudioDevice.swift \
+  Sources/LuxDidi/NativeLiveConversation.swift Tests/DidiLiveTests/NativeLiveAudioRunner.swift -o "$work/native-audio"
+"$work/native-audio"
 # Isolated mutation sensitivity: compile a scratch copy, never alter the committed source or weaken a gate.
 python3 - "$work/MutatedTransport.swift" <<'PY'
 import pathlib, sys

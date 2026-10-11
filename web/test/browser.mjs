@@ -58,10 +58,13 @@ try {
     await page.getByText('Speaking',{exact:true}).waitFor();
     assert.equal(await page.getByText('what is lux 123',{exact:true}).count(),1);
     assert.equal(await page.getByText('Here is the answer.',{exact:true}).count(),1);
-    const link=page.locator('#live-panel .live-result a[href="https://example.org"]');
+    const link=page.locator('#live-panel .live-result p a[href="https://example.org"]');
     assert.equal(await link.count(),1);
     assert.equal(await link.getAttribute('rel'),'noopener noreferrer');
     assert.equal(await link.getAttribute('target'),'_blank');
+    const sourceLink=page.locator('#live-panel .live-result .sources a[href="https://example.org"]');
+    assert.equal(await sourceLink.count(),1);
+    assert.equal(await sourceLink.getAttribute('rel'),'noopener noreferrer');
     assert.match(await page.locator('#live-panel .live-result strong').first().textContent(),/Answer/);
     await page.screenshot({path:`${artifacts}/desktop-live-naya.png`,fullPage:true});
     fixture.setLive({state:'idle',since:'2026-10-11T16:00:00Z',entries:[],cursor:0});

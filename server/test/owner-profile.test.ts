@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
 import { startHost } from '../host/runtime.js';
+import { loadOwnerProfile } from '../config/owner-profile.js';
 import { validateOwnerProfile, PUBLIC_PERSONA, type OwnerProfileSnapshot } from '../prompt/index.js';
 
 type EditorDocument = {
@@ -267,4 +268,25 @@ test('unsafe parent is rejected through read and write boundaries before changin
     assert.equal(response.status, 400); assert.equal(await readFile(f.path, 'utf8'), bytes);
     assert.deepEqual((await readdir(f.dataDir)).filter(n => n.endsWith('.tmp')), []);
   } finally { await chmod(f.dataDir, 0o700); }
+}));
+
+
+test('leading UTF-8 BOM retains established profile loading semantics and raw file revision', async () => fixture(async f => {
+  const initial = await f.get();
+  assert.equal((await f.request('PUT', { expectedRevision: initial.saved.revision, ...editable('BOM synthetic assistant') })).status, 200);
+  const before = await f.get(), original = await readFile(f.path);
+  const bom = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), original]);
+  await writeFile(f.path, bom);
+  // Existing explicit reader succeeds, ruling out parseJson/schema as the cause.
+  const established = loadOwnerProfile({ path: f.path, ownerId: before.saved.profile.ownerId });
+  assert.equal(established.status, 'configured');
+  const response = await f.request();
+  assert.equal(response.status, 200, 'owner editor must accept the same leading UTF-8 BOM as the established reader');
+  const after = (await response.json() as { data: EditorDocument }).data;
+  assert.equal(after.saved.profile.displayName, before.saved.profile.displayName);
+  assert.notEqual(after.saved.revision, before.saved.revision, 'raw BOM replacement must change protected-file revision');
+  assert.equal((await f.request('PUT', { expectedRevision: before.saved.revision, ...editable('Must not replace BOM') })).status, 409);
+  assert.deepEqual(await readFile(f.path), bom);
+  await writeFile(f.path, Buffer.concat([Buffer.from([0xc3, 0x28]), original]));
+  assert.equal((await f.request()).status, 400, 'malformed UTF-8 remains fail-closed, never default fallback');
 }));

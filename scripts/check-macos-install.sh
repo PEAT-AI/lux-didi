@@ -268,7 +268,7 @@ PY
   fx_origin="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["service"]["origin"])' "$proof/fx-p1.json")"
   fx_epoch="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["service"]["authorityEpoch"])' "$proof/fx-p1.json")"
   fxtoken="$(tr -d '\n' < "$fstate/admin-credential")"
-  sid="$(curl -fsS -X POST "$fx_origin/api/v1/sessions" -H "Authorization: Bearer $fxtoken" -H "Origin: $fx_origin" -H "Content-Type: application/json" -H "X-Didi-Authority-Epoch: $fx_epoch" -H "Idempotency-Key: $(uuidgen)" --data '{"title":"synthetic fixture","timeZone":"UTC"}' | python3 -c 'import json,sys;d=json.load(sys.stdin).get("data") or {};print(d.get("sessionId") or d.get("id") or "")')"
+  sid="$(curl -fsS -X POST "$fx_origin/api/v1/conversations" -H "Authorization: Bearer $fxtoken" -H "Origin: $fx_origin" -H "Content-Type: application/json" -H "X-Didi-Authority-Epoch: $fx_epoch" -H "Idempotency-Key: $(uuidgen)" --data '{"title":"synthetic fixture","timeZone":"UTC"}' | python3 -c 'import json,sys;d=json.load(sys.stdin).get("data") or {};print(d.get("sessionId") or d.get("id") or "")')"
   [ -n "$sid" ] || { echo "MACOS-INSTALL FAIL: session creation returned no actual sessionId" >&2; exit 1; }
   fkey="$(uuidgen)"
   chat() { curl --fail-with-body -sS -X POST "$fx_origin/api/v1/chat" -H "Authorization: Bearer $fxtoken" -H "Origin: $fx_origin" -H "Content-Type: application/json" -H "X-Didi-Authority-Epoch: $fx_epoch" -H "Idempotency-Key: $1" --data "{\"sessionId\":\"$sid\",\"text\":\"synthetic fixture note\",\"timeZone\":\"UTC\"}"; }
@@ -368,7 +368,11 @@ PY
   echo 'MACOS-INSTALL: launch/profile/restart/relocate pass'
 
   # Install and rollback: replace the prior app and prove the rollback is kept.
-  apps="$work/Applications"
+  source_identity="$(stat -f '%d:%i' "$app")"
+  mv "$app" "$work/Lux Didi.app"; app="$work/Lux Didi.app"
+  [ "$(stat -f '%d:%i' "$app")" = "$source_identity" ] || { echo 'MACOS-INSTALL FAIL: canonical install source identity changed' >&2; exit 1; }
+  codesign --verify --deep --strict "$app"
+  apps="$HOME/Applications"
   mkdir -p "$apps"
   bash scripts/install-macos-app.sh "$app" --to "$apps" > "$proof/install-1.log"
   grep -q 'INSTALL-MACOS-APP PASS' "$proof/install-1.log"

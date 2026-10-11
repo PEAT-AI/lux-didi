@@ -13,9 +13,11 @@ import { test } from 'node:test';
 import type { TestContext } from 'node:test';
 import { fork, spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { loadLiveConfig } from '../config/live.js';
+import { NAYA_BASE, composeLiveInstruction } from '../prompt/live-persona.js';
 import { GeminiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
 import type { LiveVoiceLimits } from '../adapters/live-voice/index.js';
 import { chatMigrations } from '../chat/index.js';
@@ -928,4 +930,57 @@ test('shared declarations retain original schemas and tool policy refuses before
   tool.execute = async () => { throw Error(CANARY); };
   const failed = await runToolCalls(owner, [{ id: 'f', name: 'test', args: { enabled: true } }], ctx);
   assert.equal(failed.tools[0]!.status, 'failed'); assert.equal(JSON.stringify(failed).includes(CANARY), false);
+});
+
+function writePrivate(dir: string, name: string, text: string): void {
+  const path = join(dir, name);
+  writeFileSync(path, text, { mode: 0o600 });
+  chmodSync(path, 0o600);
+}
+
+test('Live attach setup carries the composed Naya instruction and the bare language code', async t => {
+  const h = await harness(t);
+  const overlay = { schemaVersion: 1 as const, text: 'SYNTHETIC local overlay persona', greeting: 'Synthetic greeting' };
+  const composed = composeLiveInstruction({ base: NAYA_BASE, overlay, language: 'de' });
+  assert.ok(composed.text.startsWith(NAYA_BASE), 'composed instruction starts with the public base');
+  const acceptedPrompt = { schemaVersion: 1, ownerProfile: { schemaVersion: 1, kind: 'default', ownerId: h.store.assistantId, displayName: 'Lux Didi' },
+    compilerVersion: PROMPT_VERSION, system: composed.text, dataClasses: ['ordinary'] };
+  const profile = validateLiveProfile({ ...profileInput(), language: 'de', acceptedPrompt });
+  const voice = new GeminiLiveVoiceAdapter(options({ socketFactory: h.f.socketFactory,
+    modelId: profile.liveModelId, voice: profile.voice, keyReference: profile.keyReference,
+    route: { enabled: true, provider: 'gemini', modelId: profile.liveModelId, dataClasses: profile.route.dataClasses },
+    credentials: { resolve: async () => CANARY } }));
+  const owner = createLiveSessionOwner({ store: h.store, profile, voice, now: () => NOW }); t.after(() => owner.shutdown());
+  const accepted = owner.create({ idempotencyKey: 'wire-naya', inputClass: 'ordinary' }, h.ctx);
+  const attachment = owner.attach({ liveSessionId: accepted.liveSessionId }, h.ctx);
+  await h.f.frame(1);
+  const frame = JSON.parse(JSON.stringify(h.f.frames[0]));
+  assert.equal(frame.setup.systemInstruction.parts[0].text, composed.text);
+  assert.equal(frame.setup.generationConfig.speechConfig.languageCode, 'de');
+  attachment.close();
+});
+
+test('loadLiveConfig composes the Naya instruction and fails closed on an invalid overlay', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'didi-live-config-'));
+  const dataDir = join(root, 'data'); const configDir = join(dataDir, 'provider-config');
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  chmodSync(dataDir, 0o700); chmodSync(configDir, 0o700);
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const live = { schemaVersion: 1, enabled: true, provider: 'gemini', modelId: 'models/gemini-3.1-flash-live-preview', voice: 'Aoede', keyReference: 'gemini-primary',
+    dataClasses: ['ordinary'], preferences: { dataClass: 'ordinary', language: 'de-de', register: 'plain', humor: 'dry', verbosity: 'brief' } };
+  writePrivate(configDir, 'live.json', `${JSON.stringify(live)}\n`);
+  const overlay = { schemaVersion: 1 as const, text: 'SYNTHETIC local overlay persona', greeting: 'Synthetic greeting', accent: 'Synthetic accent' };
+  writePrivate(dataDir, 'persona-overlay.json', JSON.stringify(overlay));
+  const status = loadLiveConfig({ configDir, ownerId: 'synthetic-owner' });
+  assert.equal(status.status, 'configured');
+  if (status.status === 'configured') {
+    const expected = composeLiveInstruction({ base: NAYA_BASE, overlay, language: 'de' });
+    assert.equal(status.config.profile.language, 'de');
+    assert.equal(status.config.profile.prompt.text, expected.text);
+    assert.equal(status.config.profile.acceptedPrompt?.system, expected.text);
+  }
+  writePrivate(dataDir, 'persona-overlay.json', '{ not json');
+  const bad = loadLiveConfig({ configDir, ownerId: 'synthetic-owner' });
+  assert.equal(bad.status, 'error');
+  if (bad.status === 'error') assert.equal(bad.code, 'invalid_overlay');
 });

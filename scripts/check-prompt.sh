@@ -19,7 +19,7 @@ cd "$root"
 mkdir -p "$out/source/adapters/model" "$out/source/test" "$out/source/prompt"
 cp server/adapters/model/*.ts "$out/source/adapters/model/"
 cp server/prompt/*.ts "$out/source/prompt/"
-cp server/test/prompt.test.ts server/test/model.test.ts "$out/source/test/"
+cp server/test/prompt.test.ts server/test/model.test.ts server/test/live-persona.test.ts "$out/source/test/"
 printf '{"type":"module"}\n' > "$out/package.json"
 node "$deps/typescript/bin/tsc" --target ES2023 --module NodeNext --moduleResolution NodeNext \
   --strict --noUncheckedIndexedAccess --exactOptionalPropertyTypes \
@@ -27,5 +27,5 @@ node "$deps/typescript/bin/tsc" --target ES2023 --module NodeNext --moduleResolu
   --types node --typeRoots "$deps/@types" --rootDir "$out/source" --outDir "$out/dist" \
   "$out"/source/adapters/model/*.ts "$out"/source/prompt/*.ts "$out"/source/test/*.ts
 test -f "$out/dist/test/prompt.test.js" # fresh mktemp output; no stale dist accepted
-node --test --test-reporter=tap --test-timeout=15000 "$out/dist/test/prompt.test.js" "$out/dist/test/model.test.js" | tee "$out/results.tap"
+node --test --test-reporter=tap --test-timeout=15000 "$out/dist/test/prompt.test.js" "$out/dist/test/model.test.js" "$out/dist/test/live-persona.test.js" | tee "$out/results.tap"
 grep -Eq "^# tests [1-9][0-9]*$" "$out/results.tap"

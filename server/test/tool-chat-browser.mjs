@@ -113,7 +113,7 @@ test('B3/B5 built browser renders real trusted source identifiers and durable to
   const observation = message(child, 'observations', () => output);
   child.send({ type: 'observations', runId: terminal.runId });
   const boundary = await observation;
-  console.log('TOOL_CHAT_BROWSER_BOUNDARY ' + JSON.stringify({ runId: terminal.runId, outcome: terminal.outcome, httpOperations, boundary }));
+  console.log('TOOL_CHAT_BROWSER_BOUNDARY ' + JSON.stringify({ requestIdentity: { key, body }, runId: terminal.runId, outcome: terminal.outcome, httpOperations, boundary }));
   assert.equal(terminal.outcome, 'complete', JSON.stringify({ terminal, boundary }));
   const accept = () => page.evaluate(async ({ body, key, csrfToken, authorityEpoch }) => {
     const response = await fetch('/api/v1/chat', { method: 'POST', headers: {

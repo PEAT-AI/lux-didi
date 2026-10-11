@@ -12,6 +12,8 @@ import { fixture, barrier, scope, syntheticKey, rotatedKey, answer, sourceId, ty
 import type { ToolCallIntent, ToolResultRef } from '../adapters/model/types.js';
 import type { RunSnapshot } from '../chat/index.js';
 import { listenService } from '../http/server.js';
+import { createDomainPort } from '../domain/index.js';
+import { Outbox } from '../runtime/outbox.js';
 
 async function open(t: TestContext, options: FixtureOptions = {}) {
   const f = await fixture(options); t.after(() => f.close()); return f;
@@ -436,15 +438,18 @@ test('B6 recovery does not repeat a terminal tool intent or unknown SDK effect',
   assert.equal(f.sdkCalls.length, 1); assert.equal(forbiddenContinuation(f.modelCalls), 0);
 });
 
-for (const enrollment of ['HTTP', 'resumed'] as const) test(`DIAG ${enrollment} browser enrollment and selected tool accept reaches a real terminal result`, async t => {
+for (const enrollment of ['HTTP', 'resumed', 'browser-bootstrap'] as const) test(`DIAG ${enrollment} browser enrollment and selected tool accept reaches a real terminal result`, async t => {
   const gate = barrier(); t.after(() => gate.release());
   const f = await open(t, { beforeResolve: gate.pause });
-  const decisions: { state: string; reason: string | null; bindings: number; classes: readonly string[] }[] = [];
+  let firstDecision!: (state: string) => void;
+  const firstGate = new Promise<string>(resolve => { firstDecision = resolve; });
+  const decisions: { state: string; reason: string | null; bindings: number; classes: readonly string[]; host: { actorId: string; authorityEpoch: string; revision: number } }[] = [];
   const authorize = f.tools.resultGate.authorize.bind(f.tools.resultGate);
   f.tools.resultGate.authorize = async (...args) => {
     const decision = await authorize(...args);
     decisions.push({ state: decision.state, reason: decision.state === 'allowed' ? null : decision.reason,
-      bindings: args[1].length, classes: [...args[2]] });
+      bindings: args[1].length, classes: [...args[2]], host: { actorId: args[0].actorId, authorityEpoch: args[0].authorityEpoch, revision: args[0].revision } });
+    firstDecision(decision.state);
     return decision;
   };
   const authorityFailures: string[] = [];
@@ -453,7 +458,8 @@ for (const enrollment of ['HTTP', 'resumed'] as const) test(`DIAG ${enrollment} 
     try { return authority(...args); }
     catch (error) { authorityFailures.push(error instanceof Error ? error.message : 'unknown'); throw error; }
   };
-  const service = await listenService({ store: f.store, domain: f.domain, chat: f.chat, modelStatus: f.status,
+  const preEnrolled = enrollment === 'browser-bootstrap' ? await f.enroll() : null;
+  const service = await listenService({ store: f.store, domain: enrollment === 'browser-bootstrap' ? createDomainPort({ outbox: Outbox }) : f.domain, chat: f.chat, modelStatus: f.status,
     ...(f.connections ? { connections: f.connections } : {}), port: 0 });
   t.after(() => service.close());
   // Same existing browser pairing protocol: token is only the HttpOnly session cookie.
@@ -471,14 +477,28 @@ for (const enrollment of ['HTTP', 'resumed'] as const) test(`DIAG ${enrollment} 
   assert.ok(cookie.startsWith('didi_session='));
   const headers = { 'Content-Type': 'application/json', Cookie: cookie, Origin: service.origin,
     'X-Didi-CSRF': pairedBody.data.csrfToken, 'X-Didi-Authority-Epoch': String(pairedBody.authorityEpoch) };
-  const enrolled = await fetch(`${service.origin}/api/v1/conversations`, { method: 'POST', headers: {
-    ...headers, 'Idempotency-Key': randomUUID()
-  }, body: JSON.stringify({ title: 'Naya connected conversation', timeZone: 'UTC' }) });
-  assert.equal(enrolled.status, 200);
-  const { data: { sessionId: browserEnrolledSessionId } } = await enrolled.json() as { data: { sessionId: string } };
-  await f.approveSession(browserEnrolledSessionId);
-  // The current hardware browser fixture resumes this locally pre-enrolled conversation.
-  const sessionId = enrollment === 'HTTP' ? browserEnrolledSessionId : await f.enroll();
+  let sessionId: string;
+  if (preEnrolled) {
+    sessionId = preEnrolled;
+    for (const path of ['/auth/session', '/status', '/sessions', '/chat/status', `/conversations/${sessionId}`, `/sessions/${sessionId}`]) {
+      const response = await fetch(`${service.origin}/api/v1${path}`, { headers }); assert.equal(response.status, 200); await response.json();
+    }
+    const selected = await fetch(`${service.origin}/api/v1/conversation-selection`, { method: 'POST', headers, body: JSON.stringify({ sessionId, title: 'Synthetic tool chat' }) });
+    assert.equal(selected.status, 200); await selected.json();
+    const conversationStream = await fetch(`${service.origin}/api/v1/conversations/${sessionId}/events`, { method: 'POST', headers, body: '{}' });
+    assert.equal(conversationStream.status, 200); assert.ok(conversationStream.body);
+    const conversationReader = conversationStream.body.getReader(); t.after(() => conversationReader.cancel());
+    assert.equal((await conversationReader.read()).done, false, 'Actual browser conversation snapshot precedes accept');
+  } else {
+    const enrolled = await fetch(`${service.origin}/api/v1/conversations`, { method: 'POST', headers: {
+      ...headers, 'Idempotency-Key': randomUUID()
+    }, body: JSON.stringify({ title: 'Naya connected conversation', timeZone: 'UTC' }) });
+    assert.equal(enrolled.status, 200);
+    const { data: { sessionId: browserEnrolledSessionId } } = await enrolled.json() as { data: { sessionId: string } };
+    await f.approveSession(browserEnrolledSessionId);
+    // The current hardware browser fixture resumes this locally pre-enrolled conversation.
+    sessionId = enrollment === 'HTTP' ? browserEnrolledSessionId : await f.enroll();
+  }
   const key = randomUUID();
   const body = JSON.stringify({ sessionId, text: 'Use synthetic insight 731.', selectedConnectionIds: ['synthetic-lux'] });
   const accept = (idempotencyKey = key) => fetch(`${service.origin}/api/v1/chat`, { method: 'POST', headers: {
@@ -487,12 +507,14 @@ for (const enrollment of ['HTTP', 'resumed'] as const) test(`DIAG ${enrollment} 
   const accepted = await accept(); assert.equal(accepted.status, 200);
   const { data: run } = await accepted.json() as { data: RunSnapshot };
   assert.ok(run.toolBindingHash, 'HTTP selection freezes a real owner binding');
-  await gate.entered;
-  // A second identity conflicts while busy; replay of the actual panel identity is the same run.
-  const next = await accept(randomUUID()); assert.equal(next.status, 409);
-  const pendingReplay = await accept(); assert.equal(pendingReplay.status, 200);
-  assert.equal(((await pendingReplay.json()) as { data: RunSnapshot }).data.runId, run.runId);
-  gate.release();
+  if (await firstGate === 'allowed') {
+    await gate.entered;
+    // A second identity conflicts while busy; replay of the actual panel identity is the same run.
+    const next = await accept(randomUUID()); assert.equal(next.status, 409);
+    const pendingReplay = await accept(); assert.equal(pendingReplay.status, 200);
+    assert.equal(((await pendingReplay.json()) as { data: RunSnapshot }).data.runId, run.runId);
+    gate.release();
+  } else gate.release();
   // Observe the real Chat subscription through authenticated HTTP, not an accepted snapshot.
   const terminal = async (run: RunSnapshot) => {
     const stream = await fetch(`${service.origin}/api/v1/chat/${run.runId}/events`, { method: 'POST', headers, body: '{}' });
@@ -520,7 +542,7 @@ for (const enrollment of ['HTTP', 'resumed'] as const) test(`DIAG ${enrollment} 
   assert.equal(replayed.runId, run.runId); assert.equal(replayed.outcome, final.outcome);
   console.log('DIAG_TERMINAL ' + JSON.stringify({ outcome: final.outcome, authorityFailures, decisions,
     modelRequests: f.modelCalls.length, sdkCalls: f.sdkCalls.length, acceptedActor: f.tools.acceptedRun(run.runId)?.acceptance.actorId,
-    bindingPreserved: replayed.toolBindingHash === run.toolBindingHash, sourceIds: final.sourceIds, toolReferences: final.toolReferences.length }));
+    bindingPreserved: replayed.toolBindingHash === run.toolBindingHash, sourceIds: final.sourceIds, toolReferences: final.toolReferences.length, persisted: f.boundaryState(run.runId) }));
   assert.equal(final.outcome, 'complete', 'Browser-equivalent run must complete, not merely accept');
   assert.ok(f.modelCalls.length >= 2); assert.ok(f.sdkCalls.length > 0);
   assert.ok(final.sourceIds.includes(sourceId)); assert.ok(final.toolReferences.length > 0);

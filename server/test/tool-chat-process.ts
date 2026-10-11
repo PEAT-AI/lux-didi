@@ -16,7 +16,8 @@ import type { ConnectionPolicy, ToolsOwner } from '../tools/types.js';
 import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
-import type { ToolDefinition as McpTool } from '../adapters/mcp/port.js';
+import { endpointBinding, type ToolDefinition as McpTool } from '../adapters/mcp/port.js';
+import { canonicalJSON } from '../tools/canonical.js';
 import { composeChat, type ToolChatAssembly } from '../host/connected.js';
 import { requestCredentialsFor, credentialReceiptFor, type CredentialRouteScope } from '../config/index.js';
 import { listenService } from '../http/server.js';
@@ -201,6 +202,26 @@ export async function fixture(options: FixtureOptions = {}) {
   };
   const accept = (sessionId: string, key: string = randomUUID(), connectionIds = ['synthetic-lux'], selectedMemoryEntryIds: string[] = [], text = 'Use synthetic insight 731.') =>
     chat.accept({ sessionId, text, idempotencyKey: key, selectedConnectionIds: connectionIds, selectedMemoryEntryIds }, context);
+  // Read-only diagnostics of this synthetic fixture's persisted owner binding; never authorize or repair it.
+  const boundaryState = (runId: string) => store.transaction(tx => {
+    const row = tx.get('SELECT snapshot_json,snapshot_sha256 FROM tool_runs WHERE owner_id=? AND run_id=?', [store.assistantId, runId]);
+    if (!row) return null;
+    const snapshot = JSON.parse(String(row.snapshot_json)) as { connections: { connectionId: string; generation: number; sha256: string; policy: ConnectionPolicy }[] };
+    return { snapshotHash: row.snapshot_sha256, connections: snapshot.connections.map(bound => {
+      const current = tx.get('SELECT policy_json,policy_sha256,generation FROM tool_connections WHERE owner_id=? AND connection_id=?', [store.assistantId, bound.connectionId]);
+      const policy = current ? JSON.parse(String(current.policy_json)) as ConnectionPolicy : null;
+      const grant = registry.currentGrant(bound.policy.endpoint.id);
+      return { connectionId: bound.connectionId, boundHash: bound.sha256, currentHash: current?.policy_sha256,
+        boundGeneration: bound.generation, currentGeneration: current?.generation,
+        policyEqual: policy !== null && canonicalJSON(policy) === canonicalJSON(bound.policy),
+        boundToolNames: bound.policy.toolNames, currentToolNames: policy?.toolNames, grantToolNames: grant?.toolNames,
+        boundEnabled: bound.policy.enabled, currentEnabled: policy?.enabled,
+        boundUnknownClass: bound.policy.sourcePolicy.unknownClass, currentUnknownClass: policy?.sourcePolicy.unknownClass,
+        endpointMatches: endpointBinding(registry.endpoint(bound.policy.endpoint.id)) === endpointBinding(bound.policy.endpoint),
+        grantGeneration: grant?.generation, grantSchemaMatches: grant?.schemaDigest === bound.policy.schemaDigest,
+        grantAccountMatches: grant?.account === bound.policy.endpoint.account, grantResourceMatches: grant?.resource === bound.policy.endpoint.resource };
+    }) };
+  });
   const events: unknown[] = [];
   const terminal = async (run: RunSnapshot) => {
     for await (const event of chat.subscribe(run.runId, context)) {
@@ -243,7 +264,7 @@ export async function fixture(options: FixtureOptions = {}) {
     assert.ok(packet.result.tools.length > 0, 'Changed live catalog must be nonempty actual SDK data');
     return { tools: packet.result.tools, schemaDigest: canonicalToolDigest(packet.result.tools) };
   };
-  return { connections: composed.connections, dir, configDir, recordPath, writeRecord, store, domain, context, chat, tools, registry, port, enroll, approveSession, accept, terminal, counts, updatePolicy,
+  return { connections: composed.connections, dir, configDir, recordPath, writeRecord, store, domain, context, chat, tools, registry, port, enroll, approveSession, accept, terminal, counts, updatePolicy, boundaryState,
     modelCalls, sdkCalls, events, status: composed.status, close, profile, scope, policy: () => policy, setLiveDefinitions: () => { liveDefinitions = []; },
     differentLiveCatalog, correctLabel, gateBarrier, resolutions: () => requestCount,
     receipt: () => credentialReceiptFor(configDir, scope), advance: (ms: number) => { clock += ms; } };
@@ -258,12 +279,12 @@ export async function fixture(options: FixtureOptions = {}) {
 async function browserProcess() {
   const f = await fixture();
   // Same observational owning seams as the HTTP diagnostic; decisions are returned unchanged.
-  const decisions: { runId: string; state: string; reason: string | null; bindings: number; classes: readonly string[] }[] = [];
+  const decisions: { runId: string; state: string; reason: string | null; bindings: number; classes: readonly string[]; host: { actorId: string; authorityEpoch: string; revision: number } }[] = [];
   const authorize = f.tools.resultGate.authorize.bind(f.tools.resultGate);
   f.tools.resultGate.authorize = async (...args) => {
     const decision = await authorize(...args);
     decisions.push({ runId: args[0].runId, state: decision.state, reason: decision.state === 'allowed' ? null : decision.reason,
-      bindings: args[1].length, classes: [...args[2]] });
+      bindings: args[1].length, classes: [...args[2]], host: { actorId: args[0].actorId, authorityEpoch: args[0].authorityEpoch, revision: args[0].revision } });
     return decision;
   };
   const authorityFailures: string[] = [];
@@ -288,7 +309,7 @@ async function browserProcess() {
       && 'runId' in message && typeof message.runId === 'string') {
       const accepted = f.tools.acceptedRun(message.runId);
       process.send?.({ phase: 'observations', decisions, authorityFailures, modelRequests: f.modelCalls.length,
-        sdkCalls: f.sdkCalls.length, acceptance: accepted?.acceptance ?? null,
+        sdkCalls: f.sdkCalls.length, acceptance: accepted?.acceptance ?? null, persisted: f.boundaryState(message.runId),
         currentPolicy: { generation: f.policy().generation, enabled: f.policy().enabled,
           route: f.policy().route, sourcePolicy: f.policy().sourcePolicy, schemaDigest: f.policy().schemaDigest } });
     }

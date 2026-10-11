@@ -269,9 +269,9 @@ PY
   fx_epoch="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["service"]["authorityEpoch"])' "$proof/fx-p1.json")"
   fxtoken="$(tr -d '\n' < "$fstate/admin-credential")"
   sid="$(curl -fsS -X POST "$fx_origin/api/v1/sessions" -H "Authorization: Bearer $fxtoken" -H "Origin: $fx_origin" -H "Content-Type: application/json" -H "X-Didi-Authority-Epoch: $fx_epoch" -H "Idempotency-Key: $(uuidgen)" --data '{"title":"synthetic fixture","timeZone":"UTC"}' | python3 -c 'import json,sys;d=json.load(sys.stdin).get("data") or {};print(d.get("sessionId") or d.get("id") or "")')"
-  [ -n "$sid" ] || sid="$(uuidgen)"
+  [ -n "$sid" ] || { echo "MACOS-INSTALL FAIL: session creation returned no actual sessionId" >&2; exit 1; }
   fkey="$(uuidgen)"
-  chat() { curl -fsS -X POST "$fx_origin/api/v1/chat" -H "Authorization: Bearer $fxtoken" -H "Origin: $fx_origin" -H "Content-Type: application/json" -H "X-Didi-Authority-Epoch: $fx_epoch" -H "Idempotency-Key: $1" --data "{\"sessionId\":\"$sid\",\"text\":\"synthetic fixture note\",\"timeZone\":\"UTC\"}"; }
+  chat() { curl --fail-with-body -sS -X POST "$fx_origin/api/v1/chat" -H "Authorization: Bearer $fxtoken" -H "Origin: $fx_origin" -H "Content-Type: application/json" -H "X-Didi-Authority-Epoch: $fx_epoch" -H "Idempotency-Key: $1" --data "{\"sessionId\":\"$sid\",\"text\":\"synthetic fixture note\",\"timeZone\":\"UTC\"}"; }
   callcount() { python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1]))))' "$fstate/fixture-calls.json" 2>/dev/null || echo 0; }
   chat "$fkey" > "$proof/fx-chat-1.json"
   calls1="$(callcount)"

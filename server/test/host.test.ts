@@ -153,6 +153,13 @@ test('actual host connects durable domain, supersedes reminders, exposes conflic
     const status = await call('/status');
     assert.deepEqual(status.data.capabilities, { memory: true, commitments: true, notifications: false, model: false });
     assert.equal(status.data.model.configured, false);
+    // The MCP composition is exposed on the runtime and reports truthfully, bearer-only.
+    const toolsStatus = await call('/tools/status');
+    assert.equal(toolsStatus.status, 200);
+    assert.deepEqual(toolsStatus.data, { endpoints: [] });
+    assert.equal(typeof host.tools.owner, 'object');
+    assert.deepEqual(host.tools.connectionIds(), []);
+    assert.equal((await fetch(origin + '/api/v1/tools/status')).status, 401);
     const session = (await call('/sessions', 'POST', { title: 'Synthetic host session', timeZone: 'UTC' })).data;
     assert.equal((await call('/chat', 'POST', { sessionId: session.id, text: 'do not fabricate model work', timeZone: 'UTC' })).status, 503);
     const source = { id: randomUUID(), label: 'Synthetic meeting note', sourceTimestamp: new Date().toISOString(), availability: 'present' };

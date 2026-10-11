@@ -47,6 +47,25 @@ try {
     await page.emulateMedia({reducedMotion:'no-preference'});
     await page.waitForFunction(()=>document.querySelector('#didi-orb').dataset.motion==='animated');
   });
+  await step('live projection drives orb state, transcript and markdown sources',async()=>{
+    fixture.setLive({state:'speaking',since:'2026-10-11T16:00:00Z',cursor:3,entries:[
+      {seq:1,kind:'inputTranscription',text:'what is lux 123'},
+      {seq:2,kind:'outputTranscription',text:'Here is the answer.'},
+      {seq:3,kind:'toolResult',tool:{name:'search',status:'completed',markdown:'**Answer** see [source](https://example.org)',sources:[{title:'lux 123',url:'https://example.org'}]}}
+    ]});
+    await page.waitForFunction(()=>document.querySelector('#didi-orb').dataset.state==='SPEAKING',{timeout:12000});
+    assert.equal(await page.locator('#didi-orb').getAttribute('data-posture'),'speaking');
+    await page.getByText('Speaking',{exact:true}).waitFor();
+    assert.equal(await page.getByText('what is lux 123',{exact:true}).count(),1);
+    assert.equal(await page.getByText('Here is the answer.',{exact:true}).count(),1);
+    const link=page.locator('#live-panel .live-result a[href="https://example.org"]');
+    assert.equal(await link.count(),1);
+    assert.equal(await link.getAttribute('rel'),'noopener noreferrer');
+    assert.equal(await link.getAttribute('target'),'_blank');
+    assert.match(await page.locator('#live-panel .live-result strong').first().textContent(),/Answer/);
+    await page.screenshot({path:`${artifacts}/desktop-live-naya.png`,fullPage:true});
+    fixture.setLive({state:'idle',since:'2026-10-11T16:00:00Z',entries:[],cursor:0});
+  });
   await step('failed local save preserves draft; capture never dispatches a model',async()=>{
     const requestStart=fixture.requests.length;
     await page.getByLabel('Local note · not sent to a model').fill('Remember the synthetic blue notebook'); fixture.failNextEntry();

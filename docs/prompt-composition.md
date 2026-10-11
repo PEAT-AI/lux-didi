@@ -131,6 +131,20 @@ const { manifest, ...request } = compiled; // keep manifest host-private
 await model.generate(request, control); // existing route/authority checks required
 ```
 
+## Live voice instruction (Naya composition)
+
+The Live path composes its system instruction separately from the text compiler:
+`composeLiveInstruction({base, overlay?, language?})` in
+`server/prompt/live-persona.ts` returns `{text, sha256, sections}`. The order is
+fixed: the public neutral Naya base (`NAYA_BASE`, under 1500 chars, no biography),
+the optional local overlay verbatim, then the terminal LANGUAGE AND VOICE anchor
+(a LANGUAGE paragraph, exactly one ACCENT directive, a language-follows-the-user
+clause and the final anchor as the absolute last segment). Empty sections are
+stripped, survivors join with one blank line, and the 60k-char budget yields the
+overlay first while the base and the anchor never yield. The composed text is
+stored as the accepted Live instruction and journaled only by its hash; the local
+overlay and any private text never enter the repository.
+
 ## Verification and remaining gates
 
 Run `bash scripts/check-prompt.sh` through the declared managed check. It uses the

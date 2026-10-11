@@ -11,14 +11,14 @@ private final class NativeLiveNoRedirect: NSObject, URLSessionTaskDelegate, Send
 }
 
 /// Uses the companion's current credential and connection guard, never a second credential store.
-@MainActor struct NativePendingLiveJob: Decodable, Equatable, Sendable {
+struct NativePendingLiveJob: Decodable, Equatable, Sendable {
     let id: String
     let state: String
     let markdown: String
     var isReady: Bool { state == "completed" || state == "failed" || state == "unknown" }
 }
 
-final class NativeLiveOperatorHTTP: LiveOperatorHTTP, LiveAuthenticatedRequestFactory {
+@MainActor final class NativeLiveOperatorHTTP: LiveOperatorHTTP, LiveAuthenticatedRequestFactory {
     private struct Envelope<T: Decodable>: Decodable { let data: T }
     private struct Host: Decodable { let assistantId: String; let authorityEpoch: String }
     private struct Profile: Decodable {

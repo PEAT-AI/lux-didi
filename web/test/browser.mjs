@@ -33,6 +33,7 @@ try {
     const statusResponse=await connectedStatus;assert.equal(statusResponse.status(),200);
     assert.deepEqual((await statusResponse.json()).data,{status:'unconfigured'});
     await page.locator('#connected-route').getByText('Model unconfigured. Local notes, Today and recall still work.',{exact:true}).waitFor();
+    assert.equal(await page.locator('#connected-error').getByText('Route not found.',{exact:true}).count(),0,'Healthy connected status must not coexist with the missing-route error');
     await page.getByText('Demo test mode',{exact:true}).waitFor();
     assert.equal(await page.evaluate(()=>Object.keys(localStorage).length),0);
     assert.equal(await page.evaluate(()=>document.cookie),'');

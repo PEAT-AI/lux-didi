@@ -8,7 +8,6 @@ import { fork } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { PROMPT_VERSION } from '../prompt/index.js';
 import { once } from 'node:events';
-import { randomUUID } from 'node:crypto';
 import { openMemoryFixture, result, ROUTE_CLASSES } from './memory-context-process.js';
 import { Store } from '../runtime/store.js';
 import { Outbox } from '../runtime/outbox.js';

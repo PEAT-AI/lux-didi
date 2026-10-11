@@ -64,7 +64,7 @@ async function harness(t: TestContext, overrides: {
   const f = await fixture(t);
   const dir = mkdtempSync(join(tmpdir(), 'didi-live-session-'));
   const domain = createDomainPort({ outbox: Outbox });
-  const store = new Store(dir, [...domain.migrations, ...chatMigrations, ...liveMigrations, ...toolsMigrations]);
+  const store = new Store(dir, [...domain.migrations, ...chatMigrations, ...liveMigrations, ...(overrides.tools ? toolsMigrations : [])]);
   let clock = NOW;
   const profile = validateLiveProfile(profileInput(overrides.limits, overrides.model));
   const voice = new GeminiLiveVoiceAdapter(options({
@@ -441,7 +441,7 @@ test('live migrations preserve a populated accepted Store byte-for-byte', async 
   }));
   before.close();
 
-  const migrated = new Store(dir, [...domain.migrations, ...chatMigrations, ...liveMigrations, ...toolsMigrations]);
+  const migrated = new Store(dir, [...domain.migrations, ...chatMigrations, ...liveMigrations]);
   t.after(() => migrated.close());
   const current = migrated.transaction(tx => ({
     sessions: tx.all('SELECT * FROM sessions ORDER BY id'),
@@ -451,7 +451,7 @@ test('live migrations preserve a populated accepted Store byte-for-byte', async 
   }));
   assert.deepEqual(current, prior, 'accepted CHAT and Domain rows stay meaningful');
   const owners = migrated.transaction(tx => tx.all('SELECT owner, MAX(version) AS version FROM runtime_migrations GROUP BY owner ORDER BY owner'));
-  assert.deepEqual(owners.map(row => [String(row['owner']), Number(row['version'])]), [['chat', 4], ['domain', 3], ['live', 2]]);
+  assert.deepEqual(owners.map(row => [String(row['owner']), Number(row['version'])]), [['chat', 4], ['domain', 3], ['live', 3]]);
 });
 
 test('a failed store write aborts visibly and never fabricates a durable outcome', async t => {
@@ -460,7 +460,7 @@ test('a failed store write aborts visibly and never fabricates a durable outcome
   h.store.close();
   h.f.send({ serverContent: { inputTranscription: { text: 'after close' } } });
   await h.f.closed;
-  const reopened = new Store(h.dir, [...createDomainPort({ outbox: Outbox }).migrations, ...chatMigrations, ...liveMigrations, ...toolsMigrations]);
+  const reopened = new Store(h.dir, [...createDomainPort({ outbox: Outbox }).migrations, ...chatMigrations, ...liveMigrations]);
   assert.equal(reopened.transaction(tx => String(tx.get('SELECT lifecycle FROM live_sessions WHERE live_session_id=?', [session.liveSessionId])!['lifecycle'])), 'active');
   assert.equal(reopened.transaction(tx => tx.get('SELECT terminal_outcome FROM live_sessions WHERE live_session_id=?', [session.liveSessionId])!['terminal_outcome']), null);
   assert.equal(reopened.transaction(tx => Number(tx.get("SELECT COUNT(*) AS n FROM live_journal WHERE kind='terminal'")!['n'])), 0);
@@ -476,7 +476,7 @@ test('real SIGKILL before dispatch intent sweeps to not_started and after intent
   assert.ok(address && typeof address !== 'string');
   const port = address.port;
   const domain = createDomainPort({ outbox: Outbox });
-  const migrations = [...domain.migrations, ...chatMigrations, ...liveMigrations, ...toolsMigrations];
+  const migrations = [...domain.migrations, ...chatMigrations, ...liveMigrations];
   const profile = validateLiveProfile(profileInput());
   const recoverOwner = (store: Store) => createLiveSessionOwner({
     store, voice: new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory })), profile,
@@ -845,7 +845,7 @@ test('Live accepts a frozen real tool snapshot and projects only result-gated Ma
   assert.equal(derived.parameters.properties.ids.type, 'STRING');
   const outputs = attachment.output[Symbol.asyncIterator]();
   assert.equal((await outputs.next()).value?.marker.kind, 'ready');
-  h.f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }, { id: 'c2', name: 'get_insight', args: { ids: [123], include_links: false } }] } });
+  h.f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }, { id: 'c2', name: 'get_insight', args: { ids: [123] } }] } });
   await h.f.frame(2);
   assert.equal(h.calls.length, 2);
   const response = h.f.frames[1] as { toolResponse: { functionResponses: { id: string }[] } };

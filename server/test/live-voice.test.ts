@@ -215,14 +215,14 @@ test('bounded event retention fails explicitly rather than dropping speech', asy
 test('bounded event bytes and outgoing frame fail explicitly', async t => {
   const { f, session, captured } = await ready(t, { limits: { maxEventBytes: 80, closeMs: 30 } });
   f.send({ serverContent: { inputTranscription: { text: 'x'.repeat(256) } } }); assert.equal((await session.done).code, 'event_limit'); await captured.done;
-  const second = await ready(t, { limits: { maxOutgoingBytes: 512, closeMs: 30 } });
+  const second = await ready(t, { limits: { maxOutgoingBytes: 1024, closeMs: 30 } });
   assert.throws(() => second.session.sendAudio({ pcm: new Uint8Array(1024), dataClass: 'ordinary' }), code('outgoing_limit'));
   assert.equal((await second.session.done).code, 'outgoing_limit'); assert.equal(second.f.frames.length, 1); await second.captured.done;
 });
 
 test('socket bufferedAmount backpressure is checked before any audio write', async t => {
   const f = await fixture(t); let client!: WebSocket;
-  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: (url, config) => { client = f.socketFactory(url, config); return client; }, limits: { maxBufferedBytes: 512, closeMs: 30 } })).open(request(), control());
+  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: (url, config) => { client = f.socketFactory(url, config); return client; }, limits: { maxBufferedBytes: 1024, closeMs: 30 } })).open(request(), control());
   await f.frame(1); f.send({ setupComplete: {} }); await session.ready;
   // Deterministic congestion seam on the actual ws instance; no synthetic host load.
   Object.defineProperty(client, 'bufferedAmount', { get: () => 513 });

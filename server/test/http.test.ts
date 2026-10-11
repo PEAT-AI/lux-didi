@@ -160,7 +160,7 @@ test('package installs offline and actual production CLI serves honest runtime-o
   try {
     const cwd = new URL('../../',import.meta.url);
     const env = {...process.env,npm_config_cache:join(dir,'npm-cache')};
-    const packed = spawnSync('npm',['pack','--json','--offline','--ignore-scripts','--pack-destination',dir],{cwd,env,encoding:'utf8',timeout:5000});
+    const packed = spawnSync('npm',['pack','--json','--offline','--ignore-scripts','--pack-destination',dir,'--timing'],{cwd,env,encoding:'utf8',timeout:5000});
     assert.equal(packed.status,0,packed.status === 0 ? '' : packageFailure('npm pack', 'npm', ['pack','--json','--offline','--ignore-scripts','--pack-destination','<owned-temp>'], packed, env.npm_config_cache));
     const filename = (JSON.parse(packed.stdout) as {filename:string}[])[0]!.filename;
     const installed = spawnSync('npm',['install','--prefix',join(dir,'install'),'--offline','--ignore-scripts','--omit=dev','--no-audit','--no-fund',join(dir,filename)],{env,encoding:'utf8',timeout:5000});

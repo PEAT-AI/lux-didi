@@ -109,7 +109,11 @@ public enum LiveClientState: Sendable, Equatable {
 
 /// No preference, native REST/bootstrap, credential owner, device, UI, persistence, or reconnect binding.
 public actor LiveSessionCoordinator {
-    public private(set) var state: LiveClientState = .idle
+    public let events: AsyncStream<LiveClientState>
+    private let stateEvents: AsyncStream<LiveClientState>.Continuation
+    public private(set) var state: LiveClientState = .idle {
+        didSet { stateEvents.yield(state) }
+    }
     public private(set) var generation: UInt64 = 0
     public private(set) var sessionID: String?
     private let http: any LiveOperatorHTTP
@@ -131,6 +135,7 @@ public actor LiveSessionCoordinator {
 
     public init(http: any LiveOperatorHTTP, sockets: any LiveSocketConnecting, sink: any LiveAudioSink) {
         self.http = http; self.sockets = sockets; self.sink = sink
+        (events, stateEvents) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(16))
     }
 
     /// The only entry that generates a new key. Replaces the previous operation, never resurrects it.

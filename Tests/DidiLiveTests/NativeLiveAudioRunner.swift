@@ -41,12 +41,22 @@ func audioRequire(_ value: Bool, _ message: String) throws {
             var ring = NativePCMFrameRing()
             for i in 0..<10 { ring.push(Data(repeating: UInt8(i), count: 640)) }
             try audioRequire(ring.drops == 2 && ring.pop()?.first == 2, "eight-frame ring drops oldest and counts")
+            let capture = try NativeCaptureBuffer(converter: NativePCMConverter(input: format))
+            capture.append(tone(format, start: 0, count: 4410))
+            try audioRequire(capture.next().0?.count == 640, "capture produces complete frames")
+            capture.setMuted(true)
+            capture.append(tone(format, start: 4410, count: 4410))
+            try audioRequire(capture.next().0 == nil, "mute discards queued frames and suppresses new frames")
+            capture.setMuted(false)
+            capture.append(tone(format, start: 8820, count: 4410))
+            try audioRequire(capture.next().0?.count == 640, "unmute resumes the same converter and capture buffer")
+            capture.stop(); capture.stop()
             let device = NativeLiveAudioDevice()
             try audioRequire(!device.hasEngine && !device.isCapturing, "construction does not create audio engine")
             device.stop(); device.stop()
             try audioRequire(!device.hasEngine, "teardown idempotent")
             print("PASS silent real AVAudioConverter irregular stereo tone, frame continuity, partial discard, ring overflow, lazy device")
             print("UNVERIFIED hardware: voice processing on both IO nodes and physical device loss; Start verifies both enabled flags")
-        } catch { fputs("FAIL native audio: \(error)\n", stderr); exit(1) }
+        } catch { print("FAIL native audio: \(error)"); exit(1) }
     }
 }

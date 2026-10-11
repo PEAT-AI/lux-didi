@@ -22,6 +22,7 @@ swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-
   Tests/DidiLiveTests/Fixture.swift Tests/DidiLiveTests/Stage0.swift -o "$work/stage0"
 swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
   Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \
+  Sources/LuxDidi/NativeKeychainPolicy.swift Sources/LuxDidi/CompanionClient.swift Sources/LuxDidi/NativeLiveOperatorHTTP.swift \
   Tests/DidiLiveTests/Fixture.swift Tests/DidiLiveTests/Runner.swift -o "$work/native-live"
 swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
   Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \
@@ -29,6 +30,8 @@ swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-
   Sources/LuxDidi/NativeLiveOperatorHTTP.swift Sources/LuxDidi/NativeLiveAudioDevice.swift \
   Sources/LuxDidi/NativeLiveConversation.swift Tests/DidiLiveTests/NativeLiveAudioRunner.swift -o "$work/native-audio"
 "$work/native-audio"
+# Compile the actual app source surface without launching audio or installing an app.
+swiftc -parse-as-library Sources/LuxDidi/*.swift -o "$work/native-app"
 # Isolated mutation sensitivity: compile a scratch copy, never alter the committed source or weaken a gate.
 python3 - "$work/MutatedTransport.swift" <<'PY'
 import pathlib, sys
@@ -39,6 +42,7 @@ pathlib.Path(sys.argv[1]).write_text(source.replace(needle, '["origin", "sec-web
 PY
 swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
   "$work/MutatedTransport.swift" Sources/LuxDidi/LiveSessionCoordinator.swift \
+  Sources/LuxDidi/NativeKeychainPolicy.swift Sources/LuxDidi/CompanionClient.swift Sources/LuxDidi/NativeLiveOperatorHTTP.swift \
   Tests/DidiLiveTests/Fixture.swift Tests/DidiLiveTests/Runner.swift -o "$work/native-live-mutated"
 # Accepted dependency tests exercise real one-attach races, durable 1013, isolated revoke, journal exclusion and supervised cleanup.
 node --test --test-reporter=tap --test-timeout=30000 \

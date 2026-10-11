@@ -158,14 +158,25 @@ struct GatedSockets: LiveSocketConnecting {
 
 actor ScriptedSocket: LiveSocket {
     private var frames: [LiveFrame]
+    private(set) var inputs: [Data] = []
     init(_ frames: [LiveFrame]) { self.frames = frames }
     func receive() throws -> LiveFrame {
         guard !frames.isEmpty else { throw LiveClientError.transport }
         return frames.removeFirst()
     }
-    func sendPCM(_ data: Data) {}
+    func sendPCM(_ data: Data) { inputs.append(data) }
     func sendControl(_ command: LiveControl) {}
     func cancel() { frames = [] }
+}
+struct FixedSockets: LiveSocketConnecting {
+    let socket: ScriptedSocket
+    func connect(_ binding: LiveSocketBinding) async throws -> any LiveSocket { socket }
+}
+actor GatedPlaybackSink: LiveAudioSink {
+    let gate: Gate
+    init(_ gate: Gate) { self.gate = gate }
+    func write(_ data: Data) async { await gate.wait() }
+    func flush() {}
 }
 struct ScriptedSockets: LiveSocketConnecting {
     let frames: [LiveFrame]
@@ -237,6 +248,49 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             }
             print("PASS production transport eight local header/destination/path refusals with zero attach")
             record("guards")
+
+            let (companion, nativeHTTP) = try await MainActor.run {
+                let descriptor = try ServiceDescriptor(origin: fixture.origin, credentialService: "synthetic", credentialAccount: "fixture")
+                let companion = CompanionClient(descriptor: descriptor, credential: { fixture.token }, expectedEpoch: fixture.authorityEpoch)
+                return (companion, NativeLiveOperatorHTTP(client: companion))
+            }
+            let nativeIntent = try await nativeHTTP.beginIntent()
+            let nativeStatus = try await nativeHTTP.status(for: nativeIntent)
+            try require(nativeStatus.authorityEpoch == fixture.authorityEpoch, "native status freezes authority epoch")
+            let nativeKey = UUID().uuidString.lowercased()
+            let nativeSnapshot = try await nativeHTTP.create(for: nativeIntent, key: nativeKey)
+            try require(nativeSnapshot.idempotencyKey == nativeKey, "native create idempotency envelope")
+            _ = try await nativeHTTP.snapshot(sessionID: nativeSnapshot.liveSessionId, for: nativeIntent)
+            _ = try await nativeHTTP.journal(sessionID: nativeSnapshot.liveSessionId, cursor: 0, for: nativeIntent)
+            let nativeRequest = try await nativeHTTP.request(for: LiveSocketBinding(origin: nativeIntent.origin,
+                sessionID: nativeSnapshot.liveSessionId, authorityEpoch: nativeIntent.authorityEpoch, profileIdentity: nativeIntent.profileIdentity))
+            let nativeHeaders = Set((nativeRequest.allHTTPHeaderFields ?? [:]).keys.map { $0.lowercased() })
+            try require(nativeHeaders == ["authorization", "x-didi-authority-epoch", "x-didi-live-profile"] && nativeRequest.url?.scheme == "ws", "native audio exactly three pinned headers")
+            try await nativeHTTP.revoke(sessionID: nativeSnapshot.liveSessionId, for: nativeIntent)
+            let nativeTerminal = try await nativeHTTP.snapshot(sessionID: nativeSnapshot.liveSessionId, for: nativeIntent)
+            try require(nativeTerminal.terminal?.state == .revoked, "native revoke and snapshot routes")
+            let builder = await companion.authenticatedRequestBuilder()
+            var staleEpochRefused = false
+            do { _ = try await builder(nativeIntent.origin.appendingPathComponent("api/v1/status"), "stale") }
+            catch { staleEpochRefused = true }
+            try require(staleEpochRefused, "native builder refuses stale expected epoch")
+            print("PASS native operator status/create/snapshot/journal/revoke envelopes and exactly pinned audio headers")
+
+            let playbackGate = Gate(), duplexHTTP = TestHTTP(fixture)
+            let duplexSocket = ScriptedSocket([
+                .marker(LiveMarker(kind: .ready, sequence: 1, journalSequence: 0, text: nil, finished: nil, value: nil)),
+                .pcm(Data([1, 0]))
+            ])
+            let duplex = LiveSessionCoordinator(http: duplexHTTP, sockets: FixedSockets(socket: duplexSocket), sink: GatedPlaybackSink(playbackGate))
+            await duplex.begin(frozen)
+            try await until { await playbackGate.arrivals == 1 }
+            let duplexID = await duplex.sessionID
+            try await duplex.sendPCM(Data(repeating: 0, count: 640))
+            try await duplex.sendPCM(Data(repeating: 1, count: 640))
+            try require(await duplexSocket.inputs.count == 2, "capture PCM keeps flowing while playback write is suspended")
+            try require(await duplex.sessionID == duplexID, "duplex capture uses the same session")
+            await playbackGate.release(); await duplex.stop(); await duplexHTTP.finish()
+            print("PASS full-duplex capture interleaves with suspended playback write")
 
             // Silent scripted output proves ordering, including invalidation on a terminal frame.
             let scriptedHTTP = TestHTTP(fixture), scriptedSink = SilentSink()

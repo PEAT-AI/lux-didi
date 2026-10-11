@@ -76,8 +76,8 @@ try {
     await page.waitForFunction(() => document.querySelector('#connected-route')?.textContent.includes('gemini-connected-test'));
     // Actual main f27 mounts md on desktop: canvasSize=600, not standalone lg=800.
     const geometry = await page.locator('#didi-orb').evaluate(canvas => {
-      const style = getComputedStyle(canvas), box = canvas.getBoundingClientRect();
-      return { logical: window.didiFrameStats.logicalSize, dpr: window.didiFrameStats.dpr,
+      const style = getComputedStyle(canvas), box = canvas.getBoundingClientRect(), stats = canvas.didiFrameStats();
+      return { logical: stats.logicalSize, dpr: stats.dpr,
         effectiveDpr: Math.min(devicePixelRatio || 1, 2), backingWidth: canvas.width, backingHeight: canvas.height,
         cssWidth: parseFloat(style.width), cssHeight: parseFloat(style.height), displayWidth: box.width,
         parentWidth: canvas.parentElement.clientWidth, viewportWidth: innerWidth };

@@ -1,5 +1,5 @@
 /** Lifecycle/state adapter. No microphone, playback or native voice channel is manufactured. */
-import {paintClassic,createOrbNoise,type OrbNoise} from './orb-classic';
+import {ClassicRenderer} from './orb-classic';
 import {initialOrbFrame,stepOrbFrame} from './orb-frame';
 export type VoiceState = 'IDLE' | 'CONNECTING' | 'CONNECTED' | 'LISTENING' | 'PROCESSING' | 'SPEAKING' | 'RECONNECTING' | 'ERROR' | 'DISCONNECTED' | 'INTERRUPTED';
 export interface AudioFrame {level:number;low:number;mid:number;high:number;flux:number;timestamp:number}
@@ -25,7 +25,7 @@ export function advanceOrbDeadline(deadline:number,now:number,interval:number):n
 const animatedStates=new Set<VoiceState>(['LISTENING','SPEAKING','PROCESSING','CONNECTING','CONNECTED','RECONNECTING']);
 export class Orb {
   private context:CanvasRenderingContext2D|null;
-  private noise:OrbNoise|undefined;
+  private classic:ClassicRenderer|undefined;
   private frame=initialOrbFrame();
   private durations:number[]=[];
   private paintTimes:number[]=[];
@@ -43,7 +43,7 @@ export class Orb {
   private destroyed=false;
   readonly audio=new LatestFrame();
   constructor(private canvas:HTMLCanvasElement,private state:VoiceState){
-    this.context=canvas.getContext('2d');if(this.context)this.noise=createOrbNoise();
+    this.context=canvas.getContext('2d');if(this.context)this.classic=new ClassicRenderer(this.context);
     Object.defineProperty(canvas,'didiFrameStats',{value:()=>({
       renderer:'classic-eleven-f27bca7',state:this.state,tier:'high',logicalSize:this.size,displaySize:this.canvas.clientWidth,dpr:this.ratio,
       targetFps:this.fps(),frames:this.frames,sampleCount:this.durations.length,failedDraws:this.failedDraws,
@@ -106,12 +106,12 @@ export class Orb {
     if(animatedStates.has(this.state)||time<this.settleDeadline)this.animation=requestAnimationFrame(this.tick);
   };
   private paint(time:number){
-    if(!this.context||!this.noise)return;
+    if(!this.context||!this.classic)return;
     const start=performance.now();
     try {
       this.context.clearRect(0,0,this.size,this.size);
       this.canvas.dataset.posture=posture(this.state,this.input(time).audible);
-      paintClassic(this.context,this.frame,this.noise);
+      this.classic.draw(this.frame);
       this.frames++;this.durations.push(performance.now()-start);this.paintTimes.push(time);
       if(this.durations.length>240){this.durations.shift();this.paintTimes.shift();}
     }catch(error){this.failedDraws++;throw error;}
@@ -120,6 +120,6 @@ export class Orb {
     if(this.destroyed)return;
     this.destroyed=true;if(this.animation!==undefined)cancelAnimationFrame(this.animation);this.animation=undefined;
     this.observer.disconnect();this.motion.removeEventListener('change',this.reset);document.removeEventListener('visibilitychange',this.reset);
-    this.audio.clear();this.noise=undefined;this.context=null;
+    this.audio.clear();this.classic=undefined;this.context=null;
   }
 }

@@ -79,26 +79,48 @@ import CryptoKit
     }
     // Owned WK inspection is available only inside the existing marked synthetic
     // installed proof. No runtime JavaScript/native authority bridge is added.
+    @MainActor private final class OrbObservation {
+        weak var web: WKWebView?
+        var continuation: CheckedContinuation<Any?, Error>?
+        var timeout: DispatchWorkItem?
+        var cancelled = false
+        init(_ web: WKWebView) { self.web = web }
+        func complete(_ result: Result<Any?, Error>, cleanup: Bool = false) {
+            guard let continuation else { return }
+            self.continuation = nil
+            timeout?.cancel(); timeout = nil
+            if cleanup { web?.evaluateJavaScript("globalThis.__didiOrbProofCancel?.(); true", completionHandler: nil) }
+            continuation.resume(with: result)
+        }
+        func cancel() {
+            cancelled = true
+            complete(.failure(CancellationError()), cleanup: true)
+        }
+    }
     private static func orbJavaScript(_ web: WKWebView, _ script: String) async throws -> Any? {
-        try await withCheckedThrowingContinuation { continuation in
-            var completed = false
-            // Native clock remains live even when WK suppresses JavaScript timers/RAF.
-            let timeout = DispatchWorkItem { [weak web] in
-                Task { @MainActor in
-                    guard !completed else { return }
-                    completed = true
-                    web?.evaluateJavaScript("globalThis.__didiOrbProofCancel?.(); true", completionHandler: nil)
-                    continuation.resume(throwing: InstalledProofError.missingUI)
+        let observation = OrbObservation(web)
+        return try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { continuation in
+                observation.continuation = continuation
+                if observation.cancelled || Task.isCancelled { observation.cancel(); return }
+                // Native clock remains live when WK suppresses timers/RAF.
+                let timeout = DispatchWorkItem { [weak observation] in
+                    Task { @MainActor in
+                        observation?.complete(.failure(InstalledProofError.missingUI), cleanup: true)
+                    }
+                }
+                observation.timeout = timeout
+                DispatchQueue.main.asyncAfter(deadline: .now() + 8, execute: timeout)
+                web.callAsyncJavaScript(script, arguments: [:], in: nil, contentWorld: .page) { [weak observation] result in
+                    switch result {
+                    case .success(let value): observation?.complete(.success(value))
+                    case .failure(let error): observation?.complete(.failure(error), cleanup: true)
+                    }
                 }
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 8, execute: timeout)
-            web.callAsyncJavaScript(script, arguments: [:], in: nil, contentWorld: .page) { result in
-                guard !completed else { return }
-                completed = true
-                timeout.cancel()
-                continuation.resume(with: result.map { Optional($0) })
-            }
-        }
+        }, onCancel: {
+            Task { @MainActor in observation.cancel() }
+        })
     }
     private static func orbEvidence(_ web: WKWebView, reportURL: URL) async throws -> [String: Any] {
         var frames: [[String: Any]] = []

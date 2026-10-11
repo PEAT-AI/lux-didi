@@ -939,7 +939,3 @@ export class ClassicRenderer {
 
 
 }
-/** Stateless canvas boundary: identical frame/noise yields identical calls, with no clock or DOM access. */
-export function paintClassic(ctx: CanvasRenderingContext2D, frame: Readonly<OrbFrame>, noise: OrbNoise): void {
-  new ClassicRenderer(ctx,noise).draw(frame);
-}

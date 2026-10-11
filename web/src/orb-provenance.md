@@ -27,11 +27,11 @@ parity, a release approval, or a claim that absent voice events exist.
 ## Deliberate boundaries
 
 `ClassicRenderer` and `Orb` remain the integration names. The renderer's `draw`
-now receives the explicit frame; `paintClassic` is the stateless canvas/noise
-boundary. No DOM, clock, provider or Angular dependency lives in the painter.
-Orb consumes `paintClassic` with its retained noise field; no painter clock is
-advanced by that boundary. The owning wrapper retains canvas/phase/noise through unrelated app renders,
-clears stale/session/disconnect inputs, and disposes on actual unmount.
+now receives the explicit immutable frame; identical frame/noise yields identical
+canvas calls, with no temporal clock advanced by the painter. No DOM, provider or
+Angular dependency lives in that boundary. The unused convenience export was
+removed; Orb retains the canonical renderer and its noise field through unrelated
+app renders, clears stale/session/disconnect inputs, and disposes on actual unmount.
 
 Logical dimensions are600 desktop /400 narrow rather than scaling radius alone:
 absolute line widths, dash patterns and sparkles remain in original unit space.

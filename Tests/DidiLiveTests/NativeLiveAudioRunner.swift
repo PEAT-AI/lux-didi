@@ -5,6 +5,14 @@ func audioRequire(_ value: Bool, _ message: String) throws {
     if !value { throw NSError(domain: message, code: 1) }
 }
 
+@MainActor private final class DictationRefusalAuthority {
+    private(set) var attempts = 0
+    func request(_ url: URL, _ epoch: String?) throws -> URLRequest {
+        attempts += 1
+        throw LiveClientError.unavailable
+    }
+}
+
 @main struct NativeLiveAudioRunner {
     static func tone(_ format: AVAudioFormat, start: Int, count: Int) throws -> AVAudioPCMBuffer {
         guard format.channelCount == 2, format.commonFormat == .pcmFormatFloat32, !format.isInterleaved else {
@@ -62,6 +70,16 @@ func audioRequire(_ value: Bool, _ message: String) throws {
             try capture.append(tone(format, start: 8820, count: 4410))
             try audioRequire(capture.next().0?.count == 640, "unmute resumes the same converter and capture buffer")
             capture.stop(); capture.stop()
+            guard let origin = URL(string: "http://127.0.0.1:1") else { throw LiveClientError.invalidIntent }
+            let authority = DictationRefusalAuthority()
+            let conversation = NativeLiveConversation(authority: (origin, { url, epoch in
+                try authority.request(url, epoch)
+            }), dictationIsCapturing: { true })
+            conversation.start()
+            try audioRequire(conversation.state == .failed && conversation.failure != nil, "active dictation visibly refuses Live Start")
+            try audioRequire(!conversation.device.hasEngine && !conversation.isCapturing, "dictation refusal creates no engine or second capture")
+            try audioRequire(authority.attempts == 0, "dictation refusal constructs no HTTP or socket request")
+            print("PASS active dictation refuses Live Start with visible failure, no engine and zero authority/socket requests")
             let device = NativeLiveAudioDevice()
             try audioRequire(!device.hasEngine && !device.isCapturing, "construction does not create audio engine")
             device.stop(); device.stop()

@@ -247,9 +247,10 @@ export class LiveSessionOwner {
 
   current(cursor = 0): LivePageProjection {
     if (!Number.isSafeInteger(cursor) || cursor < 0) throw new LiveError('invalid_request');
+    const jobs = this.#jobProjection(false);
     return this.#store.transaction(tx => {
       const row = tx.get('SELECT live_session_id,lifecycle,created_at,terminal_outcome FROM live_sessions WHERE owner_assistant_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1', [this.#store.assistantId]);
-      if (!row) return { state: 'idle', since: null, jobs: this.#jobProjection(false), entries: [], cursor };
+      if (!row) return { state: 'idle', since: null, jobs, entries: [], cursor };
       const handle = this.#active.get(String(row.live_session_id));
       const terminal = parseTerminal(row.terminal_outcome);
       const state: LivePageProjection['state'] = terminal ? (['closed', 'cancelled', 'revoked', 'expired'].includes(terminal.state) ? 'ended' : 'error') : handle?.thinking ? 'thinking' : handle?.speaking ? 'speaking' : handle?.consumerState === 'attached' ? 'listening' : handle ? 'ended' : 'idle';
@@ -263,7 +264,7 @@ export class LiveSessionOwner {
           entries.push({ seq, kind, tool: kind === 'toolCall' ? { name: tool.name, status: 'called' } : { name: tool.name, status: tool.status, markdown: tool.markdown, sources: tool.sources.map(source => ({ title: source.title, ...(source.url ? { url: source.url } : {}) })) } });
         } else if (kind === 'interrupted' || kind === 'turnComplete' || kind === 'terminal') entries.push({ seq, kind });
       }
-      return { state, since: Number(row.created_at), jobs: this.#jobProjection(false), entries, cursor: rows.length ? Number(rows[rows.length - 1]!.journal_id) : cursor };
+      return { state, since: Number(row.created_at), jobs, entries, cursor: rows.length ? Number(rows[rows.length - 1]!.journal_id) : cursor };
     });
   }
 

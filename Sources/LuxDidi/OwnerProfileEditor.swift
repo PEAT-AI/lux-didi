@@ -80,7 +80,7 @@ private func validProfileName(_ value: String) -> Bool {
     let savedContent = NSTextView()
     let activeContent = NSTextView()
     let publicBase = NSTextView()
-    private(set) var document: OwnerProfileDocumentView?
+    private(set) var profileState: OwnerProfileDocumentView?
     private(set) var operation: Task<Void, Never>?
     var onClose: (() -> Void)?
     private let client: any OwnerProfileTransport
@@ -172,16 +172,16 @@ private func validProfileName(_ value: String) -> Bool {
                           lore: OwnerProfilePart(text: aboutField.string, dataClass: selected(loreClass)))
     }
     private var requiresChoice: Bool {
-        guard let document else { return true }
-        let prior = document.saved.profile.edits
-        return !document.saved.present || (prior.style.dataClass != .ordinary && edits.style.dataClass == .ordinary)
+        guard let profileState else { return true }
+        let prior = profileState.saved.profile.edits
+        return !profileState.saved.present || (prior.style.dataClass != .ordinary && edits.style.dataClass == .ordinary)
             || (prior.lore.dataClass != .ordinary && edits.lore.dataClass == .ordinary)
     }
     private func refresh() {
         privacyChoice.isHidden = !requiresChoice
-        saveButton.isEnabled = document != nil && !busy && !needsReadback && edits.valid && (!requiresChoice || privacyChoice.state == .on)
-        reloadButton.isEnabled = !busy; readbackButton.isEnabled = !busy && document != nil
-        restoreButton.isEnabled = !busy && document?.previous != nil
+        saveButton.isEnabled = profileState != nil && !busy && !needsReadback && edits.valid && (!requiresChoice || privacyChoice.state == .on)
+        reloadButton.isEnabled = !busy; readbackButton.isEnabled = !busy && profileState != nil
+        restoreButton.isEnabled = !busy && profileState?.previous != nil
     }
     func controlTextDidChange(_ obj: Notification) { refresh() }
     func textDidChange(_ notification: Notification) { refresh() }
@@ -193,7 +193,7 @@ private func validProfileName(_ value: String) -> Bool {
         loreClass.selectItem(withTitle: value.lore.dataClass.rawValue.capitalized)
     }
     private func update(_ value: OwnerProfileDocumentView) {
-        document = value; publicBase.string = value.publicBase
+        profileState = value; publicBase.string = value.publicBase
         func summary(_ profile: OwnerProfileSnapshotView) -> String {
             "Name: \(profile.displayName)\nCharacter: \(profile.style?.text ?? "(No authored character)")\nAbout me: \(profile.lore?.text ?? "(No authored about me)")"
         }
@@ -219,11 +219,11 @@ private func validProfileName(_ value: String) -> Bool {
     @objc private func savePressed() { operation = Task { [weak self] in await self?.save() } }
     private func save() async {
         window?.makeFirstResponder(nil)
-        guard let document, !busy, !needsReadback, edits.valid, !requiresChoice || privacyChoice.state == .on else { refresh(); return }
+        guard let profileState, !busy, !needsReadback, edits.valid, !requiresChoice || privacyChoice.state == .on else { refresh(); return }
         let draft = edits
         busy = true; refresh(); defer { busy = false; refresh() }
         do {
-            let value = try await client.saveOwnerProfile(draft, revision: document.saved.revision)
+            let value = try await client.saveOwnerProfile(draft, revision: profileState.saved.revision)
             guard !closed && !Task.isCancelled else { return }
             update(value)
             notice.stringValue = "Saved for next app start. Active now is unchanged. No automatic restart."
@@ -244,7 +244,7 @@ private func validProfileName(_ value: String) -> Bool {
         }
     }
     @objc private func reloadPressed() {
-        if let document, edits != document.saved.profile.edits, !confirmReload {
+        if let profileState, edits != profileState.saved.profile.edits, !confirmReload {
             confirmReload = true; reloadButton.title = "Discard edits and reload"
             notice.stringValue = "Reload would discard unsaved edits. Click Discard edits and reload to confirm, or keep editing."
             return
@@ -253,14 +253,14 @@ private func validProfileName(_ value: String) -> Bool {
     }
     @objc private func readbackPressed() { operation = Task { [weak self] in await self?.read(discardEdits: false) } }
     @objc private func restorePressed() {
-        guard let previous = document?.previous else { return }
+        guard let previous = profileState?.previous else { return }
         populate(previous.edits); privacyChoice.state = .off
         notice.stringValue = "Previous good fields copied into this form only. Save uses the current revision; nothing has been restored yet."
         refresh()
     }
     @objc private func closePressed() { close() }
     func windowWillClose(_ notification: Notification) {
-        closed = true; operation?.cancel(); document = nil
+        closed = true; operation?.cancel(); profileState = nil
         nameField.stringValue = ""; characterField.string = ""; aboutField.string = ""; activeContent.string = ""; savedContent.string = ""; publicBase.string = ""
         onClose?()
     }

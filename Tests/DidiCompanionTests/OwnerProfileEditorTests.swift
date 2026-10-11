@@ -58,7 +58,7 @@ import Foundation
         try require([401, 403].contains((denied as? HTTPURLResponse)?.statusCode ?? 0), "native profile rejects Origin even with bearer")
         let client = CompanionClient(descriptor: descriptor, credential: { token })
         let editor = OwnerProfileEditor(client: client); editor.open(); await editor.operation?.value
-        try require(editor.window?.isVisible == true && editor.document?.valid == true, "actual native form is rendered from guarded client data")
+        try require(editor.window?.isVisible == true && editor.profileState?.valid == true, "actual native form is rendered from guarded client data")
         try require(editor.nameField.stringValue == "Lux Didi" && !editor.publicBase.isEditable && !editor.activeContent.isEditable && !editor.savedContent.isEditable,
                     "actual saved prepopulation and generic active saved readonly panes")
         try require(editor.styleClass.titleOfSelectedItem == "Private" && editor.loreClass.titleOfSelectedItem == "Private"
@@ -121,7 +121,7 @@ import Foundation
         try edit(reopened, name: "Never saved synthetic", character: "SYNTHETIC_CANCEL", about: "SYNTHETIC_CANCEL")
         reopened.cancelButton.performClick(nil)
         let afterClose = try await client.readOwnerProfile()
-        try require(reopened.document == nil && reopened.nameField.stringValue.isEmpty
+        try require(reopened.profileState == nil && reopened.nameField.stringValue.isEmpty
                     && afterClose.saved.profile.displayName == "Naya", "cancel discards volatile draft only and does not write")
     }
     private static func lostReply(saved: OwnerProfileDocumentView, descriptor: ServiceDescriptor, proof: URL) async throws {
@@ -143,9 +143,9 @@ import Foundation
         form.saveButton.performClick(nil); await form.operation?.value
         try require(LostProfileReply.putCount == 1 && form.edits == draft && !form.saveButton.isEnabled
                     && form.notice.stringValue.contains("unknown"), "actual URLSession transport mapping after dispatched committed PUT is unknown and cannot auto retry")
-        try require(form.document?.saved.profile.displayName == "Naya", "lost reply cannot falsely report committed state before intentional readback")
+        try require(form.profileState?.saved.profile.displayName == "Naya", "lost reply cannot falsely report committed state before intentional readback")
         form.readbackButton.performClick(nil); await form.operation?.value
-        try require(form.document?.saved.profile.displayName == profile.displayName && form.savedContent.string.contains(profile.displayName)
+        try require(form.profileState?.saved.profile.displayName == profile.displayName && form.savedContent.string.contains(profile.displayName)
                     && form.edits == draft && form.saveButton.isEnabled && LostProfileReply.putCount == 1,
                     "successful readback shows advanced committed state and preserves draft before another Save")
         try snapshot(form, proof.appendingPathComponent("persona-editor-lost-reply.png"))

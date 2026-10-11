@@ -1,3 +1,4 @@
+import { realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Store } from './runtime/store.js';
@@ -18,4 +19,7 @@ export async function main(): Promise<void> {
     process.once('SIGINT', stop); process.once('SIGTERM', stop);
   } catch (error) { store.close(); throw error; }
 }
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) void main().catch(error => { console.error(error instanceof Error ? error.message : 'Service startup failed'); process.exitCode = 1; });
+function canonicalPath(path: string): string {
+  try { return realpathSync(path); } catch { return path; }
+}
+if (process.argv[1] && canonicalPath(resolve(process.argv[1])) === canonicalPath(fileURLToPath(import.meta.url))) void main().catch(error => { console.error(error instanceof Error ? error.message : 'Service startup failed'); process.exitCode = 1; });

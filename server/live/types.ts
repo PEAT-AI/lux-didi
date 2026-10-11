@@ -91,6 +91,7 @@ export type JournalKind =
   | 'turnComplete' | 'waitingForInput' | 'terminal';
 
 export interface LiveFragment {
+  tool?: LiveToolProjection;
   liveSessionId: string; journalSequence: number; providerSequence: number | null; kind: JournalKind;
   text: string | null; finished: boolean | null; value: boolean | null; rejectedKind: JournalKind | null;
   rejectedSequence: number | null; arrivedAt: number;

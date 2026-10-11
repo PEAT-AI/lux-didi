@@ -62,6 +62,7 @@ function markerFrame(marker: LivePublicMarker): Record<string, unknown> {
   if (marker.text !== null) frame['text'] = marker.text;
   if (marker.finished !== null) frame['finished'] = marker.finished;
   if (marker.value !== null) frame['value'] = marker.value;
+  if (marker.tool) frame['tool'] = { name: marker.tool.name, status: marker.kind === 'toolCall' ? 'called' : marker.tool.status, ...(marker.kind === 'toolResult' ? { markdown: marker.tool.markdown, sources: marker.tool.sources } : {}) };
   return frame;
 }
 

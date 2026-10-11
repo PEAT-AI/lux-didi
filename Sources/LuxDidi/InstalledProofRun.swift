@@ -111,7 +111,7 @@ import CryptoKit
                 }
                 observation.timeout = timeout
                 DispatchQueue.main.asyncAfter(deadline: .now() + 8, execute: timeout)
-                web.callAsyncJavaScript(script, arguments: [:], in: nil, contentWorld: .page) { [weak observation] result in
+                web.callAsyncJavaScript(script, arguments: [:], in: nil, in: .page) { [weak observation] result in
                     switch result {
                     case .success(let value): observation?.complete(.success(value))
                     case .failure(let error): observation?.complete(.failure(error), cleanup: true)

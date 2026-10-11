@@ -296,7 +296,7 @@ with open(target, "x") as f:
 PY
   chmod 0600 "$fx_profile"
   pin="$work/profile-input.json"; senv="$work/source.env"
-  printf '{"schemaVersion":1,"enabled":true,"provider":"gemini","modelId":"synthetic-model","keyReference":"gemini-primary","dataClasses":["ordinary","private"],"preferences":{"dataClass":"ordinary","language":"de-de","register":"plain","humor":"off","verbosity":"balanced"}}\n' > "$pin"
+  printf '{"schemaVersion":1,"enabled":true,"provider":"gemini","modelId":"gemini-connected-test","keyReference":"gemini-primary","dataClasses":["ordinary","private"],"preferences":{"dataClass":"ordinary","language":"de-de","register":"plain","humor":"off","verbosity":"balanced"}}\n' > "$pin"
   printf 'GEMINI_API_KEY=synthetic-NEVER-REAL\n' > "$senv"; chmod 0600 "$pin" "$senv"
   svc_dist="$fixture/Contents/Resources/server/node_modules/@lux-didi/service/dist"
   "$fixture/Contents/MacOS/node" --input-type=module -e 'const { initializeProviderConfig } = await import(process.argv[1]); initializeProviderConfig({ configDir: process.argv[2], ownerId: process.argv[3], profileInputPath: process.argv[4], sourceEnvPath: process.argv[5] });' "file://$svc_dist/config/index.js" "$fconfig" "$fx_assistant" "$pin" "$senv"

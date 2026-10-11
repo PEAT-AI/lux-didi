@@ -5,6 +5,8 @@ import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { createToolsOwner, toolsMigrations } from '../tools/index.js';
 import { declarationsFor, runToolCalls } from '../tools/declarations.js';
+import { LiveToolJobs, type ToolJobResult, type JobTimer } from '../tools/jobs.js';
+import type { LiveAuthority } from '../tools/types.js';
 import { liveProfileIdentity } from '../live/config.js';
 import type { ToolDefinition, HostContext } from '../adapters/model/types.js';
 import { PROMPT_VERSION } from '../prompt/index.js';
@@ -272,6 +274,42 @@ test('an unused accepted session expires without ever opening the adapter', asyn
   assert.deepEqual(after.terminal, { state: 'expired' });
   assert.equal(after.journal.complete, false);
   assert.equal(h.f.attempts, 0);
+});
+
+test('durable tool jobs defer without replay and retain completed or failed outcomes', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-live-jobs-'));
+  const migrations = createDomainPort({ outbox: Outbox }).migrations;
+  let store = new Store(dir, migrations);
+  t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
+  const host: HostContext = { runId: 'origin', actorId: 'client', authorityEpoch: store.authorityEpoch, revision: 1, grants: [] };
+  // The execution owner validates this snapshot; the receipt owner stores it without granting authority.
+  const authority = { runId: 'origin' } as LiveAuthority;
+  let expire = () => {};
+  const schedule: JobTimer = callback => { expire = callback; return { unref() {}, cancel() {} }; };
+  const batch: ToolJobResult = { tools: [], bindings: [], responses: [], error: undefined, accepted: [] };
+  let finish!: (value: ToolJobResult) => void;
+  let executions = 0;
+  let jobs = new LiveToolJobs(store, () => NOW);
+  const waiting = jobs.run(host, authority, 4000, schedule, () => { executions++; return new Promise(resolve => { finish = resolve; }); });
+  expire();
+  const deferred = await waiting;
+  assert.equal(deferred.result, undefined);
+  assert.equal(jobs.pending()[0]!.state, 'in_progress');
+  finish(batch);
+  await tick();
+  assert.equal(jobs.pending()[0]!.state, 'completed');
+  assert.deepEqual(jobs.pending()[0]!.result, JSON.parse(JSON.stringify(batch)));
+  const failed = await jobs.run(host, authority, 4000, schedule, async () => { throw new Error('synthetic failure'); });
+  assert.equal(failed.job.state, 'failed');
+  const interrupted = jobs.run(host, authority, 4000, schedule, () => { executions++; return new Promise(() => {}); });
+  expire();
+  await interrupted;
+  store.close();
+  store = new Store(dir, migrations);
+  jobs = new LiveToolJobs(store, () => NOW);
+  assert.equal(jobs.pending().filter(job => job.state === 'unknown').length, 1);
+  assert.equal(jobs.pending().filter(job => job.state === 'completed').length, 1);
+  assert.equal(executions, 2, 'reopening never replays a dispatched tool');
 });
 
 test('tool deferral budget defaults to four seconds and accepts only bounded integer milliseconds', () => {

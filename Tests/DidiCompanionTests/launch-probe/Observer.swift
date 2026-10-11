@@ -21,6 +21,7 @@ import AppKit
     var directory: Int32 = -1
     var kernel: Int32 = -1
     var failureIdentity: [String: Any] = [:]
+    var launchFailure: [String: Any] = [:]
     var control: Int32 = -1
     // eof-pre closes the control socket on purpose (control = -1). Dialling is
     // therefore tracked separately so a later directory write can never re-dial
@@ -78,9 +79,10 @@ import AppKit
                 guard !self.settled else { return }
                 guard error == nil, let app, app.bundleURL.map({ physicalPath($0.path) }) == self.bundle else {
                     let failure = error as NSError?
-                    self.fail("own launch identity", extra: ["launchErrorDomain": failure?.domain as Any? ?? NSNull(),
+                    self.launchFailure = ["launchErrorDomain": failure?.domain as Any? ?? NSNull(),
                         "launchErrorCode": failure?.code as Any? ?? NSNull(), "launchReturnedApplication": app != nil,
-                        "launchBundleMatches": app?.bundleURL.map({ physicalPath($0.path) }) == self.bundle])
+                        "launchBundleMatches": app?.bundleURL.map({ physicalPath($0.path) }) == self.bundle]
+                    self.fail("own launch identity")
                     return
                 }
                 self.target = app
@@ -338,6 +340,7 @@ import AppKit
             "dialAttempts": dialAttempts, "dialErrnos": dialErrnos, "dialOffsetsMilliseconds": dialOffsets,
             "redialSuppressed": redialSuppressed, "socketPath": "/tmp/didi-verification-" + nonce + ".sock",
             "socketPresentAtFailure": FileManager.default.fileExists(atPath: "/tmp/didi-verification-" + nonce + ".sock")]
+        output["launchConditions"] = launchFailure
         output.merge(extra) { _, new in new }
         try? atomic(output, to: root + "/observer.json")
         fputs("LaunchServices probe FAIL: " + reason + "\n", stderr); exit(1)

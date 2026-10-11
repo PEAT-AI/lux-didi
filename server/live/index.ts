@@ -1,3 +1,5 @@
+import { publicOwnerProfile, PROMPT_VERSION } from '../prompt/index.js';
+import { validateAcceptedPrompt } from './config.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type { DataClass, LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort, LiveVoiceSession } from '../adapters/live-voice/index.js';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
@@ -7,7 +9,7 @@ import {
   LiveError,
   type CreateLiveSession, type JournalKind, type LiveAttachment, type LiveConsumerState, type LiveContext,
   type LiveFragmentPage, type LiveInvalidationReason, type LiveOutputChunk, type LiveOwnerConfig,
-  type LiveProfile, type LiveProfileProjection, type LivePublicMarker, type LiveSessionSnapshot, type LiveStorePort,
+  type AcceptedPromptSnapshot, type LiveProfile, type LiveProfileProjection, type LivePublicMarker, type LiveSessionSnapshot, type LiveStorePort,
   type LiveTerminalOutcome,
 } from './types.js';
 
@@ -103,6 +105,8 @@ export class LiveSessionOwner {
   readonly #voice: LiveVoicePort;
   readonly #profile: LiveProfile;
   readonly #now: () => number;
+  readonly #schedule: NonNullable<LiveOwnerConfig['schedule']>;
+  #expiryTimer: ReturnType<NonNullable<LiveOwnerConfig['schedule']>> | undefined;
   readonly #profileIdentity: string;
   readonly #promptIdentity: string;
   readonly #active = new Map<string, ActiveSession>();
@@ -115,7 +119,16 @@ export class LiveSessionOwner {
     this.#store = config.store;
     this.#voice = config.voice;
     this.#profile = validateLiveProfile(config.profile);
-    this.#now = config.now ?? Date.now;
+    const now = config.now ?? Date.now;
+    this.#now = () => {
+      const value = now();
+      if (!Number.isSafeInteger(value)) throw new LiveError('invalid_config', 'clock must return integer epoch milliseconds');
+      return value;
+    };
+    this.#schedule = config.schedule ?? ((callback, delayMs) => {
+      const timer = setTimeout(callback, delayMs);
+      return { unref: () => { timer.unref(); }, cancel: () => { clearTimeout(timer); } };
+    });
     this.#profileIdentity = liveProfileIdentity(this.#profile);
     this.#promptIdentity = identity({ text: this.#profile.prompt.text, dataClass: this.#profile.prompt.dataClass });
     this.recover();
@@ -135,7 +148,7 @@ export class LiveSessionOwner {
   /** Startup sweep: no intent means no possible egress; an intent means possible egress. */
   recover(): number {
     const now = this.#now();
-    return this.#store.transaction(tx => {
+    const recovered = this.#store.transaction(tx => {
       const rows = tx.all("SELECT live_session_id, dispatch_intent FROM live_sessions WHERE lifecycle IN ('accepted','opening','active')");
       for (const row of rows) {
         const outcome: LiveTerminalOutcome = Number(row['dispatch_intent']) === 1 ? { state: 'outcome_unknown' } : { state: 'not_started' };
@@ -143,6 +156,8 @@ export class LiveSessionOwner {
       }
       return rows.length;
     });
+    this.#armExpiry();
+    return recovered;
   }
 
   create(input: CreateLiveSession, context: LiveContext): LiveSessionSnapshot {
@@ -152,32 +167,42 @@ export class LiveSessionOwner {
     const fingerprint = identity({ inputClass: input.inputClass, profile: this.#profileIdentity, prompt: this.#promptIdentity });
     const now = this.#now();
     const assistantId = this.#store.assistantId;
-    return this.#store.transaction(tx => {
+    const snapshot = this.#store.transaction(tx => {
       // Same-key replay is decided on the normalized request meaning before any policy.
       const prior = tx.get('SELECT * FROM live_sessions WHERE owner_assistant_id=? AND idempotency_key=?', [assistantId, input.idempotencyKey]);
       if (prior) {
         if (String(prior['fingerprint']) !== fingerprint) throw new LiveError('idempotency_conflict');
-        return this.#snapshot(tx, prior);
+        return this.#snapshot(tx, this.#expireInTx(tx, prior, now));
       }
       if (context.authorityEpoch !== this.#store.authorityEpoch) throw new LiveError('stale_authority');
       if (!classes.includes(input.inputClass) || !this.#profile.route.dataClasses.includes(input.inputClass)) throw new LiveError('invalid_request');
+      const acceptedPrompt = validateAcceptedPrompt(this.#profile.acceptedPrompt ?? {
+        schemaVersion: 1, ownerProfile: publicOwnerProfile(assistantId), compilerVersion: PROMPT_VERSION,
+        system: this.#profile.prompt.text, dataClasses: [this.#profile.prompt.dataClass],
+      }, assistantId);
+      if (acceptedPrompt.dataClasses.some(c => !this.#profile.route.dataClasses.includes(c))) throw new LiveError('invalid_request');
       const liveSessionId = randomUUID();
       tx.run('INSERT INTO live_sessions(live_session_id, owner_assistant_id, authority_epoch, idempotency_key, fingerprint, client_id, audit_id, profile_identity, prompt_identity, lifecycle, dispatch_intent, ready, journal_events, journal_bytes, journal_complete, consumer_state, terminal_outcome, terminal_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,0,0,0,0,0,?,NULL,NULL,?,?)',
         [liveSessionId, assistantId, context.authorityEpoch, input.idempotencyKey, fingerprint, context.clientId, context.auditId, this.#profileIdentity, this.#promptIdentity, 'accepted', 'detached', now, now]);
+      tx.run('UPDATE live_sessions SET accepted_prompt_snapshot=? WHERE live_session_id=?', [JSON.stringify(acceptedPrompt), liveSessionId]);
       tx.run('INSERT INTO live_grants(grant_id, live_session_id, provider, model, voice, key_reference, permitted_classes, chosen_input_class, revision, granted_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
         [randomUUID(), liveSessionId, 'gemini', this.#profile.liveModelId, this.#profile.voice, this.#profile.keyReference,
           JSON.stringify(this.#profile.route.dataClasses), input.inputClass, this.#revision, now]);
       return this.#snapshot(tx, tx.get('SELECT * FROM live_sessions WHERE live_session_id=?', [liveSessionId])!);
     });
+    this.#armExpiry();
+    return snapshot;
   }
 
   get(liveSessionId: string): LiveSessionSnapshot {
     this.#guardOpen();
-    return this.#store.transaction(tx => {
+    const snapshot = this.#store.transaction(tx => {
       const row = tx.get('SELECT * FROM live_sessions WHERE live_session_id=? AND owner_assistant_id=?', [liveSessionId, this.#store.assistantId]);
       if (!row) throw new LiveError('not_found');
-      return this.#snapshot(tx, row);
+      return this.#snapshot(tx, this.#expireInTx(tx, row, this.#now()));
     });
+    this.#armExpiry();
+    return snapshot;
   }
 
   listFragments(query: { liveSessionId: string; cursor?: number; limit?: number }): LiveFragmentPage {
@@ -187,11 +212,14 @@ export class LiveSessionOwner {
     const limit = query.limit === undefined ? 100 : query.limit;
     if (!Number.isSafeInteger(cursor) || cursor < 0) throw new LiveError('invalid_request');
     if (!Number.isSafeInteger(limit) || limit <= 0 || limit > maxPage) throw new LiveError('invalid_request');
-    return this.#store.transaction(tx => {
-      const row = tx.get('SELECT live_session_id FROM live_sessions WHERE live_session_id=? AND owner_assistant_id=?', [query.liveSessionId, this.#store.assistantId]);
+    const page = this.#store.transaction(tx => {
+      const row = tx.get('SELECT * FROM live_sessions WHERE live_session_id=? AND owner_assistant_id=?', [query.liveSessionId, this.#store.assistantId]);
       if (!row) throw new LiveError('not_found');
+      this.#expireInTx(tx, row, this.#now());
       return readFragmentPage(tx, query.liveSessionId, cursor, limit);
     });
+    this.#armExpiry();
+    return page;
   }
 
   attach(input: { liveSessionId: string }, context: LiveContext): LiveAttachment {
@@ -207,16 +235,21 @@ export class LiveSessionOwner {
       if (String(row['profile_identity']) !== this.#profileIdentity || String(row['prompt_identity']) !== this.#promptIdentity) throw new LiveError('invalidated');
       if (String(row['lifecycle']) === 'terminal') throw new LiveError('terminal');
       if (String(row['lifecycle']) !== 'accepted') throw new LiveError('already_attached');
-      if (now - Number(row['created_at']) > this.#profile.limits.unusedMs) {
-        this.#terminalInTx(tx, input.liveSessionId, { state: 'expired' }, false, now, 'detached', null);
-        return 'expired' as const;
-      }
+      if (this.#expireInTx(tx, row, now) !== row) return 'expired' as const;
+      let acceptedPrompt: AcceptedPromptSnapshot;
+      // Null is a pre-v2 legacy record. Refuse honestly rather than recompile private current state.
+      try { acceptedPrompt = validateAcceptedPrompt(JSON.parse(String(row['accepted_prompt_snapshot'])), this.#store.assistantId); }
+      catch { throw new LiveError('invalidated'); }
+      const grantClasses = tx.get('SELECT permitted_classes FROM live_grants WHERE live_session_id=?', [input.liveSessionId]);
+      const permitted: DataClass[] = JSON.parse(String(grantClasses?.['permitted_classes']));
+      if (acceptedPrompt.dataClasses.some(c => !permitted.includes(c) || !this.#profile.route.dataClasses.includes(c))) throw new LiveError('invalidated');
       tx.run("UPDATE live_sessions SET lifecycle='opening', dispatch_intent=1, consumer_state='attached', updated_at=? WHERE live_session_id=?", [now, input.liveSessionId]);
       const grant = tx.get('SELECT chosen_input_class FROM live_grants WHERE live_session_id=?', [input.liveSessionId])!;
-      return String(grant['chosen_input_class']) as DataClass;
+      return { inputClass: String(grant['chosen_input_class']) as DataClass, acceptedPrompt };
     });
+    this.#armExpiry();
     if (prepared === 'expired') throw new LiveError('expired');
-    return this.#open(input.liveSessionId, prepared, revision);
+    return this.#open(input.liveSessionId, prepared.inputClass, revision, prepared.acceptedPrompt);
   }
 
   /** Explicit host entry point: synchronous in-memory invalidation and adapter abort. */
@@ -242,6 +275,7 @@ export class LiveSessionOwner {
         if (!row) throw new LiveError('not_found');
         if (String(row['lifecycle']) !== 'terminal') this.#terminalInTx(tx, liveSessionId, { state: 'revoked' }, false, this.#now(), 'detached', null);
       });
+      this.#armExpiry();
       return;
     }
     handle.invalidated = true;
@@ -253,6 +287,8 @@ export class LiveSessionOwner {
   async shutdown(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    this.#expiryTimer?.cancel();
+    this.#expiryTimer = undefined;
     const handles = [...this.#active.values()];
     for (const handle of handles) {
       handle.consumer?.discard();
@@ -262,9 +298,10 @@ export class LiveSessionOwner {
     for (const handle of handles) handle.resolveDone();
   }
 
-  #open(liveSessionId: string, inputClass: DataClass, revision: number): LiveAttachment {
+  #open(liveSessionId: string, inputClass: DataClass, revision: number, acceptedPrompt: AcceptedPromptSnapshot): LiveAttachment {
     const abort = new AbortController();
-    const request = { system: { text: this.#profile.prompt.text, dataClass: this.#profile.prompt.dataClass }, history: [], dataClasses: [inputClass] };
+    const dataClasses = classes.filter(c => c === inputClass || acceptedPrompt.dataClasses.includes(c));
+    const request = { system: { text: acceptedPrompt.system, dataClass: dataClasses[dataClasses.length - 1]! }, history: [], dataClasses };
     let session: LiveVoiceSession;
     try {
       // Absolute wall clock for the adapter; the injected clock is the owner's own durable order.
@@ -407,6 +444,41 @@ export class LiveSessionOwner {
     handle.consumer?.close();
     handle.abort.abort();
     handle.resolveDone();
+  }
+
+  /** The transaction/lifecycle guard makes attach and every expiry observation share one winner. */
+  #expireInTx(tx: Transaction, row: SQLRow, now: number): SQLRow {
+    if (row['owner_assistant_id'] !== this.#store.assistantId || row['lifecycle'] !== 'accepted'
+      || Number(row['dispatch_intent']) !== 0 || now - Number(row['created_at']) <= this.#profile.limits.unusedMs) return row;
+    const id = String(row['live_session_id']);
+    this.#terminalInTx(tx, id, { state: 'expired' }, false, now, 'detached', null);
+    return tx.get('SELECT * FROM live_sessions WHERE live_session_id=?', [id])!;
+  }
+
+  #armExpiry(): void {
+    if (this.#closed) return;
+    const next = this.#store.transaction(tx => tx.get(
+      "SELECT MIN(created_at) AS created_at FROM live_sessions WHERE owner_assistant_id=? AND lifecycle='accepted' AND dispatch_intent=0",
+      [this.#store.assistantId])!['created_at']);
+    this.#expiryTimer?.cancel();
+    this.#expiryTimer = undefined;
+    if (next === null) return;
+    // Integer milliseconds preserve age > unusedMs, even at equality or after a trusted clock jump.
+    // Node's maximum delay is capped to avoid its overflow-to-1ms behavior.
+    const delay = Math.min(2_147_483_647, Math.max(1, Number(next) + this.#profile.limits.unusedMs + 1 - this.#now()));
+    this.#expiryTimer = this.#schedule(() => {
+      if (this.#closed) return;
+      this.#expiryTimer = undefined;
+      const now = this.#now();
+      // Deliberately uncaught: Store rollback plus Node's fatal error seam, never silent retry/success.
+      this.#store.transaction(tx => {
+        const rows = tx.all("SELECT * FROM live_sessions WHERE owner_assistant_id=? AND lifecycle='accepted' AND dispatch_intent=0 AND created_at < ?",
+          [this.#store.assistantId, now - this.#profile.limits.unusedMs]);
+        for (const row of rows) this.#expireInTx(tx, row, now);
+      });
+      this.#armExpiry();
+    }, delay);
+    this.#expiryTimer.unref();
   }
 
   #terminalInTx(tx: Transaction, liveSessionId: string, outcome: LiveTerminalOutcome, complete: boolean, now: number, consumerState: LiveConsumerState, rejected: { kind: JournalKind; sequence: number } | null): number {

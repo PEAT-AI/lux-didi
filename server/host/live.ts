@@ -1,3 +1,4 @@
+import type { OwnerProfileSnapshot } from '../prompt/types.js';
 import { credentialsFor } from '../config/index.js';
 import { loadLiveConfig, type LiveConfiguredProfile, type LiveConfigStatus } from '../config/live.js';
 import { GeminiLiveVoiceAdapter, type DataClass, type LiveSocketFactory } from '../adapters/live-voice/index.js';
@@ -82,8 +83,8 @@ class UnconfiguredLive implements LiveService {
  * startup; recovery completes before the listener announces readiness. No secret is read unless a
  * profile exists, and then only lazily through the credentialsFor seam.
  */
-export function composeLive(store: Store, configDir: string, testing?: LiveTesting, now?: () => number): { service: LiveService; status: LiveStatusPayload } {
-  const loaded = loadLiveConfig({ configDir, ownerId: store.assistantId });
+export function composeLive(store: Store, configDir: string, testing?: LiveTesting, now?: () => number, ownerProfile?: OwnerProfileSnapshot): { service: LiveService; status: LiveStatusPayload } {
+  const loaded = loadLiveConfig({ configDir, ownerId: store.assistantId, ...(ownerProfile ? { ownerProfile } : {}) });
   const profile = testing?.profile ?? (loaded.status === 'configured' ? loaded.config.profile : undefined);
   const status = statusPayload(loaded, profile);
   if (!profile) return { service: new UnconfiguredLive(status), status };
@@ -91,6 +92,11 @@ export function composeLive(store: Store, configDir: string, testing?: LiveTesti
   const voice = new GeminiLiveVoiceAdapter({
     modelId: profile.liveModelId, voice: profile.voice, keyReference: profile.keyReference, credentials,
     route: { enabled: true, provider: 'gemini', modelId: profile.liveModelId, dataClasses: [...profile.route.dataClasses] },
+    // wsBufferedBytes belongs to the gateway consumer socket, not this provider socket.
+    limits: {
+      handshakeMs: profile.limits.handshakeMs, idleMs: profile.limits.idleMs,
+      sessionMs: profile.limits.sessionMs, closeMs: profile.limits.closeMs,
+    },
     ...(testing?.socketFactory ? { socketFactory: testing.socketFactory } : {}),
   });
   const owner = createLiveSessionOwner({ store, voice, profile, ...(now ? { now } : {}) });

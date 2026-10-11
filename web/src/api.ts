@@ -26,12 +26,17 @@ export async function request<T>(path: string, options: { method?: string; body?
     }
   }
   const response = await fetch(`/api/v1${path}`, { method, credentials: 'same-origin', cache: 'no-store', headers, body: options.body === undefined ? undefined : JSON.stringify(options.body), signal: options.signal });
-  const envelope = await response.json();
-  pendingKeys.delete(fingerprint);
-  if (!response.ok) throw new ApiError(envelope.error?.code ?? 'REQUEST_FAILED', envelope.error?.message ?? 'The service could not finish that request.', response.status);
-  if (typeof envelope.authorityEpoch !== 'string' || !('data' in envelope)) throw new ApiError('INVALID_RESPONSE', 'The service returned an unexpected response.', response.status);
+  const parsed: unknown = await response.json();
+  const envelope = parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : undefined;
+  if (!response.ok) {
+    const value = envelope?.error;
+    const error = value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+    throw new ApiError(typeof error?.code === 'string' ? error.code : 'REQUEST_FAILED', typeof error?.message === 'string' ? error.message : 'The service could not finish that request.', response.status);
+  }
+  if (!envelope || typeof envelope.authorityEpoch !== 'string' || !envelope.authorityEpoch.length || !Object.prototype.hasOwnProperty.call(envelope, 'data')) throw new ApiError('INVALID_RESPONSE', 'The service returned an unexpected response.', response.status);
   if (epoch && epoch !== envelope.authorityEpoch) { clearAuthority(); authorityChanged?.(); throw new ApiError('AUTHORITY_CHANGED', 'Your connection changed. Reconnect to load the current records.', 409); }
   epoch = envelope.authorityEpoch;
+  pendingKeys.delete(fingerprint);
   return envelope.data as T;
 }
 // Exact service-owned auth freeze: service/API.md at f640274fe8ea83bf7687f26d709c399a0961148e.

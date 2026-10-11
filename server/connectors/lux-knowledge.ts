@@ -24,7 +24,7 @@ export interface LuxKnowledgeConfig {
 export interface LuxKnowledgeSearchInput { query: string; limit: number }
 export interface LuxKnowledgeGetInput { ids: number[] }
 
-export interface LuxKnowledgeSource {
+export interface HttpLuxKnowledgeSource {
   endpointId: string;
   url: string;
   account: string;
@@ -32,6 +32,17 @@ export interface LuxKnowledgeSource {
   schemaDigest: string;
   generation: number;
 }
+/** Transport-specific provenance: stdio carries no url, only the safe binding digest. */
+export interface StdioLuxKnowledgeSource {
+  endpointId: string;
+  transport: 'stdio';
+  bindingDigest: string;
+  account: string;
+  resource: string;
+  schemaDigest: string;
+  generation: number;
+}
+export type LuxKnowledgeSource = HttpLuxKnowledgeSource | StdioLuxKnowledgeSource;
 
 /** Opaque local evidence. Classification is constant `unknown`; markdown can never change it. */
 export interface LuxKnowledgeEvidence {
@@ -58,8 +69,8 @@ export type LuxKnowledgeResult =
   | LuxKnowledgeUnknown;
 
 export interface LuxKnowledgeReader {
-  search(input: LuxKnowledgeSearchInput): Promise<LuxKnowledgeResult>;
-  get(input: LuxKnowledgeGetInput): Promise<LuxKnowledgeResult>;
+  search(input: LuxKnowledgeSearchInput, signal?: AbortSignal): Promise<LuxKnowledgeResult>;
+  get(input: LuxKnowledgeGetInput, signal?: AbortSignal): Promise<LuxKnowledgeResult>;
 }
 
 export interface LuxKnowledgeOptions {
@@ -181,7 +192,7 @@ export function createLuxKnowledgeReader(options: LuxKnowledgeOptions): LuxKnowl
     maxQueryChars: requirePositiveSafeInteger(config.maxQueryChars),
   };
 
-  async function dispatch(tool: LuxKnowledgeTool, args: Record<string, unknown>, requestedIds?: readonly number[]): Promise<LuxKnowledgeResult> {
+  async function dispatch(tool: LuxKnowledgeTool, args: Record<string, unknown>, signal?: AbortSignal, requestedIds?: readonly number[]): Promise<LuxKnowledgeResult> {
     const request: CallRequest = {
       endpointId: settings.endpointId,
       toolName: tool,
@@ -190,12 +201,14 @@ export function createLuxKnowledgeReader(options: LuxKnowledgeOptions): LuxKnowl
       account: settings.account,
       resource: settings.resource,
     };
-    const result = await port.call(request);
+    if (signal?.aborted) return { state: 'refused', reason: 'cancelled-before-dispatch' };
+    const result = await port.call(request, signal);
     if (isFailed(result)) {
       return result.state === 'refused'
         ? { state: 'refused', reason: result.reason }
         : { state: 'unknown', reason: result.reason };
     }
+    if (signal?.aborted) return { state: 'unknown', reason: 'cancelled-after-dispatch' };
     const evidence: LuxKnowledgeEvidence = {
       classification: 'unknown',
       capability: 'local-only',
@@ -212,23 +225,23 @@ export function createLuxKnowledgeReader(options: LuxKnowledgeOptions): LuxKnowl
   }
 
   return {
-    async search(input: LuxKnowledgeSearchInput): Promise<LuxKnowledgeResult> {
+    async search(input: LuxKnowledgeSearchInput, signal?: AbortSignal): Promise<LuxKnowledgeResult> {
       const validated = validateSearch(input, settings);
       if (!validated.ok) return { state: 'refused', reason: validated.reason };
       const denied = preflight(registry, settings, 'search_knowledge');
       if (denied) return { state: 'refused', reason: denied };
       // Copy the validated primitives into the exact outgoing arguments once.
       const args: Record<string, unknown> = { query: validated.query, limit: validated.limit, include_sensitive: false };
-      return dispatch('search_knowledge', args);
+      return dispatch('search_knowledge', args, signal);
     },
-    async get(input: LuxKnowledgeGetInput): Promise<LuxKnowledgeResult> {
+    async get(input: LuxKnowledgeGetInput, signal?: AbortSignal): Promise<LuxKnowledgeResult> {
       const validated = validateGet(input, settings);
       if (!validated.ok) return { state: 'refused', reason: validated.reason };
       const denied = preflight(registry, settings, 'get_insight');
       if (denied) return { state: 'refused', reason: denied };
       const ids = validated.ids;
       const args: Record<string, unknown> = { ids: [...ids], include_links: false };
-      return dispatch('get_insight', args, ids);
+      return dispatch('get_insight', args, signal, ids);
     },
   };
 }

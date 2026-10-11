@@ -33,6 +33,7 @@
     "dist/prompt",
     "dist/adapters/mcp",
     "dist/connectors",
+    "dist/tools",
     "adapters/mcp/SDK-LICENSE.txt",
     "dist/adapters/live-voice",
     "dist/live"

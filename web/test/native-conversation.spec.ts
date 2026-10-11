@@ -4,17 +4,17 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { fork, execFileSync } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtemp, mkdir, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { createArtifactDir } from './artifacts.mjs';
 
 const { chromium } = createRequire(new URL('../../web/package.json', import.meta.url))('playwright');
 const { answer } = await import('../../server/dist/test/connected-process.js');
 const root = resolve(import.meta.dirname, '../..');
 const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, env: { ...process.env, GIT_PAGER: 'cat', GIT_EDITOR: 'true' } }).toString().trim();
-const artifacts = '/Users/rob/.lux/reports/lux-didi-overnight-1009/native-conversation-service/screenshots';
+const artifacts = await createArtifactDir('native-conversation-service/screenshots');
 const state = await mkdtemp(join(tmpdir(), 'native-conversation-browser-'));
-await mkdir(artifacts, { recursive: true });
 let child, descriptor, browser, context, page, stderr = '';
 const steps = [];
 

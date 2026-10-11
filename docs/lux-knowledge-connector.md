@@ -59,7 +59,16 @@ defaulted or clamped, and later caller mutation of `config` cannot change behavi
 
 ## Two methods, strict input
 
-`search({ query, limit })` and `get({ ids })` only.
+`search({ query, limit }, signal?)` and `get({ ids }, signal?)` only.
+
+Both accept an optional `AbortSignal`, forwarded unchanged to the existing MCP
+adapter. Input validation and registry preflight still run first. An already
+aborted valid request is refused (`cancelled-before-dispatch`) without calling
+the remote tool. In-flight cancellation remains owned by that adapter; its
+structured `refused`/`unknown` outcome and reason are preserved. If completed
+or error evidence arrives after cancellation, the reader returns `unknown`
+(`cancelled-after-dispatch`) instead of exposing usable evidence. Exceptions
+still propagate. There is no extra transport, detached race or automatic retry.
 
 Inputs are read once as a strict plain-data snapshot; validated primitives are copied into the
 outgoing arguments a single time. There is no getter re-read and no caller iterator use.
@@ -119,5 +128,6 @@ Lux Knowledge call. It proves positive `search`/`get` round trips, exact argumen
 malformed/extra-field refusal with zero dispatch, the required grant, writer refusal,
 schema/scope/generation drift refusal, hostile/sensitive-shaped markdown staying
 unknown/local-only with no extra call, per-response hashes, response/handle budgets, exact slice
-reconstruction, expiry/revocation without refetch, and honest `tool-error`/`unknown` outcomes.
+reconstruction, expiry/revocation without refetch, honest `tool-error`/`unknown` outcomes, pre-abort with zero remote calls, in-flight
+abort reaching the real adapter, and unusable late results for both methods.
 `scripts/check-knowledge-connector.sh` compiles the canonical source and runs only this file.

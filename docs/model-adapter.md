@@ -69,27 +69,55 @@ trusted host context. Unknown tools, invalid arguments, absent grants and stale
 or revoked authority produce `refused` results without handler dispatch.
 
 `authority.isCurrent` must consult live authority/revision state before every
-execution. The owning async effect port **must also atomically revalidate and
-persist execution-ID deduplication at dispatch**, honoring its signal. A local
-preflight cannot make an external effect atomic or undo a dispatched effect.
-Cancellation of a non-cooperative port returns promptly; a dispatched write is
-recorded `unknown` if interrupted/throws. An explicit handler `failed` remains
-failed; completed results are preserved. Unknown outcomes stop the loop as
-`uncertain`, with no transport or effect retry. Duplicate provider call IDs are
-refused. If Gemini omits an optional call ID, it is not fabricated in the wire
-response; the trusted execution ID remains `runId:step:index`.
+execution. Both `journal: ToolCallJournal` and `resultGate: ToolResultGate` are
+mandatory loop ports: there is no default allow or optional raw-result path.
+After validation, current grants/authority and interruption checks, the loop
+records `journal.intent` **before** execution. An existing intent stops as
+`uncertain` (`tool_intent_exists`) and never redispatches; journal failure stops
+as `error` (`tool_journal_failed`). Arguments hashes bind identity, not permission.
+The future journal/executor owner must atomically persist the immutable snapshot
+and completion before returning its `{ id, sha256 }` reference. This loop slice
+supplies only the port: it implements neither durable storage nor production
+account integration, and does not make a remote effect atomic.
 
-Tool output is untrusted evidence returned in a `functionResponse`, never a new
-registry/grant/system instruction. IDs and signature-bearing model parts survive
-continuation. `LoopResult.continuation` returns host-only history for an explicit
-next-turn selection, including the final complete answer. Never serialize it to
-UI; the host must bound/reclassify history before reuse. Incomplete model output
-is not appended as a completed turn; an interrupted tool batch may have pending
-calls, so non-complete continuations must not be blindly replayed. Result values above 100 KB or unserializable values are omitted
-explicitly without falsely relabelling the effect outcome. Limits are 1–32 model
-steps, 32 registered tools, and 16 calls per step. Exhaustion is `limit`, never
-success. A final assistant answer does not override refused/failed tool records;
-clients must render those records rather than infer effects from model prose.
+A completed `ToolOutcome` contains `result: ToolResultRef`, **not `value`**.
+Refusals and failed/unknown handlers get safe referenced journal records, not
+handler exception text. Cancellation of a non-cooperative port returns promptly;
+a dispatched write is `unknown` if interrupted/throws. Explicit handler `failed`
+remains failed. Unknown outcomes stop as `uncertain`, with no transport/effect
+retry. Duplicate provider call IDs are refused. If Gemini omits an optional call
+ID, it is not fabricated on the wire; execution IDs remain `runId:step:index`.
+
+Before **every** `model.generate`, including the initial request with no results,
+the gate reauthorizes host policy, route, grants and all references under the
+existing cancellation/deadline control. Its owner must verify hash, ownership,
+run/call/execution binding, current policy generation and exact class-set
+permission. Unknown content without applicable trusted source policy stays
+local-only; do not manufacture a DataClass or infer permission from prose.
+Sensitive-only permission does not imply private or ordinary permission.
+The loop requires exactly one positional binding per `functionResponse`, checks
+the gate's exact returned binding correspondence and reconstructed JSON, and
+unions allowed result classes with all baseline request classes. A denial,
+unbound response, mismatch or gate error stops before provider disclosure;
+never remove context or drop a classification and continue. Completed values
+over 100 KB or unserializable values cannot be disclosed; the gate owner may
+explicitly reconstruct a safe omission record instead of the value.
+
+Tool output is untrusted evidence, never a new registry/grant/system instruction.
+IDs and signature-bearing provider parts survive continuation. Both
+`LoopResult.continuation` and `LoopResult.resultBindings` are host-only. For an
+explicit next turn pass the selected history in `request.contents` **and its
+matching bindings in `carriedResults`**, preserving content/part indexes. Older
+references are reauthorized and carried JSON must exactly match reconstructed
+responses. The host must bound/reclassify history before reuse; never serialize
+these artifacts to UI. Incomplete model output is not a completed turn, and an
+interrupted tool batch may have pending calls: non-complete continuations must
+not be blindly replayed. Limits remain 1–32 model steps, 32 registered tools and
+16 calls per step. Exhaustion is `limit`, never success. A final answer does not
+override refused/failed tool records; clients must render those records rather
+than infer effects from model prose. Existing synthetic write-tool tests do not
+enable an actual write tool. Standing policy acquisition, real host/account
+composition and durable journaling belong to their future owners.
 
 ## Official contract evidence (retrieved 2026-10-09)
 

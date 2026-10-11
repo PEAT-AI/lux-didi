@@ -39,4 +39,10 @@ export const chatMigrations: readonly SchemaMigration[] = [{ owner: 'chat', vers
     schema_version INTEGER NOT NULL,
     requested_ids TEXT NOT NULL,
     resolved_records TEXT NOT NULL)`
+] }, { owner: 'chat', version: 4, statements: [
+  `CREATE TABLE chat_run_owner_profile (
+    run_id TEXT PRIMARY KEY REFERENCES chat_runs(run_id),
+    schema_version INTEGER NOT NULL, snapshot_json TEXT NOT NULL)`,
+  `INSERT INTO chat_run_owner_profile(run_id,schema_version,snapshot_json)
+    SELECT run_id,1,json_object('schemaVersion',1,'kind','default','ownerId',owner_assistant_id,'displayName','Lux Didi') FROM chat_runs`
 ] }];

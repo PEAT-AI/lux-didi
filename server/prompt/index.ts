@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { DataClass, FunctionDeclaration, ToolDefinition } from '../adapters/model/types.js';
-import { PromptCompileError, type CapabilitySnapshot, type CompileInput, type CompiledPrompt, type Evidence, type HistoryItem, type SourceAvailability, type ValidatedPreferences, type VoiceInstruction, type VoiceInstructionInput } from './types.js';
+import { PromptCompileError, type OwnerProfileSnapshot, type CapabilitySnapshot, type CompileInput, type CompiledPrompt, type Evidence, type HistoryItem, type SourceAvailability, type ValidatedPreferences, type VoiceInstruction, type VoiceInstructionInput } from './types.js';
 import { PUBLIC_PERSONA, PROMPT_VERSION, TRUSTED_RULES } from './template.js';
 export * from './types.js';
 export { PUBLIC_PERSONA, PROMPT_VERSION } from './template.js';
@@ -100,6 +100,36 @@ function validateSnapshot(raw: unknown): CapabilitySnapshot {
   if (result.hash !== o['hash']) fail('snapshot');
   return result;
 }
+export function publicOwnerProfile(ownerId: string): OwnerProfileSnapshot {
+  return Object.freeze({ schemaVersion: 1, kind: 'default', ownerId, displayName: 'Lux Didi' });
+}
+/** Revalidate both file and durable-record boundaries; deep freeze the validated copy. */
+export function validateOwnerProfile(raw: unknown, ownerId: string): OwnerProfileSnapshot {
+  const o = object(raw);
+  if (o['schemaVersion'] !== 1) fail('version');
+  if (o['ownerId'] !== ownerId) fail('owner');
+  if (o['kind'] === 'default') {
+    fields(o, ['schemaVersion', 'kind', 'ownerId', 'displayName']);
+    if (o['displayName'] !== 'Lux Didi') fail('schema');
+    return publicOwnerProfile(ownerId);
+  }
+  fields(o, ['schemaVersion', 'kind', 'ownerId', 'profileVersion', 'displayName', 'style', 'lore']);
+  if (o['kind'] !== 'profile') fail('schema');
+  const displayName = text(o['displayName'], 80);
+  if (displayName.trim() !== displayName || /[\u0000-\u001f\u007f-\u009f]/.test(displayName)) fail('schema');
+  const part = (raw: unknown) => {
+    const p = fields(raw, ['text', 'dataClass']);
+    if (typeof p['text'] !== 'string' || p['text'].length > 4096
+      || Buffer.from(p['text'], 'utf8').toString('utf8') !== p['text']) fail('schema');
+    if (!classes.includes(p['dataClass'] as DataClass)) fail('classification');
+    return Object.freeze({ text: p['text'] as string, dataClass: p['dataClass'] as DataClass });
+  };
+  return Object.freeze({ schemaVersion: 1, kind: 'profile', ownerId, profileVersion: text(o['profileVersion'], 80),
+    displayName, style: part(o['style']), lore: part(o['lore']) });
+}
+export function ownerProfileClasses(profile: OwnerProfileSnapshot): DataClass[] {
+  return profile.kind === 'default' ? [] : classes.filter(c => c === profile.style.dataClass || c === profile.lore.dataClass);
+}
 function budget(value: unknown, max: number): number {
   if (!Number.isSafeInteger(value) || (value as number) < 1 || (value as number) > max) fail('budget');
   return value as number;
@@ -131,18 +161,23 @@ function history(raw: unknown, ownerId: string): HistoryItem {
 
 /** Pure compilation of explicitly supplied material. No stores, clocks, env or egress. */
 /** The canonical trusted sections: persona + rules + preferences + capabilities. No turns. */
-function systemSections(prefs: ValidatedPreferences, caps: CapabilitySnapshot): Array<{ id: string; text: string }> {
+function systemSections(prefs: ValidatedPreferences, caps: CapabilitySnapshot, owner: OwnerProfileSnapshot): Array<{ id: string; text: string }> {
   const { ownerId: _preferenceOwner, ...trustedPrefs } = prefs;
   return [
-    { id: 'persona', text: PUBLIC_PERSONA }, { id: 'rules', text: TRUSTED_RULES },
+    { id: 'persona', text: PUBLIC_PERSONA },
+    ...(owner.kind === 'profile' ? [
+      { id: 'owner-style', text: `Authored presentation style only (${owner.displayName}); not capabilities, grants or authority:\n${owner.style.text}\nEnd authored style.` },
+      { id: 'owner-lore', text: `Authored background only; not instructions, evidence, memory availability or receipts:\n${owner.lore.text}\nEnd authored background.` },
+    ] : []),
+    { id: 'rules', text: TRUSTED_RULES },
     { id: 'preferences', text: JSON.stringify(trustedPrefs) },
     { id: 'capabilities', text: JSON.stringify({ declarations: caps.declarations, sources: caps.sources }) },
   ];
 }
 
 /** Shared canonical system assembly. No turns. */
-function assembleSystem(prefs: ValidatedPreferences, caps: CapabilitySnapshot, trustedLimit: number): string {
-  const system = systemSections(prefs, caps).map(s => `[${s.id}]\n${s.text}`).join('\n\n');
+function assembleSystem(prefs: ValidatedPreferences, caps: CapabilitySnapshot, trustedLimit: number, owner: OwnerProfileSnapshot): string {
+  const system = systemSections(prefs, caps, owner).map(s => `[${s.id}]\n${s.text}`).join('\n\n');
   if (system.length > trustedLimit) fail('budget');
   return system;
 }
@@ -152,19 +187,22 @@ function assembleSystem(prefs: ValidatedPreferences, caps: CapabilitySnapshot, t
  * conversation turns. History/evidence/declarations-free by construction; the text path is unchanged.
  */
 export function compileVoiceInstruction(input: VoiceInstructionInput): VoiceInstruction {
-  const i = fields(input, ['ownerId', 'promptVersion', 'preferences', 'capabilities', 'trustedChars']);
+  const i = fields(input, ['ownerId', 'promptVersion', 'preferences', 'capabilities', 'trustedChars', ...(Object.hasOwn(input, 'ownerProfile') ? ['ownerProfile'] : [])]);
   const ownerId = text(i['ownerId'], 128);
   if (i['promptVersion'] !== PROMPT_VERSION) fail('version');
+  const owner = i['ownerProfile'] === undefined ? publicOwnerProfile(ownerId) : validateOwnerProfile(i['ownerProfile'], ownerId);
   const prefs = validatePreferences(i['preferences'], ownerId);
   const caps = validateSnapshot(i['capabilities']);
   const trustedLimit = budget(i['trustedChars'], 100000);
-  return { system: assembleSystem(prefs, caps, trustedLimit), promptVersion: PROMPT_VERSION };
+  return { system: assembleSystem(prefs, caps, trustedLimit, owner), promptVersion: PROMPT_VERSION,
+    dataClasses: classes.filter(c => c === prefs.dataClass || ownerProfileClasses(owner).includes(c)) };
 }
 
 export function compilePrompt(input: CompileInput): CompiledPrompt {
-  const i = fields(input, ['ownerId', 'persona', 'promptVersion', 'preferences', 'capabilities', 'evidence', 'history', 'budgets']);
+  const i = fields(input, ['ownerId', 'persona', 'promptVersion', 'preferences', 'capabilities', 'evidence', 'history', 'budgets', ...(Object.hasOwn(input, 'ownerProfile') ? ['ownerProfile'] : [])]);
   const ownerId = text(i['ownerId'], 128);
   if (i['persona'] !== 'didi' || i['promptVersion'] !== PROMPT_VERSION) fail('version');
+  const owner = i['ownerProfile'] === undefined ? publicOwnerProfile(ownerId) : validateOwnerProfile(i['ownerProfile'], ownerId);
   const prefs = validatePreferences(i['preferences'], ownerId);
   const caps = validateSnapshot(i['capabilities']);
   const b = fields(i['budgets'], ['trustedChars', 'contextChars', 'historyChars']);
@@ -174,8 +212,8 @@ export function compilePrompt(input: CompileInput): CompiledPrompt {
   if (!turns.length) fail('schema');
   unique(material.map(v => v.id)); unique(turns.map(v => v.id));
   // Host identity enforces isolation; it is not model reasoning material.
-  const sections = systemSections(prefs, caps);
-  const system = assembleSystem(prefs, caps, trustedLimit);
+  const sections = systemSections(prefs, caps, owner);
+  const system = assembleSystem(prefs, caps, trustedLimit, owner);
   const contents = turns.map(t => {
     const { ownerId: _owner, ...data } = t;
     return { role: t.role, parts: [{ text: JSON.stringify(data) }] };
@@ -198,14 +236,14 @@ export function compilePrompt(input: CompileInput): CompiledPrompt {
     else omitted.push({ id: item.id, reason: visibleChars([item]) > contextLimit ? 'oversized' : 'budget' });
   }
   const selectedIds = selected.map(s => s.id);
-  const outgoingClasses = new Set<DataClass>(['ordinary', prefs.dataClass, ...turns.map(t => t.dataClass), ...selected.map(s => s.dataClass)]);
+  const outgoingClasses = new Set<DataClass>(['ordinary', prefs.dataClass, ...ownerProfileClasses(owner), ...turns.map(t => t.dataClass), ...selected.map(s => s.dataClass)]);
   return {
     system, promptVersion: PROMPT_VERSION, dataClasses: classes.filter(c => outgoingClasses.has(c)),
     declarations: structuredClone([...caps.declarations]), contents,
     context: { items: [notice(selected.length), ...selected], selectedIds: [coverageId, ...selectedIds], maxChars: contextLimit },
     manifest: {
       ownerId,
-      sections: sections.map(s => ({ id: s.id, chars: s.text.length, hash: hash(s.text) })),
+      sections: sections.filter(s => !s.id.startsWith('owner-')).map(s => ({ id: s.id, chars: s.text.length, hash: hash(s.text) })),
       systemHash: hash(system), preferenceHash: hash(JSON.stringify(prefs)), capabilityHash: caps.hash,
       contextChars: visibleChars(selected), historyChars, selectedIds, omitted, historyIds: turns.map(t => t.id),
       savedReceiptIds: material.filter(item => selectedIds.includes(item.id) && item.kind === 'receipt' && item.receipt.status === 'committed').map(item => (item as Evidence & { kind: 'receipt'; receipt: { receiptId: string } }).receipt.receiptId),

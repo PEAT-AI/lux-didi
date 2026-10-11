@@ -75,6 +75,92 @@ test('failed migration rolls back DDL and metadata; gaps, reserved owner and dow
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+const triggerSchema = [
+  'CREATE TABLE records(id TEXT PRIMARY KEY, text TEXT NOT NULL)',
+  'CREATE TABLE audit(text TEXT NOT NULL)',
+  `/* α; END */ CREATE TRIGGER "quoted; END α" AFTER INSERT ON records BEGIN
+    INSERT INTO audit VALUES(CASE WHEN NEW.text='α; END' THEN 'quoted ''END;'' β' ELSE 'else' END);
+    UPDATE records SET text=text || ' 😀' WHERE id=NEW.id; /* END; */
+  END; /* complete suffix ; */ -- line suffix\n`,
+  `CREATE TRIGGER immutable_identity BEFORE UPDATE ON records WHEN NEW.id IS NOT OLD.id
+    BEGIN SELECT RAISE(ABORT,'identity_guard'); END;`,
+  `CREATE TRIGGER immutable_delete BEFORE DELETE ON records
+    BEGIN SELECT RAISE(ABORT,'delete_guard'); END;`,
+];
+
+test('typed compound trigger migration enforces guards with CASE comments quotes and Unicode', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-trigger-'));
+  const migrations = [{ owner: 'trigger', version: 1, statements: triggerSchema }];
+  let store: Store | undefined;
+  try {
+    store = new Store(dir, migrations);
+    store.transaction(tx => {
+      tx.run('INSERT INTO records VALUES (?,?)', ['one', 'α; END']);
+      assert.equal(tx.get('SELECT text FROM records')!['text'], 'α; END 😀');
+      assert.equal(tx.all('SELECT text FROM audit')[0]!['text'], "quoted 'END;' β");
+      assert.throws(() => tx.run("UPDATE records SET id='changed'"), /identity_guard/);
+      assert.throws(() => tx.run('DELETE FROM records'), /delete_guard/);
+      assert.equal(tx.get('SELECT count(*) AS n FROM records')!['n'], 1);
+    });
+    store.close(); store = new Store(dir, migrations);
+    assert.throws(() => store!.transaction(tx => tx.run('DELETE FROM records')), /delete_guard/);
+  } finally { store?.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('all prepare surfaces reject tails before stepping even when rejection is caught and transaction commits', () => {
+  const f = fixture();
+  try {
+    f.store.transaction(tx => {
+      const first = "INSERT INTO records VALUES ('side','α')";
+      const tails = [' SELECT 1', ' CREATE TABLE tail(x)', ' COMMIT', ';', ' /* unterminated', ' /* valid */ garbage', '\u00a0', '\v'];
+      for (const method of ['run', 'all', 'get'] as const) {
+        for (const tail of tails) {
+          assert.throws(() => tx[method](first + ';' + tail), `reject ${method} tail ${JSON.stringify(tail)}`);
+          assert.equal(tx.get('SELECT count(*) AS n FROM records')!['n'], 0, 'first INSERT must not have stepped');
+        }
+        assert.throws(() => tx[method]('CREATE TABLE hidden(x); SELECT 1'));
+        assert.equal(tx.get("SELECT count(*) AS n FROM sqlite_master WHERE name IN ('hidden','tail')")!['n'], 0);
+      }
+      assert.equal(tx.get("SELECT '; /* END -- α */' AS text; \t\n\f\r /* complete ; */ -- EOF")!['text'], '; /* END -- α */');
+      assert.equal(tx.all("SELECT 'β' AS text; -- line\n /* block */")[0]!['text'], 'β');
+      tx.run('INSERT INTO records VALUES (?,?); -- complete suffix', ['valid', '😀']);
+    });
+    assert.equal(f.store.transaction(tx => tx.get('SELECT count(*) AS n FROM records'))!['n'], 1);
+  } finally { f.cleanup(); }
+});
+
+test('NUL and non-roundtripping Unicode reject before native preparation on all surfaces', () => {
+  const f = fixture();
+  try {
+    f.store.transaction(tx => {
+      for (const method of ['run', 'all', 'get'] as const) {
+        for (const sql of ['BROKEN\0SQL', "INSERT INTO records VALUES ('side','x');\0 COMMIT"])
+          assert.throws(() => tx[method](sql), /NUL/, 'input boundary must win over native syntax/truncation');
+        for (const bad of ['\ud800', '\udc00', '\ud800x'])
+          assert.throws(() => tx[method]('BROKEN ' + bad), /Unicode/, 'input boundary must win over native syntax/UTF8 replacement');
+      }
+      assert.equal(tx.get("SELECT 'α😀�' AS text; /* valid UTF8 */")!['text'], 'α😀�');
+      assert.equal(tx.get('SELECT count(*) AS n FROM records')!['n'], 0);
+    });
+  } finally { f.cleanup(); }
+});
+
+test('failed later migration rolls back compound trigger schema data and migration bookkeeping', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-trigger-rollback-'));
+  let store: Store | undefined;
+  try {
+    assert.throws(() => new Store(dir, [{ owner: 'trigger', version: 1, statements: [...triggerSchema, "INSERT INTO records VALUES ('side','α; END')", 'BROKEN SQL'] }]));
+    store = new Store(dir, [{ owner: 'trigger', version: 1, statements: triggerSchema }]);
+    store.transaction(tx => {
+      assert.equal(tx.get('SELECT count(*) AS n FROM records')!['n'], 0);
+      assert.equal(tx.get('SELECT count(*) AS n FROM audit')!['n'], 0);
+      assert.equal(tx.get("SELECT version FROM runtime_migrations WHERE owner='trigger'")!['version'], 1);
+      tx.run("INSERT INTO records VALUES ('one','α; END')");
+      assert.throws(() => tx.run('DELETE FROM records'), /delete_guard/);
+    });
+  } finally { store?.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('outbox and domain changes roll back together; policy default denies and wrong claims fail', () => {
   const f = fixture();
   try {

@@ -1,3 +1,4 @@
+import type { OwnerProfileSnapshot } from '../prompt/types.js';
 import type { DataClass, LiveVoiceOutcome, LiveVoicePort } from '../adapters/live-voice/index.js';
 import type { StorePort } from '../contracts/storage.js';
 
@@ -29,7 +30,12 @@ export interface LiveLimits {
   wsBufferedBytes: number;
 }
 
+export interface AcceptedPromptSnapshot {
+  readonly schemaVersion: 1; readonly ownerProfile: OwnerProfileSnapshot;
+  readonly compilerVersion: string; readonly system: string; readonly dataClasses: readonly DataClass[];
+}
 export interface LiveProfile {
+  readonly acceptedPrompt?: AcceptedPromptSnapshot;
   readonly provider: 'gemini';
   readonly liveModelId: string;
   readonly voice: string;
@@ -43,7 +49,10 @@ export interface LiveOwnerConfig {
   readonly store: LiveStorePort;
   readonly voice: LiveVoicePort;
   readonly profile: LiveProfile;
+  /** Trusted clock in safe integer Unix epoch milliseconds, shared with schedule in tests. */
   readonly now?: () => number;
+  /** Trusted in-process timer seam; not a transport or an error callback. */
+  readonly schedule?: (callback: () => void, delayMs: number) => { unref(): void; cancel(): void };
 }
 
 export interface LiveContext { readonly clientId: string; readonly auditId: string; readonly authorityEpoch: string }

@@ -65,6 +65,22 @@ store.close();
   per `(assistantId, idempotencyKey)` and conflicts on a different request fingerprint.
 - Lifecycle `accepted -> opening -> active -> terminal`; exactly one attach; `dispatch_intent`
   is durable before the adapter is opened.
+- Accepted sessions with no dispatch intent expire when `now - createdAt > unusedMs` (not at
+  equality). `get`, matching same-key replay, `listFragments` and `attach` share the same
+  transactional predicate and canonical `expired` terminal fact; replay never dispatches.
+  The snapshot's `terminal` is authoritative, not an invented fragment outcome field.
+- One unref'd owner timer tracks the earliest accepted deadline, regardless of session count.
+  It ignores opening/active sessions and remains responsible for accepted sessions after
+  invalidation. `shutdown()` cancels it synchronously before awaiting active-handle cleanup;
+  a queued callback checks the closed fence before touching Store.
+- The trusted `now` seam returns safe integer Unix epoch milliseconds (as `Date.now` does).
+  A trusted optional `schedule(callback, delayMs)` seam returns `unref()`/`cancel()` handles;
+  deterministic tests share its clock with `now`. The first eligible millisecond is deadline
+  plus one; delays stay positive and bounded to Node's maximum timeout, without weakening
+  the strict comparison. No client clock or provider timer controls unused expiry.
+- Expiry Store errors roll back and propagate: operations throw the original error; an
+  autonomous timer error escapes through Node's existing uncaught fatal seam, with no fake
+  expiration or retry loop. This is fail-loud process termination, not graceful fatal shutdown.
 - Startup recovery sweeps incomplete sessions to `not_started` (no intent) or
   `outcome_unknown` (possible egress). No retry, reconnect, replay or resume.
 - `invalidate(reason)` synchronously aborts the adapter even while silent, during model output

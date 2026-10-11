@@ -1,5 +1,9 @@
 import { createHash } from 'node:crypto';
-import type { CallRequest, EndpointConfig, ReadGrant, ResultScope, ToolDefinition } from './port.js';
+import { accessSync, constants } from 'node:fs';
+import { isAbsolute } from 'node:path';
+import { DEFAULT_INHERITED_ENV_VARS } from '@modelcontextprotocol/client/stdio';
+import { bindingDigestOf, endpointBinding, isStdioEndpoint, sourceBindingOf } from './port.js';
+import type { CallRequest, EndpointConfig, HttpEndpointConfig, ReadGrant, ResultScope, StdioEndpointConfig, ToolDefinition } from './port.js';
 
 export function canonicalToolDigest(tools: readonly ToolDefinition[]): string {
   const canonical = (value: unknown): unknown => {
@@ -16,6 +20,23 @@ export function validateEndpointUrl(raw: string): URL {
   if (url.protocol !== 'https:' && !(url.protocol === 'http:' && literalLoopback)) throw new Error('http-requires-literal-loopback');
   return url;
 }
+/**
+ * Single in-scope authority for the approved stdio environment. The SDK merges
+ * its platform inherited set into any supplied env, so every inherited key must
+ * be present in the approval identity (an explicit '' neutralizes a non-routing
+ * default). Reuses the SDK's own public DEFAULT_INHERITED_ENV_VARS so config,
+ * registry and owner cannot diverge. stdio fails closed on win32 until its
+ * adapter is implemented; HTTP/local features are unaffected.
+ */
+export const STDIO_ENV_KEYS: readonly string[] = Object.freeze([...DEFAULT_INHERITED_ENV_VARS]);
+export function validateApprovedStdioEnv(env: unknown): env is Record<string, string> {
+  if (process.platform === 'win32') return false;
+  if (env === null || typeof env !== 'object' || Array.isArray(env)) return false;
+  const record = env as Record<string, unknown>;
+  for (const [key, value] of Object.entries(record)) if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || typeof value !== 'string' || value.includes('\0')) return false;
+  for (const key of STDIO_ENV_KEYS) if (typeof record[key] !== 'string') return false;
+  return Boolean(record['HOME']) && Boolean(record['PATH']);
+}
 interface Entry {
   config: EndpointConfig;
   enabled: boolean;
@@ -23,6 +44,8 @@ interface Entry {
   tools?: readonly ToolDefinition[];
   digest?: string;
   grant?: ReadGrant;
+  consent?: ReadGrant;
+  revokedGeneration: number;
   lastGeneration: number;
   revision: number;
 }
@@ -30,11 +53,27 @@ interface Entry {
 export class McpRegistry {
   private readonly entries = new Map<string, Entry>();
   register(config: EndpointConfig): void {
+    if (isStdioEndpoint(config)) this.registerStdio(config);
+    else this.registerHttp(config);
+  }
+  private registerHttp(config: HttpEndpointConfig): void {
     const allowed = new Set(['id', 'url', 'account', 'resource', 'credentialRef']);
     if (Object.keys(config).some(key => !allowed.has(key)) || [config.id, config.url, config.account, config.resource].some(value => typeof value !== 'string' || !value) || (config.credentialRef !== undefined && (typeof config.credentialRef !== 'string' || !config.credentialRef))) throw new Error('invalid-endpoint-config');
     validateEndpointUrl(config.url);
+    this.set(config);
+  }
+  /** Explicit local executable binding: absolute installed command, ordered args, minimal explicit env. */
+  private registerStdio(config: StdioEndpointConfig): void {
+    const allowed = new Set(['id', 'transport', 'command', 'args', 'env', 'account', 'resource']);
+    if (Object.keys(config).some(key => !allowed.has(key)) || [config.id, config.command, config.account, config.resource].some(value => typeof value !== 'string' || !value) || config.transport !== 'stdio' || !isAbsolute(config.command) || !Array.isArray(config.args) || config.args.some(arg => typeof arg !== 'string')) throw new Error('invalid-endpoint-config');
+    const env = config.env;
+    if (!validateApprovedStdioEnv(env)) throw new Error('invalid-endpoint-config');
+    try { accessSync(config.command, constants.X_OK); } catch { throw new Error('invalid-endpoint-config'); }
+    this.set(config);
+  }
+  private set(config: EndpointConfig): void {
     if (this.entries.has(config.id)) throw new Error('duplicate-endpoint-id');
-    this.entries.set(config.id, { config: structuredClone(config), enabled: false, egress: false, lastGeneration: 0, revision: 0 });
+    this.entries.set(config.id, { config: structuredClone(config), enabled: false, egress: false, lastGeneration: 0, revokedGeneration: 0, revision: 0 });
   }
   private entry(id: string): Entry {
     const entry = this.entries.get(id); if (!entry) throw new Error('unknown-endpoint'); return entry;
@@ -48,11 +87,16 @@ export class McpRegistry {
     if (!entry.enabled || !entry.egress) throw new Error('source-egress-not-approved');
     return structuredClone(entry.config);
   }
+  /** Identity-only check for startup composition; does not enable egress or expose credentials. */
+  matchesEndpoint(config: EndpointConfig): boolean {
+    const entry = this.entries.get(config.id);
+    return !!entry && endpointBinding(entry.config) === endpointBinding(config);
+  }
   revision(id: string): number { return this.entry(id).revision; }
   suspend(id: string): void {
     const entry = this.entry(id); delete entry.grant; delete entry.digest; delete entry.tools; entry.revision++;
   }
-  revoke(id: string): void { const entry = this.entry(id); delete entry.grant; entry.revision++; }
+  revoke(id: string): void { const entry = this.entry(id); delete entry.grant; entry.revokedGeneration = Math.max(entry.revokedGeneration, entry.lastGeneration); entry.revision++; }
   observed(id: string, tools: readonly ToolDefinition[], revision: number): string {
     const entry = this.entry(id); this.endpoint(id);
     if (entry.revision !== revision) throw new Error('discovery-invalidated');
@@ -64,7 +108,14 @@ export class McpRegistry {
   approve(grant: ReadGrant): void {
     const entry = this.entry(grant.endpointId); this.endpoint(grant.endpointId);
     if (!entry.digest || grant.schemaDigest !== entry.digest || grant.effect !== 'read' || grant.account !== entry.config.account || grant.resource !== entry.config.resource || !Number.isSafeInteger(grant.generation) || grant.generation <= entry.lastGeneration || !Array.isArray(grant.toolNames) || new Set(grant.toolNames).size !== grant.toolNames.length || grant.toolNames.some(name => !entry.tools?.some(tool => tool.name === name))) throw new Error('invalid-local-read-grant');
-    entry.grant = structuredClone(grant); entry.lastGeneration = grant.generation;
+    entry.grant = structuredClone(grant); entry.consent = structuredClone(grant); entry.lastGeneration = grant.generation;
+  }
+  /** Trusted owner projection of durable consent; never a new operator approval. */
+  restore(grant: ReadGrant): void {
+    const entry = this.entry(grant.endpointId); this.endpoint(grant.endpointId);
+    if (!entry.digest || grant.schemaDigest !== entry.digest || grant.effect !== 'read' || grant.account !== entry.config.account || grant.resource !== entry.config.resource || !Number.isSafeInteger(grant.generation) || grant.generation < 1 || grant.generation <= entry.revokedGeneration || grant.generation < entry.lastGeneration || !Array.isArray(grant.toolNames) || new Set(grant.toolNames).size !== grant.toolNames.length || grant.toolNames.some(name => !entry.tools?.some(tool => tool.name === name))) throw new Error('invalid-standing-read-grant');
+    if (grant.generation === entry.lastGeneration && (!entry.consent || entry.consent.schemaDigest !== grant.schemaDigest || JSON.stringify(entry.consent.toolNames) !== JSON.stringify(grant.toolNames))) throw new Error('standing-consent-mismatch');
+    entry.grant = structuredClone(grant); entry.consent = structuredClone(grant); entry.lastGeneration = grant.generation;
   }
   currentGrant(id: string): ReadGrant | undefined { const grant = this.entry(id).grant; return grant ? structuredClone(grant) : undefined; }
   visibleTools(id: string): readonly ToolDefinition[] {
@@ -75,12 +126,13 @@ export class McpRegistry {
   authorize(request: CallRequest): ResultScope {
     const entry = this.entry(request.endpointId); const config = this.endpoint(request.endpointId); const grant = entry.grant;
     if (!grant || !entry.digest || grant.schemaDigest !== entry.digest || grant.effect !== 'read' || !grant.toolNames.includes(request.toolName) || request.generation !== grant.generation || request.account !== grant.account || request.resource !== grant.resource) throw new Error('local-read-grant-refused');
+    if (isStdioEndpoint(config)) return { endpointId: config.id, transport: 'stdio', bindingDigest: bindingDigestOf(config), schemaDigest: grant.schemaDigest, toolName: request.toolName, generation: grant.generation, account: grant.account, resource: grant.resource };
     return { endpointId: config.id, url: config.url, schemaDigest: grant.schemaDigest, toolName: request.toolName, generation: grant.generation, account: grant.account, resource: grant.resource };
   }
   authorizesScope(scope: ResultScope): boolean {
     try {
       const current = this.authorize({ ...scope, arguments: {} });
-      return current.url === scope.url && current.schemaDigest === scope.schemaDigest;
+      return sourceBindingOf(current) === sourceBindingOf(scope) && current.schemaDigest === scope.schemaDigest;
     } catch { return false; }
   }
 }

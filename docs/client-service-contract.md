@@ -1,9 +1,35 @@
 # Client and service contract
 
-Status: proposed contract, decided by the service stack ruling recorded in
-[decisions.md](decisions.md), implemented by the portable service seam (A19) and consumed by the
-Mac companion (F01) and the browser client (F19). No client exists yet and no behavior here has
-been verified by running code.
+The portable service and browser client are implemented. The supported composed
+host (`server/dist/host/index.js`) serves the browser and owns Store/Domain and
+connected Chat; the supported standalone entry (`server/dist/index.js`) is a
+runtime-only HTTP/Store CLI, without Domain, Chat or the browser shell. See
+[service-runtime.md](service-runtime.md) and [web-client.md](web-client.md).
+
+## Current browser wire contract
+
+- **Local Save:** creates a session if needed, then posts a user entry to
+  `/api/v1/sessions/:id/entries`. It does not dispatch a model. Success clears the
+  draft; failure or stopping the wait preserves it. Stopping a wait is not proof
+  that the service did not save the entry.
+- **Connected Chat:** `ConnectedView` obtains `/api/v1/chat/status`, starts an
+  explicitly consented conversation and posts `/api/v1/chat`. The response is a
+  durable Chat Run, not a generic job ID. Authenticated run events and
+  `/api/v1/chat/:runId` recover progress; `/api/v1/chat/:runId/cancel` requests
+  cancellation. Only notes explicitly selected in this composer are attached;
+  reconnect and status polls do not create model work. Cancellation or consent
+  revocation cannot retract provider bytes already sent.
+- Browser writes use same-origin cookie/CSRF, idempotency and authority-epoch
+  headers. The browser has no independent writer or operating-system grants.
+
+`npm --prefix web run check` exercises the real local browser HTTP/SQLite fixture;
+`bash scripts/check-connected.sh` exercises the real composed host and Chat with
+controlled synthetic model transport. These are not completed native installation,
+Live voice, account-tool execution or live-provider proof.
+
+The sections below describe broader design requirements, not a statement that
+all capabilities or the proposed generic job/envelope protocol are implemented.
+They do not replace the current browser wire contract above.
 
 ## Shape
 

@@ -228,6 +228,8 @@ ALLOWED_PATHS = {
     "docs/native-conversation-protocol.md",
     "docs/selected-memory-context.md",
     "docs/selected-memory-interface.md",
+    "docs/native-live-client.md",
+    "docs/tool-owner.md",
     "fixtures/domain/library-basic.json",
     "scripts/check-domain.sh",
     "scripts/check-mcp.sh",
@@ -242,6 +244,13 @@ ALLOWED_PATHS = {
     "scripts/check-memory-context.sh",
     "scripts/check-native-conversation.sh",
     "scripts/check-selected-memory-ui.sh",
+    "scripts/check-archive-scale.sh",
+    "scripts/check-native-live.sh",
+    "scripts/check-tool-owner.sh",
+    "scripts/check-api-response.sh",
+    "scripts/check-credential-binding.sh",
+    "docs/mcp-configuration.md",
+    "scripts/check-mcp-config.sh",
 }
 ALLOWED_PATHS |= {f"docs/{name}" for name in DOCS}
 

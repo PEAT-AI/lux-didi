@@ -7,6 +7,8 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { startHost } from '../host/runtime.js';
 import WebSocket from 'ws';
 import type { Data } from 'ws';
 import { composeLive } from '../host/live.js';
@@ -44,7 +46,7 @@ function writePrivate(dir: string, name: string, text: string): void {
   chmodSync(path, 0o600);
 }
 
-interface HarnessOptions { config?: unknown; rawLive?: string; profile?: LiveProfile; withKey?: boolean; credentials?: { resolve(reference: string): Promise<string | undefined> } }
+interface HarnessOptions { now?: () => number; config?: unknown; rawLive?: string; profile?: LiveProfile; withKey?: boolean; credentials?: { resolve(reference: string): Promise<string | undefined> } }
 
 interface Harness {
   f: Awaited<ReturnType<typeof fixture>>;
@@ -65,7 +67,7 @@ async function harness(t: TestContext, options: HarnessOptions = {}): Promise<Ha
   if (options.rawLive !== undefined) writePrivate(config, 'live.json', options.rawLive);
   else if (options.config !== undefined) writePrivate(config, 'live.json', `${JSON.stringify(options.config)}\n`);
   if (options.withKey !== false) writePrivate(config, 'gemini-primary.json', `${JSON.stringify({ schemaVersion: 1, keyReference: 'gemini-primary', key: CANARY })}\n`);
-  const { service: live } = composeLive(store, config, { socketFactory: f.socketFactory, ...(options.profile ? { profile: options.profile } : {}), ...(options.credentials ? { credentials: options.credentials } : {}) });
+  const { service: live } = composeLive(store, config, { socketFactory: f.socketFactory, ...(options.profile ? { profile: options.profile } : {}), ...(options.credentials ? { credentials: options.credentials } : {}) }, options.now);
   const running = await listenService({ store, live, port: 0 });
   t.after(async () => {
     await running.close();
@@ -498,4 +500,73 @@ test('revoke while receiving output sends no later PCM on the wire', async t => 
   h.f.send(audioFrame);
   await new Promise(resolve => setTimeout(resolve, 60));
   assert.equal(frames.filter(f => f.binary).length, before, 'no later PCM egress after revoke');
+});
+
+
+test('HTTP snapshot and same-key replay expire accepted unused sessions without audio or credentials', async t => {
+  let now = 1_700_000_000_000, credentials = 0;
+  const h = await harness(t, { now: () => now, config: configJson(true, { limits: { unusedMs: 20 } }), credentials: { resolve: async () => { credentials++; return CANARY; } } });
+  const first = await createBody(h, 'http-unused-get');
+  const second = await createBody(h, 'http-unused-replay');
+  assert.equal(first.status, 200);
+  assert.equal(second.status, 200);
+  now += 20;
+  const boundary = await json(h.origin, `/api/v1/live-sessions/${first.body.data.liveSessionId}`, { headers: bearer(h) });
+  assert.equal(boundary.status, 200);
+  assert.equal(boundary.body.data.lifecycle, 'accepted');
+  now++;
+  const expired = await json(h.origin, `/api/v1/live-sessions/${first.body.data.liveSessionId}`, { headers: bearer(h) });
+  assert.equal(expired.status, 200);
+  assert.deepEqual(expired.body.data.terminal, { state: 'expired' });
+  const replay = await createBody(h, 'http-unused-replay');
+  assert.equal(replay.body.data.liveSessionId, second.body.data.liveSessionId);
+  assert.deepEqual(replay.body.data.terminal, { state: 'expired' });
+  assert.equal(credentials, 0);
+  assert.equal(h.f.attempts, 0);
+});
+
+
+test('canonical host applies configured idle deadline and persists idle_timeout across replay and restart', async t => {
+  const f = await fixture(t);
+  const dir = mkdtempSync(join(tmpdir(), 'didi-live-host-idle-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const configDir = join(dir, 'config'); mkdirSync(configDir, { mode: 0o700 });
+  writePrivate(configDir, 'live.json', `${JSON.stringify(configJson(true, { limits: { idleMs: 200, sessionMs: 10_000, handshakeMs: 1000, closeMs: 50, wsBufferedBytes: 1024 } }))}\n`);
+  const hostConfig = { dataDir: join(dir, 'state'), configDir, webRoot: fileURLToPath(new URL('../../../web/dist', import.meta.url)), port: 0,
+    liveTesting: { socketFactory: f.socketFactory, credentials: { resolve: async () => CANARY } } };
+  const host = await startHost(hostConfig);
+  t.after(() => host.close());
+  const headers = { authorization: `Bearer ${host.store.adminCredential}`, 'x-didi-authority-epoch': host.store.authorityEpoch };
+  const create = (origin: string) => json(origin, '/api/v1/live-sessions', { method: 'POST', headers: { ...headers, 'idempotency-key': 'host-idle', 'content-type': 'application/json' }, body: JSON.stringify({ inputClass: 'ordinary' }) });
+  const created = await create(host.service.origin);
+  assert.equal(created.status, 200);
+  const id = created.body.data.liveSessionId;
+  const ws = new WebSocket(`${host.service.origin.replace('http', 'ws')}/api/v1/live-sessions/${id}/audio`, { headers });
+  const frames: any[] = [];
+  ws.on('message', (data: Data, binary: boolean) => { if (!binary) frames.push(JSON.parse(data.toString())); });
+  const closed = once(ws, 'close');
+  await once(ws, 'open');
+  await f.frame(1);
+  t.diagnostic(`provider setup bytes=${Buffer.byteLength(JSON.stringify(f.frames[0]))}; gateway consumer bound=1024, independent adapter provider bound`);
+  f.send({ setupComplete: {} });
+  // Bounded observation of the actual terminal, not a sleep or the hard session deadline.
+  await waitFor(() => frames.some(frame => frame.type === 'terminal'), 1500);
+  await closed;
+  const snapshot = await json(host.service.origin, `/api/v1/live-sessions/${id}`, { headers });
+  assert.equal(snapshot.status, 200);
+  assert.deepEqual(snapshot.body.data.terminal, { state: 'failed', code: 'idle_timeout' });
+  assert.equal(f.attempts, 1);
+  const replay = await create(host.service.origin);
+  assert.deepEqual(replay.body.data.terminal, snapshot.body.data.terminal);
+  assert.equal(replay.body.data.liveSessionId, id);
+  assert.equal(f.attempts, 1);
+  await host.close();
+  const restarted = await startHost(hostConfig);
+  t.after(() => restarted.close());
+  const recovered = await create(restarted.service.origin);
+  assert.equal(recovered.status, 200);
+  assert.deepEqual(recovered.body.data.terminal, { state: 'failed', code: 'idle_timeout' });
+  assert.equal(recovered.body.data.liveSessionId, id);
+  assert.equal(f.attempts, 1, 'restart/replay never reopens the adapter');
+  t.diagnostic('actual host idleMs=200, sessionMs=10000: observed persisted idle_timeout; replay/restart opens remain1');
 });

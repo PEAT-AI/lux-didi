@@ -46,7 +46,7 @@ A Mac-first local assistant that:
 - carries a specified, Naya-inspired character without copying any private persona or prompt;
 - acts on the user's own accounts under explicit, revocable grants, and reports honest uncertainty when an effect may already have happened;
 - treats model providers as replaceable ingredients, with Gemini preferred, not required;
-- integrates optionally with Lux Knowledge, Mongoose, Lux Coworker, Trello, Mattermost and an existing harness.
+- integrates optionally with Lux Knowledge, Mongoose, Lux Coworker, Trello and Mattermost, and with an existing harness only later, as an optional bridge.
 
 Local data and local control are the default. Local does not mean offline: approved cloud inference is part of the design.
 
@@ -54,7 +54,7 @@ One authority per assistant is the rule behind that list. There is a single cano
 
 ## First loop (target, not current state)
 
-The first real-user slice is the acceptance target for milestone M1. A person installs an early build from a clean account (Stage A, an ad-hoc local pilot), connects one Google account, presses the hotkey, and asks by text while voice is enabled as soon as the transport works. Didi reads the upcoming calendar, captures or infers one commitment with its evidence, schedules one useful reminder, opens the conversation from the notification, prepares an unsent reply, recalls the exchange in a later session, and, once resolved, never resurrects it. Lux, the harness and Trello are not required.
+The first real-user slice is the acceptance target for milestone M1. A person installs an early build from a clean account (Stage A, an ad-hoc local pilot), connects one Google account, presses the hotkey, and asks by text while voice is enabled as soon as the transport works. Didi reads the upcoming calendar, captures or infers one commitment with its evidence, schedules one useful reminder, opens the conversation from the notification, prepares an unsent reply, recalls the exchange in a later session, and, once resolved, never resurrects it. Lux, the harness and Trello are not required. **The first release is this local Mac app with its optional connection set** - the native companion, Lux Knowledge, and the mail and other providers each user chooses to connect - while the **harness bridge is optional and comes later**, after a usable app. There is **no web-only release**: no web-only tag and no web-only publication.
 
 None of that loop is complete on `main`. The part that runs today is the local store and commitment loop described in [docs/implementation-status.md](docs/implementation-status.md).
 
@@ -86,9 +86,23 @@ It validates the plan. It does not test the product; product verification is car
 - [docs/cloud-deployment.md](docs/cloud-deployment.md): the designed path from the loopback service to a Linux virtual machine, with runbook, credential, backup and hosting-boundary rules.
 - [docs/client-service-contract.md](docs/client-service-contract.md): the contract the Mac companion, the browser client and the channel adapters share.
 
+## Run the local developer baseline
+
+Prerequisites: Node **26 or newer** and npm installed on macOS (the currently verified development host). From the repository root, install the locked dependencies, build the service and web client, and start the composed product host in the foreground:
+
+```sh
+npm --prefix server ci && npm --prefix web ci && bash scripts/run-local.sh --port 0
+```
+
+The existing wrapper builds both packages before starting one loopback host on an available port. It prints the origin and availability status; use the local pairing flow in [local development](docs/local-development.md) to open the web client. That page also covers explicit state/config directories, separate builds, baseline versus feature checks, and stopping the host with Ctrl-C. `npm --prefix server start` remains the supported lower-level standalone service, not this composed product bootstrap.
+
+This is a source-checked developer command, not a freshly exercised clean-install walkthrough or an installed application. It does not bundle Node, configure a model/provider, grant OS permissions or install a Mac app. With no provider profile, inference remains disabled. See [provider configuration](docs/provider-configuration.md) for the separately authorized setup.
+
+Build/runtime do not require the managed browser harness. Browser-backed feature proofs currently require an installed Playwright Chromium **and the managed-host `lux-browser-slot` lease tool**; npm dependencies alone do not provide that tool. An unmanaged public browser-proof alternative is future work, not an implemented fallback. See [browser proof prerequisites and artifact destinations](docs/local-development.md#browser-proof-prerequisites-and-artifact-destinations).
+
 ## If you have five minutes
 
-Read this page, then [the P00 program tracker](https://github.com/PEAT-AI/lux-didi/issues/1), then [docs/roadmap.md](docs/roadmap.md). The detail of any single work item lives in its issue, and the backlog file is the machine-readable source.
+Start with the developer baseline above, then [the P00 program tracker](https://github.com/PEAT-AI/lux-didi/issues/1) and [docs/roadmap.md](docs/roadmap.md). The detail of any single work item lives in its issue, and the backlog file is the machine-readable source.
 
 ## What this repository is not
 

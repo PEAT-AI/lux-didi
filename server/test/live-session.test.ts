@@ -1,7 +1,8 @@
+import { PROMPT_VERSION } from '../prompt/index.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { TestContext } from 'node:test';
-import { fork } from 'node:child_process';
+import { fork, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -12,6 +13,7 @@ import { chatMigrations } from '../chat/index.js';
 import { createDomainPort } from '../domain/facade.js';
 import { Outbox } from '../runtime/outbox.js';
 import { Store } from '../runtime/store.js';
+import type { Transaction } from '../contracts/storage.js';
 import { createLiveSessionOwner, LiveConfigError, LiveError, liveMigrations, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, fixture, options, pcm } from './live-voice-fixture.js';
 
@@ -44,6 +46,7 @@ async function harness(t: TestContext, overrides: {
   adapterLimits?: Partial<LiveVoiceLimits>;
   credentials?: { resolve(reference: string): Promise<string | undefined> };
   model?: string;
+  scheduler?: DeadlineClock;
 } = {}): Promise<Harness> {
   const f = await fixture(t);
   const dir = mkdtempSync(join(tmpdir(), 'didi-live-session-'));
@@ -57,9 +60,9 @@ async function harness(t: TestContext, overrides: {
     credentials: overrides.credentials ?? { resolve: async () => CANARY },
     limits: { handshakeMs: 1000, idleMs: 2000, sessionMs: 4000, closeMs: 50, ...overrides.adapterLimits },
   }));
-  const owner = createLiveSessionOwner({ store, voice, profile, now: () => clock });
+  const owner = createLiveSessionOwner({ store, voice, profile, now: () => overrides.scheduler?.now ?? clock, ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
   t.after(async () => { await owner.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
-  return { f, store, owner, ctx: context(store), dir, advance: ms => { clock += ms; } };
+  return { f, store, owner, ctx: context(store), dir, advance: ms => { if (overrides.scheduler) overrides.scheduler.now += ms; else clock += ms; } };
 }
 
 async function attached(h: Harness, key = 'k1') {
@@ -398,7 +401,7 @@ test('live migrations preserve a populated accepted Store byte-for-byte', async 
   }));
   assert.deepEqual(current, prior, 'accepted CHAT and Domain rows stay meaningful');
   const owners = migrated.transaction(tx => tx.all('SELECT owner, MAX(version) AS version FROM runtime_migrations GROUP BY owner ORDER BY owner'));
-  assert.deepEqual(owners.map(row => [String(row['owner']), Number(row['version'])]), [['chat', 3], ['domain', 3], ['live', 1]]);
+  assert.deepEqual(owners.map(row => [String(row['owner']), Number(row['version'])]), [['chat', 4], ['domain', 3], ['live', 2]]);
 });
 
 test('a failed store write aborts visibly and never fabricates a durable outcome', async t => {
@@ -484,4 +487,300 @@ test('the owner disposes before Store.close and refuses work afterwards', async 
   assert.deepEqual((await attachment.done).terminal, { state: 'closed', code: 'closed' });
   assert.throws(() => h.owner.get('missing'), (error: unknown) => error instanceof LiveError);
   await h.owner.shutdown();
+});
+
+test('accepted unused observations and same-key replay expire without attach, strictly past the boundary', async t => {
+  let resolutions = 0;
+  const h = await harness(t, { limits: { unusedMs: 20 }, credentials: { resolve: async () => { resolutions++; return CANARY; } } });
+  const create = (key: string) => h.owner.create({ idempotencyKey: key, inputClass: 'ordinary' }, h.ctx);
+  const read = create('unused-read'), replay = create('unused-replay'), fragments = create('unused-fragments');
+  h.advance(20);
+  assert.equal(h.owner.get(read.liveSessionId).lifecycle, 'accepted');
+  assert.equal(create('unused-replay').lifecycle, 'accepted');
+  h.advance(1);
+  assert.equal(h.owner.get(read.liveSessionId).terminal?.state, 'expired');
+  assert.equal(create('unused-replay').terminal?.state, 'expired');
+  assert.equal(h.owner.listFragments({ liveSessionId: fragments.liveSessionId }).fragments.length, 1);
+  assert.equal(h.owner.get(fragments.liveSessionId).terminal?.state, 'expired');
+  assert.throws(() => h.owner.create({ idempotencyKey: 'unused-replay', inputClass: 'private' }, h.ctx), { code: 'idempotency_conflict' });
+  for (const row of [read, replay, fragments]) {
+    assert.equal(h.owner.get(row.liveSessionId).terminal?.state, 'expired');
+    assert.equal(h.owner.listFragments({ liveSessionId: row.liveSessionId }).fragments.length, 1);
+    assert.throws(() => h.owner.attach({ liveSessionId: row.liveSessionId }, h.ctx), { code: 'terminal' });
+  }
+  assert.equal(resolutions, 0);
+  assert.equal(h.f.attempts, 0);
+});
+
+
+/** Trusted scheduler: callbacks run only when the shared injected clock is advanced explicitly. */
+class DeadlineClock {
+  now = NOW;
+  unrefs = 0;
+  maxPending = 0;
+  callbacks = 0;
+  readonly pending = new Set<{ due: number; callback: () => void }>();
+  lastCallback: (() => void) | undefined;
+  schedule = (callback: () => void, delayMs: number) => {
+    assert.ok(delayMs > 0, 'strict boundary must not cause a zero-delay loop');
+    const entry = { due: this.now + delayMs, callback };
+    this.pending.add(entry);
+    this.maxPending = Math.max(this.maxPending, this.pending.size);
+    this.lastCallback = callback;
+    return { unref: () => { this.unrefs++; }, cancel: () => { this.pending.delete(entry); } };
+  };
+  runDue(): void {
+    for (;;) {
+      const entry = [...this.pending].find(item => item.due <= this.now);
+      if (!entry) return;
+      assert.ok(++this.callbacks < 100, 'bounded callbacks, no busy loop');
+      this.pending.delete(entry);
+      entry.callback();
+    }
+  }
+}
+
+test('one unref timer autonomously settles multiple deadlines and survives invalidation', async t => {
+  const scheduler = new DeadlineClock();
+  let credentials = 0;
+  const h = await harness(t, { scheduler, limits: { unusedMs: 20 }, credentials: { resolve: async () => { credentials++; return CANARY; } } });
+  const first = h.owner.create({ idempotencyKey: 'deadline-first', inputClass: 'ordinary' }, h.ctx);
+  h.advance(5);
+  const later = h.owner.create({ idempotencyKey: 'deadline-later', inputClass: 'ordinary' }, h.ctx);
+  assert.equal(scheduler.pending.size, 1);
+  h.advance(15); scheduler.runDue();
+  assert.equal(scheduler.callbacks, 0);
+  h.advance(1); scheduler.runDue();
+  const counts = () => h.store.transaction(tx => tx.all("SELECT live_session_id, COUNT(*) AS n FROM live_journal WHERE kind='terminal' GROUP BY live_session_id"));
+  assert.deepEqual(counts().map(row => ({ ...row })), [{ live_session_id: first.liveSessionId, n: 1 }]);
+  assert.equal(scheduler.pending.size, 1);
+  h.owner.invalidate('authority');
+  h.advance(5); scheduler.runDue();
+  assert.equal(counts().length, 2);
+  assert.equal(h.owner.get(later.liveSessionId).terminal?.state, 'expired');
+  assert.equal(h.owner.get(first.liveSessionId).terminal?.state, 'expired');
+  assert.equal(scheduler.pending.size, 0);
+  assert.equal(scheduler.maxPending, 1);
+  assert.equal(scheduler.callbacks, 2);
+  assert.ok(scheduler.unrefs >= 2);
+  assert.equal(credentials, 0);
+  assert.equal(h.f.attempts, 0);
+});
+
+test('expiry transactions roll back real storage failure on observation and autonomous timer', async t => {
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, limits: { unusedMs: 20 } });
+  const row = h.owner.create({ idempotencyKey: 'deadline-fault', inputClass: 'ordinary' }, h.ctx);
+  const failure = new Error('synthetic transaction storage failure');
+  const original = h.store.transaction.bind(h.store);
+  let fail = true;
+  t.mock.method(h.store, 'transaction', (body: (tx: Transaction) => unknown) => original(tx => {
+    const result = body(tx);
+    if (fail) throw failure;
+    return result;
+  }));
+  h.advance(21);
+  assert.throws(() => h.owner.get(row.liveSessionId), error => error === failure);
+  assert.throws(() => scheduler.runDue(), error => error === failure);
+  assert.equal(scheduler.pending.size, 0, 'a failed callback must not silently retry');
+  fail = false;
+  assert.equal(original(tx => tx.get('SELECT lifecycle FROM live_sessions WHERE live_session_id=?', [row.liveSessionId]))?.['lifecycle'], 'accepted');
+  assert.equal(original(tx => tx.all("SELECT * FROM live_journal WHERE kind='terminal'")).length, 0);
+  assert.equal(h.owner.get(row.liveSessionId).terminal?.state, 'expired');
+  assert.equal(h.f.attempts, 0);
+});
+
+test('shutdown cancels the deadline synchronously and fences already queued callbacks after Store close', async t => {
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, limits: { unusedMs: 20 } });
+  h.owner.create({ idempotencyKey: 'deadline-shutdown', inputClass: 'ordinary' }, h.ctx);
+  assert.equal(scheduler.pending.size, 1);
+  const queued = scheduler.lastCallback!;
+  const closing = h.owner.shutdown();
+  assert.equal(scheduler.pending.size, 0);
+  await closing;
+  h.store.close();
+  h.advance(21);
+  assert.doesNotThrow(queued);
+  assert.equal(scheduler.pending.size, 0);
+  assert.equal(h.f.attempts, 0);
+});
+
+test('current deadline query plan measures unrelated terminal history without a cap', async t => {
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, limits: { unusedMs: 20 } });
+  const measurements: Array<{ history: number; elapsedMs: number; accepted: number; due: number }> = [];
+  const measure = (history: number) => {
+    const start = performance.now();
+    const result = h.store.transaction(tx => ({
+      accepted: tx.all("SELECT live_session_id FROM live_sessions WHERE owner_assistant_id=? AND lifecycle='accepted' AND dispatch_intent=0", [h.store.assistantId]).length,
+      due: tx.all("SELECT live_session_id FROM live_sessions WHERE owner_assistant_id=? AND lifecycle='accepted' AND dispatch_intent=0 AND created_at < ?", [h.store.assistantId, scheduler.now - 20]).length,
+    }));
+    measurements.push({ history, elapsedMs: performance.now() - start, ...result });
+  };
+  measure(0);
+  for (let i = 0; i < 1000; i++) {
+    const row = h.owner.create({ idempotencyKey: `history-${i}`, inputClass: 'ordinary' }, h.ctx);
+    h.owner.revoke(row.liveSessionId);
+    if (i === 99 || i === 999) measure(i + 1);
+  }
+  const accepted = h.owner.create({ idempotencyKey: 'plan-accepted', inputClass: 'ordinary' }, h.ctx);
+  const plans = h.store.transaction(tx => ({
+    next: tx.all("EXPLAIN QUERY PLAN SELECT MIN(created_at) AS created_at FROM live_sessions WHERE owner_assistant_id=? AND lifecycle='accepted' AND dispatch_intent=0", [h.store.assistantId]),
+    due: tx.all("EXPLAIN QUERY PLAN SELECT * FROM live_sessions WHERE owner_assistant_id=? AND lifecycle='accepted' AND dispatch_intent=0 AND created_at < ?", [h.store.assistantId, scheduler.now - 20]),
+  }));
+  t.diagnostic(JSON.stringify({ terminalHistory: 1000, measurements, plans }));
+  assert.ok(plans.next.every(row => String(row['detail']).includes('INDEX')));
+  assert.ok(plans.due.every(row => String(row['detail']).includes('INDEX')));
+  h.advance(21); scheduler.runDue();
+  assert.equal(h.owner.get(accepted.liveSessionId).terminal?.state, 'expired');
+  assert.equal(h.store.transaction(tx => tx.all("SELECT live_session_id FROM live_sessions WHERE lifecycle='terminal'")).length, 1001);
+  assert.equal(scheduler.maxPending, 1);
+});
+
+
+test('timer storage failure is a causal uncaught process failure with durable rollback', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-live-expiry-fault-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const source = `
+    import { Store } from ${JSON.stringify(new URL('../runtime/store.js', import.meta.url).href)};
+    import { createLiveSessionOwner, validateLiveProfile, liveMigrations } from ${JSON.stringify(new URL('../live/index.js', import.meta.url).href)};
+    const store = new Store(${JSON.stringify(dir)}, liveMigrations);
+    let clock = ${NOW}, callback;
+    const owner = createLiveSessionOwner({ store, profile: validateLiveProfile(${JSON.stringify(profileInput({ unusedMs: 20 }))}),
+      now: () => clock, voice: { open() { throw new Error('unexpected provider open'); } },
+      schedule(fn) { callback = fn; return { unref() {}, cancel() {} }; } });
+    const row = owner.create({ idempotencyKey: 'child-fault', inputClass: 'ordinary' }, { clientId: 'tester', auditId: 'fault', authorityEpoch: store.authorityEpoch });
+    process.stdout.write(row.liveSessionId);
+    const transaction = store.transaction.bind(store);
+    store.transaction = body => transaction(tx => { const result = body(tx); throw new Error('LIVE-EXPIRY-CAUSAL-STORAGE-FAILURE'); });
+    clock += 21;
+    setImmediate(() => callback());
+  `;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', source], { stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000 });
+  let stdout = '', stderr = '';
+  child.stdout.on('data', value => { stdout += value; });
+  child.stderr.on('data', value => { stderr += value; });
+  const [code, signal] = await once(child, 'close');
+  assert.equal(signal, null);
+  assert.equal(code, 1);
+  assert.match(stderr, /LIVE-EXPIRY-CAUSAL-STORAGE-FAILURE/);
+  assert.match(stdout, /^[a-f0-9-]{36}$/);
+  const store = new Store(dir, liveMigrations);
+  t.after(() => store.close());
+  assert.equal(store.transaction(tx => tx.get('SELECT lifecycle FROM live_sessions WHERE live_session_id=?', [stdout]))?.['lifecycle'], 'accepted');
+  assert.equal(store.transaction(tx => tx.all('SELECT * FROM live_journal')).length, 0);
+  t.diagnostic('isolated child exit=1 signal=null; causal storage error preserved; transaction rolled back');
+});
+
+test('attach wins before deadline including opening, and expiry wins after it without open', async t => {
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, limits: { unusedMs: 20 } });
+  const row = h.owner.create({ idempotencyKey: 'deadline-attach', inputClass: 'ordinary' }, h.ctx);
+  h.advance(20);
+  const original = GeminiLiveVoiceAdapter.prototype.open;
+  t.mock.method(GeminiLiveVoiceAdapter.prototype, 'open', function(this: GeminiLiveVoiceAdapter, ...args: Parameters<typeof original>) {
+    h.advance(1); scheduler.runDue();
+    assert.equal(h.owner.get(row.liveSessionId).lifecycle, 'opening');
+    return original.apply(this, args);
+  });
+  const attachment = h.owner.attach({ liveSessionId: row.liveSessionId }, h.ctx);
+  assert.equal(h.owner.get(row.liveSessionId).lifecycle, 'active');
+  await h.f.connected;
+  h.f.send({ setupComplete: {} });
+  await attachment.ready;
+  h.advance(100); scheduler.runDue();
+  assert.equal(h.owner.get(row.liveSessionId).lifecycle, 'active');
+  assert.equal(scheduler.pending.size, 0);
+  t.mock.restoreAll();
+  const past = h.owner.create({ idempotencyKey: 'deadline-attach-late', inputClass: 'ordinary' }, h.ctx);
+  h.advance(21);
+  assert.throws(() => h.owner.attach({ liveSessionId: past.liveSessionId }, h.ctx), { code: 'expired' });
+  assert.equal(h.f.attempts, 1);
+  await h.owner.shutdown();
+  assert.equal(scheduler.pending.size, 0);
+  assert.equal((await attachment.done).terminal?.state, 'closed');
+});
+
+
+test('trusted clock rejects fractional milliseconds and maximum timer delay stays bounded', async t => {
+  const h = await harness(t);
+  assert.throws(() => createLiveSessionOwner({ store: h.store, voice: { open() { throw new Error('unexpected open'); } }, profile: validateLiveProfile(profileInput()), now: () => NOW + 0.5 }), { code: 'invalid_config' });
+  const scheduler = new DeadlineClock();
+  const max = await harness(t, { scheduler, limits: { unusedMs: 2_147_483_647 } });
+  const row = max.owner.create({ idempotencyKey: 'deadline-max', inputClass: 'ordinary' }, max.ctx);
+  assert.equal([...scheduler.pending][0]!.due - scheduler.now, 2_147_483_647);
+  max.advance(2_147_483_647); scheduler.runDue();
+  assert.equal(max.owner.get(row.liveSessionId).lifecycle, 'accepted');
+  assert.equal([...scheduler.pending][0]!.due - scheduler.now, 1);
+  max.advance(1); scheduler.runDue();
+  assert.equal(max.owner.get(row.liveSessionId).terminal?.state, 'expired');
+  assert.equal(scheduler.callbacks, 2);
+});
+
+test('Live persists the exact typed accepted instruction before intent and corrupt records fail before provider open', async t => {
+  const h = await harness(t);
+  let calls = 0;
+  const ownerProfile = { schemaVersion: 1, kind: 'profile', ownerId: h.store.assistantId, profileVersion: 'fixture-a', displayName: 'Example',
+    style: { text: 'SYNTHETIC A', dataClass: 'ordinary' }, lore: { text: 'SYNTHETIC lore', dataClass: 'ordinary' } };
+  const acceptedPrompt = { schemaVersion: 1, ownerProfile, compilerVersion: PROMPT_VERSION, system: 'SYNTHETIC exact accepted A', dataClasses: ['ordinary'] };
+  const owner = createLiveSessionOwner({ store: h.store,
+    profile: validateLiveProfile({ ...profileInput(), acceptedPrompt }),
+    voice: { open() { calls++; throw new Error('synthetic unavailable'); } }, now: () => NOW });
+  t.after(() => owner.shutdown());
+  const run = owner.create({ idempotencyKey: 'owner-frozen', inputClass: 'ordinary' }, h.ctx);
+  const row = h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot,dispatch_intent FROM live_sessions WHERE live_session_id=?', [run.liveSessionId]))!;
+  assert.equal(row.dispatch_intent, 0);
+  assert.deepEqual(JSON.parse(String(row.accepted_prompt_snapshot)), acceptedPrompt);
+  acceptedPrompt.system = 'SYNTHETIC B';
+  assert.equal(JSON.parse(String(h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [run.liveSessionId]))!.accepted_prompt_snapshot)).system, 'SYNTHETIC exact accepted A');
+  h.store.transaction(tx => tx.run('UPDATE live_sessions SET accepted_prompt_snapshot=? WHERE live_session_id=?', ['{"schemaVersion":999}', run.liveSessionId]));
+  assert.throws(() => owner.attach({ liveSessionId: run.liveSessionId }, h.ctx));
+  assert.equal(calls, 0);
+});
+
+
+test('private style alone and sensitive lore alone deny voice before adapter or socket creation', async t => {
+  const h = await harness(t);
+  for (const [styleClass, loreClass] of [['private', 'ordinary'], ['ordinary', 'sensitive']] as const) {
+    let calls = 0;
+    const ownerProfile = { schemaVersion: 1 as const, kind: 'profile' as const, ownerId: h.store.assistantId, profileVersion: 'fixture', displayName: 'Example',
+      style: { text: 'SYNTHETIC style', dataClass: styleClass }, lore: { text: 'SYNTHETIC lore', dataClass: loreClass } };
+    const owner = createLiveSessionOwner({ store: h.store, profile: validateLiveProfile({ ...profileInput(),
+      acceptedPrompt: { schemaVersion: 1, ownerProfile, compilerVersion: PROMPT_VERSION, system: 'SYNTHETIC instruction', dataClasses: ['ordinary', styleClass, loreClass].filter((c, i, cs) => cs.indexOf(c) === i) } }),
+      voice: { open() { calls++; throw Error('must not open'); } }, now: () => NOW });
+    assert.throws(() => owner.create({ idempotencyKey: `denied-${styleClass}-${loreClass}`, inputClass: 'ordinary' }, h.ctx));
+    assert.equal(calls, 0); await owner.shutdown();
+  }
+});
+
+test('Live emits exact accepted A setup, not a changed caller B instruction', async t => {
+  const h = await harness(t);
+  const acceptedPrompt = { schemaVersion: 1, ownerProfile: { schemaVersion: 1, kind: 'default', ownerId: h.store.assistantId, displayName: 'Lux Didi' },
+    compilerVersion: PROMPT_VERSION, system: 'SYNTHETIC exact wire A', dataClasses: ['ordinary'] };
+  const profile = validateLiveProfile({ ...profileInput(), acceptedPrompt });
+  const voice = new GeminiLiveVoiceAdapter(options({ socketFactory: h.f.socketFactory,
+    modelId: profile.liveModelId, voice: profile.voice, keyReference: profile.keyReference,
+    route: { enabled: true, provider: 'gemini', modelId: profile.liveModelId, dataClasses: profile.route.dataClasses },
+    credentials: { resolve: async () => CANARY } }));
+  const owner = createLiveSessionOwner({ store: h.store, profile, voice, now: () => NOW }); t.after(() => owner.shutdown());
+  const accepted = owner.create({ idempotencyKey: 'wire-a', inputClass: 'ordinary' }, h.ctx);
+  acceptedPrompt.system = 'SYNTHETIC current B';
+  const attachment = owner.attach({ liveSessionId: accepted.liveSessionId }, h.ctx);
+  await h.f.frame(1);
+  const frame = JSON.parse(JSON.stringify(h.f.frames[0]));
+  assert.equal(frame.setup.systemInstruction.parts[0].text, 'SYNTHETIC exact wire A');
+  attachment.close();
+});
+
+test('legacy null and unsupported accepted Live bindings refuse honestly before dispatch intent', async t => {
+  const h = await harness(t);
+  for (const snapshot of [null, JSON.stringify({ schemaVersion: 1, compilerVersion: 'unsupported', system: 'synthetic', dataClasses: ['ordinary'],
+    ownerProfile: { schemaVersion: 1, kind: 'default', ownerId: h.store.assistantId, displayName: 'Lux Didi' } })]) {
+    const accepted = h.owner.create({ idempotencyKey: `legacy-${snapshot === null}`, inputClass: 'ordinary' }, h.ctx);
+    h.store.transaction(tx => tx.run('UPDATE live_sessions SET accepted_prompt_snapshot=? WHERE live_session_id=?', [snapshot, accepted.liveSessionId]));
+    assert.throws(() => h.owner.attach({ liveSessionId: accepted.liveSessionId }, h.ctx), { code: 'invalidated' });
+    assert.equal(h.owner.get(accepted.liveSessionId).dispatchIntent, false);
+    assert.equal(h.f.frames.length, 0);
+  }
 });

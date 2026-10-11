@@ -17,18 +17,24 @@ export type Receipt = { status: 'committed'; durable: true; commitId: string; re
 export type Evidence = Owned & { id: string; sourceId: string; provenance: string; priority: number } &
   ({ kind: 'source'; text: string } | { kind: 'receipt'; receipt: Receipt });
 export interface HistoryItem extends Owned { id: string; role: 'user' | 'model'; text: string }
+/** Host-owned, closed immutable style/lore selection; never a config path. */
+export type OwnerProfileSnapshot = Readonly<
+  { schemaVersion: 1; kind: 'default'; ownerId: string; displayName: 'Lux Didi' }
+  | { schemaVersion: 1; kind: 'profile'; ownerId: string; profileVersion: string; displayName: string;
+      style: Readonly<{ text: string; dataClass: DataClass }>;
+      lore: Readonly<{ text: string; dataClass: DataClass }> }>;
 export interface CompileInput {
-  ownerId: string; persona: 'didi'; promptVersion: string;
+  ownerProfile?: OwnerProfileSnapshot; ownerId: string; persona: 'didi'; promptVersion: string;
   preferences: ValidatedPreferences; capabilities: CapabilitySnapshot;
   evidence: readonly Evidence[]; history: readonly HistoryItem[];
   budgets: { trustedChars: number; contextChars: number; historyChars: number };
 }
 /** Input for the turn-less voice-instruction compiler. Same canonical assembly, no conversation turns. */
 export interface VoiceInstructionInput {
-  ownerId: string; promptVersion: string; preferences: ValidatedPreferences;
+  ownerProfile?: OwnerProfileSnapshot; ownerId: string; promptVersion: string; preferences: ValidatedPreferences;
   capabilities: CapabilitySnapshot; trustedChars: number;
 }
-export interface VoiceInstruction { system: string; promptVersion: string }
+export interface VoiceInstruction { system: string; promptVersion: string; dataClasses: DataClass[] }
 
 export interface CompiledPrompt {
   system: string; promptVersion: string; dataClasses: DataClass[];

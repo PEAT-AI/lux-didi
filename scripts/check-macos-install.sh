@@ -244,7 +244,7 @@ PY
   printf '{"schemaVersion":1,"enabled":true,"provider":"gemini","modelId":"synthetic-model","keyReference":"gemini-primary"}\n' > "$pin"
   printf 'GEMINI_API_KEY=synthetic-NEVER-REAL\n' > "$senv"; chmod 0600 "$pin" "$senv"
   svc_dist="$fixture/Contents/Resources/server/node_modules/@lux-didi/service/dist"
-  "$fixture/Contents/MacOS/node" --input-type=module -e 'import { initializeProviderConfig } from process.argv[1]; initializeProviderConfig({ configDir: process.argv[2], ownerId: process.argv[3], profileInputPath: process.argv[4], sourceEnvPath: process.argv[5] });' "file://$svc_dist/config/index.js" "$fconfig" "$fx_assistant" "$pin" "$senv"
+  "$fixture/Contents/MacOS/node" --input-type=module -e 'const { initializeProviderConfig } = await import(process.argv[1]); initializeProviderConfig({ configDir: process.argv[2], ownerId: process.argv[3], profileInputPath: process.argv[4], sourceEnvPath: process.argv[5] });' "file://$svc_dist/config/index.js" "$fconfig" "$fx_assistant" "$pin" "$senv"
   HOME="$fstate" CFFIXED_USER_HOME="$fstate" "$fixture/Contents/MacOS/LuxDidi" --configure --config-dir "$fconfig" --owner-profile "$profileDir/owner-profile.json"
   run_fixture() {
     local label="$1" report="$2"

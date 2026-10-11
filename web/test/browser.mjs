@@ -9,7 +9,13 @@ await mkdir(artifacts,{recursive:true});
 console.log(`Browser artifacts: ${artifacts}`);
 const fixture=await startFixture(); let browser;
 const timings=[];
-async function step(name,fn){const start=performance.now(); await fn(); timings.push({name,seconds:Math.round((performance.now()-start)/10)/100}); console.log(`PASS ${name}`);}
+async function step(name,fn,slowReason){
+  const start=performance.now();
+  if(slowReason)console.log(`SLOW ${name}: ${slowReason}`);
+  await fn();
+  timings.push({name,seconds:Math.round((performance.now()-start)/10)/100,...(slowReason?{classification:'SLOW',slowReason}:{})});
+  console.log(`PASS ${name}`);
+}
 try {
   browser=await chromium.launch({channel:'chromium',headless:true,args:['--use-angle=metal','--enable-gpu','--ignore-gpu-blocklist']});
   const context=await browser.newContext({viewport:{width:1440,height:1000}}); const page=await context.newPage();page.setDefaultTimeout(8000);
@@ -145,7 +151,7 @@ try {
       }catch(error){record.status='failed';record.failedTraceAttempts=record.traceAttempts-record.samples.length;record.error=String(error.message);throw error;}
       finally {await proofContext.close();await writeFile(join(artifacts,'orb-reference-measurements.json'),JSON.stringify(measurements,null,2));}
     }
-  });
+  },'Four DPR/layout contexts, 288 real-noise reference samples, source-cadence animation warmup and rendered captures; required fidelity integration proof, not a unit clock simulation.');
   await step('failed local save preserves draft; capture never dispatches a model',async()=>{
     const requestStart=fixture.requests.length;
     await page.getByLabel('Local note · not sent to a model').fill('Remember the synthetic blue notebook'); fixture.failNextEntry();

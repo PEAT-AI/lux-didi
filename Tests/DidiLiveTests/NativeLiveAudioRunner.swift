@@ -6,19 +6,25 @@ func audioRequire(_ value: Bool, _ message: String) throws {
 }
 
 @main struct NativeLiveAudioRunner {
-    static func tone(_ format: AVAudioFormat, start: Int, count: Int) -> AVAudioPCMBuffer {
-        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(count))!
+    static func tone(_ format: AVAudioFormat, start: Int, count: Int) throws -> AVAudioPCMBuffer {
+        guard format.channelCount == 2, format.commonFormat == .pcmFormatFloat32, !format.isInterleaved else {
+            throw NativeLiveAudioError.unsupportedFormat
+        }
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(count)),
+              let channels = buffer.floatChannelData else { throw NativeLiveAudioError.allocationFailed }
         buffer.frameLength = AVAudioFrameCount(count)
         for i in 0..<count {
             let sample = Float(sin(Double(start + i) * 2 * .pi * 440 / 44100) * 0.25)
-            buffer.floatChannelData![0][i] = sample
-            buffer.floatChannelData![1][i] = sample
+            channels[0][i] = sample
+            channels[1][i] = sample
         }
         return buffer
     }
     @MainActor static func main() async {
         do {
-            let format = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 2)!
+            guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 44100, channels: 2, interleaved: false) else {
+                throw NativeLiveAudioError.unsupportedFormat
+            }
             let reference = try NativePCMConverter(input: format)
             var expected = try reference.append(tone(format, start: 0, count: 44100))
             expected.append(try reference.finish())
@@ -38,17 +44,22 @@ func audioRequire(_ value: Bool, _ message: String) throws {
             try audioRequire(!frames.isEmpty && frames.allSatisfy { $0.count == 640 }, "complete 640-byte frames")
             try audioRequire(frames.reduce(into: Data()) { $0.append($1) } == actual.prefix(frames.count * 640), "frame continuity")
             try audioRequire(assembler.discardPartial() == actual.count % 640, "final partial frame discarded, never padded")
+            var partial = NativePCMFrameAssembler()
+            _ = partial.append(Data(repeating: 7, count: 645))
+            try audioRequire(partial.discardPartial() == 5, "discard rebases a consumed Data carry")
+            try audioRequire(partial.append(Data(repeating: 9, count: 640)) == [Data(repeating: 9, count: 640)], "new frames exclude discarded carry")
+            try audioRequire(partial.discardPartial() == 0 && partial.discardPartial() == 0, "empty consumed carry discard is idempotent")
             var ring = NativePCMFrameRing()
             for i in 0..<10 { ring.push(Data(repeating: UInt8(i), count: 640)) }
             try audioRequire(ring.drops == 2 && ring.pop()?.first == 2, "eight-frame ring drops oldest and counts")
             let capture = try NativeCaptureBuffer(converter: NativePCMConverter(input: format))
-            capture.append(tone(format, start: 0, count: 4410))
+            try capture.append(tone(format, start: 0, count: 4410))
             try audioRequire(capture.next().0?.count == 640, "capture produces complete frames")
             capture.setMuted(true)
-            capture.append(tone(format, start: 4410, count: 4410))
+            try capture.append(tone(format, start: 4410, count: 4410))
             try audioRequire(capture.next().0 == nil, "mute discards queued frames and suppresses new frames")
             capture.setMuted(false)
-            capture.append(tone(format, start: 8820, count: 4410))
+            try capture.append(tone(format, start: 8820, count: 4410))
             try audioRequire(capture.next().0?.count == 640, "unmute resumes the same converter and capture buffer")
             capture.stop(); capture.stop()
             let device = NativeLiveAudioDevice()

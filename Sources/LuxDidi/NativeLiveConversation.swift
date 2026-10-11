@@ -79,7 +79,8 @@ import DidiOwner
                 guard let self, self.generation == token else { return }
                 self.device.stop(); await coordinator.close()
                 guard self.generation == token else { return }
-                self.failure = "Live voice could not start. Check microphone permission, audio devices and configured Live service."
+                self.failure = (error as? NativeLiveAudioError)?.errorDescription
+                    ?? "Live voice could not start. Check microphone permission, audio devices and configured Live service."
                 self.state = .failed
             }
         }

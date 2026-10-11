@@ -2,6 +2,20 @@ import AVFoundation
 import Combine
 import Foundation
 
+enum NativeLiveAudioError: LocalizedError {
+    case unsupportedFormat, allocationFailed, converterUnavailable, permissionDenied, voiceProcessingUnavailable, deviceUnavailable
+    var errorDescription: String? {
+        switch self {
+        case .unsupportedFormat: return "Live audio format is unsupported."
+        case .allocationFailed: return "Live audio buffer could not be allocated."
+        case .converterUnavailable: return "Live microphone format could not be converted."
+        case .permissionDenied: return "Microphone permission was denied."
+        case .voiceProcessingUnavailable: return "Voice processing must be enabled on both microphone and output."
+        case .deviceUnavailable: return "Live audio device is unavailable."
+        }
+    }
+}
+
 struct NativePCMFrameAssembler {
     private var carry = Data()
     mutating func append(_ data: Data) -> [Data] {
@@ -14,7 +28,7 @@ struct NativePCMFrameAssembler {
     }
     /// Stop/mute drops the final incomplete 20 ms frame; never pad or send a short frame.
     mutating func discardPartial() -> Int {
-        let count = carry.count; carry.removeAll(keepingCapacity: true); return count
+        let count = carry.count; carry = Data(); return count
     }
 }
 struct NativePCMFrameRing {
@@ -34,16 +48,20 @@ final class NativePCMConverter {
     let output: AVAudioFormat
     private let converter: AVAudioConverter
     init(input: AVAudioFormat) throws {
-        output = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16000, channels: 1, interleaved: false)!
-        guard let converter = AVAudioConverter(from: input, to: output) else { throw LiveClientError.unavailable }
-        self.converter = converter
+        guard let output = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16000, channels: 1, interleaved: false) else {
+            throw NativeLiveAudioError.unsupportedFormat
+        }
+        guard let converter = AVAudioConverter(from: input, to: output) else { throw NativeLiveAudioError.converterUnavailable }
+        self.output = output; self.converter = converter
     }
     func append(_ input: AVAudioPCMBuffer) throws -> Data { try convert(input, ending: false) }
     func finish() throws -> Data { try convert(nil, ending: true) }
     private func convert(_ input: AVAudioPCMBuffer?, ending: Bool) throws -> Data {
         var supplied = false, result = Data()
         while true {
-            let buffer = AVAudioPCMBuffer(pcmFormat: output, frameCapacity: 4096)!
+            guard let buffer = AVAudioPCMBuffer(pcmFormat: output, frameCapacity: 4096) else {
+                throw NativeLiveAudioError.allocationFailed
+            }
             var error: NSError?
             let status = converter.convert(to: buffer, error: &error) { _, state in
                 if let input, !supplied { supplied = true; state.pointee = .haveData; return input }
@@ -53,7 +71,8 @@ final class NativePCMConverter {
             if let error { throw error }
             guard status != .error else { throw LiveClientError.unavailable }
             if buffer.frameLength > 0 {
-                result.append(Data(bytes: buffer.int16ChannelData![0], count: Int(buffer.frameLength) * 2))
+                guard let channels = buffer.int16ChannelData else { throw NativeLiveAudioError.unsupportedFormat }
+                result.append(Data(bytes: channels[0], count: Int(buffer.frameLength) * 2))
             }
             if status == .inputRanDry || status == .endOfStream { return result }
         }
@@ -125,19 +144,21 @@ final class NativeCaptureBuffer: @unchecked Sendable {
 
     func start(send: @escaping @Sendable (Data) async throws -> Void) async throws {
         guard engine == nil else { throw LiveClientError.unavailable }
-        guard await AVCaptureDevice.requestAccess(for: .audio) else { throw LiveClientError.unavailable }
+        guard await AVCaptureDevice.requestAccess(for: .audio) else { throw NativeLiveAudioError.permissionDenied }
         try Task.checkCancellation()
         let engine = AVAudioEngine(), player = AVAudioPlayerNode()
         do {
             try engine.inputNode.setVoiceProcessingEnabled(true)
             try engine.outputNode.setVoiceProcessingEnabled(true)
             guard engine.inputNode.isVoiceProcessingEnabled, engine.outputNode.isVoiceProcessingEnabled else {
-                throw LiveClientError.unavailable
+                throw NativeLiveAudioError.voiceProcessingUnavailable
             }
             let hardware = engine.inputNode.outputFormat(forBus: 0)
-            guard hardware.sampleRate > 0, hardware.channelCount > 0 else { throw LiveClientError.unavailable }
+            guard hardware.sampleRate > 0, hardware.channelCount > 0 else { throw NativeLiveAudioError.deviceUnavailable }
             let capture = try NativeCaptureBuffer(converter: NativePCMConverter(input: hardware))
-            let output = AVAudioFormat(standardFormatWithSampleRate: 24000, channels: 1)!
+            guard let output = AVAudioFormat(standardFormatWithSampleRate: 24000, channels: 1) else {
+                throw NativeLiveAudioError.unsupportedFormat
+            }
             engine.attach(player); engine.connect(player, to: engine.mainMixerNode, format: output)
             engine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: hardware) { buffer, _ in capture.append(buffer) }
             self.engine = engine; self.player = player; self.capture = capture
@@ -175,12 +196,17 @@ final class NativeCaptureBuffer: @unchecked Sendable {
     func write(_ pcm: Data) async throws {
         guard let player, let engine, engine.isRunning, pcm.count.isMultiple(of: 2) else { throw LiveClientError.unavailable }
         if queuedOutput >= 24 { try await flush() }
-        let format = AVAudioFormat(standardFormatWithSampleRate: 24000, channels: 1)!
-        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(pcm.count / 2))!
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: 24000, channels: 1) else {
+            throw NativeLiveAudioError.unsupportedFormat
+        }
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(pcm.count / 2)) else {
+            throw NativeLiveAudioError.allocationFailed
+        }
+        guard let channels = buffer.floatChannelData else { throw NativeLiveAudioError.unsupportedFormat }
         buffer.frameLength = buffer.frameCapacity
         pcm.withUnsafeBytes { bytes in
             for (index, sample) in bytes.bindMemory(to: Int16.self).enumerated() {
-                buffer.floatChannelData![0][index] = Float(Int16(littleEndian: sample)) / 32768
+                channels[0][index] = Float(Int16(littleEndian: sample)) / 32768
             }
         }
         let token = outputGeneration

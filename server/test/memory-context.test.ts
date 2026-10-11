@@ -406,7 +406,11 @@ test('additive chat v3 migration upgrades a populated v1+v2 DB and preserves old
       const consent = tx.get('SELECT * FROM chat_consents WHERE session_id=? AND owner_assistant_id=?', [sending.id, f1.context.assistantId])!;
       const read = f1.domain.execute(tx, 'getSession', { id: sending.id }, f1.context);
       const subjects = [{ kind: 'session' as const, id: sending.id }, ...read.entries.map(entry => ({ kind: 'entry' as const, id: entry.id }))];
-      const labels = subjects.map(subject => ({ ...subject, ...f1.config.classify(subject, tx)! }));
+      const labels = subjects.map(subject => {
+        const label = f1.config.classify(subject, tx)!;
+        // Match historical context.classify normalization, then #labels' revision.
+        return { ...subject, schemaVersion: 1, ownerId: label.ownerId, dataClass: label.dataClass, revision: label.revision };
+      });
       const route = f1.config.route;
       tx.run(`INSERT INTO chat_runs(run_id,session_id,user_entry_id,owner_assistant_id,accepting_client_id,idempotency_key,fingerprint,authority_epoch,provider,model,prompt_version,state,retry_of,accepted_at)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,'accepted',?,?)`,

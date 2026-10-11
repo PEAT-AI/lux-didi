@@ -48,7 +48,7 @@ export class LiveToolJobs {
     const job: ToolJob = { id, originSessionId: host.runId, state: 'in_progress', createdAt: now,
       host: structuredClone(host), authority: structuredClone(authority), delivered: false };
     this.store.transaction(tx => {
-      Outbox.enqueue(tx, { id, entityId: `${prefix}${id}`, entityRevision: 1, authorityEpoch: host.authorityEpoch,
+      Outbox.insert(tx, { id, entityId: `${prefix}${id}`, entityRevision: 1, authorityEpoch: host.authorityEpoch,
         requiredGrant: 'live-tool-job', payload: JSON.stringify(job), sourceTimeZone: 'UTC',
         dueAt: new Date(now).toISOString(), expiresAt: new Date(now + 86_400_000).toISOString() });
       tx.run("UPDATE runtime_outbox SET state='claimed',claim_token=?,lease_until=? WHERE id=?", [id, now + 86_400_000, id]);

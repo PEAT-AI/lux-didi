@@ -104,6 +104,6 @@ export function composeLive(store: Store, configDir: string, testing?: LiveTesti
     ...(testing?.socketFactory ? { socketFactory: testing.socketFactory } : {}),
   });
   const owner = createLiveSessionOwner({ store, voice, profile, ...(tools ? { tools } : {}), ...(now ? { now } : {}) });
-  tools?.registerAuthoritySource?.(async (runId, signal) => signal.aborted ? null : owner.lookupAuthority(runId));
+  tools?.registerAuthoritySource?.(async (runId, signal) => signal.aborted ? null : owner.lookupAuthority(runId) ?? owner.lookupJobAuthority(runId));
   return { service: new HostLiveService(profile, owner), status };
 }

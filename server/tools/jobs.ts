@@ -56,7 +56,8 @@ export class LiveToolJobs {
     let timer: ReturnType<JobTimer> | undefined;
     const completion = Promise.resolve().then(work).then(result => {
       job.result = result;
-      job.state = result.error ? 'failed' : 'completed';
+      job.state = result.tools.some(tool => tool.status === 'unknown') ? 'unknown'
+        : result.error || result.tools.some(tool => tool.status !== 'completed') ? 'failed' : 'completed';
       this.finish(job);
       return result;
     }, () => {
@@ -76,7 +77,7 @@ export class LiveToolJobs {
   private finish(job: ToolJob): void {
     this.store.transaction(tx => {
       tx.run("UPDATE runtime_outbox SET payload=?,state=?,claim_token=NULL,lease_until=NULL WHERE id=? AND state='claimed' AND claim_token=?",
-        [JSON.stringify(job), job.state === 'completed' ? 'acknowledged' : 'failed', job.id, job.id]);
+        [JSON.stringify(job), job.state === 'completed' ? 'acknowledged' : job.state === 'unknown' ? 'unknown' : 'failed', job.id, job.id]);
     });
   }
 }

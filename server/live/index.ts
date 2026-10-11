@@ -221,6 +221,12 @@ export class LiveSessionOwner {
     });
   }
 
+  /** Additional authority source for a dispatched job only; Live session lookup remains unchanged. */
+  lookupJobAuthority(runId: string): LiveAuthority | null {
+    const job = this.#jobs.pending().find(job => job.originSessionId === runId && job.state === 'in_progress');
+    return job && job.host.authorityEpoch === this.#store.authorityEpoch ? job.authority : null;
+  }
+
   current(cursor = 0): LivePageProjection {
     if (!Number.isSafeInteger(cursor) || cursor < 0) throw new LiveError('invalid_request');
     return this.#store.transaction(tx => {
@@ -494,15 +500,16 @@ export class LiveSessionOwner {
     if (this.#tools && handle.host) {
       const authority = this.lookupAuthority(handle.host.runId);
       if (!authority) return;
+      const dispatchGate = await this.#tools.owner.resultGate.authorize(handle.host, [], [handle.inputClass], handle.abort.signal);
       const host = structuredClone(handle.host), step = ++handle.toolStep;
       const jobAbort = new AbortController();
       const control = { signal: jobAbort.signal, deadlineMs: Date.now() + this.#profile.limits.sessionMs };
       const execution = await this.#jobs.run(host, authority, this.#profile.limits.toolDeferralMs, this.#schedule, async () => {
         const raw = await runToolCalls(this.#tools!.owner, event.calls, { registry: handle.registry, host,
-          authority: { isCurrent: async (_host, _tool, signal) => !signal.aborted }, control,
+          authority: { isCurrent: async (_host, _tool, signal) => dispatchGate.state === 'allowed' && !signal.aborted }, control,
           step, contentIndex: 0, seenIds: handle.seenIds, baseClasses: [handle.inputClass] });
         // Completion never sends to the old transport. With no active authority, retain references for pickup.
-        if (!this.lookupAuthority(host.runId)) return raw;
+        if (!this.lookupAuthority(host.runId) && !this.lookupJobAuthority(host.runId)) return raw;
         const gated = await authorizeToolBatch(this.#tools!.owner, raw, { host, control, baseClasses: [handle.inputClass] });
         return gated.error?.reason === 'tool_result_denied' ? raw : gated;
       });

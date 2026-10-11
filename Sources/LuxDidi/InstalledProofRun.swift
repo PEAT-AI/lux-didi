@@ -100,7 +100,7 @@ import CryptoKit
     private static func orbJavaScript(_ web: WKWebView, _ script: String) async throws -> Any? {
         let observation = OrbObservation(web)
         return try await withTaskCancellationHandler(operation: {
-            try await withCheckedThrowingContinuation { continuation in
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Any?, Error>) in
                 observation.continuation = continuation
                 if observation.cancelled || Task.isCancelled { observation.cancel(); return }
                 // Native clock remains live when WK suppresses timers/RAF.

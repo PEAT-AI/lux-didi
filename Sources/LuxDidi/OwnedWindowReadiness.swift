@@ -21,6 +21,33 @@ import AppKit
         guard let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier else { return "unavailable" }
         return pid == getpid() ? "self" : "foreign-unclassified"
     }
+    // Passive display/session observation (R44). Documented public APIs only, and
+    // booleans or explicit unknown; no raw display IDs, private lock keys, foreign
+    // identity or window inventory are recorded. A missing value stays NSNull.
+    private static func displayState(_ window: NSWindow) -> [String: Any] {
+        var state: [String: Any] = [
+            "targetScreenAvailable": window.screen != nil,
+            "targetActive": NSNull(), "targetAsleep": NSNull(), "targetOnline": NSNull(),
+            "mainActive": NSNull(), "mainAsleep": NSNull(), "mainOnline": NSNull(),
+            "sessionOnConsole": NSNull(), "sessionLoginDone": NSNull(),
+            "screensCount": NSScreen.screens.count
+        ]
+        if let number = window.screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber {
+            let display = CGDirectDisplayID(number.uint32Value)
+            state["targetActive"] = CGDisplayIsActive(display) != 0
+            state["targetAsleep"] = CGDisplayIsAsleep(display) != 0
+            state["targetOnline"] = CGDisplayIsOnline(display) != 0
+        }
+        let main = CGMainDisplayID()
+        state["mainActive"] = CGDisplayIsActive(main) != 0
+        state["mainAsleep"] = CGDisplayIsAsleep(main) != 0
+        state["mainOnline"] = CGDisplayIsOnline(main) != 0
+        if let session = CGSessionCopyCurrentDictionary() as? [String: Any] {
+            if let value = session[kCGSessionOnConsoleKey as String] as? Bool { state["sessionOnConsole"] = value }
+            if let value = session[kCGSessionLoginDoneKey as String] as? Bool { state["sessionLoginDone"] = value }
+        }
+        return state
+    }
     static func wait(_ window: NSWindow, timeout: UInt64 = 8_000_000_000,
                      request: () -> Void) async -> Outcome {
         let started = Date()
@@ -30,6 +57,7 @@ import AppKit
                 var settled = false
                 var events: [[String: Any]] = []
                 var observers: [NSObjectProtocol] = []
+                var workspaceObservers: [NSObjectProtocol] = []
                 var deadline: Task<Void, Never>?
                 var loopObserver: CFRunLoopObserver?
                 var loopCount = 0
@@ -42,6 +70,8 @@ import AppKit
                     deadline?.cancel(); deadline = nil
                     observers.forEach { NotificationCenter.default.removeObserver($0) }
                     observers.removeAll()
+                    workspaceObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
+                    workspaceObservers.removeAll()
                     if let observer = loopObserver {
                         CFRunLoopRemoveObserver(CFRunLoopGetMain(), observer, .commonModes)
                         CFRunLoopObserverInvalidate(observer)
@@ -64,7 +94,8 @@ import AppKit
                     events.append(["event": event, "elapsedSeconds": Date().timeIntervalSince(started), "state": snapshot,
                         "diagnostic": ["activationPolicy": NSApp.activationPolicy().rawValue, "hidden": NSApp.isHidden,
                             "onActiveSpace": window.isOnActiveSpace, "canBecomeKey": window.canBecomeKey,
-                            "canBecomeMain": window.canBecomeMain, "frontmostClass": frontmostClass()]])
+                            "canBecomeMain": window.canBecomeMain, "frontmostClass": frontmostClass(),
+                            "display": displayState(window)]])
                     if complete && snapshot.values.allSatisfy({ $0 }) { finish(true) }
                 }
                 cancellation.action = { record("cancelled", complete: false); finish(false) }
@@ -91,6 +122,17 @@ import AppKit
                 ]
                 for (name, object) in notifications {
                     observers.append(NotificationCenter.default.addObserver(forName: name, object: object, queue: .main) { _ in
+                        Task { @MainActor in record(name.rawValue) }
+                    })
+                }
+                // Screens sleep/wake and session active/resign are posted on the
+                // workspace center, not the default center; same record path.
+                let workspaceEvents: [Notification.Name] = [
+                    NSWorkspace.screensDidSleepNotification, NSWorkspace.screensDidWakeNotification,
+                    NSWorkspace.sessionDidBecomeActiveNotification, NSWorkspace.sessionDidResignActiveNotification
+                ]
+                for name in workspaceEvents {
+                    workspaceObservers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { _ in
                         Task { @MainActor in record(name.rawValue) }
                     })
                 }

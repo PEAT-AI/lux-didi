@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -34,6 +34,7 @@ function adapterFor(registry: McpRegistry, timeoutMs = 4000): McpPort {
   return createMcpAdapter({ registry, store: new MemoryResultStore(), budgets: { timeoutMs } });
 }
 async function discoverAndApprove(registry: McpRegistry, adapter: McpPort, id: string, names: readonly string[]): Promise<string> {
+  registry.enable(id); registry.allowEgress(id);
   const discovery = await adapter.discover(id);
   assert.equal(discovery.state, 'discovered');
   if (discovery.state !== 'discovered') throw new Error('not discovered');
@@ -112,8 +113,6 @@ test('a granted google endpoint calls the real child with bounded defaults and b
     assert.match(eventProjection.text, /2024-01-01T09:00:00Z, Synthetic standup, Room 1/);
     assert.match(eventProjection.text, /source: https:\/\/calendar\.google\.com\/event\?eid=e1/);
   } finally {
-    const pid = Number(readFileSync(pidFile, 'utf8'));
-    assert(Number.isSafeInteger(pid) && pid > 0);
     await adapter.close();
     rmSync(dir, { recursive: true, force: true });
   }

@@ -48,7 +48,7 @@ function envelopeFor(name, args) {
   };
 }
 
-const server = new Server({ name: 'synthetic-google-mcp', version: '0.0.1' });
+const server = new Server({ name: 'synthetic-google-mcp', version: '0.0.1' }, { capabilities: { tools: {} } });
 server.setRequestHandler('tools/list', () => ({ tools: TOOLS }));
 server.setRequestHandler('tools/call', request => {
   const name = request.params?.name;

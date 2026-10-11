@@ -270,9 +270,9 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             try await nativeHTTP.revoke(sessionID: nativeSnapshot.liveSessionId, for: nativeIntent)
             let nativeTerminal = try await nativeHTTP.snapshot(sessionID: nativeSnapshot.liveSessionId, for: nativeIntent)
             try require(nativeTerminal.terminal?.state == .revoked, "native revoke and snapshot routes")
-            let builder = await companion.authenticatedRequestBuilder().request
+            let builder = companion.authenticatedRequestBuilder().request
             var staleEpochRefused = false
-            do { _ = try await builder(nativeIntent.origin.appendingPathComponent("api/v1/status"), "stale") }
+            do { _ = try builder(nativeIntent.origin.appendingPathComponent("api/v1/status"), "stale") }
             catch { staleEpochRefused = true }
             try require(staleEpochRefused, "native builder refuses stale expected epoch")
             print("PASS native operator status/create/snapshot/journal/revoke envelopes and exactly pinned audio headers")

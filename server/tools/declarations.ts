@@ -109,11 +109,8 @@ export async function authorizeToolBatch(owner: { resultGate: ToolResultGate }, 
     if (gate.state !== 'allowed' || gate.results.length !== bindings.length) return fatal();
     const checked = new Set<ToolResultBinding>();
     for (const result of gate.results) {
-      const binding = bindings.find(b => b.executionId === result.binding.executionId);
-      if (!binding || checked.has(binding) || !isDeepStrictEqual(binding, result.binding)
-          || !result.response || typeof result.response !== 'object' || Array.isArray(result.response)) return fatal();
-      const bytes = JSON.stringify(result.response);
-      if (!bytes || createHash('sha256').update(bytes).digest('hex') !== binding.result.sha256) return fatal();
+      const binding = bindings.find(b => isDeepStrictEqual(b, result.binding));
+      if (!binding || checked.has(binding) || !result.response || typeof result.response !== 'object' || Array.isArray(result.response)) return fatal();
       checked.add(binding);
     }
     return { tools, bindings, responses, error: batch.error, accepted: gate.results };

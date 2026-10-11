@@ -1,8 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { request } from 'node:http';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
@@ -151,7 +152,8 @@ test('HTTP request keys and browser session survive service and database restart
   } finally { await service.close(); store.close(); rmSync(dir,{recursive:true,force:true}); }
 });
 
-test('package installs offline and actual production CLI serves honest runtime-only status', async () => {
+// SLOW: real offline package/install and multiple production CLI starts; no mocked entry or shorter readiness proof.
+test('package installs offline and actual production CLI serves honest runtime-only status', async t => {
   const dir = mkdtempSync(join(tmpdir(),'didi-install-'));
   let child: ReturnType<typeof spawn> | undefined;
   let cliStage = 'CLI spawn'; let cliStdout = ''; let cliStderr = ''; let cliError: Error | undefined;
@@ -163,23 +165,58 @@ test('package installs offline and actual production CLI serves honest runtime-o
     const filename = (JSON.parse(packed.stdout) as {filename:string}[])[0]!.filename;
     const installed = spawnSync('npm',['install','--prefix',join(dir,'install'),'--offline','--ignore-scripts','--omit=dev','--no-audit','--no-fund',join(dir,filename)],{env,encoding:'utf8',timeout:5000});
     assert.equal(installed.status,0,installed.status === 0 ? '' : packageFailure('npm offline install', 'npm', ['install','--prefix','<owned-temp>/install','--offline','--ignore-scripts','--omit=dev','--no-audit','--no-fund','<owned-tarball>'], installed, env.npm_config_cache));
-    const state = join(dir,'state');
-    child = spawn(process.execPath,[join(dir,'install/node_modules/@lux-didi/service/dist/index.js')],{env:{...env,DIDI_STATE_DIR:state,DIDI_PORT:'0'},stdio:['ignore','pipe','pipe']});
-    child.stdout!.on('data', data => { cliStdout += data.toString(); });
-    child.stderr!.on('data', data => { cliStderr += data.toString(); });
-    child.on('error', error => { cliError = error; });
-    cliStage = 'CLI startup';
-    const exit = once(child,'exit');
-    const output = await Promise.race([once(child.stdout!,'data').then(([chunk])=>String(chunk)),exit.then(([code])=>{throw Error(`CLI exited ${String(code)}`);})]);
-    const origin = /http:\/\/127\.0\.0\.1:\d+/.exec(output)?.[0]; assert.ok(origin,output);
-    cliStage = 'CLI runtime';
-    const health = await fetch(`${origin}/health`); assert.equal(health.status,200);
-    const token = readFileSync(join(state,'admin-credential'),'utf8').trim();
-    const status = await (await fetch(`${origin}/api/v1/status`,{headers:{Authorization:`Bearer ${token}`}})).json();
-    assert.equal(status.data.capabilities.memory,false); assert.equal(status.data.model.configured,false); assert.deepEqual(status.data.sources,[]);
-    assert.ok(!output.includes(token));
-    cliStage = 'CLI teardown';
-    child.kill('SIGTERM'); const [code] = await exit; assert.equal(code,0); child = undefined;
+    const entry = join(dir,'install/node_modules/@lux-didi/service/dist/index.js');
+    const linkedInstall = join(dir,'linked-install');
+    const linkedEntry = join(dir,'install/node_modules/@lux-didi/service/dist/entry-link.js');
+    symlinkSync(join(dir,'install'),linkedInstall,'dir');
+    symlinkSync('index.js',linkedEntry);
+    const rootAliasEntry = join(linkedInstall,'node_modules/@lux-didi/service/dist/index.js');
+    const invocations = [
+      { name: 'direct', argv: [entry] },
+      { name: 'symlinked installation root', argv: [rootAliasEntry] },
+      { name: 'symlinked entry file', argv: [linkedEntry] },
+      { name: 'symlinked entry with preserved main URL', argv: ['--preserve-symlinks-main',linkedEntry] },
+    ];
+    for (const invocation of invocations) await t.test(invocation.name, async () => {
+      const state = join(dir,invocation.name.replaceAll(' ','-'));
+      cliStdout = ''; cliStderr = ''; cliError = undefined;
+      try {
+        child = spawn(process.execPath,invocation.argv,{env:{...env,DIDI_STATE_DIR:state,DIDI_PORT:'0'},stdio:['ignore','pipe','pipe']});
+        child.stdout!.on('data', data => { cliStdout += data.toString(); });
+        child.stderr!.on('data', data => { cliStderr += data.toString(); });
+        child.on('error', error => { cliError = error; });
+        cliStage = 'CLI startup';
+        const exit = once(child,'exit');
+        const output = await Promise.race([once(child.stdout!,'data').then(([chunk])=>String(chunk)),exit.then(([code])=>{throw Error(`CLI exited ${String(code)}`);})]);
+        const origin = /http:\/\/127\.0\.0\.1:\d+/.exec(output)?.[0]; assert.ok(origin,output);
+        cliStage = 'CLI runtime';
+        const health = await fetch(`${origin}/health`); assert.equal(health.status,200);
+        const token = readFileSync(join(state,'admin-credential'),'utf8').trim();
+        const status = await (await fetch(`${origin}/api/v1/status`,{headers:{Authorization:`Bearer ${token}`}})).json();
+        assert.equal(status.data.capabilities.memory,false); assert.equal(status.data.model.configured,false); assert.deepEqual(status.data.sources,[]);
+        assert.ok(!output.includes(token));
+        cliStage = 'CLI teardown';
+        child.kill('SIGTERM'); const [code] = await exit; assert.equal(code,0); child = undefined;
+      } catch (error) {
+        if (child) packageFailure(cliStage, process.execPath, invocation.argv, { status: child.exitCode, signal: child.signalCode, ...(cliError ? { error: cliError } : {}), stdout: cliStdout, stderr: cliStderr });
+        throw error;
+      } finally {
+        if (child && child.pid && child.exitCode === null) { const exit = once(child,'exit'); child.kill('SIGTERM'); await exit; }
+        child = undefined;
+      }
+    });
+    for (const argvSetup of ['', `process.argv[1]=${JSON.stringify(join(dir,'absent-importer.js'))};`]) await t.test(`import without starting (${argvSetup ? 'absent argv path' : 'no argv path'})`, () => {
+      const state = join(dir,'import-state');
+      const imported = spawnSync(process.execPath,['--input-type=module','--eval',`${argvSetup}await import(${JSON.stringify(pathToFileURL(entry).href)});console.log('imported without starting');`],{env:{...env,DIDI_STATE_DIR:state,DIDI_PORT:'0'},encoding:'utf8',timeout:5000});
+      assert.equal(imported.error,undefined); assert.equal(imported.status,0,imported.stderr);
+      assert.equal(imported.stdout,'imported without starting\n'); assert.equal(existsSync(state),false);
+    });
+    await t.test('symlinked startup error propagates', () => {
+      const state = join(dir,'error-state');
+      const failed = spawnSync(process.execPath,[rootAliasEntry,'--unsupported'],{env:{...env,DIDI_STATE_DIR:state,DIDI_PORT:'0'},encoding:'utf8',timeout:5000});
+      assert.equal(failed.error,undefined); assert.equal(failed.status,1);
+      assert.match(failed.stderr,/No CLI arguments supported/); assert.equal(failed.stdout,''); assert.equal(existsSync(state),false);
+    });
   } catch (error) {
     if (child) packageFailure(cliStage, process.execPath, ['<installed-service>/dist/index.js'], { status: child.exitCode, signal: child.signalCode, ...(cliError ? { error: cliError } : {}), stdout: cliStdout, stderr: cliStderr });
     throw error;

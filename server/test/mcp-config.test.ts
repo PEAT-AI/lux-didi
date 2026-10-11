@@ -306,3 +306,40 @@ test('mcp.json endpoint catalog: missing is a defined state; strict grantMode, o
   assert.equal(loaded.state, 'configured'); assert.equal(loaded.catalog.grantMode, 'owner-trusted-reads');
   assert.deepEqual(loaded.catalog.endpoints, [entry]);
 });
+
+test('mcp credential resolver reads an owner-only synthetic file and refuses a malformed one; a missing credential is a typed endpoint error', async t => {
+  const host = await import(hostModule);
+  const dir = mkdtempSync(join(tmpdir(), 'didi-mcp-credential-'));
+  chmodSync(dir, 0o700);
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  const good = join(dir, 'mongo.json');
+  privateJSON(good, { schemaVersion: 1, token: 'synthetic-bearer-token' });
+  assert.equal(host.readMcpCredential(dir, 'mongo'), 'synthetic-bearer-token');
+
+  privateJSON(join(dir, 'empty.json'), { schemaVersion: 1, token: '' });
+  assert.throws(() => host.readMcpCredential(dir, 'empty'), /credential empty missing or invalid/);
+  privateJSON(join(dir, 'v2.json'), { schemaVersion: 2, token: 'synthetic' });
+  assert.throws(() => host.readMcpCredential(dir, 'v2'));
+  privateJSON(join(dir, 'extra.json'), { schemaVersion: 1, token: 'synthetic', extra: true });
+  assert.throws(() => host.readMcpCredential(dir, 'extra'));
+  writeFileSync(join(dir, 'wide.json'), JSON.stringify({ schemaVersion: 1, token: 'synthetic' }), { mode: 0o644 });
+  chmodSync(join(dir, 'wide.json'), 0o644);
+  assert.throws(() => host.readMcpCredential(dir, 'wide'));
+  assert.throws(() => host.readMcpCredential(dir, 'absent'));
+  assert.throws(() => host.readMcpCredential(dir, '../escape'));
+
+  const configDir = join(dir, 'provider-config');
+  mkdirSync(configDir, { recursive: true, mode: 0o700 }); chmodSync(configDir, 0o700);
+  privateJSON(join(configDir, 'mcp.json'), { schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [
+    { id: 'mongo', transport: 'streamable-http', url: 'https://synthetic.invalid/mcp', connector: 'mongoose', account: 'alpha', resource: 'mongodb', credentialRef: 'mongo', enabled: true, allowEgress: true },
+  ] });
+  const store = new Store(join(dir, 'data'), toolsMigrations);
+  t.after(() => store.close());
+  const runtime = await host.composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null });
+  t.after(async () => { await runtime.close(); });
+  const report = runtime.status().endpoints.find((endpoint: { id: string }) => endpoint.id === 'mongo');
+  assert.equal(report?.state, 'error');
+  assert.equal(report?.error, 'credential mongo missing or invalid');
+  assert.equal(report?.tools, 0);
+});

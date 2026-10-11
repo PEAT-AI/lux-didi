@@ -1,3 +1,10 @@
+import { createToolsOwner, toolsMigrations } from '../tools/index.js';
+import { createMcpAdapter } from '../adapters/mcp/adapter.js';
+import { McpRegistry } from '../adapters/mcp/registry.js';
+import { MemoryResultStore } from '../adapters/mcp/store.js';
+import type { LiveAuthority } from '../tools/types.js';
+import type { LiveToolsComposition } from '../live/types.js';
+import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { TestContext } from 'node:test';
@@ -46,7 +53,7 @@ function writePrivate(dir: string, name: string, text: string): void {
   chmodSync(path, 0o600);
 }
 
-interface HarnessOptions { now?: () => number; config?: unknown; rawLive?: string; profile?: LiveProfile; withKey?: boolean; credentials?: { resolve(reference: string): Promise<string | undefined> } }
+interface HarnessOptions { toolsFactory?: (store: Store) => LiveToolsComposition; now?: () => number; config?: unknown; rawLive?: string; profile?: LiveProfile; withKey?: boolean; credentials?: { resolve(reference: string): Promise<string | undefined> } }
 
 interface Harness {
   f: Awaited<ReturnType<typeof fixture>>;
@@ -60,14 +67,14 @@ interface Harness {
 async function harness(t: TestContext, options: HarnessOptions = {}): Promise<Harness> {
   const f = await fixture(t);
   const dir = mkdtempSync(join(tmpdir(), 'didi-live-gateway-'));
-  const store = new Store(join(dir, 'state'), liveMigrations);
+  const store = new Store(join(dir, 'state'), [...liveMigrations, ...(options.toolsFactory ? toolsMigrations : [])]);
   const config = join(dir, 'provider-config');
   mkdirSync(config, { recursive: true, mode: 0o700 });
   chmodSync(config, 0o700);
   if (options.rawLive !== undefined) writePrivate(config, 'live.json', options.rawLive);
   else if (options.config !== undefined) writePrivate(config, 'live.json', `${JSON.stringify(options.config)}\n`);
   if (options.withKey !== false) writePrivate(config, 'gemini-primary.json', `${JSON.stringify({ schemaVersion: 1, keyReference: 'gemini-primary', key: CANARY })}\n`);
-  const { service: live } = composeLive(store, config, { socketFactory: f.socketFactory, ...(options.profile ? { profile: options.profile } : {}), ...(options.credentials ? { credentials: options.credentials } : {}) }, options.now);
+  const { service: live } = composeLive(store, config, { socketFactory: f.socketFactory, ...(options.profile ? { profile: options.profile } : {}), ...(options.credentials ? { credentials: options.credentials } : {}) }, options.now, undefined, options.toolsFactory?.(store));
   const running = await listenService({ store, live, port: 0 });
   t.after(async () => {
     await running.close();
@@ -569,4 +576,97 @@ test('canonical host applies configured idle deadline and persists idle_timeout 
   assert.equal(recovered.body.data.liveSessionId, id);
   assert.equal(f.attempts, 1, 'restart/replay never reopens the adapter');
   t.diagnostic('actual host idleMs=200, sessionMs=10000: observed persisted idle_timeout; replay/restart opens remain1');
+});
+
+test('page Live projection is cookie-only, same-origin, read-only and no-store', async t => {
+  const h = await harness(t, { config: configJson(true) });
+  const token = 'p'.repeat(43);
+  h.store.transaction(tx => tx.run('INSERT INTO runtime_sessions VALUES (?,?,?,?)', [createHash('sha256').update(token).digest('hex'), 'page-client', 'csrf', Date.now() + 60_000]));
+  const headers = { cookie: `didi_session=${token}` };
+  const response = await fetch(`${h.origin}/api/v1/live/current`, { headers });
+  assert.equal(response.status, 200); assert.equal(response.headers.get('cache-control'), 'no-store');
+  assert.equal(response.headers.get('access-control-allow-origin'), null);
+  const body = await response.json() as { data: { state: string; entries: unknown[]; cursor: number } };
+  assert.deepEqual(body.data, { state: 'idle', since: null, entries: [], cursor: 0 });
+  assert.equal((await fetch(`${h.origin}/api/v1/live/current`, { headers: bearer(h) })).status, 403);
+  assert.equal((await fetch(`${h.origin}/api/v1/live/current`, { headers: { ...headers, origin: 'https://other.test' } })).status, 403);
+  assert.equal((await fetch(`${h.origin}/api/v1/live/current`, { headers: { ...headers, 'sec-fetch-site': 'cross-site' } })).status, 403);
+  assert.equal((await fetch(`${h.origin}/api/v1/live/current?cursor=-1`, { headers })).status, 400);
+  for (const name of ['liveSessionId', 'args', 'key', 'grants', 'pcm', 'thoughts']) assert.equal(JSON.stringify(body).includes(name), false);
+});
+
+test('gateway forwards safe tool-call/result markers and keeps a refused tool batch alive', async t => {
+  const h = await harness(t, { config: configJson(true) });
+  const created = await createBody(h, 'tool-markers');
+  const ws = new WebSocket(`${h.origin.replace('http:', 'ws:')}/api/v1/live-sessions/${created.body.data.liveSessionId}/audio`, { headers: bearer(h) });
+  t.after(() => ws.terminate());
+  const markers: Record<string, any>[] = [];
+  let readyResolve!: () => void, resultResolve!: () => void;
+  const ready = new Promise<void>(resolve => { readyResolve = resolve; });
+  const result = new Promise<void>(resolve => { resultResolve = resolve; });
+  ws.on('message', (data, binary) => {
+    if (binary) return;
+    const frame = JSON.parse(data.toString()) as Record<string, any>; markers.push(frame);
+    if (frame.type === 'ready') readyResolve();
+    if (frame.type === 'toolResult') resultResolve();
+  });
+  await once(ws, 'open'); await h.f.frame(1); h.f.send({ setupComplete: {} }); await ready;
+  h.f.send({ toolCall: { functionCalls: [{ id: 'refused', name: 'not_granted', args: { secret: CANARY } }] } });
+  await h.f.frame(2); await result;
+  assert.equal(markers.some(marker => marker.type === 'toolCall'), true);
+  const projected = markers.find(marker => marker.type === 'toolResult')!;
+  assert.equal(projected.tool.status, 'error'); assert.equal(projected.tool.markdown, 'Tool not granted');
+  assert.deepEqual(projected.tool.sources, []);
+  assert.equal(JSON.stringify(markers).includes(CANARY), false); assert.equal(JSON.stringify(markers).includes('args'), false);
+  assert.equal(ws.readyState, WebSocket.OPEN);
+  const token = 'q'.repeat(43);
+  h.store.transaction(tx => tx.run('INSERT INTO runtime_sessions VALUES (?,?,?,?)', [createHash('sha256').update(token).digest('hex'), 'active-page-client', 'csrf', Date.now() + 60_000]));
+  const headers = { cookie: `didi_session=${token}` };
+  const page = await json(h.origin, '/api/v1/live/current', { headers });
+  assert.equal(page.body.data.state, 'listening');
+  assert.equal(page.body.data.entries.some((entry: any) => entry.kind === 'toolResult' && entry.tool.status === 'error'), true);
+  for (const forbidden of ['liveSessionId', 'args', 'key', 'grants', 'pcm', 'thoughts']) assert.equal(JSON.stringify(page.body).includes(forbidden), false);
+  // Input resumes without requiring an audioStreamEnd turn boundary.
+  ws.send(pcm, { binary: true }); await h.f.frame(3);
+  const modelAudio = once(ws, 'message');
+  h.f.send({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from(pcm).toString('base64') } }] } } });
+  const [, binary] = await modelAudio; assert.equal(binary, true);
+  assert.equal((await json(h.origin, '/api/v1/live/current', { headers })).body.data.state, 'speaking');
+  const interruption = once(ws, 'message'); h.f.send({ serverContent: { interrupted: true } });
+  const [boundary] = await interruption; assert.equal(JSON.parse(boundary.toString()).type, 'interrupted');
+  assert.equal((await json(h.origin, '/api/v1/live/current', { headers })).body.data.state, 'listening');
+  ws.send(JSON.stringify({ type: 'close' })); await once(ws, 'close');
+});
+
+test('trusted composition registers current Live authority and refuses after terminal/revoke', async t => {
+  let gateOwner: ReturnType<typeof createToolsOwner>;
+  let lookup: ((runId: string, signal: AbortSignal) => Promise<LiveAuthority | null>) | undefined;
+  const h = await harness(t, { config: configJson(true), toolsFactory: store => {
+    const registry = new McpRegistry();
+    const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic-token' });
+    t.after(() => port.close());
+    const owner = createToolsOwner({ store, ownerId: store.assistantId, registry, port, lookupAuthority: async (runId, signal) => lookup ? lookup(runId, signal) : null });
+    gateOwner = owner;
+    return { owner, connectionIds: () => [], registerAuthoritySource: source => { lookup = source; } };
+  } });
+  assert.equal(typeof lookup, 'function');
+  const created = await createBody(h, 'registered-authority'); const id = created.body.data.liveSessionId;
+  const signal = new AbortController().signal;
+  assert.equal(await lookup!(id, signal), null);
+  const ws = new WebSocket(`${h.origin.replace('http:', 'ws:')}/api/v1/live-sessions/${id}/audio`, { headers: bearer(h) });
+  t.after(() => ws.terminate()); await once(ws, 'open');
+  await h.f.frame(1); h.f.send({ setupComplete: {} }); await once(ws, 'message');
+  const active = await lookup!(id, signal); assert.equal(active?.runId, id); assert.match(active!.acceptedRunHash, /^[a-f0-9]{64}$/);
+  const host = { runId: id, actorId: active!.actorId, authorityEpoch: active!.authorityEpoch, revision: active!.revision, grants: [] };
+  assert.equal((await gateOwner!.resultGate.authorize(host, [], ['ordinary'], signal)).state, 'allowed');
+  const aborted = new AbortController(); aborted.abort(); assert.equal(await lookup!(id, aborted.signal), null);
+  assert.equal((await json(h.origin, `/api/v1/live-sessions/${id}/revoke`, { method: 'POST', headers: bearer(h) })).status, 200);
+  assert.equal(await lookup!(id, signal), null);
+  assert.equal((await gateOwner!.resultGate.authorize(host, [], ['ordinary'], signal)).state, 'refused');
+  ws.close(); if (ws.readyState !== WebSocket.CLOSED) await once(ws, 'close');
+  const again = await createBody(h, 'registered-terminal'); const secondId = again.body.data.liveSessionId;
+  const second = new WebSocket(`${h.origin.replace('http:', 'ws:')}/api/v1/live-sessions/${secondId}/audio`, { headers: bearer(h) });
+  t.after(() => second.terminate()); await once(second, 'open'); await h.f.frame(2); h.f.send({ setupComplete: {} }); await once(second, 'message');
+  assert.notEqual(await lookup!(secondId, signal), null);
+  second.send(JSON.stringify({ type: 'close' })); await once(second, 'close'); assert.equal(await lookup!(secondId, signal), null);
 });

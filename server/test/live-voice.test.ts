@@ -20,7 +20,9 @@ test('wire setup/history snapshots, readiness, PCM and three independent output 
   await f.frame(1);
   assert.equal(f.frames.length, 1);
   assert.deepEqual(f.frames[0], { setup: {
-    model: 'models/explicit-live-test', generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'ExplicitVoice' } } } },
+    model: 'models/explicit-live-test', generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'ExplicitVoice' } } }, thinkingConfig: { thinkingLevel: 'minimal' } },
+    historyConfig: { initialHistoryInClientContent: true }, contextWindowCompression: { slidingWindow: { targetTokens: 32000 } },
+    realtimeInputConfig: { automaticActivityDetection: { startOfSpeechSensitivity: 'START_SENSITIVITY_LOW' } },
     systemInstruction: { parts: [{ text: 'Synthetic system' }] }, inputAudioTranscription: {}, outputAudioTranscription: {},
   } });
   const endpoint = new URL(f.destination);
@@ -150,7 +152,7 @@ for (const [name, payload, expected] of [
   ['bad rate', { serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=16000', data: 'AAA=' } }] } } }, 'protocol_error'],
   ['bad base64', { serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: '!!' } }] } } }, 'protocol_error'],
   ['odd PCM', { serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: 'AA==' } }] } } }, 'protocol_error'],
-  ['unsupported tool', { toolCall: { functionCalls: [{ name: CANARY, args: { secret: CANARY } }] } }, 'unsupported_tool'],
+  ['malformed tool call', { toolCall: { functionCalls: [{ name: CANARY, args: { secret: CANARY } }] } }, 'protocol_error'],
   ['provider error', { error: { code: 401, message: CANARY } }, 'provider_error'],
   ['invalid goAway', { goAway: { timeLeft: CANARY } }, 'protocol_error'],
   ['key in model text', { serverContent: { modelTurn: { parts: [{ text: `wss://example.test/?key=${CANARY}` }] } } }, 'protocol_error'],
@@ -213,17 +215,17 @@ test('bounded event retention fails explicitly rather than dropping speech', asy
 test('bounded event bytes and outgoing frame fail explicitly', async t => {
   const { f, session, captured } = await ready(t, { limits: { maxEventBytes: 80, closeMs: 30 } });
   f.send({ serverContent: { inputTranscription: { text: 'x'.repeat(256) } } }); assert.equal((await session.done).code, 'event_limit'); await captured.done;
-  const second = await ready(t, { limits: { maxOutgoingBytes: 512, closeMs: 30 } });
+  const second = await ready(t, { limits: { maxOutgoingBytes: 1024, closeMs: 30 } });
   assert.throws(() => second.session.sendAudio({ pcm: new Uint8Array(1024), dataClass: 'ordinary' }), code('outgoing_limit'));
   assert.equal((await second.session.done).code, 'outgoing_limit'); assert.equal(second.f.frames.length, 1); await second.captured.done;
 });
 
 test('socket bufferedAmount backpressure is checked before any audio write', async t => {
   const f = await fixture(t); let client!: WebSocket;
-  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: (url, config) => { client = f.socketFactory(url, config); return client; }, limits: { maxBufferedBytes: 512, closeMs: 30 } })).open(request(), control());
+  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: (url, config) => { client = f.socketFactory(url, config); return client; }, limits: { maxBufferedBytes: 1024, closeMs: 30 } })).open(request(), control());
   await f.frame(1); f.send({ setupComplete: {} }); await session.ready;
   // Deterministic congestion seam on the actual ws instance; no synthetic host load.
-  Object.defineProperty(client, 'bufferedAmount', { get: () => 513 });
+  Object.defineProperty(client, 'bufferedAmount', { get: () => 1025 });
   assert.throws(() => session.sendAudio({ pcm, dataClass: 'ordinary' }), code('backpressure'));
   assert.equal((await session.done).code, 'backpressure'); assert.equal(f.frames.length, 1);
 });
@@ -273,4 +275,61 @@ test('expired deadline and unrepresentable initial frame have zero credential/so
   assert.equal((await expired.done).code, 'deadline');
   assert.throws(() => new GeminiLiveVoiceAdapter({ ...settings, limits: { maxOutgoingBytes: 1 } }).open(request(), control()), code('outgoing_limit'));
   assert.equal(keys, 0); assert.equal(sockets, 0);
+});
+
+test('Live tool batches use one response frame and suppress microphone audio until answered', async t => {
+  const f = await fixture(t);
+  const session = new GeminiLiveVoiceAdapter(options(f)).open({ ...request(), languageCode: 'ar', tools: [
+    { name: 'search_knowledge', description: 'Search', parameters: { type: 'OBJECT' } },
+  ] }, control());
+  const events = session.events[Symbol.asyncIterator](); t.after(() => session.close());
+  await f.frame(1);
+  const setup = (f.frames[0] as { setup: Record<string, any> }).setup;
+  assert.deepEqual(setup.tools, [{ functionDeclarations: [{ name: 'search_knowledge', description: 'Search', parameters: { type: 'OBJECT' } }] }]);
+  assert.equal(setup.generationConfig.speechConfig.languageCode, 'ar-XA');
+  assert.deepEqual(setup.generationConfig.thinkingConfig, { thinkingLevel: 'minimal' });
+  assert.deepEqual(setup.historyConfig, { initialHistoryInClientContent: true });
+  assert.deepEqual(setup.contextWindowCompression, { slidingWindow: { targetTokens: 32000 } });
+  assert.deepEqual(setup.realtimeInputConfig, { automaticActivityDetection: { startOfSpeechSensitivity: 'START_SENSITIVITY_LOW' } });
+  f.send({ setupComplete: {} }); await session.ready;
+  assert.equal((await events.next()).value?.type, 'ready');
+  f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x' } }, { id: 'c2', name: 'search_knowledge', args: { query: 'y' } }] } });
+  const event: LiveVoiceEvent | undefined = (await events.next()).value;
+  assert.equal(event?.type, 'toolCall');
+  if (event?.type !== 'toolCall') throw Error('missing tool call');
+  assert.deepEqual(event.calls.map(c => c.id), ['c1', 'c2']);
+  session.sendAudio({ pcm, dataClass: 'ordinary' });
+  assert.equal(session.droppedAudioFrames, 1);
+  session.sendToolResponse({ responses: [{ id: 'c1', name: 'search_knowledge', response: { markdown: 'one' } }, { id: 'c2', name: 'search_knowledge', response: { error: 'denied' } }] });
+  await f.frame(2);
+  assert.deepEqual(f.frames[1], { toolResponse: { functionResponses: [{ id: 'c1', name: 'search_knowledge', response: { markdown: 'one' } }, { id: 'c2', name: 'search_knowledge', response: { error: 'denied' } }] } });
+  session.sendAudio({ pcm, dataClass: 'ordinary' }); await f.frame(3);
+  session.close(); assert.equal((await session.done).droppedAudioFrames, 1);
+});
+
+test('3.8 Live omits thinking config and cancellation releases an unanswered batch', async t => {
+  const f = await fixture(t);
+  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory, modelId: 'models/gemini-3.8-live-test', route: { enabled: true, provider: 'gemini', modelId: 'models/gemini-3.8-live-test', dataClasses: ['ordinary', 'private'] } })).open(request(), control());
+  t.after(() => session.close()); const events = session.events[Symbol.asyncIterator]();
+  await f.frame(1); const setup = (f.frames[0] as { setup: { generationConfig: object } }).setup;
+  assert.equal('thinkingConfig' in setup.generationConfig, false);
+  f.send({ setupComplete: {} }); await session.ready; await events.next();
+  f.send({ toolCall: { functionCalls: [{ id: 'one', name: 'test', args: {} }, { id: 'two', name: 'test', args: {} }] } });
+  assert.equal((await events.next()).value?.type, 'toolCall');
+  assert.throws(() => session.sendToolResponse({ responses: [{ id: 'one', name: 'test', response: {} }] }), code('invalid_request'));
+  session.sendAudio({ pcm, dataClass: 'ordinary' }); assert.equal(session.droppedAudioFrames, 1);
+  f.send({ toolCallCancellation: { ids: ['one', 'two'] } });
+  assert.equal((await events.next()).value?.type, 'toolCallCancellation');
+  session.sendAudio({ pcm, dataClass: 'ordinary' }); await f.frame(2);
+  assert.equal('realtimeInput' in (f.frames[1] as object), true);
+  session.close();
+});
+
+
+test('only a 3.8 Live model id suppresses minimal thinking configuration', async t => {
+  const modelId = 'models/synthetic-3.8-test';
+  const { f, session, captured } = await ready(t, { modelId, route: { enabled: true, provider: 'gemini', modelId, dataClasses: ['ordinary', 'private'] } });
+  const setup = (f.frames[0] as { setup: { generationConfig: { thinkingConfig: unknown } } }).setup;
+  assert.deepEqual(setup.generationConfig.thinkingConfig, { thinkingLevel: 'minimal' });
+  session.close(); await captured.done;
 });

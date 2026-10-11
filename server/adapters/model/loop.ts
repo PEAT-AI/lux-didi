@@ -1,8 +1,8 @@
-import { createHash } from 'node:crypto';
+import { runToolCalls } from '../../tools/declarations.js';
 import { isDeepStrictEqual } from 'node:util';
 import { controlled, Interrupted } from './control.js';
 import { modelCalls } from './gemini.js';
-import type { Authority, Content, HostContext, LoopResult, ModelControl, ModelPort, ModelRequest, Part, ToolCallIntent, ToolCallJournal, ToolCallRefusal, ToolDefinition, ToolOutcome, ToolRecord, ToolResultBinding, ToolResultGate, ToolResultRef } from './types.js';
+import type { Authority, Content, HostContext, LoopResult, ModelControl, ModelPort, ModelRequest, Part, ToolCallJournal, ToolDefinition, ToolRecord, ToolResultBinding, ToolResultGate, ToolResultRef } from './types.js';
 
 export interface LoopOptions {
   model: ModelPort; request: ModelRequest; registry: ToolDefinition[];
@@ -91,71 +91,12 @@ export async function runTools(options: LoopOptions): Promise<LoopResult> {
     if (calls.length > 16) return end('limit', 'tool_calls_per_step_limit');
     contents.push(structuredClone(result.providerContent));
     const responses: Part[] = [];
-    for (const [index, call] of calls.entries()) {
-      const executionId = `${host.runId}:${steps}:${index}`;
-      const record: ToolRecord = { ...(call.id !== undefined ? { callId: call.id } : {}), name: call.name, executionId, status: 'refused', reason: 'unknown_tool' };
-      const tool = registry.find(t => t.name === call.name);
-      const refusal: ToolCallRefusal = {
-        runId: host.runId, actorId: host.actorId, authorityEpoch: host.authorityEpoch, revision: host.revision,
-        executionId, toolName: call.name, argumentsHash: createHash('sha256').update(JSON.stringify(call.args)).digest('hex'),
-        ...(call.id !== undefined ? { callId: call.id } : {}), ...(tool ? { accountId: tool.accountId, resourceId: tool.resourceId } : {}),
-      };
-      let intent: ToolCallIntent | undefined;
-      let outcome: ToolOutcome | undefined;
-      let dispatched = false;
-      let journalState: 'fresh' | 'existing' | 'failed' | undefined;
-      let interrupted: Interrupted | undefined;
-      try {
-        outcome = await controlled(options.control, async signal => {
-          if (!tool) return;
-          if (call.id !== undefined && seenIds.has(call.id)) { record.reason = 'duplicate_call_id'; return; }
-          if (call.id !== undefined) seenIds.add(call.id);
-          if (typeof call.args !== 'object' || call.args === null || Array.isArray(call.args) || !tool.validate(call.args)) { record.reason = 'invalid_arguments'; return; }
-          if (!host.grants.some(g => g.tool === tool.name && g.effect === tool.effect && g.accountId === tool.accountId && g.resourceId === tool.resourceId)) {
-            record.reason = 'grant_not_permitted'; return;
-          }
-          if (!await options.authority.isCurrent(host, tool, signal)) { record.reason = 'stale_or_revoked_authority'; return; }
-          if (signal.aborted || options.control.signal.aborted) throw new Interrupted('cancelled');
-          if (Date.now() >= options.control.deadlineMs) throw new Interrupted('deadline');
-          intent = { ...refusal, accountId: tool.accountId, resourceId: tool.resourceId };
-          try {
-            journalState = options.journal.intent(structuredClone(intent));
-            if (journalState !== 'fresh' && journalState !== 'existing') throw Error('invalid_journal_intent');
-          } catch { journalState = 'failed'; return; }
-          if (journalState === 'existing') return;
-          if (signal.aborted || options.control.signal.aborted) throw new Interrupted('cancelled');
-          if (Date.now() >= options.control.deadlineMs) throw new Interrupted('deadline');
-          dispatched = true;
-          return tool.execute(call.args, { runId: host.runId, actorId: host.actorId, authorityEpoch: host.authorityEpoch,
-            revision: host.revision, executionId, accountId: tool.accountId, resourceId: tool.resourceId, signal });
-        });
-        if (dispatched) {
-          if (!outcome || !['completed', 'failed', 'unknown'].includes(outcome.status)) throw Error('invalid_tool_outcome');
-          record.status = outcome.status; record.reason = 'handler_outcome';
-        }
-      } catch (error) {
-        record.status = dispatched ? (tool?.effect === 'write' ? 'unknown' : 'failed') : 'refused';
-        record.reason = dispatched ? 'handler_interrupted_or_failed' : 'authority_or_validation_failed';
-        if (error instanceof Interrupted) interrupted = error;
-      }
-      tools.push(record);
-      if (journalState === 'failed') return end('error', 'tool_journal_failed');
-      if (journalState === 'existing') { record.status = 'unknown'; record.reason = 'tool_intent_exists'; return end('uncertain', 'tool_intent_exists'); }
-      let ref: ToolResultRef;
-      try {
-        ref = record.status === 'completed' && outcome?.status === 'completed' ? outcome.result :
-          record.status === 'refused' ? options.journal.refuse(structuredClone(refusal), record.reason) :
-          options.journal.fail(structuredClone(intent!), record.status as 'failed' | 'unknown', record.reason);
-      } catch { return end('error', 'tool_journal_failed'); }
-      if (!validRef(ref)) return end('denied', 'tool_result_denied');
-      if (interrupted) return end(interrupted.status, interrupted.status);
-      if (record.status === 'unknown') return end('uncertain', 'unknown_tool_outcome');
-      // Empty host-only placeholder; only the gate may reconstruct provider JSON.
-      const binding: ToolResultBinding = { executionId, name: call.name, ...(call.id !== undefined ? { callId: call.id } : {}),
-        contentIndex: contents.length, partIndex: responses.length, result: structuredClone(ref) };
-      bindings.push(binding); fresh.add(binding);
-      responses.push({ functionResponse: { ...(call.id !== undefined ? { id: call.id } : {}), name: call.name, response: {} } });
-    }
+    const batch = await runToolCalls(options, calls, { registry, host, authority: options.authority, control: options.control,
+      step: steps, contentIndex: contents.length, seenIds, baseClasses: request.dataClasses });
+    tools.push(...batch.tools);
+    for (const binding of batch.bindings) { bindings.push(binding); fresh.add(binding); }
+    if (batch.error) return end(batch.error.status, batch.error.reason);
+    responses.push(...batch.responses);
     contents.push({ role: 'user', parts: responses });
   }
 }

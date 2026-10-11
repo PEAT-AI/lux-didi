@@ -1,3 +1,7 @@
+import { declarationsFor, runToolCalls } from '../tools/declarations.js';
+import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
+import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';
+import type { LiveToolsComposition, LivePageProjection, LiveToolProjection } from './types.js';
 import { publicOwnerProfile, PROMPT_VERSION } from '../prompt/index.js';
 import { validateAcceptedPrompt } from './config.js';
 import { createHash, randomUUID } from 'node:crypto';
@@ -14,6 +18,13 @@ import {
 } from './types.js';
 
 interface ActiveSession {
+  registry: readonly ToolDefinition[];
+  host: HostContext | undefined;
+  toolStep: number;
+  seenIds: Set<string>;
+  thinking: boolean;
+  pendingCallIds: Set<string>;
+  speaking: boolean;
   liveSessionId: string;
   session: LiveVoiceSession;
   abort: AbortController;
@@ -101,6 +112,7 @@ class OutputChannel {
 }
 
 export class LiveSessionOwner {
+  readonly #tools: LiveToolsComposition | undefined;
   readonly #store: LiveStorePort;
   readonly #voice: LiveVoicePort;
   readonly #profile: LiveProfile;
@@ -116,6 +128,7 @@ export class LiveSessionOwner {
 
   constructor(config: LiveOwnerConfig) {
     if (!config || typeof config !== 'object' || !config.store || !config.voice) throw new LiveError('invalid_config');
+    this.#tools = config.tools;
     this.#store = config.store;
     this.#voice = config.voice;
     this.#profile = validateLiveProfile(config.profile);
@@ -194,6 +207,39 @@ export class LiveSessionOwner {
     return snapshot;
   }
 
+  lookupAuthority(runId: string): LiveAuthority | null {
+    const handle = this.#active.get(runId);
+    if (!handle || this.#settled(handle) || handle.consumerState !== 'attached') return null;
+    return this.#store.transaction(tx => {
+      const session = tx.get('SELECT authority_epoch,lifecycle FROM live_sessions WHERE live_session_id=?', [runId]);
+      if (!session || session.authority_epoch !== this.#store.authorityEpoch || session.lifecycle !== 'active') return null;
+      const row = tx.get('SELECT acceptance_json,accepted_run_hash FROM live_tool_acceptances WHERE live_session_id=?', [runId]);
+      return row ? { ...JSON.parse(String(row.acceptance_json)) as RunAcceptance, acceptedRunHash: String(row.accepted_run_hash) } : null;
+    });
+  }
+
+  current(cursor = 0): LivePageProjection {
+    if (!Number.isSafeInteger(cursor) || cursor < 0) throw new LiveError('invalid_request');
+    return this.#store.transaction(tx => {
+      const row = tx.get('SELECT live_session_id,lifecycle,created_at,terminal_outcome FROM live_sessions WHERE owner_assistant_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1', [this.#store.assistantId]);
+      if (!row) return { state: 'idle', since: null, entries: [], cursor };
+      const handle = this.#active.get(String(row.live_session_id));
+      const terminal = parseTerminal(row.terminal_outcome);
+      const state: LivePageProjection['state'] = terminal ? (['closed', 'cancelled', 'revoked', 'expired'].includes(terminal.state) ? 'ended' : 'error') : handle?.thinking ? 'thinking' : handle?.speaking ? 'speaking' : handle?.consumerState === 'attached' ? 'listening' : handle ? 'ended' : 'idle';
+      const rows = tx.all('SELECT journal_id,kind,text,tool_json FROM live_journal WHERE live_session_id=? AND journal_id>? ORDER BY journal_id LIMIT 100', [String(row.live_session_id), cursor]);
+      const entries: LivePageProjection['entries'] = [];
+      for (const item of rows) {
+        const seq = Number(item.journal_id), kind = String(item.kind);
+        if (kind === 'inputTranscription' || kind === 'outputTranscription') entries.push({ seq, kind, text: String(item.text ?? '') });
+        else if (kind === 'toolCall' || kind === 'toolResult') {
+          const tool = JSON.parse(String(item.tool_json)) as LiveToolProjection;
+          entries.push({ seq, kind, tool: kind === 'toolCall' ? { name: tool.name, status: 'called' } : { name: tool.name, status: tool.status, markdown: tool.markdown, sources: tool.sources.map(source => ({ title: source.title, ...(source.url ? { url: source.url } : {}) })) } });
+        } else if (kind === 'interrupted' || kind === 'turnComplete' || kind === 'terminal') entries.push({ seq, kind });
+      }
+      return { state, since: Number(row.created_at), entries, cursor: rows.length ? Number(rows[rows.length - 1]!.journal_id) : cursor };
+    });
+  }
+
   get(liveSessionId: string): LiveSessionSnapshot {
     this.#guardOpen();
     const snapshot = this.#store.transaction(tx => {
@@ -249,7 +295,7 @@ export class LiveSessionOwner {
     });
     this.#armExpiry();
     if (prepared === 'expired') throw new LiveError('expired');
-    return this.#open(input.liveSessionId, prepared.inputClass, revision, prepared.acceptedPrompt);
+    return this.#open(input.liveSessionId, prepared.inputClass, revision, prepared.acceptedPrompt, context);
   }
 
   /** Explicit host entry point: synchronous in-memory invalidation and adapter abort. */
@@ -298,10 +344,24 @@ export class LiveSessionOwner {
     for (const handle of handles) handle.resolveDone();
   }
 
-  #open(liveSessionId: string, inputClass: DataClass, revision: number, acceptedPrompt: AcceptedPromptSnapshot): LiveAttachment {
+  #open(liveSessionId: string, inputClass: DataClass, revision: number, acceptedPrompt: AcceptedPromptSnapshot, context: LiveContext): LiveAttachment {
     const abort = new AbortController();
     const dataClasses = classes.filter(c => c === inputClass || acceptedPrompt.dataClasses.includes(c));
-    const request = { system: { text: acceptedPrompt.system, dataClass: dataClasses[dataClasses.length - 1]! }, history: [], dataClasses };
+    let registry: readonly ToolDefinition[] = [], host: HostContext | undefined;
+    if (this.#tools) {
+      const acceptance: RunAcceptance = { ownerId: this.#store.assistantId, actorId: context.clientId, runId: liveSessionId,
+        authorityEpoch: context.authorityEpoch, revision, route: { identity: liveProfileIdentity(this.#profile), provider: 'gemini', modelId: this.#profile.liveModelId, allowedClasses: [...this.#profile.route.dataClasses] },
+        allowedClasses: [...this.#profile.route.dataClasses], connectionIds: [...this.#tools.connectionIds()] };
+      this.#store.transaction(tx => {
+        const { sha256 } = this.#tools!.owner.snapshotRun(tx, acceptance);
+        tx.run('INSERT INTO live_tool_acceptances VALUES (?,?,?)', [liveSessionId, JSON.stringify(acceptance), sha256]);
+      });
+      registry = Object.freeze(this.#tools.owner.definitions(liveSessionId).map(tool => Object.freeze({ ...tool, parameters: structuredClone(tool.parameters) })));
+      host = { runId: liveSessionId, actorId: context.clientId, authorityEpoch: context.authorityEpoch, revision,
+        grants: registry.map(tool => ({ tool: tool.name, effect: tool.effect, accountId: tool.accountId, resourceId: tool.resourceId })) };
+    }
+    const request = { system: { text: acceptedPrompt.system, dataClass: dataClasses[dataClasses.length - 1]! }, history: [], dataClasses,
+      ...(registry.length ? { tools: declarationsFor(registry).declarations } : {}) };
     let session: LiveVoiceSession;
     try {
       // Absolute wall clock for the adapter; the injected clock is the owner's own durable order.
@@ -312,6 +372,7 @@ export class LiveSessionOwner {
     }
     this.#store.transaction(tx => tx.run("UPDATE live_sessions SET lifecycle='active', updated_at=? WHERE live_session_id=?", [this.#now(), liveSessionId]));
     const handle: ActiveSession = {
+      registry, host, toolStep: 0, seenIds: new Set(), thinking: false, speaking: false, pendingCallIds: new Set(),
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
       consumerState: 'attached', journalEvents: 0, journalBytes: 0, adapterOutcome: undefined,
@@ -378,7 +439,19 @@ export class LiveSessionOwner {
     try {
       for await (const event of handle.session.events) {
         if (this.#settled(handle)) break;
-        if (event.type === 'audio') { this.#pushChunk(handle, { kind: 'audio', pcm: event.pcm }); continue; }
+        if (event.type === 'toolCall') {
+          for (const call of event.calls) handle.pendingCallIds.add(call.id);
+          void this.#toolBatch(handle, event).catch(() => {
+            if (this.#settled(handle)) return;
+            const responses = event.calls.filter(call => handle.pendingCallIds.has(call.id)).map(call => ({ id: call.id, name: call.name, response: { error: 'tool_processing_failed' } }));
+            try { if (responses.length) handle.session.sendToolResponse({ responses }); } catch { /* transport may have terminated */ }
+            for (const call of event.calls) handle.pendingCallIds.delete(call.id);
+            handle.thinking = handle.pendingCallIds.size > 0;
+          }); continue;
+        }
+        if (event.type === 'toolCallCancellation') { for (const id of event.ids) handle.pendingCallIds.delete(id); handle.thinking = handle.pendingCallIds.size > 0; continue; }
+        if (event.type === 'interrupted' || event.type === 'turnComplete' || event.type === 'generationComplete') handle.speaking = false;
+        if (event.type === 'audio') { handle.speaking = true; this.#pushChunk(handle, { kind: 'audio', pcm: event.pcm }); continue; }
         if (event.type === 'outcome') { handle.adapterOutcome = event.outcome; continue; }
         const kind = journalKind(event.type);
         if (kind === null) continue;
@@ -402,19 +475,66 @@ export class LiveSessionOwner {
     handle.loopDone.resolve();
   }
 
-  #persist(handle: ActiveSession, event: LiveVoiceEvent, kind: JournalKind): number | 'overflow' {
+  async #toolBatch(handle: ActiveSession, event: Extract<LiveVoiceEvent, { type: 'toolCall' }>): Promise<void> {
+    handle.thinking = true;
+    const publish = (kind: 'toolCall' | 'toolResult', tool: LiveToolProjection) => {
+      if (this.#settled(handle)) return;
+      const sequence = this.#persist(handle, { type: kind, sequence: event.sequence, tool }, kind);
+      if (sequence === 'overflow') { this.#settle(handle, { state: 'journal_limit' }, false, 'ended', { kind, sequence: event.sequence }); return; }
+      this.#pushChunk(handle, { kind: 'marker', marker: { kind, sequence: event.sequence, journalSequence: sequence, text: null, finished: null, value: null, tool } });
+    };
+    for (const call of event.calls) publish('toolCall', { name: call.name, status: 'error', markdown: '', sources: [] });
+    if (this.#settled(handle)) return;
+    let responses = event.calls.map(call => ({ id: call.id, name: call.name, response: { error: 'Tool not granted' } as JsonObject }));
+    let projections: LiveToolProjection[] = event.calls.map(call => ({ name: call.name, status: 'error', markdown: 'Tool not granted', sources: [] }));
+    if (this.#tools && handle.host) {
+      const batch = await runToolCalls(this.#tools.owner, event.calls, { registry: handle.registry, host: handle.host,
+        authority: { isCurrent: async (host, _tool, signal) => {
+          if (!this.lookupAuthority(host.runId)) return false;
+          const gate = await this.#tools!.owner.resultGate.authorize(host, [], [handle.inputClass], signal);
+          return gate.state === 'allowed' && !!this.lookupAuthority(host.runId);
+        } }, control: { signal: handle.abort.signal, deadlineMs: Date.now() + this.#profile.limits.sessionMs },
+        step: ++handle.toolStep, contentIndex: 0, seenIds: handle.seenIds, baseClasses: [handle.inputClass], authorize: true });
+      if (this.#settled(handle)) return;
+      responses = event.calls.map((call, index) => {
+        const accepted = batch.accepted.find(result => result.binding.callId === call.id && result.binding.name === call.name);
+        const record = batch.tools[index];
+        const reason = batch.error?.reason ?? record?.reason ?? 'tool_result_denied';
+        const completed = accepted && record?.status === 'completed';
+        const markdown = completed && typeof accepted.response.text === 'string' ? accepted.response.text : reason;
+        const sources: { title: string; url?: string }[] = [];
+        if (completed) {
+          for (const match of markdown.matchAll(/\[([^\]]+)\]\((https:\/\/[^\s)]+)\)/g)) sources.push({ title: match[1]!, url: match[2]! });
+          for (const match of markdown.matchAll(/(?:#|insight\s+)(\d+)/gi)) if (!sources.some(source => source.title === match[1])) sources.push({ title: match[1]! });
+        }
+        projections[index] = { name: call.name, status: completed ? 'completed' : 'error', markdown, sources };
+        return { id: call.id, name: call.name, response: completed ? accepted.response : { error: reason } };
+      });
+    }
+    if (this.#settled(handle)) return;
+    for (const [index, projection] of projections.entries()) if (handle.pendingCallIds.has(event.calls[index]!.id)) publish('toolResult', projection);
+    responses = responses.filter(response => handle.pendingCallIds.has(response.id));
+    if (!this.#settled(handle)) {
+      try { if (responses.length) handle.session.sendToolResponse({ responses }); } catch { /* A cancelled provider batch or terminal transport cannot receive late answers. */ }
+    }
+    for (const call of event.calls) handle.pendingCallIds.delete(call.id);
+    handle.thinking = handle.pendingCallIds.size > 0;
+  }
+
+  #persist(handle: ActiveSession, event: LiveVoiceEvent | { type: 'toolCall' | 'toolResult'; sequence: number; tool: LiveToolProjection }, kind: JournalKind): number | 'overflow' {
     const text = 'text' in event ? event.text : null;
     const finished = 'finished' in event && event.finished !== undefined ? (event.finished ? 1 : 0) : null;
     const value = event.type === 'waitingForInput' ? (event.value ? 1 : 0) : null;
-    const bytes = retainedBytes(kind, text);
+    const toolJSON = 'tool' in event ? JSON.stringify(event.tool) : null;
+    const bytes = toolJSON ? Buffer.byteLength(toolJSON) : retainedBytes(kind, text);
     const limits = this.#profile.limits;
     if (handle.journalEvents + 1 > limits.journalMaxEvents || handle.journalBytes + bytes > limits.journalMaxBytes) return 'overflow';
     const now = this.#now();
     const events = handle.journalEvents + 1;
     const total = handle.journalBytes + bytes;
     const journalSequence = this.#store.transaction(tx => {
-      tx.run('INSERT INTO live_journal(live_session_id, provider_sequence, kind, text, finished, value, terminal_outcome, rejected_kind, rejected_sequence, payload_bytes, arrived_at) VALUES (?,?,?,?,?,?,NULL,NULL,NULL,?,?)',
-        [handle.liveSessionId, event.sequence, kind, text, finished, value, bytes, now]);
+      tx.run('INSERT INTO live_journal(live_session_id, provider_sequence, kind, text, finished, value, tool_json, terminal_outcome, rejected_kind, rejected_sequence, payload_bytes, arrived_at) VALUES (?,?,?,?,?,?,?,NULL,NULL,NULL,?,?)',
+        [handle.liveSessionId, event.sequence, kind, text, finished, value, toolJSON, bytes, now]);
       tx.run('UPDATE live_sessions SET journal_events=?, journal_bytes=?, ready=CASE WHEN ?=1 THEN 1 ELSE ready END, updated_at=? WHERE live_session_id=?',
         [events, total, kind === 'ready' ? 1 : 0, now, handle.liveSessionId]);
       return Number(tx.get('SELECT journal_id FROM live_journal WHERE live_session_id=? ORDER BY journal_id DESC LIMIT 1', [handle.liveSessionId])!['journal_id']);
@@ -482,7 +602,7 @@ export class LiveSessionOwner {
   }
 
   #terminalInTx(tx: Transaction, liveSessionId: string, outcome: LiveTerminalOutcome, complete: boolean, now: number, consumerState: LiveConsumerState, rejected: { kind: JournalKind; sequence: number } | null): number {
-    tx.run('INSERT INTO live_journal(live_session_id, provider_sequence, kind, text, finished, value, terminal_outcome, rejected_kind, rejected_sequence, payload_bytes, arrived_at) VALUES (?,NULL,?,NULL,NULL,NULL,?,?,?,0,?)',
+    tx.run('INSERT INTO live_journal(live_session_id, provider_sequence, kind, text, finished, value, tool_json, terminal_outcome, rejected_kind, rejected_sequence, payload_bytes, arrived_at) VALUES (?,NULL,?,NULL,NULL,NULL,NULL,?,?,?,0,?)',
       [liveSessionId, 'terminal', JSON.stringify(outcome), rejected?.kind ?? null, rejected?.sequence ?? null, now]);
     tx.run("UPDATE live_sessions SET lifecycle='terminal', journal_complete=?, terminal_outcome=?, terminal_at=?, consumer_state=?, updated_at=? WHERE live_session_id=?",
       [complete ? 1 : 0, JSON.stringify(outcome), now, consumerState, now, liveSessionId]);

@@ -1,3 +1,4 @@
+import type { createToolsOwner } from '../tools/index.js';
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
 import type { DataClass, LiveVoiceOutcome, LiveVoicePort } from '../adapters/live-voice/index.js';
 import type { StorePort } from '../contracts/storage.js';
@@ -45,7 +46,18 @@ export interface LiveProfile {
   readonly limits: LiveLimits;
 }
 
+export type LiveToolsComposition = {
+  owner: ReturnType<typeof createToolsOwner>; connectionIds(): string[];
+  registerAuthoritySource?(source: (runId: string, signal: AbortSignal) => Promise<import('../tools/types.js').LiveAuthority | null>): void;
+};
+export interface LiveToolProjection { name: string; status: 'completed' | 'error'; markdown: string; sources: { title: string; url?: string }[] }
+export interface LivePageProjection {
+  state: 'idle' | 'listening' | 'thinking' | 'speaking' | 'ended' | 'error'; since: number | null;
+  entries: { seq: number; kind: 'inputTranscription' | 'outputTranscription' | 'toolCall' | 'toolResult' | 'interrupted' | 'turnComplete' | 'terminal'; text?: string; tool?: { name: string; status: 'called' | 'completed' | 'error'; markdown?: string; sources?: { title: string; url?: string }[] } }[];
+  cursor: number;
+}
 export interface LiveOwnerConfig {
+  readonly tools?: LiveToolsComposition;
   readonly store: LiveStorePort;
   readonly voice: LiveVoicePort;
   readonly profile: LiveProfile;
@@ -77,10 +89,12 @@ export interface LiveSessionSnapshot {
 }
 
 export type JournalKind =
+  | 'toolCall' | 'toolResult'
   | 'inputTranscription' | 'outputTranscription' | 'ready' | 'interrupted' | 'generationComplete'
   | 'turnComplete' | 'waitingForInput' | 'terminal';
 
 export interface LiveFragment {
+  tool?: LiveToolProjection;
   liveSessionId: string; journalSequence: number; providerSequence: number | null; kind: JournalKind;
   text: string | null; finished: boolean | null; value: boolean | null; rejectedKind: JournalKind | null;
   rejectedSequence: number | null; arrivedAt: number;
@@ -94,6 +108,7 @@ export interface LiveFragmentPage {
 
 /** One already-committed journal marker projected for the client. */
 export interface LivePublicMarker {
+  readonly tool?: LiveToolProjection;
   readonly kind: JournalKind;
   readonly sequence: number | null;
   readonly journalSequence: number;

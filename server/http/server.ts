@@ -107,6 +107,11 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
         throw new ServiceError('METHOD_NOT_ALLOWED', 'Audio requires a WebSocket upgrade', 405);
       }
       const actor = principal(req);
+      if (route.kind === 'liveCurrent') {
+        if (actor.mode !== 'browser' || req.headers.authorization !== undefined || (req.headers['sec-fetch-site'] !== undefined && req.headers['sec-fetch-site'] !== 'same-origin')) throw new ServiceError('FORBIDDEN', 'Page session required', 403);
+        res.setHeader('Cache-Control', 'no-store');
+        send(res, 200, success(live ? live.current(route.cursor) : { state: 'idle', since: null, entries: [], cursor: route.cursor })); return;
+      }
       if (route.mutation) csrf(req, actor);
       if (route.kind === 'status') {
         send(res, 200, success({ ownerProfile: options.ownerProfileStatus ?? { status: 'default', displayName: 'Lux Didi' }, assistantId: store.assistantId, authorityEpoch: store.authorityEpoch, serviceMode: 'loopback', capabilities: { memory: !!domain, commitments: !!domain, notifications: false, model: modelStatus.status === 'configured' }, model: { configured: modelStatus.status === 'configured', ...modelStatus }, sources: [], capabilityReasons: { ...(!domain ? { memory: 'DOMAIN_NOT_CONFIGURED', commitments: 'DOMAIN_NOT_CONFIGURED' } : {}), notifications: 'NOTIFICATION_NOT_CONFIGURED', ...(modelStatus.status === 'configured' ? {} : { model: 'MODEL_NOT_CONFIGURED' }) } })); return;

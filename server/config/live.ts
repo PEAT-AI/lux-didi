@@ -1,5 +1,5 @@
-import { publicOwnerProfile, type OwnerProfileSnapshot } from '../prompt/index.js';
-import { join } from 'node:path';
+import { canonicalSpeechLanguage, composeLiveInstruction, loadPersonaOverlay, NAYA_BASE, PersonaOverlayError, publicOwnerProfile, type OwnerProfileSnapshot } from '../prompt/index.js';
+import { dirname, join } from 'node:path';
 import type { DataClass } from '../adapters/live-voice/index.js';
 import { compileVoiceInstruction, createCapabilitySnapshot, PROMPT_VERSION, validatePreferences, type ValidatedPreferences } from '../prompt/index.js';
 import { liveIdentityOf, validateLiveProfile } from '../live/config.js';
@@ -79,11 +79,16 @@ export function loadLiveConfig(options: { configDir: string; ownerId: string; ow
       preferences, model, voice: chosenVoice, dataClasses,
       profileIdentity: liveIdentityOf({ provider: 'gemini', liveModelId: model, voice: chosenVoice, keyReference: reference, modelId: model, dataClasses }),
     });
+    // The optional local overlay lives beside the data directory, outside Git; an invalid file
+    // fails closed into a typed status instead of silently falling back to the public base.
+    const overlay = loadPersonaOverlay({ dataDir: dirname(options.configDir) });
+    const language = canonicalSpeechLanguage(preferences.language);
     if (input['enabled'] === false) return { status: 'disabled', config };
-    // R1 (approved): the shared canonical system assembly compiled for a session with no turns.
-    const publicInstruction = compileVoiceInstruction({
-      ownerId: options.ownerId, promptVersion: PROMPT_VERSION, preferences,
-      capabilities: createCapabilitySnapshot([], []), trustedChars: 20000,
+    // The Live instruction is the Naya base, the local overlay and the terminal language anchor.
+    const composed = composeLiveInstruction({
+      base: NAYA_BASE,
+      ...(overlay !== undefined ? { overlay } : {}),
+      ...(language !== undefined ? { language } : {}),
     });
     const ownerProfile = options.ownerProfile ?? publicOwnerProfile(options.ownerId);
     const instruction = compileVoiceInstruction({
@@ -92,16 +97,18 @@ export function loadLiveConfig(options: { configDir: string; ownerId: string; ow
     });
     const profile = validateLiveProfile({
       provider: input['provider'], liveModelId: model, voice: chosenVoice, keyReference: reference,
+      ...(language !== undefined ? { language } : {}),
       route: { enabled: true, provider: input['provider'], modelId: model, dataClasses },
-      prompt: { text: publicInstruction.system, dataClass: preferences.dataClass },
+      prompt: { text: composed.text, dataClass: preferences.dataClass },
       acceptedPrompt: { schemaVersion: 1, ownerProfile, compilerVersion: instruction.promptVersion,
-        system: instruction.system, dataClasses: instruction.dataClasses },
+        system: composed.text, dataClasses: instruction.dataClasses },
       ...(input['limits'] !== undefined ? { limits: input['limits'] } : {}),
     });
     return { status: 'configured', config: Object.freeze({ ...config, profile }) };
   } catch (error) {
     const code = error instanceof LiveConfigError ? error.code
-      : error instanceof ConfigError ? error.code : safeError(error).code;
+      : error instanceof ConfigError ? error.code
+      : error instanceof PersonaOverlayError ? error.code : safeError(error).code;
     return { status: 'error', code };
   }
 }

@@ -923,11 +923,13 @@ test('Live answers a slow tool batch truthfully, continues the turn, and retains
   assert.ok(response.toolResponse.functionResponses[0]!.response.jobId);
   assert.equal(h.owner.current().state, 'listening');
   assert.equal(new LiveToolJobs(h.store, () => NOW).pending()[0]!.state, 'in_progress');
+  h.owner.revoke(session.liveSessionId);
+  await tick();
+  assert.equal(h.owner.lookupAuthority(session.liveSessionId), null);
   finish();
   while (new LiveToolJobs(h.store, () => NOW).pending()[0]!.state === 'in_progress') await tick();
   assert.equal(new LiveToolJobs(h.store, () => NOW).pending()[0]!.state, 'completed');
   assert.equal(h.f.frames.length, 2, 'completion must not inject a late result into Gemini');
-  assert.equal(h.owner.lookupAuthority(session.liveSessionId)?.runId, session.liveSessionId);
   assert.match(h.owner.pendingJobs()[0]!.markdown, /Synthetic insight/);
   h.owner.revoke(session.liveSessionId);
   await tick();

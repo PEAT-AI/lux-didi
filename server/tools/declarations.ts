@@ -101,6 +101,7 @@ export async function runToolCalls(owner: { journal: ToolCallJournal; resultGate
 /** The same result reconstruction boundary serves inline and explicitly picked-up jobs. */
 export async function authorizeToolBatch(owner: { resultGate: ToolResultGate }, batch: ToolBatch,
   ctx: Pick<ToolCallsContext, 'host' | 'control' | 'baseClasses'>): Promise<ToolBatch> {
+  if (batch.error) return batch;
   const { tools, bindings, responses } = batch, { host } = ctx;
   const fatal = (): ToolBatch => ({ tools, bindings, responses, error: { status: 'denied', reason: 'tool_result_denied' }, accepted: [] });
   try {

@@ -90,3 +90,41 @@ The existing WS JSON marker channel now includes `toolCall` and `toolResult`. Bo
 `GET /api/v1/live/current?cursor=0` is a read-only same-origin page route requiring the existing page cookie. Bearer credentials are refused. It emits no CORS headers and uses `Cache-Control: no-store`. Its explicit projection is `{state, since, entries, cursor}`; entries contain `seq`, an allowlisted kind, optional transcription text or `{tool: {name, status, markdown?, sources?}}`. It exposes no Live session identifiers, grants, arguments, keys, PCM or thoughts. Cursors advance over committed journal sequence numbers and limit each page to 100 rows.
 
 Server states are `idle`, `listening`, `thinking`, `speaking`, `ended` and `error`. Input is continuous and provider automatic VAD owns turn boundaries. `thinking` means a tool batch is unanswered; `speaking` means model audio is arriving until a completion or interruption boundary. `muted` is exclusively client state. `endAudioStream` remains optional, never mandatory per turn.
+
+
+## Deferred work and quiet callbacks
+
+`live.json` accepts `limits.toolDeferralMs`: integer milliseconds from 1000 through
+30000, default 4000. This budget applies to the tool batch, not the Live session
+lifetime. A batch that exceeds it receives truthful function responses containing
+its job ID and `status: "in progress"`. Naya can acknowledge the work without
+waiting for the tools. Execution uses the acceptance captured at dispatch and the
+existing tool intent journal and result gate.
+
+Execution receipts and gated results live in the existing `runtime_outbox`, not
+another database or queue. A service restart makes an interrupted dispatched job
+`unknown`; it is never automatically replayed. Completed results, actual failures
+and unknown outcomes remain available for callback. Completion does not send an
+unsolicited result or audio to the old Live transport.
+
+The authenticated, authority-bound `GET /api/v1/live/jobs/pending` returns only
+operator-facing job identity, state and gate-approved Markdown, not raw host
+acceptances or result references. The page's current projection also retains
+these job outcomes in the transcript. A native poll creates a menu-bar badge and
+a quiet notification through `NativeNotifications`; notification content has no
+sound and does not include result text. Notification arrival never opens an
+audio engine or starts microphone capture.
+
+Click the menu's **Pick up Naya’s call**, the window's pickup button, or the
+notification to explicitly start a fresh Live session. **Start Live voice** later
+also offers the oldest pending outcome first. A specific notification carries
+`pickupJobId` in the create request. The new session's existing adapter history
+is primed with the gate-approved result before its first model turn. Results
+retain their classification and must fit the newly selected Live route/input
+classes. Failed or unknown work primes a truthful failure, not a fabricated
+answer. Pending work is consumed only after that new session becomes ready;
+ignoring a call leaves its outcome in the page and outbox.
+
+History priming uses the existing adapter protocol. It supplies context, not a
+new forced-generation command; audible output still uses the normal Live turn
+and explicit user-started audio path.

@@ -549,7 +549,7 @@ export class LiveSessionOwner {
         // Completion never sends to the old transport. With no active authority, retain references for pickup.
         if (!this.lookupAuthority(host.runId) && !this.lookupJobAuthority(host.runId)) return raw;
         const gated = await authorizeToolBatch(this.#tools!.owner, raw, { host, control, baseClasses: [handle.inputClass] });
-        return gated.error?.reason === 'tool_result_denied' ? raw : gated;
+        return gated;
       });
       if (!execution.result) {
         if (!this.#settled(handle)) {

@@ -127,6 +127,8 @@ try {
       const connectingAlignment=await proofPage.evaluate(()=>({frames:globalThis.orbProof.measure().frames,actual:document.querySelector('#port').didiFrameStats()}));
       assert.deepEqual(connectingAlignment.frames,Array.from({length:3},()=>({time:0,ambientTime:0,hue:195})),'CONNECTING comparison must use matching fresh source state/hue/time histories');
       assert.equal(connectingAlignment.actual.frameTime,0);assert.equal(connectingAlignment.actual.ambientTime,0);
+      assert(connectingAlignment.actual.frames>0,'frozen actual Orb must have successfully painted its constructor frame');
+      assert.equal(connectingAlignment.actual.failedDraws,0,'frozen actual Orb must not certify a caught draw failure');
       const composition=async()=>proofPage.evaluate(async()=>{
         for(const canvas of [document.querySelector('#reference-a'),document.querySelector('#port')]){
           const target=canvas.id==='port'?canvas:canvas.parentElement;

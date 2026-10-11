@@ -1,6 +1,6 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, chmodSync, lstatSync, symlinkSync, linkSync, readdirSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, chmodSync, lstatSync, symlinkSync, linkSync, readdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -276,4 +276,33 @@ test('catalog never echoes arbitrary remote names containing protected token or 
   assert.equal(result.total, 2); assert.equal(result.cursor, null);
   assert.doesNotMatch(JSON.stringify(result), /alpha-secret|mcp-credential/);
   assert.deepEqual(result.toolNames, ['<unapproved-tool>', '<unapproved-tool>']);
+});
+
+test('mcp.json endpoint catalog: missing is a defined state; strict grantMode, owner-only, secret-free entries', async t => {
+  const config = await import(configModule);
+  const dir = mkdtempSync(join(tmpdir(), 'didi-mcp-endpoints-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const configDir = join(dir, 'provider-config');
+  // A missing directory and a directory without mcp.json are both the defined 'missing' state, never errors.
+  assert.deepEqual(config.loadMcpEndpoints({ configDir }), { state: 'missing' });
+  mkdirSync(configDir, { mode: 0o700 });
+  assert.deepEqual(config.loadMcpEndpoints({ configDir }), { state: 'missing' });
+  const file = join(configDir, 'mcp.json');
+  const entry = { id: 'lux-knowledge', transport: 'streamable-http', url: 'http://127.0.0.1:8765/mcp', connector: 'lux-knowledge', account: 'local', resource: 'lux-knowledge', credentialRef: null, enabled: true, allowEgress: true };
+  // grantMode defaults to explicit when absent; an unknown mode is refused.
+  privateJSON(file, { schemaVersion: 1, endpoints: [entry] });
+  const defaulted = config.loadMcpEndpoints({ configDir });
+  assert.equal(defaulted.state, 'configured'); assert.equal(defaulted.catalog.grantMode, 'explicit');
+  privateJSON(file, { schemaVersion: 1, grantMode: 'auto', endpoints: [entry] });
+  assert.throws(() => config.loadMcpEndpoints({ configDir }), /invalid_profile/);
+  // Only credentialRef names are allowed; an inline token is rejected as a secret.
+  privateJSON(file, { schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [{ ...entry, token: 'secret' }] });
+  assert.throws(() => config.loadMcpEndpoints({ configDir }), /invalid_profile/);
+  privateJSON(file, { schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [entry] });
+  // Owner-only: a group/other-readable file is refused.
+  chmodSync(file, 0o644);
+  assert.throws(() => config.loadMcpEndpoints({ configDir }), /file_mode/);
+  chmodSync(file, 0o600);
+  const loaded = config.loadMcpEndpoints({ configDir });
+  assert.equal(loaded.state, 'configured'); assert.equal(loaded.catalog.grantMode, 'owner-trusted-reads');
+  assert.deepEqual(loaded.catalog.endpoints, [entry]);
 });

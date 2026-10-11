@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage } from 'node:http';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { once } from 'node:events';
 import { createHash, randomUUID } from 'node:crypto';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
@@ -8,6 +11,9 @@ import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import type { McpPort, ToolDefinition } from '../adapters/mcp/port.js';
+import { Store } from '../runtime/store.js';
+import { composeMcpRuntime } from '../host/mcp.js';
+import { toolsMigrations } from '../tools/index.js';
 import { createLuxKnowledgeReader, LUX_KNOWLEDGE_TOOLS } from '../connectors/index.js';
 import type { LuxKnowledgeConfig, LuxKnowledgeEvidence, LuxKnowledgeResult } from '../connectors/index.js';
 
@@ -27,6 +33,7 @@ interface WireCall { name: unknown; arguments: unknown }
 interface FixtureOptions {
   call?: (name: string, args: Record<string, unknown>) => unknown;
   callStatus?: number;
+  list?: () => unknown;
 }
 async function body(req: IncomingMessage): Promise<Buffer> {
   const chunks: Buffer[] = [];
@@ -37,7 +44,7 @@ async function fixture(options: FixtureOptions = {}) {
   const calls: WireCall[] = [];
   const responseEntities: Buffer[] = [];
   const sdk = new Server({ name: 'synthetic-knowledge', version: '1' }, { capabilities: { tools: { listChanged: false } } });
-  sdk.setRequestHandler('tools/list', () => ({ tools: [searchTool, getTool, writerTool] }) as never);
+  sdk.setRequestHandler('tools/list', () => (options.list?.() ?? { tools: [searchTool, getTool, writerTool] }) as never);
   sdk.setRequestHandler('tools/call', request => {
     const params = request.params;
     return (options.call?.(params.name, params.arguments ?? {}) ?? { content: [{ type: 'text', text: 'synthetic α payload' }] }) as never;
@@ -558,3 +565,67 @@ for (const tool of ['search', 'get'] as const) {
     } finally { deliver.release(); await adapter.close(); await f.close(); }
   });
 }
+
+function mcpEndpointFile(configDir: string, url: string, grantMode: 'explicit' | 'owner-trusted-reads'): void {
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  const entry = { id: 'source', transport: 'streamable-http', url, connector: 'lux-knowledge', account: 'account-a', resource: 'resource-a', credentialRef: null, enabled: true, allowEgress: true };
+  writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode, endpoints: [entry] }), { mode: 0o600 });
+}
+
+test('owner-trusted-reads grants exactly the connector envelope; explicit grants nothing and writes stay unapproved', async t => {
+  let catalog: ToolDefinition[] = [searchTool, getTool, writerTool];
+  const explicitFixture = await fixture();
+  const f = await fixture({ list: () => ({ tools: catalog }) });
+  const dir = mkdtempSync(join(tmpdir(), 'didi-mcp-runtime-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const configDir = join(dir, 'provider-config');
+  try {
+    // Explicit mode discovers but never grants authority; nothing is fabricated in its place.
+    mcpEndpointFile(configDir, explicitFixture.url, 'explicit');
+    const explicitStore = new Store(join(dir, 'explicit-data'), toolsMigrations);
+    const explicit = await composeMcpRuntime({ store: explicitStore, ownerId: explicitStore.assistantId, configDir, lookupAuthority: async () => null });
+    try {
+      assert.equal(explicit.registry.currentGrant('source'), undefined);
+      assert.equal(explicit.status().endpoints[0]!.state, 'connected');
+      assert.equal(explicit.status().endpoints[0]!.tools, 0);
+    } finally { await explicit.close(); explicitStore.close(); }
+
+    mcpEndpointFile(configDir, f.url, 'owner-trusted-reads');
+    const trustedStore = new Store(join(dir, 'trusted-data'), toolsMigrations);
+    const trusted = await composeMcpRuntime({ store: trustedStore, ownerId: trustedStore.assistantId, configDir, lookupAuthority: async () => null });
+    try {
+      const grant = trusted.registry.currentGrant('source')!;
+      assert.deepEqual([...grant.toolNames].sort(), ['get_insight', 'search_knowledge']);
+      assert.equal(grant.toolNames.includes('save_insight'), false);
+      assert.equal(grant.effect, 'read');
+      assert.deepEqual(trusted.connectionIds(), ['source']);
+      assert.equal(trusted.status().endpoints[0]!.tools, 2);
+      // A changed remote catalog re-approves only the local envelope at the next generation.
+      const before = grant.schemaDigest;
+      catalog = [searchTool, getTool, writerTool, { name: 'list_topics', inputSchema: { type: 'object' }, annotations: { readOnlyHint: true } }];
+      await trusted.refresh();
+      const after = trusted.registry.currentGrant('source')!;
+      assert.notEqual(after.schemaDigest, before);
+      assert.ok(after.generation > grant.generation);
+      assert.deepEqual([...after.toolNames].sort(), ['get_insight', 'search_knowledge']);
+      assert.equal(after.toolNames.includes('list_topics'), false);
+    } finally { await trusted.close(); trustedStore.close(); }
+  } finally { await explicitFixture.close(); await f.close(); }
+});
+
+test('an unavailable endpoint reports a sanitized error and a connector read is refused, never an empty success', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-mcp-down-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const configDir = join(dir, 'provider-config'); const store = new Store(join(dir, 'data'), toolsMigrations);
+  mcpEndpointFile(configDir, 'http://127.0.0.1:1/mcp', 'owner-trusted-reads');
+  const mcp = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null });
+  try {
+    const report = mcp.status().endpoints[0]!;
+    assert.equal(report.state, 'error');
+    assert.equal(typeof report.error, 'string');
+    assert.deepEqual(mcp.connectionIds(), ['source']);
+    assert.equal(mcp.registry.currentGrant('source'), undefined);
+    const reader = createLuxKnowledgeReader({ port: mcp.port, registry: mcp.registry, config: { endpointId: 'source', account: 'account-a', resource: 'resource-a', schemaDigest: '0'.repeat(64), generation: 1, maxSearchLimit: 25, maxGetIds: 8, maxQueryChars: 200 } });
+    const result = await reader.search({ query: 'synthetic', limit: 1 });
+    assert.equal(result.state, 'refused');
+    assert.equal(Array.isArray(result), false);
+  } finally { await mcp.close(); store.close(); }
+});

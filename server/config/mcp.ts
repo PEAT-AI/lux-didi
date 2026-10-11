@@ -9,7 +9,7 @@ import { validatePolicy } from '../tools/index.js';
 import type { ConnectionEndpoint, ConnectionIntent, ConnectionPolicy, HttpConnectionEndpoint, StdioConnectionEndpoint } from '../tools/types.js';
 const stdioEndpoint = (e: ConnectionEndpoint): e is StdioConnectionEndpoint => (e as { transport?: unknown }).transport === 'stdio';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
-import { validateApprovedStdioEnv } from '../adapters/mcp/registry.js';
+import { validateApprovedStdioEnv, validateEndpointUrl } from '../adapters/mcp/registry.js';
 import { ConfigError, fail, fields, parseJson, readPrivate, safeError, validateRoot } from './files.js';
 
 export interface McpProfile extends ConnectionIntent {
@@ -193,3 +193,49 @@ export async function catalogMcpConfiguration(options: CatalogOptions): Promise<
   } finally { await adapter.close(); }
 }
 export function mcpErrorCode(error: unknown): string { return error instanceof ConfigError ? error.code : 'io_error'; }
+
+const endpointFile = 'mcp.json';
+const endpointLimit = 32768;
+/** Installed <dataDir>/provider-config/mcp.json: a small, owner-only, secret-free endpoint catalog. */
+export interface McpEndpointEntry {
+  id: string; transport: 'streamable-http'; url: string; connector: string;
+  account: string; resource: string; credentialRef: string | null; enabled: boolean; allowEgress: boolean;
+}
+export interface McpEndpointCatalog { grantMode: 'explicit' | 'owner-trusted-reads'; endpoints: readonly McpEndpointEntry[] }
+export type McpEndpointSelection = { state: 'missing' } | { state: 'configured'; catalog: McpEndpointCatalog };
+function endpointUrl(value: unknown): string {
+  if (typeof value !== 'string' || value.length > 4096 || value.includes('\0')) fail('invalid_profile');
+  try { validateEndpointUrl(value); } catch { fail('invalid_profile'); }
+  return value;
+}
+function endpointEntry(raw: unknown): McpEndpointEntry {
+  const e = fields(raw, ['id', 'transport', 'url', 'connector', 'account', 'resource', 'credentialRef', 'enabled', 'allowEgress'], 'invalid_profile');
+  identifier(e['id']); identifier(e['connector']);
+  if (e['transport'] !== 'streamable-http') fail('invalid_profile');
+  const url = endpointUrl(e['url']);
+  for (const key of ['account', 'resource'] as const) if (typeof e[key] !== 'string' || !(e[key] as string).length || (e[key] as string).length > 512 || /[\x00-\x1f\x7f]/.test(e[key] as string)) fail('invalid_profile');
+  const credentialRef = e['credentialRef'];
+  if (credentialRef !== null && (typeof credentialRef !== 'string' || !refPattern.test(credentialRef))) fail('invalid_reference');
+  if (typeof e['enabled'] !== 'boolean' || typeof e['allowEgress'] !== 'boolean') fail('invalid_profile');
+  return { id: e['id'] as string, transport: 'streamable-http', url, connector: e['connector'] as string, account: e['account'] as string, resource: e['resource'] as string, credentialRef: credentialRef as string | null, enabled: e['enabled'], allowEgress: e['allowEgress'] };
+}
+/** Missing mcp.json is a defined state, never an error: startup continues with no approved source. */
+export function loadMcpEndpoints(options: { configDir: string }): McpEndpointSelection {
+  const { configDir } = options;
+  if (typeof configDir !== 'string' || !isAbsolute(configDir) || normalize(configDir) !== configDir) fail('invalid_arguments');
+  if (!validateRoot(configDir)) return { state: 'missing' };
+  let raw: string;
+  try { raw = readPrivate(join(configDir, endpointFile), endpointLimit); }
+  catch (error) { if (error instanceof ConfigError && error.code === 'file_missing') return { state: 'missing' }; throw error; }
+  const parsed = parseJson(raw);
+  const optionalGrantMode = parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) && Object.hasOwn(parsed, 'grantMode');
+  const file = fields(parsed, optionalGrantMode ? ['schemaVersion', 'grantMode', 'endpoints'] : ['schemaVersion', 'endpoints'], 'invalid_profile');
+  if (file['schemaVersion'] !== 1) fail('invalid_profile');
+  const grantMode = file['grantMode'] ?? 'explicit';
+  if (grantMode !== 'explicit' && grantMode !== 'owner-trusted-reads') fail('invalid_profile');
+  const rawEndpoints = file['endpoints'];
+  if (!Array.isArray(rawEndpoints) || rawEndpoints.length > 64) fail('invalid_profile');
+  const seen = new Set<string>(); const endpoints: McpEndpointEntry[] = [];
+  for (const item of rawEndpoints) { const entry = endpointEntry(item); if (seen.has(entry.id)) fail('invalid_profile'); seen.add(entry.id); endpoints.push(entry); }
+  return { state: 'configured', catalog: { grantMode, endpoints } };
+}

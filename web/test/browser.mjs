@@ -33,6 +33,7 @@ try {
     assert.equal(await canvas.getAttribute('data-state'),'CONNECTED');
     assert.equal(await canvas.getAttribute('data-posture'),'idle');
     await page.getByText('Not listening',{exact:true}).waitFor();
+    assert.equal((await page.locator('.orb-label').textContent()).trim(),(await page.locator('#live-panel .live-state').textContent()).trim());
     assert.equal(await page.getByRole('button',{name:/record|microphone/i}).count(),0);
     const hasPaint=await canvas.evaluate(el=>{const pixels=el.getContext('2d').getImageData(0,0,el.width,el.height).data;return pixels.some((v,i)=>i%4===3&&v>0);});assert(hasPaint);
     await page.waitForFunction(()=>document.querySelector('#didi-orb').didiFrameStats().frames>=12);

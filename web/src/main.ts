@@ -54,9 +54,9 @@ function orbLabel() {
   const state=orbState();
   return live?liveLabel(live):state==='PROCESSING'?'Working on your request':state==='CONNECTING'?'Connecting':state==='DISCONNECTED'?'Waiting for connection':state==='ERROR'?'Needs your attention':'Ready when you are';
 }
-// The honesty line is false while the projection is active, so it shows only when voice is not in a live turn.
+// The honesty line is true only when the projection is idle, the native app reports muted, or there is no projection.
 function orbCaptionMarkup() {
-  const honesty=!live||live.state==='idle'||live.state==='ended'||live.state==='error';
+  const honesty=!live||live.state==='idle'||live.muted===true;
   return `<p class="orb-label" role="status" aria-live="polite">${e(orbLabel())}</p>${honesty?'<p class="voice-honesty"><strong>Not listening</strong><span>Voice stays on your Mac. Use its native record control.</span></p>':''}`;
 }
 function orbMarkup() {

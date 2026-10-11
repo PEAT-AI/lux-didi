@@ -3,7 +3,7 @@ import { credentialsFor } from '../config/index.js';
 import { loadLiveConfig, type LiveConfiguredProfile, type LiveConfigStatus } from '../config/live.js';
 import { GeminiLiveVoiceAdapter, type DataClass, type LiveSocketFactory } from '../adapters/live-voice/index.js';
 import type { Credentials } from '../adapters/model/types.js';
-import { createLiveSessionOwner, defaultLiveLimits, liveProfileIdentity, type LiveAttachment, type LiveContext, type LiveFragmentPage, type LiveProfile, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
+import { createLiveSessionOwner, defaultLiveLimits, liveProfileIdentity, type LiveAttachment, type LiveContext, type LiveToolsComposition, type LivePageProjection, type LiveFragmentPage, type LiveProfile, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import type { Store } from '../runtime/store.js';
 import type { LiveService, LiveStatusPayload } from '../http/live-upgrade.js';
 
@@ -50,6 +50,8 @@ class HostLiveService implements LiveService {
     this.maxBufferedBytes = profile.limits.wsBufferedBytes;
     this.profileIdentity = liveProfileIdentity(profile);
   }
+  current(cursor = 0): LivePageProjection { return this.owner.current(cursor); }
+  lookupAuthority(runId: string) { return this.owner.lookupAuthority(runId); }
   status(): LiveStatusPayload { return statusFromProfile(this.profile); }
   create(inputClass: DataClass, idempotencyKey: string, context: LiveContext): LiveSessionSnapshot {
     return this.owner.create({ inputClass, idempotencyKey }, context);
@@ -69,6 +71,8 @@ class UnconfiguredLive implements LiveService {
   readonly maxIncomingBytes = maxIncomingBytes;
   readonly maxBufferedBytes = defaultLiveLimits.wsBufferedBytes;
   constructor(private readonly payload: LiveStatusPayload) {}
+  current(cursor = 0): LivePageProjection { return this.owner.current(cursor); }
+  lookupAuthority(runId: string) { return this.owner.lookupAuthority(runId); }
   status(): LiveStatusPayload { return this.payload; }
   create(): never { return unavailable('LIVE_NOT_CONFIGURED'); }
   snapshot(): never { return unavailable('LIVE_NOT_CONFIGURED'); }
@@ -83,7 +87,7 @@ class UnconfiguredLive implements LiveService {
  * startup; recovery completes before the listener announces readiness. No secret is read unless a
  * profile exists, and then only lazily through the credentialsFor seam.
  */
-export function composeLive(store: Store, configDir: string, testing?: LiveTesting, now?: () => number, ownerProfile?: OwnerProfileSnapshot): { service: LiveService; status: LiveStatusPayload } {
+export function composeLive(store: Store, configDir: string, testing?: LiveTesting, now?: () => number, ownerProfile?: OwnerProfileSnapshot, tools?: LiveToolsComposition): { service: LiveService; status: LiveStatusPayload } {
   const loaded = loadLiveConfig({ configDir, ownerId: store.assistantId, ...(ownerProfile ? { ownerProfile } : {}) });
   const profile = testing?.profile ?? (loaded.status === 'configured' ? loaded.config.profile : undefined);
   const status = statusPayload(loaded, profile);
@@ -99,6 +103,6 @@ export function composeLive(store: Store, configDir: string, testing?: LiveTesti
     },
     ...(testing?.socketFactory ? { socketFactory: testing.socketFactory } : {}),
   });
-  const owner = createLiveSessionOwner({ store, voice, profile, ...(now ? { now } : {}) });
+  const owner = createLiveSessionOwner({ store, voice, profile, ...(tools ? { tools } : {}), ...(now ? { now } : {}) });
   return { service: new HostLiveService(profile, owner), status };
 }

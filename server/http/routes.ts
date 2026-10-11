@@ -40,6 +40,12 @@ export function resolveRoute(method: string, url: URL, body?: Record<string, unk
   const path = url.pathname;
   let expected: string[] = [];
   const matched = (methods: string[]) => { expected = methods; if (!methods.includes(method)) throw new ServiceError('METHOD_NOT_ALLOWED', 'Method is not allowed', 405); };
+  if (path === '/api/v1/live/current' && method === 'GET') {
+    if ([...url.searchParams.keys()].some(key => key !== 'cursor') || url.searchParams.getAll('cursor').length > 1) bad('Invalid cursor');
+    const raw = url.searchParams.get('cursor') ?? '0';
+    if (!/^\d+$/.test(raw) || !Number.isSafeInteger(Number(raw))) bad('Invalid cursor');
+    return { kind: 'liveCurrent', mutation: false, cursor: Number(raw) };
+  }
   if (path === '/api/v1/live/status') { matched(['GET']); query(url, []); return { kind: 'live', action: 'status', id: null, input: {}, mutation: false }; }
   if (path === '/api/v1/live-sessions') {
     matched(['POST']); query(url, []);

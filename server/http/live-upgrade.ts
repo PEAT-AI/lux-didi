@@ -23,6 +23,8 @@ export interface LiveStatusPayload {
 
 /** The one operator-facing Live surface. Implemented by the host composition, never by a browser. */
 export interface LiveService {
+  current(cursor?: number): import('../live/types.js').LivePageProjection;
+  lookupAuthority(runId: string): import('../tools/types.js').LiveAuthority | null;
   readonly enabled: boolean;
   readonly profileIdentity: string;
   readonly maxIncomingBytes: number;

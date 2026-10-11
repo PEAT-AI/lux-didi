@@ -83,7 +83,7 @@ export class GeminiLiveVoiceAdapter implements LiveVoicePort {
     const setup = JSON.stringify({ setup: {
       model: settings.modelId,
       generationConfig: { responseModalities: ['AUDIO'], speechConfig: { ...(request.languageCode ? { languageCode: request.languageCode === 'ar' ? 'ar-XA' : request.languageCode } : {}), voiceConfig: { prebuiltVoiceConfig: { voiceName: settings.voice } } },
-        ...(!settings.modelId.includes('3.8') ? { thinkingConfig: { thinkingLevel: 'minimal' } } : {}) },
+        ...(!/gemini-3\.8[^/]*live/.test(settings.modelId) ? { thinkingConfig: { thinkingLevel: 'minimal' } } : {}) },
       ...(request.tools?.length ? { tools: [{ functionDeclarations: request.tools }] } : {}),
       historyConfig: { initialHistoryInClientContent: true },
       contextWindowCompression: { slidingWindow: { targetTokens: 32000 } },

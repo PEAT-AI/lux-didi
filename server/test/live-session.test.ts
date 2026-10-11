@@ -117,6 +117,7 @@ async function harness(t: TestContext, overrides: {
 
 async function attached(h: Harness, key = 'k1') {
   const session = h.owner.create({ idempotencyKey: key, inputClass: 'ordinary' }, h.ctx);
+  assert.equal(h.owner.current().state, 'idle', 'accepted without an attachment is not listening');
   const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
   await h.f.frame(1);
   h.f.send({ setupComplete: {} });

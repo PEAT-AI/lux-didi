@@ -324,3 +324,12 @@ test('3.8 Live omits thinking config and cancellation releases an unanswered bat
   assert.equal('realtimeInput' in (f.frames[1] as object), true);
   session.close();
 });
+
+
+test('only a 3.8 Live model id suppresses minimal thinking configuration', async t => {
+  const modelId = 'models/synthetic-3.8-test';
+  const { f, session, captured } = await ready(t, { modelId, route: { enabled: true, provider: 'gemini', modelId, dataClasses: ['ordinary', 'private'] } });
+  const setup = (f.frames[0] as { setup: { generationConfig: { thinkingConfig: unknown } } }).setup;
+  assert.deepEqual(setup.generationConfig.thinkingConfig, { thinkingLevel: 'minimal' });
+  session.close(); await captured.done;
+});

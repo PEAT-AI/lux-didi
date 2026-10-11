@@ -279,12 +279,31 @@ export async function fixture(options: FixtureOptions = {}) {
 async function browserProcess() {
   const f = await fixture();
   // Same observational owning seams as the HTTP diagnostic; decisions are returned unchanged.
-  const grantObservations: { provenance: string; present?: boolean; generation?: number; schemaDigest?: string; accountMatches?: boolean; resourceMatches?: boolean; toolNames?: readonly string[]; threw?: boolean }[] = [];
+  let observationSequence = 0;
+  const suspensionObservations: { sequence: number; provenance: string; threw?: boolean }[] = [];
+  let suspensionObservationOverflow = 0;
+  const suspend = f.registry.suspend.bind(f.registry);
+  f.registry.suspend = (...args) => {
+    const sequence = ++observationSequence;
+    const stack = new Error().stack ?? '';
+    const provenance = stack.includes('client.onerror') ? 'adapter-client-error'
+      : stack.includes('client.onclose') ? 'adapter-client-close'
+      : stack.includes('at Object.discover') ? 'adapter-discovery'
+      : stack.includes('at apply (') ? 'owner-apply' : 'other';
+    const record = (threw = false) => {
+      if (suspensionObservations.length < 32) suspensionObservations.push({ sequence, provenance, ...(threw ? { threw } : {}) });
+      else suspensionObservationOverflow++;
+    };
+    try { const result = suspend(...args); record(); return result; }
+    catch (error) { record(true); throw error; }
+  };
+  const grantObservations: { sequence: number; provenance: string; present?: boolean; generation?: number; schemaDigest?: string; accountMatches?: boolean; resourceMatches?: boolean; toolNames?: readonly string[]; threw?: boolean }[] = [];
   let grantObservationOverflow = 0;
   const currentGrant = f.registry.currentGrant.bind(f.registry);
   f.registry.currentGrant = (...args) => {
+    const sequence = ++observationSequence;
     const provenance = new Error().stack?.includes('at currentProjection') ? 'owner-currentProjection' : 'other';
-    const record = (value: (typeof grantObservations)[number]) => { if (grantObservations.length < 32) grantObservations.push(value); else grantObservationOverflow++; };
+    const record = (value: Omit<(typeof grantObservations)[number], 'sequence'>) => { if (grantObservations.length < 32) grantObservations.push({ sequence, ...value }); else grantObservationOverflow++; };
     try {
       const grant = currentGrant(...args);
       record({ provenance, present: !!grant, ...(grant ? { generation: grant.generation, schemaDigest: grant.schemaDigest,
@@ -323,7 +342,7 @@ async function browserProcess() {
       && 'runId' in message && typeof message.runId === 'string') {
       const accepted = f.tools.acceptedRun(message.runId);
       process.send?.({ phase: 'observations', decisions, grantObservations, grantObservationOverflow,
-        authorityFailures, modelRequests: f.modelCalls.length,
+        suspensionObservations, suspensionObservationOverflow, authorityFailures, modelRequests: f.modelCalls.length,
         sdkCalls: f.sdkCalls.length, acceptance: accepted?.acceptance ?? null, persisted: f.boundaryState(message.runId),
         currentPolicy: { generation: f.policy().generation, enabled: f.policy().enabled,
           route: f.policy().route, sourcePolicy: f.policy().sourcePolicy, schemaDigest: f.policy().schemaDigest } });

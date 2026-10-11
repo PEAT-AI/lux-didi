@@ -915,6 +915,8 @@ test('Live answers a slow tool batch truthfully, continues the turn, and retains
   h.f.send({ toolCall: { functionCalls: [{ id: 'slow1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
   while (!h.calls.length) await tick();
   h.advance(1000); scheduler.runDue();
+  await tick();
+  assert.equal(new LiveToolJobs(h.store, () => NOW).pending().length, 1, 'dispatch must create a durable job before deferral');
   await h.f.frame(2);
   const response = h.f.frames[1] as { toolResponse: { functionResponses: { response: { status: string; jobId: string } }[] } };
   assert.equal(response.toolResponse.functionResponses[0]!.response.status, 'in progress');

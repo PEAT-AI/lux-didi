@@ -1,5 +1,11 @@
 import AVFoundation
 import Foundation
+import Security
+
+// Synthetic credentials are injected. The actual app compile includes the real policy.
+@MainActor enum NativeKeychainPolicy {
+    static func check() -> OSStatus { preconditionFailure("Silent audio tests must not access Keychain") }
+}
 
 func audioRequire(_ value: Bool, _ message: String) throws {
     if !value { throw NSError(domain: message, code: 1) }

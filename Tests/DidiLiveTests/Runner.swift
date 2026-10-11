@@ -1,4 +1,10 @@
 import Foundation
+import Security
+
+// Synthetic credentials are injected. Any real keychain access is a test failure.
+@MainActor enum NativeKeychainPolicy {
+    static func check() -> OSStatus { preconditionFailure("Synthetic Live tests must not access Keychain") }
+}
 
 struct Envelope<Value: Decodable>: Decodable { let data: Value }
 struct HostStatus: Decodable { let assistantId: String; let authorityEpoch: String }

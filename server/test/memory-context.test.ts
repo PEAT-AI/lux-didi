@@ -418,12 +418,21 @@ test('additive chat v3 migration upgrades a populated v1+v2 DB and preserves old
     const before = f1.store.transaction(tx => tx.get('SELECT fingerprint,idempotency_key,session_id,state FROM chat_runs WHERE run_id=?', [run.runId]));
     const consentBefore = f1.store.transaction(tx => tx.get('SELECT * FROM chat_consents WHERE session_id=?', [sending.id]));
     const policyBefore = f1.store.transaction(tx => tx.get('SELECT * FROM chat_run_policy WHERE run_id=?', [run.runId]));
+    // Historical normalization adds schemaVersion; raw fixture labels are not the policy DTO.
+    assert.deepEqual(JSON.parse(String(policyBefore!.selected_labels)).map((label: { schemaVersion?: number }) => label.schemaVersion), [1, 1]);
+    const recordBefore = f1.entries(source.id).find(entry => entry.id === record.id);
+    const turnBefore = f1.entries(sending.id).find(entry => entry.id === userEntry.id);
+    assert.equal(recordBefore?.text, 'Old record');
+    assert.equal(turnBefore?.text, 'Old turn');
     const legacyRunBefore = f1.store.transaction(tx => tx.get('SELECT * FROM chat_runs WHERE run_id=?', [run.runId]));
     f1.store.close();
     // Exercise the actual v3 upgrade separately before current runtime requires v4.
     const v3 = new Store(dir, [...domainMigrations, ...chatMigrations.filter(m => m.version <= 3)]);
     try {
       assert.deepEqual(chatVersions(v3), [1, 2, 3]);
+      const context = { ...f1.context, authorityEpoch: v3.authorityEpoch };
+      assert.deepEqual(v3.transaction(tx => f1.domain.execute(tx, 'getSession', { id: source.id }, context).entries.find(entry => entry.id === record.id)), recordBefore);
+      assert.deepEqual(v3.transaction(tx => f1.domain.execute(tx, 'getSession', { id: sending.id }, context).entries.find(entry => entry.id === userEntry.id)), turnBefore);
       assert.deepEqual(v3.transaction(tx => tx.get('SELECT * FROM chat_runs WHERE run_id=?', [run.runId])), legacyRunBefore);
       assert.deepEqual(v3.transaction(tx => tx.get('SELECT * FROM chat_run_policy WHERE run_id=?', [run.runId])), policyBefore);
       assert.deepEqual(v3.transaction(tx => tx.get('SELECT * FROM chat_consents WHERE session_id=?', [sending.id])), consentBefore);
@@ -433,6 +442,8 @@ test('additive chat v3 migration upgrades a populated v1+v2 DB and preserves old
     const f2 = openMemoryFixture(dir, model, {}, chatMigrations);
     try {
       assert.deepEqual(chatVersions(f2.store), chatMigrations.map(m => m.version));
+      assert.deepEqual(f2.entries(source.id).find(entry => entry.id === record.id), recordBefore);
+      assert.deepEqual(f2.entries(sending.id).find(entry => entry.id === userEntry.id), turnBefore);
       assert.equal(f2.store.transaction(tx => tx.get("SELECT name FROM sqlite_master WHERE type='table' AND name='chat_run_context'"))!.name, 'chat_run_context');
       assert.equal(Number(f2.store.transaction(tx => tx.get('SELECT COUNT(*) c FROM chat_run_context', []))!.c), 0);
       const after = f2.store.transaction(tx => tx.get('SELECT fingerprint,idempotency_key,session_id FROM chat_runs WHERE run_id=?', [run.runId]));

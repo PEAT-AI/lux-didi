@@ -80,12 +80,13 @@ import Foundation
         try snapshot(editor, proof.appendingPathComponent("persona-editor-saved.png"))
         // Same native form/action with deterministic errors, not extra servers or timeout waits.
         editor.close()
+        try await lostReply(saved: saved, descriptor: descriptor, proof: proof)
         for (failure, marker, uncertain) in [(CompanionError.rejected(409), "Conflict", true),
                                             (CompanionError.rejected(503), "uncertain", true),
                                             (CompanionError.invalidResponse, "unknown", true),
                                             (CompanionError.rejected(400), "validation", false),
                                             (CompanionError.rejected(500), "could not", false),
-                                            (CompanionError.unavailable, "could not", false)] {
+                                            (CompanionError.unavailable, "unknown", true)] {
             let transport = SyntheticProfileTransport(saved, failure)
             let form = OwnerProfileEditor(client: transport); form.open(); await form.operation?.value
             try edit(form, name: "Unsaved synthetic name", character: "SYNTHETIC_RETAIN_CHARACTER", about: "SYNTHETIC_RETAIN_ABOUT")
@@ -123,6 +124,33 @@ import Foundation
         try require(reopened.document == nil && reopened.nameField.stringValue.isEmpty
                     && afterClose.saved.profile.displayName == "Naya", "cancel discards volatile draft only and does not write")
     }
+    private static func lostReply(saved: OwnerProfileDocumentView, descriptor: ServiceDescriptor, proof: URL) async throws {
+        let profile = OwnerProfileSnapshotView(schemaVersion: 1, kind: "profile", ownerId: saved.active.profile.ownerId,
+            profileVersion: "synthetic-lost-reply-version", displayName: "Lost reply synthetic name",
+            style: OwnerProfilePart(text: "SYNTHETIC_COMMITTED_CHARACTER", dataClass: .privateData),
+            lore: OwnerProfilePart(text: "SYNTHETIC_COMMITTED_ABOUT", dataClass: .privateData))
+        let advanced = OwnerProfileDocumentView(publicBase: saved.publicBase, active: saved.active,
+            saved: OwnerProfileSavedView(profile: profile, revision: String(repeating: "f", count: 64), present: true),
+            previous: saved.saved.profile, pendingActivation: true)
+        func envelope(_ value: OwnerProfileDocumentView) throws -> Data {
+            try JSONSerialization.data(withJSONObject: ["data": JSONSerialization.jsonObject(with: JSONEncoder().encode(value))])
+        }
+        try LostProfileReply.prepare(initial: envelope(saved), advanced: envelope(advanced))
+        let client = CompanionClient(descriptor: descriptor, credential: { "SYNTHETIC_LOST_REPLY_AUTHORITY" }, testingProtocol: LostProfileReply.self)
+        let form = OwnerProfileEditor(client: client); form.open(); await form.operation?.value
+        try edit(form, name: profile.displayName, character: profile.style!.text, about: profile.lore!.text)
+        let draft = form.edits
+        form.saveButton.performClick(nil); await form.operation?.value
+        try require(LostProfileReply.putCount == 1 && form.edits == draft && !form.saveButton.isEnabled
+                    && form.notice.stringValue.contains("unknown"), "actual URLSession transport mapping after dispatched committed PUT is unknown and cannot auto retry")
+        try require(form.document?.saved.profile.displayName == "Naya", "lost reply cannot falsely report committed state before intentional readback")
+        form.readbackButton.performClick(nil); await form.operation?.value
+        try require(form.document?.saved.profile.displayName == profile.displayName && form.savedContent.string.contains(profile.displayName)
+                    && form.edits == draft && form.saveButton.isEnabled && LostProfileReply.putCount == 1,
+                    "successful readback shows advanced committed state and preserves draft before another Save")
+        try snapshot(form, proof.appendingPathComponent("persona-editor-lost-reply.png"))
+        form.close()
+    }
     private static func edit(_ form: OwnerProfileEditor, name: String, character: String, about: String) throws {
         form.nameField.selectText(nil)
         guard let field = form.nameField.currentEditor() as? NSTextView else { throw NSError(domain: "SyntheticPersonaEditorUI", code: 1) }
@@ -150,4 +178,31 @@ import Foundation
     init(_ document: OwnerProfileDocumentView, _ failure: CompanionError) { self.document = document; self.failure = failure }
     func readOwnerProfile() async throws -> OwnerProfileDocumentView { reads += 1; return document }
     func saveOwnerProfile(_ edits: OwnerProfileEdits, revision: String) async throws -> OwnerProfileDocumentView { saves += 1; throw failure }
+}
+
+// Synchronous synthetic URLSession protocol: the server state advances before
+// NetworkConnectionLost. This exercises CompanionClient's real error mapping.
+private final class LostProfileReply: URLProtocol {
+    private static let lock = NSLock()
+    private static var current = Data(), committed = Data(), puts = 0
+    static func prepare(initial: Data, advanced: Data) {
+        lock.lock(); defer { lock.unlock() }
+        current = initial; committed = advanced; puts = 0
+    }
+    static var putCount: Int { lock.lock(); defer { lock.unlock() }; return puts }
+    override class func canInit(with request: URLRequest) -> Bool { request.url?.path == "/api/v1/owner-profile" }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        Self.lock.lock()
+        if request.httpMethod == "PUT" {
+            Self.current = Self.committed; Self.puts += 1; Self.lock.unlock()
+            client?.urlProtocol(self, didFailWithError: URLError(.networkConnectionLost)); return
+        }
+        let data = Self.current; Self.lock.unlock()
+        guard let url = request.url, let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json", "Cache-Control": "no-store"]) else { return }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data); client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
 }

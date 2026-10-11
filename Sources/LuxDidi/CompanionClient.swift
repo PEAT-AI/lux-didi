@@ -99,10 +99,11 @@ enum CaptureStatus: Equatable { case idle, sending, saved, cancelled, unknown, f
     private var profileOwnerID: String?
     private(set) var captureStatus: CaptureStatus = .idle
     var captureReceipt: CaptureReceipt? { pending?.receipt }
-    init(descriptor: ServiceDescriptor, credential: @escaping () throws -> String, expectedEpoch: String? = nil, connectionGuard: @escaping () -> Bool = { true }) {
+    init(descriptor: ServiceDescriptor, credential: @escaping () throws -> String, expectedEpoch: String? = nil, connectionGuard: @escaping () -> Bool = { true }, testingProtocol: URLProtocol.Type? = nil) {
         self.descriptor = descriptor; self.credential = credential
         self.expectedEpoch = expectedEpoch; self.connectionGuard = connectionGuard
         let config = URLSessionConfiguration.ephemeral
+        if let testingProtocol { config.protocolClasses = [testingProtocol] }
         config.httpCookieStorage = nil; config.httpShouldSetCookies = false
         config.urlCache = nil; config.requestCachePolicy = .reloadIgnoringLocalCacheData
         config.timeoutIntervalForRequest = 8; config.timeoutIntervalForResource = 12

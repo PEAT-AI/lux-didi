@@ -1,3 +1,4 @@
+import type { LiveCurrent } from './protocol';
 export class ApiError extends Error {
   constructor(public code: string, message: string, public status: number) { super(message); }
 }
@@ -51,6 +52,12 @@ export async function restoreSession() {
 export async function logout() {
   await request('/auth/logout', { method: 'POST', body: {} });
   clearAuthority();
+}
+
+/** Read-only live projection. GET stays outside the mutation CSRF path; same-origin cookie. */
+export async function fetchLive(cursor: string | number | undefined, signal?: AbortSignal): Promise<LiveCurrent> {
+  const query = cursor === undefined ? '' : `?cursor=${encodeURIComponent(String(cursor))}`;
+  return request<LiveCurrent>(`/live/current${query}`, { signal });
 }
 
 /** Fetch SSE uses the same current browser authority; no URL tokens or resend. */

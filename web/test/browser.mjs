@@ -33,6 +33,7 @@ try {
     assert.equal(await canvas.getAttribute('data-state'),'CONNECTED');
     assert.equal(await canvas.getAttribute('data-posture'),'idle');
     await page.getByText('Not listening',{exact:true}).waitFor();
+    assert.equal((await page.locator('.orb-label').textContent()).trim(),(await page.locator('#live-panel .live-state').textContent()).trim());
     assert.equal(await page.getByRole('button',{name:/record|microphone/i}).count(),0);
     const hasPaint=await canvas.evaluate(el=>{const pixels=el.getContext('2d').getImageData(0,0,el.width,el.height).data;return pixels.some((v,i)=>i%4===3&&v>0);});assert(hasPaint);
     await page.waitForFunction(()=>document.querySelector('#didi-orb').didiFrameStats().frames>=12);
@@ -46,6 +47,37 @@ try {
     await page.screenshot({path:`${artifacts}/desktop-orb-reduced-motion.png`,fullPage:true});
     await page.emulateMedia({reducedMotion:'no-preference'});
     await page.waitForFunction(()=>document.querySelector('#didi-orb').dataset.motion==='animated');
+  });
+  await step('live projection drives orb state, transcript and markdown sources',async()=>{
+    fixture.setLive({state:'speaking',since:'2026-10-11T16:00:00Z',cursor:3,entries:[
+      {seq:1,kind:'inputTranscription',text:'what is lux 123'},
+      {seq:2,kind:'outputTranscription',text:'Here is the answer.'},
+      {seq:3,kind:'toolResult',tool:{name:'search',status:'completed',markdown:'**Answer** see [source](https://example.org)',sources:[{title:'lux 123',url:'https://example.org'}]}}
+    ]});
+    await page.waitForFunction(()=>document.querySelector('#didi-orb').dataset.state==='SPEAKING',{timeout:12000});
+    assert.equal(await page.locator('#didi-orb').getAttribute('data-posture'),'speaking');
+    assert.equal((await page.locator('#live-panel .live-state').textContent()).trim(),'Speaking');
+    assert.equal((await page.locator('.orb-label').textContent()).trim(),'Speaking');
+    assert.equal(await page.getByText('Not listening',{exact:true}).count(),0);
+    assert.equal(await page.getByText('what is lux 123',{exact:true}).count(),1);
+    assert.equal(await page.getByText('Here is the answer.',{exact:true}).count(),1);
+    const link=page.locator('#live-panel .live-result p a[href="https://example.org"]');
+    assert.equal(await link.count(),1);
+    assert.equal(await link.getAttribute('rel'),'noopener noreferrer');
+    assert.equal(await link.getAttribute('target'),'_blank');
+    const sourceLink=page.locator('#live-panel .live-result .sources a[href="https://example.org"]');
+    assert.equal(await sourceLink.count(),1);
+    assert.equal(await sourceLink.getAttribute('rel'),'noopener noreferrer');
+    assert.match(await page.locator('#live-panel .live-result strong').first().textContent(),/Answer/);
+    fixture.setLive({state:'listening',since:'2026-10-11T16:00:01Z',cursor:4,entries:[]});
+    await page.waitForFunction(()=>document.querySelector('#didi-orb').dataset.state==='LISTENING',{timeout:8000});
+    assert.equal(await page.locator('#didi-orb').getAttribute('data-posture'),'listening');
+    assert.equal((await page.locator('#live-panel .live-state').textContent()).trim(),'Listening');
+    assert.equal((await page.locator('.orb-label').textContent()).trim(),'Listening');
+    assert.equal(await page.getByText('Not listening',{exact:true}).count(),0);
+    assert.equal(await page.getByRole('button',{name:/record|microphone|mute/i}).count(),0);
+    await page.screenshot({path:`${artifacts}/desktop-live-naya.png`,fullPage:true});
+    fixture.setLive({state:'idle',since:'2026-10-11T16:00:00Z',entries:[],cursor:0});
   });
   await step('failed local save preserves draft; capture never dispatches a model',async()=>{
     const requestStart=fixture.requests.length;

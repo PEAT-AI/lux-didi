@@ -197,3 +197,39 @@ browser/host/SQLite/compiler/Gemini adapter with synthetic ordinary input and a
 trusted controlled transport, not live Gemini. Hardware-GPU desktop and 375px
 captures are acceptance artifacts, not native/audio or production reachability
 claims.
+
+## Live Naya surface in the shared page (WEB-D / issues #85, #91)
+
+The shared page keeps the Vicuna-derived default orb visible in every conversation
+state and now reflects the read-only live projection. `src/live-view.ts` renders a
+truthful state label in an `aria-live` region (idle, listening, speaking,
+thinking, ended, error) and never says "recording"; the thinking label names
+the tool in flight, for example "Thinking (search)", and a muted indicator
+appears only when the projection reports it. The page has no record button and
+no mute control: there is nothing to press, the orb reflects listening, speaking
+and thinking continuously, and typing stays the secondary input. The orb
+caption's own label follows the same live state (they never disagree), and its
+"Not listening" note appears only when the projection is not in an active turn.
+The section also
+renders the input and output
+transcription lines as they arrive, and the
+newest accepted `toolResult` as sanitized Markdown with clickable source links.
+The label never claims that speech was heard or a task finished beyond what the
+projection says; an error state says only that Naya reported an error.
+
+`src/markdown.ts` is a dependency-free renderer for headings, paragraphs, bold,
+italics, lists, code spans/blocks and links. Every model string is HTML-escaped,
+only `http:` and `https:` links become anchors (`target="_blank"`,
+`rel="noopener noreferrer"`), and no raw HTML passes through. `src/api.ts` and
+`src/protocol.ts` add the typed client for `GET /api/v1/live/current[?cursor=n]`
+(same-origin cookie, no bearer). `src/main.ts` polls at 1 Hz while the projection
+is active and every 4 s while idle, and pauses while the document is hidden; the
+orb maps listening/thinking/speaking to its listening/thinking/speaking postures
+through the existing orb API and honours `prefers-reduced-motion`.
+
+The projection route is provided by the live service wagon. Until it exists the
+route 404s and the page keeps its last honest state rather than inventing one.
+The unit tests are `node --test test/markdown.test.ts test/live-view.test.ts`, run
+by `npm --prefix web run check` before the shared-renderer browser pass, which adds
+a fixture-served Interface 3 payload asserting the orb is in speaking mode and a
+rendered source anchor exists.

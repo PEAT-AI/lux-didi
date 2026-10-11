@@ -10,6 +10,8 @@ export async function startFixture() {
   db.exec('CREATE TABLE records (id TEXT PRIMARY KEY, kind TEXT, value TEXT)');
   const requests = []; const epoch = 'synthetic-authority-1'; let paired = false;
   let failEntry = false, conflict = false, heldEntry, heldPlan;
+  // Interface 3 projection shape (W-D develops against this until W-B's route lands).
+  let live = { state: 'idle', since: new Date().toISOString(), entries: [], cursor: 0 };
   const put = (kind, value) => { db.prepare('INSERT OR REPLACE INTO records VALUES(?,?,?)').run(value.id, kind, JSON.stringify(value)); return value; };
   const get = id => { const row = db.prepare('SELECT value FROM records WHERE id=?').get(id); return row ? JSON.parse(row.value) : null; };
   const all = kind => db.prepare('SELECT value FROM records WHERE kind=?').all(kind).map(r => JSON.parse(r.value));
@@ -37,6 +39,7 @@ export async function startFixture() {
     if (req.method !== 'GET' && (req.headers['x-didi-authority-epoch'] !== epoch || !req.headers['idempotency-key'])) return error('INVALID_HEADERS','Missing authority or idempotency key');
     if(path === '/api/v1/auth/logout') { paired=false; res.setHeader('Set-Cookie','didi=; Max-Age=0; HttpOnly; SameSite=Strict; Path=/'); return ok({loggedOut:true}); }
     if (path === '/api/v1/status') return ok({assistantId:'synthetic-didi',authorityEpoch:epoch,serviceMode:'synthetic-test',capabilities:{memory:true,commitments:true,notifications:false,model:false},model:{configured:false},sources:[]});
+    if (path === '/api/v1/live/current') return ok(live);
     if (path === '/api/v1/sessions' && req.method==='GET') return ok({items:all('session'),nextCursor:null});
     if (path === '/api/v1/sessions' && req.method==='POST') return ok(put('session',{id:randomUUID(),...body,startedAt:new Date().toISOString(),endedAt:null,revision:1}));
     const sessionPath=path.match(/^\/api\/v1\/sessions\/([^/]+)(\/entries)?$/);
@@ -62,5 +65,5 @@ export async function startFixture() {
     return error('NOT_FOUND','Route not found.',404);
   });
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
-  return {url:`http://127.0.0.1:${server.address().port}`,requests,failNextEntry:()=>{failEntry=true;},conflictNextWrite:()=>{conflict=true;},holdNextEntry:()=>{let release;heldEntry=new Promise(r=>release=r);return ()=>release();},holdNextPlan:()=>{let release;heldPlan=new Promise(r=>release=r);return ()=>release();},close:async()=>{await new Promise(resolve=>server.close(resolve)); db.close();}};
+  return {url:`http://127.0.0.1:${server.address().port}`,requests,failNextEntry:()=>{failEntry=true;},conflictNextWrite:()=>{conflict=true;},setLive:payload=>{live=payload;},holdNextEntry:()=>{let release;heldEntry=new Promise(r=>release=r);return ()=>release();},holdNextPlan:()=>{let release;heldPlan=new Promise(r=>release=r);return ()=>release();},close:async()=>{await new Promise(resolve=>server.close(resolve)); db.close();}};
 }

@@ -56,15 +56,19 @@ export class OwnerProfileStore {
         length += count;
       }
       if (length > 65_536) fail('too_large');
-      const content = bytes.subarray(0, length), text = content.toString('utf8');
-      if (!Buffer.from(text, 'utf8').equals(content)) fail('invalid_utf8');
+      const content = bytes.subarray(0, length);
+      let text: string;
+      // Match the established fatal UTF-8 reader, including stripping a leading BOM.
+      try { text = new TextDecoder('utf-8', { fatal: true }).decode(content); } catch { return fail('invalid_utf8'); }
       let profile: OwnerProfileSnapshot;
       try { profile = validateOwnerProfile(parseJson(text), this.ownerId); } catch { return fail('invalid_profile'); }
       if (profile.kind !== 'profile') fail('invalid_profile');
       const after = fstatSync(fd); validateFile(after, 65_536);
       if (stat.size !== after.size || stat.mtimeMs !== after.mtimeMs || stat.ctimeMs !== after.ctimeMs) fail('io_error');
       const identity = [after.dev, after.ino, after.uid, after.mode, after.nlink, after.size, after.mtimeMs, after.ctimeMs];
-      return { profile, revision: hash(JSON.stringify(identity) + '\n' + text), present: true };
+      // Identity uses original bytes, not BOM-stripped/parsed/canonicalized content.
+      const revision = createHash('sha256').update(JSON.stringify(identity) + '\n').update(content).digest('hex');
+      return { profile, revision, present: true };
     } finally { closeSync(fd); }
   }
   get(): OwnerProfileDocument {

@@ -152,7 +152,7 @@ if [ "${1:-}" = "--leased-run" ]; then
   held_http_failure() (
     set -e
     held_root="$proof/held-cases/held-http-failure"
-    mkdir "$held_root" || exit "$?"
+    mkdir -m 700 "$held_root" || exit "$?"
     HOME="$real_home" CFFIXED_USER_HOME="$real_home" "$work/observer" --verification "$app" "$held_root" "$(uuidgen)" held-http-failure --installed-proof --proof-state "$held_root/state" --proof-report "$held_root/report.json" &
     held_pid=$!
     cleanup_held_failure() {

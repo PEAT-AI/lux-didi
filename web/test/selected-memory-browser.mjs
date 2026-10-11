@@ -75,6 +75,22 @@ try {
     await page.locator('#connected-route').waitFor();
     await page.waitForFunction(() => document.querySelector('#connected-route')?.textContent.includes('gemini-connected-test'));
     assert.equal(Math.round((await page.locator('#didi-orb').boundingBox()).width), 190, 'Preserve the accepted desktop orb layout');
+    // Actual main f27 mounts md on desktop: canvasSize=600, not standalone lg=800.
+    const geometry = await page.locator('#didi-orb').evaluate(canvas => {
+      const style = getComputedStyle(canvas), box = canvas.getBoundingClientRect();
+      return { logical: window.didiFrameStats.logicalSize, dpr: window.didiFrameStats.dpr,
+        effectiveDpr: Math.min(devicePixelRatio || 1, 2), backingWidth: canvas.width, backingHeight: canvas.height,
+        cssWidth: parseFloat(style.width), cssHeight: parseFloat(style.height), displayWidth: box.width,
+        parentWidth: canvas.parentElement.clientWidth, viewportWidth: innerWidth };
+    });
+    assert.equal(geometry.logical, 600, 'Actual main desktop md logical size');
+    assert.equal(geometry.dpr, geometry.effectiveDpr);
+    assert.equal(geometry.backingWidth, 600 * geometry.effectiveDpr, 'Backing size follows capped DPR, not CSS width');
+    assert.equal(geometry.backingHeight, geometry.backingWidth);
+    assert.equal(geometry.cssWidth, 600, 'Actual main desktop default CSS canvas size');
+    assert.equal(geometry.cssHeight, geometry.cssWidth);
+    assert.ok(geometry.cssWidth <= geometry.parentWidth && geometry.cssWidth <= geometry.viewportWidth, 'Canvas fits its available desktop width');
+    assert.ok(geometry.displayWidth >= geometry.cssWidth - 0.1 && geometry.displayWidth <= geometry.cssWidth * 1.05 + 0.1, 'Rendered bounds retain the source passive/processing pulse envelope');
   });
   await step('explicitly connected conversation started with consent', async () => {
     const disclosure = await page.locator('.connected-disclosure').innerText();

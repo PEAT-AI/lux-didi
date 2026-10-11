@@ -74,6 +74,14 @@ no new UI and no in-app editor.
 - `scripts/check-macos-install.sh` — composes the real app and drives it through
   LaunchServices (no external descriptor, bundled Node only), plus signatures,
   artifact hygiene, the configure matrix and install/rollback.
+  Status and P1/P2 replay assertions remain in the installer script. A private,
+  nonce/PID/service/stage-bound observation holds the same owned host until those
+  actual authenticated requests succeed; only then does the observer forward
+  completion. Failed requests/assertions cancel and join cleanup without losing
+  their exit status. Runtime negatives exercise the real native gate, including
+  post-release premature acknowledgement, wrong/stale/duplicate acknowledgement,
+  cancellation/EOF and an actual HTTP assertion failure. This adds no public
+  endpoint, ordinary-launch hold, configuration authority or longer deadline.
 - `Tests/DidiMacTests/check-mac.sh` — native shell proof (unchanged meanings).
 - `Tests/DidiCompanionTests/check-companion.sh`,
   `Tests/DidiCompanionTests/check-launch-services-probe.sh` — companion and

@@ -8,6 +8,11 @@ import Darwin
     private var listenFD: Int32 = -1, connectionFD: Int32 = -1
     private var release: CheckedContinuation<Bool, Never>?
     private var released = false, cancelled = false, disposed = false
+    private let observationRequested: Bool
+    private var observation: CheckedContinuation<Bool, Never>?
+    private var observationStage: String?
+    private var observationPublished = false, observationAcknowledged = false
+    private var servicePID: pid_t?, serviceNonce: String?
     private var bytes = Data()
     private let cancellation: AsyncStream<Void>
     private let signal: AsyncStream<Void>.Continuation
@@ -23,7 +28,7 @@ import Darwin
                 await withTaskGroup(of: Bool.self) { group in
                     group.addTask { @MainActor in
                         guard await gate.awaitRelease(), !Task.isCancelled else { return false }
-                        return await work(gate) && !Task.isCancelled
+                        return await work(gate) && !gate.cancelled && !Task.isCancelled
                     }
                     group.addTask { @MainActor in
                         for await _ in gate.cancellation { return false }
@@ -43,6 +48,7 @@ import Darwin
               UUID(uuidString: nonce) != nil,
               let marker = try? String(contentsOfFile: root + "/nonce", encoding: .utf8), marker == nonce else { throw CocoaError(.fileReadCorruptFile) }
         self.root = root; self.nonce = nonce; self.window = window
+        observationRequested = environment["LUX_VERIFICATION_HOLD_OBSERVATION"] == "1"
         socketPath = "/tmp/didi-verification-" + nonce + ".sock"
         (cancellation, signal) = AsyncStream.makeStream()
         listenFD = socket(AF_UNIX, SOCK_STREAM, 0)
@@ -83,6 +89,24 @@ import Darwin
     }
     func bindService(pid: pid_t, executable: String, serviceNonce: String) throws {
         try write(["pid": Int(pid), "executable": executable, "nonce": nonce, "serviceNonce": serviceNonce], name: "service.json")
+        self.servicePID = pid; self.serviceNonce = serviceNonce
+    }
+    // One private observation phase; ordinary launches never hold.
+    func awaitObservation() async -> Bool {
+        guard observationRequested else { return !cancelled }
+        guard released, !cancelled, !disposed, observationStage == nil,
+              let servicePID, let serviceNonce else { cancel(); return false }
+        let stage = UUID().uuidString
+        observationStage = stage
+        let accepted = await withCheckedContinuation { continuation in
+            observation = continuation
+            do {
+                try write(["schemaVersion": 1, "pid": Int(getpid()), "nonce": nonce, "stage": stage,
+                           "servicePid": Int(servicePID), "serviceNonce": serviceNonce], name: "observation-stage.json")
+                observationPublished = true
+            } catch { cancel() }
+        }
+        return accepted && !cancelled && !Task.isCancelled
     }
     private func awaitRelease() async -> Bool {
         if cancelled || Task.isCancelled { return false }
@@ -119,6 +143,10 @@ import Darwin
                 catch { cancel(); return }
                 deadline?.schedule(deadline: .now() + 120)
                 release?.resume(returning: true); release = nil
+            } else if observationRequested, released, observationPublished, !observationAcknowledged,
+                      !cancelled, bytes.isEmpty, let stage = observationStage, frame == nonce + ":observe:" + stage {
+                observationAcknowledged = true
+                let pending = observation; observation = nil; pending?.resume(returning: true)
             } else if frame == nonce + ":cancel" { cancel(); return }
             else { cancel(); return }
         }
@@ -126,6 +154,8 @@ import Darwin
     private func cancel() {
         guard !cancelled, !disposed else { return }
         cancelled = true; release?.resume(returning: false); release = nil
+        observationAcknowledged = false
+        let held = observation; observation = nil; held?.resume(returning: false)
         signal.yield(()); signal.finish()
     }
     private func endSignals() {
@@ -138,6 +168,9 @@ import Darwin
         if listenFD >= 0 { close(listenFD); listenFD = -1 }
         if connectionFD >= 0 { close(connectionFD); connectionFD = -1 }
         unlink(socketPath)
-        try? write(["pid": Int(getpid()), "nonce": nonce, "disposed": true], name: "native-disposed.json")
+        try? write(["pid": Int(getpid()), "nonce": nonce, "disposed": true, "cancelled": cancelled,
+                    "observationRequested": observationRequested, "observationPublished": observationPublished,
+                    "observationStage": observationStage as Any? ?? NSNull(),
+                    "observationAcknowledged": observationAcknowledged], name: "native-disposed.json")
     }
 }

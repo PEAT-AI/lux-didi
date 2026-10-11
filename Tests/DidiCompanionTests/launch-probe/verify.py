@@ -4,22 +4,25 @@ import signal
 import sys
 
 
-def verify_held(root, failure=False):
-    modes = ('held-http-failure',) if failure else (
+def verify_held(root, failure=False, driver=False):
+    modes = ('held-driver',) if driver else ('held-http-failure',) if failure else (
         'held-premature', 'held-premature-released', 'held-wrong-stage', 'held-stale',
         'held-duplicate', 'held-cancel', 'held-eof', 'held-positive')
     for mode in modes:
-        directory = root if failure else os.path.join(root, mode)
+        directory = root if failure or driver else os.path.join(root, mode)
+        positive = mode in ('held-positive', 'held-driver')
+        if driver:
+            assert json.load(open(os.path.join(directory, 'observer.json')))['acknowledgementOutcome'] == 'completed'
         if failure:
             assert open(os.path.join(directory, 'script-status')).read().strip() == '23'
-            assert json.load(open(os.path.join(directory, 'status.json')))['data']['assistant']['id']
+            assert json.load(open(os.path.join(directory, 'status.json')))['data']['assistantId']
         d = json.load(open(os.path.join(directory, 'observer.json')))
         native = json.load(open(os.path.join(directory, 'native-disposed.json')))
         assert d['identityVerified'] and d['registeredBeforeRelease']
         assert d['nativeDisposed'] and not d['forced']
         assert d['kernel']['statusRequested'] and d['kernel']['filter'] == -5
         raw = d['kernel']['rawStatus']
-        assert os.WIFEXITED(raw) and os.WEXITSTATUS(raw) == (0 if mode == 'held-positive' else 1)
+        assert os.WIFEXITED(raw) and os.WEXITSTATUS(raw) == (0 if positive else 1)
         assert native['nonce'] == d['identity']['nonce'] and native['pid'] == d['identity']['pid']
         assert native['observationRequested'] is True
         if mode not in ('held-premature', 'held-premature-released'):
@@ -32,8 +35,8 @@ def verify_held(root, failure=False):
         else:
             assert not native['observationPublished'] and not native['observationAcknowledged']
             assert d['released'] == (mode == 'held-premature-released')
-        assert native['observationAcknowledged'] == (mode == 'held-positive')
-        assert native['cancelled'] == (mode != 'held-positive')
+        assert native['observationAcknowledged'] == positive
+        assert native['cancelled'] == (not positive)
     print('PASS: actual native held gate accepts one bound ack; premature/wrong/stale/duplicate/cancel/EOF fail with owned cleanup')
 
 
@@ -55,8 +58,8 @@ def verify(d, case):
     assert d['observerDisposed'] is True
 
 
-if __name__ == '__main__' and len(sys.argv) > 1 and sys.argv[1] in ('--held', '--held-failure'):
-    verify_held(sys.argv[2], failure=sys.argv[1] == '--held-failure')
+if __name__ == '__main__' and len(sys.argv) > 1 and sys.argv[1] in ('--held', '--held-failure', '--held-driver'):
+    verify_held(sys.argv[2], failure=sys.argv[1] == '--held-failure', driver=sys.argv[1] == '--held-driver')
     sys.exit(0)
 
 if __name__ == '__main__':

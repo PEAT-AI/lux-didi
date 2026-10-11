@@ -41,6 +41,8 @@ import AppKit
     var released = false
     var heldStage: [String: Any]?
     var heldStimulusSent = false
+    var acknowledgementInode: ino_t?
+    var acknowledgementOutcome: String?
     var settled = false
     var bundle: String { physicalPath(args[1]) }
     var expectedExecutable: String { bundle + "/Contents/MacOS/" + (verification ? "LuxDidi" : "LaunchProbe") }
@@ -55,7 +57,7 @@ import AppKit
         directory = open(root, O_EVTONLY)
         guard directory >= 0 else { fail("directory") ; return }
         watch = DispatchSource.makeFileSystemObjectSource(fileDescriptor: directory, eventMask: .write, queue: .main)
-        watch?.setEventHandler { [self] in MainActor.assumeIsolated { handshake(); bindServiceIfReady(); exerciseHeldProbe() } }
+        watch?.setEventHandler { [self] in MainActor.assumeIsolated { handshake(); bindServiceIfReady(); superviseHeldObservation(); exerciseHeldProbe() } }
         watch?.resume()
         deadline = DispatchSource.makeTimerSource(queue: .main)
         deadline?.schedule(deadline: .now() + (verification ? 8 : 12))
@@ -68,6 +70,7 @@ import AppKit
         configuration.arguments = verification ? Array(args.dropFirst(5)) : [root, nonce, args[4]]
         var environment = ProcessInfo.processInfo.environment
         if verification { environment["LUX_VERIFICATION_GATE_ROOT"] = root; environment["LUX_VERIFICATION_GATE_NONCE"] = nonce }
+        environment.removeValue(forKey: "LUX_VERIFICATION_HOLD_OBSERVATION")
         if args[4].hasPrefix("held-") { environment["LUX_VERIFICATION_HOLD_OBSERVATION"] = "1" }
         configuration.environment = environment
         NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: bundle), configuration: configuration) { app, error in
@@ -180,22 +183,71 @@ import AppKit
                 output["forced"] = forced; output["cancelSent"] = cancelSent
                 output["heldStage"] = heldStage as Any? ?? NSNull()
                 output["heldStimulusSent"] = heldStimulusSent
+                output["acknowledgementOutcome"] = acknowledgementOutcome as Any? ?? NSNull()
                 output["releaseState"] = release?["state"] as Any? ?? [:]
                 output["nativeDisposed"] = nativeDisposition?["disposed"] as? Bool == true
             }
             try atomic(output, to: root + "/observer.json")
             if verification {
-                let expected = ["run", "held-positive"].contains(args[4]) ? raw == 0 : raw == 256
+                let expected = ["run", "held-positive", "held-driver"].contains(args[4]) ? raw == 0 : raw == 256
                 guard expected, !forced, nativeDisposition?["disposed"] as? Bool == true else { exit(1) }
             }
             exit(0)
         } catch { fputs("probe report failure\n", stderr); exit(1) }
     }
+    // Files are private proof transport, never application HTTP authority.
+    func privateNotice(_ name: String) throws -> ([String: Any], ino_t) {
+        let path = root + "/" + name
+        let fd = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+        guard fd >= 0 else { throw CocoaError(.fileReadCorruptFile) }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        defer { try? handle.close() }
+        var info = stat()
+        guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
+              info.st_uid == getuid(), info.st_mode & 0o777 == 0o600,
+              info.st_nlink == 1, info.st_size > 0, info.st_size <= 16384,
+              let data = try handle.readToEnd(),
+              let value = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        return (value, info.st_ino)
+    }
+    func superviseHeldObservation() {
+        guard verification, args[4].hasPrefix("held-"), !settled else { return }
+        do {
+            if FileManager.default.fileExists(atPath: root + "/observation-stage.json") {
+                guard let serviceFacts, let serviceRecord else { return }
+                let (notice, _) = try privateNotice("observation-stage.json")
+                guard Set(notice.keys) == ["schemaVersion", "nonce", "pid", "stage", "servicePid", "serviceNonce"],
+                      notice["schemaVersion"] as? Int == 1, notice["nonce"] as? String == nonce,
+                      notice["pid"] as? Int == Int(target?.processIdentifier ?? -1),
+                      notice["servicePid"] as? Int == Int(serviceFacts.pid),
+                      notice["serviceNonce"] as? String == serviceRecord["serviceNonce"] as? String,
+                      let stage = notice["stage"] as? String, UUID(uuidString: stage) != nil,
+                      heldStage == nil || heldStage?["stage"] as? String == stage else {
+                    fail("held stage binding"); return
+                }
+                heldStage = notice
+            }
+            if FileManager.default.fileExists(atPath: root + "/observation-ack.json") {
+                guard let heldStage, let stage = heldStage["stage"] as? String else { fail("premature shell acknowledgement"); return }
+                let (ack, inode) = try privateNotice("observation-ack.json")
+                if inode == acknowledgementInode { return } // Same atomic notice, not a second acknowledgement.
+                guard acknowledgementInode == nil,
+                      Set(ack.keys) == ["schemaVersion", "nonce", "pid", "stage", "outcome"],
+                      ack["schemaVersion"] as? Int == 1, ack["nonce"] as? String == nonce,
+                      ack["pid"] as? Int == heldStage["pid"] as? Int,
+                      ack["stage"] as? String == stage, let outcome = ack["outcome"] as? String,
+                      ["completed", "cancel"].contains(outcome) else { fail("shell acknowledgement binding"); return }
+                acknowledgementInode = inode; acknowledgementOutcome = outcome; heldStimulusSent = true
+                send(outcome == "completed" ? "observe:" + stage : "cancel")
+            }
+        } catch { fail("private observation transport") }
+    }
     // Runtime negative stimuli, not substitutes fabricated from evidence JSON.
     func exerciseHeldProbe() {
         guard args[4].hasPrefix("held-"), !["held-http-failure", "held-driver"].contains(args[4]), !heldStimulusSent, control >= 0,
-              let data = try? Data(contentsOf: URL(fileURLWithPath: root + "/observation-stage.json")),
-              let notice = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let notice = heldStage,
               let stage = notice["stage"] as? String else { return }
         heldStage = notice; heldStimulusSent = true
         switch args[4] {

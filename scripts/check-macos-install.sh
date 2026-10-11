@@ -67,6 +67,34 @@ if [ "${1:-}" = "--leased-run" ]; then
   state="$proof/state"
   mkdir -p "$proof"
 
+  active_held_pid=""; active_held_root=""
+  cleanup_active_observation() {
+    result=$?; trap - EXIT
+    if [ -n "$active_held_pid" ]; then
+      if bash Tests/DidiCompanionTests/launch-probe/produce.sh --signal-stage "$active_held_root" cancel; then :
+      else signal_result=$?; echo 'MACOS-INSTALL: observation cancellation signal failed' >&2; [ "$result" -ne 0 ] || result=$signal_result; fi
+      if wait "$active_held_pid"; then joined=0; else joined=$?; fi
+      [ "$result" -ne 0 ] || result=$joined
+      [ "$result" -ne 0 ] || result=1
+    fi
+    exit "$result"
+  }
+  trap cleanup_active_observation EXIT
+  begin_observation() {
+    active_held_root="$2"
+    HOME="$real_home" CFFIXED_USER_HOME="$real_home" "$work/observer" --verification "$1" "$2" "$(uuidgen)" held-driver --installed-proof --proof-state "$3" --proof-report "$4" &
+    active_held_pid=$!
+    bash Tests/DidiCompanionTests/launch-probe/produce.sh --await-stage "$active_held_root"
+  }
+  complete_observation() {
+    bash Tests/DidiCompanionTests/launch-probe/produce.sh --signal-stage "$active_held_root" completed
+    if wait "$active_held_pid"; then joined=0; else joined=$?; fi
+    active_held_pid=""
+    [ "$joined" -eq 0 ] || return "$joined"
+    python3 Tests/DidiCompanionTests/launch-probe/verify.py --held-driver "$active_held_root"
+    active_held_root=""
+  }
+
   # Completed-bundle signatures and public-artifact hygiene.
   codesign --verify --deep --strict "$app"
   node Tests/DidiMacTests/staged-app-proof.mjs "$app" --forbid "$HOME" --forbid "$(pwd)" --forbid "$work"
@@ -146,8 +174,8 @@ import json, sys
 status = json.load(open(sys.argv[1]))
 # Actual status is validated first; this intentionally impossible label is the
 # negative assertion, not a manufactured failed HTTP evidence record.
-assert status.get('data', {}).get('assistant', {}).get('id')
-if status['data']['assistant']['id'] != 'deliberately-impossible-held-negative':
+assert status.get('data', {}).get('assistantId')
+if status['data']['assistantId'] != 'deliberately-impossible-held-negative':
     sys.exit(23)
 raise AssertionError('negative fixture unexpectedly matched')
 PY
@@ -191,31 +219,10 @@ PY
   # pre-move content after relocation.
   mkdir -p "$proof/launch-2"
   rm -f "$proof/run-2.json"
-  HOME="$real_home" CFFIXED_USER_HOME="$real_home" "$work/observer" --verification "$app" "$proof/launch-2" "$(uuidgen)" run --installed-proof --proof-state "$state" --proof-report "$proof/run-2.json" &
-  observer_pid=$!
-  # Observe the accepted label over the existing protected loopback API while the
-  # native-launched host is up (one bounded poll, no idle loop).
+  begin_observation "$app" "$proof/launch-2" "$state" "$proof/run-2.json"
   token="$(tr -d '\n' < "$state/admin-credential")"
-  status_json=""
-  for _ in $(seq 1 300); do
-    kill -0 "$observer_pid" 2>/dev/null || break
-    origin="$(python3 - "$proof/run-2.json" <<'PY'
-import json, sys
-try: print(json.load(open(sys.argv[1])).get("service", {}).get("origin", ""))
-except Exception: print("")
-PY
-)"
-    if [ -n "$origin" ]; then
-      status_json="$(curl -fsS -H "Authorization: Bearer $token" "$origin/api/v1/status" 2>"$proof/status-curl.err")" || { status_json=""; last_curl="$(head -c 200 "$proof/status-curl.err" 2>/dev/null)"; }
-      [ -n "$status_json" ] && break
-    fi
-    sleep 0.2
-  done
-  wait "$observer_pid" 2>/dev/null || true
-  if [ -z "$status_json" ]; then
-    kill "$observer_pid" 2>/dev/null || true
-    echo "MACOS-INSTALL FAIL: protected status not observed while the native host was up; last curl: ${last_curl:-none}" >&2; exit 1
-  fi
+  origin="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["service"]["origin"])' "$proof/run-2.json")"
+  status_json="$(curl -fsS -H "Authorization: Bearer $token" "$origin/api/v1/status" 2>"$proof/status-curl.err")"
   python3 - "$status_json" "$assistant" <<'PY'
 import json, sys
 data = json.loads(sys.argv[1])["data"]
@@ -224,6 +231,7 @@ assert profile["status"] == "configured" and profile["displayName"] == "Syntheti
 assert data["assistantId"] == sys.argv[2], data["assistantId"]
 print("MACOS-INSTALL: protected API accepted label", profile["displayName"])
 PY
+  complete_observation
   python3 -c 'import json,sys;r=json.load(open(sys.argv[1]));assert r.get("success") is True and (r.get("error") in (None, {})), r.get("error")' "$proof/run-2.json"
   # Fixture P0/P1/P2: the test-only host entry injects a recording synthetic
   # transport so the per-run immutable snapshot is actually produced.
@@ -246,17 +254,8 @@ PY
   # P1: launch the fixture host and drive one chat run through the protected API
   # so the recording synthetic transport is invoked and the snapshot persists.
   rm -f "$proof/fx-p1.json"
-  HOME="$real_home" CFFIXED_USER_HOME="$real_home" "$work/observer" --verification "$fixture" "$proof/fx-p1" "$(uuidgen)" run --installed-proof --proof-state "$fstate" --proof-report "$proof/fx-p1.json" &
-  fx_pid=$!
-  fx_origin=""
-  for _ in $(seq 1 200); do
-    fx_origin="$(python3 -c 'import json,sys
-try: print(json.load(open(sys.argv[1])).get("service",{}).get("origin",""))
-except Exception: print("")' "$proof/fx-p1.json" 2>/dev/null)"
-    [ -n "$fx_origin" ] && break
-    sleep 0.25
-  done
-  [ -n "$fx_origin" ] || { kill "$fx_pid" 2>/dev/null || true; echo 'MACOS-INSTALL FAIL: fixture host did not become ready' >&2; exit 1; }
+  begin_observation "$fixture" "$proof/fx-p1" "$fstate" "$proof/fx-p1.json"
+  fx_origin="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["service"]["origin"])' "$proof/fx-p1.json")"
   fx_epoch="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["service"]["authorityEpoch"])' "$proof/fx-p1.json")"
   fxtoken="$(tr -d '\n' < "$fstate/admin-credential")"
   sid="$(curl -fsS -X POST "$fx_origin/api/v1/sessions" -H "Authorization: Bearer $fxtoken" -H "Origin: $fx_origin" -H "Content-Type: application/json" -H "X-Didi-Authority-Epoch: $fx_epoch" -H "Idempotency-Key: $(uuidgen)" --data '{"title":"synthetic fixture","timeZone":"UTC"}' | python3 -c 'import json,sys;d=json.load(sys.stdin).get("data") or {};print(d.get("sessionId") or d.get("id") or "")')"
@@ -268,7 +267,6 @@ except Exception: print("")' "$proof/fx-p1.json" 2>/dev/null)"
   calls1="$(callcount)"
   chat "$fkey" > "$proof/fx-chat-replay.json"
   calls2="$(callcount)"
-  wait "$fx_pid"
   [ "$calls1" -ge 1 ] || { echo 'MACOS-INSTALL FAIL: synthetic transport was not invoked' >&2; exit 1; }
   [ "$calls1" = "$calls2" ] || { echo 'MACOS-INSTALL FAIL: idempotent replay made extra transport calls' >&2; exit 1; }
   python3 - "$proof/fx-chat-1.json" "$proof/fx-chat-replay.json" <<'PY'
@@ -293,6 +291,7 @@ assert calls and "synthetic fixture note" in json.dumps(calls[-1]["body"]), call
 json.dump({"run_id": run_id, "sha256": hashlib.sha256(snapshot.encode()).hexdigest(), "snapshot": snap}, open(sys.argv[2], "w"))
 print("FIXTURE-P1 run=%s sha256=%s calls=%d" % (run_id, hashlib.sha256(snapshot.encode()).hexdigest(), len(calls)))
 PY
+  complete_observation
   # P2: change only a non-label profile field, restart, then (a) replay the P1
   # chat with the SAME idempotency key and prove the same P1 run/hash with zero
   # added transport calls, and (b) issue a NEW key and prove a P2 run/snapshot and
@@ -304,29 +303,19 @@ json.dump(d, open(sys.argv[1], "w"))
 PY
   HOME="$fstate" CFFIXED_USER_HOME="$fstate" "$fixture/Contents/MacOS/LuxDidi" --configure --owner-profile "$profileDir/owner-profile.json" > /dev/null
   rm -f "$proof/fx-p2.json" "$fstate/fixture-calls.json"
-  HOME="$real_home" CFFIXED_USER_HOME="$real_home" "$work/observer" --verification "$fixture" "$proof/fx-p2" "$(uuidgen)" run --installed-proof --proof-state "$fstate" --proof-report "$proof/fx-p2.json" &
-  fx_pid=$!
-  fx_origin=""
-  for _ in $(seq 1 200); do
-    fx_origin="$(python3 -c 'import json,sys
-try: print(json.load(open(sys.argv[1])).get("service",{}).get("origin",""))
-except Exception: print("")' "$proof/fx-p2.json" 2>/dev/null)"
-    [ -n "$fx_origin" ] && break
-    sleep 0.25
-  done
-  [ -n "$fx_origin" ] || { kill "$fx_pid" 2>/dev/null || true; echo 'MACOS-INSTALL FAIL: fixture host did not become ready after P2' >&2; exit 1; }
+  begin_observation "$fixture" "$proof/fx-p2" "$fstate" "$proof/fx-p2.json"
+  fx_origin="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["service"]["origin"])' "$proof/fx-p2.json")"
   fx_epoch="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["service"]["authorityEpoch"])' "$proof/fx-p2.json")"
   # (a) same idempotency key must replay the P1 run with zero new transport calls.
   chat "$fkey" > "$proof/fx-p2-replay.json"
   replay_calls="$(callcount)"
-  [ "$replay_calls" = "0" ] || { kill "$fx_pid" 2>/dev/null || true; echo "MACOS-INSTALL FAIL: idempotent replay added $replay_calls transport calls" >&2; exit 1; }
+  [ "$replay_calls" = "0" ] || { echo "MACOS-INSTALL FAIL: idempotent replay added $replay_calls transport calls" >&2; exit 1; }
   # (b) a new key runs against the P2 profile and invokes the transport once.
   newkey="$(uuidgen)"
   newtext="synthetic fixture note two"
   curl -fsS -X POST "$fx_origin/api/v1/chat" -H "Authorization: Bearer $fxtoken" -H "Origin: $fx_origin" -H "Content-Type: application/json" -H "X-Didi-Authority-Epoch: $fx_epoch" -H "Idempotency-Key: $newkey" --data "{\"sessionId\":\"$sid\",\"text\":\"$newtext\",\"timeZone\":\"UTC\"}" > "$proof/fx-p2-new.json"
   new_calls="$(callcount)"
-  [ "$new_calls" = "1" ] || { kill "$fx_pid" 2>/dev/null || true; echo "MACOS-INSTALL FAIL: new P2 run made $new_calls transport calls" >&2; exit 1; }
-  wait "$fx_pid"
+  [ "$new_calls" = "1" ] || { echo "MACOS-INSTALL FAIL: new P2 run made $new_calls transport calls" >&2; exit 1; }
   python3 - "$fstate/state.sqlite" "$proof/fx-triple.json" "$fstate/fixture-calls.json" <<'PY'
 import hashlib, json, sqlite3, sys
 db = sqlite3.connect("file:%s?mode=ro" % sys.argv[1], uri=True)
@@ -344,6 +333,7 @@ calls = json.load(open(sys.argv[3]))
 assert calls and "synthetic fixture note two" in json.dumps(calls[-1]["body"]), calls[-1] if calls else None
 print("FIXTURE-P2 p1_preserved=%s p2_profile=%s p2_prompt_ok=1" % (recorded["run_id"], p2[-1]["profileVersion"]))
 PY
+  complete_observation
   echo 'MACOS-INSTALL: fixture snapshot transport pass'
   # A profile for a foreign identity must fail closed at the actual host.
   python3 - "$profileDir/other.json" <<'PY'

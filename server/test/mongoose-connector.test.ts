@@ -69,12 +69,12 @@ async function fixture(options: FixtureOptions = {}) {
   return { url, calls, async close() { await sdk.close().catch(() => {}); await new Promise<void>(resolve => listener.close(() => resolve())); } };
 }
 
-function adapterFor(url: string, extras: { resolveCredential?: (ref: string) => Promise<string> } = {}) {
+function adapterFor(url: string, resolveCredential: (ref: string) => Promise<string> = async () => 'test-token') {
   const registry = new McpRegistry();
   registry.register({ id: 'source', url, account: ACCOUNT, resource: RESOURCE, credentialRef: 'mongoose-mcp' });
   registry.enable('source'); registry.allowEgress('source');
   const store = new MemoryResultStore();
-  const adapter = createMcpAdapter({ registry, store, resolveCredential: extras.resolveCredential ?? (async () => 'test-token') });
+  const adapter = createMcpAdapter({ registry, store, resolveCredential });
   return { registry, store, adapter };
 }
 
@@ -87,7 +87,7 @@ async function approve(adapter: McpPort, registry: McpRegistry, names: readonly 
 }
 
 function reader(adapter: McpPort, registry: McpRegistry, schemaDigest: string) {
-  return createMongooseReader({ port: adapter, registry, config: { endpointId: 'source', account: ACCOUNT, resource: RESOURCE, schemaDigest, generation: 1, maxSearchLimit: 10, maxGetIds: 10, maxQueryChars: 200 } });
+  return createMongooseReader({ port: adapter, registry, config: { endpointId: 'source', account: ACCOUNT, resource: RESOURCE, schemaDigest, generation: 1, maxSearchLimit: 10, maxListLimit: 10, queryChars: 200 } });
 }
 
 test('search round trip: exact outgoing arguments and opaque unknown/local-only evidence', async t => {
@@ -95,15 +95,14 @@ test('search round trip: exact outgoing arguments and opaque unknown/local-only 
   const { registry, adapter } = adapterFor(f.url);
   const digest = await approve(adapter, registry);
   try {
-    const result = await reader(adapter, registry, digest).search('agri pricing', 3);
+    const result = await reader(adapter, registry, digest).search({ query: 'agri pricing', limit: 3 });
     assert.equal(result.state, 'completed');
     assert.deepEqual(f.calls, [{ name: 'search_mongoose', arguments: { query: 'agri pricing', limit: 3 } }]);
-    if (result.state !== 'completed') return;
-    assert.equal(result.classification, 'unknown');
-    assert.equal(result.capability, 'local-only');
-    const projected = projectMongooseResult(result, adapter);
-    assert.match(projected.text, /\[Agri input pricing\]\(https:\/\/mongoose\.dev\.peat-cloud\.com\/knowledge\/agri-pricing\)/);
-    assert.deepEqual(projected.sources, ['https://mongoose.dev.peat-cloud.com/knowledge/agri-pricing']);
+    const projected = projectMongooseResult(adapter, result);
+    assert.equal(projected.ok, true);
+    if (!projected.ok) return;
+    assert.match(projected.projection.text, /- Agri input pricing/);
+    assert.match(projected.projection.text, /source: https:\/\/mongoose\.dev\.peat-cloud\.com\/knowledge\/agri-pricing/);
   } finally { await adapter.close(); }
 });
 
@@ -117,9 +116,9 @@ test('bearer missing is a typed refusal before an empty success', async t => {
   const digest = await approve(adapter, registry);
   try {
     authed = false;
-    const result = await reader(adapter, registry, digest).search('secret', 1);
+    const result = await reader(adapter, registry, digest).search({ query: 'secret' });
     assert.ok(result.state === 'refused' || result.state === 'unknown', `expected a typed refusal, got ${result.state}`);
-    if (result.state === 'refused' || result.state === 'unknown') assert.match(String(result.reason), /credential|protocol|unknown|pre-dispatch/i);
+    assert.equal(projectMongooseResult(adapter, result).ok, false);
   } finally { await adapter.close(); }
 });
 
@@ -128,21 +127,21 @@ test('only the read envelope is eligible; a granted writer refuses the whole cal
   const { registry, adapter } = adapterFor(f.url);
   const digest = await approve(adapter, registry, [...MONGOOSE_TOOLS, 'create_ticket']);
   try {
-    const result = await reader(adapter, registry, digest).search('agri', 1);
+    const result = await reader(adapter, registry, digest).search({ query: 'agri' });
     assert.equal(result.state, 'refused');
-    assert.equal(result.reason, 'ineligible-tool-granted');
+    assert.equal(result.state === 'refused' ? result.reason : '', 'ineligible-tool-granted');
     assert.equal(f.calls.length, 0);
   } finally { await adapter.close(); }
 });
 
-test('a missing write definition refuses before dispatch', async t => {
+test('a tool outside the read grant refuses before dispatch', async t => {
   const f = await fixture(); t.after(() => f.close());
   const { registry, adapter } = adapterFor(f.url);
   const digest = await approve(adapter, registry, MONGOOSE_TOOLS.filter(name => name !== 'get_ticket'));
   try {
-    const result = await reader(adapter, registry, digest).getTicket('ticket-1');
+    const result = await reader(adapter, registry, digest).getTicket({ id: 'ticket-1' });
     assert.equal(result.state, 'refused');
-    assert.equal(result.reason, 'required-definition-absent');
+    assert.equal(result.state === 'refused' ? result.reason : '', 'tool-not-granted');
   } finally { await adapter.close(); }
 });
 
@@ -152,10 +151,10 @@ test('input budgets refuse malformed arguments before any wire call', async t =>
   const digest = await approve(adapter, registry);
   const r = reader(adapter, registry, digest);
   try {
-    assert.equal((await r.search('   ', 1)).state, 'refused');
-    assert.equal((await r.search('ok', 999)).state, 'refused');
-    assert.equal((await r.listTickets(0)).state, 'refused');
-    assert.equal((await r.getTicket('')).state, 'refused');
+    assert.equal((await r.search({ query: '   ' })).state, 'refused');
+    assert.equal((await r.search({ query: 'ok', limit: 999 })).state, 'refused');
+    assert.equal((await r.listTickets({ limit: 0 })).state, 'refused');
+    assert.equal((await r.getTicket({ id: '' })).state, 'refused');
     assert.equal(f.calls.length, 0);
   } finally { await adapter.close(); }
 });
@@ -167,11 +166,13 @@ test('a large Mongoose answer is projected as bounded, partial-marked Markdown',
   try {
     const result = await reader(adapter, registry, digest).companyProfile();
     assert.equal(result.state, 'completed');
-    if (result.state !== 'completed') return;
-    const projected = projectMongooseResult(result, adapter, 128);
-    assert.equal(projected.bounded, true);
-    assert.equal(projected.omittedCharacters, 4096 - 128);
-    assert.match(projected.text, /\[partial: 3968 characters omitted\]/);
+    const projected = projectMongooseResult(adapter, result);
+    assert.equal(projected.ok, true);
+    if (!projected.ok) return;
+    assert.equal(projected.projection.partial, true);
+    assert.equal(projected.projection.text.length, 4000);
+    assert.equal(projected.projection.originalCharacters, 4096);
+    assert.equal(projected.projection.omittedCharacters, 96);
   } finally { await adapter.close(); }
 });
 

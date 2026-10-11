@@ -9,7 +9,7 @@ import { McpRegistry } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import type { EndpointConfig, McpPort } from '../adapters/mcp/port.js';
 import { createMattermostReader, MATTERMOST_AUTH_NEEDED, MATTERMOST_TOOLS } from '../connectors/index.js';
-import { projectMattermostResult } from '../tools/mattermost.js';
+import { mattermostToolStatus, projectMattermostResult } from '../tools/mattermost.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const child = join(here, 'fixtures', 'stdio-mattermost-child.mjs');
@@ -38,34 +38,33 @@ async function approve(adapter: McpPort, registry: McpRegistry, names: readonly 
 }
 
 function reader(adapter: McpPort, registry: McpRegistry, schemaDigest: string) {
-  return createMattermostReader({ port: adapter, registry, config: { endpointId: 'mattermost', account: ACCOUNT, resource: RESOURCE, schemaDigest, generation: 1, maxLimit: 100, maxQueryChars: 200 } });
+  return createMattermostReader({ port: adapter, registry, config: { endpointId: 'mattermost', account: ACCOUNT, resource: RESOURCE, schemaDigest, generation: 1, maxLimit: 60, queryChars: 200 } });
 }
 
 test('channel history projects Markdown with bounded fields and permalink sources', async t => {
   const f = setup('ok');
   t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
   const digest = await approve(f.adapter, f.registry);
-  const result = await reader(f.adapter, f.registry, digest).getChannelHistory('town-square', 20);
+  const result = await reader(f.adapter, f.registry, digest).getChannelHistory({ channel: 'town-square', limit: 20 });
   assert.equal(result.state, 'completed');
-  if (result.state !== 'completed') return;
-  const projected = projectMattermostResult(result, f.adapter);
-  assert.match(projected.text, /town-square · Rob · 2026-10-11T10:00:00Z/);
-  assert.match(projected.text, /Standup at ten/);
-  assert.deepEqual(projected.sources, [
-    'https://chat.peat-cloud.com/team/pl/abcdef1234567890abcdefghij',
-    'https://chat.peat-cloud.com/team/pl/0987654321fedcba0987654321',
-  ]);
+  const projected = projectMattermostResult(f.adapter, result);
+  assert.equal(projected.ok, true);
+  if (!projected.ok) return;
+  assert.match(projected.projection.text, /town-square \| Rob \| 2026-10-11T10:00:00Z/);
+  assert.match(projected.projection.text, /Standup at ten/);
+  assert.match(projected.projection.text, /source: https:\/\/chat\.peat-cloud\.com\/team\/pl\/abcdef1234567890abcdefghij/);
 });
 
 test('a long message body is clipped to 600 characters per field', async t => {
   const f = setup('ok');
   t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
   const digest = await approve(f.adapter, f.registry);
-  const result = await reader(f.adapter, f.registry, digest).search('standup', 5);
+  const result = await reader(f.adapter, f.registry, digest).search({ query: 'standup' });
   assert.equal(result.state, 'completed');
-  if (result.state !== 'completed') return;
-  const projected = projectMattermostResult(result, f.adapter);
-  assert.ok(projected.text.length > 0);
+  const projected = projectMattermostResult(f.adapter, result);
+  assert.equal(projected.ok, true);
+  if (!projected.ok) return;
+  assert.ok(projected.projection.text.length > 0);
 });
 
 test('only the read envelope is eligible; a granted writer refuses the whole call', async t => {
@@ -74,18 +73,17 @@ test('only the read envelope is eligible; a granted writer refuses the whole cal
   const digest = await approve(f.adapter, f.registry, [...MATTERMOST_TOOLS, 'mattermost_post_message']);
   const result = await reader(f.adapter, f.registry, digest).whoami();
   assert.equal(result.state, 'refused');
-  assert.equal(result.reason, 'ineligible-tool-granted');
+  assert.equal(result.state === 'refused' ? result.reason : '', 'ineligible-tool-granted');
 });
 
 test('a missing session reports auth-needed, never an empty success', async t => {
   const f = setup('auth-needed');
   t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
   const digest = await approve(f.adapter, f.registry);
-  const r = reader(f.adapter, f.registry, digest);
-  const result = await r.whoami();
-  assert.equal(result.state, 'unknown');
-  assert.equal(result.reason, MATTERMOST_AUTH_NEEDED);
-  assert.equal(await r.status(), MATTERMOST_AUTH_NEEDED);
+  const result = await reader(f.adapter, f.registry, digest).whoami();
+  assert.equal(result.state, 'tool-error');
+  if (result.state !== 'tool-error') throw new Error('not a tool error');
+  assert.deepEqual(mattermostToolStatus(result), { state: 'configured', reason: MATTERMOST_AUTH_NEEDED });
 });
 
 test('input budgets refuse malformed arguments before any wire call', async t => {
@@ -93,17 +91,17 @@ test('input budgets refuse malformed arguments before any wire call', async t =>
   t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
   const digest = await approve(f.adapter, f.registry);
   const r = reader(f.adapter, f.registry, digest);
-  assert.equal((await r.getChannelHistory('', 1)).state, 'refused');
-  assert.equal((await r.getThread('p', 0)).state, 'refused');
-  assert.equal((await r.search('   ', 1)).state, 'refused');
-  assert.equal((await r.listChannels(9999)).state, 'refused');
+  assert.equal((await r.getChannelHistory({ channel: '' })).state, 'refused');
+  assert.equal((await r.getThread({ postId: 'p', limit: 0 })).state, 'refused');
+  assert.equal((await r.search({ query: '   ' })).state, 'refused');
+  assert.equal((await r.listChannels({ limit: 9999 })).state, 'refused');
 });
 
-test('a missing read definition refuses before dispatch', async t => {
+test('a tool outside the read grant refuses before dispatch', async t => {
   const f = setup('ok');
   t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
   const digest = await approve(f.adapter, f.registry, MATTERMOST_TOOLS.filter(name => name !== 'mattermost_get_thread'));
-  const result = await reader(f.adapter, f.registry, digest).getThread('post-1', 1);
+  const result = await reader(f.adapter, f.registry, digest).getThread({ postId: 'post-1' });
   assert.equal(result.state, 'refused');
-  assert.equal(result.reason, 'required-definition-absent');
+  assert.equal(result.state === 'refused' ? result.reason : '', 'tool-not-granted');
 });

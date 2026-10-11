@@ -1,10 +1,10 @@
-import type { CallRequest, CompletedResult, McpPort, StoredPayload } from '../adapters/mcp/port.js';
+import type { CallRequest, CallResult, CompletedResult, McpPort, ReadGrant, ResultScope, StoredPayload } from '../adapters/mcp/port.js';
 import type { McpRegistry } from '../adapters/mcp/registry.js';
 
 /**
- * The only remote Mongoose tools this connector may ever read, in fixed order.
- * Writes (create/update/claim ticket, authoring tools) are deliberately absent: no
- * caller override can add them, and a grant carrying an unlisted name is refused.
+ * The only remote tools this connector may ever call, in fixed order. A name outside this
+ * envelope is refused even when the remote lists it: the local read classification is the
+ * authority, never the remote's readOnlyHint. Ticket writes and authoring tools are absent.
  */
 export const MONGOOSE_TOOLS = [
   'ask_mongoose',
@@ -17,6 +17,9 @@ export const MONGOOSE_TOOLS = [
 ] as const;
 export type MongooseTool = (typeof MONGOOSE_TOOLS)[number];
 
+/** Bounded argument defaults; a caller may only narrow these, never widen them. */
+export const MONGOOSE_DEFAULTS = { searchLimit: 5, maxSearchLimit: 50, listLimit: 10, maxListLimit: 100, queryChars: 500 } as const;
+
 export interface MongooseConfig {
   endpointId: string;
   account: string;
@@ -25,20 +28,19 @@ export interface MongooseConfig {
   schemaDigest: string;
   /** Approved read-grant generation; must match the current registry grant. */
   generation: number;
-  /** Request budget: largest `limit` a search caller may select. */
-  maxSearchLimit: number;
-  /** Batch budget: largest `limit` a list caller may select. */
-  maxGetIds: number;
-  /** Bound on query or question length in characters. */
-  maxQueryChars: number;
+  /** Largest `limit` any answer/search caller may select. Defaults 50, never above 50. */
+  maxSearchLimit?: number;
+  /** Largest `limit` any list caller may select. Defaults 100, never above 100. */
+  maxListLimit?: number;
+  /** Bound on a question or identifier in characters. Defaults 500, never above 500. */
+  queryChars?: number;
 }
 
-/** Opaque local evidence: classification is a constant, remote markdown can never change it. */
+/** Opaque local evidence, mirroring the Lux knowledge connector shape. */
 export interface MongooseEvidence {
-  classification: 'unknown';
-  capability: 'local-only';
+  state: 'completed' | 'tool-error' | 'protocol-error';
   tool: MongooseTool;
-  source: CompletedResult['source'];
+  source: ResultScope;
   observedAt: number;
   coverage: CompletedResult['coverage'];
   projection: CompletedResult['projection'];
@@ -46,63 +48,59 @@ export interface MongooseEvidence {
 }
 export interface MongooseRefused { state: 'refused'; reason: string }
 export interface MongooseUnknown { state: 'unknown'; reason: string }
-export type MongooseResult =
-  | (MongooseEvidence & { state: 'completed' | 'tool-error' | 'protocol-error' })
-  | MongooseRefused
-  | MongooseUnknown;
+export type MongooseResult = MongooseEvidence | MongooseRefused | MongooseUnknown;
+
+export interface AskInput { question: string; limit?: number }
+export interface SearchInput { query: string; limit?: number }
+export interface IdInput { id: string }
+export interface ListInput { limit?: number }
 
 export interface MongooseReader {
-  ask(question: string, limit: number, signal?: AbortSignal): Promise<MongooseResult>;
-  search(query: string, limit: number, signal?: AbortSignal): Promise<MongooseResult>;
-  getKnowledgeItem(id: string, signal?: AbortSignal): Promise<MongooseResult>;
-  readKnowledgeBody(id: string, signal?: AbortSignal): Promise<MongooseResult>;
+  ask(input: AskInput, signal?: AbortSignal): Promise<MongooseResult>;
+  search(input: SearchInput, signal?: AbortSignal): Promise<MongooseResult>;
+  getKnowledgeItem(input: IdInput, signal?: AbortSignal): Promise<MongooseResult>;
+  readKnowledgeBody(input: IdInput, signal?: AbortSignal): Promise<MongooseResult>;
   companyProfile(signal?: AbortSignal): Promise<MongooseResult>;
-  listTickets(limit: number, signal?: AbortSignal): Promise<MongooseResult>;
-  getTicket(id: string, signal?: AbortSignal): Promise<MongooseResult>;
+  listTickets(input: ListInput, signal?: AbortSignal): Promise<MongooseResult>;
+  getTicket(input: IdInput, signal?: AbortSignal): Promise<MongooseResult>;
 }
 
-export interface MongooseOptions {
-  port: McpPort;
-  registry: McpRegistry;
-  config: MongooseConfig;
-}
+export interface MongooseOptions { port: McpPort; registry: McpRegistry; config: MongooseConfig }
 
 const ELIGIBLE: ReadonlySet<string> = new Set<string>(MONGOOSE_TOOLS);
-
-/** Distinguishes the adapter's non-completed outcomes from a completed protocol result. */
 type FailedCall = { state: 'refused' | 'unknown'; reason: string };
-function isFailed(result: { state: string }): result is FailedCall {
+function isFailed(result: CallResult): result is FailedCall {
   return result.state === 'refused' || result.state === 'unknown';
 }
-
-function positiveSafeInteger(value: unknown, max: number): value is number {
-  return Number.isSafeInteger(value) && (value as number) > 0 && (value as number) <= max;
+function positive(value: unknown, fallback: number): number {
+  if (value === undefined) return fallback;
+  if (!Number.isSafeInteger(value) || (value as number) <= 0) throw new Error('invalid-connector-budget');
+  return value as number;
 }
-function boundedText(value: unknown, max: number): value is string {
-  return typeof value === 'string' && value.trim().length > 0 && value.length <= max;
+function requirePositiveSafeInteger(value: unknown): number {
+  if (!Number.isSafeInteger(value) || (value as number) <= 0) throw new Error('invalid-connector-config');
+  return value as number;
 }
 
 interface Settings {
   endpointId: string; account: string; resource: string; schemaDigest: string; generation: number;
-  maxSearchLimit: number; maxGetIds: number; maxQueryChars: number;
+  maxSearchLimit: number; maxListLimit: number; queryChars: number;
 }
 
-/**
- * Pre-dispatch gate over the accepted registry. No discovery, no approval, no egress change:
- * a caller can never widen the grant, and an unexpected granted tool refuses the whole call.
- */
+/** Pre-dispatch gate over the accepted registry. No discovery, no approval, no egress change. */
 function preflight(registry: McpRegistry, settings: Settings, tool: MongooseTool): string | undefined {
-  let grant;
+  let grant: ReadGrant | undefined;
   try {
     registry.endpoint(settings.endpointId);
     grant = registry.currentGrant(settings.endpointId);
   } catch { return 'source-unavailable'; }
   if (!grant) return 'grant-absent';
   if (grant.schemaDigest !== settings.schemaDigest) return 'schema-drift';
-  if (grant.generation !== settings.generation) return 'grant-generation-mismatch';
-  if (grant.account !== settings.account || grant.resource !== settings.resource) return 'grant-scope-mismatch';
+  if (grant.generation !== settings.generation) return 'grant-stale';
+  if (grant.effect !== 'read') return 'grant-not-read';
   const visible = registry.visibleTools(settings.endpointId).map(definition => definition.name);
   if (visible.some(name => !ELIGIBLE.has(name))) return 'ineligible-tool-granted';
+  if (!grant.toolNames.includes(tool)) return 'tool-not-granted';
   if (!visible.includes(tool)) return 'required-definition-absent';
   return undefined;
 }
@@ -114,16 +112,13 @@ export function createMongooseReader(options: MongooseOptions): MongooseReader {
     account: config.account,
     resource: config.resource,
     schemaDigest: config.schemaDigest,
-    generation: config.generation,
-    maxSearchLimit: config.maxSearchLimit,
-    maxGetIds: config.maxGetIds,
-    maxQueryChars: config.maxQueryChars,
+    generation: requirePositiveSafeInteger(config.generation),
+    maxSearchLimit: Math.min(positive(config.maxSearchLimit, MONGOOSE_DEFAULTS.maxSearchLimit), MONGOOSE_DEFAULTS.maxSearchLimit),
+    maxListLimit: Math.min(positive(config.maxListLimit, MONGOOSE_DEFAULTS.maxListLimit), MONGOOSE_DEFAULTS.maxListLimit),
+    queryChars: Math.min(positive(config.queryChars, MONGOOSE_DEFAULTS.queryChars), MONGOOSE_DEFAULTS.queryChars),
   };
 
   async function dispatch(tool: MongooseTool, args: Record<string, unknown>, signal?: AbortSignal): Promise<MongooseResult> {
-    const denied = preflight(registry, settings, tool);
-    if (denied) return { state: 'refused', reason: denied };
-    if (signal?.aborted) return { state: 'refused', reason: 'cancelled-before-dispatch' };
     const request: CallRequest = {
       endpointId: settings.endpointId,
       toolName: tool,
@@ -132,56 +127,81 @@ export function createMongooseReader(options: MongooseOptions): MongooseReader {
       account: settings.account,
       resource: settings.resource,
     };
+    if (signal?.aborted) return { state: 'refused', reason: 'cancelled-before-dispatch' };
     const result = await port.call(request, signal);
     if (isFailed(result)) return { state: result.state, reason: result.reason };
     if (signal?.aborted) return { state: 'unknown', reason: 'cancelled-after-dispatch' };
     const evidence: MongooseEvidence = {
-      classification: 'unknown',
-      capability: 'local-only',
+      state: result.state,
       tool,
-      source: structuredClone(result.source),
+      source: { ...result.source },
       observedAt: result.freshness.receivedAt,
       coverage: structuredClone(result.coverage),
       projection: structuredClone(result.projection),
       response: structuredClone(result.payload),
     };
-    return { state: result.state, ...evidence };
+    return evidence;
   }
 
-  const intArgs = (key: string, value: number, max: number): Record<string, unknown> | undefined =>
-    positiveSafeInteger(value, max) ? { [key]: value } : undefined;
+  function boundedQuestion(value: unknown): string | undefined {
+    return typeof value === 'string' && value.trim().length > 0 && value.length <= settings.queryChars ? value : undefined;
+  }
+  function limited(value: unknown, fallback: number, max: number): Record<string, unknown> | undefined {
+    if (value === undefined) return { limit: Math.min(fallback, max) };
+    if (!Number.isSafeInteger(value) || (value as number) < 1 || (value as number) > max) return undefined;
+    return { limit: value as number };
+  }
 
   return {
-    async ask(question, limit, signal) {
-      if (!boundedText(question, settings.maxQueryChars)) return { state: 'refused', reason: 'invalid-question' };
-      const bounded = intArgs('limit', limit, settings.maxSearchLimit);
-      if (!bounded) return { state: 'refused', reason: 'ask-limit-out-of-budget' };
+    async ask(input: AskInput, signal?: AbortSignal): Promise<MongooseResult> {
+      const denied = preflight(registry, settings, 'ask_mongoose');
+      if (denied) return { state: 'refused', reason: denied };
+      const question = boundedQuestion(input.question);
+      if (question === undefined) return { state: 'refused', reason: 'invalid-question' };
+      const bounded = limited(input.limit, MONGOOSE_DEFAULTS.searchLimit, settings.maxSearchLimit);
+      if (!bounded) return { state: 'refused', reason: 'limit-out-of-budget' };
       return dispatch('ask_mongoose', { question, ...bounded }, signal);
     },
-    async search(query, limit, signal) {
-      if (!boundedText(query, settings.maxQueryChars)) return { state: 'refused', reason: 'invalid-query' };
-      const bounded = intArgs('limit', limit, settings.maxSearchLimit);
-      if (!bounded) return { state: 'refused', reason: 'search-limit-out-of-budget' };
+    async search(input: SearchInput, signal?: AbortSignal): Promise<MongooseResult> {
+      const denied = preflight(registry, settings, 'search_mongoose');
+      if (denied) return { state: 'refused', reason: denied };
+      const query = boundedQuestion(input.query);
+      if (query === undefined) return { state: 'refused', reason: 'invalid-query' };
+      const bounded = limited(input.limit, MONGOOSE_DEFAULTS.searchLimit, settings.maxSearchLimit);
+      if (!bounded) return { state: 'refused', reason: 'limit-out-of-budget' };
       return dispatch('search_mongoose', { query, ...bounded }, signal);
     },
-    async getKnowledgeItem(id, signal) {
-      if (!boundedText(id, settings.maxQueryChars)) return { state: 'refused', reason: 'invalid-id' };
+    async getKnowledgeItem(input: IdInput, signal?: AbortSignal): Promise<MongooseResult> {
+      const denied = preflight(registry, settings, 'get_knowledge_item');
+      if (denied) return { state: 'refused', reason: denied };
+      const id = boundedQuestion(input.id);
+      if (id === undefined) return { state: 'refused', reason: 'invalid-id' };
       return dispatch('get_knowledge_item', { id }, signal);
     },
-    async readKnowledgeBody(id, signal) {
-      if (!boundedText(id, settings.maxQueryChars)) return { state: 'refused', reason: 'invalid-id' };
+    async readKnowledgeBody(input: IdInput, signal?: AbortSignal): Promise<MongooseResult> {
+      const denied = preflight(registry, settings, 'read_knowledge_body');
+      if (denied) return { state: 'refused', reason: denied };
+      const id = boundedQuestion(input.id);
+      if (id === undefined) return { state: 'refused', reason: 'invalid-id' };
       return dispatch('read_knowledge_body', { id }, signal);
     },
-    async companyProfile(signal) {
+    async companyProfile(signal?: AbortSignal): Promise<MongooseResult> {
+      const denied = preflight(registry, settings, 'get_company_profile');
+      if (denied) return { state: 'refused', reason: denied };
       return dispatch('get_company_profile', {}, signal);
     },
-    async listTickets(limit, signal) {
-      const bounded = intArgs('limit', limit, settings.maxGetIds);
-      if (!bounded) return { state: 'refused', reason: 'list-limit-out-of-budget' };
+    async listTickets(input: ListInput, signal?: AbortSignal): Promise<MongooseResult> {
+      const denied = preflight(registry, settings, 'list_tickets');
+      if (denied) return { state: 'refused', reason: denied };
+      const bounded = limited(input.limit, MONGOOSE_DEFAULTS.listLimit, settings.maxListLimit);
+      if (!bounded) return { state: 'refused', reason: 'limit-out-of-budget' };
       return dispatch('list_tickets', bounded, signal);
     },
-    async getTicket(id, signal) {
-      if (!boundedText(id, settings.maxQueryChars)) return { state: 'refused', reason: 'invalid-id' };
+    async getTicket(input: IdInput, signal?: AbortSignal): Promise<MongooseResult> {
+      const denied = preflight(registry, settings, 'get_ticket');
+      if (denied) return { state: 'refused', reason: denied };
+      const id = boundedQuestion(input.id);
+      if (id === undefined) return { state: 'refused', reason: 'invalid-id' };
       return dispatch('get_ticket', { id }, signal);
     },
   };

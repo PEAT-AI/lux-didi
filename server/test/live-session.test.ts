@@ -933,6 +933,26 @@ test('legacy null and unsupported accepted Live bindings refuse honestly before 
   }
 });
 
+test('completion after hangup remains delivery pending even before the deferral budget expires', async t => {
+  const scheduler = new DeadlineClock();
+  let finish!: () => void;
+  const work = new Promise<void>(resolve => { finish = resolve; });
+  const h = await harness(t, { tools: true, scheduler, beforeTool: () => work });
+  const { session } = await attached(h);
+  h.f.send({ toolCall: { functionCalls: [{ id: 'detached1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
+  while (!h.calls.length) await tick();
+  h.owner.revoke(session.liveSessionId);
+  finish();
+  const jobs = new LiveToolJobs(h.store, () => NOW);
+  while (jobs.list()[0]!.state === 'in_progress') await tick();
+  await tick();
+  assert.equal(jobs.pending().length, 1, 'a returned batch is not delivered when the original call has ended');
+  assert.equal(jobs.pending()[0]!.state, 'completed');
+  assert.equal(jobs.pending()[0]!.delivered, false);
+  assert.match(h.owner.pendingJobs()[0]!.markdown, /Synthetic insight/);
+  assert.equal(h.f.frames.length, 1, 'completion cannot send to the ended Gemini session');
+});
+
 test('Live answers a slow tool batch truthfully, continues the turn, and retains a durable pending result', async t => {
   const scheduler = new DeadlineClock();
   let finish!: () => void;

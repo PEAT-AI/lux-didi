@@ -9,6 +9,46 @@ const code = (expected: string) => (error: unknown) => error instanceof LiveVoic
 const audio = () => ({ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from(pcm).toString('base64') } });
 function noCanary(value: unknown) { assert.equal(JSON.stringify(value).includes(CANARY), false, 'public serialization is sanitized'); }
 
+test('explicit user-first opening preserves incomplete history and model-first opens a spoken turn without user audio', async t => {
+  for (const opening of ['user_first', 'model_first'] as const) {
+    const f = await fixture(t);
+    const input = { ...request(), opening: opening as 'user_first' | 'model_first',
+      history: [{ role: 'user' as const, text: 'Actual pending job result', dataClass: 'ordinary' as const }] };
+    const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory })).open(input, control());
+    t.after(() => session.close());
+    const events = session.events[Symbol.asyncIterator]();
+    input.opening = 'user_first'; // Opening, like history, is captured before credentials or handshake.
+    await f.frame(1); f.send({ setupComplete: {} }); await session.ready; await f.frame(2);
+    assert.deepEqual(f.frames[1], { clientContent: { turns: [{ role: 'user', parts: [{ text: 'Actual pending job result' }] }], turnComplete: opening === 'model_first' } });
+    assert.equal((await events.next()).value?.type, 'ready');
+    if (opening === 'model_first') {
+      // The provider fixture responds to the completed opening turn without any microphone frame.
+      f.send({ serverContent: { modelTurn: { parts: [audio()] }, outputTranscription: { text: 'Here is the actual result.', finished: true }, generationComplete: true, turnComplete: true } });
+      const firstTurn = [];
+      for (;;) {
+        const next = await events.next(); assert.equal(next.done, false);
+        firstTurn.push(next.value);
+        if (next.value?.type === 'turnComplete') break;
+      }
+      assert.ok(firstTurn.some(event => event?.type === 'audio'));
+      assert.ok(firstTurn.some(event => event?.type === 'outputTranscription' && event.text === 'Here is the actual result.'));
+      assert.equal(f.frames.length, 2, 'no audio input or nudge message starts the opening turn');
+    }
+  }
+});
+
+test('invalid opening modes are refused before credentials or dispatch', t => {
+  let credentials = 0;
+  const adapter = new GeminiLiveVoiceAdapter(options({ credentials: { resolve: async () => { credentials++; return CANARY; } } }));
+  for (const opening of ['invalid', null, false]) {
+    assert.throws(() => {
+      const session = adapter.open({ ...request(), opening } as unknown as ReturnType<typeof request>, control());
+      t.after(() => session.close());
+    }, code('invalid_request'));
+  }
+  assert.equal(credentials, 0);
+});
+
 test('wire setup/history snapshots, readiness, PCM and three independent output boundaries', async t => {
   const f = await fixture(t);
   const settings = options({ socketFactory: f.socketFactory });

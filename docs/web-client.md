@@ -197,3 +197,30 @@ browser/host/SQLite/compiler/Gemini adapter with synthetic ordinary input and a
 trusted controlled transport, not live Gemini. Hardware-GPU desktop and 375px
 captures are acceptance artifacts, not native/audio or production reachability
 claims.
+
+## Live Naya surface in the shared page (WEB-D / issues #85, #91)
+
+The shared page keeps the Vicuna-derived default orb visible in every conversation
+state and now reflects the read-only live projection. `src/live-view.ts` renders a
+truthful state label in an `aria-live` region (idle, recording, thinking, speaking,
+ended, error), the input and output transcription lines as they arrive, and the
+newest accepted `toolResult` as sanitized Markdown with clickable source links.
+The label never claims that speech was heard or a task finished beyond what the
+projection says; an error state says only that Naya reported an error.
+
+`src/markdown.ts` is a dependency-free renderer for headings, paragraphs, bold,
+italics, lists, code spans/blocks and links. Every model string is HTML-escaped,
+only `http:` and `https:` links become anchors (`target="_blank"`,
+`rel="noopener noreferrer"`), and no raw HTML passes through. `src/api.ts` and
+`src/protocol.ts` add the typed client for `GET /api/v1/live/current[?cursor=n]`
+(same-origin cookie, no bearer). `src/main.ts` polls at 1 Hz while the projection
+is active and every 4 s while idle, and pauses while the document is hidden; the
+orb maps recording/thinking/speaking to its listening/thinking/speaking postures
+through the existing orb API and honours `prefers-reduced-motion`.
+
+The projection route is provided by the live service wagon. Until it exists the
+route 404s and the page keeps its last honest state rather than inventing one.
+The unit tests are `node --test test/markdown.test.ts test/live-view.test.ts`, run
+by `npm --prefix web run check` before the shared-renderer browser pass, which adds
+a fixture-served Interface 3 payload asserting the orb is in speaking mode and a
+rendered source anchor exists.

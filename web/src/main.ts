@@ -1,8 +1,9 @@
 import './style.css';
 import { ConnectedView } from './connected';
 import { Orb, type VoiceState } from './orb';
-import { ApiError, request, pair, demoMode, onAuthorityChanged, clearAuthority, restoreSession, logout } from './api';
-import type { Session, Entry, Commitment, CommitmentDetail, Plan, Recall, Status } from './protocol';
+import { ApiError, request, pair, demoMode, onAuthorityChanged, clearAuthority, restoreSession, logout, fetchLive } from './api';
+import { liveMarkup, liveVoiceState, liveDelay, mergeLive } from './live-view';
+import type { Session, Entry, Commitment, CommitmentDetail, Plan, Recall, Status, LiveCurrent } from './protocol';
 
 type Tab = 'Conversation' | 'Today' | 'Memory' | 'Settings';
 const root = document.querySelector<HTMLDivElement>('#app')!;
@@ -10,6 +11,7 @@ const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 const tabs: Tab[] = ['Conversation', 'Today', 'Memory', 'Settings'];
 let tab: Tab = 'Conversation';
 let orb: Orb | undefined;
+let appliedOrbState: VoiceState | undefined;
 let status: Status | undefined;
 const connectedView = new ConnectedView(() => orb?.setState(orbState()));
 let connection: 'Connecting' | 'Connected' | 'Disconnected' | 'Offline' | 'Pair this browser' = 'Connecting';
@@ -21,6 +23,8 @@ let notice = '', error = '', busy = false, readBusy = false, pairingBusy = false
 let pairingRequired = false, sessionMore = false, entriesMore = false;
 let controller: AbortController | undefined;
 let pollTimer: ReturnType<typeof setTimeout> | undefined, backoff = 30000;
+let live: LiveCurrent | undefined;
+let liveTimer: ReturnType<typeof setTimeout> | undefined;
 let readGeneration = 0;
 const e = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
 const datetime = (value: string | null) => value ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value)) : 'No due date';
@@ -41,6 +45,7 @@ function entryMarkup(entry: Entry) { return `<article class="entry ${entry.role}
 function orbState(): VoiceState {
   if(connection==='Offline'||connection==='Disconnected'||pairingRequired)return 'DISCONNECTED';
   if(connection==='Connecting')return 'CONNECTING';
+  if(live && live.state!=='idle')return liveVoiceState(live.state);
   if(busy||connectedView.active)return 'PROCESSING';
   if(error)return 'ERROR';
   return 'CONNECTED';
@@ -52,7 +57,7 @@ function orbMarkup() {
 }
 function conversation() {
   return `<section class="page-heading"><div><p class="eyebrow">SPACE TO THINK</p><h1>A little clarity.</h1><p>Put it into words. We’ll keep what matters.</p></div><button id="new-conversation" class="secondary" ${disabled(busy)}>New conversation</button></section>
-  ${orbMarkup()}<div class="conversation-grid"><aside class="panel conversations" aria-label="Conversations"><h2>Your conversations</h2>${sessions.length ? sessions.map(s => `<button data-session="${e(s.id)}" class="session ${session?.id === s.id ? 'selected' : ''}"><strong>${e(s.title)}</strong><small>${e(datetime(s.startedAt))}</small></button>`).join('') : '<p class="muted">No conversations yet.</p>'}${sessionMore ? '<p class="muted">More conversations are available in the service. This view shows the first page.</p>' : ''}</aside>
+  ${orbMarkup()}${liveMarkup(live)}<div class="conversation-grid"><aside class="panel conversations" aria-label="Conversations"><h2>Your conversations</h2>${sessions.length ? sessions.map(s => `<button data-session="${e(s.id)}" class="session ${session?.id === s.id ? 'selected' : ''}"><strong>${e(s.title)}</strong><small>${e(datetime(s.startedAt))}</small></button>`).join('') : '<p class="muted">No conversations yet.</p>'}${sessionMore ? '<p class="muted">More conversations are available in the service. This view shows the first page.</p>' : ''}</aside>
   <section class="panel thread" aria-label="Conversation">${sessions.length ? `<div class="mobile-conversations"><label for="conversation-select">Choose a conversation</label><select id="conversation-select"><option value="">Start a new conversation</option>${sessions.map(s=>`<option value="${e(s.id)}" ${session?.id===s.id?'selected':''}>${e(s.title)}</option>`).join('')}</select></div>` : ''}<div class="thread-heading"><span class="dot"></span><h2>${e(session?.title ?? 'Start where you are')}</h2></div>
   <div class="entries">${entries.length ? entries.map(entryMarkup).join('') : `<div class="empty"><span class="empty-icon" aria-hidden="true">✳</span><h3>What’s on your mind?</h3><p>Save a thought, make a plan, or pick up a conversation.</p></div>`}${entriesMore ? '<p class="muted">There are more messages in this conversation. This view shows the first page.</p>' : ''}</div>
   <form id="message-form" class="composer"><label for="message">Local note · not sent to a model</label><textarea id="message" rows="3" maxlength="12000" placeholder="A thought, a next step, a thing to remember…">${e(messageDraft)}</textarea><div class="composer-foot"><small>${status?.model.configured ? 'Save a message, or ask Didi for help.' : 'No model connected. You can still save messages and commitments.'}</small><div class="button-row"><button type="submit" ${disabled(!writable())}>${busy ? 'Working…' : 'Save message'}</button><button type="button" id="ask-didi" class="secondary" disabled title="Start an explicitly disclosed connected conversation below">Ask Didi</button></div></div></form>
@@ -89,7 +94,7 @@ function render() {
   bind();
   connectedView.attach();
   const canvas=document.getElementById('didi-orb') as HTMLCanvasElement | null;
-  if(canvas)orb=new Orb(canvas,orbState());
+  if(canvas)orb=new Orb(canvas,appliedOrbState=orbState());
   if (focusId) { const next=document.getElementById(focusId) as HTMLInputElement | HTMLTextAreaElement | null; next?.focus({preventScroll:true}); if(selection && next && selection[0]!==null) next.setSelectionRange(selection[0],selection[1]); }
 }
 function button(id: string, action: () => void) { document.getElementById(id)?.addEventListener('click', action); }
@@ -179,12 +184,29 @@ async function connect(background=false) {
     const current=await request<Status>('/status',{signal:AbortSignal.timeout(8000)});status=current;connection='Connected';pairingRequired=false;backoff=30000;
     if(!background){await loadTab();await connectedView.refresh(current.assistantId);}
   } catch(err){error=failure(err);if(!pairingRequired)connection='Disconnected';backoff=Math.min(backoff*2,120000);}
-  render();schedulePoll();
+  render();schedulePoll();void pollLive();
 }
 function schedulePoll(){if(pollTimer)clearTimeout(pollTimer);if(!document.hidden&&!pairingRequired)pollTimer=setTimeout(()=>void connect(true),backoff);}
+// Live projection poll: 1 Hz while active, 4 s while idle, paused while hidden. The route is W-B's;
+// a missing or failed route leaves the last honest state and never fabricates one.
+async function pollLive(){
+  liveTimer=undefined;
+  if(document.hidden||connection!=='Connected')return;
+  try{const next=await fetchLive(live?.cursor);live=mergeLive(live,next);paintLive();}
+  catch(err){if(err instanceof ApiError&&err.status===404){live=undefined;paintLive();}}
+  finally{scheduleLive();}
+}
+function scheduleLive(){
+  if(liveTimer)clearTimeout(liveTimer);liveTimer=undefined;
+  if(liveDelay(live?.state,document.hidden)!==undefined&&connection==='Connected')liveTimer=setTimeout(()=>void pollLive(),liveDelay(live?.state,document.hidden));
+}
+function paintLive(){
+  const panel=document.getElementById('live-panel');if(panel)panel.outerHTML=liveMarkup(live);
+  const next=orbState();if(next!==appliedOrbState){appliedOrbState=next;orb?.setState(next);}
+}
 onAuthorityChanged(()=>{connectedView.reset();status=undefined;sessions=[];entries=[];session=undefined;plan=undefined;recall=undefined;recent=[];connection='Disconnected';});
-window.addEventListener('offline',()=>{connectedView.detach();connection='Offline';if(pollTimer)clearTimeout(pollTimer);render();});
+window.addEventListener('offline',()=>{connectedView.detach();connection='Offline';if(pollTimer)clearTimeout(pollTimer);if(liveTimer)clearTimeout(liveTimer);render();});
 window.addEventListener('online',()=>void connect());
-document.addEventListener('visibilitychange',()=>{if(document.hidden){if(pollTimer)clearTimeout(pollTimer);}else{void connect(true);}});
+document.addEventListener('visibilitychange',()=>{if(document.hidden){if(pollTimer)clearTimeout(pollTimer);if(liveTimer)clearTimeout(liveTimer);}else{void connect(true);}});
 if('serviceWorker' in navigator && import.meta.env.PROD)void navigator.serviceWorker.register('/sw.js').catch(()=>{ /* Shell availability is optional; never imply offline saving. */ });
 render();void connect();

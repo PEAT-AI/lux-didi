@@ -8,12 +8,31 @@ import Darwin
         guard value else { throw NSError(domain: "LifecycleProof: " + label, code: 1) }
         print("PASS: \(label)")
     }
+    // R60 synthetic companion-only diagnostic. One JSONL record per validation stage, written into the
+    // retained proof directory (argv[2]) so a failing fixture records which stage rejected the node and
+    // the record survives fixture cleanup. Synthetic case labels, relative node path, nodeMajor, node
+    // kind/mode booleans and stage status only: no environment, no stdout content, no credentials and no
+    // path outside the owned fixture. Diagnostic only: it changes no error, timing, guard or child argv.
+    static let diagnosticURL: URL? = CommandLine.arguments.count > 2
+        ? URL(fileURLWithPath: CommandLine.arguments[2]).appendingPathComponent("companion-diagnostic.jsonl") : nil
+    static func diagnose(_ stage: String, _ extra: [String: Any] = [:]) {
+        guard let url = diagnosticURL,
+              let data = try? JSONSerialization.data(withJSONObject: extra.merging(["stage": stage]) { _, new in new },
+                                                     options: [.sortedKeys]) else { return }
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: url.path) { fm.createFile(atPath: url.path, contents: nil) }
+        guard let handle = try? FileHandle(forWritingTo: url) else { return }
+        handle.seekToEndOfFile(); handle.write(data); handle.write(Data("\n".utf8)); try? handle.close()
+    }
     static func run(node: String) async throws {
         let started = Date()
         let fm = FileManager.default
         let root = fm.temporaryDirectory.appendingPathComponent("didi-lifecycle-" + UUID().uuidString)
         try fm.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let service = "ai.peat.lux-didi.proof." + UUID().uuidString
+#if COMPANION_TEST
+        NativeServiceSupervisor.diagnosticSink = { record in diagnose("supervisor:probe", record) }
+#endif
         var accounts: [String] = []
         var children: [NativeServiceSupervisor] = []
         defer {
@@ -39,6 +58,13 @@ import Darwin
             let bundledNode = macos.appendingPathComponent("node")
             do { try fm.linkItem(atPath: realNode.path, toPath: bundledNode.path) }
             catch { try fm.copyItem(atPath: realNode.path, toPath: bundledNode.path) }
+            var staged = stat()
+            let stagedStatOK = lstat(bundledNode.path, &staged) == 0
+            diagnose("fixture:node-staged", ["case": mode, "relativeNodePath": "Contents/MacOS/node", "nodeMajor": 26,
+                "statOK": stagedStatOK, "isSymlink": stagedStatOK && (staged.st_mode & S_IFMT) == S_IFLNK,
+                "isRegular": stagedStatOK && (staged.st_mode & S_IFMT) == S_IFREG,
+                "ownerExecutable": stagedStatOK && (staged.st_mode & 0o100) != 0,
+                "groupOrWorldWritable": stagedStatOK && (staged.st_mode & 0o022) != 0])
             // The verification launch runs with cwd /, so resolve the fixture from
             // the source root the producer publishes rather than the process cwd.
             // A missing root is a clear verification failure, not a silent fallback.
@@ -52,7 +78,14 @@ import Darwin
             manifest.merge(changes) { _, new in new }
             try JSONSerialization.data(withJSONObject: manifest).write(to: resources.appendingPathComponent("didi-runtime.json"))
             let state = state ?? root.appendingPathComponent("state-" + id)
-            return (try InstalledRuntime.load(resources: resources)!, state)
+            do {
+                let loaded = try InstalledRuntime.load(resources: resources)
+                diagnose("fixture:runtime-load", ["case": mode, "loaded": loaded != nil])
+                return (loaded!, state)
+            } catch {
+                diagnose("fixture:runtime-load", ["case": mode, "loaded": false])
+                throw error
+            }
         }
         func supervisor(_ setup: (InstalledRuntime, URL)) -> NativeServiceSupervisor {
             let result = NativeServiceSupervisor(runtime: setup.0, proofState: setup.1, proofCredentialService: service)

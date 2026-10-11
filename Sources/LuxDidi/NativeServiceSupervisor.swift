@@ -157,15 +157,41 @@ struct OwnedServiceConnection {
     func isCurrent(_ candidate: OwnedServiceConnection) -> Bool {
         isRunning && connection?.nonce == candidate.nonce && child?.pid == candidate.pid
     }
+#if COMPANION_TEST
+    // R60 synthetic companion-only diagnostic sink. Present only in the companion fixture build
+    // (-D COMPANION_TEST). It records probe stage labels and booleans and changes no public error,
+    // timing, guard, child argument, resource ownership or release path. No environment, no stdout
+    // content, no credentials and no path outside the owned fixture are recorded.
+    static var diagnosticSink: (([String: Any]) -> Void)?
+#endif
     private func probeNode() async throws {
         let probe = OwnedServiceChild()
+#if COMPANION_TEST
+        var stage = "probe-launch"
+#endif
         do {
             try probe.launch(executable: runtime.node, arguments: ["--input-type=module", "-e", "import {DatabaseSync} from 'node:sqlite'; const db=new DatabaseSync(':memory:'); db.close(); process.stdout.write(JSON.stringify({major:Number(process.versions.node.split('.')[0]),sqlite:true})+'\\n');"])
+#if COMPANION_TEST
+            stage = "probe-first-frame"
+#endif
             let data = try await probe.firstFrame(timeout: 3_000_000_000)
+#if COMPANION_TEST
+            let parsedObject = try? JSONSerialization.jsonObject(with: data)
+            let parsed = parsedObject as? [String: Any]
+            Self.diagnosticSink?(["stage": "probe-first-frame", "bytes": data.count, "parsed": parsed != nil,
+                "majorMatches": (parsed?["major"] as? Int) == runtime.nodeMajor,
+                "sqliteTrue": (parsed?["sqlite"] as? Bool) == true])
+            stage = "probe-guard"
+#endif
             guard let value = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                   value["major"] as? Int == runtime.nodeMajor, value["sqlite"] as? Bool == true else { throw NativeServiceError.invalidNode }
             await probe.stop()
-        } catch { await probe.stop(); throw NativeServiceError.invalidNode }
+        } catch {
+#if COMPANION_TEST
+            Self.diagnosticSink?(["stage": "probe-failed", "failedAt": stage])
+#endif
+            await probe.stop(); throw NativeServiceError.invalidNode
+        }
     }
     private func unavailable(_ owner: OwnedServiceChild) {
         guard child === owner, state != .stopped else { return }

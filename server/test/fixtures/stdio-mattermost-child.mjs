@@ -12,6 +12,8 @@ const WRITES = ['mattermost_post_message', 'mattermost_react', 'mattermost_edit_
 const posts = [
   { channel: 'town-square', author: 'Rob', time: '2026-10-11T10:00:00Z', text: 'Standup at ten', permalink: 'https://chat.peat-cloud.com/team/pl/abcdef1234567890abcdefghij' },
   { channel: 'town-square', author: 'Dana', time: '2026-10-11T10:01:00Z', text: 'On it', permalink: 'https://chat.peat-cloud.com/team/pl/0987654321fedcba0987654321' },
+  // Longer than the 600-character per-field bound so the projection clip is exercised.
+  { channel: 'town-square', author: 'Rob', time: '2026-10-11T10:02:00Z', text: 'L'.repeat(700), permalink: 'https://chat.peat-cloud.com/team/pl/longbody0000000000000000000000' },
 ];
 
 const server = new Server({ name: 'stdio-mattermost-fixture', version: '1' }, { capabilities: { tools: {} } });

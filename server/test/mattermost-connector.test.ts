@@ -9,7 +9,7 @@ import { McpRegistry } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import type { EndpointConfig, McpPort } from '../adapters/mcp/port.js';
 import { createMattermostReader, MATTERMOST_AUTH_NEEDED, MATTERMOST_TOOLS } from '../connectors/index.js';
-import { mattermostToolStatus, projectMattermostResult } from '../tools/mattermost.js';
+import { mattermostToolStatus, projectMattermostResult, MATTERMOST_FIELD_CHARS } from '../tools/mattermost.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const child = join(here, 'fixtures', 'stdio-mattermost-child.mjs');
@@ -64,7 +64,9 @@ test('a long message body is clipped to 600 characters per field', async t => {
   const projected = projectMattermostResult(f.adapter, result);
   assert.equal(projected.ok, true);
   if (!projected.ok) return;
-  assert.ok(projected.projection.text.length > 0);
+  const long = 'L'.repeat(700);
+  assert.ok(projected.projection.text.includes(`${long.slice(0, MATTERMOST_FIELD_CHARS)}...`), 'the bound must clip the long body to 600 characters');
+  assert.equal(projected.projection.text.includes(long), false, 'the unbounded body must never appear');
 });
 
 test('only the read envelope is eligible; a granted writer refuses the whole call', async t => {

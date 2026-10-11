@@ -61,6 +61,34 @@ test('fixture SDK GET establishes headers and forwards a live chunk before EOF, 
   }
 });
 
+test('fixture SDK GET close after a fulfilled read suppresses writes and settles without a future drain', async () => {
+  const reading = barrier(); const cancelled = barrier(); let cancellationCount = 0;
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  const body = new ReadableStream<Uint8Array>({
+    start(value) { controller = value; },
+    pull() { void reading.pause(); reading.release(); },
+    cancel() { cancellationCount++; void cancelled.pause(); cancelled.release(); },
+  });
+  const sink = sdkResponseSink();
+  const bridging = bridgeSdkResponse('GET', sink.res, new Response(body));
+  try {
+    await reading.entered;
+    controller.enqueue(Buffer.from('must not write after close'));
+    sink.res.emit('close'); // Same turn: fulfill read, then close before its await continuation.
+    await cancelled.entered;
+    assert.equal(sink.state.chunks.length, 0, 'A fulfilled read must not write after response close');
+    assert.equal(sink.res.listenerCount('drain'), 0, 'No drain waiter may be installed after close');
+    await bridging;
+    assert.equal(sink.state.ended, false); assert.equal(cancellationCount, 1);
+    assert.equal(body.locked, false); assert.equal(sink.res.listenerCount('close'), 0);
+  } finally {
+    // Release a broken implementation without waiting for a timeout or another close.
+    sink.res.emit('drain');
+    if (!cancellationCount) controller.close();
+    await bridging;
+  }
+});
+
 test('fixture SDK POST keeps finite response status, headers and bytes unchanged', async () => {
   const sink = sdkResponseSink(); const bytes = Buffer.from('{"jsonrpc":"2.0","id":1,"result":{}}');
   await bridgeSdkResponse('POST', sink.res, new Response(new Uint8Array(bytes), { status: 200, headers: { 'Content-Type': 'application/json' } }));

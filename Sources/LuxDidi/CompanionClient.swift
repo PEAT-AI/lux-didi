@@ -2,6 +2,8 @@ import Foundation
 import Security
 import LocalAuthentication
 
+public typealias NativeLiveRequestBuilder = @MainActor @Sendable (URL, String?) throws -> URLRequest
+
 struct ServiceDescriptor: Codable {
     let origin: String
     let credentialService: String
@@ -61,7 +63,7 @@ enum CompanionError: LocalizedError {
     }
 }
 
-private final class NoRedirect: NSObject, URLSessionTaskDelegate {
+private final class CompanionNoRedirect: NSObject, URLSessionTaskDelegate {
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
 }
@@ -76,7 +78,7 @@ struct SyntheticProofRecord {
 struct CaptureReceipt { let entryID: String; let sessionID: String }
 enum CaptureStatus: Equatable { case idle, sending, saved, cancelled, unknown, failed }
 
-@MainActor final class CompanionClient {
+@MainActor public final class CompanionClient {
     private(set) var descriptor: ServiceDescriptor
     private var credential: () throws -> String
     private var connectionGuard: () -> Bool
@@ -105,7 +107,7 @@ enum CaptureStatus: Equatable { case idle, sending, saved, cancelled, unknown, f
         config.httpCookieStorage = nil; config.httpShouldSetCookies = false
         config.urlCache = nil; config.requestCachePolicy = .reloadIgnoringLocalCacheData
         config.timeoutIntervalForRequest = 8; config.timeoutIntervalForResource = 12
-        session = URLSession(configuration: config, delegate: NoRedirect(), delegateQueue: nil)
+        session = URLSession(configuration: config, delegate: CompanionNoRedirect(), delegateQueue: nil)
     }
     // Only after new owned readiness. Keep pending UUID/body/epoch on restart;
     // transport replacement must never silently turn an uncertain send into a new one.
@@ -114,6 +116,22 @@ enum CaptureStatus: Equatable { case idle, sending, saved, cancelled, unknown, f
         self.descriptor = descriptor; self.credential = credential
         self.expectedEpoch = expectedEpoch; self.connectionGuard = connectionGuard
         cookie = nil; csrf = nil
+    }
+    /// Live requests share the current descriptor, keychain provider and readiness fence.
+    public func authenticatedRequestBuilder() -> (origin: URL, request: NativeLiveRequestBuilder) {
+        (descriptor.baseURL, { [weak self] url, authority in
+            guard let self, self.connectionGuard() else { throw CompanionError.unavailable }
+            guard self.descriptor.allows(url) else { throw CompanionError.invalidConfiguration }
+            if let expected = self.expectedEpoch, let authority, expected != authority {
+                throw CompanionError.invalidResponse
+            }
+            var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
+            request.setValue("Bearer " + (try self.credential()), forHTTPHeaderField: "Authorization")
+            if let epoch = authority ?? self.expectedEpoch {
+                request.setValue(epoch, forHTTPHeaderField: "x-didi-authority-epoch")
+            }
+            return request
+        })
     }
     private func request(_ path: String, method: String = "GET", body: [String: Any]? = nil, query: [URLQueryItem] = [],
                          bearer: Bool = true, page: Bool = false, key: String? = nil, authority: String? = nil) async throws -> ([String: Any], HTTPURLResponse) {

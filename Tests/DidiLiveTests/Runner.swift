@@ -1,4 +1,5 @@
 import Foundation
+@testable import DidiOwner
 
 struct Envelope<Value: Decodable>: Decodable { let data: Value }
 struct HostStatus: Decodable { let assistantId: String; let authorityEpoch: String }
@@ -156,6 +157,33 @@ struct GatedSockets: LiveSocketConnecting {
     func connect(_ binding: LiveSocketBinding) async throws -> any LiveSocket { try await GatedSocket(underlying.connect(binding), gate) }
 }
 
+actor ScriptedSocket: LiveSocket {
+    private var frames: [LiveFrame]
+    private(set) var inputs: [Data] = []
+    init(_ frames: [LiveFrame]) { self.frames = frames }
+    func receive() throws -> LiveFrame {
+        guard !frames.isEmpty else { throw LiveClientError.transport }
+        return frames.removeFirst()
+    }
+    func sendPCM(_ data: Data) { inputs.append(data) }
+    func sendControl(_ command: LiveControl) {}
+    func cancel() { frames = [] }
+}
+struct FixedSockets: LiveSocketConnecting {
+    let socket: ScriptedSocket
+    func connect(_ binding: LiveSocketBinding) async throws -> any LiveSocket { socket }
+}
+actor GatedPlaybackSink: LiveAudioSink {
+    let gate: Gate
+    init(_ gate: Gate) { self.gate = gate }
+    func write(_ data: Data) async { await gate.wait() }
+    func flush() {}
+}
+struct ScriptedSockets: LiveSocketConnecting {
+    let frames: [LiveFrame]
+    func connect(_ binding: LiveSocketBinding) async throws -> any LiveSocket { ScriptedSocket(frames) }
+}
+
 func until(_ condition: @escaping @Sendable () async -> Bool) async throws {
     let clock = ContinuousClock(); let deadline = clock.now + .seconds(3)
     while !(await condition()) {
@@ -222,6 +250,65 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             print("PASS production transport eight local header/destination/path refusals with zero attach")
             record("guards")
 
+            let (companion, nativeHTTP) = try await MainActor.run {
+                let descriptor = try ServiceDescriptor(origin: fixture.origin, credentialService: "synthetic", credentialAccount: "fixture")
+                let companion = CompanionClient(descriptor: descriptor, credential: { fixture.token }, expectedEpoch: fixture.authorityEpoch)
+                return (companion, NativeLiveOperatorHTTP(authority: companion.authenticatedRequestBuilder()))
+            }
+            let nativeIntent = try await nativeHTTP.beginIntent()
+            let nativeStatus = try await nativeHTTP.status(for: nativeIntent)
+            try require(nativeStatus.authorityEpoch == fixture.authorityEpoch, "native status freezes authority epoch")
+            let nativeKey = UUID().uuidString.lowercased()
+            let nativeSnapshot = try await nativeHTTP.create(for: nativeIntent, key: nativeKey)
+            try require(nativeSnapshot.idempotencyKey == nativeKey, "native create idempotency envelope")
+            _ = try await nativeHTTP.snapshot(sessionID: nativeSnapshot.liveSessionId, for: nativeIntent)
+            _ = try await nativeHTTP.journal(sessionID: nativeSnapshot.liveSessionId, cursor: 0, for: nativeIntent)
+            let nativeRequest = try await nativeHTTP.request(for: LiveSocketBinding(origin: nativeIntent.origin,
+                sessionID: nativeSnapshot.liveSessionId, authorityEpoch: nativeIntent.authorityEpoch, profileIdentity: nativeIntent.profileIdentity))
+            let nativeHeaders = Set((nativeRequest.allHTTPHeaderFields ?? [:]).keys.map { $0.lowercased() })
+            try require(nativeHeaders == ["authorization", "x-didi-authority-epoch", "x-didi-live-profile"] && nativeRequest.url?.scheme == "ws", "native audio exactly three pinned headers")
+            try await nativeHTTP.revoke(sessionID: nativeSnapshot.liveSessionId, for: nativeIntent)
+            let nativeTerminal = try await nativeHTTP.snapshot(sessionID: nativeSnapshot.liveSessionId, for: nativeIntent)
+            try require(nativeTerminal.terminal?.state == .revoked, "native revoke and snapshot routes")
+            let builder = companion.authenticatedRequestBuilder().request
+            var staleEpochRefused = false
+            do { _ = try builder(nativeIntent.origin.appendingPathComponent("api/v1/status"), "stale") }
+            catch { staleEpochRefused = true }
+            try require(staleEpochRefused, "native builder refuses stale expected epoch")
+            print("PASS native operator status/create/snapshot/journal/revoke envelopes and exactly pinned audio headers")
+
+            let playbackGate = Gate(), duplexHTTP = TestHTTP(fixture)
+            let duplexSocket = ScriptedSocket([
+                .marker(LiveMarker(kind: .ready, sequence: 1, journalSequence: 0, text: nil, finished: nil, value: nil)),
+                .pcm(Data([1, 0]))
+            ])
+            let duplex = LiveSessionCoordinator(http: duplexHTTP, sockets: FixedSockets(socket: duplexSocket), sink: GatedPlaybackSink(playbackGate))
+            await duplex.begin(frozen)
+            try await until { await playbackGate.arrivals == 1 }
+            let duplexID = await duplex.sessionID
+            try await duplex.sendPCM(Data(repeating: 0, count: 640))
+            try await duplex.sendPCM(Data(repeating: 1, count: 640))
+            try require(await duplexSocket.inputs.count == 2, "capture PCM keeps flowing while playback write is suspended")
+            try require(await duplex.sessionID == duplexID, "duplex capture uses the same session")
+            await playbackGate.release(); await duplex.stop(); await duplexHTTP.finish()
+            print("PASS full-duplex capture interleaves with suspended playback write")
+
+            // Silent scripted output proves ordering, including invalidation on a terminal frame.
+            let scriptedHTTP = TestHTTP(fixture), scriptedSink = SilentSink()
+            let scripted = LiveSessionCoordinator(http: scriptedHTTP, sockets: ScriptedSockets(frames: [
+                .marker(LiveMarker(kind: .ready, sequence: 1, journalSequence: 0, text: nil, finished: nil, value: nil)),
+                .pcm(Data([1, 0])), .pcm(Data([2, 0])),
+                .marker(LiveMarker(kind: .interrupted, sequence: 2, journalSequence: 0, text: nil, finished: nil, value: nil)),
+                .pcm(Data([3, 0])), .terminal(LiveTerminal(state: .closed), complete: true)
+            ]), sink: scriptedSink)
+            await scripted.begin(frozen)
+            try await until { await scriptedSink.events.count == 6 }
+            try require(await scriptedSink.events == ["flush", "pcm:1", "pcm:2", "flush", "pcm:3", "flush"],
+                        "PCM, interrupted and terminal flush order")
+            try require(await scriptedSink.queued.isEmpty, "terminal discards queued playback")
+            await scripted.stop(); await scriptedHTTP.finish()
+            print("PASS silent scripted PCM/interrupted/terminal output ordering")
+
             // Fresh coordinator does zero work. Loss happens AFTER actual server commit; explicit retry keeps exact key/meaning.
             let http = TestHTTP(fixture); let sockets = CountedSockets(fixture); let sink = SilentSink()
             let client = LiveSessionCoordinator(http: http, sockets: sockets, sink: sink)
@@ -262,6 +349,7 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             try require(await sink.queued.allSatisfy { $0.first == 3 }, "old queued PCM invalidated, new PCM valid")
             try await client.endAudioStream()
             await client.revoke()
+            try require(await sink.queued.isEmpty, "revoke invalidates queued playback before returning")
             let terminal = try await client.readSnapshot()
             try require(terminal.terminal?.state == .revoked, "durable revoke")
             let page = try await client.readJournal()
@@ -322,7 +410,8 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             record("pins")
 
             let lateHTTP = TestHTTP(fixture); let lateSockets = CountedSockets(fixture); let gate = Gate()
-            let late = LiveSessionCoordinator(http: lateHTTP, sockets: lateSockets, sink: SilentSink())
+            let lateSink = SilentSink()
+            let late = LiveSessionCoordinator(http: lateHTTP, sockets: lateSockets, sink: lateSink)
             await lateHTTP.configure(gate: gate)
             let old = Task { await late.begin(frozen) }
             try await until { await gate.arrivals == 1 }
@@ -333,8 +422,11 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             let lateState = await late.state
             try require(await late.sessionID == newID && lateState == .active, "late canceled operation cannot replace new explicit begin")
             try require(await lateSockets.attempts == 1, "old canceled begin has zero create/attach")
+            // Seed the sink boundary without changing the parent fixture's exact wire-input budget.
+            await lateSink.write(Data([1, 0]))
             await lateSockets.disconnect()
             try await until { if case .outcomeUnknown = await late.state { return true }; return false }
+            try await until { await lateSink.queued.isEmpty }
             _ = try await late.readSnapshot()
             try require(await lateSockets.attempts == 1, "explicit snapshot recovery does not reattach")
             await lateHTTP.configure(failRead: true)
@@ -355,7 +447,9 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             try require(staleRead, "late explicit read after new begin is fenced")
             let newestState = await late.state
             try require(await late.sessionID == newestID && newestState == .active, "old terminal snapshot cannot overwrite new active generation")
+            await lateSink.write(Data([1, 0]))
             await late.close()
+            try require(await lateSink.queued.isEmpty, "close invalidates queued playback before returning")
             let closeState = await late.state
             switch closeState {
             case .terminal, .outcomeUnknown: break

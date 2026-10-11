@@ -109,7 +109,11 @@ public enum LiveClientState: Sendable, Equatable {
 
 /// No preference, native REST/bootstrap, credential owner, device, UI, persistence, or reconnect binding.
 public actor LiveSessionCoordinator {
-    public private(set) var state: LiveClientState = .idle
+    public let events: AsyncStream<LiveClientState>
+    private let stateEvents: AsyncStream<LiveClientState>.Continuation
+    public private(set) var state: LiveClientState = .idle {
+        didSet { stateEvents.yield(state) }
+    }
     public private(set) var generation: UInt64 = 0
     public private(set) var sessionID: String?
     private let http: any LiveOperatorHTTP
@@ -131,6 +135,7 @@ public actor LiveSessionCoordinator {
 
     public init(http: any LiveOperatorHTTP, sockets: any LiveSocketConnecting, sink: any LiveAudioSink) {
         self.http = http; self.sockets = sockets; self.sink = sink
+        (events, stateEvents) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(16))
     }
 
     /// The only entry that generates a new key. Replaces the previous operation, never resurrects it.
@@ -230,6 +235,7 @@ public actor LiveSessionCoordinator {
                 case .terminal(let terminal, _):
                     state = .terminal(terminal)
                     socket = nil
+                    try? await sink.flush()
                     await connection.cancel()
                     return
                 }
@@ -237,6 +243,7 @@ public actor LiveSessionCoordinator {
         } catch {
             guard generation == token, !Task.isCancelled, state == .attaching || state == .active else { return }
             state = .outcomeUnknown(safe(error, fallback: .transport)); socket = nil
+            try? await sink.flush()
             await connection.cancel()
         }
     }
@@ -280,11 +287,15 @@ public actor LiveSessionCoordinator {
         guard state != .idle, !settled else { return }
         guard let frozen = intent, let id = sessionID else {
             operation &+= 1; operationTask?.cancel(); receiveTask?.cancel()
-            state = .outcomeUnknown(.unavailable); return
+            state = .outcomeUnknown(.unavailable)
+            try? await sink.flush()
+            return
         }
         operation &+= 1; operationTask?.cancel(); receiveTask?.cancel()
         let token = generation, op = operation
         let connection = socket; socket = nil; state = .closing
+        try? await sink.flush()
+        guard current(token, op) else { await connection?.cancel(); return }
         do { try await connection?.sendControl(.close) } catch { /* snapshot remains authoritative */ }
         await connection?.cancel()
         guard current(token, op) else { return }
@@ -301,6 +312,7 @@ public actor LiveSessionCoordinator {
         operation &+= 1; operationTask?.cancel(); receiveTask?.cancel()
         let token = generation, op = operation
         let connection = socket; socket = nil; state = .closing
+        try? await sink.flush()
         await connection?.cancel()
         guard current(token, op) else { return }
         guard let frozen = intent, let id = sessionID else { state = .outcomeUnknown(.unavailable); return }

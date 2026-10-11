@@ -906,6 +906,28 @@ test('legacy null and unsupported accepted Live bindings refuse honestly before 
   }
 });
 
+test('Live answers a slow tool batch truthfully, continues the turn, and retains a durable pending result', async t => {
+  const scheduler = new DeadlineClock();
+  let finish!: () => void;
+  const slow = new Promise<void>(resolve => { finish = resolve; });
+  const h = await harness(t, { tools: true, scheduler, limits: { toolDeferralMs: 1000 }, beforeTool: () => slow });
+  const { session } = await attached(h);
+  h.f.send({ toolCall: { functionCalls: [{ id: 'slow1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
+  while (!h.calls.length) await tick();
+  h.advance(1000); scheduler.runDue();
+  await h.f.frame(2);
+  const response = h.f.frames[1] as { toolResponse: { functionResponses: { response: { status: string; jobId: string } }[] } };
+  assert.equal(response.toolResponse.functionResponses[0]!.response.status, 'in progress');
+  assert.ok(response.toolResponse.functionResponses[0]!.response.jobId);
+  assert.equal(h.owner.current().state, 'listening');
+  assert.equal(new LiveToolJobs(h.store, () => NOW).pending()[0]!.state, 'in_progress');
+  finish();
+  while (new LiveToolJobs(h.store, () => NOW).pending()[0]!.state === 'in_progress') await tick();
+  assert.equal(new LiveToolJobs(h.store, () => NOW).pending()[0]!.state, 'completed');
+  assert.equal(h.f.frames.length, 2, 'completion must not inject a late result into Gemini');
+  assert.equal(h.owner.lookupAuthority(session.liveSessionId)?.runId, session.liveSessionId);
+});
+
 test('Live accepts a frozen real tool snapshot and projects only result-gated Markdown', async t => {
   const h = await harness(t, { tools: true });
   const { session, attachment } = await attached(h);

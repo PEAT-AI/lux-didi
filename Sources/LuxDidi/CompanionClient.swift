@@ -76,7 +76,7 @@ struct SyntheticProofRecord {
 struct CaptureReceipt { let entryID: String; let sessionID: String }
 enum CaptureStatus: Equatable { case idle, sending, saved, cancelled, unknown, failed }
 
-@MainActor final class CompanionClient {
+@MainActor final class CompanionClient: OwnerProfileTransport {
     private(set) var descriptor: ServiceDescriptor
     private var credential: () throws -> String
     private var connectionGuard: () -> Bool
@@ -96,6 +96,7 @@ enum CaptureStatus: Equatable { case idle, sending, saved, cancelled, unknown, f
         var receipt: CaptureReceipt?
     }
     private var pending: Capture?
+    private var profileOwnerID: String?
     private(set) var captureStatus: CaptureStatus = .idle
     var captureReceipt: CaptureReceipt? { pending?.receipt }
     init(descriptor: ServiceDescriptor, credential: @escaping () throws -> String, expectedEpoch: String? = nil, connectionGuard: @escaping () -> Bool = { true }) {
@@ -144,6 +145,22 @@ enum CaptureStatus: Equatable { case idle, sending, saved, cancelled, unknown, f
         guard let envelope = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let value = envelope["data"] as? [String: Any] else { throw CompanionError.invalidResponse }
         return (value, http)
+    }
+    private func profileDocument(_ raw: [String: Any]) throws -> OwnerProfileDocumentView {
+        guard let bytes = try? JSONSerialization.data(withJSONObject: raw),
+              let value = try? JSONDecoder().decode(OwnerProfileDocumentView.self, from: bytes), value.valid,
+              profileOwnerID == nil || profileOwnerID == value.active.profile.ownerId else { throw CompanionError.invalidResponse }
+        profileOwnerID = value.active.profile.ownerId
+        return value
+    }
+    func readOwnerProfile() async throws -> OwnerProfileDocumentView {
+        let (value, _) = try await request("api/v1/owner-profile")
+        return try profileDocument(value)
+    }
+    func saveOwnerProfile(_ edits: OwnerProfileEdits, revision: String) async throws -> OwnerProfileDocumentView {
+        guard edits.valid else { throw CompanionError.rejected(400) }
+        let (value, _) = try await request("api/v1/owner-profile", method: "PUT", body: edits.body(revision: revision))
+        return try profileDocument(value)
     }
     func bootstrap() async throws -> HTTPCookie {
         // Only explicitly requested reconnect. No auto auth or mutation retry loop.

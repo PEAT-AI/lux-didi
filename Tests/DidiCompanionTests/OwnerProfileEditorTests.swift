@@ -1,16 +1,15 @@
 import AppKit
 import Foundation
 
-// Initial red checkpoint exercises the real native-to-host wire without requiring
-// a not-yet-implemented Swift type to compile. Rendered form assertions follow
-// once the independently reviewed editor interface is available.
+// Real protected-host wire, actual native field/actions, and deterministic failure UI.
+// Synthetic data only. The existing companion producer owns the hardware lease.
 @MainActor enum OwnerProfileEditorTests {
     private static func require(_ value: Bool, _ label: String) throws {
         guard value else { throw NSError(domain: "SyntheticPersonaEditor", code: 1,
             userInfo: [NSLocalizedDescriptionKey: label]) }
         print("PASS: persona editor \(label)")
     }
-    static func run(node: String) async throws {
+    static func run(node: String, proof: URL) async throws {
         guard let root = ProcessInfo.processInfo.environment["LUX_COMPANION_SOURCE_ROOT"] else {
             throw NSError(domain: "SyntheticPersonaEditorSetup", code: 1)
         }
@@ -57,5 +56,98 @@ import Foundation
         request.setValue(origin, forHTTPHeaderField: "Origin")
         let (_, denied) = try await session.data(for: request)
         try require([401, 403].contains((denied as? HTTPURLResponse)?.statusCode ?? 0), "native profile rejects Origin even with bearer")
+        let client = CompanionClient(descriptor: descriptor, credential: { token })
+        let editor = OwnerProfileEditor(client: client); editor.open(); await editor.operation?.value
+        try require(editor.window?.isVisible == true && editor.document?.valid == true, "actual native form is rendered from guarded client data")
+        try require(editor.nameField.stringValue == "Lux Didi" && !editor.publicBase.isEditable && !editor.activeContent.isEditable && !editor.savedContent.isEditable,
+                    "actual saved prepopulation and generic active saved readonly panes")
+        try require(editor.styleClass.titleOfSelectedItem == "Private" && editor.loreClass.titleOfSelectedItem == "Private"
+                    && editor.privacyChoice.state == .off && !editor.saveButton.isEnabled, "first save requires visible initially private choice")
+        try edit(editor, name: "Naya", character: "SYNTHETIC_CHARACTER_EDIT", about: "SYNTHETIC_ABOUT_EDIT")
+        editor.privacyChoice.performClick(nil)
+        try require(editor.saveButton.isEnabled, "actual field edits and explicit privacy confirmation enable save")
+        try snapshot(editor, proof.appendingPathComponent("persona-editor-draft.png"))
+        editor.saveButton.performClick(nil); await editor.operation?.value
+        let saved = try await client.readOwnerProfile()
+        try require(saved.saved.profile.displayName == "Naya" && saved.saved.profile.style?.text == "SYNTHETIC_CHARACTER_EDIT"
+                    && saved.saved.profile.lore?.text == "SYNTHETIC_ABOUT_EDIT" && saved.saved.profile.style?.dataClass == .privateData,
+                    "actual CompanionClient PUT persists all editable fields and classification")
+        try require(saved.active.profile.displayName == "Lux Didi" && saved.pendingActivation
+                    && editor.activeContent.string.contains("Lux Didi") && editor.savedContent.string.contains("Naya"), "save does not activate captured host and visible saved active content is truthful")
+        let path = directory.appendingPathComponent("state/owner-profile.json")
+        let permissions = try FileManager.default.attributesOfItem(atPath: path.path)[.posixPermissions] as? NSNumber
+        try require(permissions?.intValue == 0o600 && saved.saved.profile.ownerId == saved.active.profile.ownerId, "actual saved file is protected and stable owner ID is unchanged")
+        try snapshot(editor, proof.appendingPathComponent("persona-editor-saved.png"))
+        // Same native form/action with deterministic errors, not extra servers or timeout waits.
+        editor.close()
+        for (failure, marker, uncertain) in [(CompanionError.rejected(409), "Conflict", true),
+                                            (CompanionError.rejected(503), "uncertain", true),
+                                            (CompanionError.invalidResponse, "unknown", true),
+                                            (CompanionError.rejected(400), "validation", false),
+                                            (CompanionError.rejected(500), "could not", false),
+                                            (CompanionError.unavailable, "could not", false)] {
+            let transport = SyntheticProfileTransport(saved, failure)
+            let form = OwnerProfileEditor(client: transport); form.open(); await form.operation?.value
+            try edit(form, name: "Unsaved synthetic name", character: "SYNTHETIC_RETAIN_CHARACTER", about: "SYNTHETIC_RETAIN_ABOUT")
+            let draft = form.edits
+            form.saveButton.performClick(nil); await form.operation?.value
+            try require(form.edits == draft && form.notice.stringValue.contains(marker) && transport.saves == 1,
+                        "failure retains all unsaved fields and shows explicit outcome without automatic retry")
+            try require(form.saveButton.isEnabled == !uncertain, "unknown conflict or durability state requires intentional readback")
+            if uncertain {
+                form.readbackButton.performClick(nil); await form.operation?.value
+                try require(form.edits == draft && transport.reads == 2 && transport.saves == 1
+                            && form.savedContent.string.contains("Naya"), "readback exposes actual saved content while keeping unsaved fields")
+            }
+            form.reloadButton.performClick(nil)
+            try require(form.edits == draft && form.reloadButton.title.contains("Discard"), "reload cannot silently discard unsaved edits")
+            if marker == "uncertain" { try snapshot(form, proof.appendingPathComponent("persona-editor-readback.png")) }
+            form.reloadButton.performClick(nil); await form.operation?.value
+            try require(form.edits == saved.saved.profile.edits, "intentional confirmed reload returns actual saved fields")
+            form.close()
+        }
+        let reopened = OwnerProfileEditor(client: client); reopened.open(); await reopened.operation?.value
+        try require(reopened.nameField.stringValue == "Naya" && reopened.characterField.string == "SYNTHETIC_CHARACTER_EDIT",
+                    "reopened native editor loads actual saved content without activation")
+        try edit(reopened, name: "Second synthetic name", character: "SYNTHETIC_SECOND_CHARACTER", about: "SYNTHETIC_SECOND_ABOUT")
+        reopened.saveButton.performClick(nil); await reopened.operation?.value
+        try require(reopened.restoreButton.isEnabled, "second save exposes a real protected previous good copy")
+        reopened.restoreButton.performClick(nil)
+        try require(reopened.edits.displayName == "Naya" && reopened.notice.stringValue.contains("nothing has been restored"),
+                    "previous good action changes RAM fields only")
+        reopened.saveButton.performClick(nil); await reopened.operation?.value
+        try require((try await client.readOwnerProfile()).saved.profile.displayName == "Naya", "restoration uses ordinary revision guarded save")
+        try edit(reopened, name: "Never saved synthetic", character: "SYNTHETIC_CANCEL", about: "SYNTHETIC_CANCEL")
+        reopened.cancelButton.performClick(nil)
+        let afterClose = try await client.readOwnerProfile()
+        try require(reopened.document == nil && reopened.nameField.stringValue.isEmpty
+                    && afterClose.saved.profile.displayName == "Naya", "cancel discards volatile draft only and does not write")
     }
+    private static func edit(_ form: OwnerProfileEditor, name: String, character: String, about: String) throws {
+        form.nameField.selectText(nil)
+        guard let field = form.nameField.currentEditor() as? NSTextView else { throw NSError(domain: "SyntheticPersonaEditorUI", code: 1) }
+        field.insertText(name, replacementRange: NSRange(location: 0, length: field.string.utf16.count))
+        form.window?.makeFirstResponder(form.characterField)
+        form.characterField.insertText(character, replacementRange: NSRange(location: 0, length: form.characterField.string.utf16.count))
+        form.window?.makeFirstResponder(form.aboutField)
+        form.aboutField.insertText(about, replacementRange: NSRange(location: 0, length: form.aboutField.string.utf16.count))
+        form.window?.makeFirstResponder(nil)
+    }
+    private static func snapshot(_ form: OwnerProfileEditor, _ url: URL) throws {
+        guard let view = form.window?.contentView else { throw NSError(domain: "SyntheticPersonaEditorUI", code: 2) }
+        view.layoutSubtreeIfNeeded(); view.displayIfNeeded()
+        guard let image = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw NSError(domain: "SyntheticPersonaEditorUI", code: 3) }
+        view.cacheDisplay(in: view.bounds, to: image)
+        guard let data = image.representation(using: .png, properties: [:]), data.count > 1000 else { throw NSError(domain: "SyntheticPersonaEditorUI", code: 4) }
+        try data.write(to: url); try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        try require(image.pixelsWide > 500 && image.pixelsHigh > 500, "actual owned native form screenshot captured with synthetic fields only")
+    }
+}
+@MainActor private final class SyntheticProfileTransport: OwnerProfileTransport {
+    let document: OwnerProfileDocumentView
+    let failure: CompanionError
+    var reads = 0, saves = 0
+    init(_ document: OwnerProfileDocumentView, _ failure: CompanionError) { self.document = document; self.failure = failure }
+    func readOwnerProfile() async throws -> OwnerProfileDocumentView { reads += 1; return document }
+    func saveOwnerProfile(_ edits: OwnerProfileEdits, revision: String) async throws -> OwnerProfileDocumentView { saves += 1; throw failure }
 }

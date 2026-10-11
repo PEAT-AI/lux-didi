@@ -14,6 +14,7 @@ import Security
     let voice = NativeVoice()
     let notifications = NativeNotifications()
     private(set) var client: CompanionClient?
+    private var personaEditor: OwnerProfileEditor?
     private(set) var supervisor: NativeServiceSupervisor?
     private var submittedDraft: String?
     private(set) var installedProof: PreparedInstalledProof?
@@ -43,6 +44,14 @@ import Security
         } catch { self.error = CompanionError.invalidConfiguration.localizedDescription }
     }
     func refresh() async { voice.refresh(); notificationStatus = await notifications.capability() }
+    func openPersona() {
+        guard let client else { error = "Connect to the owned service before opening Persona."; return }
+        if let editor = personaEditor, editor.window?.isVisible == true { editor.window?.makeKeyAndOrderFront(nil); return }
+        let editor = OwnerProfileEditor(client: client)
+        personaEditor = editor
+        editor.onClose = { [weak self] in self?.personaEditor = nil }
+        editor.open()
+    }
     func reconnect() async {
         guard !connecting else { return }
         connecting = true; defer { connecting = false }
@@ -132,6 +141,7 @@ struct RootView: View {
                     Button("Stop") { model.stopRecording("Stopped by user") }
                         .disabled(voice.state.phase != .recording).accessibilityLabel("Stop recording")
                     Menu("Settings") {
+                        Button("Persona…") { model.openPersona() }.disabled(model.client == nil)
                         Button("Request microphone/speech permissions") { Task { await model.voice.requestPermissions() } }
                         Button("Reconnect service") { Task { await model.reconnect() } }
                         Button("Disconnect") { Task { await model.logout() } }

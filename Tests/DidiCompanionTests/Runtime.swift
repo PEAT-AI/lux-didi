@@ -63,7 +63,7 @@ import Darwin
         do {
             try InstalledProofTests.run()
             try await LifecycleProof.run(node: CommandLine.arguments[3])
-            try await OwnerProfileEditorTests.run(node: CommandLine.arguments[3])
+            try await OwnerProfileEditorTests.run(node: CommandLine.arguments[3], proof: URL(fileURLWithPath: CommandLine.arguments[1]))
             let config = try JSONSerialization.jsonObject(with: Data(contentsOf: ready)) as! [String: Any]
             let origin = "http://127.0.0.1:\(config["port"] as! Int)"
             let descriptor = try ServiceDescriptor(origin: origin, credentialService: "synthetic", credentialAccount: "fixture")

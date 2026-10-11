@@ -242,3 +242,29 @@ test('valid competing managed profile never rescues a missing, malformed or unsa
   await assert.rejects(startHost({ ...f.config, ownerProfilePath: explicit }), /invalid_profile/);
   assert.equal(await readFile(f.path, 'utf8'), managed);
 }));
+
+test('invalid previous-good copy is unavailable and cannot replace or silently rescue current', async () => fixture(async f => {
+  const initial = await f.get();
+  assert.equal((await f.request('PUT', { expectedRevision: initial.saved.revision, ...editable('Good current') })).status, 200);
+  const current = await f.get(), bytes = await readFile(f.path, 'utf8');
+  const previous = f.path + '.previous-good.json';
+  await writeFile(previous, JSON.stringify({ schemaVersion: 1, kind: 'profile', ownerId: 'synthetic-other-owner',
+    profileVersion: 'synthetic-invalid-previous', ...editable('Invalid previous') }), { mode: 0o600 });
+  assert.equal((await f.get()).previous, null);
+  const response = await f.request('PUT', { expectedRevision: current.saved.revision, ...editable('Must not replace') });
+  assert.equal(response.status, 400); assert.equal(await readFile(f.path, 'utf8'), bytes);
+  assert.deepEqual((await readdir(f.dataDir)).filter(n => n.endsWith('.tmp')), []);
+}));
+
+test('unsafe parent is rejected through read and write boundaries before changing valid profile', async () => fixture(async f => {
+  const initial = await f.get();
+  assert.equal((await f.request('PUT', { expectedRevision: initial.saved.revision, ...editable() })).status, 200);
+  const current = await f.get(), bytes = await readFile(f.path, 'utf8');
+  await chmod(f.dataDir, 0o755);
+  try {
+    assert.equal((await f.request()).status, 400);
+    const response = await f.request('PUT', { expectedRevision: current.saved.revision, ...editable('Unsafe parent') });
+    assert.equal(response.status, 400); assert.equal(await readFile(f.path, 'utf8'), bytes);
+    assert.deepEqual((await readdir(f.dataDir)).filter(n => n.endsWith('.tmp')), []);
+  } finally { await chmod(f.dataDir, 0o700); }
+}));

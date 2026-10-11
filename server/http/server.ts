@@ -1,4 +1,6 @@
 import { createServer } from 'node:http';
+import { ConfigError, parseJson } from '../config/files.js';
+import { OwnerProfileConflict, OwnerProfileWriteError, type OwnerProfileStore } from '../config/owner-profile-store.js';
 import type { IncomingMessage, ServerResponse, Server } from 'node:http';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { Store } from '../runtime/store.js';
@@ -20,14 +22,18 @@ function canonical(value: unknown): string {
   if (value !== null && typeof value === 'object') return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`).join(',')}}`;
   return JSON.stringify(value);
 }
-async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+async function readBody(req: IncomingMessage, strict = false): Promise<Record<string, unknown>> {
   if (req.headers['content-type'] !== 'application/json' && req.headers['content-type'] !== 'application/json; charset=utf-8') throw new ServiceError('BAD_REQUEST', 'JSON Content-Type required');
   const chunks: Buffer[] = []; let size = 0;
   for await (const chunk of req) { size += (chunk as Buffer).length; if (size > 65536) { req.resume(); throw new ServiceError('PAYLOAD_TOO_LARGE', 'Request body exceeds limit', 413); } chunks.push(chunk as Buffer); }
-  try { return object(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } catch (error) { if (error instanceof ServiceError) throw error; throw new ServiceError('BAD_REQUEST', 'Malformed JSON'); }
+  try {
+    const bytes = Buffer.concat(chunks), text = bytes.toString('utf8');
+    if (strict && !Buffer.from(text, 'utf8').equals(bytes)) throw new ServiceError('BAD_REQUEST', 'Malformed UTF-8 JSON');
+    return object(strict ? parseJson(text) : JSON.parse(text));
+  } catch (error) { if (error instanceof ServiceError) throw error; throw new ServiceError('BAD_REQUEST', 'Malformed JSON'); }
 }
 interface Principal { clientId: string; mode: 'bearer' | 'browser'; tokenHash?: string; csrfToken?: string }
-export interface ServiceOptions { ownerProfileStatus?: { status: 'default' | 'configured'; displayName: string }; store: Store; domain?: DomainPort; port?: number; now?: () => number; webRoot?: string; chat?: ChatPort; modelStatus?: ConnectedStatus; live?: LiveService }
+export interface ServiceOptions { ownerProfiles?: OwnerProfileStore; ownerProfileStatus?: { status: 'default' | 'configured'; displayName: string }; store: Store; domain?: DomainPort; port?: number; now?: () => number; webRoot?: string; chat?: ChatPort; modelStatus?: ConnectedStatus; live?: LiveService }
 export interface RunningService { server: Server; origin: string; close(): Promise<void> }
 export async function listenService(options: ServiceOptions): Promise<RunningService> {
   const { store, domain, chat, live } = options;
@@ -84,6 +90,26 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
         store.transaction(tx => { tx.run('DELETE FROM runtime_sessions WHERE expires_at<=?', [now()]); tx.run('INSERT INTO runtime_sessions VALUES (?,?,?,?)', [hash(token), randomUUID(), csrfToken, now() + 12 * 60 * 60 * 1000]); });
         res.setHeader('Set-Cookie', `didi_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200`);
         send(res, 200, success({ csrfToken })); return;
+      }
+      if (route.kind === 'owner-profile') {
+        operatorPrincipal(req, store, origin); // Never infer owner authority from a browser clientId.
+        if (!options.ownerProfiles) throw new ServiceError('NOT_FOUND', 'Owner editor is unavailable', 404);
+        try {
+          const document = route.mutation ? options.ownerProfiles.put(await readBody(req, true)) : options.ownerProfiles.get();
+          send(res, 200, success(document));
+        } catch (error) {
+          if (error instanceof ServiceError) throw error;
+          const conflict = error instanceof OwnerProfileConflict;
+          const uncertain = error instanceof OwnerProfileWriteError && error.uncertain;
+          const invalid = error instanceof ConfigError && error.code !== 'io_error';
+          send(res, conflict ? 409 : uncertain ? 503 : invalid ? 400 : 500, { error: {
+            code: conflict ? 'PROFILE_CONFLICT' : uncertain ? 'PROFILE_DURABILITY_UNCERTAIN' : invalid ? 'PROFILE_INVALID' : 'PROFILE_SAVE_FAILED',
+            message: conflict ? 'Saved profile changed. Reload intentionally; unsaved edits are not saved.'
+              : uncertain ? 'Save durability is uncertain. Read back before another save.'
+              : invalid ? 'Protected profile content or filesystem is invalid.' : 'Owner profile operation failed.',
+          }, requestId });
+        }
+        return;
       }
       // Live is operator-bearer only and must run before the generic cookie/Bearer principal so a
       // browser cookie/CSRF or any Origin gets 403 before the owner or credentials are touched.

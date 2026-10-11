@@ -1,4 +1,4 @@
-import { loadOwnerProfile } from '../config/owner-profile.js';
+import { OwnerProfileStore, type OwnerProfileTesting } from '../config/owner-profile-store.js';
 import { ConfigError } from '../config/files.js';
 import { homedir, platform } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -14,7 +14,7 @@ import { liveMigrations } from '../live/index.js';
 import { composeChat, type ModelTesting } from './connected.js';
 import { composeLive, type LiveTesting } from './live.js';
 
-export interface HostConfig { dataDir: string; webRoot: string; port?: number; descriptor?: string; configDir?: string; ownerProfilePath?: string; modelTesting?: ModelTesting; liveTesting?: LiveTesting; now?: () => number }
+export interface HostConfig { dataDir: string; webRoot: string; port?: number; descriptor?: string; configDir?: string; ownerProfilePath?: string; ownerProfileTesting?: OwnerProfileTesting; modelTesting?: ModelTesting; liveTesting?: LiveTesting; now?: () => number }
 export function defaultDataDir(): string {
   if (platform() === 'darwin') return join(homedir(), 'Library', 'Application Support', 'Lux Didi');
   if (platform() === 'win32') return join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'), 'Lux Didi');
@@ -71,12 +71,16 @@ export async function startHost(config: HostConfig) {
   const domain = createDomainPort({ outbox: Outbox }); // No authorized device/target: reminders remain unbound.
   const store = new Store(dataDir, [...domain.migrations, ...chatMigrations, ...liveMigrations]);
   try {
-    const owner = loadOwnerProfile({ ...(config.ownerProfilePath !== undefined ? { path: config.ownerProfilePath } : {}), ownerId: store.assistantId });
-    if (owner.status === 'error') throw new ConfigError('invalid_profile');
+    let ownerProfiles: OwnerProfileStore;
+    try {
+      ownerProfiles = new OwnerProfileStore(resolve(config.ownerProfilePath ?? join(dataDir, 'owner-profile.json')),
+        store.assistantId, config.ownerProfilePath === undefined, config.ownerProfileTesting);
+    } catch { throw new ConfigError('invalid_profile'); }
+    const owner = { status: ownerProfiles.status, snapshot: ownerProfiles.active.profile };
     const providerConfigDir = resolve(config.configDir ?? join(dataDir, 'provider-config'));
     const { chat, status } = composeChat(store, domain, providerConfigDir, config.modelTesting, config.now, owner.snapshot);
     const { service: live } = composeLive(store, providerConfigDir, config.liveTesting, config.now, owner.snapshot);
-    const service = await listenService({ store, domain, chat, live, modelStatus: status, ownerProfileStatus: { status: owner.status, displayName: owner.snapshot.displayName }, webRoot, port, ...(config.now ? { now: config.now } : {}) });
+    const service = await listenService({ store, domain, chat, live, ownerProfiles, modelStatus: status, ownerProfileStatus: { status: owner.status, displayName: owner.snapshot.displayName }, webRoot, port, ...(config.now ? { now: config.now } : {}) });
     try {
       const descriptor: RuntimeDescriptor = { schemaVersion: 1, origin: service.origin, authorityEpoch: store.authorityEpoch, assistantId: store.assistantId, pid: process.pid, startedAt: new Date().toISOString() };
       await publish(descriptorPath, descriptor); // Never use a stale descriptor as authority or carry bearer material.

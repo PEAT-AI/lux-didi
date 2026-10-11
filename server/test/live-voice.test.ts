@@ -274,3 +274,33 @@ test('expired deadline and unrepresentable initial frame have zero credential/so
   assert.throws(() => new GeminiLiveVoiceAdapter({ ...settings, limits: { maxOutgoingBytes: 1 } }).open(request(), control()), code('outgoing_limit'));
   assert.equal(keys, 0); assert.equal(sockets, 0);
 });
+
+test('Live tool batches use one response frame and suppress microphone audio until answered', async t => {
+  const f = await fixture(t);
+  const session = new GeminiLiveVoiceAdapter(options(f)).open({ ...request, languageCode: 'ar', tools: [
+    { name: 'search_knowledge', description: 'Search', parameters: { type: 'OBJECT' } },
+  ] }, control());
+  const captured = collect(session); t.after(() => session.close());
+  await f.frame(1);
+  const setup = f.frames[0]!.setup as Record<string, any>;
+  assert.deepEqual(setup.tools, [{ functionDeclarations: [{ name: 'search_knowledge', description: 'Search', parameters: { type: 'OBJECT' } }] }]);
+  assert.equal(setup.generationConfig.speechConfig.languageCode, 'ar-XA');
+  assert.deepEqual(setup.generationConfig.thinkingConfig, { thinkingLevel: 'minimal' });
+  assert.deepEqual(setup.historyConfig, { initialHistoryInClientContent: true });
+  assert.deepEqual(setup.contextWindowCompression, { slidingWindow: { targetTokens: 32000 } });
+  assert.deepEqual(setup.realtimeInputConfig, { automaticActivityDetection: { startOfSpeechSensitivity: 'START_SENSITIVITY_LOW' } });
+  f.send({ setupComplete: {} }); await session.ready;
+  const original = captured.events;
+  f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x' } }, { id: 'c2', name: 'search_knowledge', args: { query: 'y' } }] } });
+  // A following content boundary proves the inbound batch has been consumed, without a real-clock wait.
+  f.send({ serverContent: { turnComplete: true } });
+  for (;;) { await new Promise<void>(resolve => setImmediate(resolve)); if (original.some(e => e.type === 'turnComplete')) break; }
+  assert.deepEqual(original.find(e => e.type === 'toolCall')?.calls.map(c => c.id), ['c1', 'c2']);
+  session.sendAudio({ pcm, dataClass: 'ordinary' });
+  assert.equal(session.droppedAudioFrames, 1);
+  session.sendToolResponse({ responses: [{ id: 'c1', name: 'search_knowledge', response: { markdown: 'one' } }, { id: 'c2', name: 'search_knowledge', response: { error: 'denied' } }] });
+  await f.frame(2);
+  assert.deepEqual(f.frames[1], { toolResponse: { functionResponses: [{ id: 'c1', name: 'search_knowledge', response: { markdown: 'one' } }, { id: 'c2', name: 'search_knowledge', response: { error: 'denied' } }] } });
+  session.sendAudio({ pcm, dataClass: 'ordinary' }); await f.frame(3);
+  session.close(); await captured.done;
+});

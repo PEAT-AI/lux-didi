@@ -312,6 +312,27 @@ test('durable tool jobs defer without replay and retain completed or failed outc
   assert.equal(executions, 2, 'reopening never replays a dispatched tool');
 });
 
+test('expired job leases become unknown without replay or accepting late completion', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-live-job-lease-'));
+  const store = new Store(dir, createDomainPort({ outbox: Outbox }).migrations);
+  t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
+  let clock = NOW, expire = () => {}, executions = 0;
+  const jobs = new LiveToolJobs(store, () => clock);
+  const host: HostContext = { runId: 'origin', actorId: 'client', authorityEpoch: store.authorityEpoch, revision: 1, grants: [] };
+  let finish!: (result: ToolJobResult) => void;
+  const waiting = jobs.run(host, { runId: 'origin' } as LiveAuthority, 4000,
+    callback => { expire = callback; return { unref() {}, cancel() {} }; },
+    () => { executions++; return new Promise(resolve => { finish = resolve; }); });
+  expire(); await waiting;
+  clock += 86_400_000;
+  assert.equal(jobs.pending()[0]!.state, 'unknown');
+  finish({ tools: [], bindings: [], responses: [], error: undefined, accepted: [] });
+  await tick();
+  assert.equal(jobs.pending()[0]!.state, 'unknown');
+  assert.equal(jobs.pending()[0]!.result, undefined);
+  assert.equal(executions, 1);
+});
+
 test('tool deferral budget defaults to four seconds and accepts only bounded integer milliseconds', () => {
   assert.equal((validateLiveProfile(profileInput()).limits as unknown as Record<string, number>).toolDeferralMs, 4000);
   for (const value of [1000, 4000, 30000]) {

@@ -576,18 +576,21 @@ test('owner-trusted-reads grants exactly the connector envelope; explicit grants
   let catalog: ToolDefinition[] = [searchTool, getTool, writerTool];
   const f = await fixture({ list: () => ({ tools: catalog }) });
   const dir = mkdtempSync(join(tmpdir(), 'didi-mcp-runtime-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const configDir = join(dir, 'provider-config'); const store = new Store(join(dir, 'data'), toolsMigrations);
+  const configDir = join(dir, 'provider-config');
   try {
     // Explicit mode discovers but never grants authority; nothing is fabricated in its place.
     mcpEndpointFile(configDir, f.url, 'explicit');
-    const explicit = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null });
-    assert.equal(explicit.registry.currentGrant('source'), undefined);
-    assert.equal(explicit.status().endpoints[0]!.state, 'connected');
-    assert.equal(explicit.status().endpoints[0]!.tools, 0);
-    await explicit.close();
+    const explicitStore = new Store(join(dir, 'explicit-data'), toolsMigrations);
+    const explicit = await composeMcpRuntime({ store: explicitStore, ownerId: explicitStore.assistantId, configDir, lookupAuthority: async () => null });
+    try {
+      assert.equal(explicit.registry.currentGrant('source'), undefined);
+      assert.equal(explicit.status().endpoints[0]!.state, 'connected');
+      assert.equal(explicit.status().endpoints[0]!.tools, 0);
+    } finally { await explicit.close(); explicitStore.close(); }
 
     mcpEndpointFile(configDir, f.url, 'owner-trusted-reads');
-    const trusted = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null });
+    const trustedStore = new Store(join(dir, 'trusted-data'), toolsMigrations);
+    const trusted = await composeMcpRuntime({ store: trustedStore, ownerId: trustedStore.assistantId, configDir, lookupAuthority: async () => null });
     try {
       const grant = trusted.registry.currentGrant('source')!;
       assert.deepEqual([...grant.toolNames].sort(), ['get_insight', 'search_knowledge']);
@@ -604,8 +607,8 @@ test('owner-trusted-reads grants exactly the connector envelope; explicit grants
       assert.ok(after.generation > grant.generation);
       assert.deepEqual([...after.toolNames].sort(), ['get_insight', 'search_knowledge']);
       assert.equal(after.toolNames.includes('list_topics'), false);
-    } finally { await trusted.close(); }
-  } finally { await f.close(); store.close(); }
+    } finally { await trusted.close(); trustedStore.close(); }
+  } finally { await f.close(); }
 });
 
 test('an unavailable endpoint reports a sanitized error and a connector read is refused, never an empty success', async t => {

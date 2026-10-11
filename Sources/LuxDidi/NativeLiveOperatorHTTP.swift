@@ -32,6 +32,7 @@ struct NativePendingLiveJob: Decodable, Equatable, Sendable {
     let origin: URL
     private let build: NativeLiveRequestBuilder
     private let pickupJobID: String?
+    private var pickupCreateKey: String?
     private let session: URLSession
     init(authority: (origin: URL, request: NativeLiveRequestBuilder), pickupJobID: String? = nil) {
         self.pickupJobID = pickupJobID
@@ -93,7 +94,10 @@ struct NativePendingLiveJob: Decodable, Equatable, Sendable {
     // Serialized create input is a testable boundary; authentication and transport stay in fetch.
     func createBody(for intent: LiveBeginIntent, key: String) throws -> Data {
         var input = ["inputClass": intent.inputClass]
-        if let pickupJobID { input["pickupJobId"] = pickupJobID }
+        if let pickupJobID {
+            if pickupCreateKey == nil { pickupCreateKey = key }
+            if pickupCreateKey == key { input["pickupJobId"] = pickupJobID }
+        }
         return try JSONEncoder().encode(input)
     }
     func create(for intent: LiveBeginIntent, key: String) async throws -> LiveSnapshot {

@@ -47,7 +47,7 @@ import DidiOwner
         observer = Task { [weak self, coordinator] in
             await self?.startTask?.value
             if self?.state == .failed { return }
-            for await event in await coordinator.events {
+            for await event in coordinator.events {
                 let current = await coordinator.state
                 guard let self, self.generation == token, !Task.isCancelled else { return }
                 guard current == event else { continue }

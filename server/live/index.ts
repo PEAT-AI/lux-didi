@@ -470,7 +470,7 @@ export class LiveSessionOwner {
     const publish = (kind: 'toolCall' | 'toolResult', tool: LiveToolProjection) => {
       if (this.#settled(handle)) return;
       const sequence = this.#persist(handle, { type: kind, sequence: event.sequence, tool }, kind);
-      if (sequence === 'overflow') { this.#settle(handle, { state: 'journal_overflow' }, false, 'ended', { kind, sequence: event.sequence }); return; }
+      if (sequence === 'overflow') { this.#settle(handle, { state: 'journal_limit' }, false, 'ended', { kind, sequence: event.sequence }); return; }
       this.#pushChunk(handle, { kind: 'marker', marker: { kind, sequence: event.sequence, journalSequence: sequence, text: null, finished: null, value: null, tool } });
     };
     for (const call of event.calls) publish('toolCall', { name: call.name, status: 'error', markdown: '', sources: [] });

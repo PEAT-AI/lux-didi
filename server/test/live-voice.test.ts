@@ -279,7 +279,7 @@ test('expired deadline and unrepresentable initial frame have zero credential/so
 
 test('Live tool batches use one response frame and suppress microphone audio until answered', async t => {
   const f = await fixture(t);
-  const session = new GeminiLiveVoiceAdapter(options(f)).open({ ...request, languageCode: 'ar', tools: [
+  const session = new GeminiLiveVoiceAdapter(options(f)).open({ ...request(), languageCode: 'ar', tools: [
     { name: 'search_knowledge', description: 'Search', parameters: { type: 'OBJECT' } },
   ] }, control());
   const events = session.events[Symbol.asyncIterator](); t.after(() => session.close());
@@ -294,7 +294,7 @@ test('Live tool batches use one response frame and suppress microphone audio unt
   f.send({ setupComplete: {} }); await session.ready;
   assert.equal((await events.next()).value?.type, 'ready');
   f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x' } }, { id: 'c2', name: 'search_knowledge', args: { query: 'y' } }] } });
-  const event = (await events.next()).value;
+  const event: LiveVoiceEvent | undefined = (await events.next()).value;
   assert.equal(event?.type, 'toolCall');
   if (event?.type !== 'toolCall') throw Error('missing tool call');
   assert.deepEqual(event.calls.map(c => c.id), ['c1', 'c2']);

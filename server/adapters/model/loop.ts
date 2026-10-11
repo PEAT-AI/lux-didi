@@ -2,7 +2,7 @@ import { runToolCalls } from '../../tools/declarations.js';
 import { isDeepStrictEqual } from 'node:util';
 import { controlled, Interrupted } from './control.js';
 import { modelCalls } from './gemini.js';
-import type { Authority, Content, HostContext, LoopResult, ModelControl, ModelPort, ModelRequest, Part, ToolCallIntent, ToolCallJournal, ToolCallRefusal, ToolDefinition, ToolOutcome, ToolRecord, ToolResultBinding, ToolResultGate, ToolResultRef } from './types.js';
+import type { Authority, Content, HostContext, LoopResult, ModelControl, ModelPort, ModelRequest, Part, ToolCallJournal, ToolDefinition, ToolRecord, ToolResultBinding, ToolResultGate, ToolResultRef } from './types.js';
 
 export interface LoopOptions {
   model: ModelPort; request: ModelRequest; registry: ToolDefinition[];

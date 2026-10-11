@@ -4,7 +4,7 @@ export type DomainRoute = { kind: 'domain'; operation: DomainOperation; input: D
 export type ConnectedRoute = { kind: 'connected'; action: 'status' | 'enroll' | 'conversation' | 'revoke' | 'accept' | 'run' | 'cancel' | 'events' | 'conversationEvents'; id: string | null; input: Record<string, unknown>; mutation: boolean };
 export type SelectionRoute = { kind: 'selection'; clear: boolean; mutation: boolean; input: Record<string, unknown> };
 export type LiveRoute = { kind: 'live'; action: 'status' | 'create' | 'snapshot' | 'journal' | 'revoke' | 'audio'; id: string | null; input: Record<string, unknown>; mutation: boolean };
-export type Route = DomainRoute | ConnectedRoute | SelectionRoute | LiveRoute | { kind: 'health' | 'status' | 'pairing' | 'pair' | 'session' | 'logout' | 'chat'; mutation: boolean };
+export type Route = { kind: 'liveCurrent'; mutation: false; cursor: number } | DomainRoute | ConnectedRoute | SelectionRoute | LiveRoute | { kind: 'health' | 'status' | 'pairing' | 'pair' | 'session' | 'logout' | 'chat'; mutation: boolean };
 type DirectKind = 'health' | 'status' | 'pairing' | 'pair' | 'session' | 'logout' | 'chat';
 const bad = (message: string): never => { throw new ServiceError('BAD_REQUEST', message); };
 export function object(value: unknown): Record<string, unknown> { if (!value || typeof value !== 'object' || Array.isArray(value)) return bad('JSON object required'); return value as Record<string, unknown>; }

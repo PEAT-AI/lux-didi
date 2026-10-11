@@ -71,8 +71,8 @@ class UnconfiguredLive implements LiveService {
   readonly maxIncomingBytes = maxIncomingBytes;
   readonly maxBufferedBytes = defaultLiveLimits.wsBufferedBytes;
   constructor(private readonly payload: LiveStatusPayload) {}
-  current(cursor = 0): LivePageProjection { return this.owner.current(cursor); }
-  lookupAuthority(runId: string) { return this.owner.lookupAuthority(runId); }
+  current(cursor = 0): LivePageProjection { return { state: 'idle', since: null, entries: [], cursor }; }
+  lookupAuthority(_runId: string) { return null; }
   status(): LiveStatusPayload { return this.payload; }
   create(): never { return unavailable('LIVE_NOT_CONFIGURED'); }
   snapshot(): never { return unavailable('LIVE_NOT_CONFIGURED'); }

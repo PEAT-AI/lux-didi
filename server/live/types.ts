@@ -1,5 +1,4 @@
 import type { createToolsOwner } from '../tools/index.js';
-import type { LiveAuthority } from '../tools/types.js';
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
 import type { DataClass, LiveVoiceOutcome, LiveVoicePort } from '../adapters/live-voice/index.js';
 import type { StorePort } from '../contracts/storage.js';

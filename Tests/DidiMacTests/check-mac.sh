@@ -12,7 +12,7 @@ if [ "${1:-}" = "--prepare" ]; then
   cd "$root"
   app="$artifacts/Lux Didi.app"
   start=$SECONDS
-  /usr/bin/nice -n 10 xcrun swiftc -j 1 -num-threads 1 -whole-module-optimization -module-cache-path "$artifacts/cache" Sources/LuxDidi/AppPorts.swift Sources/LuxDidi/NativeKeychainPolicy.swift Sources/LuxDidi/CompanionClient.swift Tests/DidiMacTests/main.swift -o "$artifacts/seams"
+  /usr/bin/nice -n 10 xcrun swiftc -j 1 -num-threads 1 -whole-module-optimization -module-cache-path "$artifacts/cache" Sources/LuxDidi/AppPorts.swift Sources/LuxDidi/NativeKeychainPolicy.swift Sources/LuxDidi/CompanionClient.swift Sources/LuxDidi/OwnerProfileEditor.swift Tests/DidiMacTests/main.swift -o "$artifacts/seams"
   "$artifacts/seams"
   printf 'DURATION seam-compile-and-run=%ss (test-only duration above)\n' "$((SECONDS-start))"
   mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"

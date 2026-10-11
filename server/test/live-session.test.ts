@@ -928,6 +928,19 @@ test('Live answers a slow tool batch truthfully, continues the turn, and retains
   assert.equal(new LiveToolJobs(h.store, () => NOW).pending()[0]!.state, 'completed');
   assert.equal(h.f.frames.length, 2, 'completion must not inject a late result into Gemini');
   assert.equal(h.owner.lookupAuthority(session.liveSessionId)?.runId, session.liveSessionId);
+  assert.match(h.owner.pendingJobs()[0]!.markdown, /Synthetic insight/);
+  h.owner.revoke(session.liveSessionId);
+  await tick();
+  assert.equal(h.owner.lookupAuthority(session.liveSessionId), null);
+  const callback = h.owner.createWithPending({ inputClass: 'ordinary', idempotencyKey: 'callback' }, h.ctx);
+  const pickedUp = h.owner.attach({ liveSessionId: callback.liveSessionId }, h.ctx);
+  await h.f.frame(3);
+  h.f.send({ setupComplete: {} });
+  await pickedUp.ready;
+  await h.f.frame(4);
+  const history = h.f.frames[3] as { clientContent: { turns: { parts: { text: string }[] }[] } };
+  assert.match(history.clientContent.turns[0]!.parts[0]!.text, /Synthetic insight/);
+  assert.equal(h.owner.pendingJobs().length, 0, 'only explicit pickup consumes the pending result');
 });
 
 test('Live accepts a frozen real tool snapshot and projects only result-gated Markdown', async t => {

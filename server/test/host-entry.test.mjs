@@ -194,3 +194,33 @@ test('protected host snapshot has safe current label, restart reloads it and sto
     }
   });
 });
+
+test('canonical CLI loads a protected managed owner profile when the explicit flag is omitted', async () => {
+  await fixture(async ({ dir }) => {
+    const webRoot = join(dir, 'static'), dataDir = join(dir, 'state');
+    await mkdir(join(webRoot, 'assets'), { recursive: true });
+    for (const file of ['index.html', 'assets/fixture.js', 'assets/fixture.css', 'sw.js', 'manifest.webmanifest', 'icon.svg']) {
+      await writeFile(join(webRoot, file), file === 'index.html' ? '<script src="/assets/fixture.js"></script><link href="/assets/fixture.css" rel="stylesheet">' : 'synthetic');
+    }
+    const store = new Store(dataDir, [...chatMigrations, ...liveMigrations]); const ownerId = store.assistantId; store.close();
+    const path = join(dataDir, 'owner-profile.json');
+    const profile = { schemaVersion: 1, kind: 'profile', ownerId, profileVersion: 'synthetic-managed', displayName: 'Naya',
+      style: { text: 'SYNTHETIC managed character', dataClass: 'private' }, lore: { text: '', dataClass: 'private' } };
+    await writeFile(path, JSON.stringify(profile), { mode: 0o600 });
+    const process = launch([entry, '--supervised', '--data-dir', dataDir, '--web-root', webRoot, '--port', '0'], dir);
+    process.line.catch(() => {});
+    try {
+      process.child.stdin.write(`${JSON.stringify({ type: 'start', schemaVersion: 1, nonce: randomUUID() })}\n`);
+      const ready = JSON.parse(await process.line);
+      const token = (await readFile(join(dataDir, 'admin-credential'), 'utf8')).trim();
+      const response = await fetch(`${ready.origin}/api/v1/status`, { headers: { Authorization: `Bearer ${token}` } });
+      assert.equal(response.status, 200);
+      const status = (await response.json()).data;
+      assert.deepEqual(status.ownerProfile, { status: 'configured', displayName: 'Naya' });
+      assert.equal(status.assistantId, ownerId); assert.ok(!JSON.stringify(status).includes(profile.style.text));
+    } finally { await stop(process); }
+    await writeFile(path, '{');
+    const invalid = await invoke([entry, '--data-dir', dataDir, '--web-root', webRoot, '--port', '0'], dir);
+    assert.notEqual(invalid.code, 0); assert.match(invalid.stderr, /invalid_profile/); assert.ok(!invalid.stderr.includes(path));
+  });
+});

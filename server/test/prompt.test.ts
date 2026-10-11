@@ -25,10 +25,10 @@ const wireContext = (result: ReturnType<typeof compilePrompt>) => 'Untrusted sou
 test('public template is content-versioned; sections/order/hashes are deterministic', () => {
   const a = compilePrompt(input()); const b = compilePrompt(input());
   assert.deepEqual(a, b);
-  assert.match(PUBLIC_PERSONA, /^You are Didi, a personal AI assistant\./);
+  assert.match(PUBLIC_PERSONA, /^You are a personal AI assistant\./);
   assert.ok(a.system.includes(PUBLIC_PERSONA));
   assert.equal(PROMPT_VERSION, 'didi-v1-' + createHash('sha256').update(PUBLIC_PERSONA + '\n\n' + a.system.split('[rules]\n')[1]!.split('\n\n[preferences]')[0]!).digest('hex'));
-  assert.deepEqual(a.manifest.sections.map(s => s.id), ['persona', 'rules', 'preferences', 'capabilities']);
+  assert.deepEqual(a.manifest.sections.map(s => s.id), ['persona', 'identity', 'rules', 'preferences', 'capabilities']);
   assert.equal(a.manifest.systemHash, createHash('sha256').update(a.system).digest('hex'));
   for (const section of a.manifest.sections) assert.ok(section.chars > 0 && /^[a-f0-9]{64}$/.test(section.hash));
 });
@@ -258,4 +258,23 @@ test('owner text is never truncated and unknown classes/fields and wrong owner a
   ]) assert.throws(() => compilePrompt({ ...input(), ownerProfile } as CompileInput));
   rejects('budget', () => compilePrompt({ ...input(), ownerProfile: syntheticOwner,
     budgets: { ...input().budgets, trustedChars: 1 } } as CompileInput));
+});
+
+test('name-neutral public base survives empty authored fields and validated identity governs text and voice', () => {
+  const base = input();
+  for (const displayName of ['Naya', 'Synthetic Renamed Assistant']) {
+    const ownerProfile = { schemaVersion: 1 as const, kind: 'profile' as const, ownerId: base.ownerId,
+      profileVersion: 'synthetic-editor', displayName,
+      style: { text: '', dataClass: 'private' as const }, lore: { text: '', dataClass: 'private' as const } };
+    const text = compilePrompt({ ...base, ownerProfile });
+    const voice = compileVoiceInstruction({ ownerId: base.ownerId, promptVersion: base.promptVersion,
+      preferences: base.preferences, capabilities: base.capabilities, trustedChars: base.budgets.trustedChars, ownerProfile });
+    assert.equal(text.system, voice.system);
+    assert.ok(text.system.includes(PUBLIC_PERSONA));
+    assert.ok(text.system.includes(`Your conversational name is ${JSON.stringify(displayName)}.`));
+    assert.doesNotMatch(text.system, /You are Didi,|You are Naya,/);
+    assert.ok(text.system.includes('[rules]')); assert.ok(text.system.includes('[capabilities]'));
+    assert.equal(text.manifest.capabilityHash, compilePrompt(base).manifest.capabilityHash);
+  }
+  assert.ok(compilePrompt(base).system.includes('Your conversational name is "Lux Didi".'));
 });

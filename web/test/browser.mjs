@@ -140,7 +140,7 @@ try {
       const staticConnecting=await composition();
       assert.equal(staticConnecting[0].effectiveOpacity,.5);assert.equal(staticConnecting[1].effectiveOpacity,.5);
       await proofPage.evaluate(()=>globalThis.connectingProof.dispose());
-      Object.assign(record,{status:'pass',layout,gpu,metadata,appAssets,sampleCount:samples.length,animatedConnecting,staticConnecting,
+      Object.assign(record,{status:'pass',layout,gpu,metadata,appAssets,sampleCount:samples.length,animatedConnecting,staticConnecting,connectingAlignment,connectingCenters,
         judgment:'Measured only. Noise differences reported against original self-variation; no invented tolerance, pixel-identity or visual-equivalence claim. Original chat host/entrance is not this isolated adapter.'});
       }catch(error){record.status='failed';record.failedTraceAttempts=record.traceAttempts-record.samples.length;record.error=String(error.message);throw error;}
       finally {await proofContext.close();await writeFile(join(artifacts,'orb-reference-measurements.json'),JSON.stringify(measurements,null,2));}

@@ -236,7 +236,6 @@ PY
   # Fixture P0/P1/P2: the test-only host entry injects a recording synthetic
   # transport so the per-run immutable snapshot is actually produced.
   fstate="$proof/fixture-state"; fconfig="$HOME/fixture-provider-config"
-  mkdir -p "$fconfig"; chmod 0700 "$fconfig"
   mkdir -p "$proof/fx-p0"
   HOME="$real_home" CFFIXED_USER_HOME="$real_home" "$work/observer" --verification "$fixture" "$proof/fx-p0" "$(uuidgen)" run --installed-proof --proof-state "$fstate" --proof-report "$proof/fx-p0.json"
   fx_assistant="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["service"]["assistantId"])' "$proof/fx-p0.json")"

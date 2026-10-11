@@ -56,6 +56,10 @@ class HostLiveService implements LiveService {
   create(inputClass: DataClass, idempotencyKey: string, context: LiveContext): LiveSessionSnapshot {
     return this.owner.create({ inputClass, idempotencyKey }, context);
   }
+  pendingJobs() { return this.owner.pendingJobs(); }
+  createWithPending(inputClass: DataClass, idempotencyKey: string, context: LiveContext, pickupJobId?: string): LiveSessionSnapshot {
+    return this.owner.createWithPending({ inputClass, idempotencyKey, ...(pickupJobId ? { pickupJobId } : {}) }, context);
+  }
   snapshot(liveSessionId: string): LiveSessionSnapshot { return this.owner.get(liveSessionId); }
   journal(liveSessionId: string, cursor: number | undefined, limit: number | undefined): LiveFragmentPage {
     return this.owner.listFragments({ liveSessionId, ...(cursor === undefined ? {} : { cursor }), ...(limit === undefined ? {} : { limit }) });
@@ -104,6 +108,6 @@ export function composeLive(store: Store, configDir: string, testing?: LiveTesti
     ...(testing?.socketFactory ? { socketFactory: testing.socketFactory } : {}),
   });
   const owner = createLiveSessionOwner({ store, voice, profile, ...(tools ? { tools } : {}), ...(now ? { now } : {}) });
-  tools?.registerAuthoritySource?.(async (runId, signal) => signal.aborted ? null : owner.lookupAuthority(runId));
+  tools?.registerAuthoritySource?.(async (runId, signal) => signal.aborted ? null : owner.lookupAuthority(runId) ?? owner.lookupJobAuthority(runId));
   return { service: new HostLiveService(profile, owner), status };
 }

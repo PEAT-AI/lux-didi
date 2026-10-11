@@ -112,3 +112,17 @@ test('markup never claims heard or done and reports an error honestly', () => {
   assert.match(html, /Something went wrong/);
   assert.equal(/heard/i.test(html), false);
 });
+
+
+test('background job results remain in the page without starting audio, including failures', () => {
+  const current = { state: 'ended', entries: [], cursor: 0, jobs: [
+    { id: 'job1', originSessionId: 'old', state: 'completed', createdAt: 1, markdown: '**Actual answer**', delivered: false },
+    { id: 'job2', originSessionId: 'old', state: 'failed', createdAt: 2, markdown: '<script>bad()</script>Actual failure', delivered: false },
+  ] } as LiveCurrent;
+  const markup = liveMarkup(current);
+  assert.match(markup, /Actual answer/);
+  assert.match(markup, /Actual failure/);
+  assert.match(markup, /Call Naya back/);
+  assert.doesNotMatch(markup, /<script>|<audio|autoplay/);
+  assert.match(liveMarkup({ ...current, jobs: [] } as LiveCurrent), /No live transcription yet/);
+});

@@ -1,11 +1,12 @@
-import { declarationsFor, runToolCalls } from '../tools/declarations.js';
+import { LiveToolJobs, type ToolJob } from '../tools/jobs.js';
+import { declarationsFor, runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
 import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection } from './types.js';
 import { publicOwnerProfile, PROMPT_VERSION } from '../prompt/index.js';
 import { validateAcceptedPrompt } from './config.js';
 import { createHash, randomUUID } from 'node:crypto';
-import type { DataClass, LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort, LiveVoiceSession } from '../adapters/live-voice/index.js';
+import type { DataClass, LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort, LiveVoiceSession, LiveVoiceRequest } from '../adapters/live-voice/index.js';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
 import { liveProfileIdentity, validateLiveProfile } from './config.js';
 import { parseTerminal, persistedKinds, readFragmentPage, retainedBytes } from './journal.js';
@@ -112,6 +113,7 @@ class OutputChannel {
 }
 
 export class LiveSessionOwner {
+  readonly #jobs: LiveToolJobs;
   readonly #tools: LiveToolsComposition | undefined;
   readonly #store: LiveStorePort;
   readonly #voice: LiveVoicePort;
@@ -142,6 +144,7 @@ export class LiveSessionOwner {
       const timer = setTimeout(callback, delayMs);
       return { unref: () => { timer.unref(); }, cancel: () => { clearTimeout(timer); } };
     });
+    this.#jobs = new LiveToolJobs(this.#store, this.#now);
     this.#profileIdentity = liveProfileIdentity(this.#profile);
     this.#promptIdentity = identity({ text: this.#profile.prompt.text, dataClass: this.#profile.prompt.dataClass });
     this.recover();
@@ -177,7 +180,7 @@ export class LiveSessionOwner {
     this.#guardOpen();
     if (!input || typeof input !== 'object' || typeof input.idempotencyKey !== 'string' || !keyPattern.test(input.idempotencyKey)) throw new LiveError('invalid_request');
     this.#contextShape(context);
-    const fingerprint = identity({ inputClass: input.inputClass, profile: this.#profileIdentity, prompt: this.#promptIdentity });
+    const fingerprint = identity({ inputClass: input.inputClass, profile: this.#profileIdentity, prompt: this.#promptIdentity, pickupJobId: input.pickupJobId ?? null });
     const now = this.#now();
     const assistantId = this.#store.assistantId;
     const snapshot = this.#store.transaction(tx => {
@@ -218,11 +221,38 @@ export class LiveSessionOwner {
     });
   }
 
+  /** Additional authority source for a dispatched job only; Live session lookup remains unchanged. */
+  lookupJobAuthority(runId: string): LiveAuthority | null {
+    const job = this.#jobs.list().find(job => job.originSessionId === runId && job.state === 'in_progress');
+    return job && job.host.authorityEpoch === this.#store.authorityEpoch ? job.authority : null;
+  }
+
+  #jobProjection(pendingOnly: boolean): import('./types.js').PendingLiveJob[] {
+    return this.#jobs.list().filter(job => job.deferred && (!pendingOnly || !job.delivered)).map(job => ({
+      id: job.id, originSessionId: job.originSessionId, state: job.state, createdAt: job.createdAt, delivered: job.delivered,
+      markdown: job.result?.accepted.map(result => typeof result.response.text === 'string' ? result.response.text : JSON.stringify(result.response)).join('\n\n')
+        || (job.state === 'in_progress' ? "I'm on it, I'll call you when it's done." : job.state === 'completed' ? 'Completed, delivery pending.' : `Background job ${job.state}.`),
+    }));
+  }
+
+  pendingJobs(): import('./types.js').PendingLiveJob[] { return this.#jobProjection(true); }
+
+  createWithPending(input: CreateLiveSession, context: LiveContext): LiveSessionSnapshot {
+    const selected = input.pickupJobId ? this.#jobs.pending().find(job => job.id === input.pickupJobId && job.state !== 'in_progress') : undefined;
+    if (input.pickupJobId && !selected) throw new LiveError('invalid_request');
+    const session = this.create(input, context);
+    if (this.#jobs.forSession(session.liveSessionId)) return session;
+    const job = selected ?? this.#jobs.pending().find(job => job.state !== 'in_progress');
+    if (job) { job.deliverySessionId = session.liveSessionId; this.#jobs.save(job); }
+    return session;
+  }
+
   current(cursor = 0): LivePageProjection {
     if (!Number.isSafeInteger(cursor) || cursor < 0) throw new LiveError('invalid_request');
+    const jobs = this.#jobProjection(false);
     return this.#store.transaction(tx => {
       const row = tx.get('SELECT live_session_id,lifecycle,created_at,terminal_outcome FROM live_sessions WHERE owner_assistant_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1', [this.#store.assistantId]);
-      if (!row) return { state: 'idle', since: null, entries: [], cursor };
+      if (!row) return { state: 'idle', since: null, ...(jobs.length ? { jobs } : {}), entries: [], cursor };
       const handle = this.#active.get(String(row.live_session_id));
       const terminal = parseTerminal(row.terminal_outcome);
       const state: LivePageProjection['state'] = terminal ? (['closed', 'cancelled', 'revoked', 'expired'].includes(terminal.state) ? 'ended' : 'error') : handle?.thinking ? 'thinking' : handle?.speaking ? 'speaking' : handle?.consumerState === 'attached' ? 'listening' : handle ? 'ended' : 'idle';
@@ -236,7 +266,7 @@ export class LiveSessionOwner {
           entries.push({ seq, kind, tool: kind === 'toolCall' ? { name: tool.name, status: 'called' } : { name: tool.name, status: tool.status, markdown: tool.markdown, sources: tool.sources.map(source => ({ title: source.title, ...(source.url ? { url: source.url } : {}) })) } });
         } else if (kind === 'interrupted' || kind === 'turnComplete' || kind === 'terminal') entries.push({ seq, kind });
       }
-      return { state, since: Number(row.created_at), entries, cursor: rows.length ? Number(rows[rows.length - 1]!.journal_id) : cursor };
+      return { state, since: Number(row.created_at), ...(jobs.length ? { jobs } : {}), entries, cursor: rows.length ? Number(rows[rows.length - 1]!.journal_id) : cursor };
     });
   }
 
@@ -344,6 +374,19 @@ export class LiveSessionOwner {
     for (const handle of handles) handle.resolveDone();
   }
 
+  #jobHistory(sessionId: string, inputClass: DataClass): readonly { role: 'user'; text: string; dataClass: DataClass }[] | undefined {
+    const job = this.#jobs.forSession(sessionId);
+    if (!job) return undefined;
+    const accepted = job.result?.accepted ?? [];
+    // Only gate-reconstructed results can become history; never reconstruct raw references here.
+    const text = accepted.length ? accepted.map(result => JSON.stringify({ tool: result.binding.name, result: result.response })).join('\n')
+      : job.state === 'completed' ? 'The tool finished, but its result could not be authorized for delivery. Report this delivery failure, not success.'
+      : `The background job ${job.id} ${job.state === 'unknown' ? 'has an unknown outcome after interruption; it was not replayed' : 'failed'}. Do not invent a successful result.`;
+    const classes = accepted.flatMap(result => result.dataClasses ?? [inputClass]);
+    const dataClass: DataClass = classes.includes('sensitive') ? 'sensitive' : classes.includes('private') ? 'private' : inputClass;
+    return [{ role: 'user', text, dataClass }];
+  }
+
   #open(liveSessionId: string, inputClass: DataClass, revision: number, acceptedPrompt: AcceptedPromptSnapshot, context: LiveContext): LiveAttachment {
     const abort = new AbortController();
     const dataClasses = classes.filter(c => c === inputClass || acceptedPrompt.dataClasses.includes(c));
@@ -360,7 +403,10 @@ export class LiveSessionOwner {
       host = { runId: liveSessionId, actorId: context.clientId, authorityEpoch: context.authorityEpoch, revision,
         grants: registry.map(tool => ({ tool: tool.name, effect: tool.effect, accountId: tool.accountId, resourceId: tool.resourceId })) };
     }
-    const request = { system: { text: acceptedPrompt.system, dataClass: dataClasses[dataClasses.length - 1]! }, history: [], dataClasses,
+    const history = this.#jobHistory(liveSessionId, inputClass);
+    const system = acceptedPrompt.system + (history ? '\n\nThe user has just picked up. Deliver the pending job result first, briefly, then resume the conversation. If the outcome failed or is unknown, state that truthfully.' : '');
+    const request: LiveVoiceRequest = { opening: history ? 'model_first' : 'user_first',
+      system: { text: system, dataClass: dataClasses[dataClasses.length - 1]! }, history: history ?? [], dataClasses,
       ...(this.#profile.language !== undefined ? { languageCode: this.#profile.language } : {}),
       ...(registry.length ? { tools: declarationsFor(registry).declarations } : {}) };
     let session: LiveVoiceSession;
@@ -383,7 +429,11 @@ export class LiveSessionOwner {
       try { handle.done.resolve(this.#readSnapshot(liveSessionId)); }
       catch (error) { handle.done.reject(error); }
     };
-    session.ready.then(() => { handle.ready = true; }, () => {});
+    session.ready.then(() => {
+      handle.ready = true;
+      const job = this.#jobs.forSession(liveSessionId);
+      if (job) { job.delivered = true; this.#jobs.save(job); }
+    }, () => {});
     session.done.catch(() => {});
     this.#active.set(liveSessionId, handle);
     void handle.done.promise.catch(() => {});
@@ -478,6 +528,10 @@ export class LiveSessionOwner {
 
   async #toolBatch(handle: ActiveSession, event: Extract<LiveVoiceEvent, { type: 'toolCall' }>): Promise<void> {
     handle.thinking = true;
+    let inlineJob: ToolJob | undefined;
+    const retainUndelivered = () => {
+      if (inlineJob) { inlineJob.deferred = true; this.#jobs.save(inlineJob); }
+    };
     const publish = (kind: 'toolCall' | 'toolResult', tool: LiveToolProjection) => {
       if (this.#settled(handle)) return;
       const sequence = this.#persist(handle, { type: kind, sequence: event.sequence, tool }, kind);
@@ -489,14 +543,37 @@ export class LiveSessionOwner {
     let responses = event.calls.map(call => ({ id: call.id, name: call.name, response: { error: 'Tool not granted' } as JsonObject }));
     let projections: LiveToolProjection[] = event.calls.map(call => ({ name: call.name, status: 'error', markdown: 'Tool not granted', sources: [] }));
     if (this.#tools && handle.host) {
-      const batch = await runToolCalls(this.#tools.owner, event.calls, { registry: handle.registry, host: handle.host,
-        authority: { isCurrent: async (host, _tool, signal) => {
-          if (!this.lookupAuthority(host.runId)) return false;
-          const gate = await this.#tools!.owner.resultGate.authorize(host, [], [handle.inputClass], signal);
-          return gate.state === 'allowed' && !!this.lookupAuthority(host.runId);
-        } }, control: { signal: handle.abort.signal, deadlineMs: Date.now() + this.#profile.limits.sessionMs },
-        step: ++handle.toolStep, contentIndex: 0, seenIds: handle.seenIds, baseClasses: [handle.inputClass], authorize: true });
-      if (this.#settled(handle)) return;
+      const authority = this.lookupAuthority(handle.host.runId);
+      if (!authority) return;
+      const dispatchGate = await this.#tools.owner.resultGate.authorize(handle.host, [], [handle.inputClass], handle.abort.signal);
+      const host = structuredClone(handle.host), step = ++handle.toolStep;
+      const jobAbort = new AbortController();
+      const control = { signal: jobAbort.signal, deadlineMs: Date.now() + this.#profile.limits.sessionMs };
+      const execution = await this.#jobs.run(host, authority, this.#profile.limits.toolDeferralMs, this.#schedule, async () => {
+        const raw = await runToolCalls(this.#tools!.owner, event.calls, { registry: handle.registry, host,
+          authority: { isCurrent: async (_host, _tool, signal) => dispatchGate.state === 'allowed' && !signal.aborted }, control,
+          step, contentIndex: 0, seenIds: handle.seenIds, baseClasses: [handle.inputClass] });
+        // Completion never sends to the old transport. With no active authority, retain references for pickup.
+        if (!this.lookupAuthority(host.runId) && !this.lookupJobAuthority(host.runId)) return raw;
+        const gated = await authorizeToolBatch(this.#tools!.owner, raw, { host, control, baseClasses: [handle.inputClass] });
+        return gated;
+      });
+      if (!execution.result) {
+        if (!this.#settled(handle)) {
+          const status = execution.job.state === 'in_progress' ? 'in progress' : execution.job.state;
+          for (const call of event.calls) publish('toolResult', { name: call.name, status: 'error',
+            markdown: status === 'in progress' ? "I'm on it, I'll call you when it's done." : `Background job ${status}.`, sources: [] });
+          const responses = event.calls.filter(call => handle.pendingCallIds.has(call.id)).map(call => ({ id: call.id, name: call.name,
+            response: { jobId: execution.job.id, status, message: status === 'in progress' ? "I'm on it, I'll call you when it's done." : `Background job ${status}.` } }));
+          try { if (responses.length) handle.session.sendToolResponse({ responses }); } catch { /* cancelled provider batch */ }
+          for (const call of event.calls) handle.pendingCallIds.delete(call.id);
+          handle.thinking = false;
+        }
+        return;
+      }
+      inlineJob = execution.job;
+      const batch = execution.result;
+      if (this.#settled(handle)) { retainUndelivered(); return; }
       responses = event.calls.map((call, index) => {
         const accepted = batch.accepted.find(result => result.binding.callId === call.id && result.binding.name === call.name);
         const record = batch.tools[index];
@@ -512,11 +589,20 @@ export class LiveSessionOwner {
         return { id: call.id, name: call.name, response: completed ? accepted.response : { error: reason } };
       });
     }
-    if (this.#settled(handle)) return;
+    if (this.#settled(handle)) { retainUndelivered(); return; }
     for (const [index, projection] of projections.entries()) if (handle.pendingCallIds.has(event.calls[index]!.id)) publish('toolResult', projection);
     responses = responses.filter(response => handle.pendingCallIds.has(response.id));
     if (!this.#settled(handle)) {
-      try { if (responses.length) handle.session.sendToolResponse({ responses }); } catch { /* A cancelled provider batch or terminal transport cannot receive late answers. */ }
+      try {
+        if (responses.length) {
+          handle.session.sendToolResponse({ responses });
+          if (inlineJob) inlineJob.delivered = true;
+        }
+      } catch { /* A cancelled provider batch or terminal transport cannot receive late answers. */ }
+    }
+    if (inlineJob) {
+      inlineJob.deferred = !inlineJob.delivered;
+      this.#jobs.save(inlineJob);
     }
     for (const call of event.calls) handle.pendingCallIds.delete(call.id);
     handle.thinking = handle.pendingCallIds.size > 0;

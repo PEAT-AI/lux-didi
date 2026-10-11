@@ -22,4 +22,5 @@ export type LiveKind = 'inputTranscription' | 'outputTranscription' | 'toolCall'
 export interface LiveSource { title: string; url?: string }
 export interface LiveTool { name: string; status: 'called' | 'completed' | 'error'; markdown?: string; sources?: LiveSource[] }
 export interface LiveEntry { seq: number; kind: LiveKind; text?: string; tool?: LiveTool }
-export interface LiveCurrent { state: LiveState; since?: string; muted?: boolean; entries: LiveEntry[]; cursor: string | number }
+export interface LiveJob { id: string; originSessionId: string; state: 'in_progress' | 'completed' | 'failed' | 'unknown'; createdAt: number; markdown: string; delivered: boolean }
+export interface LiveCurrent { jobs?: LiveJob[]; state: LiveState; since?: string; muted?: boolean; entries: LiveEntry[]; cursor: string | number }

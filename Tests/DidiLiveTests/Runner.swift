@@ -201,6 +201,11 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
     static func main() async {
         do {
             let fixture = try JSONDecoder().decode(Fixture.self, from: FileHandle.standardInput.readDataToEndOfFile())
+            let pendingWire = Data("[{\"id\":\"job1\",\"state\":\"in_progress\",\"markdown\":\"Working\"},{\"id\":\"job2\",\"state\":\"failed\",\"markdown\":\"Actual failure\"}]".utf8)
+            let pendingCalls = try JSONDecoder().decode([NativePendingLiveJob].self, from: pendingWire)
+            try require(!pendingCalls[0].isReady && pendingCalls[1].isReady, "only a completed or failed job offers a quiet callback")
+            try require(pendingCalls[1].markdown == "Actual failure", "native callback never turns a failure into success")
+
             if CommandLine.arguments.contains("--child-before-intent") || CommandLine.arguments.contains("--child-after-intent") {
                 let http = TestHTTP(fixture)
                 let client = LiveSessionCoordinator(http: http, sockets: CountedSockets(fixture), sink: SilentSink())
@@ -256,6 +261,15 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
                 return (companion, NativeLiveOperatorHTTP(authority: companion.authenticatedRequestBuilder()))
             }
             let nativeIntent = try await nativeHTTP.beginIntent()
+            let pickupID = "10000000-0000-4000-8000-000000000001"
+            let pickedHTTP = await MainActor.run {
+                NativeLiveOperatorHTTP(authority: companion.authenticatedRequestBuilder(), pickupJobID: pickupID)
+            }
+            let firstPickup = try JSONDecoder().decode([String: String].self, from: pickedHTTP.createBody(for: nativeIntent, key: "pickup-key"))
+            let pickupRetry = try JSONDecoder().decode([String: String].self, from: pickedHTTP.createBody(for: nativeIntent, key: "pickup-key"))
+            let laterStart = try JSONDecoder().decode([String: String].self, from: pickedHTTP.createBody(for: nativeIntent, key: "later-start-key"))
+            try require(firstPickup["pickupJobId"] == pickupID && pickupRetry["pickupJobId"] == pickupID, "pickup and its idempotent retry select the same job")
+            try require(laterStart["pickupJobId"] == nil && laterStart["inputClass"] == nativeIntent.inputClass, "a later Start cannot reuse the consumed pickup ID")
             let nativeStatus = try await nativeHTTP.status(for: nativeIntent)
             try require(nativeStatus.authorityEpoch == fixture.authorityEpoch, "native status freezes authority epoch")
             let nativeKey = UUID().uuidString.lowercased()

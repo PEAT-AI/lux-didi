@@ -5,6 +5,8 @@ import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { createToolsOwner, toolsMigrations } from '../tools/index.js';
 import { declarationsFor, runToolCalls } from '../tools/declarations.js';
+import { LiveToolJobs, type ToolJobResult, type JobTimer } from '../tools/jobs.js';
+import type { LiveAuthority } from '../tools/types.js';
 import { liveProfileIdentity } from '../live/config.js';
 import type { ToolDefinition, HostContext } from '../adapters/model/types.js';
 import { PROMPT_VERSION } from '../prompt/index.js';
@@ -19,7 +21,7 @@ import { join } from 'node:path';
 import { loadLiveConfig } from '../config/live.js';
 import { NAYA_BASE, composeLiveInstruction } from '../prompt/live-persona.js';
 import { GeminiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
-import type { LiveVoiceLimits } from '../adapters/live-voice/index.js';
+import type { LiveVoiceLimits, LiveVoiceRequest } from '../adapters/live-voice/index.js';
 import { chatMigrations } from '../chat/index.js';
 import { createDomainPort } from '../domain/facade.js';
 import { Outbox } from '../runtime/outbox.js';
@@ -44,6 +46,7 @@ function profileInput(limits?: Record<string, number>, model = MODEL) {
 }
 
 interface Harness {
+  requests: LiveVoiceRequest[];
   f: Awaited<ReturnType<typeof fixture>>;
   store: Store;
   owner: LiveSessionOwner;
@@ -76,6 +79,11 @@ async function harness(t: TestContext, overrides: {
     limits: { handshakeMs: 1000, idleMs: 2000, sessionMs: 4000, closeMs: 50, ...overrides.adapterLimits },
   }));
   const calls: { name: string; args: unknown }[] = [];
+  const requests: LiveVoiceRequest[] = [];
+  const open = voice.open.bind(voice);
+  t.mock.method(voice, 'open', (input: LiveVoiceRequest, ctl: Parameters<typeof voice.open>[1]) => {
+    requests.push(structuredClone(input)); return open(input, ctl);
+  });
   let owner!: LiveSessionOwner;
   let tools: import('../live/types.js').LiveToolsComposition | undefined;
   if (overrides.tools) {
@@ -101,7 +109,7 @@ async function harness(t: TestContext, overrides: {
       return transport.handleRequest(request);
     });
     const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic-token', budgets: { maxResponseBytes: 12000, projectionChars: 10, timeoutMs: 1000 } });
-    const toolOwner = createToolsOwner({ store, ownerId: store.assistantId, registry, port, lookupAuthority: async runId => owner?.lookupAuthority(runId) ?? null });
+    const toolOwner = createToolsOwner({ store, ownerId: store.assistantId, registry, port, lookupAuthority: async runId => owner?.lookupAuthority(runId) ?? owner?.lookupJobAuthority(runId) ?? null });
     toolOwner.applyConnection({ schemaVersion: 1, ownerId: store.assistantId, connectionId: 'lux', generation: 1, enabled: true, connector: 'lux-knowledge',
       endpoint: { ...endpoint, credentialRef: null }, toolNames: ['search_knowledge', 'get_insight'], schemaDigest: canonicalToolDigest(schemas),
       sourcePolicy: { id: 'live-fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
@@ -114,7 +122,7 @@ async function harness(t: TestContext, overrides: {
   }
   owner = createLiveSessionOwner({ store, voice, profile, ...(tools ? { tools } : {}), now: () => overrides.scheduler?.now ?? clock, ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
   t.after(async () => { await owner.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
-  return { calls, f, store, owner, ctx: context(store), dir, advance: ms => { if (overrides.scheduler) overrides.scheduler.now += ms; else clock += ms; } };
+  return { requests, calls, f, store, owner, ctx: context(store), dir, advance: ms => { if (overrides.scheduler) overrides.scheduler.now += ms; else clock += ms; } };
 }
 
 async function attached(h: Harness, key = 'k1') {
@@ -272,6 +280,73 @@ test('an unused accepted session expires without ever opening the adapter', asyn
   assert.deepEqual(after.terminal, { state: 'expired' });
   assert.equal(after.journal.complete, false);
   assert.equal(h.f.attempts, 0);
+});
+
+test('durable tool jobs defer without replay and retain completed or failed outcomes', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-live-jobs-'));
+  const migrations = createDomainPort({ outbox: Outbox }).migrations;
+  let store = new Store(dir, migrations);
+  t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
+  const host: HostContext = { runId: 'origin', actorId: 'client', authorityEpoch: store.authorityEpoch, revision: 1, grants: [] };
+  // The execution owner validates this snapshot; the receipt owner stores it without granting authority.
+  const authority = { runId: 'origin' } as LiveAuthority;
+  let expire = () => {};
+  const schedule: JobTimer = callback => { expire = callback; return { unref() {}, cancel() {} }; };
+  const batch: ToolJobResult = { tools: [], bindings: [], responses: [], error: undefined, accepted: [] };
+  let finish!: (value: ToolJobResult) => void;
+  let executions = 0;
+  let jobs = new LiveToolJobs(store, () => NOW);
+  const waiting = jobs.run(host, authority, 4000, schedule, () => { executions++; return new Promise(resolve => { finish = resolve; }); });
+  expire();
+  const deferred = await waiting;
+  assert.equal(deferred.result, undefined);
+  assert.equal(jobs.pending()[0]!.state, 'in_progress');
+  finish(batch);
+  await tick();
+  assert.equal(jobs.pending()[0]!.state, 'completed');
+  assert.deepEqual(jobs.pending()[0]!.result, JSON.parse(JSON.stringify(batch)));
+  const failed = await jobs.run(host, authority, 4000, schedule, async () => { throw new Error('synthetic failure'); });
+  assert.equal(failed.job.state, 'failed');
+  const interrupted = jobs.run(host, authority, 4000, schedule, () => { executions++; return new Promise(() => {}); });
+  expire();
+  await interrupted;
+  store.close();
+  store = new Store(dir, migrations);
+  jobs = new LiveToolJobs(store, () => NOW);
+  assert.equal(jobs.pending().filter(job => job.state === 'unknown').length, 1);
+  assert.equal(jobs.pending().filter(job => job.state === 'completed').length, 1);
+  assert.equal(executions, 2, 'reopening never replays a dispatched tool');
+});
+
+test('expired job leases become unknown without replay or accepting late completion', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-live-job-lease-'));
+  const store = new Store(dir, createDomainPort({ outbox: Outbox }).migrations);
+  t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
+  let clock = NOW, expire = () => {}, executions = 0;
+  const jobs = new LiveToolJobs(store, () => clock);
+  const host: HostContext = { runId: 'origin', actorId: 'client', authorityEpoch: store.authorityEpoch, revision: 1, grants: [] };
+  let finish!: (result: ToolJobResult) => void;
+  const waiting = jobs.run(host, { runId: 'origin' } as LiveAuthority, 4000,
+    callback => { expire = callback; return { unref() {}, cancel() {} }; },
+    () => { executions++; return new Promise(resolve => { finish = resolve; }); });
+  expire(); await waiting;
+  clock += 86_400_000;
+  assert.equal(jobs.pending()[0]!.state, 'unknown');
+  finish({ tools: [], bindings: [], responses: [], error: undefined, accepted: [] });
+  await tick();
+  assert.equal(jobs.pending()[0]!.state, 'unknown');
+  assert.equal(jobs.pending()[0]!.result, undefined);
+  assert.equal(executions, 1);
+});
+
+test('tool deferral budget defaults to four seconds and accepts only bounded integer milliseconds', () => {
+  assert.equal((validateLiveProfile(profileInput()).limits as unknown as Record<string, number>).toolDeferralMs, 4000);
+  for (const value of [1000, 4000, 30000]) {
+    assert.equal((validateLiveProfile(profileInput({ toolDeferralMs: value })).limits as unknown as Record<string, number>).toolDeferralMs, value);
+  }
+  for (const value of [0, 999, 30001, 1000.5, NaN, Infinity]) {
+    assert.throws(() => validateLiveProfile(profileInput({ toolDeferralMs: value })), LiveConfigError);
+  }
 });
 
 test('profile validation rejects text-model fallback and bounds, and validation precedes credentials', async t => {
@@ -856,6 +931,78 @@ test('legacy null and unsupported accepted Live bindings refuse honestly before 
     assert.equal(h.owner.get(accepted.liveSessionId).dispatchIntent, false);
     assert.equal(h.f.frames.length, 0);
   }
+});
+
+test('completion after hangup remains delivery pending even before the deferral budget expires', async t => {
+  const scheduler = new DeadlineClock();
+  let finish!: () => void;
+  const work = new Promise<void>(resolve => { finish = resolve; });
+  const h = await harness(t, { tools: true, scheduler, beforeTool: () => work });
+  const { session } = await attached(h);
+  h.f.send({ toolCall: { functionCalls: [{ id: 'detached1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
+  while (!h.calls.length) await tick();
+  h.owner.revoke(session.liveSessionId);
+  finish();
+  const jobs = new LiveToolJobs(h.store, () => NOW);
+  while (jobs.list()[0]!.state === 'in_progress') await tick();
+  await tick();
+  assert.equal(jobs.pending().length, 1, 'a returned batch is not delivered when the original call has ended');
+  assert.equal(jobs.pending()[0]!.state, 'completed');
+  assert.equal(jobs.pending()[0]!.delivered, false);
+  assert.match(h.owner.pendingJobs()[0]!.markdown, /Synthetic insight/);
+  assert.equal(h.f.frames.length, 1, 'completion cannot send to the ended Gemini session');
+});
+
+test('Live answers a slow tool batch truthfully, continues the turn, and retains a durable pending result', async t => {
+  const scheduler = new DeadlineClock();
+  let finish!: () => void;
+  const slow = new Promise<void>(resolve => { finish = resolve; });
+  const h = await harness(t, { tools: true, scheduler, limits: { toolDeferralMs: 1000 }, beforeTool: () => slow });
+  const { session } = await attached(h);
+  assert.equal((h.requests[0] as LiveVoiceRequest & { opening?: string }).opening, 'user_first');
+  h.f.send({ toolCall: { functionCalls: [{ id: 'slow1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
+  while (!h.calls.length) await tick();
+  h.advance(1000); scheduler.runDue();
+  await tick();
+  assert.equal(new LiveToolJobs(h.store, () => NOW).pending().length, 1, 'dispatch must create a durable job before deferral');
+  await h.f.frame(2);
+  const response = h.f.frames[1] as { toolResponse: { functionResponses: { response: { status: string; jobId: string } }[] } };
+  assert.equal(response.toolResponse.functionResponses[0]!.response.status, 'in progress');
+  assert.ok(response.toolResponse.functionResponses[0]!.response.jobId);
+  assert.equal(h.owner.current().state, 'listening');
+  assert.equal(new LiveToolJobs(h.store, () => NOW).pending()[0]!.state, 'in_progress');
+  h.owner.revoke(session.liveSessionId);
+  await tick();
+  assert.equal(h.owner.lookupAuthority(session.liveSessionId), null);
+  finish();
+  while (new LiveToolJobs(h.store, () => NOW).pending()[0]!.state === 'in_progress') await tick();
+  assert.equal(new LiveToolJobs(h.store, () => NOW).pending()[0]!.state, 'completed');
+  assert.equal(h.f.frames.length, 2, 'completion must not inject a late result into Gemini');
+  assert.match(h.owner.pendingJobs()[0]!.markdown, /Synthetic insight/);
+  h.owner.revoke(session.liveSessionId);
+  await tick();
+  assert.equal(h.owner.lookupAuthority(session.liveSessionId), null);
+  const callback = h.owner.createWithPending({ inputClass: 'ordinary', idempotencyKey: 'callback' }, h.ctx);
+  const pickedUp = h.owner.attach({ liveSessionId: callback.liveSessionId }, h.ctx);
+  await h.f.frame(3);
+  h.f.send({ setupComplete: {} });
+  await pickedUp.ready;
+  await h.f.frame(4);
+  const history = h.f.frames[3] as { clientContent: { turns: { parts: { text: string }[] }[] } };
+  assert.match(history.clientContent.turns[0]!.parts[0]!.text, /Synthetic insight/);
+  assert.equal((history.clientContent as typeof history.clientContent & { turnComplete: boolean }).turnComplete, true);
+  assert.equal((h.requests[1] as LiveVoiceRequest & { opening?: string }).opening, 'model_first');
+  assert.match(h.requests[1]!.system.text, /user has just picked up/i);
+  assert.match(h.requests[1]!.system.text, /briefly/i);
+  h.f.send({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from(pcm).toString('base64') } }] },
+    outputTranscription: { text: 'Synthetic insight is ready.', finished: true }, turnComplete: true } });
+  await drain(h, callback.liveSessionId, 3);
+  const output = pickedUp.output[Symbol.asyncIterator]();
+  const openingChunks = [(await output.next()).value, (await output.next()).value, (await output.next()).value];
+  assert.ok(openingChunks.some(chunk => chunk?.kind === 'audio'), 'the completed opening produces a first spoken turn in the fixture');
+  assert.ok(h.owner.current().entries.some(entry => entry.kind === 'outputTranscription' && entry.text === 'Synthetic insight is ready.'));
+  assert.equal(h.f.frames.length, 4, 'pickup needs no microphone input or nudge frame');
+  assert.equal(h.owner.pendingJobs().length, 0, 'only explicit pickup consumes the pending result');
 });
 
 test('Live accepts a frozen real tool snapshot and projects only result-gated Markdown', async t => {

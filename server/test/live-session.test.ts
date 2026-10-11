@@ -21,7 +21,7 @@ import { join } from 'node:path';
 import { loadLiveConfig } from '../config/live.js';
 import { NAYA_BASE, composeLiveInstruction } from '../prompt/live-persona.js';
 import { GeminiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
-import type { LiveVoiceLimits } from '../adapters/live-voice/index.js';
+import type { LiveVoiceLimits, LiveVoiceRequest } from '../adapters/live-voice/index.js';
 import { chatMigrations } from '../chat/index.js';
 import { createDomainPort } from '../domain/facade.js';
 import { Outbox } from '../runtime/outbox.js';
@@ -46,6 +46,7 @@ function profileInput(limits?: Record<string, number>, model = MODEL) {
 }
 
 interface Harness {
+  requests: LiveVoiceRequest[];
   f: Awaited<ReturnType<typeof fixture>>;
   store: Store;
   owner: LiveSessionOwner;
@@ -78,6 +79,11 @@ async function harness(t: TestContext, overrides: {
     limits: { handshakeMs: 1000, idleMs: 2000, sessionMs: 4000, closeMs: 50, ...overrides.adapterLimits },
   }));
   const calls: { name: string; args: unknown }[] = [];
+  const requests: LiveVoiceRequest[] = [];
+  const open = voice.open.bind(voice);
+  t.mock.method(voice, 'open', (input: LiveVoiceRequest, ctl: Parameters<typeof voice.open>[1]) => {
+    requests.push(structuredClone(input)); return open(input, ctl);
+  });
   let owner!: LiveSessionOwner;
   let tools: import('../live/types.js').LiveToolsComposition | undefined;
   if (overrides.tools) {
@@ -116,7 +122,7 @@ async function harness(t: TestContext, overrides: {
   }
   owner = createLiveSessionOwner({ store, voice, profile, ...(tools ? { tools } : {}), now: () => overrides.scheduler?.now ?? clock, ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
   t.after(async () => { await owner.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
-  return { calls, f, store, owner, ctx: context(store), dir, advance: ms => { if (overrides.scheduler) overrides.scheduler.now += ms; else clock += ms; } };
+  return { requests, calls, f, store, owner, ctx: context(store), dir, advance: ms => { if (overrides.scheduler) overrides.scheduler.now += ms; else clock += ms; } };
 }
 
 async function attached(h: Harness, key = 'k1') {
@@ -933,6 +939,7 @@ test('Live answers a slow tool batch truthfully, continues the turn, and retains
   const slow = new Promise<void>(resolve => { finish = resolve; });
   const h = await harness(t, { tools: true, scheduler, limits: { toolDeferralMs: 1000 }, beforeTool: () => slow });
   const { session } = await attached(h);
+  assert.equal((h.requests[0] as LiveVoiceRequest & { opening?: string }).opening, 'user_first');
   h.f.send({ toolCall: { functionCalls: [{ id: 'slow1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
   while (!h.calls.length) await tick();
   h.advance(1000); scheduler.runDue();
@@ -963,6 +970,18 @@ test('Live answers a slow tool batch truthfully, continues the turn, and retains
   await h.f.frame(4);
   const history = h.f.frames[3] as { clientContent: { turns: { parts: { text: string }[] }[] } };
   assert.match(history.clientContent.turns[0]!.parts[0]!.text, /Synthetic insight/);
+  assert.equal((history.clientContent as typeof history.clientContent & { turnComplete: boolean }).turnComplete, true);
+  assert.equal((h.requests[1] as LiveVoiceRequest & { opening?: string }).opening, 'model_first');
+  assert.match(h.requests[1]!.system.text, /user has just picked up/i);
+  assert.match(h.requests[1]!.system.text, /briefly/i);
+  h.f.send({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from(pcm).toString('base64') } }] },
+    outputTranscription: { text: 'Synthetic insight is ready.', finished: true }, turnComplete: true } });
+  await drain(h, callback.liveSessionId, 3);
+  const output = pickedUp.output[Symbol.asyncIterator]();
+  const openingChunks = [(await output.next()).value, (await output.next()).value, (await output.next()).value];
+  assert.ok(openingChunks.some(chunk => chunk?.kind === 'audio'), 'the completed opening produces a first spoken turn in the fixture');
+  assert.ok(h.owner.current().entries.some(entry => entry.kind === 'outputTranscription' && entry.text === 'Synthetic insight is ready.'));
+  assert.equal(h.f.frames.length, 4, 'pickup needs no microphone input or nudge frame');
   assert.equal(h.owner.pendingJobs().length, 0, 'only explicit pickup consumes the pending result');
 });
 

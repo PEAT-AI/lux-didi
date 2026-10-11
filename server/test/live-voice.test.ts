@@ -39,7 +39,7 @@ test('explicit user-first opening preserves incomplete history and model-first o
 
 test('invalid opening modes are refused before credentials or dispatch', t => {
   let credentials = 0;
-  const adapter = new GeminiLiveVoiceAdapter(options({ credentials: { resolve: async () => { credentials++; return CANARY; } } }));
+  const adapter = new GeminiLiveVoiceAdapter(options({ credentials: { resolve: async () => { credentials++; return CANARY; } }, socketFactory: () => { throw new Error('Unexpected invalid-opening dispatch'); } }));
   for (const opening of ['invalid', null, false]) {
     assert.throws(() => {
       const session = adapter.open({ ...request(), opening } as unknown as ReturnType<typeof request>, control());

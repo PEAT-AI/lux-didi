@@ -27,8 +27,12 @@ try {
   await writeFile(`${artifacts}/renderer.json`,JSON.stringify({browser:browser.version(),...renderer},null,2));
   assert.match(renderer?.renderer||'',/Metal/,'Actual GPU renderer must be Metal, not software');
   await step('pairing, empty data, no model, synthetic mode',async()=>{
+    const connectedStatus=page.waitForResponse(response=>new URL(response.url()).pathname==='/api/v1/chat/status'&&response.request().method()==='GET');
     await page.getByLabel('One-time pairing code').fill('synthetic-only'); await page.getByRole('button',{name:'Pair this browser',exact:true}).click();
     await page.getByText('No conversations yet.',{exact:true}).waitFor();
+    const statusResponse=await connectedStatus;assert.equal(statusResponse.status(),200);
+    assert.deepEqual((await statusResponse.json()).data,{status:'unconfigured'});
+    await page.locator('#connected-route').getByText('Model unconfigured. Local notes, Today and recall still work.',{exact:true}).waitFor();
     await page.getByText('Demo test mode',{exact:true}).waitFor();
     assert.equal(await page.evaluate(()=>Object.keys(localStorage).length),0);
     assert.equal(await page.evaluate(()=>document.cookie),'');

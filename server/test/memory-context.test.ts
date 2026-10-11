@@ -399,10 +399,22 @@ test('additive chat v3 migration upgrades a populated v1+v2 DB and preserves old
     const run = f1.chat.accept({ sessionId: sending.id, text: 'Old turn', idempotencyKey: 'old' }, f1.context);
     const before = f1.store.transaction(tx => tx.get('SELECT fingerprint,idempotency_key,session_id,state FROM chat_runs WHERE run_id=?', [run.runId]));
     const consentBefore = f1.store.transaction(tx => tx.get('SELECT * FROM chat_consents WHERE session_id=?', [sending.id]));
+    const policyBefore = f1.store.transaction(tx => tx.get('SELECT * FROM chat_run_policy WHERE run_id=?', [run.runId]));
+    const legacyRunBefore = f1.store.transaction(tx => tx.get('SELECT * FROM chat_runs WHERE run_id=?', [run.runId]));
     f1.store.close();
+    // Exercise the actual v3 upgrade separately before current runtime requires v4.
+    const v3 = new Store(dir, [...domainMigrations, ...chatMigrations.filter(m => m.version <= 3)]);
+    try {
+      assert.deepEqual(chatVersions(v3), [1, 2, 3]);
+      assert.deepEqual(v3.transaction(tx => tx.get('SELECT * FROM chat_runs WHERE run_id=?', [run.runId])), legacyRunBefore);
+      assert.deepEqual(v3.transaction(tx => tx.get('SELECT * FROM chat_run_policy WHERE run_id=?', [run.runId])), policyBefore);
+      assert.deepEqual(v3.transaction(tx => tx.get('SELECT * FROM chat_consents WHERE session_id=?', [sending.id])), consentBefore);
+      assert.equal(v3.transaction(tx => tx.get('SELECT * FROM chat_run_context WHERE run_id=?', [run.runId])), undefined);
+      assert.equal(v3.transaction(tx => tx.get("SELECT name FROM sqlite_master WHERE name='chat_run_owner_profile'", [])), undefined);
+    } finally { v3.close(); }
     const f2 = openMemoryFixture(dir, model, {}, chatMigrations);
     try {
-      assert.deepEqual(chatVersions(f2.store), [1, 2, 3]);
+      assert.deepEqual(chatVersions(f2.store), chatMigrations.map(m => m.version));
       assert.equal(f2.store.transaction(tx => tx.get("SELECT name FROM sqlite_master WHERE type='table' AND name='chat_run_context'"))!.name, 'chat_run_context');
       assert.equal(Number(f2.store.transaction(tx => tx.get('SELECT COUNT(*) c FROM chat_run_context', []))!.c), 0);
       const after = f2.store.transaction(tx => tx.get('SELECT fingerprint,idempotency_key,session_id FROM chat_runs WHERE run_id=?', [run.runId]));

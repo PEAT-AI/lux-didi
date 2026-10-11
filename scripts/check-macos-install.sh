@@ -67,9 +67,23 @@ if [ "${1:-}" = "--leased-run" ]; then
   state="$proof/state"
   mkdir -p "$proof"
 
-  active_held_pid=""; active_held_root=""
+  active_held_pid=""; active_held_root=""; active_caffeinate_pid=""
+  display_assertion_max="${LUX_DISPLAY_ASSERTION_MAX:-900}"
+  # Test-only display precondition, never a product behavior change: caffeinate -u turns the display
+  # on if it is off and -d holds it awake. Started only after the lease and only for the actual native
+  # producer child, bound to that child (-w) and to an explicit maximum (-t), and killed as soon as the
+  # child ends or the script exits, so no assertion and no process outlives the run. The run's own
+  # display diagnostic records the actual observed state; the assertion is never assumed to have worked.
+  stop_display_assertion() {
+    if [ -n "$active_caffeinate_pid" ]; then
+      kill "$active_caffeinate_pid" 2>/dev/null || true
+      wait "$active_caffeinate_pid" 2>/dev/null || true
+      active_caffeinate_pid=""
+    fi
+  }
   cleanup_active_observation() {
     result=$?; trap - EXIT
+    stop_display_assertion
     if [ -n "$active_held_pid" ]; then
       if bash Tests/DidiCompanionTests/launch-probe/produce.sh --signal-stage "$active_held_root" cancel; then :
       else signal_result=$?; echo 'MACOS-INSTALL: observation cancellation signal failed' >&2; [ "$result" -ne 0 ] || result=$signal_result; fi
@@ -85,12 +99,15 @@ if [ "${1:-}" = "--leased-run" ]; then
     mkdir -p "$active_held_root"; chmod 0700 "$active_held_root"
     HOME="$real_home" CFFIXED_USER_HOME="$real_home" "$work/observer" --verification "$1" "$2" "$(uuidgen)" held-driver --installed-proof --proof-state "$3" --proof-report "$4" &
     active_held_pid=$!
+    /usr/bin/caffeinate -d -u -w "$active_held_pid" -t "$display_assertion_max" &
+    active_caffeinate_pid=$!
     bash Tests/DidiCompanionTests/launch-probe/produce.sh --await-stage "$active_held_root"
   }
   complete_observation() {
     bash Tests/DidiCompanionTests/launch-probe/produce.sh --signal-stage "$active_held_root" completed
     if wait "$active_held_pid"; then joined=0; else joined=$?; fi
     active_held_pid=""
+    stop_display_assertion
     [ "$joined" -eq 0 ] || return "$joined"
     python3 Tests/DidiCompanionTests/launch-probe/verify.py --held-driver "$active_held_root"
     active_held_root=""

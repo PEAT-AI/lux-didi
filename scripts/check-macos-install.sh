@@ -70,15 +70,12 @@ if [ "${1:-}" = "--leased-run" ]; then
   active_held_pid=""; active_held_root=""; active_caffeinate_pid=""
   display_assertion_max="${LUX_DISPLAY_ASSERTION_MAX:-900}"
   # Test-only display precondition, never a product behavior change: caffeinate -u turns the display
-  # on if it is off and -d holds it awake. Started only after the lease and only for an actual native
-  # producer child (the held-cases producer and each held-driver observer), bound to that child (-w) and
-  # to an explicit maximum (-t), and killed as soon as the child ends or the script exits, so no
-  # assertion and no process outlives the run. The run's own display diagnostic records the actual
-  # observed state; the assertion is never assumed to have worked.
-  start_display_assertion() {
-    /usr/bin/caffeinate -d -u -w "$1" -t "$display_assertion_max" &
-    active_caffeinate_pid=$!
-  }
+  # on if it is off and -d holds it awake. One assertion covers the whole already-leased native-proof
+  # scope, bound to this leased shell's own pid (-w $$) and to an explicit maximum (-t), and released
+  # by the existing EXIT cleanup. It is created only after the lease is acquired and after the trap is
+  # installed, and is killed on success, failure or signal, so it never runs during admission or lease
+  # wait and never outlives the scope. The run's own display diagnostic records the actual observed
+  # state; the assertion is never assumed to have worked.
   stop_display_assertion() {
     if [ -n "$active_caffeinate_pid" ]; then
       kill "$active_caffeinate_pid" 2>/dev/null || true
@@ -99,19 +96,19 @@ if [ "${1:-}" = "--leased-run" ]; then
     exit "$result"
   }
   trap cleanup_active_observation EXIT
+  /usr/bin/caffeinate -d -u -w "$$" -t "$display_assertion_max" &
+  active_caffeinate_pid=$!
   begin_observation() {
     active_held_root="$2"
     mkdir -p "$active_held_root"; chmod 0700 "$active_held_root"
     HOME="$real_home" CFFIXED_USER_HOME="$real_home" "$work/observer" --verification "$1" "$2" "$(uuidgen)" held-driver --installed-proof --proof-state "$3" --proof-report "$4" &
     active_held_pid=$!
-    start_display_assertion "$active_held_pid"
     bash Tests/DidiCompanionTests/launch-probe/produce.sh --await-stage "$active_held_root"
   }
   complete_observation() {
     bash Tests/DidiCompanionTests/launch-probe/produce.sh --signal-stage "$active_held_root" completed
     if wait "$active_held_pid"; then joined=0; else joined=$?; fi
     active_held_pid=""
-    stop_display_assertion
     [ "$joined" -eq 0 ] || return "$joined"
     python3 Tests/DidiCompanionTests/launch-probe/verify.py --held-driver "$active_held_root"
     active_held_root=""
@@ -167,15 +164,9 @@ if [ "${1:-}" = "--leased-run" ]; then
   echo 'MACOS-INSTALL: invalid store fails closed with a safe error'
 
   export LUX_VERIFICATION_DRIVER
-  # Retain real gate negatives: no JSON-only evidence substitutes. This held-cases producer is the
-  # actual native producer for the measured failure and runs before any begin_observation call, so it
-  # carries the same bounded display assertion over its own child lifespan.
-  bash Tests/DidiCompanionTests/launch-probe/produce.sh --held-cases "$work/observer" "$app" "$proof/held-cases" "$real_home" &
-  cases_pid=$!
-  start_display_assertion "$cases_pid"
-  if wait "$cases_pid"; then cases_result=0; else cases_result=$?; fi
-  stop_display_assertion
-  [ "$cases_result" -eq 0 ] || exit "$cases_result"
+  # Retain real gate negatives: no JSON-only evidence substitutes. Runs in the foreground with its
+  # original signal and exit semantics; the leased-scope display assertion above already covers it.
+  bash Tests/DidiCompanionTests/launch-probe/produce.sh --held-cases "$work/observer" "$app" "$proof/held-cases" "$real_home"
   # A real authenticated HTTP response followed by a deliberately failing
   # assertion must cancel the held gate and retain the assertion's exit status.
   held_http_failure() (

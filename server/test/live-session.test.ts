@@ -428,13 +428,23 @@ test('live migrations preserve a populated accepted Store byte-for-byte', async 
   const dir = mkdtempSync(join(tmpdir(), 'didi-live-migrate-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const domain = createDomainPort({ outbox: Outbox });
-  const before = new Store(dir, [...domain.migrations, ...chatMigrations]);
+  const before = new Store(dir, [...domain.migrations, ...chatMigrations, ...liveMigrations.filter(migration => migration.version < 3)]);
   before.transaction(tx => {
     tx.run('INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?)', ['s1', 'Prior session', 1, null, 'UTC', 1, 1, 1]);
     tx.run('INSERT INTO entries VALUES (?,?,?,?,?,?,?,?)', ['e1', 's1', 1, 'user', 'preserved text', 2, 'UTC', 1]);
     tx.run('INSERT INTO chat_consents VALUES (?,?,?,?,?,?,?,?,?,?,?)', ['s1', before.assistantId, 'gemini', MODEL, 'route', 1, '["ordinary"]', '2026-01-01T00:00:00.000Z', null, 'consent-key', 'fingerprint']);
   });
+  const journalColumns = 'journal_id,live_session_id,provider_sequence,kind,text,finished,value,terminal_outcome,rejected_kind,rejected_sequence,payload_bytes,arrived_at';
+  before.transaction(tx => {
+    tx.run(`INSERT INTO live_sessions(live_session_id,owner_assistant_id,authority_epoch,idempotency_key,fingerprint,client_id,audit_id,profile_identity,prompt_identity,lifecycle,dispatch_intent,ready,journal_events,journal_bytes,journal_complete,consumer_state,terminal_outcome,terminal_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,'terminal',1,1,3,10,1,'ended',?,1,1,1)`,
+      ['legacy-live', before.assistantId, before.authorityEpoch, 'legacy-key', 'fingerprint', 'client', 'audit', 'profile', 'prompt', JSON.stringify({ state: 'closed' })]);
+    tx.run(`INSERT INTO live_journal(${journalColumns}) VALUES (41,'legacy-live',1,'inputTranscription','hello',1,NULL,NULL,NULL,NULL,5,1)`);
+    tx.run(`INSERT INTO live_journal(${journalColumns}) VALUES (42,'legacy-live',2,'outputTranscription','world',0,NULL,NULL,NULL,NULL,5,2)`);
+    tx.run(`INSERT INTO live_journal(${journalColumns}) VALUES (43,'legacy-live',NULL,'terminal',NULL,NULL,NULL,?,NULL,NULL,0,3)`, [JSON.stringify({ state: 'closed' })]);
+  });
   const prior = before.transaction(tx => ({
+    liveSessions: tx.all('SELECT * FROM live_sessions ORDER BY live_session_id'),
+    liveJournal: tx.all(`SELECT ${journalColumns} FROM live_journal ORDER BY journal_id`),
     sessions: tx.all('SELECT * FROM sessions ORDER BY id'),
     entries: tx.all('SELECT * FROM entries ORDER BY id'),
     consents: tx.all('SELECT * FROM chat_consents ORDER BY session_id'),
@@ -445,12 +455,22 @@ test('live migrations preserve a populated accepted Store byte-for-byte', async 
   const migrated = new Store(dir, [...domain.migrations, ...chatMigrations, ...liveMigrations]);
   t.after(() => migrated.close());
   const current = migrated.transaction(tx => ({
+    liveSessions: tx.all('SELECT * FROM live_sessions ORDER BY live_session_id'),
+    liveJournal: tx.all(`SELECT ${journalColumns} FROM live_journal ORDER BY journal_id`),
     sessions: tx.all('SELECT * FROM sessions ORDER BY id'),
     entries: tx.all('SELECT * FROM entries ORDER BY id'),
     consents: tx.all('SELECT * FROM chat_consents ORDER BY session_id'),
     outbox: tx.all('SELECT * FROM runtime_outbox ORDER BY id'),
   }));
   assert.deepEqual(current, prior, 'accepted CHAT and Domain rows stay meaningful');
+  assert.deepEqual(migrated.transaction(tx => tx.all('SELECT journal_id,tool_json FROM live_journal ORDER BY journal_id')),
+    [41, 42, 43].map(journal_id => ({ journal_id, tool_json: null })));
+  migrated.transaction(tx => {
+    tx.run(`INSERT INTO live_journal(live_session_id,kind,tool_json,payload_bytes,arrived_at) VALUES ('legacy-live','toolCall','{}',2,4)`);
+    tx.run(`INSERT INTO live_journal(live_session_id,kind,tool_json,payload_bytes,arrived_at) VALUES ('legacy-live','toolResult','{}',2,5)`);
+    assert.deepEqual(tx.all('SELECT journal_id,kind FROM live_journal WHERE journal_id>43 ORDER BY journal_id'),
+      [{ journal_id: 44, kind: 'toolCall' }, { journal_id: 45, kind: 'toolResult' }]);
+  });
   const owners = migrated.transaction(tx => tx.all('SELECT owner, MAX(version) AS version FROM runtime_migrations GROUP BY owner ORDER BY owner'));
   assert.deepEqual(owners.map(row => [String(row['owner']), Number(row['version'])]), [['chat', 4], ['domain', 3], ['live', 3]]);
 });

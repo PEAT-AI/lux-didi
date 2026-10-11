@@ -65,8 +65,12 @@ config_dir="${data_dir}/provider-config"
 if [ ! -e "${config_dir}/mcp.json" ]; then
   [ -d "${config_dir}" ] || { mkdir -p "${config_dir}"; chmod 700 "${config_dir}"; }
   tmp_file="${config_dir}/.mcp.json.tmp.$$"
-  cat > "$tmp_file" <<'JSON'
-{"schemaVersion":1,"grantMode":"owner-trusted-reads","endpoints":[{"id":"lux-knowledge","transport":"streamable-http","url":"http://127.0.0.1:8765/mcp","connector":"lux-knowledge","account":"local","resource":"lux-knowledge","credentialRef":null,"enabled":true,"allowEgress":true}]}
+  # The Google helper is a local stdio executable; both families share one approved env.
+  google_command="/Users/rob/.lux/reports/lux-didi-voice-1011/tools/google-mcp/.venv/bin/google-mcp"
+  json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+  stdio_env="{\"HOME\":\"$(json_escape "${HOME}")\",\"PATH\":\"$(json_escape "${PATH}")\",\"LOGNAME\":\"\",\"SHELL\":\"\",\"TERM\":\"\",\"USER\":\"\"}"
+  cat > "$tmp_file" <<JSON
+{"schemaVersion":1,"grantMode":"owner-trusted-reads","endpoints":[{"id":"lux-knowledge","transport":"streamable-http","url":"http://127.0.0.1:8765/mcp","connector":"lux-knowledge","account":"local","resource":"lux-knowledge","credentialRef":null,"enabled":true,"allowEgress":true},{"id":"gmail","transport":"stdio","command":"${google_command}","args":["--family","gmail"],"env":${stdio_env},"connector":"google","account":"local","resource":"google-gmail","credentialRef":null,"enabled":true,"allowEgress":true},{"id":"calendar","transport":"stdio","command":"${google_command}","args":["--family","calendar"],"env":${stdio_env},"connector":"google","account":"local","resource":"google-calendar","credentialRef":null,"enabled":true,"allowEgress":true}]}
 JSON
   chmod 600 "$tmp_file"
   mv "$tmp_file" "${config_dir}/mcp.json"

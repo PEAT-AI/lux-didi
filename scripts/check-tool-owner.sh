@@ -14,7 +14,7 @@ mkdir -p "$out/source/"{tools,contracts,runtime,connectors,test,adapters/model,a
 cp "$root"/server/tools/*.ts "$out/source/tools/"
 cp "$root"/server/contracts/{storage,errors}.ts "$out/source/contracts/"
 cp "$root/server/runtime/store.ts" "$out/source/runtime/"
-cp "$root/server/connectors/lux-knowledge.ts" "$out/source/connectors/"
+cp "$root"/server/connectors/*.ts "$out/source/connectors/"
 cp "$root"/server/adapters/model/*.ts "$out/source/adapters/model/"
 cp "$root"/server/adapters/mcp/*.ts "$out/source/adapters/mcp/"
 cp "$root/server/test/tool-owner.test.ts" "$out/source/test/"

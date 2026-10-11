@@ -24,8 +24,8 @@ globalThis.__didiFixtureModelTesting = {
       const i = process.argv.indexOf('--data-dir');
       if (i >= 0 && process.argv[i + 1]) writeFileSync(join(process.argv[i + 1], 'fixture-calls.json'), JSON.stringify(calls));
     } catch {}
-    const chunk = { candidates: [{ content: { parts: [{ text: 'synthetic reply' }], role: 'model' } }] };
-    const body = `data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`;
+    const chunk = { candidates: [{ content: { parts: [{ text: 'synthetic reply' }], role: 'model' }, finishReason: 'STOP' }] };
+    const body = `data: ${JSON.stringify(chunk)}\n\n`;
     return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
   }
 };

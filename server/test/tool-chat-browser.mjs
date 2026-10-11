@@ -11,9 +11,18 @@ const require = createRequire(resolve(dependencyRoot, '../../web/package.json'))
 const { chromium } = require('playwright');
 function message(child, phase, diagnostics = () => '') {
   return new Promise((resolve, reject) => {
-    const detail = () => diagnostics().replace(/tool-chat-synthetic-key-(?:one|two)|synthetic-mcp-token/g, '[redacted]').slice(-1000);
+    const bootstrap = []; let bootstrapOverflow = 0;
+    const detail = () => diagnostics().replace(/tool-chat-synthetic-key-(?:one|two)|synthetic-mcp-token/g, '[redacted]').slice(-1000)
+      + ` :: bootstrap=${JSON.stringify(bootstrap)} overflow=${bootstrapOverflow}`;
     const timer = setTimeout(() => finish(Error(`Synthetic process ${phase} timeout :: ${detail()}`)), 10000);
-    const receive = value => { if (value.phase === phase) finish(null, value); };
+    const receive = value => {
+      if (value.phase === 'bootstrap') {
+        if (bootstrap.length < 4) bootstrap.push({ mode: value.mode === 'browser' ? 'browser' : value.mode === 'recovery' ? 'recovery' : 'other',
+          entryMatches: value.entryMatches === true, canonicalEntryMatches: value.canonicalEntryMatches === true });
+        else bootstrapOverflow++;
+      }
+      if (value.phase === phase) finish(null, value);
+    };
     const exited = (code, signal) => finish(Error(`Synthetic process exited before ${phase} (code=${code}, signal=${signal}) :: ${detail()}`));
     function finish(error, value) {
       clearTimeout(timer); child.off('message', receive); child.off('exit', exited);

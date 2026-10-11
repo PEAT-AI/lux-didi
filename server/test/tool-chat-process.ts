@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import { createServer, type IncomingMessage } from 'node:http';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -55,6 +55,12 @@ async function body(req: IncomingMessage) {
   for await (const chunk of req) chunks.push(Buffer.from(chunk));
   return Buffer.concat(chunks);
 }
+// Test-only HTTP boundary, extracted without changing the existing buffering behavior.
+export async function bridgeSdkResponse(_method: string | undefined, res: ServerResponse, response: Response): Promise<void> {
+  res.writeHead(response.status, Object.fromEntries(response.headers));
+  res.end(Buffer.from(await response.arrayBuffer()));
+}
+
 export async function fixture(options: FixtureOptions = {}) {
   const dir = options.dir ?? mkdtempSync(join(tmpdir(), 'didi-tool-chat-'));
   const configDir = join(dir, 'provider-config'); mkdirSync(configDir, { mode: 0o700, recursive: true });
@@ -115,8 +121,7 @@ export async function fixture(options: FixtureOptions = {}) {
       // SDK handler executed, but no response reaches its caller: unknown effect.
       res.destroy(); return;
     }
-    res.writeHead(response.status, Object.fromEntries(response.headers));
-    res.end(Buffer.from(await response.arrayBuffer()));
+    await bridgeSdkResponse(req.method, res, response);
   })().catch(() => { res.writeHead(500); res.end('synthetic SDK failure'); }); });
   cleanups.push(() => sdkServer.listening ? new Promise<void>((resolve, reject) => sdkServer.close(error => error ? reject(error) : resolve())) : undefined);
   sdkServer.listen(0, '127.0.0.1'); await once(sdkServer, 'listening');
@@ -373,7 +378,12 @@ async function recoveryProcess() {
   });
   process.send?.({ phase: 'ready', sessionId, key });
 }
-if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+const entryMatches = !!process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1]);
+const canonicalEntryMatches = !!process.argv[1] && fileURLToPath(import.meta.url) === realpathSync(resolve(process.argv[1]));
+if (process.send && (process.argv[2] === 'browser' || process.argv[2] === 'recovery')) {
+  process.send({ phase: 'bootstrap', mode: process.argv[2], entryMatches, canonicalEntryMatches });
+}
+if (entryMatches) {
   const task = process.argv[2] === 'browser' ? browserProcess : process.argv[2] === 'recovery' ? recoveryProcess : null;
   if (task) void task().catch(error => {
     // This process only owns synthetic fixtures; redact their keys and bound startup evidence.

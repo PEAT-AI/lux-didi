@@ -574,7 +574,7 @@ test('canonical host applies configured idle deadline and persists idle_timeout 
 
 test('page Live projection is cookie-only, same-origin, read-only and no-store', async t => {
   const h = await harness(t, { config: configJson(true) });
-  const token = 'synthetic-page-cookie';
+  const token = 'p'.repeat(43);
   h.store.transaction(tx => tx.run('INSERT INTO runtime_sessions VALUES (?,?,?,?)', [createHash('sha256').update(token).digest('hex'), 'page-client', 'csrf', Date.now() + 60_000]));
   const headers = { cookie: `didi_session=${token}` };
   const response = await fetch(`${h.origin}/api/v1/live/current`, { headers });
@@ -613,7 +613,7 @@ test('gateway forwards safe tool-call/result markers and keeps a refused tool ba
   assert.deepEqual(projected.tool.sources, []);
   assert.equal(JSON.stringify(markers).includes(CANARY), false); assert.equal(JSON.stringify(markers).includes('args'), false);
   assert.equal(ws.readyState, WebSocket.OPEN);
-  const token = 'active-page-cookie';
+  const token = 'q'.repeat(43);
   h.store.transaction(tx => tx.run('INSERT INTO runtime_sessions VALUES (?,?,?,?)', [createHash('sha256').update(token).digest('hex'), 'active-page-client', 'csrf', Date.now() + 60_000]));
   const headers = { cookie: `didi_session=${token}` };
   const page = await json(h.origin, '/api/v1/live/current', { headers });

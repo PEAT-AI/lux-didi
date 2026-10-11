@@ -46,7 +46,10 @@ export interface LiveProfile {
   readonly limits: LiveLimits;
 }
 
-export type LiveToolsComposition = { owner: ReturnType<typeof createToolsOwner>; connectionIds(): string[] };
+export type LiveToolsComposition = {
+  owner: ReturnType<typeof createToolsOwner>; connectionIds(): string[];
+  registerAuthoritySource?(source: (runId: string, signal: AbortSignal) => Promise<import('../tools/types.js').LiveAuthority | null>): void;
+};
 export interface LiveToolProjection { name: string; status: 'completed' | 'error'; markdown: string; sources: { title: string; url?: string }[] }
 export interface LivePageProjection {
   state: 'idle' | 'listening' | 'thinking' | 'speaking' | 'ended' | 'error'; since: number | null;

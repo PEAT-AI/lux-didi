@@ -1,3 +1,9 @@
+import { createToolsOwner, toolsMigrations } from '../tools/index.js';
+import { createMcpAdapter } from '../adapters/mcp/adapter.js';
+import { McpRegistry } from '../adapters/mcp/registry.js';
+import { MemoryResultStore } from '../adapters/mcp/store.js';
+import type { LiveAuthority } from '../tools/types.js';
+import type { LiveToolsComposition } from '../live/types.js';
 import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -47,7 +53,7 @@ function writePrivate(dir: string, name: string, text: string): void {
   chmodSync(path, 0o600);
 }
 
-interface HarnessOptions { now?: () => number; config?: unknown; rawLive?: string; profile?: LiveProfile; withKey?: boolean; credentials?: { resolve(reference: string): Promise<string | undefined> } }
+interface HarnessOptions { toolsFactory?: (store: Store) => LiveToolsComposition; now?: () => number; config?: unknown; rawLive?: string; profile?: LiveProfile; withKey?: boolean; credentials?: { resolve(reference: string): Promise<string | undefined> } }
 
 interface Harness {
   f: Awaited<ReturnType<typeof fixture>>;
@@ -61,14 +67,14 @@ interface Harness {
 async function harness(t: TestContext, options: HarnessOptions = {}): Promise<Harness> {
   const f = await fixture(t);
   const dir = mkdtempSync(join(tmpdir(), 'didi-live-gateway-'));
-  const store = new Store(join(dir, 'state'), liveMigrations);
+  const store = new Store(join(dir, 'state'), [...liveMigrations, ...(options.toolsFactory ? toolsMigrations : [])]);
   const config = join(dir, 'provider-config');
   mkdirSync(config, { recursive: true, mode: 0o700 });
   chmodSync(config, 0o700);
   if (options.rawLive !== undefined) writePrivate(config, 'live.json', options.rawLive);
   else if (options.config !== undefined) writePrivate(config, 'live.json', `${JSON.stringify(options.config)}\n`);
   if (options.withKey !== false) writePrivate(config, 'gemini-primary.json', `${JSON.stringify({ schemaVersion: 1, keyReference: 'gemini-primary', key: CANARY })}\n`);
-  const { service: live } = composeLive(store, config, { socketFactory: f.socketFactory, ...(options.profile ? { profile: options.profile } : {}), ...(options.credentials ? { credentials: options.credentials } : {}) }, options.now);
+  const { service: live } = composeLive(store, config, { socketFactory: f.socketFactory, ...(options.profile ? { profile: options.profile } : {}), ...(options.credentials ? { credentials: options.credentials } : {}) }, options.now, undefined, options.toolsFactory?.(store));
   const running = await listenService({ store, live, port: 0 });
   t.after(async () => {
     await running.close();
@@ -630,4 +636,32 @@ test('gateway forwards safe tool-call/result markers and keeps a refused tool ba
   const [boundary] = await interruption; assert.equal(JSON.parse(boundary.toString()).type, 'interrupted');
   assert.equal((await json(h.origin, '/api/v1/live/current', { headers })).body.data.state, 'listening');
   ws.send(JSON.stringify({ type: 'close' })); await once(ws, 'close');
+});
+
+test('trusted composition registers current Live authority and refuses after terminal/revoke', async t => {
+  let lookup: ((runId: string, signal: AbortSignal) => Promise<LiveAuthority | null>) | undefined;
+  const h = await harness(t, { config: configJson(true), toolsFactory: store => {
+    const registry = new McpRegistry();
+    const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic-token' });
+    t.after(() => port.close());
+    const owner = createToolsOwner({ store, ownerId: store.assistantId, registry, port, lookupAuthority: async (runId, signal) => lookup ? lookup(runId, signal) : null });
+    return { owner, connectionIds: () => [], registerAuthoritySource: source => { lookup = source; } };
+  } });
+  assert.equal(typeof lookup, 'function');
+  const created = await createBody(h, 'registered-authority'); const id = created.body.data.liveSessionId;
+  const signal = new AbortController().signal;
+  assert.equal(await lookup!(id, signal), null);
+  const ws = new WebSocket(`${h.origin.replace('http:', 'ws:')}/api/v1/live-sessions/${id}/audio`, { headers: bearer(h) });
+  t.after(() => ws.terminate()); await once(ws, 'open');
+  await h.f.frame(1); h.f.send({ setupComplete: {} }); await once(ws, 'message');
+  const active = await lookup!(id, signal); assert.equal(active?.runId, id); assert.match(active!.acceptedRunHash, /^[a-f0-9]{64}$/);
+  const aborted = new AbortController(); aborted.abort(); assert.equal(await lookup!(id, aborted.signal), null);
+  assert.equal((await json(h.origin, `/api/v1/live-sessions/${id}/revoke`, { method: 'POST', headers: bearer(h) })).status, 200);
+  assert.equal(await lookup!(id, signal), null);
+  ws.close(); if (ws.readyState !== WebSocket.CLOSED) await once(ws, 'close');
+  const again = await createBody(h, 'registered-terminal'); const secondId = again.body.data.liveSessionId;
+  const second = new WebSocket(`${h.origin.replace('http:', 'ws:')}/api/v1/live-sessions/${secondId}/audio`, { headers: bearer(h) });
+  t.after(() => second.terminate()); await once(second, 'open'); await h.f.frame(2); h.f.send({ setupComplete: {} }); await once(second, 'message');
+  assert.notEqual(await lookup!(secondId, signal), null);
+  second.send(JSON.stringify({ type: 'close' })); await once(second, 'close'); assert.equal(await lookup!(secondId, signal), null);
 });

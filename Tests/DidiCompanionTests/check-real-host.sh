@@ -56,7 +56,7 @@ def valid_launch(launch, native_pid, node_pid):
  assert launch['serviceKernel']['rawStatus']==0 and launch['nativeDisposed'] and launch['observerDisposed'] and not launch['forced']
 for i,r in enumerate(reports):
  assert set(r)==set('type schemaVersion phase success runId installId proofId reopened source native service priorRecords newRecord observations visual serviceStop credentialCleanup error'.split())
- assert set(r['visual'])==set('windowId screenCapturePermission pageSnapshot nativeChrome nativeChromeLimitation accessibility rootVisualReviewRequired'.split())
+ assert set(r['visual'])==set('windowId screenCapturePermission pageSnapshot nativeChrome nativeChromeLimitation accessibility rootVisualReviewRequired orb'.split())
  diagnostic=json.load(open(f'{root}/run-{i+1}.json.diagnostics.json'))
  assert diagnostic['nativePid']==r['native']['pid'] and diagnostic['windowId']==r['visual']['windowId']
  assert diagnostic['sourceSHA']==commit and diagnostic['proofId']==r['proofId']

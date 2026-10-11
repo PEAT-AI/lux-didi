@@ -49,7 +49,7 @@ One session spans multiple turns. Events have a monotonically increasing adapter
 
 Combined serverContent fields are not discarded. Deterministic projection within one envelope is model parts, input transcription, output transcription, interruption, generation boundary, turn boundary, then activity facts. Ordering across envelopes follows actual ws delivery. Input transcription can arrive after output completion and remains independent evidence; durable association belongs to later orchestration. Interrupted output is followed by turnComplete without generationComplete. Generated audio does not prove playback.
 
-Unknown harmless protocol additions are ignored. Empty envelopes, malformed recognized fields, invalid PCM/rates and premature or repeated setup completion fail closed. Tool calls fail explicitly with `unsupported_tool`; there is no execution or invented tool result. `goAway` projects the documented duration then closes honestly. Resumption updates expose only availability; raw handles are never emitted or persisted and no resumption is attempted. No context compression or unsupported setup controls are included.
+Unknown harmless protocol additions are ignored. Empty envelopes, malformed recognized fields, invalid PCM/rates and premature or repeated setup completion fail closed. Tool batches are surfaced as events; the host executes already-granted tools and answers each batch in one response frame. `goAway` projects the documented duration then closes honestly. Resumption updates expose only availability; raw handles are never emitted or persisted and no resumption is attempted. Sliding-window context compression and documented history/VAD controls are included; no resumption or reconnect is attempted.
 
 ## Failure and resource bounds
 

@@ -23,6 +23,7 @@ interface ActiveSession {
   toolStep: number;
   seenIds: Set<string>;
   thinking: boolean;
+  pendingCallIds: Set<string>;
   speaking: boolean;
   liveSessionId: string;
   session: LiveVoiceSession;
@@ -224,7 +225,7 @@ export class LiveSessionOwner {
       if (!row) return { state: 'idle', since: null, entries: [], cursor };
       const handle = this.#active.get(String(row.live_session_id));
       const terminal = parseTerminal(row.terminal_outcome);
-      const state: LivePageProjection['state'] = terminal ? (terminal.state === 'closed' || terminal.state === 'cancelled' ? 'ended' : 'error') : handle?.thinking ? 'thinking' : handle?.speaking ? 'speaking' : 'listening';
+      const state: LivePageProjection['state'] = terminal ? (['closed', 'cancelled', 'revoked', 'expired'].includes(terminal.state) ? 'ended' : 'error') : handle?.thinking ? 'thinking' : handle?.speaking ? 'speaking' : 'listening';
       const rows = tx.all('SELECT journal_id,kind,text,tool_json FROM live_journal WHERE live_session_id=? AND journal_id>? ORDER BY journal_id LIMIT 100', [String(row.live_session_id), cursor]);
       const entries: LivePageProjection['entries'] = [];
       for (const item of rows) {
@@ -371,7 +372,7 @@ export class LiveSessionOwner {
     }
     this.#store.transaction(tx => tx.run("UPDATE live_sessions SET lifecycle='active', updated_at=? WHERE live_session_id=?", [this.#now(), liveSessionId]));
     const handle: ActiveSession = {
-      registry, host, toolStep: 0, seenIds: new Set(), thinking: false, speaking: false,
+      registry, host, toolStep: 0, seenIds: new Set(), thinking: false, speaking: false, pendingCallIds: new Set(),
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
       consumerState: 'attached', journalEvents: 0, journalBytes: 0, adapterOutcome: undefined,
@@ -438,8 +439,17 @@ export class LiveSessionOwner {
     try {
       for await (const event of handle.session.events) {
         if (this.#settled(handle)) break;
-        if (event.type === 'toolCall') { void this.#toolBatch(handle, event).catch(() => {}); continue; }
-        if (event.type === 'toolCallCancellation') { handle.thinking = false; continue; }
+        if (event.type === 'toolCall') {
+          for (const call of event.calls) handle.pendingCallIds.add(call.id);
+          void this.#toolBatch(handle, event).catch(() => {
+            if (this.#settled(handle)) return;
+            const responses = event.calls.filter(call => handle.pendingCallIds.has(call.id)).map(call => ({ id: call.id, name: call.name, response: { error: 'tool_processing_failed' } }));
+            try { if (responses.length) handle.session.sendToolResponse({ responses }); } catch { /* transport may have terminated */ }
+            for (const call of event.calls) handle.pendingCallIds.delete(call.id);
+            handle.thinking = handle.pendingCallIds.size > 0;
+          }); continue;
+        }
+        if (event.type === 'toolCallCancellation') { for (const id of event.ids) handle.pendingCallIds.delete(id); handle.thinking = handle.pendingCallIds.size > 0; continue; }
         if (event.type === 'interrupted' || event.type === 'turnComplete' || event.type === 'generationComplete') handle.speaking = false;
         if (event.type === 'audio') { handle.speaking = true; this.#pushChunk(handle, { kind: 'audio', pcm: event.pcm }); continue; }
         if (event.type === 'outcome') { handle.adapterOutcome = event.outcome; continue; }
@@ -502,11 +512,13 @@ export class LiveSessionOwner {
       });
     }
     if (this.#settled(handle)) return;
-    for (const projection of projections) publish('toolResult', projection);
+    for (const [index, projection] of projections.entries()) if (handle.pendingCallIds.has(event.calls[index]!.id)) publish('toolResult', projection);
+    responses = responses.filter(response => handle.pendingCallIds.has(response.id));
     if (!this.#settled(handle)) {
-      try { handle.session.sendToolResponse({ responses }); } catch { /* A cancelled provider batch or terminal transport cannot receive late answers. */ }
+      try { if (responses.length) handle.session.sendToolResponse({ responses }); } catch { /* A cancelled provider batch or terminal transport cannot receive late answers. */ }
     }
-    handle.thinking = false;
+    for (const call of event.calls) handle.pendingCallIds.delete(call.id);
+    handle.thinking = handle.pendingCallIds.size > 0;
   }
 
   #persist(handle: ActiveSession, event: LiveVoiceEvent | { type: 'toolCall' | 'toolResult'; sequence: number; tool: LiveToolProjection }, kind: JournalKind): number | 'overflow' {

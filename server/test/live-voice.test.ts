@@ -306,3 +306,21 @@ test('Live tool batches use one response frame and suppress microphone audio unt
   session.sendAudio({ pcm, dataClass: 'ordinary' }); await f.frame(3);
   session.close();
 });
+
+test('3.8 Live omits thinking config and cancellation releases an unanswered batch', async t => {
+  const f = await fixture(t);
+  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory, modelId: 'gemini-3.8-live-test', route: { enabled: true, provider: 'gemini', modelId: 'gemini-3.8-live-test', dataClasses: ['ordinary', 'private'] } })).open(request(), control());
+  t.after(() => session.close()); const events = session.events[Symbol.asyncIterator]();
+  await f.frame(1); const setup = (f.frames[0] as { setup: { generationConfig: object } }).setup;
+  assert.equal('thinkingConfig' in setup.generationConfig, false);
+  f.send({ setupComplete: {} }); await session.ready; await events.next();
+  f.send({ toolCall: { functionCalls: [{ id: 'one', name: 'test', args: {} }, { id: 'two', name: 'test', args: {} }] } });
+  assert.equal((await events.next()).value?.type, 'toolCall');
+  assert.throws(() => session.sendToolResponse({ responses: [{ id: 'one', name: 'test', response: {} }] }), code('invalid_request'));
+  session.sendAudio({ pcm, dataClass: 'ordinary' }); assert.equal(session.droppedAudioFrames, 1);
+  f.send({ toolCallCancellation: { ids: ['one', 'two'] } });
+  assert.equal((await events.next()).value?.type, 'toolCallCancellation');
+  session.sendAudio({ pcm, dataClass: 'ordinary' }); await f.frame(2);
+  assert.equal('realtimeInput' in (f.frames[1] as object), true);
+  session.close();
+});

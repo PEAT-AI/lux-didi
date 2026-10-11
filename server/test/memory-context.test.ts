@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fork } from 'node:child_process';
+import { createHash, randomUUID } from 'node:crypto';
+import { PROMPT_VERSION } from '../prompt/index.js';
 import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { openMemoryFixture, result, ROUTE_CLASSES } from './memory-context-process.js';
@@ -396,7 +398,24 @@ test('additive chat v3 migration upgrades a populated v1+v2 DB and preserves old
     const record = f1.append(source.id, 'Old record', sourceRef());
     assert.equal(record.id.length > 0, true);
     const sending = f1.enroll();
-    const run = f1.chat.accept({ sessionId: sending.id, text: 'Old turn', idempotencyKey: 'old' }, f1.context);
+    // Seed the actual v1/v2 accept contract (pre-v4 0c069bc2^), not current chat.accept
+    // which now requires the owner-profile table. Use real domain rows and granted consent.
+    const userEntry = f1.append(sending.id, 'Old turn');
+    const run = { runId: randomUUID() };
+    const fingerprint = createHash('sha256').update(JSON.stringify({ sessionId: sending.id, text: 'Old turn', retryOf: null })).digest('hex');
+    f1.store.transaction(tx => {
+      const consent = tx.get('SELECT * FROM chat_consents WHERE session_id=? AND owner_assistant_id=?', [sending.id, f1.context.assistantId])!;
+      const read = f1.domain.execute(tx, 'getSession', { id: sending.id }, f1.context);
+      const subjects = [{ kind: 'session' as const, id: sending.id }, ...read.entries.map(entry => ({ kind: 'entry' as const, id: entry.id }))];
+      const labels = subjects.map(subject => ({ ...subject, ...f1.config.classify(subject, tx)! }));
+      const route = f1.config.route;
+      tx.run(`INSERT INTO chat_runs(run_id,session_id,user_entry_id,owner_assistant_id,accepting_client_id,idempotency_key,fingerprint,authority_epoch,provider,model,prompt_version,state,retry_of,accepted_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,'accepted',?,?)`,
+      [run.runId, sending.id, userEntry.id, f1.context.assistantId, f1.context.clientId, 'old', fingerprint, f1.context.authorityEpoch, route.provider!, route.model!, PROMPT_VERSION, null, f1.context.now]);
+      tx.run('INSERT INTO chat_run_policy VALUES (?,1,?,?,?)', [run.runId, Number(consent.revision), consent.route_identity!, JSON.stringify(labels)]);
+    });
+    assert.deepEqual(chatVersions(f1.store), [1, 2]);
+    assert.equal(f1.store.transaction(tx => tx.get("SELECT name FROM sqlite_master WHERE name IN ('chat_run_context','chat_run_owner_profile')", [])), undefined);
     const before = f1.store.transaction(tx => tx.get('SELECT fingerprint,idempotency_key,session_id,state FROM chat_runs WHERE run_id=?', [run.runId]));
     const consentBefore = f1.store.transaction(tx => tx.get('SELECT * FROM chat_consents WHERE session_id=?', [sending.id]));
     const policyBefore = f1.store.transaction(tx => tx.get('SELECT * FROM chat_run_policy WHERE run_id=?', [run.runId]));

@@ -50,6 +50,7 @@ export async function startFixture() {
     if (req.method !== 'GET' && req.headers['x-didi-csrf'] !== 'synthetic-csrf') return error('CSRF_INVALID','Missing CSRF token.',403);
     if (req.method !== 'GET' && (req.headers['x-didi-authority-epoch'] !== epoch || !req.headers['idempotency-key'])) return error('INVALID_HEADERS','Missing authority or idempotency key');
     if(path === '/api/v1/auth/logout') { paired=false; res.setHeader('Set-Cookie','didi=; Max-Age=0; HttpOnly; SameSite=Strict; Path=/'); return ok({loggedOut:true}); }
+    if (path === '/api/v1/chat/status' && req.method==='GET') return ok({status:'unconfigured'});
     if (path === '/api/v1/status') return ok({ownerProfile:{status:'default',displayName:'Lux Didi'},assistantId:'synthetic-didi',authorityEpoch:epoch,serviceMode:'synthetic-test',capabilities:{memory:true,commitments:true,notifications:false,model:false},model:{configured:false},sources:[]});
     if (path === '/api/v1/sessions' && req.method==='GET') return ok({items:all('session'),nextCursor:null});
     if (path === '/api/v1/sessions' && req.method==='POST') return ok(put('session',{id:randomUUID(),...body,startedAt:new Date().toISOString(),endedAt:null,revision:1}));

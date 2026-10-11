@@ -64,16 +64,10 @@ data_dir="${HOME}/Library/Application Support/ai.peat.lux-didi"
 config_dir="${data_dir}/provider-config"
 if [ ! -e "${config_dir}/mcp.json" ]; then
   [ -d "${config_dir}" ] || { mkdir -p "${config_dir}"; chmod 700 "${config_dir}"; }
-  # Mattermost is a stdio child: register it only when node and the child are installed,
-  # so a clean machine still starts. The child reads its own session; env carries no secret.
-  node_bin="$(command -v node 2>/dev/null || true)"
-  mattermost_dist="${HOME}/GitHub/mattermost-mcp/dist/index.cjs"
-  mattermost_entry=""
-  if [ -n "$node_bin" ] && [ -x "$node_bin" ] && [ -f "$mattermost_dist" ]; then
-    mattermost_entry=",{\"id\":\"mattermost\",\"transport\":\"stdio\",\"command\":\"${node_bin}\",\"args\":[\"${mattermost_dist}\"],\"env\":{\"HOME\":\"${HOME}\",\"LOGNAME\":\"\",\"PATH\":\"${PATH}\",\"SHELL\":\"\",\"TERM\":\"\",\"USER\":\"${USER:-}\",\"MATTERMOST_URL\":\"https://chat.peat-cloud.com\"},\"connector\":\"mattermost\",\"account\":\"local\",\"resource\":\"mattermost\",\"credentialRef\":null,\"enabled\":true,\"allowEgress\":true}"
-  fi
   tmp_file="${config_dir}/.mcp.json.tmp.$$"
-  printf '{"schemaVersion":1,"grantMode":"owner-trusted-reads","endpoints":[{"id":"lux-knowledge","transport":"streamable-http","url":"http://127.0.0.1:8765/mcp","connector":"lux-knowledge","account":"local","resource":"lux-knowledge","credentialRef":null,"enabled":true,"allowEgress":true},{"id":"mongoose","transport":"streamable-http","url":"https://mongoose.dev.peat-cloud.com/mcp/","connector":"mongoose","account":"local","resource":"mongoose","credentialRef":"mongoose-mcp","enabled":true,"allowEgress":true}%s]}\n' "$mattermost_entry" > "$tmp_file"
+  cat > "$tmp_file" <<'JSON'
+{"schemaVersion":1,"grantMode":"owner-trusted-reads","endpoints":[{"id":"lux-knowledge","transport":"streamable-http","url":"http://127.0.0.1:8765/mcp","connector":"lux-knowledge","account":"local","resource":"lux-knowledge","credentialRef":null,"enabled":true,"allowEgress":true}]}
+JSON
   chmod 600 "$tmp_file"
   mv "$tmp_file" "${config_dir}/mcp.json"
 fi

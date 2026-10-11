@@ -33,6 +33,7 @@ export type LiveVoiceErrorCode =
   | 'remote_closed' | 'protocol_error' | 'unsupported_tool' | 'incoming_limit' | 'outgoing_limit'
   | 'backpressure' | 'event_limit' | 'handshake_timeout' | 'idle_timeout' | 'session_timeout' | 'go_away';
 export interface LiveVoiceOutcome {
+  droppedAudioFrames?: number;
   status: 'closed' | 'cancelled' | 'deadline' | 'failed'; code: LiveVoiceErrorCode;
 }
 export type LiveVoiceEvent = { sequence: number } & (

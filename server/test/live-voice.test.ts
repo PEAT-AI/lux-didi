@@ -304,7 +304,7 @@ test('Live tool batches use one response frame and suppress microphone audio unt
   await f.frame(2);
   assert.deepEqual(f.frames[1], { toolResponse: { functionResponses: [{ id: 'c1', name: 'search_knowledge', response: { markdown: 'one' } }, { id: 'c2', name: 'search_knowledge', response: { error: 'denied' } }] } });
   session.sendAudio({ pcm, dataClass: 'ordinary' }); await f.frame(3);
-  session.close();
+  session.close(); assert.equal((await session.done).droppedAudioFrames, 1);
 });
 
 test('3.8 Live omits thinking config and cancellation releases an unanswered batch', async t => {

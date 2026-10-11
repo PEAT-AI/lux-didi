@@ -639,12 +639,14 @@ test('gateway forwards safe tool-call/result markers and keeps a refused tool ba
 });
 
 test('trusted composition registers current Live authority and refuses after terminal/revoke', async t => {
+  let gateOwner: ReturnType<typeof createToolsOwner>;
   let lookup: ((runId: string, signal: AbortSignal) => Promise<LiveAuthority | null>) | undefined;
   const h = await harness(t, { config: configJson(true), toolsFactory: store => {
     const registry = new McpRegistry();
     const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic-token' });
     t.after(() => port.close());
     const owner = createToolsOwner({ store, ownerId: store.assistantId, registry, port, lookupAuthority: async (runId, signal) => lookup ? lookup(runId, signal) : null });
+    gateOwner = owner;
     return { owner, connectionIds: () => [], registerAuthoritySource: source => { lookup = source; } };
   } });
   assert.equal(typeof lookup, 'function');
@@ -655,9 +657,12 @@ test('trusted composition registers current Live authority and refuses after ter
   t.after(() => ws.terminate()); await once(ws, 'open');
   await h.f.frame(1); h.f.send({ setupComplete: {} }); await once(ws, 'message');
   const active = await lookup!(id, signal); assert.equal(active?.runId, id); assert.match(active!.acceptedRunHash, /^[a-f0-9]{64}$/);
+  const host = { runId: id, actorId: active!.actorId, authorityEpoch: active!.authorityEpoch, revision: active!.revision, grants: [] };
+  assert.equal((await gateOwner!.resultGate.authorize(host, [], ['ordinary'], signal)).state, 'allowed');
   const aborted = new AbortController(); aborted.abort(); assert.equal(await lookup!(id, aborted.signal), null);
   assert.equal((await json(h.origin, `/api/v1/live-sessions/${id}/revoke`, { method: 'POST', headers: bearer(h) })).status, 200);
   assert.equal(await lookup!(id, signal), null);
+  assert.equal((await gateOwner!.resultGate.authorize(host, [], ['ordinary'], signal)).state, 'refused');
   ws.close(); if (ws.readyState !== WebSocket.CLOSED) await once(ws, 'close');
   const again = await createBody(h, 'registered-terminal'); const secondId = again.body.data.liveSessionId;
   const second = new WebSocket(`${h.origin.replace('http:', 'ws:')}/api/v1/live-sessions/${secondId}/audio`, { headers: bearer(h) });

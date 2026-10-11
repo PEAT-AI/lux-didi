@@ -355,7 +355,7 @@ class Session implements LiveVoiceSession {
   private finish(code: LiveVoiceErrorCode) {
     if (this.terminal) return;
     const status = code === 'closed' ? 'closed' : code === 'cancelled' ? 'cancelled' : code === 'deadline' ? 'deadline' : 'failed';
-    this.terminal = Object.freeze({ status, code });
+    this.terminal = Object.freeze({ status, code, ...(this.droppedAudioFrames ? { droppedAudioFrames: this.droppedAudioFrames } : {}) });
     for (const timer of this.timers) clearTimeout(timer);
     this.timers.clear(); this.signal.removeEventListener('abort', this.onAbort);
     this.initial = undefined; this.secret = '';

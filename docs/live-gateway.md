@@ -40,7 +40,7 @@ status or error payloads. Status meaning is local validation, never remote reach
 
 Authorization is header-only `Authorization: Bearer <store.adminCredential>`. Any `Cookie`, any
 `Origin`, duplicate protected headers, a wrong `Host`, or a stale `x-didi-authority-epoch` fails before
-the owner or credentials are touched. A paired browser cookie/CSRF never authorizes Live, and a browser
+the owner or credentials are touched. A paired browser cookie/CSRF never authorizes Live control or audio, and a browser
 `clientId` is never trusted.
 
 ## Routes
@@ -83,7 +83,7 @@ a delivered terminal or heard audio.
 
 ## Granted tools and page projection
 
-Trusted composition may pass `LiveToolsComposition = {owner, connectionIds()}` as the sixth argument to `composeLive`. The Live owner persists an accepted run at attach, snapshots the owner's configured connection selection, and declares only that frozen tool-definition snapshot. The composing host delegates the tools owner's authority lookup to `LiveService.lookupAuthority(runId)`. It returns the accepted hash and authority only while the Live session is attached and current, and null after revocation, termination, shutdown or epoch invalidation. The shared tool helper preserves the text loop's original validation, grant, authority, intent, execute ordering. Only resultGate-accepted responses become completed tool-result projections. The tool grant evaluator is unchanged.
+Trusted composition may pass `LiveToolsComposition = {owner, connectionIds(), registerAuthoritySource?}` as the sixth argument to `composeLive`. The Live owner persists an accepted run at attach, snapshots the owner's configured connection selection, and declares only that frozen tool-definition snapshot. When provided, `registerAuthoritySource` is called with the Live owner's current-authority lookup; a trusted composer may also delegate through `LiveService.lookupAuthority(runId)`. It returns the accepted hash and authority only while the Live session is attached and current, and null after revocation, termination, shutdown or epoch invalidation. The shared tool helper preserves the text loop's original validation, grant, authority, intent, execute ordering. Only resultGate-accepted responses become completed tool-result projections. The tool grant evaluator is unchanged.
 
 The existing WS JSON marker channel now includes `toolCall` and `toolResult`. Both expose only the tool name and status; results additionally contain accepted Markdown and sources. A source URL exists only for a real HTTPS Markdown link; insight references without a URL remain title-only. PCM stays in binary frames. Arguments, credentials, provider errors and raw MCP envelopes are not markers or Live journal payloads.
 

@@ -22,6 +22,32 @@ import AppKit
     var kernel: Int32 = -1
     var failureIdentity: [String: Any] = [:]
     var launchFailure: [String: Any] = [:]
+    // Passive ordered launch trace (R51). Records the launch submission and completion boundaries, the
+    // real returned application and error flags, the previous launched child's exit state and a
+    // self/observer/foreign-unclassified frontmost category only. Recording only: no new, reordered or
+    // retried launch call and no synchronization barrier; no foreign identity or window inventory.
+    var launchTrace: [[String: Any]] = []
+    var launchTraceOrdinal = 0
+    var lastLaunched: NSRunningApplication?
+    @discardableResult
+    func trace(_ event: String, _ extra: [String: Any] = [:]) -> Int {
+        launchTraceOrdinal += 1
+        var entry: [String: Any] = ["ordinal": launchTraceOrdinal,
+            "monotonicMs": Int(ProcessInfo.processInfo.systemUptime * 1000), "event": event]
+        for (key, value) in extra { entry[key] = value }
+        launchTrace.append(entry)
+        return launchTraceOrdinal
+    }
+    func frontmostCategory() -> String {
+        guard let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier else { return "unavailable" }
+        if pid == getpid() { return "observer" }
+        if pid == target?.processIdentifier { return "self" }
+        return "foreign-unclassified"
+    }
+    func previousChildExited() -> Any {
+        guard let last = lastLaunched else { return NSNull() }
+        return last.isTerminated
+    }
     var control: Int32 = -1
     // eof-pre closes the control socket on purpose (control = -1). Dialling is
     // therefore tracked separately so a later directory write can never re-dial
@@ -74,9 +100,15 @@ import AppKit
         environment.removeValue(forKey: "LUX_VERIFICATION_HOLD_OBSERVATION")
         if args[4].hasPrefix("held-") { environment["LUX_VERIFICATION_HOLD_OBSERVATION"] = "1" }
         configuration.environment = environment
+        trace("observer:launch-submitted", ["previousChildExited": previousChildExited(),
+            "frontmostCategory": frontmostCategory()])
         NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: bundle), configuration: configuration) { app, error in
             Task { @MainActor in
                 guard !self.settled else { return }
+                self.trace("observer:launch-completed", ["launchError": error != nil,
+                    "returnedApplication": app != nil, "previousChildExited": self.previousChildExited(),
+                    "frontmostCategory": self.frontmostCategory()])
+                if let app { self.lastLaunched = app }
                 guard error == nil, let app, app.bundleURL.map({ physicalPath($0.path) }) == self.bundle else {
                     let failure = error as NSError?
                     self.launchFailure = ["launchErrorDomain": failure?.domain as Any? ?? NSNull(),
@@ -189,6 +221,7 @@ import AppKit
                 output["serviceIdentity"] = serviceRecord as Any? ?? NSNull(); output["serviceKernel"] = serviceKernel
                 output["pidReuseRefused"] = pidReuseRefused; output["driverMixupRefused"] = driverMixupRefused
                 output["forced"] = forced; output["cancelSent"] = cancelSent
+                output["launchTrace"] = launchTrace
                 output["heldStage"] = heldStage as Any? ?? NSNull()
                 output["heldStimulusSent"] = heldStimulusSent
                 output["acknowledgementOutcome"] = acknowledgementOutcome as Any? ?? NSNull()

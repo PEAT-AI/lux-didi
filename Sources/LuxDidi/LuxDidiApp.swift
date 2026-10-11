@@ -182,7 +182,11 @@ struct RootView: View {
     private var cleanQuit = false
     private var quitting = false
     func applicationDidFinishLaunching(_ notification: Notification) {
+        OwnedWindowReadiness.trace("app:didFinishLaunching-entry",
+            ["activationPolicy": NSApp.activationPolicy().rawValue, "isActive": NSApp.isActive])
         NSApp.setActivationPolicy(.accessory)
+        OwnedWindowReadiness.trace("app:setActivationPolicy-accessory",
+            ["activationPolicy": NSApp.activationPolicy().rawValue])
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 980, height: 760), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.title = "Didi"; window.center(); window.delegate = self
         window.isReleasedWhenClosed = false
@@ -205,7 +209,9 @@ struct RootView: View {
         }
         show()
         Task {
+            OwnedWindowReadiness.trace("app:refresh-start")
             await model.refresh()
+            OwnedWindowReadiness.trace("app:refresh-end", ["isActive": NSApp.isActive])
             if proofRequest != nil { await runInstalledProof(); return }
             if CommandLine.arguments.contains("--self-check") { await selfCheck(); return }
             if let index = CommandLine.arguments.firstIndex(of: "--ui-proof"), CommandLine.arguments.count > index + 1 {
@@ -214,7 +220,17 @@ struct RootView: View {
             await model.reconnect()
         }
     }
-    @objc func show() { window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) }
+    @objc func show() {
+        OwnedWindowReadiness.trace("app:show-entry", ["windowExists": window != nil])
+        OwnedWindowReadiness.trace("app:makeKeyAndOrderFront-before")
+        window.makeKeyAndOrderFront(nil)
+        OwnedWindowReadiness.trace("app:makeKeyAndOrderFront-after",
+            ["isVisible": window.isVisible, "isKey": window.isKeyWindow, "isMain": window.isMainWindow])
+        OwnedWindowReadiness.trace("app:activateIgnoringOtherApps-before", ["isActive": NSApp.isActive])
+        NSApp.activate(ignoringOtherApps: true)
+        OwnedWindowReadiness.trace("app:activateIgnoringOtherApps-after",
+            ["isActive": NSApp.isActive, "isKey": window.isKeyWindow, "isMain": window.isMainWindow])
+    }
     func toggle() { window.isVisible ? hide() : show() }
     func hide() { model.stopRecording("Didi hidden"); window.orderOut(nil) }
     func escape() { hide() }

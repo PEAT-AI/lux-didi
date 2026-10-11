@@ -26,12 +26,16 @@ export class LiveToolJobs {
   constructor(private readonly store: StorePort, private readonly now: () => number) {}
 
   list(): ToolJob[] {
-    return this.store.transaction(tx => tx.all('SELECT id,payload,state FROM runtime_outbox WHERE entity_id LIKE ? ORDER BY due_at,id', [`${prefix}%`])
+    return this.store.transaction(tx => {
+      // Match the outbox's unknown-on-expired-claim rule without claiming unrelated reminder work.
+      tx.run("UPDATE runtime_outbox SET state='unknown',claim_token=NULL,lease_until=NULL WHERE entity_id LIKE ? AND state='claimed' AND lease_until<=?", [`${prefix}%`, this.now()]);
+      return tx.all('SELECT id,payload,state FROM runtime_outbox WHERE entity_id LIKE ? ORDER BY due_at,id', [`${prefix}%`])
       .map(row => {
         const job = JSON.parse(String(row.payload)) as ToolJob;
         if (row.state === 'unknown') return { ...job, state: 'unknown' as const };
         return job;
-      }));
+      });
+    });
   }
 
   pending(): ToolJob[] { return this.list().filter(job => job.deferred && !job.delivered); }

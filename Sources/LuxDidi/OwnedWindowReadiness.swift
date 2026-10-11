@@ -14,6 +14,13 @@ import AppKit
          "active": NSApp.isActive, "visible": window.isVisible, "main": window.isMainWindow,
          "key": window.isKeyWindow, "unoccluded": window.occlusionState.contains(.visible)]
     }
+    // Privacy-safe per-record foreground classification. A LaunchServices launch
+    // parent is not an ownership proof, so only self/foreign-unclassified/
+    // unavailable are reported; no foreign pid, bundle, name or title is emitted.
+    private static func frontmostClass() -> String {
+        guard let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier else { return "unavailable" }
+        return pid == getpid() ? "self" : "foreign-unclassified"
+    }
     static func wait(_ window: NSWindow, timeout: UInt64 = 8_000_000_000,
                      request: () -> Void) async -> Outcome {
         let started = Date()
@@ -57,7 +64,7 @@ import AppKit
                     events.append(["event": event, "elapsedSeconds": Date().timeIntervalSince(started), "state": snapshot,
                         "diagnostic": ["activationPolicy": NSApp.activationPolicy().rawValue, "hidden": NSApp.isHidden,
                             "onActiveSpace": window.isOnActiveSpace, "canBecomeKey": window.canBecomeKey,
-                            "canBecomeMain": window.canBecomeMain]])
+                            "canBecomeMain": window.canBecomeMain, "frontmostClass": frontmostClass()]])
                     if complete && snapshot.values.allSatisfy({ $0 }) { finish(true) }
                 }
                 cancellation.action = { record("cancelled", complete: false); finish(false) }
@@ -78,7 +85,9 @@ import AppKit
                     (NSApplication.didBecomeActiveNotification, NSApplication.shared),
                     (NSWindow.didBecomeMainNotification, window),
                     (NSWindow.didBecomeKeyNotification, window),
-                    (NSWindow.didChangeOcclusionStateNotification, window)
+                    (NSWindow.didChangeOcclusionStateNotification, window),
+                    (NSApplication.didResignActiveNotification, NSApplication.shared),
+                    (NSWindow.didResignKeyNotification, window)
                 ]
                 for (name, object) in notifications {
                     observers.append(NotificationCenter.default.addObserver(forName: name, object: object, queue: .main) { _ in

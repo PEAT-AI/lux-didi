@@ -82,6 +82,7 @@ if [ "${1:-}" = "--leased-run" ]; then
   trap cleanup_active_observation EXIT
   begin_observation() {
     active_held_root="$2"
+    mkdir -p "$active_held_root"; chmod 0700 "$active_held_root"
     HOME="$real_home" CFFIXED_USER_HOME="$real_home" "$work/observer" --verification "$1" "$2" "$(uuidgen)" held-driver --installed-proof --proof-state "$3" --proof-report "$4" &
     active_held_pid=$!
     bash Tests/DidiCompanionTests/launch-probe/produce.sh --await-stage "$active_held_root"
@@ -239,12 +240,22 @@ PY
   mkdir -p "$proof/fx-p0"
   HOME="$real_home" CFFIXED_USER_HOME="$real_home" "$work/observer" --verification "$fixture" "$proof/fx-p0" "$(uuidgen)" run --installed-proof --proof-state "$fstate" --proof-report "$proof/fx-p0.json"
   fx_assistant="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["service"]["assistantId"])' "$proof/fx-p0.json")"
+  fx_profile="$profileDir/fixture-owner-profile.json"
+  python3 - "$profileDir/owner-profile.json" "$fx_profile" "$fx_assistant" <<'PY'
+import json, sys
+source, target, owner = sys.argv[1:]
+profile = json.load(open(source))  # Generated synthetic fixture, never a real profile.
+profile["ownerId"] = owner
+with open(target, "x") as f:
+    json.dump(profile, f)
+PY
+  chmod 0600 "$fx_profile"
   pin="$work/profile-input.json"; senv="$work/source.env"
   printf '{"schemaVersion":1,"enabled":true,"provider":"gemini","modelId":"synthetic-model","keyReference":"gemini-primary"}\n' > "$pin"
   printf 'GEMINI_API_KEY=synthetic-NEVER-REAL\n' > "$senv"; chmod 0600 "$pin" "$senv"
   svc_dist="$fixture/Contents/Resources/server/node_modules/@lux-didi/service/dist"
   "$fixture/Contents/MacOS/node" --input-type=module -e 'const { initializeProviderConfig } = await import(process.argv[1]); initializeProviderConfig({ configDir: process.argv[2], ownerId: process.argv[3], profileInputPath: process.argv[4], sourceEnvPath: process.argv[5] });' "file://$svc_dist/config/index.js" "$fconfig" "$fx_assistant" "$pin" "$senv"
-  HOME="$fstate" CFFIXED_USER_HOME="$fstate" "$fixture/Contents/MacOS/LuxDidi" --configure --config-dir "$fconfig" --owner-profile "$profileDir/owner-profile.json"
+  HOME="$fstate" CFFIXED_USER_HOME="$fstate" "$fixture/Contents/MacOS/LuxDidi" --configure --config-dir "$fconfig" --owner-profile "$fx_profile"
   run_fixture() {
     local label="$1" report="$2"
     mkdir -p "$proof/fx-$label"
@@ -295,12 +306,12 @@ PY
   # chat with the SAME idempotency key and prove the same P1 run/hash with zero
   # added transport calls, and (b) issue a NEW key and prove a P2 run/snapshot and
   # P2 prompt in the recorded transport.
-  python3 - "$profileDir/owner-profile.json" <<'PY'
+  python3 - "$fx_profile" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1])); d["profileVersion"] = "synthetic-2"
 json.dump(d, open(sys.argv[1], "w"))
 PY
-  HOME="$fstate" CFFIXED_USER_HOME="$fstate" "$fixture/Contents/MacOS/LuxDidi" --configure --owner-profile "$profileDir/owner-profile.json" > /dev/null
+  HOME="$fstate" CFFIXED_USER_HOME="$fstate" "$fixture/Contents/MacOS/LuxDidi" --configure --owner-profile "$fx_profile" > /dev/null
   rm -f "$proof/fx-p2.json" "$fstate/fixture-calls.json"
   begin_observation "$fixture" "$proof/fx-p2" "$fstate" "$proof/fx-p2.json"
   fx_origin="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["service"]["origin"])' "$proof/fx-p2.json")"

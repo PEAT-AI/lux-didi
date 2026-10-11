@@ -1,10 +1,5 @@
 import Foundation
-import Security
-
-// Synthetic credentials are injected. Any real keychain access is a test failure.
-@MainActor enum NativeKeychainPolicy {
-    static func check() -> OSStatus { preconditionFailure("Synthetic Live tests must not access Keychain") }
-}
+@testable import DidiOwner
 
 struct Envelope<Value: Decodable>: Decodable { let data: Value }
 struct HostStatus: Decodable { let assistantId: String; let authorityEpoch: String }
@@ -258,7 +253,7 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             let (companion, nativeHTTP) = try await MainActor.run {
                 let descriptor = try ServiceDescriptor(origin: fixture.origin, credentialService: "synthetic", credentialAccount: "fixture")
                 let companion = CompanionClient(descriptor: descriptor, credential: { fixture.token }, expectedEpoch: fixture.authorityEpoch)
-                return (companion, NativeLiveOperatorHTTP(client: companion))
+                return (companion, NativeLiveOperatorHTTP(authority: companion.authenticatedRequestBuilder()))
             }
             let nativeIntent = try await nativeHTTP.beginIntent()
             let nativeStatus = try await nativeHTTP.status(for: nativeIntent)
@@ -275,7 +270,7 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             try await nativeHTTP.revoke(sessionID: nativeSnapshot.liveSessionId, for: nativeIntent)
             let nativeTerminal = try await nativeHTTP.snapshot(sessionID: nativeSnapshot.liveSessionId, for: nativeIntent)
             try require(nativeTerminal.terminal?.state == .revoked, "native revoke and snapshot routes")
-            let builder = await companion.authenticatedRequestBuilder()
+            let builder = await companion.authenticatedRequestBuilder().request
             var staleEpochRefused = false
             do { _ = try await builder(nativeIntent.origin.appendingPathComponent("api/v1/status"), "stale") }
             catch { staleEpochRefused = true }

@@ -102,7 +102,7 @@ import Security
     func startLive() {
         guard let client else { error = "Connect the local service before starting Live voice."; return }
         if live == nil {
-            live = NativeLiveConversation(client: client, dictationIsCapturing: { [weak self] in
+            live = NativeLiveConversation(authority: client.authenticatedRequestBuilder(), dictationIsCapturing: { [weak self] in
                 self?.voice.state.phase == .recording
             })
         }

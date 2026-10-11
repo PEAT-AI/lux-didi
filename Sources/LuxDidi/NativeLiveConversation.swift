@@ -1,5 +1,8 @@
 import Combine
 import Foundation
+#if DIDI_OWNER_MODULE
+import DidiOwner
+#endif
 
 @MainActor final class NativeLiveConversation: ObservableObject {
     enum State: String { case idle, connecting, listening, speaking, muted, ended, failed, outcomeUnknown }
@@ -14,8 +17,8 @@ import Foundation
     private var generation: UInt64 = 0
     private var muted = false, speaking = false
     var isCapturing: Bool { state == .connecting || device.isCapturing }
-    init(client: CompanionClient, dictationIsCapturing: @escaping () -> Bool) {
-        self.http = NativeLiveOperatorHTTP(client: client)
+    init(authority: (origin: URL, request: NativeLiveRequestBuilder), dictationIsCapturing: @escaping () -> Bool) {
+        self.http = NativeLiveOperatorHTTP(authority: authority)
         self.dictationIsCapturing = dictationIsCapturing
         let device = NativeLiveAudioDevice(); self.device = device
         coordinator = LiveSessionCoordinator(http: http, sockets: LiveSocketTransport(requests: http), sink: device)

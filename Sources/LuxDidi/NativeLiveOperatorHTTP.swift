@@ -1,4 +1,7 @@
 import Foundation
+#if DIDI_OWNER_MODULE
+import DidiOwner
+#endif
 
 private final class NativeLiveNoRedirect: NSObject, URLSessionTaskDelegate, Sendable {
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
@@ -22,9 +25,9 @@ private final class NativeLiveNoRedirect: NSObject, URLSessionTaskDelegate, Send
     let origin: URL
     private let build: NativeLiveRequestBuilder
     private let session: URLSession
-    init(client: CompanionClient) {
-        origin = client.descriptor.baseURL
-        build = client.authenticatedRequestBuilder()
+    init(authority: (origin: URL, request: NativeLiveRequestBuilder)) {
+        origin = authority.origin
+        build = authority.request
         let config = URLSessionConfiguration.ephemeral
         config.httpCookieStorage = nil; config.httpShouldSetCookies = false
         config.urlCache = nil; config.urlCredentialStorage = nil

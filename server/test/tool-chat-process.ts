@@ -65,7 +65,7 @@ export async function bridgeSdkResponse(method: string | undefined, res: ServerR
   try {
     res.flushHeaders();
     while (!closed) {
-      const chunk = await reader.read(); if (chunk.done) break;
+      const chunk = await reader.read(); if (chunk.done || closed) break;
       if (!res.write(Buffer.from(chunk.value))) {
         await new Promise<void>(resolve => {
           const resume = () => { res.off('drain', resume); res.off('close', resume); resolve(); };

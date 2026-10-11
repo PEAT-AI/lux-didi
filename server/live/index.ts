@@ -223,15 +223,33 @@ export class LiveSessionOwner {
 
   /** Additional authority source for a dispatched job only; Live session lookup remains unchanged. */
   lookupJobAuthority(runId: string): LiveAuthority | null {
-    const job = this.#jobs.pending().find(job => job.originSessionId === runId && job.state === 'in_progress');
+    const job = this.#jobs.list().find(job => job.originSessionId === runId && job.state === 'in_progress');
     return job && job.host.authorityEpoch === this.#store.authorityEpoch ? job.authority : null;
+  }
+
+  #jobProjection(pendingOnly: boolean): import('./types.js').PendingLiveJob[] {
+    return this.#jobs.list().filter(job => job.deferred && (!pendingOnly || !job.delivered)).map(job => ({
+      id: job.id, originSessionId: job.originSessionId, state: job.state, createdAt: job.createdAt, delivered: job.delivered,
+      markdown: job.result?.accepted.map(result => typeof result.response.text === 'string' ? result.response.text : JSON.stringify(result.response)).join('\n\n')
+        || (job.state === 'in_progress' ? "I'm on it, I'll call you when it's done." : job.state === 'completed' ? 'Completed, delivery pending.' : `Background job ${job.state}.`),
+    }));
+  }
+
+  pendingJobs(): import('./types.js').PendingLiveJob[] { return this.#jobProjection(true); }
+
+  createWithPending(input: CreateLiveSession, context: LiveContext): LiveSessionSnapshot {
+    const session = this.create(input, context);
+    if (this.#jobs.forSession(session.liveSessionId)) return session;
+    const job = this.#jobs.pending().find(job => job.state !== 'in_progress');
+    if (job) { job.deliverySessionId = session.liveSessionId; this.#jobs.save(job); }
+    return session;
   }
 
   current(cursor = 0): LivePageProjection {
     if (!Number.isSafeInteger(cursor) || cursor < 0) throw new LiveError('invalid_request');
     return this.#store.transaction(tx => {
       const row = tx.get('SELECT live_session_id,lifecycle,created_at,terminal_outcome FROM live_sessions WHERE owner_assistant_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1', [this.#store.assistantId]);
-      if (!row) return { state: 'idle', since: null, entries: [], cursor };
+      if (!row) return { state: 'idle', since: null, jobs: this.#jobProjection(false), entries: [], cursor };
       const handle = this.#active.get(String(row.live_session_id));
       const terminal = parseTerminal(row.terminal_outcome);
       const state: LivePageProjection['state'] = terminal ? (['closed', 'cancelled', 'revoked', 'expired'].includes(terminal.state) ? 'ended' : 'error') : handle?.thinking ? 'thinking' : handle?.speaking ? 'speaking' : handle?.consumerState === 'attached' ? 'listening' : handle ? 'ended' : 'idle';
@@ -245,7 +263,7 @@ export class LiveSessionOwner {
           entries.push({ seq, kind, tool: kind === 'toolCall' ? { name: tool.name, status: 'called' } : { name: tool.name, status: tool.status, markdown: tool.markdown, sources: tool.sources.map(source => ({ title: source.title, ...(source.url ? { url: source.url } : {}) })) } });
         } else if (kind === 'interrupted' || kind === 'turnComplete' || kind === 'terminal') entries.push({ seq, kind });
       }
-      return { state, since: Number(row.created_at), entries, cursor: rows.length ? Number(rows[rows.length - 1]!.journal_id) : cursor };
+      return { state, since: Number(row.created_at), jobs: this.#jobProjection(false), entries, cursor: rows.length ? Number(rows[rows.length - 1]!.journal_id) : cursor };
     });
   }
 
@@ -353,6 +371,19 @@ export class LiveSessionOwner {
     for (const handle of handles) handle.resolveDone();
   }
 
+  #jobHistory(sessionId: string, inputClass: DataClass): readonly { role: 'user'; text: string; dataClass: DataClass }[] | undefined {
+    const job = this.#jobs.forSession(sessionId);
+    if (!job) return undefined;
+    const accepted = job.result?.accepted ?? [];
+    // Only gate-reconstructed results can become history; never reconstruct raw references here.
+    const text = accepted.length ? accepted.map(result => JSON.stringify({ tool: result.binding.name, result: result.response })).join('\n')
+      : job.state === 'completed' ? 'The tool finished, but its result could not be authorized for delivery. Report this delivery failure, not success.'
+      : `The background job ${job.id} ${job.state === 'unknown' ? 'has an unknown outcome after interruption; it was not replayed' : 'failed'}. Do not invent a successful result.`;
+    const classes = accepted.flatMap(result => (result as typeof result & { dataClasses?: DataClass[] }).dataClasses ?? [inputClass]);
+    const dataClass: DataClass = classes.includes('sensitive') ? 'sensitive' : classes.includes('private') ? 'private' : inputClass;
+    return [{ role: 'user', text: `I am picking up your background call. Explain this actual job outcome first, then resume our conversation.\n${text}`, dataClass }];
+  }
+
   #open(liveSessionId: string, inputClass: DataClass, revision: number, acceptedPrompt: AcceptedPromptSnapshot, context: LiveContext): LiveAttachment {
     const abort = new AbortController();
     const dataClasses = classes.filter(c => c === inputClass || acceptedPrompt.dataClasses.includes(c));
@@ -369,7 +400,7 @@ export class LiveSessionOwner {
       host = { runId: liveSessionId, actorId: context.clientId, authorityEpoch: context.authorityEpoch, revision,
         grants: registry.map(tool => ({ tool: tool.name, effect: tool.effect, accountId: tool.accountId, resourceId: tool.resourceId })) };
     }
-    const request = { system: { text: acceptedPrompt.system, dataClass: dataClasses[dataClasses.length - 1]! }, history: [], dataClasses,
+    const request = { system: { text: acceptedPrompt.system, dataClass: dataClasses[dataClasses.length - 1]! }, history: this.#jobHistory(liveSessionId, inputClass) ?? [], dataClasses,
       ...(this.#profile.language !== undefined ? { languageCode: this.#profile.language } : {}),
       ...(registry.length ? { tools: declarationsFor(registry).declarations } : {}) };
     let session: LiveVoiceSession;
@@ -392,7 +423,11 @@ export class LiveSessionOwner {
       try { handle.done.resolve(this.#readSnapshot(liveSessionId)); }
       catch (error) { handle.done.reject(error); }
     };
-    session.ready.then(() => { handle.ready = true; }, () => {});
+    session.ready.then(() => {
+      handle.ready = true;
+      const job = this.#jobs.forSession(liveSessionId);
+      if (job) { job.delivered = true; this.#jobs.save(job); }
+    }, () => {});
     session.done.catch(() => {});
     this.#active.set(liveSessionId, handle);
     void handle.done.promise.catch(() => {});

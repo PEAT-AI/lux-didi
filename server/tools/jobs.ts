@@ -16,6 +16,7 @@ export interface ToolJob {
   result?: ToolJobResult;
   deliverySessionId?: string;
   delivered: boolean;
+  deferred: boolean;
 }
 export type JobTimer = (callback: () => void, ms: number) => { unref(): void; cancel(): void };
 const prefix = 'live-job:';
@@ -33,7 +34,7 @@ export class LiveToolJobs {
       }));
   }
 
-  pending(): ToolJob[] { return this.list().filter(job => !job.delivered); }
+  pending(): ToolJob[] { return this.list().filter(job => job.deferred && !job.delivered); }
   forSession(sessionId: string): ToolJob | undefined { return this.list().find(job => job.deliverySessionId === sessionId); }
 
   save(job: ToolJob): void {
@@ -46,7 +47,7 @@ export class LiveToolJobs {
     work: () => Promise<ToolJobResult>): Promise<{ job: ToolJob; result?: ToolJobResult }> {
     const id = randomUUID(), now = this.now();
     const job: ToolJob = { id, originSessionId: host.runId, state: 'in_progress', createdAt: now,
-      host: structuredClone(host), authority: structuredClone(authority), delivered: false };
+      host: structuredClone(host), authority: structuredClone(authority), delivered: false, deferred: false };
     this.store.transaction(tx => {
       Outbox.insert(tx, { id, entityId: `${prefix}${id}`, entityRevision: 1, authorityEpoch: host.authorityEpoch,
         requiredGrant: 'live-tool-job', payload: JSON.stringify(job), sourceTimeZone: 'UTC',
@@ -68,7 +69,9 @@ export class LiveToolJobs {
     const timeout = new Promise<undefined>(resolve => { timer = schedule(() => resolve(undefined), budgetMs); timer.unref(); });
     const result = await Promise.race([completion, timeout]);
     timer?.cancel();
-    if (result) { job.delivered = true; this.save(job); }
+    if (result) job.delivered = true;
+    else job.deferred = true;
+    this.save(job);
     // Observe persistence failures even after deferral; the durable claim then remains unknown on reopen.
     void completion.catch(() => undefined);
     return { job, ...(result ? { result } : {}) };

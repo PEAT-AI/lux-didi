@@ -1,3 +1,4 @@
+import type { LivePendingService } from '../live/types.js';
 import { createServer } from 'node:http';
 import type { IncomingMessage, ServerResponse, Server } from 'node:http';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
@@ -91,6 +92,8 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
         if (!live) throw new ServiceError('MODEL_NOT_CONFIGURED', 'Live route is not locally configured', 503);
         const principal = operatorPrincipal(req, store, origin);
         const context = authorityContext(req, store, principal);
+        const jobs = live as typeof live & Partial<LivePendingService>;
+        if (route.action === 'pendingJobs') { send(res, 200, success(jobs.pendingJobs?.() ?? [])); return; }
         if (route.action === 'status') { send(res, 200, success(live.status())); return; }
         if (!live.enabled) throw new ServiceError('MODEL_NOT_CONFIGURED', 'Live is not locally configured', 503);
         if (route.action === 'create') {
@@ -99,7 +102,7 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
           if (resolved.kind !== 'live') throw new ServiceError('BAD_REQUEST', 'Invalid Live request');
           const key = req.headers['idempotency-key'];
           if (typeof key !== 'string' || !/^[A-Za-z0-9_.:-]{1,128}$/.test(key)) throw new ServiceError('BAD_REQUEST', 'Idempotency-Key required');
-          send(res, 200, success(live.create(String(resolved.input['inputClass']) as DataClass, key, context))); return;
+          send(res, 200, success(jobs.createWithPending ? jobs.createWithPending(String(resolved.input['inputClass']) as DataClass, key, context) : live.create(String(resolved.input['inputClass']) as DataClass, key, context))); return;
         }
         if (route.action === 'snapshot') { send(res, 200, success(live.snapshot(route.id!))); return; }
         if (route.action === 'journal') { send(res, 200, success(live.journal(route.id!, route.input['cursor'] as number | undefined, route.input['limit'] as number | undefined))); return; }

@@ -15,15 +15,13 @@ import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { startHost } from '../host/runtime.js';
+
 import WebSocket from 'ws';
 import type { Data } from 'ws';
 import { composeLive } from '../host/live.js';
 import { listenService } from '../http/server.js';
 import { liveMigrations, type LiveProfile } from '../live/index.js';
-import { createDomainPort } from '../domain/facade.js';
-import { chatMigrations } from '../chat/index.js';
-import { Outbox } from '../runtime/outbox.js';
+import { hostMigrations, startHost } from '../host/runtime.js';
 import { Store } from '../runtime/store.js';
 import { CANARY, fixture, pcm } from './live-voice-fixture.js';
 
@@ -364,7 +362,7 @@ test('supervised host composes Live, closes owned sockets on EOF, and the Store 
   assert.equal(ws.readyState, ws.CLOSED, 'owned socket is closed on shutdown');
   await assert.rejects(fetch(`${ready.origin}/api/v1/status`, { signal: AbortSignal.timeout(2000) }));
 
-  const store = new Store(dir, [...createDomainPort({ outbox: Outbox }).migrations, ...chatMigrations, ...liveMigrations]);
+  const store = new Store(dir, hostMigrations);
   try { assert.equal(store.assistantId, ready.assistantId, 'the real Store reopens with stable identity'); } finally { store.close(); }
 });
 

@@ -461,7 +461,7 @@ test('fixture child launched through a lexical alias reaches real SDK ready for 
     env: { ...process.env, DIDI_TOOL_CHAT_RECOVERY_DIR: join(dir, 'data') } });
   const errors: string[] = []; child.stderr!.on('data', data => { if (errors.join('').length < 4000) errors.push(String(data)); });
   t.after(async () => { try { await terminateChild(child); } finally { rmSync(dir, { recursive: true, force: true }); } });
-  child.on('message', value => {
+  child.on('message', (value: Record<string, unknown>) => {
     if (value.phase === 'bootstrap') errors.push(`bootstrap mode=recovery lexical=${value.entryMatches === true} physical=${value.canonicalEntryMatches === true}`);
   });
   const [bootstrap, ready] = await Promise.all([childMessage(child, 'bootstrap', errors), childMessage(child, 'ready', errors)]);

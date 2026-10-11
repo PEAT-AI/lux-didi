@@ -230,6 +230,7 @@ public actor LiveSessionCoordinator {
                 case .terminal(let terminal, _):
                     state = .terminal(terminal)
                     socket = nil
+                    await sink.flush()
                     await connection.cancel()
                     return
                 }
@@ -237,6 +238,7 @@ public actor LiveSessionCoordinator {
         } catch {
             guard generation == token, !Task.isCancelled, state == .attaching || state == .active else { return }
             state = .outcomeUnknown(safe(error, fallback: .transport)); socket = nil
+            await sink.flush()
             await connection.cancel()
         }
     }
@@ -280,11 +282,15 @@ public actor LiveSessionCoordinator {
         guard state != .idle, !settled else { return }
         guard let frozen = intent, let id = sessionID else {
             operation &+= 1; operationTask?.cancel(); receiveTask?.cancel()
-            state = .outcomeUnknown(.unavailable); return
+            state = .outcomeUnknown(.unavailable)
+            await sink.flush()
+            return
         }
         operation &+= 1; operationTask?.cancel(); receiveTask?.cancel()
         let token = generation, op = operation
         let connection = socket; socket = nil; state = .closing
+        await sink.flush()
+        guard current(token, op) else { await connection?.cancel(); return }
         do { try await connection?.sendControl(.close) } catch { /* snapshot remains authoritative */ }
         await connection?.cancel()
         guard current(token, op) else { return }
@@ -301,6 +307,7 @@ public actor LiveSessionCoordinator {
         operation &+= 1; operationTask?.cancel(); receiveTask?.cancel()
         let token = generation, op = operation
         let connection = socket; socket = nil; state = .closing
+        await sink.flush()
         await connection?.cancel()
         guard current(token, op) else { return }
         guard let frozen = intent, let id = sessionID else { state = .outcomeUnknown(.unavailable); return }

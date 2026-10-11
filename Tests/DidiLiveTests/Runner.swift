@@ -156,6 +156,22 @@ struct GatedSockets: LiveSocketConnecting {
     func connect(_ binding: LiveSocketBinding) async throws -> any LiveSocket { try await GatedSocket(underlying.connect(binding), gate) }
 }
 
+actor ScriptedSocket: LiveSocket {
+    private var frames: [LiveFrame]
+    init(_ frames: [LiveFrame]) { self.frames = frames }
+    func receive() throws -> LiveFrame {
+        guard !frames.isEmpty else { throw LiveClientError.transport }
+        return frames.removeFirst()
+    }
+    func sendPCM(_ data: Data) {}
+    func sendControl(_ command: LiveControl) {}
+    func cancel() { frames = [] }
+}
+struct ScriptedSockets: LiveSocketConnecting {
+    let frames: [LiveFrame]
+    func connect(_ binding: LiveSocketBinding) async throws -> any LiveSocket { ScriptedSocket(frames) }
+}
+
 func until(_ condition: @escaping @Sendable () async -> Bool) async throws {
     let clock = ContinuousClock(); let deadline = clock.now + .seconds(3)
     while !(await condition()) {
@@ -221,6 +237,22 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             }
             print("PASS production transport eight local header/destination/path refusals with zero attach")
             record("guards")
+
+            // Silent scripted output proves ordering, including invalidation on a terminal frame.
+            let scriptedHTTP = TestHTTP(fixture), scriptedSink = SilentSink()
+            let scripted = LiveSessionCoordinator(http: scriptedHTTP, sockets: ScriptedSockets(frames: [
+                .marker(LiveMarker(kind: .ready, sequence: 1, journalSequence: 0, text: nil, finished: nil, value: nil)),
+                .pcm(Data([1, 0])), .pcm(Data([2, 0])),
+                .marker(LiveMarker(kind: .interrupted, sequence: 2, journalSequence: 0, text: nil, finished: nil, value: nil)),
+                .pcm(Data([3, 0])), .terminal(LiveTerminal(state: .closed), complete: true)
+            ]), sink: scriptedSink)
+            await scripted.begin(frozen)
+            try await until { await scriptedSink.events.count == 6 }
+            try require(await scriptedSink.events == ["flush", "pcm:1", "pcm:2", "flush", "pcm:3", "flush"],
+                        "PCM, interrupted and terminal flush order")
+            try require(await scriptedSink.queued.isEmpty, "terminal discards queued playback")
+            await scripted.stop(); await scriptedHTTP.finish()
+            print("PASS silent scripted PCM/interrupted/terminal output ordering")
 
             // Fresh coordinator does zero work. Loss happens AFTER actual server commit; explicit retry keeps exact key/meaning.
             let http = TestHTTP(fixture); let sockets = CountedSockets(fixture); let sink = SilentSink()

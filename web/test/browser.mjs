@@ -28,6 +28,7 @@ try {
     assert.equal(await page.evaluate(()=>document.cookie),'');
     assert.match(await page.locator('body').innerText(),/No model connected/);
     assert.equal(await page.locator('#connection-state').getAttribute('aria-live'),'polite');
+    assert(!/Cannot read properties of undefined/.test(await page.locator('body').innerText()),'synthetic unconfigured status must satisfy real ownerProfile DTO; no raw displayName error');
   });
   await step('classic Canvas orb is idle not listening and honors reduced motion',async()=>{
     const canvas=page.locator('#didi-orb');
@@ -117,6 +118,9 @@ try {
       }
       await proofPage.screenshot({path:join(artifacts,`orb-measured-side-by-side-${width}-dpr${dpr}.png`),fullPage:true});
       await proofPage.evaluate(()=>{globalThis.connectingProof=globalThis.orbProof.connecting();});
+      const connectingAlignment=await proofPage.evaluate(()=>({frames:globalThis.orbProof.measure().frames,actual:document.querySelector('#port').didiFrameStats()}));
+      assert.deepEqual(connectingAlignment.frames,Array.from({length:3},()=>({time:0,ambientTime:0,hue:195})),'CONNECTING comparison must use matching fresh source state/hue/time histories');
+      assert.equal(connectingAlignment.actual.frameTime,0);assert.equal(connectingAlignment.actual.ambientTime,0);
       const composition=async()=>proofPage.evaluate(async()=>{
         for(const canvas of [document.querySelector('#reference-a'),document.querySelector('#port')]){
           const target=canvas.id==='port'?canvas:canvas.parentElement;
@@ -129,6 +133,8 @@ try {
       const animatedConnecting=await composition();
       assert(Math.abs(animatedConnecting[0].effectiveOpacity-.45)<.0001,'original disabled parent x processing midpoint');
       assert(Math.abs(animatedConnecting[1].effectiveOpacity-animatedConnecting[0].effectiveOpacity)<.0001,'actual shipped Orb disabled/pulse composition');
+      const connectingCenters=await proofPage.evaluate(()=>['reference-a','reference-b','port'].map(id=>{const r=document.getElementById(id).getBoundingClientRect();return r.y+r.height/2;}));
+      assert(Math.max(...connectingCenters)-Math.min(...connectingCenters)<1,'comparison titles must not offset canvas centers');
       await proofPage.screenshot({path:join(artifacts,`orb-connecting-composition-${width}-dpr${dpr}.png`),fullPage:true});
       await proofPage.emulateMedia({reducedMotion:'reduce'});
       const staticConnecting=await composition();

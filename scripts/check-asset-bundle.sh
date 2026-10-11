@@ -73,6 +73,21 @@ printf 'RED_FIXTURE refused: %s\n' "$(cat "$work/red.err")"
 # --- Green path: build the real bundle, then verify every stage. ---
 bash scripts/build-asset-bundle.sh "$bundle"
 verify_bundle "$bundle" || exit 1
+# A regular copied runtime behind an intermediate symlink must not escape into a prefix sibling.
+escape="$work/bundle-escape"
+escape_sibling="$escape-other"
+mkdir -p "$escape/Resources" "$escape_sibling"
+cp -R "$bundle/Resources/node/." "$escape_sibling/"
+ln -s "$escape_sibling" "$escape/Resources/node"
+if [ -L "$escape/Resources/node/bin/node" ]; then echo 'escape fixture: leaf must be regular' >&2; exit 1; fi
+if verify_bundle "$escape" 2>"$work/escape.err"; then
+  echo 'escape fixture: intermediate-directory prefix-sibling escape was accepted' >&2; exit 1
+fi
+if ! grep -q 'node execPath is outside the bundle' "$work/escape.err"; then
+  echo 'escape fixture: refusal was incidental, not outside-bundle containment' >&2
+  cat "$work/escape.err" >&2; exit 1
+fi
+printf 'ESCAPE_FIXTURE refused: %s\n' "$(cat "$work/escape.err")"
 node_bin="$bundle/Resources/node/bin/node"
 recorded=$(sed -n 's/^node=v//p' "$bundle/ASSET-BUNDLE.txt")
 if [ "v${recorded}" != "$("$node_bin" -p 'process.version')" ]; then

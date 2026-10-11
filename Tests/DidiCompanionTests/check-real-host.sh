@@ -116,10 +116,11 @@ for i,r in enumerate(reports):
   data=open(snapshot['path'],'rb').read()
   assert hashlib.sha256(data).hexdigest()==snapshot['sha256'] and data[:8]==bytes((137,80,78,71,13,10,26,10))
  timing=orb['timing']; assert timing['windowRequestedMs']==2000 and timing['elapsedMs']>=2000
- assert timing['sampleCount']>=2 and timing['observedPaints']>=2
+ assert timing['sampleCount']>=2 and timing['successfulPaints']>=2
+ assert timing['failedDraws']==0 and timing['attempts']==timing['successfulPaints']+timing['failedDraws']
  assert len(timing['paintTimes'])==len(timing['drawMs'])==timing['sampleCount']
  assert all(math.isfinite(v) and v>=0 for v in timing['drawMs'])
- print('ORB-WK renderer=%s samples=%s attempts=%s elapsedMs=%.3f targetFps=%s meanDrawMs=%.3f' % (orb['renderer'],timing['sampleCount'],timing['observedPaints'],timing['elapsedMs'],timing['after']['targetFps'],sum(timing['drawMs'])/timing['sampleCount']))
+ print('ORB-WK renderer=%s samples=%s successes=%s failures=%s attempts=%s elapsedMs=%.3f targetFps=%s meanDrawMs=%.3f' % (orb['renderer'],timing['sampleCount'],timing['successfulPaints'],timing['failedDraws'],timing['attempts'],timing['elapsedMs'],timing['after']['targetFps'],sum(timing['drawMs'])/timing['sampleCount']))
  for previous in reports[:i]:
   expected=previous['newRecord']
   assert any(all(old[k]==expected[k] for k in ('sessionId','entryId','text')) and old['visibleInCanonicalUI'] for old in r['priorRecords'])

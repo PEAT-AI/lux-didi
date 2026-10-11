@@ -158,8 +158,9 @@ test('known host pulses/resting and neutral/disabled semantics retain original s
     const start=source.indexOf(`@keyframes ${name}`);assert(start>=0,`missing ${name}`);
     const open=source.indexOf('{',start);let depth=1,index=open+1;
     while(depth&&index<source.length){if(source[index]==='{')depth++;if(source[index]==='}')depth--;index++;}
-    assert.equal(depth,0);return source.slice(open,index).replace(/\s+/g,'').replace(/0\./g,'.').replace(/;}/g,'}');
+    assert.equal(depth,0);return source.slice(open,index).replace(/\s+/g,'').replace(/(?<![\d.])0\./g,'.').replace(/;}/g,'}');
   };
+  assert.notEqual(keyframe(fixture.wrapperCSS.replace('scale(1.03)','scale(10.03)'),'breathe'),keyframe(fixture.wrapperCSS,'breathe'),'numeric normalization must not erase a tenfold transform mutation');
   for(const [original,port] of [['breathe','orb-breathe'],['speak-pulse','orb-speak-pulse'],['pulse-slow','orb-pulse-slow'],['rest-breathe','orb-rest-breathe']])
     assert.equal(keyframe(css,port),keyframe(fixture.wrapperCSS,original),`original ${original} compositor motion`);
   const h=lifecycle('CONNECTED');

@@ -1,6 +1,6 @@
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, symlinkSync, existsSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
 import type { ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -26,7 +26,7 @@ function sdkResponseSink() {
   const res = Object.assign(events, {
     writeHead(status: number, headers: Record<string, string>) { state.status = status; state.headers = headers; },
     flushHeaders() { state.flushed = true; },
-    write(chunk: Uint8Array) { state.flushed = true; state.chunks.push(Buffer.from(chunk)); firstChunk.release(); return false; },
+    write(chunk: Uint8Array) { state.flushed = true; state.chunks.push(Buffer.from(chunk)); void firstChunk.pause(); firstChunk.release(); return false; },
     end(chunk?: Uint8Array) { state.flushed = true; state.ended = true; if (chunk) state.chunks.push(Buffer.from(chunk)); },
   });
   return { res: res as unknown as ServerResponse, state, firstChunk };
@@ -37,15 +37,17 @@ test('fixture SDK GET establishes headers and forwards a live chunk before EOF, 
   let controller!: ReadableStreamDefaultController<Uint8Array>;
   const bytes = Buffer.from('event: message\ndata: synthetic notification\n\n');
   const body = new ReadableStream<Uint8Array>({
-    start(value) { controller = value; controller.enqueue(bytes); },
-    pull() { reading.release(); },
-    cancel() { cancellationCount++; cancelled.release(); },
+    start(value) { controller = value; },
+    pull() { void reading.pause(); reading.release(); },
+    cancel() { cancellationCount++; void cancelled.pause(); cancelled.release(); },
   });
   const sink = sdkResponseSink();
   const bridging = bridgeSdkResponse('GET', sink.res, new Response(body, { headers: { 'Content-Type': 'text/event-stream' } }));
   try {
     await reading.entered;
-    assert.equal(sink.state.flushed, true, 'GET headers must establish without waiting for an open SSE response EOF');
+    assert.equal(sink.state.flushed, true, 'GET headers must establish before the first live chunk or open SSE response EOF');
+    assert.equal(sink.state.chunks.length, 0); assert.equal(sink.state.ended, false);
+    controller.enqueue(bytes);
     await sink.firstChunk.entered;
     assert.deepEqual(sink.state.chunks, [bytes]); assert.equal(sink.state.ended, false);
     assert.equal(sink.res.listenerCount('drain'), 1, 'Live chunk honors response backpressure');
@@ -437,6 +439,21 @@ async function terminateChild(child: ChildProcess) {
   }
 }
 
+test('importing the fixture child with a recovery argument does not execute its entry', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-tool-chat-import-')); const data = join(dir, 'must-not-exist');
+  const driver = join(dir, 'import-driver.mjs');
+  writeFileSync(driver, `import { pathToFileURL } from 'node:url';\nawait import(pathToFileURL(${JSON.stringify(join(import.meta.dirname, 'tool-chat-process.js'))}).href);\nprocess.send({ phase: 'imported' }); process.disconnect();\n`);
+  const child = fork(driver, ['recovery'], { stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+    env: { ...process.env, DIDI_TOOL_CHAT_RECOVERY_DIR: data } });
+  const exit = once(child, 'exit'); const errors: string[] = [];
+  child.stderr!.on('data', value => { if (errors.join('').length < 4000) errors.push(String(value)); });
+  t.after(async () => { try { await terminateChild(child); } finally { rmSync(dir, { recursive: true, force: true }); } });
+  const [bootstrap] = await Promise.all([childMessage(child, 'bootstrap', errors), childMessage(child, 'imported', errors)]);
+  assert.equal(bootstrap.entryMatches, false); assert.equal(bootstrap.canonicalEntryMatches, false);
+  assert.equal(existsSync(data), false, 'An imported fixture module must not create its recovery Store');
+  const [code, signal] = await exit; assert.equal(code, 0); assert.equal(signal, null);
+});
+
 test('fixture child launched through a lexical alias reaches real SDK ready for the same physical module', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'didi-tool-chat-entry-'));
   const alias = join(dir, 'tool-chat-child.js'); symlinkSync(join(import.meta.dirname, 'tool-chat-process.js'), alias);
@@ -444,11 +461,12 @@ test('fixture child launched through a lexical alias reaches real SDK ready for 
     env: { ...process.env, DIDI_TOOL_CHAT_RECOVERY_DIR: join(dir, 'data') } });
   const errors: string[] = []; child.stderr!.on('data', data => { if (errors.join('').length < 4000) errors.push(String(data)); });
   t.after(async () => { try { await terminateChild(child); } finally { rmSync(dir, { recursive: true, force: true }); } });
-  const bootstrap = await childMessage(child, 'bootstrap', errors);
+  child.on('message', value => {
+    if (value.phase === 'bootstrap') errors.push(`bootstrap mode=recovery lexical=${value.entryMatches === true} physical=${value.canonicalEntryMatches === true}`);
+  });
+  const [bootstrap, ready] = await Promise.all([childMessage(child, 'bootstrap', errors), childMessage(child, 'ready', errors)]);
   assert.equal(bootstrap.mode, 'recovery'); assert.equal(bootstrap.canonicalEntryMatches, true);
-  errors.push(`bootstrap mode=recovery lexical=${bootstrap.entryMatches === true} physical=${bootstrap.canonicalEntryMatches === true}`);
-  const ready = childMessage(child, 'ready', errors);
-  assert.ok(await ready, 'The same physical child module must reach ready when launched through a lexical alias');
+  assert.ok(ready, 'The same physical child module must reach ready when launched through a lexical alias');
 });
 
 test('B6 process restart recovers a real durable nonterminal SDK-dispatched intent as unknown without repeating its effect', async t => {

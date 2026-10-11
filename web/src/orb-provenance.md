@@ -19,7 +19,8 @@ parity, a release approval, or a claim that absent voice events exist.
   status-owned hue, per-frame easing/pulse, independent main/ambient clocks,
   asymmetric EMAs, source state branches, previous-ambient breathing, and
   audible PROCESSING's speaking geometry without changing its195 hue.
-- Known source host filters, processing/listening/speaking/resting pulses and
+- Known source host filters, disabled-parent/animated-child opacity composition,
+  processing/listening/speaking/resting pulses and
   known disabled predicates. ERROR recoverability and greeting/entrance are
   not emitted by Didi, so they remain named gaps, not invented events.
 
@@ -28,7 +29,8 @@ parity, a release approval, or a claim that absent voice events exist.
 `ClassicRenderer` and `Orb` remain the integration names. The renderer's `draw`
 now receives the explicit frame; `paintClassic` is the stateless canvas/noise
 boundary. No DOM, clock, provider or Angular dependency lives in the painter.
-The owning wrapper retains canvas/phase/noise through unrelated app renders,
+Orb consumes `paintClassic` with its retained noise field; no painter clock is
+advanced by that boundary. The owning wrapper retains canvas/phase/noise through unrelated app renders,
 clears stale/session/disconnect inputs, and disposes on actual unmount.
 
 Logical dimensions are600 desktop /400 narrow rather than scaling radius alone:

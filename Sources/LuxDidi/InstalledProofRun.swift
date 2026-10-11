@@ -79,6 +79,27 @@ import CryptoKit
     }
     // Owned WK inspection is available only inside the existing marked synthetic
     // installed proof. No runtime JavaScript/native authority bridge is added.
+    private static func orbJavaScript(_ web: WKWebView, _ script: String) async throws -> Any? {
+        try await withCheckedThrowingContinuation { continuation in
+            var completed = false
+            // Native clock remains live even when WK suppresses JavaScript timers/RAF.
+            let timeout = DispatchWorkItem { [weak web] in
+                Task { @MainActor in
+                    guard !completed else { return }
+                    completed = true
+                    web?.evaluateJavaScript("globalThis.__didiOrbProofCancel?.(); true", completionHandler: nil)
+                    continuation.resume(throwing: InstalledProofError.missingUI)
+                }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 8, execute: timeout)
+            web.callAsyncJavaScript(script, arguments: [:], in: nil, contentWorld: .page) { result in
+                guard !completed else { return }
+                completed = true
+                timeout.cancel()
+                continuation.resume(with: result.map { Optional($0) })
+            }
+        }
+    }
     private static func orbEvidence(_ web: WKWebView, reportURL: URL) async throws -> [String: Any] {
         var frames: [[String: Any]] = []
         var previous = -1
@@ -86,12 +107,17 @@ import CryptoKit
             let script = """
             const canvas=document.querySelector('#didi-orb');
             if(!canvas||typeof canvas.didiFrameStats!=='function')throw Error('orb missing');
-            const deadline=performance.now()+8000;
-            await new Promise((resolve,reject)=>{function check(){
-              if(canvas.didiFrameStats().frames>\(previous)){resolve();return;}
-              if(performance.now()>deadline){reject(Error('orb frame observation expired'));return;}
-              requestAnimationFrame(check);
-            }check();});
+            await new Promise((resolve,reject)=>{
+              let raf=0;
+              const finish=error=>{clearTimeout(timer);cancelAnimationFrame(raf);delete globalThis.__didiOrbProofCancel;error?reject(error):resolve();};
+              const timer=setTimeout(()=>finish(Error('orb frame observation expired')),8000);
+              globalThis.__didiOrbProofCancel=()=>finish(Error('owned orb proof cancelled'));
+              function check(){
+                if(document.hidden){finish(Error('owned orb page hidden'));return;}
+                if(canvas.didiFrameStats().frames>\(previous)){finish();return;}
+                raf=requestAnimationFrame(check);
+              }check();
+            });
             const stats=canvas.didiFrameStats(),data=canvas.getContext('2d').getImageData(0,0,canvas.width,canvas.height).data;
             let paintedPixels=0;for(let i=3;i<data.length;i+=4)if(data[i])paintedPixels++;
             const digest=new Uint8Array(await crypto.subtle.digest('SHA-256',data));
@@ -100,7 +126,7 @@ import CryptoKit
             return {stats,paintedPixels,pixelCount:canvas.width*canvas.height,pixelSha256,
               rect:{x:rect.x,y:rect.y,width:rect.width,height:rect.height},visibility:document.visibilityState};
             """
-            guard var measured = try await web.callAsyncJavaScript(script, arguments: [:], in: nil, contentWorld: .page) as? [String: Any],
+            guard var measured = try await orbJavaScript(web, script) as? [String: Any],
                   let stats = measured["stats"] as? [String: Any], let count = stats["frames"] as? Int,
                   let pixels = measured["paintedPixels"] as? Int, pixels > 0,
                   stats["renderer"] as? String == "classic-eleven-f27bca7" else { throw InstalledProofError.missingUI }
@@ -110,16 +136,22 @@ import CryptoKit
         }
         let timingScript = """
         const canvas=document.querySelector('#didi-orb'),start=performance.now(),before=canvas.didiFrameStats();
-        await new Promise(resolve=>{function sample(){if(performance.now()-start>=2000){resolve();return;}requestAnimationFrame(sample);}requestAnimationFrame(sample);});
+        await new Promise((resolve,reject)=>{
+          const finish=error=>{clearTimeout(timer);delete globalThis.__didiOrbProofCancel;error?reject(error):resolve();};
+          const timer=setTimeout(()=>finish(document.hidden?Error('owned orb page hidden'):undefined),2000);
+          globalThis.__didiOrbProofCancel=()=>finish(Error('owned orb timing cancelled'));
+          if(document.hidden)finish(Error('owned orb page hidden'));
+        });
         const end=performance.now(),after=canvas.didiFrameStats();
         const indices=after.paintTimes.map((time,index)=>({time,index})).filter(v=>v.time>=start&&v.time<=end);
         return {method:'owned-WKWebView/Canvas2D normal-host observation',windowRequestedMs:2000,
-          elapsedMs:end-start,refreshObservation:'requestAnimationFrame',before,after,
-          observedPaints:after.frames-before.frames,sampleCount:indices.length,
+          elapsedMs:end-start,refreshObservation:'owned cumulative draw counters and paint timestamps; timer-bounded wall-clock window',before,after,
+          successfulPaints:after.frames-before.frames,failedDraws:after.failedDraws-before.failedDraws,
+          attempts:(after.frames-before.frames)+(after.failedDraws-before.failedDraws),sampleCount:indices.length,
           paintTimes:indices.map(v=>v.time),drawMs:indices.map(v=>after.drawMs[v.index]),
           baseline:'source high-tier12idle60active; no artificial load, budget concession or frame dropping for proof'};
         """
-        guard let timing = try await web.callAsyncJavaScript(timingScript, arguments: [:], in: nil, contentWorld: .page) as? [String: Any] else { throw InstalledProofError.missingUI }
+        guard let timing = try await orbJavaScript(web, timingScript) as? [String: Any] else { throw InstalledProofError.missingUI }
         return ["frames": frames, "timing": timing, "renderer": "classic-eleven-f27bca7", "nativePid": Int(getpid())]
     }
     static func execute(model: AppModel, window: NSWindow) async -> Bool {

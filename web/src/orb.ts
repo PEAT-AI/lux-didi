@@ -1,5 +1,5 @@
 /** Lifecycle/state adapter. No microphone, playback or native voice channel is manufactured. */
-import {ClassicRenderer} from './orb-classic';
+import {paintClassic,createOrbNoise,type OrbNoise} from './orb-classic';
 import {initialOrbFrame,stepOrbFrame} from './orb-frame';
 export type VoiceState = 'IDLE' | 'CONNECTING' | 'CONNECTED' | 'LISTENING' | 'PROCESSING' | 'SPEAKING' | 'RECONNECTING' | 'ERROR' | 'DISCONNECTED' | 'INTERRUPTED';
 export interface AudioFrame {level:number;low:number;mid:number;high:number;flux:number;timestamp:number}
@@ -25,7 +25,7 @@ export function advanceOrbDeadline(deadline:number,now:number,interval:number):n
 const animatedStates=new Set<VoiceState>(['LISTENING','SPEAKING','PROCESSING','CONNECTING','CONNECTED','RECONNECTING']);
 export class Orb {
   private context:CanvasRenderingContext2D|null;
-  private classic:ClassicRenderer|undefined;
+  private noise:OrbNoise|undefined;
   private frame=initialOrbFrame();
   private durations:number[]=[];
   private paintTimes:number[]=[];
@@ -43,9 +43,9 @@ export class Orb {
   private destroyed=false;
   readonly audio=new LatestFrame();
   constructor(private canvas:HTMLCanvasElement,private state:VoiceState){
-    this.context=canvas.getContext('2d');if(this.context)this.classic=new ClassicRenderer(this.context);
+    this.context=canvas.getContext('2d');if(this.context)this.noise=createOrbNoise();
     Object.defineProperty(canvas,'didiFrameStats',{value:()=>({
-      renderer:'classic-eleven-f27bca7',tier:'high',logicalSize:this.size,displaySize:this.canvas.clientWidth,dpr:this.ratio,
+      renderer:'classic-eleven-f27bca7',state:this.state,tier:'high',logicalSize:this.size,displaySize:this.canvas.clientWidth,dpr:this.ratio,
       targetFps:this.fps(),frames:this.frames,sampleCount:this.durations.length,failedDraws:this.failedDraws,
       maxDrawMs:Math.max(0,...this.durations),meanDrawMs:this.durations.reduce((a,b)=>a+b,0)/Math.max(1,this.durations.length),
       drawMs:[...this.durations],paintTimes:[...this.paintTimes],elapsedMs:performance.now()-this.started,
@@ -86,6 +86,11 @@ export class Orb {
     // ERROR's recoverability is not emitted by this app; do not invent it.
     if(this.state==='ERROR')delete this.canvas.dataset.disabled;
     else this.canvas.dataset.disabled=String(['IDLE','DISCONNECTED','CONNECTING'].includes(this.state));
+    const visual=this.canvas.parentElement;
+    if(visual?.classList.contains('orb-visual')){
+      if(this.canvas.dataset.disabled===undefined)delete visual.dataset.disabled;
+      else visual.dataset.disabled=this.canvas.dataset.disabled;
+    }
     if(document.hidden)return;
     this.paint(this.nextPaint);
     if(!this.motion.matches&&this.context)this.animation=requestAnimationFrame(this.tick);
@@ -101,12 +106,12 @@ export class Orb {
     if(animatedStates.has(this.state)||time<this.settleDeadline)this.animation=requestAnimationFrame(this.tick);
   };
   private paint(time:number){
-    if(!this.context||!this.classic)return;
+    if(!this.context||!this.noise)return;
     const start=performance.now();
     try {
       this.context.clearRect(0,0,this.size,this.size);
       this.canvas.dataset.posture=posture(this.state,this.input(time).audible);
-      this.classic.draw(this.frame);
+      paintClassic(this.context,this.frame,this.noise);
       this.frames++;this.durations.push(performance.now()-start);this.paintTimes.push(time);
       if(this.durations.length>240){this.durations.shift();this.paintTimes.shift();}
     }catch(error){this.failedDraws++;throw error;}
@@ -115,6 +120,6 @@ export class Orb {
     if(this.destroyed)return;
     this.destroyed=true;if(this.animation!==undefined)cancelAnimationFrame(this.animation);this.animation=undefined;
     this.observer.disconnect();this.motion.removeEventListener('change',this.reset);document.removeEventListener('visibilitychange',this.reset);
-    this.audio.clear();this.classic=undefined;this.context=null;
+    this.audio.clear();this.noise=undefined;this.context=null;
   }
 }

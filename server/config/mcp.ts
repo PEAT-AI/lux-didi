@@ -197,10 +197,16 @@ export function mcpErrorCode(error: unknown): string { return error instanceof C
 const endpointFile = 'mcp.json';
 const endpointLimit = 32768;
 /** Installed <dataDir>/provider-config/mcp.json: a small, owner-only, secret-free endpoint catalog. */
-export interface McpEndpointEntry {
+export interface McpHttpEndpointEntry {
   id: string; transport: 'streamable-http'; url: string; connector: string;
   account: string; resource: string; credentialRef: string | null; enabled: boolean; allowEgress: boolean;
 }
+/** An explicit operator-approved local executable binding in the catalog; credentialRef is strictly null. */
+export interface McpStdioEndpointEntry {
+  id: string; transport: 'stdio'; command: string; args: readonly string[]; env: Readonly<Record<string, string>>; connector: string;
+  account: string; resource: string; credentialRef: null; enabled: boolean; allowEgress: boolean;
+}
+export type McpEndpointEntry = McpHttpEndpointEntry | McpStdioEndpointEntry;
 export interface McpEndpointCatalog { grantMode: 'explicit' | 'owner-trusted-reads'; endpoints: readonly McpEndpointEntry[] }
 export type McpEndpointSelection = { state: 'missing' } | { state: 'configured'; catalog: McpEndpointCatalog };
 function endpointUrl(value: unknown): string {
@@ -209,15 +215,34 @@ function endpointUrl(value: unknown): string {
   return value;
 }
 function endpointEntry(raw: unknown): McpEndpointEntry {
+  if (raw !== null && typeof raw === 'object' && !Array.isArray(raw) && (raw as Record<string, unknown>)['transport'] === 'stdio') return stdioEntry(raw);
   const e = fields(raw, ['id', 'transport', 'url', 'connector', 'account', 'resource', 'credentialRef', 'enabled', 'allowEgress'], 'invalid_profile');
   identifier(e['id']); identifier(e['connector']);
   if (e['transport'] !== 'streamable-http') fail('invalid_profile');
   const url = endpointUrl(e['url']);
-  for (const key of ['account', 'resource'] as const) if (typeof e[key] !== 'string' || !(e[key] as string).length || (e[key] as string).length > 512 || /[\x00-\x1f\x7f]/.test(e[key] as string)) fail('invalid_profile');
+  scopeFields(e);
   const credentialRef = e['credentialRef'];
   if (credentialRef !== null && (typeof credentialRef !== 'string' || !refPattern.test(credentialRef))) fail('invalid_reference');
   if (typeof e['enabled'] !== 'boolean' || typeof e['allowEgress'] !== 'boolean') fail('invalid_profile');
   return { id: e['id'] as string, transport: 'streamable-http', url, connector: e['connector'] as string, account: e['account'] as string, resource: e['resource'] as string, credentialRef: credentialRef as string | null, enabled: e['enabled'], allowEgress: e['allowEgress'] };
+}
+function scopeFields(e: { [key: string]: unknown }): void {
+  for (const key of ['account', 'resource'] as const) if (typeof e[key] !== 'string' || !(e[key] as string).length || (e[key] as string).length > 512 || /[\x00-\x1f\x7f]/.test(e[key] as string)) fail('invalid_profile');
+}
+/** The stdio arm keeps a credentialRef key pinned to null, mirroring the protected profile shape. */
+function stdioEntry(raw: unknown): McpEndpointEntry {
+  const e = fields(raw, ['id', 'transport', 'command', 'args', 'env', 'connector', 'account', 'resource', 'credentialRef', 'enabled', 'allowEgress'], 'invalid_profile');
+  identifier(e['id']); identifier(e['connector']);
+  if (e['transport'] !== 'stdio') fail('invalid_profile');
+  if (e['credentialRef'] !== null) fail('invalid_reference');
+  const command = e['command'];
+  if (typeof command !== 'string' || !isAbsolute(command) || normalize(command) !== command || command.includes('\0')) fail('invalid_profile');
+  const args = e['args'];
+  if (!Array.isArray(args) || args.some(arg => typeof arg !== 'string' || arg.includes('\0'))) fail('invalid_profile');
+  if (!validateApprovedStdioEnv(e['env'])) fail('invalid_profile');
+  scopeFields(e);
+  if (typeof e['enabled'] !== 'boolean' || typeof e['allowEgress'] !== 'boolean') fail('invalid_profile');
+  return { id: e['id'] as string, transport: 'stdio', command, args: [...(args as string[])], env: { ...(e['env'] as Record<string, string>) }, connector: e['connector'] as string, account: e['account'] as string, resource: e['resource'] as string, credentialRef: null, enabled: e['enabled'], allowEgress: e['allowEgress'] };
 }
 /** Missing mcp.json is a defined state, never an error: startup continues with no approved source. */
 export function loadMcpEndpoints(options: { configDir: string }): McpEndpointSelection {
@@ -238,4 +263,16 @@ export function loadMcpEndpoints(options: { configDir: string }): McpEndpointSel
   const seen = new Set<string>(); const endpoints: McpEndpointEntry[] = [];
   for (const item of rawEndpoints) { const entry = endpointEntry(item); if (seen.has(entry.id)) fail('invalid_profile'); seen.add(entry.id); endpoints.push(entry); }
   return { state: 'configured', catalog: { grantMode, endpoints } };
+}
+/**
+ * Read one owner-only bearer file `<configDir>/<reference>.json` for an approved endpoint
+ * (`{"schemaVersion":1,"token":"..."}`). The file is the agent's own credential, never
+ * committed and never echoed; a missing, oversized or malformed file refuses explicitly.
+ */
+export function resolveEndpointCredential(configDir: string, reference: string): string {
+  if (!refPattern.test(reference)) fail('invalid_reference');
+  const raw = readPrivate(join(configDir, `${reference}.json`), secretLimit);
+  const record = fields(parseJson(raw), ['schemaVersion', 'token'], 'invalid_secret');
+  if (record['schemaVersion'] !== 1 || typeof record['token'] !== 'string' || !record['token'] || /[\r\n]/.test(record['token'])) fail('invalid_secret');
+  return record['token'];
 }

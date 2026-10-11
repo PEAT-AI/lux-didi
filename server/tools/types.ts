@@ -9,8 +9,10 @@ export interface StdioConnectionEndpoint { id: string; transport: 'stdio'; comma
 export type ConnectionEndpoint = HttpConnectionEndpoint | StdioConnectionEndpoint;
 export interface ConnectionPolicy {
   schemaVersion: 1; ownerId: string; connectionId: string; generation: number; enabled: boolean;
+  /** The Didi connector that owns this connection's read envelope, tool table and projector. */
+  connector: string;
   endpoint: ConnectionEndpoint;
-  toolNames: readonly ('search_knowledge' | 'get_insight')[]; schemaDigest: string;
+  toolNames: readonly string[]; schemaDigest: string;
   sourcePolicy: { id: string; revision: number; unknownClass: DataClass | null; allowedClasses: readonly DataClass[] };
   route: { identity: string; allowedClasses: readonly DataClass[] };
   bounds: { maxQueryChars: number; maxSearchLimit: number; maxGetIds: number; maxEntityBytes: number; maxResultBytes: number };
@@ -29,6 +31,8 @@ export interface ModelSnapshot { response: JsonObject; dataClasses: readonly Dat
 export interface ToolsOwnerOptions {
   store: StorePort; ownerId: string; registry: McpRegistry; port: McpPort;
   lookupAuthority(runId: string, signal: AbortSignal): Promise<LiveAuthority | null>;
+  /** Reports a connector-classified connection status after a call; null clears it (R4). */
+  reportToolStatus?(connectionId: string, status: { state: 'configured'; reason: string } | null): void;
 }
 export interface ConnectionIntent { expectedPolicySha256: string | null; policy: ConnectionPolicy }
 export interface ConnectionApplyResult { state: 'applied' | 'unchanged'; sha256: string }

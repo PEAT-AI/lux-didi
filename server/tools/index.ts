@@ -4,9 +4,8 @@ import type { SQLRow, Transaction } from '../contracts/storage.js';
 import type { DataClass, HostContext, JsonObject, ToolCallIntent, ToolCallRefusal, ToolDefinition, ToolResultBinding, ToolResultGate, ToolResultRef } from '../adapters/model/types.js';
 import { validateEndpointUrl, validateApprovedStdioEnv } from '../adapters/mcp/registry.js';
 import { endpointBinding } from '../adapters/mcp/port.js';
-import { createLuxKnowledgeReader } from '../connectors/lux-knowledge.js';
+import { CONNECTOR_DESCRIPTORS } from '../connectors/index.js';
 import { canonicalJSON, detached, sha256 } from './canonical.js';
-import { projectLuxResult } from './lux-knowledge.js';
 import type { BoundConnection, ConnectionApplyResult, ConnectionPolicy, HttpConnectionEndpoint, ModelSnapshot, RunAcceptance, RunSnapshot, StdioConnectionEndpoint, ToolsOwner, ToolsOwnerOptions } from './types.js';
 export { toolsMigrations } from './schema.js';
 export type * from './types.js';
@@ -29,7 +28,7 @@ function classSet(value: unknown): asserts value is DataClass[] {
 }
 export function validatePolicy(input: ConnectionPolicy): ConnectionPolicy {
   const p = detached(input);
-  exact(p, ['schemaVersion', 'ownerId', 'connectionId', 'generation', 'enabled', 'endpoint', 'toolNames', 'schemaDigest', 'sourcePolicy', 'route', 'bounds']);
+  exact(p, ['schemaVersion', 'ownerId', 'connectionId', 'generation', 'enabled', 'connector', 'endpoint', 'toolNames', 'schemaDigest', 'sourcePolicy', 'route', 'bounds']);
   if (p.schemaVersion !== 1 || typeof p.enabled !== 'boolean') throw Error('invalid_policy_version');
   [p.ownerId, p.connectionId].forEach(text); positive(p.generation);
   exact(p.endpoint, (p.endpoint as { transport?: unknown }).transport === 'stdio' ? ['id', 'transport', 'command', 'args', 'env', 'account', 'resource', 'credentialRef'] : ['id', 'url', 'account', 'resource', 'credentialRef']);
@@ -44,7 +43,10 @@ export function validatePolicy(input: ConnectionPolicy): ConnectionPolicy {
     [e.id, e.account, e.resource, e.url].forEach(text); validateEndpointUrl(e.url);
     if (e.credentialRef !== null) text(e.credentialRef);
   }
-  if (!Array.isArray(p.toolNames) || p.toolNames.length < 1 || p.toolNames.length > 2 || new Set(p.toolNames).size !== p.toolNames.length || p.toolNames.some(n => !['search_knowledge', 'get_insight'].includes(n)) || !/^[a-f0-9]{64}$/.test(p.schemaDigest)) throw Error('invalid_read_tools');
+  text(p.connector);
+  const descriptor = CONNECTOR_DESCRIPTORS[p.connector];
+  if (!descriptor) throw Error('invalid_connector');
+  if (!Array.isArray(p.toolNames) || p.toolNames.length < 1 || p.toolNames.length > descriptor.envelope.length || new Set(p.toolNames).size !== p.toolNames.length || p.toolNames.some(n => typeof n !== 'string' || !descriptor.envelope.includes(n)) || !/^[a-f0-9]{64}$/.test(p.schemaDigest)) throw Error('invalid_read_tools');
   exact(p.sourcePolicy, ['id', 'revision', 'unknownClass', 'allowedClasses']); text(p.sourcePolicy.id); positive(p.sourcePolicy.revision); classSet(p.sourcePolicy.allowedClasses);
   if (p.sourcePolicy.unknownClass !== null && !classes.includes(p.sourcePolicy.unknownClass)) throw Error('invalid_unknown_class');
   exact(p.route, ['identity', 'allowedClasses']); text(p.route.identity); classSet(p.route.allowedClasses);
@@ -73,7 +75,7 @@ function hostMatches(a: RunAcceptance, h: Pick<HostContext, 'runId' | 'actorId' 
 }
 
 export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
-  const { store, registry, port, lookupAuthority, ownerId } = options; text(ownerId);
+  const { store, registry, port, lookupAuthority, ownerId, reportToolStatus } = options; text(ownerId);
   if (ownedStores.has(store)) throw Error('duplicate_store_tools_owner');
   ownedStores.add(store);
   // Failure latch is not authority: it only prevents fallback journal writes after failed persistence.
@@ -117,7 +119,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
     return row;
   };
   const target = (snapshot: RunSnapshot, call: ToolCallRefusal): BoundConnection => {
-    const matches = snapshot.connections.filter(b => b.policy.toolNames.includes(call.toolName as 'search_knowledge' | 'get_insight') && b.policy.endpoint.account === call.accountId && b.policy.endpoint.resource === call.resourceId);
+    const matches = snapshot.connections.filter(b => b.policy.toolNames.includes(call.toolName) && b.policy.endpoint.account === call.accountId && b.policy.endpoint.resource === call.resourceId);
     if (matches.length !== 1) throw Error('intent_scope_mismatch'); return matches[0]!;
   };
   const validateCallRun = (tx: Transaction, call: ToolCallRefusal): RunSnapshot => {
@@ -290,23 +292,19 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
       const definitions: ToolDefinition[] = [];
       for (const bound of snapshot.connections) {
         const p = bound.policy;
-        const reader = createLuxKnowledgeReader({ port, registry, config: { endpointId: p.endpoint.id, account: p.endpoint.account, resource: p.endpoint.resource, schemaDigest: p.schemaDigest, generation: p.generation, ...p.bounds } });
+        const descriptor = CONNECTOR_DESCRIPTORS[p.connector];
+        if (!descriptor) throw Error('unknown_connector');
+        const reader = descriptor.createReader({ port, registry, endpoint: p.endpoint, schemaDigest: p.schemaDigest, generation: p.generation, policy: p });
+        const declarations = descriptor.declarations(p);
         for (const name of p.toolNames) {
           if (definitions.some(d => d.name === name)) throw Error('ambiguous_model_tool_name');
-          const search = name === 'search_knowledge';
-          const validate = (args: unknown): boolean => {
-            try {
-              const a = detached(args); exact(a, search ? ['query', 'limit'] : ['ids']);
-              if (search) return typeof a['query'] === 'string' && a['query'].trim().length > 0 && a['query'].length <= p.bounds.maxQueryChars && Number.isSafeInteger(a['limit']) && Number(a['limit']) > 0 && Number(a['limit']) <= p.bounds.maxSearchLimit;
-              return Array.isArray(a['ids']) && a['ids'].length > 0 && a['ids'].length <= p.bounds.maxGetIds && new Set(a['ids']).size === a['ids'].length && a['ids'].every(id => Number.isSafeInteger(id) && id > 0);
-            } catch { return false; }
-          };
-          definitions.push({ name, description: search ? 'Search bounded Lux knowledge evidence.' : 'Get bounded Lux knowledge evidence; requested IDs are unverified input.', effect: 'read', accountId: p.endpoint.account, resourceId: p.endpoint.resource, validate,
-            parameters: search ? { type: 'object', additionalProperties: false, required: ['query', 'limit'], properties: { query: { type: 'string', minLength: 1, maxLength: p.bounds.maxQueryChars }, limit: { type: 'integer', minimum: 1, maximum: p.bounds.maxSearchLimit } } } :
-              { type: 'object', additionalProperties: false, required: ['ids'], properties: { ids: { type: 'array', minItems: 1, maxItems: p.bounds.maxGetIds, uniqueItems: true, items: { type: 'integer', minimum: 1 } } } },
+          const declaration = declarations.find(candidate => candidate.name === name);
+          if (!declaration) throw Error('unknown_connector_tool');
+          definitions.push({ name, description: declaration.description, effect: 'read', accountId: p.endpoint.account, resourceId: p.endpoint.resource, validate: declaration.validate,
+            parameters: declaration.parameters,
             async execute(args, context) {
               if (context.signal.aborted) return { status: 'unknown' };
-              if (!validate(args)) return { status: 'failed' };
+              if (!declaration.validate(args)) return { status: 'failed' };
               const gate = await resultGate.authorize({ ...context, grants: [] }, [], [], context.signal);
               if (context.signal.aborted) return { status: 'unknown' };
               if (gate.state !== 'allowed') return { status: 'failed' };
@@ -319,11 +317,19 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
                 if (!currentPolicies(tx, accepted) || target(accepted, expected).connectionId !== bound.connectionId) throw Error('executor_policy_denied');
                 return expected;
               });
-              const evidence = search ? await reader.search(args as { query: string; limit: number }, context.signal) : await reader.get(args as { ids: number[] }, context.signal);
+              const evidence = await reader.call(name, args as Record<string, unknown>, context.signal);
               if (context.signal.aborted || evidence.state === 'unknown') return { status: 'unknown' };
-              if (evidence.state !== 'completed') return { status: 'failed' };
+              if (evidence.state !== 'completed') {
+                const status = evidence.state === 'tool-error' || evidence.state === 'protocol-error' ? descriptor.status?.(evidence) : undefined;
+                if (!status) return { status: 'failed' };
+                // A classified failure is visible: the endpoint flips to configured and the call
+                // returns the plain reason as its projection, never an empty success.
+                reportToolStatus?.(p.endpoint.id, status);
+                return { status: 'completed', result: complete(call, { tool: name, text: status.reason, partial: false, originalCharacters: status.reason.length, omittedCharacters: 0 }, []) };
+              }
+              reportToolStatus?.(p.endpoint.id, null);
               let value: ModelSnapshot;
-              try { value = projectLuxResult(evidence, p, port); } catch { return { status: 'failed' }; }
+              try { value = descriptor.project(evidence, port, p); } catch { return { status: 'failed' }; }
               return { status: 'completed', result: complete(call, value.response, value.dataClasses) };
             },
           });

@@ -55,10 +55,29 @@ async function body(req: IncomingMessage) {
   for await (const chunk of req) chunks.push(Buffer.from(chunk));
   return Buffer.concat(chunks);
 }
-// Test-only HTTP boundary, extracted without changing the existing buffering behavior.
-export async function bridgeSdkResponse(_method: string | undefined, res: ServerResponse, response: Response): Promise<void> {
+// The official SDK GET response stays open; establish headers before reading its live body.
+export async function bridgeSdkResponse(method: string | undefined, res: ServerResponse, response: Response): Promise<void> {
   res.writeHead(response.status, Object.fromEntries(response.headers));
-  res.end(Buffer.from(await response.arrayBuffer()));
+  if (method !== 'GET' || !response.body) { res.end(Buffer.from(await response.arrayBuffer())); return; }
+  const reader = response.body.getReader(); let closed = false;
+  const cancel = () => { closed = true; void reader.cancel().catch(() => {}); };
+  res.once('close', cancel);
+  try {
+    res.flushHeaders();
+    while (!closed) {
+      const chunk = await reader.read(); if (chunk.done) break;
+      if (!res.write(Buffer.from(chunk.value))) {
+        await new Promise<void>(resolve => {
+          const resume = () => { res.off('drain', resume); res.off('close', resume); resolve(); };
+          res.once('drain', resume); res.once('close', resume);
+        });
+      }
+    }
+    if (!closed) res.end();
+  } finally {
+    res.off('close', cancel);
+    await reader.cancel().catch(() => {}); reader.releaseLock();
+  }
 }
 
 export async function fixture(options: FixtureOptions = {}) {
@@ -122,7 +141,10 @@ export async function fixture(options: FixtureOptions = {}) {
       res.destroy(); return;
     }
     await bridgeSdkResponse(req.method, res, response);
-  })().catch(() => { res.writeHead(500); res.end('synthetic SDK failure'); }); });
+  })().catch(() => {
+    if (res.headersSent) { res.destroy(); return; }
+    res.writeHead(500); res.end('synthetic SDK failure');
+  }); });
   cleanups.push(() => sdkServer.listening ? new Promise<void>((resolve, reject) => sdkServer.close(error => error ? reject(error) : resolve())) : undefined);
   sdkServer.listen(0, '127.0.0.1'); await once(sdkServer, 'listening');
   const address = sdkServer.address(); assert.ok(address && typeof address !== 'string');
@@ -383,7 +405,7 @@ const canonicalEntryMatches = !!process.argv[1] && fileURLToPath(import.meta.url
 if (process.send && (process.argv[2] === 'browser' || process.argv[2] === 'recovery')) {
   process.send({ phase: 'bootstrap', mode: process.argv[2], entryMatches, canonicalEntryMatches });
 }
-if (entryMatches) {
+if (entryMatches || canonicalEntryMatches) {
   const task = process.argv[2] === 'browser' ? browserProcess : process.argv[2] === 'recovery' ? recoveryProcess : null;
   if (task) void task().catch(error => {
     // This process only owns synthetic fixtures; redact their keys and bound startup evidence.

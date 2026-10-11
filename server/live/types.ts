@@ -26,6 +26,7 @@ export class LiveConfigError extends Error {
 }
 
 export interface LiveLimits {
+  toolDeferralMs: number;
   sessionMs: number; idleMs: number; unusedMs: number; handshakeMs: number; closeMs: number;
   journalMaxEvents: number; journalMaxBytes: number; consumerQueueEvents: number; consumerQueueBytes: number;
   wsBufferedBytes: number;

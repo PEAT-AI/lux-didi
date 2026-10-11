@@ -1,6 +1,6 @@
 import WebSocket from 'ws';
 import type { RawData } from 'ws';
-import type { DataClass, GeminiLiveVoiceOptions, LiveVoiceControl, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession, LiveSocketFactory, LiveVoiceErrorCode } from './types.js';
+import type { DataClass, GeminiLiveVoiceOptions, LiveVoiceControl, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession, LiveSocketFactory, LiveVoiceErrorCode, LiveToolResponse, LiveToolCall } from './types.js';
 import { LiveVoiceError } from './types.js';
 
 // Fixed official v1beta endpoint. Neither destination nor credentials are public events.
@@ -76,11 +76,18 @@ export class GeminiLiveVoiceAdapter implements LiveVoicePort {
       checkClass(turn.dataClass);
       return { role: turn.role, parts: [{ text: turn.text }] };
     });
+    if (request.languageCode !== undefined && !/^[a-z]{2}$/.test(request.languageCode)) fail('invalid_request');
+    if (request.tools !== undefined && (!Array.isArray(request.tools) || request.tools.length > 128 || request.tools.some(t => !object(t) || typeof t.name !== 'string' || !t.name || !object(t.parameters)))) fail('invalid_request');
     const system = request.system.text;
-    if (Buffer.byteLength(JSON.stringify({ system, history })) > settings.limits.maxRequestBytes) fail('invalid_request');
+    if (Buffer.byteLength(JSON.stringify({ system, history, tools: request.tools })) > settings.limits.maxRequestBytes) fail('invalid_request');
     const setup = JSON.stringify({ setup: {
       model: settings.modelId,
-      generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: settings.voice } } } },
+      generationConfig: { responseModalities: ['AUDIO'], speechConfig: { ...(request.languageCode ? { languageCode: request.languageCode === 'ar' ? 'ar-XA' : request.languageCode } : {}), voiceConfig: { prebuiltVoiceConfig: { voiceName: settings.voice } } },
+        ...(!settings.modelId.includes('3.8') ? { thinkingConfig: { thinkingLevel: 'minimal' } } : {}) },
+      ...(request.tools?.length ? { tools: [{ functionDeclarations: request.tools }] } : {}),
+      historyConfig: { initialHistoryInClientContent: true },
+      contextWindowCompression: { slidingWindow: { targetTokens: 32000 } },
+      realtimeInputConfig: { automaticActivityDetection: { startOfSpeechSensitivity: 'START_SENSITIVITY_LOW' } },
       systemInstruction: { parts: [{ text: system }] }, inputAudioTranscription: {}, outputAudioTranscription: {},
     } });
     const initial = history.length ? JSON.stringify({ clientContent: { turns: history, turnComplete: false } }) : undefined;
@@ -110,6 +117,8 @@ class Session implements LiveVoiceSession {
   private idle: ReturnType<typeof setTimeout> | undefined;
   private closeTimer: ReturnType<typeof setTimeout> | undefined;
   private cleaned = false;
+  private pendingCalls: LiveToolCall[] = [];
+  droppedAudioFrames = 0;
   private creatingSocket = false;
   constructor(private readonly settings: Settings, private readonly declared: readonly DataClass[], setup: string, initial: string | undefined,
     private readonly signal: AbortSignal, private readonly deadlineMs: number) {
@@ -198,7 +207,19 @@ class Session implements LiveVoiceSession {
       const message: unknown = JSON.parse(bytes.toString('utf8'));
       if (!object(message) || !Object.keys(message).length) fail('protocol_error');
       if ('error' in message) fail('provider_error');
-      if ('toolCall' in message || 'toolCallCancellation' in message) fail('unsupported_tool');
+      if ('toolCall' in message) {
+        if (!this.isReady || this.pendingCalls.length || !object(message.toolCall) || !Array.isArray(message.toolCall.functionCalls) || !message.toolCall.functionCalls.length || message.toolCall.functionCalls.length > 16) fail('protocol_error');
+        const calls = message.toolCall.functionCalls;
+        if (calls.some(c => !object(c) || typeof c.id !== 'string' || !c.id || typeof c.name !== 'string' || !c.name || !object(c.args)) || new Set(calls.map(c => c.id)).size !== calls.length) fail('protocol_error');
+        this.pendingCalls = structuredClone(calls) as LiveToolCall[];
+        this.emit({ type: 'toolCall', calls: structuredClone(this.pendingCalls) });
+      }
+      if ('toolCallCancellation' in message) {
+        if (!object(message.toolCallCancellation) || !Array.isArray(message.toolCallCancellation.ids) || message.toolCallCancellation.ids.some(id => typeof id !== 'string')) fail('protocol_error');
+        const ids = message.toolCallCancellation.ids as string[];
+        this.pendingCalls = this.pendingCalls.filter(c => !ids.includes(c.id));
+        this.emit({ type: 'toolCallCancellation', ids });
+      }
       if ('setupComplete' in message) {
         if (this.isReady || !object(message.setupComplete)) fail('protocol_error');
         this.clear(this.handshake); this.isReady = true;
@@ -305,11 +326,20 @@ class Session implements LiveVoiceSession {
       this.touch(); return !this.terminal;
     } catch { this.finish('transport_error'); return false; }
   }
+  sendToolResponse(input: { responses: LiveToolResponse[] }): void {
+    if (!this.checkpoint()) fail(this.terminal!.code);
+    if (!this.isReady) fail('not_ready');
+    if (!object(input) || !Array.isArray(input.responses) || !this.pendingCalls.length || input.responses.length !== this.pendingCalls.length ||
+      new Set(input.responses.map(r => r.id)).size !== input.responses.length || input.responses.some(r => !object(r) || !object(r.response) || !this.pendingCalls.some(c => c.id === r.id && c.name === r.name))) fail('invalid_request');
+    const frame = JSON.stringify({ toolResponse: { functionResponses: input.responses } });
+    if (this.write(frame)) this.pendingCalls = [];
+  }
   sendAudio(input: { pcm: Uint8Array; dataClass: DataClass }): void {
     if (!this.checkpoint()) fail(this.terminal!.code);
     if (!this.isReady) fail('not_ready');
     if (!object(input) || !(input.pcm instanceof Uint8Array) || !input.pcm.byteLength || input.pcm.byteLength % 2) fail('invalid_audio');
     if (!classes.includes(input.dataClass) || !this.declared.includes(input.dataClass)) fail('route_denied');
+    if (this.pendingCalls.length) { this.droppedAudioFrames++; return; }
     // Size bound precedes the owned copy/base64 allocation. Never queue or resend audio.
     const overhead = Buffer.byteLength(JSON.stringify({ realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: '' } } }));
     if (Math.ceil(input.pcm.byteLength / 3) * 4 + overhead > this.settings.limits.maxOutgoingBytes) { this.finish('outgoing_limit'); fail('outgoing_limit'); }

@@ -20,7 +20,9 @@ test('wire setup/history snapshots, readiness, PCM and three independent output 
   await f.frame(1);
   assert.equal(f.frames.length, 1);
   assert.deepEqual(f.frames[0], { setup: {
-    model: 'models/explicit-live-test', generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'ExplicitVoice' } } } },
+    model: 'models/explicit-live-test', generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'ExplicitVoice' } } }, thinkingConfig: { thinkingLevel: 'minimal' } },
+    historyConfig: { initialHistoryInClientContent: true }, contextWindowCompression: { slidingWindow: { targetTokens: 32000 } },
+    realtimeInputConfig: { automaticActivityDetection: { startOfSpeechSensitivity: 'START_SENSITIVITY_LOW' } },
     systemInstruction: { parts: [{ text: 'Synthetic system' }] }, inputAudioTranscription: {}, outputAudioTranscription: {},
   } });
   const endpoint = new URL(f.destination);
@@ -150,7 +152,7 @@ for (const [name, payload, expected] of [
   ['bad rate', { serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=16000', data: 'AAA=' } }] } } }, 'protocol_error'],
   ['bad base64', { serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: '!!' } }] } } }, 'protocol_error'],
   ['odd PCM', { serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: 'AA==' } }] } } }, 'protocol_error'],
-  ['unsupported tool', { toolCall: { functionCalls: [{ name: CANARY, args: { secret: CANARY } }] } }, 'unsupported_tool'],
+  ['malformed tool call', { toolCall: { functionCalls: [{ name: CANARY, args: { secret: CANARY } }] } }, 'protocol_error'],
   ['provider error', { error: { code: 401, message: CANARY } }, 'provider_error'],
   ['invalid goAway', { goAway: { timeLeft: CANARY } }, 'protocol_error'],
   ['key in model text', { serverContent: { modelTurn: { parts: [{ text: `wss://example.test/?key=${CANARY}` }] } } }, 'protocol_error'],
@@ -280,9 +282,9 @@ test('Live tool batches use one response frame and suppress microphone audio unt
   const session = new GeminiLiveVoiceAdapter(options(f)).open({ ...request, languageCode: 'ar', tools: [
     { name: 'search_knowledge', description: 'Search', parameters: { type: 'OBJECT' } },
   ] }, control());
-  const captured = collect(session); t.after(() => session.close());
+  const events = session.events[Symbol.asyncIterator](); t.after(() => session.close());
   await f.frame(1);
-  const setup = f.frames[0]!.setup as Record<string, any>;
+  const setup = (f.frames[0] as { setup: Record<string, any> }).setup;
   assert.deepEqual(setup.tools, [{ functionDeclarations: [{ name: 'search_knowledge', description: 'Search', parameters: { type: 'OBJECT' } }] }]);
   assert.equal(setup.generationConfig.speechConfig.languageCode, 'ar-XA');
   assert.deepEqual(setup.generationConfig.thinkingConfig, { thinkingLevel: 'minimal' });
@@ -290,17 +292,17 @@ test('Live tool batches use one response frame and suppress microphone audio unt
   assert.deepEqual(setup.contextWindowCompression, { slidingWindow: { targetTokens: 32000 } });
   assert.deepEqual(setup.realtimeInputConfig, { automaticActivityDetection: { startOfSpeechSensitivity: 'START_SENSITIVITY_LOW' } });
   f.send({ setupComplete: {} }); await session.ready;
-  const original = captured.events;
+  assert.equal((await events.next()).value?.type, 'ready');
   f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x' } }, { id: 'c2', name: 'search_knowledge', args: { query: 'y' } }] } });
-  // A following content boundary proves the inbound batch has been consumed, without a real-clock wait.
-  f.send({ serverContent: { turnComplete: true } });
-  for (;;) { await new Promise<void>(resolve => setImmediate(resolve)); if (original.some(e => e.type === 'turnComplete')) break; }
-  assert.deepEqual(original.find(e => e.type === 'toolCall')?.calls.map(c => c.id), ['c1', 'c2']);
+  const event = (await events.next()).value;
+  assert.equal(event?.type, 'toolCall');
+  if (event?.type !== 'toolCall') throw Error('missing tool call');
+  assert.deepEqual(event.calls.map(c => c.id), ['c1', 'c2']);
   session.sendAudio({ pcm, dataClass: 'ordinary' });
   assert.equal(session.droppedAudioFrames, 1);
   session.sendToolResponse({ responses: [{ id: 'c1', name: 'search_knowledge', response: { markdown: 'one' } }, { id: 'c2', name: 'search_knowledge', response: { error: 'denied' } }] });
   await f.frame(2);
   assert.deepEqual(f.frames[1], { toolResponse: { functionResponses: [{ id: 'c1', name: 'search_knowledge', response: { markdown: 'one' } }, { id: 'c2', name: 'search_knowledge', response: { error: 'denied' } }] } });
   session.sendAudio({ pcm, dataClass: 'ordinary' }); await f.frame(3);
-  session.close(); await captured.done;
+  session.close();
 });

@@ -1,3 +1,4 @@
+import type { FunctionDeclaration, JsonObject } from '../model/types.js';
 import type { Credentials, DataClass } from '../model/types.js';
 import type WebSocket from 'ws';
 import type { ClientOptions } from 'ws';
@@ -16,7 +17,11 @@ export interface GeminiLiveVoiceOptions {
   modelId: string; voice: string; keyReference: string; credentials: Credentials;
   route: LiveVoiceRoute; limits?: Partial<LiveVoiceLimits>; socketFactory?: LiveSocketFactory;
 }
+export interface LiveToolCall { id: string; name: string; args: JsonObject }
+export interface LiveToolResponse { id: string; name: string; response: JsonObject }
 export interface LiveVoiceRequest {
+  tools?: FunctionDeclaration[];
+  languageCode?: string;
   system: { text: string; dataClass: DataClass };
   history?: readonly { role: 'user' | 'model'; text: string; dataClass: DataClass }[];
   dataClasses: readonly DataClass[];
@@ -32,6 +37,8 @@ export interface LiveVoiceOutcome {
 }
 export type LiveVoiceEvent = { sequence: number } & (
   | { type: 'ready' }
+  | { type: 'toolCall'; calls: LiveToolCall[] }
+  | { type: 'toolCallCancellation'; ids: string[] }
   | { type: 'audio'; pcm: Uint8Array; mimeType: 'audio/pcm;rate=24000' }
   | { type: 'inputTranscription' | 'outputTranscription'; text: string; finished?: boolean }
   | { type: 'modelText'; text: string; thought: boolean }
@@ -46,6 +53,8 @@ export interface LiveVoiceSession {
   readonly ready: Promise<void>;
   readonly events: AsyncIterable<LiveVoiceEvent>;
   readonly done: Promise<LiveVoiceOutcome>;
+  readonly droppedAudioFrames: number;
+  sendToolResponse(input: { responses: LiveToolResponse[] }): void;
   sendAudio(input: { pcm: Uint8Array; dataClass: DataClass }): void;
   endAudioStream(): void;
   close(): void;

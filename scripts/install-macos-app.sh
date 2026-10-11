@@ -59,4 +59,17 @@ if ! codesign --verify --deep --strict "$target" || [ ! -x "$target/Contents/Mac
   exit 1
 fi
 
+# Seed the provider MCP endpoint catalog once, if absent. Owner-only data, never a secret.
+data_dir="${HOME}/Library/Application Support/ai.peat.lux-didi"
+config_dir="${data_dir}/provider-config"
+if [ ! -e "${config_dir}/mcp.json" ]; then
+  [ -d "${config_dir}" ] || { mkdir -p "${config_dir}"; chmod 700 "${config_dir}"; }
+  tmp_file="${config_dir}/.mcp.json.tmp.$$"
+  cat > "$tmp_file" <<'JSON'
+{"schemaVersion":1,"grantMode":"owner-trusted-reads","endpoints":[{"id":"lux-knowledge","transport":"streamable-http","url":"http://127.0.0.1:8765/mcp","connector":"lux-knowledge","account":"local","resource":"lux-knowledge","credentialRef":null,"enabled":true,"allowEgress":true}]}
+JSON
+  chmod 600 "$tmp_file"
+  mv "$tmp_file" "${config_dir}/mcp.json"
+fi
+
 printf 'INSTALL-MACOS-APP PASS target=%s rollback=%s\n' "$target" "${rollback:-none}"

@@ -13,6 +13,11 @@ import { chatMigrations } from '../chat/index.js';
 import { liveMigrations } from '../live/index.js';
 import { composeChat, type ModelTesting } from './connected.js';
 import { composeLive, type LiveTesting } from './live.js';
+import { composeMcpRuntime } from './mcp.js';
+import type { ToolsOwner } from '../tools/types.js';
+
+/** Structural match for W-B's LiveToolsComposition; kept local until its signature lands on the train. */
+interface LiveToolsComposition { owner: ToolsOwner; connectionIds(): string[] }
 
 export interface HostConfig { dataDir: string; webRoot: string; port?: number; descriptor?: string; configDir?: string; ownerProfilePath?: string; modelTesting?: ModelTesting; liveTesting?: LiveTesting; now?: () => number }
 export function defaultDataDir(): string {
@@ -74,17 +79,20 @@ export async function startHost(config: HostConfig) {
     const owner = loadOwnerProfile({ ...(config.ownerProfilePath !== undefined ? { path: config.ownerProfilePath } : {}), ownerId: store.assistantId });
     if (owner.status === 'error') throw new ConfigError('invalid_profile');
     const providerConfigDir = resolve(config.configDir ?? join(dataDir, 'provider-config'));
+    const mcp = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir: providerConfigDir, lookupAuthority: async () => null });
+    const liveTools: LiveToolsComposition = { owner: mcp.owner, connectionIds: () => mcp.connectionIds() };
     const { chat, status } = composeChat(store, domain, providerConfigDir, config.modelTesting, config.now, owner.snapshot);
-    const { service: live } = composeLive(store, providerConfigDir, config.liveTesting, config.now, owner.snapshot);
-    const service = await listenService({ store, domain, chat, live, modelStatus: status, ownerProfileStatus: { status: owner.status, displayName: owner.snapshot.displayName }, webRoot, port, ...(config.now ? { now: config.now } : {}) });
+    const composeLiveWithTools = composeLive as unknown as (...args: unknown[]) => ReturnType<typeof composeLive>;
+    const { service: live } = composeLiveWithTools(store, providerConfigDir, config.liveTesting, config.now, owner.snapshot, liveTools);
+    const service = await listenService({ store, domain, chat, live, modelStatus: status, ownerProfileStatus: { status: owner.status, displayName: owner.snapshot.displayName }, toolsStatus: () => mcp.status(), webRoot, port, ...(config.now ? { now: config.now } : {}) });
     try {
       const descriptor: RuntimeDescriptor = { schemaVersion: 1, origin: service.origin, authorityEpoch: store.authorityEpoch, assistantId: store.assistantId, pid: process.pid, startedAt: new Date().toISOString() };
       await publish(descriptorPath, descriptor); // Never use a stale descriptor as authority or carry bearer material.
       let closed = false;
-      return { store, chat, service, descriptor, descriptorPath, async close() {
+      return { store, chat, service, descriptor, descriptorPath, tools: liveTools, async close() {
         if (closed) return; closed = true;
         chat.shutdown();
-        try { await service.close(); await live.shutdown(); } finally { store.close(); }
+        try { await service.close(); await live.shutdown(); await mcp.close(); } finally { store.close(); }
       } };
     } catch (error) { await service.close(); throw error; }
   } catch (error) { store.close(); throw error; }

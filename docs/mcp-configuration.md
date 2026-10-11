@@ -65,3 +65,15 @@ A connection may bind an operator-approved local executable instead of an HTTP U
 Child stdout/stderr are never forwarded to the parent's sinks, and neither command, args, env nor any secret marker appears in status payloads, diagnostics or model-visible projections.
 
 **Platform support.** The stdio arm is supported and verified on macOS/POSIX only. On win32 a stdio binding is **refused** (`validateApprovedStdioEnv` returns false there) because the platform's inherited-environment set differs and its adapter is not implemented, while HTTP and local features are unaffected. This is a source-level guarantee; no Windows runtime behaviour is claimed or proven.
+
+## Installed endpoint catalog and owner-trusted-reads
+
+`scripts/install-macos-app.sh` writes `<dataDir>/provider-config/mcp.json` once, if absent, at `0700` (directory) and `0600` (file). It holds no secret: endpoints name a `credentialRef` at most. Shape:
+
+`{ "schemaVersion": 1, "grantMode": "explicit" | "owner-trusted-reads", "endpoints": [ { "id", "transport": "streamable-http", "url", "connector", "account", "resource", "credentialRef", "enabled", "allowEgress" } ] }`
+
+`grantMode` defaults to `explicit` when absent. `validateEndpointUrl` still permits plain HTTP only for literal loopback. The installed default binds `lux-knowledge` to `http://127.0.0.1:8765/mcp` with `connector: "lux-knowledge"` and `grantMode: "owner-trusted-reads"`.
+
+Under `owner-trusted-reads`, after each successful discovery the host approves exactly the tools in the Didi connector's local read envelope for that endpoint (lux-knowledge: `search_knowledge`, `get_insight`) at the discovered schema digest, one generation higher; anything outside the envelope, and every write or unknown effect, is never auto-approved, whatever the remote `readOnlyHint` says. A changed digest re-approves only the envelope. The existing grant evaluator enforces every call unchanged.
+
+Status: `GET /api/v1/tools/status` (operator bearer only) returns `{ endpoints: [{ id, state, tools, lastHandshakeAt, error? }] }` with states `missing` (no file), `configured` (present, not connected), `connected` (handshake done) and `error`.

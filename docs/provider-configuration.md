@@ -52,6 +52,33 @@ or caller-selected path. Key length is 1 to 1024 bytes, visible ASCII without sp
 are synthetic, not credentials. Secret bytes never appear in status/errors,
 causes, logs, CLI output, argv or serialized returned objects.
 
+## Live profile (`live.json`) and the local persona overlay
+
+`live.json`, at most 16 KiB, is a separate closed file in the same `configDir`
+(`<dataDir>/provider-config`). It carries the same five-field `preferences`
+block, and its `preferences.language` is the same explicit BCP47 locale. For
+Live it is additionally reduced to the bare ISO 639-1 primary subtag for
+`generationConfig.speechConfig.languageCode` (for example `de-DE` becomes `de`;
+the adapter pins `ar` to `ar-XA` and omits the field for a tag with no two-letter
+language). The literal key reference is still `gemini-primary`; the key file is
+separate and untouched.
+
+```json
+{"schemaVersion":1,"enabled":true,"provider":"gemini","modelId":"models/gemini-3.1-flash-live-preview","voice":"Aoede","keyReference":"gemini-primary","dataClasses":["ordinary"],"preferences":{"dataClass":"ordinary","language":"en","register":"plain","humor":"dry","verbosity":"brief"}}
+```
+
+The installer seeds this file, owner-only, only when absent; it never overwrites
+an existing profile. The Live system instruction is not this file: it is
+composed from the public Naya base, an optional local overlay and the terminal
+language anchor (see `docs/prompt-composition.md`).
+
+`<dataDir>/persona-overlay.json`, at most 16 KiB, is the optional private local
+persona layer, outside Git. It is a closed record
+`{schemaVersion:1, text, greeting?, accent?}`. A missing file means no overlay; a
+present but malformed, oversized or non-regular file is a typed error surfaced
+as Live status `error` with code `invalid_overlay` or `overlay_too_large`, never
+a silent fall back to the public base.
+
 ## Library API (ESM)
 
 Import `loadProviderConfig`, `initializeProviderConfig`, `ConfigError` and types

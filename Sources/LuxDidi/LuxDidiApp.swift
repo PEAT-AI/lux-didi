@@ -12,6 +12,7 @@ import Security
     @Published var shell: CompanionWeb?
     @Published var connecting = false
     let voice = NativeVoice()
+    @Published private(set) var live: NativeLiveConversation?
     let notifications = NativeNotifications()
     private(set) var client: CompanionClient?
     private(set) var supervisor: NativeServiceSupervisor?
@@ -36,6 +37,7 @@ import Security
                     owner.onUnavailable = { [weak self] in
                         self?.error = NativeServiceError.exited.localizedDescription
                         self?.shell?.clear()
+                        self?.stopLive()
                     }
                     return
                 }
@@ -97,15 +99,56 @@ import Security
             self.error = error.localizedDescription
         }
     }
+    func startLive() {
+        guard let client else { error = "Connect the local service before starting Live voice."; return }
+        if live == nil {
+            live = NativeLiveConversation(authority: client.authenticatedRequestBuilder(), dictationIsCapturing: { [weak self] in
+                self?.voice.state.phase == .recording
+            })
+        }
+        live?.start()
+    }
+    func stopLive() {
+        let conversation = live
+        conversation?.device.stop()
+        Task { await conversation?.stop() }
+    }
+    func startDictation() {
+        guard live?.isCapturing != true else { error = "Stop Live voice before starting dictation."; return }
+        voice.start()
+    }
     func stopRecording(_ reason: String) {
+        stopLive()
         let wasRecording = voice.state.phase == .recording
         voice.stop(reason: reason)
         if wasRecording && !voice.state.transcript.isEmpty { draft = voice.state.transcript }
     }
-    func logout() async { stopRecording("Logout"); await client?.revokePageSession(); shell?.clear() }
+    func logout() async {
+        stopRecording("Logout")
+        await live?.stop(); live = nil
+        await client?.revokePageSession(); shell?.clear()
+    }
     func shutdown() async {
         await logout()
         await supervisor?.stop()
+    }
+}
+
+struct NativeLiveControls: View {
+    @ObservedObject var conversation: NativeLiveConversation
+    @ObservedObject var device: NativeLiveAudioDevice
+    var body: some View {
+        VStack {
+            Text("Live: " + conversation.state.rawValue).accessibilityLabel("Live voice lifecycle")
+            ProgressView(value: conversation.state == .muted ? 0 : Double(device.inputLevel))
+                .accessibilityLabel(conversation.state == .muted ? "Microphone muted" : "Live microphone input level")
+            HStack {
+                Button(conversation.state == .muted ? "Unmute" : "Mute") { conversation.toggleMute() }
+                    .disabled(![.listening, .speaking, .muted].contains(conversation.state))
+                Button("Stop Live voice") { Task { await conversation.stop() } }
+            }
+            if let failure = conversation.failure { Text(failure).font(.caption) }
+        }
     }
 }
 
@@ -132,11 +175,17 @@ struct RootView: View {
                     Button(model.captureStatus == .unknown ? "Retry Send" : "Send") { Task { await model.saveDraft() } }
                         .disabled(!Presentation.canSend(model.draft) || model.captureStatus == .sending || voice.state.phase == .recording)
                         .accessibilityLabel(model.captureStatus == .unknown ? "Retry same text capture" : "Send text")
-                    Button("Start") { voice.start() }
-                        .disabled(voice.state.phase == .recording || voice.microphone != .granted || voice.speech != .granted || !voice.onDevice)
+                    Button("Start") { model.startDictation() }
+                        .disabled(model.live?.isCapturing == true || voice.state.phase == .recording || voice.microphone != .granted || voice.speech != .granted || !voice.onDevice)
                         .accessibilityLabel("Start recording")
                     Button("Stop") { model.stopRecording("Stopped by user") }
                         .disabled(voice.state.phase != .recording).accessibilityLabel("Stop recording")
+                    VStack {
+                        Text("Live microphone audio leaves this device for the configured Live provider. Start only with your consent.").font(.caption)
+                        Button("Start Live voice") { model.startLive() }
+                            .disabled(model.live?.isCapturing == true || voice.state.phase == .recording)
+                        if let live = model.live { NativeLiveControls(conversation: live, device: live.device) }
+                    }
                     Menu("Settings") {
                         Button("Request microphone/speech permissions") { Task { await model.voice.requestPermissions() } }
                         Button("Reconnect service") { Task { await model.reconnect() } }

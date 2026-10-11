@@ -7,10 +7,7 @@ import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { Store } from '../dist/runtime/store.js';
-import { Outbox } from '../dist/runtime/outbox.js';
-import { createDomainPort } from '../dist/domain/index.js';
-import { chatMigrations } from '../dist/chat/index.js';
-import { liveMigrations } from '../dist/live/index.js';
+import { hostMigrations } from '../dist/host/runtime.js';
 
 const entry = resolve(import.meta.dirname, '../dist/host/index.js');
 
@@ -136,8 +133,8 @@ test('symlink-addressed supervised host serves durable commands and closes on ow
       assert.deepEqual(result, { code: 0, signal: null, stdout: line + '\n', stderr: '' });
       await assert.rejects(fetch(ready.origin + '/api/v1/status', { headers, signal: AbortSignal.timeout(3000) }));
       // Reopening the real Store proves EOF releases the single-writer lease and preserves its identity.
-      // The reopen imports the complete current owner migration set (domain + chat + live).
-      const store = new Store(dataDir, [...createDomainPort({ outbox: Outbox }).migrations, ...chatMigrations, ...liveMigrations]);
+      // The reopen imports the one exported host migration list (domain + chat + live + tools).
+      const store = new Store(dataDir, hostMigrations);
       try { assert.equal(store.assistantId, ready.assistantId); } finally { store.close(); }
       t.diagnostic('symlink start/ready nonce+pid matched; session POST200/GET200 with matching title; EOF exit0; listener refused; real Store reopened with stable identity');
     } finally { await stop(process); }
@@ -167,8 +164,7 @@ test('protected host snapshot has safe current label, restart reloads it and sto
     for (const file of ['index.html', 'assets/fixture.js', 'assets/fixture.css', 'sw.js', 'manifest.webmanifest', 'icon.svg']) {
       await writeFile(join(webRoot, file), file === 'index.html' ? '<script src="/assets/fixture.js"></script><link href="/assets/fixture.css" rel="stylesheet">' : 'synthetic');
     }
-    const domain = createDomainPort({ outbox: Outbox });
-    const store = new Store(dataDir, [...domain.migrations, ...chatMigrations, ...liveMigrations]);
+    const store = new Store(dataDir, hostMigrations);
     const ownerId = store.assistantId; store.close();
     const profile = { schemaVersion: 1, kind: 'profile', ownerId, profileVersion: 'synthetic-private-version', displayName: 'Example A',
       style: { text: 'SYNTHETIC hidden style', dataClass: 'private' }, lore: { text: 'SYNTHETIC hidden lore', dataClass: 'sensitive' } };

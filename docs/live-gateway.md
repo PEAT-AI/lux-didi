@@ -40,7 +40,7 @@ status or error payloads. Status meaning is local validation, never remote reach
 
 Authorization is header-only `Authorization: Bearer <store.adminCredential>`. Any `Cookie`, any
 `Origin`, duplicate protected headers, a wrong `Host`, or a stale `x-didi-authority-epoch` fails before
-the owner or credentials are touched. A paired browser cookie/CSRF never authorizes Live, and a browser
+the owner or credentials are touched. A paired browser cookie/CSRF never authorizes Live control or audio, and a browser
 `clientId` is never trusted.
 
 ## Routes
@@ -79,3 +79,14 @@ session closes with a durable `consumer_backpressure` outcome, retaining every p
 marker, and no DB query runs per PCM frame. Terminal upstream outcome stops input, emits the final
 committed terminal when transport allows, then closes the owned socket. Transport failure never invents
 a delivered terminal or heard audio.
+
+
+## Granted tools and page projection
+
+Trusted composition may pass `LiveToolsComposition = {owner, connectionIds(), registerAuthoritySource?}` as the sixth argument to `composeLive`. The Live owner persists an accepted run at attach, snapshots the owner's configured connection selection, and declares only that frozen tool-definition snapshot. When provided, `registerAuthoritySource` is called with the Live owner's current-authority lookup; a trusted composer may also delegate through `LiveService.lookupAuthority(runId)`. It returns the accepted hash and authority only while the Live session is attached and current, and null after revocation, termination, shutdown or epoch invalidation. The shared tool helper preserves the text loop's original validation, grant, authority, intent, execute ordering. Only resultGate-accepted responses become completed tool-result projections. The tool grant evaluator is unchanged.
+
+The existing WS JSON marker channel now includes `toolCall` and `toolResult`. Both expose only the tool name and status; results additionally contain accepted Markdown and sources. A source URL exists only for a real HTTPS Markdown link; insight references without a URL remain title-only. PCM stays in binary frames. Arguments, credentials, provider errors and raw MCP envelopes are not markers or Live journal payloads.
+
+`GET /api/v1/live/current?cursor=0` is a read-only same-origin page route requiring the existing page cookie. Bearer credentials are refused. It emits no CORS headers and uses `Cache-Control: no-store`. Its explicit projection is `{state, since, entries, cursor}`; entries contain `seq`, an allowlisted kind, optional transcription text or `{tool: {name, status, markdown?, sources?}}`. It exposes no Live session identifiers, grants, arguments, keys, PCM or thoughts. Cursors advance over committed journal sequence numbers and limit each page to 100 rows.
+
+Server states are `idle`, `listening`, `thinking`, `speaking`, `ended` and `error`. Input is continuous and provider automatic VAD owns turn boundaries. `thinking` means a tool batch is unanswered; `speaking` means model audio is arriving until a completion or interruption boundary. `muted` is exclusively client state. `endAudioStream` remains optional, never mandatory per turn.

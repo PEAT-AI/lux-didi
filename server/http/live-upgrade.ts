@@ -23,6 +23,8 @@ export interface LiveStatusPayload {
 
 /** The one operator-facing Live surface. Implemented by the host composition, never by a browser. */
 export interface LiveService {
+  current(cursor?: number): import('../live/types.js').LivePageProjection;
+  lookupAuthority(runId: string): import('../tools/types.js').LiveAuthority | null;
   readonly enabled: boolean;
   readonly profileIdentity: string;
   readonly maxIncomingBytes: number;
@@ -60,6 +62,7 @@ function markerFrame(marker: LivePublicMarker): Record<string, unknown> {
   if (marker.text !== null) frame['text'] = marker.text;
   if (marker.finished !== null) frame['finished'] = marker.finished;
   if (marker.value !== null) frame['value'] = marker.value;
+  if (marker.tool) frame['tool'] = { name: marker.tool.name, status: marker.kind === 'toolCall' ? 'called' : marker.tool.status, ...(marker.kind === 'toolResult' ? { markdown: marker.tool.markdown, sources: marker.tool.sources } : {}) };
   return frame;
 }
 

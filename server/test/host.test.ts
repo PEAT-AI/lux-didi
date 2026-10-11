@@ -153,6 +153,19 @@ test('actual host connects durable domain, supersedes reminders, exposes conflic
     const status = await call('/status');
     assert.deepEqual(status.data.capabilities, { memory: true, commitments: true, notifications: false, model: false });
     assert.equal(status.data.model.configured, false);
+    // The MCP composition is exposed on the runtime and reports truthfully, bearer-only.
+    const toolsStatus = await call('/tools/status');
+    assert.equal(toolsStatus.status, 200);
+    assert.deepEqual(toolsStatus.data, { endpoints: [] });
+    assert.equal(typeof host.tools.owner, 'object');
+    assert.deepEqual(host.tools.connectionIds(), []);
+    assert.equal((await fetch(origin + '/api/v1/tools/status')).status, 401);
+    // R3: the composition's authority lookup is pluggable; none registered returns null, never fabricated.
+    const authority = { ownerId: host.descriptor.assistantId, actorId: 'synthetic', runId: 'run-1', authorityEpoch: epoch, revision: 1, route: { identity: 'synthetic-route', provider: 'gemini' as const, modelId: 'synthetic-model', allowedClasses: ['ordinary'] as const }, allowedClasses: ['ordinary'] as const, connectionIds: [], acceptedRunHash: 'a'.repeat(64) };
+    const signal = new AbortController().signal;
+    assert.equal(await host.tools.lookupAuthority('run-1', signal), null);
+    host.tools.registerAuthoritySource(async () => ({ ...authority }));
+    assert.deepEqual(await host.tools.lookupAuthority('run-1', signal), authority);
     const session = (await call('/sessions', 'POST', { title: 'Synthetic host session', timeZone: 'UTC' })).data;
     assert.equal((await call('/chat', 'POST', { sessionId: session.id, text: 'do not fabricate model work', timeZone: 'UTC' })).status, 503);
     const source = { id: randomUUID(), label: 'Synthetic meeting note', sourceTimestamp: new Date().toISOString(), availability: 'present' };

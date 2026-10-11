@@ -1,12 +1,23 @@
+import { randomUUID } from 'node:crypto';
+import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
+import { createMcpAdapter } from '../adapters/mcp/adapter.js';
+import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
+import { MemoryResultStore } from '../adapters/mcp/store.js';
+import { createToolsOwner, toolsMigrations } from '../tools/index.js';
+import { declarationsFor, runToolCalls } from '../tools/declarations.js';
+import { liveProfileIdentity } from '../live/config.js';
+import type { ToolDefinition, HostContext } from '../adapters/model/types.js';
 import { PROMPT_VERSION } from '../prompt/index.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { TestContext } from 'node:test';
 import { fork, spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { loadLiveConfig } from '../config/live.js';
+import { NAYA_BASE, composeLiveInstruction } from '../prompt/live-persona.js';
 import { GeminiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
 import type { LiveVoiceLimits } from '../adapters/live-voice/index.js';
 import { chatMigrations } from '../chat/index.js';
@@ -15,7 +26,7 @@ import { Outbox } from '../runtime/outbox.js';
 import { Store } from '../runtime/store.js';
 import type { Transaction } from '../contracts/storage.js';
 import { createLiveSessionOwner, LiveConfigError, LiveError, liveMigrations, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
-import { CANARY, fixture, options, pcm } from './live-voice-fixture.js';
+import { CANARY, control, deferred, fixture, options, pcm } from './live-voice-fixture.js';
 
 const MODEL = 'models/live-session-test';
 const NOW = 1_700_000_000_000;
@@ -38,6 +49,7 @@ interface Harness {
   owner: LiveSessionOwner;
   ctx: LiveContext;
   dir: string;
+  calls: { name: string; args: unknown }[];
   advance(ms: number): void;
 }
 
@@ -46,12 +58,15 @@ async function harness(t: TestContext, overrides: {
   adapterLimits?: Partial<LiveVoiceLimits>;
   credentials?: { resolve(reference: string): Promise<string | undefined> };
   model?: string;
+  tools?: boolean;
+  beforeTool?: () => Promise<void>;
+  toolError?: boolean;
   scheduler?: DeadlineClock;
 } = {}): Promise<Harness> {
   const f = await fixture(t);
   const dir = mkdtempSync(join(tmpdir(), 'didi-live-session-'));
   const domain = createDomainPort({ outbox: Outbox });
-  const store = new Store(dir, [...domain.migrations, ...chatMigrations, ...liveMigrations]);
+  const store = new Store(dir, [...domain.migrations, ...chatMigrations, ...liveMigrations, ...(overrides.tools ? toolsMigrations : [])]);
   let clock = NOW;
   const profile = validateLiveProfile(profileInput(overrides.limits, overrides.model));
   const voice = new GeminiLiveVoiceAdapter(options({
@@ -60,13 +75,51 @@ async function harness(t: TestContext, overrides: {
     credentials: overrides.credentials ?? { resolve: async () => CANARY },
     limits: { handshakeMs: 1000, idleMs: 2000, sessionMs: 4000, closeMs: 50, ...overrides.adapterLimits },
   }));
-  const owner = createLiveSessionOwner({ store, voice, profile, now: () => overrides.scheduler?.now ?? clock, ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
+  const calls: { name: string; args: unknown }[] = [];
+  let owner!: LiveSessionOwner;
+  let tools: import('../live/types.js').LiveToolsComposition | undefined;
+  if (overrides.tools) {
+    const schemas = [
+      { name: 'search_knowledge', inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' } }, required: ['query', 'limit'], additionalProperties: false } },
+      { name: 'get_insight', inputSchema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'integer' } }, include_links: { type: 'boolean' } }, required: ['ids', 'include_links'], additionalProperties: false } },
+    ];
+    const registry = new McpRegistry();
+    const endpoint = { id: 'lux', url: 'https://fixture.invalid/mcp', account: 'account', resource: 'resource' };
+    registry.register(endpoint); registry.enable(endpoint.id); registry.allowEgress(endpoint.id);
+    const sdk = new Server({ name: 'live-tools-fixture', version: '1' }, { capabilities: { tools: { listChanged: false } } });
+    const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
+    sdk.setRequestHandler('tools/list', () => ({ tools: structuredClone(schemas) }) as never);
+    sdk.setRequestHandler('tools/call', async req => {
+      calls.push({ name: req.params.name, args: req.params.arguments });
+      await overrides.beforeTool?.();
+      return { content: [{ type: 'text', text: '#123: Synthetic insight\n[Evidence](https://example.test/evidence)' }], ...(overrides.toolError ? { isError: true } : {}) };
+    });
+    await sdk.connect(transport);
+    t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      if (request.method === 'GET') return new Response(null, { status: 405 });
+      return transport.handleRequest(request);
+    });
+    const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic-token', budgets: { maxResponseBytes: 12000, projectionChars: 10, timeoutMs: 1000 } });
+    const toolOwner = createToolsOwner({ store, ownerId: store.assistantId, registry, port, lookupAuthority: async runId => owner?.lookupAuthority(runId) ?? null });
+    toolOwner.applyConnection({ schemaVersion: 1, ownerId: store.assistantId, connectionId: 'lux', generation: 1, enabled: true, connector: 'lux-knowledge',
+      endpoint: { ...endpoint, credentialRef: null }, toolNames: ['search_knowledge', 'get_insight'], schemaDigest: canonicalToolDigest(schemas),
+      sourcePolicy: { id: 'live-fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
+      route: { identity: liveProfileIdentity(profile), allowedClasses: ['ordinary'] },
+      bounds: { maxQueryChars: 80, maxSearchLimit: 3, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 } });
+    assert.equal((await port.discover(endpoint.id)).state, 'discovered');
+    toolOwner.projectConnection('lux');
+    tools = { owner: toolOwner, connectionIds: () => ['lux'] };
+    t.after(async () => { await port.close(); await transport.close(); await sdk.close(); });
+  }
+  owner = createLiveSessionOwner({ store, voice, profile, ...(tools ? { tools } : {}), now: () => overrides.scheduler?.now ?? clock, ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
   t.after(async () => { await owner.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
-  return { f, store, owner, ctx: context(store), dir, advance: ms => { if (overrides.scheduler) overrides.scheduler.now += ms; else clock += ms; } };
+  return { calls, f, store, owner, ctx: context(store), dir, advance: ms => { if (overrides.scheduler) overrides.scheduler.now += ms; else clock += ms; } };
 }
 
 async function attached(h: Harness, key = 'k1') {
   const session = h.owner.create({ idempotencyKey: key, inputClass: 'ordinary' }, h.ctx);
+  assert.equal(h.owner.current().state, 'idle', 'accepted without an attachment is not listening');
   const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
   await h.f.frame(1);
   h.f.send({ setupComplete: {} });
@@ -377,13 +430,23 @@ test('live migrations preserve a populated accepted Store byte-for-byte', async 
   const dir = mkdtempSync(join(tmpdir(), 'didi-live-migrate-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const domain = createDomainPort({ outbox: Outbox });
-  const before = new Store(dir, [...domain.migrations, ...chatMigrations]);
+  const before = new Store(dir, [...domain.migrations, ...chatMigrations, ...liveMigrations.filter(migration => migration.version < 3)]);
   before.transaction(tx => {
     tx.run('INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?)', ['s1', 'Prior session', 1, null, 'UTC', 1, 1, 1]);
     tx.run('INSERT INTO entries VALUES (?,?,?,?,?,?,?,?)', ['e1', 's1', 1, 'user', 'preserved text', 2, 'UTC', 1]);
     tx.run('INSERT INTO chat_consents VALUES (?,?,?,?,?,?,?,?,?,?,?)', ['s1', before.assistantId, 'gemini', MODEL, 'route', 1, '["ordinary"]', '2026-01-01T00:00:00.000Z', null, 'consent-key', 'fingerprint']);
   });
+  const journalColumns = 'journal_id,live_session_id,provider_sequence,kind,text,finished,value,terminal_outcome,rejected_kind,rejected_sequence,payload_bytes,arrived_at';
+  before.transaction(tx => {
+    tx.run(`INSERT INTO live_sessions(live_session_id,owner_assistant_id,authority_epoch,idempotency_key,fingerprint,client_id,audit_id,profile_identity,prompt_identity,lifecycle,dispatch_intent,ready,journal_events,journal_bytes,journal_complete,consumer_state,terminal_outcome,terminal_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,'terminal',1,1,3,10,1,'ended',?,1,1,1)`,
+      ['legacy-live', before.assistantId, before.authorityEpoch, 'legacy-key', 'fingerprint', 'client', 'audit', 'profile', 'prompt', JSON.stringify({ state: 'closed' })]);
+    tx.run(`INSERT INTO live_journal(${journalColumns}) VALUES (41,'legacy-live',1,'inputTranscription','hello',1,NULL,NULL,NULL,NULL,5,1)`);
+    tx.run(`INSERT INTO live_journal(${journalColumns}) VALUES (42,'legacy-live',2,'outputTranscription','world',0,NULL,NULL,NULL,NULL,5,2)`);
+    tx.run(`INSERT INTO live_journal(${journalColumns}) VALUES (43,'legacy-live',NULL,'terminal',NULL,NULL,NULL,?,NULL,NULL,0,3)`, [JSON.stringify({ state: 'closed' })]);
+  });
   const prior = before.transaction(tx => ({
+    liveSessions: tx.all('SELECT * FROM live_sessions ORDER BY live_session_id'),
+    liveJournal: tx.all(`SELECT ${journalColumns} FROM live_journal ORDER BY journal_id`),
     sessions: tx.all('SELECT * FROM sessions ORDER BY id'),
     entries: tx.all('SELECT * FROM entries ORDER BY id'),
     consents: tx.all('SELECT * FROM chat_consents ORDER BY session_id'),
@@ -394,14 +457,24 @@ test('live migrations preserve a populated accepted Store byte-for-byte', async 
   const migrated = new Store(dir, [...domain.migrations, ...chatMigrations, ...liveMigrations]);
   t.after(() => migrated.close());
   const current = migrated.transaction(tx => ({
+    liveSessions: tx.all('SELECT * FROM live_sessions ORDER BY live_session_id'),
+    liveJournal: tx.all(`SELECT ${journalColumns} FROM live_journal ORDER BY journal_id`),
     sessions: tx.all('SELECT * FROM sessions ORDER BY id'),
     entries: tx.all('SELECT * FROM entries ORDER BY id'),
     consents: tx.all('SELECT * FROM chat_consents ORDER BY session_id'),
     outbox: tx.all('SELECT * FROM runtime_outbox ORDER BY id'),
   }));
   assert.deepEqual(current, prior, 'accepted CHAT and Domain rows stay meaningful');
+  assert.deepEqual(migrated.transaction(tx => tx.all('SELECT journal_id,tool_json FROM live_journal ORDER BY journal_id').map(row => ({ ...row }))),
+    [41, 42, 43].map(journal_id => ({ journal_id, tool_json: null })));
+  migrated.transaction(tx => {
+    tx.run(`INSERT INTO live_journal(live_session_id,kind,tool_json,payload_bytes,arrived_at) VALUES ('legacy-live','toolCall','{}',2,4)`);
+    tx.run(`INSERT INTO live_journal(live_session_id,kind,tool_json,payload_bytes,arrived_at) VALUES ('legacy-live','toolResult','{}',2,5)`);
+    assert.deepEqual(tx.all('SELECT journal_id,kind FROM live_journal WHERE journal_id>43 ORDER BY journal_id').map(row => ({ ...row })),
+      [{ journal_id: 44, kind: 'toolCall' }, { journal_id: 45, kind: 'toolResult' }]);
+  });
   const owners = migrated.transaction(tx => tx.all('SELECT owner, MAX(version) AS version FROM runtime_migrations GROUP BY owner ORDER BY owner'));
-  assert.deepEqual(owners.map(row => [String(row['owner']), Number(row['version'])]), [['chat', 4], ['domain', 3], ['live', 2]]);
+  assert.deepEqual(owners.map(row => [String(row['owner']), Number(row['version'])]), [['chat', 4], ['domain', 3], ['live', 3]]);
 });
 
 test('a failed store write aborts visibly and never fabricates a durable outcome', async t => {
@@ -783,4 +856,131 @@ test('legacy null and unsupported accepted Live bindings refuse honestly before 
     assert.equal(h.owner.get(accepted.liveSessionId).dispatchIntent, false);
     assert.equal(h.f.frames.length, 0);
   }
+});
+
+test('Live accepts a frozen real tool snapshot and projects only result-gated Markdown', async t => {
+  const h = await harness(t, { tools: true });
+  const { session, attachment } = await attached(h);
+  assert.equal(h.owner.lookupAuthority(session.liveSessionId)?.actorId, h.ctx.clientId);
+  const setup = (h.f.frames[0] as { setup: { tools: { functionDeclarations: { name: string; parameters: any }[] }[] } }).setup;
+  assert.equal(setup.tools[0]!.functionDeclarations.length, 2);
+  const derived = setup.tools[0]!.functionDeclarations.find(d => d.name === 'get_insight')!;
+  assert.equal(derived.parameters.properties.ids.type, 'STRING');
+  const outputs = attachment.output[Symbol.asyncIterator]();
+  assert.equal((await outputs.next()).value?.marker.kind, 'ready');
+  h.f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }, { id: 'c2', name: 'get_insight', args: { ids: [123] } }] } });
+  await h.f.frame(2);
+  assert.equal(h.calls.length, 2);
+  const response = h.f.frames[1] as { toolResponse: { functionResponses: { id: string }[] } };
+  assert.deepEqual(response.toolResponse.functionResponses.map(r => r.id), ['c1', 'c2']);
+  assert.equal(h.owner.current().state, 'listening');
+  const page = h.owner.current();
+  assert.equal(page.entries.filter(e => e.kind === 'toolCall').length, 2);
+  const result = page.entries.find(e => e.kind === 'toolResult')!.tool!;
+  assert.equal(result.status, 'completed'); assert.match(result.markdown!, /Synthetic insight/);
+  assert.deepEqual(result.sources, [{ title: 'Evidence', url: 'https://example.test/evidence' }, { title: '123' }]);
+  assert.equal(JSON.stringify(page).includes('liveSessionId'), false);
+  assert.equal(JSON.stringify(page).includes('args'), false);
+  assert.equal(JSON.stringify(page).includes(CANARY), false);
+  const marker = (await outputs.next()).value;
+  assert.equal(marker?.marker.kind, 'toolCall');
+  attachment.close(); await attachment.done;
+  assert.equal(h.owner.lookupAuthority(session.liveSessionId), null);
+});
+
+test('Live refuses undeclared tools and original-schema-invalid arguments without dispatch', async t => {
+  const h = await harness(t, { tools: true }); const { attachment } = await attached(h);
+  h.f.send({ toolCall: { functionCalls: [{ id: 'bad1', name: 'get_insight', args: { ids: '[123]', include_links: 'false' } }, { id: 'bad2', name: 'not_granted', args: {} }] } });
+  await h.f.frame(2); assert.equal(h.calls.length, 0);
+  const response = h.f.frames[1] as { toolResponse: { functionResponses: { response: { error: string } }[] } };
+  assert.deepEqual(response.toolResponse.functionResponses.map(r => r.response.error), ['invalid_arguments', 'unknown_tool']);
+  assert.equal(h.owner.current().entries.filter(e => e.kind === 'toolResult' && e.tool?.status === 'error').length, 2);
+  attachment.close(); await attachment.done;
+});
+
+test('Live revocation invalidates authority and discards an in-flight result', async t => {
+  const started = deferred<void>(), finish = deferred<void>();
+  const h = await harness(t, { tools: true, beforeTool: async () => { started.resolve(); await finish.promise; } });
+  const { session, attachment } = await attached(h);
+  h.f.send({ toolCall: { functionCalls: [{ id: 'late', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
+  await started.promise; assert.equal(h.owner.current().state, 'thinking');
+  h.owner.revoke(session.liveSessionId); assert.equal(h.owner.lookupAuthority(session.liveSessionId), null);
+  finish.resolve(); await attachment.done;
+  assert.equal(h.f.frames.length, 1);
+  assert.equal(h.owner.current().entries.filter(e => e.kind === 'toolResult').length, 0);
+});
+
+test('shared declarations retain original schemas and tool policy refuses before invocation', async () => {
+  let invoked = 0; const ref = { id: 'r', sha256: 'a'.repeat(64) };
+  const tool: ToolDefinition = { name: 'test', description: 'Test', parameters: { type: 'object', properties: { mode: { type: 'string', enum: ['a', 'b'] }, enabled: { type: 'boolean' }, ids: { type: 'array', items: { type: 'integer' } } } },
+    effect: 'read', accountId: 'a', resourceId: 'r', validate: args => typeof (args as { enabled?: unknown }).enabled === 'boolean', execute: async () => { invoked++; return { status: 'completed', result: ref }; } };
+  const { declarations, originalByName } = declarationsFor([tool]);
+  assert.deepEqual(originalByName.get('test'), tool.parameters); assert.notDeepEqual(declarations[0]!.parameters, tool.parameters);
+  const host: HostContext = { runId: 'run', actorId: 'actor', authorityEpoch: 'epoch', revision: 0, grants: [] };
+  const owner = { journal: { intent: () => 'fresh' as const, refuse: () => ref, fail: () => ref }, resultGate: { authorize: async (_host: HostContext, bindings: readonly import('../adapters/model/types.js').ToolResultBinding[]) => ({ state: 'allowed' as const, results: bindings.map(binding => ({ binding, response: { text: 'Accepted' }, dataClasses: [] })) }) } };
+  const ctx = { registry: [tool], host, authority: { isCurrent: async () => false }, control: control(), step: 1, contentIndex: 0, seenIds: new Set<string>(), baseClasses: [] as const, authorize: true };
+  const grant = await runToolCalls(owner, [{ id: 'g', name: 'test', args: { enabled: true } }], ctx);
+  assert.equal(grant.tools[0]!.reason, 'grant_not_permitted'); assert.equal(invoked, 0);
+  host.grants.push({ tool: 'test', effect: 'read', accountId: 'a', resourceId: 'r' });
+  const revoked = await runToolCalls(owner, [{ id: 'r', name: 'test', args: { enabled: true } }], ctx);
+  assert.equal(revoked.tools[0]!.reason, 'stale_or_revoked_authority'); assert.equal(invoked, 0);
+  ctx.authority.isCurrent = async () => true;
+  const completed = await runToolCalls(owner, [{ id: 'c', name: 'test', args: { enabled: true } }], ctx);
+  assert.equal(completed.tools[0]!.status, 'completed'); assert.equal(invoked, 1);
+  tool.execute = async () => { throw Error(CANARY); };
+  const failed = await runToolCalls(owner, [{ id: 'f', name: 'test', args: { enabled: true } }], ctx);
+  assert.equal(failed.tools[0]!.status, 'failed'); assert.equal(JSON.stringify(failed).includes(CANARY), false);
+});
+
+function writePrivate(dir: string, name: string, text: string): void {
+  const path = join(dir, name);
+  writeFileSync(path, text, { mode: 0o600 });
+  chmodSync(path, 0o600);
+}
+
+test('Live attach setup carries the composed Naya instruction and the bare language code', async t => {
+  const h = await harness(t);
+  const overlay = { schemaVersion: 1 as const, text: 'SYNTHETIC local overlay persona', greeting: 'Synthetic greeting' };
+  const composed = composeLiveInstruction({ base: NAYA_BASE, overlay, language: 'de' });
+  assert.ok(composed.text.startsWith(NAYA_BASE), 'composed instruction starts with the public base');
+  const acceptedPrompt = { schemaVersion: 1, ownerProfile: { schemaVersion: 1, kind: 'default', ownerId: h.store.assistantId, displayName: 'Lux Didi' },
+    compilerVersion: PROMPT_VERSION, system: composed.text, dataClasses: ['ordinary'] };
+  const profile = validateLiveProfile({ ...profileInput(), language: 'de', acceptedPrompt });
+  const voice = new GeminiLiveVoiceAdapter(options({ socketFactory: h.f.socketFactory,
+    modelId: profile.liveModelId, voice: profile.voice, keyReference: profile.keyReference,
+    route: { enabled: true, provider: 'gemini', modelId: profile.liveModelId, dataClasses: profile.route.dataClasses },
+    credentials: { resolve: async () => CANARY } }));
+  const owner = createLiveSessionOwner({ store: h.store, profile, voice, now: () => NOW }); t.after(() => owner.shutdown());
+  const accepted = owner.create({ idempotencyKey: 'wire-naya', inputClass: 'ordinary' }, h.ctx);
+  const attachment = owner.attach({ liveSessionId: accepted.liveSessionId }, h.ctx);
+  await h.f.frame(1);
+  const frame = JSON.parse(JSON.stringify(h.f.frames[0]));
+  assert.equal(frame.setup.systemInstruction.parts[0].text, composed.text);
+  assert.equal(frame.setup.generationConfig.speechConfig.languageCode, 'de');
+  attachment.close();
+});
+
+test('loadLiveConfig composes the Naya instruction and fails closed on an invalid overlay', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'didi-live-config-'));
+  const dataDir = join(root, 'data'); const configDir = join(dataDir, 'provider-config');
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  chmodSync(dataDir, 0o700); chmodSync(configDir, 0o700);
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const live = { schemaVersion: 1, enabled: true, provider: 'gemini', modelId: 'models/gemini-3.1-flash-live-preview', voice: 'Aoede', keyReference: 'gemini-primary',
+    dataClasses: ['ordinary'], preferences: { dataClass: 'ordinary', language: 'de-de', register: 'plain', humor: 'dry', verbosity: 'brief' } };
+  writePrivate(configDir, 'live.json', `${JSON.stringify(live)}\n`);
+  const overlay = { schemaVersion: 1 as const, text: 'SYNTHETIC local overlay persona', greeting: 'Synthetic greeting', accent: 'Synthetic accent' };
+  writePrivate(dataDir, 'persona-overlay.json', JSON.stringify(overlay));
+  const status = loadLiveConfig({ configDir, ownerId: 'synthetic-owner' });
+  assert.equal(status.status, 'configured');
+  if (status.status === 'configured') {
+    const expected = composeLiveInstruction({ base: NAYA_BASE, overlay, language: 'de' });
+    assert.equal(status.config.profile.language, 'de');
+    assert.equal(status.config.profile.prompt.text, expected.text);
+    assert.equal(status.config.profile.acceptedPrompt?.system, expected.text);
+  }
+  writePrivate(dataDir, 'persona-overlay.json', '{ not json');
+  const bad = loadLiveConfig({ configDir, ownerId: 'synthetic-owner' });
+  assert.equal(bad.status, 'error');
+  if (bad.status === 'error') assert.equal(bad.code, 'invalid_overlay');
 });

@@ -3,7 +3,7 @@ import type { JournalKind, LiveFragment, LiveFragmentPage, LiveTerminalOutcome }
 
 /** Kinds the journal persists. Audio, thoughts, modelText and raw transport facts are excluded. */
 export const persistedKinds: readonly JournalKind[] = Object.freeze([
-  'inputTranscription', 'outputTranscription', 'ready', 'interrupted', 'generationComplete', 'turnComplete', 'waitingForInput',
+  'toolCall', 'toolResult', 'inputTranscription', 'outputTranscription', 'ready', 'interrupted', 'generationComplete', 'turnComplete', 'waitingForInput',
 ]);
 
 /**
@@ -16,6 +16,7 @@ export function retainedBytes(kind: JournalKind, text: string | null): number {
 
 export function rowToFragment(row: SQLRow): LiveFragment {
   return {
+    ...(row['tool_json'] ? { tool: JSON.parse(String(row['tool_json'])) } : {}),
     liveSessionId: String(row['live_session_id']),
     journalSequence: Number(row['journal_id']),
     providerSequence: row['provider_sequence'] === null || row['provider_sequence'] === undefined ? null : Number(row['provider_sequence']),

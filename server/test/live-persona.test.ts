@@ -1,0 +1,117 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  NAYA_BASE, PersonaOverlayError, canonicalSpeechLanguage, composeLiveInstruction, loadPersonaOverlay,
+  validatePersonaOverlay, type PersonaOverlay,
+} from '../prompt/live-persona.js';
+
+const sha = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex');
+const BUDGET = 60_000;
+
+function writePrivate(dir: string, name: string, text: string): void {
+  const path = join(dir, name);
+  writeFileSync(path, text, { mode: 0o600 });
+  chmodSync(path, 0o600);
+}
+
+test('the public Naya base is new, short, neutral and names no biography', () => {
+  assert.ok(NAYA_BASE.length > 0 && NAYA_BASE.length < 1500, `base must stay under 1500 chars, got ${NAYA_BASE.length}`);
+  assert.match(NAYA_BASE, /Naya/);
+  assert.ok(!NAYA_BASE.includes('—') && !NAYA_BASE.includes('–'), 'no dash prose');
+  assert.ok(!/farmer|llama|vicuna|gemini/i.test(NAYA_BASE), 'no model-specific or recon borrowings');
+});
+
+test('composition keeps base -> overlay -> voice order and hashes the exact text', () => {
+  const overlay: PersonaOverlay = { schemaVersion: 1, text: 'Local overlay persona', greeting: 'Hello there' };
+  const result = composeLiveInstruction({ base: 'PUBLIC BASE TEXT', overlay, language: 'de-DE' });
+  assert.deepEqual(result.sections.map(s => s.id), ['base', 'overlay', 'voice']);
+  const baseAt = result.text.indexOf('PUBLIC BASE TEXT');
+  const overlayAt = result.text.indexOf('Local overlay persona');
+  const voiceAt = result.text.indexOf('LANGUAGE:');
+  assert.ok(baseAt >= 0 && overlayAt > baseAt && voiceAt > overlayAt, 'order base then overlay then voice anchor');
+  assert.ok(result.text.includes('ACCENT:'), 'one ACCENT directive');
+  assert.ok(result.text.indexOf('LANGUAGE:') < result.text.indexOf('ACCENT:'), 'LANGUAGE before ACCENT');
+  assert.ok(result.text.includes('German'), 'language paragraph names the language, not the code');
+  assert.equal(result.sha256, sha(result.text));
+  const joined = result.sections.reduce((n, s) => n + s.chars, 0) + 2 * (result.sections.length - 1);
+  assert.equal(joined, result.text.length, 'sections are the text joined by one blank line');
+  for (const section of result.sections) assert.match(section.sha256, /^[0-9a-f]{64}$/);
+  assert.equal(result.sections[0]!.sha256, sha('PUBLIC BASE TEXT'));
+});
+
+test('missing and empty overlay sections are stripped, and the hash is stable', () => {
+  const a = composeLiveInstruction({ base: 'PUBLIC BASE TEXT', language: 'en' });
+  const b = composeLiveInstruction({ base: 'PUBLIC BASE TEXT', language: 'en' });
+  assert.deepEqual(a.sections.map(s => s.id), ['base', 'voice']);
+  assert.equal(a.sha256, b.sha256, 'same input, same hash');
+  assert.equal(a.text, b.text);
+  assert.match(a.text, /^PUBLIC BASE TEXT\n\n/);
+  const withOverlay = composeLiveInstruction({ base: 'PUBLIC BASE TEXT', overlay: { schemaVersion: 1, text: 'x' }, language: 'en' });
+  assert.notEqual(withOverlay.sha256, a.sha256, 'overlay changes the hash');
+});
+
+test('the terminal voice anchor is the absolute last segment', () => {
+  const result = composeLiveInstruction({ base: 'PUBLIC BASE TEXT', overlay: { schemaVersion: 1, text: 'overlay', accent: 'a synthetic accent' }, language: 'en' });
+  assert.ok(result.text.includes('a synthetic accent'), 'overlay accent feeds the ACCENT directive');
+  const tail = result.text.slice(result.text.lastIndexOf('\n\n') + 1);
+  assert.ok(/final|anchor|begin/i.test(tail), `anchor must be last, got tail: ${tail.slice(0, 60)}`);
+});
+
+test('speech language canonicalization keeps bare ISO 639-1 only', () => {
+  assert.equal(canonicalSpeechLanguage('de-DE'), 'de');
+  assert.equal(canonicalSpeechLanguage('en'), 'en');
+  assert.equal(canonicalSpeechLanguage('ar'), 'ar');
+  assert.equal(canonicalSpeechLanguage('ar-XA'), 'ar');
+  assert.equal(canonicalSpeechLanguage('zh-Hant-TW'), 'zh');
+  assert.equal(canonicalSpeechLanguage('fil'), undefined, 'a 3-letter primary subtag is not ISO 639-1');
+  assert.equal(canonicalSpeechLanguage(undefined), undefined);
+  assert.equal(canonicalSpeechLanguage(''), undefined);
+});
+
+test('the 60k budget yields the overlay first and never drops the base or anchor', () => {
+  const base = 'B'.repeat(55_000);
+  const overlay: PersonaOverlay = { schemaVersion: 1, text: 'O'.repeat(10_000) };
+  const result = composeLiveInstruction({ base, overlay, language: 'en' });
+  assert.ok(result.text.length <= BUDGET, `composed text ${result.text.length} must fit the budget`);
+  assert.ok(result.text.startsWith(base), 'base never yields');
+  assert.ok(result.text.includes('LANGUAGE:'), 'anchor never yields');
+  const overlaySection = result.sections.find(s => s.id === 'overlay');
+  assert.ok(!overlaySection || overlaySection.chars < 10_000, 'overlay yielded');
+  const overfull = composeLiveInstruction({ base: 'B'.repeat(BUDGET), overlay: { schemaVersion: 1, text: 'O'.repeat(1000) }, language: 'en' });
+  assert.equal(overfull.sections.find(s => s.id === 'overlay'), undefined, 'overlay dropped when nothing is left');
+  assert.ok(overfull.text.startsWith('B'.repeat(BUDGET)));
+});
+
+test('overlay validation is strict and bounded', () => {
+  assert.deepEqual(validatePersonaOverlay({ schemaVersion: 1, text: 'hello' }), { schemaVersion: 1, text: 'hello' });
+  const bad: unknown[] = [
+    null, [], {}, { schemaVersion: 2, text: 'x' }, { schemaVersion: 1 }, { schemaVersion: 1, text: '' },
+    { schemaVersion: 1, text: 'x', extra: true }, { schemaVersion: 1, text: 5 },
+    { schemaVersion: 1, text: 'x'.repeat(16 * 1024 + 1) },
+  ];
+  for (const value of bad) {
+    assert.throws(() => validatePersonaOverlay(value), (error: unknown) => error instanceof PersonaOverlayError);
+  }
+});
+
+test('loadPersonaOverlay returns undefined when absent and throws when the file is invalid', () => {
+  const root = mkdtempSync(join(tmpdir(), 'didi-persona-'));
+  chmodSync(root, 0o700);
+  try {
+    assert.equal(loadPersonaOverlay({ dataDir: root }), undefined, 'missing file is no overlay');
+    writePrivate(root, 'persona-overlay.json', JSON.stringify({ schemaVersion: 1, text: 'local persona', greeting: 'hi' }));
+    assert.deepEqual(loadPersonaOverlay({ dataDir: root }), { schemaVersion: 1, text: 'local persona', greeting: 'hi' });
+    writePrivate(root, 'persona-overlay.json', '{ not json');
+    assert.throws(() => loadPersonaOverlay({ dataDir: root }), (error: unknown) => error instanceof PersonaOverlayError && error.code === 'invalid_overlay');
+    writePrivate(root, 'persona-overlay.json', JSON.stringify({ schemaVersion: 1, text: 'x', surprise: 1 }));
+    assert.throws(() => loadPersonaOverlay({ dataDir: root }), (error: unknown) => error instanceof PersonaOverlayError);
+    writePrivate(root, 'persona-overlay.json', JSON.stringify({ schemaVersion: 1, text: 'x'.repeat(16 * 1024 + 1) }));
+    assert.throws(() => loadPersonaOverlay({ dataDir: root }), (error: unknown) => error instanceof PersonaOverlayError && error.code === 'overlay_too_large');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

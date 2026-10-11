@@ -6,7 +6,7 @@ import { loadMcpConfiguration, loadMcpEndpoints, type McpEndpointEntry } from '.
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import type { McpPort } from '../adapters/mcp/port.js';
-import { LUX_KNOWLEDGE_TOOLS } from '../connectors/lux-knowledge.js';
+import { CONNECTOR_ENVELOPES } from '../connectors/index.js';
 
 export interface McpConnectionBundle {
   state: 'applied' | 'unchanged' | 'refused' | 'pending';
@@ -45,7 +45,7 @@ export interface McpRuntimeComposition {
   close(): Promise<void>;
 }
 /** The local read envelope is the Didi connector's own classification, never the remote readOnlyHint. */
-const connectorEnvelopes: Readonly<Record<string, readonly string[]>> = { 'lux-knowledge': LUX_KNOWLEDGE_TOOLS };
+const connectorEnvelopes: Readonly<Record<string, readonly string[]>> = CONNECTOR_ENVELOPES;
 /** Compose the MCP runtime once at startup: one registry, adapter and owner. Never blocks on a remote. */
 export async function composeMcpRuntime(options: {
   store: Store; ownerId: string; configDir: string;
@@ -67,7 +67,11 @@ export async function composeMcpRuntime(options: {
   const active = endpoints.filter(entry => entry.enabled && entry.allowEgress);
   for (const entry of endpoints) {
     if (entry.enabled) {
-      registry.register({ id: entry.id, url: entry.url, account: entry.account, resource: entry.resource, ...(entry.credentialRef ? { credentialRef: entry.credentialRef } : {}) });
+      if (entry.transport === 'stdio') {
+        registry.register({ id: entry.id, transport: 'stdio', command: entry.command, args: [...entry.args], env: { ...entry.env }, account: entry.account, resource: entry.resource });
+      } else {
+        registry.register({ id: entry.id, url: entry.url, account: entry.account, resource: entry.resource, ...(entry.credentialRef ? { credentialRef: entry.credentialRef } : {}) });
+      }
       registry.enable(entry.id);
       if (entry.allowEgress) registry.allowEgress(entry.id);
     }

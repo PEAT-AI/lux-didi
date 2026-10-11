@@ -77,13 +77,20 @@ export async function composeMcpRuntime(options: {
   const { store, ownerId, configDir } = options; const now = options.now ?? Date.now;
   const registry = new McpRegistry();
   const port = createMcpAdapter({ registry, store: new MemoryResultStore(), resolveCredential: async reference => readMcpCredential(configDir, reference) });
-  const owner = createToolsOwner({ store, ownerId, registry, port, lookupAuthority: options.lookupAuthority });
+  const reports = new Map<string, McpEndpointReport>();
+  const reportToolStatus = (connectionId: string, status: { state: 'configured'; reason: string } | null): void => {
+    const previous = reports.get(connectionId);
+    if (!previous) return;
+    reports.set(connectionId, status === null
+      ? { id: previous.id, state: 'connected', tools: previous.tools, lastHandshakeAt: previous.lastHandshakeAt }
+      : { id: previous.id, state: 'configured', tools: previous.tools, lastHandshakeAt: previous.lastHandshakeAt, error: status.reason });
+  };
+  const owner = createToolsOwner({ store, ownerId, registry, port, lookupAuthority: options.lookupAuthority, reportToolStatus });
   const selection = loadMcpEndpoints({ configDir });
   if (selection.state === 'missing') {
     return { registry, port, owner, connectionIds: () => [], status: () => ({ endpoints: [] }), refresh: async () => {}, close: () => port.close() };
   }
   const { grantMode, endpoints } = selection.catalog;
-  const reports = new Map<string, McpEndpointReport>();
   const generations = new Map<string, number>();
   const digests = new Map<string, string>();
   const active = endpoints.filter(entry => entry.enabled && entry.allowEgress);

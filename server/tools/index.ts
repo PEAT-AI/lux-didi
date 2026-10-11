@@ -75,7 +75,7 @@ function hostMatches(a: RunAcceptance, h: Pick<HostContext, 'runId' | 'actorId' 
 }
 
 export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
-  const { store, registry, port, lookupAuthority, ownerId } = options; text(ownerId);
+  const { store, registry, port, lookupAuthority, ownerId, reportToolStatus } = options; text(ownerId);
   if (ownedStores.has(store)) throw Error('duplicate_store_tools_owner');
   ownedStores.add(store);
   // Failure latch is not authority: it only prevents fallback journal writes after failed persistence.
@@ -319,7 +319,15 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
               });
               const evidence = await reader.call(name, args as Record<string, unknown>, context.signal);
               if (context.signal.aborted || evidence.state === 'unknown') return { status: 'unknown' };
-              if (evidence.state !== 'completed') return { status: 'failed' };
+              if (evidence.state !== 'completed') {
+                const status = evidence.state === 'tool-error' || evidence.state === 'protocol-error' ? descriptor.status?.(evidence) : undefined;
+                if (!status) return { status: 'failed' };
+                // A classified failure is visible: the endpoint flips to configured and the call
+                // returns the plain reason as its projection, never an empty success.
+                reportToolStatus?.(p.endpoint.id, status);
+                return { status: 'completed', result: complete(call, { tool: name, text: status.reason, partial: false, originalCharacters: status.reason.length, omittedCharacters: 0 }, []) };
+              }
+              reportToolStatus?.(p.endpoint.id, null);
               let value: ModelSnapshot;
               try { value = descriptor.project(evidence, port, p); } catch { return { status: 'failed' }; }
               return { status: 'completed', result: complete(call, value.response, value.dataClasses) };

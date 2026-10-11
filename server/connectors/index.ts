@@ -6,8 +6,8 @@ import { createLuxKnowledgeReader, LUX_KNOWLEDGE_TOOLS } from './lux-knowledge.j
 import type { LuxKnowledgeResult } from './lux-knowledge.js';
 import { projectLuxResult } from '../tools/lux-knowledge.js';
 import { createGoogleReader, GOOGLE_TOOLS } from './google.js';
-import type { GcalCalendarsInput, GcalListInput, GmailListInput, GmailReadInput, GoogleFamily, GoogleResult } from './google.js';
-import { projectGoogleResult } from '../tools/google.js';
+import type { GcalCalendarsInput, GcalListInput, GmailListInput, GmailReadInput, GoogleEvidence, GoogleFamily, GoogleResult } from './google.js';
+import { googleToolStatus, projectGoogleResult } from '../tools/google.js';
 
 export * from './lux-knowledge.js';
 export * from './google.js';
@@ -52,6 +52,8 @@ export interface ConnectorDescriptor {
   createReader(input: { port: McpPort; registry: McpRegistry; endpoint: ConnectionEndpoint; schemaDigest: string; generation: number; policy: ConnectionPolicy }): ConnectorReader;
   /** Model-visible projection of one completed result, using only locally accepted data. */
   project(evidence: ConnectorEvidence, port: McpPort, policy: ConnectionPolicy): ModelSnapshot;
+  /** Connection status for a non-completed result, when the connector can classify it (R4). */
+  status?(evidence: ConnectorEvidence): { state: 'configured'; reason: string } | undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -133,6 +135,10 @@ function googleProject(evidence: ConnectorEvidence, port: McpPort, policy: Conne
     dataClasses: [unknownClass] as DataClass[],
   };
 }
+function googleStatus(evidence: ConnectorEvidence): { state: 'configured'; reason: string } | undefined {
+  const status = googleToolStatus(evidence as unknown as GoogleEvidence);
+  return status && status.state === 'configured' ? { state: 'configured', reason: status.reason } : undefined;
+}
 const googleDescriptor: ConnectorDescriptor = {
   id: 'google',
   envelope: GOOGLE_TOOLS,
@@ -162,6 +168,7 @@ const googleDescriptor: ConnectorDescriptor = {
     };
   },
   project: googleProject,
+  status: googleStatus,
 };
 
 export const CONNECTOR_DESCRIPTORS: Readonly<Record<string, ConnectorDescriptor>> = {

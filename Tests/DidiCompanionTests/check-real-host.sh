@@ -3,6 +3,7 @@ set -euo pipefail
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 app="$1"; proof="$2"; node="$3"
 work="$(mktemp -d "${TMPDIR:-/tmp}/didi-native-real-host.XXXXXX")"
+work="$(cd "$work" && pwd -P)"
 trap 'rm -rf "$work"' EXIT
 mkdir "$work/source" "$proof/real-host"
 chmod 700 "$proof/real-host"

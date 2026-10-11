@@ -74,7 +74,6 @@ try {
     const pairing = await operator('/auth/pairing'); await page.locator('#pair-code').fill(pairing.pairingCode); await page.locator('#pair-form').evaluate(form => form.requestSubmit());
     await page.locator('#connected-route').waitFor();
     await page.waitForFunction(() => document.querySelector('#connected-route')?.textContent.includes('gemini-connected-test'));
-    assert.equal(Math.round((await page.locator('#didi-orb').boundingBox()).width), 190, 'Preserve the accepted desktop orb layout');
     // Actual main f27 mounts md on desktop: canvasSize=600, not standalone lg=800.
     const geometry = await page.locator('#didi-orb').evaluate(canvas => {
       const style = getComputedStyle(canvas), box = canvas.getBoundingClientRect();

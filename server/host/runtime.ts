@@ -4,7 +4,7 @@ import { homedir, platform } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { lstat, mkdir, open, readFile, rename, rm } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { createDomainPort } from '../domain/index.js';
+import { createDomainPort, domainMigrations } from '../domain/index.js';
 import { Outbox } from '../runtime/outbox.js';
 import { Store } from '../runtime/store.js';
 import { listenService } from '../http/server.js';
@@ -16,6 +16,9 @@ import { composeChat, type ModelTesting } from './connected.js';
 import { composeLive, type LiveTesting } from './live.js';
 import { composeMcpRuntime } from './mcp.js';
 import type { LiveAuthority, ToolsOwner } from '../tools/types.js';
+
+/** The one migration list the host applies and every Store reopen reuses, so a host-written database never refuses a downgrade. */
+export const hostMigrations = [...domainMigrations, ...chatMigrations, ...liveMigrations, ...toolsMigrations];
 
 /** Structural match for W-B's LiveToolsComposition; kept local and additive until its signature lands. */
 export type AuthoritySource = (runId: string, signal: AbortSignal) => Promise<LiveAuthority | null>;
@@ -81,7 +84,7 @@ export async function startHost(config: HostConfig) {
   const descriptorRelative = relative(webRoot, descriptorPath);
   if (!descriptorPath.endsWith('.json') || (!isAbsolute(descriptorRelative) && descriptorRelative !== '..' && !descriptorRelative.startsWith(`..${sep}`))) throw new Error('Descriptor must be a JSON file outside the web build');
   const domain = createDomainPort({ outbox: Outbox }); // No authorized device/target: reminders remain unbound.
-  const store = new Store(dataDir, [...domain.migrations, ...chatMigrations, ...liveMigrations, ...toolsMigrations]);
+  const store = new Store(dataDir, hostMigrations);
   try {
     const owner = loadOwnerProfile({ ...(config.ownerProfilePath !== undefined ? { path: config.ownerProfilePath } : {}), ownerId: store.assistantId });
     if (owner.status === 'error') throw new ConfigError('invalid_profile');

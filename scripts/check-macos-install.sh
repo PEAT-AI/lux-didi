@@ -418,8 +418,8 @@ PY
 import json, sys
 native, observer = (json.load(open(path)) for path in sys.argv[1:])
 assert native["success"] is False and native["error"]["code"] == "ready-frame/exited", "foreign-owner input did not reject the owned host before readiness"
-assert observer["released"] is True and observer["observedIdentity"], "foreign-owner negative never reached the actual native verification"
-assert observer["observerDisposed"] is True and observer["forced"] is False, "foreign-owner negative required forced cleanup"
+assert observer["released"] is True and isinstance(observer["identity"], dict) and observer["identity"] and observer["identityVerified"] is True and observer["registeredBeforeRelease"] is True, "foreign-owner negative never reached the actual verified native identity/release"
+assert observer["nativeDisposed"] is True and observer["observerDisposed"] is True and observer["forced"] is False, "foreign-owner negative required forced cleanup or lacked actual native disposal"
 assert observer["kernel"]["statusRequested"] is True and observer["kernel"]["rawStatus"] == 256, "actual native failure/owned kernel exit missing"
 print("MACOS-INSTALL: controlled foreign-owner host rejection and owned native disposal")
 PY_REJECT

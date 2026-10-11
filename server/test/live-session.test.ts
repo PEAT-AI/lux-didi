@@ -274,6 +274,16 @@ test('an unused accepted session expires without ever opening the adapter', asyn
   assert.equal(h.f.attempts, 0);
 });
 
+test('tool deferral budget defaults to four seconds and accepts only bounded integer milliseconds', () => {
+  assert.equal((validateLiveProfile(profileInput()).limits as unknown as Record<string, number>).toolDeferralMs, 4000);
+  for (const value of [1000, 4000, 30000]) {
+    assert.equal((validateLiveProfile(profileInput({ toolDeferralMs: value })).limits as unknown as Record<string, number>).toolDeferralMs, value);
+  }
+  for (const value of [0, 999, 30001, 1000.5, NaN, Infinity]) {
+    assert.throws(() => validateLiveProfile(profileInput({ toolDeferralMs: value })), LiveConfigError);
+  }
+});
+
 test('profile validation rejects text-model fallback and bounds, and validation precedes credentials', async t => {
   const cases: unknown[] = [
     { ...profileInput(), provider: 'openai' },

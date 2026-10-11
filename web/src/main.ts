@@ -2,7 +2,7 @@ import './style.css';
 import { ConnectedView } from './connected';
 import { Orb, type VoiceState } from './orb';
 import { ApiError, request, pair, demoMode, onAuthorityChanged, clearAuthority, restoreSession, logout, fetchLive } from './api';
-import { liveMarkup, liveVoiceState, liveDelay, mergeLive } from './live-view';
+import { liveMarkup, liveLabel, liveVoiceState, liveDelay, mergeLive } from './live-view';
 import type { Session, Entry, Commitment, CommitmentDetail, Plan, Recall, Status, LiveCurrent } from './protocol';
 
 type Tab = 'Conversation' | 'Today' | 'Memory' | 'Settings';
@@ -50,10 +50,17 @@ function orbState(): VoiceState {
   if(error)return 'ERROR';
   return 'CONNECTED';
 }
-function orbMarkup() {
+function orbLabel() {
   const state=orbState();
-  const label=state==='PROCESSING'?'Working on your request':state==='CONNECTING'?'Connecting':state==='DISCONNECTED'?'Waiting for connection':state==='ERROR'?'Needs your attention':'Ready when you are';
-  return `<section class="orb-stage" aria-label="Didi voice and activity"><canvas id="didi-orb" width="440" height="440" aria-hidden="true"></canvas><div class="orb-caption"><p class="orb-label" role="status" aria-live="polite">${e(label)}</p><p class="voice-honesty"><strong>Not listening</strong><span>Voice stays on your Mac. Use its native record control.</span></p></div></section>`;
+  return live?liveLabel(live):state==='PROCESSING'?'Working on your request':state==='CONNECTING'?'Connecting':state==='DISCONNECTED'?'Waiting for connection':state==='ERROR'?'Needs your attention':'Ready when you are';
+}
+// The honesty line is false while the projection is active, so it shows only when voice is not in a live turn.
+function orbCaptionMarkup() {
+  const honesty=!live||live.state==='idle'||live.state==='ended'||live.state==='error';
+  return `<p class="orb-label" role="status" aria-live="polite">${e(orbLabel())}</p>${honesty?'<p class="voice-honesty"><strong>Not listening</strong><span>Voice stays on your Mac. Use its native record control.</span></p>':''}`;
+}
+function orbMarkup() {
+  return `<section class="orb-stage" aria-label="Didi voice and activity"><canvas id="didi-orb" width="440" height="440" aria-hidden="true"></canvas><div class="orb-caption">${orbCaptionMarkup()}</div></section>`;
 }
 function conversation() {
   return `<section class="page-heading"><div><p class="eyebrow">SPACE TO THINK</p><h1>A little clarity.</h1><p>Put it into words. We’ll keep what matters.</p></div><button id="new-conversation" class="secondary" ${disabled(busy)}>New conversation</button></section>
@@ -202,6 +209,7 @@ function scheduleLive(){
 }
 function paintLive(){
   const panel=document.getElementById('live-panel');if(panel)panel.outerHTML=liveMarkup(live);
+  const caption=document.querySelector('.orb-caption');if(caption)caption.innerHTML=orbCaptionMarkup();
   const next=orbState();if(next!==appliedOrbState){appliedOrbState=next;orb?.setState(next);}
 }
 onAuthorityChanged(()=>{connectedView.reset();status=undefined;sessions=[];entries=[];session=undefined;plan=undefined;recall=undefined;recent=[];connection='Disconnected';});

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { liveStateLabel, liveVoiceState, liveToolName, liveDelay, mergeLive, liveTranscript, liveResult, liveMarkup } from '../src/live-view.ts';
+import { liveStateLabel, liveVoiceState, liveToolName, liveLabel, liveDelay, mergeLive, liveTranscript, liveResult, liveMarkup } from '../src/live-view.ts';
 import type { LiveCurrent } from '../src/protocol.ts';
 
 const speaking: LiveCurrent = {
@@ -35,6 +35,13 @@ test('the thinking label names the tool in flight', () => {
   assert.equal(liveToolName(thinking), 'search');
   assert.match(liveMarkup(thinking), /Thinking \(search\)/);
   assert.match(liveMarkup({ state: 'thinking', cursor: 0, entries: [] }), /Thinking<\/p>/);
+});
+
+test('liveLabel is the one label main.ts and the panel share', () => {
+  assert.equal(liveLabel(undefined), 'Ready when you are');
+  assert.equal(liveLabel({ state: 'listening', cursor: 0, entries: [] }), 'Listening');
+  assert.equal(liveLabel({ state: 'speaking', cursor: 0, entries: [] }), 'Speaking');
+  assert.equal(liveLabel({ state: 'thinking', cursor: 1, entries: [{ seq: 1, kind: 'toolCall', tool: { name: 'search', status: 'called' } }] }), 'Thinking (search)');
 });
 
 test('a muted indicator appears only when the projection reports it', () => {

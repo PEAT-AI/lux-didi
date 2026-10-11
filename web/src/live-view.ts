@@ -29,6 +29,17 @@ export function liveToolName(live: LiveCurrent): string | undefined {
   return undefined;
 }
 
+/** The one visible state label, including the tool name while thinking.
+ * main.ts and liveMarkup share it so the orb caption and the panel never disagree. */
+export function liveLabel(live: LiveCurrent | undefined): string {
+  const state = live?.state;
+  if (state === 'thinking') {
+    const tool = live ? liveToolName(live) : undefined;
+    return tool ? `Thinking (${tool})` : liveStateLabel('thinking');
+  }
+  return liveStateLabel(state ?? 'idle');
+}
+
 /** 1 Hz while the projection is active, 4 s while idle, paused while the document is hidden. */
 export function liveDelay(state: LiveState | undefined, hidden: boolean): number | undefined {
   if (hidden) return undefined;
@@ -76,9 +87,7 @@ function sourcesMarkup(sources: LiveSource[]): string {
 /** Full section markup, id="live-panel" so the poller can replace it in place. */
 export function liveMarkup(live: LiveCurrent | undefined): string {
   const state = live?.state;
-  const label = state === 'thinking'
-    ? (live && liveToolName(live) ? `Thinking (${liveToolName(live)})` : liveStateLabel('thinking'))
-    : liveStateLabel(state ?? 'idle');
+  const label = liveLabel(live);
   const lines = live ? liveTranscript(live) : [];
   const result = live ? liveResult(live) : undefined;
   const error = state === 'error' ? '<p class="muted" role="status">Naya reported an error. The live session has stopped.</p>' : '';

@@ -207,7 +207,10 @@ thinking, ended, error) and never says "recording"; the thinking label names
 the tool in flight, for example "Thinking (search)", and a muted indicator
 appears only when the projection reports it. The page has no record button and
 no mute control: there is nothing to press, the orb reflects listening, speaking
-and thinking continuously, and typing stays the secondary input. The section also
+and thinking continuously, and typing stays the secondary input. The orb
+caption's own label follows the same live state (they never disagree), and its
+"Not listening" note appears only when the projection is not in an active turn.
+The section also
 renders the input and output
 transcription lines as they arrive, and the
 newest accepted `toolResult` as sanitized Markdown with clickable source links.

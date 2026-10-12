@@ -121,6 +121,11 @@ export async function composeMcpRuntime(options: {
       const names = grantMode === 'owner-trusted-reads'
         ? discovery.tools.map(tool => tool.name).filter(name => envelope.includes(name)).sort()
         : [];
+      // Healthy discovery without an approved envelope is status-only, not an empty owner policy.
+      if (!names.length) {
+        reports.set(entry.id, { id: entry.id, state: 'connected', tools: 0, lastHandshakeAt: discovery.observedAt });
+        return;
+      }
       // Reconcile through the owner's CAS intent API, never fabricate a registry-only grant.
       // The owner validates the existing row (including its hash) before accepting the intent.
       const row = store.transaction(tx => tx.get('SELECT policy_json,policy_sha256,generation FROM tool_connections WHERE owner_id=? AND connection_id=?', [ownerId, entry.id]));

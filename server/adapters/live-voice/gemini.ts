@@ -58,12 +58,15 @@ export class GeminiLiveVoiceAdapter implements LiveVoicePort {
     });
   }
   open(request: LiveVoiceRequest, control: LiveVoiceControl): LiveVoiceSession {
+    if (!object(control)) fail('invalid_request');
     const settings = { ...this.settings, limits: { ...this.settings.limits, ...control.limits } };
     for (const name of timerNames) if (!Number.isSafeInteger(settings.limits[name]) || settings.limits[name] < 1) fail('invalid_request');
+    if (control.idleResetMs !== undefined && (!Number.isSafeInteger(control.idleResetMs) || control.idleResetMs < 1 || control.idleResetMs > 2_147_483_647)) fail('invalid_request');
     if (!settings.enabled) fail('route_denied');
     if (!object(request) || !object(request.system) || typeof request.system.text !== 'string' || !request.system.text.length
       || (request.history !== undefined && !Array.isArray(request.history))) fail('invalid_request');
     if (request.opening !== undefined && request.opening !== 'user_first' && request.opening !== 'model_first') fail('invalid_request');
+    if (request.resumptionHandle !== undefined && (typeof request.resumptionHandle !== 'string' || !request.resumptionHandle.length || request.resumptionHandle.length > 8192)) fail('invalid_request');
     const opening = request.opening ?? 'user_first';
     const declared = classList(request.dataClasses, 'invalid_request');
     if (declared.some(c => !settings.allowed.includes(c))) fail('route_denied');
@@ -98,7 +101,7 @@ export class GeminiLiveVoiceAdapter implements LiveVoicePort {
     if (Buffer.byteLength(setup) > settings.limits.maxOutgoingBytes || (initial && Buffer.byteLength(initial) > settings.limits.maxOutgoingBytes)) fail('outgoing_limit');
     if (!object(control) || !(control.signal instanceof AbortSignal) || !Number.isSafeInteger(control.deadlineMs)
       || control.deadlineMs <= 0 || control.deadlineMs - Date.now() > 2_147_483_647) fail('invalid_request');
-    return new Session(settings, declared, setup, initial, control.signal, control.deadlineMs);
+    return new Session(settings, declared, setup, initial, control.signal, control.deadlineMs, control.idleResetMs ?? settings.limits.idleMs);
   }
 }
 
@@ -129,7 +132,7 @@ class Session implements LiveVoiceSession {
   droppedAudioFrames = 0;
   private creatingSocket = false;
   constructor(private readonly settings: Settings, private readonly declared: readonly DataClass[], setup: string, initial: string | undefined,
-    private readonly signal: AbortSignal, private readonly deadlineMs: number) {
+    private readonly signal: AbortSignal, private readonly deadlineMs: number, private readonly idleResetMs: number) {
     // Failure remains observable through ready/done/events, without an unhandled rejection.
     void this.ready.catch(() => {});
     let consumed = false;
@@ -154,9 +157,10 @@ class Session implements LiveVoiceSession {
   private clear(timer: ReturnType<typeof setTimeout> | undefined) {
     if (timer) { clearTimeout(timer); this.timers.delete(timer); }
   }
-  private touch() {
+  private touch(activity = true) {
+    if (!activity && this.idle) return;
     this.clear(this.idle);
-    if (this.isReady && !this.terminal) this.idle = this.timer(this.settings.limits.idleMs, 'idle_timeout');
+    if (this.isReady && !this.terminal) this.idle = this.timer(activity ? this.idleResetMs : this.settings.limits.idleMs, 'idle_timeout');
   }
   private readonly onAbort = () => { this.finish('cancelled'); };
   private checkpoint(): boolean {
@@ -273,7 +277,7 @@ class Session implements LiveVoiceSession {
         this.timer(Math.max(1, Math.ceil(Number(away.timeLeft.slice(0, -1)) * 1000)), 'go_away');
       }
       for (const event of events) { if (!this.checkpoint() || !this.emit(event)) return; }
-      this.touch();
+      this.touch(events.some(event => event.type !== 'ready' && event.type !== 'resumptionHandle' && event.type !== 'goAway'));
 
     } catch (error) { this.finish(error instanceof LiveVoiceError ? error.code : 'protocol_error'); }
   };

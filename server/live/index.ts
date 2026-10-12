@@ -338,7 +338,7 @@ export class LiveSessionOwner {
     const prepared = this.#store.transaction(tx => {
       const row = tx.get('SELECT * FROM live_sessions WHERE live_session_id=? AND owner_assistant_id=?', [input.liveSessionId, this.#store.assistantId]);
       if (!row) throw new LiveError('not_found');
-      if (String(row['profile_identity']) !== this.#profileIdentity || String(row['prompt_identity']) !== this.#promptIdentity) throw new LiveError('invalidated');
+      if (String(row['profile_identity']) !== this.#profileIdentity) throw new LiveError('invalidated');
       if (String(row['lifecycle']) === 'terminal') throw new LiveError('terminal');
       if (String(row['lifecycle']) !== 'accepted') throw new LiveError('already_attached');
       if (this.#expireInTx(tx, row, now) !== row) return 'expired' as const;
@@ -346,6 +346,7 @@ export class LiveSessionOwner {
       // Null is a pre-v2 legacy record. Refuse honestly rather than recompile private current state.
       try { acceptedPrompt = validateAcceptedPrompt(JSON.parse(String(row['accepted_prompt_snapshot'])), this.#store.assistantId); }
       catch { throw new LiveError('invalidated'); }
+      if (String(row['prompt_identity']) !== identity({ text: acceptedPrompt.system, dataClass: this.#profile.prompt.dataClass })) throw new LiveError('invalidated');
       const grantClasses = tx.get('SELECT permitted_classes FROM live_grants WHERE live_session_id=?', [input.liveSessionId]);
       const permitted: DataClass[] = JSON.parse(String(grantClasses?.['permitted_classes']));
       if (acceptedPrompt.dataClasses.some(c => !permitted.includes(c) || !this.#profile.route.dataClasses.includes(c))) throw new LiveError('invalidated');

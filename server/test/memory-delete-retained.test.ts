@@ -50,6 +50,7 @@ test('HTTP deletion atomically scrubs retained chat, Live and request copies, in
     const ctx = { clientId: f.context.clientId, auditId: 'retained', authorityEpoch: f.store.authorityEpoch };
     const input = { idempotencyKey: 'live', inputClass: 'ordinary' as const };
     const accepted = live.create(input, ctx);
+    const detached = live.create({ ...input, idempotencyKey: 'detached' }, ctx);
     attachment = live.attach({ liveSessionId: accepted.liveSessionId }, ctx);
     await ws.frame(1); ws.send({ setupComplete: {} }); await attachment.ready;
     assert.equal(liveRequests[0]!.system.text.includes('synthetic retained deletion'), true);
@@ -58,6 +59,19 @@ test('HTTP deletion atomically scrubs retained chat, Live and request copies, in
     const cached = await fetch(path, { method: 'POST', headers: { ...headers, 'Idempotency-Key': 'cached' }, body: JSON.stringify({ title: note, timeZone: 'UTC' }) });
     assert.equal(cached.status, 200);
     await cached.json();
+    // Fail the last owner scrub after domain, chat and Live writes to prove rollback.
+    const savedCache = f.store.transaction(tx => {
+      const row = tx.get("SELECT response FROM runtime_requests WHERE request_key='cached'", [])!;
+      tx.run("UPDATE runtime_requests SET response='{invalid' WHERE request_key='cached'", []);
+      return String(row.response);
+    });
+    const failedDelete = await fetch(`${service.origin}/api/v1/entries/${entry.id}`, { method: 'DELETE', headers: { ...headers, 'Idempotency-Key': 'delete-failed' }, body: '{}' });
+    assert.equal(failedDelete.status, 500);
+    assert.equal(f.store.transaction(tx => f.domain.execute(tx, 'resolveEntries', { entryIds: [entry.id] }, f.context)).records.length, 1);
+    for (const [table, column] of [['chat_run_context', 'resolved_records'], ['live_sessions', 'accepted_prompt_snapshot']] as const) {
+      assert.equal(JSON.stringify(f.store.transaction(tx => tx.all(`SELECT ${column} FROM ${table}`, []))).includes('synthetic retained deletion'), true);
+    }
+    f.store.transaction(tx => tx.run("UPDATE runtime_requests SET response=? WHERE request_key='cached'", [savedCache]));
     const deleted = await fetch(`${service.origin}/api/v1/entries/${entry.id}`, { method: 'DELETE', headers: { ...headers, 'Idempotency-Key': 'delete' }, body: '{}' });
     assert.equal(deleted.status, 200);
     for (const [table, column] of [['chat_run_context', 'resolved_records'], ['live_sessions', 'accepted_prompt_snapshot'], ['runtime_requests', 'response']] as const) {
@@ -82,6 +96,11 @@ test('HTTP deletion atomically scrubs retained chat, Live and request copies, in
     assert.equal(again.status, 200);
     const journal = f.store.transaction(tx => tx.all("SELECT text FROM live_journal WHERE live_session_id=? AND kind='continuity'", [accepted.liveSessionId]));
     assert.equal(journal.filter(row => String(row.text).includes('memory_deleted')).length, 1);
+    live.revoke(accepted.liveSessionId);
+    attachment = live.attach({ liveSessionId: detached.liveSessionId }, ctx);
+    await ws.frame(3); ws.send({ setupComplete: {} }); await attachment.ready;
+    assert.equal(liveRequests[2]!.system.text.includes('synthetic retained deletion'), false);
+    assert.equal(liveRequests[2]!.system.text.includes('synthetic surviving note'), true);
   } finally {
     attachment?.close(); await service.close(); f.store.close(); rmSync(dir, { recursive: true, force: true });
   }

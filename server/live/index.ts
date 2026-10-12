@@ -82,7 +82,6 @@ class OutputChannel {
   #queue: LiveOutputChunk[] = [];
   #bytes = 0;
   #waiter: ((result: IteratorResult<LiveOutputChunk>) => void) | undefined;
-  #providerMemory = new WeakMap<ActiveSession, Map<string, number>>();
   #closed = false;
   constructor(private readonly maxEvents: number, private readonly maxBytes: number) {}
   push(chunk: LiveOutputChunk): 'ok' | 'backpressure' {
@@ -214,6 +213,7 @@ export class LiveSessionOwner {
   readonly #active = new Map<string, ActiveSession>();
   #revision = 1;
   #invalidated = false;
+  #providerMemory = new WeakMap<ActiveSession, Map<string, number>>();
   #closed = false;
 
   constructor(config: LiveOwnerConfig) {

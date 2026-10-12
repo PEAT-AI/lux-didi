@@ -118,3 +118,17 @@ change login registration or saved window preferences.
 
 The native draft button is **Save note**: it saves a local note, not connected
 chat. Retry uses the same local save path.
+
+## Support snapshot
+
+The status menu offers **Reveal logs** (opens the log directory) and **Copy
+diagnostics**, which puts a plain-text snapshot on the clipboard for pasting to
+an assistant: app version, installed release commit, macOS version, service
+state (connected, restarting, stopped, connecting) with its origin port, the
+current Live state, the session and idle limits when known, each connector id
+with its state, the current audio route names, and the last typed pre-CREATE
+failure class and code from `logs/native-live.log`. Missing inputs read
+`unknown`. The snapshot never carries tokens, cookies, keys, bearer values,
+file contents, transcripts, memory or persona text, mail, or any path inside
+the owner's home; a value that looks like a credential is replaced by
+`unknown`.

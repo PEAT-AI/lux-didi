@@ -372,6 +372,7 @@ struct RootView: View {
         let pickup = NSMenuItem(title: "Pick up Naya’s call", action: #selector(pickupLiveCall), keyEquivalent: "")
         pickup.isHidden = true; pickupMenuItem = pickup; menu.addItem(pickup)
         menu.addItem(withTitle: "Reveal logs", action: #selector(revealLogs), keyEquivalent: "")
+        menu.addItem(withTitle: NativeDiagnosticsAction.itemTitle, action: #selector(copyDiagnostics), keyEquivalent: "")
         menu.addItem(withTitle: "Quit Didi", action: #selector(quit), keyEquivalent: "q")
         for item in menu.items { item.target = self }; statusItem.menu = menu
         hotkey.onToggle = { [weak self] in self?.toggle() }
@@ -429,6 +430,39 @@ struct RootView: View {
         } catch {
             let alert = NSAlert(); alert.messageText = "Logs are unavailable."; alert.runModal()
         }
+    }
+
+    @objc private func copyDiagnostics() {
+        let runtime = Bundle.main.resourceURL.flatMap { try? InstalledRuntime.load(resources: $0) } ?? nil
+        let logs = (proofRequest?.state ?? (try? InstalledRuntime.applicationState()))?.appendingPathComponent("logs", isDirectory: true)
+        let failure = NativeDiagnosticsSnapshot.preCreateFailure(logsDirectory: logs)
+        let service: String
+        if model.connecting { service = "connecting" }
+        else if model.serviceRestarting { service = "restarting" }
+        else if model.supervisor?.isRunning == true { service = "connected" }
+        else if model.supervisor != nil { service = "stopped" }
+        else { service = "unknown" }
+        let action = NativeDiagnosticsAction(makeInput: {
+            DiagnosticsSnapshotInput(
+                appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+                releaseCommit: runtime?.releaseCommit,
+                macOSVersion: ProcessInfo.processInfo.operatingSystemVersionString,
+                serviceState: service,
+                serviceOrigin: self.model.supervisor?.currentConnection?.descriptor.origin,
+                liveState: self.model.live?.state.rawValue,
+                sessionLimit: self.model.liveLimits.map { NativeLiveLimits.duration($0.sessionMs) },
+                idleLimit: self.model.liveLimits.map { NativeLiveLimits.duration($0.idleMs) },
+                connections: self.model.connections.map { "\($0.id): \($0.state)" },
+                audioRoute: self.model.live?.device.route,
+                preCreateFailureClass: failure?.failureClass,
+                preCreateFailureCode: failure?.code,
+                capturedAt: ISO8601DateFormatter().string(from: Date()))
+        }, write: { text in
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.setString(text, forType: .string)
+        })
+        action.copy()
     }
 
     @objc func show() {

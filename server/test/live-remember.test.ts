@@ -1,43 +1,32 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import * as memory from '../domain/memory.js';
 import * as labels from '../domain/labels.js';
-import { resolveLiveMemory } from '../host/live.js';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { createToolsOwner, toolsMigrations } from '../tools/index.js';
-import { declarationsFor, runToolCalls } from '../tools/declarations.js';
-import { LiveToolJobs, type ToolJobResult, type JobTimer } from '../tools/jobs.js';
-import type { LiveAuthority } from '../tools/types.js';
 import { liveProfileIdentity } from '../live/config.js';
-import type { ToolDefinition, HostContext } from '../adapters/model/types.js';
-import { PROMPT_VERSION } from '../prompt/index.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { TestContext } from 'node:test';
 import { fork, spawn } from 'node:child_process';
-import { once } from 'node:events';
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadLiveConfig } from '../config/live.js';
-import { NAYA_BASE, NAYA_TOOLS, composeLiveInstruction } from '../prompt/live-persona.js';
 import { GeminiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
 import type { LiveVoiceLimits, LiveVoiceRequest } from '../adapters/live-voice/index.js';
 import { chatMigrations } from '../chat/index.js';
 import { createDomainPort } from '../domain/facade.js';
 import { Outbox } from '../runtime/outbox.js';
 import { Store } from '../runtime/store.js';
-import type { Transaction } from '../contracts/storage.js';
-import { createLiveSessionOwner, LiveConfigError, LiveError, liveMigrations, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
+import { createLiveSessionOwner, liveMigrations, validateLiveProfile, type LiveContext, type LiveSessionOwner } from '../live/index.js';
 import { CANARY, control, deferred, fixture, options, pcm } from './live-voice-fixture.js';
 
 const MODEL = 'models/live-session-test';
 const NOW = 1_700_000_000_000;
 const context = (store: Store): LiveContext => ({ clientId: 'tester', auditId: 'audit-1', authorityEpoch: store.authorityEpoch });
-const tick = () => new Promise<void>(resolve => setImmediate(resolve));
-const audio = () => ({ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from(pcm).toString('base64') } });
 
 function profileInput(limits?: Record<string, number>, model = MODEL) {
   return {
@@ -68,7 +57,6 @@ async function harness(t: TestContext, overrides: {
   grantMode?: 'explicit' | 'owner-trusted-reads';
   beforeTool?: () => Promise<void>;
   toolError?: boolean;
-  scheduler?: DeadlineClock;
   system?: string;
   overlay?: { schemaVersion: 1; text: string; accent?: string };
   memoryFailure?: boolean;
@@ -139,9 +127,9 @@ async function harness(t: TestContext, overrides: {
       return { id: record.entryId, text: record.text, dataClass };
     });
   };
-  owner = createLiveSessionOwner({ store, voice, profile, ...{ memorySource }, ...(tools ? { tools } : {}), now: () => overrides.scheduler?.now ?? clock, ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
+  owner = createLiveSessionOwner({ store, voice, profile, ...{ memorySource }, ...(tools ? { tools } : {}), now: () => clock });
   t.after(async () => { await owner.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
-  return { requests, calls, f, store, owner, ctx: context(store), dir, advance: ms => { if (overrides.scheduler) overrides.scheduler.now += ms; else clock += ms; } };
+  return { requests, calls, f, store, owner, ctx: context(store), dir, advance: ms => { clock += ms; } };
 }
 
 async function attached(h: Harness, key = 'k1') {

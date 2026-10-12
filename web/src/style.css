@@ -37,3 +37,12 @@
 .live-tool-result summary { cursor: pointer; }
 
 .live-tool-result { margin-top: 18px; padding: 14px 18px; border: 1px solid var(--border); border-radius: 9px; }
+.didi-settings { margin-block: 1rem; }
+.didi-settings dl { margin: 0; }
+.didi-settings dt { font-weight: 600; margin-top: .6rem; }
+.didi-settings dd { margin: 0; }
+.didi-settings .settings-unavailable { color: var(--muted); font-style: italic; }
+.didi-settings .settings-connectors { list-style: none; padding: 0; }
+.didi-settings .settings-connectors li { margin-block: .6rem; }
+.didi-settings code { background: #eef1ea; border-radius: 4px; padding: .1rem .3rem; }
+.didi-settings .settings-restart { color: #854724; }

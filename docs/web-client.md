@@ -260,4 +260,25 @@ endpoint id, state, tool count, last handshake and a fixed repair hint for a
 sanitized reason code. Raw diagnostics, credentials and configuration are never
 rendered. Failed polls mark the displayed connection values as stale.
 
+## Didi settings summary
+
+The Settings tab carries one read-only "Didi settings" panel so the owner can see
+what this Didi is running with without opening a file or a terminal. It renders
+only fields the page already fetches: the persona name, conversation model and
+service mode from `GET /api/v1/status`, and every configured connector from
+`GET /api/v1/live/connections` with a fixed state name (`Configured`,
+`Connected`, `Failed`, `Credential missing`) and a one-line next step. Session and
+idle limits are shown in whole minutes when a Live status payload carries them.
+
+The panel also names, by file name only, where each setting lives on disk under
+the operator config dir (`live.json`, `profile.json`, `gemini-primary.json`,
+`provider-config/mcp.json`) and labels them "changes need a restart of Lux Didi".
+File contents are never read or shown. The view whitelists and escapes each field
+by name, so a secret-looking field on a route payload cannot reach the page. A
+failed route shows "Unavailable" for that group rather than stale values.
+
+`GET /api/v1/live/status` is operator-bearer-only, so the page cannot read the
+Live model, voice and limits from it. Those fields stay "Unavailable" until a
+browser-readable route exists; the panel does not invent them.
+
 The Live page projection may include optional `pastSession` metadata. Past sessions render as the last Live session, not a current error. `endedAt` is the persisted terminal timestamp; an orphan has null `endedAt` and an unknown outcome, with `lastObservedAt` shown explicitly as last seen. Active session labels are unchanged.

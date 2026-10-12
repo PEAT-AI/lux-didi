@@ -1,4 +1,5 @@
 import { Store } from '../runtime/store.js';
+import { toolsMigrations } from '../tools/index.js';
 import { Outbox } from '../runtime/outbox.js';
 import { createDomainPort } from '../domain/facade.js';
 import { ChatService, chatMigrations, type ChatConfig } from '../chat/index.js';
@@ -21,7 +22,7 @@ export function openFixture(dir: string, model: ModelPort, overrides: Partial<Ch
   const ownedMigrations = chatMigrations.map(migration => ({ ...migration,
     statements: migration.statements.map(statement => faultCheck && statement.startsWith('CREATE TABLE chat_runs')
       ? statement.replace(/\)\s*$/, `, CHECK (${faultCheck}))`) : statement) }));
-  const store = new Store(dir, [...domain.migrations, ...ownedMigrations]);
+  const store = new Store(dir, [...domain.migrations, ...ownedMigrations, ...toolsMigrations]);
   const context: DomainContext = { assistantId: store.assistantId, clientId: 'test-actor', authorityEpoch: store.authorityEpoch, now: new Date(0).toISOString() };
   const config: ChatConfig = { store, domain, model,
     route: { provider: 'synthetic', model: 'counting', available: true, allows: () => true, endpoint: 'https://generativelanguage.googleapis.com', apiVersion: 'v1beta', keyReference: 'gemini-primary', allowedClasses: ['ordinary', 'private'] },

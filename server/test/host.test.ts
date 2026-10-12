@@ -358,6 +358,12 @@ for (const scenario of ['both', 'existing-live', 'default', 'absent'] as const) 
       const existingLive = live + '\n';
       if (scenario === 'existing-live') await writeFile(join(effective, 'live.json'), existingLive, { mode: 0o600 });
       host = await startHost({ dataDir: dir, webRoot, configDir: effective, port: 0 });
+      if (scenario !== 'absent') {
+        const diagnostics = await readFile(join(dir, 'logs', 'host.log'), 'utf8');
+        assert.match(diagnostics, /"event":"config_seeded"/);
+        assert.ok(!diagnostics.includes('SECRET'));
+      }
+
       for (const name of ['live.json', 'mcp.json']) {
         if (scenario === 'absent') await assert.rejects(readFile(join(effective, name)), { code: 'ENOENT' });
         else {

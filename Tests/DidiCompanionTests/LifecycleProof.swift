@@ -124,6 +124,13 @@ import Darwin
             let valid = try setup("normal")
             let owned = supervisor(valid)
             let first = try await owned.start()
+            let diagnostics = valid.1.appendingPathComponent("logs/supervisor.log")
+            let diagnosticText = try String(contentsOf: diagnostics, encoding: .utf8)
+            try expect(diagnosticText.contains("spawn") && diagnosticText.contains("config_dir"), "supervisor lifecycle persists")
+            let permissions = try fm.attributesOfItem(atPath: diagnostics.path)[.posixPermissions] as? NSNumber
+            try expect(permissions?.intValue == 0o600, "supervisor diagnostics are private")
+            try expect(!diagnosticText.contains("credentialService"), "ready frame is not persisted")
+
             try expect(owned.isRunning && first.pid > 0, "actual owned live Node child and listener accepted")
             try expect(!fm.fileExists(atPath: marker.path), "ambient NODE_OPTIONS injection never executes")
             try expect(first.descriptor.credentialService == service && first.descriptor.credentialAccount == valid.0.installId, "credential reference derived from install identity")

@@ -200,10 +200,12 @@ final class NativeCaptureBuffer: @unchecked Sendable {
         guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &property, 0, nil, &size, &device) == noErr,
               device != kAudioObjectUnknown else { return ("", "No microphone") }
         property.mSelector = kAudioObjectPropertyName
-        var name: CFString = "Unknown device" as CFString
-        size = UInt32(MemoryLayout<CFString>.size)
-        _ = AudioObjectGetPropertyData(device, &property, 0, nil, &size, &name)
-        return (String(device), name as String)
+        var name: Unmanaged<CFString>?
+        size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        let status = withUnsafeMutablePointer(to: &name) {
+            AudioObjectGetPropertyData(device, &property, 0, nil, &size, $0)
+        }
+        return (String(device), status == noErr ? (name?.takeRetainedValue() as String? ?? "Unknown device") : "Unknown device")
     }
     func resumeInput() { recovery.resume(); if isCapturing { onResume?() } }
     private var engine: AVAudioEngine?

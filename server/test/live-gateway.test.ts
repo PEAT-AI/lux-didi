@@ -79,6 +79,11 @@ async function harness(t: TestContext, options: HarnessOptions = {}): Promise<Ha
   let tools = options.toolsFactory?.(store);
   if (options.realMcp) {
     const trace: string[] = [];
+    const observed = McpRegistry.prototype.observed;
+    t.mock.method(McpRegistry.prototype, 'observed', function (this: McpRegistry, ...args: Parameters<typeof observed>) {
+      try { return observed.apply(this, args); }
+      catch (error) { trace.push(`observed: ${error instanceof Error ? error.message : 'unknown'}`); throw error; }
+    });
     // Same SDK endpoint/HTTP bridge as knowledge-connector.test.ts and mcp-config.test.ts.
     const sdk = new Server({ name: 'synthetic-knowledge', version: '1' }, { capabilities: { tools: {} } });
     sdk.setRequestHandler('tools/list', () => ({ tools: [{ name: 'search_knowledge', inputSchema: { type: 'object' } }] }) as never);

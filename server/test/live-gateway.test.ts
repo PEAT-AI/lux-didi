@@ -231,8 +231,8 @@ test('live operator routes reject browsers, origins and duplicate headers before
   assert.equal(h.f.attempts, 0, 'guards run before any provider open');
 });
 
-for (const failedMcp of [false, true]) test(`real MCP composition: Swift sequence reaches ready (failed endpoint=${failedMcp})`, { timeout: 5000 }, async t => {
-  const h = await harness(t, { config: configJson(true), realMcp: true, failedMcp });
+for (const mode of ['fixture-only', 'healthy', 'failed'] as const) test(`Swift sequence reaches ready (${mode})`, { timeout: 5000 }, async t => {
+  const h = await harness(t, { config: configJson(true), realMcp: mode !== 'fixture-only', failedMcp: mode === 'failed' });
   // LiveSessionCoordinator.performCreate: status, create, validate the returned grant, connect.
   const status = await json(h.origin, '/api/v1/live/status', { headers: bearer(h) });
   assert.equal(status.status, 200);
@@ -278,6 +278,7 @@ for (const [label, error, code] of [
   ['typed', new LiveError('invalidated', CANARY), 'invalidated'],
   ['authorization', new ServiceError('FORBIDDEN', CANARY, 403), 'FORBIDDEN'],
   ['unknown', new Error(CANARY), 'internal'],
+  ['known code', new Error('connection_policy_missing_or_corrupt'), 'internal'],
 ] as const) {
   test(`attach rejection reports sanitized ${label} code once`, async t => {
     const h = await harness(t, { config: configJson(true) });
@@ -295,7 +296,7 @@ for (const [label, error, code] of [
     assert.equal(closeCode, 1008);
     assert.equal(reason.toString(), `attach_rejected:${code}`);
     assert.ok(Buffer.byteLength(reason) <= 123);
-    assert.deepEqual(events, [[JSON.stringify({ event: 'live_attach_rejected', liveSessionId: id, code })]]);
+    assert.deepEqual(events, [[JSON.stringify({ event: 'live_attach_rejected', liveSessionId: id, code, ...(code === 'internal' ? { class: 'Error', ...(label === 'known code' ? { detail: 'connection_policy_missing_or_corrupt' } : {}) } : {}) })]]);
     assert.equal(JSON.stringify(events).includes(CANARY), false);
     assert.equal(h.f.attempts, 0);
   });

@@ -182,6 +182,7 @@ export function appendEntry(
   id: string = newId(),
 ): EntryRecord {
   void clock;
+  if (tx.get('SELECT entry_id FROM entry_tombstones WHERE entry_id = ?', [id])) badRequest('entry id has been deleted');
   const text = requireText(input.text, 'text');
   assertTimeZone(input.timeZone);
   readSession(tx, input.sessionId);
@@ -236,6 +237,7 @@ export function addSourceReference(
 }
 
 export function sourceReferences(tx: Transaction, ownerId: string): SourceRefRecord[] {
+  if (tx.get('SELECT entry_id FROM entry_tombstones WHERE entry_id = ?', [ownerId])) return [];
   return tx
     .all(`SELECT * FROM source_references WHERE owner_id = ? ORDER BY id ASC`, [ownerId])
     .map(mapSourceRef);
@@ -406,4 +408,15 @@ export function preference(tx: Transaction, key: string): PreferenceRecord {
 export function preferenceOrNull(tx: Transaction, key: string): PreferenceRecord | null {
   const row = tx.get(`SELECT * FROM preferences WHERE key = ?`, [key]);
   return row ? mapPreference(row) : null;
+}
+
+/** Content-free deletion journal; runtime transaction owns atomicity. */
+export function deleteEntry(tx: Transaction, id: string, deletedAt: string, actor: string): import('../contracts/domain.js').EntryTombstone {
+  const existing = tx.get('SELECT * FROM entry_tombstones WHERE entry_id = ?', [id]);
+  if (existing) return { entryId: id, deletedAt: String(existing.deleted_at), actor: String(existing.actor), reasonCode: 'owner_request' };
+  readEntry(tx, id);
+  tx.run("DELETE FROM source_references WHERE owner_kind = 'entry' AND owner_id = ?", [id]);
+  tx.run('DELETE FROM entries WHERE id = ?', [id]);
+  tx.run('INSERT INTO entry_tombstones(entry_id, deleted_at, actor, reason_code) VALUES (?, ?, ?, ?)', [id, deletedAt, actor, 'owner_request']);
+  return { entryId: id, deletedAt, actor, reasonCode: 'owner_request' };
 }

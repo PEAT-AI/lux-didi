@@ -106,4 +106,16 @@ export const domainMigrations: SchemaMigration[] = [
       `CREATE INDEX ix_source_references_owner ON source_references(owner_id, owner_kind)`,
     ],
   },
+  {
+    owner: 'domain',
+    version: 4,
+    statements: [
+      `CREATE TABLE entry_tombstones (
+        entry_id TEXT PRIMARY KEY,
+        deleted_at TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        reason_code TEXT NOT NULL CHECK(reason_code = 'owner_request')
+      )`,
+    ],
+  },
 ];

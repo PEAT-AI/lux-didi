@@ -1,4 +1,4 @@
-import type { LiveCurrent } from './protocol';
+import type { LiveCurrent, EntryTombstone } from './protocol';
 export class ApiError extends Error {
   constructor(public code: string, message: string, public status: number) { super(message); }
 }
@@ -84,4 +84,8 @@ export async function stream(path: string, signal: AbortSignal, onFrame: (value:
       if (done) break;
     }
   } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
+}
+
+export function deleteMemoryEntry(id: string, signal?: AbortSignal): Promise<EntryTombstone> {
+  return request<EntryTombstone>(`/entries/${encodeURIComponent(id)}`, { method: 'DELETE', ...(signal ? { signal } : {}) });
 }

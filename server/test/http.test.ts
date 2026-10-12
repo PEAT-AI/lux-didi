@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import { request } from 'node:http';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
+import { createDomainPort } from '../domain/facade.js';
+import { Outbox } from '../runtime/outbox.js';
 import { Store } from '../runtime/store.js';
 import { listenService } from '../http/server.js';
 import type { DomainPort } from '../contracts/domain.js';
@@ -284,4 +286,28 @@ test('package diagnostics distinguish actual spawn error and signal from install
     assert.equal(signalEvidence.error, null);
   } finally { rmSync(dir, { recursive: true, force: true }); }
   assert.equal(existsSync(dir), false);
+});
+
+
+test('owner memory delete requires a principal, is idempotent and reports unknown ids', async () => {
+  const port = createDomainPort({ outbox: Outbox });
+  const f = await fixture(port);
+  try {
+    const ctx = { assistantId: f.store.assistantId, clientId: 'fixture-owner', authorityEpoch: f.store.authorityEpoch, now: new Date().toISOString() };
+    const session = f.store.transaction(tx => port.execute(tx, 'createSession', { title: 'Delete fixture', timeZone: 'UTC' }, ctx));
+    const entry = f.store.transaction(tx => port.execute(tx, 'appendEntry', { sessionId: session.id, text: 'synthetic HTTP deletion note', role: 'user', timeZone: 'UTC' }, ctx));
+    const path = `${f.service.origin}/api/v1/entries/${entry.id}`;
+    assert.equal((await fetch(path, { method: 'DELETE' })).status, 401);
+    const browser = await pair(f);
+    const headers = { Cookie: browser.cookie.split(';')[0]!, Origin: f.service.origin, 'X-Didi-CSRF': browser.csrf, 'X-Didi-Authority-Epoch': f.store.authorityEpoch, 'Idempotency-Key': 'delete-one' };
+    const first = await fetch(path, { method: 'DELETE', headers });
+    assert.equal(first.status, 200);
+    const deleted = await first.json();
+    const second = await fetch(path, { method: 'DELETE', headers: { ...headers, 'Idempotency-Key': 'delete-again' } });
+    assert.equal(second.status, 200);
+    assert.deepEqual((await second.json()).data, deleted.data);
+    const unknown = await fetch(`${f.service.origin}/api/v1/entries/00000000-0000-4000-8000-000000000000`, { method: 'DELETE', headers: { ...headers, 'Idempotency-Key': 'delete-unknown' } });
+    assert.equal(unknown.status, 404);
+    assert.equal((await unknown.json()).error.code, 'NOT_FOUND');
+  } finally { await f.cleanup(); }
 });

@@ -24,3 +24,5 @@ export interface LiveTool { name: string; status: 'called' | 'completed' | 'erro
 export interface LiveEntry { seq: number; kind: LiveKind; text?: string; tool?: LiveTool }
 export interface LiveJob { id: string; originSessionId: string; state: 'in_progress' | 'completed' | 'failed' | 'unknown'; createdAt: number; markdown: string; delivered: boolean }
 export interface LiveCurrent { jobs?: LiveJob[]; state: LiveState; since?: string; muted?: boolean; entries: LiveEntry[]; cursor: string | number }
+
+export interface EntryTombstone { entryId: string; deletedAt: string; actor: string; reasonCode: 'owner_request' }

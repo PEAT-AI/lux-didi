@@ -114,3 +114,19 @@ downloads and subframes are refused rather than rendered.
 Same-user process separation is not a security sandbox, and this document does not claim that it is.
 Hidden-view graphics-context loss and cookie behaviour across a content-process termination are open
 questions with measurements attached, not established facts.
+
+## Memory deletion boundary
+
+The paired owner can delete an entry through `DELETE /api/v1/entries/:id`, using the
+existing cookie principal, origin/CSRF protection, authority epoch, and request-key
+contract. The admin credential path is unchanged. Entry text and entry source metadata
+are removed from the domain tables atomically, leaving a content-free tombstone
+(entry id, deletion time, actor, reason code). This is a local deletion journal, not an
+outbox delivery: deletion must not dispatch any network side effect.
+
+This does not scrub old provider requests, quoted chat messages, Live transcripts,
+or frozen `chat_run_context.resolved_records` / Live accepted-prompt snapshots.
+Already accepted chat runs read back their frozen resolved records for composition;
+preventing that later dispatch is tracked separately. Domain-row erasure is not a
+claim of forensic erasure of SQLite free pages, WAL files, filesystem snapshots,
+or backups. New domain reads, recall queries, and Live CREATEs exclude deleted ids.

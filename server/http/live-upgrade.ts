@@ -1,3 +1,4 @@
+import { ConnectorCompositionError } from '../connectors/index.js';
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { WebSocketServer, type WebSocket, type RawData } from 'ws';
@@ -46,6 +47,7 @@ const statusText: Record<number, string> = { 400: 'Bad Request', 401: 'Unauthori
 /** Map an owner or guard failure to a closed HTTP error. Never leaks prompt/key bytes. */
 export function liveServiceError(error: unknown): ServiceError {
   if (error instanceof ServiceError) return error;
+  if (error instanceof ConnectorCompositionError) return new ServiceError('CONNECTOR_COMPOSITION_ERROR', 'Connector composition failed', 503);
   if (!(error instanceof LiveError)) return new ServiceError('INTERNAL_ERROR', 'Internal service error', 500);
   switch (error.code) {
     case 'not_found': return new ServiceError('NOT_FOUND', error.message, 404);

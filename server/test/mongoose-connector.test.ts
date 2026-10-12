@@ -1,3 +1,5 @@
+import { connectorDescriptor } from '../connectors/index.js';
+import type { ConnectionPolicy } from '../tools/types.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage } from 'node:http';
@@ -33,12 +35,12 @@ async function body(req: IncomingMessage): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
-interface FixtureOptions { text?: string; requireBearer?: boolean }
+interface FixtureOptions { text?: string; requireBearer?: boolean; tools?: Array<{ name: string; inputSchema: Record<string, unknown> }> }
 async function fixture(options: FixtureOptions = {}) {
   const calls: { name: unknown; arguments: unknown }[] = [];
   const requireBearer = options.requireBearer ?? true;
   const sdk = new Server({ name: 'synthetic-mongoose', version: '1' }, { capabilities: { tools: { listChanged: false } } });
-  sdk.setRequestHandler('tools/list', () => ({ tools: [...readTools, ...writeTools] }) as never);
+  sdk.setRequestHandler('tools/list', () => ({ tools: options.tools ?? [...readTools, ...writeTools] }) as never);
   sdk.setRequestHandler('tools/call', request => {
     const params = request.params as { name: string; arguments: Record<string, unknown> };
     calls.push({ name: params.name, arguments: params.arguments });
@@ -208,3 +210,42 @@ test('owner-trusted-reads grants exactly the connector envelope through the runt
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+for (const [connector, tool] of [['mongoose', 'search_mongoose'], ['mattermost', 'mattermost_search']] as const) {
+  test(`${connector} Live descriptor validates bounds and dispatches against the original MCP schema`, async () => {
+    const f = await fixture({ requireBearer: false, tools: [{ name: tool, inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer', maximum: 1 } }, required: ['query'], additionalProperties: false } }] });
+    const dir = mkdtempSync(join(tmpdir(), 'didi-company-descriptor-'));
+    const store = new Store(join(dir, 'data'), toolsMigrations);
+    let runtime: Awaited<ReturnType<typeof composeMcpRuntime>> | undefined;
+    try {
+      const configDir = join(dir, 'provider-config'); mkdirSync(configDir, { recursive: true, mode: 0o700 });
+      writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [{ id: connector, connector, transport: 'streamable-http', url: f.url, account: ACCOUNT, resource: RESOURCE, credentialRef: null, enabled: true, allowEgress: true }] }), { mode: 0o600 });
+      runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null });
+      const row = store.transaction(tx => tx.get('SELECT policy_json FROM tool_connections WHERE owner_id=? AND connection_id=?', [store.assistantId, connector]));
+      assert.ok(row);
+      const policy = JSON.parse(String(row.policy_json)) as ConnectionPolicy;
+      const descriptor = connectorDescriptor(connector); assert.ok(descriptor);
+      const declaration = descriptor.declarations(policy).find(candidate => candidate.name === tool); assert.ok(declaration);
+      assert.equal(declaration.validate({ query: 'agri', limit: 2 }), true, 'local bounds allow two results');
+      assert.equal(declaration.validate({ query: '', limit: 1 }), false);
+      assert.equal(declaration.validate({ query: 'agri', limit: 101 }), false);
+      assert.equal(declaration.validate({ query: 'agri', limit: 1, write: true }), false);
+      const reader = descriptor.createReader({ port: runtime.port, registry: runtime.registry, endpoint: policy.endpoint, schemaDigest: policy.schemaDigest, generation: policy.generation, policy });
+      const refused = await reader.call(tool, { query: 'agri', limit: 2 });
+      assert.equal(refused.state, 'refused', 'original MCP schema is stricter than the local declaration');
+      assert.equal(f.calls.length, 0, 'schema rejection happens before remote dispatch');
+      const accepted = await reader.call(tool, { query: 'agri', limit: 1 });
+      assert.equal(accepted.state, 'completed');
+      assert.deepEqual(f.calls, [{ name: tool, arguments: { query: 'agri', limit: 1 } }]);
+      if (accepted.state === 'completed') {
+        assert.throws(() => descriptor.project(accepted, runtime!.port, policy), /unknown_source_denied/);
+        // The synthetic fixture's opaque payload is explicitly classified, never production consent.
+        const classified = { ...policy, sourcePolicy: { ...policy.sourcePolicy, unknownClass: 'ordinary' as const } };
+        const snapshot = descriptor.project(accepted, runtime.port, classified);
+        assert.equal(snapshot.response['tool'], tool);
+        assert.equal(typeof snapshot.response['text'], 'string');
+        assert.deepEqual(snapshot.dataClasses, ['ordinary']);
+      }
+    } finally { await runtime?.close(); store.close(); await f.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
+}

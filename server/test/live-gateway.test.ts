@@ -1,3 +1,4 @@
+import { ConnectorCompositionError } from '../connectors/index.js';
 import { domainMigrations } from '../domain/schema.js';
 import { createToolsOwner, toolsMigrations } from '../tools/index.js';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
@@ -807,4 +808,20 @@ test('host Live status exposes only counts from the committed memory snapshot', 
   const id = created.body.data.liveSessionId;
   const stored = h.store.transaction(tx => JSON.parse(String(tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [id])!['accepted_prompt_snapshot'])));
   assert.match(stored.system, /Fixture durable owner note/);
+});
+
+test('CREATE maps a typed connector composition defect to a bounded visible envelope', async t => {
+  const h = await harness(t, { config: configJson(true), toolsFactory: store => {
+    const registry = new McpRegistry();
+    const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic-token' });
+    t.after(() => port.close());
+    const owner = createToolsOwner({ store, ownerId: store.assistantId, registry, port, lookupAuthority: async () => null });
+    owner.snapshotRun = () => { throw new ConnectorCompositionError('unknown_connector', 'missing-endpoint', 'missing-kind'); };
+    return { owner, connectionIds: () => [], registerAuthoritySource: () => {} };
+  } });
+  const created = await createBody(h, 'composition-error');
+  assert.equal(created.status, 503);
+  assert.equal(created.body.error.code, 'CONNECTOR_COMPOSITION_ERROR');
+  assert.equal(created.body.error.message, 'Connector composition failed');
+  assert.ok(created.body.requestId);
 });

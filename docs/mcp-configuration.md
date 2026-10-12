@@ -83,3 +83,9 @@ Google read tools project to bounded Markdown (a Gmail list renders `subject, fr
 Status: `GET /api/v1/tools/status` (operator bearer only) returns `{ endpoints: [{ id, state, tools, lastHandshakeAt, error? }] }` with states `missing` (no file), `configured` (present, not connected), `connected` (handshake done) and `error`.
 
 A connection becomes a Live acceptance id only after successful credential validation and discovery, durable canonical ConnectionPolicy reconciliation through the tools owner, and projection of that policy into the registry. The endpoint and discovered schema digest are bound to the durable generation; owner-trusted reads grant only the connector read envelope. Disabled endpoints, denied egress, missing credentials, failed discovery or policy reconciliation remain visible in endpoint status but are not acceptance ids. Refresh reconciles the policy before making the connection usable again.
+
+### Live connector composition
+
+Supported connector kinds are `lux-knowledge`, `google`, `mattermost`, and `mongoose`. Endpoint IDs are independent of the connector kind: separate `gmail` and `calendar` endpoints both use `google`. Each supported kind has a local read envelope and a Live reader descriptor. Model declarations accept only bounded read arguments; the company readers also validate the actual dispatched arguments against the original discovered MCP schema. Remote write tools never become Live declarations.
+
+An unknown connector kind fails host startup before transport discovery with `ConnectorCompositionError`, naming the endpoint ID and connector kind, even for a disabled endpoint. A known connector with no approved discovered reads remains healthy and status-only; a missing credential remains a visible connector error and is not accepted into a Live run. A typed connector composition defect during CREATE returns HTTP 503 with the bounded error code `CONNECTOR_COMPOSITION_ERROR`, not a generic `INTERNAL_ERROR`.

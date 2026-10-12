@@ -371,3 +371,81 @@ for (const scenario of ['both', 'existing-live', 'default', 'absent'] as const) 
     } finally { await host?.close(); await rm(dir, { recursive: true, force: true }); }
   });
 }
+
+// Real installed endpoint identities and connector kinds, with synthetic transports only.
+for (const missingMongoose of [true, false]) {
+  test(`real five-endpoint host CREATE composes company readers (mongoose missing=${missingMongoose})`, async t => {
+    const dir = await mkdtemp(join(tmpdir(), 'didi-real-shape-'));
+    t.after(() => rm(dir, { recursive: true, force: true }));
+    const config = join(dir, 'provider-config');
+    await mkdir(config, { mode: 0o700 });
+    const tools = [
+      'search_knowledge', 'get_insight', 'gmail_get_profile', 'gmail_list', 'gmail_read',
+      'gcal_calendars', 'gcal_list', 'mattermost_whoami', 'mattermost_get_channel_history',
+      'mattermost_get_thread', 'mattermost_search', 'mattermost_list_channels', 'ask_mongoose',
+      'search_mongoose', 'get_knowledge_item', 'read_knowledge_body', 'get_company_profile', 'list_tickets', 'get_ticket',
+    ].map(name => ({ name, inputSchema: { type: 'object', properties: {}, additionalProperties: true } }));
+    const reply = (message: { id?: unknown; method: string }) => message.id === undefined ? undefined : {
+      jsonrpc: '2.0', id: message.id, result: message.method === 'initialize'
+        ? { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'fake', version: '1' } }
+        : message.method === 'tools/list' ? { tools } : {},
+    };
+    const endpoint = createServer(async (req, res) => {
+      if (req.method !== 'POST') { res.writeHead(405); res.end(); return; }
+      const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      const response = reply(JSON.parse(Buffer.concat(chunks).toString()));
+      if (response && req.url && 'tools' in response.result) {
+        const family = req.url.slice(1);
+        response.result.tools = tools.filter(tool => family === 'gmail' ? tool.name.startsWith('gmail_') : family === 'calendar' ? tool.name.startsWith('gcal_') : family === 'lux-knowledge' ? ['search_knowledge', 'get_insight'].includes(tool.name) : !tool.name.startsWith('mattermost_') && !tool.name.startsWith('gmail_') && !tool.name.startsWith('gcal_') && !['search_knowledge', 'get_insight'].includes(tool.name));
+      }
+      res.writeHead(response ? 200 : 202, { 'content-type': 'application/json' });
+      res.end(response ? JSON.stringify(response) : undefined);
+    });
+    endpoint.listen(0, '127.0.0.1'); await once(endpoint, 'listening');
+    t.after(async () => { endpoint.closeAllConnections(); await new Promise<void>(done => endpoint.close(() => done())); });
+    const address = endpoint.address(); assert(address && typeof address !== 'string');
+    const url = `http://127.0.0.1:${address.port}`;
+    const child = join(dir, 'fake-mattermost.cjs');
+    await writeFile(child, `const tools=${JSON.stringify(tools)}; const reply=${reply.toString()}; require('node:readline').createInterface({input:process.stdin}).on('line', line => { const response=reply(JSON.parse(line)); if(response) console.log(JSON.stringify(response)); });`);
+    const http = (id: string, connector: string, credentialRef: string | null = null) => ({ id, connector, transport: 'streamable-http', url: url + '/' + id, account: 'synthetic', resource: id, credentialRef, enabled: true, allowEgress: true });
+    await writeFile(join(config, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [
+      http('lux-knowledge', 'lux-knowledge'), http('gmail', 'google'), http('calendar', 'google'),
+      { id: 'mattermost', connector: 'mattermost', transport: 'stdio', command: process.execPath, args: [child], env: { HOME: dir, PATH: process.env.PATH ?? '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' }, account: 'synthetic', resource: 'mattermost', credentialRef: null, enabled: true, allowEgress: true },
+      http('mongoose', 'mongoose', missingMongoose ? 'missing-credential' : null),
+    ] }), { mode: 0o600 });
+    await writeFile(join(config, 'live.json'), JSON.stringify({ schemaVersion: 1, enabled: true, provider: 'gemini', modelId: 'models/live-gateway-test', voice: 'LiveVoice', keyReference: 'gemini-primary', dataClasses: ['ordinary'], preferences: { dataClass: 'ordinary', language: 'en-US', register: 'plain', humor: 'dry', verbosity: 'balanced' } }), { mode: 0o600 });
+    await writeFile(join(config, 'gemini-primary.json'), JSON.stringify({ schemaVersion: 1, keyReference: 'gemini-primary', key: 'synthetic-test-key' }), { mode: 0o600 });
+    const host = await startHost({ dataDir: join(dir, 'state'), configDir: config, webRoot, port: 0 });
+    t.after(() => host.close());
+    const headers = { Authorization: `Bearer ${host.store.adminCredential}`, 'Content-Type': 'application/json', 'Idempotency-Key': randomUUID(), 'X-Didi-Authority-Epoch': host.descriptor.authorityEpoch };
+    const status = await fetch(host.descriptor.origin + '/api/v1/tools/status', { headers });
+    assert.equal(status.status, 200);
+    const reports = (await status.json()).data.endpoints as Array<{ id: string; state: string; tools: number }>;
+    assert.deepEqual(reports.map(report => [report.id, report.state, report.tools]).sort(), [
+      ['lux-knowledge', 'connected', 2], ['gmail', 'connected', 3], ['calendar', 'connected', 2],
+      ['mattermost', 'connected', 5], ['mongoose', missingMongoose ? 'error' : 'connected', missingMongoose ? 0 : 7],
+    ].sort());
+    const response = await fetch(host.descriptor.origin + '/api/v1/live-sessions', { method: 'POST', headers, body: JSON.stringify({ inputClass: 'ordinary' }) });
+    const body = await response.json();
+    assert.equal(response.status, 200, JSON.stringify(body));
+    assert.ok(body.data.liveSessionId);
+    assert.equal(body.data.lifecycle, 'accepted');
+  });
+}
+
+test('host rejects an unknown connector kind before discovery and names it', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'didi-unknown-connector-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const config = join(dir, 'provider-config'); await mkdir(config, { mode: 0o700 });
+  await writeFile(join(config, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [{ id: 'unknown-endpoint', connector: 'unknown-kind', transport: 'streamable-http', url: 'http://127.0.0.1:1/', account: 'synthetic', resource: 'synthetic', credentialRef: null, enabled: true, allowEgress: true }] }), { mode: 0o600 });
+  await assert.rejects(async () => {
+    const host = await startHost({ dataDir: join(dir, 'state'), configDir: config, webRoot, port: 0 });
+    await host.close();
+  }, error => {
+    assert(error instanceof Error);
+    assert.equal(error.name, 'ConnectorCompositionError');
+    assert.match(error.message, /unknown-endpoint/);
+    assert.match(error.message, /unknown-kind/);
+    return true;
+  });
+});

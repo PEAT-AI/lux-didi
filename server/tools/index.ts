@@ -4,7 +4,7 @@ import type { SQLRow, Transaction } from '../contracts/storage.js';
 import type { DataClass, HostContext, JsonObject, ToolCallIntent, ToolCallRefusal, ToolDefinition, ToolResultBinding, ToolResultGate, ToolResultRef } from '../adapters/model/types.js';
 import { validateEndpointUrl, validateApprovedStdioEnv } from '../adapters/mcp/registry.js';
 import { endpointBinding } from '../adapters/mcp/port.js';
-import { CONNECTOR_DESCRIPTORS, CONNECTOR_ENVELOPES } from '../connectors/index.js';
+import { ConnectorCompositionError, connectorDescriptor, CONNECTOR_ENVELOPES } from '../connectors/index.js';
 import { canonicalJSON, detached, sha256 } from './canonical.js';
 import type { BoundConnection, ConnectionApplyResult, ConnectionPolicy, HttpConnectionEndpoint, ModelSnapshot, RunAcceptance, RunSnapshot, StdioConnectionEndpoint, ToolsOwner, ToolsOwnerOptions } from './types.js';
 export { toolsMigrations } from './schema.js';
@@ -295,14 +295,14 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
       const definitions: ToolDefinition[] = [];
       for (const bound of snapshot.connections) {
         const p = bound.policy;
-        const descriptor = CONNECTOR_DESCRIPTORS[p.connector];
-        if (!descriptor) throw Error('unknown_connector');
+        const descriptor = connectorDescriptor(p.connector);
+        if (!descriptor) throw new ConnectorCompositionError('unknown_connector', p.connectionId, p.connector);
         const reader = descriptor.createReader({ port, registry, endpoint: p.endpoint, schemaDigest: p.schemaDigest, generation: p.generation, policy: p });
         const declarations = descriptor.declarations(p);
         for (const name of p.toolNames) {
-          if (definitions.some(d => d.name === name)) throw Error('ambiguous_model_tool_name');
+          if (definitions.some(d => d.name === name)) throw new ConnectorCompositionError('ambiguous_model_tool_name', p.connectionId, p.connector);
           const declaration = declarations.find(candidate => candidate.name === name);
-          if (!declaration) throw Error('unknown_connector_tool');
+          if (!declaration) throw new ConnectorCompositionError('unknown_connector_tool', p.connectionId, p.connector);
           definitions.push({ name, description: declaration.description, effect: 'read', accountId: p.endpoint.account, resourceId: p.endpoint.resource, validate: declaration.validate,
             parameters: declaration.parameters,
             async execute(args, context) {

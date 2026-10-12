@@ -105,7 +105,7 @@ async function harness(t: TestContext, options: HarnessOptions = {}): Promise<Ha
       assert.deepEqual(runtime.connectionIds(), ['healthy']);
       assert.equal(runtime.status().endpoints.find(e => e.id === 'failed')?.state, 'error');
     }
-    tools = { owner: runtime.owner, connectionIds: () => runtime.connectionIds(), registerAuthoritySource: source => { sources.push(source); }, lookupAuthority };
+    tools = { owner: runtime.owner, connectionIds: () => runtime.connectionIds(), registerAuthoritySource: source => { sources.push(source); } };
   }
   const { service: live } = composeLive(store, config, { socketFactory: f.socketFactory, ...(options.profile ? { profile: options.profile } : {}), ...(options.credentials ? { credentials: options.credentials } : {}) }, options.now, undefined, tools);
   const running = await listenService({ store, live, port: 0 });

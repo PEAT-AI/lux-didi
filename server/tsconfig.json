@@ -57,6 +57,7 @@
     "test/selected-memory-ui.test.ts",
     "test/selected-memory-browser-fixture.ts",
     "test/chat-consent.test.ts",
-    "test/client-diagnostics.test.ts"
+    "test/client-diagnostics.test.ts",
+    "test/live-summary.test.ts"
   ]
 }

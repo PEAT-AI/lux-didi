@@ -52,7 +52,7 @@ export function validatePolicy(input: ConnectionPolicy): ConnectionPolicy {
   if (!envelope) throw Error('invalid_connector');
   if (!Array.isArray(p.toolNames) || p.toolNames.length < 1 || p.toolNames.length > envelope.length || new Set(p.toolNames).size !== p.toolNames.length || p.toolNames.some(n => typeof n !== 'string' || !envelope.includes(n)) || !/^[a-f0-9]{64}$/.test(p.schemaDigest)) throw Error('invalid_read_tools');
   exact(p.sourcePolicy, ['id', 'revision', 'unknownClass', 'allowedClasses']); text(p.sourcePolicy.id); positive(p.sourcePolicy.revision); classSet(p.sourcePolicy.allowedClasses);
-  if (p.sourcePolicy.unknownClass !== null && !classes.includes(p.sourcePolicy.unknownClass)) throw Error('invalid_unknown_class');
+  if ((p.bindingMode === 'connection' && p.sourcePolicy.unknownClass === null) || (p.sourcePolicy.unknownClass !== null && !classes.includes(p.sourcePolicy.unknownClass))) throw Error('invalid_unknown_class');
   exact(p.route, ['identity', 'allowedClasses']); text(p.route.identity); classSet(p.route.allowedClasses);
   exact(p.bounds, ['maxQueryChars', 'maxSearchLimit', 'maxGetIds', 'maxEntityBytes', 'maxResultBytes']); Object.values(p.bounds).forEach(positive);
   return p;
@@ -275,7 +275,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
       let selected: BoundConnection;
       try {
         selected = store.transaction(tx => connection(tx, id));
-        if (!selected.policy.enabled || !endpointMatches(selected.policy)) return { state: 'refused', reason: 'connection-not-enabled' };
+        if (!selected.policy.enabled || selected.policy.bindingMode !== 'connection' || selected.policy.sourcePolicy.unknownClass === null || !endpointMatches(selected.policy)) return { state: 'refused', reason: 'connection-not-enabled' };
         assertCurrentBinding();
       } catch { return { state: 'refused', reason: 'binding-not-current' }; }
       let discovered: Awaited<ReturnType<typeof port.discover>>;
@@ -296,7 +296,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
       } catch { return { state: 'refused', reason: 'binding-or-consent-not-current' }; }
     },
     projectConnection(id) {
-      const p = store.transaction(tx => connection(tx, id).policy); if (!p.enabled) throw Error('connection_disabled');
+      const p = store.transaction(tx => connection(tx, id).policy); if (!p.enabled || p.bindingMode !== 'connection' || p.sourcePolicy.unknownClass === null) throw Error('connection_not_executable');
       const endpoint = registry.endpoint(p.endpoint.id);
       if (endpointBinding(endpoint) !== endpointBinding(p.endpoint)) throw Error('projection_endpoint_mismatch');
       const grant = registry.currentGrant(p.endpoint.id);

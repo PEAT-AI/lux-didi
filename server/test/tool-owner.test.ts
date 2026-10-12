@@ -265,17 +265,14 @@ test('search/get strict arguments, provenance and requested IDs remain unverifie
   assert.equal((value['source'] as Record<string, unknown>)['account'], 'account');
 });
 
-for (const bad of [null, 'absent'] as const) test(`unknown source policy ${bad} denies before initial provider`, async t => {
+for (const bad of [null, 'absent'] as const) test(`unknown source policy ${bad} is not an executable connection approval`, async t => {
   const p = policy(); p.sourcePolicy.unknownClass = null;
   if (bad === 'absent') delete (p.sourcePolicy as Partial<typeof p.sourcePolicy>).unknownClass;
-  if (bad === 'absent') {
-    const dir = mkdtempSync(join(tmpdir(), 'didi-owner-test-')); const store = new Store(dir, toolsMigrations);
-    t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
-    const owner = createToolsOwner({ store, ownerId: 'owner', registry: new McpRegistry(), port: {} as McpPort, lookupAuthority: async () => null });
-    assert.throws(() => owner.applyConnection(p)); return;
-  }
-  const f = await fixture(t, { policy: p }); let requests = 0;
-  assert.equal((await f.run({ generate: async () => { requests++; return modelResult(); } })).status, 'denied'); assert.equal(requests, 0);
+  const dir = mkdtempSync(join(tmpdir(), 'didi-owner-test-')); const store = new Store(dir, toolsMigrations);
+  t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
+  const owner = createToolsOwner({ store, ownerId: 'owner', registry: new McpRegistry(), port: {} as McpPort, lookupAuthority: async () => null });
+  assert.throws(() => owner.applyConnection(p));
+  assert.equal(store.transaction(tx => tx.all('SELECT * FROM tool_connections')).length, 0);
 });
 
 for (const [label, result, memoryBytes] of [

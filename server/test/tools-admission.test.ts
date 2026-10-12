@@ -19,7 +19,7 @@ import { fixture as voiceFixture } from './live-voice-fixture.js';
 
 const endpoints = [
   { id: 'lux-knowledge', connector: 'lux-knowledge', tool: 'search_knowledge', args: { query: 'synthetic', limit: 1 } },
-  { id: 'gmail', connector: 'google', tool: 'gmail_get_profile', args: {} },
+  { id: 'gmail', connector: 'google', tool: 'gmail_list', args: {} },
   { id: 'calendar', connector: 'google', tool: 'gcal_calendars', args: {} },
   { id: 'mattermost', connector: 'mattermost', tool: 'mattermost_whoami', args: {} },
   { id: 'mongoose', connector: 'mongoose', tool: 'get_company_profile', args: {} },
@@ -44,11 +44,11 @@ async function harness(t: TestContext, builder: 'live' | 'chat-shaped') {
   for (const entry of endpoints) {
     const sdk = new Server({ name: entry.id, version: '1' }, { capabilities: { tools: {} } });
     const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
-    sdk.setRequestHandler('tools/list', () => ({ tools: visible.has(entry.id) ? [{ name: entry.tool, inputSchema: entry.id === 'lux-knowledge' ? { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, include_sensitive: { type: 'boolean' } }, required: ['query', 'limit', 'include_sensitive'], additionalProperties: false } : { type: 'object', properties: {}, additionalProperties: false } }] : [] }) as never);
+    sdk.setRequestHandler('tools/list', () => ({ tools: visible.has(entry.id) ? [{ name: entry.tool, inputSchema: entry.id === 'lux-knowledge' ? { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, include_sensitive: { type: 'boolean' } }, required: ['query', 'limit', 'include_sensitive'], additionalProperties: false } : entry.connector === 'google' ? { type: 'object', properties: { maxResults: { type: 'integer' }, pageToken: { type: 'string' }, q: { type: 'string' } }, additionalProperties: false } : { type: 'object', properties: {}, additionalProperties: false } }] : [] }) as never);
     sdk.setRequestHandler('tools/call', async () => {
       counts.set(entry.id, counts.get(entry.id)! + 1);
       await dispatch?.(entry.id);
-      const text = entry.connector === 'google' ? JSON.stringify({ family: entry.id === 'gmail' ? 'gmail' : 'calendar', tool: entry.tool, method: entry.tool, account: { configured: 'configured', provider: null }, data: entry.id === 'gmail' ? { emailAddress: 'synthetic@example.invalid', messagesTotal: 1, threadsTotal: 1 } : { calendars: [{ id: 'synthetic', summary: 'Synthetic calendar' }] } }) : `synthetic ${entry.id} read`;
+      const text = entry.connector === 'google' ? JSON.stringify({ family: entry.id === 'gmail' ? 'gmail' : 'calendar', tool: entry.tool, method: entry.tool, account: { configured: 'configured', provider: null }, data: entry.id === 'gmail' ? { messages: [{ id: 'synthetic', headers: { Subject: 'Synthetic mail', From: 'Synthetic sender <synthetic@example.invalid>', Date: 'Synthetic date' } }] } : { calendars: [{ id: 'synthetic', summary: 'Synthetic calendar' }] } }) : `synthetic ${entry.id} read`;
       return { content: [{ type: 'text', text }] } as never;
     });
     await sdk.connect(transport); readers.set(entry.id, transport);
@@ -126,7 +126,7 @@ for (const builder of ['live', 'chat-shaped'] as const) test(`connection-scoped 
   const responses = batch.seen[1]!.contents.flatMap(c => c.parts.flatMap(p => p.functionResponse ? [p.functionResponse] : []));
   assert.equal(responses.length, 3);
   assert.match(JSON.stringify(responses), /synthetic lux-knowledge read/);
-  assert.match(JSON.stringify(responses), /synthetic@example.invalid/);
+  assert.match(JSON.stringify(responses), /Synthetic mail/);
   assert(!JSON.stringify(responses).includes('synthetic mattermost read'));
   const rows = h.store.transaction(tx => tx.all('SELECT state,intent_json,result_json FROM tool_calls WHERE run_id=?', [run.host.runId]));
   assert(rows.some(r => r.state === 'completed')); assert(rows.some(r => r.state === 'refused'));

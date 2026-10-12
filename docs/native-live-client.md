@@ -85,3 +85,41 @@ failure codes in `logs/native-live.log` (0600), without error bodies or credenti
 Show conversation focuses the existing authenticated embedded view. Connections
 is read-only and uses the page cookie, never the Live bearer credential. It
 refreshes every ten seconds only while its window is visible and not minimized.
+
+## Provider continuity wire contract
+
+A provider replacement does not create a new Live session or change the accepted
+prompt, memory or tools. The current projection (`GET /api/v1/live/current`) has
+non-terminal `state: "rebuilding"` throughout replacement setup, then returns to
+its normal listening/thinking/speaking state. `GET /api/v1/live/status` is the
+configuration preflight, not the conversation-state projection: it still returns
+`service: "live", status: "configured"` while rebuilding. Clients must not infer
+conversation continuity from that configuration status.
+
+Socket JSON control frames use `type: "continuity"`, `event: "rebuilding"` or
+`event: "resumed"`, `sequence: null`, an increasing `journalSequence`, and omit absent
+`text`, `finished`, and `value`. The rebuilding marker additionally has a typed
+`reason` such as `go_away` or `remote_closed`. Journal fragment projections expose
+the same `kind`, `event` and optional `reason` with `text: null`; page entries use
+`seq` for the journal sequence. No marker, fragment or page entry includes a
+provider handle. Continuity entries are status facts, never transcript turns.
+
+For example, the exact socket JSON fields are:
+
+```json
+{"type":"continuity","sequence":null,"journalSequence":12,"event":"rebuilding","reason":"go_away"}
+{"type":"continuity","sequence":null,"journalSequence":13,"event":"resumed"}
+```
+
+The resumed frame omits `reason`; nullable marker payload fields are omitted
+rather than serialized as null. The journal sequences above are illustrative.
+
+On `rebuilding`, keep the audio device open, drop captured input rather than
+buffering/replaying it, stop old queued playback and show **Reconnecting**.
+On `resumed`, permit new input and return to normal live presentation. Do not
+restart, re-create or recap the conversation. Terminal snapshots use
+`terminal: {state: "failed", code: "resume_failed"}` when recovery cannot complete;
+the socket terminal frame is `{type: "terminal", state: "failed", code: "resume_failed", complete: false}`. The native terminal presentation is: **Live voice lost the connection and could
+not resume. Start again.** A terminal snapshot ends the device as usual. The
+night-master native lane owns coordinator, wire decoding, capture control and
+presentation changes together; this server wagon does not edit Swift.

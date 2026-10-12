@@ -142,3 +142,10 @@ Already accepted chat runs read back their frozen resolved records for compositi
 preventing that later dispatch is tracked separately. Domain-row erasure is not a
 claim of forensic erasure of SQLite free pages, WAL files, filesystem snapshots,
 or backups. New domain reads, recall queries, and Live CREATEs exclude deleted ids. The content-free Live source-turn key prevents remember_note from recreating a deleted note from the same retained voice turn; the existing already_remembered outcome carries only its deleted entry id.
+
+Provider resumption handles are provider-opaque secrets, retained by the live
+owner only and sent only in provider setup. They never appear in projections,
+client events, logs or errors. Resumption restores provider-side continuity; the
+service reconstructs no conversation history, adds no recap instruction and
+replays no PCM. Accepted prompt, memory and tool authority snapshots remain
+immutable across connection replacement.

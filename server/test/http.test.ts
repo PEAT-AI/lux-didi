@@ -295,10 +295,10 @@ test('T13 connections preserve bounded typed configuration errors', async () => 
     const browser = await pair(f);
     const response = await fetch(`${f.service.origin}/api/v1/live/connections`, { headers: { Cookie: browser.cookie.split(';')[0]!, 'sec-fetch-site': 'same-origin' } });
     assert.equal(response.status, 200);
-    const body = await response.json() as { connections: Array<{ reasonCode: string; configurationError?: string }> };
-    assert.equal(body.connections[0]!.reasonCode, 'configuration_error');
-    assert.equal(body.connections[0]!.configurationError, 'unknown-class-missing');
-    assert.equal(body.connections[1]!.configurationError, undefined);
+    const body = await response.json() as { data: Array<{ reasonCode: string; configurationError?: string }> };
+    assert.equal(body.data[0]!.reasonCode, 'configuration_error');
+    assert.equal(body.data[0]!.configurationError, 'unknown-class-missing');
+    assert.equal(body.data[1]!.configurationError, undefined);
     assert.equal(JSON.stringify(body).includes('private diagnostic'), false);
   } finally { await f.cleanup(); }
 });

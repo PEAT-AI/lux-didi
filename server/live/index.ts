@@ -176,7 +176,7 @@ export function redactDeletedMemorySnapshots(tx: Transaction, entryId: string, n
     if (!dataClass) throw new LiveError('invalidated');
     const promptIdentity = identity({ text: system, dataClass });
     const id = String(row['live_session_id']);
-    const grant = tx.get('SELECT chosen_input_class FROM live_send_grants WHERE live_session_id=?', [id]);
+    const grant = tx.get('SELECT chosen_input_class FROM live_grants WHERE live_session_id=?', [id]);
     if (!grant) throw new LiveError('invalidated');
     const fingerprint = identity({ inputClass: String(grant['chosen_input_class']), profile: String(row['profile_identity']), prompt: promptIdentity, pickupJobId: snapshot.pickup?.jobId ?? null });
     tx.run('UPDATE live_sessions SET accepted_prompt_snapshot=?,memory_provenance=?,prompt_identity=?,fingerprint=? WHERE live_session_id=?',

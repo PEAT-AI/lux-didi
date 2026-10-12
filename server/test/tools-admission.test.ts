@@ -41,7 +41,12 @@ async function harness(t: TestContext, builder: 'live' | 'chat-shaped') {
   const readers = new Map<string, WebStandardStreamableHTTPServerTransport>();
   let dispatch: ((id: string) => Promise<void> | void) | undefined;
   let visible = new Set(pair);
-  for (const entry of endpoints) {
+  const sdks = new Map<string, Server>();
+  const resetReaders = async () => {
+    for (const transport of readers.values()) await transport.close();
+    for (const sdk of sdks.values()) await sdk.close();
+    readers.clear(); sdks.clear();
+    for (const entry of endpoints) {
     const sdk = new Server({ name: entry.id, version: '1' }, { capabilities: { tools: {} } });
     const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
     sdk.setRequestHandler('tools/list', () => ({ tools: visible.has(entry.id) ? [{ name: entry.tool, inputSchema: entry.id === 'lux-knowledge' ? { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, include_sensitive: { type: 'boolean' } }, required: ['query', 'limit', 'include_sensitive'], additionalProperties: false } : entry.connector === 'google' ? { type: 'object', properties: { maxResults: { type: 'integer' }, pageToken: { type: 'string' }, q: { type: 'string' } }, additionalProperties: false } : { type: 'object', properties: {}, additionalProperties: false } }] : [] }) as never);
@@ -51,9 +56,11 @@ async function harness(t: TestContext, builder: 'live' | 'chat-shaped') {
       const text = entry.connector === 'google' ? JSON.stringify({ family: entry.id === 'gmail' ? 'gmail' : 'calendar', tool: entry.tool, method: entry.tool, account: { configured: 'configured', provider: null }, data: entry.id === 'gmail' ? { messages: [{ id: 'synthetic', headers: { Subject: 'Synthetic mail', From: 'Synthetic sender <synthetic@example.invalid>', Date: 'Synthetic date' } }] } : { calendars: [{ id: 'synthetic', summary: 'Synthetic calendar' }] } }) : `synthetic ${entry.id} read`;
       return { content: [{ type: 'text', text }] } as never;
     });
-    await sdk.connect(transport); readers.set(entry.id, transport);
-    t.after(async () => { await transport.close(); await sdk.close(); });
-  }
+    await sdk.connect(transport); readers.set(entry.id, transport); sdks.set(entry.id, sdk);
+    }
+  };
+  await resetReaders();
+  t.after(async () => { for (const transport of readers.values()) await transport.close(); for (const sdk of sdks.values()) await sdk.close(); });
   t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = new Request(input, init);
     const id = new URL(request.url).pathname.slice(1);
@@ -74,6 +81,8 @@ async function harness(t: TestContext, builder: 'live' | 'chat-shaped') {
       for (const runtime of runtimes) await runtime.close(); runtimes.length = 0;
       store.close(); store = new Store(join(dir, 'data'), [...domainMigrations, ...liveMigrations, ...toolsMigrations]);
       sources.length = 0; chatAuthorities.clear();
+      // Each SDK HTTP transport represents one session, so a host restart needs fresh readers.
+      await resetReaders();
     }
     writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: endpoints.map(e => ({ id: e.id, connector: e.connector, transport: 'streamable-http', url: `http://127.0.0.1:18765/${e.id}`, account: e.id, resource: e.id, credentialRef: null, enabled: enabled.includes(e.id), allowEgress: true, unknownClass: Object.hasOwn(sourceClasses, e.id) ? sourceClasses[e.id] : 'ordinary' })) }), { mode: 0o600 });
     const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority }); runtimes.push(runtime); return runtime;
@@ -140,7 +149,7 @@ for (const builder of ['live', 'chat-shaped'] as const) test(`connection-scoped 
   const unchanged = generations(); await h.start(); assert.deepEqual(generations(), unchanged, 'unchanged restart must not bump generations');
   // Missing or invalid class is a typed local error for only that connection.
   const missing = await h.start(all, { mattermost: undefined });
-  assert.deepEqual(missing.connectionIds(), all.filter(id => id !== 'mattermost'));
+  assert.deepEqual(missing.connectionIds(), all.filter(id => id !== 'mattermost'), JSON.stringify(missing.status()));
   assert.equal(missing.status().endpoints.find(e => e.id === 'mattermost')?.configurationError, 'unknown-class-missing');
   const invalid = await h.start(all, { mattermost: 'public' });
   assert.deepEqual(invalid.connectionIds(), all.filter(id => id !== 'mattermost'));

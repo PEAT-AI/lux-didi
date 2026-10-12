@@ -42,7 +42,7 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
   let reject = false;
   let errorFlag = true;
   sdk.setRequestHandler('tools/list', () => ({ tools: exposed }) as never);
-  sdk.setRequestHandler('tools/call', () => { executions++; onDispatch?.(); return { content: [{ type: 'text', text: reject ? REJECTED : ACCEPTED }], ...(reject && errorFlag ? { isError: true } : {}), _meta: { diagnostic: REJECTED } } as never; });
+  sdk.setRequestHandler('tools/call', () => { executions++; onDispatch?.(); return { content: [{ type: 'text', text: reject ? REJECTED : ACCEPTED }], ...(reject && errorFlag ? { isError: true } : {}) } as never; });
   await sdk.connect(transport);
   t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
     const req = new Request(input, init); assert.equal(req.url, endpoint.url);
@@ -54,18 +54,6 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
   // Use actual host policy construction, including its current denial, never a matching fixture route.
   const mcp = await composeMcpRuntime({ store: f.store, ownerId: f.store.assistantId, configDir: dir, lookupAuthority: async (id, signal) => authority?.(id, signal) ?? null });
   const { owner, registry } = mcp;
-  const originalCall = mcp.port.call.bind(mcp.port);
-  t.mock.method(mcp.port, 'call', async (...args: Parameters<typeof originalCall>) => {
-    const value = await originalCall(...args);
-    t.diagnostic(JSON.stringify({ stage: 'mcp-call', state: value.state, reason: 'reason' in value ? value.reason : null }));
-    return value;
-  });
-  const originalSlice = mcp.port.readSlice.bind(mcp.port);
-  t.mock.method(mcp.port, 'readSlice', (...args: Parameters<typeof originalSlice>) => {
-    const value = originalSlice(...args);
-    t.diagnostic(JSON.stringify({ stage: 'mcp-slice', state: value.state, reason: 'reason' in value ? value.reason : null }));
-    return value;
-  });
   assert.deepEqual(mcp.connectionIds(), [endpoint.id]);
   t.after(async () => { await mcp.close(); await transport.close(); await sdk.close(); });
   const composition = { owner, connectionIds: () => mcp.connectionIds(), registerAuthoritySource: (source: typeof authority) => { authority = source; } };
@@ -92,8 +80,6 @@ test('real chat declares approved reads, journals execution, and discloses only 
   assert.ok(f.requests[0]?.declarations?.some(d => d.name === 'search_knowledge'), 'approved read declaration must reach text chat');
   assert.equal(f.executions(), 1);
   const rows = f.store.transaction(tx => tx.all('SELECT state,intent_json,result_json FROM tool_calls WHERE run_id=?', [run.runId]));
-  t.diagnostic(JSON.stringify({ stage: 'canonical-journal', rows }));
-  t.diagnostic(JSON.stringify({ stage: 'acceptance-route', route: f.store.transaction(tx => JSON.parse(String(tx.get('SELECT snapshot_json FROM tool_runs WHERE run_id=?', [run.runId])!.snapshot_json)).acceptance.route) }));
   assert.equal(rows.length, 1); assert.equal(rows[0]?.state, 'completed');
   assert.ok(f.requests.length >= 2);
   assert.match(JSON.stringify(f.requests[1]), /ACCEPTED/); assert.doesNotMatch(JSON.stringify(f.requests), /REJECTED/);

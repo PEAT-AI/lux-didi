@@ -134,8 +134,13 @@ export function createLiveUpgrader(options: LiveUpgradeOptions) {
       try { attachment = options.live.attach(sessionId!, context!); }
       catch (error) {
         const code = error instanceof LiveError || error instanceof ServiceError ? error.code : 'internal';
-        // Only fixed typed codes and the session identity, never exception messages or payloads.
-        console.error(JSON.stringify({ event: 'live_attach_rejected', liveSessionId: sessionId, code }));
+        // Only bounded class names and an allowlisted code token, never free text or payloads.
+        const diagnostics = code === 'internal' ? {
+          class: error instanceof Error && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(error.constructor.name) ? error.constructor.name : 'Unknown',
+          ...(error instanceof Error && error.constructor === Error && error.message === 'connection_policy_missing_or_corrupt'
+            ? { detail: error.message } : {}),
+        } : {};
+        console.error(JSON.stringify({ event: 'live_attach_rejected', liveSessionId: sessionId, code, ...diagnostics }));
         // Typed codes are ASCII; reserve 16 bytes for the prefix in the 123-byte close reason.
         ws.close(1008, `attach_rejected:${code.slice(0, 107)}`);
         return;

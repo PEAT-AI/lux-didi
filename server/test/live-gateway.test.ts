@@ -4,14 +4,16 @@ import { McpRegistry } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import type { LiveAuthority } from '../tools/types.js';
 import type { LiveToolsComposition } from '../live/types.js';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { TestContext } from 'node:test';
 import { once } from 'node:events';
 import { fork } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { request } from 'node:http';
+import { request, createServer } from 'node:http';
+import { composeMcpRuntime } from '../host/mcp.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -52,7 +54,7 @@ function writePrivate(dir: string, name: string, text: string): void {
   chmodSync(path, 0o600);
 }
 
-interface HarnessOptions { toolsFactory?: (store: Store) => LiveToolsComposition; now?: () => number; config?: unknown; rawLive?: string; profile?: LiveProfile; withKey?: boolean; credentials?: { resolve(reference: string): Promise<string | undefined> } }
+interface HarnessOptions { realMcp?: boolean; failedMcp?: boolean; toolsFactory?: (store: Store) => LiveToolsComposition; now?: () => number; config?: unknown; rawLive?: string; profile?: LiveProfile; withKey?: boolean; credentials?: { resolve(reference: string): Promise<string | undefined> } }
 
 interface Harness {
   f: Awaited<ReturnType<typeof fixture>>;
@@ -67,14 +69,58 @@ interface Harness {
 async function harness(t: TestContext, options: HarnessOptions = {}): Promise<Harness> {
   const f = await fixture(t);
   const dir = mkdtempSync(join(tmpdir(), 'didi-live-gateway-'));
-  const store = new Store(join(dir, 'state'), [...liveMigrations, ...(options.toolsFactory ? toolsMigrations : [])]);
+  const store = new Store(join(dir, 'state'), [...liveMigrations, ...(options.toolsFactory || options.realMcp ? toolsMigrations : [])]);
   const config = join(dir, 'provider-config');
   mkdirSync(config, { recursive: true, mode: 0o700 });
   chmodSync(config, 0o700);
   if (options.rawLive !== undefined) writePrivate(config, 'live.json', options.rawLive);
   else if (options.config !== undefined) writePrivate(config, 'live.json', `${JSON.stringify(options.config)}\n`);
   if (options.withKey !== false) writePrivate(config, 'gemini-primary.json', `${JSON.stringify({ schemaVersion: 1, keyReference: 'gemini-primary', key: CANARY })}\n`);
-  const { service: live } = composeLive(store, config, { socketFactory: f.socketFactory, ...(options.profile ? { profile: options.profile } : {}), ...(options.credentials ? { credentials: options.credentials } : {}) }, options.now, undefined, options.toolsFactory?.(store));
+  let tools = options.toolsFactory?.(store);
+  if (options.realMcp) {
+    // Same SDK endpoint/HTTP bridge as knowledge-connector.test.ts and mcp-config.test.ts.
+    const sdk = new Server({ name: 'synthetic-knowledge', version: '1' }, { capabilities: { tools: {} } });
+    sdk.setRequestHandler('tools/list', () => ({ tools: [{ name: 'search_knowledge', inputSchema: { type: 'object' } }] }) as never);
+    const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
+    await sdk.connect(transport);
+    const endpoint = createServer(async (req, res) => {
+      try {
+        const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
+        const bytes = Buffer.concat(chunks);
+        const headers = new Headers();
+        for (const [key, value] of Object.entries(req.headers)) if (value !== undefined) headers.set(key, Array.isArray(value) ? value.join(',') : value);
+        const request = new Request(`http://${req.headers.host}${req.url}`, { method: req.method ?? 'GET', headers, ...(bytes.length ? { body: new Uint8Array(bytes) } : {}) });
+        const response = await transport.handleRequest(request);
+        res.writeHead(response.status, Object.fromEntries(response.headers));
+        if (!response.body) { res.end(); return; }
+        const reader = response.body.getReader();
+        res.on('close', () => { void reader.cancel().catch(() => {}); });
+        while (!res.destroyed) { const chunk = await reader.read(); if (chunk.done) break; res.write(chunk.value); }
+        res.end();
+      } catch { if (!res.headersSent) res.writeHead(500); res.end(); }
+    });
+    endpoint.listen(0, '127.0.0.1'); await once(endpoint, 'listening');
+    t.after(async () => { endpoint.closeAllConnections(); await new Promise<void>(resolve => endpoint.close(() => resolve())); await transport.close(); await sdk.close(); });
+    const address = endpoint.address(); assert(address && typeof address !== 'string');
+    const url = `http://127.0.0.1:${address.port}`;
+    const entry = (id: string, path: string) => ({ id, url: url + path, transport: 'streamable-http', connector: 'lux-knowledge', account: 'fixture', resource: 'knowledge', credentialRef: null, enabled: true, allowEgress: true });
+    writePrivate(config, 'mcp.json', JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [entry('healthy', '/'), ...(options.failedMcp ? [{ ...entry('failed', '/'), credentialRef: 'missing-credential' }] : [])] }));
+    const sources: Array<(runId: string, signal: AbortSignal) => Promise<LiveAuthority | null>> = [];
+    const lookupAuthority = async (runId: string, signal: AbortSignal) => {
+      for (const source of sources) { const authority = await source(runId, signal); if (authority) return authority; }
+      return null;
+    };
+    const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir: config, lookupAuthority });
+    t.after(async () => { await runtime.close(); });
+    // Keep the missing-policy regression first: the base reaches attach, then closes internal.
+    assert.deepEqual(runtime.connectionIds(), ['healthy'], JSON.stringify(runtime.status()));
+    if (options.failedMcp) {
+      assert.equal(runtime.status().endpoints.find(e => e.id === 'failed')?.state, 'error');
+      assert.equal(runtime.status().endpoints.find(e => e.id === 'failed')?.error, 'credential missing-credential missing or invalid');
+    }
+    tools = { owner: runtime.owner, connectionIds: () => runtime.connectionIds(), registerAuthoritySource: source => { sources.push(source); } };
+  }
+  const { service: live } = composeLive(store, config, { socketFactory: f.socketFactory, ...(options.profile ? { profile: options.profile } : {}), ...(options.credentials ? { credentials: options.credentials } : {}) }, options.now, undefined, tools);
   const running = await listenService({ store, live, port: 0 });
   t.after(async () => {
     await running.close();
@@ -185,8 +231,8 @@ test('live operator routes reject browsers, origins and duplicate headers before
   assert.equal(h.f.attempts, 0, 'guards run before any provider open');
 });
 
-test('Swift create, grant acceptance and pinned audio upgrade stay attached', async t => {
-  const h = await harness(t, { config: configJson(true) });
+for (const mode of ['failed', 'healthy', 'fixture-only'] as const) test(`Swift sequence reaches ready (${mode})`, { timeout: 5000 }, async t => {
+  const h = await harness(t, { config: configJson(true), realMcp: mode !== 'fixture-only', failedMcp: mode === 'failed' });
   // LiveSessionCoordinator.performCreate: status, create, validate the returned grant, connect.
   const status = await json(h.origin, '/api/v1/live/status', { headers: bearer(h) });
   assert.equal(status.status, 200);
@@ -210,9 +256,8 @@ test('Swift create, grant acceptance and pinned audio upgrade stay attached', as
     ws.on('close', (code, reason) => reject(new Error(`closed before ready: ${code}:${reason}`)));
     ws.on('message', (data, binary) => { if (!binary && JSON.parse(data.toString()).type === 'ready') resolve(); });
   });
-  await h.f.frame(1);
-  h.f.send({ setupComplete: {} });
-  await ready;
+  const setup = (async () => { await h.f.frame(1); h.f.send({ setupComplete: {} }); })();
+  await Promise.race([ready, setup.then(() => ready)]);
   // The coordinator sends capture only after ready; FoundationLiveSocket sends PCM as binary,
   // and endAudioStream as one text JSON control, not a terminal close.
   ws.send(Buffer.from(pcm));
@@ -233,6 +278,7 @@ for (const [label, error, code] of [
   ['typed', new LiveError('invalidated', CANARY), 'invalidated'],
   ['authorization', new ServiceError('FORBIDDEN', CANARY, 403), 'FORBIDDEN'],
   ['unknown', new Error(CANARY), 'internal'],
+  ['known-code', new Error('connection_policy_missing_or_corrupt'), 'internal'],
 ] as const) {
   test(`attach rejection reports sanitized ${label} code once`, async t => {
     const h = await harness(t, { config: configJson(true) });
@@ -250,7 +296,7 @@ for (const [label, error, code] of [
     assert.equal(closeCode, 1008);
     assert.equal(reason.toString(), `attach_rejected:${code}`);
     assert.ok(Buffer.byteLength(reason) <= 123);
-    assert.deepEqual(events, [[JSON.stringify({ event: 'live_attach_rejected', liveSessionId: id, code })]]);
+    assert.deepEqual(events, [[JSON.stringify({ event: 'live_attach_rejected', liveSessionId: id, code, ...(code === 'internal' ? { class: 'Error', ...(label === 'known-code' ? { detail: 'connection_policy_missing_or_corrupt' } : {}) } : {}) })]]);
     assert.equal(JSON.stringify(events).includes(CANARY), false);
     assert.equal(h.f.attempts, 0);
   });

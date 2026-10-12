@@ -436,7 +436,7 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             await scripted.stop(); await scriptedHTTP.finish()
             print("PASS silent scripted PCM/interrupted/terminal output ordering")
 
-            let continuityHTTP = TestHTTP(fixture), continuitySocket = ContinuitySocket(), continuitySink = RecordingSink()
+            let continuityHTTP = TestHTTP(fixture), continuitySocket = ContinuitySocket(), continuitySink = SilentSink()
             let continuity = LiveSessionCoordinator(http: continuityHTTP, sockets: continuitySocket, sink: continuitySink)
             await continuitySocket.push(.marker(LiveMarker(kind: .ready, sequence: 1, journalSequence: 0, text: nil, finished: nil, value: nil)))
             await continuity.begin(frozen)
@@ -445,7 +445,10 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             await continuitySocket.push(.pcm(Data([7, 0])))
             try await until { await continuitySink.queued.count == 1 }
             await continuitySocket.push(.continuity(event: "rebuilding"))
-            try await until { await continuity.state == .rebuilding && continuitySink.queued.isEmpty }
+            try await until {
+                let state = await continuity.state, empty = await continuitySink.queued.isEmpty
+                return state == .rebuilding && empty
+            }
             try await continuity.sendPCM(Data(repeating: 0, count: 640))
             try require(await continuitySocket.inputs.isEmpty, "rebuilding drops captured input")
             await continuitySocket.push(.continuity(event: "future_event"))

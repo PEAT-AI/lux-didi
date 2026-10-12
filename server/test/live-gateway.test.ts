@@ -1,3 +1,4 @@
+import { domainMigrations } from '../domain/schema.js';
 import { createToolsOwner, toolsMigrations } from '../tools/index.js';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry } from '../adapters/mcp/registry.js';
@@ -67,7 +68,7 @@ interface Harness {
 async function harness(t: TestContext, options: HarnessOptions = {}): Promise<Harness> {
   const f = await fixture(t);
   const dir = mkdtempSync(join(tmpdir(), 'didi-live-gateway-'));
-  const store = new Store(join(dir, 'state'), [...liveMigrations, ...(options.toolsFactory ? toolsMigrations : [])]);
+  const store = new Store(join(dir, 'state'), [...domainMigrations, ...liveMigrations, ...(options.toolsFactory ? toolsMigrations : [])]);
   const config = join(dir, 'provider-config');
   mkdirSync(config, { recursive: true, mode: 0o700 });
   chmodSync(config, 0o700);
@@ -741,4 +742,23 @@ test('trusted composition registers current Live authority and refuses after ter
   t.after(() => second.terminate()); await once(second, 'open'); await h.f.frame(2); h.f.send({ setupComplete: {} }); await once(second, 'message');
   assert.notEqual(await lookup!(secondId, signal), null);
   second.send(JSON.stringify({ type: 'close' })); await once(second, 'close'); assert.equal(await lookup!(secondId, signal), null);
+});
+
+
+test('host Live status exposes only counts from the committed memory snapshot', async t => {
+  const h = await harness(t, { config: configJson(true), withKey: false });
+  h.store.transaction(tx => {
+    tx.run('INSERT INTO sessions VALUES (?,?,?,NULL,?,1,?,?)', ['memory-session', 'Fixture', 1, 'UTC', 1, 1]);
+    tx.run('INSERT INTO entries VALUES (?,?,1,?,?,?, ?,1)', ['memory-entry', 'memory-session', 'user', 'Fixture durable owner note', 1, 'UTC']);
+    for (const [kind, id] of [['session', 'memory-session'], ['entry', 'memory-entry']]) tx.run('INSERT INTO routing_labels VALUES (?,?,1,?,?,?)', [kind!, id!, 'ordinary', 'owner_review', 1]);
+  });
+  const created = await createBody(h, 'memory-wire');
+  assert.equal(created.status, 200);
+  const status = await json(h.origin, '/api/v1/live/status', { headers: bearer(h) });
+  assert.deepEqual(status.body.data.memory, { status: 'selected', selected: 1, omitted: 0 });
+  assert.ok(!JSON.stringify(status.body).includes('Fixture durable owner note'));
+  assert.ok(!JSON.stringify(status.body).includes('memory-entry'));
+  const id = created.body.data.liveSessionId;
+  const stored = h.store.transaction(tx => JSON.parse(String(tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [id])!['accepted_prompt_snapshot'])));
+  assert.match(stored.system, /Fixture durable owner note/);
 });

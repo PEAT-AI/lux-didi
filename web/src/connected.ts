@@ -1,7 +1,7 @@
 import { ApiError, request, stream } from './api';
-import type { Entry, Session, Recall, MemorySelectionSnapshot, ConnectedRouteStatus, Status } from './protocol';
+import type { Entry, Session, Recall, MemorySelectionSnapshot, ConnectedRouteStatus, ConnectedConsent, Status } from './protocol';
 interface RouteStatus extends ConnectedRouteStatus {}
-interface Conversation { sessionId: string; provider: string; model: string; state: 'active' | 'revoked' | 'route_changed'; revision: number; permittedClasses: string[]; latestRunId: string | null }
+interface Conversation { scope: 'conversation' | 'standing'; sessionId: string; provider: string; model: string; state: 'active' | 'revoked' | 'route_changed'; revision: number; permittedClasses: string[]; latestRunId: string | null }
 interface Run { runId: string; sessionId: string; state: 'accepted' | 'dispatch_intent' | 'terminal'; outcome: string | null; finalText: string | null; partialText: string; mayHaveBeenSent: boolean; sequence: number; memorySelection: MemorySelectionSnapshot | null }
 type RecalledNote = Recall['hits'][number];
 const escape = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
@@ -14,7 +14,7 @@ export class ConnectedView {
   #conversations: { title: string; conversation: Conversation }[] = []; #entries: Entry[] = [];
   #run: Run | undefined; #draft = ''; #pending: { key: string; text: string; sessionId: string; selectedMemoryEntryIds: string[] } | undefined;
   #memoryQuery = ''; #memoryHits: RecalledNote[] = []; #memorySelected: RecalledNote[] = []; #memoryError = ''; #memoryBusy = false; #memoryOpen = false;
-  #error = ''; #busy = false; #controller: AbortController | undefined; #generation = 0; #consent = false;
+  #error = ''; #busy = false; #controller: AbortController | undefined; #generation = 0; #consent = false; #remember = false;
   #conversationController: AbortController | undefined; #selectionToken = 0;
   #opChain: Promise<void> = Promise.resolve(); #attaching = new Set<string>();
   #storage() { return `didi-connected:${this.#owner}`; }
@@ -124,8 +124,8 @@ export class ConnectedView {
       <p class="eyebrow">EXPLICITLY CONNECTED · SEPARATE FROM LOCAL NOTES</p><h2>Talk with ${escape(this.#displayName)}</h2>
       <p id="connected-route" role="status">${available ? `Locally configured: ${escape(this.#status.provider)} / ${escape(this.#status.model)}. This is not a reachability check.` : `Model ${escape(this.#status.status)}${this.#status.code ? ` (${escape(this.#status.code)})` : ''}. Local notes, Today and recall still work.`}</p>
       <p class="connected-disclosure">Starting a connected conversation sends its current and earlier selected turns to <strong>${escape(this.#status.provider ?? 'the configured provider')} / ${escape(this.#status.model ?? 'no model')}</strong>. It does not send other sessions, Today, recall or tools. It sends stored local notes only when you explicitly select them for that message, under this connection's existing route and consent; no note is ever included silently and no new permission is granted. Only private conversation material and ordinary material you deliberately review here are permitted. Revocation cannot retract bytes already sent.</p>
-      <label class="connected-consent"><input id="connected-consent" type="checkbox" ${this.#consent ? 'checked' : ''}> I agree to this route for a new conversation.</label>
-      <button id="connected-start" class="secondary" ${!available || !this.#consent || this.#busy ? 'disabled' : ''}>Start connected conversation</button>
+      ${this.#status.consent ? connectedConsentIndicator(this.#status.consent) : `<label class="connected-consent"><input id="connected-consent" type="checkbox" ${this.#consent ? 'checked' : ''}> I agree to this route for a new conversation.</label><label class="check"><input type="checkbox" id="connected-remember" ${this.#remember ? 'checked' : ''}> Remember for this provider and route (including this model)</label>`}
+      <button id="connected-start" class="secondary" ${!available || (!this.#consent && !this.#status.consent) || this.#busy ? 'disabled' : ''}>Start connected conversation</button>
       ${this.#conversations.length ? `<label>Connected history<select id="connected-history">${this.#conversations.map(item => `<option value="${escape(item.conversation.sessionId)}" ${c?.sessionId === item.conversation.sessionId ? 'selected' : ''}>${escape(item.title)} · ${escape(item.conversation.model)} · ${escape(item.conversation.state)}</option>`).join('')}</select></label>` : ''}
       ${c ? `<div class="connected-state"><span class="tag">${escape(c.provider)} / ${escape(c.model)} · ${escape(c.state)}</span>${c.state !== 'active' ? '<p>This conversation is paused. History remains here. Start a new explicitly disclosed conversation to send again.</p>' : ''}<button id="connected-recover" class="quiet">Recover saved history</button><button id="connected-revoke" class="quiet" ${c.state === 'revoked' || this.#busy ? 'disabled' : ''}>Revoke conversation consent</button></div>
       <div id="connected-entries" class="connected-entries">${this.#entries.map(entry => `<article class="entry ${entry.role}"><header><strong>${entry.role === 'assistant' ? 'Naya · saved answer' : 'You · saved locally'}</strong></header><p>${escape(entry.text)}</p></article>`).join('')}</div>
@@ -135,10 +135,12 @@ export class ConnectedView {
       ${this.#error ? `<p id="connected-error" role="alert">${escape(this.#error)}</p>` : ''}
     </section>`;
     panel.querySelector<HTMLInputElement>('#connected-consent')?.addEventListener('change', event => { this.#consent = (event.target as HTMLInputElement).checked; this.attach(); });
+    panel.querySelector<HTMLInputElement>('#connected-remember')?.addEventListener('change', event => { this.#remember = (event.target as HTMLInputElement).checked; });
+    panel.querySelector('#connected-standing-revoke')?.addEventListener('click', () => { const grant = this.#status.consent; if (grant) void this.#action(async () => { await request(`/conversations/${grant.sessionId}/revoke`, { method: 'POST', body: {} }); this.#status = await request<RouteStatus>('/chat/status'); this.#consent = false; this.attach(); }); });
     panel.querySelector('#connected-start')?.addEventListener('click', () => { void this.#action(async () => {
-      if (!this.#consent) return;
-      const grant = await request<Conversation>('/conversations', { method: 'POST', body: { title: 'Naya connected conversation', timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }, signal: AbortSignal.timeout(8000) });
-      this.#consent = false; this.#draft = ''; this.#pending = undefined;
+      if (!this.#consent && !this.#status.consent) return;
+      const grant = await request<Conversation>('/conversations', { method: 'POST', body: { title: 'Naya connected conversation', timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, ...(!this.#status.consent ? { consent: this.#consent, remember: this.#remember } : {}) }, signal: AbortSignal.timeout(8000) });
+      this.#consent = false; this.#remember = false; this.#status = await request<RouteStatus>('/chat/status'); this.#draft = ''; this.#pending = undefined;
       this.#conversations.unshift({ title: 'Naya connected conversation', conversation: grant }); await this.select(grant.sessionId);
     }); });
     panel.querySelector<HTMLSelectElement>('#connected-history')?.addEventListener('change', event => { const next = (event.target as HTMLSelectElement).value; void this.select(next).catch(error => { this.#error = error instanceof Error ? error.message : 'Could not open that connected conversation.'; this.attach(); }); });
@@ -238,4 +240,9 @@ export class ConnectedView {
     } catch (error) { if (!controller.signal.aborted) this.#error = error instanceof Error ? error.message : 'Stream disconnected; recover the saved run.'; }
     finally { if (generation === this.#generation) { this.#controller = undefined; this.attach(); } }
   }
+}
+
+/** Only a server-resolved grant is passed to this display boundary. */
+export function connectedConsentIndicator(grant: ConnectedConsent): string {
+  return `<p class="connected-consent-indicator" role="status">Connected as ${escape(grant.provider)}, ${escape(grant.scope)} consent${grant.scope === 'standing' && grant.state === 'active' ? ', <button id="connected-standing-revoke" class="secondary">Revoke</button>' : ''}</p>`;
 }

@@ -146,7 +146,7 @@ export class ChatService implements ChatPort {
       if (!route.available || !route.allows(['private'])) throw new ChatError('unavailable');
       const session = this.#config.domain.execute(tx, 'createSession', { title: input.title, timeZone: input.timeZone }, this.#context(context), { writer: 'capture', dataClass: 'private' });
       const permitted = (['ordinary', 'private'] as const).filter(c => route.allowedClasses.includes(c));
-      if (standing && !input.remember) {
+      if (standing) {
         tx.run('INSERT INTO chat_consent_enrollments VALUES (?,?,?,?)', [session.id, context.assistantId, input.idempotencyKey, fingerprint]);
       } else {
         tx.run(`INSERT INTO chat_consents VALUES (?,?,?,?,?,1,?,?,NULL,?,?,?)`,
@@ -227,7 +227,9 @@ export class ChatService implements ChatPort {
       if (row.revoked_at === null) tx.run('UPDATE chat_consents SET revision=revision+1,revoked_at=? WHERE session_id=? AND owner_assistant_id=?', [this.#context(context).now, String(row.session_id), context.assistantId]);
       return this.#conversation({ ...row, revoked_at: this.#context(context).now, revision: Number(row.revision) + 1 }, sessionId);
     });
-    this.#invalidate(row => result.scope === 'standing' || row.session_id === sessionId, context);
+    this.#invalidate(row => result.scope === 'standing'
+      ? this.#config.store.transaction(tx => !this.#validConsent(this.#consent(tx, String(row.session_id), context)))
+      : row.session_id === sessionId, context);
     return result;
   }
   correctRoutingLabel(input: RoutingLabelCorrection, context: DomainContext) {

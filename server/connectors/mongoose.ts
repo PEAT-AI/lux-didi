@@ -1,3 +1,4 @@
+import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/ajv';
 import type { CallRequest, CallResult, CompletedResult, McpPort, ReadGrant, ResultScope, StoredPayload } from '../adapters/mcp/port.js';
 import type { McpRegistry } from '../adapters/mcp/registry.js';
 
@@ -118,6 +119,8 @@ export function createMongooseReader(options: MongooseOptions): MongooseReader {
     queryChars: Math.min(positive(config.queryChars, MONGOOSE_DEFAULTS.queryChars), MONGOOSE_DEFAULTS.queryChars),
   };
 
+  const schemaValidator = new AjvJsonSchemaValidator();
+
   async function dispatch(tool: MongooseTool, args: Record<string, unknown>, signal?: AbortSignal): Promise<MongooseResult> {
     const request: CallRequest = {
       endpointId: settings.endpointId,
@@ -128,6 +131,9 @@ export function createMongooseReader(options: MongooseOptions): MongooseReader {
       resource: settings.resource,
     };
     if (signal?.aborted) return { state: 'refused', reason: 'cancelled-before-dispatch' };
+    // Validate the actual bounded dispatch arguments against the original discovered schema.
+    const original = port.visibleTools(settings.endpointId).find(definition => definition.name === tool);
+    if (!original || !schemaValidator.getValidator(original.inputSchema)(args).valid) return { state: 'refused', reason: 'original-schema-arguments-refused' };
     const result = await port.call(request, signal);
     if (isFailed(result)) return { state: result.state, reason: result.reason };
     if (signal?.aborted) return { state: 'unknown', reason: 'cancelled-after-dispatch' };

@@ -121,7 +121,7 @@ The paired owner can delete an entry through `DELETE /api/v1/entries/:id`, using
 existing cookie principal, origin/CSRF protection, authority epoch, and request-key
 contract. The admin credential path is unchanged. Entry text and entry source metadata
 are removed from the domain tables atomically, leaving a content-free tombstone
-(entry id, deletion time, actor, reason code). This is a local deletion journal, not an
+(entry id, deletion time, actor, reason code, and a canonical Live source-turn identity when present). This is a local deletion journal, not an
 outbox delivery: deletion must not dispatch any network side effect.
 
 This does not scrub old provider requests, quoted chat messages, Live transcripts,
@@ -129,4 +129,4 @@ or frozen `chat_run_context.resolved_records` / Live accepted-prompt snapshots.
 Already accepted chat runs read back their frozen resolved records for composition;
 preventing that later dispatch is tracked separately. Domain-row erasure is not a
 claim of forensic erasure of SQLite free pages, WAL files, filesystem snapshots,
-or backups. New domain reads, recall queries, and Live CREATEs exclude deleted ids.
+or backups. New domain reads, recall queries, and Live CREATEs exclude deleted ids. The content-free Live source-turn key prevents remember_note from recreating a deleted note from the same retained voice turn; the existing already_remembered outcome carries only its deleted entry id.

@@ -73,7 +73,7 @@ invalidates the picker's cached selection and refreshes it from the service.
 
 The owner physically removes the entry and its source references in one transaction,
 and retains only entry id, deletion time, browser actor, and `owner_request` in a
-domain tombstone. Repeating deletion returns that same tombstone; unknown ids return
+domain tombstone, with a content-free Live session/turn dedup key when applicable. A repeated remember_note for that voice turn returns already_remembered and writes nothing. Repeating deletion returns that same tombstone; unknown ids return
 NOT_FOUND. New recall and Live CREATE selection cannot resolve the removed entry.
 Historical chat context snapshots and Live transcripts are not rewritten. In particular,
 a previously accepted chat run can still compose its frozen resolved-record snapshot;

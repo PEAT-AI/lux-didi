@@ -114,8 +114,11 @@ export const domainMigrations: SchemaMigration[] = [
         entry_id TEXT PRIMARY KEY,
         deleted_at TEXT NOT NULL,
         actor TEXT NOT NULL,
-        reason_code TEXT NOT NULL CHECK(reason_code = 'owner_request')
+        reason_code TEXT NOT NULL CHECK(reason_code = 'owner_request'),
+        source_kind TEXT,
+        source_key TEXT
       )`,
+      `CREATE INDEX ix_entry_tombstones_source ON entry_tombstones(source_kind, source_key)`,
     ],
   },
 ];

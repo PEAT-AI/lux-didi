@@ -3,6 +3,8 @@ import { test } from 'node:test';
 import { CONNECTOR_DESCRIPTORS } from '../connectors/index.js';
 import { declarationsFor } from '../tools/declarations.js';
 import { chatCapabilities } from '../chat/context.js';
+import { compilePrompt, validatePreferences, PROMPT_VERSION } from '../prompt/index.js';
+import { createHash } from 'node:crypto';
 import { REMEMBER_PARAMETERS } from '../tools/remember.js';
 import type { ConnectionPolicy } from '../tools/types.js';
 import type { ToolDefinition } from '../adapters/model/types.js';
@@ -40,4 +42,19 @@ test('nested unsupported constraints never leak and semantic constraints remain 
   assert.deepEqual(violations(declaration.parameters, 'nested'), []);
   assert.match(JSON.stringify(declaration.parameters), /Original schema/);
   assert.equal(parameters.additionalProperties, false);
+});
+
+
+test('chat TOOLS conduct is in the compiled instruction and its audited capability section', () => {
+  const registry: ToolDefinition[] = [{ name: 'read_fixture', description: 'Read synthetic evidence', parameters: { type: 'object', properties: {} }, effect: 'read', accountId: 'fixture', resourceId: 'fixture', validate: () => true, execute: async () => ({ status: 'failed' }) }];
+  const base = { ownerId: 'fixture', persona: 'didi' as const, promptVersion: PROMPT_VERSION,
+    preferences: validatePreferences({ schemaVersion: 1, ownerId: 'fixture', dataClass: 'ordinary', language: 'en-US', register: 'plain', humor: 'off', verbosity: 'brief' }, 'fixture'),
+    evidence: [], history: [{ schemaVersion: 1 as const, ownerId: 'fixture', dataClass: 'ordinary' as const, id: 'turn', role: 'user' as const, text: 'Read the evidence' }],
+    budgets: { trustedChars: 20000, contextChars: 12000, historyChars: 12000 } };
+  const enabled = compilePrompt({ ...base, capabilities: chatCapabilities(registry, []) });
+  assert.match(enabled.system, /TOOLS: Call approved read tools/);
+  const capabilityText = enabled.system.split('[capabilities]\n')[1]!;
+  assert.equal(enabled.manifest.sections.find(section => section.id === 'capabilities')?.hash, createHash('sha256').update(capabilityText).digest('hex'));
+  const disabled = compilePrompt({ ...base, capabilities: chatCapabilities([], []) });
+  assert.doesNotMatch(disabled.system, /TOOLS:/);
 });

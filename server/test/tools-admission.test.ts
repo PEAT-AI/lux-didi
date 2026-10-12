@@ -84,7 +84,7 @@ async function harness(t: TestContext, builder: 'live' | 'chat-shaped') {
       // Each SDK HTTP transport represents one session, so a host restart needs fresh readers.
       await resetReaders();
     }
-    writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: endpoints.map(e => ({ id: e.id, connector: e.connector, transport: 'streamable-http', url: `http://127.0.0.1:18765/${e.id}`, account: e.id, resource: e.id, credentialRef: null, enabled: enabled.includes(e.id), allowEgress: true, unknownClass: Object.hasOwn(sourceClasses, e.id) ? sourceClasses[e.id] : 'ordinary' })) }), { mode: 0o600 });
+    writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: endpoints.map(e => ({ id: e.id, connector: e.connector, transport: 'streamable-http', url: `http://127.0.0.1:18765/${e.id}`, account: e.id, resource: e.id, credentialRef: null, enabled: enabled.includes(e.id), allowEgress: true, unknownClass: Object.hasOwn(sourceClasses, e.id) ? sourceClasses[e.id] : 'private' })) }), { mode: 0o600 });
     const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority }); runtimes.push(runtime); return runtime;
   };
   const accept = async (runtime: Awaited<ReturnType<typeof start>>, allowedClasses: DataClass[] = ['ordinary', 'private']) => {
@@ -130,6 +130,7 @@ for (const builder of ['live', 'chat-shaped'] as const) test(`connection-scoped 
   const beforePair = new Map(h.counts);
   const batch = await h.read(expanded, run.host, [...pair, 'mattermost']);
   assert.equal(batch.outcome.status, 'complete'); assert.equal(batch.seen.length, 2);
+  assert(batch.seen[1]!.dataClasses.includes('private'), 'private connector evidence reaches the explicitly private-capable route');
   for (const id of pair) assert.equal(h.counts.get(id), beforePair.get(id)! + 1);
   assert.equal(h.counts.get('mattermost'), 0);
   const responses = batch.seen[1]!.contents.flatMap(c => c.parts.flatMap(p => p.functionResponse ? [p.functionResponse] : []));
@@ -145,6 +146,9 @@ for (const builder of ['live', 'chat-shaped'] as const) test(`connection-scoped 
   const beforeAll = new Map(h.counts);
   const allRead = await h.read(expanded, allRun.host, all); assert.equal(allRead.outcome.status, 'complete'); assert.equal(allRead.seen.length, 2);
   for (const id of all) assert.equal(h.counts.get(id), beforeAll.get(id)! + 1, id);
+  const allResponses = allRead.seen[1]!.contents.flatMap(c => c.parts.flatMap(p => p.functionResponse ? [p.functionResponse.response] : []));
+  assert.equal(allResponses.length, 5);
+  for (const response of allResponses) assert(typeof response['text'] === 'string' && response['text'].length > 0, 'each admitted read releases nonempty model evidence');
   const generations = () => h.store.transaction(tx => tx.all('SELECT connection_id,generation FROM tool_connections ORDER BY connection_id'));
   const unchanged = generations(); await h.start(); assert.deepEqual(generations(), unchanged, 'unchanged restart must not bump generations');
   // Missing or invalid class is a typed local error for only that connection.

@@ -238,7 +238,7 @@ for (const [connector, tool] of [['mongoose', 'search_mongoose'], ['mattermost',
       assert.equal(accepted.state, 'completed');
       assert.deepEqual(f.calls, [{ name: tool, arguments: { query: 'agri', limit: 1 } }]);
       if (accepted.state === 'completed') {
-        assert.throws(() => descriptor.project(accepted, runtime!.port, policy), /unknown_source_denied/);
+        assert.throws(() => descriptor.project(accepted, runtime!.port, { ...policy, sourcePolicy: { ...policy.sourcePolicy, unknownClass: null } }), /unknown_source_denied/);
         // The synthetic fixture's opaque payload is explicitly classified, never production consent.
         const classified = { ...policy, sourcePolicy: { ...policy.sourcePolicy, unknownClass: 'ordinary' as const } };
         const snapshot = descriptor.project(accepted, runtime.port, classified);

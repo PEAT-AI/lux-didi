@@ -83,3 +83,11 @@ Google read tools project to bounded Markdown (a Gmail list renders `subject, fr
 Status: `GET /api/v1/tools/status` (operator bearer only) returns `{ endpoints: [{ id, state, tools, lastHandshakeAt, error? }] }` with states `missing` (no file), `configured` (present, not connected), `connected` (handshake done) and `error`.
 
 A connection becomes a Live acceptance id only after successful credential validation and discovery, durable canonical ConnectionPolicy reconciliation through the tools owner, and projection of that policy into the registry. The endpoint and discovered schema digest are bound to the durable generation; owner-trusted reads grant only the connector read envelope. Disabled endpoints, denied egress, missing credentials, failed discovery or policy reconciliation remain visible in endpoint status but are not acceptance ids. Refresh reconciles the policy before making the connection usable again.
+
+The paired browser may read `GET /api/v1/live/connections`, protected by the same
+browser-principal and same-origin checks as `/api/v1/live/current`, with
+`Cache-Control: no-store` and no CORS grant. Its envelope data is an array of
+allowlisted `{id, state, tools, lastHandshakeAt, reasonCode}` rows; `reasonCode`
+is null for healthy connections or one of `credential_missing`, `unreachable`,
+`discovery_failed`, `handshake_failed`, `unknown`. Diagnostics and configuration
+payloads are not returned. `/api/v1/tools/status` remains operator bearer-only.

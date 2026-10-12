@@ -16,7 +16,13 @@ const webRoot = resolve(import.meta.dirname, '../../../web/dist');
 test('host serves the accepted build with security policy, never API or private files', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'didi-host-static-'));
   const store = new Store(dir);
-  const service = await listenService({ store, port: 0, webRoot });
+  const endpoints = [
+    { id: 'missing', state: 'missing', tools: 0, lastHandshakeAt: null, error: 'credential private.json missing or invalid', config: 'SECRET CONFIG' },
+    { id: 'ready', state: 'configured', tools: 0, lastHandshakeAt: null },
+    { id: 'online', state: 'connected', tools: 3, lastHandshakeAt: '2026-10-12T14:52:00.000Z' },
+    { id: 'offline', state: 'error', tools: 0, lastHandshakeAt: null, error: 'RAW SECRET https://secret.invalid/?token=PRIVATE' },
+  ];
+  const service = await listenService({ store, port: 0, webRoot, toolsStatus: () => ({ endpoints }) });
   try {
     const response = await fetch(service.origin);
     assert.equal(response.status, 200, 'the real shell must be available without API authentication');
@@ -64,7 +70,13 @@ test('host serves the accepted build with security policy, never API or private 
     assert.equal(connections.status, 200);
     assert.equal(connections.headers.get('cache-control'), 'no-store');
     assert.equal(connections.headers.get('access-control-allow-origin'), null);
-    assert.deepEqual((await connections.json()).data, []);
+    const projection = (await connections.json()).data;
+    assert.deepEqual(projection.map((row: { state: string }) => row.state), ['missing', 'configured', 'connected', 'error']);
+    assert.deepEqual(projection.map((row: { reasonCode: string | null }) => row.reasonCode), ['credential_missing', null, null, 'unknown']);
+    for (const row of projection) assert.deepEqual(Object.keys(row).sort(), ['id', 'lastHandshakeAt', 'reasonCode', 'state', 'tools']);
+    assert.doesNotMatch(JSON.stringify(projection), /SECRET|PRIVATE|secret.invalid|private.json|config/);
+    assert.equal((await fetch(service.origin + '/api/v1/live/connections')).status, 401);
+    assert.equal((await fetch(service.origin + '/api/v1/live/connections', { headers: { Cookie: cookie, Origin: 'https://evil.invalid' } })).status, 403);
     assert.equal((await fetch(service.origin + '/api/v1/tools/status', { headers: { Cookie: cookie } })).status, 403);
     assert.equal((await fetch(service.origin + '/api/v1/live/connections', { headers: { Cookie: cookie, 'Sec-Fetch-Site': 'cross-site' } })).status, 403);
     assert.equal((await fetch(service.origin + '/api/v1/live/connections', { headers: { Authorization: `Bearer ${store.adminCredential}` } })).status, 403);

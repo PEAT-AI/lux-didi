@@ -46,9 +46,9 @@ export function liveDelay(state: LiveState | undefined, hidden: boolean): number
   return state === undefined || state === 'idle' ? 4000 : 1000;
 }
 
-/** Merge cursor paged entries by seq, newest value winning; a new snapshot replaces nothing. */
+/** Merge cursor paged entries by seq, newest value winning; a changed session start replaces the accumulated transcript. */
 export function mergeLive(previous: LiveCurrent | undefined, next: LiveCurrent): LiveCurrent {
-  if (!previous) return { ...next, entries: [...next.entries] };
+  if (!previous || previous.since !== next.since) return { ...next, entries: [...next.entries] };
   const bySeq = new Map<number, LiveEntry>();
   for (const entry of previous.entries) bySeq.set(entry.seq, entry);
   for (const entry of next.entries) bySeq.set(entry.seq, entry);
@@ -63,6 +63,20 @@ export function liveTranscript(live: LiveCurrent): LiveLine[] {
     if (entry.kind === 'outputTranscription' && entry.text) lines.push({ role: 'naya', text: entry.text });
   }
   return lines;
+}
+
+export interface LivePollState { live?: LiveCurrent; lastSuccess?: Date; stale?: boolean }
+/** The polling boundary preserves the last projection on failure, never raw errors. */
+export async function pollLiveView(previous: LivePollState, fetch: (cursor?: string | number) => Promise<LiveCurrent>, now: () => Date = () => new Date()): Promise<LivePollState> {
+  try {
+    let next = await fetch(previous.live?.cursor);
+    // A cursor belongs to a session: reload its first page when the latest session changes.
+    if (previous.live && previous.live.since !== next.since) next = await fetch();
+    return { live: mergeLive(previous.live, next), lastSuccess: now(), stale: false };
+  } catch (error) {
+    if (typeof error === 'object' && error !== null && 'status' in error && error.status === 404) return { lastSuccess: now(), stale: false };
+    return { ...previous, stale: true };
+  }
 }
 
 export interface LiveAnswer { markdown: string; sources: LiveSource[] }
@@ -85,7 +99,7 @@ function sourcesMarkup(sources: LiveSource[]): string {
 }
 
 /** Full section markup, id="live-panel" so the poller can replace it in place. */
-export function liveMarkup(live: LiveCurrent | undefined): string {
+export function liveMarkup(live: LiveCurrent | undefined, poll: LivePollState = {}): string {
   const state = live?.state;
   const label = liveLabel(live);
   const lines = live ? liveTranscript(live) : [];
@@ -103,8 +117,10 @@ export function liveMarkup(live: LiveCurrent | undefined): string {
   return `<section class="panel live" id="live-panel" aria-label="Naya live conversation">
     <p class="live-state" role="status" aria-live="polite">${escapeHtml(label)}</p>
     ${muted}
+    ${poll.stale ? `<p class="live-stale" role="status">Live view stale${poll.lastSuccess ? ' since ' + escapeHtml(poll.lastSuccess.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })) : ', no successful poll yet'}, service unreachable</p>` : ''}
     <ol class="entries live-transcript">${transcript}</ol>
     ${error}
+    ${(live?.entries ?? []).filter(entry => entry.kind === 'toolResult').map(entry => `<details class="live-result" data-result-seq="${entry.seq}"><summary>${escapeHtml(entry.tool?.name ?? 'Tool result')} (${escapeHtml(entry.tool?.status ?? 'unknown')})</summary>${entry.tool?.status !== 'error' && entry.tool?.markdown ? renderMarkdown(entry.tool.markdown) + sourcesMarkup(entry.tool.sources ?? []) : ''}</details>`).join('')}
     ${jobs}
     ${result ? `<div class="live-result"><h2>Latest answer</h2>${renderMarkdown(result.markdown)}${sourcesMarkup(result.sources)}</div>` : ''}
   </section>`;

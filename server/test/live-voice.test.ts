@@ -391,3 +391,16 @@ test('binary invalid UTF-8 inside otherwise valid JSON is protocol_error', async
   await assert.rejects(session.ready, code('protocol_error'));
   await session.done;
 });
+
+test('provider fixture rejects unsupported setup schema with 1007 before ready', async t => {
+  const f = await providerFixture(t);
+  const session = new GeminiLiveVoiceAdapter(options(f)).open({ ...request(), tools: [
+    { name: 'invalid', description: 'Invalid original schema', parameters: { type: 'OBJECT', properties: { nested: { type: 'OBJECT', additionalProperties: false } } } },
+  ] }, control());
+  const captured = collect(session);
+  await assert.rejects(session.ready, code('remote_closed'));
+  assert.equal((await session.done).code, 'remote_closed');
+  await captured.done;
+  assert.equal(captured.events.some(event => event.type === 'ready'), false);
+  noCanary(captured.events);
+});

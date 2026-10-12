@@ -38,7 +38,18 @@ export async function fixture(t: TestContext, frameMode: FrameMode = 'binary') {
     socket.on('error', () => {});
     socket.on('close', () => noteClosed());
     socket.on('message', bytes => {
-      frames.push(JSON.parse(bytes.toString()));
+      const frame = JSON.parse(bytes.toString());
+      frames.push(frame);
+      // Gemini rejects unsupported schema keys in setup, including nested objects.
+      const hasAdditionalProperties = (value: unknown): boolean => {
+        if (!value || typeof value !== 'object') return false;
+        if (Array.isArray(value)) return value.some(hasAdditionalProperties);
+        return Object.entries(value).some(([key, child]) => key === 'additionalProperties' || hasAdditionalProperties(child));
+      };
+      if (frame.setup?.tools?.some((tool: { functionDeclarations?: { parameters?: unknown }[] }) =>
+        tool.functionDeclarations?.some(declaration => hasAdditionalProperties(declaration.parameters)))) {
+        socket.close(1007, `Invalid additionalProperties tools.function_declarations.parameters ${CANARY}`);
+      }
       for (const [n, notify] of waiters) if (frames.length >= n) { waiters.delete(n); notify(); }
     });
     resolve();

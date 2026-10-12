@@ -193,7 +193,7 @@ test('split and combined protocol fields preserve late input, thought and unknow
 
 for (const [name, payload, expected] of [
   ['empty object', {}, 'protocol_error'], ['invalid JSON', 'raw', 'protocol_error'], ['array', [], 'protocol_error'],
-  ['empty content', { serverContent: {} }, 'protocol_error'], ['null transcription', { serverContent: { inputTranscription: null } }, 'protocol_error'],
+  ['null content', { serverContent: null }, 'protocol_error'], ['null transcription', { serverContent: { inputTranscription: null } }, 'protocol_error'],
   ['bad completion flag', { serverContent: { turnComplete: 'true' } }, 'protocol_error'], ['bad text', { serverContent: { outputTranscription: { text: 3 } } }, 'protocol_error'],
   ['bad rate', { serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=16000', data: 'AAA=' } }] } } }, 'protocol_error'],
   ['bad base64', { serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: '!!' } }] } } }, 'protocol_error'],
@@ -213,10 +213,11 @@ for (const [name, payload, expected] of [
 }
 
 test('duplicate setupComplete and server content before setup fail closed', async t => {
-  for (const duplicate of [true, false]) {
+  for (const variant of ['duplicate', 'content', 'empty']) {
+    const duplicate = variant === 'duplicate';
     const f = await fixture(t); const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory })).open(request(), control());
     await f.frame(1); if (duplicate) { f.send({ setupComplete: {} }); await session.ready; }
-    f.send(duplicate ? { setupComplete: {} } : { serverContent: { turnComplete: true } });
+    f.send(duplicate ? { setupComplete: {} } : { serverContent: variant === 'empty' ? {} : { turnComplete: true } });
     assert.equal((await session.done).code, 'protocol_error');
   }
 });
@@ -433,7 +434,7 @@ test('speech activity siblings and informational keys preserve the next audio fr
     if (next.value!.type === 'audio') break;
   }
   assert.ok(observed.some(e => e.type === 'audio'));
-  assert.ok(session.unknownTopLevelKeys! >= 1);
+  assert.equal(session.unknownTopLevelKeys, 4);
   assert.deepEqual(observed.filter(e => e.type === 'waitingForInput').map(e => e.value), [true, false]);
   session.close();
 });

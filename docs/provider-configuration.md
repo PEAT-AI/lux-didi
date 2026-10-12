@@ -72,6 +72,13 @@ an existing profile. The Live system instruction is not this file: it is
 composed from the public Naya base, an optional local overlay and the terminal
 language anchor (see `docs/prompt-composition.md`).
 
+The optional `limits` block carries per-profile timer overrides: `limits.sessionMs`
+(the longest single session) and `limits.idleMs` (silence before the session ends),
+both whole milliseconds. The installer-seeded defaults are `sessionMs` 3600000 (60
+minutes) and `idleMs` 300000 (5 minutes); an omitted key falls back to the built-in
+default (`sessionMs` 900000, `idleMs` 60000) and a value outside 1 to 2147483647
+is a typed validation error.
+
 `<dataDir>/persona-overlay.json`, at most 16 KiB, is the optional private local
 persona layer, outside Git. It is a closed record
 `{schemaVersion:1, text, greeting?, accent?}`. A missing file means no overlay; a

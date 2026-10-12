@@ -20,10 +20,10 @@ for (const location of ['provider-config', 'provider-38']) for (const kind of ['
   try {
     run();
     const current = JSON.parse(readFileSync(path, 'utf8'));
-    if (kind === 'live') assert.deepEqual(current.dataClasses, ['ordinary', 'private']);
+    if (kind === 'live') { assert.deepEqual(current.dataClasses, ['ordinary', 'private']); assert.deepEqual(current.limits, { sessionMs: 3600000, idleMs: 300000 }); }
     else for (const entry of current.endpoints) assert.equal(entry.unknownClass, 'private');
     const old = structuredClone(current);
-    if (kind === 'live') old.dataClasses = ['ordinary'];
+    if (kind === 'live') { old.dataClasses = ['ordinary']; delete old.limits; }
     else for (const entry of old.endpoints) delete entry.unknownClass;
     writeFileSync(path, `${JSON.stringify(old)}\n`, { mode: 0o600 });
     run(); assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), current, 'exact old shipped seed upgrades');
@@ -38,6 +38,41 @@ for (const location of ['provider-config', 'provider-38']) for (const kind of ['
     assert.equal(statSync(path, { bigint: true }).mtimeNs, editedStat.mtimeNs);
     if (kind === 'live') assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')).dataClasses, ['ordinary']);
     else { const loaded = loadMcpEndpoints({ configDir }); assert.equal(loaded.state, 'configured'); if (loaded.state !== 'configured') throw Error('missing'); for (const entry of loaded.catalog.endpoints) assert.equal(entry.configurationError, 'unknown-class-missing'); }
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test('R5 upgrades the build-9 live.json seed and never rewrites an owner-edited one', () => {
+  const home = mkdtempSync(join(tmpdir(), 'didi-install-build9-'));
+  const configDir = join(home, 'Library/Application Support/ai.peat.lux-didi/provider-config');
+  const path = join(configDir, 'live.json');
+  const run = () => { const result = spawnSync('/bin/bash', ['-euc', seed], { env: { ...process.env, HOME: home }, encoding: 'utf8', timeout: 3000 }); assert.equal(result.status, 0, result.stderr); };
+  try {
+    run();
+    const current = JSON.parse(readFileSync(path, 'utf8'));
+    const build9 = structuredClone(current); delete build9.limits;
+    writeFileSync(path, `${JSON.stringify(build9)}\n`, { mode: 0o600 });
+    run();
+    assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), current, 'build-9 seed upgrades to the owner limits');
+    const edited = structuredClone(current); edited.limits = { sessionMs: 120000, idleMs: 30000 };
+    const editedBytes = `${JSON.stringify(edited)}\n`; writeFileSync(path, editedBytes);
+    const editedStat = statSync(path, { bigint: true }); run();
+    assert.equal(readFileSync(path, 'utf8'), editedBytes, 'owner-edited limits stay byte-identical');
+    assert.equal(statSync(path, { bigint: true }).mtimeNs, editedStat.mtimeNs);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test('the installed live.json seed parses as a Live profile exposing the owner limits', async () => {
+  const { loadLiveConfig } = await import('../config/live.js');
+  const home = mkdtempSync(join(tmpdir(), 'didi-install-live-config-'));
+  const configDir = join(home, 'Library/Application Support/ai.peat.lux-didi/provider-config');
+  const run = () => { const result = spawnSync('/bin/bash', ['-euc', seed], { env: { ...process.env, HOME: home }, encoding: 'utf8', timeout: 3000 }); assert.equal(result.status, 0, result.stderr); };
+  try {
+    run();
+    const status = loadLiveConfig({ configDir, ownerId: 'synthetic-owner' });
+    assert.equal(status.status, 'configured');
+    if (status.status !== 'configured') throw Error('not configured');
+    assert.equal(status.config.profile.limits.sessionMs, 3600000);
+    assert.equal(status.config.profile.limits.idleMs, 300000);
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 

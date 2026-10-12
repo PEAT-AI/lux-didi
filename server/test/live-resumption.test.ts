@@ -64,3 +64,22 @@ test('a resumed connection uses the remaining idle budget once, then the full ac
   t.mock.timers.tick(60);
   assert.equal((await session.done).code, 'idle_timeout'); await captured.done;
 });
+
+test('network socket creation errors are recoverable but missing credentials are final', async () => {
+  for (const credential of [undefined, 'synthetic-key']) {
+    const session = new GeminiLiveVoiceAdapter(options({ credentials: { resolve: async () => credential }, socketFactory: () => { throw Error('synthetic-network-error'); } })).open(request(), control());
+    const captured = collect(session);
+    const outcome = await session.done; await captured.done;
+    assert.equal(Boolean(outcome.recoverable), credential !== undefined);
+  }
+});
+
+test('resumed setup does not replay original history or the model-first opening turn', async t => {
+  const f = await fixture(t);
+  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory })).open({ ...request(), resumptionHandle: HANDLE, opening: 'model_first', history: [{ role: 'user', text: 'Original accepted pickup', dataClass: 'ordinary' }] }, control());
+  const captured = collect(session);
+  await f.frame(1); f.send({ setupComplete: {} }); await session.ready;
+  session.close(); await session.done; await captured.done;
+  assert.equal(f.frames.length, 1, 'resume sends setup only, never a reconstructed history or opening turn');
+  assert.equal((f.frames[0] as { setup: { sessionResumption: { handle: string } } }).setup.sessionResumption.handle === HANDLE, true);
+});

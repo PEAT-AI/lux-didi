@@ -420,10 +420,16 @@ for (const missingMongoose of [true, false]) {
     const headers = { Authorization: `Bearer ${host.store.adminCredential}`, 'Content-Type': 'application/json', 'Idempotency-Key': randomUUID(), 'X-Didi-Authority-Epoch': host.descriptor.authorityEpoch };
     const status = await fetch(host.descriptor.origin + '/api/v1/tools/status', { headers });
     assert.equal(status.status, 200);
+    const reports = (await status.json()).data.endpoints as Array<{ id: string; state: string; tools: number }>;
+    assert.deepEqual(reports.map(report => [report.id, report.state, report.tools]).sort(), [
+      ['lux-knowledge', 'connected', 2], ['gmail', 'connected', 3], ['calendar', 'connected', 2],
+      ['mattermost', 'connected', 5], ['mongoose', missingMongoose ? 'error' : 'connected', missingMongoose ? 0 : 7],
+    ].sort());
     const response = await fetch(host.descriptor.origin + '/api/v1/live-sessions', { method: 'POST', headers, body: JSON.stringify({ inputClass: 'ordinary' }) });
     const body = await response.json();
     assert.equal(response.status, 200, JSON.stringify(body));
-    assert.ok(body.data.id);
+    assert.ok(body.data.liveSessionId);
+    assert.equal(body.data.lifecycle, 'accepted');
   });
 }
 

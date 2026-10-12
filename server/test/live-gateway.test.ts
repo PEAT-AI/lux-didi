@@ -813,7 +813,7 @@ test('host Live status exposes only counts from the committed memory snapshot', 
 test('CREATE maps a typed connector composition defect to a bounded visible envelope', async t => {
   const h = await harness(t, { config: configJson(true), toolsFactory: store => {
     const registry = new McpRegistry();
-    const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 10000, maxSliceBytes: 512 }), resolveCredential: async () => undefined });
+    const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic-token' });
     t.after(() => port.close());
     const owner = createToolsOwner({ store, ownerId: store.assistantId, registry, port, lookupAuthority: async () => null });
     owner.definitions = () => { throw new ConnectorCompositionError('unknown_connector', 'missing-endpoint', 'missing-kind'); };

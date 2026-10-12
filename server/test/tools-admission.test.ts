@@ -104,7 +104,7 @@ for (const builder of ['live', 'chat-shaped'] as const) test(`connection-scoped 
   const h = await harness(t, builder);
   const initial = await h.start(pair); const run = await h.accept(initial);
   assert.deepEqual(run.acceptance.connectionIds, pair);
-  const intent: ToolCallIntent = { ...run.host, executionId: `${run.host.runId}:probe`, toolName: 'search_knowledge', accountId: 'lux-knowledge', resourceId: 'lux-knowledge', callId: 'probe', argumentsHash: sha256(JSON.stringify(endpoints[0]!.args)) };
+  const intent: ToolCallIntent = { runId: run.host.runId, actorId: run.host.actorId, authorityEpoch: run.host.authorityEpoch, revision: run.host.revision, executionId: `${run.host.runId}:probe`, toolName: 'search_knowledge', accountId: 'lux-knowledge', resourceId: 'lux-knowledge', callId: 'probe', argumentsHash: sha256(JSON.stringify(endpoints[0]!.args)) };
   // At the base this throws intent_policy_denied, before any connector is invoked.
   assert.equal(initial.owner.journal.intent(intent), 'fresh');
   const definition = initial.owner.definitions(run.host.runId).find(d => d.name === intent.toolName)!;

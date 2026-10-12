@@ -11,6 +11,7 @@ export type LiveLifecycle = 'accepted' | 'opening' | 'active' | 'terminal';
 export type LiveConsumerState = 'detached' | 'attached' | 'ended' | 'backpressure';
 export type LiveInvalidationReason = 'revoked' | 'authority' | 'profile';
 export type LiveErrorCode =
+  | 'memory_unavailable' | 'instruction_too_large' | 'pickup_changed'
   | 'invalid_config' | 'invalid_request' | 'invalid_context' | 'stale_authority' | 'not_found'
   | 'idempotency_conflict' | 'terminal' | 'already_attached' | 'not_ready' | 'invalidated'
   | 'expired' | 'invalid_audio' | 'persistence_failed';
@@ -32,11 +33,24 @@ export interface LiveLimits {
   wsBufferedBytes: number;
 }
 
+export interface LiveMemoryRecord { readonly id: string; readonly text: string; readonly dataClass: DataClass | 'unknown' }
+export type LiveMemorySource = (tx: import('../contracts/storage.js').Transaction) => readonly LiveMemoryRecord[];
+export interface LiveMemoryProvenance {
+  readonly status: 'empty' | 'selected' | 'partial' | 'omitted';
+  readonly selectedIds: readonly string[];
+  readonly omitted: readonly { readonly id: string; readonly reason: 'budget' }[];
+}
+export interface LiveMemoryProjection { readonly status: LiveMemoryProvenance['status']; readonly selected: number; readonly omitted: number }
+
 export interface AcceptedPromptSnapshot {
+  readonly memory?: LiveMemoryProvenance;
+  readonly pickup?: { readonly jobId: string; readonly identity: string };
+
   readonly schemaVersion: 1; readonly ownerProfile: OwnerProfileSnapshot;
   readonly compilerVersion: string; readonly system: string; readonly dataClasses: readonly DataClass[];
 }
 export interface LiveProfile {
+  readonly overlay?: import('../prompt/live-persona.js').PersonaOverlay;
   readonly acceptedPrompt?: AcceptedPromptSnapshot;
   readonly provider: 'gemini';
   readonly liveModelId: string;
@@ -63,12 +77,14 @@ export interface LivePendingService {
 }
 export interface LivePageProjection {
   jobs?: PendingLiveJob[];
+  memory?: LiveMemoryProjection;
   state: 'idle' | 'listening' | 'thinking' | 'speaking' | 'ended' | 'error'; since: number | null;
   entries: { seq: number; kind: 'inputTranscription' | 'outputTranscription' | 'toolCall' | 'toolResult' | 'interrupted' | 'turnComplete' | 'terminal'; text?: string; tool?: { name: string; status: 'called' | 'completed' | 'error'; markdown?: string; sources?: { title: string; url?: string }[] } }[];
   cursor: number;
 }
 export interface LiveOwnerConfig {
   readonly tools?: LiveToolsComposition;
+  readonly memorySource?: LiveMemorySource;
   readonly store: LiveStorePort;
   readonly voice: LiveVoicePort;
   readonly profile: LiveProfile;
@@ -94,6 +110,7 @@ export type LiveTerminalOutcome =
 export interface LiveSessionSnapshot {
   liveSessionId: string; assistantId: string; authorityEpoch: string; idempotencyKey: string;
   clientId: string; auditId: string; lifecycle: LiveLifecycle; dispatchIntent: boolean; ready: boolean;
+  memory: LiveMemoryProjection;
   profileIdentity: string; promptIdentity: string; grant: LiveGrantSnapshot; consumerState: LiveConsumerState;
   journal: { events: number; bytes: number; maxEvents: number; maxBytes: number; complete: boolean };
   terminal: LiveTerminalOutcome | null; createdAt: number; updatedAt: number;
@@ -148,6 +165,7 @@ export interface LiveAttachment {
 
 /** Safe operator-visible identity. Never carries key bytes or prompt text. */
 export interface LiveProfileProjection {
+  readonly memory: LiveMemoryProjection;
   readonly provider: LiveProvider;
   readonly model: string;
   readonly voice: string;

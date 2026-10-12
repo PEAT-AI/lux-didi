@@ -5,7 +5,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  NAYA_BASE, NAYA_TOOLS, PersonaOverlayError, canonicalSpeechLanguage, composeLiveInstruction, loadPersonaOverlay,
+  NAYA_BASE, NAYA_TOOLS, PersonaOverlayError, canonicalSpeechLanguage, composeLiveInstruction, composeLiveSessionInstruction, loadPersonaOverlay,
   validatePersonaOverlay, withToolsSection, type PersonaOverlay,
 } from '../prompt/live-persona.js';
 
@@ -178,4 +178,19 @@ test('loadPersonaOverlay returns undefined when absent and throws when the file 
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+
+test('session composition places bounded whole memory records and pickup before the final voice anchor', () => {
+  const baseline = composeLiveInstruction({ base: NAYA_BASE, overlay: { schemaVersion: 1, text: 'Fixture overlay' }, language: 'hi' });
+  const composed = composeLiveSessionInstruction({ text: baseline.text, tools: ['search_knowledge'], records: [{ id: 'b', text: 'Fixture note B' }, { id: 'a', text: 'Fixture note A' }], pickupNote: 'Fixture pickup note', trustedChars: 20000 });
+  assert.deepEqual(composed.selectedIds, ['a', 'b']);
+  const order = [NAYA_BASE, NAYA_TOOLS, 'Fixture overlay', 'Fixture pickup note', '# Memory', 'LANGUAGE:'];
+  for (let i = 1; i < order.length; i++) assert.ok(composed.text.indexOf(order[i - 1]!) < composed.text.indexOf(order[i]!));
+  assert.ok(composed.text.endsWith(baseline.text.slice(baseline.text.lastIndexOf('LANGUAGE:'))));
+  const withMemory = composeLiveInstruction({ base: NAYA_BASE, memory: 'Fixture memory section' });
+  assert.deepEqual(withMemory.sections.map(section => section.id), ['base', 'memory', 'voice']);
+  const yielding = composeLiveInstruction({ base: NAYA_BASE, overlay: { schemaVersion: 1, text: 'Fixture overlay' }, memory: 'x'.repeat(BUDGET) });
+  assert.ok(!yielding.sections.some(section => section.id === 'memory'));
+  assert.ok(yielding.text.includes('Fixture overlay'), 'memory yields before overlay');
 });

@@ -1,4 +1,7 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import * as memory from '../domain/memory.js';
+import * as labels from '../domain/labels.js';
+import { resolveLiveMemory } from '../host/live.js';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
@@ -65,13 +68,16 @@ async function harness(t: TestContext, overrides: {
   beforeTool?: () => Promise<void>;
   toolError?: boolean;
   scheduler?: DeadlineClock;
+  system?: string;
+  overlay?: { schemaVersion: 1; text: string; accent?: string };
+  memoryFailure?: boolean;
 } = {}): Promise<Harness> {
   const f = await fixture(t);
   const dir = mkdtempSync(join(tmpdir(), 'didi-live-session-'));
   const domain = createDomainPort({ outbox: Outbox });
   const store = new Store(dir, [...domain.migrations, ...chatMigrations, ...liveMigrations, ...(overrides.tools ? toolsMigrations : [])]);
   let clock = NOW;
-  const profile = validateLiveProfile(profileInput(overrides.limits, overrides.model));
+  const profile = validateLiveProfile({ ...profileInput(overrides.limits, overrides.model), ...(overrides.overlay ? { overlay: overrides.overlay } : {}), ...(overrides.system !== undefined ? { prompt: { text: overrides.system, dataClass: 'ordinary' } } : {}) });
   const voice = new GeminiLiveVoiceAdapter(options({
     socketFactory: f.socketFactory, modelId: profile.liveModelId, voice: profile.voice, keyReference: profile.keyReference,
     route: { enabled: true, provider: 'gemini', modelId: profile.liveModelId, dataClasses: profile.route.dataClasses },
@@ -120,7 +126,19 @@ async function harness(t: TestContext, overrides: {
     tools = { owner: toolOwner, connectionIds: () => ['lux'] };
     t.after(async () => { await port.close(); await transport.close(); await sdk.close(); });
   }
-  owner = createLiveSessionOwner({ store, voice, profile, ...(tools ? { tools } : {}), now: () => overrides.scheduler?.now ?? clock, ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
+  const memorySource = (tx: import('../contracts/storage.js').Transaction) => {
+    if (overrides.memoryFailure) throw new Error('synthetic memory failure');
+    const ids = tx.all('SELECT id FROM entries ORDER BY id').map(row => String(row['id']));
+    return ids.flatMap(id => memory.resolveEntries(tx, [id])).map(record => {
+      const entry = labels.current(tx, { kind: 'entry', id: record.entryId }).dataClass;
+      const parent = labels.current(tx, { kind: 'session', id: record.sessionId }).dataClass;
+      const dataClass = entry === 'unknown' || parent === 'unknown' ? 'unknown' as const
+        : entry === 'sensitive' || parent === 'sensitive' ? 'sensitive' as const
+        : entry === 'private' || parent === 'private' ? 'private' as const : 'ordinary' as const;
+      return { id: record.entryId, text: record.text, dataClass };
+    });
+  };
+  owner = createLiveSessionOwner({ store, voice, profile, ...{ memorySource }, ...(tools ? { tools } : {}), now: () => overrides.scheduler?.now ?? clock, ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
   t.after(async () => { await owner.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
   return { requests, calls, f, store, owner, ctx: context(store), dir, advance: ms => { if (overrides.scheduler) overrides.scheduler.now += ms; else clock += ms; } };
 }
@@ -135,9 +153,103 @@ async function attached(h: Harness, key = 'k1') {
   return { session, attachment };
 }
 
+function accepted(h: Harness, id: string): { system: string; memory: { status: string; selectedIds: string[]; omitted: { id: string; reason: string }[] }; pickup?: { jobId: string; identity: string } } {
+  return h.store.transaction(tx => JSON.parse(String(tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [id])!['accepted_prompt_snapshot'])));
+}
+
+function assertFrozenInstruction(h: Harness, id: string, request: number) {
+  const snapshot = accepted(h, id);
+  assert.equal(h.requests[request]!.system.text, snapshot.system);
+  const digest = createHash('sha256').update(JSON.stringify({ text: snapshot.system, dataClass: 'ordinary' })).digest('hex');
+  assert.equal(h.owner.get(id).promptIdentity, digest);
+}
+
+function note(h: Harness, id: string, text: string, entryClass = 'ordinary', parentClass = 'ordinary') {
+  h.store.transaction(tx => {
+    tx.run('INSERT INTO sessions VALUES (?,?,?,NULL,?,1,?,?)', [`parent-${id}`, 'Fixture', NOW, 'UTC', NOW, NOW]);
+    tx.run('INSERT INTO entries VALUES (?,?,1,?,?,?, ?,1)', [id, `parent-${id}`, 'user', text, NOW, 'UTC']);
+    for (const [kind, subject, dataClass] of [['entry', id, entryClass], ['session', `parent-${id}`, parentClass]]) {
+      tx.run('INSERT INTO routing_labels VALUES (?,?,1,?,?,?)', [kind!, subject!, dataClass!, 'owner_review', NOW]);
+    }
+  });
+}
+
+test('Live memory is frozen at CREATE, fresh at the next CREATE, and covered by the fingerprint', async t => {
+  const h = await harness(t);
+  note(h, 'note-a', 'Fixture old owner note');
+  const first = h.owner.create({ idempotencyKey: 'memory-old', inputClass: 'ordinary' }, h.ctx);
+  h.store.transaction(tx => tx.run('UPDATE entries SET text=?, revision=2 WHERE id=?', ['Fixture revised owner note', 'note-a']));
+  assert.equal(h.owner.create({ idempotencyKey: 'memory-old', inputClass: 'ordinary' }, h.ctx).liveSessionId, first.liveSessionId, 'same-key replay never re-resolves memory');
+  const attachment = h.owner.attach({ liveSessionId: first.liveSessionId }, h.ctx);
+  await h.f.frame(1); h.f.send({ setupComplete: {} }); await attachment.ready;
+  assertFrozenInstruction(h, first.liveSessionId, 0);
+  assert.match(h.requests[0]!.system.text, /Fixture old owner note/);
+  assert.ok(!h.requests[0]!.system.text.includes('Fixture revised owner note'));
+  h.owner.revoke(first.liveSessionId); await attachment.done;
+  const fresh = h.owner.create({ idempotencyKey: 'memory-new', inputClass: 'ordinary' }, h.ctx);
+  assert.match(accepted(h, fresh.liveSessionId).system, /Fixture revised owner note/);
+  assert.notEqual(fresh.promptIdentity, first.promptIdentity);
+  assert.equal(h.store.transaction(tx => tx.get('SELECT fingerprint FROM live_sessions WHERE live_session_id=?', [first.liveSessionId])!['fingerprint']), createHash('sha256').update(JSON.stringify({ inputClass: 'ordinary', profile: first.profileIdentity, prompt: first.promptIdentity, pickupJobId: null })).digest('hex'));
+});
+
+test('Live memory recalls ordinary entries only, including parent labels, and reports an empty selection', async t => {
+  const h = await harness(t);
+  const empty = h.owner.create({ idempotencyKey: 'empty-memory', inputClass: 'ordinary' }, h.ctx);
+  assert.equal(accepted(h, empty.liveSessionId).memory.status, 'empty');
+  note(h, 'ordinary', 'Fixture ordinary note');
+  note(h, 'private', 'Fixture private canary', 'private');
+  note(h, 'sensitive', 'Fixture sensitive canary', 'sensitive');
+  note(h, 'private-parent', 'Fixture parent private canary', 'ordinary', 'private');
+  const session = h.owner.create({ idempotencyKey: 'class-memory', inputClass: 'ordinary' }, h.ctx);
+  const snapshot = accepted(h, session.liveSessionId);
+  assert.match(snapshot.system, /Fixture ordinary note/);
+  for (const forbidden of ['Fixture private canary', 'Fixture sensitive canary', 'Fixture parent private canary']) assert.ok(!snapshot.system.includes(forbidden));
+  assert.deepEqual(snapshot.memory.selectedIds, ['ordinary']);
+  assert.deepEqual(h.store.transaction(resolveLiveMemory).map(record => record.id), ['ordinary']);
+  assert.deepEqual(h.owner.profileProjection().memory, { status: 'selected', selected: 1, omitted: 0 });
+  assert.deepEqual(h.owner.current().memory, { status: 'selected', selected: 1, omitted: 0 });
+});
+
+test('Live memory budget keeps whole records, reports overflow, and rejects oversized static instructions and resolution failure', async t => {
+  const h = await harness(t);
+  note(h, 'a', 'Fixture whole note');
+  const initial = h.owner.create({ idempotencyKey: 'measure-memory', inputClass: 'ordinary' }, h.ctx);
+  const remaining = 20000 - accepted(h, initial.liveSessionId).system.length;
+  h.store.transaction(tx => tx.run('UPDATE entries SET text=? WHERE id=?', ['Fixture whole note' + 'x'.repeat(remaining), 'a']));
+  note(h, 'b', 'Fixture overflow note');
+  const boundary = h.owner.create({ idempotencyKey: 'boundary-memory', inputClass: 'ordinary' }, h.ctx);
+  const snapshot = accepted(h, boundary.liveSessionId);
+  assert.equal(snapshot.system.length, 20000);
+  assert.deepEqual(snapshot.memory.selectedIds, ['a']);
+  assert.deepEqual(snapshot.memory.omitted, [{ id: 'b', reason: 'budget' }]);
+  assert.ok(!snapshot.system.includes('Fixture overflow note'));
+  assert.ok(snapshot.system.includes(JSON.stringify({ id: 'a', text: 'Fixture whole note' + 'x'.repeat(remaining) })), 'the selected record survives byte for byte');
+  const oversized = await harness(t, { system: 'x'.repeat(4096), tools: true, overlay: { schemaVersion: 1, text: 'x'.repeat(16000) } });
+  assert.throws(() => oversized.owner.create({ idempotencyKey: 'oversized', inputClass: 'ordinary' }, oversized.ctx), (error: unknown) => error instanceof LiveError && String(error.code) === 'instruction_too_large');
+  const failed = await harness(t, { memoryFailure: true });
+  assert.throws(() => failed.owner.create({ idempotencyKey: 'failed-memory', inputClass: 'ordinary' }, failed.ctx), (error: unknown) => error instanceof LiveError && String(error.code) === 'memory_unavailable');
+  assert.equal(oversized.requests.length + failed.requests.length, 0);
+});
+
+test('Live transcripts and completion, interruption and terminal events stay journal-only', async t => {
+  const h = await harness(t);
+  note(h, 'existing', 'Fixture existing note');
+  const { session, attachment } = await attached(h, 'journal-only');
+  const before = h.store.transaction(tx => Number(tx.get('SELECT COUNT(*) AS n FROM entries')!['n']));
+  h.f.send({ serverContent: { inputTranscription: { text: 'Fixture voice input', finished: true }, outputTranscription: { text: 'Fixture voice output', finished: true }, turnComplete: true } });
+  await drain(h, session.liveSessionId, 4);
+  h.f.send({ serverContent: { interrupted: true } });
+  await drain(h, session.liveSessionId, 5);
+  h.owner.revoke(session.liveSessionId); await attachment.done;
+  const kinds = h.store.transaction(tx => tx.all('SELECT kind FROM live_journal WHERE live_session_id=?', [session.liveSessionId]).map(row => row['kind']));
+  for (const kind of ['inputTranscription', 'outputTranscription', 'turnComplete', 'interrupted', 'terminal']) assert.ok(kinds.includes(kind));
+  assert.equal(h.store.transaction(tx => Number(tx.get('SELECT COUNT(*) AS n FROM entries')!['n'])), before);
+});
+
 test('a session with a tool declaration carries the tools conduct; without one composes exactly as before', async t => {
   const withTools = await harness(t, { tools: true });
-  const { attachment: withAttachment } = await attached(withTools);
+  const { session: withSession, attachment: withAttachment } = await attached(withTools);
+  assertFrozenInstruction(withTools, withSession.liveSessionId, 0);
   assert.equal(withTools.requests.length, 1);
   assert.ok(withTools.requests[0]!.system.text.includes(NAYA_TOOLS),
     'the authored tools conduct is in the attached system instruction');
@@ -555,7 +667,8 @@ test('live migrations preserve a populated accepted Store byte-for-byte', async 
     consents: tx.all('SELECT * FROM chat_consents ORDER BY session_id'),
     outbox: tx.all('SELECT * FROM runtime_outbox ORDER BY id'),
   }));
-  assert.deepEqual(current, prior, 'accepted CHAT and Domain rows stay meaningful');
+  assert.ok(current.liveSessions.every(row => row['memory_provenance'] === null), 'additive v4 provenance is null on legacy rows');
+  assert.deepEqual({ ...current, liveSessions: current.liveSessions.map(({ memory_provenance: _newColumn, ...legacy }) => legacy) }, { ...prior, liveSessions: prior.liveSessions.map(row => ({ ...row })) }, 'all pre-existing Live, CHAT and Domain values stay byte-identical');
   assert.deepEqual(migrated.transaction(tx => tx.all('SELECT journal_id,tool_json FROM live_journal ORDER BY journal_id').map(row => ({ ...row }))),
     [41, 42, 43].map(journal_id => ({ journal_id, tool_json: null })));
   migrated.transaction(tx => {
@@ -565,7 +678,7 @@ test('live migrations preserve a populated accepted Store byte-for-byte', async 
       [{ journal_id: 44, kind: 'toolCall' }, { journal_id: 45, kind: 'toolResult' }]);
   });
   const owners = migrated.transaction(tx => tx.all('SELECT owner, MAX(version) AS version FROM runtime_migrations GROUP BY owner ORDER BY owner'));
-  assert.deepEqual(owners.map(row => [String(row['owner']), Number(row['version'])]), [['chat', 4], ['domain', 3], ['live', 3]]);
+  assert.deepEqual(owners.map(row => [String(row['owner']), Number(row['version'])]), [['chat', 4], ['domain', 3], ['live', 4]]);
 });
 
 test('a failed store write aborts visibly and never fabricates a durable outcome', async t => {
@@ -895,7 +1008,7 @@ test('Live persists the exact typed accepted instruction before intent and corru
   const run = owner.create({ idempotencyKey: 'owner-frozen', inputClass: 'ordinary' }, h.ctx);
   const row = h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot,dispatch_intent FROM live_sessions WHERE live_session_id=?', [run.liveSessionId]))!;
   assert.equal(row.dispatch_intent, 0);
-  assert.deepEqual(JSON.parse(String(row.accepted_prompt_snapshot)), acceptedPrompt);
+  assert.deepEqual(JSON.parse(String(row.accepted_prompt_snapshot)), { ...acceptedPrompt, memory: { status: 'empty', selectedIds: [], omitted: [] } });
   acceptedPrompt.system = 'SYNTHETIC B';
   assert.equal(JSON.parse(String(h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [run.liveSessionId]))!.accepted_prompt_snapshot)).system, 'SYNTHETIC exact accepted A');
   h.store.transaction(tx => tx.run('UPDATE live_sessions SET accepted_prompt_snapshot=? WHERE live_session_id=?', ['{"schemaVersion":999}', run.liveSessionId]));
@@ -999,6 +1112,12 @@ test('Live answers a slow tool batch truthfully, continues the turn, and retains
   await tick();
   assert.equal(h.owner.lookupAuthority(session.liveSessionId), null);
   const callback = h.owner.createWithPending({ inputClass: 'ordinary', idempotencyKey: 'callback' }, h.ctx);
+  const frozenJob = new LiveToolJobs(h.store, () => NOW).forSession(callback.liveSessionId)!;
+  assert.equal(accepted(h, callback.liveSessionId).pickup?.jobId, frozenJob.id);
+  frozenJob.state = 'failed'; new LiveToolJobs(h.store, () => NOW).save(frozenJob);
+  assert.throws(() => h.owner.attach({ liveSessionId: callback.liveSessionId }, h.ctx), (error: unknown) => error instanceof LiveError && String(error.code) === 'pickup_changed');
+  assert.equal(h.requests.length, 1, 'changed pickup state is rejected before dispatch');
+  frozenJob.state = 'completed'; new LiveToolJobs(h.store, () => NOW).save(frozenJob);
   const pickedUp = h.owner.attach({ liveSessionId: callback.liveSessionId }, h.ctx);
   await h.f.frame(3);
   h.f.send({ setupComplete: {} });
@@ -1008,6 +1127,8 @@ test('Live answers a slow tool batch truthfully, continues the turn, and retains
   assert.match(history.clientContent.turns[0]!.parts[0]!.text, /Synthetic insight/);
   assert.equal((history.clientContent as typeof history.clientContent & { turnComplete: boolean }).turnComplete, true);
   assert.equal((h.requests[1] as LiveVoiceRequest & { opening?: string }).opening, 'model_first');
+  assertFrozenInstruction(h, callback.liveSessionId, 1);
+  assert.match(accepted(h, callback.liveSessionId).system, /user has just picked up/i);
   assert.match(h.requests[1]!.system.text, /user has just picked up/i);
   assert.match(h.requests[1]!.system.text, /briefly/i);
   h.f.send({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from(pcm).toString('base64') } }] },
@@ -1137,7 +1258,8 @@ test('loadLiveConfig composes the Naya instruction and fails closed on an invali
   const status = loadLiveConfig({ configDir, ownerId: 'synthetic-owner' });
   assert.equal(status.status, 'configured');
   if (status.status === 'configured') {
-    const expected = composeLiveInstruction({ base: NAYA_BASE, overlay, language: 'de' });
+    const expected = composeLiveInstruction({ base: NAYA_BASE, accent: overlay.accent, language: 'de' });
+    assert.deepEqual(status.config.profile.overlay, overlay);
     assert.equal(status.config.profile.language, 'de');
     assert.equal(status.config.profile.prompt.text, expected.text);
     assert.equal(status.config.profile.acceptedPrompt?.system, expected.text);

@@ -108,3 +108,28 @@ bash scripts/check-live-session.sh
 Builds the canonical service, runs this owner suite together with the accepted Live adapter
 regression suite, and verifies the packaged tarball publishes `dist/live`. The packaging gate
 `bash scripts/check-package.sh` covers the ordinary service artifact.
+
+## Release 4: frozen ordinary memory
+
+CREATE resolves durable entries through the domain memory layer and uses both the entry and
+parent-session routing labels. Only ordinary entries qualify, even when the configured route
+permits private or sensitive data. Unknown labels do not qualify. There is no voice write-back:
+transcriptions, interruption, completion and terminal events remain in `live_journal` only.
+
+The effective instruction, including tool conduct, selected historical notes and any deferred
+pickup instruction, is committed in `accepted_prompt_snapshot`. Its full text is hashed into
+`prompt_identity`, which contributes to the session fingerprint. Same-key replay returns the
+original snapshot without reading memory again. Attach sends the stored instruction unchanged.
+A subsequent CREATE can see revised notes and gets a new identity when effective text changes.
+
+Memory records are JSON-delimited, stable by entry id, and never clipped. The complete instruction
+must fit the existing 20,000-character trusted budget. Memory records yield before any static
+persona layer. An oversized static baseline raises `instruction_too_large`; memory resolution
+failure raises `memory_unavailable`, before provider dispatch. Selected ids and budget omissions
+are retained privately with the session. Safe session, profile and Live status projections expose
+only memory status and selected/omitted counts, never ids or note text. Empty recall is `empty`.
+
+A pickup session captures the deferred job id and its state/result identity at CREATE. An attach
+with a changed or missing pickup job raises `pickup_changed` before dispatch. The sanitized
+WebSocket rejection carries that reason; create a new session instead of retrying the stale one.
+The additive Live v4 migration adds `memory_provenance`; install migrations remain one-time.

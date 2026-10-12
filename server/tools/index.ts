@@ -11,6 +11,7 @@ export { toolsMigrations } from './schema.js';
 export type * from './types.js';
 
 const ownedStores = new WeakSet<object>();
+const transactionDefinitions = new WeakMap<ToolsOwner, (runId: string, tx?: Transaction) => ToolDefinition[]>();
 const ownerBindings = new WeakMap<object, Pick<ToolsOwnerOptions, 'store' | 'registry' | 'ownerId'>>();
 /** Factory identity check: no second owner, port or registry may substitute for canonical authority. */
 export function assertToolsOwnerBinding(owner: ToolsOwner, expected: Pick<ToolsOwnerOptions, 'store' | 'registry' | 'ownerId'>): void {
@@ -238,6 +239,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
     const endpoint = registry.endpoint(p.endpoint.id);
     return endpointBinding(endpoint) === endpointBinding(p.endpoint);
   };
+
   const owner: ToolsOwner = {
     journal, resultGate, complete,
     applyConnection(input) { apply(input, undefined); },
@@ -287,8 +289,8 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
       if (existing) { if (existing.snapshot_json !== bytes) throw Error('run_snapshot_collision'); return { sha256: hash }; }
       tx.run('INSERT INTO tool_runs VALUES (?,?,?,?)', [ownerId, acceptance.runId, bytes, hash]); return { sha256: hash };
     },
-    definitions(runId) {
-      const snapshot = store.transaction(tx => readRun(tx, runId).snapshot);
+    definitions(runId, tx?: Transaction) {
+      const snapshot = tx ? readRun(tx, runId).snapshot : store.transaction(current => readRun(current, runId).snapshot);
       const definitions: ToolDefinition[] = [];
       for (const bound of snapshot.connections) {
         const p = bound.policy;
@@ -336,8 +338,16 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
         }
       }
       return definitions;
-    },
+      },
   };
   ownerBindings.set(owner, { store, registry, ownerId });
+  transactionDefinitions.set(owner, owner.definitions);
   return owner;
+}
+
+/** Read a frozen run through the caller's transaction, without opening a nested transaction. */
+export function definitionsInTransaction(owner: ToolsOwner, runId: string, tx: Transaction): ToolDefinition[] {
+  const read = transactionDefinitions.get(owner);
+  if (!read) throw Error('unbound_tools_owner');
+  return read(runId, tx);
 }

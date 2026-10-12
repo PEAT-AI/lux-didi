@@ -195,6 +195,12 @@ test('owner-trusted-reads grants exactly the connector envelope through the runt
     assert.deepEqual([...grant.toolNames].sort(), [...MONGOOSE_TOOLS].sort());
     assert.equal(grant.toolNames.includes('create_ticket' as never), false);
     assert.equal(runtime.status().endpoints[0]?.tools, MONGOOSE_TOOLS.length);
+    assert.equal(runtime.status().endpoints[0]?.state, 'connected');
+    assert.deepEqual(runtime.connectionIds(), ['mongoose']);
+    await runtime.refresh();
+    assert.equal(runtime.status().endpoints[0]?.state, 'connected');
+    assert.deepEqual(runtime.connectionIds(), ['mongoose']);
+    assert.deepEqual(runtime.registry.currentGrant('mongoose')?.toolNames.slice().sort(), [...MONGOOSE_TOOLS].sort());
   } finally {
     if (runtime) await runtime.close();
     if (store) store.close();

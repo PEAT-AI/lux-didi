@@ -92,3 +92,4 @@ expect(NativeLaunchVisibility.shouldShow(loginLaunch: false), "ordinary launch s
 for state in ["idle", "ended", "failed", "outcomeUnknown"] {
     expect(LiveStatusPresentation(state: state, pendingCall: false).text == "Naya: stopped", "inactive status \(state) is stopped")
 }
+expect(LiveStatusPresentation(state: "ended", pendingCall: false, dictationCapturing: true).state == "listening", "dictation microphone is not reported stopped")

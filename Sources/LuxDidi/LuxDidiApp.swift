@@ -680,7 +680,11 @@ private final class ConnectedProofTransport: URLProtocol, @unchecked Sendable {
     let client = CompanionClient(descriptor: descriptor, credential: { "synthetic-only" }, protocolClasses: [ConnectedProofTransport.self])
     _ = try await client.bootstrap()
     let model = AppModel(fixtureClient: client, fixtureOutbox: root.appendingPathComponent("outbox", isDirectory: true))
-    func require(_ condition: Bool) throws { if !condition { throw CompanionError.invalidResponse } }
+    func require(_ condition: Bool, line: Int = #line) throws {
+        if !condition { throw NSError(domain: "ConnectedAppProof", code: line,
+            userInfo: [NSLocalizedDescriptionKey: "Synthetic AppModel assertion failed at line \(line); model error: \(model.error ?? "none")"])
+        }
+    }
     state.lock.withLock { state.consent = false }
     model.draft = "Synthetic consent denied"
     await model.sendToNaya()

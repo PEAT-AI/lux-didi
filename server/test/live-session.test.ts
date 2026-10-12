@@ -77,7 +77,7 @@ async function harness(t: TestContext, overrides: {
   const domain = createDomainPort({ outbox: Outbox });
   const store = new Store(dir, [...domain.migrations, ...chatMigrations, ...liveMigrations, ...(overrides.tools ? toolsMigrations : [])]);
   let clock = NOW;
-  const profile = validateLiveProfile({ ...profileInput(overrides.limits, overrides.model), ...(overrides.overlay ? { overlay: overrides.overlay } : {}), ...(overrides.system !== undefined ? { prompt: { text: overrides.system, dataClass: 'ordinary' } } : {}) });
+  const profile = validateLiveProfile({ ...profileInput({ handshakeMs: 1000, idleMs: 2000, sessionMs: 4000, closeMs: 50, ...Object.fromEntries(Object.entries(overrides.adapterLimits ?? {}).filter(([key]) => ['handshakeMs', 'idleMs', 'sessionMs', 'closeMs'].includes(key))), ...overrides.limits }, overrides.model), ...(overrides.overlay ? { overlay: overrides.overlay } : {}), ...(overrides.system !== undefined ? { prompt: { text: overrides.system, dataClass: 'ordinary' } } : {}) });
   const voice = new GeminiLiveVoiceAdapter(options({
     socketFactory: f.socketFactory, modelId: profile.liveModelId, voice: profile.voice, keyReference: profile.keyReference,
     route: { enabled: true, provider: 'gemini', modelId: profile.liveModelId, dataClasses: profile.route.dataClasses },
@@ -253,14 +253,14 @@ test('a session with a tool declaration carries the tools conduct; without one c
   assert.equal(withTools.requests.length, 1);
   assert.ok(withTools.requests[0]!.system.text.includes(NAYA_TOOLS),
     'the authored tools conduct is in the attached system instruction');
-  await withAttachment.done;
+  withAttachment.close(); await withAttachment.done;
 
   const withoutTools = await harness(t, {});
   const { attachment: withoutAttachment } = await attached(withoutTools);
   assert.equal(withoutTools.requests.length, 1);
   assert.equal(withoutTools.requests[0]!.system.text, 'Synthetic system', 'no declarations compose exactly as before');
   assert.ok(!withoutTools.requests[0]!.system.text.includes('# Tools'));
-  await withoutAttachment.done;
+  withoutAttachment.close(); await withoutAttachment.done;
 });
 
 async function drain(h: Harness, liveSessionId: string, expected: number): Promise<LiveSessionSnapshot> {
@@ -968,7 +968,7 @@ test('attach wins before deadline including opening, and expiry wins after it wi
   await attachment.ready;
   h.advance(100); scheduler.runDue();
   assert.equal(h.owner.get(row.liveSessionId).lifecycle, 'active');
-  assert.equal(scheduler.pending.size, 0);
+  assert.equal(scheduler.pending.size, 2, 'only active session and idle budgets remain');
   t.mock.restoreAll();
   const past = h.owner.create({ idempotencyKey: 'deadline-attach-late', inputClass: 'ordinary' }, h.ctx);
   h.advance(21);
@@ -1297,7 +1297,7 @@ test('resumption keeps journal identity and frozen authority with the real adapt
   const setup = (h.f.frames[1] as { setup: { sessionResumption: { handle: string } } }).setup;
   assert.equal(setup.sessionResumption.handle === handle, true);
   const saved = h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot,memory_provenance,resumption_handle,connection_generation FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!;
-  assert.deepEqual({ accepted_prompt_snapshot: saved.accepted_prompt_snapshot, memory_provenance: saved.memory_provenance }, frozen);
+  assert.deepEqual({ accepted_prompt_snapshot: saved.accepted_prompt_snapshot, memory_provenance: saved.memory_provenance }, { ...frozen });
   assert.equal(saved.resumption_handle === handle, true);
   assert.equal(saved.connection_generation, 1);
   assert.equal(h.owner.current().state, 'rebuilding');

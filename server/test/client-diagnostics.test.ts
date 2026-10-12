@@ -25,7 +25,7 @@ test('operator diagnostics append exact nested typed events alongside another Ho
     for (const diagnostic of [audio, serviceEvent]) {
       const response = await f.post(diagnostic);
       assert.equal(response.status, 204); assert.equal(await response.text(), '');
-      new HostLog(f.dir).event({ event: 'live_terminal', code: 'unavailable' });
+      new HostLog(f.dir).event({ event: 'live_attach_rejected', code: 'unavailable' });
     }
     const lines = f.lines();
     assert.equal(lines.length, 4);

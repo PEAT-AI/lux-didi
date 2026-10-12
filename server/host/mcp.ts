@@ -87,8 +87,8 @@ export async function composeMcpRuntime(options: {
       ? { id: previous.id, state: 'connected', tools: previous.tools, lastHandshakeAt: previous.lastHandshakeAt }
       : { id: previous.id, state: 'configured', tools: previous.tools, lastHandshakeAt: previous.lastHandshakeAt, error: status.reason });
   };
-  const owner = createToolsOwner({ store, ownerId, registry, port, lookupAuthority: options.lookupAuthority, reportToolStatus });
   const selection = loadMcpEndpoints({ configDir });
+  const owner = createToolsOwner({ grantMode: selection.state === 'missing' ? 'explicit' : selection.catalog.grantMode, store, ownerId, registry, port, lookupAuthority: options.lookupAuthority, reportToolStatus });
   if (selection.state === 'missing') {
     return { registry, port, owner, connectionIds: () => [], status: () => ({ endpoints: [] }), refresh: async () => {}, close: () => port.close() };
   }

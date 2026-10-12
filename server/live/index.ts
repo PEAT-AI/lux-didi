@@ -1,3 +1,5 @@
+import * as memory from '../domain/memory.js';
+import * as labels from '../domain/labels.js';
 import { definitionsInTransaction } from '../tools/index.js';
 import { LiveToolJobs, type ToolJob } from '../tools/jobs.js';
 import { declarationsFor, runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
@@ -115,6 +117,39 @@ class OutputChannel {
   }
 }
 
+const normalized = (text: string) => text.toLowerCase().replace(/\s+/g, ' ').trim().replace(/[.!?,;:]+$/, '').trim();
+const command = /^(?:naya\s*,?\s+)?remember\b(?:\s+that\b)?\s*:?\s*/i;
+const classified = /^(?:privately\b|(?:this\s+)?(?:is\s+|as\s+)?(?:private|sensitive)\b)/i;
+
+/** All reads and the write share the tool owner's transaction: duplicate calls cannot race. */
+export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: { text: string; kind: 'fact' | 'preference' | 'task' }, now: number): JsonObject {
+  // A bounded journal window, assembled into owner turns, not provider/model arguments.
+  const rows = tx.all("SELECT journal_id,text,finished FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' ORDER BY journal_id DESC LIMIT 64", [liveSessionId]).reverse();
+  const turns: { seq: number; text: string }[] = [];
+  let pending = '';
+  for (const row of rows) {
+    pending += String(row.text ?? '');
+    if (Number(row.finished) === 1) { turns.push({ seq: Number(row.journal_id), text: pending }); pending = ''; }
+  }
+  const turn = turns.reverse().find(turn => command.test(turn.text.trim().replace(/\s+/g, ' ')));
+  if (!turn) return { remembered: false, code: 'owner_transcript_not_final' };
+  const utterance = turn.text.trim();
+  const payload = utterance.replace(command, '').trim();
+  if (classified.test(payload)) return { remembered: false, code: 'private_memory_unsupported' };
+  const pointer = normalized(args.text), ownerText = normalized(payload);
+  if (!pointer || !ownerText || !ownerText.includes(pointer)) return { remembered: false, code: 'owner_text_mismatch' };
+  const externalId = `${liveSessionId}:${turn.seq}`;
+  const existing = tx.get("SELECT owner_id FROM source_references WHERE owner_kind='entry' AND provider='live-voice' AND external_id=?", [externalId]);
+  if (existing) return { remembered: false, code: 'already_remembered', entryId: String(existing.owner_id) };
+  const clock = { now: () => now };
+  const session = memory.createSession(tx, { title: 'Live voice memory', startedAt: now, timeZone: 'UTC' }, clock);
+  labels.correct(tx, { subject: { kind: 'session', id: session.id }, expectedRevision: 0, dataClass: 'ordinary' }, now);
+  const entry = memory.appendEntry(tx, { sessionId: session.id, text: payload, capturedAt: now, timeZone: 'UTC',
+    source: { label: `live-voice ${liveSessionId}`, provider: 'live-voice', accountId: liveSessionId, externalId, sourceTimestamp: now, availability: 'present', note: `kind:${args.kind}` } }, clock);
+  labels.correct(tx, { subject: { kind: 'entry', id: entry.id }, expectedRevision: 0, dataClass: 'ordinary' }, now);
+  return { remembered: true, entryId: entry.id };
+}
+
 export class LiveSessionOwner {
   readonly #jobs: LiveToolJobs;
   readonly #tools: LiveToolsComposition | undefined;
@@ -210,7 +245,7 @@ export class LiveSessionOwner {
           route: { identity: this.#profileIdentity, provider: 'gemini', modelId: this.#profile.liveModelId, allowedClasses: [...this.#profile.route.dataClasses] },
           allowedClasses: [...this.#profile.route.dataClasses], connectionIds: [...this.#tools.connectionIds()] };
         toolAcceptance = { acceptance, sha256: this.#tools.owner.snapshotRun(tx, acceptance).sha256 };
-        toolNames = definitionsInTransaction(this.#tools.owner, liveSessionId, tx).map(tool => tool.name);
+        toolNames = [...definitionsInTransaction(this.#tools.owner, liveSessionId, tx).map(tool => tool.name).filter(name => name !== 'remember_note'), 'remember_note'];
       }
       const pickupJob = input.pickupJobId ? this.#jobs.pending(tx).find(job => job.id === input.pickupJobId && job.state !== 'in_progress') : undefined;
       if (input.pickupJobId && !pickupJob) throw new LiveError('invalid_request');
@@ -430,9 +465,9 @@ export class LiveSessionOwner {
     if (this.#tools) {
       const saved = this.#store.transaction(tx => tx.get('SELECT acceptance_json FROM live_tool_acceptances WHERE live_session_id=?', [liveSessionId]));
       if (!saved) throw new LiveError('invalidated');
-      registry = Object.freeze(this.#tools.owner.definitions(liveSessionId).map(tool => Object.freeze({ ...tool, parameters: structuredClone(tool.parameters) })));
+      registry = Object.freeze(this.#tools.owner.liveDefinitions(liveSessionId, (tx, id, args) => rememberOwnerNote(tx, id, args, this.#now())).map(tool => Object.freeze({ ...tool, parameters: structuredClone(tool.parameters) })));
       host = { runId: liveSessionId, actorId: context.clientId, authorityEpoch: context.authorityEpoch, revision,
-        grants: registry.map(tool => ({ tool: tool.name, effect: tool.effect, accountId: tool.accountId, resourceId: tool.resourceId })) };
+        grants: registry.filter(tool => tool.effect === 'read' || this.#tools!.owner.liveRememberApproved() && tool.name === 'remember_note' && tool.accountId === 'gateway:live-voice' && tool.resourceId === 'owner-memory').map(tool => ({ tool: tool.name, effect: tool.effect, accountId: tool.accountId, resourceId: tool.resourceId })) };
     }
     const history = this.#jobHistory(liveSessionId, inputClass);
     const declarations = registry.length ? declarationsFor(registry).declarations : [];

@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
 import type { DataClass, HostContext, JsonObject, ToolCallIntent, ToolCallRefusal, ToolDefinition, ToolResultBinding, ToolResultGate, ToolResultRef } from '../adapters/model/types.js';
@@ -7,6 +7,7 @@ import { endpointBinding } from '../adapters/mcp/port.js';
 import { ConnectorCompositionError, connectorDescriptor, CONNECTOR_ENVELOPES } from '../connectors/index.js';
 import { canonicalJSON, detached, sha256 } from './canonical.js';
 import type { BoundConnection, ConnectionApplyResult, ConnectionPolicy, HttpConnectionEndpoint, ModelSnapshot, RunAcceptance, RunSnapshot, StdioConnectionEndpoint, ToolsOwner, ToolsOwnerOptions } from './types.js';
+import { REMEMBER_IDENTITY, REMEMBER_PARAMETERS, validateRemember } from './remember.js';
 export { toolsMigrations } from './schema.js';
 export type * from './types.js';
 
@@ -120,13 +121,21 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
     if (!row || row.execution_id !== call.executionId || row.intent_json !== canonicalJSON(call)) throw Error('intent_mismatch');
     return row;
   };
-  const target = (snapshot: RunSnapshot, call: ToolCallRefusal): BoundConnection => {
+  const target = (snapshot: RunSnapshot, call: ToolCallRefusal): { connectionId: string; policy: { sourcePolicy: { allowedClasses: readonly DataClass[] }; route: { allowedClasses: readonly DataClass[] }; bounds: { maxResultBytes: number } } } => {
+    if (call.toolName === REMEMBER_IDENTITY.name && call.accountId === REMEMBER_IDENTITY.accountId && call.resourceId === REMEMBER_IDENTITY.resourceId) {
+      if (options.grantMode !== 'owner-trusted-reads') throw Error('builtin_grant_denied');
+      return { connectionId: 'gateway:live-voice', policy: { sourcePolicy: { allowedClasses: ['ordinary'] }, route: { allowedClasses: ['ordinary'] }, bounds: { maxResultBytes: 1024 } } };
+    }
     const matches = snapshot.connections.filter(b => b.policy.toolNames.includes(call.toolName) && b.policy.endpoint.account === call.accountId && b.policy.endpoint.resource === call.resourceId);
     if (matches.length !== 1) throw Error('intent_scope_mismatch'); return matches[0]!;
   };
   const validateCallRun = (tx: Transaction, call: ToolCallRefusal): RunSnapshot => {
     const { snapshot } = readRun(tx, call.runId);
     if (!hostMatches(snapshot.acceptance, call)) throw Error('intent_run_mismatch'); return snapshot;
+  };
+  const assertLiveIdentity = (tx: Transaction, call: ToolCallRefusal): void => {
+    if (call.accountId !== REMEMBER_IDENTITY.accountId || call.resourceId !== REMEMBER_IDENTITY.resourceId) return;
+    if (call.toolName !== REMEMBER_IDENTITY.name || !tx.get("SELECT live_session_id FROM live_sessions WHERE live_session_id=? AND owner_assistant_id=? AND lifecycle IN ('opening','active')", [call.runId, ownerId])) throw Error('builtin_live_session_required');
   };
   const persistTerminal = (tx: Transaction, call: ToolCallRefusal, state: 'completed' | 'failed' | 'unknown' | 'refused', value: ModelSnapshot, fresh = false): ToolResultRef => {
     const bytes = canonicalJSON({ ...value, intentSha256: sha256(canonicalJSON(call)) }); const ref = { id: randomUUID(), sha256: sha256(bytes) };
@@ -143,19 +152,20 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
     }
   });
 
-  const complete = (input: ToolCallIntent, response: JsonObject, dataClasses: readonly DataClass[]): ToolResultRef => {
+  const complete = (input: ToolCallIntent, response: JsonObject, dataClasses: readonly DataClass[], transaction?: Transaction): ToolResultRef => {
     const call = callDTO(input);
     try {
-      return store.transaction(tx => {
+      const commit = (tx: Transaction) => {
         const row = exactIntent(tx, call); if (row.state !== 'intent') throw Error('terminal_immutable');
-        const snapshot = validateCallRun(tx, call); const bound = target(snapshot, call);
+        const snapshot = validateCallRun(tx, call); assertLiveIdentity(tx, call); const bound = target(snapshot, call);
         if (!currentPolicies(tx, snapshot)) throw Error('completion_policy_denied');
         classSet(dataClasses); exact(response, [], Object.keys(response));
         if (dataClasses.some(c => !bound.policy.sourcePolicy.allowedClasses.includes(c) || !bound.policy.route.allowedClasses.includes(c) || !snapshot.acceptance.allowedClasses.includes(c) || !snapshot.acceptance.route.allowedClasses.includes(c))) throw Error('completion_class_denied');
         const value = { response: detached(response), dataClasses: [...dataClasses] };
         if (Buffer.byteLength(canonicalJSON({ ...value, intentSha256: sha256(canonicalJSON(call)) })) > bound.policy.bounds.maxResultBytes) throw Error('model_snapshot_oversize');
         return persistTerminal(tx, call, 'completed', value);
-      });
+      };
+      return transaction ? commit(transaction) : store.transaction(commit);
     } catch (error) { persistenceFailures.add(call.executionId); throw error; }
   };
   const journal: ToolsOwner['journal'] = {
@@ -164,7 +174,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
       return store.transaction(tx => {
         const existing = callRow(tx, call);
         if (existing) { if (existing.intent_json !== canonicalJSON(call) || existing.execution_id !== call.executionId) throw Error('intent_collision'); return 'existing'; }
-        const snapshot = validateCallRun(tx, call); target(snapshot, call);
+        const snapshot = validateCallRun(tx, call); assertLiveIdentity(tx, call); target(snapshot, call);
         if (!currentPolicies(tx, snapshot)) throw Error('intent_policy_denied');
         tx.run("INSERT INTO tool_calls(owner_id,run_id,execution_id,call_id,intent_json,state) VALUES (?,?,?,?,?,'intent')", [ownerId, call.runId, call.executionId, call.callId ?? null, canonicalJSON(call)]);
         return 'fresh';
@@ -289,6 +299,31 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
       const existing = tx.get('SELECT snapshot_json FROM tool_runs WHERE owner_id=? AND run_id=?', [ownerId, acceptance.runId]);
       if (existing) { if (existing.snapshot_json !== bytes) throw Error('run_snapshot_collision'); return { sha256: hash }; }
       tx.run('INSERT INTO tool_runs VALUES (?,?,?,?)', [ownerId, acceptance.runId, bytes, hash]); return { sha256: hash };
+    },
+    liveRememberApproved() { return options.grantMode === 'owner-trusted-reads'; },
+    liveDefinitions(runId, rememberNote) {
+      const definitions = owner.definitions(runId).filter(tool => tool.name !== REMEMBER_IDENTITY.name);
+      definitions.push({ ...REMEMBER_IDENTITY, description: 'Remember a note explicitly requested in the owner’s finalized words.', effect: 'write', parameters: REMEMBER_PARAMETERS, validate: validateRemember,
+        async execute(args, context) {
+          if (context.runId !== runId || !validateRemember(args) || context.signal.aborted) return { status: 'failed' };
+          const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
+          if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' };
+          const result = store.transaction(tx => {
+            const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, context.runId, context.executionId]);
+            if (!row || row.state !== 'intent') throw Error('intent_missing_or_terminal');
+            const call = callDTO(JSON.parse(String(row.intent_json)) as ToolCallIntent);
+            const expected = { runId: context.runId, actorId: context.actorId, authorityEpoch: context.authorityEpoch, revision: context.revision, executionId: context.executionId, toolName: REMEMBER_IDENTITY.name, argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'), accountId: REMEMBER_IDENTITY.accountId, resourceId: REMEMBER_IDENTITY.resourceId, ...(call.callId !== undefined ? { callId: call.callId } : {}) };
+            if (canonicalJSON(call) !== canonicalJSON(expected)) throw Error('executor_intent_mismatch');
+            const snapshot = validateCallRun(tx, call);
+            assertLiveIdentity(tx, call); target(snapshot, call);
+            if (!currentPolicies(tx, snapshot) || !currentProjection(snapshot)) throw Error('executor_policy_denied');
+            const response = rememberNote(tx, runId, args);
+            return complete(call as ToolCallIntent, response, ['ordinary'], tx);
+          });
+          return { status: 'completed', result };
+        },
+      });
+      return definitions;
     },
     definitions(runId, tx?: Transaction) {
       const snapshot = tx ? readRun(tx, runId).snapshot : store.transaction(current => readRun(current, runId).snapshot);

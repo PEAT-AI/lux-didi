@@ -1,3 +1,4 @@
+import './live-remember.test.js';
 import assert from 'node:assert/strict';
 import { describe, test, type TestContext } from 'node:test';
 import WebSocket from 'ws';

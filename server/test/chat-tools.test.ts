@@ -39,8 +39,9 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
   let exposed = structuredClone(tools);
   let onDispatch: (() => void) | undefined;
   let reject = false;
+  let errorFlag = true;
   sdk.setRequestHandler('tools/list', () => ({ tools: exposed }) as never);
-  sdk.setRequestHandler('tools/call', () => { executions++; onDispatch?.(); return { content: [{ type: 'text', text: reject ? REJECTED : ACCEPTED }], ...(reject ? { isError: true } : {}), diagnostic: REJECTED } as never; });
+  sdk.setRequestHandler('tools/call', () => { executions++; onDispatch?.(); return { content: [{ type: 'text', text: reject ? REJECTED : ACCEPTED }], ...(reject && errorFlag ? { isError: true } : {}), diagnostic: REJECTED } as never; });
   await sdk.connect(transport);
   t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
     const req = new Request(input, init); assert.equal(req.url, endpoint.url);
@@ -66,7 +67,7 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
     for await (const event of chat.subscribe(accepted.runId, f.context)) if (event.type === 'snapshot' && event.run.state === 'terminal') return event.run;
     throw Error('no terminal snapshot');
   };
-  return { ...f, chat, owner, registry, requests, endpoint, mcp, composition, session, turn, executions: () => executions, repeatCalls: () => { repeat = true; }, noCalls: () => { ask = false; }, rejectResult: () => { reject = true; }, setDispatchHook: (hook: () => void) => { onDispatch = hook; },
+  return { ...f, chat, owner, registry, requests, endpoint, mcp, composition, session, turn, executions: () => executions, repeatCalls: () => { repeat = true; }, noCalls: () => { ask = false; }, rejectResult: () => { reject = true; }, rawRejectedResult: () => { reject = true; errorFlag = false; }, setDispatchHook: (hook: () => void) => { onDispatch = hook; },
     approveY: async () => { exposed.push({ name: 'get_insight', inputSchema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'integer' } }, include_links: { type: 'boolean' } }, required: ['ids', 'include_links'], additionalProperties: false } }); await mcp.refresh(); },
     privateOnly: async () => { const p = f.store.transaction(tx => JSON.parse(String(tx.get('SELECT policy_json FROM tool_connections WHERE connection_id=?', [endpoint.id])!.policy_json)) as ConnectionPolicy); owner.applyConnection({ ...p, generation: p.generation + 1, sourcePolicy: { ...p.sourcePolicy, unknownClass: 'private', allowedClasses: ['private'] }, route: { ...p.route, allowedClasses: ['private'] } }); assert.equal((await mcp.port.discover(endpoint.id)).state, 'discovered'); owner.projectConnection(endpoint.id); },
     admission: (sessionId: string) => f.store.transaction(tx => { const row = tx.get('SELECT * FROM chat_capability_acceptances WHERE session_id=?', [sessionId]); return row ? JSON.parse(String(row.capabilities_json)) as { name: string }[] : []; }) };
@@ -159,4 +160,17 @@ test('repeated tool requests are bounded and the last accepted result has an evi
   assert.equal(run.finalEntryId, null);
   assert.equal(run.toolEvidence?.length, 4, 'final bounded tool result is gated and retained without another model request');
   assert.doesNotMatch(JSON.stringify(run), /REJECTED/);
+});
+
+
+test('a result rejected after connector execution cannot disclose its raw sentinel', async t => {
+  const f = await fixture(t); const session = f.session(); const accepted = await f.turn(session);
+  assert.match(JSON.stringify(accepted.toolEvidence), /ACCEPTED/);
+  f.rawRejectedResult(); f.setDispatchHook(() => { f.registry.revoke(f.endpoint.id); });
+  const rejected = await f.turn(session);
+  assert.equal(f.executions(), 2, 'rejected raw connector response must actually be produced');
+  assert.notEqual(rejected.outcome, 'complete');
+  assert.doesNotMatch(JSON.stringify(f.requests), /REJECTED/);
+  assert.doesNotMatch(JSON.stringify(rejected), /REJECTED/);
+  assert.doesNotMatch(JSON.stringify(f.chat.get(rejected.runId, f.context)), /REJECTED/);
 });

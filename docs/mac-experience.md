@@ -93,3 +93,28 @@ The Live panel displays the current microphone and system output. Changing only 
 An owned local-service exit stops Live and displays persistent “Local service restarting” status. Replacements use a bounded three-attempt budget with 1/2/4-second backoff. Exhaustion asks for explicit Reconnect; Quit or disconnect cancels recovery. Wake reconciles child liveness and service health, while a network failure alone never causes child replacement. The restored service connection does not restore microphone authorization: the owner must explicitly Start a new Live session.
 
 Silent injected tests exercise the real audio converter, capture queue and device drain, including preserved mute and discarded stale frames. Lifecycle seams use injected scheduling, launch outcomes and wake events, never real timeout waits. Physical AirPods/USB transitions, voice-processing effectiveness and acoustic behavior remain human-device acceptance items.
+
+### Summon and microphone availability
+
+Control-Option-Space remains Show/hide and never starts capture. Explicit Start
+Live in the menu or Control-Option-Shift-L shows the window and uses the same
+guarded Live start. Control-Option-Shift-M toggles mute; menu controls also offer
+Mute/Unmute and Stop. These three-modifier letter combinations avoid common
+macOS defaults; custom user shortcuts can still conflict. Each Live shortcut's
+registration result is visible in the menu, including its OSStatus on conflict.
+Live is full duplex, not push-to-talk. Muting discards captured frames. Hide and
+close still stop capture, and Show never resumes it.
+
+The status icon, accessible label and menu describe stopped, connecting,
+listening, speaking or muted. A pending-call dot is independent of microphone
+state and never starts capture.
+
+Open at login is opt-in in the menu (macOS 13 or later). Its text reflects the
+system registration status, including approval required or unavailable, rather
+than a saved preference. Login launch starts hidden and never captures audio.
+The window frame is remembered; a frame no longer contained on a connected
+screen falls back to a centered, screen-sized frame. Proof launches do not
+change login registration or saved window preferences.
+
+The native draft button is **Save note**: it saves a local note, not connected
+chat. Retry uses the same local save path.

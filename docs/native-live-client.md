@@ -91,3 +91,11 @@ refreshes every ten seconds only while its window is visible and not minimized.
 An owned local child exit invalidates the old connection and stops Live. The supervisor shows a persistent “Local service restarting” status while attempting at most three replacements, after 1, 2 and 4 seconds. Successful recovery does not reset this budget; only an explicit new activation does. Quit or disconnect cancels pending work and fences old callbacks. Wake reconciles the owned child's liveness and reconnects the client to probe health. A network/health failure alone is not evidence of child death and does not trigger replacement.
 
 A replacement child receives fresh connection authority. Recovery rebinds the service client, never the microphone or a Live session. Lost Live requires a new owner Start. Native audio tests use real AVAudioConverter, capture buffers and the device drain with an injected input format, so they exercise mute preservation and stale-frame discard without opening hardware. Mac lifecycle seams inject scheduling, launch results and wake events; no test waits out the real backoff or rearms a microphone.
+
+The native menu provides explicit Start Live, Mute/Unmute and Stop. Global
+Control-Option-Shift-L starts/shows Live, Control-Option-Shift-M toggles mute;
+Control-Option-Space remains Show/hide only. Registration conflicts are visible
+in the menu. No shortcut, login launch, call badge or Show action implicitly
+restarts a stopped microphone. Login availability is opt-in; closing or hiding
+still stops capture. Status text and its accessibility label expose the actual
+Live state independently of pending calls.

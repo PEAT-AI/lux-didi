@@ -19,6 +19,7 @@ import DidiOwner
     private let logsDirectory: URL?
     private var limits: NativeLiveLimits?
     private var muted = false, speaking = false
+    var isMuted: Bool { muted }
     var isCapturing: Bool { state == .connecting || state == .pausedForInput || device.isCapturing }
     init(authority: (origin: URL, request: NativeLiveRequestBuilder), dictationIsCapturing: @escaping () -> Bool, pickupJobID: String? = nil, logsDirectory: URL? = nil) {
         self.logsDirectory = logsDirectory
@@ -138,14 +139,20 @@ import DidiOwner
         } catch { /* Logging must not change the failure or restart Live. */ }
     }
     func toggleMute() {
-        guard [.listening, .speaking, .muted].contains(state) else { return }
+        guard [.listening, .speaking, .muted, .pausedForInput].contains(state) else { return }
         muted.toggle(); device.setMuted(muted)
+        guard state != .pausedForInput else { return }
         state = muted ? .muted : (speaking ? .speaking : .listening)
     }
-    func stop() async {
+    /// Stop capture and presentation synchronously before asynchronous transport cleanup.
+    func stopCapture() {
         generation &+= 1; startTask?.cancel(); startTask = nil
         observer?.cancel(); observer = nil
         device.stop()
+        state = .ended
+    }
+    func stop() async {
+        stopCapture()
         await coordinator.close()
         let outcome = await coordinator.state
         if case .outcomeUnknown = outcome { state = .outcomeUnknown }

@@ -292,12 +292,12 @@ test('T13 connections preserve bounded typed configuration errors', async () => 
     { id: 'untrusted-code', state: 'error', tools: 0, lastHandshakeAt: null, error: 'private diagnostic', configurationError: 'private diagnostic' },
   ] }));
   try {
-    const response = await fetch(`${f.service.url}/api/v1/live/connections`, { headers: f.auth });
+    const response = await fetch(`${f.service.origin}/api/v1/live/connections`, { headers: f.auth });
     assert.equal(response.status, 200);
     const body = await response.json() as { endpoints: Array<{ reasonCode: string; configurationError?: string }> };
-    assert.equal(body.endpoints[0].reasonCode, 'configuration_error');
-    assert.equal(body.endpoints[0].configurationError, 'unknown-class-missing');
-    assert.equal(body.endpoints[1].configurationError, undefined);
+    assert.equal(body.endpoints[0]!.reasonCode, 'configuration_error');
+    assert.equal(body.endpoints[0]!.configurationError, 'unknown-class-missing');
+    assert.equal(body.endpoints[1]!.configurationError, undefined);
     assert.equal(JSON.stringify(body).includes('private diagnostic'), false);
   } finally { await f.cleanup(); }
 });

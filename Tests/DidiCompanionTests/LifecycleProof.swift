@@ -58,6 +58,19 @@ import Darwin
             let bundledNode = macos.appendingPathComponent("node")
             do { try fm.linkItem(atPath: realNode.path, toPath: bundledNode.path) }
             catch { try fm.copyItem(atPath: realNode.path, toPath: bundledNode.path) }
+            // Homebrew Node can be a shared-libnode build. Relocating only its executable
+            // breaks @rpath before JavaScript runs; stage its sibling runtime library too.
+            let libraries = realNode.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("lib", isDirectory: true)
+            if fm.fileExists(atPath: libraries.path) {
+                for library in try fm.contentsOfDirectory(at: libraries, includingPropertiesForKeys: nil)
+                    where library.lastPathComponent.hasPrefix("libnode.") && library.pathExtension == "dylib" {
+                    let source = library.resolvingSymlinksInPath()
+                    let destination = macos.appendingPathComponent(library.lastPathComponent)
+                    do { try fm.linkItem(atPath: source.path, toPath: destination.path) }
+                    catch { try fm.copyItem(atPath: source.path, toPath: destination.path) }
+                }
+            }
+
             var staged = stat()
             let stagedStatOK = lstat(bundledNode.path, &staged) == 0
             diagnose("fixture:node-staged", ["case": mode, "relativeNodePath": "Contents/MacOS/node", "nodeMajor": 26,

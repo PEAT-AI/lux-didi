@@ -1,7 +1,7 @@
 import * as memory from '../domain/memory.js';
 import * as labels from '../domain/labels.js';
 import { definitionsInTransaction } from '../tools/index.js';
-import { LiveToolJobs, type ToolJob } from '../tools/jobs.js';
+import { LiveToolJobs, type ToolJob, type JobTimer } from '../tools/jobs.js';
 import { declarationsFor, runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
 import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';

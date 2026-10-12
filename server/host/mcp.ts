@@ -57,7 +57,7 @@ export function composeMcpConnection(options: { store: Store; owner: ToolsOwner;
 }
 
 export type McpEndpointState = 'missing' | 'configured' | 'connected' | 'error';
-export interface McpEndpointReport { id: string; state: McpEndpointState; tools: number; lastHandshakeAt: string | null; error?: string }
+export interface McpEndpointReport { id: string; state: McpEndpointState; tools: number; lastHandshakeAt: string | null; error?: string; exception?: { class: string; code: string } }
 export interface McpRuntimeComposition {
   registry: McpRegistry;
   port: McpPort;
@@ -116,7 +116,7 @@ export async function composeMcpRuntime(options: {
     }
     try {
       const discovery = await port.discover(entry.id);
-      if (discovery.state !== 'discovered') { reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: discovery.reason }); return; }
+      if (discovery.state !== 'discovered') { reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: discovery.reason, ...(discovery.exception ? { exception: discovery.exception } : {}) }); return; }
       const envelope = connectorEnvelopes[entry.connector] ?? [];
       const names = grantMode === 'owner-trusted-reads'
         ? discovery.tools.map(tool => tool.name).filter(name => envelope.includes(name)).sort()

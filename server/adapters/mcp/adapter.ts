@@ -190,7 +190,11 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
       } catch (error) {
         // Do not leak remote errors, response bodies, credentials or endpoints in diagnostics.
         if (sessions.has(endpointId)) { suspend(endpointId); await retire(endpointId); }
-        return { state: 'unavailable', reason: error instanceof PolicyError ? error.reason : 'discovery-unavailable' };
+        const className = error instanceof Error && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(error.constructor.name) ? error.constructor.name : 'Unknown';
+        const localCodes = ['discovery-invalidated', 'source-egress-not-approved', 'invalid-endpoint-config', 'unknown-endpoint'];
+        const code = error instanceof PolicyError ? error.reason
+          : error instanceof Error && error.constructor === Error && localCodes.includes(error.message) ? error.message : 'unknown';
+        return { state: 'unavailable', reason: error instanceof PolicyError ? error.reason : 'discovery-unavailable', exception: { class: className, code } };
       } finally { busy.delete(endpointId); }
     },
     visibleTools(endpointId: string) { return options.registry.visibleTools(endpointId); },

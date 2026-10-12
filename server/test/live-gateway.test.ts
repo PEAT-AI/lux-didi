@@ -5,8 +5,6 @@ import { MemoryResultStore } from '../adapters/mcp/store.js';
 import type { LiveAuthority } from '../tools/types.js';
 import type { LiveToolsComposition } from '../live/types.js';
 import { createHash, randomUUID } from 'node:crypto';
-import { Client } from '@modelcontextprotocol/client';
-import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/ajv';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -81,21 +79,6 @@ async function harness(t: TestContext, options: HarnessOptions = {}): Promise<Ha
   let tools = options.toolsFactory?.(store);
   if (options.realMcp) {
     const trace: string[] = [];
-    const sdkRequest = Client.prototype.request;
-    t.mock.method(Client.prototype, 'request', async function (this: Client, ...args: Parameters<typeof sdkRequest>) {
-      try { return await sdkRequest.apply(this, args); }
-      catch (error) { trace.push(`client request: ${error instanceof Error ? error.message : 'unknown'}`); throw error; }
-    });
-    const getValidator = AjvJsonSchemaValidator.prototype.getValidator;
-    t.mock.method(AjvJsonSchemaValidator.prototype, 'getValidator', function (this: AjvJsonSchemaValidator, ...args: Parameters<typeof getValidator>) {
-      try { return getValidator.apply(this, args); }
-      catch (error) { trace.push(`validator: ${error instanceof Error ? error.message : 'unknown'}`); throw error; }
-    });
-    const observed = McpRegistry.prototype.observed;
-    t.mock.method(McpRegistry.prototype, 'observed', function (this: McpRegistry, ...args: Parameters<typeof observed>) {
-      try { return observed.apply(this, args); }
-      catch (error) { trace.push(`observed: ${error instanceof Error ? error.message : 'unknown'}`); throw error; }
-    });
     // Same SDK endpoint/HTTP bridge as knowledge-connector.test.ts and mcp-config.test.ts.
     const sdk = new Server({ name: 'synthetic-knowledge', version: '1' }, { capabilities: { tools: {} } });
     sdk.setRequestHandler('tools/list', () => ({ tools: [{ name: 'search_knowledge', inputSchema: { type: 'object' } }] }) as never);
@@ -250,7 +233,7 @@ test('live operator routes reject browsers, origins and duplicate headers before
   assert.equal(h.f.attempts, 0, 'guards run before any provider open');
 });
 
-for (const mode of ['fixture-only', 'healthy', 'failed'] as const) test(`Swift sequence reaches ready (${mode})`, { timeout: 5000 }, async t => {
+for (const mode of ['failed', 'healthy', 'fixture-only'] as const) test(`Swift sequence reaches ready (${mode})`, { timeout: 5000 }, async t => {
   const h = await harness(t, { config: configJson(true), realMcp: mode !== 'fixture-only', failedMcp: mode === 'failed' });
   // LiveSessionCoordinator.performCreate: status, create, validate the returned grant, connect.
   const status = await json(h.origin, '/api/v1/live/status', { headers: bearer(h) });

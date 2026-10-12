@@ -85,7 +85,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
   // Failure latch is not authority: it only prevents fallback journal writes after failed persistence.
   const persistenceFailures = new Set<string>();
   const connection = (tx: Transaction, id: string): BoundConnection => {
-    const row = tx.get('SELECT * FROM tool_connections WHERE owner_id=? AND connection_id=?', [ownerId, id]);
+    const row = tx.get("SELECT c.*,COALESCE(s.binding_mode,'legacy') AS binding_mode FROM tool_connections c LEFT JOIN tool_connection_semantics s ON s.owner_id=c.owner_id AND s.connection_id=c.connection_id WHERE c.owner_id=? AND c.connection_id=?", [ownerId, id]);
     if (!row || typeof row.policy_json !== 'string' || sha256(row.policy_json) !== row.policy_sha256) throw Error('connection_policy_missing_or_corrupt');
     const policy = validatePolicy(JSON.parse(row.policy_json) as ConnectionPolicy);
     if (canonicalJSON(policy) !== row.policy_json || policy.ownerId !== ownerId || policy.connectionId !== id || policy.endpoint.id !== row.endpoint_id || policy.generation !== row.generation || Number(policy.enabled) !== row.enabled || (policy.bindingMode ?? 'legacy') !== row.binding_mode) throw Error('connection_policy_binding');
@@ -249,8 +249,9 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
       if (current && canonicalJSON(current.policy) === bytes) return false;
       if (expected !== undefined && expected !== (current?.sha256 ?? null)) throw Error('connection_predecessor_mismatch');
       if (current && (p.generation <= current.generation || canonicalJSON(p.endpoint) !== canonicalJSON(current.policy.endpoint))) throw Error('connection_identity_or_generation');
-      if (row) tx.run('UPDATE tool_connections SET generation=?,enabled=?,policy_json=?,policy_sha256=?,binding_mode=? WHERE owner_id=? AND connection_id=?', [p.generation, Number(p.enabled), bytes, hash, p.bindingMode!, ownerId, p.connectionId]);
-      else tx.run('INSERT INTO tool_connections(owner_id,connection_id,endpoint_id,generation,enabled,policy_json,policy_sha256,binding_mode) VALUES (?,?,?,?,?,?,?,?)', [ownerId, p.connectionId, p.endpoint.id, p.generation, Number(p.enabled), bytes, hash, p.bindingMode!]);
+      if (row) tx.run('UPDATE tool_connections SET generation=?,enabled=?,policy_json=?,policy_sha256=? WHERE owner_id=? AND connection_id=?', [p.generation, Number(p.enabled), bytes, hash, ownerId, p.connectionId]);
+      else tx.run('INSERT INTO tool_connections VALUES (?,?,?,?,?,?,?)', [ownerId, p.connectionId, p.endpoint.id, p.generation, Number(p.enabled), bytes, hash]);
+      tx.run("INSERT OR IGNORE INTO tool_connection_semantics VALUES (?,?,'connection')", [ownerId, p.connectionId]);
       return true;
     });
     // Durable commit wins even when projection is unavailable.

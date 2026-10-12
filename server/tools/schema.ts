@@ -35,5 +35,7 @@ export const toolsMigrations: readonly SchemaMigration[] = [{ owner: 'tools', ve
     WHEN NEW.owner_id IS NOT OLD.owner_id OR NEW.run_id IS NOT OLD.run_id OR NEW.execution_id IS NOT OLD.execution_id OR NEW.call_id IS NOT OLD.call_id OR NEW.intent_json IS NOT OLD.intent_json OR OLD.state!='intent' OR NEW.state='intent'
     BEGIN SELECT RAISE(ABORT,'call_identity_or_terminal'); END`,
 ] }, { owner: 'tools', version: 2, statements: [
-  `ALTER TABLE tool_connections ADD COLUMN binding_mode TEXT NOT NULL DEFAULT 'legacy' CHECK(binding_mode IN ('legacy','connection'))`,
+  `CREATE TABLE tool_connection_semantics (owner_id TEXT NOT NULL, connection_id TEXT NOT NULL, binding_mode TEXT NOT NULL CHECK(binding_mode='connection'), PRIMARY KEY(owner_id,connection_id), FOREIGN KEY(owner_id,connection_id) REFERENCES tool_connections(owner_id,connection_id))`,
+  `CREATE TRIGGER tool_connection_semantics_no_update BEFORE UPDATE ON tool_connection_semantics BEGIN SELECT RAISE(ABORT,'connection_semantics_immutable'); END`,
+  `CREATE TRIGGER tool_connection_semantics_no_delete BEFORE DELETE ON tool_connection_semantics BEGIN SELECT RAISE(ABORT,'connection_semantics_immutable'); END`,
 ] }];

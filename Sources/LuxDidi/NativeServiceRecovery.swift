@@ -50,3 +50,24 @@ import Foundation
         cancel?(); cancel = nil; status(false)
     }
 }
+
+/// App ownership seam: only owner Start invokes the factory; service events release capture.
+@MainActor final class NativeLiveAuthorityOwner<Session> {
+    private var authority: String?
+    private var retained: Session?
+    private let release: (Session) -> Void
+    private let publish: (Session?) -> Void
+    init(release: @escaping (Session) -> Void, publish: @escaping (Session?) -> Void) {
+        self.release = release; self.publish = publish
+    }
+    func rebind(_ authority: String) { self.authority = authority }
+    func unavailable() { if let retained { release(retained) } }
+    func ownerStart(make: () -> Session) -> Session {
+        if let retained { return retained }
+        let session = make(); retained = session; publish(session); return session
+    }
+    func clear() {
+        if let retained { release(retained) }
+        retained = nil; publish(nil)
+    }
+}

@@ -128,3 +128,43 @@ expect(LiveStatusPresentation(state: "ended", pendingCall: false, dictationCaptu
 let inputPausedStatus = LiveStatusPresentation(state: "pausedForInput", pendingCall: false)
 expect(inputPausedStatus.text == "Naya: microphone changed; Resume required", "input pause status names consent action")
 expect(inputPausedStatus.symbol == "pause.circle", "input pause status is not active recording")
+
+// Actual app ownership seam plus actual authenticated request builders, no HTTP or audio.
+try MainActor.assumeIsolated {
+    let started = Date()
+    typealias Authority = (origin: URL, request: NativeLiveRequestBuilder)
+    let oldDescriptor = try ServiceDescriptor(origin: "http://127.0.0.1:41231", credentialService: "test", credentialAccount: "old")
+    let newDescriptor = try ServiceDescriptor(origin: "http://127.0.0.1:41232", credentialService: "test", credentialAccount: "new")
+    var currentNonce = "old"
+    let oldClient = CompanionClient(descriptor: oldDescriptor, credential: { "old-proof-token" },
+                                    expectedEpoch: "old-epoch", connectionGuard: { currentNonce == "old" })
+    let newClient = CompanionClient(descriptor: newDescriptor, credential: { "new-proof-token" },
+                                    expectedEpoch: "new-epoch", connectionGuard: { currentNonce == "new" })
+    var creates = 0, captures = 0, releases = 0
+    var presented: Authority?
+    let owner = NativeLiveAuthorityOwner<Authority>(release: { _ in captures = 0; releases += 1 },
+                                                   publish: { presented = $0 })
+    owner.rebind("old")
+    let oldLive = owner.ownerStart {
+        creates += 1; captures += 1; return oldClient.authenticatedRequestBuilder()
+    }
+    _ = try oldLive.request(oldLive.origin.appendingPathComponent("api/live/status"), "old-epoch")
+    owner.unavailable(); currentNonce = "new"
+    expect(captures == 0 && creates == 1, "child exit releases capture without an automatic Start")
+    owner.rebind("new")
+    expect(captures == 0 && creates == 1, "successful service recovery never creates Live or capture")
+    let replacementLive = owner.ownerStart {
+        creates += 1; captures += 1; return newClient.authenticatedRequestBuilder()
+    }
+    expect(replacementLive.origin == newDescriptor.baseURL && creates == 2,
+           "explicit Start after child recovery must use replacement Live authority")
+    let request = try replacementLive.request(replacementLive.origin.appendingPathComponent("api/live/status"), "new-epoch")
+    expect(request.url?.port == 41232 && request.value(forHTTPHeaderField: "Authorization") == "Bearer new-proof-token",
+           "replacement Live request uses new origin and credential")
+    owner.rebind("new")
+    expect(captures == 1 && creates == 2 && presented?.origin == newDescriptor.baseURL,
+           "wake health reconcile with same authority preserves the current Live owner")
+    owner.unavailable()
+    expect(captures == 0 && presented == nil && releases == 2, "lost replacement clears stale Live presentation")
+    print("DURATION live-authority-recovery-seam=\(Date().timeIntervalSince(started))s")
+}

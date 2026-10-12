@@ -20,6 +20,12 @@ import Security
     @Published private(set) var serviceRestarting = false
     let voice = NativeVoice()
     @Published private(set) var live: NativeLiveConversation?
+    private lazy var liveAuthorityOwner: NativeLiveAuthorityOwner<NativeLiveConversation> = NativeLiveAuthorityOwner(
+        release: { conversation in
+            conversation.stopCapture()
+            Task { await conversation.stop() }
+        },
+        publish: { [weak self] in self?.live = $0 })
     @Published private(set) var pendingLiveCalls: [NativePendingLiveJob] = []
     private var notifiedLiveJobs = Set<String>()
     private var checkingLiveCalls = false
@@ -57,7 +63,7 @@ import Security
                     owner.onUnavailable = { [weak self] in
                         self?.error = NativeServiceError.exited.localizedDescription
                         self?.shell?.clear()
-                        self?.stopLive()
+                        self?.liveAuthorityOwner.unavailable()
                         self?.error = "Local service restarting. Lost Live requires an explicit Start."
                     }
                     return
@@ -89,6 +95,7 @@ import Security
                 } else {
                     client = CompanionClient(descriptor: descriptor, credential: credential, expectedEpoch: connection.authorityEpoch, connectionGuard: allowed)
                 }
+                liveAuthorityOwner.rebind(connection.nonce)
                 if shell?.descriptor.origin != descriptor.origin { shell = CompanionWeb(descriptor: descriptor) }
             }
             guard let client, let shell else { throw CompanionError.invalidConfiguration }
@@ -163,12 +170,12 @@ import Security
     }
     func startLive(pickupJobID: String? = nil) {
         guard let client else { error = "Connect the local service before starting Live voice."; return }
-        if live == nil {
-            live = NativeLiveConversation(authority: client.authenticatedRequestBuilder(), dictationIsCapturing: { [weak self] in
+        let conversation = liveAuthorityOwner.ownerStart {
+            NativeLiveConversation(authority: client.authenticatedRequestBuilder(), dictationIsCapturing: { [weak self] in
                 self?.voice.state.phase == .recording
             }, pickupJobID: pickupJobID, logsDirectory: liveLogsDirectory)
         }
-        live?.start()
+        conversation.start()
     }
     func stopLive() {
         let conversation = live
@@ -187,7 +194,7 @@ import Security
     }
     func logout() async {
         stopRecording("Logout")
-        await live?.stop(); live = nil
+        await live?.stop(); liveAuthorityOwner.clear()
         await client?.revokePageSession(); shell?.clear()
     }
     func shutdown() async {

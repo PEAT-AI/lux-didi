@@ -57,11 +57,17 @@ import DidiOwner
                 switch event {
                 case .active: self.state = self.muted ? .muted : (self.speaking ? .speaking : .listening)
                 case .terminal(let outcome):
+                    if outcome.state == .failed {
+                        self.failure = outcome.code.map { "Live service: " + $0 + "." } ?? "Live service failed."
+                    }
                     self.device.stop()
                     self.state = outcome.state == .failed ? .failed : (outcome.state == .outcome_unknown ? .outcomeUnknown : .ended)
-                case .outcomeUnknown:
+                case .failed(let reason):
+                    self.device.stop(); self.state = .failed
+                    self.failure = reason.errorDescription ?? "Live voice could not start. Check microphone permission, audio devices and configured Live service."
+                case .outcomeUnknown(let reason):
                     self.device.stop(); self.state = .outcomeUnknown
-                    self.failure = "Live outcome is unknown. No automatic reconnect."
+                    self.failure = reason.errorDescription ?? "Live outcome is unknown. No automatic reconnect."
                 default: break
                 }
             }
@@ -82,7 +88,8 @@ import DidiOwner
                 guard let self, self.generation == token else { return }
                 self.device.stop(); await coordinator.close()
                 guard self.generation == token else { return }
-                self.failure = (error as? NativeLiveAudioError)?.errorDescription
+                self.failure = (error as? LiveClientError)?.errorDescription
+                    ?? (error as? NativeLiveAudioError)?.errorDescription
                     ?? "Live voice could not start. Check microphone permission, audio devices and configured Live service."
                 self.state = .failed
             }

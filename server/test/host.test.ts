@@ -8,6 +8,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { pairLocal, startHost, type RuntimeDescriptor } from '../host/runtime.js';
+import { HostLog } from '../host/log.js';
 import { Store } from '../runtime/store.js';
 import { listenService } from '../http/server.js';
 
@@ -377,6 +378,12 @@ for (const scenario of ['both', 'existing-live', 'default', 'absent'] as const) 
       const existingLive = live + '\n';
       if (scenario === 'existing-live') await writeFile(join(effective, 'live.json'), existingLive, { mode: 0o600 });
       host = await startHost({ dataDir: dir, webRoot, configDir: effective, port: 0 });
+      if (scenario === 'both' || scenario === 'existing-live') {
+        const diagnostics = await readFile(join(dir, 'logs', 'host.log'), 'utf8');
+        assert.match(diagnostics, /"event":"config_seeded"/);
+        assert.ok(!diagnostics.includes('SECRET'));
+      }
+
       for (const name of ['live.json', 'mcp.json']) {
         if (scenario === 'absent') await assert.rejects(readFile(join(effective, name)), { code: 'ENOENT' });
         else {
@@ -468,4 +475,43 @@ test('host rejects an unknown connector kind before discovery and names it', asy
     assert.match(error.message, /unknown-kind/);
     return true;
   });
+});
+
+// Small limits exercise the production rotation algorithm without producing host load.
+test('durable diagnostics rotate privately and persist only safe structured events', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'didi-log-'));
+  try {
+    const log = new HostLog(root, 220);
+    for (let n = 0; n < 12; n++) log.event({ event: 'config_seeded', file: 'providers.json', from: 'provider-config' });
+    log.event({ event: 'live_attach_rejected', code: 'internal', message: 'SECRET-message', bearer: 'SECRET-bearer', key: 'SECRET-key' });
+    for (const name of ['host.log', 'host.log.1', 'host.log.2']) {
+      const path = join(root, 'logs', name);
+      assert.equal((await stat(path)).mode & 0o777, 0o600);
+      const text = await readFile(path, 'utf8');
+      assert.ok(!text.includes('SECRET'));
+      for (const line of text.trim().split('\n')) {
+        const record = JSON.parse(line);
+        assert.ok(!Number.isNaN(Date.parse(record.timestamp)));
+        assert.equal(record.pid, process.pid);
+        assert.ok(['config_seeded', 'live_attach_rejected'].includes(record.event));
+      }
+      assert.ok(Buffer.byteLength(text) <= 220);
+    }
+    const newest = await readFile(join(root, 'logs', 'host.log'), 'utf8');
+    assert.match(newest, /live_attach_rejected/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('provider terminal diagnostics retain only bounded class and code', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'didi-terminal-log-'));
+  try {
+    const log = new HostLog(root);
+    for (const code of ['provider_setup_rejected', 'protocol_error']) log.terminal({ state: 'failed', code, message: 'SECRET-provider' });
+    log.terminal({ state: 'failed', code: 'SECRET invalid code' });
+    const text = await readFile(join(root, 'logs', 'host.log'), 'utf8');
+    const records = text.trim().split('\n').map(line => JSON.parse(line));
+    assert.deepEqual(records.map(({ event, class: kind, code }) => ({ event, class: kind, code })),
+      ['provider_setup_rejected', 'protocol_error'].map(code => ({ event: 'host_error', class: 'LiveTerminal', code })));
+    assert.ok(!text.includes('SECRET'));
+  } finally { await rm(root, { recursive: true, force: true }); }
 });

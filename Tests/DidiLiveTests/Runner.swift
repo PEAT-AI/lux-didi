@@ -200,6 +200,13 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
 @main struct NativeLiveTests {
     static func main() async {
         do {
+            let httpReason = LiveClientError.http(status: 403, code: "profile_denied")
+            try require(httpReason.errorDescription == "Live service HTTP 403: profile_denied.", "HTTP status and typed code are visible")
+            let closeReason = LiveClientError.socketClosed(code: 1008, reason: "attach_rejected:internal")
+            try require(closeReason.errorDescription == "Live socket closed (1008): attach_rejected:internal.", "socket close reason is visible")
+            try require(LiveClientError.boundedCloseReason(Data("attach_rejected:internal\nSECRET".utf8)) == nil, "unsafe multiline reason rejected")
+            try require(LiveClientError.transport.errorDescription == nil, "unknown transport keeps generic fallback")
+
             let fixture = try JSONDecoder().decode(Fixture.self, from: FileHandle.standardInput.readDataToEndOfFile())
             let pendingWire = Data("[{\"id\":\"job1\",\"state\":\"in_progress\",\"markdown\":\"Working\"},{\"id\":\"job2\",\"state\":\"failed\",\"markdown\":\"Actual failure\"}]".utf8)
             let pendingCalls = try JSONDecoder().decode([NativePendingLiveJob].self, from: pendingWire)
@@ -219,6 +226,11 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
                 FileHandle.standardOutput.write(report + Data("\n".utf8))
                 await Gate().wait() // parent owns a bounded readiness/kill protocol, no autonomous client requests
                 return
+            }
+            for code in ["provider_setup_rejected", "protocol_error"] {
+                let frame = try LiveSocketTransport.decode(.string("{\"type\":\"terminal\",\"state\":\"failed\",\"code\":\"\(code)\",\"complete\":true}"))
+                guard case .terminal(let terminal, _) = frame else { throw ProbeError.assertion("typed terminal frame") }
+                try require(terminal.code == code, "provider terminal code retained")
             }
             if CommandLine.arguments.contains("--mutation") {
                 // Compiled mutated transport only removes Cookie preflight. Behavioral check must catch that at the real host.
@@ -261,6 +273,13 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
                 return (companion, NativeLiveOperatorHTTP(authority: companion.authenticatedRequestBuilder()))
             }
             let nativeIntent = try await nativeHTTP.beginIntent()
+            do {
+                _ = try await nativeHTTP.snapshot(sessionID: "00000000-0000-4000-8000-000000000000", for: nativeIntent)
+                throw ProbeError.assertion("missing native snapshot must fail")
+            } catch let error as LiveClientError {
+                try require(error == .http(status: 404, code: "NOT_FOUND"), "actual native HTTP preserves status and typed code")
+            }
+
             let pickupID = "10000000-0000-4000-8000-000000000001"
             let pickedHTTP = await MainActor.run {
                 NativeLiveOperatorHTTP(authority: companion.authenticatedRequestBuilder(), pickupJobID: pickupID)
@@ -401,6 +420,15 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             let external = try await LiveSocketTransport(requests: TestRequests(fixture: fixture, alteration: "")).connect(
                 LiveSocketBinding(origin: frozen.origin, sessionID: activeSnapshot.liveSessionId, authorityEpoch: frozen.authorityEpoch, profileIdentity: frozen.profileIdentity))
             guard case .marker(let externalReady) = try await external.receive(), externalReady.kind == .ready else { throw ProbeError.assertion("external consumed snapshot") }
+            let duplicate = try await LiveSocketTransport(requests: TestRequests(fixture: fixture, alteration: "")).connect(
+                LiveSocketBinding(origin: frozen.origin, sessionID: activeSnapshot.liveSessionId, authorityEpoch: frozen.authorityEpoch, profileIdentity: frozen.profileIdentity))
+            do {
+                _ = try await duplicate.receive()
+                throw ProbeError.assertion("duplicate attach must close")
+            } catch let error as LiveClientError {
+                try require(error == .socketClosed(code: 1008, reason: "attach_rejected:already_attached"), "actual native socket preserves close reason")
+            }
+            await duplicate.cancel()
             try await activeReplay.retryCreate()
             try require(await activeReplay.state == .outcomeUnknown(.unavailable), "active consumed replay remains honest unknown")
             try require(await activeSockets.attempts == 0, "active consumed replay zero automatic attach")

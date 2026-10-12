@@ -196,8 +196,8 @@ class Session implements LiveVoiceSession {
     const code = (error as Error & { code?: unknown }).code;
     this.finish(code === 'WS_ERR_UNSUPPORTED_MESSAGE_LENGTH' ? 'incoming_limit' : 'transport_error');
   };
-  private readonly onClose = () => {
-    if (!this.terminal) this.finish('remote_closed');
+  private readonly onClose = (code: number) => {
+    if (!this.terminal) this.finish(code === 1007 && !this.isReady ? 'provider_setup_rejected' : 'remote_closed');
     this.cleanup();
   };
   private readonly onMessage = (data: RawData) => {

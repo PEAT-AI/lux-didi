@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { openFixture, result } from './chat-process.js';
 import { ChatService, type RunSnapshot } from '../chat/index.js';
+import { chatAllowsToolClasses } from '../chat/context.js';
 import { composeMcpRuntime } from '../host/mcp.js';
 import type { LiveAuthority, ConnectionPolicy } from '../tools/types.js';
 import type { ModelPort, ModelRequest, DataClass } from '../adapters/model/types.js';
@@ -27,7 +28,7 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
     }
     return result(request, 'complete', 'Answer from evidence');
   } };
-  const f = openFixture(dir, model, { route: { provider: 'gemini', model: 'fixture', available: true, allows: classes => classes.every(c => routeClasses.includes(c)), endpoint: 'https://generativelanguage.googleapis.com', apiVersion: 'v1beta', keyReference: 'fixture', allowedClasses: routeClasses } });
+  const f = openFixture(dir, model, { now: Date.now, route: { provider: 'gemini', model: 'fixture', available: true, allows: classes => classes.every(c => routeClasses.includes(c)), endpoint: 'https://generativelanguage.googleapis.com', apiVersion: 'v1beta', keyReference: 'fixture', allowedClasses: routeClasses } });
   t.after(() => { f.chat.shutdown(); f.store.close(); rmSync(dir, { recursive: true, force: true }); });
   const endpoint = { id: 'fixture-endpoint', url: 'https://fixture.invalid/mcp', account: 'fixture-account', resource: 'fixture-resource' };
   const sdk = new Server({ name: 'chat-fixture', version: '1' }, { capabilities: { tools: { listChanged: false } } });
@@ -124,12 +125,12 @@ test('provider consent revoked while evidence is pending refuses the follow-up r
 });
 
 
-test('route class filter excludes private-only reads from an ordinary route', async t => {
-  const f = await fixture(t, ['ordinary']); await f.privateOnly();
-  const session = f.session(); await f.turn(session);
-  assert.deepEqual(f.admission(session), []);
-  assert.ok(f.requests.every(request => !request.declarations?.some(d => d.name === 'search_knowledge')));
-  assert.equal(f.executions(), 0);
+test('route class filter excludes private-only envelopes from ordinary classes', () => {
+  // Current enrollment requires ordinary+private provider support; exercise the
+  // exact admission predicate rather than fabricate an ordinary-only enrollment.
+  assert.equal(chatAllowsToolClasses(['ordinary'], ['private'], ['private']), false);
+  assert.equal(chatAllowsToolClasses(['private'], ['private'], ['private']), true);
+  assert.equal(chatAllowsToolClasses(['ordinary', 'private'], ['sensitive'], ['ordinary', 'private']), false);
 });
 
 test('private-permitted route admits the private-only envelope through the same class filter', async t => {

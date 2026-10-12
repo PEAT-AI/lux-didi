@@ -28,6 +28,9 @@ export interface ContextTrace {
   historyOmissionReason: 'compiler_budget_or_limit' | null;
 }
 /** Domain reads finish in one synchronous Store transaction before compilation. */
+export function chatAllowsToolClasses(permitted: readonly DataClass[], sourceClasses: readonly DataClass[], routeClasses: readonly DataClass[]): boolean {
+  return sourceClasses.every(c => permitted.includes(c)) && routeClasses.every(c => permitted.includes(c));
+}
 export function chatCapabilities(registry: readonly ToolDefinition[], sources: ChatConfig['context']['sources']) {
   const { declarations } = declarationsFor(registry);
   return createCapabilitySnapshot(registry.map((tool, i) => ({ ...tool, ...declarations[i]! })), sources);

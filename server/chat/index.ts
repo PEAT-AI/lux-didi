@@ -10,7 +10,7 @@ import { definitionsInTransaction } from '../tools/index.js';
 import { canonicalJSON } from '../tools/canonical.js';
 import type { LiveAuthority, RunAcceptance, RunSnapshot as OwnerRunSnapshot } from '../tools/types.js';
 import type { ToolEvidence } from './types.js';
-import { assemble, classify, ContextFailure, type ContextTrace } from './context.js';
+import { assemble, chatAllowsToolClasses, classify, ContextFailure, type ContextTrace } from './context.js';
 import { Subscription } from './subscription.js';
 import { memorySelectionSnapshot, normalizeSelectedMemory, selectedEvidenceId, MAX_SERIALIZED_SELECTION_BYTES, type RunSelection } from './memorySelection.js';
 import { ChatError, type AcceptInput, type ChatConfig, type ChatEvent, type ChatPort, type ChatRecoveryContext, type ConversationEvent, type Outcome, type RunSnapshot, type EnrollInput, type ConversationStatus, type MemorySelectionSnapshot } from './types.js';
@@ -86,8 +86,7 @@ export class ChatService implements ChatPort {
         const row = tx.get('SELECT policy_json FROM tool_connections WHERE owner_id=? AND connection_id=?', [context.assistantId, id]);
         if (!row) return false;
         const policy = JSON.parse(String(row.policy_json)) as import('../tools/types.js').ConnectionPolicy;
-        return policy.sourcePolicy.allowedClasses.every(c => permitted.includes(c))
-          && policy.route.allowedClasses.every(c => permitted.includes(c));
+        return chatAllowsToolClasses(permitted, policy.sourcePolicy.allowedClasses, policy.route.allowedClasses);
       });
       const consent = this.#consent(tx, run.sessionId, context);
       const acceptance: RunAcceptance = { ownerId: context.assistantId, actorId: context.clientId, runId: run.runId,

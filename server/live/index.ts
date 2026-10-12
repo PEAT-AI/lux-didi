@@ -1,7 +1,7 @@
 import * as memory from '../domain/memory.js';
 import * as labels from '../domain/labels.js';
 import { definitionsInTransaction } from '../tools/index.js';
-import { LiveToolJobs, type ToolJob } from '../tools/jobs.js';
+import { LiveToolJobs, type ToolJob, type JobTimer } from '../tools/jobs.js';
 import { declarationsFor, runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
 import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';
@@ -24,6 +24,10 @@ import {
 const pickupInstruction = 'The user has just picked up. Deliver the pending job result first, briefly, then resume the conversation. If the outcome failed or is unknown, state that truthfully.';
 
 interface ActiveSession {
+  generation: number; attempts: number; rebuilding: boolean;
+  request: LiveVoiceRequest; deadlineMs: number; deadlineAt: number; idleAt: number; goAwayUntil: number | undefined;
+  sessionTimer: ReturnType<JobTimer> | undefined; idleTimer: ReturnType<JobTimer> | undefined;
+  pendingCalls: Map<string, string>;
   registry: readonly ToolDefinition[];
   host: HostContext | undefined;
   toolStep: number;
@@ -88,6 +92,7 @@ class OutputChannel {
     if (waiter) { this.#waiter = undefined; waiter({ value: chunk, done: false }); return 'ok'; }
     this.#queue.push(chunk); this.#bytes += size; return 'ok';
   }
+  dropAudio(): void { this.#queue = this.#queue.filter(chunk => chunk.kind !== 'audio'); this.#bytes = 0; }
   /** Graceful end: already queued committed markers are still delivered, then done. */
   close(): void {
     if (this.#closed) return;
@@ -150,6 +155,50 @@ export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: 
   return { remembered: true, entryId: entry.id };
 }
 
+/** Scrub only the deleted record, preserving the rest of the frozen instruction. */
+function scrubMemorySnapshots(tx: Transaction, entryId: string): { id: string; system: string }[] {
+  const scrubbed: { id: string; system: string }[] = [];
+  if (!tx.get("SELECT name FROM sqlite_master WHERE type='table' AND name='live_sessions'", [])) return scrubbed;
+  for (const row of tx.all('SELECT live_session_id,accepted_prompt_snapshot,prompt_identity,profile_identity FROM live_sessions', [])) {
+    if (row['accepted_prompt_snapshot'] === null) continue;
+    const snapshot = JSON.parse(String(row['accepted_prompt_snapshot'])) as AcceptedPromptSnapshot;
+    let removed = false;
+    const system = snapshot.system.replace(/<memory-record>\n([^\n]*)\n<\/memory-record>/g, (block, json: string) => {
+      const record = JSON.parse(json) as { id: string };
+      if (record.id !== entryId) return block;
+      removed = true; return '';
+    });
+    if (!removed) continue;
+    const selectedIds = snapshot.memory?.selectedIds.filter(id => id !== entryId) ?? [];
+    const omitted = snapshot.memory?.omitted.filter(record => record.id !== entryId) ?? [];
+    const memory = { status: omitted.length ? selectedIds.length ? 'partial' : 'omitted' : selectedIds.length ? 'selected' : 'empty', selectedIds, omitted } as const;
+    const updated = { ...snapshot, system, memory };
+    const dataClass = classes.find(dataClass => identity({ text: snapshot.system, dataClass }) === row['prompt_identity']);
+    if (!dataClass) throw new LiveError('invalidated');
+    const promptIdentity = identity({ text: system, dataClass });
+    const id = String(row['live_session_id']);
+    const grant = tx.get('SELECT chosen_input_class FROM live_grants WHERE live_session_id=?', [id]);
+    if (!grant) throw new LiveError('invalidated');
+    const fingerprint = identity({ inputClass: String(grant['chosen_input_class']), profile: String(row['profile_identity']), prompt: promptIdentity, pickupJobId: snapshot.pickup?.jobId ?? null });
+    tx.run('UPDATE live_sessions SET accepted_prompt_snapshot=?,memory_provenance=?,prompt_identity=?,fingerprint=? WHERE live_session_id=?',
+      [JSON.stringify(updated), JSON.stringify(memory), promptIdentity, fingerprint, id]);
+    scrubbed.push({ id, system });
+  }
+  return scrubbed;
+}
+
+// Host composition and HTTP share the canonical Store object. Keep active-handle
+// ownership here rather than exposing the manager through transport projections.
+const memoryOwners = new WeakMap<LiveStorePort, LiveSessionOwner>();
+
+/** Stage redaction in the caller's transaction, then publish active changes after commit. */
+export function redactDeletedMemorySnapshots(store: LiveStorePort, tx: Transaction, entryId: string): { liveSessionRetainsUntilRebuild: boolean; publish: () => void } {
+  const owner = memoryOwners.get(store);
+  if (owner) return owner.redactDeletedMemory(tx, entryId);
+  scrubMemorySnapshots(tx, entryId);
+  return { liveSessionRetainsUntilRebuild: false, publish: () => {} };
+}
+
 export class LiveSessionOwner {
   readonly #jobs: LiveToolJobs;
   readonly #tools: LiveToolsComposition | undefined;
@@ -164,6 +213,7 @@ export class LiveSessionOwner {
   readonly #active = new Map<string, ActiveSession>();
   #revision = 1;
   #invalidated = false;
+  #providerMemory = new WeakMap<ActiveSession, Map<string, number>>();
   #closed = false;
 
   constructor(config: LiveOwnerConfig) {
@@ -185,6 +235,7 @@ export class LiveSessionOwner {
     });
     this.#jobs = new LiveToolJobs(this.#store, this.#now);
     this.#profileIdentity = liveProfileIdentity(this.#profile);
+    memoryOwners.set(this.#store, this);
     this.recover();
   }
 
@@ -324,7 +375,7 @@ export class LiveSessionOwner {
       const terminal = parseTerminal(row.terminal_outcome);
       const pastSession: LivePageProjection['pastSession'] = terminal || !handle
         ? { outcome: terminal?.state ?? 'unknown', endedAt: terminal ? Number(row.terminal_at) : null, lastObservedAt: Number(row.updated_at) } : undefined;
-      const state: LivePageProjection['state'] = pastSession ? (!terminal && row.lifecycle === 'accepted' ? 'idle' : 'ended') : handle?.thinking ? 'thinking' : handle?.speaking ? 'speaking' : handle?.consumerState === 'attached' ? 'listening' : handle ? 'ended' : 'idle';
+      const state: LivePageProjection['state'] = pastSession ? (!terminal && row.lifecycle === 'accepted' ? 'idle' : 'ended') : handle?.rebuilding ? 'rebuilding' : handle?.thinking ? 'thinking' : handle?.speaking ? 'speaking' : handle?.consumerState === 'attached' ? 'listening' : handle ? 'ended' : 'idle';
       const rows = tx.all('SELECT journal_id,kind,text,tool_json FROM live_journal WHERE live_session_id=? AND journal_id>? ORDER BY journal_id LIMIT 100', [String(row.live_session_id), cursor]);
       const entries: LivePageProjection['entries'] = [];
       for (const item of rows) {
@@ -333,7 +384,8 @@ export class LiveSessionOwner {
         else if (kind === 'toolCall' || kind === 'toolResult') {
           const tool = JSON.parse(String(item.tool_json)) as LiveToolProjection;
           entries.push({ seq, kind, tool: kind === 'toolCall' ? { name: tool.name, status: 'called' } : { name: tool.name, status: tool.status, markdown: tool.markdown, sources: tool.sources.map(source => ({ title: source.title, ...(source.url ? { url: source.url } : {}) })) } });
-        } else if (kind === 'interrupted' || kind === 'turnComplete' || kind === 'terminal') entries.push({ seq, kind });
+        } else if (kind === 'continuity') entries.push({ seq, kind, ...JSON.parse(String(item.text)) });
+        else if (kind === 'interrupted' || kind === 'turnComplete' || kind === 'terminal') entries.push({ seq, kind });
       }
       return { state, ...(pastSession ? { pastSession } : {}), since: Number(row.created_at), memory: memoryProjection(row['memory_provenance']), ...(jobs.length ? { jobs } : {}), entries, cursor: rows.length ? Number(rows[rows.length - 1]!.journal_id) : cursor };
     });
@@ -399,6 +451,31 @@ export class LiveSessionOwner {
     this.#armExpiry();
     if (prepared === 'expired') throw new LiveError('expired');
     return this.#open(input.liveSessionId, prepared.inputClass, revision, prepared.acceptedPrompt, context);
+  }
+
+  /** The HTTP delete owns the transaction; publish handle changes only after it commits. */
+  redactDeletedMemory(tx: Transaction, entryId: string): { liveSessionRetainsUntilRebuild: boolean; publish: () => void } {
+    let liveSessionRetainsUntilRebuild = [...this.#active.values()].some(handle => !handle.terminal && this.#providerMemory.get(handle)?.get(entryId) === handle.generation);
+    const publish: (() => void)[] = [];
+    for (const snapshot of scrubMemorySnapshots(tx, entryId)) {
+      const handle = this.#active.get(snapshot.id);
+      if (!handle || handle.terminal) continue;
+      liveSessionRetainsUntilRebuild = true;
+      // A staging handle lets the normal journal path maintain the same counters
+      // without changing an active request if another owner subsequently rolls back.
+      const staged = { ...handle, request: { ...handle.request, system: { ...handle.request.system, text: snapshot.system } } };
+      const sequence = this.#persist(staged, { type: 'continuity', sequence: 0, text: JSON.stringify({ event: 'memory_deleted', entryId }) }, 'continuity', tx);
+      if (sequence === 'overflow') throw new LiveError('persistence_failed');
+      publish.push(() => {
+        handle.request = staged.request;
+        handle.journalEvents = staged.journalEvents;
+        handle.journalBytes = staged.journalBytes;
+        const retained = this.#providerMemory.get(handle) ?? new Map<string, number>();
+        retained.set(entryId, handle.generation);
+        this.#providerMemory.set(handle, retained);
+      });
+    }
+    return { liveSessionRetainsUntilRebuild, publish: () => { for (const apply of publish) apply(); } };
   }
 
   /** Explicit host entry point: synchronous in-memory invalidation and adapter abort. */
@@ -478,16 +555,21 @@ export class LiveSessionOwner {
       system: { text: system, dataClass: dataClasses[dataClasses.length - 1]! }, history: history ?? [], dataClasses,
       ...(this.#profile.language !== undefined ? { languageCode: this.#profile.language } : {}),
       ...(declarations.length ? { tools: declarations } : {}) };
+    const deadlineMs = Date.now() + this.#profile.limits.sessionMs;
+    const deadlineAt = this.#now() + this.#profile.limits.sessionMs;
     let session: LiveVoiceSession;
     try {
       // Absolute wall clock for the adapter; the injected clock is the owner's own durable order.
-      session = this.#voice.open(request, { signal: abort.signal, deadlineMs: Date.now() + this.#profile.limits.sessionMs });
+      session = this.#voice.open(request, { signal: abort.signal, deadlineMs, limits: this.#profile.limits });
     } catch (error) {
       this.#store.transaction(tx => this.#terminalInTx(tx, liveSessionId, { state: 'not_started' }, false, this.#now(), 'ended', null));
       throw error;
     }
     this.#store.transaction(tx => tx.run("UPDATE live_sessions SET lifecycle='active', updated_at=? WHERE live_session_id=?", [this.#now(), liveSessionId]));
     const handle: ActiveSession = {
+      generation: 0, attempts: 0, rebuilding: false, request: structuredClone(request),
+      deadlineMs, deadlineAt, idleAt: this.#now() + this.#profile.limits.idleMs, goAwayUntil: undefined,
+      sessionTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
       registry, host, toolStep: 0, seenIds: new Set(), thinking: false, speaking: false, pendingCallIds: new Set(),
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
@@ -499,6 +581,7 @@ export class LiveSessionOwner {
       catch (error) { handle.done.reject(error); }
     };
     session.ready.then(() => {
+      if (handle.generation !== 0 || this.#settled(handle)) return;
       handle.ready = true;
       const job = this.#jobs.forSession(liveSessionId);
       if (job) { job.delivered = true; this.#jobs.save(job); }
@@ -506,6 +589,8 @@ export class LiveSessionOwner {
     session.done.catch(() => {});
     this.#active.set(liveSessionId, handle);
     void handle.done.promise.catch(() => {});
+    handle.sessionTimer = this.#schedule(() => this.#settle(handle, { state: 'failed', code: 'session_timeout' }, false, 'ended', null), this.#profile.limits.sessionMs);
+    this.#armIdle(handle, this.#profile.limits.idleMs);
     void this.#consume(handle);
     const ready = session.ready.then(() => this.#readSnapshot(liveSessionId));
     void ready.catch(() => {});
@@ -515,7 +600,7 @@ export class LiveSessionOwner {
       output: handle.consumer,
       done: handle.done.promise,
       sendAudio: ({ pcm }) => this.#sendAudio(handle, pcm),
-      endAudioStream: () => { this.#guardHandle(handle); handle.session.endAudioStream(); },
+      endAudioStream: () => { if (handle.rebuilding) return; this.#guardHandle(handle); handle.session.endAudioStream(); },
       close: () => { handle.session.close(); },
       detach: () => this.#detach(handle),
       overflow: () => {
@@ -526,9 +611,62 @@ export class LiveSessionOwner {
     };
   }
 
+  #armIdle(handle: ActiveSession, remainingMs: number): void {
+    if (this.#settled(handle)) return;
+    handle.idleTimer?.cancel();
+    handle.idleAt = this.#now() + remainingMs;
+    handle.idleTimer = this.#schedule(() => this.#settle(handle, { state: 'failed', code: 'idle_timeout' }, false, 'ended', null), remainingMs);
+  }
+
+  #continuity(handle: ActiveSession, event: 'rebuilding' | 'resumed', reason?: string): void {
+    const journalSequence = this.#persist(handle, { type: 'continuity', sequence: 0, text: JSON.stringify({ event, ...(reason ? { reason } : {}) }) }, 'continuity');
+    if (journalSequence === 'overflow') { this.#settle(handle, { state: 'journal_limit' }, false, 'ended', null); return; }
+    this.#pushChunk(handle, { kind: 'marker', marker: { kind: 'continuity', event, ...(reason ? { reason } : {}), sequence: null, journalSequence, text: null, finished: null, value: null } });
+  }
+
+  #rebuild(handle: ActiveSession, reason: string): boolean {
+    const remaining = handle.deadlineAt - this.#now(), idle = handle.idleAt - this.#now();
+    const window = Math.min(10_000, handle.goAwayUntil === undefined ? 10_000 : handle.goAwayUntil - this.#now());
+    const saved = this.#store.transaction(tx => tx.get('SELECT resumption_handle FROM live_sessions WHERE live_session_id=?', [handle.liveSessionId]));
+    const resumptionHandle = saved?.['resumption_handle'];
+    if (handle.attempts >= 2 || typeof resumptionHandle !== 'string' || !resumptionHandle || remaining <= 0 || idle <= 0 || window <= 0) {
+      this.#settle(handle, { state: 'failed', code: 'resume_failed' }, false, 'ended', null);
+      return false;
+    }
+    handle.attempts += 1; handle.generation += 1; handle.rebuilding = true; handle.ready = false;
+    handle.thinking = false; handle.speaking = false;
+    this.#store.transaction(tx => tx.run('UPDATE live_sessions SET connection_generation=? WHERE live_session_id=?', [handle.generation, handle.liveSessionId]));
+    handle.consumer.dropAudio();
+    // Fence before closing: neither iterator callbacks nor pending async tool work can cross the cut.
+    handle.session.close();
+    for (const id of handle.pendingCallIds) {
+      const tool: LiveToolProjection = { callId: id, name: handle.pendingCalls.get(id) ?? 'unknown', status: 'error', code: 'tool_call_lost_on_resume', markdown: 'Tool call lost when the voice connection resumed.', sources: [] };
+      const journalSequence = this.#persist(handle, { type: 'toolResult', sequence: 0, tool }, 'toolResult');
+      if (journalSequence === 'overflow') { this.#settle(handle, { state: 'journal_limit' }, false, 'ended', null); return false; }
+      this.#pushChunk(handle, { kind: 'marker', marker: { kind: 'toolResult', sequence: null, journalSequence, text: null, finished: null, value: null, tool } });
+    }
+    handle.pendingCallIds.clear(); handle.pendingCalls.clear();
+    this.#continuity(handle, 'rebuilding', reason);
+    if (this.#settled(handle)) return false;
+    try {
+      handle.session = this.#voice.open({ ...structuredClone(handle.request), resumptionHandle }, {
+        signal: handle.abort.signal, deadlineMs: handle.deadlineMs, idleResetMs: this.#profile.limits.idleMs,
+        limits: { ...this.#profile.limits, sessionMs: Math.ceil(remaining), idleMs: Math.ceil(idle), handshakeMs: Math.max(1, Math.ceil(Math.min(this.#profile.limits.handshakeMs, window, remaining, idle))) },
+      });
+      void handle.session.ready.catch(() => {}); void handle.session.done.catch(() => {});
+      handle.goAwayUntil = undefined;
+      return true;
+    } catch {
+      this.#settle(handle, { state: 'failed', code: 'resume_failed' }, false, 'ended', null);
+      return false;
+    }
+  }
+
   #sendAudio(handle: ActiveSession, pcm: Uint8Array): void {
+    if (handle.rebuilding) return;
     this.#guardHandle(handle);
     if (!(pcm instanceof Uint8Array) || !pcm.length || pcm.length % 2 !== 0) throw new LiveError('invalid_audio');
+    this.#armIdle(handle, this.#profile.limits.idleMs);
     handle.session.sendAudio({ pcm, dataClass: handle.inputClass });
   }
 
@@ -556,13 +694,31 @@ export class LiveSessionOwner {
   }
 
   async #consume(handle: ActiveSession): Promise<void> {
+    while (!this.#settled(handle)) {
+    const session = handle.session, generation = handle.generation;
+    let outcome: LiveVoiceOutcome | undefined;
     try {
-      for await (const event of handle.session.events) {
-        if (this.#settled(handle)) break;
+      for await (const event of session.events) {
+        if (this.#settled(handle) || generation !== handle.generation) break;
+        if (event.type === 'resumptionHandle') {
+          this.#store.transaction(tx => tx.run('UPDATE live_sessions SET resumption_handle=? WHERE live_session_id=?', [event.handle, handle.liveSessionId]));
+          continue;
+        }
+        if (event.type === 'goAway') {
+          handle.goAwayUntil = this.#now() + event.timeLeftMs;
+          outcome = { status: 'failed', code: 'go_away', recoverable: true };
+          break;
+        }
+        if (event.type === 'ready' && handle.rebuilding) {
+          handle.rebuilding = false; handle.ready = true;
+          this.#continuity(handle, 'resumed');
+          continue;
+        }
+        if (event.type !== 'ready' && event.type !== 'outcome') this.#armIdle(handle, this.#profile.limits.idleMs);
         if (event.type === 'toolCall') {
-          for (const call of event.calls) handle.pendingCallIds.add(call.id);
-          void this.#toolBatch(handle, event).catch(() => {
-            if (this.#settled(handle)) return;
+          for (const call of event.calls) { handle.pendingCallIds.add(call.id); handle.pendingCalls.set(call.id, call.name); }
+          void this.#toolBatch(handle, event, generation).catch(() => {
+            if (this.#settled(handle) || generation !== handle.generation) return;
             const responses = event.calls.filter(call => handle.pendingCallIds.has(call.id)).map(call => ({ id: call.id, name: call.name, response: { error: 'tool_processing_failed' } }));
             try { if (responses.length) handle.session.sendToolResponse({ responses }); } catch { /* transport may have terminated */ }
             for (const call of event.calls) handle.pendingCallIds.delete(call.id);
@@ -573,7 +729,7 @@ export class LiveSessionOwner {
         if (event.type === 'interrupted' || event.type === 'turnComplete' || event.type === 'generationComplete') handle.speaking = false;
         if (event.type === 'waitingForInput') { handle.thinking = !event.value; if (event.value) handle.speaking = false; }
         if (event.type === 'audio') { handle.thinking = false; handle.speaking = true; this.#pushChunk(handle, { kind: 'audio', pcm: event.pcm }); continue; }
-        if (event.type === 'outcome') { handle.adapterOutcome = event.outcome; continue; }
+        if (event.type === 'outcome') { outcome = event.outcome; continue; }
         const kind = journalKind(event.type);
         if (kind === null) continue;
         const persisted = this.#persist(handle, event, kind);
@@ -587,41 +743,47 @@ export class LiveSessionOwner {
     if (!handle.terminal) {
       if (handle.persistFailure) { handle.abort.abort(); handle.done.reject(handle.persistFailure); }
       else {
-        const outcome = handle.adapterOutcome ?? await handle.session.done.catch(() => undefined);
-        if (outcome) this.#settle(handle, { state: outcome.status, code: outcome.code }, outcome.status === 'closed', 'ended', null);
+        outcome ??= await session.done.catch(() => undefined);
+        if (outcome?.recoverable && this.#rebuild(handle, outcome.code)) continue;
+        if (handle.terminal) break;
+        if (outcome) this.#settle(handle, { state: outcome.status, code: handle.rebuilding && outcome.code !== 'session_timeout' && outcome.code !== 'idle_timeout' && outcome.code !== 'deadline' || outcome.recoverable ? 'resume_failed' : outcome.code === 'deadline' ? 'session_timeout' : outcome.code }, outcome.status === 'closed', 'ended', null);
         else this.#settle(handle, { state: 'outcome_unknown' }, false, 'ended', null);
       }
+    }
+    break;
     }
     this.#active.delete(handle.liveSessionId);
     handle.loopDone.resolve();
   }
 
-  async #toolBatch(handle: ActiveSession, event: Extract<LiveVoiceEvent, { type: 'toolCall' }>): Promise<void> {
+  async #toolBatch(handle: ActiveSession, event: Extract<LiveVoiceEvent, { type: 'toolCall' }>, generation: number): Promise<void> {
     handle.thinking = true;
     let inlineJob: ToolJob | undefined;
     const retainUndelivered = () => {
       if (inlineJob) { inlineJob.deferred = true; this.#jobs.save(inlineJob); }
     };
     const publish = (kind: 'toolCall' | 'toolResult', tool: LiveToolProjection) => {
-      if (this.#settled(handle)) return;
+      if ((this.#settled(handle) || generation !== handle.generation)) return;
       const sequence = this.#persist(handle, { type: kind, sequence: event.sequence, tool }, kind);
       if (sequence === 'overflow') { this.#settle(handle, { state: 'journal_limit' }, false, 'ended', { kind, sequence: event.sequence }); return; }
       this.#pushChunk(handle, { kind: 'marker', marker: { kind, sequence: event.sequence, journalSequence: sequence, text: null, finished: null, value: null, tool } });
     };
     for (const call of event.calls) publish('toolCall', { name: call.name, status: 'error', markdown: '', sources: [] });
-    if (this.#settled(handle)) return;
+    if ((this.#settled(handle) || generation !== handle.generation)) return;
     let responses = event.calls.map(call => ({ id: call.id, name: call.name, response: { error: 'Tool not granted' } as JsonObject }));
     let projections: LiveToolProjection[] = event.calls.map(call => ({ name: call.name, status: 'error', markdown: 'Tool not granted', sources: [] }));
     if (this.#tools && handle.host) {
       const authority = this.lookupAuthority(handle.host.runId);
       if (!authority) return;
       const dispatchGate = await this.#tools.owner.resultGate.authorize(handle.host, [], [handle.inputClass], handle.abort.signal);
+      if (this.#settled(handle) || generation !== handle.generation) return;
       const host = structuredClone(handle.host), step = ++handle.toolStep;
       const jobAbort = new AbortController();
-      const control = { signal: jobAbort.signal, deadlineMs: Date.now() + this.#profile.limits.sessionMs };
+      const control = { signal: jobAbort.signal, deadlineMs: handle.deadlineMs };
       const execution = await this.#jobs.run(host, authority, this.#profile.limits.toolDeferralMs, this.#schedule, async () => {
+        if (this.#settled(handle) || generation !== handle.generation) throw new LiveError('invalidated');
         const raw = await runToolCalls(this.#tools!.owner, event.calls, { registry: handle.registry, host,
-          authority: { isCurrent: async (_host, _tool, signal) => dispatchGate.state === 'allowed' && !signal.aborted }, control,
+          authority: { isCurrent: async (_host, _tool, signal) => dispatchGate.state === 'allowed' && !signal.aborted && generation === handle.generation && !this.#settled(handle) }, control,
           step, contentIndex: 0, seenIds: handle.seenIds, baseClasses: [handle.inputClass] });
         // Completion never sends to the old transport. With no active authority, retain references for pickup.
         if (!this.lookupAuthority(host.runId) && !this.lookupJobAuthority(host.runId)) return raw;
@@ -629,7 +791,7 @@ export class LiveSessionOwner {
         return gated;
       });
       if (!execution.result) {
-        if (!this.#settled(handle)) {
+        if (!(this.#settled(handle) || generation !== handle.generation)) {
           const status = execution.job.state === 'in_progress' ? 'in progress' : execution.job.state;
           for (const call of event.calls) publish('toolResult', { name: call.name, status: 'error',
             markdown: status === 'in progress' ? "I'm on it, I'll call you when it's done." : `Background job ${status}.`, sources: [] });
@@ -643,7 +805,7 @@ export class LiveSessionOwner {
       }
       inlineJob = execution.job;
       const batch = execution.result;
-      if (this.#settled(handle)) { retainUndelivered(); return; }
+      if ((this.#settled(handle) || generation !== handle.generation)) { retainUndelivered(); return; }
       responses = event.calls.map((call, index) => {
         const accepted = batch.accepted.find(result => result.binding.callId === call.id && result.binding.name === call.name);
         const record = batch.tools[index];
@@ -659,10 +821,10 @@ export class LiveSessionOwner {
         return { id: call.id, name: call.name, response: completed ? accepted.response : { error: reason } };
       });
     }
-    if (this.#settled(handle)) { retainUndelivered(); return; }
+    if ((this.#settled(handle) || generation !== handle.generation)) { retainUndelivered(); return; }
     for (const [index, projection] of projections.entries()) if (handle.pendingCallIds.has(event.calls[index]!.id)) publish('toolResult', projection);
     responses = responses.filter(response => handle.pendingCallIds.has(response.id));
-    if (!this.#settled(handle)) {
+    if (!(this.#settled(handle) || generation !== handle.generation)) {
       try {
         if (responses.length) {
           handle.session.sendToolResponse({ responses });
@@ -678,24 +840,25 @@ export class LiveSessionOwner {
     handle.thinking = handle.pendingCallIds.size > 0;
   }
 
-  #persist(handle: ActiveSession, event: LiveVoiceEvent | { type: 'toolCall' | 'toolResult'; sequence: number; tool: LiveToolProjection }, kind: JournalKind): number | 'overflow' {
+  #persist(handle: ActiveSession, event: { type: 'continuity'; sequence: number; text: string } | LiveVoiceEvent | { type: 'toolCall' | 'toolResult'; sequence: number; tool: LiveToolProjection }, kind: JournalKind, transaction?: Transaction): number | 'overflow' {
     const text = 'text' in event ? event.text : null;
     const finished = 'finished' in event && event.finished !== undefined ? (event.finished ? 1 : 0) : null;
     const value = event.type === 'waitingForInput' ? (event.value ? 1 : 0) : null;
     const toolJSON = 'tool' in event ? JSON.stringify(event.tool) : null;
-    const bytes = toolJSON ? Buffer.byteLength(toolJSON) : retainedBytes(kind, text);
+    const bytes = toolJSON ? Buffer.byteLength(toolJSON) : kind === 'continuity' ? Buffer.byteLength(text ?? '') : retainedBytes(kind, text);
     const limits = this.#profile.limits;
     if (handle.journalEvents + 1 > limits.journalMaxEvents || handle.journalBytes + bytes > limits.journalMaxBytes) return 'overflow';
     const now = this.#now();
     const events = handle.journalEvents + 1;
     const total = handle.journalBytes + bytes;
-    const journalSequence = this.#store.transaction(tx => {
+    const persist = (tx: Transaction) => {
       tx.run('INSERT INTO live_journal(live_session_id, provider_sequence, kind, text, finished, value, tool_json, terminal_outcome, rejected_kind, rejected_sequence, payload_bytes, arrived_at) VALUES (?,?,?,?,?,?,?,NULL,NULL,NULL,?,?)',
         [handle.liveSessionId, event.sequence, kind, text, finished, value, toolJSON, bytes, now]);
       tx.run('UPDATE live_sessions SET journal_events=?, journal_bytes=?, ready=CASE WHEN ?=1 THEN 1 ELSE ready END, updated_at=? WHERE live_session_id=?',
         [events, total, kind === 'ready' ? 1 : 0, now, handle.liveSessionId]);
       return Number(tx.get('SELECT journal_id FROM live_journal WHERE live_session_id=? ORDER BY journal_id DESC LIMIT 1', [handle.liveSessionId])!['journal_id']);
-    });
+    };
+    const journalSequence = transaction ? persist(transaction) : this.#store.transaction(persist);
     handle.journalEvents = events;
     handle.journalBytes = total;
     return journalSequence;
@@ -706,6 +869,8 @@ export class LiveSessionOwner {
   #settle(handle: ActiveSession, outcome: LiveTerminalOutcome, complete: boolean, consumerState: LiveConsumerState, rejected: { kind: JournalKind; sequence: number } | null): void {
     if (handle.terminal) return;
     handle.terminal = true;
+    handle.sessionTimer?.cancel(); handle.idleTimer?.cancel();
+    handle.session.close();
     let journalSequence: number;
     try {
       journalSequence = this.#store.transaction(tx => this.#terminalInTx(tx, handle.liveSessionId, outcome, complete, this.#now(), consumerState, rejected));

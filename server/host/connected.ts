@@ -1,7 +1,7 @@
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
 import type { DomainPort } from '../contracts/domain.js';
 import type { Store } from '../runtime/store.js';
-import { ChatService } from '../chat/index.js';
+import { ChatService, type ChatToolsComposition } from '../chat/index.js';
 import { loadProviderConfig } from '../config/index.js';
 import { GeminiAdapter, type Credentials, type Transport } from '../adapters/model/index.js';
 import { validatePreferences } from '../prompt/index.js';
@@ -10,7 +10,7 @@ export type ConnectedStatus = { status: 'unconfigured' } | { status: 'error'; co
   | { status: 'disabled' | 'configured'; provider: 'gemini'; model: string };
 /** Trusted in-process construction seam only: never accepted by CLI/HTTP/env. */
 export interface ModelTesting { credentials?: Credentials; transport?: Transport; deadlineMs?: number }
-export function composeChat(store: Store, domain: DomainPort, configDir: string, testing?: ModelTesting, now?: () => number, ownerProfile?: OwnerProfileSnapshot) {
+export function composeChat(store: Store, domain: DomainPort, configDir: string, testing?: ModelTesting, now?: () => number, ownerProfile?: OwnerProfileSnapshot, tools?: ChatToolsComposition) {
   const loaded = loadProviderConfig({ configDir, ownerId: store.assistantId });
   let ready = loaded.status === 'ready' ? loaded : null;
   let status: ConnectedStatus = ready ? { status: 'configured', provider: 'gemini', model: ready.profile.modelId }
@@ -24,6 +24,7 @@ export function composeChat(store: Store, domain: DomainPort, configDir: string,
   }
   const route = ready?.route;
   const chat = new ChatService({
+    ...(tools ? { tools } : {}),
     ...(ownerProfile ? { ownerProfile } : {}), store, domain, model,
     route: { provider: 'gemini', model: ready?.profile.modelId ?? '', available: !!ready,
       endpoint: `https://generativelanguage.googleapis.com/v1beta/models/${ready?.profile.modelId ?? ''}:streamGenerateContent?alt=sse`, apiVersion: 'v1beta', keyReference: 'gemini-primary',
@@ -40,5 +41,6 @@ export function composeChat(store: Store, domain: DomainPort, configDir: string,
     ...(now ? { now } : {})
   });
   chat.recover({ assistantId: store.assistantId, authorityEpoch: store.authorityEpoch });
+  tools?.registerAuthoritySource?.(async (runId, signal) => signal.aborted ? null : chat.lookupAuthority(runId));
   return { chat, status };
 }

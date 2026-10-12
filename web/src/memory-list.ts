@@ -87,11 +87,17 @@ export async function deleteMemoryAndReload<T>(id: string, actions: {
   remove: (id: string) => Promise<unknown>;
   reload: () => Promise<T>;
   apply: (payload: T) => void;
+  deleted?: (message: string) => void;
 }): Promise<boolean> {
   if (!actions.confirm()) return false;
-  await actions.remove(id);
+  const response = await actions.remove(id);
   const payload = await actions.reload();
   actions.apply(payload);
+  const retained = response !== null && typeof response === 'object'
+    && 'liveSessionRetainsUntilRebuild' in response && response.liveSessionRetainsUntilRebuild === true;
+  actions.deleted?.(retained
+    ? "Naya's current live conversation still has this note until it reconnects or ends."
+    : 'Memory deleted.');
   return true;
 }
 

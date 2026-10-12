@@ -62,6 +62,10 @@ export function liveServiceError(error: unknown): ServiceError {
 
 function markerFrame(marker: LivePublicMarker): Record<string, unknown> {
   const frame: Record<string, unknown> = { type: marker.kind, sequence: marker.sequence, journalSequence: marker.journalSequence };
+  if (marker.kind === 'continuity') {
+    frame['event'] = marker.event;
+    if (marker.reason !== undefined) frame['reason'] = marker.reason;
+  }
   if (marker.text !== null) frame['text'] = marker.text;
   if (marker.finished !== null) frame['finished'] = marker.finished;
   if (marker.value !== null) frame['value'] = marker.value;

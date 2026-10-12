@@ -1,3 +1,4 @@
+import { liveVoiceTimerDefaults } from '../adapters/live-voice/types.js';
 import { createHash } from 'node:crypto';
 import type { DataClass } from '../adapters/live-voice/index.js';
 import { validatePersonaOverlay } from '../prompt/live-persona.js';
@@ -15,7 +16,7 @@ const limitBounds: Readonly<Record<keyof LiveLimits, number>> = {
 };
 export const defaultLiveLimits: Readonly<LiveLimits> = Object.freeze({
   toolDeferralMs: 4000,
-  sessionMs: 900_000, idleMs: 60_000, unusedMs: 300_000, handshakeMs: 15_000, closeMs: 1_000,
+  ...liveVoiceTimerDefaults, unusedMs: 300_000,
   journalMaxEvents: 16_384, journalMaxBytes: 16 * 1024 * 1024,
   consumerQueueEvents: 256, consumerQueueBytes: 2 * 1024 * 1024, wsBufferedBytes: 4 * 1024 * 1024,
 });

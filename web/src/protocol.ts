@@ -6,6 +6,8 @@ export interface Commitment { id: string; title: string; notes: string; dueAt: s
 export interface Plan { date: string; timeZone: string; items: { commitment: Commitment; isOverdue: boolean }[]; unscheduled: Commitment[]; nextCursor: string | null }
 export interface Recall { hits: { sessionId: string; entryId?: string; snippet: string; sourceRefs: SourceRef[]; sourceTimestamp: string | null }[]; totalMatches: number; truncated: boolean; nextCursor: string | null }
 /** Safe per-run memory-selection metadata: ids, counts and omit reasons only, never note text. */
+export interface ToolEvidence { name: string; markdown: string; sources: { title: string; url?: string }[] }
+
 export interface MemorySelectionSnapshot { schemaVersion: 1; requestedIds: string[]; usedIds: string[]; omitted: { id: string; reason: 'budget' | 'oversized' | 'not_included' }[]; counts: { requested: number; used: number; omitted: number }; frozen: boolean }
 export interface Status { ownerProfile: OwnerProfileStatus; assistantId: string; authorityEpoch: string; serviceMode: string; capabilities: { memory: boolean; commitments: boolean; notifications: boolean; model: boolean }; model: { configured: boolean; provider?: string; model?: string }; sources: SourceRef[] }
 export interface CommitmentDetail { commitment: Commitment; history: { revision: number; operation: string; recordedAt: string; title: string; notes: string; dueAt: string | null; timeZone: string; status: Commitment['status'] }[] }
@@ -19,12 +21,13 @@ export interface ConnectedRouteStatus {
 export interface OwnerProfileStatus { status: 'default' | 'configured'; displayName: string }
 
 /** Interface 3 live projection (W-B route). Read-only, cookie-authenticated, no session ids or raw results. */
-export type LiveState = 'idle' | 'listening' | 'speaking' | 'thinking' | 'ended' | 'error';
-export type LiveKind = 'inputTranscription' | 'outputTranscription' | 'toolCall' | 'toolResult' | 'interrupted' | 'turnComplete' | 'terminal';
+export type LiveState = 'idle' | 'listening' | 'speaking' | 'thinking' | 'rebuilding' | 'ended' | 'error';
+export type LiveKind = 'continuity' | 'inputTranscription' | 'outputTranscription' | 'toolCall' | 'toolResult' | 'interrupted' | 'turnComplete' | 'terminal';
 export interface LiveSource { title: string; url?: string }
 export interface LiveTool { name: string; status: 'called' | 'completed' | 'error'; markdown?: string; sources?: LiveSource[] }
-export interface LiveEntry { seq: number; kind: LiveKind; text?: string; tool?: LiveTool }
+export interface LiveEntry { event?: 'rebuilding' | 'resumed'; reason?: string; seq: number; kind: LiveKind; text?: string; tool?: LiveTool }
 export interface LiveJob { id: string; originSessionId: string; state: 'in_progress' | 'completed' | 'failed' | 'unknown'; createdAt: number; markdown: string; delivered: boolean }
 export interface LiveCurrent { pastSession?: { outcome: 'closed' | 'failed' | 'cancelled' | 'deadline' | 'not_started' | 'outcome_unknown' | 'journal_limit' | 'consumer_backpressure' | 'expired' | 'revoked' | 'unknown'; endedAt: number | null; lastObservedAt: number }; jobs?: LiveJob[]; state: LiveState; since?: string; muted?: boolean; entries: LiveEntry[]; cursor: string | number }
 
 export interface EntryTombstone { entryId: string; deletedAt: string; actor: string; reasonCode: 'owner_request' }
+export interface EntryDeletionResponse extends EntryTombstone { liveSessionRetainsUntilRebuild: boolean }

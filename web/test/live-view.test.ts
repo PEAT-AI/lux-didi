@@ -162,6 +162,15 @@ test('rejected live poll preserves transcript, shows last success, recovery clea
   assert.equal(empty.live, undefined); assert.equal(empty.stale, false);
 });
 
+test('rebuilding is a non-error voice status and restoration is not transcript text', () => {
+  const live = { state: 'rebuilding', cursor: 1, entries: [{ seq: 1, kind: 'continuity', event: 'rebuilding', reason: 'go_away' }] } as unknown as LiveCurrent;
+  assert.equal(liveStateLabel(live.state), 'Reconnecting to the voice service');
+  assert.notEqual(liveVoiceState(live.state), 'ERROR');
+  assert.match(liveMarkup(live), /Reconnecting to the voice service/);
+  assert.doesNotMatch(liveMarkup(live), /session has stopped/);
+  assert.deepEqual(liveTranscript(live), []);
+});
+
 for (const [outcome, phrase] of [['failed', 'ended with an error'], ['closed', 'ended'], ['unknown', 'has an unknown end']] as const) {
   test(`past Live ${outcome} is not a current failure`, () => {
     const time = Date.UTC(2026, 9, 12, 21, 52);

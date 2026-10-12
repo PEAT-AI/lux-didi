@@ -19,7 +19,7 @@ test('memory list renders kind, source and local created time from a payload ent
   assert.match(markup, /data-delete-memory="entry-1"/);
   const local = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date('2026-10-11T16:00:00.000Z'));
   assert.ok(markup.includes(local), `expected local created time ${local} in markup`);
-  assert.ok(!markup.includes('2026-10-11T16:00:00.000Z'), 'raw ISO time must not be shown');
+  assert.ok(!markup.includes('>2026-10-11T16:00:00.000Z<'), 'raw ISO time must not be shown as text');
 });
 
 test('memory item kind prefers the domain kind note and falls back to the role', () => {

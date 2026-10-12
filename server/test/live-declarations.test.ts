@@ -31,7 +31,7 @@ test('every composed Live connector and built-in declaration conforms to provide
 
 test('nested unsupported constraints never leak and semantic constraints remain described', () => {
   const parameters = { type: 'object', additionalProperties: false, $schema: 'fixture', properties: { nested: { type: 'object', title: 'nested', properties: { text: { type: 'string', minLength: 1, maxLength: 10, pattern: '^a', format: 'email', default: 'a', examples: ['a'], const: 'a' }, choice: { type: 'string', enum: ['a', 'b'] } } } } };
-  const registry = [{ name: 'nested', description: 'nested', parameters }] as ToolDefinition[];
+  const registry: ToolDefinition[] = [{ name: 'nested', description: 'nested', parameters, effect: 'read', accountId: 'fixture', resourceId: 'fixture', validate: () => true, execute: async () => ({ status: 'failed' }) }];
   const declaration = declarationsFor(registry).declarations[0]!;
   assert.deepEqual(violations(declaration.parameters, 'nested'), []);
   assert.match(JSON.stringify(declaration.parameters), /Original schema/);

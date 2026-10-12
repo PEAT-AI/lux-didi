@@ -17,10 +17,19 @@ import Security
     private var checkingConnections = false
     private let liveLogsDirectory: URL?
     @Published var connecting = false
+    @Published private(set) var serviceRestarting = false
     let voice = NativeVoice()
     @Published private(set) var live: NativeLiveConversation?
+    private lazy var liveAuthorityOwner: NativeLiveAuthorityOwner<NativeLiveConversation> = NativeLiveAuthorityOwner(
+        release: { conversation in
+            conversation.stopCapture()
+            Task { await conversation.stop() }
+        },
+        publish: { [weak self] in self?.live = $0 })
     @Published private(set) var pendingLiveCalls: [NativePendingLiveJob] = []
-    private var notifiedLiveJobs = Set<String>()
+    private var liveCallDelivery = NativeLiveCallDelivery()
+    @Published private(set) var liveCallsError: String?
+    private var pickingUpLiveCall = false
     private var checkingLiveCalls = false
     let notifications = NativeNotifications()
     private(set) var client: CompanionClient?
@@ -44,10 +53,20 @@ import Security
                     catch { self.error = NativeServiceError.invalidOperatorSettings.localizedDescription; return }
                     let owner = try NativeServiceSupervisor(runtime: runtime, proof: prepared, operatorSettings: operatorSettings)
                     supervisor = owner
+                    owner.onRestartStatus = { [weak self, weak owner] restarting in
+                        self?.serviceRestarting = restarting
+                        if !restarting, owner?.isRunning == false {
+                            self?.error = "Local service unavailable. Reconnect explicitly after bounded retries."
+                        }
+                    }
+                    owner.onRecovered = { [weak self] in
+                        Task { @MainActor in await self?.reconnect() }
+                    }
                     owner.onUnavailable = { [weak self] in
                         self?.error = NativeServiceError.exited.localizedDescription
                         self?.shell?.clear()
-                        self?.stopLive()
+                        self?.liveAuthorityOwner.unavailable()
+                        self?.error = "Local service restarting. Lost Live requires an explicit Start."
                     }
                     return
                 }
@@ -78,6 +97,7 @@ import Security
                 } else {
                     client = CompanionClient(descriptor: descriptor, credential: credential, expectedEpoch: connection.authorityEpoch, connectionGuard: allowed)
                 }
+                liveAuthorityOwner.rebind(connection.nonce)
                 if shell?.descriptor.origin != descriptor.origin { shell = CompanionWeb(descriptor: descriptor) }
             }
             guard let client, let shell else { throw CompanionError.invalidConfiguration }
@@ -133,35 +153,75 @@ import Security
         do {
             let http = NativeLiveOperatorHTTP(authority: client.authenticatedRequestBuilder())
             let jobs = try await http.pendingCalls().filter(\.isReady)
-            pendingLiveCalls = jobs
-            live?.offerPendingCall(jobs.first)
-            for job in jobs where !notifiedLiveJobs.contains(job.id) {
-                notifiedLiveJobs.insert(job.id)
-                _ = await notifications.submitLiveCall(jobID: job.id)
+            liveCallDelivery.reconcile(jobs.map(\.id))
+            pendingLiveCalls = jobs.filter { liveCallDelivery.canPickUp($0.id) }
+            liveCallsError = nil
+            live?.offerPendingCall(pendingLiveCalls.first)
+            notificationStatus = await notifications.capability()
+            for job in pendingLiveCalls {
+                guard liveCallDelivery.beginAttempt(job.id, permitted: notificationStatus.canSchedule) else { continue }
+                let result = await notifications.submitLiveCall(jobID: job.id)
+                liveCallDelivery.completeAttempt(job.id, result: result)
             }
-        } catch { /* Retain the last known offer; never start audio on a poll or transport failure. */ }
+        } catch {
+            liveCallDelivery.reconcile(nil)
+            pendingLiveCalls = []
+            live?.offerPendingCall(nil)
+            liveCallsError = "Callbacks offline. Pending calls will return when the local service reconnects."
+        }
+    }
+    func requestNotificationPermission() async {
+        _ = await notifications.requestPermission()
+        notificationStatus = await notifications.capability()
+        await refreshLiveCalls()
     }
     func pickUpLiveCall(_ jobID: String? = nil) {
-        let selected = jobID ?? pendingLiveCalls.first?.id
+        guard !pickingUpLiveCall, let selected = jobID ?? pendingLiveCalls.first?.id,
+              let client else { return }
+        pickingUpLiveCall = true
         Task { [weak self] in
             guard let self else { return }
-            await self.live?.stop()
-            self.live = nil
-            self.startLive(pickupJobID: selected)
+            defer { self.pickingUpLiveCall = false }
+            do {
+                let pickedUp = try await NativeLiveCallPickup.perform(validate: {
+                    let jobs = try await NativeLiveOperatorHTTP(authority: client.authenticatedRequestBuilder()).pendingCalls().filter(\.isReady)
+                    self.liveCallDelivery.reconcile(jobs.map(\.id))
+                    self.pendingLiveCalls = jobs.filter { self.liveCallDelivery.canPickUp($0.id) }
+                    self.liveCallsError = nil
+                    self.live?.offerPendingCall(self.pendingLiveCalls.first)
+                    return self.liveCallDelivery.canPickUp(selected)
+                }, stop: {
+                    self.liveCallDelivery.acknowledge(selected)
+                    self.pendingLiveCalls.removeAll { $0.id == selected }
+                    await self.live?.stop()
+                    self.live = nil
+                }, start: {
+                    self.startLive(pickupJobID: selected)
+                })
+                if !pickedUp {
+                    self.error = "This callback is no longer pending. Your current conversation was not changed."
+                }
+            } catch {
+                self.liveCallDelivery.reconcile(nil)
+                self.pendingLiveCalls = []
+                self.live?.offerPendingCall(nil)
+                self.liveCallsError = "Callbacks offline. Your current conversation was not changed."
+                self.error = self.liveCallsError
+            }
         }
     }
     func startLive(pickupJobID: String? = nil) {
         guard let client else { error = "Connect the local service before starting Live voice."; return }
-        if live == nil {
-            live = NativeLiveConversation(authority: client.authenticatedRequestBuilder(), dictationIsCapturing: { [weak self] in
+        let conversation = liveAuthorityOwner.ownerStart {
+            NativeLiveConversation(authority: client.authenticatedRequestBuilder(), dictationIsCapturing: { [weak self] in
                 self?.voice.state.phase == .recording
             }, pickupJobID: pickupJobID, logsDirectory: liveLogsDirectory)
         }
-        live?.start()
+        conversation.start()
     }
     func stopLive() {
         let conversation = live
-        conversation?.device.stop()
+        conversation?.stopCapture()
         Task { await conversation?.stop() }
     }
     func startDictation() {
@@ -176,7 +236,7 @@ import Security
     }
     func logout() async {
         stopRecording("Logout")
-        await live?.stop(); live = nil
+        await live?.stop(); liveAuthorityOwner.clear()
         await client?.revokePageSession(); shell?.clear()
     }
     func shutdown() async {
@@ -190,12 +250,19 @@ struct NativeLiveControls: View {
     @ObservedObject var device: NativeLiveAudioDevice
     var body: some View {
         VStack {
-            Text("Live: " + conversation.state.rawValue).accessibilityLabel("Live voice lifecycle")
+            Text("Live: " + (conversation.state == .rebuilding ? "Reconnecting" : conversation.state.rawValue)).accessibilityLabel("Live voice lifecycle")
+            if !device.route.isEmpty { Text(device.route).font(.caption) }
+            if conversation.state == .pausedForInput {
+                Button("Resume") { conversation.start() }
+            }
+            if conversation.state == .failed {
+                Button("Restart") { conversation.start() }
+            }
             ProgressView(value: conversation.state == .muted ? 0 : Double(device.inputLevel))
                 .accessibilityLabel(conversation.state == .muted ? "Microphone muted" : "Live microphone input level")
             HStack {
-                Button(conversation.state == .muted ? "Unmute" : "Mute") { conversation.toggleMute() }
-                    .disabled(![.listening, .speaking, .muted].contains(conversation.state))
+                Button(conversation.isMuted ? "Unmute" : "Mute") { conversation.toggleMute() }
+                    .disabled(![.listening, .speaking, .muted, .pausedForInput].contains(conversation.state))
                 Button("Stop Live voice") { Task { await conversation.stop() } }
             }
             if let failure = conversation.failure { Text(failure).font(.caption) }
@@ -223,9 +290,9 @@ struct RootView: View {
                 Text("Native capture · \(model.hotkeyStatus)").font(.caption).foregroundStyle(.secondary)
                 HStack {
                     TextField("User-entered or on-device transcribed text", text: $model.draft)
-                    Button(model.captureStatus == .unknown ? "Retry Send" : "Send") { Task { await model.saveDraft() } }
+                    Button(model.captureStatus == .unknown ? "Retry Save note" : NativeNoteAction.label) { Task { await model.saveDraft() } }
                         .disabled(!Presentation.canSend(model.draft) || model.captureStatus == .sending || voice.state.phase == .recording)
-                        .accessibilityLabel(model.captureStatus == .unknown ? "Retry same text capture" : "Send text")
+                        .accessibilityLabel(model.captureStatus == .unknown ? "Retry Save note" : NativeNoteAction.label)
                     Button("Start") { model.startDictation() }
                         .disabled(model.live?.isCapturing == true || voice.state.phase == .recording || voice.microphone != .granted || voice.speech != .granted || !voice.onDevice)
                         .accessibilityLabel("Start recording")
@@ -236,6 +303,9 @@ struct RootView: View {
                         if !model.pendingLiveCalls.isEmpty {
                             Button("Pick up Naya’s call") { model.pickUpLiveCall() }
                         }
+                        Button("Enable callback notifications") { Task { await model.requestNotificationPermission() } }
+                        Text("Notifications: \(model.notificationStatus.rawValue). If denied, use the menu bar badge and Pick up menu; notifications never start the microphone.").font(.caption)
+                        if let offline = model.liveCallsError { Text(offline).font(.caption) }
                         Button("Start Live voice") { model.startLive() }
                             .disabled(model.live?.isCapturing == true || voice.state.phase == .recording)
                         Text(model.liveLimits?.sentence ?? "Live limits unavailable. Reconnect the service to refresh.").font(.caption)
@@ -267,7 +337,8 @@ struct RootView: View {
                     }
                 }
                 Text(captureDetail).font(.caption)
-                if let error = model.error { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
+                if model.serviceRestarting { Text("Local service restarting…").accessibilityLabel("Local service restarting") }
+                    if let error = model.error { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
                 Text("Record locally, review the text, then send it. Closing Didi keeps your draft.").font(.caption2).foregroundStyle(.secondary)
             }.padding(12)
         }.frame(minWidth: 780, minHeight: 620)
@@ -284,7 +355,7 @@ struct RootView: View {
     }
 }
 
-@MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+@MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate {
     let model: AppModel
     private let proofRequest: InstalledProofRequest?
     init(proofRequest: InstalledProofRequest? = nil) {
@@ -292,17 +363,33 @@ struct RootView: View {
         super.init()
     }
     let hotkey = GlobalHotkey()
+    let liveShortcuts = NativeShortcuts()
+    private lazy var summonActions = NativeSummonActions(show: { [weak self] in self?.show() },
+        isCapturing: { [weak self] in self?.model.live?.isCapturing == true },
+        start: { [weak self] in self?.model.startLive() },
+        mute: { [weak self] in self?.model.live?.toggleMute() },
+        stop: { [weak self] in self?.model.stopLive() })
+    private var loginAvailability: LoginAvailability?
+    private var liveObservation: AnyCancellable?
+    private var dictationObservation: AnyCancellable?
+    private var liveStateObservation: AnyCancellable?
+    private var liveMenuItem: NSMenuItem?
+    private var muteMenuItem: NSMenuItem?
+    private var loginMenuItem: NSMenuItem?
     private(set) var window: NSWindow!
     private var statusItem: NSStatusItem!
     private var liveCallTimer: Timer?
     private var liveCallBadge: AnyCancellable?
+    private var liveCallHealth: AnyCancellable?
     private var pickupMenuItem: NSMenuItem?
     private var keyboardMonitor: Any?
     private var terminationMonitor: NSObjectProtocol?
     private var hotkeyCode: OSStatus = noErr
+    private var loginLaunch = false
     private var cleanQuit = false
     private var quitting = false
     func applicationDidFinishLaunching(_ notification: Notification) {
+        loginLaunch = launchedAtLogin
         OwnedWindowReadiness.trace("app:didFinishLaunching-entry",
             ["activationPolicy": NSApp.activationPolicy().rawValue, "isActive": NSApp.isActive])
         NSApp.setActivationPolicy(.accessory)
@@ -310,28 +397,60 @@ struct RootView: View {
             ["activationPolicy": NSApp.activationPolicy().rawValue])
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 980, height: 760), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.title = "Didi"; window.center(); window.delegate = self
+        if proofRequest == nil && !CommandLine.arguments.contains("--ui-proof") && !CommandLine.arguments.contains("--self-check") {
+            let saved = UserDefaults.standard.string(forKey: "DidiWindowFrame").map(NSRectFromString)
+            window.setFrame(WindowFrameRestore.resolve(saved, screens: NSScreen.screens.map(\.visibleFrame)), display: false)
+            if #available(macOS 13.0, *) { loginAvailability = LoginAvailability(registration: SystemLoginRegistration()) }
+        }
         window.isReleasedWhenClosed = false
         window.contentView = NSHostingView(rootView: RootView(model: model, voice: model.voice))
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.button?.image = NSImage(systemSymbolName: "sparkle", accessibilityDescription: "Didi")
         let menu = NSMenu()
+        menu.delegate = self
+        liveMenuItem = menu.addItem(withTitle: "Naya: stopped", action: nil, keyEquivalent: "")
+        menu.addItem(withTitle: "Start Live", action: #selector(startLiveFromMenu), keyEquivalent: "")
+        muteMenuItem = menu.addItem(withTitle: "Mute", action: #selector(muteLiveFromMenu), keyEquivalent: "")
+        menu.addItem(withTitle: "Stop", action: #selector(stopLiveFromMenu), keyEquivalent: "")
+        menu.addItem(NSMenuItem.separator())
+        loginMenuItem = menu.addItem(withTitle: "Open at login", action: #selector(toggleLogin), keyEquivalent: "")
         menu.addItem(withTitle: "Show Didi", action: #selector(show), keyEquivalent: "")
         let pickup = NSMenuItem(title: "Pick up Naya’s call", action: #selector(pickupLiveCall), keyEquivalent: "")
         pickup.isHidden = true; pickupMenuItem = pickup; menu.addItem(pickup)
         menu.addItem(withTitle: "Reveal logs", action: #selector(revealLogs), keyEquivalent: "")
+        menu.addItem(withTitle: NativeDiagnosticsAction.itemTitle, action: #selector(copyDiagnostics), keyEquivalent: "")
         menu.addItem(withTitle: "Quit Didi", action: #selector(quit), keyEquivalent: "q")
         for item in menu.items { item.target = self }; statusItem.menu = menu
         hotkey.onToggle = { [weak self] in self?.toggle() }
         hotkeyCode = hotkey.register()
         model.hotkeyStatus = hotkeyCode == noErr ? "⌃ ⌥ Space · registered" : "Unavailable (OSStatus \(hotkeyCode)); use the menu bar"
+        liveShortcuts.onStart = { [weak self] in self?.startLiveFromMenu() }
+        liveShortcuts.onMute = { [weak self] in self?.muteLiveFromMenu() }
+        liveShortcuts.register()
+        menu.addItem(withTitle: "Start Live ⌃ ⌥ ⇧ L: " + liveShortcuts.startStatus, action: nil, keyEquivalent: "")
+        menu.addItem(withTitle: "Mute ⌃ ⌥ ⇧ M: " + liveShortcuts.muteStatus, action: nil, keyEquivalent: "")
+        liveObservation = model.$live.sink { [weak self] conversation in
+            self?.liveStateObservation = conversation?.$state.sink { [weak self] state in
+                self?.updateLiveStatus(state: state.rawValue)
+            }
+            self?.updateLiveStatus(state: conversation?.state.rawValue ?? "stopped")
+        }
+        dictationObservation = model.voice.$state.sink { [weak self] state in
+            self?.updateLiveStatus(dictationCapturing: state.phase == .recording)
+        }
         model.notifications.onOpen = { [weak self] _ in self?.show() }
         model.notifications.onLiveCall = { [weak self] jobID in
             self?.show(); self?.model.pickUpLiveCall(jobID)
         }
         liveCallBadge = model.$pendingLiveCalls.sink { [weak self] jobs in
-            self?.statusItem.button?.title = jobs.isEmpty ? "" : "•"
-            self?.statusItem.button?.toolTip = jobs.isEmpty ? "Didi" : "Naya is calling, pick up when you want"
+            self?.updateLiveStatus(pendingCall: !jobs.isEmpty)
             self?.pickupMenuItem?.isHidden = jobs.isEmpty
+        }
+        let health = NSMenuItem(title: "Callbacks offline", action: nil, keyEquivalent: "")
+        health.isEnabled = false; health.isHidden = true; menu.addItem(health)
+        liveCallHealth = model.$liveCallsError.sink { error in
+            health.title = error ?? "Callbacks online"
+            health.isHidden = error == nil
         }
         liveCallTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.model.refreshLiveCalls() }
@@ -343,7 +462,7 @@ struct RootView: View {
             Task { @MainActor in self?.model.stopRecording("Mac is going to sleep") }
         }
         Task {
-            show()
+            if NativeLaunchVisibility.shouldShow(loginLaunch: loginLaunch) { show() }
             OwnedWindowReadiness.trace("app:refresh-start")
             await model.refresh()
             OwnedWindowReadiness.trace("app:refresh-end", ["isActive": NSApp.isActive])
@@ -365,6 +484,39 @@ struct RootView: View {
         }
     }
 
+    @objc private func copyDiagnostics() {
+        let runtime = Bundle.main.resourceURL.flatMap { try? InstalledRuntime.load(resources: $0) } ?? nil
+        let logs = (proofRequest?.state ?? (try? InstalledRuntime.applicationState()))?.appendingPathComponent("logs", isDirectory: true)
+        let failure = NativeDiagnosticsSnapshot.preCreateFailure(logsDirectory: logs)
+        let service: String
+        if model.connecting { service = "connecting" }
+        else if model.serviceRestarting { service = "restarting" }
+        else if model.supervisor?.isRunning == true { service = "connected" }
+        else if model.supervisor != nil { service = "stopped" }
+        else { service = "unknown" }
+        let action = NativeDiagnosticsAction(makeInput: {
+            DiagnosticsSnapshotInput(
+                appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+                releaseCommit: runtime?.releaseCommit,
+                macOSVersion: ProcessInfo.processInfo.operatingSystemVersionString,
+                serviceState: service,
+                serviceOrigin: self.model.supervisor?.currentConnection?.descriptor.origin,
+                liveState: self.model.live?.state.rawValue,
+                sessionLimit: self.model.liveLimits.map { NativeLiveLimits.duration($0.sessionMs) },
+                idleLimit: self.model.liveLimits.map { NativeLiveLimits.duration($0.idleMs) },
+                connections: self.model.connections.map { "\($0.id): \($0.state)" },
+                audioRoute: self.model.live?.device.route,
+                preCreateFailureClass: failure?.failureClass,
+                preCreateFailureCode: failure?.code,
+                capturedAt: ISO8601DateFormatter().string(from: Date()))
+        }, write: { text in
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.setString(text, forType: .string)
+        })
+        action.copy()
+    }
+
     @objc func show() {
         OwnedWindowReadiness.trace("app:show-entry", ["windowExists": window != nil])
         OwnedWindowReadiness.trace("app:makeKeyAndOrderFront-before")
@@ -375,6 +527,40 @@ struct RootView: View {
         NSApp.activate(ignoringOtherApps: true)
         OwnedWindowReadiness.trace("app:activateIgnoringOtherApps-after",
             ["isActive": NSApp.isActive, "isKey": window.isKeyWindow, "isMain": window.isMainWindow])
+    }
+    private var launchedAtLogin: Bool {
+        NSAppleEventManager.shared().currentAppleEvent?.paramDescriptor(forKeyword: AEKeyword(keyAEPropData))?.enumCodeValue == OSType(keyAELaunchedAsLogInItem)
+    }
+    private func updateLiveStatus(state: String? = nil, pendingCall: Bool? = nil, dictationCapturing: Bool? = nil) {
+        let raw = state ?? model.live?.state.rawValue ?? "stopped"
+        let presentation = LiveStatusPresentation(state: raw, pendingCall: pendingCall ?? !model.pendingLiveCalls.isEmpty,
+            dictationCapturing: dictationCapturing ?? (model.voice.state.phase == .recording))
+        statusItem.button?.image = NSImage(systemSymbolName: presentation.symbol, accessibilityDescription: presentation.text)
+        statusItem.button?.title = presentation.pendingCall ? "•" : ""
+        statusItem.button?.toolTip = presentation.text
+        statusItem.button?.setAccessibilityLabel(presentation.text)
+        liveMenuItem?.title = presentation.text
+        muteMenuItem?.title = model.live?.isMuted == true ? "Unmute" : "Mute"
+    }
+    func menuWillOpen(_ menu: NSMenu) {
+        updateLiveStatus()
+        loginMenuItem?.title = loginAvailability?.text ?? "Open at login: unavailable in this launch"
+        loginMenuItem?.state = loginAvailability?.status == .on ? .on : .off
+        loginMenuItem?.isEnabled = loginAvailability != nil
+    }
+    @objc func startLiveFromMenu() { summonActions.start() }
+    @objc func muteLiveFromMenu() { summonActions.mute() }
+    @objc func stopLiveFromMenu() { summonActions.stop() }
+    @objc func toggleLogin() {
+        guard let loginAvailability else { return }
+        do { try loginAvailability.setEnabled(loginAvailability.status != .on) }
+        catch { model.error = "Open at login: \(error.localizedDescription)" }
+    }
+    func windowDidMove(_ notification: Notification) { rememberFrame() }
+    func windowDidResize(_ notification: Notification) { rememberFrame() }
+    private func rememberFrame() {
+        guard proofRequest == nil, !CommandLine.arguments.contains("--ui-proof"), !CommandLine.arguments.contains("--self-check"), let window else { return }
+        UserDefaults.standard.set(NSStringFromRect(window.frame), forKey: "DidiWindowFrame")
     }
     func toggle() { window.isVisible ? hide() : show() }
     func hide() { model.stopRecording("Didi hidden"); window.orderOut(nil) }
@@ -406,8 +592,8 @@ struct RootView: View {
     }
     @objc private func pickupLiveCall() { show(); model.pickUpLiveCall() }
     func applicationWillTerminate(_ notification: Notification) {
-        liveCallTimer?.invalidate(); liveCallBadge?.cancel()
-        model.stopRecording("Didi quit"); hotkey.unregister()
+        liveCallTimer?.invalidate(); liveCallBadge?.cancel(); liveCallHealth?.cancel()
+        model.stopRecording("Didi quit"); hotkey.unregister(); liveShortcuts.unregister()
         if let keyboardMonitor { NSEvent.removeMonitor(keyboardMonitor) }
         if let terminationMonitor { NSWorkspace.shared.notificationCenter.removeObserver(terminationMonitor) }
     }
@@ -485,7 +671,9 @@ struct RootView: View {
     func register() -> OSStatus {
         var specification = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         let context = Unmanaged.passUnretained(self).toOpaque()
-        let installed = InstallEventHandler(GetApplicationEventTarget(), { _, _, context in
+        let installed = InstallEventHandler(GetApplicationEventTarget(), { _, event, context in
+            var identity = EventHotKeyID()
+            guard let event, GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil, MemoryLayout<EventHotKeyID>.size, nil, &identity) == noErr, identity.signature == 0x44494449, identity.id == 1 else { return OSStatus(eventNotHandledErr) }
             guard let context else { return OSStatus(eventNotHandledErr) }
             DispatchQueue.main.async { Unmanaged<GlobalHotkey>.fromOpaque(context).takeUnretainedValue().onToggle?() }
             return noErr

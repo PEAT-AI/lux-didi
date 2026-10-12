@@ -44,9 +44,9 @@ Start Live voice is the explicit consent action: microphone audio leaves the dev
 
 One streaming AVAudioConverter converts the hardware format to 16 kHz mono Int16 little-endian. A carry buffer emits only complete 640-byte (20 ms) frames. The eight-frame ring drops oldest on overflow and counts drops; exactly one drain task calls sendPCM sequentially. While connecting, frames are not sent until the coordinator reports active. Mute keeps the session and engine, clears unsent frames and partial carry, suppresses further frames and zeros the input indicator. Unmute resumes the same converter/session. A frame already committed to transport when Mute is pressed cannot be recalled. Stop drops unsent and final partial frames, never pads them, closes the Live session and releases the tap, engine, player and socket.
 
-The player queues at most 24 buffers; exceeding that bound discards old queued playback. Interrupted, terminal, receive error, close and revoke flush the sink; flush is player.stop(), not a wait for scheduled buffers. Configuration change/device loss stops capture and output and signals a visible interruption upward. There is no automatic reconnect. Dictation and Live enforce a one-microphone guard in both directions. Hide, sleep, logout, service loss and quit use the same teardown path.
+The player queues at most 24 buffers; exceeding that bound discards old queued playback. Interrupted, terminal, receive error, close and revoke flush the sink; flush is player.stop(), not a wait for scheduled buffers. An output-route change releases old capture and queued output, follows the system defaults and rebuilds the converter, tap and player with voice processing on both IO nodes. It preserves mute and the same authorized Live session; it does not reconnect the Live socket or replay audio. Repeated notifications are coalesced and old drain/tap callbacks are fenced. An input identity change releases capture and shows “Microphone changed to <device name>. Resume?”; only explicit Resume authorizes the new input. Resume rechecks the default-device identity. No valid default input or a failed rebuild releases capture and presents Restart instead. The panel shows the current microphone and output route. There is no automatic Live reconnect. Dictation and Live enforce a one-microphone guard in both directions. Hide, sleep, logout, service loss and quit use the same teardown path.
 
-Lifecycle labels are idle, connecting, listening, speaking, muted, ended, failed and outcomeUnknown. Listening comes from coordinator active events; speaking comes from scheduled model audio, not a claim that the model heard the user. Silent synthetic tests cover real converter continuity for irregular 44.1 kHz stereo chunks, frame assembly, drop-oldest overflow, mute/unmute at the capture buffer, interleaved input while playback is suspended, and flush ordering. Both-node voice-processing effectiveness, permissions UI, physical device loss and provider barge-in require Rob's human device trial. Do not run an automated audible test.
+Lifecycle labels are idle, connecting, listening, speaking, muted, ended, failed, outcomeUnknown and pausedForInput. Listening comes from coordinator active events; speaking comes from scheduled model audio, not a claim that the model heard the user. Silent synthetic tests cover real converter continuity for irregular 44.1 kHz stereo chunks, frame assembly, drop-oldest overflow, mute/unmute at the capture buffer, interleaved input while playback is suspended, and flush ordering. Both-node voice-processing effectiveness, permissions UI, physical device loss and provider barge-in require Rob's human device trial. Do not run an automated audible test.
 
 ## Where the logs are
 
@@ -86,3 +86,65 @@ Show conversation focuses the existing authenticated embedded view. Connections
 is read-only and uses the page cookie, never the Live bearer credential. It
 refreshes every ten seconds only while its window is visible and not minimized.
 The native client POSTs its typed pre-CREATE failure to `/api/v1/diagnostics/client`; Swift wiring lands with W-NAT2's follow-up.
+
+## Local service recovery
+
+An owned local child exit invalidates the old connection and stops Live. The supervisor shows a persistent “Local service restarting” status while attempting at most three replacements, after 1, 2 and 4 seconds. Successful recovery does not reset this budget; only an explicit new activation does. Quit or disconnect cancels pending work and fences old callbacks. Wake reconciles the owned child's liveness and reconnects the client to probe health. A network/health failure alone is not evidence of child death and does not trigger replacement.
+
+A replacement child receives fresh connection authority. Child loss or authority replacement discards the old Live conversation, including its frozen HTTP origin and coordinator, while releasing capture synchronously. Recovery rebinds the service client, never the microphone or a Live session. Only a new owner Start creates the replacement conversation from the current client authority. A same-authority wake health reconciliation preserves the current conversation. Native audio tests use real AVAudioConverter, capture buffers and the device drain with an injected input format, so they exercise mute preservation and stale-frame discard without opening hardware. Mac lifecycle seams inject scheduling, launch results and wake events; no test waits out the real backoff or rearms a microphone.
+
+The native menu provides explicit Start Live, Mute/Unmute and Stop. Global
+Control-Option-Shift-L starts/shows Live, Control-Option-Shift-M toggles mute;
+Control-Option-Space remains Show/hide only. Registration conflicts are visible
+in the menu. No shortcut, login launch, call badge or Show action implicitly
+restarts a stopped microphone. Login availability is opt-in; closing or hiding
+still stops capture. Status text and its accessibility label expose the actual
+Live state independently of pending calls.
+
+### Native silent callbacks
+
+With the app running, pending callbacks are polled even when its window is closed.
+Use **Enable callback notifications** to explicitly request macOS alert/badge
+permission. Denied or unavailable notifications fall back to the independent menu
+bar badge and **Pick up Naya’s call** entry. Notifications are silent and generic:
+no result text, microphone activation, or override of Focus settings.
+
+A successful notification submission is remembered for this app launch. Transient
+submission failures retry on subsequent polls, at most three attempts per job per
+launch. Denial does not consume attempts. Pickup suppresses that job for the rest
+of the launch; the service owns durable acknowledgement. Relaunch discovers any
+still-pending job again. Poll errors clear stale offers and show **Callbacks
+offline** in the app and status menu. A stale notification click revalidates at
+the service before stopping an active conversation, and reports a missing job or
+an offline service without starting capture. Only explicit pickup starts voice.
+
+## Provider continuity in the Mac client
+
+Provider replacement keeps the same Live session. The socket sends JSON control
+frames with `type: "continuity"`, `sequence: null`, `journalSequence: n` and
+`event: "rebuilding"` or `event: "resumed"`; a rebuilding frame can include a
+`reason`. Unknown continuity events are ignored. `/api/v1/live/current` projects
+`state: "rebuilding"`; `/api/v1/live/status` remains configuration preflight and
+continues to report `status: "configured"`.
+
+During rebuilding the bar and status item show **Reconnecting**, without error
+styling. The duplex audio device stays open, captured input is dropped and queued
+model output is flushed. Resumption returns to listening, or muted if the owner
+was muted, without creating another session. A terminal `resume_failed` stops the
+device and displays **Naya's connection could not be resumed. Start Live again.**
+Only an explicit Start can open another session.
+### Best-effort pre-CREATE diagnostic
+
+A typed pre-CREATE failure still presents the same sentence and appends the same
+`logs/native-live.log` line. Independently, the app asynchronously attempts one
+`POST /api/v1/diagnostics/client` through its existing operator bearer client,
+without cookies. The JSON contains only `event: "live_precreate_failed"`, the
+`audio` or `service` failure class and the closed failure code. Only `http` and
+`socketClosed` include an integer `detail` (status or close code). No text, paths,
+error descriptions or response bodies are sent. A 429 or transport failure is
+not recorded remotely; it never replaces the native failure and is not retried.
+
+The pre-CREATE boundary is explicit: the start catch is pre-CREATE, and a
+coordinator failure is pre-CREATE only while no created session ID exists.
+After CREATE completes, failures emit neither this native log line nor this
+POST; the service journal and terminal outcome already record them.

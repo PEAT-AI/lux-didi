@@ -265,3 +265,35 @@ test('Live memory port writes ordinary owner payload with the real domain transa
   assert.equal(result.remembered, true);
   assert.equal(rows(h)[0]?.text, 'mint is Friday');
 });
+
+test('deleted remember_note entry is absent from the next Live CREATE', async t => {
+  const h = await harness(t, { tools: true });
+  const { attachment } = await attached(h);
+  const payload = 'synthetic forgotten apricot reminder';
+  const result = await remember(h, `remember: ${payload}`, { text: payload, kind: 'task' }, 2);
+  assert.equal(result.remembered, true);
+  const id = String(result.entryId);
+  const domain = createDomainPort({ outbox: Outbox });
+  h.store.transaction(tx => domain.execute(tx, 'deleteEntry', { id }, { assistantId: h.store.assistantId, clientId: h.ctx.clientId, authorityEpoch: h.store.authorityEpoch, now: new Date(NOW).toISOString() }));
+  await attachment.close();
+  const next = h.owner.create({ idempotencyKey: 'after-deletion', inputClass: 'ordinary' }, h.ctx);
+  assert.equal(String(frozen(h, next.liveSessionId)?.accepted_prompt_snapshot).includes(payload), false);
+  assert.equal(rows(h).some(row => row.id === id), false);
+});
+
+test('a later remember_note cannot recreate a deleted note from the retained voice turn', async t => {
+  const h = await harness(t, { tools: true });
+  await attached(h);
+  const payload = 'synthetic discarded plum task';
+  const result = await remember(h, `remember: ${payload}`, { text: payload, kind: 'task' }, 2);
+  assert.equal(result.remembered, true);
+  const domain = createDomainPort({ outbox: Outbox });
+  h.store.transaction(tx => domain.execute(tx, 'deleteEntry', { id: String(result.entryId) }, { assistantId: h.store.assistantId, clientId: h.ctx.clientId, authorityEpoch: h.store.authorityEpoch, now: new Date(NOW).toISOString() }));
+  const repeated = await remember(h, undefined, { text: payload, kind: 'task' }, 3);
+  assert.deepEqual(repeated, { remembered: false, code: 'already_remembered', entryId: result.entryId });
+  const tombstone = h.store.transaction(tx => tx.get('SELECT * FROM entry_tombstones WHERE entry_id = ?', [String(result.entryId)]));
+  assert.equal(tombstone?.source_kind, 'live-voice');
+  assert.match(String(tombstone?.source_key), /^[0-9a-f-]{36}:\d+$/);
+  assert.equal(JSON.stringify(tombstone).includes(payload), false);
+  assert.equal(rows(h).some(row => row.text === payload), false, 'retained voice turn must not resurrect deleted memory');
+});

@@ -178,3 +178,67 @@ for (const [outcome, phrase] of [['failed', 'ended with an error'], ['closed', '
 test('active Live error remains a current error', () => {
   assert.equal(liveLabel({ state: 'error', cursor: 0, entries: [] }), 'Something went wrong');
 });
+
+test('a remembered note renders one evidence card with the saved words', () => {
+  const live: LiveCurrent = { ...speaking, entries: [
+    { seq: 1, kind: 'inputTranscription', text: 'Naya, remember that the spare key is under the third pot' },
+    { seq: 2, kind: 'toolCall', tool: { name: 'remember_note', status: 'called' } },
+    { seq: 3, kind: 'toolResult', tool: { name: 'remember_note', status: 'completed', markdown: 'the spare key is under the third pot' } },
+  ] };
+  const html = liveMarkup(live);
+  assert.equal((html.match(/class="live-remember"/g) ?? []).length, 1);
+  assert.match(html, /Remembered/);
+  assert.match(html, /the spare key is under the third pot/);
+  assert.equal((html.match(/<details/g) ?? []).length, 0);
+});
+
+test('every declined remember code renders one honest reason line', () => {
+  for (const code of ['already_remembered', 'private_memory_unsupported', 'owner_transcript_not_final', 'owner_text_mismatch']) {
+    const live: LiveCurrent = { ...speaking, entries: [
+      { seq: 1, kind: 'toolResult', tool: { name: 'remember_note', status: 'completed', markdown: code } },
+    ] };
+    const html = liveMarkup(live);
+    assert.equal((html.match(/class="live-remember declined"/g) ?? []).length, 1, code);
+    assert.doesNotMatch(html, /Remembered/, code);
+    assert.match(html, /not saved|did not save|already had|not final|did not match/i, code);
+  }
+  const errored: LiveCurrent = { ...speaking, entries: [
+    { seq: 1, kind: 'toolResult', tool: { name: 'remember_note', status: 'error', markdown: '' } },
+  ] };
+  assert.match(liveMarkup(errored), /not saved|did not save/i);
+});
+
+test('the observed projection shape neither confirms nor denies the saved note', () => {
+  // The service projects a completed remember_note with markdown 'handler_outcome' for a saved OR
+  // declined note (server/tools/declarations.ts:78, server/live/index.ts:655), so the card must not
+  // claim either outcome from it.
+  for (const markdown of ['handler_outcome', 'some_future_code']) {
+    const live: LiveCurrent = { ...speaking, entries: [
+      { seq: 1, kind: 'toolResult', tool: { name: 'remember_note', status: 'completed', markdown } },
+    ] };
+    const html = liveMarkup(live);
+    assert.equal((html.match(/class="live-remember"/g) ?? []).length, 1, markdown);
+    assert.equal((html.match(/class="live-remember declined"/g) ?? []).length, 0, markdown);
+    assert.doesNotMatch(html, /Remembered/, markdown);
+    assert.match(html, /did not report whether the note was saved/i, markdown);
+  }
+});
+
+test('other tool results still render as inspectable detail cards', () => {
+  const live: LiveCurrent = { ...speaking, entries: [
+    { seq: 1, kind: 'toolResult', tool: { name: 'search', status: 'completed', markdown: 'answer' } },
+    { seq: 2, kind: 'toolResult', tool: { name: 'remember_note', status: 'completed', markdown: 'a saved note' } },
+  ] };
+  const html = liveMarkup(live);
+  assert.equal((html.match(/class="live-tool-result"/g) ?? []).length, 1);
+  assert.equal((html.match(/class="live-remember"/g) ?? []).length, 1);
+});
+
+test('remembered note text is escaped and never rendered as raw markup', () => {
+  const live: LiveCurrent = { ...speaking, entries: [
+    { seq: 1, kind: 'toolResult', tool: { name: 'remember_note', status: 'completed', markdown: '<img src=x onerror=alert(1)>' } },
+  ] };
+  const html = liveMarkup(live);
+  assert.doesNotMatch(html, /<img/);
+  assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
+});

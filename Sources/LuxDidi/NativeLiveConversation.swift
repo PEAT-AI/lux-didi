@@ -5,7 +5,15 @@ import DidiOwner
 #endif
 
 @MainActor final class NativeLiveConversation: ObservableObject {
-    enum State: String { case idle, connecting, listening, speaking, muted, ended, failed, outcomeUnknown }
+    enum State: String { case idle, connecting, listening, speaking, muted, ended, failed, outcomeUnknown, pausedForInput, rebuilding }
+    /// Continuity changes presentation, never the owner's mute choice or audio device.
+    static func continuityPresentation(_ event: LiveClientState, muted: Bool) -> State? {
+        switch event {
+        case .rebuilding: return .rebuilding
+        case .active: return muted ? .muted : .listening
+        default: return nil
+        }
+    }
     @Published private(set) var state: State = .idle
     @Published private(set) var failure: String?
     @Published private(set) var pendingCall: NativePendingLiveJob?
@@ -19,7 +27,8 @@ import DidiOwner
     private let logsDirectory: URL?
     private var limits: NativeLiveLimits?
     private var muted = false, speaking = false
-    var isCapturing: Bool { state == .connecting || device.isCapturing }
+    var isMuted: Bool { muted }
+    var isCapturing: Bool { state == .connecting || state == .pausedForInput || device.isCapturing }
     init(authority: (origin: URL, request: NativeLiveRequestBuilder), dictationIsCapturing: @escaping () -> Bool, pickupJobID: String? = nil, logsDirectory: URL? = nil) {
         self.logsDirectory = logsDirectory
         self.http = NativeLiveOperatorHTTP(authority: authority, pickupJobID: pickupJobID)
@@ -33,16 +42,29 @@ import DidiOwner
                 self.state = self.muted ? .muted : (speaking ? .speaking : .listening)
             }
         }
+        device.onInputChange = { [weak self] name in
+            guard let self else { return }
+            self.state = .pausedForInput
+            self.failure = "Microphone changed to " + name + ". Resume?"
+        }
+        device.onResume = { [weak self] in
+            guard let self, self.state == .pausedForInput else { return }
+            self.failure = nil
+            self.state = self.muted ? .muted : (self.speaking ? .speaking : .listening)
+        }
         device.onInterruption = { [weak self] in
             guard let self else { return }
+            let token = self.generation &+ 1
             await self.stop()
-            self.failure = "Live audio device or service interrupted. Start explicitly to try again."
+            guard self.generation == token else { return }
+            self.failure = "Live audio could not recover. Capture released. Restart explicitly to try again."
             self.state = .failed
         }
     }
     // Presentation only: an offer never opens a session, an audio engine or the microphone.
     func offerPendingCall(_ job: NativePendingLiveJob?) { pendingCall = job }
     func start() {
+        if state == .pausedForInput { device.resumeInput(); return }
         guard !isCapturing else { return }
         guard !dictationIsCapturing() else {
             failure = "Stop dictation before starting Live voice."; state = .failed; return
@@ -55,10 +77,17 @@ import DidiOwner
             if self?.state == .failed { return }
             for await event in coordinator.events {
                 let current = await coordinator.state
+                let beforeCreate = await coordinator.sessionID == nil
                 guard let self, self.generation == token, !Task.isCancelled else { return }
                 guard current == event else { continue }
                 switch event {
+                case .active where self.state == .pausedForInput: break
                 case .active: self.state = self.muted ? .muted : (self.speaking ? .speaking : .listening)
+                case .rebuilding:
+                    self.speaking = false
+                    if self.state != .pausedForInput {
+                        self.state = Self.continuityPresentation(event, muted: self.muted)!
+                    }
                 case .terminal(let outcome):
                     if let sentence = NativeLivePresentation.ended(outcome.code, limits: self.limits) {
                         self.failure = sentence
@@ -70,7 +99,7 @@ import DidiOwner
                 case .failed(let reason):
                     self.device.stop(); self.state = .failed
                     self.failure = NativeLivePresentation.failure(reason)
-                    self.logFailure(reason)
+                    self.logFailure(reason, beforeCreate: beforeCreate)
                 case .createUnknown:
                     self.device.stop(); self.state = .outcomeUnknown
                     self.failure = "Live start outcome is unknown. Check the conversation before starting again."
@@ -99,13 +128,16 @@ import DidiOwner
                 self.device.stop(); await coordinator.close()
                 guard self.generation == token else { return }
                 self.failure = NativeLivePresentation.failure(error)
-                self.logFailure(error)
+                self.logFailure(error, beforeCreate: true)
                 self.state = .failed
             }
         }
     }
-    private func logFailure(_ error: Error) {
-        guard let logsDirectory else { return }
+    @discardableResult
+    func logFailure(_ error: Error, beforeCreate: Bool, diagnosticSession: URLSession? = nil) -> Task<Void, Never>? {
+        guard beforeCreate else { return nil }
+        let diagnostic = Task { [http] in await http.postPrecreateFailure(error, using: diagnosticSession) }
+        guard let logsDirectory else { return diagnostic }
         let code: String
         if error is URLError { code = "service_unreachable" }
         else if error is DecodingError { code = "unexpected_response" }
@@ -116,7 +148,7 @@ import DidiOwner
             try FileManager.default.createDirectory(at: logsDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             let file = logsDirectory.appendingPathComponent("native-live.log")
             if !FileManager.default.fileExists(atPath: file.path) {
-                guard FileManager.default.createFile(atPath: file.path, contents: nil, attributes: [.posixPermissions: 0o600]) else { return }
+                guard FileManager.default.createFile(atPath: file.path, contents: nil, attributes: [.posixPermissions: 0o600]) else { return diagnostic }
             }
             let handle = try FileHandle(forWritingTo: file)
             defer { try? handle.close() }
@@ -124,18 +156,28 @@ import DidiOwner
             var record = try JSONSerialization.data(withJSONObject: ["event": "live_precreate_failed", "failureClass": error is NativeLiveAudioError ? "audio" : "service", "code": code], options: [.sortedKeys])
             record.append(10); try handle.write(contentsOf: record)
         } catch { /* Logging must not change the failure or restart Live. */ }
+        return diagnostic
     }
     func toggleMute() {
-        guard [.listening, .speaking, .muted].contains(state) else { return }
+        guard [.listening, .speaking, .muted, .pausedForInput].contains(state) else { return }
         muted.toggle(); device.setMuted(muted)
+        guard state != .pausedForInput else { return }
         state = muted ? .muted : (speaking ? .speaking : .listening)
     }
-    func stop() async {
+    /// Stop capture and presentation synchronously before asynchronous transport cleanup.
+    func stopCapture() {
         generation &+= 1; startTask?.cancel(); startTask = nil
         observer?.cancel(); observer = nil
         device.stop()
+        state = .ended
+    }
+    func stop() async {
+        stopCapture()
+        let token = generation
         await coordinator.close()
+        guard generation == token else { return }
         let outcome = await coordinator.state
+        guard generation == token else { return }
         if case .outcomeUnknown = outcome { state = .outcomeUnknown }
         else { state = .ended }
         muted = false; speaking = false

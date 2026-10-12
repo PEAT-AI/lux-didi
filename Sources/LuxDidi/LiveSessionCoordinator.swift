@@ -105,6 +105,7 @@ public enum LiveClientState: Sendable, Equatable {
     case terminal(LiveTerminal)
     case outcomeUnknown(LiveClientError)
     case failed(LiveClientError)
+    case rebuilding
 }
 
 /// No preference, native REST/bootstrap, credential owner, device, UI, persistence, or reconnect binding.
@@ -214,13 +215,22 @@ public actor LiveSessionCoordinator {
         do {
             while !Task.isCancelled {
                 let frame = try await connection.receive()
-                guard generation == token, !Task.isCancelled, state == .attaching || state == .active else { return }
+                guard generation == token, !Task.isCancelled, state == .attaching || state == .active || state == .rebuilding else { return }
                 switch frame {
+                case .continuity(let event):
+                    if event == "rebuilding", state == .active {
+                        state = .rebuilding
+                        try await sink.flush()
+                    } else if event == "resumed", state == .rebuilding {
+                        state = .active
+                    }
                 case .pcm(let pcm):
+                    if state == .rebuilding { continue }
                     guard state == .active else { throw LiveClientError.invalidFrame }
                     try await sink.write(pcm)
                     guard generation == token, !Task.isCancelled else { return }
                 case .marker(let marker):
+                    if state == .rebuilding { continue }
                     guard marker.sequence > previousSequence else { throw LiveClientError.invalidFrame }
                     previousSequence = marker.sequence
                     if marker.kind == .ready {
@@ -242,7 +252,7 @@ public actor LiveSessionCoordinator {
                 }
             }
         } catch {
-            guard generation == token, !Task.isCancelled, state == .attaching || state == .active else { return }
+            guard generation == token, !Task.isCancelled, state == .attaching || state == .active || state == .rebuilding else { return }
             state = .outcomeUnknown(safe(error, fallback: .transport)); socket = nil
             try? await sink.flush()
             await connection.cancel()
@@ -250,6 +260,7 @@ public actor LiveSessionCoordinator {
     }
 
     public func sendPCM(_ pcm: Data) async throws {
+        if state == .rebuilding { return }
         try LiveSocketTransport.validatePCM(pcm)
         guard state == .active, !inputEnded, let connection = socket else { throw LiveClientError.unavailable }
         let token = generation

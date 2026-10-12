@@ -35,16 +35,43 @@ struct NativePendingLiveJob: Decodable, Equatable, Sendable {
     private let pickupJobID: String?
     private var pickupCreateKey: String?
     private let session: URLSession
-    init(authority: (origin: URL, request: NativeLiveRequestBuilder), pickupJobID: String? = nil) {
+    init(authority: (origin: URL, request: NativeLiveRequestBuilder), pickupJobID: String? = nil, configuration: URLSessionConfiguration? = nil) {
         self.pickupJobID = pickupJobID
         origin = authority.origin
         build = authority.request
-        let config = URLSessionConfiguration.ephemeral
+        let config = configuration ?? URLSessionConfiguration.ephemeral
         config.httpCookieStorage = nil; config.httpShouldSetCookies = false
         config.urlCache = nil; config.urlCredentialStorage = nil
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         config.timeoutIntervalForRequest = 8; config.timeoutIntervalForResource = 12
         session = URLSession(configuration: config, delegate: NativeLiveNoRedirect(), delegateQueue: nil)
+    }
+    /// Closed, non-textual telemetry only; the owner's native failure remains authoritative.
+    func postPrecreateFailure(_ error: Error, using diagnosticSession: URLSession? = nil) async {
+        let code: String
+        if error is URLError { code = "service_unreachable" }
+        else if error is DecodingError { code = "unexpected_response" }
+        else if let reason = error as? LiveClientError { code = reason.rawValue }
+        else if let audio = error as? NativeLiveAudioError { code = audio.rawValue }
+        else { code = "connection_refused" }
+        var body: [String: Any] = ["event": "live_precreate_failed",
+                                   "failureClass": error is NativeLiveAudioError ? "audio" : "service", "code": code]
+        if let reason = error as? LiveClientError {
+            switch reason {
+            case .http(let status, _): body["detail"] = status
+            case .socketClosed(let code, _): body["detail"] = code
+            default: break
+            }
+        }
+        do {
+            let data = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
+            var request = try build(origin.appendingPathComponent("api/v1/diagnostics/client"), nil)
+            request.httpMethod = "POST"; request.httpBody = data
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            _ = try await (diagnosticSession ?? session).data(for: request)
+        } catch {
+            // Best effort, including 429: no retry and no replacement of the native log or sentence.
+        }
     }
     deinit { session.invalidateAndCancel() }
     private func fetch(_ path: String, epoch: String?, method: String = "GET", body: Data? = nil,
@@ -173,6 +200,8 @@ enum NativeLivePresentation {
     }
     static func ended(_ code: String?, limits: NativeLiveLimits?) -> String? {
         switch code {
+        case "resume_failed":
+            return "Naya's connection could not be resumed. Start Live again."
         case "session_timeout":
             return "Session limit reached" + (limits.map { " (\(NativeLiveLimits.duration($0.sessionMs)))" } ?? "") + ". Start again to continue."
         case "idle_timeout":

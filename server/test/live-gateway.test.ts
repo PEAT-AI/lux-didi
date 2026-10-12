@@ -115,7 +115,7 @@ async function harness(t: TestContext, options: HarnessOptions = {}): Promise<Ha
     t.after(async () => { await runtime.close(); });
     // Keep the missing-policy regression first: the base reaches attach, then closes internal.
     if (options.failedMcp) {
-      assert.deepEqual(runtime.connectionIds(), ['healthy']);
+      assert.deepEqual(runtime.connectionIds(), ['healthy'], JSON.stringify(runtime.status()));
       assert.equal(runtime.status().endpoints.find(e => e.id === 'failed')?.state, 'error');
     }
     tools = { owner: runtime.owner, connectionIds: () => runtime.connectionIds(), registerAuthoritySource: source => { sources.push(source); } };
@@ -278,7 +278,7 @@ for (const [label, error, code] of [
   ['typed', new LiveError('invalidated', CANARY), 'invalidated'],
   ['authorization', new ServiceError('FORBIDDEN', CANARY, 403), 'FORBIDDEN'],
   ['unknown', new Error(CANARY), 'internal'],
-  ['known code', new Error('connection_policy_missing_or_corrupt'), 'internal'],
+  ['known-code', new Error('connection_policy_missing_or_corrupt'), 'internal'],
 ] as const) {
   test(`attach rejection reports sanitized ${label} code once`, async t => {
     const h = await harness(t, { config: configJson(true) });
@@ -296,7 +296,7 @@ for (const [label, error, code] of [
     assert.equal(closeCode, 1008);
     assert.equal(reason.toString(), `attach_rejected:${code}`);
     assert.ok(Buffer.byteLength(reason) <= 123);
-    assert.deepEqual(events, [[JSON.stringify({ event: 'live_attach_rejected', liveSessionId: id, code, ...(code === 'internal' ? { class: 'Error', ...(label === 'known code' ? { detail: 'connection_policy_missing_or_corrupt' } : {}) } : {}) })]]);
+    assert.deepEqual(events, [[JSON.stringify({ event: 'live_attach_rejected', liveSessionId: id, code, ...(code === 'internal' ? { class: 'Error', ...(label === 'known-code' ? { detail: 'connection_policy_missing_or_corrupt' } : {}) } : {}) })]]);
     assert.equal(JSON.stringify(events).includes(CANARY), false);
     assert.equal(h.f.attempts, 0);
   });

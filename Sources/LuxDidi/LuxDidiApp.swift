@@ -644,6 +644,7 @@ private final class ConnectedProofTransport: URLProtocol, @unchecked Sendable {
             if state.consent { data = ["state": "active", "sessionId": state.session] }
             else { status = 403 }
         case "/api/v1/chat":
+            print("MAC-CONNECTED-FIXTURE method=\(request.httpMethod ?? "nil") path=\(path) bodyKeys=\(body.keys.sorted()) bodyStream=\(request.httpBodyStream != nil) cookie=\(request.value(forHTTPHeaderField: "Cookie") == "didi_session=synthetic-cookie") csrf=\(request.value(forHTTPHeaderField: "X-Didi-CSRF") == "synthetic-csrf") key=\(request.value(forHTTPHeaderField: "Idempotency-Key") != nil) epoch=\(request.value(forHTTPHeaderField: "x-didi-authority-epoch") == state.epoch)")
             guard request.value(forHTTPHeaderField: "Cookie") == "didi_session=synthetic-cookie",
                   request.value(forHTTPHeaderField: "X-Didi-CSRF") == "synthetic-csrf",
                   request.value(forHTTPHeaderField: "Authorization") == nil,

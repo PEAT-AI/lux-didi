@@ -11,7 +11,8 @@ import type { TestContext } from 'node:test';
 import { once } from 'node:events';
 import { fork } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { request } from 'node:http';
+import { request, createServer } from 'node:http';
+import { composeMcpRuntime } from '../host/mcp.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -52,7 +53,7 @@ function writePrivate(dir: string, name: string, text: string): void {
   chmodSync(path, 0o600);
 }
 
-interface HarnessOptions { toolsFactory?: (store: Store) => LiveToolsComposition; now?: () => number; config?: unknown; rawLive?: string; profile?: LiveProfile; withKey?: boolean; credentials?: { resolve(reference: string): Promise<string | undefined> } }
+interface HarnessOptions { realMcp?: boolean; failedMcp?: boolean; toolsFactory?: (store: Store) => LiveToolsComposition; now?: () => number; config?: unknown; rawLive?: string; profile?: LiveProfile; withKey?: boolean; credentials?: { resolve(reference: string): Promise<string | undefined> } }
 
 interface Harness {
   f: Awaited<ReturnType<typeof fixture>>;
@@ -67,14 +68,46 @@ interface Harness {
 async function harness(t: TestContext, options: HarnessOptions = {}): Promise<Harness> {
   const f = await fixture(t);
   const dir = mkdtempSync(join(tmpdir(), 'didi-live-gateway-'));
-  const store = new Store(join(dir, 'state'), [...liveMigrations, ...(options.toolsFactory ? toolsMigrations : [])]);
+  const store = new Store(join(dir, 'state'), [...liveMigrations, ...(options.toolsFactory || options.realMcp ? toolsMigrations : [])]);
   const config = join(dir, 'provider-config');
   mkdirSync(config, { recursive: true, mode: 0o700 });
   chmodSync(config, 0o700);
   if (options.rawLive !== undefined) writePrivate(config, 'live.json', options.rawLive);
   else if (options.config !== undefined) writePrivate(config, 'live.json', `${JSON.stringify(options.config)}\n`);
   if (options.withKey !== false) writePrivate(config, 'gemini-primary.json', `${JSON.stringify({ schemaVersion: 1, keyReference: 'gemini-primary', key: CANARY })}\n`);
-  const { service: live } = composeLive(store, config, { socketFactory: f.socketFactory, ...(options.profile ? { profile: options.profile } : {}), ...(options.credentials ? { credentials: options.credentials } : {}) }, options.now, undefined, options.toolsFactory?.(store));
+  let tools = options.toolsFactory?.(store);
+  if (options.realMcp) {
+    const endpoint = createServer(async (req, res) => {
+      if (req.url === '/failed') { res.writeHead(503); res.end(); return; }
+      let bytes = ''; for await (const chunk of req) bytes += chunk;
+      const message = JSON.parse(bytes);
+      if (message.id === undefined) { res.writeHead(202); res.end(); return; }
+      const result = message.method === 'initialize'
+        ? { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'fixture', version: '1' } }
+        : { tools: [{ name: 'search_knowledge', description: 'fixture read', inputSchema: { type: 'object', properties: { query: { type: 'string' } } } }] };
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ jsonrpc: '2.0', id: message.id, result }));
+    });
+    endpoint.listen(0, '127.0.0.1'); await once(endpoint, 'listening');
+    const address = endpoint.address(); assert(address && typeof address !== 'string');
+    const url = `http://127.0.0.1:${address.port}`;
+    const entry = (id: string, path: string) => ({ id, url: url + path, transport: 'streamable-http', connector: 'lux-knowledge', account: 'fixture', resource: 'knowledge', enabled: true, allowEgress: true });
+    writePrivate(config, 'mcp.json', JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [entry('healthy', '/'), ...(options.failedMcp ? [entry('failed', '/failed')] : [])] }));
+    const sources: Array<(runId: string, signal: AbortSignal) => Promise<LiveAuthority | null>> = [];
+    const lookupAuthority = async (runId: string, signal: AbortSignal) => {
+      for (const source of sources) { const authority = await source(runId, signal); if (authority) return authority; }
+      return null;
+    };
+    const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir: config, lookupAuthority });
+    t.after(async () => { await runtime.close(); endpoint.closeAllConnections(); await new Promise<void>(resolve => endpoint.close(() => resolve())); });
+    // Keep the missing-policy regression first: the base reaches attach, then closes internal.
+    if (options.failedMcp) {
+      assert.deepEqual(runtime.connectionIds(), ['healthy']);
+      assert.equal(runtime.status().endpoints.find(e => e.id === 'failed')?.state, 'error');
+    }
+    tools = { owner: runtime.owner, connectionIds: () => runtime.connectionIds(), registerAuthoritySource: source => { sources.push(source); }, lookupAuthority };
+  }
+  const { service: live } = composeLive(store, config, { socketFactory: f.socketFactory, ...(options.profile ? { profile: options.profile } : {}), ...(options.credentials ? { credentials: options.credentials } : {}) }, options.now, undefined, tools);
   const running = await listenService({ store, live, port: 0 });
   t.after(async () => {
     await running.close();
@@ -185,8 +218,8 @@ test('live operator routes reject browsers, origins and duplicate headers before
   assert.equal(h.f.attempts, 0, 'guards run before any provider open');
 });
 
-test('Swift create, grant acceptance and pinned audio upgrade stay attached', async t => {
-  const h = await harness(t, { config: configJson(true) });
+for (const failedMcp of [false, true]) test(`real MCP composition: Swift sequence reaches ready (failed endpoint=${failedMcp})`, async t => {
+  const h = await harness(t, { config: configJson(true), realMcp: true, failedMcp });
   // LiveSessionCoordinator.performCreate: status, create, validate the returned grant, connect.
   const status = await json(h.origin, '/api/v1/live/status', { headers: bearer(h) });
   assert.equal(status.status, 200);

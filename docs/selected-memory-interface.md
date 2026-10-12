@@ -65,7 +65,7 @@ Run both through `scripts/check-selected-memory-ui.sh`.
 
 Every entry shown in the local conversation, recall results, or selected-note picker has a
 Delete memory control with one confirmation. The browser calls authenticated
-`DELETE /api/v1/entries/:id`, then reloads the conversation and recall payloads from the
+`DELETE /api/v1/entries/:id` with an empty JSON object, then reloads the conversation and recall payloads from the
 service. It does not optimistically filter records. Failed deletes leave the previous
 payload visible; a failed reload reports an error rather than claiming a fresh list.
 Deletion is unavailable while a connected generation is active. Successful deletion

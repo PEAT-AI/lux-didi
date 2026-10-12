@@ -299,14 +299,14 @@ test('owner memory delete requires a principal, is idempotent and reports unknow
     const path = `${f.service.origin}/api/v1/entries/${entry.id}`;
     assert.equal((await fetch(path, { method: 'DELETE' })).status, 401);
     const browser = await pair(f);
-    const headers = { Cookie: browser.cookie.split(';')[0]!, Origin: f.service.origin, 'X-Didi-CSRF': browser.csrf, 'X-Didi-Authority-Epoch': f.store.authorityEpoch, 'Idempotency-Key': 'delete-one' };
-    const first = await fetch(path, { method: 'DELETE', headers });
+    const headers = { Cookie: browser.cookie.split(';')[0]!, Origin: f.service.origin, 'X-Didi-CSRF': browser.csrf, 'X-Didi-Authority-Epoch': f.store.authorityEpoch, 'Idempotency-Key': 'delete-one', 'Content-Type': 'application/json' };
+    const first = await fetch(path, { method: 'DELETE', headers, body: '{}' });
     assert.equal(first.status, 200);
     const deleted = await first.json();
-    const second = await fetch(path, { method: 'DELETE', headers: { ...headers, 'Idempotency-Key': 'delete-again' } });
+    const second = await fetch(path, { method: 'DELETE', headers: { ...headers, 'Idempotency-Key': 'delete-again' }, body: '{}' });
     assert.equal(second.status, 200);
     assert.deepEqual((await second.json()).data, deleted.data);
-    const unknown = await fetch(`${f.service.origin}/api/v1/entries/00000000-0000-4000-8000-000000000000`, { method: 'DELETE', headers: { ...headers, 'Idempotency-Key': 'delete-unknown' } });
+    const unknown = await fetch(`${f.service.origin}/api/v1/entries/00000000-0000-4000-8000-000000000000`, { method: 'DELETE', headers: { ...headers, 'Idempotency-Key': 'delete-unknown' }, body: '{}' });
     assert.equal(unknown.status, 404);
     assert.equal((await unknown.json()).error.code, 'NOT_FOUND');
   } finally { await f.cleanup(); }

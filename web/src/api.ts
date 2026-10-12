@@ -87,5 +87,5 @@ export async function stream(path: string, signal: AbortSignal, onFrame: (value:
 }
 
 export function deleteMemoryEntry(id: string, signal?: AbortSignal): Promise<EntryTombstone> {
-  return request<EntryTombstone>(`/entries/${encodeURIComponent(id)}`, { method: 'DELETE', ...(signal ? { signal } : {}) });
+  return request<EntryTombstone>(`/entries/${encodeURIComponent(id)}`, { method: 'DELETE', body: {}, ...(signal ? { signal } : {}) });
 }

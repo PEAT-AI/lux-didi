@@ -65,4 +65,4 @@ export LUX_MAC_ARTIFACTS="$work/mac"
 bash Tests/DidiMacTests/check-mac.sh --prepare "$LUX_MAC_ARTIFACTS"
 # One leased run phase. Every LaunchServices registration, native launch, UI/AX
 # capture and browser stays inside the existing slot and its acquisition deadline.
-lux-browser-slot run --wait 120 -- bash "$root/Tests/DidiCompanionTests/produce-companion.sh" --leased-run "$work" "$proof" "$node"
+lux-browser-slot run --wait 1800 -- bash "$root/Tests/DidiCompanionTests/produce-companion.sh" --leased-run "$work" "$proof" "$node"

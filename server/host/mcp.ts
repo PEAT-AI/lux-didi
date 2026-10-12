@@ -139,7 +139,7 @@ export async function composeMcpRuntime(options: {
       owner.applyConnectionIntent({ expectedPolicySha256: row ? String(row.policy_sha256) : null, policy });
       const restored = await owner.restoreConnection(entry.id, () => {
         const current = loadMcpEndpoints({ configDir });
-        if (current.state !== 'catalog' || current.catalog.grantMode !== grantMode
+        if (current.state !== 'configured' || current.catalog.grantMode !== grantMode
           || canonicalJSON(current.catalog.endpoints.find(endpoint => endpoint.id === entry.id) ?? null) !== canonicalJSON(entry)) {
           throw Error('endpoint-binding-mismatch');
         }

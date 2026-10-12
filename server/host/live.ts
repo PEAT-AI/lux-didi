@@ -22,6 +22,7 @@ function statusFromProfile(profile: LiveProfile): LiveStatusPayload {
   return {
     service: 'live', status: 'configured', provider: 'gemini', model: profile.liveModelId, voice: profile.voice,
     dataClasses: [...profile.route.dataClasses], profileIdentity: liveProfileIdentity(profile),
+    limits: { sessionMs: profile.limits.sessionMs, idleMs: profile.limits.idleMs },
   };
 }
 

@@ -11,6 +11,11 @@ import Security
     @Published var notificationStatus: NotificationCapability = .unknown
     @Published var hotkeyStatus = "Registering…"
     @Published var shell: CompanionWeb?
+    @Published private(set) var liveLimits: NativeLiveLimits?
+    @Published private(set) var connections: [NativeLiveConnection] = []
+    @Published private(set) var connectionsError: String?
+    private var checkingConnections = false
+    private let liveLogsDirectory: URL?
     @Published var connecting = false
     let voice = NativeVoice()
     @Published private(set) var live: NativeLiveConversation?
@@ -24,6 +29,7 @@ import Security
     private(set) var installedProof: PreparedInstalledProof?
     private(set) var bootstrapFailureCode: String?
     init(proofRequest: InstalledProofRequest? = nil) {
+        liveLogsDirectory = (proofRequest?.state ?? (try? InstalledRuntime.applicationState()))?.appendingPathComponent("logs", isDirectory: true)
         // A present but invalid installed resource is a blocker, never attach fallback.
         if let resources = Bundle.main.resourceURL {
             do {
@@ -76,7 +82,8 @@ import Security
             }
             guard let client, let shell else { throw CompanionError.invalidConfiguration }
             bootstrapFailureCode = nil
-            await shell.load(cookie: try await client.bootstrap()); error = nil
+            await shell.load(cookie: try await client.bootstrap())
+            await refreshLiveDetails(); error = nil
         } catch {
             bootstrapFailureCode = supervisor?.startupFailureCode ?? "bootstrap/" + ((error as? CompanionError).map { String(describing: $0) } ?? "platformFailure")
             self.error = error.localizedDescription; shell?.clear()
@@ -102,6 +109,23 @@ import Security
             captureStatus = client.captureStatus == .idle ? .failed : client.captureStatus
             self.error = error.localizedDescription
         }
+    }
+    func showConversation() { shell?.focusConversation() }
+    var livePanelVisible: Bool {
+        guard let window = shell?.webView.window else { return false }
+        return window.isVisible && !window.isMiniaturized && window.occlusionState.contains(.visible)
+    }
+    func refreshLiveDetails() async {
+        guard let client else { return }
+        do { liveLimits = try await NativeLiveOperatorHTTP(authority: client.authenticatedRequestBuilder()).configuredLimits() }
+        catch { liveLimits = nil }
+        await refreshConnections()
+    }
+    func refreshConnections() async {
+        guard livePanelVisible, !checkingConnections, let client else { return }
+        checkingConnections = true; defer { checkingConnections = false }
+        do { connections = try await client.liveConnections(); connectionsError = nil }
+        catch { connections = []; connectionsError = "Connections unavailable. Reconnect the service to refresh." }
     }
     func refreshLiveCalls() async {
         guard !checkingLiveCalls, let client else { return }
@@ -131,7 +155,7 @@ import Security
         if live == nil {
             live = NativeLiveConversation(authority: client.authenticatedRequestBuilder(), dictationIsCapturing: { [weak self] in
                 self?.voice.state.phase == .recording
-            }, pickupJobID: pickupJobID)
+            }, pickupJobID: pickupJobID, logsDirectory: liveLogsDirectory)
         }
         live?.start()
     }
@@ -214,7 +238,22 @@ struct RootView: View {
                         }
                         Button("Start Live voice") { model.startLive() }
                             .disabled(model.live?.isCapturing == true || voice.state.phase == .recording)
+                        Text(model.liveLimits?.sentence ?? "Live limits unavailable. Reconnect the service to refresh.").font(.caption)
+                        Button("Show conversation") { model.showConversation() }.disabled(model.shell == nil)
                         if let live = model.live { NativeLiveControls(conversation: live, device: live.device) }
+                        GroupBox("Connections") {
+                            VStack(alignment: .leading) {
+                                if let error = model.connectionsError { Text(error) }
+                                else if model.connections.isEmpty { Text("No connectors reported.") }
+                                ForEach(model.connections) { connection in
+                                    Text("\(connection.id): \(connection.state)" + (connection.reason.map { " (" + $0 + ")" } ?? ""))
+                                }
+                            }.font(.caption)
+                        }
+                        .task { await model.refreshConnections() }
+                        .onReceive(Timer.publish(every: 10, on: .main, in: .common).autoconnect()) { _ in
+                            Task { await model.refreshConnections() }
+                        }
                     }
                     Menu("Settings") {
                         Button("Request microphone/speech permissions") { Task { await model.voice.requestPermissions() } }

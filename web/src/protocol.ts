@@ -11,7 +11,9 @@ export interface Status { ownerProfile: OwnerProfileStatus; assistantId: string;
 export interface CommitmentDetail { commitment: Commitment; history: { revision: number; operation: string; recordedAt: string; title: string; notes: string; dueAt: string | null; timeZone: string; status: Commitment['status'] }[] }
 
 /** Safe current presentation only; no authored profile/version/path. */
+export interface ConnectedConsent { sessionId: string; provider: string; model: string; scope: 'conversation' | 'standing'; state: 'active' | 'revoked' | 'route_changed' }
 export interface ConnectedRouteStatus {
+  consent?: ConnectedConsent | null;
   status: 'unconfigured' | 'disabled' | 'error' | 'configured'; provider?: string; model?: string; code?: string;
 }
 export interface OwnerProfileStatus { status: 'default' | 'configured'; displayName: string }

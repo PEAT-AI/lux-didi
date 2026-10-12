@@ -68,3 +68,20 @@ close code and bounded `attach_rejected:<code>` reason when available. Unknown
 failures retain the generic guidance; no automatic reconnect is introduced.
 
 Each host start creates `host.log` with a bounded `host_started` event containing the installed release commit (or `unknown` for source starts), configuration kind (`effective` or `seeded`) and endpoint count, never configuration paths or secrets.
+
+### Native Live operator feedback
+
+Before Start, the native panel displays the configured session and idle limits
+from the optional `limits` field on `/api/v1/live/status`. Older services without
+that field remain decodable; the panel reports that limits are unavailable,
+never substitutes defaults. A session or idle timeout explains the limit and
+asks for an explicit new Start. Live never restarts automatically.
+
+Start errors distinguish unreachable service, unconfigured Live, HTTP rejection,
+unexpected response and local audio or permission failures. A lost CREATE reply
+remains an unknown outcome, not a safe retry. The native app records closed
+failure codes in `logs/native-live.log` (0600), without error bodies or credentials.
+
+Show conversation focuses the existing authenticated embedded view. Connections
+is read-only and uses the page cookie, never the Live bearer credential. It
+refreshes every ten seconds only while its window is visible and not minimized.

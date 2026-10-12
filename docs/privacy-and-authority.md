@@ -114,3 +114,15 @@ downloads and subframes are refused rather than rendered.
 Same-user process separation is not a security sandbox, and this document does not claim that it is.
 Hidden-view graphics-context loss and cookie behaviour across a content-process termination are open
 questions with measurements attached, not established facts.
+
+Connection-scoped tools admission freezes the owner-approved usable connection IDs and the model route's allowed data-class set when the run is accepted. A connection's policy is source/local-operation authority, not a model-route approval. The canonical owner checks the selected connection's current approval and effective locally configured source class before MCP dispatch and again at result release, using exact class-set membership, and journals the run route identity in intent and result rows. Discovery cannot expand an existing run, missing source classification disables only its connection, and an in-flight revocation withholds the result rather than releasing stale evidence.
+
+The installer seeds Live with the explicit allowed-class set `ordinary` and `private` so its five private connector sources can execute; it upgrades only byte-identical templates shipped by this program, in provider-config and provider-38, and never widens an owner-edited Live set or rewrites an owner-edited MCP catalog.
+
+### Remembered connected-chat provider disclosure
+
+Remembering the connected-chat provider disclosure is an explicit owner action, not a browser preference. The server records a standing grant with the owner, provider, route, model, permitted data classes and disclosure revision. Existing conversation grants keep their original scope. Neither localStorage nor a UI checkbox can substitute for the server's consent resolution during generation.
+
+A standing grant applies only to its exact validated tuple. Revocation or a changed route, provider, model, permitted-class policy or disclosure revision makes it unusable. In particular, ordinary-route consent cannot authorize a private route. The UI's standing-consent indicator and revoke control reflect the server payload, and a revoked grant cannot authorize a new conversation. A conversation-scoped grant can still authorize its own conversation under its existing validation rules.
+
+Standing chat disclosure does not authorize connector reads, broaden connector grants, enroll Live voice, or authorize microphone capture. Those authority boundaries remain unchanged.

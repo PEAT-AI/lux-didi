@@ -637,7 +637,7 @@ test('live migrations preserve a populated accepted Store byte-for-byte', async 
   before.transaction(tx => {
     tx.run('INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?)', ['s1', 'Prior session', 1, null, 'UTC', 1, 1, 1]);
     tx.run('INSERT INTO entries VALUES (?,?,?,?,?,?,?,?)', ['e1', 's1', 1, 'user', 'preserved text', 2, 'UTC', 1]);
-    tx.run('INSERT INTO chat_consents VALUES (?,?,?,?,?,?,?,?,?,?,?)', ['s1', before.assistantId, 'gemini', MODEL, 'route', 1, '["ordinary"]', '2026-01-01T00:00:00.000Z', null, 'consent-key', 'fingerprint']);
+    tx.run('INSERT INTO chat_consents(session_id,owner_assistant_id,provider,model,route_identity,revision,permitted_classes,granted_at,revoked_at,idempotency_key,fingerprint) VALUES (?,?,?,?,?,?,?,?,?,?,?)', ['s1', before.assistantId, 'gemini', MODEL, 'route', 1, '["ordinary"]', '2026-01-01T00:00:00.000Z', null, 'consent-key', 'fingerprint']);
   });
   const journalColumns = 'journal_id,live_session_id,provider_sequence,kind,text,finished,value,terminal_outcome,rejected_kind,rejected_sequence,payload_bytes,arrived_at';
   before.transaction(tx => {
@@ -678,7 +678,7 @@ test('live migrations preserve a populated accepted Store byte-for-byte', async 
       [{ journal_id: 44, kind: 'toolCall' }, { journal_id: 45, kind: 'toolResult' }]);
   });
   const owners = migrated.transaction(tx => tx.all('SELECT owner, MAX(version) AS version FROM runtime_migrations GROUP BY owner ORDER BY owner'));
-  assert.deepEqual(owners.map(row => [String(row['owner']), Number(row['version'])]), [['chat', 4], ['domain', 3], ['live', 4]]);
+  assert.deepEqual(owners.map(row => [String(row['owner']), Number(row['version'])]), [['chat', 5], ['domain', 3], ['live', 4]]);
 });
 
 test('a failed store write aborts visibly and never fabricates a durable outcome', async t => {

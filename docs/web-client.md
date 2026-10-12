@@ -281,4 +281,17 @@ failed route shows "Unavailable" for that group rather than stale values.
 Live model, voice and limits from it. Those fields stay "Unavailable" until a
 browser-readable route exists; the panel does not invent them.
 
+
+## Live summary
+
+The read-only Live summary reads `GET /api/v1/live/summary` with the existing
+browser cookie (the operator bearer is accepted too); the operator-only
+`/api/v1/live/status` still refuses the cookie. The response is a closed
+whitelist, `{modelId, voice, personaName, limits: {sessionMs, idleMs},
+profileEnabled}`, carrying the configured model and voice, the persona display
+name and the session and idle limits, and nothing else: no key reference, no
+endpoint, no provider credential and no persona or system prompt text. When Live
+is unconfigured or disabled the route still answers 200 with `profileEnabled`
+false and the other fields null.
+
 The Live page projection may include optional `pastSession` metadata. Past sessions render as the last Live session, not a current error. `endedAt` is the persisted terminal timestamp; an orphan has null `endedAt` and an unknown outcome, with `lastObservedAt` shown explicitly as last seen. Active session labels are unchanged.

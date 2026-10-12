@@ -105,7 +105,7 @@ async function harness(t: TestContext, options: HarnessOptions = {}): Promise<Ha
     t.after(async () => { endpoint.closeAllConnections(); await new Promise<void>(resolve => endpoint.close(() => resolve())); await transport.close(); await sdk.close(); });
     const address = endpoint.address(); assert(address && typeof address !== 'string');
     const url = `http://127.0.0.1:${address.port}`;
-    const entry = (id: string, path: string) => ({ id, url: url + path, transport: 'streamable-http', connector: 'lux-knowledge', account: 'fixture', resource: 'knowledge', credentialRef: null, enabled: true, allowEgress: true });
+    const entry = (id: string, path: string) => ({ id, url: url + path, transport: 'streamable-http', connector: 'lux-knowledge', account: 'fixture', resource: 'knowledge', credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'ordinary' });
     writePrivate(config, 'mcp.json', JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [entry('healthy', '/'), ...(options.failedMcp ? [{ ...entry('failed', '/'), credentialRef: 'missing-credential' }] : [])] }));
     const sources: Array<(runId: string, signal: AbortSignal) => Promise<LiveAuthority | null>> = [];
     const lookupAuthority = async (runId: string, signal: AbortSignal) => {
@@ -215,6 +215,7 @@ test('live status is local validation; absent, disabled and malformed files neve
   const ready = await json(enabled.origin, '/api/v1/live/status', { headers: bearer(enabled) });
   assert.equal(ready.body.data.status, 'configured');
   assert.equal(ready.body.data.model, MODEL);
+  assert.deepEqual(ready.body.data.limits, { sessionMs: 900_000, idleMs: 60_000 });
 });
 
 test('live operator routes reject browsers, origins and duplicate headers before the owner', async t => {

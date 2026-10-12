@@ -50,7 +50,7 @@ pack_json=$(cd "$builder" && npm pack --json --offline --ignore-scripts)
 tarball=$(printf '%s' "$pack_json" | "$bundled_node" -e 'const chunks=[];process.stdin.on("data",c=>chunks.push(c)).on("end",()=>{const parsed=JSON.parse(chunks.join(""));const first=(Array.isArray(parsed)?parsed:Object.values(parsed))[0];process.stdout.write(String(first.filename));});')
 test -n "$tarball" || { echo 'npm pack produced no tarball name' >&2; exit 1; }
 cp "$builder/$tarball" "$out/$tarball"
-(cd "$out/server" && npm install --offline --omit=dev --ignore-scripts --no-audit --no-fund "$out/$tarball")
+bash scripts/npm-ci-offline.sh "$out/server" install --offline --omit=dev --ignore-scripts --no-audit --no-fund "$out/$tarball"
 installed="$out/server/node_modules/@lux-didi/service"
 test -d "$installed/dist/tools" || { echo 'Offline install is missing the compiled tools tree' >&2; exit 1; }
 test -f "$installed/dist/host/index.js" || { echo 'Offline install is missing the host entry' >&2; exit 1; }

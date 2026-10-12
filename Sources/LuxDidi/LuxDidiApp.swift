@@ -26,10 +26,16 @@ import Security
     private(set) var client: CompanionClient?
     private(set) var supervisor: NativeServiceSupervisor?
     private var submittedDraft: String?
+    @Published private(set) var sendingConnected = false
+    private var connectedSender: NativeConnectedSend?
     private(set) var installedProof: PreparedInstalledProof?
     private(set) var bootstrapFailureCode: String?
-    init(proofRequest: InstalledProofRequest? = nil) {
+    init(proofRequest: InstalledProofRequest? = nil, fixtureClient: CompanionClient? = nil, fixtureOutbox: URL? = nil) {
         liveLogsDirectory = (proofRequest?.state ?? (try? InstalledRuntime.applicationState()))?.appendingPathComponent("logs", isDirectory: true)
+        if let fixtureClient, let fixtureOutbox {
+            client = fixtureClient; connectedSender = NativeConnectedSend(directory: fixtureOutbox)
+            return
+        }
         // A present but invalid installed resource is a blocker, never attach fallback.
         if let resources = Bundle.main.resourceURL {
             do {
@@ -109,6 +115,21 @@ import Security
             captureStatus = client.captureStatus == .idle ? .failed : client.captureStatus
             self.error = error.localizedDescription
         }
+    }
+    func sendToNaya() async {
+        guard !sendingConnected, let client else { error = "Show the conversation and reconnect first."; return }
+        sendingConnected = true; defer { sendingConnected = false }
+        let submitted = draft
+        do {
+            if connectedSender == nil {
+                connectedSender = NativeConnectedSend(directory: try InstalledRuntime.applicationState().appendingPathComponent("connected-outbox", isDirectory: true))
+            }
+            let sent = try await connectedSender!.send(text: submitted, client: client)
+            guard self.client === client else { throw NativeConnectedSend.Failure.authority }
+            if draft == sent.text { draft = "" }
+            error = nil
+            showConversation()
+        } catch { self.error = error.localizedDescription }
     }
     func showConversation() { shell?.focusConversation() }
     var livePanelVisible: Bool {
@@ -229,6 +250,8 @@ struct RootView: View {
                     Button("Start") { model.startDictation() }
                         .disabled(model.live?.isCapturing == true || voice.state.phase == .recording || voice.microphone != .granted || voice.speech != .granted || !voice.onDevice)
                         .accessibilityLabel("Start recording")
+                    Button(NativeConnectedSend.label) { Task { await model.sendToNaya() } }
+                        .disabled(model.sendingConnected || model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     Button("Stop") { model.stopRecording("Stopped by user") }
                         .disabled(voice.state.phase != .recording).accessibilityLabel("Stop recording")
                     VStack {
@@ -486,6 +509,8 @@ struct RootView: View {
         if let terminationMonitor { NSWorkspace.shared.notificationCenter.removeObserver(terminationMonitor) }
     }
     func selfCheck() async {
+        do { try await connectedSendProof() }
+        catch { failProof("connected production action: " + error.localizedDescription); return }
         let result = await model.notifications.submit(ReminderEnvelope(commitmentID: "synthetic", revision: 1, title: "Synthetic", body: "Invalid date, never submitted"), at: .distantPast)
         guard case .failed = result, model.voice.state.phase == .idle,
               model.voice.preparedPlayback("Muted preparation only").volume == 0 else { failProof("safe runtime checks"); return }
@@ -580,4 +605,102 @@ struct RootView: View {
         guard parameterResult == noErr else { return parameterResult }
         return SendEventToEventTarget(event, GetApplicationEventTarget())
     }
+}
+
+// Silent actual-app proof: production AppModel and CompanionClient, isolated URL transport only.
+private final class ConnectedProofState: @unchecked Sendable {
+    let lock = NSLock()
+    let assistant = UUID().uuidString, originalEpoch = UUID().uuidString
+    let originalSession = UUID().uuidString, run = UUID().uuidString
+    let noteSession = UUID().uuidString, noteEntry = UUID().uuidString
+    var epoch = "", session = ""
+    var consent = true, loseReply = false
+    var sends: [(String, String, String)] = []
+    var notes: [String] = []
+    init() { epoch = originalEpoch; session = originalSession }
+}
+private final class ConnectedProofTransport: URLProtocol, @unchecked Sendable {
+    static let state = ConnectedProofState()
+    override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "127.0.0.1" && request.url?.port == 19997 }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func stopLoading() {}
+    override func startLoading() {
+        let state = Self.state
+        state.lock.lock(); defer { state.lock.unlock() }
+        let path = request.url!.path
+        let body = (request.httpBody.flatMap { try? JSONSerialization.jsonObject(with: $0) }) as? [String: Any] ?? [:]
+        var data: [String: Any] = [:]
+        var status = 200
+        var headers = ["Content-Type": "application/json"]
+        switch path {
+        case "/api/v1/status": data = ["assistantId": state.assistant, "authorityEpoch": state.epoch]
+        case "/api/v1/auth/pairing": data = ["pairingCode": "synthetic"]
+        case "/api/v1/auth/pair":
+            data = ["csrfToken": "synthetic-csrf"]
+            headers["Set-Cookie"] = "didi_session=synthetic-cookie; Path=/; HttpOnly; SameSite=Strict"
+        case "/api/v1/conversation-selection": data = ["sessionId": state.session, "title": "Synthetic conversation"]
+        case "/api/v1/conversations/" + state.session:
+            if state.consent { data = ["state": "active", "sessionId": state.session] }
+            else { status = 403 }
+        case "/api/v1/chat":
+            guard request.value(forHTTPHeaderField: "Cookie") == "didi_session=synthetic-cookie",
+                  request.value(forHTTPHeaderField: "X-Didi-CSRF") == "synthetic-csrf",
+                  request.value(forHTTPHeaderField: "Authorization") == nil,
+                  request.value(forHTTPHeaderField: "x-didi-authority-epoch") == state.epoch,
+                  let key = request.value(forHTTPHeaderField: "Idempotency-Key"),
+                  let session = body["sessionId"] as? String, let text = body["text"] as? String, !text.isEmpty else {
+                client?.urlProtocol(self, didFailWithError: CompanionError.invalidResponse); return
+            }
+            state.sends.append((key, session, text))
+            if state.loseReply {
+                state.loseReply = false
+                client?.urlProtocol(self, didFailWithError: URLError(.timedOut)); return
+            }
+            data = ["runId": state.run, "sessionId": session, "finalText": "Synthetic Naya answer"]
+        case "/api/v1/sessions": data = ["id": state.noteSession, "revision": 1]
+        case "/api/v1/sessions/" + state.noteSession + "/entries":
+            state.notes.append(body["text"] as? String ?? "")
+            data = ["id": state.noteEntry, "sessionId": state.noteSession]
+        default:
+            client?.urlProtocol(self, didFailWithError: CompanionError.invalidConfiguration); return
+        }
+        let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: "HTTP/1.1", headerFields: headers)!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: try! JSONSerialization.data(withJSONObject: ["data": data]))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+}
+@MainActor private func connectedSendProof() async throws {
+    let root = URL(fileURLWithPath: "/private/tmp/wnat6-" + UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+    defer { try? FileManager.default.removeItem(at: root) }
+    let state = ConnectedProofTransport.state
+    let descriptor = try ServiceDescriptor(origin: "http://127.0.0.1:19997", credentialService: "synthetic", credentialAccount: "synthetic")
+    let client = CompanionClient(descriptor: descriptor, credential: { "synthetic-only" }, protocolClasses: [ConnectedProofTransport.self])
+    _ = try await client.bootstrap()
+    let model = AppModel(fixtureClient: client, fixtureOutbox: root.appendingPathComponent("outbox", isDirectory: true))
+    func require(_ condition: Bool) throws { if !condition { throw CompanionError.invalidResponse } }
+    state.lock.withLock { state.consent = false }
+    model.draft = "Synthetic consent denied"
+    await model.sendToNaya()
+    try require(model.error == NativeConnectedSend.consentInstruction && state.lock.withLock { state.sends.isEmpty })
+    state.lock.withLock { state.consent = true; state.loseReply = true }
+    model.draft = "Synthetic pinned connected request"
+    await model.sendToNaya()
+    try require(model.error != nil && model.draft == "Synthetic pinned connected request")
+    state.lock.withLock { state.session = UUID().uuidString }
+    await model.sendToNaya()
+    try require(state.lock.withLock { state.sends.count == 1 })
+    state.lock.withLock { state.session = state.originalSession; state.epoch = UUID().uuidString }
+    await model.sendToNaya()
+    try require(state.lock.withLock { state.sends.count == 1 })
+    state.lock.withLock { state.epoch = state.originalEpoch }
+    model.draft = "Edited while uncertain"
+    await model.sendToNaya()
+    let sends = state.lock.withLock { state.sends }
+    try require(model.error == nil && model.draft == "Edited while uncertain" && sends.count == 2 && sends[0].0 == sends[1].0 && sends[0].1 == state.originalSession && sends[0].2 == sends[1].2)
+    model.draft = "Synthetic local note"
+    await model.saveDraft()
+    try require(model.captureStatus == .saved && state.lock.withLock { state.notes == ["Synthetic local note"] && state.sends.count == 2 })
+    print("MAC-CONNECTED PASS production=AppModel consent=denied destination=pinned authority=fenced uncertain=same-key-and-text connected=nonempty-result note=local fixture=isolated")
 }

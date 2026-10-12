@@ -110,3 +110,21 @@ change login registration or saved window preferences.
 
 The native draft button is **Save note**: it saves a local note, not connected
 chat. Retry uses the same local save path.
+
+### Separate note and connected actions
+
+**Save note** still writes a local note. **Send to Naya** sends the draft to the
+conversation selected in the embedded shared conversation view, using its existing
+paired page authority. Enable connected chat in that view first; selecting a
+conversation is not consent. The server resolves either conversation consent or a
+valid standing consent. The native action never grants consent.
+
+An uncertain send retains its original conversation, text and request key in the
+local outbox. Return to that conversation to retry; reconnecting to a different
+assistant or authority cannot retarget it. Edits made while a send is uncertain
+remain in the draft after the original request is acknowledged. Results appear in
+the shared conversation view, not a second native transcript.
+
+The built application's existing `--self-check` path runs a silent synthetic
+production-AppModel proof using an isolated URL transport fixture, without a real
+model provider, microphone capture or installed application state.

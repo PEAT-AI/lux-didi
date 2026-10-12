@@ -432,7 +432,10 @@ test('host rejects an unknown connector kind before discovery and names it', asy
   t.after(() => rm(dir, { recursive: true, force: true }));
   const config = join(dir, 'provider-config'); await mkdir(config, { mode: 0o700 });
   await writeFile(join(config, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [{ id: 'unknown-endpoint', connector: 'unknown-kind', transport: 'streamable-http', url: 'http://127.0.0.1:1/', account: 'synthetic', resource: 'synthetic', credentialRef: null, enabled: true, allowEgress: true }] }), { mode: 0o600 });
-  await assert.rejects(startHost({ dataDir: join(dir, 'state'), configDir: config, webRoot, port: 0 }), error => {
+  await assert.rejects(async () => {
+    const host = await startHost({ dataDir: join(dir, 'state'), configDir: config, webRoot, port: 0 });
+    await host.close();
+  }, error => {
     assert(error instanceof Error);
     assert.equal(error.name, 'ConnectorCompositionError');
     assert.match(error.message, /unknown-endpoint/);

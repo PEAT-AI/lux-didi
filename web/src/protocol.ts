@@ -17,10 +17,10 @@ export interface ConnectedRouteStatus {
 export interface OwnerProfileStatus { status: 'default' | 'configured'; displayName: string }
 
 /** Interface 3 live projection (W-B route). Read-only, cookie-authenticated, no session ids or raw results. */
-export type LiveState = 'idle' | 'listening' | 'speaking' | 'thinking' | 'ended' | 'error';
-export type LiveKind = 'inputTranscription' | 'outputTranscription' | 'toolCall' | 'toolResult' | 'interrupted' | 'turnComplete' | 'terminal';
+export type LiveState = 'idle' | 'listening' | 'speaking' | 'thinking' | 'rebuilding' | 'ended' | 'error';
+export type LiveKind = 'continuity' | 'inputTranscription' | 'outputTranscription' | 'toolCall' | 'toolResult' | 'interrupted' | 'turnComplete' | 'terminal';
 export interface LiveSource { title: string; url?: string }
 export interface LiveTool { name: string; status: 'called' | 'completed' | 'error'; markdown?: string; sources?: LiveSource[] }
-export interface LiveEntry { seq: number; kind: LiveKind; text?: string; tool?: LiveTool }
+export interface LiveEntry { event?: 'rebuilding' | 'resumed'; reason?: string; seq: number; kind: LiveKind; text?: string; tool?: LiveTool }
 export interface LiveJob { id: string; originSessionId: string; state: 'in_progress' | 'completed' | 'failed' | 'unknown'; createdAt: number; markdown: string; delivered: boolean }
 export interface LiveCurrent { jobs?: LiveJob[]; state: LiveState; since?: string; muted?: boolean; entries: LiveEntry[]; cursor: string | number }

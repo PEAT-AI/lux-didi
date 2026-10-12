@@ -106,3 +106,19 @@ An upstream 1007 close before setup readiness is classified as `provider_setup_r
 Provider frames are validated independently for every known key: setupComplete, serverContent, toolCall, toolCallCancellation, goAway, sessionResumptionUpdate and voiceActivity. Voice activity ACTIVITY_START and ACTIVITY_END project through waitingForInput markers to listening and thinking; empty serverContent objects and empty modelTurn parts are valid informational content when accompanied by voiceActivity. Unknown informational siblings (including usageMetadata) are ignored, counted up to 65,535 per session, and logged as structured stderr key names only, once per retained name (at most 32 identifier-shaped names of 64 characters). Values are never logged. Empty top-level frames, malformed known content or tool calls, setupComplete after ready, provider errors, and serverContent before ready remain fail-closed.
 
 After setup readiness, empty `serverContent` frames are informational, with or without siblings: they are counted on the session and their key name is logged once through the bounded `live_provider_informational_key` event. Gemini voice activity uses `voiceActivity: {type: 'ACTIVITY_START' | 'ACTIVITY_END'}` to emit the existing waiting-for-input activity events; the legacy `voiceActivityType` field remains accepted. Content before readiness, malformed model-turn parts and malformed tool calls still fail closed.
+
+## Connection resumption contract
+
+Each adapter owns exactly one provider connection and never reconnects itself.
+Setup always includes `sessionResumption: {}`; a handle supplied by the live owner
+changes it to `{handle}`. Updates are typed private owner events
+`resumptionHandle` with a handle or null, never public markers. A typed `goAway`
+event carries `timeLeftMs`; it stops outbound admission without finishing the
+connection. The owner may replace the draining connection immediately.
+
+Outcomes classify network failures and transport closes 1006/1011 as recoverable,
+as well as completion of a provider drain. Policy/setup rejection (including
+1008), authentication, quota, protocol errors and local session, idle or deadline
+expiry are final. Limits supplied by the owner override connection timers,
+including the remaining session/idle budget on resumed connections. Recovery
+attempts and durable continuity belong only to the live owner.

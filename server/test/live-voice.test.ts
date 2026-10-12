@@ -86,9 +86,9 @@ test('wire setup/history snapshots, readiness, PCM and three independent output 
   f.send({ serverContent: { turnComplete: true, waitingForInput: true, interactionStatus: 'IDLE' } });
   f.send({ serverContent: { inputTranscription: { text: 'late independent input', finished: true } } });
   f.send({ sessionResumptionUpdate: { resumable: true, newHandle: CANARY } });
-  f.send({ goAway: { timeLeft: '1s' } });
-  assert.deepEqual(await session.done, { status: 'failed', code: 'go_away' }); await captured.done;
-  assert.deepEqual(captured.events.map(e => e.type), ['ready', 'audio', 'modelText', 'outputTranscription', 'generationComplete', 'turnComplete', 'interrupted', 'turnComplete', 'audio', 'generationComplete', 'turnComplete', 'waitingForInput', 'interactionStatus', 'inputTranscription', 'resumptionAvailability', 'goAway', 'outcome']);
+  f.send({ goAway: { timeLeft: '1s' } }); f.remoteClose('', 1000);
+  assert.deepEqual(await session.done, { status: 'failed', code: 'go_away', recoverable: true }); await captured.done;
+  assert.deepEqual(captured.events.map(e => e.type), ['ready', 'audio', 'modelText', 'outputTranscription', 'generationComplete', 'turnComplete', 'interrupted', 'turnComplete', 'audio', 'generationComplete', 'turnComplete', 'waitingForInput', 'interactionStatus', 'inputTranscription', 'resumptionHandle', 'goAway', 'outcome']);
   assert.deepEqual(captured.events.map(e => e.sequence), captured.events.map((_, i) => i + 1));
   const output = captured.events.find((e): e is Extract<LiveVoiceEvent, { type: 'audio' }> => e.type === 'audio')!;
   assert.deepEqual(output.pcm, pcm); assert.equal(output.mimeType, 'audio/pcm;rate=24000');
@@ -187,7 +187,7 @@ test('split and combined protocol fields preserve late input, thought and unknow
   f.send({ harmlessFutureField: { value: 1 } });
   f.send({ serverContent: { generationComplete: true } });
   f.send({ serverContent: { interrupted: true, turnComplete: true, inputTranscription: { text: 'late' }, outputTranscription: { text: 'out' }, modelTurn: { parts: [{ text: 'text only' }] } } });
-  f.send({ goAway: { timeLeft: '0.5s' } }); await session.done; await captured.done;
+  f.send({ goAway: { timeLeft: '0.5s' } }); f.remoteClose('', 1000); await session.done; await captured.done;
   assert.deepEqual(captured.events.map(e => e.type), ['ready', 'generationComplete', 'modelText', 'inputTranscription', 'outputTranscription', 'interrupted', 'turnComplete', 'goAway', 'outcome']);
 });
 

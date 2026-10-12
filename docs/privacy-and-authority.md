@@ -114,3 +114,10 @@ downloads and subframes are refused rather than rendered.
 Same-user process separation is not a security sandbox, and this document does not claim that it is.
 Hidden-view graphics-context loss and cookie behaviour across a content-process termination are open
 questions with measurements attached, not established facts.
+
+Provider resumption handles are provider-opaque secrets, retained by the live
+owner only and sent only in provider setup. They never appear in projections,
+client events, logs or errors. Resumption restores provider-side continuity; the
+service reconstructs no conversation history, adds no recap instruction and
+replays no PCM. Accepted prompt, memory and tool authority snapshots remain
+immutable across connection replacement.

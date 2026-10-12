@@ -404,3 +404,11 @@ test('provider fixture rejects unsupported setup schema with 1007 before ready',
   assert.equal(captured.events.some(event => event.type === 'ready'), false);
   noCanary(captured.events);
 });
+
+test('provider 1007 after ready remains remote_closed, not setup rejection', async t => {
+  const { f, session, captured } = await ready(t);
+  f.remoteClose(CANARY, 1007);
+  assert.deepEqual(await session.done, { status: 'failed', code: 'remote_closed' });
+  await captured.done;
+  noCanary(captured.events);
+});

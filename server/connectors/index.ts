@@ -284,5 +284,5 @@ export const CONNECTOR_DESCRIPTORS: Readonly<Record<string, ConnectorDescriptor>
 };
 
 export function connectorDescriptor(id: string): ConnectorDescriptor | undefined {
-  return CONNECTOR_DESCRIPTORS[id];
+  return Object.hasOwn(CONNECTOR_DESCRIPTORS, id) ? CONNECTOR_DESCRIPTORS[id] : undefined;
 }

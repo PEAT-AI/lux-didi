@@ -14,7 +14,7 @@ export function validateRemember(args: unknown): args is { text: string; kind: '
 }
 const normalized = (text: string) => text.toLowerCase().replace(/\s+/g, ' ').trim().replace(/[.!?,;:]+$/, '').trim();
 const command = /^(?:naya\s*,?\s+)?remember\b(?:\s+that\b)?\s*:?\s*/i;
-const classified = /^(?:naya\s*,?\s+)?remember\s+(?:privately\b|(?:this\s+)?(?:as\s+)?(?:private|sensitive)\b|(?:this|that)\s+(?:is|as)\s+(?:private|sensitive)\b)/i;
+const classified = /^(?:privately\b|(?:this\s+)?(?:is\s+|as\s+)?(?:private|sensitive)\b)/i;
 
 /** All reads and the write share the tool owner's transaction: duplicate calls cannot race. */
 export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: { text: string; kind: 'fact' | 'preference' | 'task' }, now: number): JsonObject {
@@ -29,8 +29,8 @@ export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: 
   const turn = turns.reverse().find(turn => command.test(turn.text.trim().replace(/\s+/g, ' ')));
   if (!turn) return { remembered: false, code: 'owner_transcript_not_final' };
   const utterance = turn.text.trim();
-  if (classified.test(utterance)) return { remembered: false, code: 'private_memory_unsupported' };
   const payload = utterance.replace(command, '').trim();
+  if (classified.test(payload)) return { remembered: false, code: 'private_memory_unsupported' };
   const pointer = normalized(args.text), ownerText = normalized(payload);
   if (!pointer || !ownerText || !ownerText.includes(pointer)) return { remembered: false, code: 'owner_text_mismatch' };
   const externalId = `${liveSessionId}:${turn.seq}`;

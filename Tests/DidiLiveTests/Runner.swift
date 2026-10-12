@@ -181,6 +181,25 @@ struct GatedSockets: LiveSocketConnecting {
     func connect(_ binding: LiveSocketBinding) async throws -> any LiveSocket { try await GatedSocket(underlying.connect(binding), gate) }
 }
 
+actor ContinuitySocket: LiveSocket, LiveSocketConnecting {
+    private var frames: [LiveFrame] = []
+    private var waiter: CheckedContinuation<LiveFrame, Error>?
+    private(set) var inputs: [Data] = []
+    private(set) var connections = 0
+    func connect(_ binding: LiveSocketBinding) -> any LiveSocket { connections += 1; return self }
+    func push(_ frame: LiveFrame) {
+        if let pending = waiter { waiter = nil; pending.resume(returning: frame) }
+        else { frames.append(frame) }
+    }
+    func receive() async throws -> LiveFrame {
+        if !frames.isEmpty { return frames.removeFirst() }
+        return try await withCheckedThrowingContinuation { waiter = $0 }
+    }
+    func sendPCM(_ data: Data) { inputs.append(data) }
+    func sendControl(_ command: LiveControl) {}
+    func cancel() { waiter?.resume(throwing: LiveClientError.transport); waiter = nil }
+}
+
 actor ScriptedSocket: LiveSocket {
     private var frames: [LiveFrame]
     private(set) var inputs: [Data] = []
@@ -228,9 +247,14 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             try require(NativeLivePresentation.failure(LiveClientError.transport) == NativeLivePresentation.failure(URLError(.timedOut)), "coordinator preserves transport class")
             try require(NativeLivePresentation.failure(LiveClientError.unavailable) == "Live voice is not configured. Check the Live service settings.", "unconfigured failure is actionable")
             try require(NativeLivePresentation.failure(DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "private"))) == "Live service returned an unexpected response. Reconnect the service and try again.", "decoding failure never leaks response")
+            for event in ["rebuilding", "resumed", "future_event"] {
+                let wire = "{\"type\":\"continuity\",\"sequence\":null,\"journalSequence\":2,\"event\":\"\(event)\",\"reason\":\"go_away\"}"
+                _ = try LiveSocketTransport.decode(.string(wire))
+            }
             let oldProfile = try JSONDecoder().decode(NativeLiveOperatorHTTP.Profile.self, from: Data("{\"status\":\"unconfigured\"}".utf8))
             try require(oldProfile.limits == nil, "old status remains decodable")
             let limits = try JSONDecoder().decode(NativeLiveLimits.self, from: Data("{\"sessionMs\":900000,\"idleMs\":60000}".utf8))
+            try require(NativeLivePresentation.ended("resume_failed", limits: nil) == "Naya's connection could not be resumed. Start Live again.", "resume_failed exact typed sentence")
             try require(limits.sentence == "Session limit 15 min, idle limit 1 min.", "configured limits are plain text")
             try require(NativeLivePresentation.ended("session_timeout", limits: limits) == "Session limit reached (15 min). Start again to continue.", "session limit explains next action")
             try require(NativeLivePresentation.ended("idle_timeout", limits: limits) == "Ended after 1 min without speech. Start again when ready.", "idle limit explains next action")
@@ -412,6 +436,32 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             try require(await scriptedSink.queued.isEmpty, "terminal discards queued playback")
             await scripted.stop(); await scriptedHTTP.finish()
             print("PASS silent scripted PCM/interrupted/terminal output ordering")
+
+            let continuityHTTP = TestHTTP(fixture), continuitySocket = ContinuitySocket(), continuitySink = SilentSink()
+            let continuity = LiveSessionCoordinator(http: continuityHTTP, sockets: continuitySocket, sink: continuitySink)
+            await continuitySocket.push(.marker(LiveMarker(kind: .ready, sequence: 1, journalSequence: 0, text: nil, finished: nil, value: nil)))
+            await continuity.begin(frozen)
+            try await until { await continuity.state == .active }
+            let continuityID = await continuity.sessionID
+            await continuitySocket.push(.pcm(Data([7, 0])))
+            try await until { await continuitySink.queued.count == 1 }
+            await continuitySocket.push(.continuity(event: "rebuilding"))
+            try await until {
+                let state = await continuity.state, empty = await continuitySink.queued.isEmpty
+                return state == .rebuilding && empty
+            }
+            try await continuity.sendPCM(Data(repeating: 0, count: 640))
+            try require(await continuitySocket.inputs.isEmpty, "rebuilding drops captured input")
+            await continuitySocket.push(.continuity(event: "future_event"))
+            await continuitySocket.push(.continuity(event: "resumed"))
+            try await until { await continuity.state == .active }
+            try require(await continuity.sessionID == continuityID, "resumed preserves session identity")
+            try await continuity.sendPCM(Data(repeating: 0, count: 640))
+            try require(await continuitySocket.inputs.count == 1, "resumed accepts input")
+            await continuitySocket.push(.terminal(LiveTerminal(state: .failed, code: "resume_failed"), complete: true))
+            try await until { await continuity.state == .terminal(LiveTerminal(state: .failed, code: "resume_failed")) }
+            try require(await continuitySocket.connections == 1, "terminal resume failure never reconnects")
+            print("PASS continuity rebuilding flush/drop/resume identity + unknown event + terminal no restart")
 
             // Fresh coordinator does zero work. Loss happens AFTER actual server commit; explicit retry keeps exact key/meaning.
             let http = TestHTTP(fixture); let sockets = CountedSockets(fixture); let sink = SilentSink()

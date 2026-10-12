@@ -250,7 +250,7 @@ struct NativeLiveControls: View {
     @ObservedObject var device: NativeLiveAudioDevice
     var body: some View {
         VStack {
-            Text("Live: " + conversation.state.rawValue).accessibilityLabel("Live voice lifecycle")
+            Text("Live: " + (conversation.state == .rebuilding ? "Reconnecting" : conversation.state.rawValue)).accessibilityLabel("Live voice lifecycle")
             if !device.route.isEmpty { Text(device.route).font(.caption) }
             if conversation.state == .pausedForInput {
                 Button("Resume") { conversation.start() }

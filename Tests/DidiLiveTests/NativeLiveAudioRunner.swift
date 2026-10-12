@@ -180,6 +180,14 @@ private actor NativeAudioSendGate {
             try capture.append(tone(format, start: 13230, count: 4410))
             try audioRequire(capture.next().0 == nil, "stopped capture produces no frames, including after hide's stop")
             guard let origin = URL(string: "http://127.0.0.1:1") else { throw LiveClientError.invalidIntent }
+            for muted in [false, true] {
+                var presentation: NativeLiveConversation.State = muted ? .muted : .listening
+                presentation = NativeLiveConversation.continuityPresentation(.rebuilding, muted: muted)!
+                try audioRequire(presentation == .rebuilding, "muted continuity enters rebuilding")
+                presentation = NativeLiveConversation.continuityPresentation(.active, muted: muted)!
+                try audioRequire(presentation == (muted ? .muted : .listening), "resumed presentation preserves mute")
+            }
+            try audioRequire(NativeLivePresentation.ended("resume_failed", limits: nil) == "Naya's connection could not be resumed. Start Live again.", "resume_failed exact typed sentence")
             let authority = DictationRefusalAuthority()
             let conversation = NativeLiveConversation(authority: (origin, { url, epoch in
                 try authority.request(url, epoch)

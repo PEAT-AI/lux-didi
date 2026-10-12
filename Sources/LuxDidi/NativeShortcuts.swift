@@ -15,7 +15,7 @@ struct LiveStatusPresentation {
         self.pendingCall = pendingCall
     }
     var text: String {
-        let label = state == "pausedForInput" ? "microphone changed; Resume required" : state
+        let label = state == "pausedForInput" ? "microphone changed; Resume required" : (state == "rebuilding" ? "Reconnecting" : state)
         return "Naya: \(label)" + (pendingCall ? "; Naya is calling" : "")
     }
     var symbol: String {
@@ -23,7 +23,7 @@ struct LiveStatusPresentation {
         case "listening": return "mic.fill"
         case "speaking": return "waveform"
         case "muted": return "mic.slash.fill"
-        case "connecting": return "ellipsis.circle"
+        case "connecting", "rebuilding": return "ellipsis.circle"
         case "pausedForInput": return "pause.circle"
         default: return "mic.slash"
         }

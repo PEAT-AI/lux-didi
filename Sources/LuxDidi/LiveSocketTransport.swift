@@ -82,6 +82,7 @@ public enum LiveFrame: Sendable, Equatable {
     case pcm(Data)
     case marker(LiveMarker)
     case terminal(LiveTerminal, complete: Bool)
+    case continuity(event: String)
 }
 
 public enum LiveControl: String, Sendable {
@@ -156,6 +157,12 @@ public struct LiveSocketTransport: LiveSocketConnecting, Sendable {
             guard string.utf8.count <= 65536,
                   let object = try? JSONSerialization.jsonObject(with: Data(string.utf8)) as? [String: Any],
                   let type = object["type"] as? String else { throw LiveClientError.invalidFrame }
+            if type == "continuity" {
+                guard object["sequence"] is NSNull,
+                      let journalSequence = integer(object["journalSequence"]), journalSequence > 0,
+                      let event = object["event"] as? String else { throw LiveClientError.invalidFrame }
+                return .continuity(event: event)
+            }
             if type == "terminal" {
                 guard Set(object.keys) == Set(["type", "state", "code", "complete"]),
                       let raw = object["state"] as? String, let state = LiveTerminalState(rawValue: raw),

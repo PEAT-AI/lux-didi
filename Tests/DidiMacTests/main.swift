@@ -313,3 +313,5 @@ let validPickup = try await NativeLiveCallPickup.perform(validate: {
 expect(validPickup && stopCount == 1 && captureCount == 1, "explicit valid pickup is the only capture hook")
 expect(pickupOrder == ["validate", "stop", "start"], "pickup validates before interrupting and starting capture")
 print("MAC-CALLBACK-SEAMS PASS duration=\(String(format: "%.3f", Date().timeIntervalSince(testStarted)))s")
+
+expect(LiveStatusPresentation(state: "rebuilding", pendingCall: false).text == "Naya: Reconnecting", "continuity status is Reconnecting")

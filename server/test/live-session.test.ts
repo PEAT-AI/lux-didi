@@ -667,7 +667,8 @@ test('live migrations preserve a populated accepted Store byte-for-byte', async 
     consents: tx.all('SELECT * FROM chat_consents ORDER BY session_id'),
     outbox: tx.all('SELECT * FROM runtime_outbox ORDER BY id'),
   }));
-  assert.deepEqual(current, prior, 'accepted CHAT and Domain rows stay meaningful');
+  assert.ok(current.liveSessions.every(row => row['memory_provenance'] === null), 'additive v4 provenance is null on legacy rows');
+  assert.deepEqual({ ...current, liveSessions: current.liveSessions.map(({ memory_provenance: _newColumn, ...legacy }) => legacy) }, { ...prior, liveSessions: prior.liveSessions.map(row => ({ ...row })) }, 'all pre-existing Live, CHAT and Domain values stay byte-identical');
   assert.deepEqual(migrated.transaction(tx => tx.all('SELECT journal_id,tool_json FROM live_journal ORDER BY journal_id').map(row => ({ ...row }))),
     [41, 42, 43].map(journal_id => ({ journal_id, tool_json: null })));
   migrated.transaction(tx => {
@@ -1007,7 +1008,7 @@ test('Live persists the exact typed accepted instruction before intent and corru
   const run = owner.create({ idempotencyKey: 'owner-frozen', inputClass: 'ordinary' }, h.ctx);
   const row = h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot,dispatch_intent FROM live_sessions WHERE live_session_id=?', [run.liveSessionId]))!;
   assert.equal(row.dispatch_intent, 0);
-  assert.deepEqual(JSON.parse(String(row.accepted_prompt_snapshot)), acceptedPrompt);
+  assert.deepEqual(JSON.parse(String(row.accepted_prompt_snapshot)), { ...acceptedPrompt, memory: { status: 'empty', selectedIds: [], omitted: [] } });
   acceptedPrompt.system = 'SYNTHETIC B';
   assert.equal(JSON.parse(String(h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [run.liveSessionId]))!.accepted_prompt_snapshot)).system, 'SYNTHETIC exact accepted A');
   h.store.transaction(tx => tx.run('UPDATE live_sessions SET accepted_prompt_snapshot=? WHERE live_session_id=?', ['{"schemaVersion":999}', run.liveSessionId]));

@@ -195,8 +195,8 @@ test('CURRENT protected rebind and credential-await local revoke send zero HTTP;
 
 test('catalog is explicitly egress-approved, bounded complete discovery with digest-bound local pages; repeated/oversize source denied', async t => {
   const source = await localSource(t); const f = await configFixture(t, source.url);
-  const options = { configDir: f.configDir, ownerId: f.ownerId, allowEgress: true, limit: 1 };
-  await assert.rejects(f.config.catalogMcpConfiguration({ ...options, allowEgress: false }));
+  const options = { configDir: f.configDir, ownerId: f.ownerId, allowEgress: true, unknownClass: 'ordinary', limit: 1 };
+  await assert.rejects(f.config.catalogMcpConfiguration({ ...options, allowEgress: false, unknownClass: 'ordinary' }));
   const first = await f.config.catalogMcpConfiguration(options); assert.equal(first.total, 2); assert.equal(first.toolNames.length, 1); assert.ok(first.cursor);
   const second = await f.config.catalogMcpConfiguration({ ...options, cursor: first.cursor }); assert.equal(second.toolNames.length, 1); assert.equal(second.cursor, null); assert.notDeepEqual(first.toolNames, second.toolNames);
   await assert.rejects(f.config.catalogMcpConfiguration({ ...options, cursor: 'invalid' }));
@@ -272,7 +272,7 @@ test('durable revoke during actual authenticated discovery and after installatio
 test('catalog never echoes arbitrary remote names containing protected token or reference', async t => {
   const source = await localSource(t); const f = await configFixture(t, source.url);
   source.catalogNames(['alpha-secret', 'mcp-credential']);
-  const result = await f.config.catalogMcpConfiguration({ configDir: f.configDir, ownerId: f.ownerId, allowEgress: true, limit: 2 });
+  const result = await f.config.catalogMcpConfiguration({ configDir: f.configDir, ownerId: f.ownerId, allowEgress: true, unknownClass: 'ordinary', limit: 2 });
   assert.equal(result.total, 2); assert.equal(result.cursor, null);
   assert.doesNotMatch(JSON.stringify(result), /alpha-secret|mcp-credential/);
   assert.deepEqual(result.toolNames, ['<unapproved-tool>', '<unapproved-tool>']);
@@ -287,7 +287,7 @@ test('mcp.json endpoint catalog: missing is a defined state; strict grantMode, o
   mkdirSync(configDir, { mode: 0o700 });
   assert.deepEqual(config.loadMcpEndpoints({ configDir }), { state: 'missing' });
   const file = join(configDir, 'mcp.json');
-  const entry = { id: 'lux-knowledge', transport: 'streamable-http', url: 'http://127.0.0.1:8765/mcp', connector: 'lux-knowledge', account: 'local', resource: 'lux-knowledge', credentialRef: null, enabled: true, allowEgress: true };
+  const entry = { id: 'lux-knowledge', transport: 'streamable-http', url: 'http://127.0.0.1:8765/mcp', connector: 'lux-knowledge', account: 'local', resource: 'lux-knowledge', credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'ordinary' };
   // grantMode defaults to explicit when absent; an unknown mode is refused.
   privateJSON(file, { schemaVersion: 1, endpoints: [entry] });
   const defaulted = config.loadMcpEndpoints({ configDir });
@@ -332,7 +332,7 @@ test('mcp credential resolver reads an owner-only synthetic file and refuses a m
   const configDir = join(dir, 'provider-config');
   mkdirSync(configDir, { recursive: true, mode: 0o700 }); chmodSync(configDir, 0o700);
   privateJSON(join(configDir, 'mcp.json'), { schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [
-    { id: 'mongo', transport: 'streamable-http', url: 'https://synthetic.invalid/mcp', connector: 'mongoose', account: 'alpha', resource: 'mongodb', credentialRef: 'mongo', enabled: true, allowEgress: true },
+    { id: 'mongo', transport: 'streamable-http', url: 'https://synthetic.invalid/mcp', connector: 'mongoose', account: 'alpha', resource: 'mongodb', credentialRef: 'mongo', enabled: true, allowEgress: true, unknownClass: 'ordinary' },
   ] });
   const store = new Store(join(dir, 'data'), toolsMigrations);
   t.after(() => store.close());
@@ -342,4 +342,21 @@ test('mcp credential resolver reads an owner-only synthetic file and refuses a m
   assert.equal(report?.state, 'error');
   assert.equal(report?.error, 'credential mongo missing or invalid');
   assert.equal(report?.tools, 0);
+});
+
+// F1: the declared MCP config check pins the installer template without running installation.
+test('installer seeds explicit bounded source classes for all five connectors', async () => {
+  const config = await import('../config/mcp.js');
+  const template = readFileSync(join(process.cwd(), 'scripts/install-macos-app.sh'), 'utf8').split('\n').find(line => line.startsWith('{"schemaVersion":1,"grantMode":"owner-trusted-reads"'));
+  assert(template);
+  const values: Record<string, string> = { google_command: '/synthetic/google-mcp', node_command: '/synthetic/node', mattermost_command: '/synthetic/mattermost.cjs', stdio_env: '{"HOME":"/synthetic","PATH":"/usr/bin","LOGNAME":"","SHELL":"","TERM":"","USER":""}' };
+  const json = template.replace(/\$\{([a-z_]+)\}/g, (_, name: string) => { assert(Object.hasOwn(values, name), name); return values[name]!; });
+  const dir = mkdtempSync(join(tmpdir(), 'didi-seed-'));
+  try {
+    chmodSync(dir, 0o700); writeFileSync(join(dir, 'mcp.json'), json, { mode: 0o600 });
+    const loaded = config.loadMcpEndpoints({ configDir: dir }); assert.equal(loaded.state, 'configured');
+    if (loaded.state !== 'configured') throw Error('seed missing');
+    assert.deepEqual(loaded.catalog.endpoints.map(e => e.id).sort(), ['calendar', 'gmail', 'lux-knowledge', 'mattermost', 'mongoose']);
+    for (const entry of loaded.catalog.endpoints) assert(['ordinary', 'private', 'sensitive'].includes((entry as unknown as { unknownClass: string }).unknownClass), entry.id);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

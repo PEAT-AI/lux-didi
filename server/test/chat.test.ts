@@ -496,5 +496,3 @@ test('real Store restart retains accepted Chat A and explicit interrupted-run re
   } finally { reopened?.close(); if (!originalClosed) f.store.close(); rmSync(f.dir, { recursive: true, force: true }); }
 });
 
-// Standing disclosure regressions share the declared chat compilation root.
-import "./chat-consent.test.js";

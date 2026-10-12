@@ -116,8 +116,8 @@ import Security
             self.error = error.localizedDescription
         }
     }
-    func sendToNaya() async {
-        guard !sendingConnected, let client else { error = "Show the conversation and reconnect first."; return }
+    @discardableResult func sendToNaya() async -> String? {
+        guard !sendingConnected, let client else { error = "Show the conversation and reconnect first."; return nil }
         sendingConnected = true; defer { sendingConnected = false }
         let submitted = draft
         do {
@@ -129,7 +129,8 @@ import Security
             if draft == sent.text { draft = "" }
             error = nil
             showConversation()
-        } catch { self.error = error.localizedDescription }
+            return sent.run
+        } catch { self.error = error.localizedDescription; return nil }
     }
     func showConversation() { shell?.focusConversation() }
     var livePanelVisible: Bool {
@@ -669,7 +670,7 @@ private final class ConnectedProofTransport: URLProtocol, @unchecked Sendable {
                 state.loseReply = false
                 client?.urlProtocol(self, didFailWithError: URLError(.timedOut)); return
             }
-            data = ["runId": state.run, "sessionId": session, "finalText": "Synthetic Naya answer"]
+            data = ["runId": state.run, "sessionId": session, "state": "accepted", "finalText": NSNull()]
         case "/api/v1/sessions": data = ["id": state.noteSession, "revision": 1]
         case "/api/v1/sessions/" + state.noteSession + "/entries":
             state.notes.append(body["text"] as? String ?? "")
@@ -713,9 +714,23 @@ private final class ConnectedProofTransport: URLProtocol, @unchecked Sendable {
     try require(state.lock.withLock { state.sends.count == 1 })
     state.lock.withLock { state.epoch = state.originalEpoch }
     model.draft = "Edited while uncertain"
-    await model.sendToNaya()
+    let returnedRunID = await model.sendToNaya()
     let sends = state.lock.withLock { state.sends }
     try require(model.error == nil && model.draft == "Edited while uncertain" && sends.count == 2 && sends[0].0 == sends[1].0 && sends[0].1 == state.originalSession && sends[0].2 == sends[1].2)
+    try require(returnedRunID == state.run)
+    // Same result-reading route used by the shared page, no native transcript.
+    // The synthetic fixture advances on reads, never on a real clock.
+    var terminal: [String: Any]?
+    for _ in 0..<2 {
+        let run = try await client.connectedRead("api/v1/chat/" + returnedRunID!)
+        if run["state"] as? String == "terminal" { terminal = run; break }
+    }
+    let conversation = try await client.connectedRead("api/v1/conversations/" + state.originalSession)
+    try require(terminal?["runId"] as? String == returnedRunID &&
+        terminal?["sessionId"] as? String == state.originalSession &&
+        !(terminal?["finalText"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        conversation["sessionId"] as? String == state.originalSession &&
+        conversation["latestRunId"] as? String == returnedRunID)
     model.draft = "Synthetic local note"
     await model.saveDraft()
     try require(model.captureStatus == .saved && state.lock.withLock { state.notes == ["Synthetic local note"] && state.sends.count == 2 })

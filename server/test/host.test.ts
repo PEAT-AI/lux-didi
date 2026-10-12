@@ -1,3 +1,5 @@
+// The declared host check also exercises the real installer's isolated seed block (R5).
+import './install-template.test.js';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';

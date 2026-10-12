@@ -188,7 +188,7 @@ test('owner-trusted-reads grants exactly the connector envelope through the runt
     mkdirSync(configDir, { recursive: true, mode: 0o700 });
     writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({
       schemaVersion: 1, grantMode: 'owner-trusted-reads',
-      endpoints: [{ id: 'mongoose', transport: 'streamable-http', url: f.url, connector: 'mongoose', account: ACCOUNT, resource: RESOURCE, credentialRef: null, enabled: true, allowEgress: true }],
+      endpoints: [{ id: 'mongoose', transport: 'streamable-http', url: f.url, connector: 'mongoose', account: ACCOUNT, resource: RESOURCE, credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'ordinary' }],
     }), { mode: 0o600 });
     store = new Store(join(dir, 'data'), toolsMigrations);
     runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null });
@@ -219,7 +219,7 @@ for (const [connector, tool] of [['mongoose', 'search_mongoose'], ['mattermost',
     let runtime: Awaited<ReturnType<typeof composeMcpRuntime>> | undefined;
     try {
       const configDir = join(dir, 'provider-config'); mkdirSync(configDir, { recursive: true, mode: 0o700 });
-      writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [{ id: connector, connector, transport: 'streamable-http', url: f.url, account: ACCOUNT, resource: RESOURCE, credentialRef: null, enabled: true, allowEgress: true }] }), { mode: 0o600 });
+      writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [{ id: connector, connector, transport: 'streamable-http', url: f.url, account: ACCOUNT, resource: RESOURCE, credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'ordinary' }] }), { mode: 0o600 });
       runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null });
       const row = store.transaction(tx => tx.get('SELECT policy_json FROM tool_connections WHERE owner_id=? AND connection_id=?', [store.assistantId, connector]));
       assert.ok(row);

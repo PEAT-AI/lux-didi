@@ -332,10 +332,10 @@ test('protected stdio configuration carries the binding through init/approve/loa
   const { dir: childDir, pidFile } = scratch();
   const baseArgs = [child, 'ok', pidFile, 'stdio-pong'];
   const policyFor = (args: readonly string[], generation: number, enabled: boolean) => ({
-    schemaVersion: 1 as const, ownerId, connectionId: 'local', generation, enabled, connector: 'lux-knowledge',
+    schemaVersion: 1 as const, bindingMode: 'connection' as const, ownerId, connectionId: 'local', generation, enabled, connector: 'lux-knowledge',
     endpoint: { id: 'local-endpoint', transport: 'stdio' as const, command: process.execPath, args, env: { HOME: join(dir, 'home'), PATH: process.env.PATH ?? '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' }, account: ACCOUNT, resource: RESOURCE, credentialRef: null },
     toolNames: ['search_knowledge'] as const, schemaDigest: '0'.repeat(64),
-    sourcePolicy: { id: 'operator-reviewed', revision: 1, unknownClass: null, allowedClasses: ['ordinary'] as const },
+    sourcePolicy: { id: 'operator-reviewed', revision: 1, unknownClass: 'ordinary' as const, allowedClasses: ['ordinary'] as const },
     route: { identity: 'synthetic-route', allowedClasses: ['ordinary'] as const },
     bounds: { maxQueryChars: 80, maxSearchLimit: 3, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 },
   });

@@ -145,7 +145,7 @@ async function harness(t: TestContext, overrides: {
 
 async function attached(h: Harness, key = 'k1') {
   const session = h.owner.create({ idempotencyKey: key, inputClass: 'ordinary' }, h.ctx);
-  assert.equal(h.owner.current().state, 'ended', 'without an active handle the page does not claim to be listening');
+  assert.equal(h.owner.current().state, 'idle', 'accepted without an attachment is not listening');
   const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
   await h.f.frame(1);
   h.f.send({ setupComplete: {} });
@@ -1291,10 +1291,10 @@ for (const outcome of ['failed', 'closed', 'unknown'] as const) {
     const h = await harness(t);
     const session = h.owner.create({ idempotencyKey: 'past', inputClass: 'ordinary' }, h.ctx);
     const terminal = outcome === 'unknown' ? null : JSON.stringify({ state: outcome, code: 'fixture' });
-    h.store.transaction(tx => tx.run('UPDATE live_sessions SET terminal_outcome=?,updated_at=? WHERE live_session_id=?', [terminal, NOW + 1000, session.liveSessionId]));
+    h.store.transaction(tx => tx.run("UPDATE live_sessions SET lifecycle='active',terminal_outcome=?,terminal_at=?,updated_at=? WHERE live_session_id=?", [terminal, outcome === 'unknown' ? null : NOW + 1000, NOW + 2000, session.liveSessionId]));
     const page = h.owner.current();
     assert.equal(page.state, 'ended');
-    assert.deepEqual((page as typeof page & { pastSession?: unknown }).pastSession, { outcome, endedAt: outcome === 'unknown' ? null : NOW + 1000, lastObservedAt: NOW + 1000 });
+    assert.deepEqual((page as typeof page & { pastSession?: unknown }).pastSession, { outcome, endedAt: outcome === 'unknown' ? null : NOW + 1000, lastObservedAt: NOW + 2000 });
   });
 }
 test('active page does not carry past session metadata', async t => {

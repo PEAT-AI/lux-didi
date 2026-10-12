@@ -78,6 +78,7 @@ async function harness(t: TestContext, options: HarnessOptions = {}): Promise<Ha
   if (options.withKey !== false) writePrivate(config, 'gemini-primary.json', `${JSON.stringify({ schemaVersion: 1, keyReference: 'gemini-primary', key: CANARY })}\n`);
   let tools = options.toolsFactory?.(store);
   if (options.realMcp) {
+    const trace: string[] = [];
     // Same SDK endpoint/HTTP bridge as knowledge-connector.test.ts and mcp-config.test.ts.
     const sdk = new Server({ name: 'synthetic-knowledge', version: '1' }, { capabilities: { tools: {} } });
     sdk.setRequestHandler('tools/list', () => ({ tools: [{ name: 'search_knowledge', inputSchema: { type: 'object' } }] }) as never);
@@ -91,13 +92,14 @@ async function harness(t: TestContext, options: HarnessOptions = {}): Promise<Ha
         for (const [key, value] of Object.entries(req.headers)) if (value !== undefined) headers.set(key, Array.isArray(value) ? value.join(',') : value);
         const request = new Request(`http://${req.headers.host}${req.url}`, { method: req.method ?? 'GET', headers, ...(bytes.length ? { body: new Uint8Array(bytes) } : {}) });
         const response = await transport.handleRequest(request);
+        trace.push(`${req.method} ${req.url}: ${response.status}`);
         res.writeHead(response.status, Object.fromEntries(response.headers));
         if (!response.body) { res.end(); return; }
         const reader = response.body.getReader();
         res.on('close', () => { void reader.cancel().catch(() => {}); });
         while (!res.destroyed) { const chunk = await reader.read(); if (chunk.done) break; res.write(chunk.value); }
         res.end();
-      } catch { if (!res.headersSent) res.writeHead(500); res.end(); }
+      } catch (error) { trace.push(error instanceof Error ? error.message : 'unknown'); if (!res.headersSent) res.writeHead(500); res.end(); }
     });
     endpoint.listen(0, '127.0.0.1'); await once(endpoint, 'listening');
     t.after(async () => { endpoint.closeAllConnections(); await new Promise<void>(resolve => endpoint.close(() => resolve())); await transport.close(); await sdk.close(); });
@@ -114,7 +116,7 @@ async function harness(t: TestContext, options: HarnessOptions = {}): Promise<Ha
     t.after(async () => { await runtime.close(); });
     // Keep the missing-policy regression first: the base reaches attach, then closes internal.
     if (options.failedMcp) {
-      assert.deepEqual(runtime.connectionIds(), ['healthy'], JSON.stringify(runtime.status()));
+      assert.deepEqual(runtime.connectionIds(), ['healthy'], JSON.stringify({ ...runtime.status(), trace }));
       assert.equal(runtime.status().endpoints.find(e => e.id === 'failed')?.state, 'error');
       assert.equal(runtime.status().endpoints.find(e => e.id === 'failed')?.error, 'credential missing-credential missing or invalid');
     }

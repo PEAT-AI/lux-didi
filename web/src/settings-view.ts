@@ -47,7 +47,7 @@ export function connectorState(value: unknown): { id: string; state: string; nex
   if (!row) return undefined;
   const id = typeof row.id === 'string' && /^[\w.-]{1,128}$/.test(row.id) ? row.id : undefined;
   if (!id) return undefined;
-  const state = text(row.state);
+  const state = text(row.state) ?? 'unknown';
   if (state === 'connected') return { id, state: 'Connected', next: nextStep(id, state).text };
   if (state === 'configured') return { id, state: 'Configured', next: nextStep(id, state).text };
   const reason = typeof row.reasonCode === 'string' && reasonCodes.some(reason => reason === row.reasonCode) ? row.reasonCode : 'unknown';

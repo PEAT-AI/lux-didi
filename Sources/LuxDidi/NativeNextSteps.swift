@@ -15,12 +15,18 @@ enum NativeNextSteps {
         "mattermost": NativeNextStep(text: "Add the connector credential under the effective data directory; see RUNBOOK, then restart Lux Didi.", command: nil),
         "mongoose": NativeNextStep(text: "Add ~/Library/Application Support/ai.peat.lux-didi/provider-38/mongoose-mcp.json; see RUNBOOK-connectors.md (RUNBOOK), then restart Lux Didi.", command: nil),
     ]
+    static let failureStep = NativeNextStep(text: "Check the connector service, then use Copy diagnostics from the Lux Didi menu.", command: nil)
+    static let table: [String: [String: NativeNextStep]] = Dictionary(uniqueKeysWithValues: connectorIDs.map { id in
+        (id, Dictionary(uniqueKeysWithValues: reasonCodes.map { reason in
+            (reason, reason == "credential_missing" ? credentialSteps[id]! : failureStep)
+        }))
+    })
     static func lookup(id: String, state: String, reason: String?) -> NativeNextStep {
         if state == "connected" { return NativeNextStep(text: "no action needed", command: nil) }
         if state == "configured" { return NativeNextStep(text: "a Live session connects on demand", command: nil) }
         if state == "missing" || reason == "credential_missing" {
-            return credentialSteps[id] ?? NativeNextStep(text: "Add the connector credential under the effective data directory; see RUNBOOK, then restart Lux Didi.", command: nil)
+            return table[id]?["credential_missing"] ?? NativeNextStep(text: "Add the connector credential under the effective data directory; see RUNBOOK, then restart Lux Didi.", command: nil)
         }
-        return NativeNextStep(text: "Check the connector service, then use Copy diagnostics from the Lux Didi menu.", command: nil)
+        return table[id]?[reason ?? "unknown"] ?? failureStep
     }
 }

@@ -23,4 +23,4 @@ node --test --test-reporter=tap --test-timeout=20000 \
 grep -Eq '^# tests [1-9][0-9]*$' "$log" || { echo 'Zero selected tests' >&2; exit 1; }
 if [ "$status" -ne 0 ]; then exit "$status"; fi
 # Real GPU browser admission: a held slot is reported by the helper, never read as a pass.
-lux-browser-slot run --priority worker --want 1 --wait 240 -- node web/test/native-conversation.spec.ts
+lux-browser-slot run --priority worker --want 1 --wait 1800 -- node web/test/native-conversation.spec.ts

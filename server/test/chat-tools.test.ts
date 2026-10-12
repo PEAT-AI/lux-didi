@@ -42,7 +42,7 @@ async function fixture(t: TestContext) {
     return transport.handleRequest(req);
   });
   let authority: ((runId: string, signal: AbortSignal) => Promise<LiveAuthority | null>) | undefined;
-  writeFileSync(join(dir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [{ ...endpoint, connector: 'lux-knowledge', transport: 'streamable-http', credentialRef: null, enabled: true, allowEgress: true }] }));
+  writeFileSync(join(dir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [{ ...endpoint, connector: 'lux-knowledge', transport: 'streamable-http', credentialRef: null, enabled: true, allowEgress: true }] }), { mode: 0o600 });
   // Use actual host policy construction, including its current denial, never a matching fixture route.
   const mcp = await composeMcpRuntime({ store: f.store, ownerId: f.store.assistantId, configDir: dir, lookupAuthority: async (id, signal) => authority?.(id, signal) ?? null });
   const { owner, registry } = mcp;

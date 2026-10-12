@@ -422,7 +422,7 @@ test('additive chat migrations upgrade a populated v1+v2 DB and preserve old rec
     f1.store.close();
     const f2 = openMemoryFixture(dir, model, {}, chatMigrations);
     try {
-      assert.deepEqual(chatVersions(f2.store), [1, 2, 3, 4, 5]);
+      assert.deepEqual(chatVersions(f2.store), chatMigrations.map(migration => migration.version));
       assert.equal(f2.store.transaction(tx => tx.get("SELECT name FROM sqlite_master WHERE type='table' AND name='chat_run_context'"))!.name, 'chat_run_context');
       assert.equal(Number(f2.store.transaction(tx => tx.get('SELECT COUNT(*) c FROM chat_run_context', []))!.c), 0);
       const after = f2.store.transaction(tx => tx.get('SELECT * FROM chat_runs WHERE run_id=?', [run.runId]));
@@ -480,7 +480,7 @@ test('domain v3 owner index upgrades a populated schema preserving rows, refs an
     f1.store.close();
     const f2 = openMemoryFixture(dir, model, {}, chatMigrations, domainMigrations);
     try {
-      assert.deepEqual(domainVersions(f2.store), [1, 2, 3, 4]);
+      assert.deepEqual(domainVersions(f2.store), domainMigrations.map(migration => migration.version));
       const indexSql = String(f2.store.transaction(tx => tx.get("SELECT sql FROM sqlite_master WHERE type='index' AND name='ix_source_references_owner'", []))!.sql);
       assert.match(indexSql, /source_references\(owner_id, owner_kind\)/);
       assert.deepEqual(f2.store.transaction(tx => tx.all('SELECT * FROM entries ORDER BY id', [])), entriesBefore);
@@ -495,7 +495,7 @@ test('domain v3 owner index upgrades a populated schema preserving rows, refs an
     } finally { raw.close(); }
     const f3 = openMemoryFixture(dir, model, {}, chatMigrations, domainMigrations);
     try {
-      assert.deepEqual(domainVersions(f3.store), [1, 2, 3, 4]);
+      assert.deepEqual(domainVersions(f3.store), domainMigrations.map(migration => migration.version));
       assert.deepEqual(f3.store.transaction(tx => tx.all('SELECT * FROM source_references ORDER BY id', [])), refsBefore);
     } finally { f3.store.close(); }
   } finally { rmSync(dir, { recursive: true, force: true }); }

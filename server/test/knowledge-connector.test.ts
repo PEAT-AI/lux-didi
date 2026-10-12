@@ -621,7 +621,8 @@ test('an unavailable endpoint reports a sanitized error and a connector read is 
     const report = mcp.status().endpoints[0]!;
     assert.equal(report.state, 'error');
     assert.equal(typeof report.error, 'string');
-    assert.deepEqual(mcp.connectionIds(), ['source']);
+    // Failed discovery is status-only, never an owner-backed acceptance connection.
+    assert.deepEqual(mcp.connectionIds(), []);
     assert.equal(mcp.registry.currentGrant('source'), undefined);
     const reader = createLuxKnowledgeReader({ port: mcp.port, registry: mcp.registry, config: { endpointId: 'source', account: 'account-a', resource: 'resource-a', schemaDigest: '0'.repeat(64), generation: 1, maxSearchLimit: 25, maxGetIds: 8, maxQueryChars: 200 } });
     const result = await reader.search({ query: 'synthetic', limit: 1 });

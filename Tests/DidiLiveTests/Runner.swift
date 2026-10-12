@@ -181,6 +181,25 @@ struct GatedSockets: LiveSocketConnecting {
     func connect(_ binding: LiveSocketBinding) async throws -> any LiveSocket { try await GatedSocket(underlying.connect(binding), gate) }
 }
 
+actor ContinuitySocket: LiveSocket, LiveSocketConnecting {
+    private var frames: [LiveFrame] = []
+    private var waiter: CheckedContinuation<LiveFrame, Error>?
+    private(set) var inputs: [Data] = []
+    private(set) var connections = 0
+    func connect(_ binding: LiveSocketBinding) -> any LiveSocket { connections += 1; return self }
+    func push(_ frame: LiveFrame) {
+        if let pending = waiter { waiter = nil; pending.resume(returning: frame) }
+        else { frames.append(frame) }
+    }
+    func receive() async throws -> LiveFrame {
+        if !frames.isEmpty { return frames.removeFirst() }
+        return try await withCheckedThrowingContinuation { waiter = $0 }
+    }
+    func sendPCM(_ data: Data) { inputs.append(data) }
+    func sendControl(_ command: LiveControl) {}
+    func cancel() { waiter?.resume(throwing: LiveClientError.transport); waiter = nil }
+}
+
 actor ScriptedSocket: LiveSocket {
     private var frames: [LiveFrame]
     private(set) var inputs: [Data] = []
@@ -416,6 +435,29 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             try require(await scriptedSink.queued.isEmpty, "terminal discards queued playback")
             await scripted.stop(); await scriptedHTTP.finish()
             print("PASS silent scripted PCM/interrupted/terminal output ordering")
+
+            let continuityHTTP = TestHTTP(fixture), continuitySocket = ContinuitySocket(), continuitySink = RecordingSink()
+            let continuity = LiveSessionCoordinator(http: continuityHTTP, sockets: continuitySocket, sink: continuitySink)
+            await continuitySocket.push(.marker(LiveMarker(kind: .ready, sequence: 1, journalSequence: 0, text: nil, finished: nil, value: nil)))
+            await continuity.begin(frozen)
+            try await until { await continuity.state == .active }
+            let continuityID = await continuity.sessionID
+            await continuitySocket.push(.pcm(Data([7, 0])))
+            try await until { await continuitySink.queued.count == 1 }
+            await continuitySocket.push(.continuity(event: "rebuilding"))
+            try await until { await continuity.state == .rebuilding && continuitySink.queued.isEmpty }
+            try await continuity.sendPCM(Data(repeating: 0, count: 640))
+            try require(await continuitySocket.inputs.isEmpty, "rebuilding drops captured input")
+            await continuitySocket.push(.continuity(event: "future_event"))
+            await continuitySocket.push(.continuity(event: "resumed"))
+            try await until { await continuity.state == .active }
+            try require(await continuity.sessionID == continuityID, "resumed preserves session identity")
+            try await continuity.sendPCM(Data(repeating: 0, count: 640))
+            try require(await continuitySocket.inputs.count == 1, "resumed accepts input")
+            await continuitySocket.push(.terminal(LiveTerminal(state: .failed, code: "resume_failed"), complete: true))
+            try await until { await continuity.state == .terminal(LiveTerminal(state: .failed, code: "resume_failed")) }
+            try require(await continuitySocket.connections == 1, "terminal resume failure never reconnects")
+            print("PASS continuity rebuilding flush/drop/resume identity + unknown event + terminal no restart")
 
             // Fresh coordinator does zero work. Loss happens AFTER actual server commit; explicit retry keeps exact key/meaning.
             let http = TestHTTP(fixture); let sockets = CountedSockets(fixture); let sink = SilentSink()

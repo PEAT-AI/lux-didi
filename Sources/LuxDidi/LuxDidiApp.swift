@@ -17,6 +17,7 @@ import Security
     private var checkingConnections = false
     private let liveLogsDirectory: URL?
     @Published var connecting = false
+    @Published private(set) var serviceRestarting = false
     let voice = NativeVoice()
     @Published private(set) var live: NativeLiveConversation?
     @Published private(set) var pendingLiveCalls: [NativePendingLiveJob] = []
@@ -44,10 +45,15 @@ import Security
                     catch { self.error = NativeServiceError.invalidOperatorSettings.localizedDescription; return }
                     let owner = try NativeServiceSupervisor(runtime: runtime, proof: prepared, operatorSettings: operatorSettings)
                     supervisor = owner
+                    owner.onRestartStatus = { [weak self] in self?.serviceRestarting = $0 }
+                    owner.onRecovered = { [weak self] in
+                        Task { @MainActor in await self?.reconnect() }
+                    }
                     owner.onUnavailable = { [weak self] in
                         self?.error = NativeServiceError.exited.localizedDescription
                         self?.shell?.clear()
                         self?.stopLive()
+                        self?.error = "Local service restarting. Lost Live requires an explicit Start."
                     }
                     return
                 }
@@ -274,7 +280,8 @@ struct RootView: View {
                     }
                 }
                 Text(captureDetail).font(.caption)
-                if let error = model.error { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
+                if model.serviceRestarting { Text("Local service restarting…").accessibilityLabel("Local service restarting") }
+                    if let error = model.error { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
                 Text("Record locally, review the text, then send it. Closing Didi keeps your draft.").font(.caption2).foregroundStyle(.secondary)
             }.padding(12)
         }.frame(minWidth: 780, minHeight: 620)

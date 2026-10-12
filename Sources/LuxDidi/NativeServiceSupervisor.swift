@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import AppKit
 import Darwin
 import Security
 
@@ -142,6 +143,49 @@ struct OwnedServiceConnection {
     }
     @Published private(set) var state: NativeServiceState = .stopped
     var onUnavailable: (() -> Void)?
+    var onRecovered: (() -> Void)?
+    var onRestartStatus: ((Bool) -> Void)?
+    private var wakeObserver: NSObjectProtocol?
+    private var restartTask: Task<Void, Never>?
+    private lazy var recovery = NativeServiceRecovery(
+        schedule: { delay, action in
+            let task = Task { @MainActor in
+                do { try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
+                catch { return }
+                guard !Task.isCancelled else { return }
+                action()
+            }
+            return { task.cancel() }
+        },
+        launch: { [weak self] token in
+            guard let self else { return }
+            self.restartTask = Task { @MainActor in
+                do {
+                    _ = try await self.start(recovering: true)
+                    guard !Task.isCancelled, self.recovery.generation == token else { return }
+                    self.recovery.finished(token, success: true)
+                    self.onRecovered?()
+                } catch {
+                    guard !Task.isCancelled else { return }
+                    self.recovery.finished(token, success: false)
+                }
+            }
+        },
+        lost: { [weak self] in self?.onUnavailable?() },
+        reconcile: { [weak self] in self?.reconcileAfterWake() },
+        status: { [weak self] restarting in self?.onRestartStatus?(restarting) })
+    private func reconcileAfterWake() {
+        guard let child else { return }
+        if !child.isRunning { unavailable(child) }
+        else { onRecovered?() } // Reconnect probes health; network failure is not child death.
+    }
+    private func observeWake() {
+        guard wakeObserver == nil else { return }
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.recovery.wake() }
+            }
+    }
     var isRunning: Bool { state == .running && child?.isRunning == true }
     init(runtime: InstalledRuntime, proof: PreparedInstalledProof? = nil, operatorSettings: OperatorSettings? = nil) throws {
         self.runtime = runtime; self.operatorSettings = operatorSettings
@@ -195,10 +239,11 @@ struct OwnedServiceConnection {
     }
     private func unavailable(_ owner: OwnedServiceChild) {
         guard child === owner, state != .stopped else { return }
-        state = .unavailable; connection = nil; onUnavailable?()
+        state = .unavailable; connection = nil
+        recovery.childExited(recovery.generation)
         Task { await owner.stop() }
     }
-    func start() async throws -> OwnedServiceConnection {
+    func start(recovering: Bool = false) async throws -> OwnedServiceConnection {
         if let connection, isCurrent(connection) { return connection }
         guard !Task.isCancelled else { throw NativeServiceError.exited }
         guard state != .starting else { throw NativeServiceError.alreadyStarting }
@@ -251,6 +296,8 @@ struct OwnedServiceConnection {
             let descriptor = try ServiceDescriptor(origin: origin, credentialService: reference.service, credentialAccount: reference.account)
             let result = OwnedServiceConnection(descriptor: descriptor, authorityEpoch: epoch, pid: owned.pid, nonce: nonce, assistantId: assistant)
             connection = result; state = .running
+            if !recovering { recovery.activate() }
+            observeWake()
             return result
         } catch {
             startupFailureCode = stage + "/" + ((error as? NativeServiceError).map { String(describing: $0) } ?? "platformFailure")
@@ -262,6 +309,9 @@ struct OwnedServiceConnection {
         }
     }
     func stop() async {
+        recovery.stop(); restartTask?.cancel(); restartTask = nil
+        if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
+        wakeObserver = nil
         operation = nil; state = .stopped; connection = nil
         if let child { await child.stop(); observeStop(child); self.child = nil }
     }

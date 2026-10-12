@@ -292,7 +292,8 @@ test('T13 connections preserve bounded typed configuration errors', async () => 
     { id: 'untrusted-code', state: 'error', tools: 0, lastHandshakeAt: null, error: 'private diagnostic', configurationError: 'private diagnostic' },
   ] }));
   try {
-    const response = await fetch(`${f.service.origin}/api/v1/live/connections`, { headers: f.auth });
+    const browser = await pair(f);
+    const response = await fetch(`${f.service.origin}/api/v1/live/connections`, { headers: { Cookie: browser.cookie.split(';')[0]!, 'sec-fetch-site': 'same-origin' } });
     assert.equal(response.status, 200);
     const body = await response.json() as { endpoints: Array<{ reasonCode: string; configurationError?: string }> };
     assert.equal(body.endpoints[0]!.reasonCode, 'configuration_error');

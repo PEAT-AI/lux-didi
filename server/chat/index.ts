@@ -227,9 +227,10 @@ export class ChatService implements ChatPort {
       if (row.revoked_at === null) tx.run('UPDATE chat_consents SET revision=revision+1,revoked_at=? WHERE session_id=? AND owner_assistant_id=?', [this.#context(context).now, String(row.session_id), context.assistantId]);
       return this.#conversation({ ...row, revoked_at: this.#context(context).now, revision: Number(row.revision) + 1 }, sessionId);
     });
-    this.#invalidate(row => result.scope === 'standing'
-      ? this.#config.store.transaction(tx => !this.#validConsent(this.#consent(tx, String(row.session_id), context)))
-      : row.session_id === sessionId, context);
+    const affected = result.scope === 'standing' ? this.#config.store.transaction(tx => new Set(tx.all(
+      'SELECT session_id FROM chat_consents WHERE owner_assistant_id=? UNION SELECT session_id FROM chat_consent_enrollments WHERE owner_assistant_id=?',
+      [context.assistantId, context.assistantId]).filter(row => !this.#validConsent(this.#consent(tx, String(row.session_id), context))).map(row => String(row.session_id)))) : new Set([sessionId]);
+    this.#invalidate(row => affected.has(String(row.session_id)), context);
     return result;
   }
   correctRoutingLabel(input: RoutingLabelCorrection, context: DomainContext) {

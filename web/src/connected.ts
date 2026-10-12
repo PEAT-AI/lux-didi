@@ -22,7 +22,7 @@ export class ConnectedView {
     if (this.#owner) localStorage.setItem(this.#storage(), JSON.stringify({ sessionId: this.#conversation?.sessionId, draft: this.#draft, pending: this.#pending }));
   }
   detach() { this.#controller?.abort(); this.#controller = undefined; this.#generation++; }
-  reset() { this.detach(); this.#closeConversationStream(); this.#owner = ''; this.#displayName = 'Lux Didi'; this.#conversation = undefined; this.#run = undefined; this.#entries = []; this.#conversations = []; this.#draft = ''; this.#pending = undefined; this.#memoryQuery = ''; this.#memoryHits = []; this.#memorySelected = []; this.#memoryError = ''; this.#memoryBusy = false; this.#memoryOpen = false; }
+  reset() { this.#consent = false; this.#remember = false; this.detach(); this.#closeConversationStream(); this.#owner = ''; this.#displayName = 'Lux Didi'; this.#conversation = undefined; this.#run = undefined; this.#entries = []; this.#conversations = []; this.#draft = ''; this.#pending = undefined; this.#memoryQuery = ''; this.#memoryHits = []; this.#memorySelected = []; this.#memoryError = ''; this.#memoryBusy = false; this.#memoryOpen = false; }
   async refresh(owner: string) {
     if (owner !== this.#owner) { this.reset(); this.#owner = owner; }
     const token = this.#selectionToken;

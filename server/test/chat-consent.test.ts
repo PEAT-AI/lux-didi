@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openFixture, result } from './chat-process.js';
 import { ChatService, ChatError, chatMigrations, type EnrollInput } from '../chat/index.js';
+import { listenService } from '../http/server.js';
 import { Store } from '../runtime/store.js';
 import type { ModelPort } from '../adapters/model/types.js';
 
@@ -86,4 +87,36 @@ test('populated v4 consent table upgrades additively, defaulting existing rows t
     legacy = new Store(dir, [...f.domain.migrations, ...chatMigrations]);
     assert.equal(legacy.transaction(tx => tx.all('SELECT * FROM chat_consents')).length, 1);
   } finally { legacy?.close(); f.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('real HTTP enrollment requires disclosure, returns standing scope and observes revocation', async () => {
+  const f = fixture();
+  const service = await listenService({ store: f.store, domain: f.domain, chat: f.chat, modelStatus: { status: 'configured', provider: 'gemini', model: 'counting' }, port: 0 });
+  try {
+    const bootstrap = await fetch(`${service.origin}/api/v1/auth/pairing`, { method: 'POST', headers: { Authorization: `Bearer ${f.store.adminCredential}`, 'Content-Type': 'application/json' }, body: '{}' });
+    assert.equal(bootstrap.status, 200);
+    const pairingCode = (await bootstrap.json()).data.pairingCode;
+    const paired = await fetch(`${service.origin}/api/v1/auth/pair`, { method: 'POST', headers: { Origin: service.origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ pairingCode }) });
+    assert.equal(paired.status, 200);
+    const cookie = paired.headers.get('set-cookie')!.split(';')[0]!;
+    const auth = (await paired.json()).data;
+    const headers = { Cookie: cookie, Origin: service.origin, 'Content-Type': 'application/json', 'X-Didi-CSRF': auth.csrfToken, 'X-Didi-Authority-Epoch': auth.authorityEpoch };
+    async function enrollHTTP(key: string, extra: Record<string, unknown> = {}) {
+      return fetch(`${service.origin}/api/v1/conversations`, { method: 'POST', headers: { ...headers, 'Idempotency-Key': key }, body: JSON.stringify({ title: key, timeZone: 'UTC', ...extra }) });
+    }
+    const denied = await enrollHTTP('missing'); assert.notEqual(denied.status, 200);
+    const malformed = await enrollHTTP('malformed', { consent: 'true', remember: true }); assert.equal(malformed.status, 400);
+    assert.equal(f.calls(), 0);
+    const first = await enrollHTTP('remember-http', { consent: true, remember: true }); assert.equal(first.status, 200);
+    const grant = (await first.json()).data; assert.equal(grant.scope, 'standing');
+    const status = await fetch(`${service.origin}/api/v1/chat/status`, { headers: { Cookie: cookie } });
+    assert.equal((await status.json()).data.consent.scope, 'standing');
+    const second = await enrollHTTP('without-flag'); assert.equal(second.status, 200);
+    const effective = (await second.json()).data; assert.equal(effective.scope, 'standing');
+    assert.notEqual(effective.sessionId, grant.sessionId);
+    const revoked = await fetch(`${service.origin}/api/v1/conversations/${grant.sessionId}/revoke`, { method: 'POST', headers, body: '{}' }); assert.equal(revoked.status, 200);
+    assert.notEqual((await enrollHTTP('after-revoke')).status, 200);
+    const after = await fetch(`${service.origin}/api/v1/chat/status`, { headers: { Cookie: cookie } });
+    assert.equal((await after.json()).data.consent, null);
+  } finally { await service.close(); f.close(); }
 });

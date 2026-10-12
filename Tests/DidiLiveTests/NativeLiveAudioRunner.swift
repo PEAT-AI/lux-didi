@@ -30,6 +30,28 @@ func audioRequire(_ value: Bool, _ message: String) throws {
     }
     @MainActor static func main() async {
         do {
+            var builds = 0, releases = 0, paused = "", failures = 0
+            var input = "Built-in microphone"
+            let recovery = NativeAudioRouteRecovery(
+                input: { input }, release: { releases += 1 },
+                rebuild: { builds += 1 }, paused: { paused = $0 }, failed: { failures += 1 })
+            recovery.begin()
+            recovery.changed(); recovery.changed(); recovery.changed()
+            await recovery.pending?.value
+            try audioRequire(builds == 1 && releases == 1, "route storm must rebuild once")
+            input = "USB microphone"
+            recovery.changed(); await recovery.pending?.value
+            try audioRequire(builds == 1 && paused == input && recovery.awaitingResume,
+                             "input change needs owner Resume, not a new session")
+            recovery.resume()
+            try audioRequire(builds == 2 && !recovery.awaitingResume, "Resume rebuilds authorized capture")
+            recovery.changed(); recovery.stop(); await recovery.pending?.value
+            try audioRequire(builds == 2, "Stop fences queued recovery")
+            let failedRecovery = NativeAudioRouteRecovery(input: { input }, release: { releases += 1 },
+                rebuild: { throw NativeLiveAudioError.deviceUnavailable }, paused: { _ in }, failed: { failures += 1 })
+            failedRecovery.begin(); failedRecovery.changed(); await failedRecovery.pending?.value
+            try audioRequire(failures == 1 && !failedRecovery.authorized, "failed rebuild releases authorization")
+            print("PASS route storm, input consent, Resume, Stop fencing and failed rebuild")
             guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 44100, channels: 2, interleaved: false) else {
                 throw NativeLiveAudioError.unsupportedFormat
             }

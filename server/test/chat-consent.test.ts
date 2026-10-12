@@ -100,7 +100,7 @@ test('real HTTP enrollment requires disclosure, returns standing scope and obser
     assert.equal(paired.status, 200);
     const cookie = paired.headers.get('set-cookie')!.split(';')[0]!;
     const auth = (await paired.json()).data;
-    const headers = { Cookie: cookie, Origin: service.origin, 'Content-Type': 'application/json', 'X-Didi-CSRF': auth.csrfToken, 'X-Didi-Authority-Epoch': auth.authorityEpoch };
+    const headers = { Cookie: cookie, Origin: service.origin, 'Content-Type': 'application/json', 'X-Didi-CSRF': auth.csrfToken, 'X-Didi-Authority-Epoch': f.store.authorityEpoch };
     async function enrollHTTP(key: string, extra: Record<string, unknown> = {}) {
       return fetch(`${service.origin}/api/v1/conversations`, { method: 'POST', headers: { ...headers, 'Idempotency-Key': key }, body: JSON.stringify({ title: key, timeZone: 'UTC', ...extra }) });
     }

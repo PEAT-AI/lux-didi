@@ -67,8 +67,8 @@ async function harness(t: TestContext, builder: 'live' | 'chat-shaped') {
     for (const source of sources) { const found = await source(runId, s); if (found) return found; }
     return chatAuthorities.get(runId) ?? null;
   };
-  const start = async (enabled = all) => {
-    writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: endpoints.map(e => ({ id: e.id, connector: e.connector, transport: 'streamable-http', url: `http://127.0.0.1:18765/${e.id}`, account: e.id, resource: e.id, credentialRef: null, enabled: enabled.includes(e.id), allowEgress: true })) }), { mode: 0o600 });
+  const start = async (enabled = all, sourceClasses: Record<string, unknown> = {}) => {
+    writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: endpoints.map(e => ({ id: e.id, connector: e.connector, transport: 'streamable-http', url: `http://127.0.0.1:18765/${e.id}`, account: e.id, resource: e.id, credentialRef: null, enabled: enabled.includes(e.id), allowEgress: true, unknownClass: Object.hasOwn(sourceClasses, e.id) ? sourceClasses[e.id] : 'ordinary' })) }), { mode: 0o600 });
     const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority }); runtimes.push(runtime); return runtime;
   };
   const accept = async (runtime: Awaited<ReturnType<typeof start>>, allowedClasses: DataClass[] = ['ordinary', 'private']) => {
@@ -91,9 +91,9 @@ async function harness(t: TestContext, builder: 'live' | 'chat-shaped') {
     const host: HostContext = { ...acceptance, grants: endpoints.map(e => ({ tool: e.tool, effect: 'read', accountId: e.id, resourceId: e.id })) };
     return { acceptance, host };
   };
-  const read = async (runtime: Awaited<ReturnType<typeof start>>, host: HostContext, id: string) => {
-    const endpoint = endpoints.find(e => e.id === id)!; const seen: ModelRequest[] = [];
-    const model: ModelPort = { generate: async request => { seen.push(structuredClone(request)); return seen.length === 1 ? result(endpoint.tool, endpoint.args) : result(); } };
+  const read = async (runtime: Awaited<ReturnType<typeof start>>, host: HostContext, ids: readonly string[]) => {
+    const selected = ids.map(id => endpoints.find(e => e.id === id)!); const seen: ModelRequest[] = [];
+    const model: ModelPort = { generate: async request => { seen.push(structuredClone(request)); if (seen.length !== 1) return result(); const answer = result(); answer.providerContent.parts = selected.map(e => ({ functionCall: { name: e.tool, args: e.args, id: `call-${e.id}` } })); return answer; } };
     const outcome = await runTools({ model, request: { system: 'synthetic', promptVersion: '1', contents: [{ role: 'user', parts: [{ text: 'read' }] }], dataClasses: ['ordinary'], context: { items: [], selectedIds: [], maxChars: 100 } }, registry: runtime.owner.definitions(host.runId), host, authority: { isCurrent: async () => (await lookupAuthority(host.runId, signal)) !== null }, maxSteps: 3, control: { signal, deadlineMs: Date.now() + 5000 }, journal: runtime.owner.journal, resultGate: runtime.owner.resultGate });
     return { outcome, seen };
   };
@@ -109,18 +109,55 @@ for (const builder of ['live', 'chat-shaped'] as const) test(`connection-scoped 
   assert.equal(initial.owner.journal.intent(intent), 'fresh');
   const definition = initial.owner.definitions(run.host.runId).find(d => d.name === intent.toolName)!;
   const completed = await definition.execute(endpoints[0]!.args, { ...intent, signal }); assert.equal(completed.status, 'completed');
-  for (const id of pair) {
-    const before = h.counts.get(id)!; const { outcome, seen } = await h.read(initial, run.host, id);
-    assert.equal(outcome.status, 'complete'); assert.equal(h.counts.get(id), before + 1);
-    assert.equal(seen.length, 2); assert(seen[1]!.contents.some(c => c.parts.some(p => p.functionResponse)));
-  }
   const expanded = await h.start();
-  const denied = await h.read(expanded, run.host, 'mattermost');
-  assert.equal(h.counts.get('mattermost'), 0); assert(!denied.seen.some(r => r.contents.some(c => c.parts.some(p => p.functionResponse && JSON.stringify(p.functionResponse).includes('synthetic mattermost read')))));
+  const beforePair = new Map(h.counts);
+  const batch = await h.read(expanded, run.host, [...pair, 'mattermost']);
+  assert.equal(batch.outcome.status, 'complete'); assert.equal(batch.seen.length, 2);
+  for (const id of pair) assert.equal(h.counts.get(id), beforePair.get(id)! + 1);
+  assert.equal(h.counts.get('mattermost'), 0);
+  const responses = batch.seen[1]!.contents.flatMap(c => c.parts.flatMap(p => p.functionResponse ? [p.functionResponse] : []));
+  assert.equal(responses.length, 3);
+  assert.match(JSON.stringify(responses), /synthetic lux-knowledge read/);
+  assert.match(JSON.stringify(responses), /synthetic@example.invalid/);
+  assert(!JSON.stringify(responses).includes('synthetic mattermost read'));
   const rows = h.store.transaction(tx => tx.all('SELECT state,intent_json,result_json FROM tool_calls WHERE run_id=?', [run.host.runId]));
   assert(rows.some(r => r.state === 'completed')); assert(rows.some(r => r.state === 'refused'));
   for (const row of rows) { assert.equal(JSON.parse(String(row.intent_json)).routeIdentity, run.acceptance.route.identity); assert.equal(JSON.parse(String(row.result_json)).routeIdentity, run.acceptance.route.identity); }
   const allRun = await h.accept(expanded);
   assert.deepEqual(allRun.acceptance.connectionIds, all);
-  for (const id of all) { const before = h.counts.get(id)!; const read = await h.read(expanded, allRun.host, id); assert.equal(read.outcome.status, 'complete', id); assert.equal(h.counts.get(id), before + 1, id); }
+  const beforeAll = new Map(h.counts);
+  const allRead = await h.read(expanded, allRun.host, all); assert.equal(allRead.outcome.status, 'complete'); assert.equal(allRead.seen.length, 2);
+  for (const id of all) assert.equal(h.counts.get(id), beforeAll.get(id)! + 1, id);
+  const generations = () => h.store.transaction(tx => tx.all('SELECT connection_id,generation FROM tool_connections ORDER BY connection_id'));
+  const unchanged = generations(); await h.start(); assert.deepEqual(generations(), unchanged, 'unchanged restart must not bump generations');
+  // Missing or invalid class is a typed local error for only that connection.
+  const missing = await h.start(all, { mattermost: undefined });
+  assert.deepEqual(missing.connectionIds(), all.filter(id => id !== 'mattermost'));
+  assert.equal(missing.status().endpoints.find(e => e.id === 'mattermost')?.configurationError, 'unknown-class-missing');
+  const invalid = await h.start(all, { mattermost: 'public' });
+  assert.deepEqual(invalid.connectionIds(), all.filter(id => id !== 'mattermost'));
+  assert.equal(invalid.status().endpoints.find(e => e.id === 'mattermost')?.configurationError, 'unknown-class-invalid');
+  // Revocation during an actual SDK read must withhold that result from the model.
+  const inFlightRun = await h.accept(expanded); const beforeFlight = h.counts.get('gmail')!;
+  h.setDispatch(id => {
+    if (id !== 'gmail') return;
+    const row = h.store.transaction(tx => tx.get('SELECT policy_json,policy_sha256 FROM tool_connections WHERE connection_id=?', ['gmail']))!;
+    const policy = JSON.parse(String(row.policy_json)); policy.enabled = false; policy.generation += 1;
+    expanded.owner.applyConnectionIntent({ expectedPolicySha256: String(row.policy_sha256), policy });
+  });
+  const revoked = await h.read(expanded, inFlightRun.host, ['gmail']); h.setDispatch(undefined);
+  assert.equal(h.counts.get('gmail'), beforeFlight + 1); assert.equal(revoked.seen.length, 1);
+  assert.notEqual(revoked.outcome.status, 'complete');
+  const withheld = h.store.transaction(tx => tx.all('SELECT state,result_json FROM tool_calls WHERE run_id=?', [inFlightRun.host.runId]));
+  assert.equal(withheld.length, 1); assert.notEqual(withheld[0]!.state, 'completed');
+  // Class tightening changes generation and denies an admitted connection before invocation.
+  const sensitive = await h.start(all, { 'lux-knowledge': 'sensitive' });
+  const classRun = await h.accept(sensitive); const beforeClass = h.counts.get('lux-knowledge')!;
+  const classDenied = await h.read(sensitive, classRun.host, ['lux-knowledge']);
+  assert(classRun.acceptance.connectionIds.includes('lux-knowledge'));
+  assert.equal(h.counts.get('lux-knowledge'), beforeClass); assert.equal(classDenied.seen.length, 1);
+  assert.notEqual(classDenied.outcome.status, 'complete');
+  assert(Number(generations().find(r => r.connection_id === 'lux-knowledge')!.generation) > Number(unchanged.find(r => r.connection_id === 'lux-knowledge')!.generation));
+  const lower = await h.start();
+  assert.equal(lower.status().endpoints.find(e => e.id === 'lux-knowledge')?.configurationError, 'owner-approval-required');
 });

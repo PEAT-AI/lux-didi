@@ -34,4 +34,6 @@ export const toolsMigrations: readonly SchemaMigration[] = [{ owner: 'tools', ve
   `CREATE TRIGGER tool_calls_update_guard BEFORE UPDATE ON tool_calls
     WHEN NEW.owner_id IS NOT OLD.owner_id OR NEW.run_id IS NOT OLD.run_id OR NEW.execution_id IS NOT OLD.execution_id OR NEW.call_id IS NOT OLD.call_id OR NEW.intent_json IS NOT OLD.intent_json OR OLD.state!='intent' OR NEW.state='intent'
     BEGIN SELECT RAISE(ABORT,'call_identity_or_terminal'); END`,
+] }, { owner: 'tools', version: 2, statements: [
+  `ALTER TABLE tool_connections ADD COLUMN binding_mode TEXT NOT NULL DEFAULT 'legacy' CHECK(binding_mode IN ('legacy','connection'))`,
 ] }];

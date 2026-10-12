@@ -1,7 +1,7 @@
 import { CONNECTOR_DESCRIPTORS, ConnectorCompositionError } from '../connectors/index.js';
 import type { Store } from '../runtime/store.js';
 import { McpRegistry } from '../adapters/mcp/registry.js';
-import { assertToolsOwnerBinding, createToolsOwner } from '../tools/index.js';
+import { assertToolsOwnerBinding, createToolsOwner, validatePolicy } from '../tools/index.js';
 import type { ConnectionPolicy, ConnectionRestoreResult, LiveAuthority, ToolsOwner } from '../tools/types.js';
 import { loadMcpConfiguration, loadMcpEndpoints, type McpEndpointEntry } from '../config/mcp.js';
 import { fields, parseJson, readPrivate } from '../config/files.js';
@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import type { McpPort } from '../adapters/mcp/port.js';
-import { canonicalJSON } from '../tools/canonical.js';
+import { canonicalJSON, sha256 } from '../tools/canonical.js';
 import { CONNECTOR_ENVELOPES } from '../connectors/index.js';
 
 export interface McpConnectionBundle {
@@ -58,7 +58,7 @@ export function composeMcpConnection(options: { store: Store; owner: ToolsOwner;
 }
 
 export type McpEndpointState = 'missing' | 'configured' | 'connected' | 'error';
-export interface McpEndpointReport { id: string; state: McpEndpointState; tools: number; lastHandshakeAt: string | null; error?: string; exception?: { class: string; code: string } }
+export interface McpEndpointReport { id: string; state: McpEndpointState; tools: number; lastHandshakeAt: string | null; error?: string; configurationError?: 'unknown-class-missing' | 'unknown-class-invalid' | 'owner-approval-required' | 'ambiguous-legacy-policy'; exception?: { class: string; code: string } }
 export interface McpRuntimeComposition {
   registry: McpRegistry;
   port: McpPort;
@@ -114,6 +114,10 @@ export async function composeMcpRuntime(options: {
   const connect = async (entry: McpEndpointEntry): Promise<void> => {
     const previous = reports.get(entry.id);
     usable.delete(entry.id);
+    if (entry.configurationError || entry.unknownClass === null) {
+      const code = entry.configurationError ?? 'unknown-class-missing';
+      reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: code, configurationError: code }); return;
+    }
     // A missing or malformed credential is a visible, typed status; discovery never runs with a blank bearer.
     if (entry.credentialRef) {
       try { readMcpCredential(configDir, entry.credentialRef); }
@@ -135,18 +139,45 @@ export async function composeMcpRuntime(options: {
       // The owner validates the existing row (including its hash) before accepting the intent.
       const row = store.transaction(tx => tx.get('SELECT policy_json,policy_sha256,generation FROM tool_connections WHERE owner_id=? AND connection_id=?', [ownerId, entry.id]));
       const policy: ConnectionPolicy = {
-        schemaVersion: 1, ownerId, connectionId: entry.id, generation: row ? Number(row.generation) : 1,
+        schemaVersion: 1, bindingMode: 'connection', ownerId, connectionId: entry.id, generation: row ? Number(row.generation) : 1,
         enabled: true, connector: entry.connector,
         endpoint: entry.transport === 'stdio'
           ? { id: entry.id, transport: 'stdio', command: entry.command, args: [...entry.args], env: { ...entry.env }, account: entry.account, resource: entry.resource, credentialRef: null }
           : { id: entry.id, url: entry.url, account: entry.account, resource: entry.resource, credentialRef: entry.credentialRef },
         toolNames: names, schemaDigest: discovery.schemaDigest,
-        sourcePolicy: { id: entry.id, revision: 1, unknownClass: null, allowedClasses: ['ordinary'] },
-        route: { identity: entry.id, allowedClasses: ['ordinary'] },
+        sourcePolicy: { id: entry.id, revision: 1, unknownClass: entry.unknownClass, allowedClasses: [entry.unknownClass] },
+        route: { identity: entry.id, allowedClasses: [entry.unknownClass] },
         bounds: { maxQueryChars: 16384, maxSearchLimit: 100, maxGetIds: 100, maxEntityBytes: 1048576, maxResultBytes: 1048576 },
       };
-      if (row && canonicalJSON(policy) !== String(row.policy_json)) policy.generation += 1;
-      owner.applyConnectionIntent({ expectedPolicySha256: row ? String(row.policy_sha256) : null, policy });
+      if (row) {
+        const bytes = String(row.policy_json);
+        if (sha256(bytes) !== row.policy_sha256) throw Error('connection_policy_binding');
+        const stored = validatePolicy(JSON.parse(bytes) as ConnectionPolicy);
+        if (stored.ownerId !== ownerId || stored.connectionId !== entry.id || stored.generation !== Number(row.generation)) throw Error('connection_policy_binding');
+        const legacy = stored.bindingMode === undefined;
+        if (legacy && stored.route.identity !== stored.endpoint.id) {
+          reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'ambiguous-legacy-policy', configurationError: 'ambiguous-legacy-policy' }); return;
+        }
+        const rank = { ordinary: 0, private: 1, sensitive: 2 };
+        const oldClass = stored.sourcePolicy.unknownClass;
+        const widened = names.some(name => !stored.toolNames.includes(name));
+        if (canonicalJSON(stored.endpoint) !== canonicalJSON(policy.endpoint) || widened || (oldClass !== null && rank[entry.unknownClass] < rank[oldClass])) {
+          reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'owner-approval-required', configurationError: 'owner-approval-required' }); return;
+        }
+        // Persisted approval fields are authoritative. A restart cannot re-enable a revocation.
+        policy.enabled = stored.enabled; policy.bounds = stored.bounds;
+        policy.sourcePolicy = { ...stored.sourcePolicy, unknownClass: entry.unknownClass };
+        policy.route = stored.route;
+        if (oldClass !== entry.unknownClass) {
+          // Null legacy classifications were never executable approvals. Explicit local config
+          // supplies the initial bounded class; later changes may only tighten without approval.
+          const replaceClass = (set: typeof stored.sourcePolicy.allowedClasses) => oldClass === null ? [entry.unknownClass!] : [...new Set(set.map(c => c === oldClass ? entry.unknownClass! : c))];
+          policy.sourcePolicy.allowedClasses = replaceClass(stored.sourcePolicy.allowedClasses);
+          policy.sourcePolicy.revision += 1;
+          policy.route = { ...stored.route, allowedClasses: replaceClass(stored.route.allowedClasses) };
+        }
+        if (canonicalJSON(policy) !== bytes) { policy.generation += 1; owner.applyConnectionIntent({ expectedPolicySha256: String(row.policy_sha256), policy }); }
+      } else owner.applyConnectionIntent({ expectedPolicySha256: null, policy });
       const restored = await owner.restoreConnection(entry.id, () => {
         const current = loadMcpEndpoints({ configDir });
         if (current.state !== 'configured' || current.catalog.grantMode !== grantMode

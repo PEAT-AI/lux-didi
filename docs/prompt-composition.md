@@ -145,6 +145,12 @@ overlay first while the base and the anchor never yield. The composed text is
 stored as the accepted Live instruction and journaled only by its hash; the local
 overlay and any private text never enter the repository.
 
+When a session is attached with at least one declared tool, the request system
+text gains a fourth section, `tools`, spliced between the base and the overlay from
+the same Architect-authored conduct text; a session with no declarations composes
+exactly as before. The section is one of the composer's `sections` entries, with
+its own chars and sha256.
+
 ## Verification and remaining gates
 
 Run `bash scripts/check-prompt.sh` through the declared managed check. It uses the

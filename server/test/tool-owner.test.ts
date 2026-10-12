@@ -27,7 +27,7 @@ const route = { identity: 'synthetic-route', provider: 'gemini' as const, modelI
 // This suite drives the HTTP arm; the union's stdio arm has no url.
 const policyUrl = (e: ConnectionPolicy['endpoint']): string => (e as { transport?: unknown }).transport === 'stdio' ? '' : (e as { url: string }).url;
 function policy(overrides: Partial<ConnectionPolicy> = {}): ConnectionPolicy {
-  return { schemaVersion: 1, ownerId: 'owner', connectionId: 'lux', generation: 1, enabled: true, connector: 'lux-knowledge',
+  return { schemaVersion: 1, bindingMode: 'connection', ownerId: 'owner', connectionId: 'lux', generation: 1, enabled: true, connector: 'lux-knowledge',
     endpoint: { id: 'endpoint', url: 'https://synthetic.invalid/mcp', account: 'account', resource: 'resource', credentialRef: 'private:synthetic-reference' },
     toolNames: ['search_knowledge', 'get_insight'], schemaDigest: canonicalToolDigest(tools),
     sourcePolicy: { id: 'synthetic-policy', revision: 1, unknownClass: 'private', allowedClasses: ['private'] },
@@ -522,7 +522,7 @@ test('endpoint union: stdio arm validates; HTTP nullability and cross-arm reject
 
 for (const legacyRoute of ['endpoint', 'ambiguous-model-route']) test(`migration does not turn legacy ${legacyRoute} into route approval`, async t => {
   const dir = mkdtempSync(join(tmpdir(), 'didi-legacy-policy-'));
-  const legacy = policy(); legacy.route.identity = legacyRoute;
+  const legacy = policy(); delete legacy.bindingMode; legacy.route.identity = legacyRoute;
   const bytes = canonicalJSON(legacy); const hash = sha256(bytes);
   const oldStore = new Store(dir, toolsMigrations.filter(m => m.version === 1));
   oldStore.transaction(tx => tx.run('INSERT INTO tool_connections VALUES (?,?,?,?,?,?,?)', ['owner', 'lux', 'endpoint', 1, 1, bytes, hash])); oldStore.close();

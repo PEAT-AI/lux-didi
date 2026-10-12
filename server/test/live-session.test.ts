@@ -187,7 +187,7 @@ test('Live memory is frozen at CREATE, fresh at the next CREATE, and covered by 
   const fresh = h.owner.create({ idempotencyKey: 'memory-new', inputClass: 'ordinary' }, h.ctx);
   assert.match(accepted(h, fresh.liveSessionId).system, /Fixture revised owner note/);
   assert.notEqual(fresh.promptIdentity, first.promptIdentity);
-  assert.equal(first.fingerprint, createHash('sha256').update(JSON.stringify({ inputClass: 'ordinary', profile: first.profileIdentity, prompt: first.promptIdentity, pickupJobId: null })).digest('hex'));
+  assert.equal(h.store.transaction(tx => tx.get('SELECT fingerprint FROM live_sessions WHERE live_session_id=?', [first.liveSessionId])!['fingerprint']), createHash('sha256').update(JSON.stringify({ inputClass: 'ordinary', profile: first.profileIdentity, prompt: first.promptIdentity, pickupJobId: null })).digest('hex'));
 });
 
 test('Live memory recalls ordinary entries only, including parent labels, and reports an empty selection', async t => {

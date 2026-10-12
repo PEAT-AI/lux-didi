@@ -296,7 +296,8 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
       } catch { return { state: 'refused', reason: 'binding-or-consent-not-current' }; }
     },
     projectConnection(id) {
-      const p = store.transaction(tx => connection(tx, id).policy); if (!p.enabled || p.bindingMode !== 'connection' || p.sourcePolicy.unknownClass === null) throw Error('connection_not_executable');
+      const p = store.transaction(tx => connection(tx, id).policy); if (!p.enabled) throw Error('connection_disabled');
+      if (p.bindingMode !== 'connection' || p.sourcePolicy.unknownClass === null) throw Error('connection_not_executable');
       const endpoint = registry.endpoint(p.endpoint.id);
       if (endpointBinding(endpoint) !== endpointBinding(p.endpoint)) throw Error('projection_endpoint_mismatch');
       const grant = registry.currentGrant(p.endpoint.id);

@@ -123,7 +123,7 @@ export async function composeMcpRuntime(options: {
         : [];
       // Healthy discovery without an approved envelope is status-only, not an empty owner policy.
       if (!names.length) {
-        reports.set(entry.id, { id: entry.id, state: 'connected', tools: 0, lastHandshakeAt: discovery.observedAt });
+        reports.set(entry.id, { id: entry.id, state: 'connected', tools: 0, lastHandshakeAt: new Date(discovery.observedAt).toISOString() });
         return;
       }
       // Reconcile through the owner's CAS intent API, never fabricate a registry-only grant.

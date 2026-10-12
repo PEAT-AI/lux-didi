@@ -350,7 +350,7 @@ for (const scenario of ['both', 'existing-live', 'default', 'absent'] as const) 
     try {
       await mkdir(defaults, { mode: 0o700 });
       if (effective !== defaults) await mkdir(effective, { mode: 0o700 });
-      if (scenario === 'both' || scenario === 'existing-live') {
+      if (scenario !== 'absent') {
         await writeFile(join(defaults, 'live.json'), live, { mode: 0o600 });
         await writeFile(join(defaults, 'mcp.json'), mcp, { mode: 0o600 });
         for (const name of ['gemini-primary.json', 'profile.json', 'admin-credential']) await writeFile(join(defaults, name), 'not a seed', { mode: 0o600 });

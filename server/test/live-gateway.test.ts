@@ -893,10 +893,14 @@ test('canonical host resumes one journal and never exposes the handle on the wir
   const pageToken = 'r'.repeat(43);
   host.store.transaction(tx => tx.run('INSERT INTO runtime_sessions VALUES (?,?,?,?)', [createHash('sha256').update(pageToken).digest('hex'), 'resume-page', 'csrf', Date.now() + 60_000]));
   const projection = await json(host.service.origin, '/api/v1/live/current', { headers: { cookie: `didi_session=${pageToken}` } });
+  assert.equal(projection.status, 200);
   assert.equal(projection.body.data.state, 'rebuilding');
   const status = await json(host.service.origin, '/api/v1/live/status', { headers });
+  assert.equal(status.status, 200);
   assert.equal(status.body.data.status, 'configured');
   const snapshot = await json(host.service.origin, `/api/v1/live-sessions/${id}`, { headers });
+  assert.equal(snapshot.status, 200);
+  assert.equal(snapshot.body.data.liveSessionId, id);
   assert.equal(JSON.stringify([frames, projection.body, status.body, snapshot.body]).includes(handle), false);
   assert.equal(readFileSync(join(dataDir, 'logs', 'host.log'), 'utf8').includes(handle), false);
   f.send({ setupComplete: {} });
@@ -904,8 +908,11 @@ test('canonical host resumes one journal and never exposes the handle on the wir
   assert.deepEqual(resumed, { type: 'continuity', event: 'resumed', sequence: null, journalSequence: resumed.journalSequence });
   assert.ok(Number(resumed.journalSequence) > Number(rebuilding.journalSequence));
   assert.deepEqual(host.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot,memory_provenance FROM live_sessions WHERE live_session_id=?', [id])), frozen);
-  ws.send(JSON.stringify({ type: 'close' })); await closed;
+  // The explicit client close control intentionally closes before terminal delivery.
+  // End from the provider instead, keeping the consumer attached for the terminal fact.
+  f.remoteClose('', 1000); await closed;
   assert.equal(frames.filter(frame => frame.type === 'terminal').length, 1);
+  assert.equal(frames.find(frame => frame.type === 'terminal')!.code, 'remote_closed');
   const rows = host.store.transaction(tx => tx.all('SELECT journal_id,kind FROM live_journal WHERE live_session_id=? ORDER BY journal_id', [id]));
   assert.equal(rows.filter(row => row.kind === 'terminal').length, 1);
   assert.equal(new Set(rows.map(row => row.journal_id)).size, rows.length);

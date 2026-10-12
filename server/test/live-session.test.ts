@@ -1288,7 +1288,7 @@ test('provider voice activity journals listening and thinking without retaining 
 
 test('resumption keeps journal identity and frozen authority with the real adapter', async t => {
   const h = await harness(t);
-  const { session, attachment } = await start(h, 'resume-identity');
+  const { session, attachment } = await attached(h, 'resume-identity');
   const frozen = h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot,memory_provenance FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]));
   const handle = 'synthetic-owner-resumption-secret';
   h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: handle } });

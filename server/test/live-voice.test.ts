@@ -1,4 +1,5 @@
 import './live-remember.test.js';
+import './live-declarations.test.js';
 import assert from 'node:assert/strict';
 import { describe, test, type TestContext } from 'node:test';
 import WebSocket from 'ws';
@@ -389,4 +390,25 @@ test('binary invalid UTF-8 inside otherwise valid JSON is protocol_error', async
   f.sendRaw(Buffer.concat([Buffer.from('{"futureField":"'), Buffer.from([0xff]), Buffer.from('"}') ]));
   await assert.rejects(session.ready, code('protocol_error'));
   await session.done;
+});
+
+test('provider fixture rejects unsupported setup schema with 1007 before ready', async t => {
+  const f = await providerFixture(t);
+  const session = new GeminiLiveVoiceAdapter(options(f)).open({ ...request(), tools: [
+    { name: 'invalid', description: 'Invalid original schema', parameters: { type: 'OBJECT', properties: { nested: { type: 'OBJECT', additionalProperties: false } } } },
+  ] }, control());
+  const captured = collect(session);
+  await assert.rejects(session.ready, code('provider_setup_rejected'));
+  assert.equal((await session.done).code, 'provider_setup_rejected');
+  await captured.done;
+  assert.equal(captured.events.some(event => event.type === 'ready'), false);
+  noCanary(captured.events);
+});
+
+test('provider 1007 after ready remains remote_closed, not setup rejection', async t => {
+  const { f, session, captured } = await providerReady(t);
+  f.remoteClose(CANARY, 1007);
+  assert.deepEqual(await session.done, { status: 'failed', code: 'remote_closed' });
+  await captured.done;
+  noCanary(captured.events);
 });

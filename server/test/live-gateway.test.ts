@@ -825,3 +825,25 @@ test('CREATE maps a typed connector composition defect to a bounded visible enve
   assert.equal(created.body.error.message, 'Connector composition failed');
   assert.ok(created.body.requestId);
 });
+
+test('pre-ready provider 1007 is journaled and closes with typed attach rejection', async t => {
+  const h = await harness(t, { config: configJson(true) });
+  const created = await createBody(h, 'setup-rejected');
+  assert.equal(created.status, 200);
+  const id = created.body.data.liveSessionId;
+  const ws = new WebSocket(`${h.origin.replace('http', 'ws')}/api/v1/live-sessions/${id}/audio`, { headers: bearer(h) });
+  const frames: string[] = [];
+  ws.on('message', bytes => frames.push(bytes.toString()));
+  const closed = once(ws, 'close');
+  await once(ws, 'open');
+  await h.f.frame(1);
+  h.f.remoteClose(CANARY, 1007);
+  const [closeCode, reason] = await closed;
+  assert.equal(closeCode, 1008);
+  assert.equal(reason.toString(), 'attach_rejected:provider_setup_rejected');
+  const snapshot = h.live.snapshot(id);
+  assert.equal(snapshot.ready, false);
+  assert.deepEqual(snapshot.terminal, { state: 'failed', code: 'provider_setup_rejected' });
+  assert.equal(JSON.stringify(snapshot).includes(CANARY), false);
+  assert.equal(frames.some(frame => JSON.parse(frame).code === 'provider_setup_rejected'), true);
+});

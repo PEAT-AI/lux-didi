@@ -184,7 +184,9 @@ export function createLiveUpgrader(options: LiveUpgradeOptions) {
       const terminal = snapshot.terminal as { state: string; code?: string };
       ws.send(JSON.stringify({ type: 'terminal', state: terminal.state, code: terminal.code ?? null, complete: snapshot.journal.complete }), { binary: false });
     }
-    ws.close(1000, 'terminal');
+    const code = snapshot?.terminal && 'code' in snapshot.terminal ? snapshot.terminal.code : undefined;
+    if (snapshot && !snapshot.ready && code && /^[a-z][a-z0-9_]{0,63}$/.test(code)) ws.close(1008, `attach_rejected:${code}`);
+    else ws.close(1000, 'terminal');
   }
 
   return {

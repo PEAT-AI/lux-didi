@@ -31,7 +31,7 @@ export interface LiveVoiceControl { signal: AbortSignal; deadlineMs: number }
 export type LiveVoiceErrorCode =
   | 'closed' | 'cancelled' | 'deadline' | 'invalid_settings' | 'invalid_request' | 'route_denied'
   | 'credential_unavailable' | 'not_ready' | 'invalid_audio' | 'transport_error' | 'provider_error'
-  | 'remote_closed' | 'protocol_error' | 'unsupported_tool' | 'incoming_limit' | 'outgoing_limit'
+  | 'remote_closed' | 'provider_setup_rejected' | 'protocol_error' | 'unsupported_tool' | 'incoming_limit' | 'outgoing_limit'
   | 'backpressure' | 'event_limit' | 'handshake_timeout' | 'idle_timeout' | 'session_timeout' | 'go_away';
 export interface LiveVoiceOutcome {
   droppedAudioFrames?: number;

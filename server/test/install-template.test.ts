@@ -40,3 +40,15 @@ for (const location of ['provider-config', 'provider-38']) for (const kind of ['
     else { const loaded = loadMcpEndpoints({ configDir }); assert.equal(loaded.state, 'configured'); if (loaded.state !== 'configured') throw Error('missing'); for (const entry of loaded.catalog.endpoints) assert.equal(entry.configurationError, 'unknown-class-missing'); }
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
+
+for (const count of [1, 3]) test(`R5 recognizes the historical ${count}-connector template`, () => {
+  const home = mkdtempSync(join(tmpdir(), 'didi-install-history-'));
+  const path = join(home, 'Library/Application Support/ai.peat.lux-didi/provider-config/mcp.json');
+  const run = () => { const result = spawnSync('/bin/bash', ['-euc', seed], { env: { ...process.env, HOME: home }, encoding: 'utf8', timeout: 3000 }); assert.equal(result.status, 0, result.stderr); };
+  try {
+    run(); const current = JSON.parse(readFileSync(path, 'utf8')); const old = structuredClone(current);
+    old.endpoints = old.endpoints.slice(0, count); for (const entry of old.endpoints) delete entry.unknownClass;
+    writeFileSync(path, `${JSON.stringify(old)}\n`); run();
+    assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), current);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});

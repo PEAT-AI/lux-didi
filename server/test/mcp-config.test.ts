@@ -343,3 +343,20 @@ test('mcp credential resolver reads an owner-only synthetic file and refuses a m
   assert.equal(report?.error, 'credential mongo missing or invalid');
   assert.equal(report?.tools, 0);
 });
+
+// F1: the declared MCP config check pins the installer template without running installation.
+test('installer seeds explicit bounded source classes for all five connectors', async () => {
+  const config = await import('../config/mcp.js');
+  const template = readFileSync(join(process.cwd(), 'scripts/install-macos-app.sh'), 'utf8').split('\n').find(line => line.startsWith('{"schemaVersion":1,"grantMode":"owner-trusted-reads"'));
+  assert(template);
+  const values: Record<string, string> = { google_command: '/synthetic/google-mcp', node_command: '/synthetic/node', mattermost_command: '/synthetic/mattermost.cjs', stdio_env: '{"HOME":"/synthetic","PATH":"/usr/bin","LOGNAME":"","SHELL":"","TERM":"","USER":""}' };
+  const json = template.replace(/\$\{([a-z_]+)\}/g, (_, name: string) => { assert(Object.hasOwn(values, name), name); return values[name]!; });
+  const dir = mkdtempSync(join(tmpdir(), 'didi-seed-'));
+  try {
+    chmodSync(dir, 0o700); writeFileSync(join(dir, 'mcp.json'), json, { mode: 0o600 });
+    const loaded = config.loadMcpEndpoints({ configDir: dir }); assert.equal(loaded.state, 'configured');
+    if (loaded.state !== 'configured') throw Error('seed missing');
+    assert.deepEqual(loaded.catalog.endpoints.map(e => e.id).sort(), ['calendar', 'gmail', 'lux-knowledge', 'mattermost', 'mongoose']);
+    for (const entry of loaded.catalog.endpoints) assert(['ordinary', 'private', 'sensitive'].includes((entry as unknown as { unknownClass: string }).unknownClass), entry.id);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

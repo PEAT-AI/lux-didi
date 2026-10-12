@@ -34,16 +34,17 @@ function result(name?: string, args: Record<string, unknown> = {}): ModelResult 
 async function harness(t: TestContext, builder: 'live' | 'chat-shaped') {
   const dir = mkdtempSync(join(tmpdir(), 'didi-admission-'));
   const configDir = join(dir, 'config'); mkdirSync(configDir, { mode: 0o700 });
-  const store = new Store(join(dir, 'data'), [...domainMigrations, ...liveMigrations, ...toolsMigrations]);
+  let store = new Store(join(dir, 'data'), [...domainMigrations, ...liveMigrations, ...toolsMigrations]);
   const sources: ((runId: string, signal: AbortSignal) => Promise<LiveAuthority | null>)[] = [];
   const chatAuthorities = new Map<string, LiveAuthority>();
   const counts = new Map(all.map(id => [id, 0]));
   const readers = new Map<string, WebStandardStreamableHTTPServerTransport>();
   let dispatch: ((id: string) => Promise<void> | void) | undefined;
+  let visible = new Set(pair);
   for (const entry of endpoints) {
     const sdk = new Server({ name: entry.id, version: '1' }, { capabilities: { tools: {} } });
     const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
-    sdk.setRequestHandler('tools/list', () => ({ tools: [{ name: entry.tool, inputSchema: entry.id === 'lux-knowledge' ? { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, include_sensitive: { type: 'boolean' } }, required: ['query', 'limit', 'include_sensitive'], additionalProperties: false } : { type: 'object', properties: {}, additionalProperties: false } }] }) as never);
+    sdk.setRequestHandler('tools/list', () => ({ tools: visible.has(entry.id) ? [{ name: entry.tool, inputSchema: entry.id === 'lux-knowledge' ? { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, include_sensitive: { type: 'boolean' } }, required: ['query', 'limit', 'include_sensitive'], additionalProperties: false } : { type: 'object', properties: {}, additionalProperties: false } }] : [] }) as never);
     sdk.setRequestHandler('tools/call', async () => {
       counts.set(entry.id, counts.get(entry.id)! + 1);
       await dispatch?.(entry.id);
@@ -68,6 +69,12 @@ async function harness(t: TestContext, builder: 'live' | 'chat-shaped') {
     return chatAuthorities.get(runId) ?? null;
   };
   const start = async (enabled = all, sourceClasses: Record<string, unknown> = {}) => {
+    if (runtimes.length) {
+      for (const service of services) await service.shutdown(); services.length = 0;
+      for (const runtime of runtimes) await runtime.close(); runtimes.length = 0;
+      store.close(); store = new Store(join(dir, 'data'), [...domainMigrations, ...liveMigrations, ...toolsMigrations]);
+      sources.length = 0; chatAuthorities.clear();
+    }
     writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: endpoints.map(e => ({ id: e.id, connector: e.connector, transport: 'streamable-http', url: `http://127.0.0.1:18765/${e.id}`, account: e.id, resource: e.id, credentialRef: null, enabled: enabled.includes(e.id), allowEgress: true, unknownClass: Object.hasOwn(sourceClasses, e.id) ? sourceClasses[e.id] : 'ordinary' })) }), { mode: 0o600 });
     const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority }); runtimes.push(runtime); return runtime;
   };
@@ -97,19 +104,20 @@ async function harness(t: TestContext, builder: 'live' | 'chat-shaped') {
     const outcome = await runTools({ model, request: { system: 'synthetic', promptVersion: '1', contents: [{ role: 'user', parts: [{ text: 'read' }] }], dataClasses: ['ordinary'], context: { items: [], selectedIds: [], maxChars: 100 } }, registry: runtime.owner.definitions(host.runId), host, authority: { isCurrent: async () => (await lookupAuthority(host.runId, signal)) !== null }, maxSteps: 3, control: { signal, deadlineMs: Date.now() + 5000 }, journal: runtime.owner.journal, resultGate: runtime.owner.resultGate });
     return { outcome, seen };
   };
-  return { store, start, accept, read, counts, setDispatch: (hook: typeof dispatch) => { dispatch = hook; } };
+  return { get store() { return store; }, start, accept, read, counts, revealAll: () => { visible = new Set(all); }, setDispatch: (hook: typeof dispatch) => { dispatch = hook; } };
 }
 
 for (const builder of ['live', 'chat-shaped'] as const) test(`connection-scoped admission through host composition (${builder}, T8-FIX-R1)`, async t => {
   const h = await harness(t, builder);
-  const initial = await h.start(pair); const run = await h.accept(initial);
+  const initial = await h.start(); const run = await h.accept(initial);
   assert.deepEqual(run.acceptance.connectionIds, pair);
   const intent: ToolCallIntent = { runId: run.host.runId, actorId: run.host.actorId, authorityEpoch: run.host.authorityEpoch, revision: run.host.revision, executionId: `${run.host.runId}:probe`, toolName: 'search_knowledge', accountId: 'lux-knowledge', resourceId: 'lux-knowledge', callId: 'probe', argumentsHash: sha256(JSON.stringify(endpoints[0]!.args)) };
   // At the base this throws intent_policy_denied, before any connector is invoked.
   assert.equal(initial.owner.journal.intent(intent), 'fresh');
   const definition = initial.owner.definitions(run.host.runId).find(d => d.name === intent.toolName)!;
   const completed = await definition.execute(endpoints[0]!.args, { ...intent, signal }); assert.equal(completed.status, 'completed');
-  const expanded = await h.start();
+  h.revealAll(); await initial.refresh();
+  const expanded = initial;
   const beforePair = new Map(h.counts);
   const batch = await h.read(expanded, run.host, [...pair, 'mattermost']);
   assert.equal(batch.outcome.status, 'complete'); assert.equal(batch.seen.length, 2);
@@ -137,19 +145,6 @@ for (const builder of ['live', 'chat-shaped'] as const) test(`connection-scoped 
   const invalid = await h.start(all, { mattermost: 'public' });
   assert.deepEqual(invalid.connectionIds(), all.filter(id => id !== 'mattermost'));
   assert.equal(invalid.status().endpoints.find(e => e.id === 'mattermost')?.configurationError, 'unknown-class-invalid');
-  // Revocation during an actual SDK read must withhold that result from the model.
-  const inFlightRun = await h.accept(expanded); const beforeFlight = h.counts.get('gmail')!;
-  h.setDispatch(id => {
-    if (id !== 'gmail') return;
-    const row = h.store.transaction(tx => tx.get('SELECT policy_json,policy_sha256 FROM tool_connections WHERE connection_id=?', ['gmail']))!;
-    const policy = JSON.parse(String(row.policy_json)); policy.enabled = false; policy.generation += 1;
-    expanded.owner.applyConnectionIntent({ expectedPolicySha256: String(row.policy_sha256), policy });
-  });
-  const revoked = await h.read(expanded, inFlightRun.host, ['gmail']); h.setDispatch(undefined);
-  assert.equal(h.counts.get('gmail'), beforeFlight + 1); assert.equal(revoked.seen.length, 1);
-  assert.notEqual(revoked.outcome.status, 'complete');
-  const withheld = h.store.transaction(tx => tx.all('SELECT state,result_json FROM tool_calls WHERE run_id=?', [inFlightRun.host.runId]));
-  assert.equal(withheld.length, 1); assert.notEqual(withheld[0]!.state, 'completed');
   // Class tightening changes generation and denies an admitted connection before invocation.
   const sensitive = await h.start(all, { 'lux-knowledge': 'sensitive' });
   const classRun = await h.accept(sensitive); const beforeClass = h.counts.get('lux-knowledge')!;
@@ -160,4 +155,18 @@ for (const builder of ['live', 'chat-shaped'] as const) test(`connection-scoped 
   assert(Number(generations().find(r => r.connection_id === 'lux-knowledge')!.generation) > Number(unchanged.find(r => r.connection_id === 'lux-knowledge')!.generation));
   const lower = await h.start();
   assert.equal(lower.status().endpoints.find(e => e.id === 'lux-knowledge')?.configurationError, 'owner-approval-required');
+  // Revocation during an actual SDK read must withhold that result from the model.
+  const inFlightRun = await h.accept(lower); const beforeFlight = h.counts.get('gmail')!;
+  h.setDispatch(id => {
+    if (id !== 'gmail') return;
+    const row = h.store.transaction(tx => tx.get('SELECT policy_json,policy_sha256 FROM tool_connections WHERE connection_id=?', ['gmail']))!;
+    const policy = JSON.parse(String(row.policy_json)); policy.enabled = false; policy.generation += 1;
+    lower.owner.applyConnectionIntent({ expectedPolicySha256: String(row.policy_sha256), policy });
+  });
+  const revoked = await h.read(lower, inFlightRun.host, ['gmail']); h.setDispatch(undefined);
+  assert.equal(h.counts.get('gmail'), beforeFlight + 1); assert.equal(revoked.seen.length, 1);
+  assert.notEqual(revoked.outcome.status, 'complete');
+  const withheld = h.store.transaction(tx => tx.all('SELECT state,result_json FROM tool_calls WHERE run_id=?', [inFlightRun.host.runId]));
+  assert.equal(withheld.length, 1); assert.notEqual(withheld[0]!.state, 'completed');
+
 });

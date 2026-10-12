@@ -1285,3 +1285,33 @@ test('provider voice activity journals listening and thinking without retaining 
   attachment.close();
   await attachment.done;
 });
+
+test('resumption keeps journal identity and frozen authority with the real adapter', async t => {
+  const h = await harness(t);
+  const { session, attachment } = await start(h, 'resume-identity');
+  const frozen = h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot,memory_provenance FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]));
+  const handle = 'synthetic-owner-resumption-secret';
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: handle } });
+  h.f.send({ goAway: { timeLeft: '10s' } });
+  h.f.terminate();
+  await h.f.frame(2);
+  const setup = (h.f.frames[1] as { setup: { sessionResumption: { handle: string } } }).setup;
+  assert.equal(setup.sessionResumption.handle === handle, true);
+  const saved = h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot,memory_provenance,resumption_handle,connection_generation FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!;
+  assert.deepEqual({ accepted_prompt_snapshot: saved.accepted_prompt_snapshot, memory_provenance: saved.memory_provenance }, frozen);
+  assert.equal(saved.resumption_handle === handle, true);
+  assert.equal(saved.connection_generation, 1);
+  assert.equal(h.owner.current().state, 'rebuilding');
+  assert.equal(JSON.stringify(h.owner.current()).includes(handle), false);
+  h.f.send({ setupComplete: {} });
+  // The public committed marker, not a timer, is the resumption acknowledgement.
+  for await (const chunk of attachment.output) {
+    if (chunk.kind === 'marker' && chunk.marker.kind === ('continuity' as string) && 'event' in chunk.marker && chunk.marker.event === 'resumed') break;
+  }
+  assert.equal(h.owner.current().state, 'listening');
+  attachment.close(); await attachment.done;
+  const rows = h.store.transaction(tx => tx.all('SELECT journal_id,kind FROM live_journal WHERE live_session_id=? ORDER BY journal_id', [session.liveSessionId]));
+  assert.equal(rows.filter(r => r.kind === 'terminal').length, 1);
+  assert.equal(rows.filter(r => r.kind === 'continuity').length, 2);
+  assert.equal(new Set(rows.map(r => r.journal_id)).size, rows.length);
+});

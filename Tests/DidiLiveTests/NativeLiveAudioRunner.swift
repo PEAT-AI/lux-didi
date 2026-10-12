@@ -13,6 +13,92 @@ func audioRequire(_ value: Bool, _ message: String) throws {
     }
 }
 
+// In-process HTTP fixture: captures the complete request, without a real timeout or server.
+final class DiagnosticLogHTTPFixture: URLProtocol, @unchecked Sendable {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var requests: [URLRequest] = []
+    nonisolated(unsafe) private static var status: Int? = 204
+    static func reset(status: Int?) { lock.lock(); defer { lock.unlock() }; requests = []; self.status = status }
+    static func captured() -> [URLRequest] { lock.lock(); defer { lock.unlock() }; return requests }
+    override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "diagnostic.fixture" }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        var captured = request
+        if captured.httpBody == nil, let stream = captured.httpBodyStream {
+            stream.open(); defer { stream.close() }
+            var data = Data(); var bytes = [UInt8](repeating: 0, count: 512)
+            while stream.hasBytesAvailable {
+                let count = stream.read(&bytes, maxLength: bytes.count)
+                if count <= 0 { break }; data.append(contentsOf: bytes.prefix(count))
+            }
+            captured.httpBody = data
+        }
+        Self.lock.lock(); Self.requests.append(captured); let status = Self.status; Self.lock.unlock()
+        if let status {
+            client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: status,
+                httpVersion: "HTTP/1.1", headerFields: nil)!, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocolDidFinishLoading(self)
+        } else { client?.urlProtocol(self, didFailWithError: URLError(.cannotConnectToHost)) }
+    }
+    override func stopLoading() {}
+}
+
+// W-DIAGC: exercise the actual conversation log boundary, without starting audio.
+@MainActor private func checkConversationDiagnostics() async throws {
+    let started = ContinuousClock.now
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("didi-diagnostic-log-" + UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let config = URLSessionConfiguration.ephemeral
+    config.protocolClasses = [DiagnosticLogHTTPFixture.self]
+    config.httpCookieStorage = nil; config.httpShouldSetCookies = false
+    let session = URLSession(configuration: config)
+    defer { session.invalidateAndCancel() }
+    let origin = URL(string: "http://diagnostic.fixture")!
+    let authority: (origin: URL, request: NativeLiveRequestBuilder) = (origin, { url, _ in
+        var request = URLRequest(url: url)
+        request.setValue("Bearer synthetic-operator", forHTTPHeaderField: "Authorization")
+        return request
+    })
+    let cases: [(Error, String, String, Int?)] = [
+        (NativeLiveAudioError.permissionDenied, "audio", "permissionDenied", nil),
+        (URLError(.cannotConnectToHost), "service", "service_unreachable", nil),
+        (LiveClientError.http(status: 503, code: "private description"), "service", "http", 503),
+        (LiveClientError.socketClosed(code: 1006, reason: "private path"), "service", "socketClosed", 1006),
+    ]
+    for (index, status) in ([204, 429, nil] as [Int?]).enumerated() {
+        for (error, failureClass, code, detail) in cases {
+            let directory = root.appendingPathComponent("\(index)-\(code)")
+            let conversation = NativeLiveConversation(authority: authority, dictationIsCapturing: { false }, logsDirectory: directory)
+            DiagnosticLogHTTPFixture.reset(status: status)
+            let presented = conversation.failure
+            let task = conversation.logFailure(error, beforeCreate: true, diagnosticSession: session)
+            var nativeLine = try JSONSerialization.data(withJSONObject: ["event": "live_precreate_failed", "failureClass": failureClass, "code": code], options: [.sortedKeys])
+            nativeLine.append(10)
+            let file = directory.appendingPathComponent("native-live.log")
+            try audioRequire(try Data(contentsOf: file) == nativeLine, "native line exists immediately and retains exact JSONL format")
+            await task?.value
+            try audioRequire(try Data(contentsOf: file) == nativeLine, "429/transport does not alter or duplicate native log")
+            try audioRequire(conversation.failure == presented, "diagnostic cannot change the owner's presentation")
+            let requests = DiagnosticLogHTTPFixture.captured()
+            try audioRequire(requests.count == 1, "one diagnostic from actual logFailure, no retry")
+            var expected: [String: Any] = ["event": "live_precreate_failed", "failureClass": failureClass, "code": code]
+            if let detail { expected["detail"] = detail }
+            try audioRequire(requests[0].httpBody == JSONSerialization.data(withJSONObject: expected, options: [.sortedKeys]), "native log boundary posts only the server vocabulary")
+            DiagnosticLogHTTPFixture.reset(status: status)
+            let suppressed = conversation.logFailure(error, beforeCreate: false, diagnosticSession: session)
+            await suppressed?.value
+            try audioRequire(DiagnosticLogHTTPFixture.captured().isEmpty, "post-CREATE failure posts nothing")
+            try audioRequire(try Data(contentsOf: file) == nativeLine, "post-CREATE failure appends nothing")
+            let fresh = root.appendingPathComponent("after-\(index)-\(code)")
+            let postCreate = NativeLiveConversation(authority: authority, dictationIsCapturing: { false }, logsDirectory: fresh)
+            await postCreate.logFailure(error, beforeCreate: false, diagnosticSession: session)?.value
+            try audioRequire(!FileManager.default.fileExists(atPath: fresh.path), "post-CREATE failure creates no native log directory")
+        }
+    }
+    print("PASS conversation pre-CREATE native JSONL and diagnostic HTTP, 429/transport unchanged, post-CREATE both suppressed")
+    print("DURATION \(started.duration(to: .now)) conversation-diagnostics")
+}
+
 @main struct NativeLiveAudioRunner {
     static func tone(_ format: AVAudioFormat, start: Int, count: Int) throws -> AVAudioPCMBuffer {
         guard format.channelCount == 2, format.commonFormat == .pcmFormatFloat32, !format.isInterleaved else {
@@ -30,6 +116,7 @@ func audioRequire(_ value: Bool, _ message: String) throws {
     }
     @MainActor static func main() async {
         do {
+            try await checkConversationDiagnostics()
             guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 44100, channels: 2, interleaved: false) else {
                 throw NativeLiveAudioError.unsupportedFormat
             }

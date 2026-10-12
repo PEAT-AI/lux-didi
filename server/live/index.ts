@@ -156,8 +156,9 @@ export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: 
 }
 
 /** Scrub only the deleted record, preserving the rest of the frozen instruction. */
-export function redactDeletedMemorySnapshots(tx: Transaction, entryId: string, now: number): void {
-  if (!tx.get("SELECT name FROM sqlite_master WHERE type='table' AND name='live_sessions'", [])) return;
+function scrubMemorySnapshots(tx: Transaction, entryId: string): { id: string; system: string }[] {
+  const scrubbed: { id: string; system: string }[] = [];
+  if (!tx.get("SELECT name FROM sqlite_master WHERE type='table' AND name='live_sessions'", [])) return scrubbed;
   for (const row of tx.all('SELECT live_session_id,accepted_prompt_snapshot,prompt_identity,profile_identity FROM live_sessions', [])) {
     if (row['accepted_prompt_snapshot'] === null) continue;
     const snapshot = JSON.parse(String(row['accepted_prompt_snapshot'])) as AcceptedPromptSnapshot;
@@ -181,10 +182,21 @@ export function redactDeletedMemorySnapshots(tx: Transaction, entryId: string, n
     const fingerprint = identity({ inputClass: String(grant['chosen_input_class']), profile: String(row['profile_identity']), prompt: promptIdentity, pickupJobId: snapshot.pickup?.jobId ?? null });
     tx.run('UPDATE live_sessions SET accepted_prompt_snapshot=?,memory_provenance=?,prompt_identity=?,fingerprint=? WHERE live_session_id=?',
       [JSON.stringify(updated), JSON.stringify(memory), promptIdentity, fingerprint, id]);
-    const journal = JSON.stringify({ event: 'memory_deleted', entryId });
-    tx.run("INSERT INTO live_journal(live_session_id,provider_sequence,kind,text,payload_bytes,arrived_at) VALUES (?,NULL,'continuity',?,?,?)",
-      [id, journal, Buffer.byteLength(journal, 'utf8'), now]);
+    scrubbed.push({ id, system });
   }
+  return scrubbed;
+}
+
+// Host composition and HTTP share the canonical Store object. Keep active-handle
+// ownership here rather than exposing the manager through transport projections.
+const memoryOwners = new WeakMap<LiveStorePort, LiveSessionOwner>();
+
+/** Stage redaction in the caller's transaction, then publish active changes after commit. */
+export function redactDeletedMemorySnapshots(store: LiveStorePort, tx: Transaction, entryId: string): () => void {
+  const owner = memoryOwners.get(store);
+  if (owner) return owner.redactDeletedMemory(tx, entryId);
+  scrubMemorySnapshots(tx, entryId);
+  return () => {};
 }
 
 export class LiveSessionOwner {
@@ -222,6 +234,7 @@ export class LiveSessionOwner {
     });
     this.#jobs = new LiveToolJobs(this.#store, this.#now);
     this.#profileIdentity = liveProfileIdentity(this.#profile);
+    memoryOwners.set(this.#store, this);
     this.recover();
   }
 
@@ -437,6 +450,26 @@ export class LiveSessionOwner {
     this.#armExpiry();
     if (prepared === 'expired') throw new LiveError('expired');
     return this.#open(input.liveSessionId, prepared.inputClass, revision, prepared.acceptedPrompt, context);
+  }
+
+  /** The HTTP delete owns the transaction; publish handle changes only after it commits. */
+  redactDeletedMemory(tx: Transaction, entryId: string): () => void {
+    const publish: (() => void)[] = [];
+    for (const snapshot of scrubMemorySnapshots(tx, entryId)) {
+      const handle = this.#active.get(snapshot.id);
+      if (!handle || handle.terminal) continue;
+      // A staging handle lets the normal journal path maintain the same counters
+      // without changing an active request if another owner subsequently rolls back.
+      const staged = { ...handle, request: { ...handle.request, system: { ...handle.request.system, text: snapshot.system } } };
+      const sequence = this.#persist(staged, { type: 'continuity', sequence: 0, text: JSON.stringify({ event: 'memory_deleted', entryId }) }, 'continuity', tx);
+      if (sequence === 'overflow') throw new LiveError('persistence_failed');
+      publish.push(() => {
+        handle.request = staged.request;
+        handle.journalEvents = staged.journalEvents;
+        handle.journalBytes = staged.journalBytes;
+      });
+    }
+    return () => { for (const apply of publish) apply(); };
   }
 
   /** Explicit host entry point: synchronous in-memory invalidation and adapter abort. */
@@ -801,7 +834,7 @@ export class LiveSessionOwner {
     handle.thinking = handle.pendingCallIds.size > 0;
   }
 
-  #persist(handle: ActiveSession, event: { type: 'continuity'; sequence: number; text: string } | LiveVoiceEvent | { type: 'toolCall' | 'toolResult'; sequence: number; tool: LiveToolProjection }, kind: JournalKind): number | 'overflow' {
+  #persist(handle: ActiveSession, event: { type: 'continuity'; sequence: number; text: string } | LiveVoiceEvent | { type: 'toolCall' | 'toolResult'; sequence: number; tool: LiveToolProjection }, kind: JournalKind, transaction?: Transaction): number | 'overflow' {
     const text = 'text' in event ? event.text : null;
     const finished = 'finished' in event && event.finished !== undefined ? (event.finished ? 1 : 0) : null;
     const value = event.type === 'waitingForInput' ? (event.value ? 1 : 0) : null;
@@ -812,13 +845,14 @@ export class LiveSessionOwner {
     const now = this.#now();
     const events = handle.journalEvents + 1;
     const total = handle.journalBytes + bytes;
-    const journalSequence = this.#store.transaction(tx => {
+    const persist = (tx: Transaction) => {
       tx.run('INSERT INTO live_journal(live_session_id, provider_sequence, kind, text, finished, value, tool_json, terminal_outcome, rejected_kind, rejected_sequence, payload_bytes, arrived_at) VALUES (?,?,?,?,?,?,?,NULL,NULL,NULL,?,?)',
         [handle.liveSessionId, event.sequence, kind, text, finished, value, toolJSON, bytes, now]);
       tx.run('UPDATE live_sessions SET journal_events=?, journal_bytes=?, ready=CASE WHEN ?=1 THEN 1 ELSE ready END, updated_at=? WHERE live_session_id=?',
         [events, total, kind === 'ready' ? 1 : 0, now, handle.liveSessionId]);
       return Number(tx.get('SELECT journal_id FROM live_journal WHERE live_session_id=? ORDER BY journal_id DESC LIMIT 1', [handle.liveSessionId])!['journal_id']);
-    });
+    };
+    const journalSequence = transaction ? persist(transaction) : this.#store.transaction(persist);
     handle.journalEvents = events;
     handle.journalBytes = total;
     return journalSequence;

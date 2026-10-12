@@ -96,6 +96,13 @@ test('HTTP deletion atomically scrubs retained chat, Live and request copies, in
     assert.equal(again.status, 200);
     const journal = f.store.transaction(tx => tx.all("SELECT text FROM live_journal WHERE live_session_id=? AND kind='continuity'", [accepted.liveSessionId]));
     assert.equal(journal.filter(row => String(row.text).includes('memory_deleted')).length, 1);
+    const counts = f.store.transaction(tx => {
+      const saved = tx.get('SELECT journal_events,journal_bytes FROM live_sessions WHERE live_session_id=?', [accepted.liveSessionId])!;
+      const actual = tx.get('SELECT count(*) AS events,sum(payload_bytes) AS bytes FROM live_journal WHERE live_session_id=?', [accepted.liveSessionId])!;
+      return { saved, actual };
+    });
+    assert.equal(Number(counts.saved.journal_events), Number(counts.actual.events));
+    assert.equal(Number(counts.saved.journal_bytes), Number(counts.actual.bytes));
     live.revoke(accepted.liveSessionId);
     attachment = live.attach({ liveSessionId: detached.liveSessionId }, ctx);
     await ws.frame(3); ws.send({ setupComplete: {} }); await attachment.ready;

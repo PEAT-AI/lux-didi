@@ -231,6 +231,7 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
       if (typeof key !== 'string' || !/^[A-Za-z0-9_.:-]{1,128}$/.test(key)) throw new ServiceError('BAD_REQUEST', 'Idempotency-Key required');
       if (req.headers['x-didi-authority-epoch'] !== store.authorityEpoch) throw new ServiceError('STALE_AUTHORITY', 'Authority epoch does not match', 409);
       const fingerprint = hash(canonical({ method, path: url.pathname, input: route.input }));
+      let publishLiveRedaction = () => {};
       const response = store.transaction(tx => {
         const prior = tx.get('SELECT * FROM runtime_requests WHERE assistant_id=? AND client_id=? AND request_key=?', [store.assistantId, actor.clientId, key]);
         if (prior) { if (prior.fingerprint !== fingerprint) throw new ServiceError('CONFLICT', 'Idempotency key reused with different request', 409); return JSON.parse(String(prior.response)) as unknown; }
@@ -243,13 +244,14 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
         const data = domain.execute(tx, domainRoute.operation, domainRoute.input, context);
         if (deletedId !== undefined) {
           redactDeletedMemoryContext(tx, deletedId);
-          redactDeletedMemorySnapshots(tx, deletedId, now());
+          publishLiveRedaction = redactDeletedMemorySnapshots(store, tx, deletedId);
           scrubDeletedMemoryResponses(tx, store.assistantId, deletedText);
         }
         if (data && typeof (data as unknown as { then?: unknown }).then === 'function') throw new Error('Domain operation must be synchronous');
         const result = success(data);
         tx.run('INSERT INTO runtime_requests VALUES (?,?,?,?,?)', [store.assistantId, actor.clientId, key, fingerprint, JSON.stringify(result)]); return result;
       });
+      publishLiveRedaction();
       send(res, 200, response);
     } catch (error) {
       const typed = error instanceof ServiceError ? error : error instanceof ChatError

@@ -160,6 +160,11 @@ scrubs its own table; an error rolls back all changes. Chat frozen records becom
 content-free entry references, and dispatch separately revalidates surviving
 records against the domain before composing a prompt. Live removes the matching
 memory record without changing surviving notes, and maintains its replay identity.
+For an active Live session, the manager stages its retained request update and
+writes one content-free scrub journal row through its normal counter-maintaining
+journal path. The in-process update is published only after the transaction
+commits, before any later connection replacement can run. Inactive sessions need
+only the persisted snapshot scrub.
 Runtime keeps the original request fingerprints but replaces cached owner responses
 containing the deleted text with a content-free NOT_FOUND response. It does not
 re-execute the original mutation on replay.

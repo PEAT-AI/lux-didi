@@ -85,3 +85,4 @@ failure codes in `logs/native-live.log` (0600), without error bodies or credenti
 Show conversation focuses the existing authenticated embedded view. Connections
 is read-only and uses the page cookie, never the Live bearer credential. It
 refreshes every ten seconds only while its window is visible and not minimized.
+The native client POSTs its typed pre-CREATE failure to `/api/v1/diagnostics/client`; Swift wiring lands with W-NAT2's follow-up.

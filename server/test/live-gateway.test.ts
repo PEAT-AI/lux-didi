@@ -231,6 +231,7 @@ test('Swift create, grant acceptance and pinned audio upgrade stay attached', as
 
 for (const [label, error, code] of [
   ['typed', new LiveError('invalidated', CANARY), 'invalidated'],
+  ['pickup', new LiveError('pickup_changed', CANARY), 'pickup_changed'],
   ['authorization', new ServiceError('FORBIDDEN', CANARY, 403), 'FORBIDDEN'],
   ['unknown', new Error(CANARY), 'internal'],
 ] as const) {

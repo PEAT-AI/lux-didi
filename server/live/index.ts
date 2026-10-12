@@ -3,7 +3,7 @@ import { declarationsFor, runToolCalls, authorizeToolBatch } from '../tools/decl
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
 import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection } from './types.js';
-import { publicOwnerProfile, PROMPT_VERSION, withToolsSection } from '../prompt/index.js';
+import { publicOwnerProfile, PROMPT_VERSION, composeLiveSessionInstruction } from '../prompt/index.js';
 import { validateAcceptedPrompt } from './config.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type { DataClass, LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort, LiveVoiceSession, LiveVoiceRequest } from '../adapters/live-voice/index.js';
@@ -17,6 +17,8 @@ import {
   type AcceptedPromptSnapshot, type LiveProfile, type LiveProfileProjection, type LivePublicMarker, type LiveSessionSnapshot, type LiveStorePort,
   type LiveTerminalOutcome,
 } from './types.js';
+
+const pickupInstruction = 'The user has just picked up. Deliver the pending job result first, briefly, then resume the conversation. If the outcome failed or is unknown, state that truthfully.';
 
 interface ActiveSession {
   registry: readonly ToolDefinition[];
@@ -115,6 +117,7 @@ class OutputChannel {
 export class LiveSessionOwner {
   readonly #jobs: LiveToolJobs;
   readonly #tools: LiveToolsComposition | undefined;
+  readonly #memorySource: LiveOwnerConfig['memorySource'];
   readonly #store: LiveStorePort;
   readonly #voice: LiveVoicePort;
   readonly #profile: LiveProfile;
@@ -122,7 +125,6 @@ export class LiveSessionOwner {
   readonly #schedule: NonNullable<LiveOwnerConfig['schedule']>;
   #expiryTimer: ReturnType<NonNullable<LiveOwnerConfig['schedule']>> | undefined;
   readonly #profileIdentity: string;
-  readonly #promptIdentity: string;
   readonly #active = new Map<string, ActiveSession>();
   #revision = 1;
   #invalidated = false;
@@ -131,6 +133,7 @@ export class LiveSessionOwner {
   constructor(config: LiveOwnerConfig) {
     if (!config || typeof config !== 'object' || !config.store || !config.voice) throw new LiveError('invalid_config');
     this.#tools = config.tools;
+    this.#memorySource = config.memorySource;
     this.#store = config.store;
     this.#voice = config.voice;
     this.#profile = validateLiveProfile(config.profile);
@@ -146,7 +149,6 @@ export class LiveSessionOwner {
     });
     this.#jobs = new LiveToolJobs(this.#store, this.#now);
     this.#profileIdentity = liveProfileIdentity(this.#profile);
-    this.#promptIdentity = identity({ text: this.#profile.prompt.text, dataClass: this.#profile.prompt.dataClass });
     this.recover();
   }
 
@@ -158,6 +160,7 @@ export class LiveSessionOwner {
     return {
       provider: this.#profile.provider, model: this.#profile.liveModelId, voice: this.#profile.voice,
       dataClasses: this.#profile.route.dataClasses, profileIdentity: this.#profileIdentity,
+      memory: this.#store.transaction(tx => memoryProjection(tx.get('SELECT memory_provenance FROM live_sessions WHERE owner_assistant_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1', [this.#store.assistantId])?.['memory_provenance'])),
     };
   }
 
@@ -180,27 +183,55 @@ export class LiveSessionOwner {
     this.#guardOpen();
     if (!input || typeof input !== 'object' || typeof input.idempotencyKey !== 'string' || !keyPattern.test(input.idempotencyKey)) throw new LiveError('invalid_request');
     this.#contextShape(context);
-    const fingerprint = identity({ inputClass: input.inputClass, profile: this.#profileIdentity, prompt: this.#promptIdentity, pickupJobId: input.pickupJobId ?? null });
+    const fingerprintFor = (prompt: string) => identity({ inputClass: input.inputClass, profile: this.#profileIdentity, prompt, pickupJobId: input.pickupJobId ?? null });
     const now = this.#now();
     const assistantId = this.#store.assistantId;
     const snapshot = this.#store.transaction(tx => {
       // Same-key replay is decided on the normalized request meaning before any policy.
       const prior = tx.get('SELECT * FROM live_sessions WHERE owner_assistant_id=? AND idempotency_key=?', [assistantId, input.idempotencyKey]);
       if (prior) {
-        if (String(prior['fingerprint']) !== fingerprint) throw new LiveError('idempotency_conflict');
+        if (String(prior['fingerprint']) !== fingerprintFor(String(prior['prompt_identity']))) throw new LiveError('idempotency_conflict');
         return this.#snapshot(tx, this.#expireInTx(tx, prior, now));
       }
       if (context.authorityEpoch !== this.#store.authorityEpoch) throw new LiveError('stale_authority');
       if (!classes.includes(input.inputClass) || !this.#profile.route.dataClasses.includes(input.inputClass)) throw new LiveError('invalid_request');
-      const acceptedPrompt = validateAcceptedPrompt(this.#profile.acceptedPrompt ?? {
+      const configuredPrompt = validateAcceptedPrompt(this.#profile.acceptedPrompt ?? {
         schemaVersion: 1, ownerProfile: publicOwnerProfile(assistantId), compilerVersion: PROMPT_VERSION,
         system: this.#profile.prompt.text, dataClasses: [this.#profile.prompt.dataClass],
       }, assistantId);
-      if (acceptedPrompt.dataClasses.some(c => !this.#profile.route.dataClasses.includes(c))) throw new LiveError('invalid_request');
+      if (configuredPrompt.dataClasses.some(c => !this.#profile.route.dataClasses.includes(c))) throw new LiveError('invalid_request');
       const liveSessionId = randomUUID();
+      let toolNames: string[] = [];
+      let toolAcceptance: { acceptance: RunAcceptance; sha256: string } | undefined;
+      if (this.#tools) {
+        const acceptance: RunAcceptance = { ownerId: assistantId, actorId: context.clientId, runId: liveSessionId,
+          authorityEpoch: context.authorityEpoch, revision: this.#revision,
+          route: { identity: this.#profileIdentity, provider: 'gemini', modelId: this.#profile.liveModelId, allowedClasses: [...this.#profile.route.dataClasses] },
+          allowedClasses: [...this.#profile.route.dataClasses], connectionIds: [...this.#tools.connectionIds()] };
+        toolAcceptance = { acceptance, sha256: this.#tools.owner.snapshotRun(tx, acceptance).sha256 };
+        toolNames = this.#tools.owner.definitions(liveSessionId).map(tool => tool.name);
+      }
+      const pickupJob = input.pickupJobId ? this.#jobs.pending().find(job => job.id === input.pickupJobId && job.state !== 'in_progress') : undefined;
+      if (input.pickupJobId && !pickupJob) throw new LiveError('invalid_request');
+      const pickup = pickupJob ? { jobId: pickupJob.id, identity: identity({ state: pickupJob.state, result: pickupJob.result ?? null }) } : undefined;
+      let records: ReturnType<NonNullable<LiveOwnerConfig['memorySource']>>;
+      try { records = this.#memorySource?.(tx) ?? []; }
+      catch { throw new LiveError('memory_unavailable'); }
+      let composed: ReturnType<typeof composeLiveSessionInstruction>;
+      try { composed = composeLiveSessionInstruction({ text: configuredPrompt.system, tools: toolNames,
+        records: records.filter(record => record.dataClass === 'ordinary'), trustedChars: 20000,
+        ...(pickup ? { pickupNote: pickupInstruction } : {}) }); }
+      catch (error) { if (error instanceof Error && 'code' in error && error.code === 'instruction_too_large') throw new LiveError('instruction_too_large'); throw error; }
+      const memory = { status: composed.omitted.length ? composed.selectedIds.length ? 'partial' : 'omitted' : composed.selectedIds.length ? 'selected' : 'empty',
+        selectedIds: composed.selectedIds, omitted: composed.omitted };
+      const acceptedPrompt = validateAcceptedPrompt({ ...configuredPrompt, system: composed.text, memory, ...(pickup ? { pickup } : {}) }, assistantId);
+      const promptIdentity = identity({ text: acceptedPrompt.system, dataClass: this.#profile.prompt.dataClass });
+      const fingerprint = fingerprintFor(promptIdentity);
       tx.run('INSERT INTO live_sessions(live_session_id, owner_assistant_id, authority_epoch, idempotency_key, fingerprint, client_id, audit_id, profile_identity, prompt_identity, lifecycle, dispatch_intent, ready, journal_events, journal_bytes, journal_complete, consumer_state, terminal_outcome, terminal_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,0,0,0,0,0,?,NULL,NULL,?,?)',
-        [liveSessionId, assistantId, context.authorityEpoch, input.idempotencyKey, fingerprint, context.clientId, context.auditId, this.#profileIdentity, this.#promptIdentity, 'accepted', 'detached', now, now]);
-      tx.run('UPDATE live_sessions SET accepted_prompt_snapshot=? WHERE live_session_id=?', [JSON.stringify(acceptedPrompt), liveSessionId]);
+        [liveSessionId, assistantId, context.authorityEpoch, input.idempotencyKey, fingerprint, context.clientId, context.auditId, this.#profileIdentity, promptIdentity, 'accepted', 'detached', now, now]);
+      tx.run('UPDATE live_sessions SET accepted_prompt_snapshot=?,memory_provenance=? WHERE live_session_id=?', [JSON.stringify(acceptedPrompt), JSON.stringify(memory), liveSessionId]);
+      if (toolAcceptance) tx.run('INSERT INTO live_tool_acceptances VALUES (?,?,?)', [liveSessionId, JSON.stringify(toolAcceptance.acceptance), toolAcceptance.sha256]);
+      if (pickupJob) { pickupJob.deliverySessionId = liveSessionId; this.#jobs.save(pickupJob); }
       tx.run('INSERT INTO live_grants(grant_id, live_session_id, provider, model, voice, key_reference, permitted_classes, chosen_input_class, revision, granted_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
         [randomUUID(), liveSessionId, 'gemini', this.#profile.liveModelId, this.#profile.voice, this.#profile.keyReference,
           JSON.stringify(this.#profile.route.dataClasses), input.inputClass, this.#revision, now]);
@@ -238,20 +269,19 @@ export class LiveSessionOwner {
   pendingJobs(): import('./types.js').PendingLiveJob[] { return this.#jobProjection(true); }
 
   createWithPending(input: CreateLiveSession, context: LiveContext): LiveSessionSnapshot {
-    const selected = input.pickupJobId ? this.#jobs.pending().find(job => job.id === input.pickupJobId && job.state !== 'in_progress') : undefined;
-    if (input.pickupJobId && !selected) throw new LiveError('invalid_request');
-    const session = this.create(input, context);
-    if (this.#jobs.forSession(session.liveSessionId)) return session;
-    const job = selected ?? this.#jobs.pending().find(job => job.state !== 'in_progress');
-    if (job) { job.deliverySessionId = session.liveSessionId; this.#jobs.save(job); }
-    return session;
+    const priorPickup = this.#store.transaction(tx => {
+      const prior = tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE owner_assistant_id=? AND idempotency_key=?', [this.#store.assistantId, input.idempotencyKey]);
+      return prior ? validateAcceptedPrompt(JSON.parse(String(prior['accepted_prompt_snapshot'])), this.#store.assistantId).pickup?.jobId ?? null : undefined;
+    });
+    const pickupJobId = input.pickupJobId ?? (priorPickup !== undefined ? priorPickup ?? undefined : this.#jobs.pending().find(job => job.state !== 'in_progress')?.id);
+    return this.create({ ...input, ...(pickupJobId ? { pickupJobId } : {}) }, context);
   }
 
   current(cursor = 0): LivePageProjection {
     if (!Number.isSafeInteger(cursor) || cursor < 0) throw new LiveError('invalid_request');
     const jobs = this.#jobProjection(false);
     return this.#store.transaction(tx => {
-      const row = tx.get('SELECT live_session_id,lifecycle,created_at,terminal_outcome FROM live_sessions WHERE owner_assistant_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1', [this.#store.assistantId]);
+      const row = tx.get('SELECT live_session_id,lifecycle,created_at,terminal_outcome,memory_provenance FROM live_sessions WHERE owner_assistant_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1', [this.#store.assistantId]);
       if (!row) return { state: 'idle', since: null, ...(jobs.length ? { jobs } : {}), entries: [], cursor };
       const handle = this.#active.get(String(row.live_session_id));
       const terminal = parseTerminal(row.terminal_outcome);
@@ -266,7 +296,7 @@ export class LiveSessionOwner {
           entries.push({ seq, kind, tool: kind === 'toolCall' ? { name: tool.name, status: 'called' } : { name: tool.name, status: tool.status, markdown: tool.markdown, sources: tool.sources.map(source => ({ title: source.title, ...(source.url ? { url: source.url } : {}) })) } });
         } else if (kind === 'interrupted' || kind === 'turnComplete' || kind === 'terminal') entries.push({ seq, kind });
       }
-      return { state, since: Number(row.created_at), ...(jobs.length ? { jobs } : {}), entries, cursor: rows.length ? Number(rows[rows.length - 1]!.journal_id) : cursor };
+      return { state, since: Number(row.created_at), memory: memoryProjection(row['memory_provenance']), ...(jobs.length ? { jobs } : {}), entries, cursor: rows.length ? Number(rows[rows.length - 1]!.journal_id) : cursor };
     });
   }
 
@@ -319,6 +349,9 @@ export class LiveSessionOwner {
       const grantClasses = tx.get('SELECT permitted_classes FROM live_grants WHERE live_session_id=?', [input.liveSessionId]);
       const permitted: DataClass[] = JSON.parse(String(grantClasses?.['permitted_classes']));
       if (acceptedPrompt.dataClasses.some(c => !permitted.includes(c) || !this.#profile.route.dataClasses.includes(c))) throw new LiveError('invalidated');
+      const job = this.#jobs.forSession(input.liveSessionId);
+      if (acceptedPrompt.pickup ? !job || job.id !== acceptedPrompt.pickup.jobId || job.delivered
+        || identity({ state: job.state, result: job.result ?? null }) !== acceptedPrompt.pickup.identity : Boolean(job)) throw new LiveError('pickup_changed');
       tx.run("UPDATE live_sessions SET lifecycle='opening', dispatch_intent=1, consumer_state='attached', updated_at=? WHERE live_session_id=?", [now, input.liveSessionId]);
       const grant = tx.get('SELECT chosen_input_class FROM live_grants WHERE live_session_id=?', [input.liveSessionId])!;
       return { inputClass: String(grant['chosen_input_class']) as DataClass, acceptedPrompt };
@@ -392,21 +425,15 @@ export class LiveSessionOwner {
     const dataClasses = classes.filter(c => c === inputClass || acceptedPrompt.dataClasses.includes(c));
     let registry: readonly ToolDefinition[] = [], host: HostContext | undefined;
     if (this.#tools) {
-      const acceptance: RunAcceptance = { ownerId: this.#store.assistantId, actorId: context.clientId, runId: liveSessionId,
-        authorityEpoch: context.authorityEpoch, revision, route: { identity: liveProfileIdentity(this.#profile), provider: 'gemini', modelId: this.#profile.liveModelId, allowedClasses: [...this.#profile.route.dataClasses] },
-        allowedClasses: [...this.#profile.route.dataClasses], connectionIds: [...this.#tools.connectionIds()] };
-      this.#store.transaction(tx => {
-        const { sha256 } = this.#tools!.owner.snapshotRun(tx, acceptance);
-        tx.run('INSERT INTO live_tool_acceptances VALUES (?,?,?)', [liveSessionId, JSON.stringify(acceptance), sha256]);
-      });
+      const saved = this.#store.transaction(tx => tx.get('SELECT acceptance_json FROM live_tool_acceptances WHERE live_session_id=?', [liveSessionId]));
+      if (!saved) throw new LiveError('invalidated');
       registry = Object.freeze(this.#tools.owner.definitions(liveSessionId).map(tool => Object.freeze({ ...tool, parameters: structuredClone(tool.parameters) })));
       host = { runId: liveSessionId, actorId: context.clientId, authorityEpoch: context.authorityEpoch, revision,
         grants: registry.map(tool => ({ tool: tool.name, effect: tool.effect, accountId: tool.accountId, resourceId: tool.resourceId })) };
     }
     const history = this.#jobHistory(liveSessionId, inputClass);
     const declarations = registry.length ? declarationsFor(registry).declarations : [];
-    const system = withToolsSection(acceptedPrompt.system, declarations.map(declaration => declaration.name))
-      + (history ? '\n\nThe user has just picked up. Deliver the pending job result first, briefly, then resume the conversation. If the outcome failed or is unknown, state that truthfully.' : '');
+    const system = acceptedPrompt.system;
     const request: LiveVoiceRequest = { opening: history ? 'model_first' : 'user_first',
       system: { text: system, dataClass: dataClasses[dataClasses.length - 1]! }, history: history ?? [], dataClasses,
       ...(this.#profile.language !== undefined ? { languageCode: this.#profile.language } : {}),
@@ -714,6 +741,7 @@ export class LiveSessionOwner {
     if (!grant) throw new LiveError('not_found');
     const limits = this.#profile.limits;
     return {
+      memory: memoryProjection(row['memory_provenance']),
       liveSessionId: String(row['live_session_id']), assistantId: String(row['owner_assistant_id']),
       authorityEpoch: String(row['authority_epoch']), idempotencyKey: String(row['idempotency_key']),
       clientId: String(row['client_id']), auditId: String(row['audit_id']),
@@ -746,4 +774,10 @@ export class LiveSessionOwner {
 /** Factory composition: the host supplies the validated profile, the real LiveVoicePort and its credentials. */
 export function createLiveSessionOwner(config: LiveOwnerConfig): LiveSessionOwner {
   return new LiveSessionOwner(config);
+}
+
+function memoryProjection(value: unknown): import('./types.js').LiveMemoryProjection {
+  if (typeof value !== 'string') return { status: 'empty', selected: 0, omitted: 0 };
+  const provenance = JSON.parse(value) as import('./types.js').LiveMemoryProvenance;
+  return { status: provenance.status, selected: provenance.selectedIds.length, omitted: provenance.omitted.length };
 }

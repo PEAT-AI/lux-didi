@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import * as memory from '../domain/memory.js';
 import * as labels from '../domain/labels.js';
+import { resolveLiveMemory } from '../host/live.js';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
@@ -203,6 +204,9 @@ test('Live memory recalls ordinary entries only, including parent labels, and re
   assert.match(snapshot.system, /Fixture ordinary note/);
   for (const forbidden of ['Fixture private canary', 'Fixture sensitive canary', 'Fixture parent private canary']) assert.ok(!snapshot.system.includes(forbidden));
   assert.deepEqual(snapshot.memory.selectedIds, ['ordinary']);
+  assert.deepEqual(h.store.transaction(resolveLiveMemory).map(record => record.id), ['ordinary']);
+  assert.deepEqual(h.owner.profileProjection().memory, { status: 'selected', selected: 1, omitted: 0 });
+  assert.deepEqual(h.owner.current().memory, { status: 'selected', selected: 1, omitted: 0 });
 });
 
 test('Live memory budget keeps whole records, reports overflow, and rejects oversized static instructions and resolution failure', async t => {
@@ -218,7 +222,7 @@ test('Live memory budget keeps whole records, reports overflow, and rejects over
   assert.deepEqual(snapshot.memory.selectedIds, ['a']);
   assert.deepEqual(snapshot.memory.omitted, [{ id: 'b', reason: 'budget' }]);
   assert.ok(!snapshot.system.includes('Fixture overflow note'));
-  assert.match(snapshot.system, /x+\n<\/memory-record>/);
+  assert.ok(snapshot.system.includes(JSON.stringify({ id: 'a', text: 'Fixture whole note' + 'x'.repeat(remaining) })), 'the selected record survives byte for byte');
   const oversized = await harness(t, { system: 'x'.repeat(20001) });
   assert.throws(() => oversized.owner.create({ idempotencyKey: 'oversized', inputClass: 'ordinary' }, oversized.ctx), (error: unknown) => error instanceof LiveError && String(error.code) === 'instruction_too_large');
   const failed = await harness(t, { memoryFailure: true });
@@ -1106,6 +1110,12 @@ test('Live answers a slow tool batch truthfully, continues the turn, and retains
   await tick();
   assert.equal(h.owner.lookupAuthority(session.liveSessionId), null);
   const callback = h.owner.createWithPending({ inputClass: 'ordinary', idempotencyKey: 'callback' }, h.ctx);
+  const frozenJob = new LiveToolJobs(h.store, () => NOW).forSession(callback.liveSessionId)!;
+  assert.equal(accepted(h, callback.liveSessionId).pickup?.jobId, frozenJob.id);
+  frozenJob.state = 'failed'; new LiveToolJobs(h.store, () => NOW).save(frozenJob);
+  assert.throws(() => h.owner.attach({ liveSessionId: callback.liveSessionId }, h.ctx), (error: unknown) => error instanceof LiveError && String(error.code) === 'pickup_changed');
+  assert.equal(h.requests.length, 1, 'changed pickup state is rejected before dispatch');
+  frozenJob.state = 'completed'; new LiveToolJobs(h.store, () => NOW).save(frozenJob);
   const pickedUp = h.owner.attach({ liveSessionId: callback.liveSessionId }, h.ctx);
   await h.f.frame(3);
   h.f.send({ setupComplete: {} });

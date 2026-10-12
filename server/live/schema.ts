@@ -82,4 +82,6 @@ export const liveMigrations: readonly SchemaMigration[] = [{
     `CREATE INDEX live_journal_session ON live_journal(live_session_id, journal_id)`,
     `CREATE TABLE live_tool_acceptances (live_session_id TEXT PRIMARY KEY REFERENCES live_sessions(live_session_id), acceptance_json TEXT NOT NULL, accepted_run_hash TEXT NOT NULL)`,
   ],
-}];
+}, { owner: 'live', version: 4, statements: [
+  `ALTER TABLE live_sessions ADD COLUMN memory_provenance TEXT`
+]}];

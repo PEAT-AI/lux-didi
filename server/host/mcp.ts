@@ -1,13 +1,14 @@
 import type { Store } from '../runtime/store.js';
 import { McpRegistry } from '../adapters/mcp/registry.js';
 import { assertToolsOwnerBinding, createToolsOwner } from '../tools/index.js';
-import type { ConnectionRestoreResult, LiveAuthority, ToolsOwner } from '../tools/types.js';
+import type { ConnectionPolicy, ConnectionRestoreResult, LiveAuthority, ToolsOwner } from '../tools/types.js';
 import { loadMcpConfiguration, loadMcpEndpoints, type McpEndpointEntry } from '../config/mcp.js';
 import { fields, parseJson, readPrivate } from '../config/files.js';
 import { join } from 'node:path';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import type { McpPort } from '../adapters/mcp/port.js';
+import { canonicalJSON } from '../tools/canonical.js';
 import { CONNECTOR_ENVELOPES } from '../connectors/index.js';
 
 export interface McpConnectionBundle {
@@ -91,8 +92,7 @@ export async function composeMcpRuntime(options: {
     return { registry, port, owner, connectionIds: () => [], status: () => ({ endpoints: [] }), refresh: async () => {}, close: () => port.close() };
   }
   const { grantMode, endpoints } = selection.catalog;
-  const generations = new Map<string, number>();
-  const digests = new Map<string, string>();
+  const usable = new Set<string>();
   const active = endpoints.filter(entry => entry.enabled && entry.allowEgress);
   for (const entry of endpoints) {
     if (entry.enabled) {
@@ -108,6 +108,7 @@ export async function composeMcpRuntime(options: {
   }
   const connect = async (entry: McpEndpointEntry): Promise<void> => {
     const previous = reports.get(entry.id);
+    usable.delete(entry.id);
     // A missing or malformed credential is a visible, typed status; discovery never runs with a blank bearer.
     if (entry.credentialRef) {
       try { readMcpCredential(configDir, entry.credentialRef); }
@@ -116,26 +117,36 @@ export async function composeMcpRuntime(options: {
     try {
       const discovery = await port.discover(entry.id);
       if (discovery.state !== 'discovered') { reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: discovery.reason }); return; }
-      let granted = 0;
-      if (grantMode === 'owner-trusted-reads') {
-        const envelope = connectorEnvelopes[entry.connector] ?? [];
-        const names = discovery.tools.map(tool => tool.name).filter(name => envelope.includes(name));
-        if (names.length) {
-          const generation = (generations.get(entry.id) ?? 0) + 1;
-          registry.approve({ endpointId: entry.id, schemaDigest: discovery.schemaDigest, toolNames: names, effect: 'read', account: entry.account, resource: entry.resource, generation });
-          generations.set(entry.id, generation);
-          if (digests.has(entry.id) && digests.get(entry.id) !== discovery.schemaDigest) console.error(`[mcp] envelope re-approved after digest change: ${entry.id}`);
-          digests.set(entry.id, discovery.schemaDigest);
-        }
-        granted = names.length;
-      }
+      const envelope = connectorEnvelopes[entry.connector] ?? [];
+      const names = grantMode === 'owner-trusted-reads'
+        ? discovery.tools.map(tool => tool.name).filter(name => envelope.includes(name)).sort()
+        : [];
+      // Reconcile through the owner's CAS intent API, never fabricate a registry-only grant.
+      // The owner validates the existing row (including its hash) before accepting the intent.
+      const row = store.transaction(tx => tx.get('SELECT policy_json,policy_sha256,generation FROM tool_connections WHERE owner_id=? AND connection_id=?', [ownerId, entry.id]));
+      const policy: ConnectionPolicy = {
+        schemaVersion: 1, ownerId, connectionId: entry.id, generation: row ? Number(row.generation) : 1,
+        enabled: true, connector: entry.connector,
+        endpoint: entry.transport === 'stdio'
+          ? { id: entry.id, transport: 'stdio', command: entry.command, args: [...entry.args], env: { ...entry.env }, account: entry.account, resource: entry.resource, credentialRef: null }
+          : { id: entry.id, url: entry.url, account: entry.account, resource: entry.resource, credentialRef: entry.credentialRef },
+        toolNames: names, schemaDigest: discovery.schemaDigest,
+        sourcePolicy: { id: entry.id, revision: 1, unknownClass: null, allowedClasses: ['ordinary'] },
+        route: { identity: entry.id, allowedClasses: ['ordinary'] },
+        bounds: { maxQueryChars: 16384, maxSearchLimit: 100, maxGetIds: 100, maxEntityBytes: 1048576, maxResultBytes: 1048576 },
+      };
+      if (row && canonicalJSON(policy) !== String(row.policy_json)) policy.generation += 1;
+      owner.applyConnectionIntent({ expectedPolicySha256: row ? String(row.policy_sha256) : null, policy });
+      owner.projectConnection(entry.id);
+      usable.add(entry.id);
+      const granted = names.length;
       reports.set(entry.id, { id: entry.id, state: 'connected', tools: granted, lastHandshakeAt: new Date(now()).toISOString() });
     } catch { reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'discovery-unavailable' }); }
   };
   await Promise.all(active.map(connect));
   return {
     registry, port, owner,
-    connectionIds: () => active.map(entry => entry.id),
+    connectionIds: () => active.filter(entry => usable.has(entry.id) && reports.get(entry.id)?.state === 'connected').map(entry => entry.id),
     status: () => ({ endpoints: [...reports.values()].map(report => ({ ...report })) }),
     refresh: async () => { await Promise.all(active.map(connect)); },
     close: () => port.close(),

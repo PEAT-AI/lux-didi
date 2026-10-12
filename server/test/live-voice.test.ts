@@ -242,7 +242,7 @@ test('actual ws error and disconnect have no replay', async t => {
   const f = await fixture(t); let client!: WebSocket;
   const session = new GeminiLiveVoiceAdapter(options({ socketFactory: (url, config) => { client = f.socketFactory(url, config); return client; } })).open(request(), control());
   const captured = collect(session); await f.frame(1); f.send({ setupComplete: {} }); await session.ready;
-  client.emit('error', Error(CANARY)); assert.equal((await session.done).code, 'transport_error'); await captured.done;
+  client.emit('error', Object.assign(Error(CANARY), { code: 'ECONNRESET' })); assert.equal((await session.done).code, 'transport_error'); await captured.done;
   assert.equal(f.attempts, 1); noCanary(captured.events);
 });
 

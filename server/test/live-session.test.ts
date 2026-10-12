@@ -1492,3 +1492,30 @@ test('active page does not carry past session metadata', async t => {
   assert.equal(h.owner.current().state, 'listening');
   assert.equal((h.owner.current() as { pastSession?: unknown }).pastSession, undefined);
 });
+
+
+for (const status of [401, 403, 429]) test(`resumed HTTP upgrade refusal ${status} ends without another recovery attempt`, async t => {
+  const h = await harness(t);
+  const { session, attachment } = await attached(h, `resume-refused-${status}`);
+  h.f.refuseUpgrades(status);
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-refused-resumption-secret' }, goAway: { timeLeft: '10s' } });
+  assert.deepEqual((await attachment.done).terminal, { state: 'failed', code: 'resume_failed' });
+  assert.equal(h.f.attempts, 2, 'one original connection and one rejected resume, never a second recovery');
+  assert.equal(h.f.connections, 1);
+  assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(row => row.kind === 'terminal').length, 1);
+});
+
+test('established WebSocket protocol error ends without resumption despite a saved handle', async t => {
+  const h = await harness(t);
+  const { session, attachment } = await attached(h, 'resume-protocol-final');
+  const output = attachment.output[Symbol.asyncIterator]();
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-protocol-resumption-secret' } });
+  h.f.send({ serverContent: { inputTranscription: { text: 'protocol sentinel' } } });
+  await transcription(output, 'protocol sentinel');
+  assert.equal(h.store.transaction(tx => tx.get('SELECT resumption_handle FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!.resumption_handle !== null, true);
+  // If the defect reconnects, refuse setup immediately rather than waiting a real timeout.
+  h.f.refuseUpgrades(403); h.f.invalidOpcode();
+  assert.deepEqual((await attachment.done).terminal, { state: 'failed', code: 'protocol_error' });
+  assert.equal(h.f.attempts, 1);
+  assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(row => row.kind === 'terminal').length, 1);
+});

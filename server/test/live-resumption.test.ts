@@ -67,7 +67,7 @@ test('a resumed connection uses the remaining idle budget once, then the full ac
 
 test('network socket creation errors are recoverable but missing credentials are final', async () => {
   for (const credential of [undefined, 'synthetic-key']) {
-    const session = new GeminiLiveVoiceAdapter(options({ credentials: { resolve: async () => credential }, socketFactory: () => { throw Error('synthetic-network-error'); } })).open(request(), control());
+    const session = new GeminiLiveVoiceAdapter(options({ credentials: { resolve: async () => credential }, socketFactory: () => { throw Object.assign(Error('synthetic-network-error'), { code: 'ECONNRESET' }); } })).open(request(), control());
     const captured = collect(session);
     const outcome = await session.done; await captured.done;
     assert.equal(Boolean(outcome.recoverable), credential !== undefined);
@@ -82,4 +82,48 @@ test('resumed setup does not replay original history or the model-first opening 
   session.close(); await session.done; await captured.done;
   assert.equal(f.frames.length, 1, 'resume sends setup only, never a reconstructed history or opening turn');
   assert.equal((f.frames[0] as { setup: { sessionResumption: { handle: string } } }).setup.sessionResumption.handle === HANDLE, true);
+});
+
+
+for (const status of [301, 400, 401, 403, 429, 500]) test(`HTTP upgrade refusal ${status} is a final setup rejection`, async t => {
+  const f = await fixture(t); f.refuseUpgrades(status);
+  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory })).open({ ...request(), resumptionHandle: HANDLE }, control());
+  const readiness = session.ready.then(() => 'ready', error => error.code);
+  const captured = collect(session);
+  const outcome = await session.done; await captured.done;
+  assert.equal(outcome.code, 'provider_setup_rejected');
+  assert.equal(Boolean(outcome.recoverable), false);
+  assert.equal(await readiness, 'provider_setup_rejected');
+  assert.equal(f.attempts, 1); assert.equal(f.connections, 0); assert.equal(f.frames.length, 0);
+});
+
+test('a real WebSocket protocol violation after setupComplete is final', async t => {
+  const f = await fixture(t);
+  const errors: unknown[] = [];
+  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: (url, config) => {
+    const client = f.socketFactory(url, config);
+    client.on('error', error => errors.push((error as Error & { code?: unknown }).code));
+    return client;
+  } })).open(request(), control());
+  const captured = collect(session);
+  await f.frame(1); f.send({ setupComplete: {} }); await session.ready;
+  f.invalidOpcode();
+  const outcome = await session.done; await captured.done;
+  assert.ok(errors.includes('WS_ERR_INVALID_OPCODE'), 'the real receiver, not JSON parsing, detected the violation');
+  assert.equal(outcome.code, 'protocol_error'); assert.equal(Boolean(outcome.recoverable), false);
+  assert.equal(f.attempts, 1);
+});
+
+for (const code of ['ECONNRESET', 'ETIMEDOUT', 'EPIPE', undefined]) test(`socket error ${code ?? 'unclassified'} is recoverable only with genuine network evidence`, async t => {
+  const f = await fixture(t); let fail: () => void = () => {};
+  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: (url, config) => {
+    const client = f.socketFactory(url, config);
+    fail = () => client.emit('error', Object.assign(Error('Synthetic socket failure'), code === undefined ? {} : { code }));
+    return client;
+  } })).open(request(), control());
+  const captured = collect(session);
+  await f.frame(1); f.send({ setupComplete: {} }); await session.ready; fail();
+  const outcome = await session.done; await captured.done;
+  assert.equal(Boolean(outcome.recoverable), code !== undefined);
+  assert.equal(outcome.code, code === undefined ? 'provider_error' : 'transport_error');
 });

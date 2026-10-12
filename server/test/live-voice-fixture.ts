@@ -1,3 +1,4 @@
+import type { IncomingMessage } from 'node:http';
 import { once } from 'node:events';
 import type { TestContext } from 'node:test';
 import WebSocket, { WebSocketServer } from 'ws';
@@ -20,7 +21,13 @@ export function options(overrides: Partial<GeminiLiveVoiceOptions> = {}): Gemini
 }
 export type FrameMode = 'text' | 'binary';
 export async function fixture(t: TestContext, frameMode: FrameMode = 'binary') {
-  const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+  let refusalStatus: number | undefined;
+  const server = new WebSocketServer({ port: 0, host: '127.0.0.1',
+    verifyClient: (_info: { origin: string; secure: boolean; req: IncomingMessage }, accept: (accepted: boolean, code?: number, message?: string) => void) => {
+      if (refusalStatus !== undefined) accept(false, refusalStatus, 'Fixture refusal');
+      else accept(true);
+    },
+  });
   await once(server, 'listening');
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('fixture address');
@@ -72,6 +79,11 @@ export async function fixture(t: TestContext, frameMode: FrameMode = 'binary') {
     },
     send(value: unknown) { peer!.send(JSON.stringify(value), { binary: frameMode === 'binary' }); },
     sendRaw(value: string | Buffer) { peer!.send(value, { binary: frameMode === 'binary' }); },
+    refuseUpgrades(status: number) { refusalStatus = status; },
+    invalidOpcode() {
+      // Reserved opcode3 drives the real ws receiver protocol-error interface.
+      (peer! as unknown as { _socket: { write(frame: Buffer): void } })._socket.write(Buffer.from([0x83, 0]));
+    },
     remoteClose(reason = '', code = 1000) { peer!.close(code, reason); },
     terminate() { peer!.terminate(); },
     get peer() { return peer!; },

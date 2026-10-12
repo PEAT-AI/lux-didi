@@ -151,14 +151,21 @@ final class SupervisorLog: @unchecked Sendable {
 #endif
                 if count <= 0 { break }
                 buffer.append(contentsOf: bytes.prefix(count))
+                var ready: Data?
                 while let newline = buffer.firstIndex(of: 10) {
                     let line = Data(buffer[..<newline]); buffer.removeSubrange(...newline)
                     if diagnostics?.childLine(line, pid: childPID, stderr: false) == true { continue }
-                    guard !delivered, line.count <= 1024 else { await self?.invalidOutput(); return }
-                    delivered = true
-                    await self?.received(line)
+                    guard !delivered, ready == nil, line.count <= 1024 else { await self?.invalidOutput(); return }
+                    ready = line
                 }
                 guard buffer.count <= 4096 else { await self?.invalidOutput(); return }
+                if let ready {
+                    // Reject extra protocol output in this read before waking the ready
+                    // waiter, which can immediately import the credential on the actor.
+                    guard buffer.isEmpty else { await self?.invalidOutput(); return }
+                    delivered = true
+                    await self?.received(ready)
+                }
             }
             await self?.endedOutput()
         }

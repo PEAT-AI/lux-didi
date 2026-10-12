@@ -300,6 +300,7 @@ struct RootView: View {
         stop: { [weak self] in self?.model.stopLive() })
     private var loginAvailability: LoginAvailability?
     private var liveObservation: AnyCancellable?
+    private var dictationObservation: AnyCancellable?
     private var liveStateObservation: AnyCancellable?
     private var liveMenuItem: NSMenuItem?
     private var muteMenuItem: NSMenuItem?
@@ -361,6 +362,9 @@ struct RootView: View {
             }
             self?.updateLiveStatus(state: conversation?.state.rawValue ?? "stopped")
         }
+        dictationObservation = model.voice.$state.sink { [weak self] state in
+            self?.updateLiveStatus(dictationCapturing: state.phase == .recording)
+        }
         model.notifications.onOpen = { [weak self] _ in self?.show() }
         model.notifications.onLiveCall = { [weak self] jobID in
             self?.show(); self?.model.pickUpLiveCall(jobID)
@@ -415,9 +419,10 @@ struct RootView: View {
     private var launchedAtLogin: Bool {
         NSAppleEventManager.shared().currentAppleEvent?.paramDescriptor(forKeyword: AEKeyword(keyAEPropData))?.enumCodeValue == OSType(keyAELaunchedAsLogInItem)
     }
-    private func updateLiveStatus(state: String? = nil, pendingCall: Bool? = nil) {
+    private func updateLiveStatus(state: String? = nil, pendingCall: Bool? = nil, dictationCapturing: Bool? = nil) {
         let raw = state ?? model.live?.state.rawValue ?? "stopped"
-        let presentation = LiveStatusPresentation(state: raw, pendingCall: pendingCall ?? !model.pendingLiveCalls.isEmpty)
+        let presentation = LiveStatusPresentation(state: raw, pendingCall: pendingCall ?? !model.pendingLiveCalls.isEmpty,
+            dictationCapturing: dictationCapturing ?? (model.voice.state.phase == .recording))
         statusItem.button?.image = NSImage(systemSymbolName: presentation.symbol, accessibilityDescription: presentation.text)
         statusItem.button?.title = presentation.pendingCall ? "•" : ""
         statusItem.button?.toolTip = presentation.text

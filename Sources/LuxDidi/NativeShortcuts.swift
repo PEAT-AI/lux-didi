@@ -10,8 +10,8 @@ enum ShortcutStatus {
 struct LiveStatusPresentation {
     let state: String
     let pendingCall: Bool
-    init(state: String, pendingCall: Bool) {
-        self.state = ["idle", "ended", "failed", "outcomeUnknown"].contains(state) ? "stopped" : state
+    init(state: String, pendingCall: Bool, dictationCapturing: Bool = false) {
+        self.state = dictationCapturing ? "listening" : (["idle", "ended", "failed", "outcomeUnknown"].contains(state) ? "stopped" : state)
         self.pendingCall = pendingCall
     }
     var text: String { "Naya: \(state)" + (pendingCall ? "; Naya is calling" : "") }

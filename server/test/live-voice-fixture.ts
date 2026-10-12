@@ -94,3 +94,10 @@ export function deferred<T>() {
   const promise = new Promise<T>(r => { resolve = r; });
   return { promise, resolve };
 }
+
+// The smoke retained only top-level names; these are synthetic minimal shapes.
+export function speechActivityFrames(send: (value: unknown) => void) {
+  send({ serverContent: {}, voiceActivity: { voiceActivityType: 'ACTIVITY_START' }, usageMetadata: {} });
+  send({ serverContent: { modelTurn: { parts: [] } }, voiceActivity: { voiceActivityType: 'ACTIVITY_END' } });
+  send({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from(pcm).toString('base64') } }] } } });
+}

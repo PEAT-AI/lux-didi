@@ -57,7 +57,7 @@ interface HarnessOptions { toolsFactory?: (store: Store) => LiveToolsComposition
 interface Harness {
   f: Awaited<ReturnType<typeof fixture>>;
   store: Store;
-  live: ReturnType<typeof composeLive>;
+  live: ReturnType<typeof composeLive>['service'];
   origin: string;
   token: string;
   epoch: string;

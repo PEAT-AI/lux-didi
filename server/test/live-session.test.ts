@@ -135,6 +135,7 @@ async function harness(t: TestContext, overrides: {
     t.after(async () => { await port.close(); await transport.close(); await sdk.close(); });
   }
   const memorySource = (tx: import('../contracts/storage.js').Transaction) => {
+    memorySelections += 1;
     if (overrides.memoryFailure) throw new Error('synthetic memory failure');
     const ids = tx.all('SELECT id FROM entries ORDER BY id').map(row => String(row['id']));
     return ids.flatMap(id => memory.resolveEntries(tx, [id])).map(record => {

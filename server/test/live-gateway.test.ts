@@ -847,3 +847,62 @@ test('pre-ready provider 1007 is journaled and closes with typed attach rejectio
   assert.equal(JSON.stringify(snapshot).includes(CANARY), false);
   assert.equal(frames.some(frame => JSON.parse(frame).code === 'provider_setup_rejected'), true);
 });
+
+test('canonical host resumes one journal and never exposes the handle on the wire or host log', async t => {
+  const f = await fixture(t);
+  const dir = mkdtempSync(join(tmpdir(), 'didi-live-host-resume-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const configDir = join(dir, 'config'); mkdirSync(configDir, { mode: 0o700 });
+  writePrivate(configDir, 'live.json', `${JSON.stringify(configJson(true, { limits: { idleMs: 2000, sessionMs: 4000, handshakeMs: 1000, closeMs: 50 } }))}\n`);
+  const dataDir = join(dir, 'state');
+  const host = await startHost({ dataDir, configDir, webRoot: fileURLToPath(new URL('../../../web/dist', import.meta.url)), port: 0,
+    liveTesting: { socketFactory: f.socketFactory, credentials: { resolve: async () => CANARY } } });
+  t.after(() => host.close());
+  const headers = { authorization: `Bearer ${host.store.adminCredential}`, 'x-didi-authority-epoch': host.store.authorityEpoch };
+  const created = await json(host.service.origin, '/api/v1/live-sessions', { method: 'POST', headers: { ...headers, 'idempotency-key': 'host-resume', 'content-type': 'application/json' }, body: JSON.stringify({ inputClass: 'ordinary' }) });
+  assert.equal(created.status, 200);
+  const id = created.body.data.liveSessionId;
+  const frozen = host.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot,memory_provenance FROM live_sessions WHERE live_session_id=?', [id]));
+  const ws = new WebSocket(`${host.service.origin.replace('http', 'ws')}/api/v1/live-sessions/${id}/audio`, { headers: { ...headers, 'x-didi-live-profile': created.body.data.profileIdentity } });
+  t.after(() => ws.terminate());
+  const frames: Record<string, unknown>[] = [];
+  const waiters = new Map<string, (frame: Record<string, unknown>) => void>();
+  const key = (frame: Record<string, unknown>) => `${frame.type}:${frame.event ?? ''}`;
+  ws.on('message', (bytes: Data, binary: boolean) => {
+    if (binary) return;
+    const frame = JSON.parse(bytes.toString()) as Record<string, unknown>;
+    frames.push(frame); const notify = waiters.get(key(frame));
+    if (notify) { waiters.delete(key(frame)); notify(frame); }
+  });
+  const next = (type: string, event = '') => {
+    const found = frames.find(frame => key(frame) === `${type}:${event}`);
+    return found ? Promise.resolve(found) : new Promise<Record<string, unknown>>(resolve => waiters.set(`${type}:${event}`, resolve));
+  };
+  const closed = once(ws, 'close');
+  await f.frame(1); f.send({ setupComplete: {} }); await next('ready');
+  const handle = 'synthetic-canonical-host-resumption-secret';
+  f.send({ sessionResumptionUpdate: { resumable: true, newHandle: handle }, goAway: { timeLeft: '10s' } });
+  await f.frame(2);
+  // Assert the actual serialized shape before waiting on resumed: missing fields fail promptly.
+  const rebuilding = await next('continuity');
+  assert.equal(rebuilding.event, 'rebuilding');
+  assert.equal(rebuilding.reason, 'go_away');
+  const pageToken = 'r'.repeat(43);
+  host.store.transaction(tx => tx.run('INSERT INTO runtime_sessions VALUES (?,?,?,?)', [createHash('sha256').update(pageToken).digest('hex'), 'resume-page', 'csrf', Date.now() + 60_000]));
+  const projection = await json(host.service.origin, '/api/v1/live/current', { headers: { cookie: `didi_session=${pageToken}` } });
+  assert.equal(projection.body.data.state, 'rebuilding');
+  const status = await json(host.service.origin, '/api/v1/live/status', { headers });
+  assert.equal(status.body.data.status, 'configured');
+  const snapshot = await json(host.service.origin, `/api/v1/live-sessions/${id}`, { headers });
+  assert.equal(JSON.stringify([frames, projection.body, status.body, snapshot.body]).includes(handle), false);
+  assert.equal(readFileSync(join(dataDir, 'logs', 'host.log'), 'utf8').includes(handle), false);
+  f.send({ setupComplete: {} }); await next('continuity', 'resumed');
+  assert.deepEqual(host.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot,memory_provenance FROM live_sessions WHERE live_session_id=?', [id])), frozen);
+  ws.send(JSON.stringify({ type: 'close' })); await closed;
+  assert.equal(frames.filter(frame => frame.type === 'terminal').length, 1);
+  const rows = host.store.transaction(tx => tx.all('SELECT journal_id,kind FROM live_journal WHERE live_session_id=? ORDER BY journal_id', [id]));
+  assert.equal(rows.filter(row => row.kind === 'terminal').length, 1);
+  assert.equal(new Set(rows.map(row => row.journal_id)).size, rows.length);
+  assert.equal(readFileSync(join(dataDir, 'logs', 'host.log'), 'utf8').includes(handle), false);
+  assert.equal(JSON.stringify(frames).includes(handle), false);
+});

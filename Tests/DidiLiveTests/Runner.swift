@@ -325,7 +325,7 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
                 let companion = CompanionClient(descriptor: descriptor, credential: { fixture.token }, expectedEpoch: fixture.authorityEpoch)
                 return (companion, NativeLiveOperatorHTTP(authority: companion.authenticatedRequestBuilder()))
             }
-            let callbackHTTP = try await MainActor.run {
+            let callbackHTTP = await MainActor.run {
                 let config = URLSessionConfiguration.ephemeral
                 config.protocolClasses = [PendingCallsFixture.self]
                 return NativeLiveOperatorHTTP(authority: companion.authenticatedRequestBuilder(), configuration: config)
@@ -342,6 +342,7 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             let goneCallbacks = try await callbackHTTP.pendingCalls()
             try require(goneCallbacks.isEmpty, "native HTTP fixture reconciles job gone after poll error")
             print("PASS native callback HTTP ready/error/gone fixture")
+            record("callbacks")
             let nativeIntent = try await nativeHTTP.beginIntent()
             do {
                 _ = try await nativeHTTP.snapshot(sessionID: "00000000-0000-4000-8000-000000000000", for: nativeIntent)

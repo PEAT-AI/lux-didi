@@ -79,8 +79,8 @@ configuration preflight, not the conversation-state projection: it still returns
 `service: "live", status: "configured"` while rebuilding. Clients must not infer
 conversation continuity from that configuration status.
 
-Socket public markers have `kind: "continuity"`, `event: "rebuilding"` or
-`event: "resumed"`, `sequence: null`, an increasing `journalSequence`, and null
+Socket JSON control frames use `type: "continuity"`, `event: "rebuilding"` or
+`event: "resumed"`, `sequence: null`, an increasing `journalSequence`, and omit absent
 `text`, `finished`, and `value`. The rebuilding marker additionally has a typed
 `reason` such as `go_away` or `remote_closed`. Journal fragment projections expose
 the same `kind`, `event` and optional `reason` with `text: null`; page entries use
@@ -92,7 +92,7 @@ buffering/replaying it, stop old queued playback and show **Reconnecting**.
 On `resumed`, permit new input and return to normal live presentation. Do not
 restart, re-create or recap the conversation. Terminal snapshots use
 `terminal: {state: "failed", code: "resume_failed"}` when recovery cannot complete;
-the native terminal presentation is: **Live voice lost the connection and could
+the socket terminal frame is `{type: "terminal", state: "failed", code: "resume_failed", complete: false}`. The native terminal presentation is: **Live voice lost the connection and could
 not resume. Start again.** A terminal snapshot ends the device as usual. The
 night-master native lane owns coordinator, wire decoding, capture control and
 presentation changes together; this server wagon does not edit Swift.

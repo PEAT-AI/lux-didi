@@ -56,6 +56,7 @@ interface Harness {
   ctx: LiveContext;
   dir: string;
   calls: { name: string; args: unknown }[];
+  readonly memorySelections: number;
   advance(ms: number): void;
 }
 
@@ -78,6 +79,7 @@ async function harness(t: TestContext, overrides: {
   const domain = createDomainPort({ outbox: Outbox });
   const store = new Store(dir, [...domain.migrations, ...chatMigrations, ...liveMigrations, ...(overrides.tools ? toolsMigrations : [])]);
   let clock = NOW;
+  let memorySelections = 0;
   const profile = validateLiveProfile({ ...profileInput({ handshakeMs: 1000, idleMs: 2000, sessionMs: 4000, closeMs: 50, ...Object.fromEntries(Object.entries(overrides.adapterLimits ?? {}).filter(([key]) => ['handshakeMs', 'idleMs', 'sessionMs', 'closeMs'].includes(key))), ...overrides.limits }, overrides.model), ...(overrides.overlay ? { overlay: overrides.overlay } : {}), ...(overrides.system !== undefined ? { prompt: { text: overrides.system, dataClass: 'ordinary' } } : {}) });
   const voice = new GeminiLiveVoiceAdapter(options({
     socketFactory: f.socketFactory, modelId: profile.liveModelId, voice: profile.voice, keyReference: profile.keyReference,
@@ -89,6 +91,7 @@ async function harness(t: TestContext, overrides: {
   const requests: LiveVoiceRequest[] = [];
   const open = voice.open.bind(voice);
   t.mock.method(voice, 'open', (input: LiveVoiceRequest, ctl: Parameters<typeof voice.open>[1]) => {
+    if (input.resumptionHandle) assert.equal(store.transaction(tx => tx.get("SELECT resumption_handle FROM live_sessions WHERE lifecycle='active'"))?.resumption_handle === input.resumptionHandle, true, 'handle is durable before open');
     requests.push(structuredClone(input)); return open(input, ctl);
   });
   let owner!: LiveSessionOwner;
@@ -145,7 +148,7 @@ async function harness(t: TestContext, overrides: {
   };
   owner = createLiveSessionOwner({ store, voice, profile, ...{ memorySource }, ...(tools ? { tools } : {}), now: () => overrides.scheduler?.now ?? clock, ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
   t.after(async () => { await owner.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
-  return { requests, calls, f, store, owner, ctx: context(store), dir, advance: ms => { if (overrides.scheduler) overrides.scheduler.now += ms; else clock += ms; } };
+  return { requests, calls, get memorySelections() { return memorySelections; }, f, store, owner, ctx: context(store), dir, advance: ms => { if (overrides.scheduler) overrides.scheduler.now += ms; else clock += ms; } };
 }
 
 async function attached(h: Harness, key = 'k1') {
@@ -1306,13 +1309,15 @@ test('resumption keeps journal identity and frozen authority with the real adapt
   assert.deepEqual({ accepted_prompt_snapshot: saved.accepted_prompt_snapshot, memory_provenance: saved.memory_provenance }, { ...frozen });
   assert.equal(saved.resumption_handle === handle, true);
   assert.equal(saved.connection_generation, 1);
+  assert.equal(h.memorySelections, 1, 'memory selection is never re-run');
+  assert.deepEqual(h.requests[1]!.tools, h.requests[0]!.tools);
+  assert.deepEqual(h.requests[1]!.system, h.requests[0]!.system);
   assert.equal(h.owner.current().state, 'rebuilding');
   assert.equal(JSON.stringify(h.owner.current()).includes(handle), false);
   h.f.send({ setupComplete: {} });
   // The public committed marker, not a timer, is the resumption acknowledgement.
-  for await (const chunk of attachment.output) {
-    if (chunk.kind === 'marker' && chunk.marker.kind === ('continuity' as string) && 'event' in chunk.marker && chunk.marker.event === 'resumed') break;
-  }
+  const output = attachment.output[Symbol.asyncIterator]();
+  await continuity(output, 'resumed');
   assert.equal(h.owner.current().state, 'listening');
   attachment.close(); await attachment.done;
   const rows = h.store.transaction(tx => tx.all('SELECT journal_id,kind FROM live_journal WHERE live_session_id=? ORDER BY journal_id', [session.liveSessionId]));
@@ -1342,9 +1347,8 @@ test('pending tool call at the resume cut gets one lost result and never dispatc
   assert.equal(rebuilding?.text, null, 'continuity is typed, not transcript text');
   assert.deepEqual(h.store.transaction(tx => tx.get('SELECT acceptance_json,accepted_run_hash FROM live_tool_acceptances WHERE live_session_id=?', [session.liveSessionId])), acceptance);
   h.f.send({ setupComplete: {} });
-  for await (const chunk of attachment.output) {
-    if (chunk.kind === 'marker' && chunk.marker.kind === 'continuity' && chunk.marker.event === 'resumed') break;
-  }
+  const output = attachment.output[Symbol.asyncIterator]();
+  await continuity(output, 'resumed');
   release.resolve();
   // Let the rejected old dispatch gate and its catch finish without a clock wait.
   await tick(); await tick();
@@ -1353,5 +1357,99 @@ test('pending tool call at the resume cut gets one lost result and never dispatc
   const after = h.owner.listFragments({ liveSessionId: session.liveSessionId });
   assert.equal(after.fragments.filter(row => row.tool?.code === 'tool_call_lost_on_resume').length, 1);
   assert.equal(after.fragments.length, cut.fragments.length + 1, 'only the resumed row crosses the generation fence');
+  attachment.close(); await attachment.done;
+});
+
+async function continuity(output: AsyncIterator<import('../live/types.js').LiveOutputChunk>, event: 'rebuilding' | 'resumed') {
+  for (;;) {
+    const item = await output.next();
+    assert.equal(item.done, false, 'consumer remains attached across the resume');
+    if (item.value.kind === 'marker' && item.value.marker.kind === 'continuity' && item.value.marker.event === event) return item.value.marker;
+  }
+}
+
+test('resumed setup policy rejection ends once with resume_failed', async t => {
+  const h = await harness(t);
+  const { session, attachment } = await attached(h, 'resume-policy');
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-policy-resumption-secret' }, goAway: { timeLeft: '10s' } });
+  await h.f.frame(2); h.f.remoteClose('', 1008);
+  assert.deepEqual((await attachment.done).terminal, { state: 'failed', code: 'resume_failed' });
+  assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(r => r.kind === 'terminal').length, 1);
+});
+
+test('third recoverable loss ends the same session without a fourth connection', async t => {
+  const h = await harness(t);
+  const { session, attachment } = await attached(h, 'resume-attempts');
+  const output = attachment.output[Symbol.asyncIterator]();
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-attempt-resumption-secret' } });
+  for (let connection = 2; connection <= 3; connection++) {
+    h.f.send({ goAway: { timeLeft: '10s' } }); await h.f.frame(connection);
+    h.f.send({ setupComplete: {} }); await continuity(output, 'resumed');
+  }
+  h.f.remoteClose('', 1011);
+  assert.deepEqual((await attachment.done).terminal, { state: 'failed', code: 'resume_failed' });
+  assert.equal(h.f.connections, 3);
+  assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(r => r.kind === 'terminal').length, 1);
+});
+
+test('revoked resumption handle is cleared before a recoverable loss', async t => {
+  const h = await harness(t);
+  const { session, attachment } = await attached(h, 'resume-cleared');
+  const output = attachment.output[Symbol.asyncIterator]();
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-cleared-resumption-secret' }, serverContent: { inputTranscription: { text: 'saved' } } });
+  await transcription(output, 'saved');
+  assert.equal(h.store.transaction(tx => tx.get('SELECT resumption_handle FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!.resumption_handle !== null, true);
+  h.f.send({ sessionResumptionUpdate: { resumable: false }, serverContent: { inputTranscription: { text: 'cleared' } } });
+  await transcription(output, 'cleared');
+  assert.equal(h.store.transaction(tx => tx.get('SELECT resumption_handle FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!.resumption_handle, null);
+  h.f.remoteClose('', 1011);
+  assert.deepEqual((await attachment.done).terminal, { state: 'failed', code: 'resume_failed' });
+  assert.equal(h.f.connections, 1);
+});
+
+test('resumption cannot extend the original session budget or idle expiry', async t => {
+  for (const limit of ['sessionMs', 'idleMs'] as const) {
+    const scheduler = new DeadlineClock();
+    const h = await harness(t, { scheduler, limits: { sessionMs: 1000, idleMs: 1000, [limit]: 100 } });
+    const { attachment } = await attached(h, `resume-${limit}`);
+    const output = attachment.output[Symbol.asyncIterator]();
+    h.advance(60);
+    h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-budget-resumption-secret' }, goAway: { timeLeft: '10s' } });
+    await h.f.frame(2); h.f.send({ setupComplete: {} }); await continuity(output, 'resumed');
+    h.advance(40); scheduler.runDue();
+    const terminal = (await attachment.done).terminal!;
+    assert.equal(terminal.state, 'failed');
+    assert.equal('code' in terminal && terminal.code, limit === 'sessionMs' ? 'session_timeout' : 'idle_timeout');
+    assert.equal(h.f.connections, 2);
+  }
+});
+
+async function transcription(output: AsyncIterator<import('../live/types.js').LiveOutputChunk>, text: string) {
+  for (;;) {
+    const item = await output.next(); assert.equal(item.done, false);
+    if (item.value.kind === 'marker' && item.value.marker.text === text) return;
+  }
+}
+
+
+test('queued PCM is dropped at the cut and capture during rebuilding is never replayed', async t => {
+  const h = await harness(t);
+  const { attachment } = await attached(h, 'resume-media');
+  attachment.sendAudio({ pcm }); await h.f.frame(2);
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-media-resumption-secret' }, serverContent: { modelTurn: { parts: [audio()] } }, goAway: { timeLeft: '10s' } });
+  await h.f.frame(3);
+  const output = attachment.output[Symbol.asyncIterator]();
+  for (;;) {
+    const item = await output.next(); assert.equal(item.done, false);
+    assert.notEqual(item.value.kind, 'audio', 'old queued output PCM is discarded');
+    if (item.value.kind === 'marker' && item.value.marker.kind === 'continuity') break;
+  }
+  attachment.sendAudio({ pcm }); attachment.endAudioStream();
+  assert.equal(h.f.frames.length, 3, 'capture during rebuilding is dropped');
+  h.f.send({ setupComplete: {}, serverContent: { modelTurn: { parts: [audio()] } } });
+  await continuity(output, 'resumed');
+  const resumedAudio = await output.next();
+  assert.equal(resumedAudio.value.kind, 'audio');
+  assert.equal(h.f.frames.length, 3, 'no old PCM replay follows setupComplete');
   attachment.close(); await attachment.done;
 });

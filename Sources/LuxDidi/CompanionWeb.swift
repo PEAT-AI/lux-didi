@@ -6,6 +6,12 @@ enum PageState: Equatable { case loading, ready, unavailable }
 
 @MainActor final class CompanionWeb: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
     let descriptor: ServiceDescriptor
+    func focusConversation() {
+        guard let window = webView.window else { return }
+        window.makeKeyAndOrderFront(nil)
+        window.makeFirstResponder(webView)
+        webView.scrollView.flashScrollers()
+    }
     let webView: WKWebView
     @Published private(set) var state: PageState = .unavailable
     @Published private(set) var detail = "Connect to the approved service."

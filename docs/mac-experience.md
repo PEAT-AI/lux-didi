@@ -79,3 +79,9 @@ writes the per-user `ai.peat.lux-didi-operator` store (directory 0700, file
 public default; a configured invalid store refuses before the host is spawned.
 Launch only forwards the two existing host path flags. See
 [building and installing the Mac app](macos-install.md).
+
+The Live panel includes Show conversation, which focuses its embedded conversation
+rather than opening a browser. Configured session and idle limits appear beside
+Start; a limit-ended session explains how to continue explicitly. The read-only
+Connections card shows each connector's state and safe reason, with ten-second
+refreshes only while visible. Unavailable connection status is shown explicitly.

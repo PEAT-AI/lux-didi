@@ -19,6 +19,8 @@ actor TestHTTP: LiveOperatorHTTP {
     let fixture: Fixture
     let session = isolatedSession()
     var loseCreate = false
+    var unreachableStatus = false
+    func makeStatusUnreachable() { unreachableStatus = true }
     var wrongGrant = false
     var wrongEpoch = false
     var wrongStatus = false
@@ -51,6 +53,7 @@ actor TestHTTP: LiveOperatorHTTP {
         return data
     }
     func status(for intent: LiveBeginIntent) async throws -> LiveOperatorStatus {
+        if unreachableStatus { throw URLError(.cannotConnectToHost) }
         let host = try JSONDecoder().decode(Envelope<HostStatus>.self, from: await raw("/api/v1/status")).data
         let live = try JSONDecoder().decode(Envelope<StatusWire>.self, from: await raw("/api/v1/live/status")).data
         guard live.status == "configured", let provider = live.provider, let model = live.model,

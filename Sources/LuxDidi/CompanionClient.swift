@@ -133,8 +133,19 @@ enum CaptureStatus: Equatable { case idle, sending, saved, cancelled, unknown, f
             return request
         })
     }
+    func liveConnections() async throws -> [NativeLiveConnection] {
+        let (value, _) = try await requestPayload("api/v1/live/connections", bearer: false, page: true)
+        guard let rows = value as? [[String: Any]] else { throw CompanionError.invalidResponse }
+        return try JSONDecoder().decode([NativeLiveConnection].self, from: JSONSerialization.data(withJSONObject: rows))
+    }
     private func request(_ path: String, method: String = "GET", body: [String: Any]? = nil, query: [URLQueryItem] = [],
                          bearer: Bool = true, page: Bool = false, key: String? = nil, authority: String? = nil) async throws -> ([String: Any], HTTPURLResponse) {
+        let (value, response) = try await requestPayload(path, method: method, body: body, query: query, bearer: bearer, page: page, key: key, authority: authority)
+        guard let dictionary = value as? [String: Any] else { throw CompanionError.invalidResponse }
+        return (dictionary, response)
+    }
+    private func requestPayload(_ path: String, method: String = "GET", body: [String: Any]? = nil, query: [URLQueryItem] = [],
+                         bearer: Bool = true, page: Bool = false, key: String? = nil, authority: String? = nil) async throws -> (Any, HTTPURLResponse) {
         guard connectionGuard() else { throw CompanionError.unavailable }
         var parts = URLComponents(url: descriptor.baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false)!
         if !query.isEmpty { parts.queryItems = query }
@@ -160,7 +171,7 @@ enum CaptureStatus: Equatable { case idle, sending, saved, cancelled, unknown, f
         if http.statusCode == 401 { throw CompanionError.authentication }
         guard (200...299).contains(http.statusCode) else { throw CompanionError.rejected(http.statusCode) }
         guard let envelope = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let value = envelope["data"] as? [String: Any] else { throw CompanionError.invalidResponse }
+              let value = envelope["data"] else { throw CompanionError.invalidResponse }
         return (value, http)
     }
     func bootstrap() async throws -> HTTPCookie {
@@ -232,6 +243,22 @@ enum CaptureStatus: Equatable { case idle, sending, saved, cancelled, unknown, f
             // Even a later definitive rejection cannot erase an earlier unknown result.
             captureStatus = .unknown
             throw error
+        }
+    }
+}
+
+struct NativeLiveConnection: Decodable, Identifiable {
+    let id: String
+    let state: String
+    let reasonCode: String?
+    var reason: String? {
+        switch reasonCode {
+        case "credential_missing": return "Credential missing or invalid"
+        case "unreachable": return "Connector unreachable"
+        case "discovery_failed": return "Tool discovery failed"
+        case "handshake_failed": return "Connector handshake failed"
+        case "unknown": return "Connector error"
+        default: return nil
         }
     }
 }

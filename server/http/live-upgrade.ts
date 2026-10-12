@@ -20,6 +20,7 @@ export interface LiveStatusPayload {
   voice?: string;
   dataClasses?: string[];
   profileIdentity?: string;
+  limits?: { sessionMs: number; idleMs: number };
 }
 
 /** The one operator-facing Live surface. Implemented by the host composition, never by a browser. */

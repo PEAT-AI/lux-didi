@@ -21,13 +21,14 @@ struct NativePendingLiveJob: Decodable, Equatable, Sendable {
 @MainActor final class NativeLiveOperatorHTTP: LiveOperatorHTTP, LiveAuthenticatedRequestFactory {
     private struct Envelope<T: Decodable>: Decodable { let data: T }
     private struct Host: Decodable { let assistantId: String; let authorityEpoch: String }
-    private struct Profile: Decodable {
+    struct Profile: Decodable {
         let status: String
         let provider: String?
         let model: String?
         let voice: String?
         let profileIdentity: String?
         let dataClasses: [String]?
+        let limits: NativeLiveLimits?
     }
     let origin: URL
     private let build: NativeLiveRequestBuilder
@@ -65,9 +66,15 @@ struct NativePendingLiveJob: Decodable, Equatable, Sendable {
         guard data.count < 2 * 1024 * 1024 else { throw LiveClientError.transport }
         return data
     }
+    private(set) var limits: NativeLiveLimits?
+    func configuredLimits() async throws -> NativeLiveLimits? {
+        _ = try await projection(epoch: nil)
+        return limits
+    }
     private func projection(epoch: String?) async throws -> LiveOperatorStatus {
         let host = try JSONDecoder().decode(Envelope<Host>.self, from: await fetch("/api/v1/status", epoch: epoch)).data
         let profile = try JSONDecoder().decode(Envelope<Profile>.self, from: await fetch("/api/v1/live/status", epoch: host.authorityEpoch)).data
+        limits = profile.limits
         guard profile.status == "configured", let provider = profile.provider, let model = profile.model,
               let voice = profile.voice, let identity = profile.profileIdentity, let classes = profile.dataClasses,
               epoch == nil || epoch == host.authorityEpoch else { throw LiveClientError.unavailable }
@@ -126,5 +133,50 @@ struct NativePendingLiveJob: Decodable, Equatable, Sendable {
         parts.scheme = "ws"; request.url = parts.url
         request.setValue(binding.profileIdentity, forHTTPHeaderField: "x-didi-live-profile")
         return request
+    }
+}
+
+struct NativeLiveLimits: Decodable, Sendable {
+    let sessionMs: Int
+    let idleMs: Int
+    static func duration(_ milliseconds: Int) -> String {
+        milliseconds % 60_000 == 0 ? "\(milliseconds / 60_000) min" : "\(milliseconds / 1_000) sec"
+    }
+    var sentence: String { "Session limit \(Self.duration(sessionMs)), idle limit \(Self.duration(idleMs))." }
+}
+
+// One presentation boundary for both direct HTTP and coordinator failures.
+enum NativeLivePresentation {
+    static func failure(_ error: Error) -> String {
+        if error is URLError { return "Live service is unreachable. Reconnect the service and try again." }
+        if error is DecodingError { return "Live service returned an unexpected response. Reconnect the service and try again." }
+        if let reason = error as? LiveClientError {
+            switch reason {
+            case .transport: return "Live service is unreachable. Reconnect the service and try again."
+            case .unavailable, .grantMismatch, .statusMismatch, .invalidIntent:
+                return "Live voice is not configured. Check the Live service settings."
+            case .http, .socketClosed: return reason.errorDescription!
+            case .conflict: return "Another Live session is already active. Stop it before starting again."
+            case .invalidFrame: return "Live service returned an unexpected response. Reconnect the service and try again."
+            case .invalidAudio: return "Live audio format is unsupported. Check the audio device."
+            case .queueOverflow: return "Live audio could not keep up. Stop and start again."
+            case .staleOperation: return "The Live request was superseded. Start again when ready."
+            case .invalidDestination, .forbiddenHeader: return "The Live service connection was refused. Reconnect in Settings."
+            }
+        }
+        // Device and owner errors have closed, locally authored descriptions.
+        let name = String(describing: type(of: error))
+        if ["NativeLiveAudioError", "CompanionError"].contains(name),
+           let text = (error as? LocalizedError)?.errorDescription { return text }
+        return "Live voice could not start. Reconnect the service and try again."
+    }
+    static func ended(_ code: String?, limits: NativeLiveLimits?) -> String? {
+        switch code {
+        case "session_timeout":
+            return "Session limit reached" + (limits.map { " (\(NativeLiveLimits.duration($0.sessionMs)))" } ?? "") + ". Start again to continue."
+        case "idle_timeout":
+            return "Ended after " + (limits.map { NativeLiveLimits.duration($0.idleMs) } ?? "the idle limit") + " without speech. Start again when ready."
+        default: return nil
+        }
     }
 }

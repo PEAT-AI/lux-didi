@@ -43,3 +43,15 @@ test('owner deletion removes every domain copy, is idempotent and survives resta
     });
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('chat refuses a deleted selectedMemoryEntryIds id with its typed not_found error', async () => {
+  const { openFixture } = await import('./chat-process.js');
+  const dir = mkdtempSync(join(tmpdir(), 'didi-delete-chat-'));
+  const fixture = openFixture(dir, { generate: async () => { assert.fail('deleted selection must not reach the provider'); } });
+  try {
+    const session = fixture.createSession();
+    const entry = fixture.store.transaction(tx => fixture.domain.execute(tx, 'appendEntry', { sessionId: session.id, text: 'synthetic selected deletion note', role: 'user', timeZone: 'UTC' }, fixture.context));
+    fixture.store.transaction(tx => fixture.domain.execute(tx, 'deleteEntry', { id: entry.id }, fixture.context));
+    assert.throws(() => fixture.chat.accept({ sessionId: session.id, text: 'Use my note', selectedMemoryEntryIds: [entry.id], idempotencyKey: 'deleted-selected-note' }, fixture.context), { code: 'not_found' });
+  } finally { await fixture.chat.shutdown(); fixture.store.close(); rmSync(dir, { recursive: true, force: true }); }
+});

@@ -267,7 +267,7 @@ test('Live memory port writes ordinary owner payload with the real domain transa
 });
 
 test('deleted remember_note entry is absent from the next Live CREATE', async t => {
-  const h = await harness(t);
+  const h = await harness(t, { tools: true });
   const { attachment } = await attached(h);
   const payload = 'synthetic forgotten apricot reminder';
   const result = await remember(h, `remember: ${payload}`, { text: payload, kind: 'task' }, 2);

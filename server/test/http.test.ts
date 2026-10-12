@@ -29,11 +29,11 @@ const domain = {
     throw new ServiceError('NOT_FOUND', 'Synthetic not found', 404);
   }
 } as DomainPort;
-async function fixture(port?: DomainPort) {
+async function fixture(port?: DomainPort, toolsStatus?: Parameters<typeof listenService>[0]['toolsStatus']) {
   const dir = mkdtempSync(join(tmpdir(), 'didi-http-'));
   const store = new Store(dir, port?.migrations);
   let time = Date.now();
-  const service = await listenService({ store, now: () => time, ...(port ? { domain: port } : {}), port: 0 });
+  const service = await listenService({ store, now: () => time, ...(port ? { domain: port } : {}), port: 0, ...(toolsStatus ? { toolsStatus } : {}) });
   const token = readFileSync(join(dir, 'admin-credential'), 'utf8').trim();
   const auth = { Authorization: `Bearer ${token}` };
   return { dir, store, service, auth, advance(ms: number) { time += ms; }, async cleanup() { await service.close(); store.close(); rmSync(dir, { recursive: true, force: true }); } };
@@ -284,4 +284,20 @@ test('package diagnostics distinguish actual spawn error and signal from install
     assert.equal(signalEvidence.error, null);
   } finally { rmSync(dir, { recursive: true, force: true }); }
   assert.equal(existsSync(dir), false);
+});
+
+test('T13 connections preserve bounded typed configuration errors', async () => {
+  const f = await fixture(undefined, () => ({ endpoints: [
+    { id: 'missing-class', state: 'error', tools: 0, lastHandshakeAt: null, error: 'unknown-class-missing', configurationError: 'unknown-class-missing' },
+    { id: 'untrusted-code', state: 'error', tools: 0, lastHandshakeAt: null, error: 'private diagnostic', configurationError: 'private diagnostic' },
+  ] }));
+  try {
+    const response = await fetch(`${f.service.url}/api/v1/live/connections`, { headers: f.auth });
+    assert.equal(response.status, 200);
+    const body = await response.json() as { endpoints: Array<{ reasonCode: string; configurationError?: string }> };
+    assert.equal(body.endpoints[0].reasonCode, 'configuration_error');
+    assert.equal(body.endpoints[0].configurationError, 'unknown-class-missing');
+    assert.equal(body.endpoints[1].configurationError, undefined);
+    assert.equal(JSON.stringify(body).includes('private diagnostic'), false);
+  } finally { await f.cleanup(); }
 });

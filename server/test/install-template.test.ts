@@ -87,3 +87,38 @@ for (const count of [1, 3]) test(`R5 recognizes the historical ${count}-connecto
     assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), current);
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
+
+for (const location of ['provider-config', 'provider-38']) test(`T13 PATH substitution upgrades ${location} without accepting other edits`, () => {
+  const home = mkdtempSync(join(tmpdir(), 'didi-path-seed-'));
+  const path = join(home, 'Library/Application Support/ai.peat.lux-didi', location, 'mcp.json');
+  const run = () => {
+    const result = spawnSync('bash', ['-c', seed], { env: { ...process.env, HOME: home }, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+  };
+  try {
+    run();
+    const current = JSON.parse(readFileSync(path, 'utf8'));
+    const old = structuredClone(current);
+    for (const entry of old.endpoints) {
+      delete entry.unknownClass;
+      if (entry.env?.PATH !== undefined) entry.env.PATH = '/stored/seeding/path';
+    }
+    for (const change of ['extra-env', 'command']) {
+      const edited = structuredClone(old);
+      const entry = edited.endpoints.find((entry: { env?: object }) => entry.env);
+      if (change === 'extra-env') entry.env.OWNER_EDIT = 'keep';
+      else entry.command = '/owner/command';
+      const bytes = `${JSON.stringify(edited)}\n`;
+      writeFileSync(path, bytes);
+      run(); assert.equal(readFileSync(path, 'utf8'), bytes);
+    }
+    writeFileSync(path, `${JSON.stringify(old)}\n`);
+    run();
+    const expected = structuredClone(old);
+    for (const entry of expected.endpoints) entry.unknownClass = 'private';
+    assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), expected);
+    const before = statSync(path, { bigint: true }); run();
+    const after = statSync(path, { bigint: true });
+    assert.equal(after.ino, before.ino); assert.equal(after.mtimeNs, before.mtimeNs);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});

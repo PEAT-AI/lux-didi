@@ -122,3 +122,13 @@ as well as completion of a provider drain. Policy/setup rejection (including
 expiry are final. Limits supplied by the owner override connection timers,
 including the remaining session/idle budget on resumed connections. Recovery
 attempts and durable continuity belong only to the live owner.
+
+
+At the socket boundary, any non-101 HTTP upgrade response is a final
+`provider_setup_rejected`, including 401/403 authentication and 429 quota
+refusals. Established WebSocket `WS_ERR_*` protocol failures are final
+`protocol_error` (message-length overflow remains `incoming_limit`). Unknown
+socket errors are final, not inferred network failures. Known network errno
+failures such as `ECONNRESET`, `ETIMEDOUT` and `EPIPE`, abnormal close1006 without
+a prior protocol failure, server-error close1011 and provider drains retain
+recoverability. HTTP refusal bodies and error text are never diagnostics.

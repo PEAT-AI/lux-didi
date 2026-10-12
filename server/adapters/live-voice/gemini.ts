@@ -1,9 +1,11 @@
+import type { ClientRequest, IncomingMessage } from 'node:http';
 import WebSocket from 'ws';
 import type { RawData } from 'ws';
 import type { DataClass, GeminiLiveVoiceOptions, LiveVoiceControl, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession, LiveSocketFactory, LiveVoiceErrorCode, LiveToolResponse, LiveToolCall } from './types.js';
 import { LiveVoiceError, liveVoiceTimerDefaults } from './types.js';
 
 // Fixed official v1beta endpoint. Neither destination nor credentials are public events.
+const networkErrors = new Set(['ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ECONNREFUSED', 'ECONNABORTED', 'ENETUNREACH', 'EHOSTUNREACH', 'ENOTFOUND', 'EAI_AGAIN']);
 const ENDPOINT = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent';
 const DEFAULTS: Readonly<LiveVoiceLimits> = Object.freeze({
   maxIncomingBytes: 1024 * 1024, maxOutgoingBytes: 1024 * 1024, maxBufferedBytes: 2 * 1024 * 1024,
@@ -190,6 +192,7 @@ class Session implements LiveVoiceSession {
       this.creatingSocket = false;
       socket.on('error', this.onError); socket.on('close', this.onClose);
       socket.on('message', this.onMessage);
+      socket.on('unexpected-response', this.onUnexpectedResponse);
       socket.once('open', this.onOpen = () => { if (this.checkpoint()) this.write(setup); });
       // The trusted seam/resolver can invalidate authority synchronously too.
       if (!this.checkpoint()) this.shutdownSocket();
@@ -201,11 +204,19 @@ class Session implements LiveVoiceSession {
   }
   private initial: string | undefined;
   private onOpen: () => void = () => {};
-  private readonly onError = (error: Error) => {
+  private socketFailure(error: unknown): void {
     if (this.terminal) return;
-    const code = (error as Error & { code?: unknown }).code;
-    this.recoverable = code !== 'WS_ERR_UNSUPPORTED_MESSAGE_LENGTH';
-    this.finish(code === 'WS_ERR_UNSUPPORTED_MESSAGE_LENGTH' ? 'incoming_limit' : 'transport_error');
+    const code = object(error) ? error.code : undefined;
+    this.finish(code === 'WS_ERR_UNSUPPORTED_MESSAGE_LENGTH' ? 'incoming_limit'
+      : typeof code === 'string' && code.startsWith('WS_ERR_') ? 'protocol_error'
+      : typeof code === 'string' && networkErrors.has(code) ? 'transport_error'
+      : this.isReady ? 'provider_error' : 'provider_setup_rejected');
+  }
+  private readonly onError = (error: Error) => { this.socketFailure(error); };
+  private readonly onUnexpectedResponse = (_request: ClientRequest, response: IncomingMessage) => {
+    // Classify the HTTP refusal before ws can replace it with an untyped error/1006.
+    this.finish('provider_setup_rejected');
+    response.resume(); // Discard the body; never turn provider text into diagnostics.
   };
   private readonly onClose = (code: number) => {
     if (!this.terminal) {
@@ -350,15 +361,16 @@ class Session implements LiveVoiceSession {
   private write(frame: string): boolean {
     if (!this.checkpoint()) return false;
     const socket = this.socket;
-    if (!socket || socket.readyState !== WebSocket.OPEN) { this.finish('transport_error'); return false; }
+    // A closing socket is not evidence of a network failure: let onClose classify it.
+    if (!socket || socket.readyState !== WebSocket.OPEN) return false;
     const bytes = Buffer.byteLength(frame);
     if (bytes > this.settings.limits.maxOutgoingBytes) { this.finish('outgoing_limit'); return false; }
     if (socket.bufferedAmount + bytes > this.settings.limits.maxBufferedBytes) { this.finish('backpressure'); return false; }
     try {
       if (!this.checkpoint()) return false;
-      socket.send(frame, error => { if (error && this.checkpoint()) this.finish('transport_error'); });
+      socket.send(frame, error => { if (error && this.checkpoint()) this.socketFailure(error); });
       this.touch(); return !this.terminal;
-    } catch { this.finish('transport_error'); return false; }
+    } catch (error) { this.socketFailure(error); return false; }
   }
   sendToolResponse(input: { responses: LiveToolResponse[] }): void {
     if (this.draining) return;
@@ -414,6 +426,7 @@ class Session implements LiveVoiceSession {
     const socket = this.socket;
     if (socket) {
       socket.off('open', this.onOpen); socket.off('message', this.onMessage); socket.off('close', this.onClose);
+      socket.off('unexpected-response', this.onUnexpectedResponse);
       // Keep the owned error guard until termination's close event has fired.
       if (socket.readyState === WebSocket.CLOSED) socket.off('error', this.onError);
       else socket.once('close', () => socket.off('error', this.onError));

@@ -104,3 +104,8 @@ without cookies. The JSON contains only `event: "live_precreate_failed"`, the
 `socketClosed` include an integer `detail` (status or close code). No text, paths,
 error descriptions or response bodies are sent. A 429 or transport failure is
 not recorded remotely; it never replaces the native failure and is not retried.
+
+The pre-CREATE boundary is explicit: the start catch is pre-CREATE, and a
+coordinator failure is pre-CREATE only while no created session ID exists.
+After CREATE completes, failures emit neither this native log line nor this
+POST; the service journal and terminal outcome already record them.

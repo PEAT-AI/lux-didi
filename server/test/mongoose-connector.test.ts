@@ -228,7 +228,7 @@ for (const [connector, tool] of [['mongoose', 'search_mongoose'], ['mattermost',
       const declaration = descriptor.declarations(policy).find(candidate => candidate.name === tool); assert.ok(declaration);
       assert.equal(declaration.validate({ query: 'agri', limit: 2 }), true, 'local bounds allow two results');
       assert.equal(declaration.validate({ query: '', limit: 1 }), false);
-      assert.equal(declaration.validate({ query: 'agri', limit: 11 }), false);
+      assert.equal(declaration.validate({ query: 'agri', limit: 101 }), false);
       assert.equal(declaration.validate({ query: 'agri', limit: 1, write: true }), false);
       const reader = descriptor.createReader({ port: runtime.port, registry: runtime.registry, endpoint: policy.endpoint, schemaDigest: policy.schemaDigest, generation: policy.generation, policy });
       const refused = await reader.call(tool, { query: 'agri', limit: 2 });

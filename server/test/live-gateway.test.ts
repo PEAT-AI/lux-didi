@@ -18,9 +18,10 @@ import { fileURLToPath } from 'node:url';
 
 import WebSocket from 'ws';
 import type { Data } from 'ws';
+import { ServiceError } from '../contracts/errors.js';
 import { composeLive } from '../host/live.js';
 import { listenService } from '../http/server.js';
-import { liveMigrations, type LiveProfile } from '../live/index.js';
+import { LiveError, liveMigrations, type LiveProfile } from '../live/index.js';
 import { hostMigrations, startHost } from '../host/runtime.js';
 import { Store } from '../runtime/store.js';
 import { CANARY, fixture, pcm } from './live-voice-fixture.js';
@@ -56,6 +57,7 @@ interface HarnessOptions { toolsFactory?: (store: Store) => LiveToolsComposition
 interface Harness {
   f: Awaited<ReturnType<typeof fixture>>;
   store: Store;
+  live: ReturnType<typeof composeLive>;
   origin: string;
   token: string;
   epoch: string;
@@ -80,7 +82,7 @@ async function harness(t: TestContext, options: HarnessOptions = {}): Promise<Ha
     store.close();
     rmSync(dir, { recursive: true, force: true });
   });
-  return { f, store, origin: running.origin, token: store.adminCredential, epoch: store.authorityEpoch, close: () => running.close() };
+  return { f, store, live, origin: running.origin, token: store.adminCredential, epoch: store.authorityEpoch, close: () => running.close() };
 }
 
 function bearer(h: Harness): Record<string, string> {
@@ -182,6 +184,77 @@ test('live operator routes reject browsers, origins and duplicate headers before
   assert.equal((await createBody(h, 'e', { authorization: [`Bearer ${h.token}`, 'Bearer other'] })).status, 400);
   assert.equal(h.f.attempts, 0, 'guards run before any provider open');
 });
+
+test('Swift create, grant acceptance and pinned audio upgrade stay attached', async t => {
+  const h = await harness(t, { config: configJson(true) });
+  // LiveSessionCoordinator.performCreate: status, create, validate the returned grant, connect.
+  const status = await json(h.origin, '/api/v1/live/status', { headers: bearer(h) });
+  assert.equal(status.status, 200);
+  const created = await createBody(h, 'swift-sequence');
+  assert.equal(created.status, 200);
+  const snapshot = created.body.data;
+  assert.equal(snapshot.lifecycle, 'accepted');
+  assert.equal(snapshot.consumerState, 'detached');
+  assert.equal(snapshot.dispatchIntent, false);
+  assert.equal(snapshot.profileIdentity, status.body.data.profileIdentity);
+  assert.equal(snapshot.grant.model, status.body.data.model);
+  assert.equal(snapshot.grant.voice, status.body.data.voice);
+  assert.deepEqual(snapshot.grant.permittedClasses, status.body.data.dataClasses);
+  // LiveSocketTransport.validate: exact path, four identity headers, no query/subprotocol.
+  const ws = new WebSocket(`${h.origin.replace('http', 'ws')}/api/v1/live-sessions/${snapshot.liveSessionId}/audio`, {
+    headers: { ...bearer(h), host: new URL(h.origin).host, 'x-didi-live-profile': snapshot.profileIdentity },
+  });
+  t.after(() => ws.terminate());
+  const ready = new Promise<void>((resolve, reject) => {
+    ws.on('error', reject);
+    ws.on('close', (code, reason) => reject(new Error(`closed before ready: ${code}:${reason}`)));
+    ws.on('message', (data, binary) => { if (!binary && JSON.parse(data.toString()).type === 'ready') resolve(); });
+  });
+  await h.f.frame(1);
+  h.f.send({ setupComplete: {} });
+  await ready;
+  // The coordinator sends capture only after ready; FoundationLiveSocket sends PCM as binary,
+  // and endAudioStream as one text JSON control, not a terminal close.
+  ws.send(Buffer.from(pcm));
+  await h.f.frame(2);
+  ws.send(JSON.stringify({ type: 'endAudioStream' }));
+  await h.f.frame(3);
+  assert.deepEqual(h.f.frames[1], { realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: Buffer.from(pcm).toString('base64') } } });
+  assert.deepEqual(h.f.frames[2], { realtimeInput: { audioStreamEnd: true } });
+  const current = await json(h.origin, `/api/v1/live-sessions/${snapshot.liveSessionId}`, { headers: bearer(h) });
+  assert.equal(current.status, 200);
+  assert.equal(current.body.data.lifecycle, 'active');
+  assert.equal(current.body.data.consumerState, 'attached');
+  assert.equal(current.body.data.terminal, null);
+  assert.equal(ws.readyState, WebSocket.OPEN);
+});
+
+for (const [label, error, code] of [
+  ['typed', new LiveError('invalidated', CANARY), 'invalidated'],
+  ['authorization', new ServiceError('FORBIDDEN', CANARY, 403), 'FORBIDDEN'],
+  ['unknown', new Error(CANARY), 'internal'],
+] as const) {
+  test(`attach rejection reports sanitized ${label} code once`, async t => {
+    const h = await harness(t, { config: configJson(true) });
+    const created = await createBody(h, `rejection-${label}`);
+    assert.equal(created.status, 200);
+    const id = created.body.data.liveSessionId;
+    const events: unknown[][] = [];
+    t.mock.method(console, 'error', (...args: unknown[]) => { events.push(args); });
+    t.mock.method(h.live, 'attach', () => { throw error; });
+    const ws = new WebSocket(`${h.origin.replace('http', 'ws')}/api/v1/live-sessions/${id}/audio`, {
+      headers: { ...bearer(h), host: new URL(h.origin).host, 'x-didi-live-profile': created.body.data.profileIdentity },
+    });
+    t.after(() => ws.terminate());
+    const [closeCode, reason] = await once(ws, 'close');
+    assert.equal(closeCode, 1008);
+    assert.equal(reason.toString(), `attach_rejected:${code}`);
+    assert.ok(Buffer.byteLength(reason) <= 123);
+    assert.deepEqual(events, [[JSON.stringify({ event: 'live_attach_rejected', liveSessionId: id, code })]]);
+    assert.equal(JSON.stringify(events).includes(CANARY), false);
+    assert.equal(h.f.attempts, 0);
+  });
+}
 
 test('one ordered authenticated audio upgrade carries PCM, markers and the terminal fact', async t => {
   const h = await harness(t, { config: configJson(true) });

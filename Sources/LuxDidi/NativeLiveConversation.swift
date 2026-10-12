@@ -81,14 +81,13 @@ import DidiOwner
                 guard let self, self.generation == token, !Task.isCancelled else { return }
                 guard current == event else { continue }
                 switch event {
-<<<<<<< HEAD
                 case .active where self.state == .pausedForInput: break
                 case .active: self.state = self.muted ? .muted : (self.speaking ? .speaking : .listening)
-=======
-                case .rebuilding, .active:
+                case .rebuilding:
                     self.speaking = false
-                    self.state = Self.continuityPresentation(event, muted: self.muted)!
->>>>>>> origin/feat/native-live-resumption
+                    if self.state != .pausedForInput {
+                        self.state = Self.continuityPresentation(event, muted: self.muted)!
+                    }
                 case .terminal(let outcome):
                     if let sentence = NativeLivePresentation.ended(outcome.code, limits: self.limits) {
                         self.failure = sentence

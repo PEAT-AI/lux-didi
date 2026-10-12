@@ -140,7 +140,6 @@ final class DiagnosticLogHTTPFixture: URLProtocol, @unchecked Sendable {
     }
     @MainActor static func main() async {
         do {
-<<<<<<< HEAD
             let routeTestStarted = Date()
             var builds = 0, releases = 0, paused = "", failures = 0
             var input = "Built-in microphone"
@@ -171,9 +170,7 @@ final class DiagnosticLogHTTPFixture: URLProtocol, @unchecked Sendable {
                              "missing input immediately releases capture and requests Restart")
             try audioRequire(paused != "invalid pause", "missing input must never offer Resume")
             print("PASS route storm, input consent, Resume, Stop fencing, missing input and failed rebuild")
-=======
             try await checkConversationDiagnostics()
->>>>>>> origin/feat/native-diagnostic-post
             guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 44100, channels: 2, interleaved: false) else {
                 throw NativeLiveAudioError.unsupportedFormat
             }

@@ -96,3 +96,7 @@ first, from the existing owner list route (`GET /api/v1/sessions/:id/entries`). 
 - Deletion keeps W-X's confirm-and-server-confirmation behaviour: the same `Delete memory` control
   and `deleteMemoryAndReload` helper, so a cancelled or failed delete leaves the displayed list
   untouched.
+
+The memory list module above renders the whole section; the page mounts it from
+`web/src/main.ts`, which this wagon's Files in scope do not cover. Mounting is
+requested by a scope ruling, and the exact page patch is recorded with the wagon.

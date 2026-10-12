@@ -10,7 +10,6 @@ enum PageState: Equatable { case loading, ready, unavailable }
         guard let window = webView.window else { return }
         window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(webView)
-        webView.scrollView.flashScrollers()
     }
     let webView: WKWebView
     @Published private(set) var state: PageState = .unavailable

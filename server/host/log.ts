@@ -33,15 +33,19 @@ export class HostLog {
   private append(event: Record<string, unknown>): void {
     const line = Buffer.from(JSON.stringify({ timestamp: new Date().toISOString(), pid: process.pid, ...event }) + '\n');
     if (line.length > this.limit) return;
-    let fd = openSync(this.path, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o600);
+    let fd = openSync(this.path, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
     try {
+      const info = fstatSync(fd);
+      if (!info.isFile() || info.nlink !== 1 || (process.getuid && info.uid !== process.getuid())) throw new Error('Invalid diagnostics file');
       fchmodSync(fd, 0o600);
-      if (fstatSync(fd).size + line.length > this.limit) {
+      if (info.size + line.length > this.limit) {
         closeSync(fd); fd = -1;
         if (existsSync(this.path + '.2')) unlinkSync(this.path + '.2');
         if (existsSync(this.path + '.1')) renameSync(this.path + '.1', this.path + '.2');
         renameSync(this.path, this.path + '.1');
-        fd = openSync(this.path, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o600);
+        fd = openSync(this.path, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
+        const rotated = fstatSync(fd);
+        if (!rotated.isFile() || rotated.nlink !== 1 || (process.getuid && rotated.uid !== process.getuid())) throw new Error('Invalid diagnostics file');
         fchmodSync(fd, 0o600);
       }
       writeSync(fd, line);

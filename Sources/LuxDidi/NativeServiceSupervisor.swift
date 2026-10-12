@@ -23,12 +23,11 @@ final class SupervisorLog: @unchecked Sendable {
         guard var data = try? JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]) else { return }
         data.append(10)
         guard data.count <= limit else { return }
-        var fd = Darwin.open(path.path, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        var fd = Darwin.open(path.path, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK, 0o600)
         guard fd >= 0 else { return }
         defer { if fd >= 0 { Darwin.close(fd) } }
-        guard fchmod(fd, 0o600) == 0 else { return }
         var info = stat()
-        guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else { return }
+        guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG, info.st_nlink == 1, info.st_uid == getuid(), fchmod(fd, 0o600) == 0 else { return }
         if Int(info.st_size) + data.count > limit {
             Darwin.close(fd); fd = -1
             let fm = FileManager.default
@@ -39,8 +38,8 @@ final class SupervisorLog: @unchecked Sendable {
                 if fm.fileExists(atPath: first.path) { try fm.moveItem(at: first, to: second) }
                 try fm.moveItem(at: path, to: first)
             } catch { return }
-            fd = Darwin.open(path.path, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
-            guard fd >= 0, fchmod(fd, 0o600) == 0 else { return }
+            fd = Darwin.open(path.path, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK, 0o600)
+            guard fd >= 0, fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG, info.st_nlink == 1, info.st_uid == getuid(), fchmod(fd, 0o600) == 0 else { return }
         }
         let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: false)
         try? handle.write(contentsOf: data)

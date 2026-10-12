@@ -1,5 +1,6 @@
 import AVFoundation
 import Combine
+import CoreAudio
 import Foundation
 
 
@@ -113,6 +114,59 @@ final class NativeCaptureBuffer: @unchecked Sendable {
     }
 }
 
+/// Owns only recovery permission, never session creation. Notifications coalesce before rebuild.
+@MainActor final class NativeAudioRouteRecovery {
+    private let input: () -> String
+    private let release: () -> Void
+    private let rebuild: () throws -> Void
+    private let paused: (String) -> Void
+    private let failed: () -> Void
+    private var previousInput = ""
+    private var generation: UInt64 = 0
+    private(set) var authorized = false
+    private(set) var awaitingResume = false
+    private(set) var pending: Task<Void, Never>?
+    init(input: @escaping () -> String, release: @escaping () -> Void,
+         rebuild: @escaping () throws -> Void, paused: @escaping (String) -> Void,
+         failed: @escaping () -> Void) {
+        self.input = input; self.release = release; self.rebuild = rebuild
+        self.paused = paused; self.failed = failed
+    }
+    func begin() { authorized = true; awaitingResume = false; previousInput = input() }
+    func changed() {
+        guard authorized, pending == nil else { return }
+        // Release synchronously, before any old tap/drain/player can deliver more audio.
+        release()
+        let token = generation
+        pending = Task { [weak self] in
+            await Task.yield()
+            guard let self, self.authorized, self.generation == token, !Task.isCancelled else { return }
+            self.pending = nil
+            let current = self.input()
+            if current != self.previousInput || self.awaitingResume {
+                self.previousInput = current; self.awaitingResume = true; self.paused(current)
+            } else { self.recover() }
+        }
+    }
+    func resume() {
+        guard authorized, awaitingResume else { return }
+        pending?.cancel(); pending = nil; generation &+= 1
+        let current = input()
+        guard current == previousInput else {
+            previousInput = current; paused(current); return
+        }
+        awaitingResume = false; recover()
+    }
+    private func recover() {
+        do { try rebuild() }
+        catch { stop(); failed() }
+    }
+    func stop() {
+        authorized = false; awaitingResume = false; generation &+= 1
+        pending?.cancel(); pending = nil; release()
+    }
+}
+
 @MainActor final class NativeLiveAudioDevice: ObservableObject, LiveAudioSink {
     @Published private(set) var inputLevel: Float = 0
     @Published private(set) var droppedFrames = 0
@@ -120,6 +174,38 @@ final class NativeCaptureBuffer: @unchecked Sendable {
     var hasEngine: Bool { engine != nil }
     var onOutput: ((Bool) -> Void)?
     var onInterruption: (() async -> Void)?
+    var onInputChange: ((String) -> Void)?
+    var onResume: (() -> Void)?
+    @Published private(set) var route = ""
+    private var muted = false
+    private var sendFrame: (@Sendable (Data) async throws -> Void)?
+    private lazy var recovery = NativeAudioRouteRecovery(
+        input: { Self.defaultDevice(input: true).id },
+        release: { [weak self] in self?.releaseAudio() },
+        rebuild: { [weak self] in
+            guard let self, let send = self.sendFrame else { throw NativeLiveAudioError.deviceUnavailable }
+            try self.build(send: send)
+        },
+        paused: { [weak self] _ in self?.onInputChange?(Self.defaultDevice(input: true).name) },
+        failed: { [weak self] in
+            guard let self else { return }
+            self.sendFrame = nil
+            Task { await self.onInterruption?() }
+        })
+    private static func defaultDevice(input: Bool) -> (id: String, name: String) {
+        var property = AudioObjectPropertyAddress(
+            mSelector: input ? kAudioHardwarePropertyDefaultInputDevice : kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var device = AudioDeviceID(0), size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &property, 0, nil, &size, &device) == noErr,
+              device != kAudioObjectUnknown else { return ("", "No microphone") }
+        property.mSelector = kAudioObjectPropertyName
+        var name: CFString = "Unknown device" as CFString
+        size = UInt32(MemoryLayout<CFString>.size)
+        _ = AudioObjectGetPropertyData(device, &property, 0, nil, &size, &name)
+        return (String(device), name as String)
+    }
+    func resumeInput() { recovery.resume(); if isCapturing { onResume?() } }
     private var engine: AVAudioEngine?
     private var player: AVAudioPlayerNode?
     private var capture: NativeCaptureBuffer?
@@ -140,6 +226,11 @@ final class NativeCaptureBuffer: @unchecked Sendable {
         @unknown default: throw NativeLiveAudioError.permissionRestricted
         }
         try Task.checkCancellation()
+        sendFrame = send
+        do { try build(send: send); recovery.begin() }
+        catch { sendFrame = nil; throw error }
+    }
+    private func build(send: @escaping @Sendable (Data) async throws -> Void) throws {
         let engine = AVAudioEngine(), player = AVAudioPlayerNode()
         do {
             do {
@@ -152,6 +243,7 @@ final class NativeCaptureBuffer: @unchecked Sendable {
             let hardware = engine.inputNode.outputFormat(forBus: 0)
             guard hardware.sampleRate > 0, hardware.channelCount > 0 else { throw NativeLiveAudioError.deviceUnavailable }
             let capture = try NativeCaptureBuffer(converter: NativePCMConverter(input: hardware))
+            capture.setMuted(muted)
             guard let output = AVAudioFormat(standardFormatWithSampleRate: 24000, channels: 1) else {
                 throw NativeLiveAudioError.unsupportedFormat
             }
@@ -159,6 +251,7 @@ final class NativeCaptureBuffer: @unchecked Sendable {
             engine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: hardware) { buffer, _ in capture.append(buffer) }
             self.engine = engine; self.player = player; self.capture = capture
             engine.prepare(); try engine.start(); player.play()
+            route = "Microphone: " + Self.defaultDevice(input: true).name + " · Output: " + Self.defaultDevice(input: false).name
             isCapturing = true; captureGeneration &+= 1
             let token = captureGeneration
             // Exactly one drain task. Playback never owns or pauses the capture path.
@@ -170,21 +263,24 @@ final class NativeCaptureBuffer: @unchecked Sendable {
                         self.inputLevel = level; self.droppedFrames = drops
                         if failed { await self.interrupt(); return }
                         guard let frame else { break }
-                        do { try await send(frame) }
+                        do { try Task.checkCancellation(); try await send(frame) }
                         catch { await self.interrupt(); return }
                     }
                 }
             }
             configurationObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil) { [weak self] _ in
-                Task { @MainActor in await self?.interrupt() }
+                Task { @MainActor in
+                    guard let self, self.captureGeneration == token else { return }
+                    self.recovery.changed()
+                }
             }
         } catch {
-            if self.engine != nil { stop() }
+            if self.engine != nil { releaseAudio() }
             else { engine.stop() }
             throw (error as? NativeLiveAudioError) ?? NativeLiveAudioError.deviceUnavailable
         }
     }
-    func setMuted(_ muted: Bool) { capture?.setMuted(muted); inputLevel = 0 }
+    func setMuted(_ muted: Bool) { self.muted = muted; capture?.setMuted(muted); inputLevel = 0 }
     private func interrupt() async {
         stop()
         await onInterruption?()
@@ -221,6 +317,9 @@ final class NativeCaptureBuffer: @unchecked Sendable {
         outputGeneration &+= 1; player?.stop(); queuedOutput = 0; onOutput?(false)
     }
     func stop() {
+        recovery.stop(); sendFrame = nil; muted = false
+    }
+    private func releaseAudio() {
         captureGeneration &+= 1
         if let observer = configurationObserver { NotificationCenter.default.removeObserver(observer) }
         configurationObserver = nil

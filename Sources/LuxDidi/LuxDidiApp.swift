@@ -191,6 +191,13 @@ struct NativeLiveControls: View {
     var body: some View {
         VStack {
             Text("Live: " + conversation.state.rawValue).accessibilityLabel("Live voice lifecycle")
+            if !device.route.isEmpty { Text(device.route).font(.caption) }
+            if conversation.state == .pausedForInput {
+                Button("Resume") { conversation.start() }
+            }
+            if conversation.state == .failed {
+                Button("Restart") { conversation.start() }
+            }
             ProgressView(value: conversation.state == .muted ? 0 : Double(device.inputLevel))
                 .accessibilityLabel(conversation.state == .muted ? "Microphone muted" : "Live microphone input level")
             HStack {

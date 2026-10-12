@@ -5,7 +5,7 @@ import DidiOwner
 #endif
 
 @MainActor final class NativeLiveConversation: ObservableObject {
-    enum State: String { case idle, connecting, listening, speaking, muted, ended, failed, outcomeUnknown }
+    enum State: String { case idle, connecting, listening, speaking, muted, ended, failed, outcomeUnknown, pausedForInput }
     @Published private(set) var state: State = .idle
     @Published private(set) var failure: String?
     @Published private(set) var pendingCall: NativePendingLiveJob?
@@ -19,7 +19,7 @@ import DidiOwner
     private let logsDirectory: URL?
     private var limits: NativeLiveLimits?
     private var muted = false, speaking = false
-    var isCapturing: Bool { state == .connecting || device.isCapturing }
+    var isCapturing: Bool { state == .connecting || state == .pausedForInput || device.isCapturing }
     init(authority: (origin: URL, request: NativeLiveRequestBuilder), dictationIsCapturing: @escaping () -> Bool, pickupJobID: String? = nil, logsDirectory: URL? = nil) {
         self.logsDirectory = logsDirectory
         self.http = NativeLiveOperatorHTTP(authority: authority, pickupJobID: pickupJobID)
@@ -33,16 +33,27 @@ import DidiOwner
                 self.state = self.muted ? .muted : (speaking ? .speaking : .listening)
             }
         }
+        device.onInputChange = { [weak self] name in
+            guard let self else { return }
+            self.state = .pausedForInput
+            self.failure = "Microphone changed to " + name + ". Resume?"
+        }
+        device.onResume = { [weak self] in
+            guard let self, self.state == .pausedForInput else { return }
+            self.failure = nil
+            self.state = self.muted ? .muted : (self.speaking ? .speaking : .listening)
+        }
         device.onInterruption = { [weak self] in
             guard let self else { return }
             await self.stop()
-            self.failure = "Live audio device or service interrupted. Start explicitly to try again."
+            self.failure = "Live audio could not recover. Capture released. Restart explicitly to try again."
             self.state = .failed
         }
     }
     // Presentation only: an offer never opens a session, an audio engine or the microphone.
     func offerPendingCall(_ job: NativePendingLiveJob?) { pendingCall = job }
     func start() {
+        if state == .pausedForInput { device.resumeInput(); return }
         guard !isCapturing else { return }
         guard !dictationIsCapturing() else {
             failure = "Stop dictation before starting Live voice."; state = .failed; return
@@ -58,6 +69,7 @@ import DidiOwner
                 guard let self, self.generation == token, !Task.isCancelled else { return }
                 guard current == event else { continue }
                 switch event {
+                case .active where self.state == .pausedForInput: break
                 case .active: self.state = self.muted ? .muted : (self.speaking ? .speaking : .listening)
                 case .terminal(let outcome):
                     if let sentence = NativeLivePresentation.ended(outcome.code, limits: self.limits) {

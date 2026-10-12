@@ -410,7 +410,7 @@ for (const missingMongoose of [true, false]) {
     const http = (id: string, connector: string, credentialRef: string | null = null) => ({ id, connector, transport: 'streamable-http', url: url + '/' + id, account: 'synthetic', resource: id, credentialRef, enabled: true, allowEgress: true });
     await writeFile(join(config, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [
       http('lux-knowledge', 'lux-knowledge'), http('gmail', 'google'), http('calendar', 'google'),
-      { id: 'mattermost', connector: 'mattermost', transport: 'stdio', command: process.execPath, args: [child], env: {}, account: 'synthetic', resource: 'mattermost', credentialRef: null, enabled: true, allowEgress: true },
+      { id: 'mattermost', connector: 'mattermost', transport: 'stdio', command: process.execPath, args: [child], env: { HOME: dir, PATH: process.env.PATH ?? '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' }, account: 'synthetic', resource: 'mattermost', credentialRef: null, enabled: true, allowEgress: true },
       http('mongoose', 'mongoose', missingMongoose ? 'missing-credential' : null),
     ] }), { mode: 0o600 });
     await writeFile(join(config, 'live.json'), JSON.stringify({ schemaVersion: 1, enabled: true, provider: 'gemini', modelId: 'models/live-gateway-test', voice: 'LiveVoice', keyReference: 'gemini-primary', dataClasses: ['ordinary'], preferences: { dataClass: 'ordinary', language: 'en-US', register: 'plain', humor: 'dry', verbosity: 'balanced' } }), { mode: 0o600 });

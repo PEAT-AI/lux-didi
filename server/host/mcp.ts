@@ -137,7 +137,14 @@ export async function composeMcpRuntime(options: {
       };
       if (row && canonicalJSON(policy) !== String(row.policy_json)) policy.generation += 1;
       owner.applyConnectionIntent({ expectedPolicySha256: row ? String(row.policy_sha256) : null, policy });
-      owner.projectConnection(entry.id);
+      const restored = await owner.restoreConnection(entry.id, () => {
+        const current = loadMcpEndpoints({ configDir });
+        if (current.state !== 'catalog' || current.catalog.grantMode !== grantMode
+          || canonicalJSON(current.catalog.endpoints.find(endpoint => endpoint.id === entry.id) ?? null) !== canonicalJSON(entry)) {
+          throw Error('endpoint-binding-mismatch');
+        }
+      });
+      if (restored.state !== 'restored') { reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: restored.reason }); return; }
       usable.add(entry.id);
       const granted = names.length;
       reports.set(entry.id, { id: entry.id, state: 'connected', tools: granted, lastHandshakeAt: new Date(now()).toISOString() });

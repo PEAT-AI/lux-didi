@@ -50,6 +50,7 @@ export interface AcceptedPromptSnapshot {
   readonly compilerVersion: string; readonly system: string; readonly dataClasses: readonly DataClass[];
 }
 export interface LiveProfile {
+  readonly overlay?: import('../prompt/live-persona.js').PersonaOverlay;
   readonly acceptedPrompt?: AcceptedPromptSnapshot;
   readonly provider: 'gemini';
   readonly liveModelId: string;

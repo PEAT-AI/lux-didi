@@ -1,3 +1,4 @@
+import { definitionsInTransaction } from '../tools/index.js';
 import { LiveToolJobs, type ToolJob } from '../tools/jobs.js';
 import { declarationsFor, runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
@@ -209,9 +210,9 @@ export class LiveSessionOwner {
           route: { identity: this.#profileIdentity, provider: 'gemini', modelId: this.#profile.liveModelId, allowedClasses: [...this.#profile.route.dataClasses] },
           allowedClasses: [...this.#profile.route.dataClasses], connectionIds: [...this.#tools.connectionIds()] };
         toolAcceptance = { acceptance, sha256: this.#tools.owner.snapshotRun(tx, acceptance).sha256 };
-        toolNames = this.#tools.owner.definitions(liveSessionId).map(tool => tool.name);
+        toolNames = definitionsInTransaction(this.#tools.owner, liveSessionId, tx).map(tool => tool.name);
       }
-      const pickupJob = input.pickupJobId ? this.#jobs.pending().find(job => job.id === input.pickupJobId && job.state !== 'in_progress') : undefined;
+      const pickupJob = input.pickupJobId ? this.#jobs.pending(tx).find(job => job.id === input.pickupJobId && job.state !== 'in_progress') : undefined;
       if (input.pickupJobId && !pickupJob) throw new LiveError('invalid_request');
       const pickup = pickupJob ? { jobId: pickupJob.id, identity: identity({ state: pickupJob.state, result: pickupJob.result ?? null }) } : undefined;
       let records: ReturnType<NonNullable<LiveOwnerConfig['memorySource']>>;
@@ -220,6 +221,7 @@ export class LiveSessionOwner {
       let composed: ReturnType<typeof composeLiveSessionInstruction>;
       try { composed = composeLiveSessionInstruction({ text: configuredPrompt.system, tools: toolNames,
         records: records.filter(record => record.dataClass === 'ordinary'), trustedChars: 20000,
+        ...(this.#profile.overlay ? { overlay: this.#profile.overlay } : {}),
         ...(pickup ? { pickupNote: pickupInstruction } : {}) }); }
       catch (error) { if (error instanceof Error && 'code' in error && error.code === 'instruction_too_large') throw new LiveError('instruction_too_large'); throw error; }
       const memory = { status: composed.omitted.length ? composed.selectedIds.length ? 'partial' : 'omitted' : composed.selectedIds.length ? 'selected' : 'empty',
@@ -231,7 +233,7 @@ export class LiveSessionOwner {
         [liveSessionId, assistantId, context.authorityEpoch, input.idempotencyKey, fingerprint, context.clientId, context.auditId, this.#profileIdentity, promptIdentity, 'accepted', 'detached', now, now]);
       tx.run('UPDATE live_sessions SET accepted_prompt_snapshot=?,memory_provenance=? WHERE live_session_id=?', [JSON.stringify(acceptedPrompt), JSON.stringify(memory), liveSessionId]);
       if (toolAcceptance) tx.run('INSERT INTO live_tool_acceptances VALUES (?,?,?)', [liveSessionId, JSON.stringify(toolAcceptance.acceptance), toolAcceptance.sha256]);
-      if (pickupJob) { pickupJob.deliverySessionId = liveSessionId; this.#jobs.save(pickupJob); }
+      if (pickupJob) { pickupJob.deliverySessionId = liveSessionId; this.#jobs.save(pickupJob, tx); }
       tx.run('INSERT INTO live_grants(grant_id, live_session_id, provider, model, voice, key_reference, permitted_classes, chosen_input_class, revision, granted_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
         [randomUUID(), liveSessionId, 'gemini', this.#profile.liveModelId, this.#profile.voice, this.#profile.keyReference,
           JSON.stringify(this.#profile.route.dataClasses), input.inputClass, this.#revision, now]);
@@ -350,7 +352,7 @@ export class LiveSessionOwner {
       const grantClasses = tx.get('SELECT permitted_classes FROM live_grants WHERE live_session_id=?', [input.liveSessionId]);
       const permitted: DataClass[] = JSON.parse(String(grantClasses?.['permitted_classes']));
       if (acceptedPrompt.dataClasses.some(c => !permitted.includes(c) || !this.#profile.route.dataClasses.includes(c))) throw new LiveError('invalidated');
-      const job = this.#jobs.forSession(input.liveSessionId);
+      const job = this.#jobs.forSession(input.liveSessionId, tx);
       if (acceptedPrompt.pickup ? !job || job.id !== acceptedPrompt.pickup.jobId || job.delivered
         || identity({ state: job.state, result: job.result ?? null }) !== acceptedPrompt.pickup.identity : Boolean(job)) throw new LiveError('pickup_changed');
       tx.run("UPDATE live_sessions SET lifecycle='opening', dispatch_intent=1, consumer_state='attached', updated_at=? WHERE live_session_id=?", [now, input.liveSessionId]);

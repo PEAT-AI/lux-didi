@@ -69,6 +69,7 @@ async function harness(t: TestContext, overrides: {
   toolError?: boolean;
   scheduler?: DeadlineClock;
   system?: string;
+  overlay?: { schemaVersion: 1; text: string; accent?: string };
   memoryFailure?: boolean;
 } = {}): Promise<Harness> {
   const f = await fixture(t);
@@ -76,7 +77,7 @@ async function harness(t: TestContext, overrides: {
   const domain = createDomainPort({ outbox: Outbox });
   const store = new Store(dir, [...domain.migrations, ...chatMigrations, ...liveMigrations, ...(overrides.tools ? toolsMigrations : [])]);
   let clock = NOW;
-  const profile = validateLiveProfile({ ...profileInput(overrides.limits, overrides.model), ...(overrides.system !== undefined ? { prompt: { text: overrides.system, dataClass: 'ordinary' } } : {}) });
+  const profile = validateLiveProfile({ ...profileInput(overrides.limits, overrides.model), ...(overrides.overlay ? { overlay: overrides.overlay } : {}), ...(overrides.system !== undefined ? { prompt: { text: overrides.system, dataClass: 'ordinary' } } : {}) });
   const voice = new GeminiLiveVoiceAdapter(options({
     socketFactory: f.socketFactory, modelId: profile.liveModelId, voice: profile.voice, keyReference: profile.keyReference,
     route: { enabled: true, provider: 'gemini', modelId: profile.liveModelId, dataClasses: profile.route.dataClasses },
@@ -223,7 +224,7 @@ test('Live memory budget keeps whole records, reports overflow, and rejects over
   assert.deepEqual(snapshot.memory.omitted, [{ id: 'b', reason: 'budget' }]);
   assert.ok(!snapshot.system.includes('Fixture overflow note'));
   assert.ok(snapshot.system.includes(JSON.stringify({ id: 'a', text: 'Fixture whole note' + 'x'.repeat(remaining) })), 'the selected record survives byte for byte');
-  const oversized = await harness(t, { system: 'x'.repeat(20001) });
+  const oversized = await harness(t, { system: 'x'.repeat(4096), tools: true, overlay: { schemaVersion: 1, text: 'x'.repeat(16000) } });
   assert.throws(() => oversized.owner.create({ idempotencyKey: 'oversized', inputClass: 'ordinary' }, oversized.ctx), (error: unknown) => error instanceof LiveError && String(error.code) === 'instruction_too_large');
   const failed = await harness(t, { memoryFailure: true });
   assert.throws(() => failed.owner.create({ idempotencyKey: 'failed-memory', inputClass: 'ordinary' }, failed.ctx), (error: unknown) => error instanceof LiveError && String(error.code) === 'memory_unavailable');
@@ -1256,7 +1257,8 @@ test('loadLiveConfig composes the Naya instruction and fails closed on an invali
   const status = loadLiveConfig({ configDir, ownerId: 'synthetic-owner' });
   assert.equal(status.status, 'configured');
   if (status.status === 'configured') {
-    const expected = composeLiveInstruction({ base: NAYA_BASE, overlay, language: 'de' });
+    const expected = composeLiveInstruction({ base: NAYA_BASE, accent: overlay.accent, language: 'de' });
+    assert.deepEqual(status.config.profile.overlay, overlay);
     assert.equal(status.config.profile.language, 'de');
     assert.equal(status.config.profile.prompt.text, expected.text);
     assert.equal(status.config.profile.acceptedPrompt?.system, expected.text);

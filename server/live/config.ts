@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { DataClass } from '../adapters/live-voice/index.js';
+import { validatePersonaOverlay } from '../prompt/live-persona.js';
 import { ownerProfileClasses, PROMPT_VERSION, validateOwnerProfile } from '../prompt/index.js';
 import { LiveConfigError, type AcceptedPromptSnapshot, type LiveLimits, type LiveProfile, type LiveMemoryProvenance } from './types.js';
 
@@ -84,7 +85,7 @@ export function validateAcceptedPrompt(input: unknown, ownerId?: string): Accept
     }
     return Object.freeze({ schemaVersion: 1, ownerProfile, compilerVersion: PROMPT_VERSION,
       ...(memory ? { memory } : {}), ...(pickup ? { pickup } : {}),
-      system: text(input['system'], 'invalid_prompt'), dataClasses: Object.freeze(dataClasses) });
+      system: input['memory'] === undefined ? text(input['system'], 'invalid_prompt') : acceptedInstruction(input['system']), dataClasses: Object.freeze(dataClasses) });
   } catch { fail('invalid_prompt'); }
 }
 
@@ -106,6 +107,7 @@ export function validateLiveProfile(input: unknown): LiveProfile {
   if (!classes.includes(prompt['dataClass'] as DataClass) || !dataClasses.includes(prompt['dataClass'] as DataClass)) fail('invalid_prompt');
   const dataClass = prompt['dataClass'] as DataClass;
   return Object.freeze({
+    ...(input['overlay'] !== undefined ? { overlay: validatePersonaOverlay(input['overlay']) } : {}),
     ...(input['acceptedPrompt'] !== undefined ? { acceptedPrompt: validateAcceptedPrompt(input['acceptedPrompt']) } : {}),
     provider: 'gemini', liveModelId, voice, keyReference,
     ...(language !== undefined ? { language } : {}),
@@ -129,4 +131,9 @@ export function liveProfileIdentity(profile: LiveProfile): string {
     provider: profile.provider, liveModelId: profile.liveModelId, voice: profile.voice,
     keyReference: profile.keyReference, modelId: profile.route.modelId, dataClasses: profile.route.dataClasses,
   });
+}
+
+function acceptedInstruction(value: unknown): string {
+  if (typeof value !== 'string' || !value.length || value.length > 20000) fail('invalid_prompt');
+  return value;
 }

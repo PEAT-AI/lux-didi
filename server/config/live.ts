@@ -84,10 +84,10 @@ export function loadLiveConfig(options: { configDir: string; ownerId: string; ow
     const overlay = loadPersonaOverlay({ dataDir: dirname(options.configDir) });
     const language = canonicalSpeechLanguage(preferences.language);
     if (input['enabled'] === false) return { status: 'disabled', config };
-    // The Live instruction is the Naya base, the local overlay and the terminal language anchor.
+    // Freeze the Naya baseline and voice anchor; the validated overlay joins at session CREATE.
     const composed = composeLiveInstruction({
       base: NAYA_BASE,
-      ...(overlay !== undefined ? { overlay } : {}),
+      ...(overlay?.accent !== undefined ? { accent: overlay.accent } : {}),
       ...(language !== undefined ? { language } : {}),
     });
     const ownerProfile = options.ownerProfile ?? publicOwnerProfile(options.ownerId);
@@ -100,6 +100,7 @@ export function loadLiveConfig(options: { configDir: string; ownerId: string; ow
       ...(language !== undefined ? { language } : {}),
       route: { enabled: true, provider: input['provider'], modelId: model, dataClasses },
       prompt: { text: composed.text, dataClass: preferences.dataClass },
+      ...(overlay !== undefined ? { overlay } : {}),
       acceptedPrompt: { schemaVersion: 1, ownerProfile, compilerVersion: instruction.promptVersion,
         system: composed.text, dataClasses: instruction.dataClasses },
       ...(input['limits'] !== undefined ? { limits: input['limits'] } : {}),

@@ -274,7 +274,7 @@ test('deleted remember_note entry is absent from the next Live CREATE', async t 
   assert.equal(result.remembered, true);
   const id = String(result.entryId);
   const domain = createDomainPort({ outbox: Outbox });
-  h.store.transaction(tx => domain.execute(tx, 'deleteEntry', { id }, h.ctx));
+  h.store.transaction(tx => domain.execute(tx, 'deleteEntry', { id }, { assistantId: h.store.assistantId, clientId: h.ctx.clientId, authorityEpoch: h.store.authorityEpoch, now: new Date(NOW).toISOString() }));
   await attachment.close();
   const next = h.owner.create({ idempotencyKey: 'after-deletion', inputClass: 'ordinary' }, h.ctx);
   assert.equal(String(frozen(h, next.liveSessionId)?.accepted_prompt_snapshot).includes(payload), false);

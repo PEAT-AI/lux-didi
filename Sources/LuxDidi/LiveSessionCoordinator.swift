@@ -149,7 +149,7 @@ public actor LiveSessionCoordinator {
         await oldSocket?.cancel()
         guard current(token, op) else { return }
         do { try await sink.flush() }
-        catch { if current(token, op) { state = .failed(.unavailable) }; return }
+        catch { if current(token, op) { state = .failed(safe(error, fallback: .unavailable)) }; return }
         guard current(token, op) else { return }
         let task = Task { await self.performCreate(token, op) }
         operationTask = task
@@ -184,7 +184,8 @@ public actor LiveSessionCoordinator {
         do { snapshot = try await http.create(for: frozen, key: key) }
         catch {
             if current(token, op) {
-                state = (error as? LiveClientError) == .conflict ? .failed(.conflict) : .createUnknown
+                if let reason = error as? LiveClientError, case .http = reason { state = .failed(reason) }
+                else { state = (error as? LiveClientError) == .conflict ? .failed(.conflict) : .createUnknown }
             }
             return
         }

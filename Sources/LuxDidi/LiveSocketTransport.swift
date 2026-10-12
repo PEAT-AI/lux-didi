@@ -1,9 +1,38 @@
 import Foundation
 import CoreFoundation
 
-public enum LiveClientError: String, Error, Sendable {
+public enum LiveClientError: Error, Sendable, Equatable, LocalizedError {
     case invalidIntent, statusMismatch, grantMismatch, invalidDestination, forbiddenHeader
     case invalidFrame, invalidAudio, queueOverflow, staleOperation, unavailable, conflict, transport
+    case http(status: Int, code: String?)
+    case socketClosed(code: Int, reason: String?)
+
+    public var rawValue: String {
+        switch self {
+        case .http: return "http"
+        case .socketClosed: return "socketClosed"
+        default: return String(describing: self)
+        }
+    }
+    public var errorDescription: String? {
+        switch self {
+        case .http(let status, let code):
+            return "Live service HTTP \(status)" + (code.map { ": " + $0 } ?? "") + "."
+        case .socketClosed(let code, let reason):
+            return "Live socket closed (\(code))" + (reason.map { ": " + $0 } ?? "") + "."
+        default: return nil
+        }
+    }
+    public static func boundedCode(_ value: String?) -> String? {
+        guard let value, !value.isEmpty, value.utf8.count <= 107,
+              value.range(of: "^[A-Za-z0-9_]+$", options: .regularExpression) != nil else { return nil }
+        return value
+    }
+    public static func boundedCloseReason(_ data: Data?) -> String? {
+        guard let data, data.count <= 123, let text = String(data: data, encoding: .utf8),
+              text.hasPrefix("attach_rejected:"), boundedCode(String(text.dropFirst(16))) != nil else { return nil }
+        return text
+    }
 }
 
 public struct LiveSocketBinding: Sendable, Equatable {
@@ -29,7 +58,10 @@ public enum LiveTerminalState: String, Codable, Sendable {
 
 public struct LiveTerminal: Codable, Sendable, Equatable {
     public let state: LiveTerminalState
-    public init(state: LiveTerminalState) { self.state = state }
+    public let code: String?
+    public init(state: LiveTerminalState, code: String? = nil) {
+        self.state = state; self.code = LiveClientError.boundedCode(code)
+    }
 }
 
 public enum LiveMarkerKind: String, Codable, Sendable {
@@ -129,8 +161,9 @@ public struct LiveSocketTransport: LiveSocketConnecting, Sendable {
                       let raw = object["state"] as? String, let state = LiveTerminalState(rawValue: raw),
                       let complete = boolean(object["complete"]),
                       object["code"] is NSNull || object["code"] is String else { throw LiveClientError.invalidFrame }
-                // Do not retain/copy the provider code field. Only the closed terminal-state enum is public here.
-                return .terminal(LiveTerminal(state: state), complete: complete)
+                let code = object["code"] as? String
+                guard code == nil || LiveClientError.boundedCode(code) != nil else { throw LiveClientError.invalidFrame }
+                return .terminal(LiveTerminal(state: state, code: code), complete: complete)
             }
             guard let kind = LiveMarkerKind(rawValue: type),
                   Set(object.keys).isSubset(of: ["type", "sequence", "journalSequence", "text", "finished", "value"]),
@@ -197,7 +230,12 @@ private actor FoundationLiveSocket: LiveSocket {
             guard !closed else { throw LiveClientError.staleOperation }
             return frame
         } catch let error as LiveClientError { throw error }
-        catch { throw LiveClientError.transport }
+        catch {
+            if task.closeCode != .invalid {
+                throw LiveClientError.socketClosed(code: task.closeCode.rawValue, reason: LiveClientError.boundedCloseReason(task.closeReason))
+            }
+            throw LiveClientError.transport
+        }
     }
     func sendPCM(_ data: Data) async throws {
         try LiveSocketTransport.validatePCM(data)

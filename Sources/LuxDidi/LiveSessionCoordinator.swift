@@ -369,7 +369,12 @@ public actor LiveSessionCoordinator {
     }
     private var settled: Bool { if case .terminal = state { return true }; return false }
     private func current(_ token: UInt64, _ op: UInt64) -> Bool { generation == token && operation == op }
-    private func safe(_ error: Error, fallback: LiveClientError) -> LiveClientError { (error as? LiveClientError) ?? fallback }
+    private func safe(_ error: Error, fallback: LiveClientError) -> LiveClientError {
+        if let reason = error as? LiveClientError { return reason }
+        if error is URLError { return .transport }
+        if error is DecodingError { return .invalidFrame }
+        return fallback
+    }
     private func validateIntent(_ frozen: LiveBeginIntent) throws {
         guard !frozen.assistantID.isEmpty, frozen.provider == "gemini", !frozen.model.isEmpty, !frozen.voice.isEmpty,
               ["ordinary", "private", "sensitive"].contains(frozen.inputClass) else { throw LiveClientError.invalidIntent }

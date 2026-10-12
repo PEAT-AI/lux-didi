@@ -2,6 +2,7 @@
 set -euo pipefail
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 cd "$(dirname "$0")/.."
+helper="$(pwd)/scripts/npm-ci-offline.sh"
 work=$(mktemp -d "${TMPDIR:-/tmp}/didi-live-voice.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 # Distinct isolated configuration files; never inherit account npm configuration.
@@ -15,7 +16,7 @@ grep -Eq '^# tests [1-9][0-9]*$' "$work/test.log" || { echo 'Zero selected live 
 # Use the canonical files inventory and bundled production dependencies, offline.
 npm pack --offline --ignore-scripts --pack-destination "$work" --json > "$work/pack.json"
 mkdir "$work/runtime"
-(cd "$work/runtime" && npm init -y >/dev/null && npm install --offline --omit=dev --ignore-scripts --no-audit --no-fund "$work"/*.tgz >/dev/null)
+(cd "$work/runtime" && npm init -y >/dev/null && bash "$helper" "$work/runtime" install --offline --omit=dev --ignore-scripts --no-audit --no-fund "$work"/*.tgz >/dev/null)
 node --input-type=module - "$work/runtime" <<'NODE'
 import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';

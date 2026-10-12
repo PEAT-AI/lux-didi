@@ -36,3 +36,7 @@ do {
 expect(Presentation.canSend("  hello\n") && !Presentation.canSend(" \n"), "text input boundary")
 expect(Presentation.notificationResult(.acknowledged).contains("not proof"), "accepted is not read")
 print("MAC-SEAMS PASS duration=\(Date().timeIntervalSince(testStarted))s file=Tests/DidiMacTests/main.swift")
+
+let connectionRows = try JSONDecoder().decode([NativeLiveConnection].self, from: Data("[{\"id\":\"calendar\",\"state\":\"error\",\"reasonCode\":\"credential_missing\"}]".utf8))
+expect(connectionRows[0].id == "calendar" && connectionRows[0].state == "error", "Connections card decodes connector state")
+expect(connectionRows[0].reason == "Credential missing or invalid", "Connections card explains missing credentials")

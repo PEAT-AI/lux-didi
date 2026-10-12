@@ -56,6 +56,7 @@ export interface LiveVoiceSession {
   readonly events: AsyncIterable<LiveVoiceEvent>;
   readonly done: Promise<LiveVoiceOutcome>;
   readonly droppedAudioFrames: number;
+  // Includes informational empty serverContent frames after readiness.
   readonly unknownTopLevelKeys?: number;
   sendToolResponse(input: { responses: LiveToolResponse[] }): void;
   sendAudio(input: { pcm: Uint8Array; dataClass: DataClass }): void;

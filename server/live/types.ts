@@ -76,6 +76,7 @@ export interface LivePendingService {
   createWithPending(inputClass: DataClass, idempotencyKey: string, context: LiveContext, pickupJobId?: string): LiveSessionSnapshot;
 }
 export interface LivePageProjection {
+  pastSession?: { outcome: LiveTerminalOutcome['state'] | 'unknown'; endedAt: number | null; lastObservedAt: number };
   jobs?: PendingLiveJob[];
   memory?: LiveMemoryProjection;
   state: 'idle' | 'listening' | 'thinking' | 'speaking' | 'ended' | 'error'; since: number | null;

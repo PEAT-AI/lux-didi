@@ -318,11 +318,13 @@ export class LiveSessionOwner {
     if (!Number.isSafeInteger(cursor) || cursor < 0) throw new LiveError('invalid_request');
     const jobs = this.#jobProjection(false);
     return this.#store.transaction(tx => {
-      const row = tx.get('SELECT live_session_id,lifecycle,created_at,terminal_outcome,memory_provenance FROM live_sessions WHERE owner_assistant_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1', [this.#store.assistantId]);
+      const row = tx.get('SELECT live_session_id,lifecycle,created_at,updated_at,terminal_at,terminal_outcome,memory_provenance FROM live_sessions WHERE owner_assistant_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1', [this.#store.assistantId]);
       if (!row) return { state: 'idle', since: null, ...(jobs.length ? { jobs } : {}), entries: [], cursor };
       const handle = this.#active.get(String(row.live_session_id));
       const terminal = parseTerminal(row.terminal_outcome);
-      const state: LivePageProjection['state'] = terminal ? (['closed', 'cancelled', 'revoked', 'expired'].includes(terminal.state) ? 'ended' : 'error') : handle?.thinking ? 'thinking' : handle?.speaking ? 'speaking' : handle?.consumerState === 'attached' ? 'listening' : handle ? 'ended' : 'idle';
+      const pastSession: LivePageProjection['pastSession'] = terminal || !handle
+        ? { outcome: terminal?.state ?? 'unknown', endedAt: terminal ? Number(row.terminal_at) : null, lastObservedAt: Number(row.updated_at) } : undefined;
+      const state: LivePageProjection['state'] = pastSession ? (!terminal && row.lifecycle === 'accepted' ? 'idle' : 'ended') : handle?.thinking ? 'thinking' : handle?.speaking ? 'speaking' : handle?.consumerState === 'attached' ? 'listening' : handle ? 'ended' : 'idle';
       const rows = tx.all('SELECT journal_id,kind,text,tool_json FROM live_journal WHERE live_session_id=? AND journal_id>? ORDER BY journal_id LIMIT 100', [String(row.live_session_id), cursor]);
       const entries: LivePageProjection['entries'] = [];
       for (const item of rows) {
@@ -333,7 +335,7 @@ export class LiveSessionOwner {
           entries.push({ seq, kind, tool: kind === 'toolCall' ? { name: tool.name, status: 'called' } : { name: tool.name, status: tool.status, markdown: tool.markdown, sources: tool.sources.map(source => ({ title: source.title, ...(source.url ? { url: source.url } : {}) })) } });
         } else if (kind === 'interrupted' || kind === 'turnComplete' || kind === 'terminal') entries.push({ seq, kind });
       }
-      return { state, since: Number(row.created_at), memory: memoryProjection(row['memory_provenance']), ...(jobs.length ? { jobs } : {}), entries, cursor: rows.length ? Number(rows[rows.length - 1]!.journal_id) : cursor };
+      return { state, ...(pastSession ? { pastSession } : {}), since: Number(row.created_at), memory: memoryProjection(row['memory_provenance']), ...(jobs.length ? { jobs } : {}), entries, cursor: rows.length ? Number(rows[rows.length - 1]!.journal_id) : cursor };
     });
   }
 

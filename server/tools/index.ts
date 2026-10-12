@@ -4,7 +4,7 @@ import type { SQLRow, Transaction } from '../contracts/storage.js';
 import type { DataClass, HostContext, JsonObject, ToolCallIntent, ToolCallRefusal, ToolDefinition, ToolResultBinding, ToolResultGate, ToolResultRef } from '../adapters/model/types.js';
 import { validateEndpointUrl, validateApprovedStdioEnv } from '../adapters/mcp/registry.js';
 import { endpointBinding } from '../adapters/mcp/port.js';
-import { CONNECTOR_DESCRIPTORS } from '../connectors/index.js';
+import { CONNECTOR_DESCRIPTORS, CONNECTOR_ENVELOPES } from '../connectors/index.js';
 import { canonicalJSON, detached, sha256 } from './canonical.js';
 import type { BoundConnection, ConnectionApplyResult, ConnectionPolicy, HttpConnectionEndpoint, ModelSnapshot, RunAcceptance, RunSnapshot, StdioConnectionEndpoint, ToolsOwner, ToolsOwnerOptions } from './types.js';
 export { toolsMigrations } from './schema.js';
@@ -45,9 +45,10 @@ export function validatePolicy(input: ConnectionPolicy): ConnectionPolicy {
     if (e.credentialRef !== null) text(e.credentialRef);
   }
   text(p.connector);
-  const descriptor = CONNECTOR_DESCRIPTORS[p.connector];
-  if (!descriptor) throw Error('invalid_connector');
-  if (!Array.isArray(p.toolNames) || p.toolNames.length < 1 || p.toolNames.length > descriptor.envelope.length || new Set(p.toolNames).size !== p.toolNames.length || p.toolNames.some(n => typeof n !== 'string' || !descriptor.envelope.includes(n)) || !/^[a-f0-9]{64}$/.test(p.schemaDigest)) throw Error('invalid_read_tools');
+  // Local read grants use the connector envelope, independently of Live reader support.
+  const envelope = CONNECTOR_ENVELOPES[p.connector];
+  if (!envelope) throw Error('invalid_connector');
+  if (!Array.isArray(p.toolNames) || p.toolNames.length < 1 || p.toolNames.length > envelope.length || new Set(p.toolNames).size !== p.toolNames.length || p.toolNames.some(n => typeof n !== 'string' || !envelope.includes(n)) || !/^[a-f0-9]{64}$/.test(p.schemaDigest)) throw Error('invalid_read_tools');
   exact(p.sourcePolicy, ['id', 'revision', 'unknownClass', 'allowedClasses']); text(p.sourcePolicy.id); positive(p.sourcePolicy.revision); classSet(p.sourcePolicy.allowedClasses);
   if (p.sourcePolicy.unknownClass !== null && !classes.includes(p.sourcePolicy.unknownClass)) throw Error('invalid_unknown_class');
   exact(p.route, ['identity', 'allowedClasses']); text(p.route.identity); classSet(p.route.allowedClasses);

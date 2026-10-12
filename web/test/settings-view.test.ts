@@ -54,9 +54,9 @@ test('maps each connector state to its sentence and one-line next step', () => {
   assert.deepEqual(connectorState(connections[0]), { id: 'knowledge', state: 'Connected', next: 'no action needed' });
   assert.deepEqual(connectorState(connections[2]), { id: 'maps', state: 'Configured', next: 'a Live session connects on demand' });
   assert.equal(connectorState(connections[1])?.state, 'Credential missing');
-  assert.match(connectorState(connections[1])!.next, /credential file under provider-config/);
+  assert.match(connectorState(connections[1])!.next, /credential under the effective data directory/);
   assert.equal(connectorState(connections[3])?.state, 'Failed');
-  assert.match(connectorState(connections[3])!.next, /start the service/);
+  assert.match(connectorState(connections[3])!.next, /Copy diagnostics/);
   const html = settingsMarkup({ status, connections });
   for (const label of ['Connected', 'Configured', 'Credential missing', 'Failed']) assert.match(html, new RegExp(label));
 });

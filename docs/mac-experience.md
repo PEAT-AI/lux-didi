@@ -143,3 +143,21 @@ A notification for a job that is no longer pending leaves any current conversati
 running and explains that the callback is unavailable. Notification submission
 retries are limited to three per job per launch; successful submission or pickup
 prevents further submissions in that launch. Quitting the app stops polling.
+
+## Getting started
+
+The menu bar's **Getting started** sheet shows microphone and notification
+permission states, the actual Open at login registration, global shortcut
+defaults and current Connections status. It appears once for this onboarding
+build after a normal launch. Proof and self-check launches do not consume the
+flag. It never requests a permission automatically. Explicit setup buttons
+request a not-yet-decided microphone permission, open the microphone privacy
+pane for a denied permission, or use the existing notification permission
+affordance. A denied notification permission links to Notifications settings.
+Open at login reuses the existing opt-in toggle. Refresh status re-reads the
+service without changing its settings.
+
+Connector next steps are fixed, connector-specific instructions; **Copy command**
+can only copy the calendar sign-in command. It never reads or copies a credential.
+The page Settings panel shows the same fixed next steps. See [User guide](user-guide.md)
+for daily use, deletion limits and the two operator setup steps.

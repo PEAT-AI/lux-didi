@@ -376,6 +376,7 @@ struct RootView: View {
     private var liveMenuItem: NSMenuItem?
     private var muteMenuItem: NSMenuItem?
     private var loginMenuItem: NSMenuItem?
+    private var gettingStartedSheet: NSWindow?
     private(set) var window: NSWindow!
     private var statusItem: NSStatusItem!
     private var liveCallTimer: Timer?
@@ -414,6 +415,7 @@ struct RootView: View {
         menu.addItem(withTitle: "Stop", action: #selector(stopLiveFromMenu), keyEquivalent: "")
         menu.addItem(NSMenuItem.separator())
         loginMenuItem = menu.addItem(withTitle: "Open at login", action: #selector(toggleLogin), keyEquivalent: "")
+        menu.addItem(withTitle: "Getting started…", action: #selector(showGettingStarted), keyEquivalent: "")
         menu.addItem(withTitle: "Show Didi", action: #selector(show), keyEquivalent: "")
         let pickup = NSMenuItem(title: "Pick up Naya’s call", action: #selector(pickupLiveCall), keyEquivalent: "")
         pickup.isHidden = true; pickupMenuItem = pickup; menu.addItem(pickup)
@@ -472,6 +474,7 @@ struct RootView: View {
                 await uiProof(path: CommandLine.arguments[index + 1]); return
             }
             await model.reconnect()
+            if NativeGettingStartedOnce.consume(UserDefaults.standard) { showGettingStarted() }
         }
     }
     @objc private func revealLogs() {
@@ -551,6 +554,37 @@ struct RootView: View {
     @objc func startLiveFromMenu() { summonActions.start() }
     @objc func muteLiveFromMenu() { summonActions.mute() }
     @objc func stopLiveFromMenu() { summonActions.stop() }
+    @objc private func showGettingStarted() {
+        show()
+        guard gettingStartedSheet == nil else { return }
+        let sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 610),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        sheet.title = "Getting started"
+        sheet.isReleasedWhenClosed = false
+        sheet.contentView = NSHostingView(rootView: NativeGettingStartedView(load: { [weak self] in
+            guard let self else { return [] }
+            await model.refresh()
+            await model.refreshConnections()
+            let login = loginAvailability.map { String(describing: $0.status) } ?? "Unavailable"
+            var rows = NativeGettingStartedItems.rows(microphone: model.voice.microphone.rawValue,
+                notifications: model.notificationStatus.rawValue, login: login,
+                connections: model.connections.map { ($0.id, $0.state, $0.reasonCode) })
+            if model.connectionsError != nil {
+                rows.append(NativeGettingStartedItem(title: "Connections unavailable",
+                    detail: "Refresh status after the service is ready; use Copy diagnostics if it still fails.", command: nil))
+            }
+            return rows
+        }, microphone: { NativeGettingStartedPermissions.microphone() }, notifications: { [weak self] in
+            guard let self else { return }
+            if model.notificationStatus == .denied { NativeGettingStartedPermissions.notificationSettings() }
+            else { Task { await self.model.requestNotificationPermission() } }
+        }, login: { [weak self] in self?.toggleLogin() }, close: { [weak self] in
+            guard let self, let sheet = gettingStartedSheet else { return }
+            window.endSheet(sheet); gettingStartedSheet = nil
+        }))
+        gettingStartedSheet = sheet
+        window.beginSheet(sheet)
+    }
     @objc func toggleLogin() {
         guard let loginAvailability else { return }
         do { try loginAvailability.setEnabled(loginAvailability.status != .on) }

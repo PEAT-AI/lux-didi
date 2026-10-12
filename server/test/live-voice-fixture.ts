@@ -18,7 +18,8 @@ export function options(overrides: Partial<GeminiLiveVoiceOptions> = {}): Gemini
     limits: { handshakeMs: 1000, idleMs: 2000, sessionMs: 4000, closeMs: 50 }, ...overrides,
   };
 }
-export async function fixture(t: TestContext) {
+export type FrameMode = 'text' | 'binary';
+export async function fixture(t: TestContext, frameMode: FrameMode = 'binary') {
   const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });
   await once(server, 'listening');
   const address = server.address();
@@ -56,8 +57,8 @@ export async function fixture(t: TestContext) {
       if (frames.length >= n) return;
       await new Promise<void>(resolve => waiters.set(n, resolve));
     },
-    send(value: unknown) { peer!.send(JSON.stringify(value)); },
-    sendRaw(value: string | Buffer) { peer!.send(value); },
+    send(value: unknown) { peer!.send(JSON.stringify(value), { binary: frameMode === 'binary' }); },
+    sendRaw(value: string | Buffer) { peer!.send(value, { binary: frameMode === 'binary' }); },
     remoteClose(reason = '') { peer!.close(1000, reason); },
     terminate() { peer!.terminate(); },
     get peer() { return peer!; },
@@ -68,8 +69,8 @@ export function collect(session: LiveVoiceSession) {
   const done = (async () => { for await (const event of session.events) events.push(event); })();
   return { events, done };
 }
-export async function ready(t: TestContext, overrides: Partial<GeminiLiveVoiceOptions> = {}) {
-  const f = await fixture(t);
+export async function ready(t: TestContext, overrides: Partial<GeminiLiveVoiceOptions> = {}, frameMode: FrameMode = 'binary') {
+  const f = await fixture(t, frameMode);
   const { GeminiLiveVoiceAdapter } = await import('../adapters/live-voice/index.js');
   const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory, ...overrides })).open(request(), control());
   t.after(() => session.close());

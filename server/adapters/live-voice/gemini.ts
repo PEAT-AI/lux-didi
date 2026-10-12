@@ -200,13 +200,12 @@ class Session implements LiveVoiceSession {
     if (!this.terminal) this.finish('remote_closed');
     this.cleanup();
   };
-  private readonly onMessage = (data: RawData, binary: boolean) => {
+  private readonly onMessage = (data: RawData) => {
     if (!this.checkpoint()) return;
     try {
       const bytes = Array.isArray(data) ? Buffer.concat(data) : Buffer.isBuffer(data) ? data : Buffer.from(data);
       if (bytes.length > this.settings.limits.maxIncomingBytes) { this.finish('incoming_limit'); return; }
-      if (binary) fail('protocol_error');
-      const message: unknown = JSON.parse(bytes.toString('utf8'));
+      const message: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes));
       if (!object(message) || !Object.keys(message).length) fail('protocol_error');
       if ('error' in message) fail('provider_error');
       if ('toolCall' in message) {

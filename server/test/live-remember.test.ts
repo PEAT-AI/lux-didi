@@ -43,6 +43,7 @@ interface Harness {
   ctx: LiveContext;
   dir: string;
   calls: { name: string; args: unknown }[];
+  remoteRememberGranted(): boolean;
   advance(ms: number): void;
 }
 
@@ -52,6 +53,7 @@ async function harness(t: TestContext, overrides: {
   credentials?: { resolve(reference: string): Promise<string | undefined> };
   model?: string;
   tools?: boolean;
+  remoteRemember?: boolean;
   grantMode?: 'explicit' | 'owner-trusted-reads';
   beforeTool?: () => Promise<void>;
   toolError?: boolean;
@@ -79,12 +81,15 @@ async function harness(t: TestContext, overrides: {
   });
   let owner!: LiveSessionOwner;
   let tools: import('../live/types.js').LiveToolsComposition | undefined;
+  let remoteRememberGranted = () => false;
   if (overrides.tools) {
     const schemas = [
       { name: 'search_knowledge', inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' } }, required: ['query', 'limit'], additionalProperties: false } },
       { name: 'get_insight', inputSchema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'integer' } }, include_links: { type: 'boolean' } }, required: ['ids', 'include_links'], additionalProperties: false } },
     ];
+    if (overrides.remoteRemember) schemas.push({ name: 'remember_note', inputSchema: { type: 'object', properties: { text: { type: 'string' }, kind: { type: 'string' } }, required: ['text', 'kind'], additionalProperties: false } });
     const registry = new McpRegistry();
+    remoteRememberGranted = () => registry.currentGrant('lux')?.toolNames.includes('remember_note') ?? false;
     const endpoint = { id: 'lux', url: 'https://fixture.invalid/mcp', account: 'account', resource: 'resource' };
     registry.register(endpoint); registry.enable(endpoint.id); registry.allowEgress(endpoint.id);
     const sdk = new Server({ name: 'live-tools-fixture', version: '1' }, { capabilities: { tools: { listChanged: false } } });
@@ -127,7 +132,7 @@ async function harness(t: TestContext, overrides: {
   };
   owner = createLiveSessionOwner({ store, voice, profile, ...{ memorySource }, ...(tools ? { tools } : {}), now: () => clock });
   t.after(async () => { await owner.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
-  return { requests, calls, f, store, owner, ctx: context(store), dir, advance: ms => { clock += ms; } };
+  return { requests, calls, remoteRememberGranted, f, store, owner, ctx: context(store), dir, advance: ms => { clock += ms; } };
 }
 
 async function attached(h: Harness, key = 'k1') {
@@ -157,6 +162,7 @@ async function remember(h: Harness, text: string | undefined, args: Record<strin
 test('Live remember writes owner words once, freezes the current prompt and recalls at next CREATE', async t => {
   const h = await harness(t, { tools: true });
   const { session, attachment } = await attached(h);
+  assert.ok(h.requests[0]?.tools?.some(tool => tool.name === 'remember_note'), 'Live request declares the built-in');
   const before = frozen(h, session.liveSessionId);
   const sentences = [
     ['Naya, remember that the Mongoose mint is due Friday', 'the Mongoose mint is due Friday', 'task'],
@@ -170,6 +176,7 @@ test('Live remember writes owner words once, freezes the current prompt and reca
     assert.deepEqual(Object.keys(result).sort(), ['entryId', 'remembered']);
     const entry = rows(h)[i]!;
     assert.equal(entry.text, payload);
+    assert.equal(entry.memory_kind, kind);
     const provenance = h.store.transaction(tx => tx.get("SELECT * FROM source_refs WHERE owner_kind='entry' AND owner_id=?", [String(entry.id)]));
     assert.equal(provenance?.provider, 'live-voice');
     assert.equal(provenance?.account_id, session.liveSessionId);
@@ -194,6 +201,7 @@ test('Live remember provenance refusals do not write memory', async t => {
     ['remember that mint is Friday', 'mint is Monday', 'owner_text_mismatch'],
     ['remember this as private: mint is Friday', 'mint is Friday', 'private_memory_unsupported'],
     ['remember privately mint is Friday', 'mint is Friday', 'private_memory_unsupported'],
+    ['remember this as sensitive: mint is Friday', 'mint is Friday', 'private_memory_unsupported'],
   ] as const) {
     await t.test(code, async st => {
       const h = await harness(st, { tools: true });
@@ -213,4 +221,33 @@ test('Live remember retains schema limits and explicit mode denies the write', a
     assert.notEqual(result.remembered, true);
     assert.equal(rows(h).length, 0);
   });
+});
+
+
+test('Live remember reserves the gateway identity when MCP exposes the same name', async t => {
+  const h = await harness(t, { tools: true, remoteRemember: true });
+  await attached(h);
+  assert.equal(h.remoteRememberGranted(), false, 'MCP name receives no part of built-in approval');
+  assert.equal(h.requests[0]?.tools?.filter(tool => tool.name === 'remember_note').length, 1);
+  const result = await remember(h, 'remember mint is Friday', { text: 'mint is Friday', kind: 'fact' }, 2);
+  assert.equal(result.remembered, true);
+  assert.equal(h.calls.length, 0, 'gateway does not execute the remote endpoint');
+});
+
+test('Live remember normalizes commands and pointers but stores the entire owner payload', async t => {
+  const h = await harness(t, { tools: true });
+  await attached(h);
+  const result = await remember(h, 'NAYA REMEMBER That Mint is Friday, after lunch.', { text: '  MINT  IS FRIDAY ', kind: 'fact' }, 2);
+  assert.equal(result.remembered, true);
+  assert.equal(rows(h)[0]?.text, 'Mint is Friday, after lunch.');
+});
+
+test('Live remember waits for finalized owner turns and assembles transcript fragments', async t => {
+  const h = await harness(t, { tools: true });
+  await attached(h);
+  h.f.send({ serverContent: { inputTranscription: { text: 'remember that mint ', finished: false } } });
+  assert.deepEqual(await remember(h, undefined, { text: 'mint is Friday', kind: 'fact' }, 2), { remembered: false, code: 'owner_transcript_not_final' });
+  h.f.send({ serverContent: { inputTranscription: { text: 'is Friday', finished: true } } });
+  assert.equal((await remember(h, undefined, { text: 'mint is Friday', kind: 'fact' }, 3)).remembered, true);
+  assert.equal(rows(h)[0]?.text, 'mint is Friday');
 });

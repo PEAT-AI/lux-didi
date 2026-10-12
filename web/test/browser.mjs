@@ -130,6 +130,74 @@ try {
     await page.getByText('Synthetic notebook',{exact:true}).waitFor(); await page.getByText('Source unavailable',{exact:true}).waitFor();
     await page.getByRole('button',{name:'Open conversation source'}).click(); await page.locator('.entry').filter({hasText:'Remember the synthetic blue notebook'}).waitFor();
   });
+  await step('rendered memory deletion confirms, preserves pending/failed entries and reloads server payload',async()=>{
+    const text='Synthetic browser deletion canary';
+    await page.getByLabel('Local note · not sent to a model').fill(text);
+    await page.getByRole('button',{name:'Save message',exact:true}).click();
+    await page.locator('.entry').filter({hasText:text}).waitFor();
+    // Read it back through recall and the conversation GET, not client capture state.
+    await page.getByRole('button',{name:'Memory',exact:true}).click();
+    await page.getByLabel('Search your memory').fill(text);
+    await page.getByRole('button',{name:'Search',exact:true}).click();
+    await page.getByRole('button',{name:'Open conversation source',exact:true}).click();
+    const row=page.locator('.entry').filter({hasText:text});
+    await row.waitFor();
+    const id=await row.getByRole('button',{name:'Delete memory',exact:true}).getAttribute('data-delete-memory');
+    assert(id);
+    const write=fixture.requests.findLast(r=>r.method==='POST'&&r.path.endsWith('/entries')&&r.body.text===text);
+    assert(write);
+    const sessionPath=write.path.replace(/\/entries$/,'');
+    const envelope=await (await page.request.get(`${fixture.url}${sessionPath}`)).json();
+    const original=envelope.data.entries.find(entry=>entry.id===id);
+    assert.equal(original.text,text);
+    const retained={...original,id:'00000000-0000-4000-8000-000000000050',text:'New retained entry from the server reload'};
+    let deleted=false,releaseDelete,receivedDelete,releaseReload,receivedReload;
+    let arrival=new Promise(resolve=>{receivedDelete=resolve;});
+    const reloadArrival=new Promise(resolve=>{receivedReload=resolve;});
+    const reloadRelease=new Promise(resolve=>{releaseReload=resolve;});
+    await page.route(`${fixture.url}/api/v1/entries/${id}`,async route=>{
+      const response=new Promise(resolve=>{releaseDelete=resolve;});
+      receivedDelete(route.request());
+      await route.fulfill(await response);
+    });
+    await page.route(`${fixture.url}${sessionPath}`,async route=>{
+      if(!deleted){await route.continue();return;}
+      receivedReload();
+      await reloadRelease;
+      await route.fulfill({json:{...envelope,data:{...envelope.data,entries:[...envelope.data.entries.filter(entry=>entry.id!==id),retained]}}});
+    });
+    await page.route('**/api/v1/recall?*',async route=>{
+      const response=await route.fetch();const payload=await response.json();
+      if(deleted){payload.data.hits=payload.data.hits.filter(hit=>hit.entryId!==id);payload.data.totalMatches=payload.data.hits.length;}
+      await route.fulfill({response,json:payload});
+    });
+    const confirmDelete=async()=>{
+      const requestPromise=page.waitForRequest(request=>request.url()===`${fixture.url}/api/v1/entries/${id}`&&request.method()==='DELETE');
+      const dialogPromise=page.waitForEvent('dialog');
+      const click=row.getByRole('button',{name:'Delete memory',exact:true}).click();
+      const dialog=await dialogPromise;
+      assert.equal(dialog.type(),'confirm');assert.match(dialog.message(),/Delete this memory permanently/);
+      await dialog.accept();await click;await requestPromise;
+      const request=await arrival;assert.equal(request.method(),'DELETE');assert.deepEqual(request.postDataJSON(),{});
+    };
+    await confirmDelete();
+    assert.equal(await row.isVisible(),true,'pending DELETE must retain the entry');
+    releaseDelete({status:503,json:{error:{code:'WRITE_FAILED',message:'Could not delete this memory.'}}});
+    await page.getByRole('alert').filter({hasText:'Could not delete this memory.'}).waitFor();
+    assert.equal(await row.isVisible(),true,'failed DELETE must retain the entry');
+    arrival=new Promise(resolve=>{receivedDelete=resolve;});
+    await confirmDelete();
+    assert.equal(await row.isVisible(),true,'retry must not optimistically filter the entry');
+    deleted=true;
+    const reloadRequest=page.waitForRequest(request=>request.url()===`${fixture.url}${sessionPath}`&&request.method()==='GET');
+    releaseDelete({json:{...envelope,data:{entryId:id,deletedAt:'2026-01-01T00:00:00.000Z',actor:'browser-fixture',reasonCode:'owner_request'}}});
+    await reloadRequest;await reloadArrival;
+    assert.equal(await row.isVisible(),true,'DELETE success alone must not replace the server list');
+    releaseReload();
+    await row.waitFor({state:'detached'});
+    await page.locator('.entry').filter({hasText:retained.text}).waitFor();
+    assert.equal(await page.getByRole('alert').filter({hasText:'Could not delete this memory.'}).count(),0);
+  });
   await step('offline cannot claim saved; preserves draft; no offline writer',async()=>{
     await page.getByLabel('Local note · not sent to a model').fill('Offline draft stays here'); await context.setOffline(true); await page.getByText('Offline',{exact:true}).waitFor();
     assert.equal(await page.getByRole('button',{name:'Save message',exact:true}).isDisabled(),true);

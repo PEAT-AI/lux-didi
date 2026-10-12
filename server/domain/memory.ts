@@ -407,3 +407,28 @@ export function preferenceOrNull(tx: Transaction, key: string): PreferenceRecord
   const row = tx.get(`SELECT * FROM preferences WHERE key = ?`, [key]);
   return row ? mapPreference(row) : null;
 }
+
+/** Content-free deletion journal; runtime transaction owns atomicity. */
+export function deleteEntry(tx: Transaction, id: string, deletedAt: string, actor: string): import('../contracts/domain.js').EntryTombstone {
+  const existing = tx.get('SELECT * FROM entry_tombstones WHERE entry_id = ?', [id]);
+  if (existing) return { entryId: id, deletedAt: String(existing.deleted_at), actor: String(existing.actor), reasonCode: 'owner_request' };
+  readEntry(tx, id);
+  // Live owns exactly one source turn per remembered entry. Only its canonical
+  // UUID:sequence identity is retained, never arbitrary source labels or text.
+  const source = tx.get("SELECT external_id FROM source_references WHERE owner_kind = 'entry' AND owner_id = ? AND provider = 'live-voice'", [id]);
+  const key = source?.external_id;
+  const sourceKey = typeof key === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:\d+$/.test(key) ? key : null;
+  tx.run("DELETE FROM source_references WHERE owner_kind = 'entry' AND owner_id = ?", [id]);
+  tx.run('DELETE FROM entries WHERE id = ?', [id]);
+  tx.run('INSERT INTO entry_tombstones(entry_id, deleted_at, actor, reason_code, source_kind, source_key) VALUES (?, ?, ?, ?, ?, ?)', [id, deletedAt, actor, 'owner_request', sourceKey ? 'live-voice' : null, sourceKey]);
+  return { entryId: id, deletedAt, actor, reasonCode: 'owner_request' };
+}
+
+
+/** Source-turn identity survives deletion so a retained transcript cannot recreate a note. */
+export function rememberedLiveEntry(tx: Transaction, sourceKey: string): string | null {
+  const active = tx.get("SELECT owner_id FROM source_references WHERE owner_kind = 'entry' AND provider = 'live-voice' AND external_id = ?", [sourceKey]);
+  if (active) return String(active.owner_id);
+  const deleted = tx.get("SELECT entry_id FROM entry_tombstones WHERE source_kind = 'live-voice' AND source_key = ?", [sourceKey]);
+  return deleted ? String(deleted.entry_id) : null;
+}

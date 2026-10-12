@@ -15,7 +15,9 @@ export interface ResolvedEntry {
 export interface Commitment { id: string; title: string; notes: string; dueAt: string | null; timeZone: string; status: 'active' | 'completed' | 'cancelled'; revision: number; sourceSessionId: string | null; sourceEntryId: string | null; createdAt: string; updatedAt: string }
 export interface CommitmentHistory { revision: number; operation: string; recordedAt: string; title: string; notes: string; dueAt: string | null; timeZone: string; status: Commitment['status'] }
 export interface DomainContext { assistantId: string; clientId: string; authorityEpoch: string; now: string }
+export interface EntryTombstone { entryId: string; deletedAt: string; actor: string; reasonCode: 'owner_request' }
 export interface DomainOperations {
+  deleteEntry: { input: { id: string }; output: EntryTombstone };
   createSession: { input: { title: string; timeZone: string }; output: Session };
   listSessions: { input: Record<string, never>; output: { items: Session[]; nextCursor: string | null } };
   getSession: { input: { id: string }; output: { session: Session; entries: Entry[]; nextCursor: string | null } };

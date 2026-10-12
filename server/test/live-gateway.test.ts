@@ -871,12 +871,14 @@ test('canonical host resumes one journal and never exposes the handle on the wir
   ws.on('message', (bytes: Data, binary: boolean) => {
     if (binary) return;
     const frame = JSON.parse(bytes.toString()) as Record<string, unknown>;
-    frames.push(frame); const notify = waiters.get(key(frame));
-    if (notify) { waiters.delete(key(frame)); notify(frame); }
+    frames.push(frame); const waitKey = waiters.has(key(frame)) ? key(frame) : `${frame.type}:*`;
+    const notify = waiters.get(waitKey);
+    if (notify) { waiters.delete(waitKey); notify(frame); }
   });
-  const next = (type: string, event = '') => {
-    const found = frames.find(frame => key(frame) === `${type}:${event}`);
-    return found ? Promise.resolve(found) : new Promise<Record<string, unknown>>(resolve => waiters.set(`${type}:${event}`, resolve));
+  const next = (type: string, event?: string) => {
+    const waitKey = event === undefined ? `${type}:*` : `${type}:${event}`;
+    const found = frames.find(frame => frame.type === type && (event === undefined || frame.event === event));
+    return found ? Promise.resolve(found) : new Promise<Record<string, unknown>>(resolve => waiters.set(waitKey, resolve));
   };
   const closed = once(ws, 'close');
   await f.frame(1); f.send({ setupComplete: {} }); await next('ready');

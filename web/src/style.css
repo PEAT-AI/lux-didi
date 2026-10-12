@@ -34,4 +34,6 @@
 .connections-card ul { list-style: none; padding: 0; }
 .connections-card li { margin-block: .75rem; }
 .connections-card small { display: block; }
-.live-result summary { cursor: pointer; }
+.live-tool-result summary { cursor: pointer; }
+
+.live-tool-result { margin-top: 18px; padding: 14px 18px; border: 1px solid var(--border); border-radius: 9px; }

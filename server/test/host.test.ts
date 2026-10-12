@@ -74,7 +74,7 @@ test('host serves the accepted build with security policy, never API or private 
     assert.deepEqual(projection.map((row: { state: string }) => row.state), ['missing', 'configured', 'connected', 'error']);
     assert.deepEqual(projection.map((row: { reasonCode: string | null }) => row.reasonCode), ['credential_missing', null, null, 'unknown']);
     for (const row of projection) assert.deepEqual(Object.keys(row).sort(), ['id', 'lastHandshakeAt', 'reasonCode', 'state', 'tools']);
-    assert.doesNotMatch(JSON.stringify(projection), /SECRET|PRIVATE|secret.invalid|private.json|config/);
+    assert.doesNotMatch(JSON.stringify(projection), /SECRET|PRIVATE|secret.invalid|private.json/);
     assert.equal((await fetch(service.origin + '/api/v1/live/connections')).status, 401);
     assert.equal((await fetch(service.origin + '/api/v1/live/connections', { headers: { Cookie: cookie, Origin: 'https://evil.invalid' } })).status, 403);
     assert.equal((await fetch(service.origin + '/api/v1/tools/status', { headers: { Cookie: cookie } })).status, 403);

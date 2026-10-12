@@ -163,6 +163,9 @@ struct OwnedServiceConnection {
                 do {
                     _ = try await self.start(recovering: true)
                     guard !Task.isCancelled, self.recovery.generation == token else { return }
+                    guard self.isRunning else {
+                        self.recovery.finished(token, success: false); return
+                    }
                     self.recovery.finished(token, success: true)
                     self.onRecovered?()
                 } catch {

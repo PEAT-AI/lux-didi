@@ -26,7 +26,7 @@ const pickupInstruction = 'The user has just picked up. Deliver the pending job 
 interface ActiveSession {
   generation: number; attempts: number; rebuilding: boolean;
   request: LiveVoiceRequest; deadlineMs: number; idleAt: number; goAwayUntil: number | undefined;
-  sessionTimer: JobTimer | undefined; idleTimer: JobTimer | undefined;
+  sessionTimer: ReturnType<JobTimer> | undefined; idleTimer: ReturnType<JobTimer> | undefined;
   pendingCalls: Map<string, string>;
   registry: readonly ToolDefinition[];
   host: HostContext | undefined;

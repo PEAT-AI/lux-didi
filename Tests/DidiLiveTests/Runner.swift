@@ -49,7 +49,7 @@ final class DiagnosticHTTPFixture: URLProtocol, @unchecked Sendable {
     }))
     let cases: [(Error, String, String, Int?)] = [
         (NativeLiveAudioError.permissionDenied, "audio", "permissionDenied", nil),
-        (LiveClientError.invalidAudio, "audio", "invalidAudio", nil),
+        (LiveClientError.invalidAudio, "service", "invalidAudio", nil),
         (URLError(.cannotConnectToHost), "service", "service_unreachable", nil),
         (LiveClientError.http(status: 503, code: "private text"), "service", "http", 503),
         (LiveClientError.socketClosed(code: 1006, reason: "private text"), "service", "socketClosed", 1006),

@@ -21,6 +21,29 @@ struct LiveStatusPresentation {
         }
     }
 }
+/// The same explicit owner actions serve menu and shortcuts. Show has no capture authority.
+final class NativeSummonActions {
+    private let showWindow: () -> Void
+    private let startLive: () -> Void
+    private let muteLive: () -> Void
+    private let stopLive: () -> Void
+    init(show: @escaping () -> Void, start: @escaping () -> Void,
+         mute: @escaping () -> Void, stop: @escaping () -> Void) {
+        showWindow = show; startLive = start; muteLive = mute; stopLive = stop
+    }
+    func show() { showWindow() }
+    func start() { showWindow(); startLive() }
+    func mute() { muteLive() }
+    func stop() { stopLive() }
+}
+struct LiveShortcutRegistration {
+    let startStatus: String
+    let muteStatus: String
+    init(register: (_ key: Int, _ id: UInt32) -> Int32) {
+        startStatus = ShortcutStatus.describe(code: register(kVK_ANSI_L, 1))
+        muteStatus = ShortcutStatus.describe(code: register(kVK_ANSI_M, 2))
+    }
+}
 /// Control-Option-Shift-L starts/shows Live; Control-Option-Shift-M mutes.
 /// Each registration and Carbon event identity is independent of Show/hide.
 @MainActor final class NativeShortcuts {
@@ -45,16 +68,17 @@ struct LiveStatusPresentation {
             }
             return noErr
         }, 1, &specification, Unmanaged.passUnretained(self).toOpaque(), &handler)
-        func registerKey(_ key: Int, id: UInt32) -> String {
-            guard installed == noErr else { return ShortcutStatus.describe(code: installed) }
+        func registerKey(_ key: Int, _ id: UInt32) -> Int32 {
+            guard installed == noErr else { return installed }
             var reference: EventHotKeyRef?
             let code = RegisterEventHotKey(UInt32(key), UInt32(controlKey | optionKey | shiftKey),
                 EventHotKeyID(signature: 0x4E415941, id: id), GetApplicationEventTarget(), 0, &reference)
             if let reference { references.append(reference) }
-            return ShortcutStatus.describe(code: code)
+            return code
         }
-        startStatus = registerKey(kVK_ANSI_L, id: 1)
-        muteStatus = registerKey(kVK_ANSI_M, id: 2)
+        let registration = LiveShortcutRegistration(register: registerKey)
+        startStatus = registration.startStatus
+        muteStatus = registration.muteStatus
     }
     func unregister() {
         for reference in references { UnregisterEventHotKey(reference) }

@@ -293,6 +293,10 @@ struct RootView: View {
     }
     let hotkey = GlobalHotkey()
     let liveShortcuts = NativeShortcuts()
+    private lazy var summonActions = NativeSummonActions(show: { [weak self] in self?.show() },
+        start: { [weak self] in self?.model.startLive() },
+        mute: { [weak self] in self?.model.live?.toggleMute() },
+        stop: { [weak self] in self?.model.stopLive() })
     private var loginAvailability: LoginAvailability?
     private var liveObservation: AnyCancellable?
     private var liveStateObservation: AnyCancellable?
@@ -374,7 +378,7 @@ struct RootView: View {
             Task { @MainActor in self?.model.stopRecording("Mac is going to sleep") }
         }
         Task {
-            if !loginLaunch { show() }
+            if NativeLaunchVisibility.shouldShow(loginLaunch: loginLaunch) { show() }
             OwnedWindowReadiness.trace("app:refresh-start")
             await model.refresh()
             OwnedWindowReadiness.trace("app:refresh-end", ["isActive": NSApp.isActive])
@@ -427,9 +431,9 @@ struct RootView: View {
         loginMenuItem?.state = loginAvailability?.status == .on ? .on : .off
         loginMenuItem?.isEnabled = loginAvailability != nil
     }
-    @objc func startLiveFromMenu() { show(); model.startLive() }
-    @objc func muteLiveFromMenu() { model.live?.toggleMute() }
-    @objc func stopLiveFromMenu() { model.stopLive(); updateLiveStatus(state: "stopped") }
+    @objc func startLiveFromMenu() { summonActions.start() }
+    @objc func muteLiveFromMenu() { summonActions.mute() }
+    @objc func stopLiveFromMenu() { summonActions.stop() }
     @objc func toggleLogin() {
         guard let loginAvailability else { return }
         do { try loginAvailability.setEnabled(loginAvailability.status != .on) }

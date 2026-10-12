@@ -44,3 +44,7 @@ enum WindowFrameRestore {
         return CGRect(x: screen.midX - width / 2, y: screen.midY - height / 2, width: width, height: height)
     }
 }
+
+enum NativeLaunchVisibility {
+    static func shouldShow(loginLaunch: Bool) -> Bool { !loginLaunch }
+}

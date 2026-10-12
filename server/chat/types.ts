@@ -42,10 +42,11 @@ export interface AcceptInput {
 }
 /** Host startup authority, not an authenticated browser/client request. */
 export interface ChatRecoveryContext { assistantId: string; authorityEpoch: string }
-export interface EnrollInput { title: string; timeZone: string; idempotencyKey: string }
-export interface ConversationStatus { sessionId: string; provider: string; model: string; state: 'active' | 'revoked' | 'route_changed'; revision: number; permittedClasses: DataClass[]; latestRunId: string | null }
+export interface EnrollInput { title: string; timeZone: string; idempotencyKey: string; consent?: boolean; remember?: boolean }
+export interface ConversationStatus { scope: 'conversation' | 'standing'; sessionId: string; provider: string; model: string; state: 'active' | 'revoked' | 'route_changed'; revision: number; permittedClasses: DataClass[]; latestRunId: string | null }
 export interface ChatPort {
   enroll(input: EnrollInput, context: DomainContext): ConversationStatus;
+  standingConsent(context: DomainContext): ConversationStatus | null;
   conversation(sessionId: string, context: DomainContext): ConversationStatus;
   revoke(sessionId: string, context: DomainContext): ConversationStatus;
   correctRoutingLabel(input: RoutingLabelCorrection, context: DomainContext): RoutingLabel;

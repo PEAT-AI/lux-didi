@@ -2,6 +2,7 @@
 set -euo pipefail
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 cd "$(dirname "$0")/.."
+helper="$(pwd)/scripts/npm-ci-offline.sh"
 work=$(mktemp -d "${TMPDIR:-/tmp}/didi-live-session.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 # Distinct isolated configuration files; never inherit account npm configuration.
@@ -24,7 +25,7 @@ const files = pack[0].files.map(entry => entry.path);
 assert.ok(files.some(path => path.startsWith('dist/live/')), 'published tarball must include dist/live');
 NODE
 mkdir "$work/runtime"
-(cd "$work/runtime" && npm init -y >/dev/null && npm install --offline --omit=dev --ignore-scripts --no-audit --no-fund "$work"/*.tgz >/dev/null)
+(cd "$work/runtime" && npm init -y >/dev/null && bash "$helper" "$work/runtime" install --offline --omit=dev --ignore-scripts --no-audit --no-fund "$work"/*.tgz >/dev/null)
 node --input-type=module - "$work/runtime" <<'NODE'
 import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';

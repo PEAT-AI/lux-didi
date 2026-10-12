@@ -1,3 +1,5 @@
+// The declared host check also exercises the real installer's isolated seed block (R5).
+import './install-template.test.js';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -400,7 +402,9 @@ for (const scenario of ['both', 'existing-live', 'default', 'absent'] as const) 
       }
       assert.equal((await stat(effective)).mode & 0o777, 0o700);
       const seeded = scenario === 'both' ? ['live.json', 'mcp.json'] : scenario === 'existing-live' ? ['mcp.json'] : [];
-      assert.deepEqual(logs, seeded.map(name => `config_seeded file=${name} from=provider-config`));
+      const seedRecords = (await readFile(join(dir, 'logs', 'host.log'), 'utf8')).split('\n').filter(line => line.includes('config_seeded')).map(line => JSON.parse(line).file);
+      assert.deepEqual(seedRecords, seeded);
+      assert.deepEqual(logs, [], 'host stdout is reserved for JSON protocol frames');
       if (effective !== defaults) for (const name of ['gemini-primary.json', 'profile.json', 'admin-credential']) await assert.rejects(readFile(join(effective, name)), { code: 'ENOENT' });
     } finally { await host?.close(); await rm(dir, { recursive: true, force: true }); }
   });
@@ -441,10 +445,10 @@ for (const missingMongoose of [true, false]) {
     const url = `http://127.0.0.1:${address.port}`;
     const child = join(dir, 'fake-mattermost.cjs');
     await writeFile(child, `const tools=${JSON.stringify(tools)}; const reply=${reply.toString()}; require('node:readline').createInterface({input:process.stdin}).on('line', line => { const response=reply(JSON.parse(line)); if(response) console.log(JSON.stringify(response)); });`);
-    const http = (id: string, connector: string, credentialRef: string | null = null) => ({ id, connector, transport: 'streamable-http', url: url + '/' + id, account: 'synthetic', resource: id, credentialRef, enabled: true, allowEgress: true });
+    const http = (id: string, connector: string, credentialRef: string | null = null) => ({ id, connector, transport: 'streamable-http', url: url + '/' + id, account: 'synthetic', resource: id, credentialRef, enabled: true, allowEgress: true, unknownClass: 'ordinary' });
     await writeFile(join(config, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [
       http('lux-knowledge', 'lux-knowledge'), http('gmail', 'google'), http('calendar', 'google'),
-      { id: 'mattermost', connector: 'mattermost', transport: 'stdio', command: process.execPath, args: [child], env: { HOME: dir, PATH: process.env.PATH ?? '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' }, account: 'synthetic', resource: 'mattermost', credentialRef: null, enabled: true, allowEgress: true },
+      { id: 'mattermost', connector: 'mattermost', transport: 'stdio', command: process.execPath, args: [child], env: { HOME: dir, PATH: process.env.PATH ?? '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' }, account: 'synthetic', resource: 'mattermost', credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'ordinary' },
       http('mongoose', 'mongoose', missingMongoose ? 'missing-credential' : null),
     ] }), { mode: 0o600 });
     await writeFile(join(config, 'live.json'), JSON.stringify({ schemaVersion: 1, enabled: true, provider: 'gemini', modelId: 'models/live-gateway-test', voice: 'LiveVoice', keyReference: 'gemini-primary', dataClasses: ['ordinary'], preferences: { dataClass: 'ordinary', language: 'en-US', register: 'plain', humor: 'dry', verbosity: 'balanced' } }), { mode: 0o600 });
@@ -471,7 +475,7 @@ test('host rejects an unknown connector kind before discovery and names it', asy
   const dir = await mkdtemp(join(tmpdir(), 'didi-unknown-connector-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const config = join(dir, 'provider-config'); await mkdir(config, { mode: 0o700 });
-  await writeFile(join(config, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [{ id: 'unknown-endpoint', connector: 'unknown-kind', transport: 'streamable-http', url: 'http://127.0.0.1:1/', account: 'synthetic', resource: 'synthetic', credentialRef: null, enabled: true, allowEgress: true }] }), { mode: 0o600 });
+  await writeFile(join(config, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [{ id: 'unknown-endpoint', connector: 'unknown-kind', transport: 'streamable-http', url: 'http://127.0.0.1:1/', account: 'synthetic', resource: 'synthetic', credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'ordinary' }] }), { mode: 0o600 });
   await assert.rejects(async () => {
     const host = await startHost({ dataDir: join(dir, 'state'), configDir: config, webRoot, port: 0 });
     await host.close();

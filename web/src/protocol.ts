@@ -11,7 +11,9 @@ export interface Status { ownerProfile: OwnerProfileStatus; assistantId: string;
 export interface CommitmentDetail { commitment: Commitment; history: { revision: number; operation: string; recordedAt: string; title: string; notes: string; dueAt: string | null; timeZone: string; status: Commitment['status'] }[] }
 
 /** Safe current presentation only; no authored profile/version/path. */
+export interface ConnectedConsent { sessionId: string; provider: string; model: string; scope: 'conversation' | 'standing'; state: 'active' | 'revoked' | 'route_changed' }
 export interface ConnectedRouteStatus {
+  consent?: ConnectedConsent | null;
   status: 'unconfigured' | 'disabled' | 'error' | 'configured'; provider?: string; model?: string; code?: string;
 }
 export interface OwnerProfileStatus { status: 'default' | 'configured'; displayName: string }
@@ -23,4 +25,4 @@ export interface LiveSource { title: string; url?: string }
 export interface LiveTool { name: string; status: 'called' | 'completed' | 'error'; markdown?: string; sources?: LiveSource[] }
 export interface LiveEntry { seq: number; kind: LiveKind; text?: string; tool?: LiveTool }
 export interface LiveJob { id: string; originSessionId: string; state: 'in_progress' | 'completed' | 'failed' | 'unknown'; createdAt: number; markdown: string; delivered: boolean }
-export interface LiveCurrent { jobs?: LiveJob[]; state: LiveState; since?: string; muted?: boolean; entries: LiveEntry[]; cursor: string | number }
+export interface LiveCurrent { pastSession?: { outcome: 'closed' | 'failed' | 'cancelled' | 'deadline' | 'not_started' | 'outcome_unknown' | 'journal_limit' | 'consumer_backpressure' | 'expired' | 'revoked' | 'unknown'; endedAt: number | null; lastObservedAt: number }; jobs?: LiveJob[]; state: LiveState; since?: string; muted?: boolean; entries: LiveEntry[]; cursor: string | number }

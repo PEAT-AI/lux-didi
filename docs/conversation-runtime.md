@@ -184,3 +184,13 @@ every route, reject body owner/client injection, enforce CSRF/Origin/epoch,
 and maintain authenticated SSE-session liveness on every flush with explicit
 expiry/revocation closure that never cancels durable background work. A new
 valid client reconnects to the same run. HTTP/PWA/voice integration is later.
+
+### Standing connected-chat disclosure
+
+The enrollment form can explicitly remember the provider disclosure for the current provider, route and model. The server stores this as a `standing` chat consent. Existing rows remain `conversation` scoped after the additive chat migration (version 5); they are never promoted automatically. A standing grant retains its originating conversation for provenance, but the consent resolver selects it by owner and the full route tuple, not by conversation id.
+
+Enrollment and generation use the same server resolver: a valid conversation grant takes precedence, otherwise a valid standing grant may apply. Provider, model, route identity, permitted data classes, disclosure revision and revocation must all match. A private route cannot inherit an ordinary route's grant. A model or route change requires a new disclosure, not consent inheritance.
+
+`GET /api/v1/chat/status` returns the server-resolved standing `consent` or null. The UI can skip the checkbox only when that payload contains a valid grant, and displays its scope and a revoke action. `POST /api/v1/conversations` accepts boolean `consent` and `remember` controls; absent consent does not create a grant unless the server resolves standing consent. Remembering requires an explicit checked disclosure. The existing conversation revoke endpoint also revokes a server-resolved standing grant. After revocation, new enrollment requires disclosure again; unrelated conversation-scoped grants remain valid.
+
+This is separate from connector read grants, Live consent and microphone disclosure. The native WKWebView renders the same UI; no separate native consent state authorizes chat.

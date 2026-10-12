@@ -105,7 +105,7 @@ async function harness(t: TestContext, options: HarnessOptions = {}): Promise<Ha
     t.after(async () => { endpoint.closeAllConnections(); await new Promise<void>(resolve => endpoint.close(() => resolve())); await transport.close(); await sdk.close(); });
     const address = endpoint.address(); assert(address && typeof address !== 'string');
     const url = `http://127.0.0.1:${address.port}`;
-    const entry = (id: string, path: string) => ({ id, url: url + path, transport: 'streamable-http', connector: 'lux-knowledge', account: 'fixture', resource: 'knowledge', credentialRef: null, enabled: true, allowEgress: true });
+    const entry = (id: string, path: string) => ({ id, url: url + path, transport: 'streamable-http', connector: 'lux-knowledge', account: 'fixture', resource: 'knowledge', credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'ordinary' });
     writePrivate(config, 'mcp.json', JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [entry('healthy', '/'), ...(options.failedMcp ? [{ ...entry('failed', '/'), credentialRef: 'missing-credential' }] : [])] }));
     const sources: Array<(runId: string, signal: AbortSignal) => Promise<LiveAuthority | null>> = [];
     const lookupAuthority = async (runId: string, signal: AbortSignal) => {

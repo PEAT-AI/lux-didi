@@ -22,7 +22,7 @@ trap 'rm -rf "$work" "$bundle"' EXIT
 export npm_config_userconfig=/dev/null npm_config_globalconfig="$work/absent-global-config"
 cache="${LUX_COMPANION_NPM_CACHE:-$HOME/.npm}"
 git archive HEAD server | tar -x -C "$work/source"
-npm --prefix "$work/source/server" ci --offline --ignore-scripts --no-audit --no-fund --cache "$cache" >/dev/null
+bash scripts/npm-ci-offline.sh "$work/source/server" ci --offline --ignore-scripts --no-audit --no-fund --cache "$cache" >/dev/null
 "$node" "$work/source/server/node_modules/typescript/bin/tsc" -p "$work/source/server/tsconfig.json"
 cp -R "$work/source/server" "$bundle/Contents/Resources/server"
 entry="$bundle/Contents/Resources/server/dist/host/index.js"

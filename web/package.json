@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build",
-    "check": "npm run build && node --test test/markdown.test.ts test/live-view.test.ts && lux-browser-slot run --priority worker --want 1 --wait 240 -- node test/browser.mjs"
+    "check": "npm run build && node --test test/markdown.test.ts test/live-view.test.ts && lux-browser-slot run --priority worker --want 1 --wait 420 -- node test/browser.mjs"
   },
   "devDependencies": {
     "playwright": "1.64.0",

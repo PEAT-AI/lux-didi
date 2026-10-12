@@ -65,3 +65,5 @@
 .memory-source::before { content: "· "; }
 .memory-empty { color: var(--muted); }
 @media (max-width:420px) { .memory-list-head { flex-direction: column; } }
+
+.connected-consent-indicator { font-size: .9rem; color: var(--muted); }

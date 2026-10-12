@@ -81,6 +81,7 @@ the owner or credentials are touched. A paired browser cookie/CSRF never authori
 | method | path | notes |
 | --- | --- | --- |
 | GET | `/api/v1/live/status` | safe configured model/voice/classes/profile identity |
+| GET | `/api/v1/live/summary` | cookie-safe closed whitelist: `modelId`, `voice`, `personaName`, `limits{sessionMs,idleMs}`, `profileEnabled` |
 | POST | `/api/v1/live-sessions` | `{ inputClass }` + `Idempotency-Key`; returns a frozen snapshot |
 | GET | `/api/v1/live-sessions/:id` | snapshot |
 | GET | `/api/v1/live-sessions/:id/journal` | bounded `?cursor&limit` page |

@@ -279,8 +279,26 @@ File contents are never read or shown. The view whitelists and escapes each fiel
 by name, so a secret-looking field on a route payload cannot reach the page. A
 failed route shows "Unavailable" for that group rather than stale values.
 
-`GET /api/v1/live/status` is operator-bearer-only, so the page cannot read the
-Live model, voice and limits from it. Those fields stay "Unavailable" until a
-browser-readable route exists; the panel does not invent them.
+`GET /api/v1/live/status` is operator-bearer-only, so the page instead reads the
+browser-safe `GET /api/v1/live/summary` for the Live model, voice, persona name and
+the session and idle limits, shown in whole minutes. When the route answers with
+`profileEnabled` false the panel shows "Live profile disabled" rather than invent
+a model or voice. A failed or forbidden summary leaves the connector rows intact
+and shows "Unavailable" for those Live rows only, never a stale value; the panel
+renders only the whitelisted keys `modelId`, `voice`, `personaName`,
+`limits.sessionMs`, `limits.idleMs` and `profileEnabled`.
+
+
+## Live summary
+
+The read-only Live summary reads `GET /api/v1/live/summary` with the existing
+browser cookie (the operator bearer is accepted too); the operator-only
+`/api/v1/live/status` still refuses the cookie. The response is a closed
+whitelist, `{modelId, voice, personaName, limits: {sessionMs, idleMs},
+profileEnabled}`, carrying the configured model and voice, the persona display
+name and the session and idle limits, and nothing else: no key reference, no
+endpoint, no provider credential and no persona or system prompt text. When Live
+is unconfigured or disabled the route still answers 200 with `profileEnabled`
+false and the other fields null.
 
 The Live page projection may include optional `pastSession` metadata. Past sessions render as the last Live session, not a current error. `endedAt` is the persisted terminal timestamp; an orphan has null `endedAt` and an unknown outcome, with `lastObservedAt` shown explicitly as last seen. Active session labels are unchanged.

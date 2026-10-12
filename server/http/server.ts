@@ -110,6 +110,21 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
         throw new ServiceError('METHOD_NOT_ALLOWED', 'Audio requires a WebSocket upgrade', 405);
       }
       const actor = principal(req);
+      if (route.kind === 'liveSummary') {
+        // Browser-safe sibling of the operator-only status route: a closed whitelist for the page,
+        // never key references, prompts, endpoints or credentials. Cookie and operator both read it.
+        const status = live?.status();
+        const active = status && status.status === 'configured' ? status : undefined;
+        const personaName = options.ownerProfileStatus?.displayName ?? null;
+        res.setHeader('Cache-Control', 'no-store');
+        send(res, 200, success({
+          modelId: active?.model ?? null,
+          voice: active?.voice ?? null,
+          personaName: active ? personaName : null,
+          limits: active?.limits ?? null,
+          profileEnabled: active !== undefined,
+        })); return;
+      }
       if (route.kind === 'liveCurrent' || route.kind === 'liveConnections') {
         if (actor.mode !== 'browser' || req.headers.authorization !== undefined || (req.headers['sec-fetch-site'] !== undefined && req.headers['sec-fetch-site'] !== 'same-origin')) throw new ServiceError('FORBIDDEN', 'Page session required', 403);
         res.setHeader('Cache-Control', 'no-store');

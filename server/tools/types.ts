@@ -9,6 +9,8 @@ export interface HttpConnectionEndpoint { id: string; url: string; account: stri
 export interface StdioConnectionEndpoint { id: string; transport: 'stdio'; command: string; args: readonly string[]; env?: Readonly<Record<string, string>>; account: string; resource: string; credentialRef: null }
 export type ConnectionEndpoint = HttpConnectionEndpoint | StdioConnectionEndpoint;
 export interface ConnectionPolicy {
+  /** Missing only on legacy inputs. Explicit owner approval adopts connection semantics. */
+  bindingMode?: 'connection';
   schemaVersion: 1; ownerId: string; connectionId: string; generation: number; enabled: boolean;
   /** The Didi connector that owns this connection's read envelope, tool table and projector. */
   connector: string;

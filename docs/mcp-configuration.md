@@ -97,3 +97,11 @@ allowlisted `{id, state, tools, lastHandshakeAt, reasonCode}` rows; `reasonCode`
 is null for healthy connections or one of `credential_missing`, `unreachable`,
 `discovery_failed`, `handshake_failed`, `unknown`. Diagnostics and configuration
 payloads are not returned. `/api/v1/tools/status` remains operator bearer-only.
+
+## Required source classification per catalog entry
+
+Every `mcp.json` endpoint, HTTP or stdio, must explicitly supply `unknownClass` as `ordinary`, `private` or `sensitive`, for example `"unknownClass": "private"`. This value is owner-controlled local configuration, not remote MCP metadata. It is the connection's approved fallback source class. No value is inferred from connector descriptions, transport, credentials, route identity or an ordinal privacy hierarchy.
+
+Missing and invalid values produce the typed endpoint status `unknown-class-missing` or `unknown-class-invalid`. Only that endpoint is non-executable; the remaining configured connections still start. A healthy handshake is status-only unless the connection has current owner approval and a usable grant. The installer seeds explicit `private` values for lux-knowledge, gmail, calendar, mattermost and mongoose, reflecting non-public owner/company data; an operator must select `sensitive` where the local source requires it. Synthetic test catalogs use explicit `ordinary` values.
+
+Reconciliation retains persisted source-policy revisions, allowed classes, bounds and disabled approval across restarts. Unchanged content causes no CAS and no generation bump. A tighter fallback class changes policy revision/generation immediately; lowering classification, adding tool names or changing endpoint binding returns `owner-approval-required` until the existing explicit connection intent approval is applied. Ambiguous legacy rows return `ambiguous-legacy-policy`. Editing a catalog never re-enables a revoked stored approval.

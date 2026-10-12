@@ -263,6 +263,21 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
                 print("PASS cookie preflight sensitivity baseline")
                 return
             }
+            let unreachableHTTP = TestHTTP(fixture)
+            await unreachableHTTP.makeStatusUnreachable()
+            let unreachableSockets = CountedSockets(fixture)
+            let unreachableClient = LiveSessionCoordinator(http: unreachableHTTP, sockets: unreachableSockets, sink: SilentSink())
+            await unreachableClient.begin(intent(fixture))
+            let unreachableState = await unreachableClient.state
+            try require(unreachableState == .failed(.transport), "coordinator preserves unreachable status transport cause")
+            guard case .failed(let unreachableReason) = unreachableState else {
+                throw ProbeError.assertion("unreachable status must fail before CREATE")
+            }
+            try require(NativeLivePresentation.failure(unreachableReason) == "Live service is unreachable. Reconnect the service and try again.", "coordinator failure renders actionable transport sentence, not generic fallback")
+            try require(await unreachableHTTP.requests == 0, "unreachable status issues no CREATE request")
+            try require(await unreachableSockets.attempts == 0, "unreachable status opens no socket")
+            await unreachableHTTP.finish()
+
             var previous = ContinuousClock.now
             var durations: [(String, Duration)] = []
             func record(_ name: String) {

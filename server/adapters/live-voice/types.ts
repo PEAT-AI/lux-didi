@@ -19,7 +19,9 @@ export interface GeminiLiveVoiceOptions {
 }
 export interface LiveToolCall { id: string; name: string; args: JsonObject }
 export interface LiveToolResponse { id: string; name: string; response: JsonObject }
+export const liveVoiceTimerDefaults = Object.freeze({ handshakeMs: 15_000, idleMs: 60_000, sessionMs: 900_000, closeMs: 1000 });
 export interface LiveVoiceRequest {
+  resumptionHandle?: string;
   opening?: 'user_first' | 'model_first';
   tools?: FunctionDeclaration[];
   languageCode?: string;
@@ -27,13 +29,14 @@ export interface LiveVoiceRequest {
   history?: readonly { role: 'user' | 'model'; text: string; dataClass: DataClass }[];
   dataClasses: readonly DataClass[];
 }
-export interface LiveVoiceControl { signal: AbortSignal; deadlineMs: number }
+export interface LiveVoiceControl { signal: AbortSignal; deadlineMs: number; limits?: Partial<LiveVoiceLimits> }
 export type LiveVoiceErrorCode =
   | 'closed' | 'cancelled' | 'deadline' | 'invalid_settings' | 'invalid_request' | 'route_denied'
   | 'credential_unavailable' | 'not_ready' | 'invalid_audio' | 'transport_error' | 'provider_error'
   | 'remote_closed' | 'provider_setup_rejected' | 'protocol_error' | 'unsupported_tool' | 'incoming_limit' | 'outgoing_limit'
   | 'backpressure' | 'event_limit' | 'handshake_timeout' | 'idle_timeout' | 'session_timeout' | 'go_away';
 export interface LiveVoiceOutcome {
+  recoverable?: boolean;
   droppedAudioFrames?: number;
   status: 'closed' | 'cancelled' | 'deadline' | 'failed'; code: LiveVoiceErrorCode;
 }
@@ -47,8 +50,8 @@ export type LiveVoiceEvent = { sequence: number } & (
   | { type: 'generationComplete' | 'turnComplete' | 'interrupted' }
   | { type: 'waitingForInput'; value: boolean }
   | { type: 'interactionStatus'; value: string }
-  | { type: 'goAway'; timeLeft: string }
-  | { type: 'resumptionAvailability'; available: boolean }
+  | { type: 'goAway'; timeLeftMs: number }
+  | { type: 'resumptionHandle'; handle: string | null }
   | { type: 'outcome'; outcome: LiveVoiceOutcome }
 );
 export interface LiveVoiceSession {

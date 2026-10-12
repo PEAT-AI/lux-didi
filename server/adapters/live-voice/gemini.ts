@@ -1,14 +1,14 @@
 import WebSocket from 'ws';
 import type { RawData } from 'ws';
 import type { DataClass, GeminiLiveVoiceOptions, LiveVoiceControl, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession, LiveSocketFactory, LiveVoiceErrorCode, LiveToolResponse, LiveToolCall } from './types.js';
-import { LiveVoiceError } from './types.js';
+import { LiveVoiceError, liveVoiceTimerDefaults } from './types.js';
 
 // Fixed official v1beta endpoint. Neither destination nor credentials are public events.
 const ENDPOINT = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent';
 const DEFAULTS: Readonly<LiveVoiceLimits> = Object.freeze({
   maxIncomingBytes: 1024 * 1024, maxOutgoingBytes: 1024 * 1024, maxBufferedBytes: 2 * 1024 * 1024,
   maxEventBytes: 1024 * 1024, maxEvents: 128, maxRequestBytes: 256 * 1024, maxHistoryTurns: 128,
-  handshakeMs: 15_000, idleMs: 60_000, sessionMs: 900_000, closeMs: 1000,
+  ...liveVoiceTimerDefaults,
 });
 const classes: readonly DataClass[] = ['ordinary', 'private', 'sensitive'];
 const timerNames = ['handshakeMs', 'idleMs', 'sessionMs', 'closeMs'] as const;
@@ -58,7 +58,8 @@ export class GeminiLiveVoiceAdapter implements LiveVoicePort {
     });
   }
   open(request: LiveVoiceRequest, control: LiveVoiceControl): LiveVoiceSession {
-    const settings = this.settings;
+    const settings = { ...this.settings, limits: { ...this.settings.limits, ...control.limits } };
+    for (const name of timerNames) if (!Number.isSafeInteger(settings.limits[name]) || settings.limits[name] < 1) fail('invalid_request');
     if (!settings.enabled) fail('route_denied');
     if (!object(request) || !object(request.system) || typeof request.system.text !== 'string' || !request.system.text.length
       || (request.history !== undefined && !Array.isArray(request.history))) fail('invalid_request');
@@ -84,6 +85,7 @@ export class GeminiLiveVoiceAdapter implements LiveVoicePort {
     if (Buffer.byteLength(JSON.stringify({ system, history, tools: request.tools })) > settings.limits.maxRequestBytes) fail('invalid_request');
     const setup = JSON.stringify({ setup: {
       model: settings.modelId,
+      sessionResumption: request.resumptionHandle ? { handle: request.resumptionHandle } : {},
       generationConfig: { responseModalities: ['AUDIO'], speechConfig: { ...(request.languageCode ? { languageCode: request.languageCode === 'ar' ? 'ar-XA' : request.languageCode } : {}), voiceConfig: { prebuiltVoiceConfig: { voiceName: settings.voice } } },
         ...(!/gemini-3\.8[^/]*live/.test(settings.modelId) ? { thinkingConfig: { thinkingLevel: 'minimal' } } : {}) },
       ...(request.tools?.length ? { tools: [{ functionDeclarations: request.tools }] } : {}),
@@ -109,6 +111,8 @@ class Session implements LiveVoiceSession {
   private socket: WebSocket | undefined;
   private terminal: LiveVoiceOutcome | undefined;
   private isReady = false;
+  private draining = false;
+  private recoverable = false;
   private sequence = 0;
   private secret = '';
   private queue: { event: LiveVoiceEvent; bytes: number }[] = [];
@@ -196,10 +200,14 @@ class Session implements LiveVoiceSession {
   private readonly onError = (error: Error) => {
     if (this.terminal) return;
     const code = (error as Error & { code?: unknown }).code;
+    this.recoverable = code !== 'WS_ERR_UNSUPPORTED_MESSAGE_LENGTH';
     this.finish(code === 'WS_ERR_UNSUPPORTED_MESSAGE_LENGTH' ? 'incoming_limit' : 'transport_error');
   };
   private readonly onClose = (code: number) => {
-    if (!this.terminal) this.finish(code === 1007 && !this.isReady ? 'provider_setup_rejected' : 'remote_closed');
+    if (!this.terminal) {
+      this.recoverable = code === 1006 || code === 1011 || this.draining && code === 1000;
+      this.finish(this.draining && this.recoverable ? 'go_away' : code === 1008 || code === 1007 && !this.isReady ? 'provider_setup_rejected' : 'remote_closed');
+    }
     this.cleanup();
   };
   private readonly onMessage = (data: RawData) => {
@@ -253,17 +261,20 @@ class Session implements LiveVoiceSession {
       if ('sessionResumptionUpdate' in message) {
         const update = message.sessionResumptionUpdate;
         if (!object(update) || typeof update.resumable !== 'boolean' || ('newHandle' in update && typeof update.newHandle !== 'string')) fail('protocol_error');
-        events.push({ type: 'resumptionAvailability', available: update.resumable });
+        if (update.resumable && (typeof update.newHandle !== 'string' || !update.newHandle.length)) fail('protocol_error');
+        events.push({ type: 'resumptionHandle', handle: update.resumable ? update.newHandle as string : null });
       }
       if ('goAway' in message) {
         const away = message.goAway;
         if (!object(away) || typeof away.timeLeft !== 'string' || !/^\d+(?:\.\d{1,9})?s$/.test(away.timeLeft)
           || !Number.isFinite(Number(away.timeLeft.slice(0, -1)))) fail('protocol_error');
-        events.push({ type: 'goAway', timeLeft: away.timeLeft });
+        this.draining = true;
+        events.push({ type: 'goAway', timeLeftMs: Number(away.timeLeft.slice(0, -1)) * 1000 });
+        this.timer(Math.max(1, Math.ceil(Number(away.timeLeft.slice(0, -1)) * 1000)), 'go_away');
       }
       for (const event of events) { if (!this.checkpoint() || !this.emit(event)) return; }
       this.touch();
-      if ('goAway' in message) this.finish('go_away');
+
     } catch (error) { this.finish(error instanceof LiveVoiceError ? error.code : 'protocol_error'); }
   };
   private text(value: unknown): string {
@@ -346,6 +357,7 @@ class Session implements LiveVoiceSession {
     } catch { this.finish('transport_error'); return false; }
   }
   sendToolResponse(input: { responses: LiveToolResponse[] }): void {
+    if (this.draining) return;
     if (!this.checkpoint()) fail(this.terminal!.code);
     if (!this.isReady) fail('not_ready');
     if (!object(input) || !Array.isArray(input.responses) || !this.pendingCalls.length || input.responses.length !== this.pendingCalls.length ||
@@ -354,6 +366,7 @@ class Session implements LiveVoiceSession {
     if (this.write(frame)) this.pendingCalls = [];
   }
   sendAudio(input: { pcm: Uint8Array; dataClass: DataClass }): void {
+    if (this.draining) return;
     if (!this.checkpoint()) fail(this.terminal!.code);
     if (!this.isReady) fail('not_ready');
     if (!object(input) || !(input.pcm instanceof Uint8Array) || !input.pcm.byteLength || input.pcm.byteLength % 2) fail('invalid_audio');
@@ -366,6 +379,7 @@ class Session implements LiveVoiceSession {
     if (!this.write(JSON.stringify({ realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data } } }))) fail(this.terminal!.code);
   }
   endAudioStream(): void {
+    if (this.draining) return;
     if (!this.checkpoint()) fail(this.terminal!.code);
     if (!this.isReady) fail('not_ready');
     if (!this.write(JSON.stringify({ realtimeInput: { audioStreamEnd: true } }))) fail(this.terminal!.code);
@@ -374,7 +388,7 @@ class Session implements LiveVoiceSession {
   private finish(code: LiveVoiceErrorCode) {
     if (this.terminal) return;
     const status = code === 'closed' ? 'closed' : code === 'cancelled' ? 'cancelled' : code === 'deadline' ? 'deadline' : 'failed';
-    this.terminal = Object.freeze({ status, code, ...(this.droppedAudioFrames ? { droppedAudioFrames: this.droppedAudioFrames } : {}) });
+    this.terminal = Object.freeze({ status, code, ...(this.recoverable || code === 'go_away' ? { recoverable: true } : {}), ...(this.droppedAudioFrames ? { droppedAudioFrames: this.droppedAudioFrames } : {}) });
     for (const timer of this.timers) clearTimeout(timer);
     this.timers.clear(); this.signal.removeEventListener('abort', this.onAbort);
     this.initial = undefined; this.secret = '';

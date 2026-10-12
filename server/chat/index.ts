@@ -7,7 +7,7 @@ import { publicOwnerProfile, validateOwnerProfile, PROMPT_VERSION } from '../pro
 import { runTools } from '../adapters/model/loop.js';
 import { declarationsFor } from '../tools/declarations.js';
 import { definitionsInTransaction } from '../tools/index.js';
-import { canonicalJSON } from '../adapters/mcp/registry.js';
+import { canonicalJSON } from '../tools/canonical.js';
 import type { LiveAuthority, RunAcceptance, RunSnapshot as OwnerRunSnapshot } from '../tools/types.js';
 import type { ToolEvidence } from './types.js';
 import { assemble, classify, ContextFailure, type ContextTrace } from './context.js';
@@ -64,8 +64,8 @@ export class ChatService implements ChatPort {
     const active = this.#toolAuthorities.get(runId);
     if (!active || !active.policyMatches || this.#workers.get(runId)?.signal.aborted) return null;
     try {
-      this.#checkPolicy(runId, active.authority.runId === runId ? this.get(runId, active.context).sessionId : '', active.context);
       const run = this.get(runId, active.context);
+      this.#checkPolicy(runId, run.sessionId, active.context);
       return run.state === 'dispatch_intent' && run.authorityEpoch === active.context.authorityEpoch
         ? structuredClone(active.authority) : null;
     } catch { return null; }
@@ -149,6 +149,17 @@ export class ChatService implements ChatPort {
     } }, request, registry, host, control, maxSteps: 4,
       authority: { isCurrent: async () => this.lookupAuthority(run.runId) !== null },
       journal: tools.owner.journal, resultGate: tools.owner.resultGate });
+    // The finite bound can stop after a tool result, before another model request.
+    // Read its projection through the SAME canonical gate, never from raw journal JSON.
+    if (!control.signal.aborted && this.lookupAuthority(run.runId)) {
+      const final = await tools.owner.resultGate.authorize(host, loop.resultBindings ?? [], request.dataClasses, control.signal);
+      const toolEvidence = final.state === 'allowed' ? this.#toolEvidence({ ...request, contents: [{ role: 'user', parts: final.results.map(result => ({ functionResponse: { name: result.binding.name, response: result.response } })) }] }) : [];
+      this.#config.store.transaction(tx => {
+        const row = this.#row(tx, run.runId, context);
+        const trace = row.trace ? JSON.parse(String(row.trace)) as Record<string, unknown> : {};
+        tx.run('UPDATE chat_runs SET trace=? WHERE run_id=?', [JSON.stringify({ ...trace, toolEvidence }), run.runId]);
+      });
+    }
     return { status: loop.status === 'limit' ? 'truncated' : loop.status === 'uncertain' ? 'error' : loop.status, text: loop.text };
   }
 

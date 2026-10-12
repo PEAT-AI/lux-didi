@@ -1,6 +1,6 @@
 # Standalone tools owner
 
-`server/tools` is an additive portable owner, **not installed Chat or host tool calling**. It implements the accepted model journal and result gate without changing their signatures. It uses the existing Store and MCP registry/adapter, and the accepted Lux knowledge reader. It adds exactly three tables under the typed `tools` version-1 migration: `tool_connections`, `tool_runs`, and `tool_calls`. There is no Chat foreign key, second database, refusal table or independent authorization registry.
+`server/tools` is the additive portable owner consumed by the host's Chat and Live compositions. It implements the accepted model journal and result gate without changing their signatures. It uses the existing Store and MCP registry/adapter, and the accepted Lux knowledge reader. It adds exactly three tables under the typed `tools` version-1 migration: `tool_connections`, `tool_runs`, and `tool_calls`. There is no Chat foreign key, second database, refusal table or independent authorization registry.
 
 ## Trusted composition
 
@@ -51,3 +51,22 @@ The gateway saves the owner's finalized input transcription, not the model's pro
 Voice remembering writes **ordinary memory only**. An explicit request to classify the note as private or sensitive refuses with `private_memory_unsupported`; it is never silently downgraded. Private notes must use an owner-controlled workflow, not this voice tool. Live-voice entries have **no deletion control yet**. Durable memory deletion is deferred to a separate wagon, not available through the Live projection or the selected-memory picker.
 
 A successful result is only `{remembered: true, entryId}`; refusals return `{remembered: false, code}` (duplicate refusals additionally identify the existing entry). Note text is never echoed in the tool result. Naya confirms aloud only after success and otherwise reports the refusal. Saving does not modify the running session's `accepted_prompt_snapshot` or `prompt_identity`: recall occurs at the next session CREATE.
+
+
+## Text chat consumption
+
+Text chat consumes the canonical owner and the host's existing connection
+selection; it does not create another evaluator, journal, result gate or schema
+derivation. A frozen conversation acceptance limits which original read
+declarations can be supplied. Every actual dispatch remains subject to live
+owner authorization and registry revocation. The acceptance binds the provider,
+model, route, permitted classes and connection policy identity, and cannot be
+reused after those route inputs change. New approvals require a new conversation.
+
+The shared model tool loop has a four-request bound in chat. Every provider
+request, including an evidence follow-up, requires current conversation consent.
+The model sees only the result gate's accepted projection; browser cards are
+bounded markdown and permitted sources from that same boundary, not raw MCP
+content or tool_calls JSON. Chat reuses the canonical gate at the finite loop
+boundary before projecting the last accepted results. Denial remains denial,
+never a connector-specific fallback or authority synthesized from model output.

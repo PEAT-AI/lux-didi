@@ -125,9 +125,10 @@ Source availability is computed from actually configured reads: session is
 available; recall/Today are available only when configured, otherwise missing.
 Optional explicit `context.sources` entries can constrain the known IDs
 `session`, `recall`, `today`, but cannot advertise disabled/unknown sources as
-available or silently enable a missing/error source. There are zero runnable
-tools/declarations in this engine's capability snapshot. Read failures prevent
-dispatch. Unexpected paginated reads are unavailable rather than guessed full.
+available or silently enable a missing/error source. When the host supplies the
+canonical tools composition, approved read declarations are derived with the
+shared declaration helper and filtered by the conversation route classes. No
+write tool or remember_note is admitted. Read failures prevent dispatch. Unexpected paginated reads are unavailable rather than guessed full.
 
 History is a contiguous suffix of **whole turns**, beginning at a user entry
 and always ending at the accepted current user. Actual compiler serialization,
@@ -194,3 +195,42 @@ Enrollment and generation use the same server resolver: a valid conversation gra
 `GET /api/v1/chat/status` returns the server-resolved standing `consent` or null. The UI can skip the checkbox only when that payload contains a valid grant, and displays its scope and a revoke action. `POST /api/v1/conversations` accepts boolean `consent` and `remember` controls; absent consent does not create a grant unless the server resolves standing consent. Remembering requires an explicit checked disclosure. The existing conversation revoke endpoint also revokes a server-resolved standing grant. After revocation, new enrollment requires disclosure again; unrelated conversation-scoped grants remain valid.
 
 This is separate from connector read grants, Live consent and microphone disclosure. The native WKWebView renders the same UI; no separate native consent state authorizes chat.
+
+## Approved read tools in text chat
+
+The host passes the same tools owner, registry and connection selection used by
+Live into `composeChat`. The first tool-enabled dispatch stores a conversation
+capability acceptance: provider, model, route identity, permitted classes, policy
+identity, original declaration descriptors and connection IDs. This is a frozen
+ceiling, not a grant: later approvals do not join that conversation. Create a new
+conversation to admit newly approved reads. Revoked registry grants, changed
+connection policy identity or stale authority still stop execution. Provider,
+model, route and class changes cannot reuse the acceptance.
+
+Dispatch uses the shared `runTools` loop. Original schemas validate arguments;
+only `declarationsFor` derives provider schemas. The canonical evaluator, intent
+journal, owner execution, result gate and result journal remain authoritative.
+No chat evaluator, connector journal, schema derivation or permissive result gate
+is introduced. Provider consent and route currency are checked before every
+model request, including follow-ups carrying accepted evidence.
+
+`maxSteps` is **4 model requests**: an initial request, up to two evidence
+refinement rounds, and an answer opportunity. Repeated tool calls cannot keep a
+turn alive indefinitely; exhausting this ceiling yields the existing truncated
+outcome, not a saved complete answer. The owner gate is reused at the finite
+boundary so a last accepted result can be projected without a follow-up request.
+Denied/rejected evidence is not copied from the raw connector or journal.
+
+`RunSnapshot.toolEvidence` extends the existing snapshot response, including
+subscription snapshots and later retrieval. Only accepted gate projections are
+persisted in the private compiler trace extension; raw connector results,
+provider parts and signatures never become cards. Each card has a name, at most
+4096 markdown characters and eight permitted sources; at most sixteen cards are
+displayed. Source titles are limited to 256 characters and URLs to 2048. The web
+uses the existing safe markdown renderer, escapes HTML, displays unsafe links as
+text and links sources only over HTTP(S). Cards precede the latest saved answer.
+
+The chat system TOOLS paragraph requires tools only when the question needs
+external evidence, answers grounded in accepted evidence and explicit disclosure
+when a tool refused. Writes, per-call approval dialogs, hot capability refresh
+and connector-specific rich cards are not part of this composition.

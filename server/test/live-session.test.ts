@@ -66,6 +66,7 @@ async function harness(t: TestContext, overrides: {
   model?: string;
   tools?: boolean;
   beforeTool?: () => Promise<void>;
+  beforeGate?: () => Promise<void>;
   toolError?: boolean;
   scheduler?: DeadlineClock;
   system?: string;
@@ -116,6 +117,10 @@ async function harness(t: TestContext, overrides: {
     });
     const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic-token', budgets: { maxResponseBytes: 12000, projectionChars: 10, timeoutMs: 1000 } });
     const toolOwner = createToolsOwner({ store, ownerId: store.assistantId, registry, port, lookupAuthority: async runId => owner?.lookupAuthority(runId) ?? owner?.lookupJobAuthority(runId) ?? null });
+    if (overrides.beforeGate) {
+      const authorize = toolOwner.resultGate.authorize.bind(toolOwner.resultGate);
+      t.mock.method(toolOwner.resultGate, 'authorize', async (...args: Parameters<typeof authorize>) => { await overrides.beforeGate!(); return authorize(...args); });
+    }
     toolOwner.applyConnection({ schemaVersion: 1, ownerId: store.assistantId, connectionId: 'lux', generation: 1, enabled: true, connector: 'lux-knowledge',
       endpoint: { ...endpoint, credentialRef: null }, toolNames: ['search_knowledge', 'get_insight'], schemaDigest: canonicalToolDigest(schemas),
       sourcePolicy: { id: 'live-fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
@@ -1314,4 +1319,39 @@ test('resumption keeps journal identity and frozen authority with the real adapt
   assert.equal(rows.filter(r => r.kind === 'terminal').length, 1);
   assert.equal(rows.filter(r => r.kind === 'continuity').length, 2);
   assert.equal(new Set(rows.map(r => r.journal_id)).size, rows.length);
+});
+
+test('pending tool call at the resume cut gets one lost result and never dispatches on the new connection', async t => {
+  const entered = deferred<void>(), release = deferred<void>();
+  const h = await harness(t, { tools: true, beforeGate: async () => { entered.resolve(); await release.promise; } });
+  t.after(() => release.resolve());
+  const { session, attachment } = await attached(h, 'resume-lost-tool');
+  const acceptance = h.store.transaction(tx => tx.get('SELECT acceptance_json,accepted_run_hash FROM live_tool_acceptances WHERE live_session_id=?', [session.liveSessionId]));
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-tool-resumption-secret' }, toolCall: { functionCalls: [{ id: 'lost-call', name: 'lux_search_knowledge', args: { query: 'test', limit: 1 } }] } });
+  await entered.promise;
+  assert.equal(h.calls.length, 0);
+  h.f.send({ goAway: { timeLeft: '10s' } });
+  await h.f.frame(2);
+  assert.equal(h.owner.current().state, 'rebuilding');
+  const cut = h.owner.listFragments({ liveSessionId: session.liveSessionId });
+  const lost = cut.fragments.filter(row => row.tool?.code === 'tool_call_lost_on_resume');
+  assert.equal(lost.length, 1);
+  assert.equal(lost[0]!.tool!.callId, 'lost-call');
+  const rebuilding = cut.fragments.find(row => row.kind === 'continuity');
+  assert.equal(rebuilding?.event, 'rebuilding');
+  assert.equal(rebuilding?.text, null, 'continuity is typed, not transcript text');
+  assert.deepEqual(h.store.transaction(tx => tx.get('SELECT acceptance_json,accepted_run_hash FROM live_tool_acceptances WHERE live_session_id=?', [session.liveSessionId])), acceptance);
+  h.f.send({ setupComplete: {} });
+  for await (const chunk of attachment.output) {
+    if (chunk.kind === 'marker' && chunk.marker.kind === 'continuity' && chunk.marker.event === 'resumed') break;
+  }
+  release.resolve();
+  // Let the rejected old dispatch gate and its catch finish without a clock wait.
+  await tick(); await tick();
+  assert.equal(h.calls.length, 0, 'old pending call is never dispatched');
+  assert.equal(h.f.frames.some(frame => 'toolResponse' in (frame as object)), false);
+  const after = h.owner.listFragments({ liveSessionId: session.liveSessionId });
+  assert.equal(after.fragments.filter(row => row.tool?.code === 'tool_call_lost_on_resume').length, 1);
+  assert.equal(after.fragments.length, cut.fragments.length + 1, 'only the resumed row crosses the generation fence');
+  attachment.close(); await attachment.done;
 });

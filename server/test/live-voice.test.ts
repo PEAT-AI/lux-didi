@@ -66,6 +66,7 @@ test('wire setup/history snapshots, readiness, PCM and three independent output 
   await f.frame(1);
   assert.equal(f.frames.length, 1);
   assert.deepEqual(f.frames[0], { setup: {
+    sessionResumption: {},
     model: 'models/explicit-live-test', generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'ExplicitVoice' } } }, thinkingConfig: { thinkingLevel: 'minimal' } },
     historyConfig: { initialHistoryInClientContent: true }, contextWindowCompression: { slidingWindow: { targetTokens: 32000 } },
     realtimeInputConfig: { automaticActivityDetection: { startOfSpeechSensitivity: 'START_SENSITIVITY_LOW' } },

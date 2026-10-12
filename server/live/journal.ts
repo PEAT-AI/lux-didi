@@ -3,7 +3,7 @@ import type { JournalKind, LiveFragment, LiveFragmentPage, LiveTerminalOutcome }
 
 /** Kinds the journal persists. Audio, thoughts, modelText and raw transport facts are excluded. */
 export const persistedKinds: readonly JournalKind[] = Object.freeze([
-  'toolCall', 'toolResult', 'inputTranscription', 'outputTranscription', 'ready', 'interrupted', 'generationComplete', 'turnComplete', 'waitingForInput',
+  'continuity', 'toolCall', 'toolResult', 'inputTranscription', 'outputTranscription', 'ready', 'interrupted', 'generationComplete', 'turnComplete', 'waitingForInput',
 ]);
 
 /**
@@ -11,17 +11,18 @@ export const persistedKinds: readonly JournalKind[] = Object.freeze([
  * retain no payload text and therefore account zero bytes. Fixed terminal metadata is excluded.
  */
 export function retainedBytes(kind: JournalKind, text: string | null): number {
-  return kind === 'inputTranscription' || kind === 'outputTranscription' ? Buffer.byteLength(text ?? '', 'utf8') : 0;
+  return kind === 'continuity' || kind === 'inputTranscription' || kind === 'outputTranscription' ? Buffer.byteLength(text ?? '', 'utf8') : 0;
 }
 
 export function rowToFragment(row: SQLRow): LiveFragment {
   return {
+    ...(row['kind'] === 'continuity' ? JSON.parse(String(row['text'])) as { event: 'rebuilding' | 'resumed'; reason?: string } : {}),
     ...(row['tool_json'] ? { tool: JSON.parse(String(row['tool_json'])) } : {}),
     liveSessionId: String(row['live_session_id']),
     journalSequence: Number(row['journal_id']),
     providerSequence: row['provider_sequence'] === null || row['provider_sequence'] === undefined ? null : Number(row['provider_sequence']),
     kind: String(row['kind']) as JournalKind,
-    text: row['text'] === null || row['text'] === undefined ? null : String(row['text']),
+    text: row['kind'] === 'continuity' ? null : row['text'] === null || row['text'] === undefined ? null : String(row['text']),
     finished: row['finished'] === null || row['finished'] === undefined ? null : Number(row['finished']) === 1,
     value: row['value'] === null || row['value'] === undefined ? null : Number(row['value']) === 1,
     rejectedKind: row['rejected_kind'] === null || row['rejected_kind'] === undefined ? null : String(row['rejected_kind']) as JournalKind,

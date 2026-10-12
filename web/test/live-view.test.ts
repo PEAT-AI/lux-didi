@@ -200,7 +200,7 @@ test('every declined remember code renders one honest reason line', () => {
     const html = liveMarkup(live);
     assert.equal((html.match(/class="live-remember declined"/g) ?? []).length, 1, code);
     assert.doesNotMatch(html, /Remembered/, code);
-    assert.match(html, /not saved|not confirm|already had|not final|did not match/i, code);
+    assert.match(html, /not saved|did not save|already had|not final|did not match/i, code);
   }
 });
 

@@ -148,4 +148,23 @@ owner only and sent only in provider setup. They never appear in projections,
 client events, logs or errors. Resumption restores provider-side continuity; the
 service reconstructs no conversation history, adds no recap instruction and
 replays no PCM. Accepted prompt, memory and tool authority snapshots remain
-immutable across connection replacement.
+frozen across connection replacement, except that owner memory deletion redacts the
+deleted memory record from the retained prompt. Tool authority is not expanded by redaction.
+
+
+### Retained copies after owner memory deletion
+
+The authenticated HTTP delete composes the domain deletion with chat-context,
+Live-snapshot and runtime-response redaction in one SQLite transaction. Each owner
+scrubs its own table; an error rolls back all changes. Chat frozen records become
+content-free entry references, and dispatch separately revalidates surviving
+records against the domain before composing a prompt. Live removes the matching
+memory record without changing surviving notes, and maintains its replay identity.
+Runtime keeps the original request fingerprints but replaces cached owner responses
+containing the deleted text with a content-free NOT_FOUND response. It does not
+re-execute the original mutation on replay.
+
+Conversation transcripts and model output that quoted a note are conversation
+history, including chat_runs.partial_text and live_journal transcriptions. They
+are outside memory deletion; the owner removes those by deleting the conversation.
+Deletion cannot retract a prompt already sent to a provider.

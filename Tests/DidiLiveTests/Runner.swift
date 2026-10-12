@@ -200,6 +200,16 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
 @main struct NativeLiveTests {
     static func main() async {
         do {
+            try require(NativeLivePresentation.failure(URLError(.cannotConnectToHost)) == "Live service is unreachable. Reconnect the service and try again.", "transport failure is actionable")
+            try require(NativeLivePresentation.failure(LiveClientError.transport) == NativeLivePresentation.failure(URLError(.timedOut)), "coordinator preserves transport class")
+            try require(NativeLivePresentation.failure(LiveClientError.unavailable) == "Live voice is not configured. Check the Live service settings.", "unconfigured failure is actionable")
+            try require(NativeLivePresentation.failure(DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "private"))) == "Live service returned an unexpected response. Reconnect the service and try again.", "decoding failure never leaks response")
+            let oldProfile = try JSONDecoder().decode(NativeLiveOperatorHTTP.Profile.self, from: Data("{\"status\":\"unconfigured\"}".utf8))
+            try require(oldProfile.limits == nil, "old status remains decodable")
+            let limits = try JSONDecoder().decode(NativeLiveLimits.self, from: Data("{\"sessionMs\":900000,\"idleMs\":60000}".utf8))
+            try require(limits.sentence == "Session limit 15 min, idle limit 1 min.", "configured limits are plain text")
+            try require(NativeLivePresentation.ended("session_timeout", limits: limits) == "Session limit reached (15 min). Start again to continue.", "session limit explains next action")
+            try require(NativeLivePresentation.ended("idle_timeout", limits: limits) == "Ended after 1 min without speech. Start again when ready.", "idle limit explains next action")
             let httpReason = LiveClientError.http(status: 403, code: "profile_denied")
             try require(httpReason.errorDescription == "Live service HTTP 403: profile_denied.", "HTTP status and typed code are visible")
             let closeReason = LiveClientError.socketClosed(code: 1008, reason: "attach_rejected:internal")

@@ -44,7 +44,9 @@ import Foundation
         }
         // Persist uncertainty BEFORE crossing the transport boundary; retries retain frozen bytes/key.
         _ = try await store.markDispatchUnknown(envelope.identity)
-        let result = try await client.connectedAccept(envelope)
+        let result = try await client.connectedAccept(sessionID: envelope.identity.sessionId,
+            text: envelope.frozenText, key: envelope.identity.idempotencyKey,
+            authority: envelope.identity.authorityEpoch)
         guard let run = result["runId"] as? String, UUID(uuidString: run) != nil,
               result["sessionId"] as? String == session else { throw CompanionError.invalidResponse }
         try await store.acknowledgeAccepted(envelope.identity)

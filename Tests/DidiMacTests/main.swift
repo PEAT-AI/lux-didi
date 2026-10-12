@@ -93,3 +93,31 @@ for state in ["idle", "ended", "failed", "outcomeUnknown"] {
     expect(LiveStatusPresentation(state: state, pendingCall: false).text == "Naya: stopped", "inactive status \(state) is stopped")
 }
 expect(LiveStatusPresentation(state: "ended", pendingCall: false, dictationCapturing: true).state == "listening", "dictation microphone is not reported stopped")
+
+// Silent callbacks are attention only: the seam has no audio or conversation dependency.
+var calls = NativeLiveCallDelivery()
+calls.reconcile(["a", "b"])
+expect(calls.beginAttempt("a", permitted: false) == false, "denied notifications retain the badge without submitting")
+expect(calls.pendingIDs == ["a", "b"], "multiple pending calls remain independently visible")
+expect(calls.beginAttempt("a", permitted: true), "first notification attempt")
+calls.completeAttempt("a", result: .failed("transient"))
+expect(!calls.notified.contains("a"), "failure is not notification acknowledgement")
+expect(calls.beginAttempt("a", permitted: true), "transient failure retries")
+calls.completeAttempt("a", result: .acknowledged)
+expect(!calls.beginAttempt("a", permitted: true), "successful submission never repeats")
+for _ in 0..<3 {
+    expect(calls.beginAttempt("b", permitted: true), "bounded retry admitted")
+    calls.completeAttempt("b", result: .failed("offline"))
+}
+expect(!calls.beginAttempt("b", permitted: true), "retry bound stops spam")
+calls.reconcile(nil)
+expect(!calls.isFresh && calls.pendingIDs.isEmpty, "poll error clears stale offers and marks offline")
+calls.reconcile([])
+expect(!calls.canPickUp("a"), "stale notification click cannot pick up")
+calls.reconcile(["a"])
+calls.acknowledge("a")
+calls.reconcile(["a"])
+expect(!calls.canPickUp("a") && !calls.beginAttempt("a", permitted: true), "acknowledged job never offers or notifies again")
+var relaunched = NativeLiveCallDelivery()
+relaunched.reconcile(["pending-at-launch"])
+expect(relaunched.canPickUp("pending-at-launch"), "relaunch discovers durable pending job")

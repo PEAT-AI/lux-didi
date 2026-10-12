@@ -233,3 +233,29 @@ The unit tests are `node --test test/markdown.test.ts test/live-view.test.ts`, r
 by `npm --prefix web run check` before the shared-renderer browser pass, which adds
 a fixture-served Interface 3 payload asserting the orb is in speaking mode and a
 rendered source anchor exists.
+
+## Live view freshness
+
+A failed Live poll shows a stale banner with the last successful poll time while
+keeping the transcript visible. The next successful poll clears the banner;
+a 404 still means no session, not an unreachable service.
+
+## Conversation boundaries
+
+A changed projection `since` starts a fresh transcript. Pages with the same
+session start accumulate by sequence number; a cursor from the old session is
+not reused for the new conversation.
+
+## Inspecting tool answers
+
+Every tool result has an expandable card with its status, markdown and sources.
+Error results show their status without markdown. The Latest answer summary
+continues to show the newest accepted answer.
+
+## Connections
+
+The read-only Connections card polls `/api/v1/live/connections` every 10 seconds
+while the page is visible, using its existing browser cookie. Each row shows the
+endpoint id, state, tool count, last handshake and a fixed repair hint for a
+sanitized reason code. Raw diagnostics, credentials and configuration are never
+rendered. Failed polls mark the displayed connection values as stale.

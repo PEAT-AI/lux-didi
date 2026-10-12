@@ -110,10 +110,32 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
         throw new ServiceError('METHOD_NOT_ALLOWED', 'Audio requires a WebSocket upgrade', 405);
       }
       const actor = principal(req);
-      if (route.kind === 'liveCurrent') {
+      if (route.kind === 'liveCurrent' || route.kind === 'liveConnections') {
         if (actor.mode !== 'browser' || req.headers.authorization !== undefined || (req.headers['sec-fetch-site'] !== undefined && req.headers['sec-fetch-site'] !== 'same-origin')) throw new ServiceError('FORBIDDEN', 'Page session required', 403);
         res.setHeader('Cache-Control', 'no-store');
-        send(res, 200, success(live ? live.current(route.cursor) : { state: 'idle', since: null, entries: [], cursor: route.cursor })); return;
+        if (route.kind === 'liveConnections') {
+          const endpoints = (options.toolsStatus?.().endpoints ?? []).map(value => {
+            const row = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+            const state = ['missing', 'configured', 'connected', 'error'].includes(String(row.state)) ? String(row.state) : 'error';
+            // Classify privately; return only closed reason tokens, never the original diagnostic.
+            const error = typeof row.error === 'string' ? row.error : '';
+            const reasonCode = state === 'connected' || (state === 'configured' && !error) ? null
+              : /^credential .* missing or invalid$/.test(error) ? 'credential_missing'
+              : /unreachable|ECONNREFUSED|ENOTFOUND|ETIMEDOUT/.test(error) ? 'unreachable'
+              : /discovery/.test(error) ? 'discovery_failed'
+              : /handshake/.test(error) ? 'handshake_failed' : 'unknown';
+            return {
+              id: typeof row.id === 'string' && /^[\w.-]{1,128}$/.test(row.id) ? row.id : 'unknown', state,
+              tools: typeof row.tools === 'number' && Number.isSafeInteger(row.tools) && row.tools >= 0 ? row.tools : 0,
+              lastHandshakeAt: typeof row.lastHandshakeAt === 'string' && /^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/.test(row.lastHandshakeAt) && Number.isFinite(Date.parse(row.lastHandshakeAt)) ? row.lastHandshakeAt : null,
+              reasonCode,
+            };
+          });
+          send(res, 200, success(endpoints)); return;
+        }
+        if (route.kind === 'liveCurrent') {
+          send(res, 200, success(live ? live.current(route.cursor) : { state: 'idle', since: null, entries: [], cursor: route.cursor })); return;
+        }
       }
       if (route.mutation) csrf(req, actor);
       if (route.kind === 'status') {

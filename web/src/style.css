@@ -28,3 +28,12 @@
 .notes-usage{margin-top:8px;border-top:1px solid var(--border);padding-top:6px}
 .notes-usage p{margin:4px 0;font-size:.9rem;overflow-wrap:anywhere}
 @media (max-width:420px){.connected-notes .search-row input{flex-basis:100%}.notes-results li,.notes-selected li{align-items:flex-start}.notes-results li button,.notes-selected li button{min-height:44px}}
+
+.live-stale { color: #854724; background: #fff0e9; border: 1px solid #eac4ad; border-radius: 8px; padding: .75rem; }
+.connections-card { margin-block: 1rem; }
+.connections-card ul { list-style: none; padding: 0; }
+.connections-card li { margin-block: .75rem; }
+.connections-card small { display: block; }
+.live-tool-result summary { cursor: pointer; }
+
+.live-tool-result { margin-top: 18px; padding: 14px 18px; border: 1px solid var(--border); border-radius: 9px; }

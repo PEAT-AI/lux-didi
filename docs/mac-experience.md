@@ -161,3 +161,24 @@ Connector next steps are fixed, connector-specific instructions; **Copy command*
 can only copy the calendar sign-in command. It never reads or copies a credential.
 The page Settings panel shows the same fixed next steps. See [User guide](user-guide.md)
 for daily use, deletion limits and the two operator setup steps.
+### Separate note and connected actions
+
+**Save note** still writes a local note. **Send to Naya** sends the draft to the
+conversation selected in the embedded shared conversation view, using its existing
+paired page authority. Enable connected chat in that view first; selecting a
+conversation is not consent. The server resolves either conversation consent or a
+valid standing consent. The native action never grants consent.
+
+An uncertain send retains its original conversation, text and request key in the
+local outbox. Return to that conversation to retry; reconnecting to a different
+assistant or authority cannot retarget it. Edits made while a send is uncertain
+remain in the draft after the original request is acknowledged. Results appear in
+the shared conversation view, not a second native transcript.
+
+The built application's existing `--self-check` path runs a silent synthetic
+production-AppModel proof using an isolated URL transport fixture, without a real
+model provider, microphone capture or installed application state.
+The proof follows the run ID returned by the production action through the same
+`GET /api/v1/chat/{runId}` route used by the shared conversation view. Its fixture
+advances from accepted to terminal on bounded reads, then checks a nonempty final
+answer and the selected conversation's matching session and latest run ID.

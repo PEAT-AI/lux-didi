@@ -99,6 +99,8 @@ expect(WindowFrameRestore.resolve(lost, screens: [screen]) != lost, "off-screen 
 let visible = CGRect(x: 100, y: 50, width: 980, height: 760)
 expect(WindowFrameRestore.resolve(visible, screens: [screen]) == visible, "visible frame retained")
 expect(NativeNoteAction.label == "Save note", "local note action is honest")
+expect(NativeConnectedSend.label == "Send to Naya", "connected action is separately labelled")
+expect(NativeConnectedSend.consentInstruction == "Enable connected chat in the conversation view.", "missing consent directs owner to shared conversation")
 
 var registeredKeys: [UInt32] = []
 let shortcutRegistration = LiveShortcutRegistration { _, id in

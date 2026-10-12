@@ -146,3 +146,18 @@ export class Store {
     this.#lock?.close(); this.#lock = undefined;
   }
 }
+
+/** Keep replay fingerprints, but replace owner responses containing deleted content. */
+export function scrubDeletedMemoryResponses(tx: Transaction, assistantId: string, text: string | undefined): void {
+  if (text === undefined) return;
+  const contains = (value: unknown): boolean => typeof value === 'string' ? value.includes(text)
+    : Array.isArray(value) ? value.some(contains)
+    : value !== null && typeof value === 'object' ? Object.values(value).some(contains) : false;
+  for (const row of tx.all('SELECT client_id,request_key,response FROM runtime_requests WHERE assistant_id=?', [assistantId])) {
+    const response = JSON.parse(String(row.response)) as { requestId: string };
+    if (!contains(response)) continue;
+    tx.run('UPDATE runtime_requests SET response=? WHERE assistant_id=? AND client_id=? AND request_key=?',
+      [JSON.stringify({ error: { code: 'NOT_FOUND', message: 'Cached response removed after memory deletion' }, requestId: response.requestId }),
+        assistantId, String(row.client_id), String(row.request_key)]);
+  }
+}

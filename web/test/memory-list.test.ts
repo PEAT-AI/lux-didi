@@ -103,3 +103,20 @@ for (const failure of ['delete', 'reload']) {
     }));
   });
 }
+
+
+for (const retained of [true, false]) {
+  test(`delete confirmation honestly reports current Live retention: ${retained}`, async () => {
+    const notices: string[] = [];
+    await deleteMemoryAndReload('entry', {
+      confirm: () => true,
+      remove: async () => ({ liveSessionRetainsUntilRebuild: retained }),
+      reload: async () => [],
+      apply: () => {},
+      deleted: (message: string) => notices.push(message),
+    });
+    assert.deepEqual(notices, [retained
+      ? "Naya's current live conversation still has this note until it reconnects or ends."
+      : 'Memory deleted.']);
+  });
+}

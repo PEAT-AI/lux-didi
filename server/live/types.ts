@@ -66,7 +66,7 @@ export type LiveToolsComposition = {
   owner: ReturnType<typeof createToolsOwner>; connectionIds(): string[];
   registerAuthoritySource?(source: (runId: string, signal: AbortSignal) => Promise<import('../tools/types.js').LiveAuthority | null>): void;
 };
-export interface LiveToolProjection { name: string; status: 'completed' | 'error'; markdown: string; sources: { title: string; url?: string }[] }
+export interface LiveToolProjection { code?: 'tool_call_lost_on_resume'; callId?: string; name: string; status: 'completed' | 'error'; markdown: string; sources: { title: string; url?: string }[] }
 export interface PendingLiveJob {
   id: string; originSessionId: string; state: 'in_progress' | 'completed' | 'failed' | 'unknown';
   createdAt: number; markdown: string; delivered: boolean;
@@ -79,8 +79,8 @@ export interface LivePageProjection {
   pastSession?: { outcome: LiveTerminalOutcome['state'] | 'unknown'; endedAt: number | null; lastObservedAt: number };
   jobs?: PendingLiveJob[];
   memory?: LiveMemoryProjection;
-  state: 'idle' | 'listening' | 'thinking' | 'speaking' | 'ended' | 'error'; since: number | null;
-  entries: { seq: number; kind: 'inputTranscription' | 'outputTranscription' | 'toolCall' | 'toolResult' | 'interrupted' | 'turnComplete' | 'terminal'; text?: string; tool?: { name: string; status: 'called' | 'completed' | 'error'; markdown?: string; sources?: { title: string; url?: string }[] } }[];
+  state: 'idle' | 'listening' | 'thinking' | 'speaking' | 'rebuilding' | 'ended' | 'error'; since: number | null;
+  entries: { seq: number; kind: 'continuity' | 'inputTranscription' | 'outputTranscription' | 'toolCall' | 'toolResult' | 'interrupted' | 'turnComplete' | 'terminal'; event?: 'rebuilding' | 'resumed'; reason?: string; text?: string; tool?: { name: string; status: 'called' | 'completed' | 'error'; markdown?: string; sources?: { title: string; url?: string }[] } }[];
   cursor: number;
 }
 export interface LiveOwnerConfig {
@@ -118,11 +118,12 @@ export interface LiveSessionSnapshot {
 }
 
 export type JournalKind =
-  | 'toolCall' | 'toolResult'
+  | 'toolCall' | 'toolResult' | 'continuity'
   | 'inputTranscription' | 'outputTranscription' | 'ready' | 'interrupted' | 'generationComplete'
   | 'turnComplete' | 'waitingForInput' | 'terminal';
 
 export interface LiveFragment {
+  event?: 'rebuilding' | 'resumed'; reason?: string;
   tool?: LiveToolProjection;
   liveSessionId: string; journalSequence: number; providerSequence: number | null; kind: JournalKind;
   text: string | null; finished: boolean | null; value: boolean | null; rejectedKind: JournalKind | null;
@@ -137,6 +138,7 @@ export interface LiveFragmentPage {
 
 /** One already-committed journal marker projected for the client. */
 export interface LivePublicMarker {
+  readonly event?: 'rebuilding' | 'resumed'; readonly reason?: string;
   readonly tool?: LiveToolProjection;
   readonly kind: JournalKind;
   readonly sequence: number | null;

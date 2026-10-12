@@ -4,7 +4,8 @@ import { McpRegistry } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import type { LiveAuthority } from '../tools/types.js';
 import type { LiveToolsComposition } from '../live/types.js';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { TestContext } from 'node:test';
@@ -77,19 +78,30 @@ async function harness(t: TestContext, options: HarnessOptions = {}): Promise<Ha
   if (options.withKey !== false) writePrivate(config, 'gemini-primary.json', `${JSON.stringify({ schemaVersion: 1, keyReference: 'gemini-primary', key: CANARY })}\n`);
   let tools = options.toolsFactory?.(store);
   if (options.realMcp) {
+    // Same SDK endpoint/HTTP bridge as knowledge-connector.test.ts and mcp-config.test.ts.
+    const sdk = new Server({ name: 'synthetic-knowledge', version: '1' }, { capabilities: { tools: {} } });
+    sdk.setRequestHandler('tools/list', () => ({ tools: [{ name: 'search_knowledge', inputSchema: { type: 'object' } }] }) as never);
+    const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
+    await sdk.connect(transport);
     const endpoint = createServer(async (req, res) => {
       if (req.url === '/failed') { res.writeHead(503); res.end(); return; }
-      let bytes = ''; for await (const chunk of req) bytes += chunk;
-      const message = JSON.parse(bytes);
-      if (message.id === undefined) { res.writeHead(202); res.end(); return; }
-      const result = message.method === 'initialize'
-        ? { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'fixture', version: '1' } }
-        : { tools: [{ name: 'search_knowledge', description: 'fixture read', inputSchema: { type: 'object', properties: { query: { type: 'string' } } } }] };
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ jsonrpc: '2.0', id: message.id, result }));
+      try {
+        const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
+        const bytes = Buffer.concat(chunks);
+        const headers = new Headers();
+        for (const [key, value] of Object.entries(req.headers)) if (value !== undefined) headers.set(key, Array.isArray(value) ? value.join(',') : value);
+        const request = new Request(`http://${req.headers.host}${req.url}`, { method: req.method ?? 'GET', headers, ...(bytes.length ? { body: new Uint8Array(bytes) } : {}) });
+        const response = await transport.handleRequest(request);
+        res.writeHead(response.status, Object.fromEntries(response.headers));
+        if (!response.body) { res.end(); return; }
+        const reader = response.body.getReader();
+        res.on('close', () => { void reader.cancel().catch(() => {}); });
+        while (!res.destroyed) { const chunk = await reader.read(); if (chunk.done) break; res.write(chunk.value); }
+        res.end();
+      } catch { if (!res.headersSent) res.writeHead(500); res.end(); }
     });
     endpoint.listen(0, '127.0.0.1'); await once(endpoint, 'listening');
-    t.after(async () => { endpoint.closeAllConnections(); await new Promise<void>(resolve => endpoint.close(() => resolve())); });
+    t.after(async () => { endpoint.closeAllConnections(); await new Promise<void>(resolve => endpoint.close(() => resolve())); await transport.close(); await sdk.close(); });
     const address = endpoint.address(); assert(address && typeof address !== 'string');
     const url = `http://127.0.0.1:${address.port}`;
     const entry = (id: string, path: string) => ({ id, url: url + path, transport: 'streamable-http', connector: 'lux-knowledge', account: 'fixture', resource: 'knowledge', credentialRef: null, enabled: true, allowEgress: true });
@@ -219,7 +231,7 @@ test('live operator routes reject browsers, origins and duplicate headers before
   assert.equal(h.f.attempts, 0, 'guards run before any provider open');
 });
 
-for (const failedMcp of [false, true]) test(`real MCP composition: Swift sequence reaches ready (failed endpoint=${failedMcp})`, async t => {
+for (const failedMcp of [false, true]) test(`real MCP composition: Swift sequence reaches ready (failed endpoint=${failedMcp})`, { timeout: 5000 }, async t => {
   const h = await harness(t, { config: configJson(true), realMcp: true, failedMcp });
   // LiveSessionCoordinator.performCreate: status, create, validate the returned grant, connect.
   const status = await json(h.origin, '/api/v1/live/status', { headers: bearer(h) });
@@ -244,9 +256,8 @@ for (const failedMcp of [false, true]) test(`real MCP composition: Swift sequenc
     ws.on('close', (code, reason) => reject(new Error(`closed before ready: ${code}:${reason}`)));
     ws.on('message', (data, binary) => { if (!binary && JSON.parse(data.toString()).type === 'ready') resolve(); });
   });
-  await h.f.frame(1);
-  h.f.send({ setupComplete: {} });
-  await ready;
+  const setup = (async () => { await h.f.frame(1); h.f.send({ setupComplete: {} }); })();
+  await Promise.race([ready, setup.then(() => ready)]);
   // The coordinator sends capture only after ready; FoundationLiveSocket sends PCM as binary,
   // and endAudioStream as one text JSON control, not a terminal close.
   ws.send(Buffer.from(pcm));

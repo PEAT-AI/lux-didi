@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { EventEmitter } from 'node:events';
+import WebSocket from 'ws';
 import { GeminiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
 import { collect, control, fixture, options, pcm, request } from './live-voice-fixture.js';
 
@@ -40,18 +42,25 @@ test('resumption transport policy failures are final while a network cut is reco
 
 test('a resumed connection uses the remaining idle budget once, then the full activity interval', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
-  const f = await fixture(t);
-  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory, limits: { idleMs: 40 } })).open(request(), { ...control(), idleResetMs: 100 });
-  const output = session.events[Symbol.asyncIterator]();
-  let ended = false; void session.done.then(() => { ended = true; });
-  await f.frame(1); f.send({ setupComplete: {} }); await session.ready;
-  assert.equal((await output.next()).value.type, 'ready');
+  class Peer extends EventEmitter {
+    readyState = WebSocket.CONNECTING as number;
+    bufferedAmount = 0;
+    send(_frame: string, callback: (error?: Error) => void) { callback(); }
+    close() { this.readyState = WebSocket.CLOSED; this.emit('close', 1000); }
+    terminate() { this.close(); }
+  }
+  const peer = new Peer();
+  const session = new GeminiLiveVoiceAdapter(options({ limits: { idleMs: 40 }, socketFactory: () => {
+    queueMicrotask(() => { peer.readyState = WebSocket.OPEN; peer.emit('open'); peer.emit('message', Buffer.from(JSON.stringify({ setupComplete: {} }))); });
+    return peer as unknown as WebSocket;
+  } })).open(request(), { ...control(), idleResetMs: 100 });
+  const captured = collect(session);
+  await session.ready;
   t.mock.timers.tick(30);
-  f.send({ serverContent: { inputTranscription: { text: 'new activity' } } });
-  assert.equal((await output.next()).value.type, 'inputTranscription');
+  peer.emit('message', Buffer.from(JSON.stringify({ serverContent: { inputTranscription: { text: 'new activity' } } })));
   t.mock.timers.tick(40);
-  await new Promise<void>(resolve => setImmediate(resolve));
-  assert.equal(ended, false, 'activity refreshes the configured interval, not the reduced rebuild budget');
+  await Promise.resolve(); await Promise.resolve();
+  assert.equal(captured.events.some(e => e.type === 'outcome'), false, 'activity refreshes the configured interval, not the reduced rebuild budget');
   t.mock.timers.tick(60);
-  assert.equal((await session.done).code, 'idle_timeout');
+  assert.equal((await session.done).code, 'idle_timeout'); await captured.done;
 });

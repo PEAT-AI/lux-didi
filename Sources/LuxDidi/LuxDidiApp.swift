@@ -628,7 +628,18 @@ private final class ConnectedProofTransport: URLProtocol, @unchecked Sendable {
         let state = Self.state
         state.lock.lock(); defer { state.lock.unlock() }
         let path = request.url!.path
-        let body = (request.httpBody.flatMap { try? JSONSerialization.jsonObject(with: $0) }) as? [String: Any] ?? [:]
+        // URLSession presents upload bytes as a stream to URLProtocol on macOS.
+        var bodyData = request.httpBody ?? Data()
+        if bodyData.isEmpty, let stream = request.httpBodyStream {
+            stream.open(); defer { stream.close() }
+            var buffer = [UInt8](repeating: 0, count: 1024)
+            while bodyData.count < 16384 {
+                let count = stream.read(&buffer, maxLength: buffer.count)
+                if count <= 0 { break }
+                bodyData.append(contentsOf: buffer.prefix(count))
+            }
+        }
+        let body = (try? JSONSerialization.jsonObject(with: bodyData)) as? [String: Any] ?? [:]
         var data: [String: Any] = [:]
         var status = 200
         var headers = ["Content-Type": "application/json"]
@@ -644,8 +655,8 @@ private final class ConnectedProofTransport: URLProtocol, @unchecked Sendable {
             if state.consent { data = ["state": "active", "sessionId": state.session] }
             else { status = 403 }
         case "/api/v1/chat":
-            print("MAC-CONNECTED-FIXTURE method=\(request.httpMethod ?? "nil") path=\(path) bodyKeys=\(body.keys.sorted()) bodyStream=\(request.httpBodyStream != nil) cookie=\(request.value(forHTTPHeaderField: "Cookie") == "didi_session=synthetic-cookie") csrf=\(request.value(forHTTPHeaderField: "X-Didi-CSRF") == "synthetic-csrf") key=\(request.value(forHTTPHeaderField: "Idempotency-Key") != nil) epoch=\(request.value(forHTTPHeaderField: "x-didi-authority-epoch") == state.epoch)")
-            guard request.value(forHTTPHeaderField: "Cookie") == "didi_session=synthetic-cookie",
+            guard request.httpMethod == "POST", Set(body.keys) == Set(["sessionId", "text"]),
+                  request.value(forHTTPHeaderField: "Cookie") == "didi_session=synthetic-cookie",
                   request.value(forHTTPHeaderField: "X-Didi-CSRF") == "synthetic-csrf",
                   request.value(forHTTPHeaderField: "Authorization") == nil,
                   request.value(forHTTPHeaderField: "x-didi-authority-epoch") == state.epoch,

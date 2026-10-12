@@ -84,4 +84,6 @@ export const liveMigrations: readonly SchemaMigration[] = [{
   ],
 }, { owner: 'live', version: 4, statements: [
   `ALTER TABLE live_sessions ADD COLUMN memory_provenance TEXT`
+]}, { owner: 'live', version: 5, statements: [
+  `ALTER TABLE entries ADD COLUMN memory_kind TEXT CHECK (memory_kind IN ('fact','preference','task'))`
 ]}];

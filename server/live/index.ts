@@ -210,7 +210,7 @@ export class LiveSessionOwner {
           route: { identity: this.#profileIdentity, provider: 'gemini', modelId: this.#profile.liveModelId, allowedClasses: [...this.#profile.route.dataClasses] },
           allowedClasses: [...this.#profile.route.dataClasses], connectionIds: [...this.#tools.connectionIds()] };
         toolAcceptance = { acceptance, sha256: this.#tools.owner.snapshotRun(tx, acceptance).sha256 };
-        toolNames = definitionsInTransaction(this.#tools.owner, liveSessionId, tx).map(tool => tool.name);
+        toolNames = [...definitionsInTransaction(this.#tools.owner, liveSessionId, tx).map(tool => tool.name).filter(name => name !== 'remember_note'), 'remember_note'];
       }
       const pickupJob = input.pickupJobId ? this.#jobs.pending(tx).find(job => job.id === input.pickupJobId && job.state !== 'in_progress') : undefined;
       if (input.pickupJobId && !pickupJob) throw new LiveError('invalid_request');
@@ -430,9 +430,9 @@ export class LiveSessionOwner {
     if (this.#tools) {
       const saved = this.#store.transaction(tx => tx.get('SELECT acceptance_json FROM live_tool_acceptances WHERE live_session_id=?', [liveSessionId]));
       if (!saved) throw new LiveError('invalidated');
-      registry = Object.freeze(this.#tools.owner.definitions(liveSessionId).map(tool => Object.freeze({ ...tool, parameters: structuredClone(tool.parameters) })));
+      registry = Object.freeze(this.#tools.owner.liveDefinitions(liveSessionId).map(tool => Object.freeze({ ...tool, parameters: structuredClone(tool.parameters) })));
       host = { runId: liveSessionId, actorId: context.clientId, authorityEpoch: context.authorityEpoch, revision,
-        grants: registry.map(tool => ({ tool: tool.name, effect: tool.effect, accountId: tool.accountId, resourceId: tool.resourceId })) };
+        grants: registry.filter(tool => tool.effect === 'read' || this.#tools!.owner.liveRememberApproved() && tool.name === 'remember_note' && tool.accountId === 'gateway:live-voice' && tool.resourceId === 'owner-memory').map(tool => ({ tool: tool.name, effect: tool.effect, accountId: tool.accountId, resourceId: tool.resourceId })) };
     }
     const history = this.#jobHistory(liveSessionId, inputClass);
     const declarations = registry.length ? declarationsFor(registry).declarations : [];

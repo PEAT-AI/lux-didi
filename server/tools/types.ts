@@ -29,6 +29,7 @@ export interface RunSnapshot { acceptance: RunAcceptance; connections: BoundConn
 export interface TrustedRestrictions { localOnly: boolean; nonDisclosure: boolean; dataClasses: readonly DataClass[] }
 export interface ModelSnapshot { response: JsonObject; dataClasses: readonly DataClass[] }
 export interface ToolsOwnerOptions {
+  grantMode?: 'explicit' | 'owner-trusted-reads';
   store: StorePort; ownerId: string; registry: McpRegistry; port: McpPort;
   lookupAuthority(runId: string, signal: AbortSignal): Promise<LiveAuthority | null>;
   /** Reports a connector-classified connection status after a call; null clears it (R4). */
@@ -45,5 +46,7 @@ export interface ToolsOwner {
   projectConnection(connectionId: string): void;
   snapshotRun(tx: Transaction, acceptance: RunAcceptance): { sha256: string };
   definitions(runId: string): ToolDefinition[];
+  liveDefinitions(runId: string): ToolDefinition[];
+  liveRememberApproved(): boolean;
   complete(call: ToolCallIntent, response: JsonObject, dataClasses: readonly DataClass[]): ToolResultRef;
 }

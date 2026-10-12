@@ -18,6 +18,7 @@ export interface SessionRecord {
 }
 
 export interface EntryRecord {
+  kind?: 'fact' | 'preference' | 'task';
   id: string;
   sessionId: string;
   sequence: number;
@@ -83,6 +84,7 @@ function mapEntry(r: Row): EntryRecord {
     sequence: Number(r.sequence),
     role: String(r.role) as EntryRole,
     text: String(r.text),
+    ...(r.memory_kind ? { kind: String(r.memory_kind) as 'fact' | 'preference' | 'task' } : {}),
     capturedAt: Number(r.captured_at),
     timeZone: String(r.time_zone),
     revision: Number(r.revision),
@@ -167,6 +169,7 @@ export interface AddSourceRefInput {
 }
 
 export interface AppendEntryInput {
+  kind?: 'fact' | 'preference' | 'task';
   sessionId: string;
   text: string;
   capturedAt: number;
@@ -196,6 +199,10 @@ export function appendEntry(
      VALUES (?,?,?,?,?,?,?,1)`,
     [id, input.sessionId, sequence, role, text, input.capturedAt, input.timeZone],
   );
+  if (input.kind !== undefined) {
+    if (!['fact', 'preference', 'task'].includes(input.kind)) validation('invalid memory kind');
+    tx.run('UPDATE entries SET memory_kind=? WHERE id=?', [input.kind, id]);
+  }
   if (input.source) {
     addSourceReference(
       tx,

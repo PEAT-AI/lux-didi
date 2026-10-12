@@ -44,6 +44,12 @@ test('a failed summary shows Unavailable for the Live rows and leaves the connec
   assert.match(html, /Credential missing/);
 });
 
+test('a summary persona still shows when the status route fails', () => {
+  const html = settingsMarkup({ statusUnavailable: true, summary, connections });
+  assert.match(html, /Persona name<\/dt><dd>Naya/);
+  assert.match(html, /Conversation model<\/dt><dd><span class="settings-unavailable">Unavailable/);
+});
+
 test('maps each connector state to its sentence and one-line next step', () => {
   assert.deepEqual(connectorState(connections[0]), { id: 'knowledge', state: 'Connected', next: 'no action needed' });
   assert.deepEqual(connectorState(connections[2]), { id: 'maps', state: 'Configured', next: 'a Live session connects on demand' });

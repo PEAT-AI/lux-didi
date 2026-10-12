@@ -19,7 +19,7 @@ import { chatMigrations } from '../chat/index.js';
 import { createDomainPort } from '../domain/facade.js';
 import { Outbox } from '../runtime/outbox.js';
 import { Store } from '../runtime/store.js';
-import { createLiveSessionOwner, liveMigrations, validateLiveProfile, type LiveContext, type LiveSessionOwner } from '../live/index.js';
+import { createLiveSessionOwner, rememberOwnerNote, liveMigrations, validateLiveProfile, type LiveContext, type LiveSessionOwner } from '../live/index.js';
 import { CANARY, fixture, options } from './live-voice-fixture.js';
 
 const MODEL = 'models/live-session-test';
@@ -252,5 +252,16 @@ test('Live remember waits for finalized owner turns and assembles transcript fra
   assert.deepEqual(await remember(h, undefined, { text: 'mint is Friday', kind: 'fact' }, 2), { remembered: false, code: 'owner_transcript_not_final' });
   h.f.send({ serverContent: { inputTranscription: { text: 'is Friday', finished: true } } });
   assert.equal((await remember(h, undefined, { text: 'mint is Friday', kind: 'fact' }, 3)).remembered, true);
+  assert.equal(rows(h)[0]?.text, 'mint is Friday');
+});
+
+
+test('Live memory port writes ordinary owner payload with the real domain transaction', async t => {
+  const h = await harness(t, { tools: true });
+  const { session } = await attached(h);
+  // A refused pointer still finalizes and journals the owner turn before this direct port check.
+  assert.deepEqual(await remember(h, 'remember that mint is Friday', { text: 'Monday', kind: 'task' }, 2), { remembered: false, code: 'owner_text_mismatch' });
+  const result = h.store.transaction(tx => rememberOwnerNote(tx, session.liveSessionId, { text: 'mint is Friday', kind: 'task' }, NOW));
+  assert.equal(result.remembered, true);
   assert.equal(rows(h)[0]?.text, 'mint is Friday');
 });

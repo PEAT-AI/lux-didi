@@ -64,6 +64,6 @@ export function renderToolEvidence(evidence: readonly import('./protocol.ts').To
       const url = source.url?.slice(0, 2048);
       return `<li>${url && /^https?:\/\//i.test(url) ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${title}</a>` : title}</li>`;
     }).join('');
-    return `<article class="tool-evidence"><header><strong>${escapeHtml(tool.name)}</strong><span>Accepted read evidence</span></header><div class="markdown">${renderMarkdown(tool.markdown.slice(0, 4096))}</div>${sources ? `<ul class="tool-evidence-sources">${sources}</ul>` : ''}</article>`;
+    return `<article class="tool-evidence"><header><strong>${escapeHtml(tool.name)}</strong><span>Gated tool result</span></header><div class="markdown">${renderMarkdown(tool.markdown.slice(0, 4096))}</div>${sources ? `<ul class="tool-evidence-sources">${sources}</ul>` : ''}</article>`;
   }).join('');
 }

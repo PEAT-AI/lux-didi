@@ -182,7 +182,6 @@ export function appendEntry(
   id: string = newId(),
 ): EntryRecord {
   void clock;
-  if (tx.get('SELECT entry_id FROM entry_tombstones WHERE entry_id = ?', [id])) badRequest('entry id has been deleted');
   const text = requireText(input.text, 'text');
   assertTimeZone(input.timeZone);
   readSession(tx, input.sessionId);
@@ -237,7 +236,6 @@ export function addSourceReference(
 }
 
 export function sourceReferences(tx: Transaction, ownerId: string): SourceRefRecord[] {
-  if (tx.get('SELECT entry_id FROM entry_tombstones WHERE entry_id = ?', [ownerId])) return [];
   return tx
     .all(`SELECT * FROM source_references WHERE owner_id = ? ORDER BY id ASC`, [ownerId])
     .map(mapSourceRef);

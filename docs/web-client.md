@@ -252,7 +252,7 @@ Every tool result has an expandable card with its status, markdown and sources.
 Error results show their status without markdown. The Latest answer summary
 continues to show the newest accepted answer.
 
-A `remember_note` result is different: it renders as an evidence card (`web/src/live-view.ts`). A successful result shows **Remembered** with the saved words; a typed decline code (`already_remembered`, `private_memory_unsupported`, `owner_transcript_not_final`, `owner_text_mismatch`, or any other snake_case code) shows **Not remembered** with a one-line honest reason. Both link to the memory list. The Live projection carries only name, status, markdown and sources (`server/live/types.ts`), so the card never invents the note's kind or time; it renders the result text the service projects.
+A `remember_note` result is different: it renders as an evidence card (`web/src/live-view.ts`). A successful result shows **Remembered** with the saved words; a named decline code (`already_remembered`, `private_memory_unsupported`, `owner_transcript_not_final`, `owner_text_mismatch`, or a tool refusal) shows **Not remembered** with a one-line honest reason; any other bare result code, including the service's `handler_outcome` (which at this revision covers both a saved and a declined note), shows a neutral **Memory** card that reports the outcome was not given. Cards link to the memory list. The Live projection carries only name, status, markdown and sources (`server/live/types.ts`), so the card never invents the note's kind or time; it renders the result text the service projects.
 
 ## Connections
 

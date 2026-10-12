@@ -116,16 +116,23 @@ const REMEMBER_DECLINES: Record<string, string> = {
   tool_result_denied: 'The note was not saved.',
   tool_refused: 'The note was not saved.',
 };
-/** The Live projection carries only name/status/markdown/sources, so a note is shown as saved only
- * when the projected text is not a typed decline code. The server owns the missing kind/time fields. */
+/** The Live projection carries only name/status/markdown/sources. A saved note is claimed only when
+ * the projected text is the owner's words; a bare result code is neither those words nor a typed
+ * decline the card knows, so the outcome stays unconfirmed. The server owns kind/time and the codes. */
 function rememberCardMarkup(entry: LiveEntry): string {
   const text = entry.tool?.markdown ?? '';
-  const code = REMEMBER_CODE.test(text) ? text : undefined;
-  if (entry.tool?.status === 'error' || code) {
-    const reason = REMEMBER_DECLINES[code ?? text] ?? (code ? `Naya did not save the note (${code}).` : 'The note was not saved.');
-    return `<article class="live-remember declined" data-result-seq="${entry.seq}"><h2>Not remembered</h2><p class="muted">${escapeHtml(reason)}</p></article>`;
+  const seq = entry.seq;
+  const link = '<a class="live-remember-link" href="#recall-form">Open your memory list</a>';
+  const known = REMEMBER_DECLINES[text];
+  if (entry.tool?.status === 'error' || known) {
+    const reason = known ?? (text || 'The note was not saved.');
+    return `<article class="live-remember declined" data-result-seq="${seq}"><h2>Not remembered</h2><p class="muted">${escapeHtml(reason)}</p></article>`;
   }
-  return `<article class="live-remember" data-result-seq="${entry.seq}"><h2>Remembered</h2><p class="live-remember-text">${escapeHtml(text)}</p><a class="live-remember-link" href="#recall-form">Open your memory list</a></article>`;
+  if (!text || REMEMBER_CODE.test(text)) {
+    const detail = text ? ` (${escapeHtml(text)})` : '';
+    return `<article class="live-remember" data-result-seq="${seq}"><h2>Memory</h2><p class="muted">Naya did not report whether the note was saved${detail}.</p>${link}</article>`;
+  }
+  return `<article class="live-remember" data-result-seq="${seq}"><h2>Remembered</h2><p class="live-remember-text">${escapeHtml(text)}</p>${link}</article>`;
 }
 
 /** Full section markup, id="live-panel" so the poller can replace it in place. */

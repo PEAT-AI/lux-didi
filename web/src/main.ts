@@ -4,6 +4,7 @@ import { Orb, type VoiceState } from './orb';
 import { ApiError, request, pair, demoMode, onAuthorityChanged, clearAuthority, restoreSession, logout, fetchLive } from './api';
 import { liveMarkup, liveLabel, liveVoiceState, liveDelay, pollLiveView, type LivePollState } from './live-view';
 import { connectionsMarkup } from './connector-status';
+import { settingsMarkup } from './settings-view';
 import type { Session, Entry, Commitment, CommitmentDetail, Plan, Recall, Status, LiveCurrent } from './protocol';
 
 type Tab = 'Conversation' | 'Today' | 'Memory' | 'Settings';
@@ -28,6 +29,7 @@ let live: LiveCurrent | undefined;
 let livePoll: LivePollState = {};
 let connections: unknown = [];
 let connectionsStale = false;
+let statusUnavailable = false;
 let connectionsTimer: ReturnType<typeof setTimeout> | undefined;
 let connectionsBusy = false;
 let liveBusy = false;
@@ -92,9 +94,10 @@ function today() {
 function memory() {
   return `<section class="page-heading"><div><p class="eyebrow">REMEMBER, WITH CONTEXT</p><h1>Pick up the thread.</h1><p>Your words, connected to where they came from.</p></div></section><section class="panel recall"><form id="recall-form"><label for="recall-query">Search your memory</label><div class="search-row"><input id="recall-query" type="search" value="${e(queryDraft)}" maxlength="500" placeholder="A phrase, a project, a thought…"><button ${disabled(connection !== 'Connected' || readBusy || !status?.capabilities.memory)}>Search</button></div></form>${recall ? `<p class="muted">${recall.totalMatches} ${recall.totalMatches === 1 ? 'match' : 'matches'}${recall.truncated || recall.nextCursor ? ' · Partial results; more are available in the service.' : ''}</p>${recall.hits.length ? recall.hits.map(hit=>`<article class="recall-hit"><p>${e(hit.snippet)}</p><small>${e(datetime(hit.sourceTimestamp))}</small>${sourceMarkup(hit.sourceRefs)}<button class="quiet" data-source="${e(hit.sessionId)}">Open conversation source</button></article>`).join('') : '<div class="empty"><h3>No matches yet.</h3><p>Try a different phrase. Didi won’t invent a memory to fill the gap.</p></div>'}` : '<div class="empty"><span class="empty-icon" aria-hidden="true">↗</span><h3>Find the words you kept.</h3><p>Search saved conversations. Unavailable sources stay clearly marked.</p></div>'}</section>`;
 }
+function settingsInput() { return { status, statusUnavailable, connections, connectionsUnavailable: connectionsStale }; }
 function settings() {
   const permissions = typeof Notification === 'undefined' ? 'Not supported in this browser' : Notification.permission === 'granted' ? 'Allowed by this browser; no delivery is configured' : Notification.permission === 'denied' ? 'Blocked in browser settings' : 'Not requested';
-  return `<section class="page-heading"><div><p class="eyebrow">YOUR SETUP, PLAINLY</p><h1>Make yourself at home.</h1><p>Know what’s connected. Choose what’s allowed.</p></div></section><div class="settings-grid"><section class="panel"><h2>Connection</h2><dl><dt>Service</dt><dd>${e(connection)}</dd><dt>Address</dt><dd>${e(location.origin)} /api/v1</dd><dt>Time zone</dt><dd>${e(zone)}</dd><dt>Privacy</dt><dd>Messages stay in your service. This browser keeps only the app shell for offline opening.</dd></dl><div class="button-row"><button id="reconnect" class="secondary" ${disabled(readBusy)}>Reconnect</button><button id="logout" class="quiet" ${disabled(!writable())}>Unpair this browser</button></div><p class="muted">Browser pairing uses a secure cookie, not a saved token. ${demoMode ? 'This is an isolated synthetic test service.' : 'Ask your local service for a one-time pairing code.'}</p></section>
+  return `<section class="page-heading"><div><p class="eyebrow">YOUR SETUP, PLAINLY</p><h1>Make yourself at home.</h1><p>Know what’s connected. Choose what’s allowed.</p></div></section><div class="settings-grid">${settingsMarkup(settingsInput())}<section class="panel"><h2>Connection</h2><dl><dt>Service</dt><dd>${e(connection)}</dd><dt>Address</dt><dd>${e(location.origin)} /api/v1</dd><dt>Time zone</dt><dd>${e(zone)}</dd><dt>Privacy</dt><dd>Messages stay in your service. This browser keeps only the app shell for offline opening.</dd></dl><div class="button-row"><button id="reconnect" class="secondary" ${disabled(readBusy)}>Reconnect</button><button id="logout" class="quiet" ${disabled(!writable())}>Unpair this browser</button></div><p class="muted">Browser pairing uses a secure cookie, not a saved token. ${demoMode ? 'This is an isolated synthetic test service.' : 'Ask your local service for a one-time pairing code.'}</p></section>
   <section class="panel"><h2>Conversation model</h2><span class="tag">${status?.model.configured ? 'Connected' : 'No model connected'}</span><p>${status?.model.configured ? `${e(status.model.provider ?? '')} ${e(status.model.model ?? '')}` : 'Local Save never sends to a model. You can save thoughts, recall messages, and manage commitments. Replies need a model configured in your service.'}</p></section>
   <section class="panel"><h2>Permissions</h2><dl><dt>Notifications</dt><dd>${e(permissions)}</dd><dt>Delivery</dt><dd>${status?.capabilities.notifications ? 'Available through your service; browser delivery is not set up' : 'Not configured'}</dd><dt>Microphone</dt><dd>Not requested. Voice capture is not part of this browser version.</dd></dl><p class="muted">Nothing here listens in the background. Change denied permissions in your browser settings.</p></section><section class="panel companion"><span class="eyebrow">A HELPING HAND ON YOUR MAC</span><h2>Mac companion</h2><p>The native companion can provide local Mac notifications and device features when you allow them.</p><p class="muted">This browser cannot control your Mac, start its microphone, or grant permissions for it. Open the companion to manage those choices.</p><a class="credits" href="/third-party-notices.txt">Orb dependency notices</a></section></div>`;
 }
@@ -195,9 +198,9 @@ async function connect(background=false) {
   if(!background){connection='Connecting';error='';render();}
   try {
     await restoreSession();
-    const current=await request<Status>('/status',{signal:AbortSignal.timeout(8000)});status=current;connection='Connected';pairingRequired=false;backoff=30000;
+    const current=await request<Status>('/status',{signal:AbortSignal.timeout(8000)});status=current;statusUnavailable=false;connection='Connected';pairingRequired=false;backoff=30000;
     if(!background){await loadTab();await connectedView.refresh(current.assistantId);}
-  } catch(err){error=failure(err);if(!pairingRequired)connection='Disconnected';backoff=Math.min(backoff*2,120000);}
+  } catch(err){error=failure(err);statusUnavailable=true;if(!pairingRequired)connection='Disconnected';backoff=Math.min(backoff*2,120000);}
   render();schedulePoll();void pollLive();void pollConnections();
 }
 function schedulePoll(){if(pollTimer)clearTimeout(pollTimer);if(!document.hidden&&!pairingRequired)pollTimer=setTimeout(()=>void connect(true),backoff);}
@@ -219,6 +222,7 @@ async function pollConnections(){
   finally{
     connectionsBusy=false;
     const panel=document.getElementById('connections-panel');if(panel)panel.outerHTML=connectionsMarkup(connections,connectionsStale);
+    const summary=document.getElementById('settings-summary');if(summary)summary.outerHTML=settingsMarkup(settingsInput());
     if(!document.hidden&&!pairingRequired)connectionsTimer=setTimeout(()=>void pollConnections(),10000);
   }
 }
@@ -233,8 +237,8 @@ function paintLive(){
   const caption=document.querySelector('.orb-caption');if(caption)caption.innerHTML=orbCaptionMarkup();
   const next=orbState();if(next!==appliedOrbState){appliedOrbState=next;orb?.setState(next);}
 }
-onAuthorityChanged(()=>{connectedView.reset();live=undefined;livePoll={};connections=[];connectionsStale=false;status=undefined;sessions=[];entries=[];session=undefined;plan=undefined;recall=undefined;recent=[];connection='Disconnected';});
-window.addEventListener('offline',()=>{connectedView.detach();connection='Offline';livePoll={...livePoll,stale:true};connectionsStale=true;if(connectionsTimer)clearTimeout(connectionsTimer);if(pollTimer)clearTimeout(pollTimer);if(liveTimer)clearTimeout(liveTimer);render();});
+onAuthorityChanged(()=>{connectedView.reset();live=undefined;livePoll={};connections=[];connectionsStale=false;statusUnavailable=false;status=undefined;sessions=[];entries=[];session=undefined;plan=undefined;recall=undefined;recent=[];connection='Disconnected';});
+window.addEventListener('offline',()=>{connectedView.detach();connection='Offline';livePoll={...livePoll,stale:true};connectionsStale=true;statusUnavailable=true;if(connectionsTimer)clearTimeout(connectionsTimer);if(pollTimer)clearTimeout(pollTimer);if(liveTimer)clearTimeout(liveTimer);render();});
 window.addEventListener('online',()=>void connect());
 document.addEventListener('visibilitychange',()=>{if(document.hidden){if(connectionsTimer)clearTimeout(connectionsTimer);if(pollTimer)clearTimeout(pollTimer);if(liveTimer)clearTimeout(liveTimer);}else{void connect(true);}});
 if('serviceWorker' in navigator && import.meta.env.PROD)void navigator.serviceWorker.register('/sw.js').catch(()=>{ /* Shell availability is optional; never imply offline saving. */ });

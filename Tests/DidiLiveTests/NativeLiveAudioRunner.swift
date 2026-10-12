@@ -21,6 +21,21 @@ private actor NativeAudioSendProbe {
     func send(_ frame: Data) { count += 1; signal.yield(frame) }
 }
 
+private actor NativeAudioSendGate {
+    nonisolated let entered: AsyncStream<Void>
+    private let signal: AsyncStream<Void>.Continuation
+    private var continuation: CheckedContinuation<Void, Error>?
+    init() { (entered, signal) = AsyncStream.makeStream() }
+    func send(_ frame: Data) async throws {
+        try await withCheckedThrowingContinuation { continuation in
+            self.continuation = continuation; signal.yield(())
+        }
+    }
+    func fail() {
+        continuation?.resume(throwing: LiveClientError.unavailable); continuation = nil
+    }
+}
+
 @main struct NativeLiveAudioRunner {
     static func tone(_ format: AVAudioFormat, start: Int, count: Int) throws -> AVAudioPCMBuffer {
         guard format.channelCount == 2, format.commonFormat == .pcmFormatFloat32, !format.isInterleaved else {
@@ -38,6 +53,7 @@ private actor NativeAudioSendProbe {
     }
     @MainActor static func main() async {
         do {
+            let routeTestStarted = Date()
             var builds = 0, releases = 0, paused = "", failures = 0
             var input = "Built-in microphone"
             let recovery = NativeAudioRouteRecovery(
@@ -109,6 +125,21 @@ private actor NativeAudioSendProbe {
             injectedDevice.routeChanged(); injectedDevice.stop(); await injectedDevice.finishRouteRecovery()
             try audioRequire(captures.count == 4 && !injectedDevice.isCapturing, "Stop wins against device recovery")
             print("PASS injected real device converter/drain: mute survives, queued/stale frames discarded, input consent rechecked")
+            let gate = NativeAudioSendGate()
+            var blockedCapture: NativeCaptureBuffer?
+            let blockedDevice = NativeLiveAudioDevice(captureInput: format, defaultInput: { deviceInput })
+            blockedDevice.onCapturePrepared = { blockedCapture = $0 }
+            try await blockedDevice.start { try await gate.send($0) }
+            let oldDrain = blockedDevice.captureDrain
+            var enteredSend = gate.entered.makeAsyncIterator()
+            blockedCapture?.append(try tone(format, start: 0, count: 1024))
+            _ = await enteredSend.next()
+            blockedDevice.routeChanged(); await blockedDevice.finishRouteRecovery()
+            await gate.fail(); await oldDrain?.value
+            try audioRequire(blockedDevice.isCapturing, "stale send failure must not interrupt rebuilt capture")
+            blockedDevice.stop()
+            print("PASS stale in-flight send failure cannot interrupt replacement device")
+            print("DURATION native-route-seams=\(Date().timeIntervalSince(routeTestStarted))s")
             let reference = try NativePCMConverter(input: format)
             var expected = try reference.append(tone(format, start: 0, count: 44100))
             expected.append(try reference.finish())

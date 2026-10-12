@@ -42,6 +42,7 @@ expect(connectionRows[0].id == "calendar" && connectionRows[0].state == "error",
 expect(connectionRows[0].reason == "Credential missing or invalid", "Connections card explains missing credentials")
 
 MainActor.assumeIsolated {
+let recoveryTestStarted = Date()
 // Pure lifecycle seam: no process, network, microphone or real-clock wait.
 var queuedRestarts: [(Double, () -> Void)] = []
 var launches: [UInt64] = [], lostServices = 0, reconciles = 0
@@ -68,6 +69,7 @@ let cancelledRestart = queuedRestarts.removeFirst().1
 recovery.stop(); cancelledRestart()
 precondition(launches.count == 3, "Quit invalidates queued restart")
 print("PASS service retry cap/backoff, Quit cancellation, stale child fencing and wake reconcile; no microphone seam")
+print("DURATION service-recovery-seams=\(Date().timeIntervalSince(recoveryTestStarted))s")
 }
 
 // These seams never instantiate the system login registrar or Carbon hotkeys.

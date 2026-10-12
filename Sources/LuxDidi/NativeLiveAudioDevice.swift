@@ -175,6 +175,7 @@ final class NativeCaptureBuffer: @unchecked Sendable {
     @Published private(set) var droppedFrames = 0
     @Published private(set) var isCapturing = false
     var hasEngine: Bool { engine != nil }
+    var captureDrain: Task<Void, Never>? { drain }
     var onOutput: ((Bool) -> Void)?
     var onInterruption: (() async -> Void)?
     var onInputChange: ((String) -> Void)?

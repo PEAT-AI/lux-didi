@@ -37,3 +37,21 @@ test('resumption transport policy failures are final while a network cut is reco
     assert.equal('recoverable' in outcome && outcome.recoverable, code === 1011);
   }
 });
+
+test('a resumed connection uses the remaining idle budget once, then the full activity interval', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = await fixture(t);
+  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory, limits: { idleMs: 40 } })).open(request(), { ...control(), idleResetMs: 100 });
+  const output = session.events[Symbol.asyncIterator]();
+  let ended = false; void session.done.then(() => { ended = true; });
+  await f.frame(1); f.send({ setupComplete: {} }); await session.ready;
+  assert.equal((await output.next()).value.type, 'ready');
+  t.mock.timers.tick(30);
+  f.send({ serverContent: { inputTranscription: { text: 'new activity' } } });
+  assert.equal((await output.next()).value.type, 'inputTranscription');
+  t.mock.timers.tick(40);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(ended, false, 'activity refreshes the configured interval, not the reduced rebuild budget');
+  t.mock.timers.tick(60);
+  assert.equal((await session.done).code, 'idle_timeout');
+});

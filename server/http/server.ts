@@ -2,9 +2,10 @@ import type { LivePendingService } from '../live/types.js';
 import { createServer } from 'node:http';
 import type { IncomingMessage, ServerResponse, Server } from 'node:http';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
-import { Store } from '../runtime/store.js';
+import { Store, scrubDeletedMemoryResponses } from '../runtime/store.js';
 import type { DomainPort } from '../contracts/domain.js';
-import { ChatError, type ChatPort } from '../chat/index.js';
+import { ChatError, redactDeletedMemoryContext, type ChatPort } from '../chat/index.js';
+import { redactDeletedMemorySnapshots } from '../live/index.js';
 import type { ConnectedStatus } from '../host/connected.js';
 import { ServiceError } from '../contracts/errors.js';
 import { object, resolveRoute } from './routes.js';
@@ -233,7 +234,18 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
       const response = store.transaction(tx => {
         const prior = tx.get('SELECT * FROM runtime_requests WHERE assistant_id=? AND client_id=? AND request_key=?', [store.assistantId, actor.clientId, key]);
         if (prior) { if (prior.fingerprint !== fingerprint) throw new ServiceError('CONFLICT', 'Idempotency key reused with different request', 409); return JSON.parse(String(prior.response)) as unknown; }
+        let deletedText: string | undefined;
+        const deletedId = domainRoute.operation === 'deleteEntry' ? (domainRoute.input as { id: string }).id : undefined;
+        if (deletedId !== undefined) {
+          try { deletedText = domain.execute(tx, 'resolveEntries', { entryIds: [deletedId] }, context).records[0]?.text; }
+          catch (error) { if (!(error instanceof ServiceError && error.code === 'NOT_FOUND')) throw error; }
+        }
         const data = domain.execute(tx, domainRoute.operation, domainRoute.input, context);
+        if (deletedId !== undefined) {
+          redactDeletedMemoryContext(tx, deletedId);
+          redactDeletedMemorySnapshots(tx, deletedId, now());
+          scrubDeletedMemoryResponses(tx, store.assistantId, deletedText);
+        }
         if (data && typeof (data as unknown as { then?: unknown }).then === 'function') throw new Error('Domain operation must be synchronous');
         const result = success(data);
         tx.run('INSERT INTO runtime_requests VALUES (?,?,?,?,?)', [store.assistantId, actor.clientId, key, fingerprint, JSON.stringify(result)]); return result;

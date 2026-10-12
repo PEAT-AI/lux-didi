@@ -155,6 +155,35 @@ export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: 
   return { remembered: true, entryId: entry.id };
 }
 
+/** Scrub only the deleted record, preserving the rest of the frozen instruction. */
+export function redactDeletedMemorySnapshots(tx: Transaction, entryId: string, now: number): void {
+  if (!tx.get("SELECT name FROM sqlite_master WHERE type='table' AND name='live_sessions'", [])) return;
+  for (const row of tx.all('SELECT live_session_id,accepted_prompt_snapshot,prompt_identity FROM live_sessions', [])) {
+    if (row['accepted_prompt_snapshot'] === null) continue;
+    const snapshot = JSON.parse(String(row['accepted_prompt_snapshot'])) as AcceptedPromptSnapshot;
+    let removed = false;
+    const system = snapshot.system.replace(/<memory-record>\n([^\n]*)\n<\/memory-record>/g, (block, json: string) => {
+      const record = JSON.parse(json) as { id: string };
+      if (record.id !== entryId) return block;
+      removed = true; return '';
+    });
+    if (!removed) continue;
+    const selectedIds = snapshot.memory?.selectedIds.filter(id => id !== entryId) ?? [];
+    const omitted = snapshot.memory?.omitted.filter(record => record.id !== entryId) ?? [];
+    const memory = { status: omitted.length ? selectedIds.length ? 'partial' : 'omitted' : selectedIds.length ? 'selected' : 'empty', selectedIds, omitted } as const;
+    const updated = { ...snapshot, system, memory };
+    const dataClass = classes.find(dataClass => identity({ text: snapshot.system, dataClass }) === row['prompt_identity']);
+    if (!dataClass) throw new LiveError('invalidated');
+    const promptIdentity = identity({ text: system, dataClass });
+    const id = String(row['live_session_id']);
+    tx.run('UPDATE live_sessions SET accepted_prompt_snapshot=?,memory_provenance=?,prompt_identity=? WHERE live_session_id=?',
+      [JSON.stringify(updated), JSON.stringify(memory), promptIdentity, id]);
+    const journal = JSON.stringify({ event: 'memory_deleted', entryId });
+    tx.run("INSERT INTO live_journal(live_session_id,provider_sequence,kind,text,payload_bytes,arrived_at) VALUES (?,NULL,'continuity',?,?,?)",
+      [id, journal, Buffer.byteLength(journal, 'utf8'), now]);
+  }
+}
+
 export class LiveSessionOwner {
   readonly #jobs: LiveToolJobs;
   readonly #tools: LiveToolsComposition | undefined;

@@ -617,6 +617,7 @@ private final class ConnectedProofState: @unchecked Sendable {
     var epoch = "", session = ""
     var consent = true, loseReply = false
     var sends: [(String, String, String)] = []
+    var resultReads = 0
     var notes: [String] = []
     init() { epoch = originalEpoch; session = originalSession }
 }
@@ -653,7 +654,8 @@ private final class ConnectedProofTransport: URLProtocol, @unchecked Sendable {
             headers["Set-Cookie"] = "didi_session=synthetic-cookie; Path=/; HttpOnly; SameSite=Strict"
         case "/api/v1/conversation-selection": data = ["sessionId": state.session, "title": "Synthetic conversation"]
         case "/api/v1/conversations/" + state.session:
-            if state.consent { data = ["state": "active", "sessionId": state.session] }
+            if state.consent { data = ["state": "active", "sessionId": state.session,
+                "latestRunId": state.sends.isEmpty ? NSNull() : state.run] }
             else { status = 403 }
         case "/api/v1/chat":
             guard request.httpMethod == "POST", Set(body.keys) == Set(["sessionId", "text"]),
@@ -671,6 +673,17 @@ private final class ConnectedProofTransport: URLProtocol, @unchecked Sendable {
                 client?.urlProtocol(self, didFailWithError: URLError(.timedOut)); return
             }
             data = ["runId": state.run, "sessionId": session, "state": "accepted", "finalText": NSNull()]
+        case "/api/v1/chat/" + state.run:
+            guard request.httpMethod == "GET", let accepted = state.sends.last,
+                  request.value(forHTTPHeaderField: "Cookie") == "didi_session=synthetic-cookie",
+                  request.value(forHTTPHeaderField: "Authorization") == nil else {
+                client?.urlProtocol(self, didFailWithError: CompanionError.invalidResponse); return
+            }
+            state.resultReads += 1
+            let terminal = state.resultReads == 2
+            data = ["runId": state.run, "sessionId": accepted.1,
+                "state": terminal ? "terminal" : "accepted",
+                "finalText": terminal ? "Synthetic Naya answer" : NSNull()]
         case "/api/v1/sessions": data = ["id": state.noteSession, "revision": 1]
         case "/api/v1/sessions/" + state.noteSession + "/entries":
             state.notes.append(body["text"] as? String ?? "")
@@ -721,8 +734,10 @@ private final class ConnectedProofTransport: URLProtocol, @unchecked Sendable {
     // Same result-reading route used by the shared page, no native transcript.
     // The synthetic fixture advances on reads, never on a real clock.
     var terminal: [String: Any]?
-    for _ in 0..<2 {
+    for index in 0..<2 {
         let run = try await client.connectedRead("api/v1/chat/" + returnedRunID!)
+        try require(run["runId"] as? String == returnedRunID && run["sessionId"] as? String == state.originalSession)
+        if index == 0 { try require(run["state"] as? String == "accepted" && run["finalText"] is NSNull) }
         if run["state"] as? String == "terminal" { terminal = run; break }
     }
     let conversation = try await client.connectedRead("api/v1/conversations/" + state.originalSession)
@@ -734,5 +749,5 @@ private final class ConnectedProofTransport: URLProtocol, @unchecked Sendable {
     model.draft = "Synthetic local note"
     await model.saveDraft()
     try require(model.captureStatus == .saved && state.lock.withLock { state.notes == ["Synthetic local note"] && state.sends.count == 2 })
-    print("MAC-CONNECTED PASS production=AppModel consent=denied destination=pinned authority=fenced uncertain=same-key-and-text connected=nonempty-result note=local fixture=isolated")
+    print("MAC-CONNECTED PASS production=AppModel consent=denied destination=pinned authority=fenced uncertain=same-key-and-text connected=terminal-nonempty-result resultRoute=shared-conversation-run note=local fixture=isolated")
 }

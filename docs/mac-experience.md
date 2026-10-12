@@ -128,3 +128,7 @@ the shared conversation view, not a second native transcript.
 The built application's existing `--self-check` path runs a silent synthetic
 production-AppModel proof using an isolated URL transport fixture, without a real
 model provider, microphone capture or installed application state.
+The proof follows the run ID returned by the production action through the same
+`GET /api/v1/chat/{runId}` route used by the shared conversation view. Its fixture
+advances from accepted to terminal on bounded reads, then checks a nonempty final
+answer and the selected conversation's matching session and latest run ID.

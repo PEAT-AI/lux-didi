@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
@@ -335,3 +335,39 @@ test('canonical HOST symlink --help executes and ordinary module import never st
     assert.match(await run([alias, '--help']), /Usage: node server\/dist\/host\/index\.js/, 'Actual canonical host must execute --help through a symlink spelling');
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+for (const scenario of ['both', 'existing-live', 'default', 'absent'] as const) {
+  test(`host seeds effective config directory: ${scenario}`, async t => {
+    const dir = await mkdtemp(join(tmpdir(), 'didi-host-seed-'));
+    const defaults = join(dir, 'provider-config');
+    const effective = scenario === 'default' ? defaults : join(dir, 'operator');
+    const live = JSON.stringify({ schemaVersion: 1, enabled: false, provider: 'gemini', modelId: 'models/gemini-3.1-flash-live-preview', voice: 'Aoede', keyReference: 'gemini-primary', dataClasses: ['ordinary'], preferences: { dataClass: 'ordinary', language: 'en', register: 'plain', humor: 'dry', verbosity: 'brief' } });
+    const mcp = JSON.stringify({ schemaVersion: 1, endpoints: [] });
+    const logs: string[] = [];
+    t.mock.method(console, 'log', (line: string) => logs.push(line));
+    let host: Awaited<ReturnType<typeof startHost>> | undefined;
+    try {
+      await mkdir(defaults, { mode: 0o700 });
+      if (effective !== defaults) await mkdir(effective, { mode: 0o700 });
+      if (scenario !== 'absent') {
+        await writeFile(join(defaults, 'live.json'), live, { mode: 0o600 });
+        await writeFile(join(defaults, 'mcp.json'), mcp, { mode: 0o600 });
+        for (const name of ['gemini-primary.json', 'profile.json', 'admin-credential']) await writeFile(join(defaults, name), 'not a seed', { mode: 0o600 });
+      }
+      const existingLive = live + '\n';
+      if (scenario === 'existing-live') await writeFile(join(effective, 'live.json'), existingLive, { mode: 0o600 });
+      host = await startHost({ dataDir: dir, webRoot, configDir: effective, port: 0 });
+      for (const name of ['live.json', 'mcp.json']) {
+        if (scenario === 'absent') await assert.rejects(readFile(join(effective, name)), { code: 'ENOENT' });
+        else {
+          assert.equal(await readFile(join(effective, name), 'utf8'), name === 'mcp.json' ? mcp : scenario === 'existing-live' ? existingLive : live);
+          assert.equal((await stat(join(effective, name))).mode & 0o777, 0o600);
+        }
+      }
+      assert.equal((await stat(effective)).mode & 0o777, 0o700);
+      const seeded = scenario === 'both' ? ['live.json', 'mcp.json'] : scenario === 'existing-live' ? ['mcp.json'] : [];
+      assert.deepEqual(logs, seeded.map(name => `config_seeded file=${name} from=provider-config`));
+      if (effective !== defaults) for (const name of ['gemini-primary.json', 'profile.json', 'admin-credential']) await assert.rejects(readFile(join(effective, name)), { code: 'ENOENT' });
+    } finally { await host?.close(); await rm(dir, { recursive: true, force: true }); }
+  });
+}

@@ -309,3 +309,11 @@ closure in temporary output with installed Node >=26 and TypeScript (optional
 credential-binding, provider-config, model, live-voice and prompt test selections.
 Synthetic protected files and local fake transport/socket fixtures make no
 private/production account or model calls.
+
+The operator-selected config directory is the host's effective directory; without
+an override it is `provider-config` under the data directory. Before composing
+Live and MCP, the host seeds only missing `live.json` and `mcp.json` files from
+that default directory into the effective directory, using atomic writes with
+mode 0600 in a protected 0700 directory. Existing effective files take precedence;
+if neither directory has a file, its absent/disabled behavior is unchanged.
+Credentials and profiles are never seeded by this step.

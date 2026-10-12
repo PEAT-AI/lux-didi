@@ -25,7 +25,7 @@ const pickupInstruction = 'The user has just picked up. Deliver the pending job 
 
 interface ActiveSession {
   generation: number; attempts: number; rebuilding: boolean;
-  request: LiveVoiceRequest; deadlineMs: number; idleAt: number; goAwayUntil: number | undefined;
+  request: LiveVoiceRequest; deadlineMs: number; deadlineAt: number; idleAt: number; goAwayUntil: number | undefined;
   sessionTimer: ReturnType<JobTimer> | undefined; idleTimer: ReturnType<JobTimer> | undefined;
   pendingCalls: Map<string, string>;
   registry: readonly ToolDefinition[];
@@ -482,10 +482,12 @@ export class LiveSessionOwner {
       system: { text: system, dataClass: dataClasses[dataClasses.length - 1]! }, history: history ?? [], dataClasses,
       ...(this.#profile.language !== undefined ? { languageCode: this.#profile.language } : {}),
       ...(declarations.length ? { tools: declarations } : {}) };
+    const deadlineMs = Date.now() + this.#profile.limits.sessionMs;
+    const deadlineAt = this.#now() + this.#profile.limits.sessionMs;
     let session: LiveVoiceSession;
     try {
       // Absolute wall clock for the adapter; the injected clock is the owner's own durable order.
-      session = this.#voice.open(request, { signal: abort.signal, deadlineMs: Date.now() + this.#profile.limits.sessionMs, limits: this.#profile.limits });
+      session = this.#voice.open(request, { signal: abort.signal, deadlineMs, limits: this.#profile.limits });
     } catch (error) {
       this.#store.transaction(tx => this.#terminalInTx(tx, liveSessionId, { state: 'not_started' }, false, this.#now(), 'ended', null));
       throw error;
@@ -493,7 +495,7 @@ export class LiveSessionOwner {
     this.#store.transaction(tx => tx.run("UPDATE live_sessions SET lifecycle='active', updated_at=? WHERE live_session_id=?", [this.#now(), liveSessionId]));
     const handle: ActiveSession = {
       generation: 0, attempts: 0, rebuilding: false, request: structuredClone(request),
-      deadlineMs: Date.now() + this.#profile.limits.sessionMs, idleAt: Date.now() + this.#profile.limits.idleMs, goAwayUntil: undefined,
+      deadlineMs, deadlineAt, idleAt: this.#now() + this.#profile.limits.idleMs, goAwayUntil: undefined,
       sessionTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
       registry, host, toolStep: 0, seenIds: new Set(), thinking: false, speaking: false, pendingCallIds: new Set(),
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
@@ -539,7 +541,7 @@ export class LiveSessionOwner {
   #armIdle(handle: ActiveSession, remainingMs: number): void {
     if (this.#settled(handle)) return;
     handle.idleTimer?.cancel();
-    handle.idleAt = Date.now() + remainingMs;
+    handle.idleAt = this.#now() + remainingMs;
     handle.idleTimer = this.#schedule(() => this.#settle(handle, { state: 'failed', code: 'idle_timeout' }, false, 'ended', null), remainingMs);
   }
 
@@ -550,8 +552,8 @@ export class LiveSessionOwner {
   }
 
   #rebuild(handle: ActiveSession, reason: string): boolean {
-    const remaining = handle.deadlineMs - Date.now(), idle = handle.idleAt - Date.now();
-    const window = Math.min(10_000, handle.goAwayUntil === undefined ? 10_000 : handle.goAwayUntil - Date.now());
+    const remaining = handle.deadlineAt - this.#now(), idle = handle.idleAt - this.#now();
+    const window = Math.min(10_000, handle.goAwayUntil === undefined ? 10_000 : handle.goAwayUntil - this.#now());
     const saved = this.#store.transaction(tx => tx.get('SELECT resumption_handle FROM live_sessions WHERE live_session_id=?', [handle.liveSessionId]));
     const resumptionHandle = saved?.['resumption_handle'];
     if (handle.attempts >= 2 || typeof resumptionHandle !== 'string' || !resumptionHandle || remaining <= 0 || idle <= 0 || window <= 0) {
@@ -630,7 +632,7 @@ export class LiveSessionOwner {
           continue;
         }
         if (event.type === 'goAway') {
-          handle.goAwayUntil = Date.now() + event.timeLeftMs;
+          handle.goAwayUntil = this.#now() + event.timeLeftMs;
           outcome = { status: 'failed', code: 'go_away', recoverable: true };
           break;
         }
@@ -671,7 +673,7 @@ export class LiveSessionOwner {
         outcome ??= await session.done.catch(() => undefined);
         if (outcome?.recoverable && this.#rebuild(handle, outcome.code)) continue;
         if (handle.terminal) break;
-        if (outcome) this.#settle(handle, { state: outcome.status, code: handle.rebuilding || outcome.recoverable ? 'resume_failed' : outcome.code }, outcome.status === 'closed', 'ended', null);
+        if (outcome) this.#settle(handle, { state: outcome.status, code: handle.rebuilding && outcome.code !== 'session_timeout' && outcome.code !== 'idle_timeout' && outcome.code !== 'deadline' || outcome.recoverable ? 'resume_failed' : outcome.code === 'deadline' ? 'session_timeout' : outcome.code }, outcome.status === 'closed', 'ended', null);
         else this.#settle(handle, { state: 'outcome_unknown' }, false, 'ended', null);
       }
     }

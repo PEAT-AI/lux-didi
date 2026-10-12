@@ -678,7 +678,7 @@ test('live migrations preserve a populated accepted Store byte-for-byte', async 
       [{ journal_id: 44, kind: 'toolCall' }, { journal_id: 45, kind: 'toolResult' }]);
   });
   const owners = migrated.transaction(tx => tx.all('SELECT owner, MAX(version) AS version FROM runtime_migrations GROUP BY owner ORDER BY owner'));
-  assert.deepEqual(owners.map(row => [String(row['owner']), Number(row['version'])]), [['chat', 4], ['domain', 3], ['live', 4]]);
+  assert.deepEqual(owners.map(row => [String(row['owner']), Number(row['version'])]), [['chat', 4], ['domain', 3], ['live', 5]]);
 });
 
 test('a failed store write aborts visibly and never fabricates a durable outcome', async t => {
@@ -1293,7 +1293,6 @@ test('resumption keeps journal identity and frozen authority with the real adapt
   const handle = 'synthetic-owner-resumption-secret';
   h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: handle } });
   h.f.send({ goAway: { timeLeft: '10s' } });
-  h.f.terminate();
   await h.f.frame(2);
   const setup = (h.f.frames[1] as { setup: { sessionResumption: { handle: string } } }).setup;
   assert.equal(setup.sessionResumption.handle === handle, true);

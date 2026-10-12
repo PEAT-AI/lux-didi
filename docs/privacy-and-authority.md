@@ -116,3 +116,5 @@ Hidden-view graphics-context loss and cookie behaviour across a content-process 
 questions with measurements attached, not established facts.
 
 Connection-scoped tools admission freezes the owner-approved usable connection IDs and the model route's allowed data-class set when the run is accepted. A connection's policy is source/local-operation authority, not a model-route approval. The canonical owner checks the selected connection's current approval and effective locally configured source class before MCP dispatch and again at result release, using exact class-set membership, and journals the run route identity in intent and result rows. Discovery cannot expand an existing run, missing source classification disables only its connection, and an in-flight revocation withholds the result rather than releasing stale evidence.
+
+The installer seeds Live with the explicit allowed-class set `ordinary` and `private` so its five private connector sources can execute; it upgrades only byte-identical templates shipped by this program, in provider-config and provider-38, and never widens an owner-edited Live set or rewrites an owner-edited MCP catalog.

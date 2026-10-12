@@ -82,6 +82,25 @@ final class SupervisorLog: @unchecked Sendable {
     var onInvalidOutput: (() -> Void)?
     var isRunning: Bool { process.isRunning }
     var pid: Int32 { process.processIdentifier }
+#if COMPANION_TEST
+    private var stdoutBytes = 0
+    private var stdoutEOF = false
+    private var stdoutReadErrno = 0
+    private func observedRead(count: Int, error: Int32) {
+        if count > 0 { stdoutBytes += count }
+        else if count == 0 { stdoutEOF = true }
+        else { stdoutReadErrno = Int(error) }
+    }
+    var diagnosticState: [String: Any] {
+        let running = isRunning
+        var state: [String: Any] = ["pid": Int(pid), "running": running, "stdoutBytes": stdoutBytes,
+                                    "stdoutEOF": stdoutEOF, "stdoutReadErrno": stdoutReadErrno,
+                                    "hasFrame": frame != nil, "frameBytes": frame?.count ?? 0]
+        if pid > 0 && !running { state["exitStatus"] = Int(process.terminationStatus); state["exitReason"] = Int(process.terminationReason.rawValue) }
+        return state
+    }
+#endif
+
     func launch(executable: URL, arguments: [String]) throws {
         process.executableURL = executable; process.arguments = arguments
         // No inherited Node/loader/search-path/auth environment. Executable is explicit.
@@ -127,6 +146,9 @@ final class SupervisorLog: @unchecked Sendable {
                 var bytes = [UInt8](repeating: 0, count: 1025)
                 let count = bytes.withUnsafeMutableBytes { Darwin.read(descriptor, $0.baseAddress, $0.count) }
                 if count < 0 && errno == EINTR { continue }
+#if COMPANION_TEST
+                await self?.observedRead(count: count, error: count < 0 ? errno : 0)
+#endif
                 if count <= 0 { break }
                 buffer.append(contentsOf: bytes.prefix(count))
                 while let newline = buffer.firstIndex(of: 10) {
@@ -276,7 +298,18 @@ struct OwnedServiceConnection {
             await probe.stop()
         } catch {
 #if COMPANION_TEST
-            Self.diagnosticSink?(["stage": "probe-failed", "failedAt": stage])
+            var diagnostic = probe.diagnosticState
+            diagnostic["stage"] = "probe-failed"; diagnostic["failedAt"] = stage
+            switch error as? NativeServiceError {
+            case .timeout?: diagnostic["errorToken"] = "timeout"
+            case .invalidReady?: diagnostic["errorToken"] = "invalidReady"
+            case .exited?: diagnostic["errorToken"] = "exited"
+            case .invalidNode?: diagnostic["errorToken"] = "invalidNode"
+            case .keychain(let status)?: diagnostic["errorToken"] = "keychain"; diagnostic["status"] = Int(status)
+            case .some: diagnostic["errorToken"] = "native_other"
+            case .none: diagnostic["errorToken"] = "other"
+            }
+            Self.diagnosticSink?(diagnostic)
 #endif
             await probe.stop(); throw NativeServiceError.invalidNode
         }

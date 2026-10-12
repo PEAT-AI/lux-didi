@@ -60,14 +60,18 @@ import Foundation
     init(release: @escaping (Session) -> Void, publish: @escaping (Session?) -> Void) {
         self.release = release; self.publish = publish
     }
-    func rebind(_ authority: String) { self.authority = authority }
-    func unavailable() { if let retained { release(retained) } }
+    func rebind(_ authority: String) {
+        guard self.authority != authority else { return }
+        self.authority = authority; clear()
+    }
+    func unavailable() { authority = nil; clear() }
     func ownerStart(make: () -> Session) -> Session {
         if let retained { return retained }
         let session = make(); retained = session; publish(session); return session
     }
     func clear() {
-        if let retained { release(retained) }
-        retained = nil; publish(nil)
+        let previous = retained; retained = nil
+        if let previous { release(previous) }
+        publish(nil)
     }
 }

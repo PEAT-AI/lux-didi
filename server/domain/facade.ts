@@ -68,6 +68,10 @@ class Domain implements DomainPort {
     const op = operation as DomainOperation;
     labels.validateWriteLabel(op, writeLabel);
     switch (op) {
+      case 'deleteEntry': {
+        const i = input as DomainOperations['deleteEntry']['input'];
+        return memory.deleteEntry(tx, i.id, context.now, context.clientId) as DomainOperations[K]['output'];
+      }
       case 'createSession': {
         const i = input as DomainOperations['createSession']['input'];
         const clock = clockAt(context);

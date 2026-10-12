@@ -60,3 +60,21 @@ used. No note text is copied into a URL, localStorage, analytics or an error mes
   synthetic note fixture and the real GPU browser proof (desktop 1440, mobile 390).
 
 Run both through `scripts/check-selected-memory-ui.sh`.
+
+## Owner deletion
+
+Every entry shown in the local conversation, recall results, or selected-note picker has a
+Delete memory control with one confirmation. The browser calls authenticated
+`DELETE /api/v1/entries/:id` with an empty JSON object, then reloads the conversation and recall payloads from the
+service. It does not optimistically filter records. Failed deletes leave the previous
+payload visible; a failed reload reports an error rather than claiming a fresh list.
+Deletion is unavailable while a connected generation is active. Successful deletion
+invalidates the picker's cached selection and refreshes it from the service.
+
+The owner physically removes the entry and its source references in one transaction,
+and retains only entry id, deletion time, browser actor, and `owner_request` in a
+domain tombstone, with a content-free Live session/turn dedup key when applicable. A repeated remember_note for that voice turn returns already_remembered and writes nothing. Repeating deletion returns that same tombstone; unknown ids return
+NOT_FOUND. New recall and Live CREATE selection cannot resolve the removed entry.
+Historical chat context snapshots and Live transcripts are not rewritten. In particular,
+a previously accepted chat run can still compose its frozen resolved-record snapshot;
+that read-back is a separate follow-up and is not covered by this deletion boundary.

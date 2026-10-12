@@ -126,3 +126,18 @@ Remembering the connected-chat provider disclosure is an explicit owner action, 
 A standing grant applies only to its exact validated tuple. Revocation or a changed route, provider, model, permitted-class policy or disclosure revision makes it unusable. In particular, ordinary-route consent cannot authorize a private route. The UI's standing-consent indicator and revoke control reflect the server payload, and a revoked grant cannot authorize a new conversation. A conversation-scoped grant can still authorize its own conversation under its existing validation rules.
 
 Standing chat disclosure does not authorize connector reads, broaden connector grants, enroll Live voice, or authorize microphone capture. Those authority boundaries remain unchanged.
+## Memory deletion boundary
+
+The paired owner can delete an entry through `DELETE /api/v1/entries/:id`, using the
+existing cookie principal, origin/CSRF protection, authority epoch, and request-key
+contract. The admin credential path is unchanged. Entry text and entry source metadata
+are removed from the domain tables atomically, leaving a content-free tombstone
+(entry id, deletion time, actor, reason code, and a canonical Live source-turn identity when present). This is a local deletion journal, not an
+outbox delivery: deletion must not dispatch any network side effect.
+
+This does not scrub old provider requests, quoted chat messages, Live transcripts,
+or frozen `chat_run_context.resolved_records` / Live accepted-prompt snapshots.
+Already accepted chat runs read back their frozen resolved records for composition;
+preventing that later dispatch is tracked separately. Domain-row erasure is not a
+claim of forensic erasure of SQLite free pages, WAL files, filesystem snapshots,
+or backups. New domain reads, recall queries, and Live CREATEs exclude deleted ids. The content-free Live source-turn key prevents remember_note from recreating a deleted note from the same retained voice turn; the existing already_remembered outcome carries only its deleted entry id.

@@ -139,8 +139,8 @@ export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: 
   const pointer = normalized(args.text), ownerText = normalized(payload);
   if (!pointer || !ownerText || !ownerText.includes(pointer)) return { remembered: false, code: 'owner_text_mismatch' };
   const externalId = `${liveSessionId}:${turn.seq}`;
-  const existing = tx.get("SELECT owner_id FROM source_references WHERE owner_kind='entry' AND provider='live-voice' AND external_id=?", [externalId]);
-  if (existing) return { remembered: false, code: 'already_remembered', entryId: String(existing.owner_id) };
+  const existing = memory.rememberedLiveEntry(tx, externalId);
+  if (existing) return { remembered: false, code: 'already_remembered', entryId: existing };
   const clock = { now: () => now };
   const session = memory.createSession(tx, { title: 'Live voice memory', startedAt: now, timeZone: 'UTC' }, clock);
   labels.correct(tx, { subject: { kind: 'session', id: session.id }, expectedRevision: 0, dataClass: 'ordinary' }, now);

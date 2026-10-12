@@ -649,3 +649,15 @@ test('trusted assistant append forces assistant role and participates in caller 
     assert.equal(read.entries.length, 1); assert.equal(read.entries[0]!.text, 'Durable answer');
   } finally { cleanup(h); }
 });
+
+test('owner deletion is an exported domain operation', () => {
+  const h = fixture();
+  try {
+    const ctx = context(nextNow());
+    const session = h.store.transaction(tx => h.port.execute(tx, 'createSession', { title: 'Delete fixture', timeZone: 'UTC' }, ctx));
+    const entry = h.store.transaction(tx => h.port.execute(tx, 'appendEntry', { sessionId: session.id, text: 'synthetic deletion fixture', role: 'user', timeZone: 'UTC' }, ctx));
+    const tombstone = h.store.transaction(tx => Reflect.apply(h.port.execute, h.port, [tx, 'deleteEntry', { id: entry.id }, ctx]));
+    assert.deepEqual(tombstone, { entryId: entry.id, deletedAt: ctx.now, actor: ctx.clientId, reasonCode: 'owner_request' });
+    assert.deepEqual(h.store.transaction(tx => h.port.execute(tx, 'getSession', { id: session.id }, ctx)).entries, []);
+  } finally { cleanup(h); }
+});

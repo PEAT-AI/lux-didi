@@ -7,7 +7,7 @@ import { endpointBinding } from '../adapters/mcp/port.js';
 import { CONNECTOR_DESCRIPTORS } from '../connectors/index.js';
 import { canonicalJSON, detached, sha256 } from './canonical.js';
 import type { BoundConnection, ConnectionApplyResult, ConnectionPolicy, HttpConnectionEndpoint, ModelSnapshot, RunAcceptance, RunSnapshot, StdioConnectionEndpoint, ToolsOwner, ToolsOwnerOptions } from './types.js';
-import { REMEMBER_IDENTITY, REMEMBER_PARAMETERS, validateRemember, rememberOwnerNote } from './remember.js';
+import { REMEMBER_IDENTITY, REMEMBER_PARAMETERS, validateRemember } from './remember.js';
 export { toolsMigrations } from './schema.js';
 export type * from './types.js';
 
@@ -300,11 +300,11 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
       tx.run('INSERT INTO tool_runs VALUES (?,?,?,?)', [ownerId, acceptance.runId, bytes, hash]); return { sha256: hash };
     },
     liveRememberApproved() { return options.grantMode === 'owner-trusted-reads'; },
-    liveDefinitions(runId) {
+    liveDefinitions(runId, rememberNote) {
       const definitions = owner.definitions(runId).filter(tool => tool.name !== REMEMBER_IDENTITY.name);
       definitions.push({ ...REMEMBER_IDENTITY, description: 'Remember a note explicitly requested in the owner’s finalized words.', effect: 'write', parameters: REMEMBER_PARAMETERS, validate: validateRemember,
         async execute(args, context) {
-          if (!validateRemember(args) || context.signal.aborted) return { status: 'failed' };
+          if (context.runId !== runId || !validateRemember(args) || context.signal.aborted) return { status: 'failed' };
           const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
           if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' };
           const result = store.transaction(tx => {
@@ -316,7 +316,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
             const snapshot = validateCallRun(tx, call);
             assertLiveIdentity(tx, call); target(snapshot, call);
             if (!currentPolicies(tx, snapshot) || !currentProjection(snapshot)) throw Error('executor_policy_denied');
-            const response = rememberOwnerNote(tx, runId, args, Date.now());
+            const response = rememberNote(tx, runId, args);
             return complete(call as ToolCallIntent, response, ['ordinary'], tx);
           });
           return { status: 'completed', result };

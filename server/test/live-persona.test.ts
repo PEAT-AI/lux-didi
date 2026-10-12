@@ -5,8 +5,8 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  NAYA_BASE, PersonaOverlayError, canonicalSpeechLanguage, composeLiveInstruction, loadPersonaOverlay,
-  validatePersonaOverlay, type PersonaOverlay,
+  NAYA_BASE, NAYA_TOOLS, PersonaOverlayError, canonicalSpeechLanguage, composeLiveInstruction, loadPersonaOverlay,
+  validatePersonaOverlay, withToolsSection, type PersonaOverlay,
 } from '../prompt/live-persona.js';
 
 const sha = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex');
@@ -84,6 +84,70 @@ test('the 60k budget yields the overlay first and never drops the base or anchor
   const overfull = composeLiveInstruction({ base: 'B'.repeat(BUDGET), overlay: { schemaVersion: 1, text: 'O'.repeat(1000) }, language: 'en' });
   assert.equal(overfull.sections.find(s => s.id === 'overlay'), undefined, 'overlay dropped when nothing is left');
   assert.ok(overfull.text.startsWith('B'.repeat(BUDGET)));
+});
+
+test('the tools conduct text is authored, generic and names no connector beyond the families', () => {
+  assert.match(NAYA_TOOLS, /^# Tools\n\n/);
+  assert.match(NAYA_TOOLS, /knowledge base is the first stop/);
+  assert.match(NAYA_TOOLS, /Never invent a tool result, a source or a date\./);
+  assert.ok(!NAYA_TOOLS.includes('—') && !NAYA_TOOLS.includes('–'), 'no dash prose');
+});
+
+test('no declarations compose exactly the three existing sections and hash', () => {
+  const overlay: PersonaOverlay = { schemaVersion: 1, text: 'Local overlay persona', greeting: 'Hello there' };
+  const withoutTools = composeLiveInstruction({ base: NAYA_BASE, overlay, language: 'de-DE' });
+  const withEmptyTools = composeLiveInstruction({ base: NAYA_BASE, overlay, language: 'de-DE', tools: [] });
+  assert.deepEqual(withoutTools.sections.map(s => s.id), ['base', 'overlay', 'voice']);
+  assert.equal(withEmptyTools.text, withoutTools.text, 'an empty declaration list adds nothing');
+  assert.equal(withEmptyTools.sha256, withoutTools.sha256);
+  assert.equal(withoutTools.sha256, '3b3fb4507a91d0a2b5dd287a28a1cd1e1e1e1e3c1e1e1e1e1e1e1e1e1e1e1e1e');
+});
+
+test('declarations add the tools section verbatim between base and overlay with a stable hash', () => {
+  const overlay: PersonaOverlay = { schemaVersion: 1, text: 'Local overlay persona' };
+  const tools = ['search_knowledge', 'get_insight'];
+  const result = composeLiveInstruction({ base: NAYA_BASE, overlay, language: 'en', tools });
+  assert.deepEqual(result.sections.map(s => s.id), ['base', 'tools', 'overlay', 'voice']);
+  const baseAt = result.text.indexOf(NAYA_BASE);
+  const toolsAt = result.text.indexOf(NAYA_TOOLS);
+  const overlayAt = result.text.indexOf('Local overlay persona');
+  assert.ok(baseAt === 0 && toolsAt > baseAt && overlayAt > toolsAt, 'order base then tools then overlay');
+  const toolsSection = result.sections.find(s => s.id === 'tools');
+  assert.ok(toolsSection, 'the tools section is journaled like the others');
+  assert.equal(toolsSection.chars, NAYA_TOOLS.length);
+  assert.equal(toolsSection.sha256, sha(NAYA_TOOLS));
+  assert.equal(result.sha256, sha(result.text));
+  const again = composeLiveInstruction({ base: NAYA_BASE, overlay, language: 'en', tools });
+  assert.equal(again.sha256, result.sha256, 'hash stability for the same declaration names');
+});
+
+test('the 60k budget yields the overlay first then the tools section', () => {
+  const base = 'B'.repeat(55_000);
+  const overlay: PersonaOverlay = { schemaVersion: 1, text: 'O'.repeat(20_000) };
+  const result = composeLiveInstruction({ base, overlay, language: 'en', tools: ['search_knowledge'] });
+  assert.ok(result.text.length <= BUDGET, `composed text ${result.text.length} must fit the budget`);
+  assert.ok(result.text.startsWith(base), 'base never yields');
+  assert.ok(result.text.includes('LANGUAGE:'), 'anchor never yields');
+  const toolsSection = result.sections.find(s => s.id === 'tools');
+  assert.ok(toolsSection && toolsSection.chars === NAYA_TOOLS.length, 'tools survives while the overlay yields');
+  const overlaySection = result.sections.find(s => s.id === 'overlay');
+  assert.ok(overlaySection && overlaySection.chars < 20_000, 'overlay yielded first');
+  const overfull = composeLiveInstruction({ base: 'B'.repeat(BUDGET), overlay: { schemaVersion: 1, text: 'O'.repeat(1000) }, language: 'en', tools: ['search_knowledge'] });
+  assert.equal(overfull.sections.find(s => s.id === 'overlay'), undefined, 'overlay dropped when nothing is left');
+  assert.equal(overfull.sections.find(s => s.id === 'tools'), undefined, 'tools yields after the overlay');
+  assert.ok(overfull.text.startsWith('B'.repeat(BUDGET)));
+});
+
+test('withToolsSection splices the block after the base and is a no-op without declarations', () => {
+  const composed = composeLiveInstruction({ base: NAYA_BASE, overlay: { schemaVersion: 1, text: 'Overlay text' }, language: 'en' });
+  assert.equal(withToolsSection(composed.text, []), composed.text, 'no declarations leaves the text byte-identical');
+  const spliced = withToolsSection(composed.text, ['search_knowledge']);
+  const baseAt = spliced.indexOf(NAYA_BASE);
+  const toolsAt = spliced.indexOf(NAYA_TOOLS);
+  const overlayAt = spliced.indexOf('Overlay text');
+  assert.ok(baseAt === 0 && toolsAt > baseAt && overlayAt > toolsAt, 'base then tools then overlay');
+  assert.ok(spliced.endsWith(composed.text.slice(NAYA_BASE.length + 2)), 'everything after the base is unchanged');
+  assert.equal(withToolsSection('Synthetic system', ['search_knowledge']), `Synthetic system\n\n${NAYA_TOOLS}`);
 });
 
 test('overlay validation is strict and bounded', () => {

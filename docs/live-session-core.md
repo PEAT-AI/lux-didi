@@ -89,7 +89,8 @@ store.close();
   `generationComplete`, `turnComplete`, `waitingForInput` and one sanitized terminal record.
   PCM, thoughts, `modelText`, resumption handles and raw errors never persist.
 - Count and byte limits end the session with a durable `journal_limit` terminal record,
-  preserving every committed fragment.
+  preserving every committed fragment. The owner defaults are 60 minutes per session
+  and 5 minutes idle (`limits.sessionMs` and `limits.idleMs` in `live.json`).
 - Audio goes to a single bounded consumer channel; an undrained consumer terminates visibly.
 - A failed store write aborts the adapter and never fabricates a durable outcome.
 

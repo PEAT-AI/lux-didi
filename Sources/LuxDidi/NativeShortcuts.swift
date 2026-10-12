@@ -10,6 +10,10 @@ enum ShortcutStatus {
 struct LiveStatusPresentation {
     let state: String
     let pendingCall: Bool
+    init(state: String, pendingCall: Bool) {
+        self.state = ["idle", "ended", "failed", "outcomeUnknown"].contains(state) ? "stopped" : state
+        self.pendingCall = pendingCall
+    }
     var text: String { "Naya: \(state)" + (pendingCall ? "; Naya is calling" : "") }
     var symbol: String {
         switch state {
@@ -24,15 +28,17 @@ struct LiveStatusPresentation {
 /// The same explicit owner actions serve menu and shortcuts. Show has no capture authority.
 final class NativeSummonActions {
     private let showWindow: () -> Void
+    private let isCapturing: () -> Bool
     private let startLive: () -> Void
     private let muteLive: () -> Void
     private let stopLive: () -> Void
-    init(show: @escaping () -> Void, start: @escaping () -> Void,
+    init(show: @escaping () -> Void, isCapturing: @escaping () -> Bool, start: @escaping () -> Void,
          mute: @escaping () -> Void, stop: @escaping () -> Void) {
-        showWindow = show; startLive = start; muteLive = mute; stopLive = stop
+        showWindow = show; self.isCapturing = isCapturing
+        startLive = start; muteLive = mute; stopLive = stop
     }
     func show() { showWindow() }
-    func start() { showWindow(); startLive() }
+    func start() { showWindow(); guard !isCapturing() else { return }; startLive() }
     func mute() { muteLive() }
     func stop() { stopLive() }
 }

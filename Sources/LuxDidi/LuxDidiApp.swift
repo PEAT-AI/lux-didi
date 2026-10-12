@@ -225,7 +225,7 @@ struct RootView: View {
                     TextField("User-entered or on-device transcribed text", text: $model.draft)
                     Button(model.captureStatus == .unknown ? "Retry Save note" : NativeNoteAction.label) { Task { await model.saveDraft() } }
                         .disabled(!Presentation.canSend(model.draft) || model.captureStatus == .sending || voice.state.phase == .recording)
-                        .accessibilityLabel(model.captureStatus == .unknown ? "Retry same text capture" : "Send text")
+                        .accessibilityLabel(model.captureStatus == .unknown ? "Retry Save note" : NativeNoteAction.label)
                     Button("Start") { model.startDictation() }
                         .disabled(model.live?.isCapturing == true || voice.state.phase == .recording || voice.microphone != .granted || voice.speech != .granted || !voice.onDevice)
                         .accessibilityLabel("Start recording")
@@ -294,6 +294,7 @@ struct RootView: View {
     let hotkey = GlobalHotkey()
     let liveShortcuts = NativeShortcuts()
     private lazy var summonActions = NativeSummonActions(show: { [weak self] in self?.show() },
+        isCapturing: { [weak self] in self?.model.live?.isCapturing == true },
         start: { [weak self] in self?.model.startLive() },
         mute: { [weak self] in self?.model.live?.toggleMute() },
         stop: { [weak self] in self?.model.stopLive() })
@@ -416,14 +417,13 @@ struct RootView: View {
     }
     private func updateLiveStatus(state: String? = nil, pendingCall: Bool? = nil) {
         let raw = state ?? model.live?.state.rawValue ?? "stopped"
-        let label = ["idle", "ended", "failed", "outcomeUnknown"].contains(raw) ? "stopped" : raw
-        let presentation = LiveStatusPresentation(state: label, pendingCall: pendingCall ?? !model.pendingLiveCalls.isEmpty)
+        let presentation = LiveStatusPresentation(state: raw, pendingCall: pendingCall ?? !model.pendingLiveCalls.isEmpty)
         statusItem.button?.image = NSImage(systemSymbolName: presentation.symbol, accessibilityDescription: presentation.text)
         statusItem.button?.title = presentation.pendingCall ? "•" : ""
         statusItem.button?.toolTip = presentation.text
         statusItem.button?.setAccessibilityLabel(presentation.text)
         liveMenuItem?.title = presentation.text
-        muteMenuItem?.title = label == "muted" ? "Unmute" : "Mute"
+        muteMenuItem?.title = presentation.state == "muted" ? "Unmute" : "Mute"
     }
     func menuWillOpen(_ menu: NSMenu) {
         updateLiveStatus()

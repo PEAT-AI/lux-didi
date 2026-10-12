@@ -200,7 +200,7 @@ export function appendEntry(
     [id, input.sessionId, sequence, role, text, input.capturedAt, input.timeZone],
   );
   if (input.kind !== undefined) {
-    if (!['fact', 'preference', 'task'].includes(input.kind)) validation('invalid memory kind');
+    if (!['fact', 'preference', 'task'].includes(input.kind)) badRequest('invalid memory kind');
     tx.run('UPDATE entries SET memory_kind=? WHERE id=?', [input.kind, id]);
   }
   if (input.source) {

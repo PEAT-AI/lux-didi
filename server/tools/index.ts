@@ -311,7 +311,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
             const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, context.runId, context.executionId]);
             if (!row || row.state !== 'intent') throw Error('intent_missing_or_terminal');
             const call = callDTO(JSON.parse(String(row.intent_json)) as ToolCallIntent);
-            const expected = { runId: context.runId, actorId: context.actorId, authorityEpoch: context.authorityEpoch, revision: context.revision, executionId: context.executionId, toolName: REMEMBER_IDENTITY.name, argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'), accountId: REMEMBER_IDENTITY.accountId, resourceId: REMEMBER_IDENTITY.resourceId, ...(context.callId !== undefined ? { callId: context.callId } : {}) };
+            const expected = { runId: context.runId, actorId: context.actorId, authorityEpoch: context.authorityEpoch, revision: context.revision, executionId: context.executionId, toolName: REMEMBER_IDENTITY.name, argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'), accountId: REMEMBER_IDENTITY.accountId, resourceId: REMEMBER_IDENTITY.resourceId, ...(call.callId !== undefined ? { callId: call.callId } : {}) };
             if (canonicalJSON(call) !== canonicalJSON(expected)) throw Error('executor_intent_mismatch');
             const snapshot = validateCallRun(tx, call);
             assertLiveIdentity(tx, call); target(snapshot, call);

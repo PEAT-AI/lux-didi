@@ -40,7 +40,7 @@ export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: 
   const session = memory.createSession(tx, { title: 'Live voice memory', startedAt: now, timeZone: 'UTC' }, clock);
   labels.correct(tx, { subject: { kind: 'session', id: session.id }, expectedRevision: 0, dataClass: 'ordinary' }, now);
   const entry = memory.appendEntry(tx, { sessionId: session.id, text: payload, kind: args.kind, capturedAt: now, timeZone: 'UTC',
-    source: { label: `live-voice ${liveSessionId}`, provider: 'live-voice', accountId: liveSessionId, externalId, sourceTimestamp: now, availability: 'available' } }, clock);
+    source: { label: `live-voice ${liveSessionId}`, provider: 'live-voice', accountId: liveSessionId, externalId, sourceTimestamp: now, availability: 'present' } }, clock);
   labels.correct(tx, { subject: { kind: 'entry', id: entry.id }, expectedRevision: 0, dataClass: 'ordinary' }, now);
   return { remembered: true, entryId: entry.id };
 }

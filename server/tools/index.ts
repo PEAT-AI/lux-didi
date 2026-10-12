@@ -364,9 +364,11 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
                 const committed = storedCall(tx, row);
                 const expected = { runId: context.runId, actorId: context.actorId, authorityEpoch: context.authorityEpoch, revision: context.revision, executionId: context.executionId, accountId: context.accountId, resourceId: context.resourceId, toolName: name, argumentsHash: sha256(JSON.stringify(args)), ...(committed.callId === undefined ? {} : { callId: committed.callId }) };
                 exactIntent(tx, expected); const accepted = validateCallRun(tx, expected);
-                if (!currentPolicies(tx, accepted, bound.connectionId) || !currentProjection(accepted, bound.connectionId) || target(accepted, expected).connectionId !== bound.connectionId) throw Error('executor_policy_denied');
+                if (!currentPolicies(tx, accepted, bound.connectionId) || !currentProjection(accepted, bound.connectionId)) return null;
+                if (target(accepted, expected).connectionId !== bound.connectionId) throw Error('executor_policy_denied');
                 return expected;
               });
+              if (!call) return { status: 'failed' };
               const evidence = await reader.call(name, args as Record<string, unknown>, context.signal);
               if (context.signal.aborted || evidence.state === 'unknown') return { status: 'unknown' };
               if (evidence.state !== 'completed') {

@@ -202,6 +202,10 @@ test('every declined remember code renders one honest reason line', () => {
     assert.doesNotMatch(html, /Remembered/, code);
     assert.match(html, /not saved|did not save|already had|not final|did not match/i, code);
   }
+  const errored: LiveCurrent = { ...speaking, entries: [
+    { seq: 1, kind: 'toolResult', tool: { name: 'remember_note', status: 'error', markdown: '' } },
+  ] };
+  assert.match(liveMarkup(errored), /not saved|did not save/i);
 });
 
 test('other tool results still render as inspectable detail cards', () => {

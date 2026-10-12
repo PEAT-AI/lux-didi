@@ -176,7 +176,7 @@ test('Live remember writes owner words once, freezes the current prompt and reca
     assert.deepEqual(Object.keys(result).sort(), ['entryId', 'remembered']);
     const entry = rows(h)[i]!;
     assert.equal(entry.text, payload);
-    const provenance = h.store.transaction(tx => tx.get("SELECT * FROM source_refs WHERE owner_kind='entry' AND owner_id=?", [String(entry.id)]));
+    const provenance = h.store.transaction(tx => tx.get("SELECT * FROM source_references WHERE owner_kind='entry' AND owner_id=?", [String(entry.id)]));
     assert.equal(provenance?.provider, 'live-voice');
     assert.equal(provenance?.note, `kind:${kind}`);
     assert.equal(provenance?.account_id, session.liveSessionId);

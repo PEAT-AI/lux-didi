@@ -250,7 +250,11 @@ import Darwin
                 do { _ = try await child.start(); try expect(false, "invalid ready must fail: " + mode) }
                 catch { try expect(!child.isRunning && !itemExists(bad.0.installId), "bad readiness gets no Keychain credential: " + mode) }
             }
-            let invalidNode = supervisor(try setup("normal", changes: ["nodePath": "/usr/bin/false"]))
+            let wrongExecutable = try setup("normal")
+            // Keep the manifest valid: this case tests the executable probe, not path validation.
+            try fm.removeItem(at: wrongExecutable.0.node)
+            try fm.copyItem(atPath: "/usr/bin/false", toPath: wrongExecutable.0.node.path)
+            let invalidNode = supervisor(wrongExecutable)
             do { _ = try await invalidNode.start(); try expect(false, "non-Node executable must fail") }
             catch { try expect(!invalidNode.isRunning, "actual Node/SQLite probe refuses wrong executable") }
 

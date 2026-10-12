@@ -83,7 +83,7 @@ const normalize = text => text.replace(pathValue, '$1"<PATH>"');
 if (normalize(stored) !== normalize(old)) process.exit(1);
 const paths = [...stored.matchAll(pathValue)].map(match => match[0]);
 let index = 0;
-const desired = fs.readFileSync(candidate, 'utf8').replace(pathValue, () => paths[index++]);
+const desired = fs.readFileSync(candidate, 'utf8').replace(pathValue, match => paths[index++] ?? match);
 fs.writeFileSync(candidate, desired);
 NODE
     then mv "$candidate" "$file"; return; fi

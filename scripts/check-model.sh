@@ -16,8 +16,11 @@ trap 'rm -rf "$out"' EXIT
 cd "$root"
 # Stage only this unit under a temporary ESM marker, so the isolated worktree
 # follows SERVICE's actual NodeNext conventions without a competing manifest.
-mkdir -p "$out/source/adapters/model" "$out/source/test"
+# adapters/model/loop.ts imports ../../tools/declarations.js; stage it so the
+# isolated copy compiles instead of failing TS2307.
+mkdir -p "$out/source/adapters/model" "$out/source/tools" "$out/source/test"
 cp server/adapters/model/*.ts "$out/source/adapters/model/"
+cp server/tools/declarations.ts "$out/source/tools/"
 cp server/test/model.test.ts "$out/source/test/"
 printf '{"type":"module"}\n' > "$out/package.json"
 node "$deps/typescript/bin/tsc" --target ES2023 --module NodeNext --moduleResolution NodeNext \

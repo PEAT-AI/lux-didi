@@ -70,7 +70,7 @@ export async function fixture(t: TestContext, frameMode: FrameMode = 'binary') {
     },
     send(value: unknown) { peer!.send(JSON.stringify(value), { binary: frameMode === 'binary' }); },
     sendRaw(value: string | Buffer) { peer!.send(value, { binary: frameMode === 'binary' }); },
-    remoteClose(reason = '') { peer!.close(1000, reason); },
+    remoteClose(reason = '', code = 1000) { peer!.close(code, reason); },
     terminate() { peer!.terminate(); },
     get peer() { return peer!; },
   };

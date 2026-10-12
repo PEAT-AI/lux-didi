@@ -398,8 +398,8 @@ test('provider fixture rejects unsupported setup schema with 1007 before ready',
     { name: 'invalid', description: 'Invalid original schema', parameters: { type: 'OBJECT', properties: { nested: { type: 'OBJECT', additionalProperties: false } } } },
   ] }, control());
   const captured = collect(session);
-  await assert.rejects(session.ready, code('remote_closed'));
-  assert.equal((await session.done).code, 'remote_closed');
+  await assert.rejects(session.ready, code('provider_setup_rejected'));
+  assert.equal((await session.done).code, 'provider_setup_rejected');
   await captured.done;
   assert.equal(captured.events.some(event => event.type === 'ready'), false);
   noCanary(captured.events);

@@ -201,7 +201,16 @@ export async function composeMcpRuntime(options: {
   await Promise.all(active.map(connect));
   return {
     registry, port, owner,
-    connectionIds: () => active.filter(entry => usable.has(entry.id) && reports.get(entry.id)?.state === 'connected').map(entry => entry.id),
+    connectionIds: () => active.filter(entry => {
+      if (!usable.has(entry.id) || reports.get(entry.id)?.state !== 'connected') return false;
+      const grant = registry.currentGrant(entry.id);
+      return !!grant && store.transaction(tx => {
+        const row = tx.get('SELECT generation,enabled,policy_json,policy_sha256 FROM tool_connections WHERE owner_id=? AND connection_id=?', [ownerId, entry.id]);
+        if (!row || row.enabled !== 1 || row.generation !== grant.generation || sha256(String(row.policy_json)) !== row.policy_sha256) return false;
+        const policy = validatePolicy(JSON.parse(String(row.policy_json)) as ConnectionPolicy);
+        return policy.bindingMode === 'connection' && policy.sourcePolicy.unknownClass !== null;
+      });
+    }).map(entry => entry.id),
     status: () => ({ endpoints: [...reports.values()].map(report => ({ ...report })) }),
     refresh: async () => { await Promise.all(active.map(connect)); },
     close: () => port.close(),

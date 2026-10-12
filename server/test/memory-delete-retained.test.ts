@@ -31,7 +31,7 @@ test('HTTP deletion atomically scrubs retained chat, Live and request copies, in
     liveRequests.push(structuredClone(request)); return adapter.open(request, control);
   } }, memorySource: () => [{ id: entry.id, text: note, dataClass: 'ordinary' }, { id: keep.id, text: keep.text, dataClass: 'ordinary' }] });
   live.recover();
-  const service = await listenService({ store: f.store, domain: f.domain, chat: f.chat, live, port: 0 });
+  const service = await listenService({ store: f.store, domain: f.domain, chat: f.chat, port: 0 });
   let attachment: ReturnType<typeof live.attach> | undefined;
   try {
     const auth = { Authorization: `Bearer ${readFileSync(join(dir, 'admin-credential'), 'utf8').trim()}`, 'Content-Type': 'application/json' };

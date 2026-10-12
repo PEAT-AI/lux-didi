@@ -1,5 +1,5 @@
 import { Store } from '../runtime/store.js';
-import { toolsMigrations } from '../tools/index.js';
+import type { SchemaMigration } from '../contracts/storage.js';
 import { Outbox } from '../runtime/outbox.js';
 import { createDomainPort } from '../domain/facade.js';
 import { ChatService, chatMigrations, type ChatConfig } from '../chat/index.js';
@@ -15,14 +15,14 @@ export function result(request: ModelRequest, status: ModelResult['status'] = 'c
     reason: 'synthetic', prompt: { version: request.promptVersion, hash: 'synthetic', omittedContextIds: [] },
     timings: { kind: 'synthetic', totalMs: 0, firstTextMs: null } };
 }
-export function openFixture(dir: string, model: ModelPort, overrides: Partial<ChatConfig> = {}, faultCheck?: string) {
+export function openFixture(dir: string, model: ModelPort, overrides: Partial<ChatConfig> = {}, faultCheck?: string, extraMigrations: readonly SchemaMigration[] = []) {
   const domain = createDomainPort({ outbox: Outbox });
   // Keep the actual owned migration/Store. Faults are real SQLite constraints
   // on initial CREATE: runtime intentionally guards trigger bodies and ALTER.
   const ownedMigrations = chatMigrations.map(migration => ({ ...migration,
     statements: migration.statements.map(statement => faultCheck && statement.startsWith('CREATE TABLE chat_runs')
       ? statement.replace(/\)\s*$/, `, CHECK (${faultCheck}))`) : statement) }));
-  const store = new Store(dir, [...domain.migrations, ...ownedMigrations, ...toolsMigrations]);
+  const store = new Store(dir, [...domain.migrations, ...ownedMigrations, ...extraMigrations]);
   const context: DomainContext = { assistantId: store.assistantId, clientId: 'test-actor', authorityEpoch: store.authorityEpoch, now: new Date(0).toISOString() };
   const config: ChatConfig = { store, domain, model,
     route: { provider: 'synthetic', model: 'counting', available: true, allows: () => true, endpoint: 'https://generativelanguage.googleapis.com', apiVersion: 'v1beta', keyReference: 'gemini-primary', allowedClasses: ['ordinary', 'private'] },

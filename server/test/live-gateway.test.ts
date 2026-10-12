@@ -816,7 +816,7 @@ test('CREATE maps a typed connector composition defect to a bounded visible enve
     const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic-token' });
     t.after(() => port.close());
     const owner = createToolsOwner({ store, ownerId: store.assistantId, registry, port, lookupAuthority: async () => null });
-    owner.definitions = () => { throw new ConnectorCompositionError('unknown_connector', 'missing-endpoint', 'missing-kind'); };
+    owner.snapshotRun = () => { throw new ConnectorCompositionError('unknown_connector', 'missing-endpoint', 'missing-kind'); };
     return { owner, connectionIds: () => [], registerAuthoritySource: () => {} };
   } });
   const created = await createBody(h, 'composition-error');

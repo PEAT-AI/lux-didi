@@ -8,6 +8,39 @@ One operator-bearer Live connection on the existing loopback HTTP listener. The 
 This slice proves real loopback protocol behaviour. It does **not** claim native microphone/playback,
 audio hardware, a heard transcript, or a real Google Live network call.
 
+## Native client and probe sequence
+
+The Swift coordinator first reads `GET /api/v1/live/status`, then posts
+`POST /api/v1/live-sessions` with `Content-Type: application/json`, a fresh
+`Idempotency-Key`, and `{"inputClass":"ordinary"}` (or another permitted input class).
+Both requests use `Authorization: Bearer <operator credential>`, the listener's
+`Host: 127.0.0.1:<port>`, and `x-didi-authority-epoch: <current epoch>`.
+Create returns the accepted grant; there is **no separate HTTP acceptance request**.
+Validate the returned session is `accepted`, `detached`, and has no dispatch intent,
+and that its profile identity and grant classes/model/voice match the status and frozen intent.
+
+Upgrade `ws://127.0.0.1:<port>/api/v1/live-sessions/<liveSessionId>/audio` with the
+same Authorization, Host and authority epoch, plus
+`x-didi-live-profile: <snapshot.profileIdentity>`. There is no query string or
+WebSocket subprotocol. Wait for the text `ready` frame before sending raw PCM16
+mono 16 kHz audio as **binary**, then controls such as
+`{"type":"endAudioStream"}` as **text JSON**. `endAudioStream` does not close the
+session; the socket stays attached until an explicit close or terminal outcome.
+Do not reuse a revoked, expired, terminal or previously attached session for a new upgrade.
+
+The real-server fixture test `Swift create, grant acceptance and pinned audio upgrade stay attached`
+passes against the pre-fix owner/gateway. Thus the correct native sequence is not
+intrinsically refused by that implementation. A historical rejected probe needs
+its exact request/session state compared with this sequence; the old generic close
+reason alone cannot establish which step or configuration differed.
+
+After HTTP upgrade, attach failures close with code `1008` and reason
+`attach_rejected:<typed code>` (at most 123 bytes); unknown exceptions use
+`attach_rejected:internal`. One structured stderr event with `event`,
+`liveSessionId`, and `code` is captured by the host process log. It contains no
+exception message, audio, grant contents or credentials, and does not write a
+Live transcript fragment. HTTP preflight success alone does not prove attachment.
+
 ## Configuration
 
 Strict owner-only `live.json` in the existing `configDir` (the same directory as the model

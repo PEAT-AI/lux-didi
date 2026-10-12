@@ -132,7 +132,14 @@ export function createLiveUpgrader(options: LiveUpgradeOptions) {
       ws.on('close', () => owned.delete(ws));
       let attachment: LiveAttachment;
       try { attachment = options.live.attach(sessionId!, context!); }
-      catch { ws.close(1008, 'attach_rejected'); return; }
+      catch (error) {
+        const code = error instanceof LiveError || error instanceof ServiceError ? error.code : 'internal';
+        // Only fixed typed codes and the session identity, never exception messages or payloads.
+        console.error(JSON.stringify({ event: 'live_attach_rejected', liveSessionId: sessionId, code }));
+        // Typed codes are ASCII; reserve 16 bytes for the prefix in the 123-byte close reason.
+        ws.close(1008, `attach_rejected:${code.slice(0, 107)}`);
+        return;
+      }
       void drive(ws, attachment);
     });
   }

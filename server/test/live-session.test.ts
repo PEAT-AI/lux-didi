@@ -1269,3 +1269,19 @@ test('loadLiveConfig composes the Naya instruction and fails closed on an invali
   assert.equal(bad.status, 'error');
   if (bad.status === 'error') assert.equal(bad.code, 'invalid_overlay');
 });
+
+test('provider voice activity journals listening and thinking without retaining its payload', async t => {
+  const h = await harness(t);
+  const { session, attachment } = await attached(h);
+  h.f.send({ serverContent: {}, voiceActivity: { voiceActivityType: 'ACTIVITY_END', synthetic: 'not-journalled' } });
+  await drain(h, session.liveSessionId, 2);
+  assert.equal(h.owner.current().state, 'thinking');
+  h.f.send({ serverContent: {}, voiceActivity: { voiceActivityType: 'ACTIVITY_START' } });
+  await drain(h, session.liveSessionId, 3);
+  assert.equal(h.owner.current().state, 'listening');
+  const page = h.owner.listFragments({ liveSessionId: session.liveSessionId, limit: 10 });
+  assert.deepEqual(page.fragments.filter(f => f.kind === 'waitingForInput').map(f => f.value), [false, true]);
+  assert.equal(JSON.stringify(page).includes('not-journalled'), false);
+  attachment.close();
+  await attachment.done;
+});

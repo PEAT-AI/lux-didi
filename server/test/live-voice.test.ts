@@ -5,7 +5,7 @@ import { describe, test, type TestContext } from 'node:test';
 import WebSocket from 'ws';
 import { GeminiLiveVoiceAdapter, LiveVoiceError } from '../adapters/live-voice/index.js';
 import type { GeminiLiveVoiceOptions, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceRequest } from '../adapters/live-voice/index.js';
-import { CANARY, collect, control, deferred, fixture as providerFixture, options, pcm, ready as providerReady, request } from './live-voice-fixture.js';
+import { CANARY, speechActivityFrames, collect, control, deferred, fixture as providerFixture, options, pcm, ready as providerReady, request } from './live-voice-fixture.js';
 
 const code = (expected: string) => (error: unknown) => error instanceof LiveVoiceError && error.code === expected && error.message === expected;
 const audio = () => ({ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from(pcm).toString('base64') } });
@@ -411,4 +411,29 @@ test('provider 1007 after ready remains remote_closed, not setup rejection', asy
   assert.deepEqual(await session.done, { status: 'failed', code: 'remote_closed' });
   await captured.done;
   noCanary(captured.events);
+});
+
+test('speech activity siblings and informational keys preserve the next audio frame', async t => {
+  const f = await providerFixture(t);
+  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory })).open(request(), control());
+  t.after(() => session.close());
+  await f.frame(1); f.send({ setupComplete: {} }); await session.ready;
+  // Read directly so a terminal before audio fails instead of looking like success.
+  const events = session.events[Symbol.asyncIterator]();
+  session.sendAudio({ pcm, dataClass: 'ordinary' });
+  await f.frame(2);
+  speechActivityFrames(value => f.send(value));
+  f.send({ usageMetadata: { synthetic: true } });
+  const observed: LiveVoiceEvent[] = [];
+  for (let i = 0; i < 4; i++) {
+    const next = await events.next();
+    assert.equal(next.done, false);
+    observed.push(next.value!);
+    assert.notEqual(next.value!.type, 'outcome');
+    if (next.value!.type === 'audio') break;
+  }
+  assert.ok(observed.some(e => e.type === 'audio'));
+  assert.ok(session.unknownTopLevelKeys! >= 1);
+  assert.deepEqual(observed.filter(e => e.type === 'waitingForInput').map(e => e.value), [true, false]);
+  session.close();
 });

@@ -569,7 +569,8 @@ export class LiveSessionOwner {
         }
         if (event.type === 'toolCallCancellation') { for (const id of event.ids) handle.pendingCallIds.delete(id); handle.thinking = handle.pendingCallIds.size > 0; continue; }
         if (event.type === 'interrupted' || event.type === 'turnComplete' || event.type === 'generationComplete') handle.speaking = false;
-        if (event.type === 'audio') { handle.speaking = true; this.#pushChunk(handle, { kind: 'audio', pcm: event.pcm }); continue; }
+        if (event.type === 'waitingForInput') { handle.thinking = !event.value; if (event.value) handle.speaking = false; }
+        if (event.type === 'audio') { handle.thinking = false; handle.speaking = true; this.#pushChunk(handle, { kind: 'audio', pcm: event.pcm }); continue; }
         if (event.type === 'outcome') { handle.adapterOutcome = event.outcome; continue; }
         const kind = journalKind(event.type);
         if (kind === null) continue;

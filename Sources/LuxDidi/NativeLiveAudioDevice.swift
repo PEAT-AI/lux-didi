@@ -190,7 +190,7 @@ final class NativeCaptureBuffer: @unchecked Sendable {
         failed: { [weak self] in
             guard let self else { return }
             self.sendFrame = nil
-            Task { await self.onInterruption?() }
+            Task { @MainActor in await self.interrupt() }
         })
     private static func defaultDevice(input: Bool) -> (id: String, name: String) {
         var property = AudioObjectPropertyAddress(

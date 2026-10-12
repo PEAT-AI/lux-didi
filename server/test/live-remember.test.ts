@@ -83,7 +83,7 @@ async function harness(t: TestContext, overrides: {
   let tools: import('../live/types.js').LiveToolsComposition | undefined;
   let remoteRememberGranted = () => false;
   if (overrides.tools) {
-    const schemas = [
+    const schemas: { name: string; inputSchema: { type: 'object'; properties: Record<string, unknown>; required: string[]; additionalProperties: boolean } }[] = [
       { name: 'search_knowledge', inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' } }, required: ['query', 'limit'], additionalProperties: false } },
       { name: 'get_insight', inputSchema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'integer' } }, include_links: { type: 'boolean' } }, required: ['ids', 'include_links'], additionalProperties: false } },
     ];

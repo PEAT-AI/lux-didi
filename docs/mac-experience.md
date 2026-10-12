@@ -85,3 +85,28 @@ rather than opening a browser. Configured session and idle limits appear beside
 Start; a limit-ended session explains how to continue explicitly. The read-only
 Connections card shows each connector's state and safe reason, with ten-second
 refreshes only while visible. Unavailable connection status is shown explicitly.
+
+### Summon and microphone availability
+
+Control-Option-Space remains Show/hide and never starts capture. Explicit Start
+Live in the menu or Control-Option-Shift-L shows the window and uses the same
+guarded Live start. Control-Option-Shift-M toggles mute; menu controls also offer
+Mute/Unmute and Stop. These three-modifier letter combinations avoid common
+macOS defaults; custom user shortcuts can still conflict. Each Live shortcut's
+registration result is visible in the menu, including its OSStatus on conflict.
+Live is full duplex, not push-to-talk. Muting discards captured frames. Hide and
+close still stop capture, and Show never resumes it.
+
+The status icon, accessible label and menu describe stopped, connecting,
+listening, speaking or muted. A pending-call dot is independent of microphone
+state and never starts capture.
+
+Open at login is opt-in in the menu (macOS 13 or later). Its text reflects the
+system registration status, including approval required or unavailable, rather
+than a saved preference. Login launch starts hidden and never captures audio.
+The window frame is remembered; a frame no longer contained on a connected
+screen falls back to a centered, screen-sized frame. Proof launches do not
+change login registration or saved window preferences.
+
+The native draft button is **Save note**: it saves a local note, not connected
+chat. Retry uses the same local save path.

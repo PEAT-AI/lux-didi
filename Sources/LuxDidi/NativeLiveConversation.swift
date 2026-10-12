@@ -130,10 +130,15 @@ import DidiOwner
         muted.toggle(); device.setMuted(muted)
         state = muted ? .muted : (speaking ? .speaking : .listening)
     }
-    func stop() async {
+    /// Stop capture and presentation synchronously before asynchronous transport cleanup.
+    func stopCapture() {
         generation &+= 1; startTask?.cancel(); startTask = nil
         observer?.cancel(); observer = nil
         device.stop()
+        state = .ended
+    }
+    func stop() async {
+        stopCapture()
         await coordinator.close()
         let outcome = await coordinator.state
         if case .outcomeUnknown = outcome { state = .outcomeUnknown }

@@ -85,3 +85,11 @@ failure codes in `logs/native-live.log` (0600), without error bodies or credenti
 Show conversation focuses the existing authenticated embedded view. Connections
 is read-only and uses the page cookie, never the Live bearer credential. It
 refreshes every ten seconds only while its window is visible and not minimized.
+
+The native menu provides explicit Start Live, Mute/Unmute and Stop. Global
+Control-Option-Shift-L starts/shows Live, Control-Option-Shift-M toggles mute;
+Control-Option-Space remains Show/hide only. Registration conflicts are visible
+in the menu. No shortcut, login launch, call badge or Show action implicitly
+restarts a stopped microphone. Login availability is opt-in; closing or hiding
+still stops capture. Status text and its accessibility label expose the actual
+Live state independently of pending calls.

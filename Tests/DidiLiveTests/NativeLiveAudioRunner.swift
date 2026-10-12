@@ -70,6 +70,8 @@ func audioRequire(_ value: Bool, _ message: String) throws {
             try capture.append(tone(format, start: 8820, count: 4410))
             try audioRequire(capture.next().0?.count == 640, "unmute resumes the same converter and capture buffer")
             capture.stop(); capture.stop()
+            try capture.append(tone(format, start: 13230, count: 4410))
+            try audioRequire(capture.next().0 == nil, "stopped capture produces no frames, including after hide's stop")
             guard let origin = URL(string: "http://127.0.0.1:1") else { throw LiveClientError.invalidIntent }
             let authority = DictationRefusalAuthority()
             let conversation = NativeLiveConversation(authority: (origin, { url, epoch in

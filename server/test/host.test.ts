@@ -381,7 +381,7 @@ for (const missingMongoose of [true, false]) {
     await mkdir(config, { mode: 0o700 });
     const tools = [
       'search_knowledge', 'get_insight', 'gmail_get_profile', 'gmail_list', 'gmail_read',
-      'gcal_list_calendars', 'gcal_list', 'mattermost_whoami', 'mattermost_get_channel_history',
+      'gcal_calendars', 'gcal_list', 'mattermost_whoami', 'mattermost_get_channel_history',
       'mattermost_get_thread', 'mattermost_search', 'mattermost_list_channels', 'ask_mongoose',
       'search_mongoose', 'get_knowledge_item', 'read_knowledge_body', 'get_company_profile', 'list_tickets', 'get_ticket',
     ].map(name => ({ name, inputSchema: { type: 'object', properties: {}, additionalProperties: true } }));

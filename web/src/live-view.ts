@@ -106,6 +106,35 @@ function sourcesMarkup(sources: LiveSource[]): string {
   }).join('')}</ul>`;
 }
 
+/** A typed remember_note result code is a snake_case token; the saved note is the owner's spoken words. */
+const REMEMBER_CODE = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/;
+const REMEMBER_DECLINES: Record<string, string> = {
+  already_remembered: 'Naya already had this note saved.',
+  private_memory_unsupported: 'Private or sensitive notes are not saved in memory.',
+  owner_transcript_not_final: 'The note was not saved because your spoken words were not final.',
+  owner_text_mismatch: 'The note was not saved because it did not match your spoken words.',
+  tool_result_denied: 'The note was not saved.',
+  tool_refused: 'The note was not saved.',
+};
+/** The Live projection carries only name/status/markdown/sources. A saved note is claimed only when
+ * the projected text is the owner's words; a bare result code is neither those words nor a typed
+ * decline the card knows, so the outcome stays unconfirmed. The server owns kind/time and the codes. */
+function rememberCardMarkup(entry: LiveEntry): string {
+  const text = entry.tool?.markdown ?? '';
+  const seq = entry.seq;
+  const link = '<a class="live-remember-link" href="#recall-form">Open your memory list</a>';
+  const known = REMEMBER_DECLINES[text];
+  if (entry.tool?.status === 'error' || known) {
+    const reason = known ?? (text || 'The note was not saved.');
+    return `<article class="live-remember declined" data-result-seq="${seq}"><h2>Not remembered</h2><p class="muted">${escapeHtml(reason)}</p></article>`;
+  }
+  if (!text || REMEMBER_CODE.test(text)) {
+    const detail = text ? ` (${escapeHtml(text)})` : '';
+    return `<article class="live-remember" data-result-seq="${seq}"><h2>Memory</h2><p class="muted">Naya did not report whether the note was saved${detail}.</p>${link}</article>`;
+  }
+  return `<article class="live-remember" data-result-seq="${seq}"><h2>Remembered</h2><p class="live-remember-text">${escapeHtml(text)}</p>${link}</article>`;
+}
+
 /** Full section markup, id="live-panel" so the poller can replace it in place. */
 export function liveMarkup(live: LiveCurrent | undefined, poll: LivePollState = {}): string {
   const state = live?.state;
@@ -128,7 +157,8 @@ export function liveMarkup(live: LiveCurrent | undefined, poll: LivePollState = 
     ${poll.stale ? `<p class="live-stale" role="status">Live view stale${poll.lastSuccess ? ' since ' + escapeHtml(poll.lastSuccess.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })) : ', no successful poll yet'}, service unreachable</p>` : ''}
     <ol class="entries live-transcript">${transcript}</ol>
     ${error}
-    ${(live?.entries ?? []).filter(entry => entry.kind === 'toolResult').map(entry => `<details class="live-tool-result" data-result-seq="${entry.seq}"><summary>${escapeHtml(entry.tool?.name ?? 'Tool result')} (${escapeHtml(entry.tool?.status ?? 'unknown')})</summary>${entry.tool?.status !== 'error' && entry.tool?.markdown ? renderMarkdown(entry.tool.markdown) + sourcesMarkup(entry.tool.sources ?? []) : ''}</details>`).join('')}
+    ${(live?.entries ?? []).filter(entry => entry.kind === 'toolResult' && entry.tool?.name !== 'remember_note').map(entry => `<details class="live-tool-result" data-result-seq="${entry.seq}"><summary>${escapeHtml(entry.tool?.name ?? 'Tool result')} (${escapeHtml(entry.tool?.status ?? 'unknown')})</summary>${entry.tool?.status !== 'error' && entry.tool?.markdown ? renderMarkdown(entry.tool.markdown) + sourcesMarkup(entry.tool.sources ?? []) : ''}</details>`).join('')}
+    ${(live?.entries ?? []).filter(entry => entry.kind === 'toolResult' && entry.tool?.name === 'remember_note').map(remaining => rememberCardMarkup(remaining)).join('')}
     ${jobs}
     ${result ? `<div class="live-result"><h2>Latest answer</h2>${renderMarkdown(result.markdown)}${sourcesMarkup(result.sources)}</div>` : ''}
   </section>`;

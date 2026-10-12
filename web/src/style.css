@@ -38,6 +38,11 @@
 
 .live-tool-result { margin-top: 18px; padding: 14px 18px; border: 1px solid var(--border); border-radius: 9px; }
 
+.live-remember { margin-top: 18px; padding: 14px 18px; border: 1px solid var(--border); border-left: 3px solid var(--green); border-radius: 9px; }
+.live-remember h2 { margin: 0 0 6px; font-size: 1rem; }
+.live-remember p { margin: 0; }
+.live-remember-link { display: inline-block; margin-top: 8px; font-size: .86rem; }
+
 .connected-consent-indicator { font-size: .9rem; color: var(--muted); }
 .didi-settings { margin-block: 1rem; }
 .didi-settings dl { margin: 0; }

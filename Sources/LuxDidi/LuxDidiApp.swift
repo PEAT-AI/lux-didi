@@ -635,6 +635,7 @@ private final class ConnectedProofTransport: URLProtocol, @unchecked Sendable {
         switch path {
         case "/api/v1/status": data = ["assistantId": state.assistant, "authorityEpoch": state.epoch]
         case "/api/v1/auth/pairing": data = ["pairingCode": "synthetic"]
+        case "/api/v1/auth/session": data = ["csrfToken": "synthetic-csrf"]
         case "/api/v1/auth/pair":
             data = ["csrfToken": "synthetic-csrf"]
             headers["Set-Cookie"] = "didi_session=synthetic-cookie; Path=/; HttpOnly; SameSite=Strict"

@@ -51,4 +51,10 @@ export const chatMigrations: readonly SchemaMigration[] = [{ owner: 'chat', vers
     session_id TEXT PRIMARY KEY REFERENCES sessions(id), owner_assistant_id TEXT NOT NULL,
     idempotency_key TEXT NOT NULL, fingerprint TEXT NOT NULL,
     UNIQUE(owner_assistant_id,idempotency_key))`
+] }, { owner: 'chat', version: 6, statements: [
+  `CREATE TABLE chat_capability_acceptances (
+    session_id TEXT PRIMARY KEY, provider TEXT NOT NULL, model TEXT NOT NULL,
+    route_identity TEXT NOT NULL, permitted_classes TEXT NOT NULL,
+    policy_identity TEXT NOT NULL, capabilities_json TEXT NOT NULL,
+    connection_ids TEXT NOT NULL)`
 ] }];

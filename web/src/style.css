@@ -53,3 +53,9 @@
 .didi-settings .settings-connectors li { margin-block: .6rem; }
 .didi-settings code { background: #eef1ea; border-radius: 4px; padding: .1rem .3rem; }
 .didi-settings .settings-restart { color: #854724; }
+
+.tool-evidence { border: 1px solid var(--border); border-radius: 12px; padding: 1rem; margin: .75rem 0; background: #fff; }
+.tool-evidence header { display: flex; flex-wrap: wrap; gap: .75rem; align-items: baseline; }
+.tool-evidence header span { font-size: .8rem; opacity: .7; }
+.tool-evidence .markdown { overflow-wrap: anywhere; }
+.tool-evidence-sources { margin: .5rem 0 0; padding-left: 1.25rem; font-size: .85rem; }

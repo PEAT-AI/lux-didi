@@ -59,6 +59,7 @@
     "test/chat-consent.test.ts",
     "test/client-diagnostics.test.ts",
     "test/live-summary.test.ts",
-    "test/memory-delete.test.ts"
+    "test/memory-delete.test.ts",
+    "test/chat-tools.test.ts"
   ]
 }

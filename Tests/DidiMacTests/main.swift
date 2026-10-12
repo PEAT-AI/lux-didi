@@ -40,3 +40,30 @@ print("MAC-SEAMS PASS duration=\(Date().timeIntervalSince(testStarted))s file=Te
 let connectionRows = try JSONDecoder().decode([NativeLiveConnection].self, from: Data("[{\"id\":\"calendar\",\"state\":\"error\",\"reasonCode\":\"credential_missing\"}]".utf8))
 expect(connectionRows[0].id == "calendar" && connectionRows[0].state == "error", "Connections card decodes connector state")
 expect(connectionRows[0].reason == "Credential missing or invalid", "Connections card explains missing credentials")
+
+// These seams never instantiate the system login registrar or Carbon hotkeys.
+final class FakeLogin: LoginRegistration {
+    var status: LoginStatus = .off
+    var calls = 0
+    func setEnabled(_ enabled: Bool) throws { calls += 1; status = enabled ? .on : .off }
+}
+let fakeLogin = FakeLogin()
+let login = LoginAvailability(registration: fakeLogin)
+try login.setEnabled(true)
+expect(login.status == .on && fakeLogin.calls == 1, "login opt-in uses fake registration")
+try login.setEnabled(false)
+expect(login.status == .off && fakeLogin.calls == 2, "login opt-out uses fake registration")
+fakeLogin.status = .revoked
+expect(login.status == .revoked, "login revoked status reflects registrar, not preference")
+expect(ShortcutStatus.describe(code: -9878).contains("Unavailable"), "shortcut conflict is visible")
+expect(ShortcutStatus.describe(code: 0).contains("registered"), "shortcut success is visible")
+for state in ["listening", "speaking", "muted", "connecting", "stopped"] {
+    expect(LiveStatusPresentation(state: state, pendingCall: false).text.contains(state), "status exposes \(state)")
+    expect(LiveStatusPresentation(state: state, pendingCall: true).text.contains(state), "call badge preserves \(state)")
+}
+let screen = CGRect(x: 0, y: 0, width: 1440, height: 900)
+let lost = CGRect(x: 9000, y: 9000, width: 980, height: 760)
+expect(WindowFrameRestore.resolve(lost, screens: [screen]) != lost, "off-screen frame falls back")
+let visible = CGRect(x: 100, y: 50, width: 980, height: 760)
+expect(WindowFrameRestore.resolve(visible, screens: [screen]) == visible, "visible frame retained")
+expect(NativeNoteAction.label == "Save note", "local note action is honest")

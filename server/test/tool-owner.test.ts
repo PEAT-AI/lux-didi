@@ -198,7 +198,8 @@ test('every request denies empty-binding authority and every accepted connection
     f.setLive(original);
   }
   f.owner.applyConnection(policy({ generation: 2, sourcePolicy: { ...policy().sourcePolicy, revision: 2 } }));
-  assert.equal((await f.owner.resultGate.authorize(f.host, [], ['ordinary'], f.signal)).state, 'refused');
+  assert.equal((await f.owner.resultGate.authorize(f.host, [], ['ordinary'], f.signal)).state, 'allowed');
+  assert.throws(() => f.owner.journal.intent(f.intent()), /intent_policy_denied/);
 });
 
 test('unbound run still needs live authority, including initial request', async t => {
@@ -216,16 +217,17 @@ test('revoke while awaiting authority is caught by final synchronous persisted r
   assert.equal((await gate).state, 'refused'); assert.equal(f.calls.length, 0);
 });
 
-test('all bound connections checked even zero refs from another connection', async t => {
+test('unrelated connection revocation does not poison empty continuation; its own intent is denied', async t => {
   const f = await fixture(t);
-  const second = policy({ connectionId: 'second', endpoint: { ...policy().endpoint, id: 'second-endpoint' } });
-  f.registry.register({ id: 'second-endpoint', url: policyUrl(second.endpoint), account: 'account', resource: 'resource' });
+  const second = policy({ connectionId: 'second', endpoint: { ...policy().endpoint, id: 'second-endpoint', account: 'second', resource: 'second' } });
+  f.registry.register({ id: 'second-endpoint', url: policyUrl(second.endpoint), account: 'second', resource: 'second' });
   f.owner.applyConnection(second);
   const acceptance = { ...f.acceptance, runId: 'two', connectionIds: ['lux', 'second'] };
   const accepted = f.store.transaction(tx => f.owner.snapshotRun(tx, acceptance));
   f.setLive({ ...acceptance, acceptedRunHash: accepted.sha256 });
   f.owner.applyConnection({ ...second, generation: 2, enabled: false });
-  assert.equal((await f.owner.resultGate.authorize({ ...f.host, runId: 'two' }, [], ['ordinary'], f.signal)).state, 'refused');
+  assert.equal((await f.owner.resultGate.authorize({ ...f.host, runId: 'two' }, [], ['ordinary'], f.signal)).state, 'allowed');
+  assert.throws(() => f.owner.journal.intent({ ...f.intent(), runId: 'two', accountId: 'second', resourceId: 'second' }), /intent_policy_denied/);
 });
 
 test('result ref, execution/name/call/scope/hash binding and detached immutable bytes survive reopen', async t => {

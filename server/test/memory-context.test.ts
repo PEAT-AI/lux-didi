@@ -403,8 +403,8 @@ test('additive chat migrations upgrade a populated v1+v2 DB and preserve old rec
     const fingerprint = createHash('sha256').update(JSON.stringify({ sessionId: sending.id, text: 'Old turn', retryOf: null })).digest('hex');
     f1.store.transaction(tx => tx.run(`INSERT INTO chat_runs
       (run_id,session_id,user_entry_id,owner_assistant_id,accepting_client_id,
-       idempotency_key,fingerprint,authority_epoch,provider,model,prompt_version,state,accepted_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,'accepted',?)`,
+       idempotency_key,fingerprint,authority_epoch,provider,model,prompt_version,state,outcome,accepted_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,'terminal','cancelled',?)`,
     [run.runId, sending.id, userEntry.id, f1.context.assistantId, f1.context.clientId,
       'old', fingerprint, f1.context.authorityEpoch, 'fake', 'fake', 'v1', f1.context.now]));
     const before = f1.store.transaction(tx => tx.get('SELECT * FROM chat_runs WHERE run_id=?', [run.runId]));

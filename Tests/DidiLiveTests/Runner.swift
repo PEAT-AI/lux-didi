@@ -228,7 +228,7 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
                 return
             }
             for code in ["provider_setup_rejected", "protocol_error"] {
-                let frame = try LiveWireCodec.decode(.string("{\"type\":\"terminal\",\"state\":\"failed\",\"code\":\"\(code)\",\"complete\":true}"))
+                let frame = try LiveSocketTransport.decode(.string("{\"type\":\"terminal\",\"state\":\"failed\",\"code\":\"\(code)\",\"complete\":true}"))
                 guard case .terminal(let terminal, _) = frame else { throw ProbeError.assertion("typed terminal frame") }
                 try require(terminal.code == code, "provider terminal code retained")
             }

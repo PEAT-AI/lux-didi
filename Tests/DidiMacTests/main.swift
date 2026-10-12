@@ -1,4 +1,5 @@
 import Foundation
+import UserNotifications
 
 let testStarted = Date()
 
@@ -210,3 +211,105 @@ expect(NativeDiagnosticsAction.itemTitle == "Copy diagnostics", "diagnostics men
 diagnosticsAction.copy()
 expect(diagnosticsWritten == diagnosticsText, "diagnostics menu action writes the builder output")
 print("DURATION diagnostics-snapshot-seam=\(Date().timeIntervalSince(testStarted))s")
+// Silent callbacks are attention only: the seam has no audio or conversation dependency.
+var calls = NativeLiveCallDelivery()
+calls.reconcile(["a", "b"])
+expect(calls.beginAttempt("a", permitted: false) == false, "denied notifications retain the badge without submitting")
+expect(calls.pendingIDs == ["a", "b"], "multiple pending calls remain independently visible")
+expect(calls.beginAttempt("a", permitted: true), "first notification attempt")
+calls.completeAttempt("a", result: .failed("transient"))
+expect(!calls.notified.contains("a"), "failure is not notification acknowledgement")
+expect(calls.beginAttempt("a", permitted: true), "transient failure retries")
+calls.completeAttempt("a", result: .acknowledged)
+expect(!calls.beginAttempt("a", permitted: true), "successful submission never repeats")
+for _ in 0..<3 {
+    expect(calls.beginAttempt("b", permitted: true), "bounded retry admitted")
+    calls.completeAttempt("b", result: .failed("offline"))
+}
+expect(!calls.beginAttempt("b", permitted: true), "retry bound stops spam")
+calls.reconcile(nil)
+expect(!calls.isFresh && calls.pendingIDs.isEmpty, "poll error clears stale offers and marks offline")
+calls.reconcile([])
+expect(!calls.canPickUp("a"), "stale notification click cannot pick up")
+calls.reconcile(["a"])
+calls.acknowledge("a")
+calls.reconcile(["a"])
+expect(!calls.canPickUp("a") && !calls.beginAttempt("a", permitted: true), "acknowledged job never offers or notifies again")
+var relaunched = NativeLiveCallDelivery()
+relaunched.reconcile(["pending-at-launch"])
+expect(relaunched.canPickUp("pending-at-launch"), "relaunch discovers durable pending job")
+
+final class FakeNotificationCenter: NativeNotificationCenter {
+    var permission: NotificationCapability = .denied
+    var failOnce = false
+    var requests: [UNNotificationRequest] = []
+    var permissionRequests = 0
+    func cancel(identifier: String) {}
+    func capability() async -> NotificationCapability { permission }
+    func requestPermission() async throws -> Bool {
+        permissionRequests += 1
+        return permission.canSchedule
+    }
+    func add(_ request: UNNotificationRequest) async throws {
+        if failOnce { failOnce = false; throw NSError(domain: "fake-transient", code: 1) }
+        requests.append(request)
+    }
+}
+let fakeCenter = FakeNotificationCenter()
+let notifications = NativeNotifications(center: fakeCenter)
+let deniedResult = await notifications.submitLiveCall(jobID: "private-result-job")
+expect(deniedResult != .acknowledged && fakeCenter.requests.isEmpty, "denied center receives no submission")
+expect(fakeCenter.permissionRequests == 0, "delivery never requests permission automatically")
+_ = await notifications.requestPermission()
+expect(fakeCenter.permissionRequests == 1, "only explicit consent requests permission")
+fakeCenter.permission = .authorized
+fakeCenter.failOnce = true
+var fakeDelivery = NativeLiveCallDelivery()
+fakeDelivery.reconcile(["private-result-job"])
+for _ in 0..<3 {
+    if fakeDelivery.beginAttempt("private-result-job", permitted: true) {
+        fakeDelivery.completeAttempt("private-result-job", result: await notifications.submitLiveCall(jobID: "private-result-job"))
+    }
+}
+expect(fakeCenter.requests.count == 1 && fakeDelivery.notified.contains("private-result-job"), "fake center failure retries once then remembers success")
+let quietRequest = fakeCenter.requests[0]
+expect(quietRequest.content.sound == nil, "callback notification stays silent")
+expect(quietRequest.content.body == "Your background task is ready. Pick up when you want.", "callback body contains no result text")
+expect(quietRequest.content.userInfo["liveJobId"] as? String == "private-result-job", "callback carries only job identity for revalidation")
+
+var conversationRunning = true
+var stopCount = 0
+var captureCount = 0
+var pickupOrder: [String] = []
+func stopConversation() async { stopCount += 1; conversationRunning = false; pickupOrder.append("stop") }
+func startCapture() { captureCount += 1; pickupOrder.append("start") }
+var polled = NativeLiveCallDelivery()
+// Fake poll: ready job, transport error, then job gone.
+polled.reconcile(["ready"])
+expect(captureCount == 0 && stopCount == 0, "poll offer never starts capture or stops a conversation")
+polled.reconcile(nil)
+expect(captureCount == 0 && !polled.isFresh, "offline poll never starts capture")
+polled.reconcile([])
+let invalidPickup = try await NativeLiveCallPickup.perform(validate: {
+    pickupOrder.append("validate")
+    return polled.canPickUp("ready")
+}, stop: stopConversation, start: startCapture)
+expect(!invalidPickup && conversationRunning && stopCount == 0 && captureCount == 0, "invalid pickup during an active conversation keeps it running")
+expect(pickupOrder == ["validate"], "stale click validates without stop or capture")
+do {
+    _ = try await NativeLiveCallPickup.perform(validate: {
+        throw NSError(domain: "fake-poll-offline", code: 1)
+    }, stop: stopConversation, start: startCapture)
+    fatalError("offline pickup must throw")
+} catch {
+    expect(conversationRunning && stopCount == 0 && captureCount == 0, "pickup poll error preserves active conversation")
+}
+polled.reconcile(["ready"])
+pickupOrder = []
+let validPickup = try await NativeLiveCallPickup.perform(validate: {
+    pickupOrder.append("validate")
+    return polled.canPickUp("ready")
+}, stop: stopConversation, start: startCapture)
+expect(validPickup && stopCount == 1 && captureCount == 1, "explicit valid pickup is the only capture hook")
+expect(pickupOrder == ["validate", "stop", "start"], "pickup validates before interrupting and starting capture")
+print("MAC-CALLBACK-SEAMS PASS duration=\(String(format: "%.3f", Date().timeIntervalSince(testStarted)))s")

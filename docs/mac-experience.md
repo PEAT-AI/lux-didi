@@ -132,3 +132,14 @@ failure class and code from `logs/native-live.log`. Missing inputs read
 file contents, transcripts, memory or persona text, mail, or any path inside
 the owner's home; a value that looks like a credential is replaced by
 `unknown`.
+### Callback notification consent and fallback
+
+Choose **Enable callback notifications** in the native voice controls to request
+notification permission. If denied, the menu bar pending-call badge and pickup
+menu remain available while the app runs, including with its window closed.
+Callbacks never start the microphone automatically and notifications never include
+result text. Offline polling clears stale offers and displays **Callbacks offline**.
+A notification for a job that is no longer pending leaves any current conversation
+running and explains that the callback is unavailable. Notification submission
+retries are limited to three per job per launch; successful submission or pickup
+prevents further submissions in that launch. Quitting the app stops polling.

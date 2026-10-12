@@ -27,7 +27,9 @@ import Security
         },
         publish: { [weak self] in self?.live = $0 })
     @Published private(set) var pendingLiveCalls: [NativePendingLiveJob] = []
-    private var notifiedLiveJobs = Set<String>()
+    private var liveCallDelivery = NativeLiveCallDelivery()
+    @Published private(set) var liveCallsError: String?
+    private var pickingUpLiveCall = false
     private var checkingLiveCalls = false
     let notifications = NativeNotifications()
     private(set) var client: CompanionClient?
@@ -151,21 +153,61 @@ import Security
         do {
             let http = NativeLiveOperatorHTTP(authority: client.authenticatedRequestBuilder())
             let jobs = try await http.pendingCalls().filter(\.isReady)
-            pendingLiveCalls = jobs
-            live?.offerPendingCall(jobs.first)
-            for job in jobs where !notifiedLiveJobs.contains(job.id) {
-                notifiedLiveJobs.insert(job.id)
-                _ = await notifications.submitLiveCall(jobID: job.id)
+            liveCallDelivery.reconcile(jobs.map(\.id))
+            pendingLiveCalls = jobs.filter { liveCallDelivery.canPickUp($0.id) }
+            liveCallsError = nil
+            live?.offerPendingCall(pendingLiveCalls.first)
+            notificationStatus = await notifications.capability()
+            for job in pendingLiveCalls {
+                guard liveCallDelivery.beginAttempt(job.id, permitted: notificationStatus.canSchedule) else { continue }
+                let result = await notifications.submitLiveCall(jobID: job.id)
+                liveCallDelivery.completeAttempt(job.id, result: result)
             }
-        } catch { /* Retain the last known offer; never start audio on a poll or transport failure. */ }
+        } catch {
+            liveCallDelivery.reconcile(nil)
+            pendingLiveCalls = []
+            live?.offerPendingCall(nil)
+            liveCallsError = "Callbacks offline. Pending calls will return when the local service reconnects."
+        }
+    }
+    func requestNotificationPermission() async {
+        _ = await notifications.requestPermission()
+        notificationStatus = await notifications.capability()
+        await refreshLiveCalls()
     }
     func pickUpLiveCall(_ jobID: String? = nil) {
-        let selected = jobID ?? pendingLiveCalls.first?.id
+        guard !pickingUpLiveCall, let selected = jobID ?? pendingLiveCalls.first?.id,
+              let client else { return }
+        pickingUpLiveCall = true
         Task { [weak self] in
             guard let self else { return }
-            await self.live?.stop()
-            self.live = nil
-            self.startLive(pickupJobID: selected)
+            defer { self.pickingUpLiveCall = false }
+            do {
+                let pickedUp = try await NativeLiveCallPickup.perform(validate: {
+                    let jobs = try await NativeLiveOperatorHTTP(authority: client.authenticatedRequestBuilder()).pendingCalls().filter(\.isReady)
+                    self.liveCallDelivery.reconcile(jobs.map(\.id))
+                    self.pendingLiveCalls = jobs.filter { self.liveCallDelivery.canPickUp($0.id) }
+                    self.liveCallsError = nil
+                    self.live?.offerPendingCall(self.pendingLiveCalls.first)
+                    return self.liveCallDelivery.canPickUp(selected)
+                }, stop: {
+                    self.liveCallDelivery.acknowledge(selected)
+                    self.pendingLiveCalls.removeAll { $0.id == selected }
+                    await self.live?.stop()
+                    self.live = nil
+                }, start: {
+                    self.startLive(pickupJobID: selected)
+                })
+                if !pickedUp {
+                    self.error = "This callback is no longer pending. Your current conversation was not changed."
+                }
+            } catch {
+                self.liveCallDelivery.reconcile(nil)
+                self.pendingLiveCalls = []
+                self.live?.offerPendingCall(nil)
+                self.liveCallsError = "Callbacks offline. Your current conversation was not changed."
+                self.error = self.liveCallsError
+            }
         }
     }
     func startLive(pickupJobID: String? = nil) {
@@ -261,6 +303,9 @@ struct RootView: View {
                         if !model.pendingLiveCalls.isEmpty {
                             Button("Pick up Naya’s call") { model.pickUpLiveCall() }
                         }
+                        Button("Enable callback notifications") { Task { await model.requestNotificationPermission() } }
+                        Text("Notifications: \(model.notificationStatus.rawValue). If denied, use the menu bar badge and Pick up menu; notifications never start the microphone.").font(.caption)
+                        if let offline = model.liveCallsError { Text(offline).font(.caption) }
                         Button("Start Live voice") { model.startLive() }
                             .disabled(model.live?.isCapturing == true || voice.state.phase == .recording)
                         Text(model.liveLimits?.sentence ?? "Live limits unavailable. Reconnect the service to refresh.").font(.caption)
@@ -335,6 +380,7 @@ struct RootView: View {
     private var statusItem: NSStatusItem!
     private var liveCallTimer: Timer?
     private var liveCallBadge: AnyCancellable?
+    private var liveCallHealth: AnyCancellable?
     private var pickupMenuItem: NSMenuItem?
     private var keyboardMonitor: Any?
     private var terminationMonitor: NSObjectProtocol?
@@ -399,6 +445,12 @@ struct RootView: View {
         liveCallBadge = model.$pendingLiveCalls.sink { [weak self] jobs in
             self?.updateLiveStatus(pendingCall: !jobs.isEmpty)
             self?.pickupMenuItem?.isHidden = jobs.isEmpty
+        }
+        let health = NSMenuItem(title: "Callbacks offline", action: nil, keyEquivalent: "")
+        health.isEnabled = false; health.isHidden = true; menu.addItem(health)
+        liveCallHealth = model.$liveCallsError.sink { error in
+            health.title = error ?? "Callbacks online"
+            health.isHidden = error == nil
         }
         liveCallTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.model.refreshLiveCalls() }
@@ -540,7 +592,7 @@ struct RootView: View {
     }
     @objc private func pickupLiveCall() { show(); model.pickUpLiveCall() }
     func applicationWillTerminate(_ notification: Notification) {
-        liveCallTimer?.invalidate(); liveCallBadge?.cancel()
+        liveCallTimer?.invalidate(); liveCallBadge?.cancel(); liveCallHealth?.cancel()
         model.stopRecording("Didi quit"); hotkey.unregister(); liveShortcuts.unregister()
         if let keyboardMonitor { NSEvent.removeMonitor(keyboardMonitor) }
         if let terminationMonitor { NSWorkspace.shared.notificationCenter.removeObserver(terminationMonitor) }

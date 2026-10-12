@@ -9,6 +9,7 @@ const LABELS: Record<LiveState, string> = {
   listening: 'Listening',
   speaking: 'Speaking',
   thinking: 'Thinking',
+  rebuilding: 'Reconnecting to the voice service',
   ended: 'Session ended',
   error: 'Something went wrong',
 };
@@ -16,7 +17,7 @@ export function liveStateLabel(state: LiveState): string { return LABELS[state] 
 
 const VOICE: Record<LiveState, VoiceState> = {
   idle: 'CONNECTED', listening: 'LISTENING', speaking: 'SPEAKING',
-  thinking: 'PROCESSING', ended: 'DISCONNECTED', error: 'ERROR',
+  thinking: 'PROCESSING', rebuilding: 'CONNECTED', ended: 'DISCONNECTED', error: 'ERROR',
 };
 export function liveVoiceState(state: LiveState): VoiceState { return VOICE[state] ?? 'CONNECTED'; }
 
@@ -146,6 +147,9 @@ export function liveMarkup(live: LiveCurrent | undefined, poll: LivePollState = 
     ${renderMarkdown(job.markdown)}
     ${!job.delivered && job.state !== 'in_progress' ? '<p class="muted">Call Naya back: choose Start Live voice in the native app to pick up this result.</p>' : ''}
   </article>`).join('');
+  const latest = live?.entries.at(-1);
+  const restored = state !== 'rebuilding' && latest?.kind === 'continuity' && latest.event === 'resumed'
+    ? `<p role="status" data-continuity-seq="${latest.seq}">Connection restored</p>` : '';
   const error = state === 'error' ? '<p class="muted" role="status">Naya reported an error. The live session has stopped.</p>' : '';
   const muted = live?.muted ? '<p class="muted live-muted" role="status">Microphone muted</p>' : '';
   const transcript = lines.length
@@ -156,7 +160,7 @@ export function liveMarkup(live: LiveCurrent | undefined, poll: LivePollState = 
     ${muted}
     ${poll.stale ? `<p class="live-stale" role="status">Live view stale${poll.lastSuccess ? ' since ' + escapeHtml(poll.lastSuccess.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })) : ', no successful poll yet'}, service unreachable</p>` : ''}
     <ol class="entries live-transcript">${transcript}</ol>
-    ${error}
+    ${error}${restored}
     ${(live?.entries ?? []).filter(entry => entry.kind === 'toolResult' && entry.tool?.name !== 'remember_note').map(entry => `<details class="live-tool-result" data-result-seq="${entry.seq}"><summary>${escapeHtml(entry.tool?.name ?? 'Tool result')} (${escapeHtml(entry.tool?.status ?? 'unknown')})</summary>${entry.tool?.status !== 'error' && entry.tool?.markdown ? renderMarkdown(entry.tool.markdown) + sourcesMarkup(entry.tool.sources ?? []) : ''}</details>`).join('')}
     ${(live?.entries ?? []).filter(entry => entry.kind === 'toolResult' && entry.tool?.name === 'remember_note').map(remaining => rememberCardMarkup(remaining)).join('')}
     ${jobs}

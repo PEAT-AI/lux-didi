@@ -66,6 +66,7 @@ test('wire setup/history snapshots, readiness, PCM and three independent output 
   await f.frame(1);
   assert.equal(f.frames.length, 1);
   assert.deepEqual(f.frames[0], { setup: {
+    sessionResumption: {},
     model: 'models/explicit-live-test', generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'ExplicitVoice' } } }, thinkingConfig: { thinkingLevel: 'minimal' } },
     historyConfig: { initialHistoryInClientContent: true }, contextWindowCompression: { slidingWindow: { targetTokens: 32000 } },
     realtimeInputConfig: { automaticActivityDetection: { startOfSpeechSensitivity: 'START_SENSITIVITY_LOW' } },
@@ -85,14 +86,15 @@ test('wire setup/history snapshots, readiness, PCM and three independent output 
   f.send({ serverContent: { modelTurn: { parts: [audio()] }, generationComplete: true } });
   f.send({ serverContent: { turnComplete: true, waitingForInput: true, interactionStatus: 'IDLE' } });
   f.send({ serverContent: { inputTranscription: { text: 'late independent input', finished: true } } });
-  f.send({ sessionResumptionUpdate: { resumable: true, newHandle: CANARY } });
-  f.send({ goAway: { timeLeft: '1s' } });
-  assert.deepEqual(await session.done, { status: 'failed', code: 'go_away' }); await captured.done;
-  assert.deepEqual(captured.events.map(e => e.type), ['ready', 'audio', 'modelText', 'outputTranscription', 'generationComplete', 'turnComplete', 'interrupted', 'turnComplete', 'audio', 'generationComplete', 'turnComplete', 'waitingForInput', 'interactionStatus', 'inputTranscription', 'resumptionAvailability', 'goAway', 'outcome']);
+  f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-adapter-resumption-secret' } });
+  f.send({ goAway: { timeLeft: '1s' } }); f.remoteClose('', 1000);
+  assert.deepEqual(await session.done, { status: 'failed', code: 'go_away', recoverable: true }); await captured.done;
+  assert.deepEqual(captured.events.map(e => e.type), ['ready', 'audio', 'modelText', 'outputTranscription', 'generationComplete', 'turnComplete', 'interrupted', 'turnComplete', 'audio', 'generationComplete', 'turnComplete', 'waitingForInput', 'interactionStatus', 'inputTranscription', 'resumptionHandle', 'goAway', 'outcome']);
   assert.deepEqual(captured.events.map(e => e.sequence), captured.events.map((_, i) => i + 1));
   const output = captured.events.find((e): e is Extract<LiveVoiceEvent, { type: 'audio' }> => e.type === 'audio')!;
   assert.deepEqual(output.pcm, pcm); assert.equal(output.mimeType, 'audio/pcm;rate=24000');
-  assert.equal(captured.events.some(e => 'turnId' in e || 'heard' in e || 'handle' in e), false); noCanary(captured.events);
+  assert.ok(captured.events.some(e => e.type === 'resumptionHandle' && e.handle === 'synthetic-adapter-resumption-secret'));
+  assert.equal(captured.events.some(e => 'turnId' in e || 'heard' in e), false); noCanary(captured.events);
   assert.equal(f.attempts, 1); assert.equal(f.frames.length, 4);
 });
 
@@ -187,7 +189,7 @@ test('split and combined protocol fields preserve late input, thought and unknow
   f.send({ harmlessFutureField: { value: 1 } });
   f.send({ serverContent: { generationComplete: true } });
   f.send({ serverContent: { interrupted: true, turnComplete: true, inputTranscription: { text: 'late' }, outputTranscription: { text: 'out' }, modelTurn: { parts: [{ text: 'text only' }] } } });
-  f.send({ goAway: { timeLeft: '0.5s' } }); await session.done; await captured.done;
+  f.send({ goAway: { timeLeft: '0.5s' } }); f.remoteClose('', 1000); await session.done; await captured.done;
   assert.deepEqual(captured.events.map(e => e.type), ['ready', 'generationComplete', 'modelText', 'inputTranscription', 'outputTranscription', 'interrupted', 'turnComplete', 'goAway', 'outcome']);
 });
 
@@ -240,7 +242,7 @@ test('actual ws error and disconnect have no replay', async t => {
   const f = await fixture(t); let client!: WebSocket;
   const session = new GeminiLiveVoiceAdapter(options({ socketFactory: (url, config) => { client = f.socketFactory(url, config); return client; } })).open(request(), control());
   const captured = collect(session); await f.frame(1); f.send({ setupComplete: {} }); await session.ready;
-  client.emit('error', Error(CANARY)); assert.equal((await session.done).code, 'transport_error'); await captured.done;
+  client.emit('error', Object.assign(Error(CANARY), { code: 'ECONNRESET' })); assert.equal((await session.done).code, 'transport_error'); await captured.done;
   assert.equal(f.attempts, 1); noCanary(captured.events);
 });
 

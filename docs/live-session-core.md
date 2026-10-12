@@ -134,3 +134,25 @@ A pickup session captures the deferred job id and its state/result identity at C
 with a changed or missing pickup job raises `pickup_changed` before dispatch. The sanitized
 WebSocket rejection carries that reason; create a new session instead of retrying the stale one.
 The additive Live v4 migration adds `memory_provenance`; install migrations remain one-time.
+
+## Provider continuity inside one Live session
+
+The live owner moves `active -> rebuilding -> active` on a provider goAway or a
+recoverable transport loss. `rebuilding` is non-terminal: the consumer and
+`live_session_id` remain the same. The owner durably saves the latest usable
+resumption handle before using it, clears it when the provider revokes resumption,
+and increments a connection generation before replacing the adapter. Old
+connection callbacks cannot append journal rows, dispatch tools, update handles,
+or settle the session. One continuity row records `rebuilding` and one records
+`resumed` after setup completes.
+
+The replacement uses the original accepted prompt, memory provenance and admitted
+tool declarations without re-running selection or authority resolution. Pending
+tool calls receive `tool_call_lost_on_resume` results; no old call response is sent
+on the replacement connection. Queued PCM and speech captured during rebuilding
+are dropped, not replayed. At most two recovery attempts are admitted, each with
+setup bounded by the goAway time remaining or ten seconds and the remaining
+session and idle budget. The original session deadline never moves. A missing
+handle, exhausted budget, third loss or failed resumed setup ends once through
+the normal settlement path with `resume_failed`. Session and idle timeouts are
+final, never recovery triggers.

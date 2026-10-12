@@ -60,6 +60,7 @@
     "test/client-diagnostics.test.ts",
     "test/live-summary.test.ts",
     "test/memory-delete.test.ts",
-    "test/chat-tools.test.ts"
+    "test/chat-tools.test.ts",
+    "test/live-resumption.test.ts"
   ]
 }

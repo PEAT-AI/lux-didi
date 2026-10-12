@@ -156,10 +156,8 @@ try {
     const reloadArrival=new Promise(resolve=>{receivedReload=resolve;});
     const reloadRelease=new Promise(resolve=>{releaseReload=resolve;});
     await page.route(`${fixture.url}/api/v1/entries/${id}`,async route=>{
-      assert.equal(route.request().method(),'DELETE');
-      assert.deepEqual(route.request().postDataJSON(),{});
       const response=new Promise(resolve=>{releaseDelete=resolve;});
-      receivedDelete();
+      receivedDelete(route.request());
       await route.fulfill(await response);
     });
     await page.route(`${fixture.url}${sessionPath}`,async route=>{
@@ -174,11 +172,13 @@ try {
       await route.fulfill({response,json:payload});
     });
     const confirmDelete=async()=>{
+      const requestPromise=page.waitForRequest(request=>request.url()===`${fixture.url}/api/v1/entries/${id}`&&request.method()==='DELETE');
       const dialogPromise=page.waitForEvent('dialog');
       const click=row.getByRole('button',{name:'Delete memory',exact:true}).click();
       const dialog=await dialogPromise;
       assert.equal(dialog.type(),'confirm');assert.match(dialog.message(),/Delete this memory permanently/);
-      await dialog.accept();await click;await arrival;
+      await dialog.accept();await click;await requestPromise;
+      const request=await arrival;assert.equal(request.method(),'DELETE');assert.deepEqual(request.postDataJSON(),{});
     };
     await confirmDelete();
     assert.equal(await row.isVisible(),true,'pending DELETE must retain the entry');
@@ -189,8 +189,9 @@ try {
     await confirmDelete();
     assert.equal(await row.isVisible(),true,'retry must not optimistically filter the entry');
     deleted=true;
+    const reloadRequest=page.waitForRequest(request=>request.url()===`${fixture.url}${sessionPath}`&&request.method()==='GET');
     releaseDelete({json:{...envelope,data:{entryId:id,deletedAt:'2026-01-01T00:00:00.000Z',actor:'browser-fixture',reasonCode:'owner_request'}}});
-    await reloadArrival;
+    await reloadRequest;await reloadArrival;
     assert.equal(await row.isVisible(),true,'DELETE success alone must not replace the server list');
     releaseReload();
     await row.waitFor({state:'detached'});

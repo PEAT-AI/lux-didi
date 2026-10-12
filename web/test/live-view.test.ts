@@ -193,7 +193,7 @@ test('a remembered note renders one evidence card with the saved words', () => {
 });
 
 test('every declined remember code renders one honest reason line', () => {
-  for (const code of ['already_remembered', 'private_memory_unsupported', 'owner_transcript_not_final', 'owner_text_mismatch', 'some_future_code']) {
+  for (const code of ['already_remembered', 'private_memory_unsupported', 'owner_transcript_not_final', 'owner_text_mismatch']) {
     const live: LiveCurrent = { ...speaking, entries: [
       { seq: 1, kind: 'toolResult', tool: { name: 'remember_note', status: 'completed', markdown: code } },
     ] };
@@ -206,6 +206,22 @@ test('every declined remember code renders one honest reason line', () => {
     { seq: 1, kind: 'toolResult', tool: { name: 'remember_note', status: 'error', markdown: '' } },
   ] };
   assert.match(liveMarkup(errored), /not saved|did not save/i);
+});
+
+test('the observed projection shape neither confirms nor denies the saved note', () => {
+  // The service projects a completed remember_note with markdown 'handler_outcome' for a saved OR
+  // declined note (server/tools/declarations.ts:78, server/live/index.ts:655), so the card must not
+  // claim either outcome from it.
+  for (const markdown of ['handler_outcome', 'some_future_code']) {
+    const live: LiveCurrent = { ...speaking, entries: [
+      { seq: 1, kind: 'toolResult', tool: { name: 'remember_note', status: 'completed', markdown } },
+    ] };
+    const html = liveMarkup(live);
+    assert.equal((html.match(/class="live-remember"/g) ?? []).length, 1, markdown);
+    assert.equal((html.match(/class="live-remember declined"/g) ?? []).length, 0, markdown);
+    assert.doesNotMatch(html, /Remembered/, markdown);
+    assert.match(html, /did not report whether the note was saved/i, markdown);
+  }
 });
 
 test('other tool results still render as inspectable detail cards', () => {

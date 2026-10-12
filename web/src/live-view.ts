@@ -108,14 +108,6 @@ function sourcesMarkup(sources: LiveSource[]): string {
 
 /** Full section markup, id="live-panel" so the poller can replace it in place. */
 export function liveMarkup(live: LiveCurrent | undefined, poll: LivePollState = {}): string {
-  const past = live?.pastSession;
-  if (past) {
-    const time = new Date(past.endedAt ?? past.lastObservedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    if (past.outcome === 'unknown' || past.outcome === 'outcome_unknown') return `Last Live session has an unknown end (last seen at ${time})`;
-    if (past.endedAt === null) return `Last Live session has an unknown end (last seen at ${time})`;
-    const normal = ['closed', 'cancelled', 'revoked', 'expired'].includes(past.outcome);
-    return `Last Live session ended${normal ? '' : ' with an error'} at ${time}`;
-  }
   const state = live?.state;
   const label = liveLabel(live);
   const lines = live ? liveTranscript(live) : [];

@@ -172,6 +172,7 @@ for (const [outcome, phrase] of [['failed', 'ended with an error'], ['closed', '
     assert.ok(label.includes(displayTime));
     assert.doesNotMatch(liveMarkup(live), /Something went wrong/);
     assert.ok(liveMarkup(live).includes(label));
+    assert.match(liveMarkup(live), /id="live-panel"/);
   });
 }
 test('active Live error remains a current error', () => {

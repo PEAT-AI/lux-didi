@@ -501,3 +501,17 @@ test('durable diagnostics rotate privately and persist only safe structured even
     assert.match(newest, /live_attach_rejected/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test('provider terminal diagnostics retain only bounded class and code', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'didi-terminal-log-'));
+  try {
+    const log = new HostLog(root);
+    for (const code of ['provider_setup_rejected', 'protocol_error']) log.terminal({ state: 'failed', code, message: 'SECRET-provider' });
+    log.terminal({ state: 'failed', code: 'SECRET invalid code' });
+    const text = await readFile(join(root, 'logs', 'host.log'), 'utf8');
+    const records = text.trim().split('\n').map(line => JSON.parse(line));
+    assert.deepEqual(records.map(({ event, class: kind, code }) => ({ event, class: kind, code })),
+      ['provider_setup_rejected', 'protocol_error'].map(code => ({ event: 'host_error', class: 'LiveTerminal', code })));
+    assert.ok(!text.includes('SECRET'));
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

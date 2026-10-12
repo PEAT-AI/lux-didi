@@ -227,6 +227,11 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
                 await Gate().wait() // parent owns a bounded readiness/kill protocol, no autonomous client requests
                 return
             }
+            for code in ["provider_setup_rejected", "protocol_error"] {
+                let frame = try LiveWireCodec.decode(.string("{\"type\":\"terminal\",\"state\":\"failed\",\"code\":\"\(code)\",\"complete\":true}"))
+                guard case .terminal(let terminal, _) = frame else { throw ProbeError.assertion("typed terminal frame") }
+                try require(terminal.code == code, "provider terminal code retained")
+            }
             if CommandLine.arguments.contains("--mutation") {
                 // Compiled mutated transport only removes Cookie preflight. Behavioral check must catch that at the real host.
                 let transport = LiveSocketTransport(requests: TestRequests(fixture: fixture, alteration: "cookie"))

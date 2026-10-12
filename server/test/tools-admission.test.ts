@@ -67,8 +67,8 @@ async function harness(t: TestContext, builder: 'live' | 'chat-shaped') {
     for (const source of sources) { const found = await source(runId, s); if (found) return found; }
     return chatAuthorities.get(runId) ?? null;
   };
-  const start = async (enabled = all, unknownClass: DataClass = 'ordinary') => {
-    writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: endpoints.map(e => ({ id: e.id, connector: e.connector, transport: 'streamable-http', url: `http://127.0.0.1:18765/${e.id}`, account: e.id, resource: e.id, credentialRef: null, enabled: enabled.includes(e.id), allowEgress: true, unknownClass })) }), { mode: 0o600 });
+  const start = async (enabled = all) => {
+    writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: endpoints.map(e => ({ id: e.id, connector: e.connector, transport: 'streamable-http', url: `http://127.0.0.1:18765/${e.id}`, account: e.id, resource: e.id, credentialRef: null, enabled: enabled.includes(e.id), allowEgress: true })) }), { mode: 0o600 });
     const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority }); runtimes.push(runtime); return runtime;
   };
   const accept = async (runtime: Awaited<ReturnType<typeof start>>, allowedClasses: DataClass[] = ['ordinary', 'private']) => {

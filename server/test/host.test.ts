@@ -410,7 +410,7 @@ for (const missingMongoose of [true, false]) {
     const http = (id: string, connector: string, credentialRef: string | null = null) => ({ id, connector, transport: 'streamable-http', url: url + '/' + id, account: 'synthetic', resource: id, credentialRef, enabled: true, allowEgress: true });
     await writeFile(join(config, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [
       http('lux-knowledge', 'lux-knowledge'), http('gmail', 'google'), http('calendar', 'google'),
-      { id: 'mattermost', connector: 'mattermost', transport: 'stdio', command: process.execPath, args: [child], env: {}, account: 'synthetic', resource: 'mattermost', enabled: true, allowEgress: true },
+      { id: 'mattermost', connector: 'mattermost', transport: 'stdio', command: process.execPath, args: [child], env: {}, account: 'synthetic', resource: 'mattermost', credentialRef: null, enabled: true, allowEgress: true },
       http('mongoose', 'mongoose', missingMongoose ? 'missing-credential' : null),
     ] }), { mode: 0o600 });
     await writeFile(join(config, 'live.json'), JSON.stringify({ schemaVersion: 1, enabled: true, provider: 'gemini', modelId: 'models/live-gateway-test', voice: 'LiveVoice', keyReference: 'gemini-primary', dataClasses: ['ordinary'], preferences: { dataClass: 'ordinary', language: 'en-US', register: 'plain', humor: 'dry', verbosity: 'balanced' } }), { mode: 0o600 });
@@ -431,7 +431,7 @@ test('host rejects an unknown connector kind before discovery and names it', asy
   const dir = await mkdtemp(join(tmpdir(), 'didi-unknown-connector-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const config = join(dir, 'provider-config'); await mkdir(config, { mode: 0o700 });
-  await writeFile(join(config, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [{ id: 'unknown-endpoint', connector: 'unknown-kind', transport: 'streamable-http', url: 'http://127.0.0.1:1', account: 'synthetic', resource: 'synthetic', credentialRef: null, enabled: true, allowEgress: true }] }), { mode: 0o600 });
+  await writeFile(join(config, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [{ id: 'unknown-endpoint', connector: 'unknown-kind', transport: 'streamable-http', url: 'http://127.0.0.1:1/', account: 'synthetic', resource: 'synthetic', credentialRef: null, enabled: true, allowEgress: true }] }), { mode: 0o600 });
   await assert.rejects(startHost({ dataDir: join(dir, 'state'), configDir: config, webRoot, port: 0 }), error => {
     assert(error instanceof Error);
     assert.equal(error.name, 'ConnectorCompositionError');

@@ -243,7 +243,9 @@ test('owner profile shares exact classified canonical text and turn-less voice a
   const voice = compileVoiceInstruction({ ownerId: base.ownerId, promptVersion: base.promptVersion,
     preferences: base.preferences, capabilities: base.capabilities, trustedChars: base.budgets.trustedChars,
     ownerProfile: syntheticOwner } as Parameters<typeof compileVoiceInstruction>[0]);
-  assert.equal(voice.system, compiled.system);
+  // Tool-enabled chat adds channel conduct after the unchanged canonical voice base.
+  assert.equal(compiled.system.slice(0, voice.system.length), voice.system);
+  assert.match(compiled.system.slice(voice.system.length), /^\n\nTOOLS\b/);
   assert.ok(compiled.system.includes(syntheticOwner.style.text));
   assert.ok(compiled.system.includes(syntheticOwner.lore.text));
   for (const section of ['[rules]', '[capabilities]', '[preferences]']) assert.ok(compiled.system.includes(section));

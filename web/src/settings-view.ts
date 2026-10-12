@@ -90,12 +90,13 @@ function summaryPersona(input: SettingsInput): string | undefined {
 }
 
 function serviceRows(status: unknown, statusUnavailable: boolean, summaryName?: string): string {
-  if (statusUnavailable) return `<dt>Persona name</dt><dd>${unavailable()}</dd><dt>Conversation model</dt><dd>${unavailable()}</dd>`;
+  const persona = summaryName ?? (statusUnavailable ? undefined : text(record(record(status)?.ownerProfile)?.displayName, 120));
+  const personaCell = persona ? escapeHtml(persona) : unavailable(statusUnavailable ? 'Unavailable' : 'Not reported');
+  if (statusUnavailable) return `<dt>Persona name</dt><dd>${personaCell}</dd><dt>Conversation model</dt><dd>${unavailable()}</dd>`;
   const row = record(status);
-  const persona = summaryName ?? text(record(row?.ownerProfile)?.displayName, 120);
   const model = record(row?.model);
   const modelLabel = model?.configured === true ? [text(model.provider, 60), text(model.model, 120)].filter(Boolean).join(' ') || 'Configured' : 'Not configured';
-  return `<dt>Persona name</dt><dd>${persona ? escapeHtml(persona) : unavailable('Not reported')}</dd>
+  return `<dt>Persona name</dt><dd>${personaCell}</dd>
 <dt>Conversation model</dt><dd>${escapeHtml(modelLabel)}</dd>`;
 }
 

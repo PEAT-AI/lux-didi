@@ -254,6 +254,7 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             let oldProfile = try JSONDecoder().decode(NativeLiveOperatorHTTP.Profile.self, from: Data("{\"status\":\"unconfigured\"}".utf8))
             try require(oldProfile.limits == nil, "old status remains decodable")
             let limits = try JSONDecoder().decode(NativeLiveLimits.self, from: Data("{\"sessionMs\":900000,\"idleMs\":60000}".utf8))
+            try require(NativeLivePresentation.ended("resume_failed", limits: nil) == "Naya's connection could not be resumed. Start Live again.", "resume_failed exact typed sentence")
             try require(limits.sentence == "Session limit 15 min, idle limit 1 min.", "configured limits are plain text")
             try require(NativeLivePresentation.ended("session_timeout", limits: limits) == "Session limit reached (15 min). Start again to continue.", "session limit explains next action")
             try require(NativeLivePresentation.ended("idle_timeout", limits: limits) == "Ended after 1 min without speech. Start again when ready.", "idle limit explains next action")

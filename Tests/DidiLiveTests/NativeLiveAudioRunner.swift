@@ -80,6 +80,7 @@ func audioRequire(_ value: Bool, _ message: String) throws {
                 presentation = NativeLiveConversation.continuityPresentation(.active, muted: muted)!
                 try audioRequire(presentation == (muted ? .muted : .listening), "resumed presentation preserves mute")
             }
+            try audioRequire(NativeLivePresentation.ended("resume_failed", limits: nil) == "Naya's connection could not be resumed. Start Live again.", "resume_failed exact typed sentence")
             let authority = DictationRefusalAuthority()
             let conversation = NativeLiveConversation(authority: (origin, { url, epoch in
                 try authority.request(url, epoch)

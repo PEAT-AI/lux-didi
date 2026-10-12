@@ -66,3 +66,5 @@ recorded as a class token, not copied verbatim.
 Native Live failures show the service's HTTP status and typed code or the socket
 close code and bounded `attach_rejected:<code>` reason when available. Unknown
 failures retain the generic guidance; no automatic reconnect is introduced.
+
+Each host start creates `host.log` with a bounded `host_started` event containing the installed release commit (or `unknown` for source starts), configuration kind (`effective` or `seeded`) and endpoint count, never configuration paths or secrets.

@@ -236,12 +236,12 @@ class Session implements LiveVoiceSession {
       if ('voiceActivity' in message) {
         const activity = message.voiceActivity;
         if (!object(activity)) fail('protocol_error');
-        if (activity.voiceActivityType === 'ACTIVITY_START') events.push({ type: 'waitingForInput', value: true });
-        if (activity.voiceActivityType === 'ACTIVITY_END') events.push({ type: 'waitingForInput', value: false });
+        if ((activity.type ?? activity.voiceActivityType) === 'ACTIVITY_START') events.push({ type: 'waitingForInput', value: true });
+        if ((activity.type ?? activity.voiceActivityType) === 'ACTIVITY_END') events.push({ type: 'waitingForInput', value: false });
       }
       const knownKeys = ['error', 'toolCall', 'toolCallCancellation', 'setupComplete', 'serverContent', 'voiceActivity', 'sessionResumptionUpdate', 'goAway'];
       for (const key of Object.keys(message)) {
-        if (knownKeys.includes(key)) continue;
+        if (knownKeys.includes(key) && !(key === 'serverContent' && object(message.serverContent) && !Object.keys(message.serverContent).length)) continue;
         this.unknownTopLevelKeys = Math.min(65535, this.unknownTopLevelKeys + 1);
         // Bound both retained names and stderr. Never log a value or arbitrary text.
         if (this.informationalKeys.size < 32 && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(key) && !this.informationalKeys.has(key)) {
@@ -249,7 +249,7 @@ class Session implements LiveVoiceSession {
           console.error(JSON.stringify({ event: 'live_provider_informational_key', key }));
         }
       }
-      if ('serverContent' in message) this.content(message.serverContent, events, 'voiceActivity' in message);
+      if ('serverContent' in message) this.content(message.serverContent, events);
       if ('sessionResumptionUpdate' in message) {
         const update = message.sessionResumptionUpdate;
         if (!object(update) || typeof update.resumable !== 'boolean' || ('newHandle' in update && typeof update.newHandle !== 'string')) fail('protocol_error');
@@ -270,8 +270,8 @@ class Session implements LiveVoiceSession {
     if (typeof value !== 'string' || (this.secret && (value.includes(this.secret) || value.includes(encodeURIComponent(this.secret))))) fail('protocol_error');
     return value;
   }
-  private content(value: unknown, events: EventBody[], activityFrame = false) {
-    if (!object(value) || (!activityFrame && !Object.keys(value).length)) fail('protocol_error');
+  private content(value: unknown, events: EventBody[]) {
+    if (!object(value)) fail('protocol_error');
     if ('modelTurn' in value) {
       const turn = value.modelTurn;
       if (!object(turn) || ('role' in turn && turn.role !== 'model') || !Array.isArray(turn.parts) || (!activityFrame && !turn.parts.length)) fail('protocol_error');

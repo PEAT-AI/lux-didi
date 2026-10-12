@@ -89,9 +89,10 @@ async function harness(t: TestContext, options: HarnessOptions = {}): Promise<Ha
       res.end(JSON.stringify({ jsonrpc: '2.0', id: message.id, result }));
     });
     endpoint.listen(0, '127.0.0.1'); await once(endpoint, 'listening');
+    t.after(async () => { endpoint.closeAllConnections(); await new Promise<void>(resolve => endpoint.close(() => resolve())); });
     const address = endpoint.address(); assert(address && typeof address !== 'string');
     const url = `http://127.0.0.1:${address.port}`;
-    const entry = (id: string, path: string) => ({ id, url: url + path, transport: 'streamable-http', connector: 'lux-knowledge', account: 'fixture', resource: 'knowledge', enabled: true, allowEgress: true });
+    const entry = (id: string, path: string) => ({ id, url: url + path, transport: 'streamable-http', connector: 'lux-knowledge', account: 'fixture', resource: 'knowledge', credentialRef: null, enabled: true, allowEgress: true });
     writePrivate(config, 'mcp.json', JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [entry('healthy', '/'), ...(options.failedMcp ? [entry('failed', '/failed')] : [])] }));
     const sources: Array<(runId: string, signal: AbortSignal) => Promise<LiveAuthority | null>> = [];
     const lookupAuthority = async (runId: string, signal: AbortSignal) => {
@@ -99,7 +100,7 @@ async function harness(t: TestContext, options: HarnessOptions = {}): Promise<Ha
       return null;
     };
     const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir: config, lookupAuthority });
-    t.after(async () => { await runtime.close(); endpoint.closeAllConnections(); await new Promise<void>(resolve => endpoint.close(() => resolve())); });
+    t.after(async () => { await runtime.close(); });
     // Keep the missing-policy regression first: the base reaches attach, then closes internal.
     if (options.failedMcp) {
       assert.deepEqual(runtime.connectionIds(), ['healthy']);

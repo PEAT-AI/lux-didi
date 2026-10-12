@@ -1,7 +1,8 @@
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
 import type { DomainContext, Entry } from '../contracts/domain.js';
 import type { Transaction } from '../contracts/storage.js';
-import type { DataClass } from '../adapters/model/types.js';
+import type { DataClass, ToolDefinition } from '../adapters/model/types.js';
+import { declarationsFor } from '../tools/declarations.js';
 import { compilePrompt, createCapabilitySnapshot, PROMPT_VERSION, PromptCompileError,
   type CompileInput, type CompiledPrompt, type Evidence, type HistoryItem } from '../prompt/index.js';
 import { ChatError, type ChatConfig, type ClassificationSubject } from './types.js';
@@ -27,7 +28,11 @@ export interface ContextTrace {
   historyOmissionReason: 'compiler_budget_or_limit' | null;
 }
 /** Domain reads finish in one synchronous Store transaction before compilation. */
-export function assemble(config: ChatConfig, sessionId: string, currentId: string, context: DomainContext, selection: RunSelection | null = null, ownerProfile?: OwnerProfileSnapshot) {
+export function chatCapabilities(registry: readonly ToolDefinition[], sources: ChatConfig['context']['sources']) {
+  const { declarations } = declarationsFor(registry);
+  return createCapabilitySnapshot(registry.map((tool, i) => ({ ...tool, ...declarations[i]! })), sources);
+}
+export function assemble(config: ChatConfig, sessionId: string, currentId: string, context: DomainContext, selection: RunSelection | null = null, ownerProfile?: OwnerProfileSnapshot, registry: readonly ToolDefinition[] = []) {
   const configured = new Map([['session', true], ['recall', Boolean(config.context.recall)], ['today', Boolean(config.context.today)]]);
   for (const source of config.context.sources) {
     if (!configured.has(source.id) || (source.state === 'available') !== configured.get(source.id)) throw new ContextFailure('unavailable');
@@ -69,7 +74,7 @@ export function assemble(config: ChatConfig, sessionId: string, currentId: strin
       id: selectedEvidenceId(record.entryId), sourceId: record.entryId, provenance: 'memory.selection',
       priority: 1, kind: 'source', text: JSON.stringify(record) });
   }
-  const capabilities = createCapabilitySnapshot([], [...configured].map(([id, available]) => ({ id, state: available ? 'available' : 'missing' })));
+  const capabilities = chatCapabilities(registry, [...configured].map(([id, available]) => ({ id, state: available ? 'available' : 'missing' })));
   const base: CompileInput = { ownerId: config.store.assistantId, persona: 'didi', promptVersion: PROMPT_VERSION,
     ...(ownerProfile ? { ownerProfile } : {}), preferences: config.preferences, capabilities, evidence, history: [current], budgets: config.context.budgets };
   let compiled: CompiledPrompt;

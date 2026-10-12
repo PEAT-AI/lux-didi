@@ -517,3 +517,21 @@ test('endpoint union: stdio arm validates; HTTP nullability and cross-arm reject
   assert.throws(() => validatePolicy(asPolicy({ ...http.endpoint, transport: 'sse' })));
   assert.throws(() => validatePolicy(asPolicy({ ...stdioEndpoint, command: 'echo' })));
 });
+
+for (const legacyRoute of ['endpoint', 'ambiguous-model-route']) test(`migration does not turn legacy ${legacyRoute} into route approval`, async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-legacy-policy-'));
+  const legacy = policy(); legacy.route.identity = legacyRoute;
+  const bytes = canonicalJSON(legacy); const hash = sha256(bytes);
+  const oldStore = new Store(dir, toolsMigrations.filter(m => m.version === 1));
+  oldStore.transaction(tx => tx.run('INSERT INTO tool_connections VALUES (?,?,?,?,?,?,?)', ['owner', 'lux', 'endpoint', 1, 1, bytes, hash])); oldStore.close();
+  const store = new Store(dir, toolsMigrations);
+  t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
+  const owner = createToolsOwner({ store, ownerId: 'owner', registry: new McpRegistry(), port: {} as McpPort, lookupAuthority: async () => null });
+  const acceptance: RunAcceptance = { ownerId: 'owner', actorId: 'actor', runId: 'legacy-run', authorityEpoch: store.authorityEpoch, revision: 1, route: { identity: legacyRoute, provider: 'gemini', modelId: 'synthetic', allowedClasses: ['private'] }, allowedClasses: ['private'], connectionIds: ['lux'] };
+  store.transaction(tx => owner.snapshotRun(tx, acceptance));
+  assert.throws(() => owner.journal.intent({ runId: acceptance.runId, actorId: 'actor', authorityEpoch: store.authorityEpoch, revision: 1, executionId: 'legacy-read', toolName: 'search_knowledge', argumentsHash: sha256('{}'), accountId: 'account', resourceId: 'resource' }), /intent_policy_denied/);
+  assert.throws(() => owner.projectConnection('lux'), /connection_not_executable/);
+  assert.equal((await owner.restoreConnection('lux', () => {})).state, 'refused');
+  assert.equal(store.transaction(tx => tx.get('SELECT policy_sha256 FROM tool_connections'))!.policy_sha256, hash);
+  assert.equal(store.transaction(tx => tx.all('SELECT * FROM tool_connection_semantics')).length, 0);
+});

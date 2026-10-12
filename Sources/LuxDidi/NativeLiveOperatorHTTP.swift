@@ -56,8 +56,7 @@ struct NativePendingLiveJob: Decodable, Equatable, Sendable {
         if body != nil { request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
         if let key { request.setValue(key, forHTTPHeaderField: "Idempotency-Key") }
         let (data, response) = try await session.data(for: request)
-        guard let response = response as? HTTPURLResponse, response.url == request.url,
-              data.count < 2 * 1024 * 1024 else { throw LiveClientError.transport }
+        guard let response = response as? HTTPURLResponse, response.url == request.url else { throw LiveClientError.transport }
         guard (200..<300).contains(response.statusCode) else {
             let object = data.count <= 4096 ? (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] : nil
             let error = object?["error"] as? [String: Any]

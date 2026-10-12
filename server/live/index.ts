@@ -158,7 +158,7 @@ export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: 
 /** Scrub only the deleted record, preserving the rest of the frozen instruction. */
 export function redactDeletedMemorySnapshots(tx: Transaction, entryId: string, now: number): void {
   if (!tx.get("SELECT name FROM sqlite_master WHERE type='table' AND name='live_sessions'", [])) return;
-  for (const row of tx.all('SELECT live_session_id,accepted_prompt_snapshot,prompt_identity FROM live_sessions', [])) {
+  for (const row of tx.all('SELECT live_session_id,accepted_prompt_snapshot,prompt_identity,profile_identity FROM live_sessions', [])) {
     if (row['accepted_prompt_snapshot'] === null) continue;
     const snapshot = JSON.parse(String(row['accepted_prompt_snapshot'])) as AcceptedPromptSnapshot;
     let removed = false;
@@ -176,8 +176,11 @@ export function redactDeletedMemorySnapshots(tx: Transaction, entryId: string, n
     if (!dataClass) throw new LiveError('invalidated');
     const promptIdentity = identity({ text: system, dataClass });
     const id = String(row['live_session_id']);
-    tx.run('UPDATE live_sessions SET accepted_prompt_snapshot=?,memory_provenance=?,prompt_identity=? WHERE live_session_id=?',
-      [JSON.stringify(updated), JSON.stringify(memory), promptIdentity, id]);
+    const grant = tx.get('SELECT chosen_input_class FROM live_send_grants WHERE live_session_id=?', [id]);
+    if (!grant) throw new LiveError('invalidated');
+    const fingerprint = identity({ inputClass: String(grant['chosen_input_class']), profile: String(row['profile_identity']), prompt: promptIdentity, pickupJobId: snapshot.pickup?.jobId ?? null });
+    tx.run('UPDATE live_sessions SET accepted_prompt_snapshot=?,memory_provenance=?,prompt_identity=?,fingerprint=? WHERE live_session_id=?',
+      [JSON.stringify(updated), JSON.stringify(memory), promptIdentity, fingerprint, id]);
     const journal = JSON.stringify({ event: 'memory_deleted', entryId });
     tx.run("INSERT INTO live_journal(live_session_id,provider_sequence,kind,text,payload_bytes,arrived_at) VALUES (?,NULL,'continuity',?,?,?)",
       [id, journal, Buffer.byteLength(journal, 'utf8'), now]);

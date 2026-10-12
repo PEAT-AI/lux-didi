@@ -12,7 +12,7 @@ if [ "${1:-}" = "--prepare" ]; then
   cd "$root"
   app="$artifacts/Lux Didi.app"
   start=$SECONDS
-  /usr/bin/nice -n 10 xcrun swiftc -j 1 -num-threads 1 -whole-module-optimization -module-cache-path "$artifacts/cache" Sources/LuxDidi/AppPorts.swift Sources/LuxDidi/NativeKeychainPolicy.swift Sources/LuxDidi/NativeServiceRecovery.swift Sources/LuxDidi/CompanionClient.swift Sources/LuxDidi/NativeShortcuts.swift Sources/LuxDidi/NativeLoginItem.swift Sources/LuxDidi/NativeDiagnosticsSnapshot.swift Sources/LuxDidi/NativeNotifications.swift Tests/DidiMacTests/main.swift -o "$artifacts/seams"
+  /usr/bin/nice -n 10 xcrun swiftc -j 1 -num-threads 1 -whole-module-optimization -module-cache-path "$artifacts/cache" Sources/LuxDidi/NativeNextSteps.swift Sources/LuxDidi/NativeGettingStarted.swift Sources/LuxDidi/AppPorts.swift Sources/LuxDidi/NativeKeychainPolicy.swift Sources/LuxDidi/NativeServiceRecovery.swift Sources/LuxDidi/CompanionClient.swift Sources/LuxDidi/NativeShortcuts.swift Sources/LuxDidi/NativeLoginItem.swift Sources/LuxDidi/NativeDiagnosticsSnapshot.swift Sources/LuxDidi/NativeNotifications.swift Tests/DidiMacTests/main.swift -o "$artifacts/seams"
   "$artifacts/seams"
   printf 'DURATION seam-compile-and-run=%ss (test-only duration above)\n' "$((SECONDS-start))"
   bash scripts/build-macos-app.sh "$app" --cache "$artifacts/cache"

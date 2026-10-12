@@ -86,3 +86,15 @@ test('marks every on-disk setting with its file name and a restart note', () => 
   for (const file of ['live.json', 'profile.json', 'gemini-primary.json', 'provider-config/mcp.json']) assert.match(html, new RegExp(file.replace('.', '\\.')));
   assert.match(html, /need a restart of Lux Didi/);
 });
+
+test('connector-specific setup instructions render safely', () => {
+  const html = renderSettings({ connections: [
+    { id: 'calendar', state: 'missing', reasonCode: 'credential_missing' },
+    { id: 'mongoose', state: 'missing', reasonCode: 'credential_missing' },
+    { id: 'gmail', state: 'error', reasonCode: 'unreachable' },
+  ] });
+  assert.match(html, /uv run --package lux-gcal gcal --auth/);
+  assert.match(html, /provider-38\/mongoose-mcp.json/);
+  assert.match(html, /see RUNBOOK/);
+  assert.match(html, /Copy diagnostics/);
+});

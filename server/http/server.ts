@@ -119,7 +119,9 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
             const state = ['missing', 'configured', 'connected', 'error'].includes(String(row.state)) ? String(row.state) : 'error';
             // Classify privately; return only closed reason tokens, never the original diagnostic.
             const error = typeof row.error === 'string' ? row.error : '';
+            const configurationError = ['unknown-class-missing', 'unknown-class-invalid', 'owner-approval-required', 'ambiguous-legacy-policy'].includes(String(row.configurationError)) ? String(row.configurationError) : undefined;
             const reasonCode = state === 'connected' || (state === 'configured' && !error) ? null
+              : configurationError ? 'configuration_error'
               : /^credential .* missing or invalid$/.test(error) ? 'credential_missing'
               : /unreachable|ECONNREFUSED|ENOTFOUND|ETIMEDOUT/.test(error) ? 'unreachable'
               : /discovery/.test(error) ? 'discovery_failed'
@@ -129,6 +131,7 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
               tools: typeof row.tools === 'number' && Number.isSafeInteger(row.tools) && row.tools >= 0 ? row.tools : 0,
               lastHandshakeAt: typeof row.lastHandshakeAt === 'string' && /^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/.test(row.lastHandshakeAt) && Number.isFinite(Date.parse(row.lastHandshakeAt)) ? row.lastHandshakeAt : null,
               reasonCode,
+              ...(configurationError ? { configurationError } : {}),
             };
           });
           send(res, 200, success(endpoints)); return;

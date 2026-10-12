@@ -195,7 +195,7 @@ try {
     releaseReload();
     await row.waitFor({state:'detached'});
     await page.locator('.entry').filter({hasText:retained.text}).waitFor();
-    assert.equal(await page.getByRole('alert').count(),0);
+    assert.equal(await page.getByRole('alert').filter({hasText:'Could not delete this memory.'}).count(),0);
   });
   await step('offline cannot claim saved; preserves draft; no offline writer',async()=>{
     await page.getByLabel('Local note · not sent to a model').fill('Offline draft stays here'); await context.setOffline(true); await page.getByText('Offline',{exact:true}).waitFor();

@@ -8,8 +8,13 @@ import { projectLuxResult } from '../tools/lux-knowledge.js';
 import { createGoogleReader, GOOGLE_TOOLS } from './google.js';
 import type { GcalCalendarsInput, GcalListInput, GmailListInput, GmailReadInput, GoogleEvidence, GoogleFamily, GoogleResult } from './google.js';
 import { googleToolStatus, projectGoogleResult } from '../tools/google.js';
-import { MONGOOSE_TOOLS } from './mongoose.js';
-import { MATTERMOST_TOOLS } from './mattermost.js';
+import { createMongooseReader, MONGOOSE_TOOLS } from './mongoose.js';
+import { createMattermostReader, MATTERMOST_TOOLS } from './mattermost.js';
+
+import { projectMongooseResult } from '../tools/mongoose.js';
+import { projectMattermostResult } from '../tools/mattermost.js';
+import type { MongooseResult } from './mongoose.js';
+import type { MattermostResult } from './mattermost.js';
 
 export * from './lux-knowledge.js';
 export * from './google.js';
@@ -177,9 +182,105 @@ const googleDescriptor: ConnectorDescriptor = {
   status: googleStatus,
 };
 
+/** A local composition defect, distinct from a remote connector failure. */
+export class ConnectorCompositionError extends Error {
+  constructor(public readonly code: 'unknown_connector' | 'unknown_connector_tool' | 'ambiguous_model_tool_name', public readonly connectionId: string, public readonly connector: string) {
+    super(`Connector composition error: ${code} (${connectionId}, ${connector})`);
+    this.name = 'ConnectorCompositionError';
+  }
+}
+
+/** Company readers accept only an optional bounded limit and one required text field. */
+function companyDeclaration(name: string, description: string, maxText: number, textField?: string, maxLimit?: number): ConnectorToolDeclaration {
+  const properties: Record<string, unknown> = {};
+  if (textField) properties[textField] = { type: 'string', minLength: 1, maxLength: maxText };
+  if (maxLimit !== undefined) properties['limit'] = { type: 'integer', minimum: 1, maximum: maxLimit };
+  return {
+    name, description, effect: 'read',
+    parameters: { type: 'object', additionalProperties: false, properties, ...(textField ? { required: [textField] } : {}) },
+    validate(args) {
+      if (!isRecord(args) || Object.keys(args).some(key => !Object.hasOwn(properties, key))) return false;
+      if (textField && (typeof args[textField] !== 'string' || !(args[textField] as string).trim() || (args[textField] as string).length > maxText)) return false;
+      return args['limit'] === undefined || (Number.isSafeInteger(args['limit']) && (args['limit'] as number) >= 1 && (args['limit'] as number) <= maxLimit!);
+    },
+  };
+}
+function companyProjection(evidence: ConnectorEvidence, policy: ConnectionPolicy, projection: ReturnType<typeof projectMattermostResult>): ModelSnapshot {
+  if (!projection.ok) throw Error('result_projection_failed');
+  const unknownClass = policy.sourcePolicy.unknownClass;
+  if (!unknownClass) throw Error('unknown_source_denied');
+  return {
+    response: { tool: evidence.tool, text: projection.projection.text, coverage: evidence.coverage, projection: evidence.projection, partial: projection.projection.partial, originalCharacters: projection.projection.originalCharacters, omittedCharacters: projection.projection.omittedCharacters },
+    dataClasses: [unknownClass],
+  };
+}
+const mattermostDescriptor: ConnectorDescriptor = {
+  id: 'mattermost', envelope: MATTERMOST_TOOLS,
+  declarations(policy) {
+    const text = Math.min(200, policy.bounds.maxQueryChars);
+    const limit = Math.min(60, policy.bounds.maxSearchLimit);
+    return [
+      companyDeclaration('mattermost_whoami', 'Read the authenticated Mattermost identity.', text),
+      companyDeclaration('mattermost_get_channel_history', 'Read bounded history from a Mattermost channel.', text, 'channel', limit),
+      companyDeclaration('mattermost_get_thread', 'Read a bounded Mattermost thread.', text, 'postId', limit),
+      companyDeclaration('mattermost_search', 'Search bounded Mattermost messages.', text, 'query', limit),
+      companyDeclaration('mattermost_list_channels', 'List bounded Mattermost channels.', text, undefined, limit),
+    ];
+  },
+  createReader({ port, registry, endpoint, schemaDigest, generation, policy }) {
+    const reader = createMattermostReader({ port, registry, config: { endpointId: endpoint.id, account: endpoint.account, resource: endpoint.resource, schemaDigest, generation, maxLimit: Math.min(60, policy.bounds.maxSearchLimit), queryChars: Math.min(200, policy.bounds.maxQueryChars) } });
+    return { async call(tool, args, signal) {
+      switch (tool) {
+        case 'mattermost_whoami': return reader.whoami(signal);
+        case 'mattermost_get_channel_history': return reader.getChannelHistory(args as { channel: string; limit?: number }, signal);
+        case 'mattermost_get_thread': return reader.getThread(args as { postId: string; limit?: number }, signal);
+        case 'mattermost_search': return reader.search(args as { query: string; limit?: number }, signal);
+        case 'mattermost_list_channels': return reader.listChannels(args, signal);
+        default: throw new ConnectorCompositionError('unknown_connector_tool', endpoint.id, 'mattermost');
+      }
+    } };
+  },
+  project(evidence, port, policy) { return companyProjection(evidence, policy, projectMattermostResult(port, evidence as MattermostResult)); },
+};
+const mongooseDescriptor: ConnectorDescriptor = {
+  id: 'mongoose', envelope: MONGOOSE_TOOLS,
+  declarations(policy) {
+    const text = Math.min(500, policy.bounds.maxQueryChars);
+    const search = Math.min(50, policy.bounds.maxSearchLimit);
+    const list = Math.min(100, policy.bounds.maxSearchLimit);
+    return [
+      companyDeclaration('ask_mongoose', 'Ask a bounded question of company knowledge.', text, 'question', search),
+      companyDeclaration('search_mongoose', 'Search bounded company knowledge.', text, 'query', search),
+      companyDeclaration('get_knowledge_item', 'Read a company knowledge item by id.', text, 'id'),
+      companyDeclaration('read_knowledge_body', 'Read a company knowledge body by id.', text, 'id'),
+      companyDeclaration('get_company_profile', 'Read the company profile.', text),
+      companyDeclaration('list_tickets', 'List bounded company tickets.', text, undefined, list),
+      companyDeclaration('get_ticket', 'Read a company ticket by id.', text, 'id'),
+    ];
+  },
+  createReader({ port, registry, endpoint, schemaDigest, generation, policy }) {
+    const reader = createMongooseReader({ port, registry, config: { endpointId: endpoint.id, account: endpoint.account, resource: endpoint.resource, schemaDigest, generation, maxSearchLimit: Math.min(50, policy.bounds.maxSearchLimit), maxListLimit: Math.min(100, policy.bounds.maxSearchLimit), queryChars: Math.min(500, policy.bounds.maxQueryChars) } });
+    return { async call(tool, args, signal) {
+      switch (tool) {
+        case 'ask_mongoose': return reader.ask(args as { question: string; limit?: number }, signal);
+        case 'search_mongoose': return reader.search(args as { query: string; limit?: number }, signal);
+        case 'get_knowledge_item': return reader.getKnowledgeItem(args as { id: string }, signal);
+        case 'read_knowledge_body': return reader.readKnowledgeBody(args as { id: string }, signal);
+        case 'get_company_profile': return reader.companyProfile(signal);
+        case 'list_tickets': return reader.listTickets(args, signal);
+        case 'get_ticket': return reader.getTicket(args as { id: string }, signal);
+        default: throw new ConnectorCompositionError('unknown_connector_tool', endpoint.id, 'mongoose');
+      }
+    } };
+  },
+  project(evidence, port, policy) { return companyProjection(evidence, policy, projectMongooseResult(port, evidence as MongooseResult)); },
+};
+
 export const CONNECTOR_DESCRIPTORS: Readonly<Record<string, ConnectorDescriptor>> = {
   'lux-knowledge': luxKnowledgeDescriptor,
   'google': googleDescriptor,
+  'mattermost': mattermostDescriptor,
+  'mongoose': mongooseDescriptor,
 };
 
 export function connectorDescriptor(id: string): ConnectorDescriptor | undefined {

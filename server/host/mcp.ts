@@ -1,3 +1,4 @@
+import { CONNECTOR_DESCRIPTORS, ConnectorCompositionError } from '../connectors/index.js';
 import type { Store } from '../runtime/store.js';
 import { McpRegistry } from '../adapters/mcp/registry.js';
 import { assertToolsOwnerBinding, createToolsOwner } from '../tools/index.js';
@@ -92,6 +93,10 @@ export async function composeMcpRuntime(options: {
     return { registry, port, owner, connectionIds: () => [], status: () => ({ endpoints: [] }), refresh: async () => {}, close: () => port.close() };
   }
   const { grantMode, endpoints } = selection.catalog;
+  // Reject local capability mismatches before any transport starts, including disabled entries.
+  for (const entry of endpoints) {
+    if (!Object.hasOwn(CONNECTOR_DESCRIPTORS, entry.connector)) throw new ConnectorCompositionError('unknown_connector', entry.id, entry.connector);
+  }
   const usable = new Set<string>();
   const active = endpoints.filter(entry => entry.enabled && entry.allowEgress);
   for (const entry of endpoints) {

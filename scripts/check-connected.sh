@@ -11,4 +11,4 @@ status=0
 node --test --test-concurrency=1 --test-reporter=tap --test-timeout=15000 server/dist/test/{chat,http,host,connected}.test.js | tee "$log" || status=$?
 grep -Eq '^# tests [1-9][0-9]*$' "$log" || { echo 'Zero selected tests' >&2; exit 1; }
 if [ "$status" -ne 0 ]; then exit "$status"; fi
-lux-browser-slot run --priority worker --want 1 --wait 240 -- node server/test/connected-browser.mjs
+lux-browser-slot run --priority worker --want 1 --wait 1800 -- node server/test/connected-browser.mjs

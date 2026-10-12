@@ -67,3 +67,24 @@ expect(WindowFrameRestore.resolve(lost, screens: [screen]) != lost, "off-screen 
 let visible = CGRect(x: 100, y: 50, width: 980, height: 760)
 expect(WindowFrameRestore.resolve(visible, screens: [screen]) == visible, "visible frame retained")
 expect(NativeNoteAction.label == "Save note", "local note action is honest")
+
+var registeredKeys: [UInt32] = []
+let shortcutRegistration = LiveShortcutRegistration { _, id in
+    registeredKeys.append(id)
+    return id == 1 ? -9878 : 0
+}
+expect(registeredKeys == [1, 2], "shortcut registrations are separate even when Start conflicts")
+expect(shortcutRegistration.startStatus.contains("Unavailable") && shortcutRegistration.muteStatus == "registered", "conflict does not hide independent mute registration")
+var shown = 0, started = 0, muted = 0, stopped = 0
+var active = false
+let actions = NativeSummonActions(show: { shown += 1 }, start: {
+    guard !active else { return }; active = true; started += 1
+}, mute: { muted += 1 }, stop: { active = false; stopped += 1 })
+actions.show()
+expect(shown == 1 && started == 0, "Show never starts capture")
+actions.start(); actions.start()
+expect(shown == 3 && started == 1, "menu and shortcut share the guarded start under repeats")
+actions.mute(); actions.stop()
+expect(muted == 1 && stopped == 1 && !active, "mute and stop route without starting")
+expect(NativeLaunchVisibility.shouldShow(loginLaunch: true) == false, "login launch stays hidden")
+expect(NativeLaunchVisibility.shouldShow(loginLaunch: false), "ordinary launch shows window without starting")

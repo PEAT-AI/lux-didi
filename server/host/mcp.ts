@@ -141,7 +141,14 @@ export async function composeMcpRuntime(options: {
       usable.add(entry.id);
       const granted = names.length;
       reports.set(entry.id, { id: entry.id, state: 'connected', tools: granted, lastHandshakeAt: new Date(now()).toISOString() });
-    } catch { reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'discovery-unavailable' }); }
+    } catch (error) {
+      const localCodes = ['invalid_policy_shape', 'invalid_policy_version', 'invalid_policy_text', 'invalid_positive_integer', 'invalid_read_tools', 'invalid_unknown_class', 'invalid_data_classes', 'connection_owner_mismatch', 'connection_predecessor_mismatch', 'connection_identity_or_generation', 'connection_policy_missing_or_corrupt', 'projection_endpoint_mismatch', 'invalid-local-read-grant'];
+      const exception = {
+        class: error instanceof Error && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(error.constructor.name) ? error.constructor.name : 'Unknown',
+        code: error instanceof Error && error.constructor === Error && localCodes.includes(error.message) ? error.message : 'unknown',
+      };
+      reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'discovery-unavailable', exception });
+    }
   };
   await Promise.all(active.map(connect));
   return {

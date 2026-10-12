@@ -2,8 +2,8 @@ import Foundation
 
 /// The local outbox owns only request identity; the service and shared page own chat.
 @MainActor final class NativeConnectedSend {
-    static let label = "Send to Naya"
-    static let consentInstruction = "Enable connected chat in the conversation view."
+    nonisolated static let label = "Send to Naya"
+    nonisolated static let consentInstruction = "Enable connected chat in the conversation view."
     enum Failure: LocalizedError {
         case consent, destination, authority
         var errorDescription: String? {

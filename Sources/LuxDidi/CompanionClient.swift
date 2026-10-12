@@ -135,13 +135,15 @@ enum CaptureStatus: Equatable { case idle, sending, saved, cancelled, unknown, f
         })
     }
     func connectedRead(_ path: String) async throws -> [String: Any] {
-        try await request(path, bearer: false, page: true)
+        let (value, _) = try await request(path, bearer: false, page: true)
+        return value
     }
     func connectedAccept(_ envelope: PendingRequestEnvelope) async throws -> [String: Any] {
-        try await request("api/v1/chat", method: "POST",
+        let (value, _) = try await request("api/v1/chat", method: "POST",
             body: ["sessionId": envelope.identity.sessionId, "text": envelope.frozenText],
             bearer: false, page: true, key: envelope.identity.idempotencyKey,
             authority: envelope.identity.authorityEpoch)
+        return value
     }
     func liveConnections() async throws -> [NativeLiveConnection] {
         let (value, _) = try await requestPayload("api/v1/live/connections", bearer: false, page: true)

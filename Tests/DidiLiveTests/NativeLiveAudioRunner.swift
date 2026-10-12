@@ -13,6 +13,14 @@ func audioRequire(_ value: Bool, _ message: String) throws {
     }
 }
 
+private actor NativeAudioSendProbe {
+    nonisolated let frames: AsyncStream<Data>
+    private let signal: AsyncStream<Data>.Continuation
+    private(set) var count = 0
+    init() { (frames, signal) = AsyncStream.makeStream() }
+    func send(_ frame: Data) { count += 1; signal.yield(frame) }
+}
+
 @main struct NativeLiveAudioRunner {
     static func tone(_ format: AVAudioFormat, start: Int, count: Int) throws -> AVAudioPCMBuffer {
         guard format.channelCount == 2, format.commonFormat == .pcmFormatFloat32, !format.isInterleaved else {
@@ -51,10 +59,56 @@ func audioRequire(_ value: Bool, _ message: String) throws {
                 rebuild: { throw NativeLiveAudioError.deviceUnavailable }, paused: { _ in }, failed: { failures += 1 })
             failedRecovery.begin(); failedRecovery.changed(); await failedRecovery.pending?.value
             try audioRequire(failures == 1 && !failedRecovery.authorized, "failed rebuild releases authorization")
-            print("PASS route storm, input consent, Resume, Stop fencing and failed rebuild")
+            input = ""
+            let missingInput = NativeAudioRouteRecovery(input: { input }, release: { releases += 1 },
+                rebuild: { builds += 1 }, paused: { _ in paused = "invalid pause" }, failed: { failures += 1 })
+            missingInput.begin(); missingInput.changed()
+            try audioRequire(failures == 2 && !missingInput.authorized && missingInput.pending == nil,
+                             "missing input immediately releases capture and requests Restart")
+            try audioRequire(paused != "invalid pause", "missing input must never offer Resume")
+            print("PASS route storm, input consent, Resume, Stop fencing, missing input and failed rebuild")
             guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 44100, channels: 2, interleaved: false) else {
                 throw NativeLiveAudioError.unsupportedFormat
             }
+            var deviceInput = (id: "builtin", name: "Built-in microphone")
+            var captures: [NativeCaptureBuffer] = []
+            let injectedDevice = NativeLiveAudioDevice(captureInput: format, defaultInput: { deviceInput })
+            injectedDevice.onCapturePrepared = { captures.append($0) }
+            let sends = NativeAudioSendProbe()
+            try await injectedDevice.start { await sends.send($0) }
+            let originalCapture = captures[0]
+            originalCapture.append(try tone(format, start: 0, count: 2000))
+            injectedDevice.routeChanged(); injectedDevice.routeChanged(); injectedDevice.routeChanged()
+            await injectedDevice.finishRouteRecovery()
+            let oldSendCount = await sends.count
+            try audioRequire(captures.count == 2 && oldSendCount == 0 && originalCapture.next().0 == nil,
+                             "actual device drain must discard queued old-generation frames")
+            originalCapture.append(try tone(format, start: 0, count: 2000))
+            try audioRequire(originalCapture.next().0 == nil, "old tap must stay stopped after rebuild")
+            injectedDevice.setMuted(true)
+            injectedDevice.routeChanged(); await injectedDevice.finishRouteRecovery()
+            captures.last!.append(try tone(format, start: 0, count: 2000))
+            try audioRequire(captures.count == 3 && injectedDevice.isCapturing && captures.last!.next().0 == nil,
+                             "actual rebuilt converter and drain preserve mute")
+            injectedDevice.setMuted(false)
+            var frames = sends.frames.makeAsyncIterator()
+            captures.last!.append(try tone(format, start: 2000, count: 1024))
+            let delivered = await frames.next()
+            try audioRequire(delivered?.count == 640, "rebuilt device sends real converted frames after unmute")
+            var changedName = ""
+            injectedDevice.onInputChange = { changedName = $0 }
+            deviceInput = (id: "usb", name: "USB microphone")
+            injectedDevice.routeChanged(); await injectedDevice.finishRouteRecovery()
+            try audioRequire(!injectedDevice.isCapturing && changedName == "USB microphone" && captures.count == 3,
+                             "input change releases real capture until Resume")
+            deviceInput = (id: "airpods", name: "AirPods")
+            injectedDevice.resumeInput()
+            try audioRequire(changedName == "AirPods" && captures.count == 3, "Resume rechecks device consent identity")
+            injectedDevice.resumeInput()
+            try audioRequire(captures.count == 4 && injectedDevice.isCapturing, "explicit Resume rebuilds device")
+            injectedDevice.routeChanged(); injectedDevice.stop(); await injectedDevice.finishRouteRecovery()
+            try audioRequire(captures.count == 4 && !injectedDevice.isCapturing, "Stop wins against device recovery")
+            print("PASS injected real device converter/drain: mute survives, queued/stale frames discarded, input consent rechecked")
             let reference = try NativePCMConverter(input: format)
             var expected = try reference.append(tone(format, start: 0, count: 44100))
             expected.append(try reference.finish())

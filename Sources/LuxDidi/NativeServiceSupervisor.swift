@@ -147,7 +147,7 @@ struct OwnedServiceConnection {
     var onRestartStatus: ((Bool) -> Void)?
     private var wakeObserver: NSObjectProtocol?
     private var restartTask: Task<Void, Never>?
-    private lazy var recovery = NativeServiceRecovery(
+    private lazy var recovery: NativeServiceRecovery = NativeServiceRecovery(
         schedule: { delay, action in
             let task = Task { @MainActor in
                 do { try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }

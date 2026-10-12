@@ -423,6 +423,7 @@ test('speech activity siblings and informational keys preserve the next audio fr
   session.sendAudio({ pcm, dataClass: 'ordinary' });
   await f.frame(2);
   speechActivityFrames(value => f.send(value));
+  f.send({ usageMetadata: { synthetic: true } });
   const observed: LiveVoiceEvent[] = [];
   for (let i = 0; i < 4; i++) {
     const next = await events.next();
@@ -432,6 +433,7 @@ test('speech activity siblings and informational keys preserve the next audio fr
     if (next.value!.type === 'audio') break;
   }
   assert.ok(observed.some(e => e.type === 'audio'));
+  assert.ok(session.unknownTopLevelKeys! >= 1);
   assert.deepEqual(observed.filter(e => e.type === 'waitingForInput').map(e => e.value), [true, false]);
   session.close();
 });

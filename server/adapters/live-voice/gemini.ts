@@ -249,7 +249,7 @@ class Session implements LiveVoiceSession {
           console.error(JSON.stringify({ event: 'live_provider_informational_key', key }));
         }
       }
-      if ('serverContent' in message) this.content(message.serverContent, events);
+      if ('serverContent' in message) this.content(message.serverContent, events, 'voiceActivity' in message);
       if ('sessionResumptionUpdate' in message) {
         const update = message.sessionResumptionUpdate;
         if (!object(update) || typeof update.resumable !== 'boolean' || ('newHandle' in update && typeof update.newHandle !== 'string')) fail('protocol_error');
@@ -270,11 +270,11 @@ class Session implements LiveVoiceSession {
     if (typeof value !== 'string' || (this.secret && (value.includes(this.secret) || value.includes(encodeURIComponent(this.secret))))) fail('protocol_error');
     return value;
   }
-  private content(value: unknown, events: EventBody[]) {
-    if (!object(value)) fail('protocol_error');
+  private content(value: unknown, events: EventBody[], activityFrame = false) {
+    if (!object(value) || (!activityFrame && !Object.keys(value).length)) fail('protocol_error');
     if ('modelTurn' in value) {
       const turn = value.modelTurn;
-      if (!object(turn) || ('role' in turn && turn.role !== 'model') || !Array.isArray(turn.parts)) fail('protocol_error');
+      if (!object(turn) || ('role' in turn && turn.role !== 'model') || !Array.isArray(turn.parts) || (!activityFrame && !turn.parts.length)) fail('protocol_error');
       for (const part of turn.parts) {
         if (!object(part) || !Object.keys(part).length) fail('protocol_error');
         if ('functionCall' in part || 'functionResponse' in part) fail('unsupported_tool');

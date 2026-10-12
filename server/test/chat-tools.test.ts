@@ -21,9 +21,10 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
   const dir = mkdtempSync(join(tmpdir(), 'chat-tools-'));
   const requests: ModelRequest[] = [];
   let ask = true;
+  let repeat = false;
   const model: ModelPort = { generate: async request => {
     requests.push(structuredClone(request));
-    if (ask && request.declarations?.some(d => d.name === 'search_knowledge') && !request.contents.some(c => c.parts.some(p => p.functionResponse))) {
+    if (ask && request.declarations?.some(d => d.name === 'search_knowledge') && (repeat || !request.contents.some(c => c.parts.some(p => p.functionResponse)))) {
       return { ...result(request, 'complete', ''), providerContent: { role: 'model', parts: [{ functionCall: { name: 'search_knowledge', args: { query: 'which emails arrived', limit: 1 }, id: randomUUID() } }] } };
     }
     return result(request, 'complete', 'Answer from evidence');
@@ -64,7 +65,7 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
     for await (const event of chat.subscribe(accepted.runId, f.context)) if (event.type === 'snapshot' && event.run.state === 'terminal') return event.run;
     throw Error('no terminal snapshot');
   };
-  return { ...f, chat, owner, registry, requests, endpoint, mcp, session, turn, executions: () => executions, noCalls: () => { ask = false; }, rejectResult: () => { reject = true; }, setDispatchHook: (hook: () => void) => { onDispatch = hook; },
+  return { ...f, chat, owner, registry, requests, endpoint, mcp, composition, session, turn, executions: () => executions, repeatCalls: () => { repeat = true; }, noCalls: () => { ask = false; }, rejectResult: () => { reject = true; }, setDispatchHook: (hook: () => void) => { onDispatch = hook; },
     approveY: async () => { exposed.push({ name: 'get_insight', inputSchema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'integer' } }, include_links: { type: 'boolean' } }, required: ['ids', 'include_links'], additionalProperties: false } }); await mcp.refresh(); },
     privateOnly: async () => { const p = f.store.transaction(tx => JSON.parse(String(tx.get('SELECT policy_json FROM tool_connections WHERE connection_id=?', [endpoint.id])!.policy_json)) as ConnectionPolicy); owner.applyConnection({ ...p, generation: p.generation + 1, sourcePolicy: { ...p.sourcePolicy, unknownClass: 'private', allowedClasses: ['private'] }, route: { ...p.route, allowedClasses: ['private'] } }); assert.equal((await mcp.port.discover(endpoint.id)).state, 'discovered'); owner.projectConnection(endpoint.id); },
     admission: (sessionId: string) => f.store.transaction(tx => { const row = tx.get('SELECT * FROM chat_capability_acceptances WHERE session_id=?', [sessionId]); return row ? JSON.parse(String(row.capabilities_json)) as { name: string }[] : []; }) };
@@ -137,4 +138,24 @@ test('private-permitted route admits the private-only envelope through the same 
   const f = await fixture(t); await f.privateOnly();
   const session = f.session(); await f.turn(session);
   assert.ok(f.admission(session).some(d => d.name === 'search_knowledge'));
+});
+
+
+test('provider/model route change cannot reuse an existing frozen admission', async t => {
+  const f = await fixture(t); const session = f.session(); await f.turn(session);
+  const before = f.admission(session);
+  const changed = new ChatService({ ...f.config, tools: f.composition, route: { ...f.config.route, model: 'different-model' } });
+  changed.recover(f.recoveryContext); t.after(() => changed.shutdown());
+  assert.throws(() => changed.accept({ sessionId: session, text: 'mail', idempotencyKey: randomUUID() }, f.context), (error: unknown) => error instanceof Error && 'code' in error && error.code === 'route_changed');
+  assert.deepEqual(f.admission(session), before);
+});
+
+test('repeated tool requests are bounded and the last accepted result has an evidence card', async t => {
+  const f = await fixture(t); f.repeatCalls(); const run = await f.turn(f.session());
+  assert.equal(f.requests.length, 4, 'finite composition request bound must actually be reached');
+  assert.equal(f.executions(), 4);
+  assert.equal(run.outcome, 'truncated');
+  assert.equal(run.finalEntryId, null);
+  assert.equal(run.toolEvidence?.length, 4, 'final bounded tool result is gated and retained without another model request');
+  assert.doesNotMatch(JSON.stringify(run), /REJECTED/);
 });

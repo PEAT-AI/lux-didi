@@ -6,6 +6,14 @@ import DidiOwner
 
 @MainActor final class NativeLiveConversation: ObservableObject {
     enum State: String { case idle, connecting, listening, speaking, muted, ended, failed, outcomeUnknown, rebuilding }
+    /// Continuity changes presentation, never the owner's mute choice or audio device.
+    static func continuityPresentation(_ event: LiveClientState, muted: Bool) -> State? {
+        switch event {
+        case .rebuilding: return .rebuilding
+        case .active: return muted ? .muted : .listening
+        default: return nil
+        }
+    }
     @Published private(set) var state: State = .idle
     @Published private(set) var failure: String?
     @Published private(set) var pendingCall: NativePendingLiveJob?
@@ -58,8 +66,9 @@ import DidiOwner
                 guard let self, self.generation == token, !Task.isCancelled else { return }
                 guard current == event else { continue }
                 switch event {
-                case .rebuilding: self.speaking = false; self.state = .rebuilding
-                case .active: self.state = self.muted ? .muted : (self.speaking ? .speaking : .listening)
+                case .rebuilding, .active:
+                    self.speaking = false
+                    self.state = Self.continuityPresentation(event, muted: self.muted)!
                 case .terminal(let outcome):
                     if outcome.code == "resume_failed" {
                         self.failure = "Naya's connection could not be resumed. Start Live again."

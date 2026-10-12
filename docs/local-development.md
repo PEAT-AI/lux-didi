@@ -30,6 +30,10 @@ npm --prefix server ci
 npm --prefix web ci
 ```
 
+Several checks install offline (`npm ci --offline`) from the npm cache. Warm it once with `bash scripts/warm-npm-cache.sh`, which fills the user cache (or the cache `npm_config_cache` points at) with every tarball locked in `server/package-lock.json` and `web/package-lock.json` and touches no `node_modules` in the repository.
+Offline installs run through `scripts/npm-ci-offline.sh <dir>`: it runs the site's exact install, keeps npm's own output, exits non-zero, and never falls back to the network.
+When that wrapper fails it prints one line naming the failing directory, npm's error code (for example `ENOTCACHED`), the missing `package@version` when npm names it, and the fix command `bash scripts/warm-npm-cache.sh`.
+
 ## Build
 
 The supported build is the wrapper, which cleans this worktree's generated output and builds both packages with their canonical configuration.

@@ -173,6 +173,8 @@ enum NativeLivePresentation {
     }
     static func ended(_ code: String?, limits: NativeLiveLimits?) -> String? {
         switch code {
+        case "resume_failed":
+            return "Naya's connection could not be resumed. Start Live again."
         case "session_timeout":
             return "Session limit reached" + (limits.map { " (\(NativeLiveLimits.duration($0.sessionMs)))" } ?? "") + ". Start again to continue."
         case "idle_timeout":

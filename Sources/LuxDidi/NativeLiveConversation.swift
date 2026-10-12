@@ -70,9 +70,7 @@ import DidiOwner
                     self.speaking = false
                     self.state = Self.continuityPresentation(event, muted: self.muted)!
                 case .terminal(let outcome):
-                    if outcome.code == "resume_failed" {
-                        self.failure = "Naya's connection could not be resumed. Start Live again."
-                    } else if let sentence = NativeLivePresentation.ended(outcome.code, limits: self.limits) {
+                    if let sentence = NativeLivePresentation.ended(outcome.code, limits: self.limits) {
                         self.failure = sentence
                     } else if outcome.state == .failed {
                         self.failure = outcome.code.map { "Live service: " + $0 + "." } ?? "Live service failed."

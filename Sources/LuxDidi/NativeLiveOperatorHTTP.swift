@@ -47,7 +47,7 @@ struct NativePendingLiveJob: Decodable, Equatable, Sendable {
         session = URLSession(configuration: config, delegate: NativeLiveNoRedirect(), delegateQueue: nil)
     }
     /// Closed, non-textual telemetry only; the owner's native failure remains authoritative.
-    func postPrecreateFailure(_ error: Error) async {
+    func postPrecreateFailure(_ error: Error, using diagnosticSession: URLSession? = nil) async {
         let code: String
         if error is URLError { code = "service_unreachable" }
         else if error is DecodingError { code = "unexpected_response" }
@@ -65,7 +65,10 @@ struct NativePendingLiveJob: Decodable, Equatable, Sendable {
         }
         do {
             let data = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
-            _ = try await fetch("api/v1/diagnostics/client", epoch: nil, method: "POST", body: data)
+            var request = try build(origin.appendingPathComponent("api/v1/diagnostics/client"), nil)
+            request.httpMethod = "POST"; request.httpBody = data
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            _ = try await (diagnosticSession ?? session).data(for: request)
         } catch {
             // Best effort, including 429: no retry and no replacement of the native log or sentence.
         }

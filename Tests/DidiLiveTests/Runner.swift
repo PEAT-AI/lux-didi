@@ -39,8 +39,11 @@ final class DiagnosticHTTPFixture: URLProtocol, @unchecked Sendable {
 }
 
 @MainActor func checkClientDiagnostics() async throws {
-    URLProtocol.registerClass(DiagnosticHTTPFixture.self)
-    defer { URLProtocol.unregisterClass(DiagnosticHTTPFixture.self) }
+    let config = URLSessionConfiguration.ephemeral
+    config.protocolClasses = [DiagnosticHTTPFixture.self]
+    config.httpCookieStorage = nil; config.httpShouldSetCookies = false
+    let session = URLSession(configuration: config)
+    defer { session.invalidateAndCancel() }
     let origin = URL(string: "http://diagnostic.fixture")!
     let http = NativeLiveOperatorHTTP(authority: (origin, { url, _ in
         var request = URLRequest(url: url)
@@ -60,7 +63,7 @@ final class DiagnosticHTTPFixture: URLProtocol, @unchecked Sendable {
         for (error, failureClass, code, detail) in cases {
             DiagnosticHTTPFixture.reset(status: status)
             let sentence = NativeLivePresentation.failure(error)
-            await http.postPrecreateFailure(error)
+            await http.postPrecreateFailure(error, using: session)
             let requests = DiagnosticHTTPFixture.captured()
             try require(requests.count == 1, "diagnostic is attempted exactly once, including rate limit and transport failure")
             let request = requests[0]

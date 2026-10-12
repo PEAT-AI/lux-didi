@@ -161,3 +161,12 @@ test('rejected live poll preserves transcript, shows last success, recovery clea
   const empty = await pollLiveView(stale, async () => { throw Object.assign(new Error('missing'), { status: 404 }); });
   assert.equal(empty.live, undefined); assert.equal(empty.stale, false);
 });
+
+test('rebuilding is a non-error voice status and restoration is not transcript text', () => {
+  const live = { state: 'rebuilding', cursor: 1, entries: [{ seq: 1, kind: 'continuity', event: 'rebuilding', reason: 'go_away' }] } as unknown as LiveCurrent;
+  assert.equal(liveStateLabel(live.state), 'Reconnecting to the voice service');
+  assert.notEqual(liveVoiceState(live.state), 'ERROR');
+  assert.match(liveMarkup(live), /Reconnecting to the voice service/);
+  assert.doesNotMatch(liveMarkup(live), /session has stopped/);
+  assert.deepEqual(liveTranscript(live), []);
+});

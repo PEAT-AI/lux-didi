@@ -95,7 +95,6 @@ async function seedProviderConfig(dataDir: string, effectiveDir: string, log: Ho
       try { await file.writeFile(content); await file.sync(); } finally { await file.close(); }
       await rename(temporary, destination);
       log.event({ event: 'config_seeded', file: name, from: 'provider-config' });
-      console.log(`config_seeded file=${name} from=provider-config`);
     } finally { await rm(temporary, { force: true }); }
   }
 }

@@ -9,6 +9,7 @@ import { openFixture, result } from './chat-process.js';
 import { ChatService, type RunSnapshot } from '../chat/index.js';
 import { chatAllowsToolClasses } from '../chat/context.js';
 import { toolsMigrations } from '../tools/index.js';
+import { canonicalToolDigest } from '../adapters/mcp/registry.js';
 import { composeMcpRuntime } from '../host/mcp.js';
 import type { LiveAuthority, ConnectionPolicy } from '../tools/types.js';
 import type { ModelPort, ModelRequest, DataClass } from '../adapters/model/types.js';
@@ -41,7 +42,7 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
   let reject = false;
   let errorFlag = true;
   sdk.setRequestHandler('tools/list', () => ({ tools: exposed }) as never);
-  sdk.setRequestHandler('tools/call', () => { executions++; onDispatch?.(); return { content: [{ type: 'text', text: reject ? REJECTED : ACCEPTED }], ...(reject && errorFlag ? { isError: true } : {}), diagnostic: REJECTED } as never; });
+  sdk.setRequestHandler('tools/call', () => { executions++; onDispatch?.(); return { content: [{ type: 'text', text: reject ? REJECTED : ACCEPTED }], ...(reject && errorFlag ? { isError: true } : {}), _meta: { diagnostic: REJECTED } } as never; });
   await sdk.connect(transport);
   t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
     const req = new Request(input, init); assert.equal(req.url, endpoint.url);
@@ -68,7 +69,7 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
     throw Error('no terminal snapshot');
   };
   return { ...f, chat, owner, registry, requests, endpoint, mcp, composition, session, turn, executions: () => executions, repeatCalls: () => { repeat = true; }, noCalls: () => { ask = false; }, rejectResult: () => { reject = true; }, rawRejectedResult: () => { reject = true; errorFlag = false; }, setDispatchHook: (hook: () => void) => { onDispatch = hook; },
-    approveY: async () => { exposed.push({ name: 'get_insight', inputSchema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'integer' } }, include_links: { type: 'boolean' } }, required: ['ids', 'include_links'], additionalProperties: false } }); await mcp.refresh(); },
+    approveY: async () => { exposed.push({ name: 'get_insight', inputSchema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'integer' } }, include_links: { type: 'boolean' } }, required: ['ids', 'include_links'], additionalProperties: false } }); const current = f.store.transaction(tx => tx.get('SELECT policy_json,policy_sha256 FROM tool_connections WHERE connection_id=?', [endpoint.id])!); const prior = JSON.parse(String(current.policy_json)) as ConnectionPolicy; owner.applyConnectionIntent({ expectedPolicySha256: String(current.policy_sha256), policy: { ...prior, generation: prior.generation + 1, toolNames: exposed.map(tool => tool.name), schemaDigest: canonicalToolDigest(exposed) } }); await mcp.refresh(); },
     privateOnly: async () => { const p = f.store.transaction(tx => JSON.parse(String(tx.get('SELECT policy_json FROM tool_connections WHERE connection_id=?', [endpoint.id])!.policy_json)) as ConnectionPolicy); owner.applyConnection({ ...p, generation: p.generation + 1, sourcePolicy: { ...p.sourcePolicy, unknownClass: 'private', allowedClasses: ['private'] }, route: { ...p.route, allowedClasses: ['private'] } }); assert.equal((await mcp.port.discover(endpoint.id)).state, 'discovered'); owner.projectConnection(endpoint.id); },
     admission: (sessionId: string) => f.store.transaction(tx => { const row = tx.get('SELECT * FROM chat_capability_acceptances WHERE session_id=?', [sessionId]); return row ? JSON.parse(String(row.capabilities_json)) as { name: string }[] : []; }) };
 }

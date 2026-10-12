@@ -81,9 +81,9 @@ async function configFixture(t: TestContext, url = 'https://synthetic.invalid/mc
   const dir = mkdtempSync(join(tmpdir(), 'didi-mcp-config-test-')); chmodSync(dir, 0o700);
   const dataDir = join(dir, 'data'); const store = new Store(dataDir, toolsMigrations); const ownerId = store.assistantId;
   t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
-  const p: ConnectionPolicy = { schemaVersion: 1, ownerId, connectionId: 'knowledge', generation: 1, enabled: false, connector: 'lux-knowledge',
+  const p: ConnectionPolicy = { schemaVersion: 1, bindingMode: 'connection', ownerId, connectionId: 'knowledge', generation: 1, enabled: false, connector: 'lux-knowledge',
     endpoint: { id: 'endpoint', url, account, resource: 'synthetic-corpus', credentialRef: 'mcp-credential' }, toolNames: ['search_knowledge', 'get_insight'], schemaDigest: canonicalToolDigest(tools),
-    sourcePolicy: { id: 'operator-reviewed', revision: 1, unknownClass: null, allowedClasses: ['ordinary'] }, route: { identity: 'synthetic-route', allowedClasses: ['ordinary'] },
+    sourcePolicy: { id: 'operator-reviewed', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] }, route: { identity: 'synthetic-route', allowedClasses: ['ordinary'] },
     bounds: { maxQueryChars: 80, maxSearchLimit: 3, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 } };
   const profile = { schemaVersion: 1, transport: 'streamable-http', dataDir, expectedPolicySha256: null, policy: p };
   const credential = { schemaVersion: 1, ownerId, connectionId: p.connectionId, endpointId: p.endpoint.id, url, account, resource: p.endpoint.resource, generation: 1, credentialRef: p.endpoint.credentialRef, token: `${account}-secret`, enabled: false };

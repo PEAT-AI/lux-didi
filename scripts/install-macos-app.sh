@@ -3,8 +3,7 @@
 # Applications target. The production build is separate from the install.
 #
 # Refuses: a target outside the user's home, a missing/invalid source app, an
-# existing staging path, or any use of --force. It never deletes or reseeds user
-# data and never touches an unrelated application. The prior app is preserved as
+# existing staging path, or any use of --force. It never deletes user data or rewrites owner-edited configuration and never touches an unrelated application. The prior app is preserved as
 # a uniquely named rollback and restored if post-swap validation fails.
 #
 # Usage: scripts/install-macos-app.sh <built-app> [--to DIR]
@@ -59,37 +58,63 @@ if ! codesign --verify --deep --strict "$target" || [ ! -x "$target/Contents/Mac
   exit 1
 fi
 
-# Seed the provider Live voice profile once, if absent. Owner data (model/voice/preferences), never a secret.
 data_dir="${HOME}/Library/Application Support/ai.peat.lux-didi"
-config_dir="${data_dir}/provider-config"
-if [ ! -e "${config_dir}/live.json" ]; then
-  [ -d "${config_dir}" ] || { mkdir -p "${config_dir}"; chmod 700 "${config_dir}"; }
-  tmp_file="${config_dir}/.live.json.tmp.$$"
-  cat > "$tmp_file" <<'JSON'
-{"schemaVersion":1,"enabled":true,"provider":"gemini","modelId":"models/gemini-3.1-flash-live-preview","voice":"Aoede","keyReference":"gemini-primary","dataClasses":["ordinary"],"preferences":{"dataClass":"ordinary","language":"en","register":"plain","humor":"dry","verbosity":"brief"}}
-JSON
-  chmod 600 "$tmp_file"
-  mv "$tmp_file" "${config_dir}/live.json"
-fi
-
-# Seed the provider MCP endpoint catalog once, if absent. Owner-only data, never a secret.
-data_dir="${HOME}/Library/Application Support/ai.peat.lux-didi"
-config_dir="${data_dir}/provider-config"
-if [ ! -e "${config_dir}/mcp.json" ]; then
-  [ -d "${config_dir}" ] || { mkdir -p "${config_dir}"; chmod 700 "${config_dir}"; }
-  tmp_file="${config_dir}/.mcp.json.tmp.$$"
-  # The Google helper is a local stdio executable; both families share one approved env.
-  google_command="/Users/rob/.lux/reports/lux-didi-voice-1011/tools/google-mcp/.venv/bin/google-mcp"
-  json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
-  stdio_env="{\"HOME\":\"$(json_escape "${HOME}")\",\"PATH\":\"$(json_escape "${PATH}")\",\"LOGNAME\":\"\",\"SHELL\":\"\",\"TERM\":\"\",\"USER\":\"\"}"
-  # The Mattermost child is a local stdio node server reading its own session; no secret here.
-  node_command="$(json_escape "$(command -v node 2>/dev/null || echo /usr/local/bin/node)")"
-  mattermost_command="$(json_escape "${HOME}/GitHub/mattermost-mcp/dist/index.cjs")"
-  cat > "$tmp_file" <<JSON
+# Upgrade only byte-identical program-owned seeds. Owner edits and symlinks are untouched.
+# The candidate is private and renamed atomically; an unchanged seed is never rewritten.
+seed_shipped_config() {
+  local file="$1" desired="$2" candidate old
+  shift 2
+  if [ -L "$file" ] || { [ -e "$file" ] && [ ! -f "$file" ]; }; then return; fi
+  if [ ! -d "$(dirname "$file")" ]; then mkdir -p "$(dirname "$file")"; chmod 700 "$(dirname "$file")"; fi
+  candidate="$(mktemp "${file}.tmp.XXXXXX")"
+  printf '%s\n' "$desired" > "$candidate"
+  chmod 600 "$candidate"
+  if [ ! -e "$file" ]; then mv "$candidate" "$file"; return; fi
+  if cmp -s "$file" "$candidate"; then rm "$candidate"; return; fi
+  for old in "$@"; do
+    if cmp -s "$file" <(printf '%s\n' "$old"); then mv "$candidate" "$file"; return; fi
+  done
+  rm "$candidate"
+}
+# Substitutions are the same ones used by every shipped endpoint seed.
+google_command="/Users/rob/.lux/reports/lux-didi-voice-1011/tools/google-mcp/.venv/bin/google-mcp"
+json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+stdio_env="{\"HOME\":\"$(json_escape "${HOME}")\",\"PATH\":\"$(json_escape "${PATH}")\",\"LOGNAME\":\"\",\"SHELL\":\"\",\"TERM\":\"\",\"USER\":\"\"}"
+node_command="$(json_escape "$(command -v node 2>/dev/null || echo /usr/local/bin/node)")"
+mattermost_command="$(json_escape "${HOME}/GitHub/mattermost-mcp/dist/index.cjs")"
+mcp_template="$(cat <<JSON
 {"schemaVersion":1,"grantMode":"owner-trusted-reads","endpoints":[{"id":"lux-knowledge","unknownClass":"private","transport":"streamable-http","url":"http://127.0.0.1:8765/mcp","connector":"lux-knowledge","account":"local","resource":"lux-knowledge","credentialRef":null,"enabled":true,"allowEgress":true},{"id":"gmail","unknownClass":"private","transport":"stdio","command":"${google_command}","args":["--family","gmail"],"env":${stdio_env},"connector":"google","account":"local","resource":"google-gmail","credentialRef":null,"enabled":true,"allowEgress":true},{"id":"calendar","unknownClass":"private","transport":"stdio","command":"${google_command}","args":["--family","calendar"],"env":${stdio_env},"connector":"google","account":"local","resource":"google-calendar","credentialRef":null,"enabled":true,"allowEgress":true},{"id":"mongoose","unknownClass":"private","transport":"streamable-http","url":"https://mongoose.dev.peat-cloud.com/mcp/","connector":"mongoose","account":"local","resource":"mongoose","credentialRef":"mongoose-mcp","enabled":true,"allowEgress":true},{"id":"mattermost","unknownClass":"private","transport":"stdio","command":"${node_command}","args":["${mattermost_command}"],"env":${stdio_env},"connector":"mattermost","account":"local","resource":"mattermost","credentialRef":null,"enabled":true,"allowEgress":true}]}
 JSON
-  chmod 600 "$tmp_file"
-  mv "$tmp_file" "${config_dir}/mcp.json"
-fi
+)"
+live_template="$(cat <<'JSON'
+{"schemaVersion":1,"enabled":true,"provider":"gemini","modelId":"models/gemini-3.1-flash-live-preview","voice":"Aoede","keyReference":"gemini-primary","dataClasses":["ordinary","private"],"preferences":{"dataClass":"ordinary","language":"en","register":"plain","humor":"dry","verbosity":"brief"}}
+JSON
+)"
+# Exact historical templates, not semantic JSON equality or an ownership marker.
+# This whitelist covers the shipped one-, three-, and five-connector catalogs.
+old_mcp_templates=(
+"$(cat <<JSON
+{"schemaVersion":1,"grantMode":"owner-trusted-reads","endpoints":[{"id":"lux-knowledge","transport":"streamable-http","url":"http://127.0.0.1:8765/mcp","connector":"lux-knowledge","account":"local","resource":"lux-knowledge","credentialRef":null,"enabled":true,"allowEgress":true},{"id":"gmail","transport":"stdio","command":"${google_command}","args":["--family","gmail"],"env":${stdio_env},"connector":"google","account":"local","resource":"google-gmail","credentialRef":null,"enabled":true,"allowEgress":true},{"id":"calendar","transport":"stdio","command":"${google_command}","args":["--family","calendar"],"env":${stdio_env},"connector":"google","account":"local","resource":"google-calendar","credentialRef":null,"enabled":true,"allowEgress":true},{"id":"mongoose","transport":"streamable-http","url":"https://mongoose.dev.peat-cloud.com/mcp/","connector":"mongoose","account":"local","resource":"mongoose","credentialRef":"mongoose-mcp","enabled":true,"allowEgress":true},{"id":"mattermost","transport":"stdio","command":"${node_command}","args":["${mattermost_command}"],"env":${stdio_env},"connector":"mattermost","account":"local","resource":"mattermost","credentialRef":null,"enabled":true,"allowEgress":true}]}
+JSON
+)"
+"$(cat <<JSON
+{"schemaVersion":1,"grantMode":"owner-trusted-reads","endpoints":[{"id":"lux-knowledge","transport":"streamable-http","url":"http://127.0.0.1:8765/mcp","connector":"lux-knowledge","account":"local","resource":"lux-knowledge","credentialRef":null,"enabled":true,"allowEgress":true},{"id":"gmail","transport":"stdio","command":"${google_command}","args":["--family","gmail"],"env":${stdio_env},"connector":"google","account":"local","resource":"google-gmail","credentialRef":null,"enabled":true,"allowEgress":true},{"id":"calendar","transport":"stdio","command":"${google_command}","args":["--family","calendar"],"env":${stdio_env},"connector":"google","account":"local","resource":"google-calendar","credentialRef":null,"enabled":true,"allowEgress":true}]}
+JSON
+)"
+"$(cat <<JSON
+{"schemaVersion":1,"grantMode":"owner-trusted-reads","endpoints":[{"id":"lux-knowledge","transport":"streamable-http","url":"http://127.0.0.1:8765/mcp","connector":"lux-knowledge","account":"local","resource":"lux-knowledge","credentialRef":null,"enabled":true,"allowEgress":true}]}
+JSON
+)"
+)
+old_live_templates=(
+"$(cat <<'JSON'
+{"schemaVersion":1,"enabled":true,"provider":"gemini","modelId":"models/gemini-3.1-flash-live-preview","voice":"Aoede","keyReference":"gemini-primary","dataClasses":["ordinary"],"preferences":{"dataClass":"ordinary","language":"en","register":"plain","humor":"dry","verbosity":"brief"}}
+JSON
+)"
+ )
+for config_dir in "${data_dir}/provider-config" "${data_dir}/provider-38"; do
+  seed_shipped_config "${config_dir}/mcp.json" "$mcp_template" "${old_mcp_templates[@]}"
+  seed_shipped_config "${config_dir}/live.json" "$live_template" "${old_live_templates[@]}"
+done
 
 printf 'INSTALL-MACOS-APP PASS target=%s rollback=%s\n' "$target" "${rollback:-none}"

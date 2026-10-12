@@ -1,6 +1,46 @@
 import Foundation
 import UserNotifications
 
+// This boundary lets Mac tests exercise permission and submission without OS alerts.
+protocol NativeNotificationCenter {
+    func capability() async -> NotificationCapability
+    func requestPermission() async throws -> Bool
+    func add(_ request: UNNotificationRequest) async throws
+    func cancel(identifier: String)
+}
+private struct SystemNativeNotificationCenter: NativeNotificationCenter {
+    func cancel(identifier: String) {
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [identifier])
+    }
+    func capability() async -> NotificationCapability {
+        switch await UNUserNotificationCenter.current().notificationSettings().authorizationStatus {
+        case .notDetermined: return .notDetermined
+        case .denied: return .denied
+        case .authorized: return .authorized
+        case .provisional: return .provisional
+        default: return .unknown
+        }
+    }
+    func requestPermission() async throws -> Bool {
+        try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge])
+    }
+    func add(_ request: UNNotificationRequest) async throws {
+        try await UNUserNotificationCenter.current().add(request)
+    }
+}
+
+// The owner calls this only for explicit pickup. Validation completes before any
+// conversation interruption or capture hook, including on errors and stale clicks.
+enum NativeLiveCallPickup {
+    static func perform(validate: () async throws -> Bool,
+                        stop: () async -> Void, start: () -> Void) async throws -> Bool {
+        guard try await validate() else { return false }
+        await stop()
+        start()
+        return true
+    }
+}
+
 // OS acceptance is not a read receipt. Live callbacks retry on the existing poll,
 // at most three submissions per job per app launch, never requesting consent implicitly.
 struct NativeLiveCallDelivery {
@@ -34,22 +74,18 @@ struct NativeLiveCallDelivery {
 }
 
 final class NativeNotifications: NSObject, UNUserNotificationCenterDelegate {
-    private let center = UNUserNotificationCenter.current()
+    private let center: any NativeNotificationCenter
     var onOpen: ((ReminderLink) -> Void)?
     var onLiveCall: ((String) -> Void)?
-    override init() { super.init(); center.delegate = self }
-    func capability() async -> NotificationCapability {
-        switch await center.notificationSettings().authorizationStatus {
-        case .notDetermined: return .notDetermined
-        case .denied: return .denied
-        case .authorized: return .authorized
-        case .provisional: return .provisional
-        default: return .unknown
-        }
+    init(center: (any NativeNotificationCenter)? = nil) {
+        self.center = center ?? SystemNativeNotificationCenter()
+        super.init()
+        if center == nil { UNUserNotificationCenter.current().delegate = self }
     }
+    func capability() async -> NotificationCapability { await center.capability() }
     // Only the explicit UI button invokes this method.
     func requestPermission() async -> AdapterResult {
-        do { return try await center.requestAuthorization(options: [.alert, .badge]) ? .acknowledged : .failed("Notification permission was denied") }
+        do { return try await center.requestPermission() ? .acknowledged : .failed("Notification permission was denied") }
         catch { return .failed(error.localizedDescription) }
     }
     func submit(_ envelope: ReminderEnvelope, at date: Date) async -> AdapterResult {
@@ -77,7 +113,7 @@ final class NativeNotifications: NSObject, UNUserNotificationCenterDelegate {
             return .acknowledged
         } catch { return .failed(error.localizedDescription) }
     }
-    func cancel(identifier: String) { center.removePendingNotificationRequests(withIdentifiers: [identifier]) }
+    func cancel(identifier: String) { center.cancel(identifier: identifier) }
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
         let info = response.notification.request.content.userInfo.reduce(into: [String: String]()) { result, pair in

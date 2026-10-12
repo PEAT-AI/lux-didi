@@ -164,16 +164,24 @@ import Security
         Task { [weak self] in
             guard let self else { return }
             defer { self.pickingUpLiveCall = false }
-            // Revalidate at the service boundary before disturbing an active conversation.
             do {
-                let jobs = try await NativeLiveOperatorHTTP(authority: client.authenticatedRequestBuilder()).pendingCalls().filter(\.isReady)
-                self.liveCallDelivery.reconcile(jobs.map(\.id))
-                self.pendingLiveCalls = jobs.filter { self.liveCallDelivery.canPickUp($0.id) }
-                self.liveCallsError = nil
-                self.live?.offerPendingCall(self.pendingLiveCalls.first)
-                guard self.liveCallDelivery.canPickUp(selected) else {
+                let pickedUp = try await NativeLiveCallPickup.perform(validate: {
+                    let jobs = try await NativeLiveOperatorHTTP(authority: client.authenticatedRequestBuilder()).pendingCalls().filter(\.isReady)
+                    self.liveCallDelivery.reconcile(jobs.map(\.id))
+                    self.pendingLiveCalls = jobs.filter { self.liveCallDelivery.canPickUp($0.id) }
+                    self.liveCallsError = nil
+                    self.live?.offerPendingCall(self.pendingLiveCalls.first)
+                    return self.liveCallDelivery.canPickUp(selected)
+                }, stop: {
+                    self.liveCallDelivery.acknowledge(selected)
+                    self.pendingLiveCalls.removeAll { $0.id == selected }
+                    await self.live?.stop()
+                    self.live = nil
+                }, start: {
+                    self.startLive(pickupJobID: selected)
+                })
+                if !pickedUp {
                     self.error = "This callback is no longer pending. Your current conversation was not changed."
-                    return
                 }
             } catch {
                 self.liveCallDelivery.reconcile(nil)
@@ -181,13 +189,7 @@ import Security
                 self.live?.offerPendingCall(nil)
                 self.liveCallsError = "Callbacks offline. Your current conversation was not changed."
                 self.error = self.liveCallsError
-                return
             }
-            self.liveCallDelivery.acknowledge(selected)
-            self.pendingLiveCalls.removeAll { $0.id == selected }
-            await self.live?.stop()
-            self.live = nil
-            self.startLive(pickupJobID: selected)
         }
     }
     func startLive(pickupJobID: String? = nil) {

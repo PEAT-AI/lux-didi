@@ -414,7 +414,7 @@ test('provider 1007 after ready remains remote_closed, not setup rejection', asy
 });
 
 test('speech activity siblings and informational keys preserve the next audio frame', async t => {
-  const f = await fixture(t);
+  const f = await providerFixture(t);
   const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory })).open(request(), control());
   t.after(() => session.close());
   await f.frame(1); f.send({ setupComplete: {} }); await session.ready;

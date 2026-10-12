@@ -74,6 +74,7 @@ test('HTTP deletion atomically scrubs retained chat, Live and request copies, in
     f.store.transaction(tx => tx.run("UPDATE runtime_requests SET response=? WHERE request_key='cached'", [savedCache]));
     const deleted = await fetch(`${service.origin}/api/v1/entries/${entry.id}`, { method: 'DELETE', headers: { ...headers, 'Idempotency-Key': 'delete' }, body: '{}' });
     assert.equal(deleted.status, 200);
+    assert.equal((await deleted.json()).data.liveSessionRetainsUntilRebuild, true);
     for (const [table, column] of [['chat_run_context', 'resolved_records'], ['live_sessions', 'accepted_prompt_snapshot'], ['runtime_requests', 'response']] as const) {
       const rows = f.store.transaction(tx => tx.all(`SELECT ${column} FROM ${table}`, []));
       assert.equal(JSON.stringify(rows).includes('synthetic retained deletion'), false, `${table} retains deleted text`);
@@ -94,6 +95,7 @@ test('HTTP deletion atomically scrubs retained chat, Live and request copies, in
     assert.equal((await replay.text()).includes('synthetic retained deletion'), false);
     const again = await fetch(`${service.origin}/api/v1/entries/${entry.id}`, { method: 'DELETE', headers: { ...headers, 'Idempotency-Key': 'delete-again' }, body: '{}' });
     assert.equal(again.status, 200);
+    assert.equal((await again.json()).data.liveSessionRetainsUntilRebuild, false);
     const journal = f.store.transaction(tx => tx.all("SELECT text FROM live_journal WHERE live_session_id=? AND kind='continuity'", [accepted.liveSessionId]));
     assert.equal(journal.filter(row => String(row.text).includes('memory_deleted')).length, 1);
     const counts = f.store.transaction(tx => {

@@ -60,6 +60,14 @@ test('host serves the accepted build with security policy, never API or private 
     assert.equal(paired.status, 200);
     const cookie = paired.headers.get('set-cookie')!.split(';')[0]!;
     const { data: { csrfToken } } = await paired.json();
+    const connections = await fetch(service.origin + '/api/v1/live/connections', { headers: { Cookie: cookie, 'Sec-Fetch-Site': 'same-origin' } });
+    assert.equal(connections.status, 200);
+    assert.equal(connections.headers.get('cache-control'), 'no-store');
+    assert.equal(connections.headers.get('access-control-allow-origin'), null);
+    assert.deepEqual((await connections.json()).data, []);
+    assert.equal((await fetch(service.origin + '/api/v1/tools/status', { headers: { Cookie: cookie } })).status, 403);
+    assert.equal((await fetch(service.origin + '/api/v1/live/connections', { headers: { Cookie: cookie, 'Sec-Fetch-Site': 'cross-site' } })).status, 403);
+    assert.equal((await fetch(service.origin + '/api/v1/live/connections', { headers: { Authorization: `Bearer ${store.adminCredential}` } })).status, 403);
     const browserStatus = await fetch(service.origin + '/api/v1/status', { headers: { Cookie: cookie } });
     assert.equal(browserStatus.status, 200);
     assert.deepEqual((await browserStatus.json()).data.capabilities, { memory: false, commitments: false, notifications: false, model: false });

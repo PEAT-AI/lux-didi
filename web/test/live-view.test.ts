@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { liveStateLabel, liveVoiceState, liveToolName, liveLabel, liveDelay, mergeLive, liveTranscript, liveResult, liveMarkup } from '../src/live-view.ts';
+import './connector-status.test.ts';
+import { pollLiveView } from '../src/live-view.ts';
 import type { LiveCurrent } from '../src/protocol.ts';
 
 const speaking: LiveCurrent = {
@@ -125,4 +127,37 @@ test('background job results remain in the page without starting audio, includin
   assert.match(markup, /Call Naya back/);
   assert.doesNotMatch(markup, /<script>|<audio|autoplay/);
   assert.match(liveMarkup({ ...current, jobs: [] } as LiveCurrent), /No live transcription yet/);
+});
+
+
+test('new session replaces prior entries while same session pages accumulate', () => {
+  const next = { ...speaking, since: '2026-10-12T16:00:00Z', cursor: 4, entries: [{ seq: 4, kind: 'inputTranscription' as const, text: 'new conversation' }] };
+  assert.deepEqual(mergeLive(speaking, next).entries, next.entries);
+  assert.equal(mergeLive(speaking, { ...next, since: speaking.since }).entries.length, 4);
+});
+
+test('every tool result is inspectable and errors never show markdown', () => {
+  const live: LiveCurrent = { ...speaking, entries: [...speaking.entries,
+    { seq: 4, kind: 'toolResult', tool: { name: 'second', status: 'completed', markdown: 'Second answer', sources: [{ title: 'second source' }] } },
+    { seq: 5, kind: 'toolResult', tool: { name: 'failed', status: 'error', markdown: 'DO NOT DISPLAY' } },
+  ] };
+  const html = liveMarkup(live);
+  assert.equal((html.match(/<details/g) ?? []).length, 3);
+  assert.match(html, /Answer/); assert.match(html, /second source/); assert.match(html, /failed.*error/s);
+  assert.doesNotMatch(html, /DO NOT DISPLAY/);
+});
+
+test('rejected live poll preserves transcript, shows last success, recovery clears and 404 empties', async () => {
+  const success = await pollLiveView({}, async () => speaking, () => new Date('2026-10-12T14:52:00Z'));
+  const stale = await pollLiveView(success, async () => { throw new Error('private error'); });
+  assert.equal(stale.live, success.live);
+  assert.equal(stale.stale, true);
+  assert.match(liveMarkup(stale.live, stale), /Live view stale since/);
+  assert.match(liveMarkup(stale.live, stale), /hello/);
+  assert.doesNotMatch(liveMarkup(stale.live, stale), /private error/);
+  const recovered = await pollLiveView(stale, async () => speaking);
+  assert.equal(recovered.stale, false);
+  assert.doesNotMatch(liveMarkup(recovered.live, recovered), /Live view stale/);
+  const empty = await pollLiveView(stale, async () => { throw Object.assign(new Error('missing'), { status: 404 }); });
+  assert.equal(empty.live, undefined); assert.equal(empty.stale, false);
 });

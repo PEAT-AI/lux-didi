@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fork } from 'node:child_process';
 import { once } from 'node:events';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { openMemoryFixture, result, ROUTE_CLASSES } from './memory-context-process.js';
 import { Store } from '../runtime/store.js';
 import { Outbox } from '../runtime/outbox.js';
@@ -385,8 +385,8 @@ test('two client principals share one owner: a record under one principal is sel
   } finally { f.close(); }
 });
 
-// 12. Additive migration on a prior clean v1 schema preserves old hashes and consent.
-test('additive chat v3 migration upgrades a populated v1+v2 DB and preserves old records, fingerprint and consent', async () => {
+// 12. Upgrading a populated legacy schema preserves old hashes and consent.
+test('additive chat migrations upgrade a populated v1+v2 DB and preserve old records, fingerprint and consent', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'mem-migrate-'));
   const model = new CountingModel();
   try {
@@ -396,17 +396,30 @@ test('additive chat v3 migration upgrades a populated v1+v2 DB and preserves old
     const record = f1.append(source.id, 'Old record', sourceRef());
     assert.equal(record.id.length > 0, true);
     const sending = f1.enroll();
-    const run = f1.chat.accept({ sessionId: sending.id, text: 'Old turn', idempotencyKey: 'old' }, f1.context);
-    const before = f1.store.transaction(tx => tx.get('SELECT fingerprint,idempotency_key,session_id,state FROM chat_runs WHERE run_id=?', [run.runId]));
+    // Current ChatService.accept requires the current schema. Seed the legacy
+    // representation instead, including its original empty-selection hash.
+    const userEntry = f1.append(sending.id, 'Old turn');
+    const run = { runId: randomUUID() };
+    const fingerprint = createHash('sha256').update(JSON.stringify({ sessionId: sending.id, text: 'Old turn', retryOf: null })).digest('hex');
+    f1.store.transaction(tx => tx.run(`INSERT INTO chat_runs
+      (run_id,session_id,user_entry_id,owner_assistant_id,accepting_client_id,
+       idempotency_key,fingerprint,authority_epoch,provider,model,prompt_version,state,accepted_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,'accepted',?)`,
+    [run.runId, sending.id, userEntry.id, f1.context.assistantId, f1.context.clientId,
+      'old', fingerprint, f1.context.authorityEpoch, 'fake', 'fake', 'v1', f1.context.now]));
+    const before = f1.store.transaction(tx => tx.get('SELECT * FROM chat_runs WHERE run_id=?', [run.runId]));
+    const entriesBefore = f1.store.transaction(tx => tx.all('SELECT * FROM entries ORDER BY id'));
     const consentBefore = f1.store.transaction(tx => tx.get('SELECT * FROM chat_consents WHERE session_id=?', [sending.id]));
     f1.store.close();
     const f2 = openMemoryFixture(dir, model, {}, chatMigrations);
     try {
-      assert.deepEqual(chatVersions(f2.store), [1, 2, 3]);
+      assert.ok([1, 2, 3].every(version => chatVersions(f2.store).includes(version)));
       assert.equal(f2.store.transaction(tx => tx.get("SELECT name FROM sqlite_master WHERE type='table' AND name='chat_run_context'"))!.name, 'chat_run_context');
       assert.equal(Number(f2.store.transaction(tx => tx.get('SELECT COUNT(*) c FROM chat_run_context', []))!.c), 0);
-      const after = f2.store.transaction(tx => tx.get('SELECT fingerprint,idempotency_key,session_id FROM chat_runs WHERE run_id=?', [run.runId]));
-      assert.deepEqual({ ...after }, { fingerprint: before!.fingerprint, idempotency_key: before!.idempotency_key, session_id: before!.session_id });
+      const after = f2.store.transaction(tx => tx.get('SELECT * FROM chat_runs WHERE run_id=?', [run.runId]));
+      assert.ok(after);
+      for (const [column, value] of Object.entries(before!)) assert.deepEqual(after[column], value, column);
+      assert.deepEqual(f2.store.transaction(tx => tx.all('SELECT * FROM entries ORDER BY id')), entriesBefore);
       assert.deepEqual(f2.store.transaction(tx => tx.get('SELECT * FROM chat_consents WHERE session_id=?', [sending.id])), consentBefore);
       const replay = f2.chat.accept({ sessionId: sending.id, text: 'Old turn', idempotencyKey: 'old' }, f2.context);
       assert.equal(replay.runId, run.runId);

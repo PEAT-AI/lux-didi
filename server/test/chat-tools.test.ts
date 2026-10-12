@@ -1,17 +1,14 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { openFixture, result } from './chat-process.js';
 import { ChatService, type RunSnapshot } from '../chat/index.js';
-import { createToolsOwner } from '../tools/index.js';
-import type { ConnectionPolicy, LiveAuthority } from '../tools/types.js';
-import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
-import { createMcpAdapter } from '../adapters/mcp/adapter.js';
-import { MemoryResultStore } from '../adapters/mcp/store.js';
+import { composeMcpRuntime } from '../host/mcp.js';
+import type { LiveAuthority } from '../tools/types.js';
 import type { ModelPort, ModelRequest } from '../adapters/model/types.js';
 
 const schema = { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, include_sensitive: { type: 'boolean' } }, required: ['query', 'limit', 'include_sensitive'], additionalProperties: false };
@@ -32,9 +29,7 @@ async function fixture(t: TestContext) {
   } };
   const f = openFixture(dir, model, { route: { provider: 'gemini', model: 'fixture', available: true, allows: () => true, endpoint: 'https://generativelanguage.googleapis.com', apiVersion: 'v1beta', keyReference: 'fixture', allowedClasses: ['ordinary', 'private'] } });
   t.after(() => { f.chat.shutdown(); f.store.close(); rmSync(dir, { recursive: true, force: true }); });
-  const registry = new McpRegistry();
   const endpoint = { id: 'fixture-endpoint', url: 'https://fixture.invalid/mcp', account: 'fixture-account', resource: 'fixture-resource' };
-  registry.register(endpoint); registry.enable(endpoint.id); registry.allowEgress(endpoint.id);
   const sdk = new Server({ name: 'chat-fixture', version: '1' }, { capabilities: { tools: { listChanged: false } } });
   const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
   let executions = 0;
@@ -46,14 +41,14 @@ async function fixture(t: TestContext) {
     if (req.method === 'GET') return new Response(null, { status: 405 });
     return transport.handleRequest(req);
   });
-  const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 10000, maxSliceBytes: 512 }), resolveCredential: async () => '', budgets: { maxResponseBytes: 12000, projectionChars: 10, timeoutMs: 1000 } });
-  t.after(async () => { await port.close(); await transport.close(); await sdk.close(); });
   let authority: ((runId: string, signal: AbortSignal) => Promise<LiveAuthority | null>) | undefined;
-  const owner = createToolsOwner({ store: f.store, ownerId: f.store.assistantId, registry, port, lookupAuthority: async (id, signal) => authority?.(id, signal) ?? null });
-  const routeIdentity = JSON.stringify({ provider: 'gemini', model: 'fixture', endpoint: f.config.route.endpoint, apiVersion: 'v1beta', keyReference: 'fixture', allowedClasses: ['ordinary', 'private'], policyVersion: 1 });
-  const policy: ConnectionPolicy = { schemaVersion: 1, ownerId: f.store.assistantId, connectionId: 'fixture', generation: 1, enabled: true, connector: 'lux-knowledge', endpoint: { ...endpoint, credentialRef: null }, toolNames: ['search_knowledge'], schemaDigest: canonicalToolDigest(tools), sourcePolicy: { id: 'fixture-policy', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary', 'private'] }, route: { identity: routeIdentity, allowedClasses: ['ordinary', 'private'] }, bounds: { maxQueryChars: 100, maxSearchLimit: 3, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 } };
-  owner.applyConnection(policy); assert.equal((await port.discover(endpoint.id)).state, 'discovered'); owner.projectConnection('fixture');
-  const composition = { owner, connectionIds: () => ['fixture'], registerAuthoritySource: (source: typeof authority) => { authority = source; } };
+  writeFileSync(join(dir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [{ ...endpoint, connector: 'lux-knowledge', transport: 'streamable-http', credentialRef: null, enabled: true, allowEgress: true }] }));
+  // Use actual host policy construction, including its current denial, never a matching fixture route.
+  const mcp = await composeMcpRuntime({ store: f.store, ownerId: f.store.assistantId, configDir: dir, lookupAuthority: async (id, signal) => authority?.(id, signal) ?? null });
+  const { owner, registry } = mcp;
+  assert.deepEqual(mcp.connectionIds(), [endpoint.id]);
+  t.after(async () => { await mcp.close(); await transport.close(); await sdk.close(); });
+  const composition = { owner, connectionIds: () => mcp.connectionIds(), registerAuthoritySource: (source: typeof authority) => { authority = source; } };
   const chat = new ChatService(Object.assign({}, f.config, { tools: composition }));
   chat.recover(f.recoveryContext);
   // This mirrors the host's trusted authority-source registration seam.
@@ -65,7 +60,7 @@ async function fixture(t: TestContext) {
     for await (const event of chat.subscribe(accepted.runId, f.context)) if (event.type === 'snapshot' && event.run.state === 'terminal') return event.run;
     throw Error('no terminal snapshot');
   };
-  return { ...f, chat, owner, registry, requests, policy, endpoint, session, turn, executions: () => executions, noCalls: () => { ask = false; } };
+  return { ...f, chat, owner, registry, requests, endpoint, mcp, session, turn, executions: () => executions, noCalls: () => { ask = false; } };
 }
 
 test('real chat declares approved reads, journals execution, and discloses only gated evidence', async t => {

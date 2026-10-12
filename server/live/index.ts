@@ -578,7 +578,7 @@ export class LiveSessionOwner {
     try {
       handle.session = this.#voice.open({ ...structuredClone(handle.request), resumptionHandle }, {
         signal: handle.abort.signal, deadlineMs: handle.deadlineMs, idleResetMs: this.#profile.limits.idleMs,
-        limits: { ...this.#profile.limits, sessionMs: Math.ceil(remaining), idleMs: Math.ceil(idle), handshakeMs: Math.max(1, Math.ceil(Math.min(window, remaining, idle))) },
+        limits: { ...this.#profile.limits, sessionMs: Math.ceil(remaining), idleMs: Math.ceil(idle), handshakeMs: Math.max(1, Math.ceil(Math.min(this.#profile.limits.handshakeMs, window, remaining, idle))) },
       });
       void handle.session.ready.catch(() => {}); void handle.session.done.catch(() => {});
       handle.goAwayUntil = undefined;

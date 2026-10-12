@@ -91,7 +91,10 @@ async function harness(t: TestContext, overrides: {
   const requests: LiveVoiceRequest[] = [];
   const open = voice.open.bind(voice);
   t.mock.method(voice, 'open', (input: LiveVoiceRequest, ctl: Parameters<typeof voice.open>[1]) => {
-    if (input.resumptionHandle) assert.equal(store.transaction(tx => tx.get("SELECT resumption_handle FROM live_sessions WHERE lifecycle='active'"))?.resumption_handle === input.resumptionHandle, true, 'handle is durable before open');
+    if (input.resumptionHandle) {
+      assert.equal(store.transaction(tx => tx.get("SELECT resumption_handle FROM live_sessions WHERE lifecycle='active'"))?.resumption_handle === input.resumptionHandle, true, 'handle is durable before open');
+      assert.ok(ctl.limits!.handshakeMs! <= profile.limits.handshakeMs, 'profile handshake override reaches resumed setup');
+    }
     requests.push(structuredClone(input)); return open(input, ctl);
   });
   let owner!: LiveSessionOwner;
@@ -1314,6 +1317,12 @@ test('resumption keeps journal identity and frozen authority with the real adapt
   assert.deepEqual(h.requests[1]!.tools, h.requests[0]!.tools);
   assert.deepEqual(h.requests[1]!.system, h.requests[0]!.system);
   assert.equal(h.owner.current().state, 'rebuilding');
+  const beforeLate = h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.length;
+  h.f.clients[0]!.emit('message', Buffer.from(JSON.stringify({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-stale-secret' }, toolCall: { functionCalls: [{ id: 'stale-call', name: 'not_admitted', args: {} }] }, serverContent: { inputTranscription: { text: 'stale row' } } })));
+  h.f.clients[0]!.emit('close', 1008);
+  await tick();
+  assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.length, beforeLate, 'old callbacks cannot append or settle');
+  assert.equal(h.store.transaction(tx => tx.get('SELECT resumption_handle FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!.resumption_handle === handle, true, 'old handle cannot replace the current candidate');
   assert.equal(JSON.stringify(h.owner.current()).includes(handle), false);
   h.f.send({ setupComplete: {} });
   // The public committed marker, not a timer, is the resumption acknowledgement.
@@ -1453,4 +1462,15 @@ test('queued PCM is dropped at the cut and capture during rebuilding is never re
   assert.equal(resumedAudio.value.kind, 'audio');
   assert.equal(h.f.frames.length, 3, 'no old PCM replay follows setupComplete');
   attachment.close(); await attachment.done;
+});
+
+
+test('an exhausted original budget never opens a replacement connection', async t => {
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, limits: { sessionMs: 100, idleMs: 1000 } });
+  const { attachment } = await attached(h, 'resume-exhausted');
+  h.advance(100); // Recoverable loss wins before the fake timer callback runs.
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-exhausted-resumption-secret' }, goAway: { timeLeft: '10s' } });
+  assert.deepEqual((await attachment.done).terminal, { state: 'failed', code: 'resume_failed' });
+  assert.equal(h.f.connections, 1);
 });

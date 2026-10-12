@@ -28,6 +28,7 @@ export async function fixture(t: TestContext, frameMode: FrameMode = 'binary') {
   let attempts = 0;
   let destination = '';
   const frames: unknown[] = [];
+  const clients: WebSocket[] = [];
   const waiters = new Map<number, () => void>();
   let noteClosed: () => void = () => {};
   const closed = new Promise<void>(resolve => { noteClosed = resolve; });
@@ -59,10 +60,11 @@ export async function fixture(t: TestContext, frameMode: FrameMode = 'binary') {
     await new Promise<void>(resolve => server.close(() => resolve()));
   });
   return {
-    server, frames, connected, closed, get attempts() { return attempts; }, get connections() { return connections; }, get destination() { return destination; },
+    server, frames, clients, connected, closed, get attempts() { return attempts; }, get connections() { return connections; }, get destination() { return destination; },
     socketFactory: ((url, config) => {
       attempts++; destination = url;
-      return new WebSocket(`ws://127.0.0.1:${address.port}`, config);
+      const client = new WebSocket(`ws://127.0.0.1:${address.port}`, config);
+      clients.push(client); return client;
     }) satisfies NonNullable<GeminiLiveVoiceOptions['socketFactory']>,
     async frame(n: number): Promise<void> {
       if (frames.length >= n) return;

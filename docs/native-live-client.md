@@ -47,3 +47,22 @@ One streaming AVAudioConverter converts the hardware format to 16 kHz mono Int16
 The player queues at most 24 buffers; exceeding that bound discards old queued playback. Interrupted, terminal, receive error, close and revoke flush the sink; flush is player.stop(), not a wait for scheduled buffers. Configuration change/device loss stops capture and output and signals a visible interruption upward. There is no automatic reconnect. Dictation and Live enforce a one-microphone guard in both directions. Hide, sleep, logout, service loss and quit use the same teardown path.
 
 Lifecycle labels are idle, connecting, listening, speaking, muted, ended, failed and outcomeUnknown. Listening comes from coordinator active events; speaking comes from scheduled model audio, not a claim that the model heard the user. Silent synthetic tests cover real converter continuity for irregular 44.1 kHz stereo chunks, frame assembly, drop-oldest overflow, mute/unmute at the capture buffer, interleaved input while playback is suspended, and flush ordering. Both-node voice-processing effectiveness, permissions UI, physical device loss and provider barge-in require Rob's human device trial. Do not run an automated audible test.
+
+## Where the logs are
+
+Choose **Reveal logs** in the Didi menu bar menu to open the active service's
+`<dataDir>/logs` directory in Finder. The normal installed app uses
+`~/Library/Application Support/ai.peat.lux-didi/logs` (the active supervisor's state directory
+is authoritative if a proof run uses an isolated directory).
+
+`host.log` contains timestamped JSON diagnostic events and bounded `host_error`
+records. `supervisor.log` contains safe child stdout/stderr diagnostics plus spawn,
+exit and explicit-restart decisions, and the chosen configuration directory.
+Each file rotates at 5 MiB, keeping `.1` and `.2`, with file permissions `0600`.
+Console output is unchanged. Ready frames, credentials, exception messages/stacks,
+conversation bodies and memory text are not persisted. Unknown stderr errors are
+recorded as a class token, not copied verbatim.
+
+Native Live failures show the service's HTTP status and typed code or the socket
+close code and bounded `attach_rejected:<code>` reason when available. Unknown
+failures retain the generic guidance; no automatic reconnect is introduced.

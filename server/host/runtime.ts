@@ -1,3 +1,4 @@
+import { HostLog, captureHostDiagnostics } from './log.js';
 import { loadOwnerProfile } from '../config/owner-profile.js';
 import { ConfigError, readPrivate, validateRoot } from '../config/files.js';
 import { homedir, platform } from 'node:os';
@@ -74,7 +75,7 @@ async function publish(path: string, descriptor: RuntimeDescriptor): Promise<voi
   } finally { await rm(temporary, { force: true }); }
 }
 // Only non-secret catalogs migrate from the installer default, never credentials.
-async function seedProviderConfig(dataDir: string, effectiveDir: string): Promise<void> {
+async function seedProviderConfig(dataDir: string, effectiveDir: string, log: HostLog): Promise<void> {
   const defaultDir = join(dataDir, 'provider-config');
   if (effectiveDir === defaultDir) return;
   for (const name of ['live.json', 'mcp.json']) {
@@ -92,6 +93,7 @@ async function seedProviderConfig(dataDir: string, effectiveDir: string): Promis
       const file = await open(temporary, 'wx', 0o600);
       try { await file.writeFile(content); await file.sync(); } finally { await file.close(); }
       await rename(temporary, destination);
+      log.event({ event: 'config_seeded', file: name, from: 'provider-config' });
       console.log(`config_seeded file=${name} from=provider-config`);
     } finally { await rm(temporary, { force: true }); }
   }
@@ -107,12 +109,15 @@ export async function startHost(config: HostConfig) {
   const descriptorRelative = relative(webRoot, descriptorPath);
   if (!descriptorPath.endsWith('.json') || (!isAbsolute(descriptorRelative) && descriptorRelative !== '..' && !descriptorRelative.startsWith(`..${sep}`))) throw new Error('Descriptor must be a JSON file outside the web build');
   const domain = createDomainPort({ outbox: Outbox }); // No authorized device/target: reminders remain unbound.
-  const store = new Store(dataDir, hostMigrations);
+  const log = new HostLog(dataDir);
+  const stopDiagnostics = captureHostDiagnostics(log);
+  let store: Store;
+  try { store = new Store(dataDir, hostMigrations); } catch (error) { log.error(error); stopDiagnostics(); throw error; }
   try {
     const owner = loadOwnerProfile({ ...(config.ownerProfilePath !== undefined ? { path: config.ownerProfilePath } : {}), ownerId: store.assistantId });
     if (owner.status === 'error') throw new ConfigError('invalid_profile');
     const providerConfigDir = resolve(config.configDir ?? join(dataDir, 'provider-config'));
-    await seedProviderConfig(dataDir, providerConfigDir);
+    await seedProviderConfig(dataDir, providerConfigDir, log);
     // R3: authority is pluggable; sources are consulted in registration order and never fabricated.
     const authoritySources: AuthoritySource[] = [];
     const lookupAuthority: AuthoritySource = async (runId, signal) => {
@@ -137,8 +142,8 @@ export async function startHost(config: HostConfig) {
       return { store, chat, service, descriptor, descriptorPath, tools: liveTools, async close() {
         if (closed) return; closed = true;
         chat.shutdown();
-        try { await service.close(); await live.shutdown(); await mcp.close(); } finally { store.close(); }
+        try { await service.close(); await live.shutdown(); await mcp.close(); } finally { store.close(); stopDiagnostics(); }
       } };
     } catch (error) { await service.close(); throw error; }
-  } catch (error) { store.close(); throw error; }
+  } catch (error) { log.error(error); stopDiagnostics(); store.close(); throw error; }
 }

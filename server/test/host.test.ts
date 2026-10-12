@@ -350,7 +350,7 @@ for (const scenario of ['both', 'existing-live', 'default', 'absent'] as const) 
     try {
       await mkdir(defaults, { mode: 0o700 });
       if (effective !== defaults) await mkdir(effective, { mode: 0o700 });
-      if (scenario !== 'absent') {
+      if (scenario === 'both' || scenario === 'existing-live') {
         await writeFile(join(defaults, 'live.json'), live, { mode: 0o600 });
         await writeFile(join(defaults, 'mcp.json'), mcp, { mode: 0o600 });
         for (const name of ['gemini-primary.json', 'profile.json', 'admin-credential']) await writeFile(join(defaults, name), 'not a seed', { mode: 0o600 });
@@ -358,7 +358,7 @@ for (const scenario of ['both', 'existing-live', 'default', 'absent'] as const) 
       const existingLive = live + '\n';
       if (scenario === 'existing-live') await writeFile(join(effective, 'live.json'), existingLive, { mode: 0o600 });
       host = await startHost({ dataDir: dir, webRoot, configDir: effective, port: 0 });
-      if (scenario !== 'absent') {
+      if (scenario === 'both' || scenario === 'existing-live') {
         const diagnostics = await readFile(join(dir, 'logs', 'host.log'), 'utf8');
         assert.match(diagnostics, /"event":"config_seeded"/);
         assert.ok(!diagnostics.includes('SECRET'));

@@ -124,6 +124,17 @@ import Darwin
             let valid = try setup("normal")
             let owned = supervisor(valid)
             let first = try await owned.start()
+            let rotationState = valid.1.appendingPathComponent("log-rotation", isDirectory: true)
+            let rotating = try SupervisorLog(state: rotationState, limit: 200)
+            for _ in 0..<12 { rotating.event("spawn", pid: 123) }
+            _ = rotating.childLine(Data("{\"event\":\"live_attach_rejected\",\"code\":\"internal\",\"bearer\":\"SECRET\",\"message\":\"SECRET\"}".utf8), pid: 123, stderr: true)
+            for suffix in ["", ".1", ".2"] {
+                let file = rotationState.appendingPathComponent("logs/supervisor.log" + suffix)
+                let data = try Data(contentsOf: file)
+                try expect(data.count <= 200 && !String(decoding: data, as: UTF8.self).contains("SECRET"), "supervisor rotation is bounded and secret-free")
+                let mode = try fm.attributesOfItem(atPath: file.path)[.posixPermissions] as? NSNumber
+                try expect(mode?.intValue == 0o600, "rotated supervisor files are private")
+            }
             let diagnostics = valid.1.appendingPathComponent("logs/supervisor.log")
             let diagnosticText = try String(contentsOf: diagnostics, encoding: .utf8)
             try expect(diagnosticText.contains("spawn") && diagnosticText.contains("config_dir"), "supervisor lifecycle persists")

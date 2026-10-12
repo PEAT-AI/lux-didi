@@ -58,8 +58,11 @@ struct NativePendingLiveJob: Decodable, Equatable, Sendable {
         let (data, response) = try await session.data(for: request)
         guard let response = response as? HTTPURLResponse, response.url == request.url,
               data.count < 2 * 1024 * 1024 else { throw LiveClientError.transport }
-        if response.statusCode == 409 { throw LiveClientError.conflict }
-        guard (200..<300).contains(response.statusCode) else { throw LiveClientError.transport }
+        guard (200..<300).contains(response.statusCode) else {
+            let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            let error = object?["error"] as? [String: Any]
+            throw LiveClientError.http(status: response.statusCode, code: LiveClientError.boundedCode(error?["code"] as? String))
+        }
         return data
     }
     private func projection(epoch: String?) async throws -> LiveOperatorStatus {

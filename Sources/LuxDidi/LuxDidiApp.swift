@@ -279,6 +279,7 @@ struct RootView: View {
         menu.addItem(withTitle: "Show Didi", action: #selector(show), keyEquivalent: "")
         let pickup = NSMenuItem(title: "Pick up Naya’s call", action: #selector(pickupLiveCall), keyEquivalent: "")
         pickup.isHidden = true; pickupMenuItem = pickup; menu.addItem(pickup)
+        menu.addItem(withTitle: "Reveal logs", action: #selector(revealLogs), keyEquivalent: "")
         menu.addItem(withTitle: "Quit Didi", action: #selector(quit), keyEquivalent: "q")
         for item in menu.items { item.target = self }; statusItem.menu = menu
         hotkey.onToggle = { [weak self] in self?.toggle() }
@@ -315,6 +316,16 @@ struct RootView: View {
             await model.reconnect()
         }
     }
+    @objc private func revealLogs() {
+        guard let directory = model.supervisor?.logsURL ?? (try? InstalledRuntime.applicationState())?.appendingPathComponent("logs", isDirectory: true) else { return }
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            NSWorkspace.shared.open(directory)
+        } catch {
+            let alert = NSAlert(); alert.messageText = "Logs are unavailable."; alert.runModal()
+        }
+    }
+
     @objc func show() {
         OwnedWindowReadiness.trace("app:show-entry", ["windowExists": window != nil])
         OwnedWindowReadiness.trace("app:makeKeyAndOrderFront-before")

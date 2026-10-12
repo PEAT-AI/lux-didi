@@ -268,6 +268,13 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
                 return (companion, NativeLiveOperatorHTTP(authority: companion.authenticatedRequestBuilder()))
             }
             let nativeIntent = try await nativeHTTP.beginIntent()
+            do {
+                _ = try await nativeHTTP.snapshot(sessionID: "00000000-0000-4000-8000-000000000000", for: nativeIntent)
+                throw ProbeError.assertion("missing native snapshot must fail")
+            } catch let error as LiveClientError {
+                try require(error == .http(status: 404, code: "NOT_FOUND"), "actual native HTTP preserves status and typed code")
+            }
+
             let pickupID = "10000000-0000-4000-8000-000000000001"
             let pickedHTTP = await MainActor.run {
                 NativeLiveOperatorHTTP(authority: companion.authenticatedRequestBuilder(), pickupJobID: pickupID)
@@ -408,6 +415,15 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             let external = try await LiveSocketTransport(requests: TestRequests(fixture: fixture, alteration: "")).connect(
                 LiveSocketBinding(origin: frozen.origin, sessionID: activeSnapshot.liveSessionId, authorityEpoch: frozen.authorityEpoch, profileIdentity: frozen.profileIdentity))
             guard case .marker(let externalReady) = try await external.receive(), externalReady.kind == .ready else { throw ProbeError.assertion("external consumed snapshot") }
+            let duplicate = try await LiveSocketTransport(requests: TestRequests(fixture: fixture, alteration: "")).connect(
+                LiveSocketBinding(origin: frozen.origin, sessionID: activeSnapshot.liveSessionId, authorityEpoch: frozen.authorityEpoch, profileIdentity: frozen.profileIdentity))
+            do {
+                _ = try await duplicate.receive()
+                throw ProbeError.assertion("duplicate attach must close")
+            } catch let error as LiveClientError {
+                try require(error == .socketClosed(code: 1008, reason: "attach_rejected:already_attached"), "actual native socket preserves close reason")
+            }
+            await duplicate.cancel()
             try await activeReplay.retryCreate()
             try require(await activeReplay.state == .outcomeUnknown(.unavailable), "active consumed replay remains honest unknown")
             try require(await activeSockets.attempts == 0, "active consumed replay zero automatic attach")

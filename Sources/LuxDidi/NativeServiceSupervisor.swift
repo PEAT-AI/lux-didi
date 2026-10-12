@@ -3,11 +3,76 @@ import Combine
 import Darwin
 import Security
 
+// The ready frame is never a diagnostic: it contains private protocol material.
+final class SupervisorLog: @unchecked Sendable {
+    private let path: URL
+    private let lock = NSLock()
+    private let limit: Int
+    init(state: URL, limit: Int = 5 * 1024 * 1024) throws {
+        let directory = state.appendingPathComponent("logs", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let attributes = try FileManager.default.attributesOfItem(atPath: directory.path)
+        guard attributes[.type] as? FileAttributeType == .typeDirectory else { throw NativeServiceError.invalidRuntime }
+        self.path = directory.appendingPathComponent("supervisor.log"); self.limit = limit
+    }
+    func event(_ name: String, pid: Int32 = getpid(), fields: [String: Any] = [:]) {
+        lock.lock(); defer { lock.unlock() }
+        var record = fields
+        record["event"] = name; record["pid"] = Int(pid)
+        record["timestamp"] = ISO8601DateFormatter().string(from: Date())
+        guard var data = try? JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]) else { return }
+        data.append(10)
+        guard data.count <= limit else { return }
+        var fd = Darwin.open(path.path, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { return }
+        defer { if fd >= 0 { Darwin.close(fd) } }
+        guard fchmod(fd, 0o600) == 0 else { return }
+        var info = stat()
+        guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else { return }
+        if Int(info.st_size) + data.count > limit {
+            Darwin.close(fd); fd = -1
+            let fm = FileManager.default
+            let second = URL(fileURLWithPath: path.path + ".2")
+            let first = URL(fileURLWithPath: path.path + ".1")
+            do {
+                if fm.fileExists(atPath: second.path) { try fm.removeItem(at: second) }
+                if fm.fileExists(atPath: first.path) { try fm.moveItem(at: first, to: second) }
+                try fm.moveItem(at: path, to: first)
+            } catch { return }
+            fd = Darwin.open(path.path, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
+            guard fd >= 0, fchmod(fd, 0o600) == 0 else { return }
+        }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: false)
+        try? handle.write(contentsOf: data)
+    }
+    // Return true only for a known diagnostic. Ready/unknown stdout still belongs to the protocol parser.
+    func childLine(_ data: Data, pid: Int32, stderr: Bool) -> Bool {
+        if let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+           let name = object["event"] as? String {
+            if name == "live_attach_rejected", let code = object["code"] as? String,
+               !code.isEmpty, code.utf8.count <= 107, code.range(of: "^[A-Za-z0-9_]+$", options: .regularExpression) != nil {
+                var fields: [String: Any] = ["code": code, "stream": stderr ? "stderr" : "stdout"]
+                if let session = object["liveSessionId"] as? String, UUID(uuidString: session) != nil { fields["liveSessionId"] = session }
+                event(name, pid: pid, fields: fields); return true
+            }
+        }
+        if let text = String(data: data, encoding: .utf8),
+           ["live.json", "mcp.json"].contains(where: { text == "config_seeded file=\($0) from=provider-config" }) {
+            event("config_seeded", pid: pid, fields: ["stream": stderr ? "stderr" : "stdout"]); return true
+        }
+        if stderr { event("host_error", pid: pid, fields: ["class": "Error", "stream": "stderr"]); return true }
+        return false
+    }
+}
+
 // One process handle and private pipes. All signals target this live owned handle only.
 @MainActor private final class OwnedServiceChild {
     let process = Process()
     private let input = Pipe()
     private let output = Pipe()
+    private let errors = Pipe()
+    private var errorReader: Task<Void, Never>?
+    var log: SupervisorLog?
     private var reader: Task<Void, Never>?
     private var frame: Data?
     private var failure: Error?
@@ -22,14 +87,35 @@ import Security
         process.executableURL = executable; process.arguments = arguments
         // No inherited Node/loader/search-path/auth environment. Executable is explicit.
         process.environment = ["HOME": NSHomeDirectory(), "TMPDIR": NSTemporaryDirectory(), "LANG": "en_US.UTF-8"]
-        process.standardInput = input; process.standardOutput = output; process.standardError = FileHandle.nullDevice
-        for handle in [input.fileHandleForWriting, input.fileHandleForReading, output.fileHandleForReading, output.fileHandleForWriting] {
+        process.standardInput = input; process.standardOutput = output; process.standardError = errors
+        for handle in [input.fileHandleForWriting, input.fileHandleForReading, output.fileHandleForReading, output.fileHandleForWriting, errors.fileHandleForReading, errors.fileHandleForWriting] {
             guard fcntl(handle.fileDescriptor, F_SETFD, FD_CLOEXEC) != -1 else { throw NativeServiceError.invalidRuntime }
         }
         guard fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) != -1 else { throw NativeServiceError.invalidRuntime }
         process.terminationHandler = { [weak self] _ in Task { @MainActor in self?.didExit() } }
         try process.run()
-        try input.fileHandleForReading.close(); try output.fileHandleForWriting.close()
+        try input.fileHandleForReading.close(); try output.fileHandleForWriting.close(); try errors.fileHandleForWriting.close()
+        log?.event("spawn", pid: pid)
+        let childPID = pid
+        let diagnostics = log
+        let errorStream = errors.fileHandleForReading
+        errorReader = Task.detached {
+            defer { try? errorStream.close() }
+            var buffer = Data()
+            while !Task.isCancelled {
+                var bytes = [UInt8](repeating: 0, count: 1024)
+                let count = bytes.withUnsafeMutableBytes { Darwin.read(errorStream.fileDescriptor, $0.baseAddress, $0.count) }
+                if count < 0 && errno == EINTR { continue }
+                if count <= 0 { break }
+                buffer.append(contentsOf: bytes.prefix(count))
+                while let newline = buffer.firstIndex(of: 10) {
+                    _ = diagnostics?.childLine(Data(buffer[..<newline]), pid: childPID, stderr: true)
+                    buffer.removeSubrange(...newline)
+                }
+                if buffer.count > 4096 { diagnostics?.event("host_error", pid: childPID, fields: ["class": "Error", "stream": "stderr"]); buffer.removeAll() }
+            }
+            if !buffer.isEmpty { _ = diagnostics?.childLine(buffer, pid: childPID, stderr: true) }
+        }
         let stream = output.fileHandleForReading
         let descriptor = stream.fileDescriptor
         reader = Task.detached { [weak self] in
@@ -43,14 +129,15 @@ import Security
                 let count = bytes.withUnsafeMutableBytes { Darwin.read(descriptor, $0.baseAddress, $0.count) }
                 if count < 0 && errno == EINTR { continue }
                 if count <= 0 { break }
-                if delivered { await self?.invalidOutput(); return }
                 buffer.append(contentsOf: bytes.prefix(count))
-                guard buffer.count <= 1024 else { await self?.invalidOutput(); return }
-                if let newline = buffer.firstIndex(of: 10) {
-                    guard newline == buffer.index(before: buffer.endIndex) else { await self?.invalidOutput(); return }
+                while let newline = buffer.firstIndex(of: 10) {
+                    let line = Data(buffer[..<newline]); buffer.removeSubrange(...newline)
+                    if diagnostics?.childLine(line, pid: childPID, stderr: false) == true { continue }
+                    guard !delivered, line.count <= 1024 else { await self?.invalidOutput(); return }
                     delivered = true
-                    await self?.received(Data(buffer.dropLast()))
+                    await self?.received(line)
                 }
+                guard buffer.count <= 4096 else { await self?.invalidOutput(); return }
             }
             await self?.endedOutput()
         }
@@ -74,6 +161,7 @@ import Security
         } else if isRunning && !stopping { invalidOutput() }
     }
     private func didExit() {
+        log?.event("exit", pid: pid, fields: ["exit_code": Int(process.terminationStatus), "restart": stopping ? "stopped" : "explicit_start_required"])
         for waiter in exitWaiters { waiter.resume() }; exitWaiters.removeAll()
         if !stopping { onUnexpectedExit?() }
         // Drain stdout before deciding frame failure; a short Node probe can exit
@@ -121,6 +209,7 @@ struct OwnedServiceConnection {
 @MainActor final class NativeServiceSupervisor: ObservableObject {
     let runtime: InstalledRuntime
     private let operatorSettings: OperatorSettings?
+    var logsURL: URL { stateURL.appendingPathComponent("logs", isDirectory: true) }
     private let stateURL: URL
     private let credentialService: String
     private let credentialAccount: String
@@ -211,6 +300,8 @@ struct OwnedServiceConnection {
         do {
             guard operation == ticket, state == .starting else { throw NativeServiceError.exited }
             try NativeCredentialImport.prepareState(stateURL)
+            let diagnostics = try SupervisorLog(state: stateURL)
+            diagnostics.event("config_dir", fields: ["directory": operatorSettings?.configDir?.path ?? stateURL.appendingPathComponent("provider-config").path])
             stage = "node-probe"
             try await probeNode()
             guard operation == ticket, state == .starting, !Task.isCancelled else { throw NativeServiceError.exited }
@@ -222,6 +313,7 @@ struct OwnedServiceConnection {
             guard SecRandomCopyBytes(kSecRandomDefault, random.count, &random) == errSecSuccess else { throw NativeServiceError.invalidReady }
             let nonce = Data(random).base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
             let owned = OwnedServiceChild(); child = owned; launched = owned
+            owned.log = diagnostics
             owned.onUnexpectedExit = { [weak self, weak owned] in if let owned { self?.unavailable(owned) } }
             owned.onInvalidOutput = { [weak self, weak owned] in if let owned { self?.unavailable(owned) } }
             stage = "spawn"

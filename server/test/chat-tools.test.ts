@@ -65,12 +65,13 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
   };
   return { ...f, chat, owner, registry, requests, endpoint, mcp, session, turn, executions: () => executions, noCalls: () => { ask = false; }, rejectResult: () => { reject = true; }, setDispatchHook: (hook: () => void) => { onDispatch = hook; },
     approveY: async () => { exposed.push({ name: 'get_insight', inputSchema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'integer' } }, include_links: { type: 'boolean' } }, required: ['ids', 'include_links'], additionalProperties: false } }); await mcp.refresh(); },
-    privateOnly: () => { const p = f.store.transaction(tx => JSON.parse(String(tx.get('SELECT policy_json FROM tool_connections WHERE connection_id=?', [endpoint.id])!.policy_json)) as ConnectionPolicy); owner.applyConnection({ ...p, generation: p.generation + 1, sourcePolicy: { ...p.sourcePolicy, unknownClass: 'private', allowedClasses: ['private'] }, route: { ...p.route, allowedClasses: ['private'] } }); owner.projectConnection(endpoint.id); },
+    privateOnly: async () => { const p = f.store.transaction(tx => JSON.parse(String(tx.get('SELECT policy_json FROM tool_connections WHERE connection_id=?', [endpoint.id])!.policy_json)) as ConnectionPolicy); owner.applyConnection({ ...p, generation: p.generation + 1, sourcePolicy: { ...p.sourcePolicy, unknownClass: 'private', allowedClasses: ['private'] }, route: { ...p.route, allowedClasses: ['private'] } }); assert.equal((await mcp.port.discover(endpoint.id)).state, 'discovered'); owner.projectConnection(endpoint.id); },
     admission: (sessionId: string) => f.store.transaction(tx => { const row = tx.get('SELECT * FROM chat_capability_acceptances WHERE session_id=?', [sessionId]); return row ? JSON.parse(String(row.capabilities_json)) as { name: string }[] : []; }) };
 }
 
 test('real chat declares approved reads, journals execution, and discloses only gated evidence', async t => {
   const f = await fixture(t); const run = await f.turn(f.session());
+  t.diagnostic(`real-owner outcome=${run.outcome}; model requests=${f.requests.length}; connector executions=${f.executions()}`);
   assert.ok(f.requests[0]?.declarations?.some(d => d.name === 'search_knowledge'), 'approved read declaration must reach text chat');
   assert.equal(f.executions(), 1);
   const rows = f.store.transaction(tx => tx.all('SELECT state,intent_json,result_json FROM tool_calls WHERE run_id=?', [run.runId]));
@@ -124,7 +125,7 @@ test('provider consent revoked while evidence is pending refuses the follow-up r
 
 
 test('route class filter excludes private-only reads from an ordinary route', async t => {
-  const f = await fixture(t, ['ordinary']); f.privateOnly();
+  const f = await fixture(t, ['ordinary']); await f.privateOnly();
   const session = f.session(); await f.turn(session);
   assert.deepEqual(f.admission(session), []);
   assert.ok(f.requests.every(request => !request.declarations?.some(d => d.name === 'search_knowledge')));
@@ -132,7 +133,7 @@ test('route class filter excludes private-only reads from an ordinary route', as
 });
 
 test('private-permitted route admits the private-only envelope through the same class filter', async t => {
-  const f = await fixture(t); f.privateOnly();
+  const f = await fixture(t); await f.privateOnly();
   const session = f.session(); await f.turn(session);
   assert.ok(f.admission(session).some(d => d.name === 'search_knowledge'));
 });

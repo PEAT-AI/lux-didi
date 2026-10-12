@@ -202,6 +202,9 @@ test('Live remember provenance refusals do not write memory', async t => {
     ['remember this as private: mint is Friday', 'mint is Friday', 'private_memory_unsupported'],
     ['remember privately mint is Friday', 'mint is Friday', 'private_memory_unsupported'],
     ['remember this as sensitive: mint is Friday', 'mint is Friday', 'private_memory_unsupported'],
+    ['remember: this is private', 'this is private', 'private_memory_unsupported'],
+    ['remember that this is private', 'this is private', 'private_memory_unsupported'],
+    ['remember that this is sensitive', 'this is sensitive', 'private_memory_unsupported'],
   ] as const) {
     await t.test(code, async st => {
       const h = await harness(st, { tools: true });

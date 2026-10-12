@@ -11,8 +11,9 @@ git archive HEAD server web | tar -x -C "$work/source"
 # Offline/null npm config prevents cloud calls and reading real npm credentials.
 export npm_config_userconfig=/dev/null npm_config_globalconfig="$work/absent-global-config"
 cache="${LUX_COMPANION_NPM_CACHE:?explicit warmed npm cache required}"
-npm --prefix "$work/source/server" ci --offline --ignore-scripts --no-audit --no-fund --cache "$cache"
-npm --prefix "$work/source/web" ci --offline --ignore-scripts --no-audit --no-fund --cache "$cache"
+helper="$(cd "$(dirname "$0")/../.." && pwd)/scripts/npm-ci-offline.sh"
+bash "$helper" "$work/source/server" ci --offline --ignore-scripts --no-audit --no-fund --cache "$cache"
+bash "$helper" "$work/source/web" ci --offline --ignore-scripts --no-audit --no-fund --cache "$cache"
 "$node" "$work/source/server/node_modules/typescript/bin/tsc" -p "$work/source/server/tsconfig.json"
 npm --prefix "$work/source/web" run build
 resources="$app/Contents/Resources"

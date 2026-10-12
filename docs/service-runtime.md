@@ -127,3 +127,5 @@ zero-selected-tests failure gate. Real temp SQLite, separate processes, HTTP
 port0, synthetic credentials, clock seams for expiry, offline package install
 and production CLI prove this component. There is no claim of UI/browser
 rendering, real-domain integration, Linux deployment or whole issue completion.
+
+Host stdout is reserved for the supervisor JSON protocol. Configuration seeding diagnostics (`config_seeded`) are recorded only in `logs/host.log` under the host data directory.

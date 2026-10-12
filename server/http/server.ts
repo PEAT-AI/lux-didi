@@ -180,13 +180,13 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
       }
       if (route.kind === 'connected') {
         const context = { assistantId: store.assistantId, clientId: actor.clientId, authorityEpoch: store.authorityEpoch, now: new Date(now()).toISOString() };
-        if (route.action === 'status') { send(res, 200, success(modelStatus)); return; }
+        if (route.action === 'status') { send(res, 200, success({ ...modelStatus, consent: chat?.standingConsent(context) ?? null })); return; }
         if (!chat || (['enroll', 'accept'].includes(route.action) && modelStatus.status !== 'configured')) throw new ServiceError('MODEL_NOT_CONFIGURED', 'Model route is not locally configured', 503);
         if (route.mutation && req.headers['x-didi-authority-epoch'] !== store.authorityEpoch) throw new ServiceError('STALE_AUTHORITY', 'Authority epoch does not match', 409);
         const key = req.headers['idempotency-key'];
         if (['enroll', 'accept'].includes(route.action) && (typeof key !== 'string' || !/^[A-Za-z0-9_.:-]{1,128}$/.test(key))) throw new ServiceError('BAD_REQUEST', 'Idempotency-Key required');
         const input = route.input;
-        if (route.action === 'enroll') { send(res, 200, success(chat.enroll({ title: String(input.title), timeZone: String(input.timeZone), idempotencyKey: String(key) }, context))); return; }
+        if (route.action === 'enroll') { send(res, 200, success(chat.enroll({ title: String(input.title), timeZone: String(input.timeZone), idempotencyKey: String(key), consent: input.consent === true, remember: input.remember === true }, context))); return; }
         if (route.action === 'conversation') { send(res, 200, success(chat.conversation(route.id!, context))); return; }
         if (route.action === 'revoke') { send(res, 200, success(chat.revoke(route.id!, context))); return; }
         if (route.action === 'accept') { send(res, 200, success(chat.accept({ sessionId: String(input.sessionId), text: String(input.text), idempotencyKey: String(key), ...(input.retryOf === undefined ? {} : { retryOf: String(input.retryOf) }), ...(input.selectedMemoryEntryIds === undefined ? {} : { selectedMemoryEntryIds: input.selectedMemoryEntryIds as string[] }) }, context))); return; }

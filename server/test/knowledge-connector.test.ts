@@ -568,7 +568,7 @@ for (const tool of ['search', 'get'] as const) {
 
 function mcpEndpointFile(configDir: string, url: string, grantMode: 'explicit' | 'owner-trusted-reads'): void {
   mkdirSync(configDir, { recursive: true, mode: 0o700 });
-  const entry = { id: 'source', transport: 'streamable-http', url, connector: 'lux-knowledge', account: 'account-a', resource: 'resource-a', credentialRef: null, enabled: true, allowEgress: true };
+  const entry = { id: 'source', transport: 'streamable-http', url, connector: 'lux-knowledge', account: 'account-a', resource: 'resource-a', credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'ordinary' };
   writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode, endpoints: [entry] }), { mode: 0o600 });
 }
 

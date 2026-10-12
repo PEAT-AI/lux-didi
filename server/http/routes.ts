@@ -89,7 +89,7 @@ export function resolveRoute(method: string, url: URL, body?: Record<string, unk
     const mutation = !['status', 'conversation', 'run'].includes(action);
     matched([mutation ? 'POST' : 'GET']); query(url, []);
     if (body) {
-      if (action === 'enroll') { fields(body, ['title', 'timeZone'], ['title', 'timeZone']); text(body.title, 500); zone(body.timeZone); }
+      if (action === 'enroll') { fields(body, ['title', 'timeZone', 'consent', 'remember'], ['title', 'timeZone']); text(body.title, 500); zone(body.timeZone); for (const key of ['consent', 'remember']) if (body[key] !== undefined && typeof body[key] !== 'boolean') throw new ServiceError('BAD_REQUEST', 'Consent controls must be boolean'); }
       else if (action === 'accept') { fields(body, ['sessionId', 'text', 'retryOf', 'selectedMemoryEntryIds'], ['sessionId', 'text']); uuid(body.sessionId); text(body.text); if (body.retryOf !== undefined) uuid(body.retryOf); if (body.selectedMemoryEntryIds !== undefined) memoryIds(body.selectedMemoryEntryIds); }
       else fields(body, []);
     }

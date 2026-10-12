@@ -14,9 +14,9 @@ printf '# isolated synthetic test global config\n' > "$work/npm-global"
 export npm_config_userconfig="$work/npm-user" npm_config_globalconfig="$work/npm-global"
 printf 'NATIVE-LIVE source=%s UTC=%s\n' "$(git rev-parse HEAD)" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 # Committed locks, offline only; canonical web/dist is intentionally separate from all fixture state.
-npm --prefix server ci --offline --ignore-scripts --no-audit --no-fund
+bash scripts/npm-ci-offline.sh server
 npm --prefix server run build
-npm --prefix web ci --offline --ignore-scripts --no-audit --no-fund
+bash scripts/npm-ci-offline.sh web
 npm --prefix web run build
 # R2: existing authority owner uses its production compiler policy, once.
 # enable-testing exports existing constructors only to test fixtures, not new production code.

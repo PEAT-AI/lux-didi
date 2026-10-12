@@ -88,15 +88,39 @@ export class ChatService implements ChatPort {
       endpoint: route.endpoint, apiVersion: route.apiVersion, keyReference: route.keyReference,
       allowedClasses: [...route.allowedClasses].sort(), policyVersion: 1 });
   }
+  #validConsent(row: SQLRow) {
+    const route = this.#config.route;
+    const permitted = JSON.stringify([...route.allowedClasses].sort());
+    return row.revoked_at === null && row.route_identity === this.#identity()
+      && row.provider === route.provider && row.model === route.model && Number(row.revision) === 1
+      && JSON.stringify((JSON.parse(String(row.permitted_classes)) as string[]).sort()) === permitted;
+  }
+  /** The same tuple resolver governs both enrollment and dispatch. */
+  #resolveConsent(tx: Transaction, sessionId: string | null, context: DomainContext): SQLRow | undefined {
+    const conversation = sessionId === null ? undefined : tx.get(
+      "SELECT * FROM chat_consents WHERE scope='conversation' AND session_id=? AND owner_assistant_id=?", [sessionId, context.assistantId]);
+    if (conversation && this.#validConsent(conversation)) return conversation;
+    const standing = tx.all("SELECT * FROM chat_consents WHERE scope='standing' AND owner_assistant_id=? ORDER BY granted_at DESC,rowid DESC", [context.assistantId]);
+    return standing.find(row => this.#validConsent(row)) ?? (sessionId === null ? undefined : conversation ?? standing[0]);
+  }
   #consent(tx: Transaction, sessionId: string, context: DomainContext) {
-    const row = tx.get('SELECT * FROM chat_consents WHERE session_id=? AND owner_assistant_id=?', [sessionId, context.assistantId]);
+    const known = tx.get('SELECT session_id FROM chat_consents WHERE session_id=? AND owner_assistant_id=?', [sessionId, context.assistantId])
+      ?? tx.get('SELECT session_id FROM chat_consent_enrollments WHERE session_id=? AND owner_assistant_id=?', [sessionId, context.assistantId]);
+    const row = known && this.#resolveConsent(tx, sessionId, context);
     if (!row) throw new ChatError('consent_required');
     return row;
   }
-  #conversation(row: SQLRow): ConversationStatus {
-    return { sessionId: String(row.session_id), provider: String(row.provider), model: String(row.model),
+  #conversation(row: SQLRow, sessionId = String(row.session_id)): ConversationStatus {
+    return { sessionId, scope: row.scope as 'conversation' | 'standing', provider: String(row.provider), model: String(row.model),
       latestRunId: null, revision: Number(row.revision), permittedClasses: JSON.parse(String(row.permitted_classes)),
-      state: row.revoked_at !== null ? 'revoked' : row.route_identity !== this.#identity() ? 'route_changed' : 'active' };
+      state: row.revoked_at !== null ? 'revoked' : !this.#validConsent(row) ? 'route_changed' : 'active' };
+  }
+  standingConsent(context: DomainContext): ConversationStatus | null {
+    this.#authorize(context);
+    return this.#config.store.transaction(tx => {
+      const row = this.#resolveConsent(tx, null, context);
+      return row ? this.#conversation(row) : null;
+    });
   }
   #liveConsent(tx: Transaction, sessionId: string, context: DomainContext) {
     const row = this.#consent(tx, sessionId, context);
@@ -111,22 +135,29 @@ export class ChatService implements ChatPort {
     if (!this.#ready) throw new ChatError('recovery_required');
     if (!input || typeof input.title !== 'string' || !input.title.trim() || typeof input.timeZone !== 'string'
       || typeof input.idempotencyKey !== 'string' || !/^[A-Za-z0-9_.:-]{1,128}$/.test(input.idempotencyKey)) throw new ChatError('invalid_input');
-    const fingerprint = hash(JSON.stringify({ title: input.title, timeZone: input.timeZone }));
+    const fingerprint = hash(JSON.stringify({ title: input.title, timeZone: input.timeZone, consent: input.consent, remember: input.remember }));
     return this.#config.store.transaction(tx => {
-      const prior = tx.get('SELECT * FROM chat_consents WHERE owner_assistant_id=? AND idempotency_key=?', [context.assistantId, input.idempotencyKey]);
-      if (prior) { if (prior.fingerprint !== fingerprint) throw new ChatError('idempotency_conflict'); return this.#conversation(prior); }
+      const prior = tx.get('SELECT * FROM chat_consents WHERE owner_assistant_id=? AND idempotency_key=?', [context.assistantId, input.idempotencyKey]) ?? tx.get('SELECT * FROM chat_consent_enrollments WHERE owner_assistant_id=? AND idempotency_key=?', [context.assistantId, input.idempotencyKey]);
+      if (prior) { if (prior.fingerprint !== fingerprint) throw new ChatError('idempotency_conflict'); return this.#conversation(this.#consent(tx, String(prior.session_id), context), String(prior.session_id)); }
+      const standing = this.#resolveConsent(tx, null, context);
+      if (input.consent === false && !standing) throw new ChatError('consent_required');
+      if (input.remember && input.consent !== true) throw new ChatError('consent_required');
       const route = this.#config.route;
       if (!route.available || !route.allows(['private'])) throw new ChatError('unavailable');
       const session = this.#config.domain.execute(tx, 'createSession', { title: input.title, timeZone: input.timeZone }, this.#context(context), { writer: 'capture', dataClass: 'private' });
       const permitted = (['ordinary', 'private'] as const).filter(c => route.allowedClasses.includes(c));
-      tx.run(`INSERT INTO chat_consents VALUES (?,?,?,?,?,1,?,?,NULL,?,?)`,
-        [session.id, context.assistantId, route.provider, route.model, this.#identity(), JSON.stringify(permitted), this.#context(context).now, input.idempotencyKey, fingerprint]);
-      return this.#conversation(this.#consent(tx, session.id, context));
+      if (standing) {
+        tx.run('INSERT INTO chat_consent_enrollments VALUES (?,?,?,?)', [session.id, context.assistantId, input.idempotencyKey, fingerprint]);
+      } else {
+        tx.run(`INSERT INTO chat_consents VALUES (?,?,?,?,?,1,?,?,NULL,?,?,?)`,
+          [session.id, context.assistantId, route.provider, route.model, this.#identity(), JSON.stringify(permitted), this.#context(context).now, input.idempotencyKey, fingerprint, input.remember ? 'standing' : 'conversation']);
+      }
+      return this.#conversation(this.#consent(tx, session.id, context), session.id);
     });
   }
   conversation(sessionId: string, context: DomainContext): ConversationStatus {
     this.#authorize(context);
-    return this.#config.store.transaction(tx => ({ ...this.#conversation(this.#consent(tx, sessionId, context)), latestRunId: nullable(tx.get('SELECT run_id FROM chat_runs WHERE session_id=? AND owner_assistant_id=? ORDER BY accepted_at DESC,rowid DESC LIMIT 1', [sessionId, context.assistantId])?.run_id) }));
+    return this.#config.store.transaction(tx => ({ ...this.#conversation(this.#consent(tx, sessionId, context), sessionId), latestRunId: nullable(tx.get('SELECT run_id FROM chat_runs WHERE session_id=? AND owner_assistant_id=? ORDER BY accepted_at DESC,rowid DESC LIMIT 1', [sessionId, context.assistantId])?.run_id) }));
   }
   #labels(tx: Transaction, sessionId: string, context: DomainContext): SelectedLabel[] {
     const consent = this.#liveConsent(tx, sessionId, context);
@@ -193,10 +224,13 @@ export class ChatService implements ChatPort {
     this.#authorize(context);
     const result = this.#config.store.transaction(tx => {
       const row = this.#consent(tx, sessionId, context);
-      if (row.revoked_at === null) tx.run('UPDATE chat_consents SET revision=revision+1,revoked_at=? WHERE session_id=? AND owner_assistant_id=?', [this.#context(context).now, sessionId, context.assistantId]);
-      return this.#conversation(this.#consent(tx, sessionId, context));
+      if (row.revoked_at === null) tx.run('UPDATE chat_consents SET revision=revision+1,revoked_at=? WHERE session_id=? AND owner_assistant_id=?', [this.#context(context).now, String(row.session_id), context.assistantId]);
+      return this.#conversation({ ...row, revoked_at: this.#context(context).now, revision: Number(row.revision) + 1 }, sessionId);
     });
-    this.#invalidate(row => row.session_id === sessionId, context);
+    const affected = result.scope === 'standing' ? this.#config.store.transaction(tx => new Set(tx.all(
+      'SELECT session_id FROM chat_consents WHERE owner_assistant_id=? UNION SELECT session_id FROM chat_consent_enrollments WHERE owner_assistant_id=?',
+      [context.assistantId, context.assistantId]).filter(row => !this.#validConsent(this.#consent(tx, String(row.session_id), context))).map(row => String(row.session_id)))) : new Set([sessionId]);
+    this.#invalidate(row => affected.has(String(row.session_id)), context);
     return result;
   }
   correctRoutingLabel(input: RoutingLabelCorrection, context: DomainContext) {

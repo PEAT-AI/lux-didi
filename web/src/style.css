@@ -37,3 +37,5 @@
 .live-tool-result summary { cursor: pointer; }
 
 .live-tool-result { margin-top: 18px; padding: 14px 18px; border: 1px solid var(--border); border-radius: 9px; }
+
+.connected-consent-indicator { font-size: .9rem; color: var(--muted); }

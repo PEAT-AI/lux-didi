@@ -170,3 +170,20 @@ test('rebuilding is a non-error voice status and restoration is not transcript t
   assert.doesNotMatch(liveMarkup(live), /session has stopped/);
   assert.deepEqual(liveTranscript(live), []);
 });
+
+for (const [outcome, phrase] of [['failed', 'ended with an error'], ['closed', 'ended'], ['unknown', 'has an unknown end']] as const) {
+  test(`past Live ${outcome} is not a current failure`, () => {
+    const time = Date.UTC(2026, 9, 12, 21, 52);
+    const live = { state: 'ended' as const, cursor: 0, entries: [], pastSession: { outcome, endedAt: outcome === 'unknown' ? null : time, lastObservedAt: time } };
+    const label = liveLabel(live);
+    assert.match(label, new RegExp(`Last Live session ${phrase}`));
+    const displayTime = new Date(time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    assert.ok(label.includes(displayTime));
+    assert.doesNotMatch(liveMarkup(live), /Something went wrong/);
+    assert.ok(liveMarkup(live).includes(label));
+    assert.match(liveMarkup(live), /id="live-panel"/);
+  });
+}
+test('active Live error remains a current error', () => {
+  assert.equal(liveLabel({ state: 'error', cursor: 0, entries: [] }), 'Something went wrong');
+});

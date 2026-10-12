@@ -259,3 +259,5 @@ while the page is visible, using its existing browser cookie. Each row shows the
 endpoint id, state, tool count, last handshake and a fixed repair hint for a
 sanitized reason code. Raw diagnostics, credentials and configuration are never
 rendered. Failed polls mark the displayed connection values as stale.
+
+The Live page projection may include optional `pastSession` metadata. Past sessions render as the last Live session, not a current error. `endedAt` is the persisted terminal timestamp; an orphan has null `endedAt` and an unknown outcome, with `lastObservedAt` shown explicitly as last seen. Active session labels are unchanged.

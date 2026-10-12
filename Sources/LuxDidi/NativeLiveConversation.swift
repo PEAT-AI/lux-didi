@@ -16,9 +16,12 @@ import DidiOwner
     private var observer: Task<Void, Never>?
     private var startTask: Task<Void, Never>?
     private var generation: UInt64 = 0
+    private let logsDirectory: URL?
+    private var limits: NativeLiveLimits?
     private var muted = false, speaking = false
     var isCapturing: Bool { state == .connecting || device.isCapturing }
-    init(authority: (origin: URL, request: NativeLiveRequestBuilder), dictationIsCapturing: @escaping () -> Bool, pickupJobID: String? = nil) {
+    init(authority: (origin: URL, request: NativeLiveRequestBuilder), dictationIsCapturing: @escaping () -> Bool, pickupJobID: String? = nil, logsDirectory: URL? = nil) {
+        self.logsDirectory = logsDirectory
         self.http = NativeLiveOperatorHTTP(authority: authority, pickupJobID: pickupJobID)
         self.dictationIsCapturing = dictationIsCapturing
         let device = NativeLiveAudioDevice(); self.device = device
@@ -57,14 +60,20 @@ import DidiOwner
                 switch event {
                 case .active: self.state = self.muted ? .muted : (self.speaking ? .speaking : .listening)
                 case .terminal(let outcome):
-                    if outcome.state == .failed {
+                    if let sentence = NativeLivePresentation.ended(outcome.code, limits: self.limits) {
+                        self.failure = sentence
+                    } else if outcome.state == .failed {
                         self.failure = outcome.code.map { "Live service: " + $0 + "." } ?? "Live service failed."
                     }
                     self.device.stop()
                     self.state = outcome.state == .failed ? .failed : (outcome.state == .outcome_unknown ? .outcomeUnknown : .ended)
                 case .failed(let reason):
                     self.device.stop(); self.state = .failed
-                    self.failure = reason.errorDescription ?? "Live voice could not start. Check microphone permission, audio devices and configured Live service."
+                    self.failure = NativeLivePresentation.failure(reason)
+                    self.logFailure(reason)
+                case .createUnknown:
+                    self.device.stop(); self.state = .outcomeUnknown
+                    self.failure = "Live start outcome is unknown. Check the conversation before starting again."
                 case .outcomeUnknown(let reason):
                     self.device.stop(); self.state = .outcomeUnknown
                     self.failure = reason.errorDescription ?? "Live outcome is unknown. No automatic reconnect."
@@ -81,6 +90,7 @@ import DidiOwner
                 try Task.checkCancellation()
                 guard let self, self.generation == token else { return }
                 let intent = try await http.beginIntent()
+                self.limits = http.limits
                 try Task.checkCancellation()
                 guard self.generation == token else { return }
                 await coordinator.begin(intent)
@@ -88,12 +98,32 @@ import DidiOwner
                 guard let self, self.generation == token else { return }
                 self.device.stop(); await coordinator.close()
                 guard self.generation == token else { return }
-                self.failure = (error as? LiveClientError)?.errorDescription
-                    ?? (error as? NativeLiveAudioError)?.errorDescription
-                    ?? "Live voice could not start. Check microphone permission, audio devices and configured Live service."
+                self.failure = NativeLivePresentation.failure(error)
+                self.logFailure(error)
                 self.state = .failed
             }
         }
+    }
+    private func logFailure(_ error: Error) {
+        guard let logsDirectory else { return }
+        let code: String
+        if error is URLError { code = "service_unreachable" }
+        else if error is DecodingError { code = "unexpected_response" }
+        else if let reason = error as? LiveClientError { code = reason.rawValue }
+        else if let audio = error as? NativeLiveAudioError { code = audio.rawValue }
+        else { code = "connection_refused" }
+        do {
+            try FileManager.default.createDirectory(at: logsDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            let file = logsDirectory.appendingPathComponent("native-live.log")
+            if !FileManager.default.fileExists(atPath: file.path) {
+                guard FileManager.default.createFile(atPath: file.path, contents: nil, attributes: [.posixPermissions: 0o600]) else { return }
+            }
+            let handle = try FileHandle(forWritingTo: file)
+            defer { try? handle.close() }
+            try handle.seekToEnd()
+            var record = try JSONSerialization.data(withJSONObject: ["event": "live_precreate_failed", "failureClass": error is NativeLiveAudioError ? "audio" : "service", "code": code], options: [.sortedKeys])
+            record.append(10); try handle.write(contentsOf: record)
+        } catch { /* Logging must not change the failure or restart Live. */ }
     }
     func toggleMute() {
         guard [.listening, .speaking, .muted].contains(state) else { return }

@@ -93,3 +93,14 @@ in the menu. No shortcut, login launch, call badge or Show action implicitly
 restarts a stopped microphone. Login availability is opt-in; closing or hiding
 still stops capture. Status text and its accessibility label expose the actual
 Live state independently of pending calls.
+
+### Best-effort pre-CREATE diagnostic
+
+A typed pre-CREATE failure still presents the same sentence and appends the same
+`logs/native-live.log` line. Independently, the app asynchronously attempts one
+`POST /api/v1/diagnostics/client` through its existing operator bearer client,
+without cookies. The JSON contains only `event: "live_precreate_failed"`, the
+`audio` or `service` failure class and the closed failure code. Only `http` and
+`socketClosed` include an integer `detail` (status or close code). No text, paths,
+error descriptions or response bodies are sent. A 429 or transport failure is
+not recorded remotely; it never replaces the native failure and is not retried.

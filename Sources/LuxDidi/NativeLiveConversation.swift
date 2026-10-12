@@ -105,6 +105,7 @@ import DidiOwner
         }
     }
     private func logFailure(_ error: Error) {
+        Task { [http] in await http.postPrecreateFailure(error) }
         guard let logsDirectory else { return }
         let code: String
         if error is URLError { code = "service_unreachable" }

@@ -395,9 +395,18 @@ test('additive chat migrations upgrade a populated v1+v2 DB and preserve old rec
     const source = f1.createSession('Source');
     const record = f1.append(source.id, 'Old record', sourceRef());
     assert.equal(record.id.length > 0, true);
-    const sending = f1.enroll();
-    // Current ChatService.accept requires the current schema. Seed the legacy
-    // representation instead, including its original empty-selection hash.
+    const sending = f1.createSession('Synthetic');
+    // Current ChatService enrollment and acceptance require the current schema.
+    // Seed the v2 consent and run directly, including the empty-selection hash.
+    const routeIdentity = JSON.stringify({ version: 1, provider: 'synthetic', model: 'counting',
+      endpoint: 'https://generativelanguage.googleapis.com', apiVersion: 'v1beta',
+      keyReference: 'synthetic-key', allowedClasses: [...ROUTE_CLASSES].sort(), policyVersion: 1 });
+    f1.store.transaction(tx => tx.run(`INSERT INTO chat_consents
+      (session_id,owner_assistant_id,provider,model,route_identity,revision,
+       permitted_classes,granted_at,revoked_at,idempotency_key,fingerprint)
+      VALUES (?,?,?,?,?,1,?,?,NULL,?,?)`,
+    [sending.id, f1.context.assistantId, 'synthetic', 'counting', routeIdentity,
+      JSON.stringify(ROUTE_CLASSES), f1.context.now, 'old-consent', 'old-consent-fingerprint']));
     const userEntry = f1.append(sending.id, 'Old turn');
     const run = { runId: randomUUID() };
     const fingerprint = createHash('sha256').update(JSON.stringify({ sessionId: sending.id, text: 'Old turn', retryOf: null })).digest('hex');
@@ -413,18 +422,23 @@ test('additive chat migrations upgrade a populated v1+v2 DB and preserve old rec
     f1.store.close();
     const f2 = openMemoryFixture(dir, model, {}, chatMigrations);
     try {
-      assert.ok([1, 2, 3].every(version => chatVersions(f2.store).includes(version)));
+      assert.deepEqual(chatVersions(f2.store), [1, 2, 3, 4, 5]);
       assert.equal(f2.store.transaction(tx => tx.get("SELECT name FROM sqlite_master WHERE type='table' AND name='chat_run_context'"))!.name, 'chat_run_context');
       assert.equal(Number(f2.store.transaction(tx => tx.get('SELECT COUNT(*) c FROM chat_run_context', []))!.c), 0);
       const after = f2.store.transaction(tx => tx.get('SELECT * FROM chat_runs WHERE run_id=?', [run.runId]));
       assert.ok(after);
       for (const [column, value] of Object.entries(before!)) assert.deepEqual(after[column], value, column);
       assert.deepEqual(f2.store.transaction(tx => tx.all('SELECT * FROM entries ORDER BY id')), entriesBefore);
-      assert.deepEqual(f2.store.transaction(tx => tx.get('SELECT * FROM chat_consents WHERE session_id=?', [sending.id])), consentBefore);
+      const consentAfter = f2.store.transaction(tx => tx.get('SELECT * FROM chat_consents WHERE session_id=?', [sending.id]));
+      assert.deepEqual({ ...consentAfter }, { ...consentBefore, scope: 'conversation' });
       const replay = f2.chat.accept({ sessionId: sending.id, text: 'Old turn', idempotencyKey: 'old' }, f2.context);
       assert.equal(replay.runId, run.runId);
       assert.equal(model.calls.length, 0);
       assert.throws(() => f2.chat.accept({ sessionId: sending.id, text: 'Old turn', idempotencyKey: 'old', selectedMemoryEntryIds: [record.id] }, f2.context), error('idempotency_conflict'));
+      const enrolled = f2.enroll();
+      assert.notEqual(enrolled.id, sending.id);
+      assert.equal(f2.store.transaction(tx => tx.get('SELECT scope FROM chat_consents WHERE session_id=?', [enrolled.id]))!.scope,
+        'conversation');
     } finally { f2.store.close(); }
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

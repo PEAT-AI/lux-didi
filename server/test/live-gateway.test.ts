@@ -84,7 +84,6 @@ async function harness(t: TestContext, options: HarnessOptions = {}): Promise<Ha
     const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
     await sdk.connect(transport);
     const endpoint = createServer(async (req, res) => {
-      if (req.url === '/failed') { res.writeHead(503); res.end(); return; }
       try {
         const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
         const bytes = Buffer.concat(chunks);
@@ -105,7 +104,7 @@ async function harness(t: TestContext, options: HarnessOptions = {}): Promise<Ha
     const address = endpoint.address(); assert(address && typeof address !== 'string');
     const url = `http://127.0.0.1:${address.port}`;
     const entry = (id: string, path: string) => ({ id, url: url + path, transport: 'streamable-http', connector: 'lux-knowledge', account: 'fixture', resource: 'knowledge', credentialRef: null, enabled: true, allowEgress: true });
-    writePrivate(config, 'mcp.json', JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [entry('healthy', '/'), ...(options.failedMcp ? [entry('failed', '/failed')] : [])] }));
+    writePrivate(config, 'mcp.json', JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [entry('healthy', '/'), ...(options.failedMcp ? [{ ...entry('failed', '/'), credentialRef: 'missing-credential' }] : [])] }));
     const sources: Array<(runId: string, signal: AbortSignal) => Promise<LiveAuthority | null>> = [];
     const lookupAuthority = async (runId: string, signal: AbortSignal) => {
       for (const source of sources) { const authority = await source(runId, signal); if (authority) return authority; }
@@ -117,6 +116,7 @@ async function harness(t: TestContext, options: HarnessOptions = {}): Promise<Ha
     if (options.failedMcp) {
       assert.deepEqual(runtime.connectionIds(), ['healthy'], JSON.stringify(runtime.status()));
       assert.equal(runtime.status().endpoints.find(e => e.id === 'failed')?.state, 'error');
+      assert.equal(runtime.status().endpoints.find(e => e.id === 'failed')?.error, 'credential missing-credential missing or invalid');
     }
     tools = { owner: runtime.owner, connectionIds: () => runtime.connectionIds(), registerAuthoritySource: source => { sources.push(source); } };
   }

@@ -120,6 +120,8 @@ class Session implements LiveVoiceSession {
   private closeTimer: ReturnType<typeof setTimeout> | undefined;
   private cleaned = false;
   private pendingCalls: LiveToolCall[] = [];
+  private informationalKeys = new Set<string>();
+  unknownTopLevelKeys = 0;
   droppedAudioFrames = 0;
   private creatingSocket = false;
   constructor(private readonly settings: Settings, private readonly declared: readonly DataClass[], setup: string, initial: string | undefined,
@@ -231,6 +233,22 @@ class Session implements LiveVoiceSession {
       }
       if (!this.isReady && ('serverContent' in message || 'goAway' in message || 'sessionResumptionUpdate' in message)) fail('protocol_error');
       const events: EventBody[] = [];
+      if ('voiceActivity' in message) {
+        const activity = message.voiceActivity;
+        if (!object(activity)) fail('protocol_error');
+        if (activity.voiceActivityType === 'ACTIVITY_START') events.push({ type: 'waitingForInput', value: true });
+        if (activity.voiceActivityType === 'ACTIVITY_END') events.push({ type: 'waitingForInput', value: false });
+      }
+      const knownKeys = ['error', 'toolCall', 'toolCallCancellation', 'setupComplete', 'serverContent', 'voiceActivity', 'sessionResumptionUpdate', 'goAway'];
+      for (const key of Object.keys(message)) {
+        if (knownKeys.includes(key)) continue;
+        this.unknownTopLevelKeys = Math.min(65535, this.unknownTopLevelKeys + 1);
+        // Bound both retained names and stderr. Never log a value or arbitrary text.
+        if (this.informationalKeys.size < 32 && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(key) && !this.informationalKeys.has(key)) {
+          this.informationalKeys.add(key);
+          console.error(JSON.stringify({ event: 'live_provider_informational_key', key }));
+        }
+      }
       if ('serverContent' in message) this.content(message.serverContent, events);
       if ('sessionResumptionUpdate' in message) {
         const update = message.sessionResumptionUpdate;
@@ -253,10 +271,10 @@ class Session implements LiveVoiceSession {
     return value;
   }
   private content(value: unknown, events: EventBody[]) {
-    if (!object(value) || !Object.keys(value).length) fail('protocol_error');
+    if (!object(value)) fail('protocol_error');
     if ('modelTurn' in value) {
       const turn = value.modelTurn;
-      if (!object(turn) || ('role' in turn && turn.role !== 'model') || !Array.isArray(turn.parts) || !turn.parts.length) fail('protocol_error');
+      if (!object(turn) || ('role' in turn && turn.role !== 'model') || !Array.isArray(turn.parts)) fail('protocol_error');
       for (const part of turn.parts) {
         if (!object(part) || !Object.keys(part).length) fail('protocol_error');
         if ('functionCall' in part || 'functionResponse' in part) fail('unsupported_tool');

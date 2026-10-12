@@ -466,7 +466,7 @@ test('domain v3 owner index upgrades a populated schema preserving rows, refs an
     f1.store.close();
     const f2 = openMemoryFixture(dir, model, {}, chatMigrations, domainMigrations);
     try {
-      assert.deepEqual(domainVersions(f2.store), [1, 2, 3]);
+      assert.deepEqual(domainVersions(f2.store), [1, 2, 3, 4]);
       const indexSql = String(f2.store.transaction(tx => tx.get("SELECT sql FROM sqlite_master WHERE type='index' AND name='ix_source_references_owner'", []))!.sql);
       assert.match(indexSql, /source_references\(owner_id, owner_kind\)/);
       assert.deepEqual(f2.store.transaction(tx => tx.all('SELECT * FROM entries ORDER BY id', [])), entriesBefore);
@@ -481,7 +481,7 @@ test('domain v3 owner index upgrades a populated schema preserving rows, refs an
     } finally { raw.close(); }
     const f3 = openMemoryFixture(dir, model, {}, chatMigrations, domainMigrations);
     try {
-      assert.deepEqual(domainVersions(f3.store), [1, 2, 3]);
+      assert.deepEqual(domainVersions(f3.store), [1, 2, 3, 4]);
       assert.deepEqual(f3.store.transaction(tx => tx.all('SELECT * FROM source_references ORDER BY id', [])), refsBefore);
     } finally { f3.store.close(); }
   } finally { rmSync(dir, { recursive: true, force: true }); }

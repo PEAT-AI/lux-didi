@@ -168,3 +168,45 @@ try MainActor.assumeIsolated {
     expect(captures == 0 && presented == nil && releases == 2, "lost replacement clears stale Live presentation")
     print("DURATION live-authority-recovery-seam=\(Date().timeIntervalSince(started))s")
 }
+
+// Copy diagnostics: pure snapshot seam, no AppKit, no pasteboard, no secrets.
+let diagnosticsFixture = DiagnosticsSnapshotInput(
+    appVersion: "1.2.3",
+    releaseCommit: "0e11a5835643966ac8ea8cc532ebb16202803146",
+    macOSVersion: "Version 14.5 (Build 23F79)",
+    serviceState: "connected",
+    serviceOrigin: "http://127.0.0.1:41231",
+    liveState: "listening",
+    sessionLimit: "30 min",
+    idleLimit: "2 min",
+    connections: ["filesystem: connected", "calendar: unreachable"],
+    audioRoute: "Microphone: MacBook Pro Microphone \u{00b7} Output: MacBook Pro Speakers",
+    preCreateFailureClass: "service",
+    preCreateFailureCode: "connection_refused",
+    capturedAt: "2026-10-12T07:00:00Z")
+let diagnosticsText = NativeDiagnosticsSnapshot.render(diagnosticsFixture)
+for field in ["1.2.3", "0e11a5835643966ac8ea8cc532ebb16202803146", "Version 14.5", "connected",
+              "41231", "listening", "30 min", "2 min", "filesystem: connected",
+              "calendar: unreachable", "MacBook Pro Microphone", "MacBook Pro Speakers",
+              "service", "connection_refused", "2026-10-12T07:00:00Z"] {
+    expect(diagnosticsText.contains(field), "diagnostics snapshot renders \(field)")
+}
+let diagnosticsEmpty = NativeDiagnosticsSnapshot.render(DiagnosticsSnapshotInput())
+expect(diagnosticsEmpty.contains("unknown"), "missing diagnostics inputs render unknown")
+let diagnosticsSecret = NativeDiagnosticsSnapshot.render(DiagnosticsSnapshotInput(
+    appVersion: "Bearer abc.def.ghi",
+    serviceState: "cookie=session%3Dxyz",
+    connections: ["mail: key=deadbeef"],
+    audioRoute: "api_key=sk-live-1234567890",
+    preCreateFailureCode: "token=supersecret"))
+for secret in ["Bearer", "abc.def.ghi", "cookie", "session%3Dxyz", "api_key", "sk-live",
+               "deadbeef", "token=", "supersecret"] {
+    expect(!diagnosticsSecret.contains(secret), "diagnostics snapshot never leaks \(secret)")
+}
+var diagnosticsWritten = ""
+let diagnosticsAction = NativeDiagnosticsAction(makeInput: { diagnosticsFixture },
+                                               write: { diagnosticsWritten = $0 })
+expect(NativeDiagnosticsAction.itemTitle == "Copy diagnostics", "diagnostics menu item title")
+diagnosticsAction.copy()
+expect(diagnosticsWritten == diagnosticsText, "diagnostics menu action writes the builder output")
+print("DURATION diagnostics-snapshot-seam=\(Date().timeIntervalSince(testStarted))s")

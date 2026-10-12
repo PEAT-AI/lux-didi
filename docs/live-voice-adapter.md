@@ -1,5 +1,7 @@
 # Optional Gemini Live voice transport
 
+The provider sends binary WebSocket frames carrying UTF-8 JSON; the adapter accepts both binary and text JSON frames.
+
 This standalone adapter does not change the text ModelPort or install voice into the app. It provides transport evidence, not proof of playback, consent, durable transcript ownership or voice parity. Future service composition owns consent and aborts the session on invalidation. Native composition owns capture, playback and device permissions.
 
 ## Composition

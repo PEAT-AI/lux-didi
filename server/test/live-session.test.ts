@@ -19,7 +19,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadLiveConfig } from '../config/live.js';
-import { NAYA_BASE, composeLiveInstruction } from '../prompt/live-persona.js';
+import { NAYA_BASE, NAYA_TOOLS, composeLiveInstruction } from '../prompt/live-persona.js';
 import { GeminiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
 import type { LiveVoiceLimits, LiveVoiceRequest } from '../adapters/live-voice/index.js';
 import { chatMigrations } from '../chat/index.js';
@@ -134,6 +134,22 @@ async function attached(h: Harness, key = 'k1') {
   await attachment.ready;
   return { session, attachment };
 }
+
+test('a session with a tool declaration carries the tools conduct; without one composes exactly as before', async t => {
+  const withTools = await harness(t, { tools: true });
+  const { attachment: withAttachment } = await attached(withTools);
+  assert.equal(withTools.requests.length, 1);
+  assert.ok(withTools.requests[0]!.system.text.includes(NAYA_TOOLS),
+    'the authored tools conduct is in the attached system instruction');
+  await withAttachment.done;
+
+  const withoutTools = await harness(t, {});
+  const { attachment: withoutAttachment } = await attached(withoutTools);
+  assert.equal(withoutTools.requests.length, 1);
+  assert.equal(withoutTools.requests[0]!.system.text, 'Synthetic system', 'no declarations compose exactly as before');
+  assert.ok(!withoutTools.requests[0]!.system.text.includes('# Tools'));
+  await withoutAttachment.done;
+});
 
 async function drain(h: Harness, liveSessionId: string, expected: number): Promise<LiveSessionSnapshot> {
   const deadline = Date.now() + 10_000;

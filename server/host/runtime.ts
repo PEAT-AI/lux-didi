@@ -1,5 +1,5 @@
 import { loadOwnerProfile } from '../config/owner-profile.js';
-import { ConfigError } from '../config/files.js';
+import { ConfigError, readPrivate, validateRoot } from '../config/files.js';
 import { homedir, platform } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { lstat, mkdir, open, readFile, rename, rm } from 'node:fs/promises';
@@ -73,6 +73,29 @@ async function publish(path: string, descriptor: RuntimeDescriptor): Promise<voi
     await rename(temporary, path);
   } finally { await rm(temporary, { force: true }); }
 }
+// Only non-secret catalogs migrate from the installer default, never credentials.
+async function seedProviderConfig(dataDir: string, effectiveDir: string): Promise<void> {
+  const defaultDir = join(dataDir, 'provider-config');
+  if (effectiveDir === defaultDir) return;
+  for (const name of ['live.json', 'mcp.json']) {
+    const destination = join(effectiveDir, name);
+    try { await lstat(destination); continue; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    if (!validateRoot(defaultDir)) continue;
+    let content: string;
+    try { content = readPrivate(join(defaultDir, name), 64 * 1024); }
+    catch (error) { if (error instanceof ConfigError && error.code === 'file_missing') continue; throw error; }
+    await mkdir(effectiveDir, { recursive: true, mode: 0o700 });
+    validateRoot(effectiveDir);
+    const temporary = join(effectiveDir, `.${name}.${randomUUID()}.tmp`);
+    try {
+      const file = await open(temporary, 'wx', 0o600);
+      try { await file.writeFile(content); await file.sync(); } finally { await file.close(); }
+      await rename(temporary, destination);
+      console.log(`config_seeded file=${name} from=provider-config`);
+    } finally { await rm(temporary, { force: true }); }
+  }
+}
 export async function startHost(config: HostConfig) {
   const dataDir = resolve(config.dataDir), webRoot = resolve(config.webRoot);
   const port = config.port ?? 8765;
@@ -89,6 +112,7 @@ export async function startHost(config: HostConfig) {
     const owner = loadOwnerProfile({ ...(config.ownerProfilePath !== undefined ? { path: config.ownerProfilePath } : {}), ownerId: store.assistantId });
     if (owner.status === 'error') throw new ConfigError('invalid_profile');
     const providerConfigDir = resolve(config.configDir ?? join(dataDir, 'provider-config'));
+    await seedProviderConfig(dataDir, providerConfigDir);
     // R3: authority is pluggable; sources are consulted in registration order and never fabricated.
     const authoritySources: AuthoritySource[] = [];
     const lookupAuthority: AuthoritySource = async (runId, signal) => {

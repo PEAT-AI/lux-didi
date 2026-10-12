@@ -15,6 +15,6 @@ grep -Eq '^# tests [1-9][0-9]*$' "$log" || { echo 'Zero selected tests' >&2; exi
 # Preserve every HTTP failure while still collecting discriminating real-browser proof.
 # Deliberately not the web fixture producer: this drives the shipped UI on the real host.
 browser_status=0
-lux-browser-slot run --priority worker --want 1 --wait 240 -- node server/test/host-browser.mjs || browser_status=$?
+lux-browser-slot run --priority worker --want 1 --wait 1800 -- node server/test/host-browser.mjs || browser_status=$?
 if [ "$http_status" -ne 0 ]; then exit "$http_status"; fi
 exit "$browser_status"

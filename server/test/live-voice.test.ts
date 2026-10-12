@@ -1,13 +1,17 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { describe, test, type TestContext } from 'node:test';
 import WebSocket from 'ws';
 import { GeminiLiveVoiceAdapter, LiveVoiceError } from '../adapters/live-voice/index.js';
 import type { GeminiLiveVoiceOptions, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceRequest } from '../adapters/live-voice/index.js';
-import { CANARY, collect, control, deferred, fixture, options, pcm, ready, request } from './live-voice-fixture.js';
+import { CANARY, collect, control, deferred, fixture as providerFixture, options, pcm, ready as providerReady, request } from './live-voice-fixture.js';
 
 const code = (expected: string) => (error: unknown) => error instanceof LiveVoiceError && error.code === expected && error.message === expected;
 const audio = () => ({ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from(pcm).toString('base64') } });
 function noCanary(value: unknown) { assert.equal(JSON.stringify(value).includes(CANARY), false, 'public serialization is sanitized'); }
+
+for (const frameMode of ['binary', 'text'] as const) describe(`${frameMode} provider frames`, () => {
+const fixture = (t: TestContext) => providerFixture(t, frameMode);
+const ready = (t: TestContext, overrides: Partial<GeminiLiveVoiceOptions> = {}) => providerReady(t, overrides, frameMode);
 
 test('explicit user-first opening preserves incomplete history and model-first opens a spoken turn without user audio', async t => {
   for (const opening of ['user_first', 'model_first'] as const) {
@@ -372,4 +376,16 @@ test('only a 3.8 Live model id suppresses minimal thinking configuration', async
   const setup = (f.frames[0] as { setup: { generationConfig: { thinkingConfig: unknown } } }).setup;
   assert.deepEqual(setup.generationConfig.thinkingConfig, { thinkingLevel: 'minimal' });
   session.close(); await captured.done;
+});
+
+});
+
+test('binary invalid UTF-8 inside otherwise valid JSON is protocol_error', async t => {
+  const f = await providerFixture(t);
+  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory })).open(request(), control());
+  t.after(() => session.close());
+  await f.frame(1);
+  f.sendRaw(Buffer.concat([Buffer.from('{"futureField":"'), Buffer.from([0xff]), Buffer.from('"}') ]));
+  await assert.rejects(session.ready, code('protocol_error'));
+  await session.done;
 });

@@ -3,7 +3,7 @@ import { declarationsFor, runToolCalls, authorizeToolBatch } from '../tools/decl
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
 import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection } from './types.js';
-import { publicOwnerProfile, PROMPT_VERSION } from '../prompt/index.js';
+import { publicOwnerProfile, PROMPT_VERSION, withToolsSection } from '../prompt/index.js';
 import { validateAcceptedPrompt } from './config.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type { DataClass, LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort, LiveVoiceSession, LiveVoiceRequest } from '../adapters/live-voice/index.js';
@@ -404,11 +404,13 @@ export class LiveSessionOwner {
         grants: registry.map(tool => ({ tool: tool.name, effect: tool.effect, accountId: tool.accountId, resourceId: tool.resourceId })) };
     }
     const history = this.#jobHistory(liveSessionId, inputClass);
-    const system = acceptedPrompt.system + (history ? '\n\nThe user has just picked up. Deliver the pending job result first, briefly, then resume the conversation. If the outcome failed or is unknown, state that truthfully.' : '');
+    const declarations = registry.length ? declarationsFor(registry).declarations : [];
+    const system = withToolsSection(acceptedPrompt.system, declarations.map(declaration => declaration.name))
+      + (history ? '\n\nThe user has just picked up. Deliver the pending job result first, briefly, then resume the conversation. If the outcome failed or is unknown, state that truthfully.' : '');
     const request: LiveVoiceRequest = { opening: history ? 'model_first' : 'user_first',
       system: { text: system, dataClass: dataClasses[dataClasses.length - 1]! }, history: history ?? [], dataClasses,
       ...(this.#profile.language !== undefined ? { languageCode: this.#profile.language } : {}),
-      ...(registry.length ? { tools: declarationsFor(registry).declarations } : {}) };
+      ...(declarations.length ? { tools: declarations } : {}) };
     let session: LiveVoiceSession;
     try {
       // Absolute wall clock for the adapter; the injected clock is the owner's own durable order.

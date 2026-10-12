@@ -100,7 +100,7 @@ test('no declarations compose exactly the three existing sections and hash', () 
   assert.deepEqual(withoutTools.sections.map(s => s.id), ['base', 'overlay', 'voice']);
   assert.equal(withEmptyTools.text, withoutTools.text, 'an empty declaration list adds nothing');
   assert.equal(withEmptyTools.sha256, withoutTools.sha256);
-  assert.equal(withoutTools.sha256, '3b3fb4507a91d0a2b5dd287a28a1cd1e1e1e1e3c1e1e1e1e1e1e1e1e1e1e1e1e');
+  assert.equal(withoutTools.sha256, '23f463e11c26c804db11ca15dac54a5586d5489c5c889396a5efabbbd6ea0d8b', 'the no-tools fixture hash is unchanged from base 053b2bc');
 });
 
 test('declarations add the tools section verbatim between base and overlay with a stable hash', () => {

@@ -17,6 +17,18 @@ Naya stays in spoken register, uses plain words, and never reads out long lists,
 
 Naya does not describe a training history, a maker or any biography; Naya is simply this owner's companion.`;
 
+/**
+ * Architect-authored tool-conduct section, added verbatim when a session declares at least one tool.
+ * It is generic: it names tool families, never a schema or a connector.
+ */
+export const NAYA_TOOLS = `# Tools
+
+Naya can use tools in this conversation. The owner's knowledge base is the first stop for anything about the owner's notes, decisions, projects or past work: search it before answering from memory, and answer from what it returned. Calendar tools answer what is on the schedule; mail tools answer what someone sent; company tools answer company questions; team-chat tools answer questions about the team's conversations.
+
+When a question needs a tool, say in a few words that Naya is looking, then call it; do not narrate the call itself. Pass the user's own words as the query. Call one tool at a time unless two are independent. When results arrive, answer from them in one to three spoken sentences; the written answer on screen carries the detail and the sources. If a tool returns nothing, an error or a refusal, say so plainly and offer what Naya can still do. If a tool was deferred because the work takes longer, tell the owner Naya will call back when it is done, then carry on with the conversation.
+
+Never invent a tool result, a source or a date.`;
+
 const maxOverlayBytes = 16 * 1024;
 const maxOptionalBytes = 4096;
 const budgetChars = 60_000;
@@ -42,7 +54,7 @@ export interface PersonaOverlay {
 }
 
 export interface ComposedSection {
-  readonly id: 'base' | 'overlay' | 'voice';
+  readonly id: 'base' | 'tools' | 'overlay' | 'voice';
   readonly chars: number;
   readonly sha256: string;
 }
@@ -57,6 +69,7 @@ export interface ComposeLiveInstructionInput {
   readonly base: string;
   readonly overlay?: PersonaOverlay;
   readonly language?: string;
+  readonly tools?: readonly string[];
 }
 
 function bytes(text: string): number { return Buffer.byteLength(text, 'utf8'); }
@@ -138,25 +151,53 @@ function overlaySection(overlay: PersonaOverlay): string {
 function assemble(parts: readonly string[]): string { return parts.join(separator); }
 
 /**
- * Compose the Live system instruction: public base, optional local overlay (verbatim), then the
- * terminal LANGUAGE AND VOICE anchor. Empty sections are stripped, survivors join with one blank
- * line, and the 60k budget yields the overlay first. No memory or history enters this unit.
+ * Compose the Live system instruction: public base, the optional local overlay (verbatim), the
+ * optional tool conduct, then the terminal LANGUAGE AND VOICE anchor. Empty sections are stripped,
+ * survivors join with one blank line, and the 60k budget yields the overlay first, then the tools
+ * section. The base and the voice anchor never yield. No memory or history enters this unit.
  */
 export function composeLiveInstruction(input: ComposeLiveInstructionInput): ComposedLiveInstruction {
   if (!input || typeof input.base !== 'string' || !input.base.length) throw new PersonaOverlayError('invalid_overlay');
   const base = input.base;
   const voice = voiceAnchor(input.language, input.overlay?.accent);
-  const overlay = input.overlay !== undefined ? overlaySection(input.overlay) : undefined;
-  let entries: { id: ComposedSection['id']; text: string }[] = overlay === undefined
-    ? [{ id: 'base', text: base }, { id: 'voice', text: voice }]
-    : [{ id: 'base', text: base }, { id: 'overlay', text: overlay }, { id: 'voice', text: voice }];
-  if (overlay !== undefined && assemble(entries.map(entry => entry.text)).length > budgetChars) {
-    const remaining = budgetChars - base.length - voice.length - 2 * separator.length;
-    entries = remaining <= 0
-      ? [{ id: 'base', text: base }, { id: 'voice', text: voice }]
-      : [{ id: 'base', text: base }, { id: 'overlay', text: overlay.slice(0, remaining).replace(/\s+$/, '') }, { id: 'voice', text: voice }];
+  const overlayText = input.overlay !== undefined ? overlaySection(input.overlay) : undefined;
+  const toolsText = input.tools !== undefined && input.tools.length ? NAYA_TOOLS : undefined;
+
+  type Entry = { id: ComposedSection['id']; text: string };
+  const select = (overlay: string | undefined, tools: string | undefined): Entry[] => {
+    const entries: Entry[] = [{ id: 'base', text: base }];
+    if (tools !== undefined) entries.push({ id: 'tools', text: tools });
+    if (overlay !== undefined) entries.push({ id: 'overlay', text: overlay });
+    entries.push({ id: 'voice', text: voice });
+    return entries;
+  };
+  const fits = (entries: Entry[]): boolean => assemble(entries.map(entry => entry.text)).length <= budgetChars;
+
+  let overlay = overlayText;
+  let tools = toolsText;
+  if (!fits(select(overlay, tools))) {
+    if (overlay !== undefined) {
+      const others = [base, ...(tools !== undefined ? [tools] : []), voice];
+      const remaining = budgetChars - assemble(others).length - separator.length;
+      overlay = remaining <= 0 ? undefined : overlay.slice(0, remaining).replace(/\s+$/, '');
+    }
+    if (!fits(select(overlay, tools))) tools = undefined;
   }
+  const entries = select(overlay, tools);
   const text = assemble(entries.map(entry => entry.text));
   const sections = entries.map(entry => Object.freeze({ id: entry.id, chars: entry.text.length, sha256: digest(entry.text) }));
   return Object.freeze({ text, sha256: digest(text), sections: Object.freeze(sections) });
+}
+
+/**
+ * Insert the tool conduct into an already-composed Live instruction: right after the public base when
+ * the text is the Naya composition, otherwise after the whole text. With no declarations the input is
+ * returned byte-identical, so a session without tools composes exactly as before.
+ */
+export function withToolsSection(text: string, tools: readonly string[]): string {
+  if (!tools.length) return text;
+  const base = `${NAYA_BASE}${separator}`;
+  return text.startsWith(base)
+    ? `${base}${NAYA_TOOLS}${separator}${text.slice(base.length)}`
+    : `${text}${separator}${NAYA_TOOLS}`;
 }

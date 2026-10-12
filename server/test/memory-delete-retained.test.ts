@@ -23,7 +23,7 @@ test('HTTP deletion atomically scrubs retained chat, Live and request copies, in
   const profile = validateLiveProfile({ enabled: true, provider: 'gemini', liveModelId: 'models/live-session-test',
     voice: 'Aoede', keyReference: 'fixture-key', route: { enabled: true, provider: 'gemini', modelId: 'models/live-session-test', dataClasses: ['ordinary'] },
     prompt: { text: 'Synthetic system', dataClass: 'ordinary' } });
-  const adapter = new GeminiLiveVoiceAdapter(options({ socketFactory: ws.socketFactory, modelId: profile.liveModelId, voice: profile.voice, keyReference: profile.keyReference }));
+  const adapter = new GeminiLiveVoiceAdapter(options({ socketFactory: ws.socketFactory, modelId: profile.liveModelId, voice: profile.voice, keyReference: profile.keyReference, route: { enabled: true, provider: 'gemini', modelId: profile.liveModelId, dataClasses: ['ordinary', 'private'] } }));
   const session = f.createSession('Memory');
   const entry = f.append(session.id, note);
   const keep = f.append(session.id, 'synthetic surviving note');

@@ -1,3 +1,4 @@
+import { loadMcpEndpoints } from '../config/mcp.js';
 import { HostLog, captureHostDiagnostics } from './log.js';
 import { loadOwnerProfile } from '../config/owner-profile.js';
 import { ConfigError, readPrivate, validateRoot } from '../config/files.js';
@@ -110,6 +111,24 @@ export async function startHost(config: HostConfig) {
   if (!descriptorPath.endsWith('.json') || (!isAbsolute(descriptorRelative) && descriptorRelative !== '..' && !descriptorRelative.startsWith(`..${sep}`))) throw new Error('Descriptor must be a JSON file outside the web build');
   const domain = createDomainPort({ outbox: Outbox }); // No authorized device/target: reminders remain unbound.
   const log = new HostLog(dataDir);
+  let releaseCommit = 'unknown';
+  // Installed service layout is fixed by build-macos-app.sh; source starts have no manifest.
+  try {
+    const manifest = JSON.parse(await readFile(new URL('../../../../../../didi-runtime.json', import.meta.url), 'utf8'));
+    if (typeof manifest.releaseCommit === 'string' && /^[0-9a-f]{40}$/.test(manifest.releaseCommit)) releaseCommit = manifest.releaseCommit;
+  } catch { /* Development starts have no installed release metadata. */ }
+  const effectiveConfigDir = resolve(config.configDir ?? join(dataDir, 'provider-config'));
+  let endpoints = 0;
+  let configKind: 'effective' | 'seeded' = config.configDir === undefined ? 'seeded' : 'effective';
+  try {
+    let selection = loadMcpEndpoints({ configDir: effectiveConfigDir });
+    if (selection.state === 'missing') {
+      configKind = 'seeded';
+      selection = loadMcpEndpoints({ configDir: join(dataDir, 'provider-config') });
+    }
+    if (selection.state === 'configured') endpoints = selection.catalog.endpoints.length;
+  } catch { /* Composition below owns invalid configuration errors. */ }
+  log.event({ event: 'host_started', releaseCommit, configDir: configKind, endpoints });
   const stopDiagnostics = captureHostDiagnostics(log);
   let store: Store;
   try { store = new Store(dataDir, hostMigrations); } catch (error) { log.error(error); stopDiagnostics(); throw error; }

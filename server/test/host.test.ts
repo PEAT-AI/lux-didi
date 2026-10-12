@@ -160,6 +160,13 @@ test('canonical compiler emits every published production unit and no unpublishe
 test('actual host connects durable domain, supersedes reminders, exposes conflicts and survives process restart', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'didi-host-domain-'));
   let host = await startHost({ dataDir: dir, webRoot, port: 0 });
+  const startup = JSON.parse((await readFile(join(dir, 'logs', 'host.log'), 'utf8')).split('\n')[0]!);
+  assert.deepEqual(Object.keys(startup).sort(), ['configDir', 'endpoints', 'event', 'pid', 'releaseCommit', 'timestamp']);
+  assert.equal(startup.event, 'host_started');
+  assert.equal(startup.releaseCommit, 'unknown');
+  assert.equal(startup.configDir, 'seeded');
+  assert.equal(startup.endpoints, 0);
+  assert.equal(JSON.stringify(startup).includes(dir), false);
   let child: ChildProcess | undefined;
   try {
     const credential = host.store.adminCredential;

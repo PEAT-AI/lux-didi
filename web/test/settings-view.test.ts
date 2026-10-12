@@ -88,7 +88,7 @@ test('marks every on-disk setting with its file name and a restart note', () => 
 });
 
 test('connector-specific setup instructions render safely', () => {
-  const html = renderSettings({ connections: [
+  const html = settingsMarkup({ connections: [
     { id: 'calendar', state: 'missing', reasonCode: 'credential_missing' },
     { id: 'mongoose', state: 'missing', reasonCode: 'credential_missing' },
     { id: 'gmail', state: 'error', reasonCode: 'unreachable' },

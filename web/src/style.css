@@ -39,3 +39,9 @@
 .live-tool-result { margin-top: 18px; padding: 14px 18px; border: 1px solid var(--border); border-radius: 9px; }
 
 .connected-consent-indicator { font-size: .9rem; color: var(--muted); }
+
+.tool-evidence { border: 1px solid var(--border); border-radius: 12px; padding: 1rem; margin: .75rem 0; background: #fff; }
+.tool-evidence header { display: flex; flex-wrap: wrap; gap: .75rem; align-items: baseline; }
+.tool-evidence header span { font-size: .8rem; opacity: .7; }
+.tool-evidence .markdown { overflow-wrap: anywhere; }
+.tool-evidence-sources { margin: .5rem 0 0; padding-left: 1.25rem; font-size: .85rem; }

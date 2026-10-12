@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { CONNECTOR_DESCRIPTORS } from '../connectors/index.js';
 import { declarationsFor } from '../tools/declarations.js';
+import { chatCapabilities } from '../chat/context.js';
 import { REMEMBER_PARAMETERS } from '../tools/remember.js';
 import type { ConnectionPolicy } from '../tools/types.js';
 import type { ToolDefinition } from '../adapters/model/types.js';
@@ -27,6 +28,9 @@ test('every composed Live connector and built-in declaration conforms to provide
   assert.deepEqual([...derived.originalByName.values()], before);
   const errors = derived.declarations.flatMap(tool => violations(tool.parameters, `${tool.name}.parameters`));
   assert.deepEqual(errors, [], errors.join('\n'));
+  const chat = chatCapabilities(registry.filter(tool => tool.name !== 'remember_note'), []);
+  assert.deepEqual(chat.declarations.flatMap(tool => violations(tool.parameters, `${tool.name}.parameters`)), []);
+  assert.deepEqual(registry.map(tool => tool.parameters), before, 'chat compilation leaves validation schemas intact');
 });
 
 test('nested unsupported constraints never leak and semantic constraints remain described', () => {

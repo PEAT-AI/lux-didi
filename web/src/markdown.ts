@@ -55,3 +55,15 @@ export function renderMarkdown(source: string): string {
   }
   return blocks.join('\n');
 }
+
+/** Chat consumes only bounded accepted projections, never connector HTML or provider parts. */
+export function renderToolEvidence(evidence: readonly import('./protocol.ts').ToolEvidence[]): string {
+  return evidence.slice(0, 16).map(tool => {
+    const sources = tool.sources.slice(0, 8).map(source => {
+      const title = escapeHtml(source.title.slice(0, 256));
+      const url = source.url?.slice(0, 2048);
+      return `<li>${url && /^https?:\/\//i.test(url) ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${title}</a>` : title}</li>`;
+    }).join('');
+    return `<article class="tool-evidence"><header><strong>${escapeHtml(tool.name)}</strong><span>Accepted read evidence</span></header><div class="markdown">${renderMarkdown(tool.markdown.slice(0, 4096))}</div>${sources ? `<ul class="tool-evidence-sources">${sources}</ul>` : ''}</article>`;
+  }).join('');
+}

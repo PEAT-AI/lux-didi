@@ -131,7 +131,7 @@ export async function startHost(config: HostConfig) {
       registerAuthoritySource: source => { authoritySources.push(source); },
       lookupAuthority,
     };
-    const { chat, status } = composeChat(store, domain, providerConfigDir, config.modelTesting, config.now, owner.snapshot);
+    const { chat, status } = composeChat(store, domain, providerConfigDir, config.modelTesting, config.now, owner.snapshot, liveTools);
     const composeLiveWithTools = composeLive as unknown as (...args: unknown[]) => ReturnType<typeof composeLive>;
     const { service: live } = composeLiveWithTools(store, providerConfigDir, config.liveTesting, config.now, owner.snapshot, liveTools);
     // Observe the actual durable provider settlement, which does not emit console text.

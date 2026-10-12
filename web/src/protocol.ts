@@ -31,3 +31,4 @@ export interface LiveCurrent { pastSession?: { outcome: 'closed' | 'failed' | 'c
 export interface LiveCurrent { jobs?: LiveJob[]; state: LiveState; since?: string; muted?: boolean; entries: LiveEntry[]; cursor: string | number }
 
 export interface EntryTombstone { entryId: string; deletedAt: string; actor: string; reasonCode: 'owner_request' }
+export interface EntryDeletionResponse extends EntryTombstone { liveSessionRetainsUntilRebuild: boolean }

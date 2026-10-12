@@ -250,6 +250,7 @@ async function deleteMemory(id: string) {
     const deleted = await deleteMemoryAndReload(id, {
       confirm: () => window.confirm('Delete this memory permanently? Earlier chat and voice transcripts are not rewritten.'),
       remove: entryId => deleteMemoryEntry(entryId, signal),
+      deleted: message => notify(message),
       reload: async () => {
         const current = session ? await request<{session:Session;entries:Entry[];nextCursor:string|null}>(`/sessions/${encodeURIComponent(session.id)}`, { signal }) : undefined;
         const results = recall ? await request<Recall>(`/recall?q=${encodeURIComponent(queryDraft)}&limit=50`, { signal }) : undefined;

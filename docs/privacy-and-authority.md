@@ -172,4 +172,9 @@ re-execute the original mutation on replay.
 Conversation transcripts and model output that quoted a note are conversation
 history, including chat_runs.partial_text and live_journal transcriptions. They
 are outside memory deletion; the owner removes those by deleting the conversation.
-Deletion cannot retract a prompt already sent to a provider.
+The provider connection that is CURRENTLY open already holds the deleted note in
+its context and nothing we send can un-tell it. The scrub guarantees only that no
+later setup (rebuild or new session) carries it. The delete response's typed
+`liveSessionRetainsUntilRebuild` flag is true when an active Live connection still
+holds the entry at deletion time. The page then confirms honestly:
+"Naya's current live conversation still has this note until it reconnects or ends."

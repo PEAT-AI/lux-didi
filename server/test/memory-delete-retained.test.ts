@@ -85,6 +85,8 @@ test('HTTP deletion atomically scrubs retained chat, Live and request copies, in
     assert.equal(JSON.stringify(requests.at(-1)).includes('synthetic retained deletion'), false);
     assert.equal(JSON.stringify(requests.at(-1)).includes('synthetic surviving note'), true);
     assert.equal(JSON.stringify(live.create(input, ctx)).includes('synthetic retained deletion'), false);
+    const repeatedBeforeRebuild = await fetch(`${service.origin}/api/v1/entries/${entry.id}`, { method: 'DELETE', headers: { ...headers, 'Idempotency-Key': 'delete-before-rebuild' }, body: '{}' });
+    assert.equal((await repeatedBeforeRebuild.json()).data.liveSessionRetainsUntilRebuild, true);
     ws.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-retained-handle' }, goAway: { timeLeft: '10s' } });
     await ws.frame(2);
     assert.equal(liveRequests.length, 2);

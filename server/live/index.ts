@@ -82,6 +82,7 @@ class OutputChannel {
   #queue: LiveOutputChunk[] = [];
   #bytes = 0;
   #waiter: ((result: IteratorResult<LiveOutputChunk>) => void) | undefined;
+  #providerMemory = new WeakMap<ActiveSession, Map<string, number>>();
   #closed = false;
   constructor(private readonly maxEvents: number, private readonly maxBytes: number) {}
   push(chunk: LiveOutputChunk): 'ok' | 'backpressure' {
@@ -192,11 +193,11 @@ function scrubMemorySnapshots(tx: Transaction, entryId: string): { id: string; s
 const memoryOwners = new WeakMap<LiveStorePort, LiveSessionOwner>();
 
 /** Stage redaction in the caller's transaction, then publish active changes after commit. */
-export function redactDeletedMemorySnapshots(store: LiveStorePort, tx: Transaction, entryId: string): () => void {
+export function redactDeletedMemorySnapshots(store: LiveStorePort, tx: Transaction, entryId: string): { liveSessionRetainsUntilRebuild: boolean; publish: () => void } {
   const owner = memoryOwners.get(store);
   if (owner) return owner.redactDeletedMemory(tx, entryId);
   scrubMemorySnapshots(tx, entryId);
-  return () => {};
+  return { liveSessionRetainsUntilRebuild: false, publish: () => {} };
 }
 
 export class LiveSessionOwner {
@@ -453,11 +454,13 @@ export class LiveSessionOwner {
   }
 
   /** The HTTP delete owns the transaction; publish handle changes only after it commits. */
-  redactDeletedMemory(tx: Transaction, entryId: string): () => void {
+  redactDeletedMemory(tx: Transaction, entryId: string): { liveSessionRetainsUntilRebuild: boolean; publish: () => void } {
+    let liveSessionRetainsUntilRebuild = [...this.#active.values()].some(handle => !handle.terminal && this.#providerMemory.get(handle)?.get(entryId) === handle.generation);
     const publish: (() => void)[] = [];
     for (const snapshot of scrubMemorySnapshots(tx, entryId)) {
       const handle = this.#active.get(snapshot.id);
       if (!handle || handle.terminal) continue;
+      liveSessionRetainsUntilRebuild = true;
       // A staging handle lets the normal journal path maintain the same counters
       // without changing an active request if another owner subsequently rolls back.
       const staged = { ...handle, request: { ...handle.request, system: { ...handle.request.system, text: snapshot.system } } };
@@ -467,9 +470,12 @@ export class LiveSessionOwner {
         handle.request = staged.request;
         handle.journalEvents = staged.journalEvents;
         handle.journalBytes = staged.journalBytes;
+        const retained = this.#providerMemory.get(handle) ?? new Map<string, number>();
+        retained.set(entryId, handle.generation);
+        this.#providerMemory.set(handle, retained);
       });
     }
-    return () => { for (const apply of publish) apply(); };
+    return { liveSessionRetainsUntilRebuild, publish: () => { for (const apply of publish) apply(); } };
   }
 
   /** Explicit host entry point: synchronous in-memory invalidation and adapter abort. */

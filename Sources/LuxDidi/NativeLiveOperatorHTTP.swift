@@ -35,11 +35,11 @@ struct NativePendingLiveJob: Decodable, Equatable, Sendable {
     private let pickupJobID: String?
     private var pickupCreateKey: String?
     private let session: URLSession
-    init(authority: (origin: URL, request: NativeLiveRequestBuilder), pickupJobID: String? = nil) {
+    init(authority: (origin: URL, request: NativeLiveRequestBuilder), pickupJobID: String? = nil, configuration: URLSessionConfiguration? = nil) {
         self.pickupJobID = pickupJobID
         origin = authority.origin
         build = authority.request
-        let config = URLSessionConfiguration.ephemeral
+        let config = configuration ?? URLSessionConfiguration.ephemeral
         config.httpCookieStorage = nil; config.httpShouldSetCookies = false
         config.urlCache = nil; config.urlCredentialStorage = nil
         config.requestCachePolicy = .reloadIgnoringLocalCacheData

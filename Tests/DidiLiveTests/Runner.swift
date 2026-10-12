@@ -1,6 +1,27 @@
 import Foundation
 @testable import DidiOwner
 
+// Session-local HTTP fixture, never installs a global URLProtocol or uses the network.
+final class PendingCallsFixture: URLProtocol, @unchecked Sendable {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var responses: [Result<Data, URLError>] = []
+    static func load(_ values: [Result<Data, URLError>]) { lock.withLock { responses = values } }
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        let result = Self.lock.withLock { Self.responses.isEmpty ? .failure(URLError(.badServerResponse)) : Self.responses.removeFirst() }
+        switch result {
+        case .failure(let error): client?.urlProtocol(self, didFailWithError: error)
+        case .success(let data):
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: data)
+            client?.urlProtocolDidFinishLoading(self)
+        }
+    }
+    override func stopLoading() {}
+}
+
 struct Envelope<Value: Decodable>: Decodable { let data: Value }
 struct HostStatus: Decodable { let assistantId: String; let authorityEpoch: String }
 struct StatusWire: Decodable {
@@ -304,6 +325,23 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
                 let companion = CompanionClient(descriptor: descriptor, credential: { fixture.token }, expectedEpoch: fixture.authorityEpoch)
                 return (companion, NativeLiveOperatorHTTP(authority: companion.authenticatedRequestBuilder()))
             }
+            let callbackHTTP = try await MainActor.run {
+                let config = URLSessionConfiguration.ephemeral
+                config.protocolClasses = [PendingCallsFixture.self]
+                return NativeLiveOperatorHTTP(authority: companion.authenticatedRequestBuilder(), configuration: config)
+            }
+            let hostWire = try JSONSerialization.data(withJSONObject: ["data": ["assistantId": "naya", "authorityEpoch": fixture.authorityEpoch]])
+            let callbackWire = Data("{\"data\":[{\"id\":\"ready-a\",\"state\":\"completed\",\"markdown\":\"private result\"},{\"id\":\"ready-b\",\"state\":\"failed\",\"markdown\":\"private failure\"}]}".utf8)
+            PendingCallsFixture.load([.success(hostWire), .success(callbackWire), .failure(URLError(.notConnectedToInternet)), .success(hostWire), .success(Data("{\"data\":[]}".utf8))])
+            let readyCallbacks = try await callbackHTTP.pendingCalls()
+            try require(readyCallbacks.map(\.id) == ["ready-a", "ready-b"] && readyCallbacks.allSatisfy(\.isReady), "native HTTP fixture returns concurrent ready callbacks")
+            do {
+                _ = try await callbackHTTP.pendingCalls()
+                try require(false, "callback HTTP poll must propagate offline, not stale data")
+            } catch is URLError { }
+            let goneCallbacks = try await callbackHTTP.pendingCalls()
+            try require(goneCallbacks.isEmpty, "native HTTP fixture reconciles job gone after poll error")
+            print("PASS native callback HTTP ready/error/gone fixture")
             let nativeIntent = try await nativeHTTP.beginIntent()
             do {
                 _ = try await nativeHTTP.snapshot(sessionID: "00000000-0000-4000-8000-000000000000", for: nativeIntent)

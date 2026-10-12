@@ -91,9 +91,9 @@ private actor NativeAudioSendProbe {
             try audioRequire(captures.count == 3 && injectedDevice.isCapturing && captures.last!.next().0 == nil,
                              "actual rebuilt converter and drain preserve mute")
             injectedDevice.setMuted(false)
-            var frames = sends.frames.makeAsyncIterator()
+            var sentFrames = sends.frames.makeAsyncIterator()
             captures.last!.append(try tone(format, start: 2000, count: 1024))
-            let delivered = await frames.next()
+            let delivered = await sentFrames.next()
             try audioRequire(delivered?.count == 640, "rebuilt device sends real converted frames after unmute")
             var changedName = ""
             injectedDevice.onInputChange = { changedName = $0 }

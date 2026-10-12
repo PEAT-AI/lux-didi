@@ -53,3 +53,15 @@
 .didi-settings .settings-connectors li { margin-block: .6rem; }
 .didi-settings code { background: #eef1ea; border-radius: 4px; padding: .1rem .3rem; }
 .didi-settings .settings-restart { color: #854724; }
+.memory-list { display: flex; flex-direction: column; gap: 10px; }
+.memory-list-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.memory-list-head h2 { margin: 0; }
+.memory-count { color: var(--muted); margin: 0; font-size: .9rem; }
+.memory-filter { width: 100%; min-height: 44px; padding: 8px 10px; border: 1px solid #ced8ce; border-radius: 9px; }
+.memory-item { border-top: 1px solid var(--border); padding-top: 8px; }
+.memory-item p { margin: 6px 0; overflow-wrap: anywhere; }
+.memory-meta { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: .8rem; color: var(--muted); }
+.memory-kind { text-transform: uppercase; letter-spacing: .04em; color: var(--green); font-weight: 600; }
+.memory-source::before { content: "· "; }
+.memory-empty { color: var(--muted); }
+@media (max-width:420px) { .memory-list-head { flex-direction: column; } }

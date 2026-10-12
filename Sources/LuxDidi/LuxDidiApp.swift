@@ -232,7 +232,7 @@ struct NativeLiveControls: View {
     @ObservedObject var device: NativeLiveAudioDevice
     var body: some View {
         VStack {
-            Text("Live: " + conversation.state.rawValue).accessibilityLabel("Live voice lifecycle")
+            Text("Live: " + (conversation.state == .rebuilding ? "Reconnecting" : conversation.state.rawValue)).accessibilityLabel("Live voice lifecycle")
             ProgressView(value: conversation.state == .muted ? 0 : Double(device.inputLevel))
                 .accessibilityLabel(conversation.state == .muted ? "Microphone muted" : "Live microphone input level")
             HStack {

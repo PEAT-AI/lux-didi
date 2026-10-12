@@ -5,7 +5,7 @@ import DidiOwner
 #endif
 
 @MainActor final class NativeLiveConversation: ObservableObject {
-    enum State: String { case idle, connecting, listening, speaking, muted, ended, failed, outcomeUnknown }
+    enum State: String { case idle, connecting, listening, speaking, muted, ended, failed, outcomeUnknown, rebuilding }
     @Published private(set) var state: State = .idle
     @Published private(set) var failure: String?
     @Published private(set) var pendingCall: NativePendingLiveJob?
@@ -58,9 +58,12 @@ import DidiOwner
                 guard let self, self.generation == token, !Task.isCancelled else { return }
                 guard current == event else { continue }
                 switch event {
+                case .rebuilding: self.speaking = false; self.state = .rebuilding
                 case .active: self.state = self.muted ? .muted : (self.speaking ? .speaking : .listening)
                 case .terminal(let outcome):
-                    if let sentence = NativeLivePresentation.ended(outcome.code, limits: self.limits) {
+                    if outcome.code == "resume_failed" {
+                        self.failure = "Naya's connection could not be resumed. Start Live again."
+                    } else if let sentence = NativeLivePresentation.ended(outcome.code, limits: self.limits) {
                         self.failure = sentence
                     } else if outcome.state == .failed {
                         self.failure = outcome.code.map { "Live service: " + $0 + "." } ?? "Live service failed."

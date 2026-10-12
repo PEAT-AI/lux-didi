@@ -14,13 +14,13 @@ struct LiveStatusPresentation {
         self.state = dictationCapturing ? "listening" : (["idle", "ended", "failed", "outcomeUnknown"].contains(state) ? "stopped" : state)
         self.pendingCall = pendingCall
     }
-    var text: String { "Naya: \(state)" + (pendingCall ? "; Naya is calling" : "") }
+    var text: String { "Naya: \(state == "rebuilding" ? "Reconnecting" : state)" + (pendingCall ? "; Naya is calling" : "") }
     var symbol: String {
         switch state {
         case "listening": return "mic.fill"
         case "speaking": return "waveform"
         case "muted": return "mic.slash.fill"
-        case "connecting": return "ellipsis.circle"
+        case "connecting", "rebuilding": return "ellipsis.circle"
         default: return "mic.slash"
         }
     }

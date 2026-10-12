@@ -110,3 +110,19 @@ still-pending job again. Poll errors clear stale offers and show **Callbacks
 offline** in the app and status menu. A stale notification click revalidates at
 the service before stopping an active conversation, and reports a missing job or
 an offline service without starting capture. Only explicit pickup starts voice.
+
+## Provider continuity in the Mac client
+
+Provider replacement keeps the same Live session. The socket sends JSON control
+frames with `type: "continuity"`, `sequence: null`, `journalSequence: n` and
+`event: "rebuilding"` or `event: "resumed"`; a rebuilding frame can include a
+`reason`. Unknown continuity events are ignored. `/api/v1/live/current` projects
+`state: "rebuilding"`; `/api/v1/live/status` remains configuration preflight and
+continues to report `status: "configured"`.
+
+During rebuilding the bar and status item show **Reconnecting**, without error
+styling. The duplex audio device stays open, captured input is dropped and queued
+model output is flushed. Resumption returns to listening, or muted if the owner
+was muted, without creating another session. A terminal `resume_failed` stops the
+device and displays **Naya's connection could not be resumed. Start Live again.**
+Only an explicit Start can open another session.

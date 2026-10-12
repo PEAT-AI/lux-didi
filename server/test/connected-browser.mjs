@@ -67,7 +67,7 @@ try {
   await step('local Save stays local; explicit Start names actual model and creates trusted session', async () => {
     await page.locator('#message').fill('EXCLUDED_BROWSER_LOCAL_CANARY: archive this without any model send.');
     await page.getByRole('button', { name: 'Save message', exact: true }).click();
-    await page.waitForFunction(() => document.querySelector('.message-list, .entries, .conversation-grid')?.textContent.includes('EXCLUDED_BROWSER_LOCAL_CANARY'));
+    await page.waitForFunction(() => document.querySelector('.conversation-grid .thread .entries')?.textContent.includes('EXCLUDED_BROWSER_LOCAL_CANARY'));
     assert.equal(requests.filter(r => r.path === '/api/v1/chat' && r.method === 'POST').length, 0);
     assert.ok(await page.locator('#ask-didi').isDisabled());
     assert.match(await page.locator('.connected-disclosure').innerText(), /current and earlier selected turns/);
@@ -189,7 +189,16 @@ try {
         const heading = page.getByRole('heading', { name: `Talk with ${label}`, exact: true });
         await heading.waitFor(); assert.equal(await heading.evaluate(node => node.childElementCount), 0);
         assert.equal(await page.title(), productTitle, 'owner label must not rename the public product');
-        assert.equal(await page.locator('#connected-consent').isDisabled(), !configured);
+        assert.equal(await page.locator('#connected-consent').isDisabled(), false, 'R66 keeps explicit agreement operable without a route');
+        if (!configured) {
+          assert.equal(await page.locator('#connected-start').isDisabled(), true);
+          await page.locator('#connected-consent').check();
+          assert.equal(await page.locator('#connected-consent').isChecked(), true);
+          assert.equal(await page.locator('#connected-start').isDisabled(), true, 'a tick cannot configure a provider or authorize Start');
+          await page.locator('#connected-start').evaluate(button => button.click());
+          assert.equal((await api('/chat/status')).consent, null, 'a local tick is not a server grant');
+          assert.equal((await api('/sessions')).items.length, 0, 'no conversation is enrolled without a route');
+        }
         const profilePath = join(ownerState, 'owner-profile.json');
         const serialized = await readFile(profilePath, 'utf8'), owner = JSON.parse(serialized);
         assert.equal(status.assistantId, owner.ownerId);

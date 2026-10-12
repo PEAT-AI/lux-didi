@@ -110,7 +110,7 @@ import DidiOwner
         if error is URLError { code = "service_unreachable" }
         else if error is DecodingError { code = "unexpected_response" }
         else if let reason = error as? LiveClientError { code = reason.rawValue }
-        else if String(describing: type(of: error)) == "NativeLiveAudioError" { code = "audio_device" }
+        else if let audio = error as? NativeLiveAudioError { code = audio.rawValue }
         else { code = "connection_refused" }
         do {
             try FileManager.default.createDirectory(at: logsDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -121,7 +121,7 @@ import DidiOwner
             let handle = try FileHandle(forWritingTo: file)
             defer { try? handle.close() }
             try handle.seekToEnd()
-            var record = try JSONSerialization.data(withJSONObject: ["event": "live_precreate_failed", "code": code], options: [.sortedKeys])
+            var record = try JSONSerialization.data(withJSONObject: ["event": "live_precreate_failed", "failureClass": error is NativeLiveAudioError ? "audio" : "service", "code": code], options: [.sortedKeys])
             record.append(10); try handle.write(contentsOf: record)
         } catch { /* Logging must not change the failure or restart Live. */ }
     }

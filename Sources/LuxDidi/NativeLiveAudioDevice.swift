@@ -2,19 +2,6 @@ import AVFoundation
 import Combine
 import Foundation
 
-enum NativeLiveAudioError: LocalizedError {
-    case unsupportedFormat, allocationFailed, converterUnavailable, permissionDenied, voiceProcessingUnavailable, deviceUnavailable
-    var errorDescription: String? {
-        switch self {
-        case .unsupportedFormat: return "Live audio format is unsupported."
-        case .allocationFailed: return "Live audio buffer could not be allocated."
-        case .converterUnavailable: return "Live microphone format could not be converted."
-        case .permissionDenied: return "Microphone permission was denied."
-        case .voiceProcessingUnavailable: return "Voice processing must be enabled on both microphone and output."
-        case .deviceUnavailable: return "Live audio device is unavailable."
-        }
-    }
-}
 
 struct NativePCMFrameAssembler {
     private var carry = Data()
@@ -144,12 +131,21 @@ final class NativeCaptureBuffer: @unchecked Sendable {
 
     func start(send: @escaping @Sendable (Data) async throws -> Void) async throws {
         guard engine == nil else { throw LiveClientError.unavailable }
-        guard await AVCaptureDevice.requestAccess(for: .audio) else { throw NativeLiveAudioError.permissionDenied }
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .restricted: throw NativeLiveAudioError.permissionRestricted
+        case .denied: throw NativeLiveAudioError.permissionDenied
+        case .notDetermined:
+            guard await AVCaptureDevice.requestAccess(for: .audio) else { throw NativeLiveAudioError.permissionDenied }
+        case .authorized: break
+        @unknown default: throw NativeLiveAudioError.permissionRestricted
+        }
         try Task.checkCancellation()
         let engine = AVAudioEngine(), player = AVAudioPlayerNode()
         do {
-            try engine.inputNode.setVoiceProcessingEnabled(true)
-            try engine.outputNode.setVoiceProcessingEnabled(true)
+            do {
+                try engine.inputNode.setVoiceProcessingEnabled(true)
+                try engine.outputNode.setVoiceProcessingEnabled(true)
+            } catch { throw NativeLiveAudioError.voiceProcessingUnavailable }
             guard engine.inputNode.isVoiceProcessingEnabled, engine.outputNode.isVoiceProcessingEnabled else {
                 throw NativeLiveAudioError.voiceProcessingUnavailable
             }
@@ -185,7 +181,7 @@ final class NativeCaptureBuffer: @unchecked Sendable {
         } catch {
             if self.engine != nil { stop() }
             else { engine.stop() }
-            throw error
+            throw (error as? NativeLiveAudioError) ?? NativeLiveAudioError.deviceUnavailable
         }
     }
     func setMuted(_ muted: Bool) { capture?.setMuted(muted); inputLevel = 0 }

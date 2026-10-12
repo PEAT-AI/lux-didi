@@ -165,8 +165,9 @@ enum NativeLivePresentation {
             }
         }
         // Device and owner errors have closed, locally authored descriptions.
+        if let audio = error as? NativeLiveAudioError { return audio.errorDescription! }
         let name = String(describing: type(of: error))
-        if ["NativeLiveAudioError", "CompanionError"].contains(name),
+        if name == "CompanionError",
            let text = (error as? LocalizedError)?.errorDescription { return text }
         return "Live voice could not start. Reconnect the service and try again."
     }
@@ -180,3 +181,19 @@ enum NativeLivePresentation {
         }
     }
 }
+
+enum NativeLiveAudioError: String, LocalizedError {
+    case unsupportedFormat, allocationFailed, converterUnavailable, permissionDenied, permissionRestricted, voiceProcessingUnavailable, deviceUnavailable
+    var errorDescription: String? {
+        switch self {
+        case .unsupportedFormat: return "Live audio format is unsupported."
+        case .allocationFailed: return "Live audio buffer could not be allocated."
+        case .converterUnavailable: return "Live microphone format could not be converted."
+        case .permissionDenied: return "Microphone permission was denied. Allow microphone access in System Settings."
+        case .permissionRestricted: return "Microphone access is restricted. Check this Mac’s privacy restrictions."
+        case .voiceProcessingUnavailable: return "Voice processing could not be enabled. Check the microphone and output device."
+        case .deviceUnavailable: return "Live audio device is unavailable. Select a working microphone and output device."
+        }
+    }
+}
+

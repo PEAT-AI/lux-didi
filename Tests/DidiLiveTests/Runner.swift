@@ -213,6 +213,10 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             try require(limits.sentence == "Session limit 15 min, idle limit 1 min.", "configured limits are plain text")
             try require(NativeLivePresentation.ended("session_timeout", limits: limits) == "Session limit reached (15 min). Start again to continue.", "session limit explains next action")
             try require(NativeLivePresentation.ended("idle_timeout", limits: limits) == "Ended after 1 min without speech. Start again when ready.", "idle limit explains next action")
+            for audio in [NativeLiveAudioError.permissionDenied, .permissionRestricted, .voiceProcessingUnavailable, .deviceUnavailable, .unsupportedFormat, .allocationFailed, .converterUnavailable] {
+                try require(NativeLivePresentation.failure(audio) == audio.errorDescription, "each real audio error keeps its typed sentence")
+            }
+            try require(NativeLivePresentation.failure(LiveClientError.http(status: 503, code: "not_ready")) == "Live service HTTP 503: not_ready.", "HTTP failure remains typed")
             let httpReason = LiveClientError.http(status: 403, code: "profile_denied")
             try require(httpReason.errorDescription == "Live service HTTP 403: profile_denied.", "HTTP status and typed code are visible")
             let closeReason = LiveClientError.socketClosed(code: 1008, reason: "attach_rejected:internal")

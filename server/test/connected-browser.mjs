@@ -67,7 +67,7 @@ try {
   await step('local Save stays local; explicit Start names actual model and creates trusted session', async () => {
     await page.locator('#message').fill('EXCLUDED_BROWSER_LOCAL_CANARY: archive this without any model send.');
     await page.getByRole('button', { name: 'Save message', exact: true }).click();
-    await page.waitForFunction(() => document.querySelector('.message-list, .entries, .conversation-grid')?.textContent.includes('EXCLUDED_BROWSER_LOCAL_CANARY'));
+    await page.waitForFunction(() => document.querySelector('.conversation-grid .thread .entries')?.textContent.includes('EXCLUDED_BROWSER_LOCAL_CANARY'));
     assert.equal(requests.filter(r => r.path === '/api/v1/chat' && r.method === 'POST').length, 0);
     assert.ok(await page.locator('#ask-didi').isDisabled());
     assert.match(await page.locator('.connected-disclosure').innerText(), /current and earlier selected turns/);

@@ -8,6 +8,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { pairLocal, startHost, type RuntimeDescriptor } from '../host/runtime.js';
+import { HostLog } from '../host/log.js';
 import { Store } from '../runtime/store.js';
 import { listenService } from '../http/server.js';
 
@@ -371,3 +372,28 @@ for (const scenario of ['both', 'existing-live', 'default', 'absent'] as const) 
     } finally { await host?.close(); await rm(dir, { recursive: true, force: true }); }
   });
 }
+
+// Small limits exercise the production rotation algorithm without producing host load.
+test('durable diagnostics rotate privately and persist only safe structured events', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'didi-log-'));
+  try {
+    const log = new HostLog(root, 220);
+    for (let n = 0; n < 12; n++) log.event({ event: 'config_seeded', file: 'providers.json', from: 'provider-config' });
+    log.event({ event: 'live_attach_rejected', code: 'internal', message: 'SECRET-message', bearer: 'SECRET-bearer', key: 'SECRET-key' });
+    for (const name of ['host.log', 'host.log.1', 'host.log.2']) {
+      const path = join(root, 'logs', name);
+      assert.equal((await stat(path)).mode & 0o777, 0o600);
+      const text = await readFile(path, 'utf8');
+      assert.ok(!text.includes('SECRET'));
+      for (const line of text.trim().split('\n')) {
+        const record = JSON.parse(line);
+        assert.ok(!Number.isNaN(Date.parse(record.timestamp)));
+        assert.equal(record.pid, process.pid);
+        assert.ok(['config_seeded', 'live_attach_rejected'].includes(record.event));
+      }
+      assert.ok(Buffer.byteLength(text) <= 220);
+    }
+    const newest = await readFile(join(root, 'logs', 'host.log'), 'utf8');
+    assert.match(newest, /live_attach_rejected/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

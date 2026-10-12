@@ -200,6 +200,13 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
 @main struct NativeLiveTests {
     static func main() async {
         do {
+            let httpReason = LiveClientError.http(status: 403, code: "profile_denied")
+            try require(httpReason.errorDescription == "Live service HTTP 403: profile_denied.", "HTTP status and typed code are visible")
+            let closeReason = LiveClientError.socketClosed(code: 1008, reason: "attach_rejected:internal")
+            try require(closeReason.errorDescription == "Live socket closed (1008): attach_rejected:internal.", "socket close reason is visible")
+            try require(LiveClientError.boundedCloseReason(Data("attach_rejected:internal\nSECRET".utf8)) == nil, "unsafe multiline reason rejected")
+            try require(LiveClientError.transport.errorDescription == nil, "unknown transport keeps generic fallback")
+
             let fixture = try JSONDecoder().decode(Fixture.self, from: FileHandle.standardInput.readDataToEndOfFile())
             let pendingWire = Data("[{\"id\":\"job1\",\"state\":\"in_progress\",\"markdown\":\"Working\"},{\"id\":\"job2\",\"state\":\"failed\",\"markdown\":\"Actual failure\"}]".utf8)
             let pendingCalls = try JSONDecoder().decode([NativePendingLiveJob].self, from: pendingWire)

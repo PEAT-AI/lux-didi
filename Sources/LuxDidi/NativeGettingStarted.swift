@@ -2,6 +2,7 @@ import Foundation
 import AVFoundation
 import AppKit
 import SwiftUI
+import Combine
 
 // Versioned independently of routine launches: only this onboarding build consumes it.
 enum NativeGettingStartedOnce {
@@ -40,20 +41,24 @@ enum NativeGettingStartedItems {
     }
 }
 
+@MainActor final class NativeGettingStartedProjection: ObservableObject {
+    @Published var rows: [NativeGettingStartedItem] = []
+}
+
 struct NativeGettingStartedView: View {
     let load: () async -> [NativeGettingStartedItem]
     let microphone: () -> Void
     let notifications: () -> Void
     let login: () -> Void
     let close: () -> Void
-    @State private var rows: [NativeGettingStartedItem] = []
+    @ObservedObject private var projection = NativeGettingStartedProjection()
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Getting started").font(.title)
             Text("What is ready, and what needs you. Permissions are requested only when you press a button.")
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    ForEach(rows) { row in
+                    ForEach(projection.rows) { row in
                         VStack(alignment: .leading, spacing: 4) {
                             Text(row.title).font(.headline)
                             Text(row.detail).textSelection(.enabled)
@@ -79,9 +84,9 @@ struct NativeGettingStartedView: View {
                 Spacer()
                 Button("Done", action: close).keyboardShortcut(.defaultAction)
             }
-        }.padding(24).frame(width: 640, height: 610).task { rows = await load() }
+        }.padding(24).frame(width: 640, height: 610).task { projection.rows = await load() }
     }
-    private func reload() { Task { rows = await load() } }
+    private func reload() { Task { projection.rows = await load() } }
 }
 
 @MainActor enum NativeGettingStartedPermissions {

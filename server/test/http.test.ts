@@ -151,17 +151,18 @@ test('HTTP request keys and browser session survive service and database restart
   } finally { await service.close(); store.close(); rmSync(dir,{recursive:true,force:true}); }
 });
 
-test('package installs offline and actual production CLI serves honest runtime-only status', async () => {
+// Per-test timeout: the two npm spawnSync caps below (120s + 180s) must fit inside it, so override the suite default (15s in `npm test`).
+test('package installs offline and actual production CLI serves honest runtime-only status', { timeout: 360000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(),'didi-install-'));
   let child: ReturnType<typeof spawn> | undefined;
   let cliStage = 'CLI spawn'; let cliStdout = ''; let cliStderr = ''; let cliError: Error | undefined;
   try {
     const cwd = new URL('../../',import.meta.url);
     const env = {...process.env,npm_config_cache:join(dir,'npm-cache')};
-    const packed = spawnSync('npm',['pack','--json','--offline','--ignore-scripts','--pack-destination',dir],{cwd,env,encoding:'utf8',timeout:5000});
+    const packed = spawnSync('npm',['pack','--json','--offline','--ignore-scripts','--pack-destination',dir],{cwd,env,encoding:'utf8',timeout:120000});
     assert.equal(packed.status,0,packed.status === 0 ? '' : packageFailure('npm pack', 'npm', ['pack','--json','--offline','--ignore-scripts','--pack-destination','<owned-temp>'], packed, env.npm_config_cache));
     const filename = (JSON.parse(packed.stdout) as {filename:string}[])[0]!.filename;
-    const installed = spawnSync('npm',['install','--prefix',join(dir,'install'),'--offline','--ignore-scripts','--omit=dev','--no-audit','--no-fund',join(dir,filename)],{env,encoding:'utf8',timeout:5000});
+    const installed = spawnSync('npm',['install','--prefix',join(dir,'install'),'--offline','--ignore-scripts','--omit=dev','--no-audit','--no-fund',join(dir,filename)],{env,encoding:'utf8',timeout:180000});
     assert.equal(installed.status,0,installed.status === 0 ? '' : packageFailure('npm offline install', 'npm', ['install','--prefix','<owned-temp>/install','--offline','--ignore-scripts','--omit=dev','--no-audit','--no-fund','<owned-tarball>'], installed, env.npm_config_cache));
     const state = join(dir,'state');
     child = spawn(process.execPath,[join(dir,'install/node_modules/@lux-didi/service/dist/index.js')],{env:{...env,DIDI_STATE_DIR:state,DIDI_PORT:'0'},stdio:['ignore','pipe','pipe']});

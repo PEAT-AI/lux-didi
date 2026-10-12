@@ -207,7 +207,11 @@ final class NativeCaptureBuffer: @unchecked Sendable {
         failed: { [weak self] in
             guard let self else { return }
             self.sendFrame = nil
-            Task { @MainActor in await self.interrupt() }
+            let token = self.captureGeneration
+            Task { @MainActor in
+                guard self.captureGeneration == token else { return }
+                await self.interrupt()
+            }
         })
     private static func defaultDevice(input: Bool) -> (id: String, name: String) {
         var property = AudioObjectPropertyAddress(
@@ -307,7 +311,10 @@ final class NativeCaptureBuffer: @unchecked Sendable {
                         if failed { await self.interrupt(); return }
                         guard let frame else { break }
                         do { try Task.checkCancellation(); try await send(frame) }
-                        catch { await self.interrupt(); return }
+                        catch {
+                            guard self.captureGeneration == token, !Task.isCancelled else { return }
+                            await self.interrupt(); return
+                        }
                     }
                 }
             }

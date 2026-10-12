@@ -46,7 +46,9 @@ import DidiOwner
         }
         device.onInterruption = { [weak self] in
             guard let self else { return }
+            let token = self.generation &+ 1
             await self.stop()
+            guard self.generation == token else { return }
             self.failure = "Live audio could not recover. Capture released. Restart explicitly to try again."
             self.state = .failed
         }
@@ -153,8 +155,11 @@ import DidiOwner
     }
     func stop() async {
         stopCapture()
+        let token = generation
         await coordinator.close()
+        guard generation == token else { return }
         let outcome = await coordinator.state
+        guard generation == token else { return }
         if case .outcomeUnknown = outcome { state = .outcomeUnknown }
         else { state = .ended }
         muted = false; speaking = false

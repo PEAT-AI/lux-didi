@@ -97,6 +97,4 @@ first, from the existing owner list route (`GET /api/v1/sessions/:id/entries`). 
   and `deleteMemoryAndReload` helper, so a cancelled or failed delete leaves the displayed list
   untouched.
 
-The memory list module above renders the whole section; the page mounts it from
-`web/src/main.ts`, which this wagon's Files in scope do not cover. Mounting is
-requested by a scope ruling, and the exact page patch is recorded with the wagon.
+The Memory tab mounts the list from `memory()` in `web/src/main.ts` (ruling WMEM2-R1 grants that file for the mount only): it calls `memoryListMarkup(entries, { filter: memoryFilter, disabled })` and binds the `#memory-filter` input to a client-side re-render. Nothing else in that file changes.

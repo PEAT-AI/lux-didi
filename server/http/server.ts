@@ -133,7 +133,9 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
           });
           send(res, 200, success(endpoints)); return;
         }
-        send(res, 200, success(live ? live.current(route.cursor) : { state: 'idle', since: null, entries: [], cursor: route.cursor })); return;
+        if (route.kind === 'liveCurrent') {
+          send(res, 200, success(live ? live.current(route.cursor) : { state: 'idle', since: null, entries: [], cursor: route.cursor })); return;
+        }
       }
       if (route.mutation) csrf(req, actor);
       if (route.kind === 'status') {

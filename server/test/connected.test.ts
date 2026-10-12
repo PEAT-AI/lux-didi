@@ -188,8 +188,8 @@ test('CONNECTED private-denying and unsupported profiles keep local host alive a
     try {
       const status = (await (await f.call('/chat/status')).json()).data;
       assert.equal(status.status, options.model ? 'error' : 'configured');
-      if (options.model) assert.deepEqual(status, { status: 'error', code: 'ADAPTER_CONFIGURATION_INVALID' });
-      assert.equal((await f.call('/conversations', { title: 'No grant', timeZone: 'UTC' })).status, 503);
+      if (options.model) assert.deepEqual(status, { status: 'error', code: 'ADAPTER_CONFIGURATION_INVALID', consent: null });
+      assert.equal((await f.call('/conversations', { title: 'No grant', timeZone: 'UTC', consent: true })).status, 503);
       assert.equal((await (await f.call('/sessions')).json()).data.items.length, 0);
       assert.equal((await f.call('/sessions', { title: 'Still local', timeZone: 'UTC' }, 'local')).status, 200);
       assert.equal(f.credentialCalls, 0); assert.equal(f.captured.length, 0);

@@ -29,6 +29,76 @@ struct StatusWire: Decodable {
     let profileIdentity: String?; let dataClasses: [String]?
 }
 
+// In-process HTTP fixture: captures the complete request, without a real timeout or server.
+final class DiagnosticHTTPFixture: URLProtocol, @unchecked Sendable {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var requests: [URLRequest] = []
+    nonisolated(unsafe) private static var status: Int? = 204
+    static func reset(status: Int?) { lock.lock(); defer { lock.unlock() }; requests = []; self.status = status }
+    static func captured() -> [URLRequest] { lock.lock(); defer { lock.unlock() }; return requests }
+    override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "diagnostic.fixture" }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        var captured = request
+        if captured.httpBody == nil, let stream = captured.httpBodyStream {
+            stream.open(); defer { stream.close() }
+            var data = Data(); var bytes = [UInt8](repeating: 0, count: 512)
+            while stream.hasBytesAvailable {
+                let count = stream.read(&bytes, maxLength: bytes.count)
+                if count <= 0 { break }; data.append(contentsOf: bytes.prefix(count))
+            }
+            captured.httpBody = data
+        }
+        Self.lock.lock(); Self.requests.append(captured); let status = Self.status; Self.lock.unlock()
+        if let status {
+            client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: status,
+                httpVersion: "HTTP/1.1", headerFields: nil)!, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocolDidFinishLoading(self)
+        } else { client?.urlProtocol(self, didFailWithError: URLError(.cannotConnectToHost)) }
+    }
+    override func stopLoading() {}
+}
+
+@MainActor func checkClientDiagnostics() async throws {
+    let config = URLSessionConfiguration.ephemeral
+    config.protocolClasses = [DiagnosticHTTPFixture.self]
+    config.httpCookieStorage = nil; config.httpShouldSetCookies = false
+    let session = URLSession(configuration: config)
+    defer { session.invalidateAndCancel() }
+    let origin = URL(string: "http://diagnostic.fixture")!
+    let http = NativeLiveOperatorHTTP(authority: (origin, { url, _ in
+        var request = URLRequest(url: url)
+        request.setValue("Bearer synthetic-operator", forHTTPHeaderField: "Authorization")
+        return request
+    }))
+    let cases: [(Error, String, String, Int?)] = [
+        (NativeLiveAudioError.permissionDenied, "audio", "permissionDenied", nil),
+        (LiveClientError.invalidAudio, "service", "invalidAudio", nil),
+        (URLError(.cannotConnectToHost), "service", "service_unreachable", nil),
+        (LiveClientError.http(status: 503, code: "private text"), "service", "http", 503),
+        (LiveClientError.socketClosed(code: 1006, reason: "private text"), "service", "socketClosed", 1006),
+        (DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "private path")), "service", "unexpected_response", nil),
+        (ProbeError.assertion("private error"), "service", "connection_refused", nil),
+    ]
+    for status in [204, 429, nil] as [Int?] {
+        for (error, failureClass, code, detail) in cases {
+            DiagnosticHTTPFixture.reset(status: status)
+            let sentence = NativeLivePresentation.failure(error)
+            await http.postPrecreateFailure(error, using: session)
+            let requests = DiagnosticHTTPFixture.captured()
+            try require(requests.count == 1, "diagnostic is attempted exactly once, including rate limit and transport failure")
+            let request = requests[0]
+            try require(request.url == origin.appendingPathComponent("api/v1/diagnostics/client") && request.httpMethod == "POST", "diagnostic route and method")
+            try require(request.value(forHTTPHeaderField: "Authorization") == "Bearer synthetic-operator" && request.value(forHTTPHeaderField: "Cookie") == nil, "operator bearer without cookies")
+            var expected: [String: Any] = ["event": "live_precreate_failed", "failureClass": failureClass, "code": code]
+            if let detail { expected["detail"] = detail }
+            let body = try JSONSerialization.data(withJSONObject: expected, options: [.sortedKeys])
+            try require(request.httpBody == body && body.count <= 512, "exact closed diagnostic body, no textual details")
+            try require(NativeLivePresentation.failure(error) == sentence, "diagnostic failures cannot replace the typed sentence")
+        }
+    }
+}
+
 actor Gate {
     private var continuations: [CheckedContinuation<Void, Never>] = []
     private(set) var arrivals = 0
@@ -243,6 +313,7 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
 @main struct NativeLiveTests {
     static func main() async {
         do {
+            try await checkClientDiagnostics()
             try require(NativeLivePresentation.failure(URLError(.cannotConnectToHost)) == "Live service is unreachable. Reconnect the service and try again.", "transport failure is actionable")
             try require(NativeLivePresentation.failure(LiveClientError.transport) == NativeLivePresentation.failure(URLError(.timedOut)), "coordinator preserves transport class")
             try require(NativeLivePresentation.failure(LiveClientError.unavailable) == "Live voice is not configured. Check the Live service settings.", "unconfigured failure is actionable")

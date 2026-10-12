@@ -77,6 +77,7 @@ import DidiOwner
             if self?.state == .failed { return }
             for await event in coordinator.events {
                 let current = await coordinator.state
+                let beforeCreate = await coordinator.sessionID == nil
                 guard let self, self.generation == token, !Task.isCancelled else { return }
                 guard current == event else { continue }
                 switch event {
@@ -99,7 +100,7 @@ import DidiOwner
                 case .failed(let reason):
                     self.device.stop(); self.state = .failed
                     self.failure = NativeLivePresentation.failure(reason)
-                    self.logFailure(reason)
+                    self.logFailure(reason, beforeCreate: beforeCreate)
                 case .createUnknown:
                     self.device.stop(); self.state = .outcomeUnknown
                     self.failure = "Live start outcome is unknown. Check the conversation before starting again."
@@ -128,13 +129,16 @@ import DidiOwner
                 self.device.stop(); await coordinator.close()
                 guard self.generation == token else { return }
                 self.failure = NativeLivePresentation.failure(error)
-                self.logFailure(error)
+                self.logFailure(error, beforeCreate: true)
                 self.state = .failed
             }
         }
     }
-    private func logFailure(_ error: Error) {
-        guard let logsDirectory else { return }
+    @discardableResult
+    func logFailure(_ error: Error, beforeCreate: Bool, diagnosticSession: URLSession? = nil) -> Task<Void, Never>? {
+        guard beforeCreate else { return nil }
+        let diagnostic = Task { [http] in await http.postPrecreateFailure(error, using: diagnosticSession) }
+        guard let logsDirectory else { return diagnostic }
         let code: String
         if error is URLError { code = "service_unreachable" }
         else if error is DecodingError { code = "unexpected_response" }
@@ -145,7 +149,7 @@ import DidiOwner
             try FileManager.default.createDirectory(at: logsDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             let file = logsDirectory.appendingPathComponent("native-live.log")
             if !FileManager.default.fileExists(atPath: file.path) {
-                guard FileManager.default.createFile(atPath: file.path, contents: nil, attributes: [.posixPermissions: 0o600]) else { return }
+                guard FileManager.default.createFile(atPath: file.path, contents: nil, attributes: [.posixPermissions: 0o600]) else { return diagnostic }
             }
             let handle = try FileHandle(forWritingTo: file)
             defer { try? handle.close() }
@@ -153,6 +157,7 @@ import DidiOwner
             var record = try JSONSerialization.data(withJSONObject: ["event": "live_precreate_failed", "failureClass": error is NativeLiveAudioError ? "audio" : "service", "code": code], options: [.sortedKeys])
             record.append(10); try handle.write(contentsOf: record)
         } catch { /* Logging must not change the failure or restart Live. */ }
+        return diagnostic
     }
     func toggleMute() {
         guard [.listening, .speaking, .muted, .pausedForInput].contains(state) else { return }

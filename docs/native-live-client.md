@@ -132,3 +132,18 @@ model output is flushed. Resumption returns to listening, or muted if the owner
 was muted, without creating another session. A terminal `resume_failed` stops the
 device and displays **Naya's connection could not be resumed. Start Live again.**
 Only an explicit Start can open another session.
+### Best-effort pre-CREATE diagnostic
+
+A typed pre-CREATE failure still presents the same sentence and appends the same
+`logs/native-live.log` line. Independently, the app asynchronously attempts one
+`POST /api/v1/diagnostics/client` through its existing operator bearer client,
+without cookies. The JSON contains only `event: "live_precreate_failed"`, the
+`audio` or `service` failure class and the closed failure code. Only `http` and
+`socketClosed` include an integer `detail` (status or close code). No text, paths,
+error descriptions or response bodies are sent. A 429 or transport failure is
+not recorded remotely; it never replaces the native failure and is not retried.
+
+The pre-CREATE boundary is explicit: the start catch is pre-CREATE, and a
+coordinator failure is pre-CREATE only while no created session ID exists.
+After CREATE completes, failures emit neither this native log line nor this
+POST; the service journal and terminal outcome already record them.

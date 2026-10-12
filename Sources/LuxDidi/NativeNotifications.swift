@@ -1,7 +1,38 @@
 import Foundation
 import UserNotifications
 
-// No retry queue: the core outbox owns retries. OS acceptance is not a read receipt.
+// OS acceptance is not a read receipt. Live callbacks retry on the existing poll,
+// at most three submissions per job per app launch, never requesting consent implicitly.
+struct NativeLiveCallDelivery {
+    private(set) var pendingIDs: [String] = []
+    private(set) var isFresh = false
+    private(set) var notified = Set<String>()
+    private var acknowledged = Set<String>()
+    private var attempts: [String: Int] = [:]
+    private var inFlight = Set<String>()
+
+    mutating func reconcile(_ ids: [String]?) {
+        isFresh = ids != nil
+        pendingIDs = (ids ?? []).filter { !acknowledged.contains($0) }
+    }
+    func canPickUp(_ id: String) -> Bool { isFresh && pendingIDs.contains(id) }
+    mutating func beginAttempt(_ id: String, permitted: Bool) -> Bool {
+        guard permitted, canPickUp(id), !notified.contains(id),
+              !inFlight.contains(id), attempts[id, default: 0] < 3 else { return false }
+        attempts[id, default: 0] += 1
+        inFlight.insert(id)
+        return true
+    }
+    mutating func completeAttempt(_ id: String, result: AdapterResult) {
+        inFlight.remove(id)
+        if result == .acknowledged { notified.insert(id) }
+    }
+    mutating func acknowledge(_ id: String) {
+        acknowledged.insert(id)
+        pendingIDs.removeAll { $0 == id }
+    }
+}
+
 final class NativeNotifications: NSObject, UNUserNotificationCenterDelegate {
     private let center = UNUserNotificationCenter.current()
     var onOpen: ((ReminderLink) -> Void)?

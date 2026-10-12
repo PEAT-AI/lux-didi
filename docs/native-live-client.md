@@ -93,3 +93,20 @@ in the menu. No shortcut, login launch, call badge or Show action implicitly
 restarts a stopped microphone. Login availability is opt-in; closing or hiding
 still stops capture. Status text and its accessibility label expose the actual
 Live state independently of pending calls.
+
+### Native silent callbacks
+
+With the app running, pending callbacks are polled even when its window is closed.
+Use **Enable callback notifications** to explicitly request macOS alert/badge
+permission. Denied or unavailable notifications fall back to the independent menu
+bar badge and **Pick up Naya’s call** entry. Notifications are silent and generic:
+no result text, microphone activation, or override of Focus settings.
+
+A successful notification submission is remembered for this app launch. Transient
+submission failures retry on subsequent polls, at most three attempts per job per
+launch. Denial does not consume attempts. Pickup suppresses that job for the rest
+of the launch; the service owns durable acknowledgement. Relaunch discovers any
+still-pending job again. Poll errors clear stale offers and show **Callbacks
+offline** in the app and status menu. A stale notification click revalidates at
+the service before stopping an active conversation, and reports a missing job or
+an offline service without starting capture. Only explicit pickup starts voice.

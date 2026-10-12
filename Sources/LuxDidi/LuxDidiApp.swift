@@ -17,8 +17,15 @@ import Security
     private var checkingConnections = false
     private let liveLogsDirectory: URL?
     @Published var connecting = false
+    @Published private(set) var serviceRestarting = false
     let voice = NativeVoice()
     @Published private(set) var live: NativeLiveConversation?
+    private lazy var liveAuthorityOwner: NativeLiveAuthorityOwner<NativeLiveConversation> = NativeLiveAuthorityOwner(
+        release: { conversation in
+            conversation.stopCapture()
+            Task { await conversation.stop() }
+        },
+        publish: { [weak self] in self?.live = $0 })
     @Published private(set) var pendingLiveCalls: [NativePendingLiveJob] = []
     private var notifiedLiveJobs = Set<String>()
     private var checkingLiveCalls = false
@@ -44,10 +51,20 @@ import Security
                     catch { self.error = NativeServiceError.invalidOperatorSettings.localizedDescription; return }
                     let owner = try NativeServiceSupervisor(runtime: runtime, proof: prepared, operatorSettings: operatorSettings)
                     supervisor = owner
+                    owner.onRestartStatus = { [weak self, weak owner] restarting in
+                        self?.serviceRestarting = restarting
+                        if !restarting, owner?.isRunning == false {
+                            self?.error = "Local service unavailable. Reconnect explicitly after bounded retries."
+                        }
+                    }
+                    owner.onRecovered = { [weak self] in
+                        Task { @MainActor in await self?.reconnect() }
+                    }
                     owner.onUnavailable = { [weak self] in
                         self?.error = NativeServiceError.exited.localizedDescription
                         self?.shell?.clear()
-                        self?.stopLive()
+                        self?.liveAuthorityOwner.unavailable()
+                        self?.error = "Local service restarting. Lost Live requires an explicit Start."
                     }
                     return
                 }
@@ -78,6 +95,7 @@ import Security
                 } else {
                     client = CompanionClient(descriptor: descriptor, credential: credential, expectedEpoch: connection.authorityEpoch, connectionGuard: allowed)
                 }
+                liveAuthorityOwner.rebind(connection.nonce)
                 if shell?.descriptor.origin != descriptor.origin { shell = CompanionWeb(descriptor: descriptor) }
             }
             guard let client, let shell else { throw CompanionError.invalidConfiguration }
@@ -152,12 +170,12 @@ import Security
     }
     func startLive(pickupJobID: String? = nil) {
         guard let client else { error = "Connect the local service before starting Live voice."; return }
-        if live == nil {
-            live = NativeLiveConversation(authority: client.authenticatedRequestBuilder(), dictationIsCapturing: { [weak self] in
+        let conversation = liveAuthorityOwner.ownerStart {
+            NativeLiveConversation(authority: client.authenticatedRequestBuilder(), dictationIsCapturing: { [weak self] in
                 self?.voice.state.phase == .recording
             }, pickupJobID: pickupJobID, logsDirectory: liveLogsDirectory)
         }
-        live?.start()
+        conversation.start()
     }
     func stopLive() {
         let conversation = live
@@ -176,7 +194,7 @@ import Security
     }
     func logout() async {
         stopRecording("Logout")
-        await live?.stop(); live = nil
+        await live?.stop(); liveAuthorityOwner.clear()
         await client?.revokePageSession(); shell?.clear()
     }
     func shutdown() async {
@@ -191,11 +209,18 @@ struct NativeLiveControls: View {
     var body: some View {
         VStack {
             Text("Live: " + conversation.state.rawValue).accessibilityLabel("Live voice lifecycle")
+            if !device.route.isEmpty { Text(device.route).font(.caption) }
+            if conversation.state == .pausedForInput {
+                Button("Resume") { conversation.start() }
+            }
+            if conversation.state == .failed {
+                Button("Restart") { conversation.start() }
+            }
             ProgressView(value: conversation.state == .muted ? 0 : Double(device.inputLevel))
                 .accessibilityLabel(conversation.state == .muted ? "Microphone muted" : "Live microphone input level")
             HStack {
-                Button(conversation.state == .muted ? "Unmute" : "Mute") { conversation.toggleMute() }
-                    .disabled(![.listening, .speaking, .muted].contains(conversation.state))
+                Button(conversation.isMuted ? "Unmute" : "Mute") { conversation.toggleMute() }
+                    .disabled(![.listening, .speaking, .muted, .pausedForInput].contains(conversation.state))
                 Button("Stop Live voice") { Task { await conversation.stop() } }
             }
             if let failure = conversation.failure { Text(failure).font(.caption) }
@@ -267,7 +292,8 @@ struct RootView: View {
                     }
                 }
                 Text(captureDetail).font(.caption)
-                if let error = model.error { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
+                if model.serviceRestarting { Text("Local service restarting…").accessibilityLabel("Local service restarting") }
+                    if let error = model.error { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
                 Text("Record locally, review the text, then send it. Closing Didi keeps your draft.").font(.caption2).foregroundStyle(.secondary)
             }.padding(12)
         }.frame(minWidth: 780, minHeight: 620)
@@ -428,7 +454,7 @@ struct RootView: View {
         statusItem.button?.toolTip = presentation.text
         statusItem.button?.setAccessibilityLabel(presentation.text)
         liveMenuItem?.title = presentation.text
-        muteMenuItem?.title = presentation.state == "muted" ? "Unmute" : "Mute"
+        muteMenuItem?.title = model.live?.isMuted == true ? "Unmute" : "Mute"
     }
     func menuWillOpen(_ menu: NSMenu) {
         updateLiveStatus()

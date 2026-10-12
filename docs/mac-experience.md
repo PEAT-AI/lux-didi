@@ -86,6 +86,14 @@ Start; a limit-ended session explains how to continue explicitly. The read-only
 Connections card shows each connector's state and safe reason, with ten-second
 refreshes only while visible. Unavailable connection status is shown explicitly.
 
+## Live routes and local service recovery
+
+The Live panel displays the current microphone and system output. Changing only the output rebuilds audio inside the same authorized session, preserving mute and discarding queued playback rather than replaying it. Changing the default microphone releases capture and asks “Microphone changed to <device name>. Resume?” Explicit Resume is required, and it rechecks the device identity. No valid microphone or a failed rebuild instead presents Restart with capture released. Hiding the window still stops capture; route recovery does not change that rule or the activation policy.
+
+An owned local-service exit stops Live and displays persistent “Local service restarting” status. Replacements use a bounded three-attempt budget with 1/2/4-second backoff. Exhaustion asks for explicit Reconnect; Quit or disconnect cancels recovery. Wake reconciles child liveness and service health, while a network failure alone never causes child replacement. The restored service connection discards the old conversation and its stale authority, but does not restore microphone authorization: the owner must explicitly Start a fresh Live conversation using the replacement service authority. A wake health check with unchanged authority does not discard an active conversation.
+
+Silent injected tests exercise the real audio converter, capture queue and device drain, including preserved mute and discarded stale frames. Lifecycle seams use injected scheduling, launch outcomes and wake events, never real timeout waits. Physical AirPods/USB transitions, voice-processing effectiveness and acoustic behavior remain human-device acceptance items.
+
 ### Summon and microphone availability
 
 Control-Option-Space remains Show/hide and never starts capture. Explicit Start

@@ -145,7 +145,7 @@ export class ConnectedView {
     }); });
     panel.querySelector<HTMLSelectElement>('#connected-history')?.addEventListener('change', event => { const next = (event.target as HTMLSelectElement).value; void this.select(next).catch(error => { this.#error = error instanceof Error ? error.message : 'Could not open that connected conversation.'; this.attach(); }); });
     panel.querySelector('#connected-recover')?.addEventListener('click', () => { if (c) void this.#action(() => this.select(c.sessionId)); });
-    panel.querySelector('#connected-revoke')?.addEventListener('click', () => { if (c) void this.#action(async () => { await request(`/conversations/${c.sessionId}/revoke`, { method: 'POST', body: {} }); await this.select(c.sessionId); }); });
+    panel.querySelector('#connected-revoke')?.addEventListener('click', () => { if (c) void this.#action(async () => { await request(`/conversations/${c.sessionId}/revoke`, { method: 'POST', body: {} }); await this.select(c.sessionId); this.#status = await request<RouteStatus>('/chat/status'); this.attach(); }); });
     panel.querySelector<HTMLTextAreaElement>('#connected-draft')?.addEventListener('input', event => { this.#draft = (event.target as HTMLTextAreaElement).value; this.#save(); });
     panel.querySelector('#connected-send-form')?.addEventListener('submit', event => { event.preventDefault(); if (c) void this.#send(c); });
     panel.querySelector<HTMLInputElement>('#connected-notes-query')?.addEventListener('input', event => { this.#memoryQuery = (event.target as HTMLInputElement).value; });

@@ -52,7 +52,7 @@ test('standing consent never crosses route or model boundaries, and does not dis
     assert.equal(f.calls(), 0);
   } finally { f.close(); }
 });
-test('revocation and disclosure revision invalidate standing grants but preserve conversation grants', () => {
+test('revocation and disclosure revision invalidate standing grants but preserve conversation grants', async () => {
   const f = fixture();
   try {
     const ordinary = enroll(f, 'ordinary', { consent: true });
@@ -63,6 +63,9 @@ test('revocation and disclosure revision invalidate standing grants but preserve
     f.chat.revoke(standing.sessionId, f.context);
     assert.throws(() => enroll(f, 'revoked'), ChatError);
     assert.equal(f.chat.conversation(ordinary.sessionId, f.context).state, 'active');
+    const run = f.chat.accept({ sessionId: ordinary.sessionId, text: 'Still allowed', idempotencyKey: 'ordinary-run' }, f.context);
+    for await (const event of f.chat.subscribe(run.runId, f.context)) if (event.type === 'snapshot' && event.run.state === 'terminal') break;
+    assert.equal(f.calls(), 1);
   } finally { f.close(); }
 });
 
@@ -119,4 +122,18 @@ test('real HTTP enrollment requires disclosure, returns standing scope and obser
     const after = await fetch(`${service.origin}/api/v1/chat/status`, { headers: { Cookie: cookie } });
     assert.equal((await after.json()).data.consent, null);
   } finally { await service.close(); f.close(); }
+});
+
+test('ordinary standing grant does not authorize private-route enrollment or generation', () => {
+  const f = fixture();
+  try {
+    const ordinary = new ChatService({ ...f.config, route: { ...f.config.route, keyReference: 'ordinary-route', allowedClasses: ['ordinary'] } });
+    ordinary.recover(f.recoveryContext);
+    const grant = ordinary.enroll({ title: 'ordinary', timeZone: 'UTC', idempotencyKey: 'ordinary-standing', consent: true, remember: true }, f.context);
+    const privateRoute = new ChatService({ ...f.config, route: { ...f.config.route, keyReference: 'private-route', allowedClasses: ['ordinary', 'private'] } });
+    privateRoute.recover(f.recoveryContext);
+    assert.throws(() => privateRoute.enroll({ title: 'private', timeZone: 'UTC', idempotencyKey: 'private', consent: false }, f.context), ChatError);
+    assert.throws(() => privateRoute.accept({ sessionId: grant.sessionId, text: 'Private', idempotencyKey: 'private-run' }, f.context), ChatError);
+    assert.equal(f.calls(), 0);
+  } finally { f.close(); }
 });

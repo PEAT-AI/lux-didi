@@ -888,8 +888,8 @@ test('canonical host resumes one journal and never exposes the handle on the wir
   await f.frame(2);
   // Assert the actual serialized shape before waiting on resumed: missing fields fail promptly.
   const rebuilding = await next('continuity');
-  assert.equal(rebuilding.event, 'rebuilding');
-  assert.equal(rebuilding.reason, 'go_away');
+  assert.deepEqual(rebuilding, { type: 'continuity', event: 'rebuilding', reason: 'go_away', sequence: null, journalSequence: rebuilding.journalSequence });
+  assert.equal(typeof rebuilding.journalSequence, 'number');
   const pageToken = 'r'.repeat(43);
   host.store.transaction(tx => tx.run('INSERT INTO runtime_sessions VALUES (?,?,?,?)', [createHash('sha256').update(pageToken).digest('hex'), 'resume-page', 'csrf', Date.now() + 60_000]));
   const projection = await json(host.service.origin, '/api/v1/live/current', { headers: { cookie: `didi_session=${pageToken}` } });
@@ -899,13 +899,17 @@ test('canonical host resumes one journal and never exposes the handle on the wir
   const snapshot = await json(host.service.origin, `/api/v1/live-sessions/${id}`, { headers });
   assert.equal(JSON.stringify([frames, projection.body, status.body, snapshot.body]).includes(handle), false);
   assert.equal(readFileSync(join(dataDir, 'logs', 'host.log'), 'utf8').includes(handle), false);
-  f.send({ setupComplete: {} }); await next('continuity', 'resumed');
+  f.send({ setupComplete: {} });
+  const resumed = await next('continuity', 'resumed');
+  assert.deepEqual(resumed, { type: 'continuity', event: 'resumed', sequence: null, journalSequence: resumed.journalSequence });
+  assert.ok(Number(resumed.journalSequence) > Number(rebuilding.journalSequence));
   assert.deepEqual(host.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot,memory_provenance FROM live_sessions WHERE live_session_id=?', [id])), frozen);
   ws.send(JSON.stringify({ type: 'close' })); await closed;
   assert.equal(frames.filter(frame => frame.type === 'terminal').length, 1);
   const rows = host.store.transaction(tx => tx.all('SELECT journal_id,kind FROM live_journal WHERE live_session_id=? ORDER BY journal_id', [id]));
   assert.equal(rows.filter(row => row.kind === 'terminal').length, 1);
   assert.equal(new Set(rows.map(row => row.journal_id)).size, rows.length);
+  assert.ok(rows.every((row, index) => index === 0 || Number(rows[index - 1]!.journal_id) < Number(row.journal_id)));
   assert.equal(readFileSync(join(dataDir, 'logs', 'host.log'), 'utf8').includes(handle), false);
   assert.equal(JSON.stringify(frames).includes(handle), false);
 });

@@ -104,6 +104,16 @@ the same `kind`, `event` and optional `reason` with `text: null`; page entries u
 `seq` for the journal sequence. No marker, fragment or page entry includes a
 provider handle. Continuity entries are status facts, never transcript turns.
 
+For example, the exact socket JSON fields are:
+
+```json
+{"type":"continuity","sequence":null,"journalSequence":12,"event":"rebuilding","reason":"go_away"}
+{"type":"continuity","sequence":null,"journalSequence":13,"event":"resumed"}
+```
+
+The resumed frame omits `reason`; nullable marker payload fields are omitted
+rather than serialized as null. The journal sequences above are illustrative.
+
 On `rebuilding`, keep the audio device open, drop captured input rather than
 buffering/replaying it, stop old queued playback and show **Reconnecting**.
 On `resumed`, permit new input and return to normal live presentation. Do not

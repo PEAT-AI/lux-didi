@@ -77,8 +77,8 @@ expect(registeredKeys == [1, 2], "shortcut registrations are separate even when 
 expect(shortcutRegistration.startStatus.contains("Unavailable") && shortcutRegistration.muteStatus == "registered", "conflict does not hide independent mute registration")
 var shown = 0, started = 0, muted = 0, stopped = 0
 var active = false
-let actions = NativeSummonActions(show: { shown += 1 }, start: {
-    guard !active else { return }; active = true; started += 1
+let actions = NativeSummonActions(show: { shown += 1 }, isCapturing: { active }, start: {
+    active = true; started += 1
 }, mute: { muted += 1 }, stop: { active = false; stopped += 1 })
 actions.show()
 expect(shown == 1 && started == 0, "Show never starts capture")
@@ -88,3 +88,7 @@ actions.mute(); actions.stop()
 expect(muted == 1 && stopped == 1 && !active, "mute and stop route without starting")
 expect(NativeLaunchVisibility.shouldShow(loginLaunch: true) == false, "login launch stays hidden")
 expect(NativeLaunchVisibility.shouldShow(loginLaunch: false), "ordinary launch shows window without starting")
+
+for state in ["idle", "ended", "failed", "outcomeUnknown"] {
+    expect(LiveStatusPresentation(state: state, pendingCall: false).text == "Naya: stopped", "inactive status \(state) is stopped")
+}

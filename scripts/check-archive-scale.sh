@@ -37,10 +37,14 @@ if (!existsSync(join(deps, 'typescript/bin/tsc')) || !existsSync(join(deps, '@ty
   deps = join(yard, 'node_modules');
 }
 mkdirSync(join(out, 'source/adapters/model'), { recursive: true });
+mkdirSync(join(out, 'source/tools'), { recursive: true });
 for (const dir of ['chat', 'domain', 'runtime', 'contracts', 'prompt']) cpSync(join(root, 'server', dir), join(out, 'source', dir), { recursive: true });
 for (const file of readdirSync(join(root, 'server/adapters/model'))) {
   if (file.endsWith('.ts')) cpSync(join(root, 'server/adapters/model', file), join(out, 'source/adapters/model', file));
 }
+// adapters/model/loop.ts imports ../../tools/declarations.js; stage it so the
+// isolated copy compiles instead of failing TS2307.
+cpSync(join(root, 'server/tools/declarations.ts'), join(out, 'source/tools/declarations.ts'));
 // NodeNext must compile as the canonical ESM service, not CommonJS.
 cpSync(join(root, 'server/package.json'), join(out, 'package.json'));
 const files = [];

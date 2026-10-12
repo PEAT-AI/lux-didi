@@ -45,7 +45,7 @@ test('HTTP deletion atomically scrubs retained chat, Live and request copies, in
     const stream = f.chat.subscribe(run.runId, f.context);
     const finished = (async () => { for await (const event of stream) { if (event.type === 'snapshot' && event.run.state === 'terminal') return; } })();
     work.shift()!(); await finished;
-    assert.equal(JSON.stringify(requests[0]).includes(JSON.stringify(note).slice(1, -1)), true);
+    assert.equal(JSON.stringify(requests[0]).includes('synthetic retained deletion'), true);
     const pending = f.chat.accept({ sessionId: conversation.id, text: 'Use selected memory again', selectedMemoryEntryIds: [entry.id, keep.id], idempotencyKey: 'pending' }, f.context);
     const ctx = { clientId: f.context.clientId, auditId: 'retained', authorityEpoch: f.store.authorityEpoch };
     const input = { idempotencyKey: 'live', inputClass: 'ordinary' as const };

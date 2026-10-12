@@ -400,7 +400,7 @@ for (const scenario of ['both', 'existing-live', 'default', 'absent'] as const) 
       }
       assert.equal((await stat(effective)).mode & 0o777, 0o700);
       const seeded = scenario === 'both' ? ['live.json', 'mcp.json'] : scenario === 'existing-live' ? ['mcp.json'] : [];
-      assert.deepEqual(logs, seeded.map(name => `config_seeded file=${name} from=provider-config`));
+      assert.deepEqual(logs, [], 'host stdout is reserved for JSON protocol frames');
       if (effective !== defaults) for (const name of ['gemini-primary.json', 'profile.json', 'admin-credential']) await assert.rejects(readFile(join(effective, name)), { code: 'ENOENT' });
     } finally { await host?.close(); await rm(dir, { recursive: true, force: true }); }
   });

@@ -1285,3 +1285,21 @@ test('provider voice activity journals listening and thinking without retaining 
   attachment.close();
   await attachment.done;
 });
+
+for (const outcome of ['failed', 'closed', 'unknown'] as const) {
+  test(`page projects past Live ${outcome} with truthful timing`, async t => {
+    const h = await harness(t);
+    const session = h.owner.create({ idempotencyKey: 'past', inputClass: 'ordinary' }, h.ctx);
+    const terminal = outcome === 'unknown' ? null : JSON.stringify({ state: outcome, code: 'fixture' });
+    h.store.transaction(tx => tx.run('UPDATE live_sessions SET terminal_outcome=?,updated_at=? WHERE live_session_id=?', [terminal, NOW + 1000, session.liveSessionId]));
+    const page = h.owner.current();
+    assert.equal(page.state, 'ended');
+    assert.deepEqual((page as typeof page & { pastSession?: unknown }).pastSession, { outcome, endedAt: outcome === 'unknown' ? null : NOW + 1000, lastObservedAt: NOW + 1000 });
+  });
+}
+test('active page does not carry past session metadata', async t => {
+  const h = await harness(t);
+  await attached(h);
+  assert.equal(h.owner.current().state, 'listening');
+  assert.equal((h.owner.current() as { pastSession?: unknown }).pastSession, undefined);
+});

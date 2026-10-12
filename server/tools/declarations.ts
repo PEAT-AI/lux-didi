@@ -10,7 +10,13 @@ export function declarationsFor(registry: readonly ToolDefinition[]): { declarat
     const schema = value as JsonObject;
     const type = String(schema.type ?? 'OBJECT').toUpperCase();
     if (type === 'ARRAY' || type === 'BOOLEAN' || schema.enum !== undefined) return { type: 'STRING', description: [schema.description, `Original schema: ${JSON.stringify(schema)}`].filter(Boolean).join(' ') };
-    const result: JsonObject = { ...structuredClone(schema), type };
+    // Build the restricted provider dialect, never copy arbitrary original keys.
+    const result: JsonObject = { type: ['STRING', 'NUMBER', 'INTEGER', 'OBJECT'].includes(type) ? type : 'STRING' };
+    for (const key of ['description', 'required', 'nullable'] as const) if (schema[key] !== undefined) result[key] = structuredClone(schema[key]);
+    const presentation = new Set(['type', 'properties', 'description', 'required', 'nullable', '$schema', '$id', 'title', 'default', 'examples']);
+    if (type !== result.type || Object.keys(schema).some(key => !presentation.has(key))) {
+      result.description = [schema.description, `Original schema: ${JSON.stringify(schema)}`].filter(Boolean).join(' ');
+    }
     if (schema.properties && typeof schema.properties === 'object') result.properties = Object.fromEntries(Object.entries(schema.properties).map(([k, v]) => [k, flatten(v)]));
     return result;
   };

@@ -161,7 +161,7 @@ import Security
     }
     func stopLive() {
         let conversation = live
-        conversation?.device.stop()
+        conversation?.stopCapture()
         Task { await conversation?.stop() }
     }
     func startDictation() {
@@ -223,9 +223,9 @@ struct RootView: View {
                 Text("Native capture · \(model.hotkeyStatus)").font(.caption).foregroundStyle(.secondary)
                 HStack {
                     TextField("User-entered or on-device transcribed text", text: $model.draft)
-                    Button(model.captureStatus == .unknown ? "Retry Send" : "Send") { Task { await model.saveDraft() } }
+                    Button(model.captureStatus == .unknown ? "Retry Save note" : NativeNoteAction.label) { Task { await model.saveDraft() } }
                         .disabled(!Presentation.canSend(model.draft) || model.captureStatus == .sending || voice.state.phase == .recording)
-                        .accessibilityLabel(model.captureStatus == .unknown ? "Retry same text capture" : "Send text")
+                        .accessibilityLabel(model.captureStatus == .unknown ? "Retry Save note" : NativeNoteAction.label)
                     Button("Start") { model.startDictation() }
                         .disabled(model.live?.isCapturing == true || voice.state.phase == .recording || voice.microphone != .granted || voice.speech != .granted || !voice.onDevice)
                         .accessibilityLabel("Start recording")
@@ -284,7 +284,7 @@ struct RootView: View {
     }
 }
 
-@MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+@MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate {
     let model: AppModel
     private let proofRequest: InstalledProofRequest?
     init(proofRequest: InstalledProofRequest? = nil) {
@@ -292,6 +292,19 @@ struct RootView: View {
         super.init()
     }
     let hotkey = GlobalHotkey()
+    let liveShortcuts = NativeShortcuts()
+    private lazy var summonActions = NativeSummonActions(show: { [weak self] in self?.show() },
+        isCapturing: { [weak self] in self?.model.live?.isCapturing == true },
+        start: { [weak self] in self?.model.startLive() },
+        mute: { [weak self] in self?.model.live?.toggleMute() },
+        stop: { [weak self] in self?.model.stopLive() })
+    private var loginAvailability: LoginAvailability?
+    private var liveObservation: AnyCancellable?
+    private var dictationObservation: AnyCancellable?
+    private var liveStateObservation: AnyCancellable?
+    private var liveMenuItem: NSMenuItem?
+    private var muteMenuItem: NSMenuItem?
+    private var loginMenuItem: NSMenuItem?
     private(set) var window: NSWindow!
     private var statusItem: NSStatusItem!
     private var liveCallTimer: Timer?
@@ -300,9 +313,11 @@ struct RootView: View {
     private var keyboardMonitor: Any?
     private var terminationMonitor: NSObjectProtocol?
     private var hotkeyCode: OSStatus = noErr
+    private var loginLaunch = false
     private var cleanQuit = false
     private var quitting = false
     func applicationDidFinishLaunching(_ notification: Notification) {
+        loginLaunch = launchedAtLogin
         OwnedWindowReadiness.trace("app:didFinishLaunching-entry",
             ["activationPolicy": NSApp.activationPolicy().rawValue, "isActive": NSApp.isActive])
         NSApp.setActivationPolicy(.accessory)
@@ -310,11 +325,23 @@ struct RootView: View {
             ["activationPolicy": NSApp.activationPolicy().rawValue])
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 980, height: 760), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.title = "Didi"; window.center(); window.delegate = self
+        if proofRequest == nil && !CommandLine.arguments.contains("--ui-proof") && !CommandLine.arguments.contains("--self-check") {
+            let saved = UserDefaults.standard.string(forKey: "DidiWindowFrame").map(NSRectFromString)
+            window.setFrame(WindowFrameRestore.resolve(saved, screens: NSScreen.screens.map(\.visibleFrame)), display: false)
+            if #available(macOS 13.0, *) { loginAvailability = LoginAvailability(registration: SystemLoginRegistration()) }
+        }
         window.isReleasedWhenClosed = false
         window.contentView = NSHostingView(rootView: RootView(model: model, voice: model.voice))
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.button?.image = NSImage(systemSymbolName: "sparkle", accessibilityDescription: "Didi")
         let menu = NSMenu()
+        menu.delegate = self
+        liveMenuItem = menu.addItem(withTitle: "Naya: stopped", action: nil, keyEquivalent: "")
+        menu.addItem(withTitle: "Start Live", action: #selector(startLiveFromMenu), keyEquivalent: "")
+        muteMenuItem = menu.addItem(withTitle: "Mute", action: #selector(muteLiveFromMenu), keyEquivalent: "")
+        menu.addItem(withTitle: "Stop", action: #selector(stopLiveFromMenu), keyEquivalent: "")
+        menu.addItem(NSMenuItem.separator())
+        loginMenuItem = menu.addItem(withTitle: "Open at login", action: #selector(toggleLogin), keyEquivalent: "")
         menu.addItem(withTitle: "Show Didi", action: #selector(show), keyEquivalent: "")
         let pickup = NSMenuItem(title: "Pick up Naya’s call", action: #selector(pickupLiveCall), keyEquivalent: "")
         pickup.isHidden = true; pickupMenuItem = pickup; menu.addItem(pickup)
@@ -324,13 +351,26 @@ struct RootView: View {
         hotkey.onToggle = { [weak self] in self?.toggle() }
         hotkeyCode = hotkey.register()
         model.hotkeyStatus = hotkeyCode == noErr ? "⌃ ⌥ Space · registered" : "Unavailable (OSStatus \(hotkeyCode)); use the menu bar"
+        liveShortcuts.onStart = { [weak self] in self?.startLiveFromMenu() }
+        liveShortcuts.onMute = { [weak self] in self?.muteLiveFromMenu() }
+        liveShortcuts.register()
+        menu.addItem(withTitle: "Start Live ⌃ ⌥ ⇧ L: " + liveShortcuts.startStatus, action: nil, keyEquivalent: "")
+        menu.addItem(withTitle: "Mute ⌃ ⌥ ⇧ M: " + liveShortcuts.muteStatus, action: nil, keyEquivalent: "")
+        liveObservation = model.$live.sink { [weak self] conversation in
+            self?.liveStateObservation = conversation?.$state.sink { [weak self] state in
+                self?.updateLiveStatus(state: state.rawValue)
+            }
+            self?.updateLiveStatus(state: conversation?.state.rawValue ?? "stopped")
+        }
+        dictationObservation = model.voice.$state.sink { [weak self] state in
+            self?.updateLiveStatus(dictationCapturing: state.phase == .recording)
+        }
         model.notifications.onOpen = { [weak self] _ in self?.show() }
         model.notifications.onLiveCall = { [weak self] jobID in
             self?.show(); self?.model.pickUpLiveCall(jobID)
         }
         liveCallBadge = model.$pendingLiveCalls.sink { [weak self] jobs in
-            self?.statusItem.button?.title = jobs.isEmpty ? "" : "•"
-            self?.statusItem.button?.toolTip = jobs.isEmpty ? "Didi" : "Naya is calling, pick up when you want"
+            self?.updateLiveStatus(pendingCall: !jobs.isEmpty)
             self?.pickupMenuItem?.isHidden = jobs.isEmpty
         }
         liveCallTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
@@ -343,7 +383,7 @@ struct RootView: View {
             Task { @MainActor in self?.model.stopRecording("Mac is going to sleep") }
         }
         Task {
-            show()
+            if NativeLaunchVisibility.shouldShow(loginLaunch: loginLaunch) { show() }
             OwnedWindowReadiness.trace("app:refresh-start")
             await model.refresh()
             OwnedWindowReadiness.trace("app:refresh-end", ["isActive": NSApp.isActive])
@@ -376,6 +416,40 @@ struct RootView: View {
         OwnedWindowReadiness.trace("app:activateIgnoringOtherApps-after",
             ["isActive": NSApp.isActive, "isKey": window.isKeyWindow, "isMain": window.isMainWindow])
     }
+    private var launchedAtLogin: Bool {
+        NSAppleEventManager.shared().currentAppleEvent?.paramDescriptor(forKeyword: AEKeyword(keyAEPropData))?.enumCodeValue == OSType(keyAELaunchedAsLogInItem)
+    }
+    private func updateLiveStatus(state: String? = nil, pendingCall: Bool? = nil, dictationCapturing: Bool? = nil) {
+        let raw = state ?? model.live?.state.rawValue ?? "stopped"
+        let presentation = LiveStatusPresentation(state: raw, pendingCall: pendingCall ?? !model.pendingLiveCalls.isEmpty,
+            dictationCapturing: dictationCapturing ?? (model.voice.state.phase == .recording))
+        statusItem.button?.image = NSImage(systemSymbolName: presentation.symbol, accessibilityDescription: presentation.text)
+        statusItem.button?.title = presentation.pendingCall ? "•" : ""
+        statusItem.button?.toolTip = presentation.text
+        statusItem.button?.setAccessibilityLabel(presentation.text)
+        liveMenuItem?.title = presentation.text
+        muteMenuItem?.title = presentation.state == "muted" ? "Unmute" : "Mute"
+    }
+    func menuWillOpen(_ menu: NSMenu) {
+        updateLiveStatus()
+        loginMenuItem?.title = loginAvailability?.text ?? "Open at login: unavailable in this launch"
+        loginMenuItem?.state = loginAvailability?.status == .on ? .on : .off
+        loginMenuItem?.isEnabled = loginAvailability != nil
+    }
+    @objc func startLiveFromMenu() { summonActions.start() }
+    @objc func muteLiveFromMenu() { summonActions.mute() }
+    @objc func stopLiveFromMenu() { summonActions.stop() }
+    @objc func toggleLogin() {
+        guard let loginAvailability else { return }
+        do { try loginAvailability.setEnabled(loginAvailability.status != .on) }
+        catch { model.error = "Open at login: \(error.localizedDescription)" }
+    }
+    func windowDidMove(_ notification: Notification) { rememberFrame() }
+    func windowDidResize(_ notification: Notification) { rememberFrame() }
+    private func rememberFrame() {
+        guard proofRequest == nil, !CommandLine.arguments.contains("--ui-proof"), !CommandLine.arguments.contains("--self-check"), let window else { return }
+        UserDefaults.standard.set(NSStringFromRect(window.frame), forKey: "DidiWindowFrame")
+    }
     func toggle() { window.isVisible ? hide() : show() }
     func hide() { model.stopRecording("Didi hidden"); window.orderOut(nil) }
     func escape() { hide() }
@@ -407,7 +481,7 @@ struct RootView: View {
     @objc private func pickupLiveCall() { show(); model.pickUpLiveCall() }
     func applicationWillTerminate(_ notification: Notification) {
         liveCallTimer?.invalidate(); liveCallBadge?.cancel()
-        model.stopRecording("Didi quit"); hotkey.unregister()
+        model.stopRecording("Didi quit"); hotkey.unregister(); liveShortcuts.unregister()
         if let keyboardMonitor { NSEvent.removeMonitor(keyboardMonitor) }
         if let terminationMonitor { NSWorkspace.shared.notificationCenter.removeObserver(terminationMonitor) }
     }
@@ -485,7 +559,9 @@ struct RootView: View {
     func register() -> OSStatus {
         var specification = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         let context = Unmanaged.passUnretained(self).toOpaque()
-        let installed = InstallEventHandler(GetApplicationEventTarget(), { _, _, context in
+        let installed = InstallEventHandler(GetApplicationEventTarget(), { _, event, context in
+            var identity = EventHotKeyID()
+            guard let event, GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil, MemoryLayout<EventHotKeyID>.size, nil, &identity) == noErr, identity.signature == 0x44494449, identity.id == 1 else { return OSStatus(eventNotHandledErr) }
             guard let context else { return OSStatus(eventNotHandledErr) }
             DispatchQueue.main.async { Unmanaged<GlobalHotkey>.fromOpaque(context).takeUnretainedValue().onToggle?() }
             return noErr

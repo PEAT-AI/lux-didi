@@ -77,6 +77,7 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
   return { ...f, chat, owner, registry, requests, responseEntities, endpoint, mcp, composition, session, turn, executions: () => executions, repeatCalls: () => { repeat = true; }, noCalls: () => { ask = false; }, rejectResult: () => { reject = true; }, rawRejectedResult: () => { reject = true; errorFlag = false; }, setDispatchHook: (hook: () => void) => { onDispatch = hook; },
     approveY: async () => { exposed.push({ name: 'get_insight', inputSchema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'integer' } }, include_links: { type: 'boolean' } }, required: ['ids', 'include_links'], additionalProperties: false } }); const current = f.store.transaction(tx => tx.get('SELECT policy_json,policy_sha256 FROM tool_connections WHERE connection_id=?', [endpoint.id])!); const prior = JSON.parse(String(current.policy_json)) as ConnectionPolicy; owner.applyConnectionIntent({ expectedPolicySha256: String(current.policy_sha256), policy: { ...prior, generation: prior.generation + 1, toolNames: exposed.map(tool => tool.name), schemaDigest: canonicalToolDigest(exposed) } }); await mcp.refresh(); },
     privateOnly: async () => { const p = f.store.transaction(tx => JSON.parse(String(tx.get('SELECT policy_json FROM tool_connections WHERE connection_id=?', [endpoint.id])!.policy_json)) as ConnectionPolicy); owner.applyConnection({ ...p, generation: p.generation + 1, sourcePolicy: { ...p.sourcePolicy, unknownClass: 'private', allowedClasses: ['private'] }, route: { ...p.route, allowedClasses: ['private'] } }); assert.equal((await mcp.port.discover(endpoint.id)).state, 'discovered'); owner.projectConnection(endpoint.id); },
+    sensitiveOnly: async () => { const p = f.store.transaction(tx => JSON.parse(String(tx.get('SELECT policy_json FROM tool_connections WHERE connection_id=?', [endpoint.id])!.policy_json)) as ConnectionPolicy); owner.applyConnection({ ...p, generation: p.generation + 1, sourcePolicy: { ...p.sourcePolicy, unknownClass: 'sensitive', allowedClasses: ['sensitive'] }, route: { ...p.route, allowedClasses: ['sensitive'] } }); assert.equal((await mcp.port.discover(endpoint.id)).state, 'discovered'); owner.projectConnection(endpoint.id); },
     admission: (sessionId: string) => f.store.transaction(tx => { const row = tx.get('SELECT * FROM chat_capability_acceptances WHERE session_id=?', [sessionId]); return row ? JSON.parse(String(row.capabilities_json)) as { name: string }[] : []; }) };
 }
 
@@ -189,4 +190,25 @@ test('a result rejected after connector execution cannot disclose its raw sentin
   assert.doesNotMatch(JSON.stringify(f.requests), /REJECTED/);
   assert.doesNotMatch(JSON.stringify(rejected), /REJECTED/);
   assert.doesNotMatch(JSON.stringify(f.chat.get(rejected.runId, f.context)), /REJECTED/);
+});
+
+
+test('later sensitive tool evidence raises the completed Chat reply class', async t => {
+  const f = await fixture(t, ['ordinary', 'private', 'sensitive']); await f.sensitiveOnly();
+  const session = f.session();
+  // Isolate actual tool-loop reply labeling from the separately tested enrollment change.
+  f.store.transaction(tx => tx.run('UPDATE chat_consents SET permitted_classes=? WHERE session_id=?', ['["ordinary","private","sensitive"]', session]));
+  const run = await f.turn(session);
+  assert.equal(run.outcome, 'complete'); assert.equal(f.executions(), 1);
+  assert.equal(f.requests[0]!.dataClasses.includes('sensitive'), false);
+  assert.ok(f.requests[1]!.dataClasses.includes('sensitive'));
+  assert.equal(f.store.transaction(tx => f.domain.getRoutingLabel(tx, { kind: 'entry', id: run.finalEntryId! })).dataClass, 'sensitive');
+});
+
+test('broader Chat consent preserves independent connector class denial', async t => {
+  const f = await fixture(t); await f.sensitiveOnly();
+  const run = await f.turn(f.session());
+  assert.equal(run.outcome, 'complete'); assert.equal(f.executions(), 0);
+  assert.equal(f.requests.length, 1);
+  assert.ok(!f.requests[0]!.declarations?.some(d => d.name === 'search_knowledge'));
 });

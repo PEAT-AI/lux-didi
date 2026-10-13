@@ -472,6 +472,7 @@ fi
 # Prepare: build synthetic accepted assets and compose the production app. Native
 # compilation and bundling stay outside the browser lease.
 work="$(mktemp -d "${TMPDIR:-/tmp}/didi-macos-install.XXXXXX")"
+work="$(cd "$work" && pwd -P)"
 trap 'rm -rf "$work"' EXIT
 parent="${LUX_DIDI_PROOF_DIR:-${TMPDIR:-/tmp}}"
 mkdir -p "$parent"

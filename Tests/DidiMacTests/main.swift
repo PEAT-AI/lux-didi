@@ -126,8 +126,9 @@ expect(NativeLaunchVisibility.shouldShow(loginLaunch: false), "ordinary launch s
 expect(LiveStatusPresentation(presentation: ("Live voice stopped", "mic.slash"), pendingCall: false).text == "Naya: Live voice stopped", "status item renders the mapped sentence")
 expect(LiveStatusPresentation(presentation: ("Live voice stopped", "mic.slash"), pendingCall: false, dictationCapturing: true).text == "Naya: Dictating", "dictation microphone is not reported stopped")
 
-let inputPausedStatus = LiveStatusPresentation(presentation: ("Microphone changed; Resume required", "pause.circle"), pendingCall: false)
-expect(inputPausedStatus.text == "Naya: microphone changed; Resume required", "input pause status names consent action")
+let inputPausedPresentation = (text: "Microphone changed; Resume required", symbol: "pause.circle")
+let inputPausedStatus = LiveStatusPresentation(presentation: inputPausedPresentation, pendingCall: false)
+expect(inputPausedStatus.text == "Naya: " + inputPausedPresentation.text, "status item prefixes the mapped tuple sentence")
 expect(inputPausedStatus.symbol == "pause.circle", "input pause status is not active recording")
 
 // Actual app ownership seam plus actual authenticated request builders, no HTTP or audio.

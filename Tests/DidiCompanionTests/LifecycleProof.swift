@@ -76,7 +76,7 @@ import Darwin
             catch { try fm.copyItem(atPath: realNode.path, toPath: bundledNode.path) }
             var staged = stat()
             let stagedStatOK = lstat(bundledNode.path, &staged) == 0
-            diagnose("fixture:node-staged", ["case": mode, "relativeNodePath": "Contents/MacOS/node", "nodePath": bundledNode.path, "nodeMajor": 26,
+            diagnose("fixture:node-staged", ["case": mode, "relativeNodePath": "Contents/MacOS/node", "nodePath": bundledNode.path, "sourceNodePath": realNode.path, "nodeMajor": 26,
                 "statOK": stagedStatOK, "isSymlink": stagedStatOK && (staged.st_mode & S_IFMT) == S_IFLNK,
                 "isRegular": stagedStatOK && (staged.st_mode & S_IFMT) == S_IFREG,
                 "ownerExecutable": stagedStatOK && (staged.st_mode & 0o100) != 0,

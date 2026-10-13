@@ -174,3 +174,9 @@ On failure, `COMPANION FAILURE` and `REAL-HOST FAILURE` print retained work path
 `PROOF-DIR` identifies the retained proof directory. Keep these directories while
 reviewing `observer.json` and its named child logs. Successful runs remove their
 disposable work as before. Failure status is propagated unchanged.
+
+The companion gate selects Node from the accepted asset bundle, using the same
+source as the native install gate and `build-macos-app.sh`. Without an existing
+accepted asset input, the gate invokes the canonical asset producer. Its fixture
+Node must satisfy the native build's self-contained dependency policy; the gate
+never substitutes a PATH/Homebrew Node or patches loader references.

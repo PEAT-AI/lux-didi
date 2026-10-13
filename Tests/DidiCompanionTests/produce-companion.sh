@@ -50,7 +50,17 @@ cleanup() {
 trap cleanup EXIT
 cd "$root"
 mkdir -p "$work/cache"
-node="$(command -v node)"
+# Use the same accepted asset source as scripts/check-macos-install.sh and
+# scripts/build-macos-app.sh, never a relocatable PATH/Homebrew executable.
+assets="${LUX_ASSET_BUNDLE:-}"
+if [ -z "$assets" ]; then
+  assets="$work/assets"
+  npm_config_userconfig=/dev/null npm_config_globalconfig="$work/absent-npm-config" bash scripts/build-asset-bundle.sh "$assets"
+fi
+assets="$(cd "$assets" && pwd)"
+node="$assets/Resources/node/bin/node"
+printf 'COMPANION-NODE source=%s\n' "$node"
+[ -x "$node" ] || { echo "COMPANION FAIL: accepted asset Node missing: $node" >&2; exit 1; }
 # The fixture must exercise the same self-contained runtime policy as the native build.
 python3 - "$node" <<'PY'
 import subprocess, sys

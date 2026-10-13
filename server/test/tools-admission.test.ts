@@ -48,13 +48,13 @@ async function harness(t: TestContext, builder: 'live' | 'chat-shaped') {
     readers.clear(); sdks.clear();
     for (const entry of endpoints) {
     const sdk = new Server({ name: entry.id, version: '1' }, { capabilities: { tools: {} } });
-    const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
+    const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: entry.id !== 'lux-knowledge' });
     sdk.setRequestHandler('tools/list', () => ({ tools: visible.has(entry.id) ? [{ name: entry.tool, inputSchema: entry.id === 'lux-knowledge' ? { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, include_sensitive: { type: 'boolean' } }, required: ['query', 'limit', 'include_sensitive'], additionalProperties: false } : entry.connector === 'google' ? { type: 'object', properties: { maxResults: { type: 'integer' }, pageToken: { type: 'string' }, q: { type: 'string' } }, additionalProperties: false } : { type: 'object', properties: {}, additionalProperties: false } }] : [] }) as never);
     sdk.setRequestHandler('tools/call', async () => {
       counts.set(entry.id, counts.get(entry.id)! + 1);
       await dispatch?.(entry.id);
       const text = entry.connector === 'google' ? JSON.stringify({ family: entry.id === 'gmail' ? 'gmail' : 'calendar', tool: entry.tool, method: entry.tool, account: { configured: 'configured', provider: null }, data: entry.id === 'gmail' ? { messages: [{ id: 'synthetic', headers: { Subject: 'Synthetic mail', From: 'Synthetic sender <synthetic@example.invalid>', Date: 'Synthetic date' } }] } : { calendars: [{ id: 'synthetic', summary: 'Synthetic calendar' }] } }) : `synthetic ${entry.id} read`;
-      return { content: [{ type: 'text', text }] } as never;
+      return { content: [{ type: 'text', text }], ...(entry.id === 'lux-knowledge' ? { structuredContent: { synthetic: true } } : {}) } as never;
     });
     await sdk.connect(transport); readers.set(entry.id, transport); sdks.set(entry.id, sdk);
     }

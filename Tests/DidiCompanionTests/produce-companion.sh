@@ -60,6 +60,21 @@ mkdir -p "$proof"
 otool -Iv "$app/Contents/MacOS/LuxDidi" | grep -E 'SecItem(Add|CopyMatching|Delete)|SecKeychain(Set|Get)UserInteractionAllowed' > "$proof/keychain-binary-imports.txt"
 /usr/bin/nice -n 10 xcrun clang -Wall -Wextra -Werror -c Tests/DidiCompanionTests/launch-probe/Kernel.c -o "$work/VerificationKernel.o"
 /usr/bin/nice -n 10 xcrun swiftc -j 1 -num-threads 1 -parse-as-library -import-objc-header Tests/DidiCompanionTests/launch-probe/Kernel.h Tests/DidiCompanionTests/launch-probe/Identity.swift Tests/DidiCompanionTests/launch-probe/Observer.swift "$work/VerificationKernel.o" -o "$work/verification-observer"
+# Exercise diagnostics without launching a bundle or touching user state.
+forced_proof="$proof/forced-observer-failure"
+mkdir -m 700 "$forced_proof"
+forced_status=0
+LUX_OBSERVER_FORCE_FAILURE=1 "$work/verification-observer" --verification "$work/absent.app" "$forced_proof" diagnostic-nonce run >"$forced_proof/stdout.log" 2>"$forced_proof/stderr.log" || forced_status=$?
+python3 - "$forced_proof" "$forced_status" <<'PY'
+import json, pathlib, sys
+proof = pathlib.Path(sys.argv[1])
+assert sys.argv[2] == '1', sys.argv[2]
+assert 'forced observer failure' in (proof / 'stderr.log').read_text()
+record = json.loads((proof / 'observer.json').read_text())
+assert record['pass'] is False and record['reason'] == 'forced observer failure'
+assert all((proof / name).is_file() for name in ('stdout.log', 'stderr.log'))
+print('PASS forced observer failure: reason, exit status and retained evidence')
+PY
 # The nested real-app compilation also runs outside the lease, into prepared artifacts.
 export LUX_MAC_ARTIFACTS="$work/mac"
 bash Tests/DidiMacTests/check-mac.sh --prepare "$LUX_MAC_ARTIFACTS"

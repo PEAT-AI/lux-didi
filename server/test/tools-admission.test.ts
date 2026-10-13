@@ -35,6 +35,7 @@ function result(name?: string, args: Record<string, unknown> = {}): ModelResult 
 async function harness(t: TestContext, builder: 'live' | 'chat-shaped', failure?: 'transport' | 'result') {
   const dir = mkdtempSync(join(tmpdir(), 'didi-admission-'));
   const configDir = join(dir, 'config'); mkdirSync(configDir, { mode: 0o700 });
+  const log = new HostLog(dir);
   let store = new Store(join(dir, 'data'), [...domainMigrations, ...liveMigrations, ...toolsMigrations]);
   const sources: ((runId: string, signal: AbortSignal) => Promise<LiveAuthority | null>)[] = [];
   const chatAuthorities = new Map<string, LiveAuthority>();
@@ -90,7 +91,7 @@ async function harness(t: TestContext, builder: 'live' | 'chat-shaped', failure?
       await resetReaders();
     }
     writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: endpoints.map(e => ({ id: e.id, connector: e.connector, transport: 'streamable-http', url: `http://127.0.0.1:18765/${e.id}`, account: e.id, resource: e.id, credentialRef: null, enabled: enabled.includes(e.id), allowEgress: true, unknownClass: Object.hasOwn(sourceClasses, e.id) ? sourceClasses[e.id] : 'private' })) }), { mode: 0o600 });
-    const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority }); runtimes.push(runtime); return runtime;
+    const runtime = await composeMcpRuntime(Object.assign({ store, ownerId: store.assistantId, configDir, lookupAuthority }, { log: (event: unknown) => log.event(event) })); runtimes.push(runtime); return runtime;
   };
   const accept = async (runtime: Awaited<ReturnType<typeof start>>, allowedClasses: DataClass[] = ['ordinary', 'private']) => {
     let acceptance: RunAcceptance;
@@ -118,7 +119,7 @@ async function harness(t: TestContext, builder: 'live' | 'chat-shaped', failure?
     const outcome = await runTools({ model, request: { system: 'synthetic', promptVersion: '1', contents: [{ role: 'user', parts: [{ text: 'read' }] }], dataClasses: ['ordinary'], context: { items: [], selectedIds: [], maxChars: 100 } }, registry: runtime.owner.definitions(host.runId), host, authority: { isCurrent: async () => (await lookupAuthority(host.runId, signal)) !== null }, maxSteps: 3, control: { signal, deadlineMs: Date.now() + 5000 }, journal: runtime.owner.journal, resultGate: runtime.owner.resultGate });
     return { outcome, seen };
   };
-  return { get store() { return store; }, start, accept, read, counts, revealAll: () => { visible = new Set(all); }, setDispatch: (hook: typeof dispatch) => { dispatch = hook; } };
+  return { logRows: () => readFileSync(join(dir, 'logs', 'host.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line) as Record<string, unknown>), get store() { return store; }, start, accept, read, counts, revealAll: () => { visible = new Set(all); }, setDispatch: (hook: typeof dispatch) => { dispatch = hook; } };
 }
 
 for (const builder of ['live', 'chat-shaped'] as const) test(`connection-scoped admission through host composition (${builder}, T8-FIX-R1)`, async t => {
@@ -200,6 +201,11 @@ for (const failure of ['transport', 'result'] as const) test(`MCP ${failure} fai
   assert.equal(result.response.reason, expected);
   assert.equal(rows[0]!.state, 'unknown', 'SDK-rejected result preserves the existing unknown-outcome contract');
   assert.equal(observed.outcome.reason, expected);
+  const logs = h.logRows(); assert.equal(logs.length, 1);
+  assert.equal(logs[0]!['event'], 'tool_failure'); assert.equal(logs[0]!['code'], expected);
+  assert.equal(logs[0]!['tool'], 'search_knowledge'); assert.equal(logs[0]!['connector'], 'lux-knowledge');
+  assert.equal(logs[0]!['errorClass'], 'Error'); assert.equal(logs[0]!['messageHead'], expected);
+  assert(!('payload' in logs[0]!));
 });
 
 test('host log accepts only bounded tool-failure metadata and drops extra payload fields', () => {

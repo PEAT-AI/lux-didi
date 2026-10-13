@@ -118,7 +118,7 @@ for i,r in enumerate(reports):
  assert r['serviceStop']['pid']==r['service']['pid']
  assert r['credentialCleanup']['cleaned'] and r['newRecord']['visibleInCanonicalUI']
  assert r['native']['exitEvidence']=='external-driver-required' and 'exited' not in r['native']
- assert r['visual']['pageSnapshot'] and len(r['visual']['accessibility'])==3
+ assert r['visual']['pageSnapshot'] and len(r['visual']['accessibility'])==4
  for previous in reports[:i]:
   expected=previous['newRecord']
   assert any(all(old[k]==expected[k] for k in ('sessionId','entryId','text')) and old['visibleInCanonicalUI'] for old in r['priorRecords'])

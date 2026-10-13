@@ -57,6 +57,7 @@ test('accept/replay/fingerprint collision and active-session serialization are d
     assert.equal(f.accept().runId, run.runId); assert.equal(f.model.calls.length, 1);
     f.model.finish(); assert.equal((await terminal(f, run)).outcome, 'complete');
     assert.deepEqual(f.entries().map(e => e.role), ['user', 'assistant']);
+    assert.deepEqual(f.entries().map(e => [e.kind, e.origin]), [['note', 'chat'], ['note', 'chat']]);
     assert.equal(f.accept().runId, run.runId); assert.equal(f.model.calls.length, 1);
   } finally { f.close(); }
 });

@@ -91,9 +91,10 @@ first, from the existing owner list route (`GET /api/v1/sessions/:id`, which ret
   the entry's stored source reference (`unknown` when it records none). The badge renders only for a
   real kind (`note` shows none, W-FIX2), and the origin line renders for every entry.
 - The writers record that reference: Live `remember_note` writes `provider: live-voice`
-  (`server/live/index.ts`), and the page saver posts `provider: page` on the entry it captures
-  (`saveLocalNote` in `web/src/main.ts`, ruling WKIND-R1). The connected chat (`server/chat/index.ts`)
-  does not yet record one, so chat entries read `origin: unknown` until its writer does.
+  (`server/live/index.ts`), the page saver posts `provider: page` (`saveLocalNote` in `web/src/main.ts`,
+  ruling WKIND-R1), and the connected chat writes `provider: chat` on both entries of a run, keyed by
+  the conversation id (`server/chat/index.ts`, ruling WKIND-R2). Entries from any other writer read
+  `origin: unknown` honestly.
 - The filter box narrows the already-fetched list in the browser by text, case-insensitively, across
   the text, kind and origin. Nothing is sent to the service and no new request is made.
 - The list shows its count and an honest empty state ("Didi remembers nothing yet.") and never

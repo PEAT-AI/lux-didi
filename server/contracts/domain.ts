@@ -23,7 +23,7 @@ export interface DomainOperations {
   getSession: { input: { id: string }; output: { session: Session; entries: Entry[]; nextCursor: string | null } };
   appendEntry: { input: { sessionId: string; text: string; role: 'user'; timeZone: string; sourceRef?: SourceRef }; output: Entry };
   /** Trusted in-process completion only; never routed from public append-entry HTTP. */
-  appendAssistantEntry: { input: { sessionId: string; text: string; timeZone: string }; output: Entry };
+  appendAssistantEntry: { input: { sessionId: string; text: string; timeZone: string; sourceRef?: SourceRef }; output: Entry };
   recall: { input: { q: string; limit: number }; output: { hits: { sessionId: string; entryId?: string; snippet: string; sourceRefs: SourceRef[]; sourceTimestamp: string | null }[]; totalMatches: number; truncated: boolean; nextCursor: string | null } };
   /** Trusted in-process batch read by exact id; never a public route and never a full scan. */
   resolveEntries: { input: { entryIds: string[] }; output: { records: ResolvedEntry[] } };

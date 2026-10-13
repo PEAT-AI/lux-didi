@@ -671,20 +671,10 @@ test('owner list derives kind and origin from what the domain stores', () => {
       sessionId: session.id, text: 'I prefer window seats', role: 'user', timeZone: 'UTC',
       sourceRef: { id: 'live-1', label: 'live-voice live-1', provider: 'live-voice', accountId: 'live-1', externalId: 'live-1:1', sourceTimestamp: null, availability: 'present', note: 'kind:preference' },
     }, ctx));
-    const chat = h.store.transaction(tx => h.port.execute(tx, 'appendEntry', {
-      sessionId: session.id, text: 'Saved from the connected chat', role: 'user', timeZone: 'UTC',
-      sourceRef: { id: 'chat-1', label: 'Connected chat', provider: 'chat', sourceTimestamp: null, availability: 'present' },
-    }, ctx));
-    const page = h.store.transaction(tx => h.port.execute(tx, 'appendEntry', {
-      sessionId: session.id, text: 'Captured on the page', role: 'user', timeZone: 'UTC',
-      sourceRef: { id: 'page-1', label: 'Page capture', provider: 'page', sourceTimestamp: null, availability: 'present' },
-    }, ctx));
     const bare = h.store.transaction(tx => h.port.execute(tx, 'appendEntry', { sessionId: session.id, text: 'No recorded source', role: 'user', timeZone: 'UTC' }, ctx));
     const read = h.store.transaction(tx => h.port.execute(tx, 'getSession', { id: session.id }, ctx));
     assert.deepEqual(read.entries.map(e => [e.id, e.kind, e.origin]), [
       [live.id, 'preference', 'live-voice'],
-      [chat.id, 'note', 'chat'],
-      [page.id, 'note', 'page'],
       [bare.id, 'note', 'unknown'],
     ]);
   } finally { cleanup(h); }

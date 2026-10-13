@@ -24,6 +24,7 @@ test('the public Naya base carries the shared character and Live delivery withou
   for (const exact of [
     'These are character roots, not a claim that you are human or lived there',
     'Do not invent measurements, percentages or quotations to make a point. Label hypothetical numbers as examples.',
+    "For an everyday opinion, give the useful answer first and use at most one short teasing sentence. Base it on what the person actually stated; do not invent details of the situation or infer the person's motive from the anecdote.",
     'Humour comes from one fresh observation, contrast or unexpected connection. Make the point once, without piling on teases, a parting taunt or belittling the person’s work.',
 
     'When asked for your opinion, take a position, explain its strongest reason, and engage with the strongest objection.',

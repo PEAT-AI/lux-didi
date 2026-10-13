@@ -506,7 +506,9 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             let nativeRequest = try await nativeHTTP.request(for: LiveSocketBinding(origin: nativeIntent.origin,
                 sessionID: nativeSnapshot.liveSessionId, authorityEpoch: nativeIntent.authorityEpoch, profileIdentity: nativeIntent.profileIdentity))
             let nativeHeaders = Set((nativeRequest.allHTTPHeaderFields ?? [:]).keys.map { $0.lowercased() })
-            try require(nativeHeaders == ["authorization", "x-didi-authority-epoch", "x-didi-live-profile"] && nativeRequest.url?.scheme == "ws", "native audio exactly three pinned headers")
+            try require(nativeHeaders == ["authorization", "host", "x-didi-authority-epoch", "x-didi-live-profile"] && nativeRequest.url?.scheme == "ws", "native audio exactly four pinned headers")
+            try LiveSocketTransport.validate(nativeRequest, binding: LiveSocketBinding(origin: nativeIntent.origin,
+                sessionID: nativeSnapshot.liveSessionId, authorityEpoch: nativeIntent.authorityEpoch, profileIdentity: nativeIntent.profileIdentity))
             try await nativeHTTP.revoke(sessionID: nativeSnapshot.liveSessionId, for: nativeIntent)
             let nativeTerminal = try await nativeHTTP.snapshot(sessionID: nativeSnapshot.liveSessionId, for: nativeIntent)
             try require(nativeTerminal.terminal?.state == .revoked, "native revoke and snapshot routes")

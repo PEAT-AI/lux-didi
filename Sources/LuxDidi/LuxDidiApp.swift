@@ -455,7 +455,7 @@ struct RootView: View {
         menu.addItem(withTitle: "Mute ⌃ ⌥ ⇧ M: " + liveShortcuts.muteStatus, action: nil, keyEquivalent: "")
         liveObservation = model.$live.sink { [weak self] conversation in
             self?.liveStateObservation = conversation?.$state.sink { [weak self] state in
-                self?.updateLiveStatus(state: state.rawValue)
+                self?.updateLiveStatus(state: state)
             }
             self?.updateLiveStatus(state: conversation?.state ?? .idle)
         }

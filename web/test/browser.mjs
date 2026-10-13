@@ -158,6 +158,7 @@ try {
     assert.ok(phone.height<=phone.single+1,`Search button ${phone.height}px exceeds one line ${phone.single}px at 375px`);
     await page.screenshot({path:`${review}/375-memory.png`,fullPage:true});
     await page.setViewportSize({width:1440,height:1000});
+    await page.getByRole('button',{name:'Conversation',exact:true}).click();
   });
   await step('rendered memory deletion confirms, preserves pending/failed entries and reloads server payload',async()=>{
     const text='Synthetic browser deletion canary';

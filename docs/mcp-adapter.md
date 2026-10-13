@@ -117,10 +117,10 @@ its code. Authorized full payload retrieval is separate:
 
 - `payload.state=available` carries an opaque handle, original byte length, SHA-256,
   explicit epoch-ms expiry and encoding `http-response-entity`.
-- JSON response bytes retain the exact HTTP entity and JSON-RPC envelope, not
-  reserialized SDK output or compressed network packets. Server-side test capture
-  independently checks equality. SSE response bytes instead contain the selected,
-  decoded JSON-RPC response; framing is not included in its hash or slices.
+- Original bytes are the exact retained HTTP response entity, including the
+  original JSON-RPC envelope or SSE framing, not reserialized SDK output and not
+  compressed network packets. Server-side test capture independently checks equality.
+  `decodedResult` carries the parsed result or JSON-RPC error separately.
 - `readSlice({handle, endpointId, generation, account, resource, offset, length})`
   returns bounded bytes, or `refused`, `expired`, `unavailable`. The original endpoint,
   exact URL, grant/digest/tool, generation, account and resource are revalidated on
@@ -186,10 +186,11 @@ retain their exact bytes and use the SDK JSON-RPC parser. For SSE, the adapter
 bounds the complete entity before decoding UTF-8 frames, ignores comments,
 keep-alives and non-data fields, joins multiple `data` lines with a newline,
 and selects the JSON-RPC result or error whose id matches the request. The
-selected response is serialized as JSON for the SDK and result store. For SSE,
-result hashes and slices describe this decoded JSON response, not wire framing.
-No connector parses an HTTP entity itself: the lux-knowledge projection delegates
-to the adapter's `decodeMcpResult` after verifying the bounded stored entity.
+selected response is serialized as JSON for the SDK, while the result store retains
+the exact original SSE entity. Result hashes and slices always describe the original
+entity. The adapter returns the SDK-decoded result or error in `decodedResult`;
+connectors inspect that field after verifying the bounded stored entity, never
+parse transport bytes themselves.
 Optional `structuredContent` and `_meta` are accepted but never forwarded as
 unclassified model content; only permitted text content is projected.
 

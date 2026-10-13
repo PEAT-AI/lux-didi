@@ -373,7 +373,10 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
               if (!call) return { status: 'failed' };
               const evidence = await reader.call(name, args as Record<string, unknown>, context.signal);
               if (context.signal.aborted) return { status: 'unknown' };
-              if (evidence.state === 'unknown') return { status: 'unknown', code: 'mcp_transport_error' };
+              if (evidence.state === 'unknown') {
+                options.log?.({ event: 'tool_failure', code: 'mcp_transport_error', tool: name, connector: p.connector, errorClass: 'Error', messageHead: 'mcp_transport_error' });
+                return { status: 'unknown', code: 'mcp_transport_error' };
+              }
               if (evidence.state !== 'completed') {
                 const status = evidence.state === 'tool-error' || evidence.state === 'protocol-error' ? descriptor.status?.(evidence) : undefined;
                 if (!status) return { status: 'failed' };
@@ -385,10 +388,10 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
               reportToolStatus?.(p.endpoint.id, null);
               let value: ModelSnapshot;
               try { value = descriptor.project(evidence, port, p); } catch (error) {
-                const code = error instanceof SyntaxError || (error instanceof Error && ('code' in error && error.code === 'mcp_result_invalid' || error.message === 'unsupported_mcp_result' || error.message === 'unsupported_mcp_content')) ? 'mcp_result_invalid'
+                const code = error instanceof SyntaxError || (error instanceof Error && (error.message === 'unsupported_mcp_result' || error.message === 'unsupported_mcp_content')) ? 'mcp_result_invalid'
                   : error instanceof Error ? 'connector_error' : 'handler_outcome';
                 // Only safe class/code metadata, never remote payloads or arbitrary exception text.
-                console.error('connector projection failed', { errorClass: error instanceof Error ? error.constructor.name : typeof error, messageHead: code });
+                options.log?.({ event: 'tool_failure', code, tool: name, connector: p.connector, errorClass: error instanceof SyntaxError ? 'SyntaxError' : error instanceof Error ? 'Error' : 'UnknownThrow', messageHead: code });
                 return { status: 'failed', code };
               }
               return { status: 'completed', result: complete(call, value.response, value.dataClasses) };

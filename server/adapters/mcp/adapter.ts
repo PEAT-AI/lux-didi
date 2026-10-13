@@ -13,20 +13,6 @@ export interface McpAdapterOptions {
   assertCredentialCurrent?: (reference: string) => void;
 }
 class PolicyError extends Error { constructor(readonly reason: string) { super(reason); } }
-/** Transport decoding stays here; connectors only inspect decoded MCP results. */
-export class McpResultError extends Error { readonly code = 'mcp_result_invalid'; }
-export function decodeMcpResult(bytes: Uint8Array): unknown {
-  try {
-    const packet: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
-    if (packet === null || typeof packet !== 'object' || Array.isArray(packet)) throw new McpResultError('mcp_result_invalid');
-    const record = packet as Record<string, unknown>;
-    if (record['jsonrpc'] === '2.0') {
-      if (!('result' in record) || 'error' in record) throw new McpResultError('mcp_result_invalid');
-      return record['result'];
-    }
-    return packet; // stdio stores the SDK-decoded result, without an HTTP envelope.
-  } catch { throw new McpResultError('mcp_result_invalid'); }
-}
 function decodeSseResponse(bytes: Uint8Array, requestId: unknown): Uint8Array {
   try {
     const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes).replace(/^\uFEFF/, '');
@@ -125,7 +111,7 @@ function guardedFetch(session: Session, options: McpAdapterOptions, budgets: Mcp
     for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
     const isSse = response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase() === 'text/event-stream';
     const decoded = isSse ? decodeSseResponse(bytes, packet?.id) : bytes;
-    if (operation) operation.bytes = decoded;
+    if (operation) operation.bytes = bytes;
     const responseHeaders = new Headers(response.headers);
     if (isSse) { responseHeaders.set('content-type', 'application/json'); responseHeaders.delete('content-length'); }
     return new Response(new Uint8Array(decoded), { status: response.status, statusText: response.statusText, headers: responseHeaders });
@@ -183,18 +169,18 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
     const onmessage = transport.onmessage;
     transport.onmessage = message => {
       const operation = session.operation;
-      if (operation && isJSONRPCErrorResponse(message) && message.id === operation.requestId) operation.explicitErrorCode = message.error.code;
+      if (operation && isJSONRPCErrorResponse(message) && message.id === operation.requestId) { operation.explicitErrorCode = message.error.code; operation.explicitError = structuredClone(message.error); }
       onmessage?.(message);
     };
     if (!client.getServerCapabilities()?.tools) throw new PolicyError('tools-unavailable');
     return session;
   }
-  function completed(scope: ResultScope, bytes: Uint8Array, result: unknown, state: CompletedResult['state'], protocolErrorCode?: number): CompletedResult {
+  function completed(scope: ResultScope, bytes: Uint8Array, result: unknown, state: CompletedResult['state'], protocolErrorCode?: number, decodedResult: unknown = result): CompletedResult {
     const full = JSON.stringify(result); const text = full.slice(0, budgets.projectionChars);
     let payload: StoredPayload;
     try { payload = options.store.put(scope, bytes); } catch { payload = { state: 'unavailable', reason: 'store-unavailable' }; }
     return {
-      state, ...(protocolErrorCode === undefined ? {} : { protocolErrorCode }), source: scope,
+      state, decodedResult: structuredClone(decodedResult), ...(protocolErrorCode === undefined ? {} : { protocolErrorCode }), source: scope,
       coverage: { completeCorpus: false, basis: 'single-tool-result', remoteSideEffects: 'unverified' },
       freshness: { receivedAt: Date.now(), sourceVersion: 'unknown' },
       projection: { text, omitted: text.length !== full.length, originalCharacters: full.length, omittedCharacters: full.length - text.length }, payload,
@@ -260,7 +246,7 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
         return completed(scope, operation.bytes, result, result.isError ? 'tool-error' : 'completed');
       } catch (error) {
         if (operation.dispatched) {
-          if (error instanceof ProtocolError && operation.explicitErrorCode !== undefined && operation.bytes && options.registry.authorizesScope(scope)) return completed(scope, operation.bytes, { error: { code: operation.explicitErrorCode } }, 'protocol-error', operation.explicitErrorCode);
+          if (error instanceof ProtocolError && operation.explicitErrorCode !== undefined && operation.bytes && options.registry.authorizesScope(scope)) return completed(scope, operation.bytes, { error: { code: operation.explicitErrorCode } }, 'protocol-error', operation.explicitErrorCode, operation.explicitError);
           // HTTP SDK cancellation aborts the request, rather than notifying. Use its
           // supported notification API with the SDK-owned id; never wait indefinitely.
           if (localSignal.aborted && operation.requestId !== undefined) await bounded(session.client.notification({ method: 'notifications/cancelled', params: { requestId: operation.requestId, reason: 'local cancellation' } }), AbortSignal.timeout(200)).catch(() => {});

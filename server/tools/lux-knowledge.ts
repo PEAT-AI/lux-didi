@@ -1,4 +1,3 @@
-import { decodeMcpResult } from '../adapters/mcp/adapter.js';
 import type { McpPort } from '../adapters/mcp/port.js';
 import { bindingDigestOf, sourceBindingOf } from '../adapters/mcp/port.js';
 import type { LuxKnowledgeResult } from '../connectors/lux-knowledge.js';
@@ -31,7 +30,7 @@ export function projectLuxResult(evidence: LuxKnowledgeResult, policy: Connectio
   }
   const bytes = Buffer.concat(chunks);
   if (bytes.byteLength !== payload.byteLength || sha256(bytes) !== payload.sha256) throw Error('entity_hash_mismatch');
-  const result = decodeMcpResult(bytes);
+  const result = evidence.decodedResult;
   if (!isRecord(result)) throw Error('unsupported_mcp_result');
   if (!onlyKeys(result, ['content', 'isError', 'structuredContent', '_meta']) || result['isError'] === true || (result['isError'] !== undefined && typeof result['isError'] !== 'boolean') || !Array.isArray(result['content'])) throw Error('unsupported_mcp_result');
   const texts: string[] = [];

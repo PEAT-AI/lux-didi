@@ -131,6 +131,21 @@ async function harness(t: TestContext, overrides: {
       return { id: record.entryId, text: record.text, dataClass };
     });
   };
+  if (overrides.scheduler) {
+    const open = voice.open.bind(voice);
+    voice.open = (...args) => {
+      const session = open(...args), events = session.events;
+      Object.defineProperty(session, 'events', { value: {
+        async *[Symbol.asyncIterator]() {
+          for await (const event of events) {
+            overrides.scheduler!.trace.push({ event: event.type, at: overrides.scheduler!.now });
+            yield event;
+          }
+        },
+      } });
+      return session;
+    };
+  }
   owner = createLiveSessionOwner({ store, voice, profile, ...{ memorySource }, ...(tools ? { tools } : {}), now: () => overrides.scheduler?.now ?? clock, ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
   t.after(async () => { await owner.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
   return { requests, calls, remoteRememberGranted, f, store, owner, ctx: context(store), dir, advance: ms => { clock += ms; } };
@@ -254,9 +269,11 @@ test('Live remember normalizes commands and pointers but stores the entire owner
 
 class RememberClock {
   now = NOW;
+  trace: { event: string; at: number }[] = [];
   pending = new Set<{ at: number; callback: () => void }>();
   schedule = (callback: () => void, ms: number) => {
     const item = { at: this.now + ms, callback };
+    this.trace.push({ event: 'timer', at: item.at });
     this.pending.add(item);
     return { unref() {}, cancel: () => { this.pending.delete(item); } };
   };
@@ -285,6 +302,12 @@ test('Live remember defers the 1 ms tool boundary and persists only owner bytes'
   await until(() => [...scheduler.pending].some(item => item.at === NOW + 1501));
   assert.equal(rows(h).length, 0);
   h.f.send({ serverContent: { modelTurn: { parts: [{ text: 'A paraphrase must not be saved.' }] } } });
+  await drain();
+  console.log('REM2_TIMER_METADATA', JSON.stringify({
+    trace: scheduler.trace,
+    pending: [...scheduler.pending].map(item => item.at),
+    input: h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(row => row.kind === 'inputTranscription').map(row => ({ inputAt: row.arrivedAt, inputJournalId: row.journalSequence, inputFinal: row.finished })),
+  }));
   await until(() => [...scheduler.pending].some(item => item.at === NOW + 300));
   scheduler.advance(299); await drain();
   assert.equal((await result).remembered, true);

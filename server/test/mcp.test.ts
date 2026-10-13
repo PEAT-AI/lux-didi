@@ -479,3 +479,26 @@ test('SSE without a JSON-RPC response returns a bounded transport code', async (
     assert.deepEqual(result, { state: 'unknown', reason: 'mcp_transport_error' });
   } finally { await adapter.close(); await f.close(); }
 });
+
+
+test('call timeout overrides snapshot valid values and reject invalid durations', async () => {
+  const f = await fixture({ call: async () => {
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    return { content: [{ type: 'text', text: 'synthetic delayed result' }] };
+  } });
+  const registry = new McpRegistry();
+  registry.register({ id: 'source', url: f.url, account: 'account-a', resource: 'resource-a' });
+  registry.enable('source'); registry.allowEgress('source');
+  const overrides = new Map([['source', 2000]]);
+  const adapter = createMcpAdapter({ registry, store: new MemoryResultStore(), budgets: { timeoutMs: 1000 },
+    callTimeoutMsByEndpoint: overrides } as Parameters<typeof createMcpAdapter>[0]);
+  overrides.set('source', 1);
+  try {
+    await approve(adapter, registry);
+    assert.equal((await adapter.call(request)).state, 'completed');
+  } finally { await adapter.close(); await f.close(); }
+  for (const timeout of [0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.throws(() => createMcpAdapter({ registry, store: new MemoryResultStore(),
+      callTimeoutMsByEndpoint: new Map([['source', timeout]]) } as Parameters<typeof createMcpAdapter>[0]), /invalid-adapter-budget/);
+  }
+});

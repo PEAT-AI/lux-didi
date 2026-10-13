@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -11,7 +11,7 @@ import { liveMigrations, validateLiveProfile } from '../live/index.js';
 import { toolsMigrations } from '../tools/schema.js';
 import { composeMcpRuntime } from '../host/mcp.js';
 import { composeLive } from '../host/live.js';
-import { safeEvent } from '../host/log.js';
+import { HostLog, safeEvent } from '../host/log.js';
 import { sha256 } from '../tools/canonical.js';
 import { runTools } from '../adapters/model/loop.js';
 import type { DataClass, HostContext, ModelPort, ModelRequest, ModelResult, ToolCallIntent } from '../adapters/model/types.js';
@@ -223,4 +223,15 @@ test('Live knowledge SSE response completes with one result and no unclassified 
   assert.equal(responses.length, 1); assert.equal(responses[0]!['text'], saved.response.text);
   assert(!JSON.stringify(responses).includes('synthetic-private-unclassified'));
   assert(!('structuredContent' in responses[0]!));
+});
+
+test('bounded tool_failure metadata is written to host.log without an attached payload', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-tool-failure-log-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const log = new HostLog(dir);
+  log.event({ event: 'tool_failure', code: 'mcp_transport_error', tool: 'search_knowledge', connector: 'lux-knowledge', errorClass: 'Error', messageHead: 'mcp_transport_error', payload: 'synthetic-private-payload' });
+  const text = readFileSync(join(dir, 'logs', 'host.log'), 'utf8');
+  const row = JSON.parse(text);
+  assert.equal(row.event, 'tool_failure'); assert.equal(row.code, 'mcp_transport_error');
+  assert.equal(row.messageHead, 'mcp_transport_error'); assert.equal(row.errorClass, 'Error');
+  assert(!text.includes('synthetic-private-payload')); assert(!('payload' in row));
 });

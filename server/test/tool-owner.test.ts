@@ -17,7 +17,7 @@ import type { HostContext, ModelPort, ModelRequest, ModelResult, ToolCallIntent,
 import { createToolsOwner, toolsMigrations, validatePolicy } from '../tools/index.js';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
 import { projectLuxResult } from '../tools/lux-knowledge.js';
-import type { ConnectionPolicy, LiveAuthority, RunAcceptance } from '../tools/types.js';
+import type { ConnectionPolicy, LiveAuthority, RunAcceptance, ToolsOwnerOptions, ToolFailureEvent } from '../tools/types.js';
 
 const tools: McpTool[] = [
   { name: 'search_knowledge', inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, include_sensitive: { type: 'boolean' } }, required: ['query', 'limit', 'include_sensitive'], additionalProperties: false } },
@@ -38,7 +38,7 @@ const request: ModelRequest = { system: 'synthetic', promptVersion: '1', content
 function modelResult(name?: string, args: Record<string, unknown> = { query: 'synthetic', limit: 1 }): ModelResult {
   return { status: 'complete', text: name ? '' : 'done', providerContent: { role: 'model', parts: name ? [{ functionCall: { name, args, id: 'call' } }] : [{ text: 'done' }] }, reason: 'complete', prompt: { version: '1', hash: 'synthetic', omittedContextIds: [] }, timings: { kind: 'synthetic', totalMs: 0, firstTextMs: null } };
 }
-interface FixtureOptions { policy?: ConnectionPolicy; bindings?: string[]; result?: unknown; memoryBytes?: number }
+interface FixtureOptions { log?: ToolsOwnerOptions['log']; policy?: ConnectionPolicy; bindings?: string[]; result?: unknown; memoryBytes?: number }
 async function fixture(t: TestContext, options: FixtureOptions = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'didi-owner-test-'));
   let store = new Store(dir, toolsMigrations);
@@ -71,7 +71,7 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
   let live: LiveAuthority | null = { ...acceptance, acceptedRunHash: '' };
   let lookup: (() => Promise<LiveAuthority | null>) | undefined;
   const lookupAuthority = async () => lookup ? lookup() : structuredClone(live);
-  const owner = createToolsOwner({ store, ownerId: 'owner', registry, port, lookupAuthority });
+  const owner = createToolsOwner({ store, ownerId: 'owner', registry, port, lookupAuthority, ...(options.log ? { log: options.log } : {}) });
   owner.applyConnection(p);
   assert.equal((await port.discover(endpoint.id)).state, 'discovered');
   if (p.enabled) owner.projectConnection('lux');
@@ -91,7 +91,7 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
   return { dir, get store() { return store; }, owner, port, reader, registry, acceptance, host, signal, calls, intent, binding, execute, run, definitions,
     setLive: (value: LiveAuthority | null) => { live = value; }, getLive: () => structuredClone(live!),
     setLookup: (value: () => Promise<LiveAuthority | null>) => { lookup = value; }, setDispatch: (value: () => void) => { onDispatch = value; }, setResult: (value: unknown) => { result = value; },
-    reopen: () => { store.close(); store = new Store(dir, toolsMigrations); return createToolsOwner({ store, ownerId: 'owner', registry, port, lookupAuthority }); },
+    reopen: () => { store.close(); store = new Store(dir, toolsMigrations); return createToolsOwner({ store, ownerId: 'owner', registry, port, lookupAuthority, ...(options.log ? { log: options.log } : {}) }); },
   };
 }
 
@@ -559,4 +559,21 @@ for (const code of ['mcp_transport_error', 'mcp_result_invalid', 'connector_erro
   const row = f.store.transaction(tx => tx.get('SELECT state, result_json FROM tool_calls WHERE execution_id=?', ['run:1:0']));
   assert.equal(row?.state, 'failed');
   assert.equal(JSON.parse(String(row?.result_json)).response.reason, code);
+});
+
+test('a thrown MCP transport failure is logged without exception payload and remains unknown', async t => {
+  const events: ToolFailureEvent[] = []; const f = await fixture(t, { log: event => events.push(event) });
+  t.mock.method(f.port, 'call', async () => { throw Object.assign(Error('synthetic-private-payload must not reach logging'), { code: 'mcp_transport_error' }); });
+  const outcome = await f.run({ generate: async () => modelResult('search_knowledge') });
+  assert.equal(outcome.status, 'uncertain'); assert.equal(outcome.reason, 'mcp_transport_error');
+  assert.deepEqual(events, [{ event: 'tool_failure', code: 'mcp_transport_error', tool: 'search_knowledge', connector: 'lux-knowledge', errorClass: 'Error', messageHead: 'mcp_transport_error' }]);
+  assert(!JSON.stringify(events).includes('synthetic-private-payload'));
+});
+test('a connector-rejected decoded content shape is logged and returned with mcp_result_invalid', async t => {
+  const events: ToolFailureEvent[] = []; const f = await fixture(t, { log: event => events.push(event), result: { content: [{ type: 'image', mimeType: 'image/png', data: 'synthetic' }] } });
+  const seen: ModelRequest[] = [];
+  const outcome = await f.run({ generate: async req => { seen.push(structuredClone(req)); return seen.length === 1 ? modelResult('search_knowledge') : modelResult(); } });
+  assert.equal(outcome.status, 'complete');
+  assert.equal(seen[1]!.contents.at(-1)!.parts[0]!.functionResponse!.response['reason'], 'mcp_result_invalid');
+  assert.deepEqual(events, [{ event: 'tool_failure', code: 'mcp_result_invalid', tool: 'search_knowledge', connector: 'lux-knowledge', errorClass: 'Error', messageHead: 'mcp_result_invalid' }]);
 });

@@ -78,3 +78,23 @@ NOT_FOUND. New recall and Live CREATE selection cannot resolve the removed entry
 Historical chat context snapshots and Live transcripts are not rewritten. In particular,
 a previously accepted chat run can still compose its frozen resolved-record snapshot;
 that read-back is a separate follow-up and is not covered by this deletion boundary.
+
+## Memory list (web)
+
+The Memory tab renders an at-a-glance list of the current conversation's stored entries, newest
+first, from the existing owner list route (`GET /api/v1/sessions/:id/entries`). No route changes.
+
+- `web/src/memory-list.ts` owns the list. Each item shows its kind, its origin when the payload
+  carries one, and the local created time. The kind is the Live remember kind carried in the source
+  note (`kind:fact`, `kind:preference`, `kind:task`); any other entry falls back to its stored role
+  (`user`, `assistant`, `system`). The origin is `Live voice via remember_note` for a `live-voice`
+  source, otherwise the source label. An entry without a source renders no origin line.
+- The filter box narrows the already-fetched list in the browser by text, case-insensitively, across
+  the text, kind and origin. Nothing is sent to the service and no new request is made.
+- The list shows its count and an honest empty state ("Didi remembers nothing yet.") and never
+  invents a memory it did not receive.
+- Deletion keeps W-X's confirm-and-server-confirmation behaviour: the same `Delete memory` control
+  and `deleteMemoryAndReload` helper, so a cancelled or failed delete leaves the displayed list
+  untouched.
+
+The Memory tab mounts the list from `memory()` in `web/src/main.ts` (ruling WMEM2-R1 grants that file for the mount only): it calls `memoryListMarkup(entries, { filter: memoryFilter, disabled })` and binds the `#memory-filter` input to a client-side re-render. Nothing else in that file changes.

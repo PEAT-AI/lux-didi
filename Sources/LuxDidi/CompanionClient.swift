@@ -100,10 +100,11 @@ enum CaptureStatus: Equatable { case idle, sending, saved, cancelled, unknown, f
     private var pending: Capture?
     private(set) var captureStatus: CaptureStatus = .idle
     var captureReceipt: CaptureReceipt? { pending?.receipt }
-    init(descriptor: ServiceDescriptor, credential: @escaping () throws -> String, expectedEpoch: String? = nil, connectionGuard: @escaping () -> Bool = { true }) {
+    init(descriptor: ServiceDescriptor, credential: @escaping () throws -> String, expectedEpoch: String? = nil, connectionGuard: @escaping () -> Bool = { true }, protocolClasses: [AnyClass]? = nil) {
         self.descriptor = descriptor; self.credential = credential
         self.expectedEpoch = expectedEpoch; self.connectionGuard = connectionGuard
         let config = URLSessionConfiguration.ephemeral
+        if let protocolClasses { config.protocolClasses = protocolClasses }
         config.httpCookieStorage = nil; config.httpShouldSetCookies = false
         config.urlCache = nil; config.requestCachePolicy = .reloadIgnoringLocalCacheData
         config.timeoutIntervalForRequest = 8; config.timeoutIntervalForResource = 12
@@ -132,6 +133,16 @@ enum CaptureStatus: Equatable { case idle, sending, saved, cancelled, unknown, f
             }
             return request
         })
+    }
+    func connectedRead(_ path: String) async throws -> [String: Any] {
+        let (value, _) = try await request(path, bearer: false, page: true)
+        return value
+    }
+    func connectedAccept(sessionID: String, text: String, key: String, authority: String) async throws -> [String: Any] {
+        let (value, _) = try await request("api/v1/chat", method: "POST",
+            body: ["sessionId": sessionID, "text": text],
+            bearer: false, page: true, key: key, authority: authority)
+        return value
     }
     func liveConnections() async throws -> [NativeLiveConnection] {
         let (value, _) = try await requestPayload("api/v1/live/connections", bearer: false, page: true)

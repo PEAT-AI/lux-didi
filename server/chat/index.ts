@@ -33,6 +33,17 @@ function snapshot(row: SQLRow, finalText: string | null = null, memorySelection:
     memorySelection, toolEvidence: row.trace ? (JSON.parse(String(row.trace)) as { toolEvidence?: ToolEvidence[] }).toolEvidence ?? [] : [] };
 }
 
+/** Redact frozen selections in the caller's domain deletion transaction. */
+export function redactDeletedMemoryContext(tx: Transaction, entryId: string): void {
+  if (!tx.get("SELECT name FROM sqlite_master WHERE type='table' AND name='chat_run_context'", [])) return;
+  for (const row of tx.all('SELECT run_id,resolved_records FROM chat_run_context', [])) {
+    const records = JSON.parse(String(row.resolved_records)) as (ResolvedEntry | { entryId: string; deleted: true })[];
+    if (!records.some(record => record.entryId === entryId && !('deleted' in record))) continue;
+    tx.run('UPDATE chat_run_context SET resolved_records=? WHERE run_id=?',
+      [JSON.stringify(records.map(record => record.entryId === entryId ? { entryId, deleted: true } : record)), String(row.run_id)]);
+  }
+}
+
 export class ChatService implements ChatPort {
   #ready = false;
   readonly #config: ChatConfig;
@@ -523,11 +534,33 @@ export class ChatService implements ChatPort {
       catch { throw new ContextFailure('compile_failed'); }
     });
   }
-  #readRunContext(runId: string): RunSelection | null {
+  #readRunContext(runId: string, context: DomainContext): RunSelection | null {
     return this.#config.store.transaction(tx => {
       const row = tx.get('SELECT * FROM chat_run_context WHERE run_id=?', [runId]);
       if (!row) return null;
-      return { requestedIds: JSON.parse(String(row.requested_ids)) as string[], records: JSON.parse(String(row.resolved_records)) as ResolvedEntry[] };
+      const frozen = JSON.parse(String(row.resolved_records)) as (ResolvedEntry | { entryId: string; deleted: true })[];
+      const records: ResolvedEntry[] = [];
+      for (const record of frozen) {
+        if ('deleted' in record) continue;
+        try {
+          // Revalidate existence, but preserve the accepted content of surviving records.
+          this.#config.domain.execute(tx, 'resolveEntries', { entryIds: [record.entryId] }, this.#context(context));
+          records.push(record);
+        } catch (error) {
+          if (!(error instanceof ServiceError && error.code === 'NOT_FOUND')) throw error;
+        }
+      }
+      const surviving = new Set(records.map(record => record.entryId));
+      const deleted = new Set(frozen.filter(record => !surviving.has(record.entryId)).map(record => record.entryId));
+      if (deleted.size) {
+        const policy = tx.get('SELECT selected_labels FROM chat_run_policy WHERE run_id=?', [runId]);
+        if (policy) {
+          const labels = JSON.parse(String(policy.selected_labels)) as PolicyLabel[];
+          tx.run('UPDATE chat_run_policy SET selected_labels=? WHERE run_id=?',
+            [JSON.stringify(labels.filter(label => label.kind !== 'entry' || !deleted.has(label.id))), runId]);
+        }
+      }
+      return { requestedIds: JSON.parse(String(row.requested_ids)) as string[], records };
     });
   }
   /**
@@ -550,9 +583,9 @@ export class ChatService implements ChatPort {
     let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
       if (this.get(accepted.runId, context).state !== 'accepted') return;
+      const frozen = this.#readRunContext(accepted.runId, context);
       const acceptedPolicy = this.#checkPolicy(accepted.runId, accepted.sessionId, context);
       const registry = this.#toolRegistry(accepted, context);
-      const frozen = this.#readRunContext(accepted.runId);
       const { request, trace } = assemble(this.#config, accepted.sessionId, accepted.userEntryId, this.#context(context), frozen, this.#readOwnerProfile(accepted.runId), registry);
       if (!this.#config.route.available || !this.#config.route.allows(request.dataClasses) || !this.#config.model) { this.#finish(accepted, context, 'unavailable'); return; }
       const permitted = this.conversation(accepted.sessionId, context).permittedClasses;

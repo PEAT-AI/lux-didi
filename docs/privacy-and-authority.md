@@ -126,6 +126,7 @@ Remembering the connected-chat provider disclosure is an explicit owner action, 
 A standing grant applies only to its exact validated tuple. Revocation or a changed route, provider, model, permitted-class policy or disclosure revision makes it unusable. In particular, ordinary-route consent cannot authorize a private route. The UI's standing-consent indicator and revoke control reflect the server payload, and a revoked grant cannot authorize a new conversation. A conversation-scoped grant can still authorize its own conversation under its existing validation rules.
 
 Standing chat disclosure does not authorize connector reads, broaden connector grants, enroll Live voice, or authorize microphone capture. Those authority boundaries remain unchanged.
+
 ## Memory deletion boundary
 
 The paired owner can delete an entry through `DELETE /api/v1/entries/:id`, using the
@@ -147,4 +148,33 @@ owner only and sent only in provider setup. They never appear in projections,
 client events, logs or errors. Resumption restores provider-side continuity; the
 service reconstructs no conversation history, adds no recap instruction and
 replays no PCM. Accepted prompt, memory and tool authority snapshots remain
-immutable across connection replacement.
+frozen across connection replacement, except that owner memory deletion redacts the
+deleted memory record from the retained prompt. Tool authority is not expanded by redaction.
+
+
+### Retained copies after owner memory deletion
+
+The authenticated HTTP delete composes the domain deletion with chat-context,
+Live-snapshot and runtime-response redaction in one SQLite transaction. Each owner
+scrubs its own table; an error rolls back all changes. Chat frozen records become
+content-free entry references, and dispatch separately revalidates surviving
+records against the domain before composing a prompt. Live removes the matching
+memory record without changing surviving notes, and maintains its replay identity.
+For an active Live session, the manager stages its retained request update and
+writes one content-free scrub journal row through its normal counter-maintaining
+journal path. The in-process update is published only after the transaction
+commits, before any later connection replacement can run. Inactive sessions need
+only the persisted snapshot scrub.
+Runtime keeps the original request fingerprints but replaces cached owner responses
+containing the deleted text with a content-free NOT_FOUND response. It does not
+re-execute the original mutation on replay.
+
+Conversation transcripts and model output that quoted a note are conversation
+history, including chat_runs.partial_text and live_journal transcriptions. They
+are outside memory deletion; the owner removes those by deleting the conversation.
+The provider connection that is CURRENTLY open already holds the deleted note in
+its context and nothing we send can un-tell it. The scrub guarantees only that no
+later setup (rebuild or new session) carries it. The delete response's typed
+`liveSessionRetainsUntilRebuild` flag is true when an active Live connection still
+holds the entry at deletion time. The page then confirms honestly:
+"Naya's current live conversation still has this note until it reconnects or ends."

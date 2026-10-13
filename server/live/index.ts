@@ -155,6 +155,50 @@ export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: 
   return { remembered: true, entryId: entry.id };
 }
 
+/** Scrub only the deleted record, preserving the rest of the frozen instruction. */
+function scrubMemorySnapshots(tx: Transaction, entryId: string): { id: string; system: string }[] {
+  const scrubbed: { id: string; system: string }[] = [];
+  if (!tx.get("SELECT name FROM sqlite_master WHERE type='table' AND name='live_sessions'", [])) return scrubbed;
+  for (const row of tx.all('SELECT live_session_id,accepted_prompt_snapshot,prompt_identity,profile_identity FROM live_sessions', [])) {
+    if (row['accepted_prompt_snapshot'] === null) continue;
+    const snapshot = JSON.parse(String(row['accepted_prompt_snapshot'])) as AcceptedPromptSnapshot;
+    let removed = false;
+    const system = snapshot.system.replace(/<memory-record>\n([^\n]*)\n<\/memory-record>/g, (block, json: string) => {
+      const record = JSON.parse(json) as { id: string };
+      if (record.id !== entryId) return block;
+      removed = true; return '';
+    });
+    if (!removed) continue;
+    const selectedIds = snapshot.memory?.selectedIds.filter(id => id !== entryId) ?? [];
+    const omitted = snapshot.memory?.omitted.filter(record => record.id !== entryId) ?? [];
+    const memory = { status: omitted.length ? selectedIds.length ? 'partial' : 'omitted' : selectedIds.length ? 'selected' : 'empty', selectedIds, omitted } as const;
+    const updated = { ...snapshot, system, memory };
+    const dataClass = classes.find(dataClass => identity({ text: snapshot.system, dataClass }) === row['prompt_identity']);
+    if (!dataClass) throw new LiveError('invalidated');
+    const promptIdentity = identity({ text: system, dataClass });
+    const id = String(row['live_session_id']);
+    const grant = tx.get('SELECT chosen_input_class FROM live_grants WHERE live_session_id=?', [id]);
+    if (!grant) throw new LiveError('invalidated');
+    const fingerprint = identity({ inputClass: String(grant['chosen_input_class']), profile: String(row['profile_identity']), prompt: promptIdentity, pickupJobId: snapshot.pickup?.jobId ?? null });
+    tx.run('UPDATE live_sessions SET accepted_prompt_snapshot=?,memory_provenance=?,prompt_identity=?,fingerprint=? WHERE live_session_id=?',
+      [JSON.stringify(updated), JSON.stringify(memory), promptIdentity, fingerprint, id]);
+    scrubbed.push({ id, system });
+  }
+  return scrubbed;
+}
+
+// Host composition and HTTP share the canonical Store object. Keep active-handle
+// ownership here rather than exposing the manager through transport projections.
+const memoryOwners = new WeakMap<LiveStorePort, LiveSessionOwner>();
+
+/** Stage redaction in the caller's transaction, then publish active changes after commit. */
+export function redactDeletedMemorySnapshots(store: LiveStorePort, tx: Transaction, entryId: string): { liveSessionRetainsUntilRebuild: boolean; publish: () => void } {
+  const owner = memoryOwners.get(store);
+  if (owner) return owner.redactDeletedMemory(tx, entryId);
+  scrubMemorySnapshots(tx, entryId);
+  return { liveSessionRetainsUntilRebuild: false, publish: () => {} };
+}
+
 export class LiveSessionOwner {
   readonly #jobs: LiveToolJobs;
   readonly #tools: LiveToolsComposition | undefined;
@@ -169,6 +213,7 @@ export class LiveSessionOwner {
   readonly #active = new Map<string, ActiveSession>();
   #revision = 1;
   #invalidated = false;
+  #providerMemory = new WeakMap<ActiveSession, Map<string, number>>();
   #closed = false;
 
   constructor(config: LiveOwnerConfig) {
@@ -190,6 +235,7 @@ export class LiveSessionOwner {
     });
     this.#jobs = new LiveToolJobs(this.#store, this.#now);
     this.#profileIdentity = liveProfileIdentity(this.#profile);
+    memoryOwners.set(this.#store, this);
     this.recover();
   }
 
@@ -405,6 +451,31 @@ export class LiveSessionOwner {
     this.#armExpiry();
     if (prepared === 'expired') throw new LiveError('expired');
     return this.#open(input.liveSessionId, prepared.inputClass, revision, prepared.acceptedPrompt, context);
+  }
+
+  /** The HTTP delete owns the transaction; publish handle changes only after it commits. */
+  redactDeletedMemory(tx: Transaction, entryId: string): { liveSessionRetainsUntilRebuild: boolean; publish: () => void } {
+    let liveSessionRetainsUntilRebuild = [...this.#active.values()].some(handle => !handle.terminal && this.#providerMemory.get(handle)?.get(entryId) === handle.generation);
+    const publish: (() => void)[] = [];
+    for (const snapshot of scrubMemorySnapshots(tx, entryId)) {
+      const handle = this.#active.get(snapshot.id);
+      if (!handle || handle.terminal) continue;
+      liveSessionRetainsUntilRebuild = true;
+      // A staging handle lets the normal journal path maintain the same counters
+      // without changing an active request if another owner subsequently rolls back.
+      const staged = { ...handle, request: { ...handle.request, system: { ...handle.request.system, text: snapshot.system } } };
+      const sequence = this.#persist(staged, { type: 'continuity', sequence: 0, text: JSON.stringify({ event: 'memory_deleted', entryId }) }, 'continuity', tx);
+      if (sequence === 'overflow') throw new LiveError('persistence_failed');
+      publish.push(() => {
+        handle.request = staged.request;
+        handle.journalEvents = staged.journalEvents;
+        handle.journalBytes = staged.journalBytes;
+        const retained = this.#providerMemory.get(handle) ?? new Map<string, number>();
+        retained.set(entryId, handle.generation);
+        this.#providerMemory.set(handle, retained);
+      });
+    }
+    return { liveSessionRetainsUntilRebuild, publish: () => { for (const apply of publish) apply(); } };
   }
 
   /** Explicit host entry point: synchronous in-memory invalidation and adapter abort. */
@@ -769,7 +840,7 @@ export class LiveSessionOwner {
     handle.thinking = handle.pendingCallIds.size > 0;
   }
 
-  #persist(handle: ActiveSession, event: { type: 'continuity'; sequence: number; text: string } | LiveVoiceEvent | { type: 'toolCall' | 'toolResult'; sequence: number; tool: LiveToolProjection }, kind: JournalKind): number | 'overflow' {
+  #persist(handle: ActiveSession, event: { type: 'continuity'; sequence: number; text: string } | LiveVoiceEvent | { type: 'toolCall' | 'toolResult'; sequence: number; tool: LiveToolProjection }, kind: JournalKind, transaction?: Transaction): number | 'overflow' {
     const text = 'text' in event ? event.text : null;
     const finished = 'finished' in event && event.finished !== undefined ? (event.finished ? 1 : 0) : null;
     const value = event.type === 'waitingForInput' ? (event.value ? 1 : 0) : null;
@@ -780,13 +851,14 @@ export class LiveSessionOwner {
     const now = this.#now();
     const events = handle.journalEvents + 1;
     const total = handle.journalBytes + bytes;
-    const journalSequence = this.#store.transaction(tx => {
+    const persist = (tx: Transaction) => {
       tx.run('INSERT INTO live_journal(live_session_id, provider_sequence, kind, text, finished, value, tool_json, terminal_outcome, rejected_kind, rejected_sequence, payload_bytes, arrived_at) VALUES (?,?,?,?,?,?,?,NULL,NULL,NULL,?,?)',
         [handle.liveSessionId, event.sequence, kind, text, finished, value, toolJSON, bytes, now]);
       tx.run('UPDATE live_sessions SET journal_events=?, journal_bytes=?, ready=CASE WHEN ?=1 THEN 1 ELSE ready END, updated_at=? WHERE live_session_id=?',
         [events, total, kind === 'ready' ? 1 : 0, now, handle.liveSessionId]);
       return Number(tx.get('SELECT journal_id FROM live_journal WHERE live_session_id=? ORDER BY journal_id DESC LIMIT 1', [handle.liveSessionId])!['journal_id']);
-    });
+    };
+    const journalSequence = transaction ? persist(transaction) : this.#store.transaction(persist);
     handle.journalEvents = events;
     handle.journalBytes = total;
     return journalSequence;

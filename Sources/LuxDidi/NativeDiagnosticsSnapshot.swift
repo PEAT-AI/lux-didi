@@ -1,5 +1,18 @@
 import Foundation
 
+struct StartupFailureDiagnostic {
+    enum Stage: String { case state, nodeProbe = "node-probe", spawn, readyFrame = "ready-frame", canonicalImport = "canonical-file-and-import", bootstrap, unknown }
+    enum Category: String {
+        case invalidRuntime, invalidNode, invalidOperatorSettings, unsafeState, unsafeCredential, credentialMismatch, keychain, invalidReady, exited, timeout, alreadyStarting
+        case invalidConfiguration, credentialUnavailable, unavailable, authentication, invalidResponse, rejected, unresolvedCapture, unknown
+    }
+    enum Operation: String { case policyRecheck, copyMatching, add, none }
+    let stage: Stage
+    let category: Category
+    let operation: Operation
+    let status: Int32?
+}
+
 /// Plain inputs for the "Copy diagnostics" support snapshot.
 ///
 /// Audio routes admit only closed classifications, never device or owner labels.
@@ -20,6 +33,7 @@ struct DiagnosticsSnapshotInput {
     var audioRoute: String?
     var preCreateFailureClass: String?
     var preCreateFailureCode: String?
+    var startupFailure: StartupFailureDiagnostic?
     var capturedAt: String?
 }
 
@@ -62,7 +76,29 @@ enum NativeDiagnosticsSnapshot {
         let routes = classifications.flatMap { input in classifications.map { "Input: " + input + "; Output: " + $0 } }
         lines.append("Audio route: " + (routes.contains(input.audioRoute ?? "") ? input.audioRoute! : "Input: unknown; Output: unknown"))
         lines.append("Last pre-CREATE failure: " + scrub(input.preCreateFailureClass) + "/" + scrub(input.preCreateFailureCode))
+        lines.append("Last startup failure: " + startupFailure(input.startupFailure))
         return lines.joined(separator: "\n") + "\n"
+    }
+
+    static func startupFailure(_ value: StartupFailureDiagnostic?) -> String {
+        guard let value, value.stage != .unknown, value.category != .unknown else { return unknown }
+        let allowed: [StartupFailureDiagnostic.Category]
+        switch value.stage {
+        case .state: allowed = [.unsafeState, .exited]
+        case .nodeProbe: allowed = [.invalidNode, .invalidRuntime, .invalidReady, .exited]
+        case .spawn: allowed = [.invalidRuntime]
+        case .readyFrame: allowed = [.invalidReady, .exited, .timeout]
+        case .canonicalImport: allowed = [.unsafeState, .unsafeCredential, .credentialMismatch, .keychain, .exited]
+        case .bootstrap: allowed = [.invalidConfiguration, .credentialUnavailable, .unavailable, .authentication, .invalidResponse, .rejected, .unresolvedCapture]
+        case .unknown: return unknown
+        }
+        guard allowed.contains(value.category) else { return unknown }
+        if value.category == .keychain {
+            guard let status = value.status, status != 0, value.operation != .none else { return unknown }
+            return "stage=" + value.stage.rawValue + " category=keychain operation=" + value.operation.rawValue + " status=" + String(status)
+        }
+        guard value.status == nil, value.operation == .none else { return unknown }
+        return "stage=" + value.stage.rawValue + " category=" + value.category.rawValue + " operation=none status=unknown"
     }
 
     /// The last typed pre-CREATE failure recorded by `logFailure`. Only the

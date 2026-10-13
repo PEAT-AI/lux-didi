@@ -87,6 +87,7 @@ struct InstalledRuntime {
 struct NativeCredentialReference { let service: String; let account: String }
 
 enum NativeCredentialImport {
+    enum FailureOperation { case policyRecheck, copyMatching, add }
     static let service = "ai.peat.lux-didi.admin"
     static func prepareState(_ state: URL) throws {
         var info = stat()
@@ -101,9 +102,10 @@ enum NativeCredentialImport {
     }
     @MainActor static func importCredential(state: URL, installId: String, service: String = NativeCredentialImport.service,
                                  add: (CFDictionary, UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus = SecItemAdd,
-                                 policyCheck: @MainActor () -> OSStatus = NativeKeychainPolicy.check) throws -> NativeCredentialReference {
+                                 policyCheck: @MainActor () -> OSStatus = NativeKeychainPolicy.check,
+                                 observeFailure: (FailureOperation, Int32) -> Void = { _, _ in }) throws -> NativeCredentialReference {
         let policy = policyCheck()
-        guard policy == errSecSuccess else { throw NativeServiceError.keychain(policy) }
+        guard policy == errSecSuccess else { observeFailure(.policyRecheck, policy); throw NativeServiceError.keychain(policy) }
         let directory = open(state.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard directory >= 0 else { throw NativeServiceError.unsafeState }
         defer { close(directory) }
@@ -130,7 +132,7 @@ enum NativeCredentialImport {
         query[kSecReturnData as String] = true; query[kSecMatchLimit as String] = kSecMatchLimitOne
         var existing: CFTypeRef?
         let readPolicy = policyCheck()
-        guard readPolicy == errSecSuccess else { throw NativeServiceError.keychain(readPolicy) }
+        guard readPolicy == errSecSuccess else { observeFailure(.policyRecheck, readPolicy); throw NativeServiceError.keychain(readPolicy) }
         let status = SecItemCopyMatching(query as CFDictionary, &existing)
         if status == errSecSuccess {
             guard existing as? Data == data else { throw NativeServiceError.credentialMismatch }
@@ -139,10 +141,10 @@ enum NativeCredentialImport {
             item[kSecValueData as String] = data
             item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
             let addPolicy = policyCheck()
-            guard addPolicy == errSecSuccess else { throw NativeServiceError.keychain(addPolicy) }
+            guard addPolicy == errSecSuccess else { observeFailure(.policyRecheck, addPolicy); throw NativeServiceError.keychain(addPolicy) }
             let added = add(item as CFDictionary, nil)
-            guard added == errSecSuccess else { throw NativeServiceError.keychain(added) }
-        } else { throw NativeServiceError.keychain(status) }
+            guard added == errSecSuccess else { observeFailure(.add, added); throw NativeServiceError.keychain(added) }
+        } else { observeFailure(.copyMatching, status); throw NativeServiceError.keychain(status) }
         return NativeCredentialReference(service: service, account: installId)
     }
 }

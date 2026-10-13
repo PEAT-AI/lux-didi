@@ -22,7 +22,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadLiveConfig } from '../config/live.js';
-import { NAYA_BASE, NAYA_TOOLS, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
+import { NAYA_BASE, NAYA_LIVE_PROFILE_DESCRIPTOR, NAYA_TOOLS, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
 import { GeminiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
 import type { LiveVoiceLimits, LiveVoiceRequest } from '../adapters/live-voice/index.js';
 import { chatMigrations } from '../chat/index.js';
@@ -1327,11 +1327,10 @@ test('loadLiveConfig keeps public prompt bytes and composes classified owner sec
   const status = loadLiveConfig({ configDir, ownerId: 'synthetic-owner', ownerProfile });
   assert.equal(status.status, 'configured');
   if (status.status === 'configured') {
-    const expected = composeLiveInstruction({ base: NAYA_BASE, accent: overlay.accent, language: 'de' });
     const accepted = composeLiveInstruction({ base: NAYA_BASE, ownerProfile, accent: overlay.accent, language: 'de' });
     assert.deepEqual(status.config.profile.overlay, overlay);
     assert.equal(status.config.profile.language, 'de');
-    assert.equal(status.config.profile.prompt.text, expected.text);
+    assert.equal(status.config.profile.prompt.text, NAYA_LIVE_PROFILE_DESCRIPTOR);
     assert.equal(status.config.profile.acceptedPrompt?.system, accepted.text);
     assert.ok(accepted.text.length > 4096);
     assert.equal(accepted.text.split(style).length - 1, 1); assert.equal(accepted.text.split(lore).length - 1, 1);
@@ -1371,6 +1370,8 @@ test('configured owner system survives CREATE and attach open byte for byte befo
   await f.frame(1);
   const frame = JSON.parse(JSON.stringify(f.frames[0]));
   assert.equal(frame.setup.systemInstruction.parts[0].text, expected);
+  assert.equal(frame.setup.systemInstruction.parts[0].text.includes(NAYA_LIVE_PROFILE_DESCRIPTOR), false);
+  assert.equal(frame.setup.systemInstruction.parts[0].text.split('You are Naya, the AI companion in Lux Didi').length - 1, 1);
   attachment.close(); await attachment.done; await first.shutdown();
 });
 

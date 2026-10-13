@@ -10,6 +10,9 @@ import { NAYA_LIVE_DELIVERY, NAYA_SHARED_CHARACTER } from './behavior.js';
  */
 export const NAYA_BASE = `# Naya\n\n${NAYA_SHARED_CHARACTER}\n\n# Live delivery\n\n${NAYA_LIVE_DELIVERY}`;
 
+/** Bounded configuration descriptor. The frozen accepted prompt owns model behavior. */
+export const NAYA_LIVE_PROFILE_DESCRIPTOR = 'Naya Live behavior is frozen in the accepted prompt for each session.';
+
 /**
  * Architect-authored tool-conduct section, added verbatim when a session declares at least one tool.
  * It is generic: it names tool families, never a schema or a connector.

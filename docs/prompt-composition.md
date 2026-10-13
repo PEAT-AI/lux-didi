@@ -146,6 +146,12 @@ overlay first while the base and the anchor never yield. The composed text is
 stored as the accepted Live instruction and journaled only by its hash; the local
 overlay and any private text never enter the repository.
 
+The bounded `prompt.text` profile field contains only a truthful configuration
+descriptor. Production `loadLiveConfig` freezes the complete canonical behavior
+in `acceptedPrompt.system`; CREATE persists that exact system and the provider
+receives the frozen snapshot. Direct trusted callers that omit `acceptedPrompt`
+retain the existing caller-supplied `prompt.text` fallback.
+
 When a session is attached with at least one declared tool, the request system
 text gains a fourth section, `tools`, spliced between the base and the overlay from
 the same Architect-authored conduct text; a session with no declarations composes

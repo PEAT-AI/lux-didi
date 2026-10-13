@@ -427,8 +427,9 @@ test('speech activity siblings and informational keys preserve the next audio fr
   const events = session.events[Symbol.asyncIterator]();
   session.sendAudio({ pcm, dataClass: 'ordinary' });
   await f.frame(2);
-  speechActivityFrames(value => f.send(value));
+  // Informational keys must be consumed before audio makes the reader return.
   f.send({ usageMetadata: { synthetic: true } });
+  speechActivityFrames(value => f.send(value));
   const observed: LiveVoiceEvent[] = [];
   for (let i = 0; i < 4; i++) {
     const next = await events.next();

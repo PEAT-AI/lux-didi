@@ -54,8 +54,8 @@ async function harness(t: TestContext, builder: 'live' | 'chat-shaped', failure?
     sdk.setRequestHandler('tools/call', async () => {
       counts.set(entry.id, counts.get(entry.id)! + 1);
       await dispatch?.(entry.id);
-      const text = entry.connector === 'google' ? JSON.stringify({ family: entry.id === 'gmail' ? 'gmail' : 'calendar', tool: entry.tool, method: entry.tool, account: { configured: 'configured', provider: null }, data: entry.id === 'gmail' ? { messages: [{ id: 'synthetic', headers: { Subject: 'Synthetic mail', From: 'Synthetic sender <synthetic@example.invalid>', Date: 'Synthetic date' } }] } : { calendars: [{ id: 'synthetic', summary: 'Synthetic calendar' }] } }) : `synthetic ${entry.id} read`;
-      return { content: [{ type: 'text', text }], ...(entry.id === 'lux-knowledge' ? { structuredContent: { synthetic: true } } : {}) } as never;
+      const text = entry.connector === 'google' ? JSON.stringify({ family: entry.id === 'gmail' ? 'gmail' : 'calendar', tool: entry.tool, method: entry.tool, account: { configured: 'configured', provider: null }, data: entry.id === 'gmail' ? { messages: [{ id: 'synthetic', headers: { Subject: 'Synthetic mail', From: 'Synthetic sender <synthetic@example.invalid>', Date: 'Synthetic date' } }] } : { calendars: [{ id: 'synthetic', summary: 'Synthetic calendar' }] } }) : entry.id === 'lux-knowledge' ? 'Synthetic knowledge results: 1\n**#1** Synthetic result' : `synthetic ${entry.id} read`;
+      return { content: [{ type: 'text', text }], ...(entry.id === 'lux-knowledge' ? { structuredContent: { unclassified_marker: 'synthetic-private-unclassified' } } : {}) } as never;
     });
     await sdk.connect(transport); readers.set(entry.id, transport); sdks.set(entry.id, sdk);
     }
@@ -208,4 +208,19 @@ test('host log accepts only bounded tool-failure metadata and drops extra payloa
   assert.equal(safeEvent({ ...event, code: 'arbitrary_code' }), undefined);
   assert.equal(safeEvent({ ...event, messageHead: 'x'.repeat(121) }), undefined);
   assert.equal(safeEvent({ ...event, messageHead: 'synthetic knowledge text' }), undefined);
+});
+
+test('Live knowledge SSE response completes with one result and no unclassified structuredContent', async t => {
+  const h = await harness(t, 'live'); const runtime = await h.start(); const run = await h.accept(runtime);
+  const observed = await h.read(runtime, run.host, ['lux-knowledge']);
+  assert.equal(observed.outcome.status, 'complete');
+  const rows = h.store.transaction(tx => tx.all('SELECT state, result_json FROM tool_calls WHERE run_id=?', [run.host.runId]));
+  assert.equal(rows.length, 1); assert.equal(rows[0]!.state, 'completed');
+  const saved = JSON.parse(String(rows[0]!.result_json));
+  assert.equal(saved.response.status, 'completed');
+  assert.match(saved.response.text, /knowledge results: 1/);
+  const responses = observed.seen[1]!.contents.flatMap(c => c.parts.flatMap(p => p.functionResponse ? [p.functionResponse.response] : []));
+  assert.equal(responses.length, 1); assert.equal(responses[0]!['text'], saved.response.text);
+  assert(!JSON.stringify(responses).includes('synthetic-private-unclassified'));
+  assert(!('structuredContent' in responses[0]!));
 });

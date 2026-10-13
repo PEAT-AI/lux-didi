@@ -19,18 +19,21 @@ import CryptoKit
         let literal = String(data: try JSONSerialization.data(withJSONObject: record.text, options: [.fragmentsAllowed]), encoding: .utf8)!
         let check = "document.body.innerText.includes(\(literal))"
         if try await js(web, check) as? Bool == true { return true }
-        // Ordinary visible navigation only. No privileged JS/API/command bridge.
-        for tab in ["Conversation", "Conversations"] {
-            _ = try await js(web, "Array.from(document.querySelectorAll('button,a,[role=button]')).find(e=>e.innerText.trim()==='\(tab)')?.click(); true")
-        }
-        let count = try await js(web, "Array.from(document.querySelectorAll('button,a,[role=button]')).filter(e=>e.innerText.includes('Native capture')&&e.getBoundingClientRect().width>0).length") as? Int ?? 0
-        for index in 0..<min(count, 20) {
-            _ = try await js(web, "Array.from(document.querySelectorAll('button,a,[role=button]')).filter(e=>e.innerText.includes('Native capture')&&e.getBoundingClientRect().width>0)[\(index)]?.click(); true")
-            let until = Date().addingTimeInterval(0.5)
-            while Date() < until {
-                if try await js(web, check) as? Bool == true { return true }
-                try await Task.sleep(nanoseconds: 50_000_000)
+        let selector = String(data: try JSONSerialization.data(withJSONObject: "[data-session=\"" + record.sessionId + "\"]", options: [.fragmentsAllowed]), encoding: .utf8)!
+        _ = try await js(web, "document.querySelector('[data-tab=\"Conversation\"]')?.click(); true")
+        let until = Date().addingTimeInterval(0.5)
+        var opened = false
+        while Date() < until {
+            let snapshot = try await js(web, "(() => { const row=document.querySelector(\(selector)); return { connectionReady:document.querySelector('#connection-state')?.textContent.trim()==='Connected', listLoading:!!document.querySelector('#main .loading'), rowReady:!!row&&row.getBoundingClientRect().width>0, selected:!!row&&row.classList.contains('selected') }; })()") as? [String: Any] ?? [:]
+            if snapshot["connectionReady"] as? Bool == true, snapshot["listLoading"] as? Bool == false {
+                if !opened, snapshot["rowReady"] as? Bool == true {
+                    opened = try await js(web, "(() => { const row=document.querySelector(\(selector)); if(!row||row.getBoundingClientRect().width<=0)return false; row.click(); return true; })()") as? Bool == true
+                } else if opened, snapshot["selected"] as? Bool == true,
+                          try await js(web, check) as? Bool == true {
+                    return true
+                }
             }
+            try await Task.sleep(nanoseconds: 50_000_000)
         }
         return false
     }

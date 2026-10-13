@@ -52,11 +52,10 @@ struct NativePendingLiveJob: Decodable, Equatable, Sendable {
         if error is URLError { code = "service_unreachable" }
         else if error is DecodingError { code = "unexpected_response" }
         else if let reason = error as? LiveClientError { code = reason.rawValue }
-        else if let audio = error as? NativeLiveAudioError { code = audio.rawValue }
+        else if let audio = error as? NativeLiveAudioError { code = audio.httpDiagnosticCode }
         else { code = "connection_refused" }
         var body: [String: Any] = ["event": "live_precreate_failed",
                                    "failureClass": error is NativeLiveAudioError ? "audio" : "service", "code": code]
-        if let audio = error as? NativeLiveAudioError, let detail = audio.diagnosticDetail { body["detail"] = detail }
         if let reason = error as? LiveClientError {
             switch reason {
             case .http(let status, _): body["detail"] = status
@@ -233,7 +232,17 @@ enum NativeLiveAudioError: LocalizedError {
         case .engineFailed: return "engine_failed"
         }
     }
-    /// The bounded diagnostic route admits an integer, never NSError text or a device label.
+    /// The service route has a fixed legacy vocabulary and admits no audio detail.
+    /// Keep precise step/status in the local journal and typed owner presentation instead.
+    var httpDiagnosticCode: String {
+        switch self {
+        case .formatUnavailable, .engineFormatMismatch: return "unsupportedFormat"
+        case .voiceProcessingFailed: return "voiceProcessingUnavailable"
+        case .deviceMissing, .captureNotConfigured, .engineFailed: return "deviceUnavailable"
+        default: return rawValue
+        }
+    }
+    /// Local journal only: a numeric OSStatus/NSError code, never an error or device label.
     var diagnosticDetail: Int? {
         switch self {
         case .voiceProcessingFailed(let code): return code

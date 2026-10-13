@@ -249,3 +249,35 @@ for (const [connector, tool] of [['mongoose', 'search_mongoose'], ['mattermost',
     } finally { await runtime?.close(); store.close(); await f.close(); rmSync(dir, { recursive: true, force: true }); }
   });
 }
+
+// Fake MCP HTTP server at the real guarded-fetch seam, no listening socket or corpus.
+test('search_mongoose projects an SSE MCP entity from separately decodedResult', async t => {
+  const sdk = new Server({ name: 'synthetic-sse', version: '1' }, { capabilities: { tools: {} } });
+  const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: false });
+  const tool = { name: 'search_mongoose', inputSchema: { type: 'object' } };
+  sdk.setRequestHandler('tools/list', () => ({ tools: [tool] }) as never);
+  sdk.setRequestHandler('tools/call', () => ({ content: [{ type: 'text', text: JSON.stringify({ items: [{ id: 'synthetic-id', title: 'Synthetic SSE', body: 'Public synthetic body' }] }) }], structuredContent: { marker: 'synthetic-unclassified' }, isError: false }) as never);
+  await sdk.connect(transport);
+  t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+    const request = new Request(input, init);
+    return request.method === 'GET' ? new Response(null, { status: 405 }) : transport.handleRequest(request);
+  });
+  const registry = new McpRegistry();
+  registry.register({ id: 'sse', url: 'http://127.0.0.1:18766/mcp', account: 'synthetic', resource: 'synthetic' });
+  registry.enable('sse'); registry.allowEgress('sse');
+  const adapter = createMcpAdapter({ registry, store: new MemoryResultStore() });
+  t.after(async () => { await adapter.close(); await sdk.close(); });
+  const discovery = await adapter.discover('sse'); assert.equal(discovery.state, 'discovered');
+  if (discovery.state !== 'discovered') throw Error('discovery failed');
+  registry.approve({ endpointId: 'sse', schemaDigest: discovery.schemaDigest, toolNames: ['search_mongoose'], effect: 'read', account: 'synthetic', resource: 'synthetic', generation: 1 });
+  const result = await createMongooseReader({ port: adapter, registry, config: { endpointId: 'sse', account: 'synthetic', resource: 'synthetic', schemaDigest: discovery.schemaDigest, generation: 1, maxSearchLimit: 10, maxListLimit: 10, queryChars: 200 } }).search({ query: 'synthetic' });
+  assert.equal(result.state, 'completed');
+  if (result.state !== 'completed' || result.response.state !== 'available') throw Error('missing result');
+  const wire = adapter.readSlice({ ...result.source, handle: result.response.handle, offset: 0, length: 16 });
+  assert.equal(wire.state, 'available');
+  if (wire.state === 'available') assert.match(new TextDecoder().decode(wire.bytes), /^event:|^data:/);
+  const projected = projectMongooseResult(adapter, result); assert.equal(projected.ok, true);
+  if (!projected.ok) throw Error(projected.reason);
+  assert(projected.projection.text.includes('Synthetic SSE'));
+  assert(!projected.projection.text.includes('synthetic-unclassified'));
+});

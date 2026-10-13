@@ -11,6 +11,7 @@ import { liveMigrations, validateLiveProfile } from '../live/index.js';
 import { toolsMigrations } from '../tools/schema.js';
 import { composeMcpRuntime } from '../host/mcp.js';
 import { composeLive } from '../host/live.js';
+import { safeEvent } from '../host/log.js';
 import { sha256 } from '../tools/canonical.js';
 import { runTools } from '../adapters/model/loop.js';
 import type { DataClass, HostContext, ModelPort, ModelRequest, ModelResult, ToolCallIntent } from '../adapters/model/types.js';
@@ -205,4 +206,12 @@ for (const failure of ['transport', 'result'] as const) test(`MCP ${failure} fai
     const responses = observed.seen.flatMap(request => request.contents.flatMap(c => c.parts.flatMap(p => p.functionResponse ? [p.functionResponse.response] : [])));
     assert(responses.some(response => response['reason'] === expected));
   }
+});
+
+test('host log accepts only bounded tool-failure metadata and drops extra payload fields', () => {
+  const event = { event: 'tool_failure', code: 'mcp_result_invalid', tool: 'search_knowledge', connector: 'lux-knowledge', errorClass: 'McpResultError', messageHead: 'mcp_result_invalid' };
+  assert.deepEqual(safeEvent({ ...event, payload: 'synthetic forbidden content' }), event);
+  assert.equal(safeEvent({ ...event, code: 'arbitrary_code' }), undefined);
+  assert.equal(safeEvent({ ...event, messageHead: 'x'.repeat(121) }), undefined);
+  assert.equal(safeEvent({ ...event, messageHead: 'synthetic knowledge text' }), undefined);
 });

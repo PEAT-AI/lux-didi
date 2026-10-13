@@ -6,7 +6,6 @@ import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { Store } from '../runtime/store.js';
-import { safeEvent } from '../host/log.js';
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
@@ -560,12 +559,4 @@ for (const code of ['mcp_transport_error', 'mcp_result_invalid', 'connector_erro
   const row = f.store.transaction(tx => tx.get('SELECT state, result_json FROM tool_calls WHERE execution_id=?', ['run:1:0']));
   assert.equal(row?.state, 'failed');
   assert.equal(JSON.parse(String(row?.result_json)).response.reason, code);
-});
-
-test('host log accepts only bounded tool-failure metadata and drops extra payload fields', () => {
-  const event = { event: 'tool_failure', code: 'mcp_result_invalid', tool: 'search_knowledge', connector: 'lux-knowledge', errorClass: 'McpResultError', messageHead: 'mcp_result_invalid' };
-  assert.deepEqual(safeEvent({ ...event, payload: 'synthetic forbidden content' }), event);
-  assert.equal(safeEvent({ ...event, code: 'arbitrary_code' }), undefined);
-  assert.equal(safeEvent({ ...event, messageHead: 'x'.repeat(121) }), undefined);
-  assert.equal(safeEvent({ ...event, messageHead: 'synthetic knowledge text' }), undefined);
 });

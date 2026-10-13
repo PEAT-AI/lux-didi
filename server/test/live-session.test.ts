@@ -517,11 +517,11 @@ test('profile validation rejects text-model fallback and bounds, and validation 
   assert.throws(() => h.owner.create({ idempotencyKey: 'class', inputClass: 'private' }, h.ctx), (error: unknown) => error instanceof LiveError && error.code === 'invalid_request');
 });
 
-test('accepted complete system uses the existing 20k bound while generic prompt text stays at 4096', () => {
+test('accepted complete system uses the shared 60k bound while generic prompt text stays at 4096', () => {
   const ownerProfile = { schemaVersion: 1 as const, kind: 'default' as const, ownerId: 'assistant-test', displayName: 'Lux Didi' as const };
-  const acceptedPrompt = { schemaVersion: 1, ownerProfile, compilerVersion: PROMPT_VERSION, system: 'A'.repeat(20_000), dataClasses: ['ordinary'] };
-  assert.equal(validateLiveProfile({ ...profileInput(), acceptedPrompt }).acceptedPrompt?.system.length, 20_000);
-  assert.throws(() => validateLiveProfile({ ...profileInput(), acceptedPrompt: { ...acceptedPrompt, system: 'A'.repeat(20_001) } }), LiveConfigError);
+  const acceptedPrompt = { schemaVersion: 1, ownerProfile, compilerVersion: PROMPT_VERSION, system: 'A'.repeat(60_000), dataClasses: ['ordinary'] };
+  assert.equal(validateLiveProfile({ ...profileInput(), acceptedPrompt }).acceptedPrompt?.system.length, 60_000);
+  assert.throws(() => validateLiveProfile({ ...profileInput(), acceptedPrompt: { ...acceptedPrompt, system: 'A'.repeat(60_001) } }), LiveConfigError);
   assert.throws(() => validateLiveProfile({ ...profileInput(), prompt: { text: 'A'.repeat(4097), dataClass: 'ordinary' } }), LiveConfigError);
 });
 
@@ -1286,7 +1286,7 @@ test('loadLiveConfig keeps public prompt bytes and composes classified owner sec
   const overlay = { schemaVersion: 1 as const, text: 'SYNTHETIC local overlay persona', greeting: 'Synthetic greeting', accent: 'Synthetic accent' };
   writePrivate(dataDir, 'persona-overlay.json', JSON.stringify(overlay));
   const style = `SYNTHETIC owner style ${'S'.repeat(3000)}`;
-  const lore = `SYNTHETIC owner lore ${'L'.repeat(3000)}`;
+  const lore = `SYNTHETIC owner lore ${'L'.repeat(13_955)}`;
   const ownerProfile = { schemaVersion: 1 as const, kind: 'profile' as const, ownerId: 'synthetic-owner', profileVersion: 'fixture', displayName: 'Example',
     style: { text: style, dataClass: 'private' as const }, lore: { text: lore, dataClass: 'sensitive' as const } };
   const status = loadLiveConfig({ configDir, ownerId: 'synthetic-owner', ownerProfile });

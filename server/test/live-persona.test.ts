@@ -5,13 +5,13 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  NAYA_BASE, NAYA_TOOLS, PersonaOverlayError, canonicalSpeechLanguage, composeLiveInstruction, composeLiveSessionInstruction, loadPersonaOverlay,
+  NAYA_BASE, NAYA_TOOLS, PersonaOverlayError, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, canonicalSpeechLanguage, composeLiveInstruction, composeLiveSessionInstruction, loadPersonaOverlay,
   validatePersonaOverlay, withToolsSection, type PersonaOverlay,
 } from '../prompt/live-persona.js';
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
 
 const sha = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex');
-const BUDGET = 60_000;
+const BUDGET = TRUSTED_SYSTEM_CODE_UNIT_LIMIT;
 
 function writePrivate(dir: string, name: string, text: string): void {
   const path = join(dir, name);
@@ -196,7 +196,7 @@ test('session composition places bounded whole memory records and pickup before 
   const ownerProfile: OwnerProfileSnapshot = { schemaVersion: 1, kind: 'profile', ownerId: 'synthetic-owner', profileVersion: 'fixture', displayName: 'Example',
     style: { text: 'Fixture owner style\n\nLANGUAGE: caller-owned marker', dataClass: 'ordinary' }, lore: { text: 'Fixture owner lore', dataClass: 'ordinary' } };
   const baseline = composeLiveInstruction({ base: NAYA_BASE, ownerProfile, overlay: { schemaVersion: 1, text: 'Fixture overlay' }, language: 'hi' });
-  const composed = composeLiveSessionInstruction({ text: baseline.text, tools: ['search_knowledge'], records: [{ id: 'b', text: 'Fixture note B' }, { id: 'a', text: 'Fixture note A' }], pickupNote: 'Fixture pickup note', trustedChars: 20000 });
+  const composed = composeLiveSessionInstruction({ text: baseline.text, tools: ['search_knowledge'], records: [{ id: 'b', text: 'Fixture note B' }, { id: 'a', text: 'Fixture note A' }], pickupNote: 'Fixture pickup note', trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT });
   assert.deepEqual(composed.selectedIds, ['a', 'b']);
   const order = [NAYA_BASE, NAYA_TOOLS, 'Fixture owner style', 'Fixture owner lore', 'Fixture overlay', 'Fixture pickup note', '# Memory'];
   for (let i = 1; i < order.length; i++) assert.ok(composed.text.indexOf(order[i - 1]!) < composed.text.indexOf(order[i]!));
@@ -209,4 +209,19 @@ test('session composition places bounded whole memory records and pickup before 
   const yielding = composeLiveInstruction({ base: NAYA_BASE, overlay: { schemaVersion: 1, text: 'Fixture overlay' }, memory: 'x'.repeat(BUDGET) });
   assert.ok(!yielding.sections.some(section => section.id === 'memory'));
   assert.ok(yielding.text.includes('Fixture overlay'), 'memory yields before overlay');
+});
+
+test('tool-enabled Live CREATE retains expanded owner bytes and yields memory only as whole records', () => {
+  const lore = `SYNTHETIC expanded lore ${'L'.repeat(13_955)}`;
+  const ownerProfile: OwnerProfileSnapshot = { schemaVersion: 1, kind: 'profile', ownerId: 'synthetic-owner', profileVersion: 'fixture', displayName: 'Example',
+    style: { text: `SYNTHETIC style ${'S'.repeat(4096)}`, dataClass: 'private' }, lore: { text: lore, dataClass: 'sensitive' } };
+  const baseline = composeLiveInstruction({ base: NAYA_BASE, ownerProfile, language: 'en' });
+  const records = [{ id: 'fits', text: 'SYNTHETIC retained memory' }, { id: 'whole-oversize', text: 'M'.repeat(TRUSTED_SYSTEM_CODE_UNIT_LIMIT) }];
+  const composed = composeLiveSessionInstruction({ text: baseline.text, tools: ['search_knowledge'], records,
+    trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT });
+  assert.equal(composed.text.split(lore).length - 1, 1);
+  assert.ok(composed.text.includes(NAYA_TOOLS));
+  assert.deepEqual(composed.selectedIds, ['fits']);
+  assert.deepEqual(composed.omitted, [{ id: 'whole-oversize', reason: 'budget' }]);
+  assert.ok(!composed.text.includes('M'.repeat(128)));
 });

@@ -247,7 +247,7 @@ actor GatedSocket: LiveSocket {
     func cancel() async { closed = true; await underlying.cancel(); await gate.release() }
 }
 struct GatedSockets: LiveSocketConnecting {
-    let underlying: CountedSockets; let gate: Gate
+    let underlying: any LiveSocketConnecting; let gate: Gate
     func connect(_ binding: LiveSocketBinding) async throws -> any LiveSocket { try await GatedSocket(underlying.connect(binding), gate) }
 }
 
@@ -507,6 +507,66 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             try require(await scriptedSink.queued.isEmpty, "terminal discards queued playback")
             await scripted.stop(); await scriptedHTTP.finish()
             print("PASS silent scripted PCM/interrupted/terminal output ordering")
+
+            // R-SEC-5: admission is suspended before the final outbound epoch check.
+            let muteHTTP = TestHTTP(fixture), muteSocket = ContinuitySocket(), admissionGate = Gate()
+            let muteFence = LiveSessionCoordinator(http: muteHTTP, sockets: muteSocket, sink: SilentSink(), beforeCaptureSubmission: { await admissionGate.wait() })
+            await muteSocket.push(.marker(LiveMarker(kind: .ready, sequence: 1, journalSequence: 0, text: nil, finished: nil, value: nil)))
+            await muteFence.begin(frozen)
+            try await until { await muteFence.state == .active }
+            let staleCapture = Task { try await muteFence.sendPCM(Data([9, 0]), captureEpoch: 0) }
+            try await until { await admissionGate.arrivals == 1 }
+            let muteAcknowledged = Gate()
+            let muteRequest = Task {
+                await muteFence.setCaptureMuted(true, epoch: 1)
+                await muteAcknowledged.wait()
+            }
+            try await until { await muteFence.captureEpoch == 1 }
+            try require(await muteAcknowledged.arrivals == 0, "mute not acknowledged while admitted submission is suspended")
+            await admissionGate.release()
+            try await staleCapture.value
+            try await until { await muteAcknowledged.arrivals == 1 }
+            try require(await muteSocket.inputs.isEmpty, "old admitted capture never reaches transport after mute epoch")
+            await muteAcknowledged.release(); await muteRequest.value
+            await muteFence.setCaptureMuted(false, epoch: 2)
+            try await muteFence.sendPCM(Data([9, 0]), captureEpoch: 0)
+            try require(await muteSocket.inputs.isEmpty, "unmute cannot revive an older capture epoch")
+            let freshCapture = Task { try await muteFence.sendPCM(Data([7, 0]), captureEpoch: 2) }
+            try await until { await admissionGate.arrivals == 2 }
+            await admissionGate.release(); try await freshCapture.value
+            try require(await muteSocket.inputs == [Data([7, 0])], "new epoch sends normally after unmute")
+            await muteFence.stop(); await muteHTTP.finish()
+            print("PASS suspended capture mute epoch fence + delayed acknowledgement + unmute cannot revive stale PCM")
+
+            // WFIX1-R4: bytes handed to a suspended transport may complete, but mute
+            // rejects all post-request capture and withholds the UI acknowledgement.
+            let transportMuteHTTP = TestHTTP(fixture), transportMuteSocket = ContinuitySocket(), transportGate = Gate()
+            let transportMute = LiveSessionCoordinator(http: transportMuteHTTP,
+                sockets: GatedSockets(underlying: transportMuteSocket, gate: transportGate), sink: SilentSink())
+            await transportMuteSocket.push(.marker(LiveMarker(kind: .ready, sequence: 1, journalSequence: 0, text: nil, finished: nil, value: nil)))
+            await transportMute.begin(frozen)
+            try await until { await transportMute.state == .active }
+            let consentedFrame = Task { try await transportMute.sendPCM(Data([3, 0]), captureEpoch: 0) }
+            try await until { await transportGate.arrivals == 1 }
+            let mutedUIAcknowledgement = Gate()
+            let ownerMuteRequest = Task {
+                await transportMute.setCaptureMuted(true, epoch: 1)
+                // NativeLiveConversation updates its muted UI state only after this return.
+                await mutedUIAcknowledgement.wait()
+            }
+            try await until { await transportMute.captureEpoch == 1 }
+            try await transportMute.sendPCM(Data([5, 0]), captureEpoch: 1)
+            try require(await transportGate.arrivals == 1, "post-request captured frame never enters transport")
+            try require(await transportMuteSocket.inputs.isEmpty, "transport submission remains deterministically suspended")
+            try require(await mutedUIAcknowledgement.arrivals == 0, "muted UI acknowledgement withheld while pre-request submission is suspended")
+            await transportGate.release(); try await consentedFrame.value
+            try await until { await mutedUIAcknowledgement.arrivals == 1 }
+            try require(await transportMuteSocket.inputs == [Data([3, 0])], "only consented pre-request PCM may complete before muted acknowledgement")
+            try await transportMute.sendPCM(Data([7, 0]), captureEpoch: 1)
+            try require(await transportGate.arrivals == 1, "post-request capture remains rejected after muted acknowledgement")
+            await mutedUIAcknowledgement.release(); await ownerMuteRequest.value
+            await transportMute.stop(); await transportMuteHTTP.finish()
+            print("PASS suspended transport mute: post-request capture rejected + pre-request send may complete + muted acknowledgement after drain")
 
             let continuityHTTP = TestHTTP(fixture), continuitySocket = ContinuitySocket(), continuitySink = SilentSink()
             let continuity = LiveSessionCoordinator(http: continuityHTTP, sockets: continuitySocket, sink: continuitySink)

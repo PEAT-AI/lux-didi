@@ -89,9 +89,9 @@ fakeLogin.status = .revoked
 expect(login.status == .revoked, "login revoked status reflects registrar, not preference")
 expect(ShortcutStatus.describe(code: -9878).contains("Unavailable"), "shortcut conflict is visible")
 expect(ShortcutStatus.describe(code: 0).contains("registered"), "shortcut success is visible")
-for state in ["listening", "speaking", "muted", "connecting", "stopped"] {
-    expect(LiveStatusPresentation(state: state, pendingCall: false).text.contains(state), "status exposes \(state)")
-    expect(LiveStatusPresentation(state: state, pendingCall: true).text.contains(state), "call badge preserves \(state)")
+for state in ["Listening", "Speaking", "Microphone muted", "Connecting", "Live voice stopped"] {
+    expect(LiveStatusPresentation(presentation: (state, "mic.fill"), pendingCall: false).text.contains(state), "status exposes \(state)")
+    expect(LiveStatusPresentation(presentation: (state, "mic.fill"), pendingCall: true).text.contains(state), "call badge preserves \(state)")
 }
 let screen = CGRect(x: 0, y: 0, width: 1440, height: 900)
 let lost = CGRect(x: 9000, y: 9000, width: 980, height: 760)
@@ -123,13 +123,12 @@ expect(muted == 1 && stopped == 1 && !active, "mute and stop route without start
 expect(NativeLaunchVisibility.shouldShow(loginLaunch: true) == false, "login launch stays hidden")
 expect(NativeLaunchVisibility.shouldShow(loginLaunch: false), "ordinary launch shows window without starting")
 
-for state in ["idle", "ended", "failed", "outcomeUnknown"] {
-    expect(LiveStatusPresentation(state: state, pendingCall: false).text == "Naya: stopped", "inactive status \(state) is stopped")
-}
-expect(LiveStatusPresentation(state: "ended", pendingCall: false, dictationCapturing: true).state == "listening", "dictation microphone is not reported stopped")
+expect(LiveStatusPresentation(presentation: ("Live voice stopped", "mic.slash"), pendingCall: false).text == "Naya: Live voice stopped", "status item renders the mapped sentence")
+expect(LiveStatusPresentation(presentation: ("Live voice stopped", "mic.slash"), pendingCall: false, dictationCapturing: true).text == "Naya: Dictating", "dictation microphone is not reported stopped")
 
-let inputPausedStatus = LiveStatusPresentation(state: "pausedForInput", pendingCall: false)
-expect(inputPausedStatus.text == "Naya: microphone changed; Resume required", "input pause status names consent action")
+let inputPausedPresentation = (text: "Microphone changed; Resume required", symbol: "pause.circle")
+let inputPausedStatus = LiveStatusPresentation(presentation: inputPausedPresentation, pendingCall: false)
+expect(inputPausedStatus.text == "Naya: " + inputPausedPresentation.text, "status item prefixes the mapped tuple sentence")
 expect(inputPausedStatus.symbol == "pause.circle", "input pause status is not active recording")
 
 // Actual app ownership seam plus actual authenticated request builders, no HTTP or audio.
@@ -183,14 +182,14 @@ let diagnosticsFixture = DiagnosticsSnapshotInput(
     sessionLimit: "30 min",
     idleLimit: "2 min",
     connections: ["filesystem: connected", "calendar: unreachable"],
-    audioRoute: "Microphone: MacBook Pro Microphone \u{00b7} Output: MacBook Pro Speakers",
+    audioRoute: "Input: built-in; Output: built-in",
     preCreateFailureClass: "service",
     preCreateFailureCode: "connection_refused",
     capturedAt: "2026-10-12T07:00:00Z")
 let diagnosticsText = NativeDiagnosticsSnapshot.render(diagnosticsFixture)
 for field in ["1.2.3", "0e11a5835643966ac8ea8cc532ebb16202803146", "Version 14.5", "connected",
               "41231", "listening", "30 min", "2 min", "filesystem: connected",
-              "calendar: unreachable", "MacBook Pro Microphone", "MacBook Pro Speakers",
+              "calendar: unreachable", "Input: built-in", "Output: built-in",
               "service", "connection_refused", "2026-10-12T07:00:00Z"] {
     expect(diagnosticsText.contains(field), "diagnostics snapshot renders \(field)")
 }
@@ -316,7 +315,7 @@ expect(validPickup && stopCount == 1 && captureCount == 1, "explicit valid picku
 expect(pickupOrder == ["validate", "stop", "start"], "pickup validates before interrupting and starting capture")
 print("MAC-CALLBACK-SEAMS PASS duration=\(String(format: "%.3f", Date().timeIntervalSince(testStarted)))s")
 
-expect(LiveStatusPresentation(state: "rebuilding", pendingCall: false).text == "Naya: Reconnecting", "continuity status is Reconnecting")
+expect(LiveStatusPresentation(presentation: ("Reconnecting", "ellipsis.circle"), pendingCall: false).text == "Naya: Reconnecting", "continuity status is Reconnecting")
 
 // Getting started uses fixture values only and copies whitelisted commands.
 let onboardingDefaults = UserDefaults(suiteName: "DidiGettingStartedTests")!
@@ -335,3 +334,10 @@ expect(NativeNextSteps.lookup(id: "mongoose", state: "missing", reason: nil).com
 let onboardingRows = NativeGettingStartedItems.rows(microphone: "denied", notifications: "denied", login: "off", connections: [("calendar", "missing", "credential_missing"), ("mongoose", "connected", nil)])
 expect(onboardingRows.count == 7, "fixture includes permissions, login, shortcuts and every connection")
 expect(onboardingRows.contains { $0.title == "calendar" && $0.detail.contains("gcal --auth") }, "fixture projects exact connector next step")
+
+// R-SEC-3: ordinary owner/device labels are not safe support exports.
+let personalRoute = NativeDiagnosticsSnapshot.render(DiagnosticsSnapshotInput(audioRoute: "Microphone: Alice Smith's AirPods · Output: Alice Smith's AirPods"))
+expect(!personalRoute.contains("Alice") && !personalRoute.contains("AirPods"), "diagnostics excludes personal device names")
+for capability in [NotificationCapability.notDetermined, .denied, .authorized, .provisional, .unknown] {
+    expect(!capability.presentation.contains(capability.rawValue), "no raw notification case reaches a label")
+}

@@ -272,7 +272,7 @@ struct NativeLiveControls: View {
     @ObservedObject var device: NativeLiveAudioDevice
     var body: some View {
         VStack {
-            Text("Live: " + (conversation.state == .rebuilding ? "Reconnecting" : conversation.state.rawValue)).accessibilityLabel("Live voice lifecycle")
+            Text("Live: " + conversation.state.presentation.text).accessibilityLabel("Live voice lifecycle")
             if !device.route.isEmpty { Text(device.route).font(.caption) }
             if conversation.state == .pausedForInput {
                 Button("Resume") { conversation.start() }
@@ -315,12 +315,12 @@ struct RootView: View {
                     Button(model.captureStatus == .unknown ? "Retry Save note" : NativeNoteAction.label) { Task { await model.saveDraft() } }
                         .disabled(!Presentation.canSend(model.draft) || model.captureStatus == .sending || voice.state.phase == .recording)
                         .accessibilityLabel(model.captureStatus == .unknown ? "Retry Save note" : NativeNoteAction.label)
-                    Button("Start") { model.startDictation() }
+                    Button("Dictate") { model.startDictation() }
                         .disabled(model.live?.isCapturing == true || voice.state.phase == .recording || voice.microphone != .granted || voice.speech != .granted || !voice.onDevice)
                         .accessibilityLabel("Start recording")
                     Button(NativeConnectedSend.label) { Task { await model.sendToNaya() } }
                         .disabled(model.sendingConnected || model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    Button("Stop") { model.stopRecording("Stopped by user") }
+                    Button("Stop dictating") { model.stopRecording("Stopped by user") }
                         .disabled(voice.state.phase != .recording).accessibilityLabel("Stop recording")
                     VStack {
                         Text("Live microphone audio leaves this device for the configured Live provider. Start only with your consent.").font(.caption)
@@ -328,7 +328,7 @@ struct RootView: View {
                             Button("Pick up Naya’s call") { model.pickUpLiveCall() }
                         }
                         Button("Enable callback notifications") { Task { await model.requestNotificationPermission() } }
-                        Text("Notifications: \(model.notificationStatus.rawValue). If denied, use the menu bar badge and Pick up menu; notifications never start the microphone.").font(.caption)
+                        Text("Notifications: \(model.notificationStatus.presentation). If denied, use the menu bar badge and Pick up menu; notifications never start the microphone.").font(.caption)
                         if let offline = model.liveCallsError { Text(offline).font(.caption) }
                         Button("Start Live voice") { model.startLive() }
                             .disabled(model.live?.isCapturing == true || voice.state.phase == .recording)
@@ -457,9 +457,9 @@ struct RootView: View {
         menu.addItem(withTitle: "Mute ⌃ ⌥ ⇧ M: " + liveShortcuts.muteStatus, action: nil, keyEquivalent: "")
         liveObservation = model.$live.sink { [weak self] conversation in
             self?.liveStateObservation = conversation?.$state.sink { [weak self] state in
-                self?.updateLiveStatus(state: state.rawValue)
+                self?.updateLiveStatus(state: state)
             }
-            self?.updateLiveStatus(state: conversation?.state.rawValue ?? "stopped")
+            self?.updateLiveStatus(state: conversation?.state ?? .idle)
         }
         dictationObservation = model.voice.$state.sink { [weak self] state in
             self?.updateLiveStatus(dictationCapturing: state.phase == .recording)
@@ -532,7 +532,7 @@ struct RootView: View {
                 sessionLimit: self.model.liveLimits.map { NativeLiveLimits.duration($0.sessionMs) },
                 idleLimit: self.model.liveLimits.map { NativeLiveLimits.duration($0.idleMs) },
                 connections: self.model.connections.map { "\($0.id): \($0.state)" },
-                audioRoute: self.model.live?.device.route,
+                audioRoute: self.model.live?.device.diagnosticsRoute,
                 preCreateFailureClass: failure?.failureClass,
                 preCreateFailureCode: failure?.code,
                 capturedAt: ISO8601DateFormatter().string(from: Date()))
@@ -558,9 +558,9 @@ struct RootView: View {
     private var launchedAtLogin: Bool {
         NSAppleEventManager.shared().currentAppleEvent?.paramDescriptor(forKeyword: AEKeyword(keyAEPropData))?.enumCodeValue == OSType(keyAELaunchedAsLogInItem)
     }
-    private func updateLiveStatus(state: String? = nil, pendingCall: Bool? = nil, dictationCapturing: Bool? = nil) {
-        let raw = state ?? model.live?.state.rawValue ?? "stopped"
-        let presentation = LiveStatusPresentation(state: raw, pendingCall: pendingCall ?? !model.pendingLiveCalls.isEmpty,
+    private func updateLiveStatus(state: NativeLiveConversation.State? = nil, pendingCall: Bool? = nil, dictationCapturing: Bool? = nil) {
+        let liveState = state ?? model.live?.state ?? .idle
+        let presentation = LiveStatusPresentation(presentation: liveState.presentation, pendingCall: pendingCall ?? !model.pendingLiveCalls.isEmpty,
             dictationCapturing: dictationCapturing ?? (model.voice.state.phase == .recording))
         statusItem.button?.image = NSImage(systemSymbolName: presentation.symbol, accessibilityDescription: presentation.text)
         statusItem.button?.title = presentation.pendingCall ? "•" : ""

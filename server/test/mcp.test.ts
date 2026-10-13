@@ -73,6 +73,7 @@ async function fixture(options: FixtureOptions = {}) {
         res.writeHead(options.callStatus); res.end(); return;
       }
       res.writeHead(response.status, Object.fromEntries(response.headers));
+      res.flushHeaders();
       if (!response.body) { res.end(); return; }
       const reader = response.body.getReader();
       const entity: Buffer[] = [];
@@ -495,10 +496,28 @@ test('call timeout overrides snapshot valid values and reject invalid durations'
   overrides.set('source', 1);
   try {
     await approve(adapter, registry);
-    assert.equal((await adapter.call(request)).state, 'completed');
+    const result = await adapter.call(request);
+    assert.equal(result.state, 'completed', JSON.stringify(result));
   } finally { await adapter.close(); await f.close(); }
   for (const timeout of [0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
     assert.throws(() => createMcpAdapter({ registry, store: new MemoryResultStore(),
       callTimeoutMsByEndpoint: new Map([['source', timeout]]) } as Parameters<typeof createMcpAdapter>[0]), /invalid-adapter-budget/);
   }
+});
+
+
+test('call timeout override retains the HTTP response byte limit', async () => {
+  const f = await fixture({ call: () => ({ content: [{ type: 'text', text: 'x'.repeat(4000) }] }) });
+  const registry = new McpRegistry();
+  registry.register({ id: 'source', url: f.url, account: 'account-a', resource: 'resource-a' });
+  registry.enable('source'); registry.allowEgress('source');
+  const adapter = createMcpAdapter({ registry, store: new MemoryResultStore(), budgets: { maxResponseBytes: 1000 },
+    callTimeoutMsByEndpoint: new Map([['source', 30000]]) });
+  try {
+    await approve(adapter, registry);
+    const result = await adapter.call(request);
+    assert.equal(result.state, 'unknown');
+    if (result.state === 'unknown') assert.equal(result.reason, 'response-oversize');
+    assert.equal(f.counter, 1);
+  } finally { await adapter.close(); await f.close(); }
 });

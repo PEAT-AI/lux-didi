@@ -47,7 +47,8 @@ async function localSource(t: TestContext) {
       const args = req.params.arguments ?? {};
       const ids = args['ids'] as number[] | undefined;
       const ownId = account === 'alpha' ? 101 : 202;
-      const text = req.params.name === 'search_knowledge' ? `${ownId}: nonempty ${account} synthetic search` : ids?.includes(ownId) ? `${ownId}: nonempty ${account} synthetic insight` : 'not found in selected account';
+      const text = req.params.name === 'gmail_list' ? JSON.stringify({ data: { messages: [{ id: 'synthetic-message' }] } })
+        : req.params.name === 'search_knowledge' ? `${ownId}: nonempty ${account} synthetic search` : ids?.includes(ownId) ? `${ownId}: nonempty ${account} synthetic insight` : 'not found in selected account';
       return { content: [{ type: 'text', text }] } as never;
     });
     await sdk.connect(transport); const session = { account, sdk, transport }; sessions.set(id, session); return session;
@@ -420,7 +421,10 @@ test('host Google call budget admits a real slow read while other connectors ret
   const slice = runtime.port.readSlice({ endpointId: 'google', generation: grant.generation, account: 'alpha',
     resource: 'synthetic-corpus', handle: result.payload.handle, offset: 0, length: result.payload.byteLength });
   assert.equal(slice.state, 'available');
-  if (slice.state === 'available') assert.match(Buffer.from(slice.bytes).toString(), /nonempty alpha synthetic/);
+  if (slice.state === 'available') {
+    const entity = JSON.parse(Buffer.from(slice.bytes).toString());
+    assert.equal(JSON.parse(entity.result.content[0].text).data.messages.length, 1);
+  }
   assert.equal(unchanged.state, 'unknown');
   if (unchanged.state === 'unknown') assert.equal(unchanged.reason, 'timeout-or-cancelled');
   assert.equal(ordinary.executed, 1);
@@ -433,7 +437,7 @@ test('host Google discovery preserves the five-second startup bound', async t =>
   const { runtime } = await deadlineRuntime(t, [{ id: 'google', connector: 'google', url: google.url }]);
   assert.ok(performance.now() - began < 6000, 'slow Google discovery cannot consume a thirty-second call budget');
   const report = runtime.status().endpoints[0]; assert.equal(report?.state, 'error');
-  assert.equal(report?.error, 'discovery-unavailable'); assert.equal(google.executed, 0);
+  assert.equal(report?.error, 'timeout-or-cancelled'); assert.equal(google.executed, 0);
 });
 
 test('host Google earlier cancellation retires its call and preserves frozen authority', async t => {

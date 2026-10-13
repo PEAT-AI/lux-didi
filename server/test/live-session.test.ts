@@ -22,7 +22,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadLiveConfig } from '../config/live.js';
-import { NAYA_BASE, NAYA_TOOLS, composeLiveInstruction } from '../prompt/live-persona.js';
+import { NAYA_BASE, NAYA_TOOLS, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
 import { GeminiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
 import type { LiveVoiceLimits, LiveVoiceRequest } from '../adapters/live-voice/index.js';
 import { chatMigrations } from '../chat/index.js';
@@ -72,6 +72,8 @@ async function harness(t: TestContext, overrides: {
   toolError?: boolean;
   scheduler?: DeadlineClock;
   system?: string;
+  acceptedPrompt?: (ownerId: string) => NonNullable<ReturnType<typeof validateLiveProfile>['acceptedPrompt']>;
+  routeClasses?: readonly ('ordinary' | 'private' | 'sensitive')[];
   overlay?: { schemaVersion: 1; text: string; accent?: string };
   memoryFailure?: boolean;
 } = {}): Promise<Harness> {
@@ -81,7 +83,11 @@ async function harness(t: TestContext, overrides: {
   const store = new Store(dir, [...domain.migrations, ...chatMigrations, ...liveMigrations, ...(overrides.tools ? toolsMigrations : [])]);
   let clock = NOW;
   let memorySelections = 0;
-  const profile = validateLiveProfile({ ...profileInput({ handshakeMs: 1000, idleMs: 2000, sessionMs: 4000, closeMs: 50, ...Object.fromEntries(Object.entries(overrides.adapterLimits ?? {}).filter(([key]) => ['handshakeMs', 'idleMs', 'sessionMs', 'closeMs'].includes(key))), ...overrides.limits }, overrides.model), ...(overrides.overlay ? { overlay: overrides.overlay } : {}), ...(overrides.system !== undefined ? { prompt: { text: overrides.system, dataClass: 'ordinary' } } : {}) });
+  const initialProfile = profileInput({ handshakeMs: 1000, idleMs: 2000, sessionMs: 4000, closeMs: 50, ...Object.fromEntries(Object.entries(overrides.adapterLimits ?? {}).filter(([key]) => ['handshakeMs', 'idleMs', 'sessionMs', 'closeMs'].includes(key))), ...overrides.limits }, overrides.model);
+  const profile = validateLiveProfile({ ...initialProfile,
+    ...(overrides.routeClasses ? { route: { ...initialProfile.route, dataClasses: overrides.routeClasses } } : {}),
+    ...(overrides.overlay ? { overlay: overrides.overlay } : {}), ...(overrides.system !== undefined ? { prompt: { text: overrides.system, dataClass: 'ordinary' } } : {}),
+    ...(overrides.acceptedPrompt ? { acceptedPrompt: overrides.acceptedPrompt(store.assistantId) } : {}) });
   const voice = new GeminiLiveVoiceAdapter(options({
     socketFactory: f.socketFactory, modelId: profile.liveModelId, voice: profile.voice, keyReference: profile.keyReference,
     route: { enabled: true, provider: 'gemini', modelId: profile.liveModelId, dataClasses: profile.route.dataClasses },
@@ -521,6 +527,26 @@ test('accepted complete system uses the shared 60k bound while generic prompt te
   assert.equal(validateLiveProfile({ ...profileInput(), acceptedPrompt }).acceptedPrompt?.system.length, 60_000);
   assert.throws(() => validateLiveProfile({ ...profileInput(), acceptedPrompt: { ...acceptedPrompt, system: 'A'.repeat(60_001) } }), LiveConfigError);
   assert.throws(() => validateLiveProfile({ ...profileInput(), prompt: { text: 'A'.repeat(4097), dataClass: 'ordinary' } }), LiveConfigError);
+});
+
+test('tool-enabled Live CREATE freezes an expanded classified owner system byte for byte', async t => {
+  const style = `SYNTHETIC style ${'S'.repeat(10_000)}`;
+  const lore = `SYNTHETIC lore ${'L'.repeat(13_955)}`;
+  let expectedSystem = '';
+  const h = await harness(t, { tools: true, routeClasses: ['ordinary', 'private', 'sensitive'], acceptedPrompt: ownerId => {
+    const ownerProfile = { schemaVersion: 1 as const, kind: 'profile' as const, ownerId, profileVersion: 'fixture', displayName: 'Example',
+      style: { text: style, dataClass: 'private' as const }, lore: { text: lore, dataClass: 'sensitive' as const } };
+    expectedSystem = composeLiveInstruction({ base: NAYA_BASE, ownerProfile, language: 'en' }).text;
+    return { schemaVersion: 1, ownerProfile, compilerVersion: PROMPT_VERSION,
+      system: expectedSystem, dataClasses: ['ordinary', 'private', 'sensitive'] };
+  } });
+  const created = h.owner.create({ idempotencyKey: 'expanded-owner-tools', inputClass: 'ordinary' }, h.ctx);
+  const frozen = h.store.transaction(tx => JSON.parse(String(tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [created.liveSessionId])!['accepted_prompt_snapshot'])));
+  assert.ok(frozen.system.length > 20_000);
+  assert.equal(frozen.system, composeLiveSessionInstruction({ text: expectedSystem, tools: ['search_knowledge', 'get_insight'], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT }).text);
+  assert.equal(frozen.system.split(style).length - 1, 1);
+  assert.equal(frozen.system.split(lore).length - 1, 1);
+  assert.deepEqual(frozen.dataClasses, ['ordinary', 'private', 'sensitive']);
 });
 
 test('waitingForInput keeps its boolean and ready stays a durable fact', async t => {

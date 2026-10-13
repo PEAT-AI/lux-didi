@@ -95,6 +95,11 @@ export function loadLiveConfig(options: { configDir: string; ownerId: string; ow
       ownerId: options.ownerId, ownerProfile, promptVersion: PROMPT_VERSION, preferences,
       capabilities: createCapabilitySnapshot([], []), trustedChars: 20000,
     });
+    const accepted = composeLiveInstruction({
+      base: NAYA_BASE, ownerProfile,
+      ...(overlay?.accent !== undefined ? { accent: overlay.accent } : {}),
+      ...(language !== undefined ? { language } : {}),
+    });
     const profile = validateLiveProfile({
       provider: input['provider'], liveModelId: model, voice: chosenVoice, keyReference: reference,
       ...(language !== undefined ? { language } : {}),
@@ -102,7 +107,7 @@ export function loadLiveConfig(options: { configDir: string; ownerId: string; ow
       prompt: { text: composed.text, dataClass: preferences.dataClass },
       ...(overlay !== undefined ? { overlay } : {}),
       acceptedPrompt: { schemaVersion: 1, ownerProfile, compilerVersion: instruction.promptVersion,
-        system: composed.text, dataClasses: instruction.dataClasses },
+        system: accepted.text, dataClasses: instruction.dataClasses },
       ...(input['limits'] !== undefined ? { limits: input['limits'] } : {}),
     });
     return { status: 'configured', config: Object.freeze({ ...config, profile }) };

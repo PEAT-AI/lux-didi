@@ -86,7 +86,7 @@ export function validateAcceptedPrompt(input: unknown, ownerId?: string): Accept
     }
     return Object.freeze({ schemaVersion: 1, ownerProfile, compilerVersion: PROMPT_VERSION,
       ...(memory ? { memory } : {}), ...(pickup ? { pickup } : {}),
-      system: input['memory'] === undefined ? text(input['system'], 'invalid_prompt') : acceptedInstruction(input['system']), dataClasses: Object.freeze(dataClasses) });
+      system: acceptedInstruction(input['system']), dataClasses: Object.freeze(dataClasses) });
   } catch { fail('invalid_prompt'); }
 }
 

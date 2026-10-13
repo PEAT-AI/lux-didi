@@ -517,6 +517,14 @@ test('profile validation rejects text-model fallback and bounds, and validation 
   assert.throws(() => h.owner.create({ idempotencyKey: 'class', inputClass: 'private' }, h.ctx), (error: unknown) => error instanceof LiveError && error.code === 'invalid_request');
 });
 
+test('accepted complete system uses the existing 20k bound while generic prompt text stays at 4096', () => {
+  const ownerProfile = { schemaVersion: 1 as const, kind: 'default' as const, ownerId: 'assistant-test', displayName: 'Lux Didi' as const };
+  const acceptedPrompt = { schemaVersion: 1, ownerProfile, compilerVersion: PROMPT_VERSION, system: 'A'.repeat(20_000), dataClasses: ['ordinary'] };
+  assert.equal(validateLiveProfile({ ...profileInput(), acceptedPrompt }).acceptedPrompt?.system.length, 20_000);
+  assert.throws(() => validateLiveProfile({ ...profileInput(), acceptedPrompt: { ...acceptedPrompt, system: 'A'.repeat(20_001) } }), LiveConfigError);
+  assert.throws(() => validateLiveProfile({ ...profileInput(), prompt: { text: 'A'.repeat(4097), dataClass: 'ordinary' } }), LiveConfigError);
+});
+
 test('waitingForInput keeps its boolean and ready stays a durable fact', async t => {
   const h = await harness(t);
   const { session, attachment } = await attached(h);
@@ -1266,30 +1274,69 @@ test('Live attach setup carries the composed Naya instruction and the bare langu
   attachment.close();
 });
 
-test('loadLiveConfig composes the Naya instruction and fails closed on an invalid overlay', async t => {
+test('loadLiveConfig keeps public prompt bytes and composes classified owner sections into the accepted Live system', async t => {
   const root = mkdtempSync(join(tmpdir(), 'didi-live-config-'));
   const dataDir = join(root, 'data'); const configDir = join(dataDir, 'provider-config');
   mkdirSync(configDir, { recursive: true, mode: 0o700 });
   chmodSync(dataDir, 0o700); chmodSync(configDir, 0o700);
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const live = { schemaVersion: 1, enabled: true, provider: 'gemini', modelId: 'models/gemini-3.1-flash-live-preview', voice: 'Aoede', keyReference: 'gemini-primary',
-    dataClasses: ['ordinary'], preferences: { dataClass: 'ordinary', language: 'de-de', register: 'plain', humor: 'dry', verbosity: 'brief' } };
+    dataClasses: ['ordinary', 'private', 'sensitive'], preferences: { dataClass: 'ordinary', language: 'de-de', register: 'plain', humor: 'dry', verbosity: 'brief' } };
   writePrivate(configDir, 'live.json', `${JSON.stringify(live)}\n`);
   const overlay = { schemaVersion: 1 as const, text: 'SYNTHETIC local overlay persona', greeting: 'Synthetic greeting', accent: 'Synthetic accent' };
   writePrivate(dataDir, 'persona-overlay.json', JSON.stringify(overlay));
-  const status = loadLiveConfig({ configDir, ownerId: 'synthetic-owner' });
+  const style = `SYNTHETIC owner style ${'S'.repeat(3000)}`;
+  const lore = `SYNTHETIC owner lore ${'L'.repeat(3000)}`;
+  const ownerProfile = { schemaVersion: 1 as const, kind: 'profile' as const, ownerId: 'synthetic-owner', profileVersion: 'fixture', displayName: 'Example',
+    style: { text: style, dataClass: 'private' as const }, lore: { text: lore, dataClass: 'sensitive' as const } };
+  const status = loadLiveConfig({ configDir, ownerId: 'synthetic-owner', ownerProfile });
   assert.equal(status.status, 'configured');
   if (status.status === 'configured') {
     const expected = composeLiveInstruction({ base: NAYA_BASE, accent: overlay.accent, language: 'de' });
+    const accepted = composeLiveInstruction({ base: NAYA_BASE, ownerProfile, accent: overlay.accent, language: 'de' });
     assert.deepEqual(status.config.profile.overlay, overlay);
     assert.equal(status.config.profile.language, 'de');
     assert.equal(status.config.profile.prompt.text, expected.text);
-    assert.equal(status.config.profile.acceptedPrompt?.system, expected.text);
+    assert.equal(status.config.profile.acceptedPrompt?.system, accepted.text);
+    assert.ok(accepted.text.length > 4096);
+    assert.equal(accepted.text.split(style).length - 1, 1); assert.equal(accepted.text.split(lore).length - 1, 1);
+    assert.deepEqual(status.config.profile.acceptedPrompt?.dataClasses, ['ordinary', 'private', 'sensitive']);
   }
   writePrivate(dataDir, 'persona-overlay.json', '{ not json');
-  const bad = loadLiveConfig({ configDir, ownerId: 'synthetic-owner' });
+  const bad = loadLiveConfig({ configDir, ownerId: 'synthetic-owner', ownerProfile });
   assert.equal(bad.status, 'error');
   if (bad.status === 'error') assert.equal(bad.code, 'invalid_overlay');
+});
+
+test('configured owner system survives CREATE and attach open byte for byte before provider setup', async t => {
+  const f = await fixture(t);
+  const root = mkdtempSync(join(tmpdir(), 'didi-live-owner-reopen-'));
+  const dataDir = join(root, 'data'); const configDir = join(dataDir, 'provider-config'); const storeDir = join(root, 'store');
+  mkdirSync(configDir, { recursive: true, mode: 0o700 }); chmodSync(dataDir, 0o700); chmodSync(configDir, 0o700);
+  const domain = createDomainPort({ outbox: Outbox });
+  const store = new Store(storeDir, [...domain.migrations, ...chatMigrations, ...liveMigrations]);
+  t.after(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
+  const live = { schemaVersion: 1, enabled: true, provider: 'gemini', modelId: 'models/gemini-3.1-flash-live-preview', voice: 'Aoede', keyReference: 'gemini-primary',
+    dataClasses: ['ordinary', 'private'], preferences: { dataClass: 'ordinary', language: 'en', register: 'plain', humor: 'dry', verbosity: 'brief' } };
+  writePrivate(configDir, 'live.json', JSON.stringify(live));
+  const ownerProfile = { schemaVersion: 1 as const, kind: 'profile' as const, ownerId: store.assistantId, profileVersion: 'fixture', displayName: 'Example',
+    style: { text: 'SYNTHETIC reopen style', dataClass: 'private' as const }, lore: { text: 'SYNTHETIC reopen lore', dataClass: 'ordinary' as const } };
+  const status = loadLiveConfig({ configDir, ownerId: store.assistantId, ownerProfile });
+  assert.equal(status.status, 'configured'); if (status.status !== 'configured') return;
+  const expected = status.config.profile.acceptedPrompt!.system;
+  const adapter = () => new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory,
+    modelId: status.config.profile.liveModelId, voice: status.config.profile.voice, keyReference: status.config.profile.keyReference,
+    route: { enabled: true, provider: 'gemini', modelId: status.config.profile.liveModelId, dataClasses: status.config.profile.route.dataClasses },
+    credentials: { resolve: async () => CANARY } }));
+  const first = createLiveSessionOwner({ store, profile: status.config.profile, voice: adapter(), now: () => NOW });
+  const created = first.create({ idempotencyKey: 'owner-create', inputClass: 'ordinary' }, context(store));
+  const persisted = store.transaction(tx => JSON.parse(String(tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [created.liveSessionId])!['accepted_prompt_snapshot'])));
+  assert.equal(persisted.system, expected); assert.deepEqual(persisted.dataClasses, ['ordinary', 'private']);
+  const attachment = first.attach({ liveSessionId: created.liveSessionId }, context(store));
+  await f.frame(1);
+  const frame = JSON.parse(JSON.stringify(f.frames[0]));
+  assert.equal(frame.setup.systemInstruction.parts[0].text, expected);
+  attachment.close(); await attachment.done; await first.shutdown();
 });
 
 test('provider voice activity journals listening and thinking without retaining its payload', async t => {

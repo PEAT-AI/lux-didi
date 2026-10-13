@@ -32,6 +32,20 @@ import Darwin
         let service = "ai.peat.lux-didi.proof." + UUID().uuidString
 #if COMPANION_TEST
         NativeServiceSupervisor.diagnosticSink = { record in diagnose("supervisor:probe", record) }
+        try expect(NativeProbeFailure.classify(NativeServiceError.timeout, readErrno: 0) == .timeout, "probe timeout retains its cause")
+        try expect(NativeProbeFailure.classify(NativeServiceError.exited, readErrno: 0) == .eofBeforeFrame, "probe EOF retains its cause")
+        try expect(NativeProbeFailure.classify(NativeServiceError.exited, readErrno: EIO) == .readFailed, "probe read failure retains its cause")
+        try expect(NativeProbeFailure.classify(NativeServiceError.invalidReady, readErrno: 0) == .malformedFraming, "probe framing retains its cause")
+        for (frame, cause) in [("not JSON", NativeProbeFailure.nonJSON), ("{\"major\":26}", .invalidFields)] {
+            do {
+                try NativeServiceSupervisor.validateProbeFrame(Data(frame.utf8), major: 26)
+                try expect(false, "invalid probe frame must fail")
+            } catch {
+                try expect(NativeProbeFailure.classify(error, readErrno: 0) == cause, "probe frame retains typed classification")
+            }
+        }
+        try NativeServiceSupervisor.validateProbeFrame(Data("{\"major\":26,\"sqlite\":true}".utf8), major: 26)
+        print("PASS probe diagnostic seams: timeout, EOF, read, framing, non-JSON and invalid fields")
 #endif
         var accounts: [String] = []
         var children: [NativeServiceSupervisor] = []

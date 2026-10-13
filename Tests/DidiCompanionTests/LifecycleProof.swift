@@ -237,7 +237,10 @@ import Darwin
             }
             let invalidNode = supervisor(try setup("normal", changes: ["nodePath": "/usr/bin/false"]))
             do { _ = try await invalidNode.start(); try expect(false, "non-Node executable must fail") }
-            catch { try expect(!invalidNode.isRunning, "actual Node/SQLite probe refuses wrong executable") }
+            catch NativeServiceError.invalidNode {
+                try expect(!invalidNode.isRunning, "actual Node/SQLite probe refuses wrong executable")
+                diagnose("fixture:non-node-refused", ["typedReason": "invalidNode", "running": invalidNode.isRunning])
+            }
 
             for kind in ["mode", "symlink", "directory"] {
                 let bad = try setup("normal")

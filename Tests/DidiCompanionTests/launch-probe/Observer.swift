@@ -381,7 +381,7 @@ import AppKit
         }
     }
     func writeFailure(_ reason: String, extra: [String: Any]) {
-        var output: [String: Any] = ["case": args.count > 4 ? args[4] : "invalid", "bundleURL": bundle, "error": reason,
+        var output: [String: Any] = ["case": args.count > 4 ? args[4] : "invalid", "bundleURL": bundle, "error": reason, "pass": false, "reason": reason,
             "observerDisposed": true, "released": released, "cancelSent": cancelSent, "kernel": nativeResult as Any? ?? NSNull(),
             "expectedExecutable": expectedExecutable, "observedIdentity": record as Any? ?? NSNull(), "expectedUid": Int(getuid()),
             "dialAttempts": dialAttempts, "dialErrnos": dialErrnos, "dialOffsetsMilliseconds": dialOffsets,

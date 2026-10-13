@@ -262,6 +262,10 @@ class RememberClock {
   }
 }
 const drain = async () => { for (let i = 0; i < 8; i++) await new Promise<void>(resolve => setImmediate(resolve)); };
+async function until(predicate: () => boolean) {
+  for (let i = 0; i < 1000 && !predicate(); i++) await new Promise<void>(resolve => setImmediate(resolve));
+  assert.ok(predicate(), 'fixture reached the observable boundary');
+}
 
 test('Live remember defers the 1 ms tool boundary and persists only owner bytes', async t => {
   const scheduler = new RememberClock();
@@ -269,12 +273,14 @@ test('Live remember defers the 1 ms tool boundary and persists only owner bytes'
   const { session } = await attached(h);
   h.f.send({ serverContent: { inputTranscription: { text: 'remember that mint ' } } });
   h.f.send({ serverContent: { inputTranscription: { text: 'is Friday' } } });
-  await drain(); scheduler.advance(1);
+  await until(() => h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(row => row.kind === 'inputTranscription').length === 2);
+  scheduler.advance(1);
   const result = remember(h, undefined, { text: 'mint is Friday', kind: 'fact' }, 2);
-  await drain();
+  await until(() => [...scheduler.pending].some(item => item.at === NOW + 1501));
   assert.equal(rows(h).length, 0);
   h.f.send({ serverContent: { modelTurn: { parts: [{ text: 'A paraphrase must not be saved.' }] } } });
-  await drain(); scheduler.advance(299); await drain();
+  await until(() => [...scheduler.pending].some(item => item.at === NOW + 300));
+  scheduler.advance(299); await drain();
   assert.equal((await result).remembered, true);
   assert.equal(rows(h)[0]?.text, 'mint is Friday');
   const deferred = h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(row => String(row.kind) === 'remember_deferred');
@@ -287,11 +293,13 @@ test('Live remember refuses after 1500 ms when newer speech invalidates the turn
   const h = await harness(t, { tools: true, scheduler });
   const { session } = await attached(h);
   h.f.send({ serverContent: { inputTranscription: { text: 'remember that mint ', finished: false } } });
-  await drain();
+  await until(() => h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.some(row => row.kind === 'inputTranscription'));
   const result = remember(h, undefined, { text: 'mint is Friday', kind: 'fact' }, 2);
-  await drain(); scheduler.advance(1);
+  await until(() => [...scheduler.pending].some(item => item.at === NOW + 1500));
+  scheduler.advance(1);
   h.f.send({ serverContent: { inputTranscription: { text: 'is Friday' } } });
-  await drain(); scheduler.advance(1499); await drain();
+  await until(() => h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(row => row.kind === 'inputTranscription').length === 2);
+  scheduler.advance(1499); await drain();
   assert.deepEqual(await result, { remembered: false, code: 'owner_transcript_not_final' });
   assert.equal(rows(h).length, 0);
   const deferred = h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(row => String(row.kind) === 'remember_deferred');

@@ -10,6 +10,7 @@ export interface McpAdapterOptions {
   store: ResultStorePort;
   resolveCredential?: (reference: string) => Promise<string>;
   budgets?: Partial<McpBudgets>;
+  callTimeoutMsByEndpoint?: ReadonlyMap<string, number>;
   assertCredentialCurrent?: (reference: string) => void;
 }
 class PolicyError extends Error { constructor(readonly reason: string) { super(reason); } }
@@ -34,7 +35,7 @@ function decodeSseResponse(bytes: Uint8Array, requestId: unknown): Uint8Array {
   } catch { throw new PolicyError('mcp_transport_error'); }
   throw new PolicyError('mcp_transport_error');
 }
-interface Operation { scope: ResultScope; signal: AbortSignal; dispatched: boolean; bytes?: Uint8Array; requestId?: string | number; explicitErrorCode?: number; explicitError?: unknown; receivedResult?: boolean }
+interface Operation { scope: ResultScope; signal: AbortSignal; timeoutMs: number; dispatched: boolean; bytes?: Uint8Array; requestId?: string | number; explicitErrorCode?: number; explicitError?: unknown; receivedResult?: boolean }
 interface Session { client: Client; config: EndpointConfig; operation?: Operation }
 const allowedHeaders = new Set(['accept', 'content-type', 'mcp-session-id', 'mcp-protocol-version', 'last-event-id', 'mcp-method', 'mcp-name']);
 
@@ -53,7 +54,7 @@ function guardedFetch(session: Session, options: McpAdapterOptions, budgets: Mcp
     if (isCall && (!operation || operation.dispatched)) throw new PolicyError('call-replay-refused');
     if (operation && !options.registry.authorizesScope(operation.scope)) throw new PolicyError('grant-revoked-before-dispatch');
     // Cancellation notification gets its own short deadline, not the already aborted call signal.
-    const timeout = AbortSignal.timeout(packet?.method === 'notifications/cancelled' ? Math.min(200, budgets.timeoutMs) : budgets.timeoutMs);
+    const timeout = AbortSignal.timeout(packet?.method === 'notifications/cancelled' ? Math.min(200, budgets.timeoutMs) : operation?.timeoutMs ?? budgets.timeoutMs);
     const signal = AbortSignal.any([request.signal, timeout, ...(operation ? [operation.signal] : [])]);
     const headers = new Headers(request.headers);
     if (config.credentialRef) {
@@ -140,6 +141,8 @@ function validateTool(value: unknown, validator: AjvJsonSchemaValidator): ToolDe
 export function createMcpAdapter(options: McpAdapterOptions): McpPort {
   const budgets: McpBudgets = { timeoutMs: 5000, maxResponseBytes: 1024 * 1024, maxPages: 64, maxTools: 1000, projectionChars: 2048, ...options.budgets };
   for (const value of Object.values(budgets)) if (!Number.isSafeInteger(value) || value <= 0) throw new Error('invalid-adapter-budget');
+  const callTimeouts = new Map(options.callTimeoutMsByEndpoint);
+  for (const timeout of callTimeouts.values()) if (!Number.isSafeInteger(timeout) || timeout <= 0) throw new Error('invalid-adapter-budget');
   const sessions = new Map<string, Session>(); const busy = new Set<string>();
   const suspended = new Set<string>(); const waiters = new Map<string, Set<() => void>>();
   const schemaValidator = new AjvJsonSchemaValidator();
@@ -231,13 +234,14 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
       const session = sessions.get(request.endpointId);
       if (!session) return { state: 'refused', reason: 'discovery-required' };
       busy.add(request.endpointId);
-      const deadline = AbortSignal.timeout(budgets.timeoutMs);
+      const timeoutMs = callTimeouts.get(request.endpointId) ?? budgets.timeoutMs;
+      const deadline = AbortSignal.timeout(timeoutMs);
       const localSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
-      const operation: Operation = { scope, signal: localSignal, dispatched: false }; session.operation = operation;
+      const operation: Operation = { scope, signal: localSignal, timeoutMs, dispatched: false }; session.operation = operation;
       try {
         // Supported SDK request API avoids callTool's automatic header-mismatch refresh/retry.
         if (isStdioEndpoint(session.config)) operation.dispatched = true;
-        const result = await bounded(session.client.request({ method: 'tools/call', params: { name: request.toolName, arguments: request.arguments } }, { signal: localSignal, timeout: budgets.timeoutMs }), localSignal);
+        const result = await bounded(session.client.request({ method: 'tools/call', params: { name: request.toolName, arguments: request.arguments } }, { signal: localSignal, timeout: timeoutMs }), localSignal);
         if (!options.registry.authorizesScope(scope)) throw new PolicyError('grant-revoked-after-dispatch');
         if (!operation.bytes) {
           // A stdio child has no HTTP response entity; the parsed JSON-RPC result is the entity.

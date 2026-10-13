@@ -101,7 +101,8 @@ test('cancellation retires the child and reports an unknown outcome', async () =
   const registry = new McpRegistry();
   registry.register(config('local-stdio', 'hang-call', pidFile));
   registry.enable('local-stdio'); registry.allowEgress('local-stdio');
-  const adapter = adapterFor(registry, 8000);
+  const adapter = createMcpAdapter({ registry, store: new MemoryResultStore(), budgets: { timeoutMs: 8000 },
+    callTimeoutMsByEndpoint: new Map([['local-stdio', 30000]]) });
   try {
     const discovery = await adapter.discover('local-stdio');
     assert.equal(discovery.state, 'discovered');

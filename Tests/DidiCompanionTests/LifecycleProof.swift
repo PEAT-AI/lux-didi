@@ -29,6 +29,7 @@ import Darwin
         let fm = FileManager.default
         let root = fm.temporaryDirectory.appendingPathComponent("didi-lifecycle-" + UUID().uuidString)
         try fm.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        var succeeded = false
         let service = "ai.peat.lux-didi.proof." + UUID().uuidString
 #if COMPANION_TEST
         NativeServiceSupervisor.diagnosticSink = { record in diagnose("supervisor:probe", record) }
@@ -54,7 +55,8 @@ import Darwin
                 let context = LAContext(); context.interactionNotAllowed = true
                 SecItemDelete([kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account, kSecUseAuthenticationContext as String: context] as CFDictionary)
             }
-            try? fm.removeItem(at: root)
+            if succeeded { try? fm.removeItem(at: root) }
+            else { diagnose("fixture:retained", ["root": root.path]) }
         }
         func setup(_ mode: String, state: URL? = nil, changes: [String: Any] = [:]) throws -> (InstalledRuntime, URL) {
             let id = UUID().uuidString.lowercased()
@@ -74,7 +76,7 @@ import Darwin
             catch { try fm.copyItem(atPath: realNode.path, toPath: bundledNode.path) }
             var staged = stat()
             let stagedStatOK = lstat(bundledNode.path, &staged) == 0
-            diagnose("fixture:node-staged", ["case": mode, "relativeNodePath": "Contents/MacOS/node", "nodeMajor": 26,
+            diagnose("fixture:node-staged", ["case": mode, "relativeNodePath": "Contents/MacOS/node", "nodePath": bundledNode.path, "nodeMajor": 26,
                 "statOK": stagedStatOK, "isSymlink": stagedStatOK && (staged.st_mode & S_IFMT) == S_IFLNK,
                 "isRegular": stagedStatOK && (staged.st_mode & S_IFMT) == S_IFREG,
                 "ownerExecutable": stagedStatOK && (staged.st_mode & 0o100) != 0,
@@ -287,6 +289,7 @@ import Darwin
             throw error
         }
         for child in children { await child.stop() }
+        succeeded = true
         print("NATIVE-LIFECYCLE PASS duration=\(Date().timeIntervalSince(started))s ownedProcesses=cleaned canonicalCredential=retained Keychain=synthetic-only install=not-performed")
     }
 }

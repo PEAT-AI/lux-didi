@@ -123,12 +123,12 @@ expect(muted == 1 && stopped == 1 && !active, "mute and stop route without start
 expect(NativeLaunchVisibility.shouldShow(loginLaunch: true) == false, "login launch stays hidden")
 expect(NativeLaunchVisibility.shouldShow(loginLaunch: false), "ordinary launch shows window without starting")
 
-for state in ["idle", "ended", "failed", "outcomeUnknown"] {
-    expect(LiveStatusPresentation(state: state, pendingCall: false).text == "Naya: stopped", "inactive status \(state) is stopped")
+for state in [NativeLiveState.idle, .ended, .failed, .outcomeUnknown] {
+    expect(LiveStatusPresentation(state: state, pendingCall: false).text == "Naya: " + state.presentation, "inactive status \(state) is stopped")
 }
-expect(LiveStatusPresentation(state: "ended", pendingCall: false, dictationCapturing: true).state == "listening", "dictation microphone is not reported stopped")
+expect(LiveStatusPresentation(state: .ended, pendingCall: false, dictationCapturing: true).state == .listening, "dictation microphone is not reported stopped")
 
-let inputPausedStatus = LiveStatusPresentation(state: "pausedForInput", pendingCall: false)
+let inputPausedStatus = LiveStatusPresentation(state: .pausedForInput, pendingCall: false)
 expect(inputPausedStatus.text == "Naya: microphone changed; Resume required", "input pause status names consent action")
 expect(inputPausedStatus.symbol == "pause.circle", "input pause status is not active recording")
 
@@ -316,4 +316,16 @@ expect(validPickup && stopCount == 1 && captureCount == 1, "explicit valid picku
 expect(pickupOrder == ["validate", "stop", "start"], "pickup validates before interrupting and starting capture")
 print("MAC-CALLBACK-SEAMS PASS duration=\(String(format: "%.3f", Date().timeIntervalSince(testStarted)))s")
 
-expect(LiveStatusPresentation(state: "rebuilding", pendingCall: false).text == "Naya: Reconnecting", "continuity status is Reconnecting")
+expect(LiveStatusPresentation(state: .rebuilding, pendingCall: false).text == "Naya: Reconnecting", "continuity status is Reconnecting")
+
+// R-SEC-3: ordinary owner/device labels are not safe support exports.
+let personalRoute = NativeDiagnosticsSnapshot.render(DiagnosticsSnapshotInput(audioRoute: "Microphone: Alice Smith's AirPods · Output: Alice Smith's AirPods"))
+expect(!personalRoute.contains("Alice") && !personalRoute.contains("AirPods"), "diagnostics excludes personal device names")
+for state in NativeLiveState.allCases {
+    let presentation = LiveStatusPresentation(state: state, pendingCall: false)
+    expect(presentation.text == "Naya: " + state.presentation, "bar and menu share exhaustive presentation")
+    expect(!state.presentation.contains(state.rawValue), "no raw conversation case reaches a label")
+}
+for capability in [NotificationCapability.notDetermined, .denied, .authorized, .provisional, .unknown] {
+    expect(!capability.presentation.contains(capability.rawValue), "no raw notification case reaches a label")
+}

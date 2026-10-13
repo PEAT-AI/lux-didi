@@ -4,6 +4,9 @@ import type { DomainContext, DomainPort, SourceRef, RoutingLabel, RoutingLabelCo
 import type { DataClass, ModelPort, ModelStatus } from '../adapters/model/types.js';
 import type { CompileInput, SourceAvailability, ValidatedPreferences } from '../prompt/index.js';
 
+export interface ToolEvidence { name: string; markdown: string; sources: { title: string; url?: string }[] }
+export type ChatToolsComposition = import('../live/types.js').LiveToolsComposition;
+
 export type Outcome = ModelStatus | 'not_dispatched' | 'outcome_unknown' | 'unavailable' | 'input_too_large' | 'compile_failed' | 'persistence_failed';
 /**
  * Safe local metadata about an explicit per-turn memory selection. Ids, counts
@@ -28,6 +31,8 @@ export interface RunSnapshot {
   acceptedAt: string; intentAt: string | null; terminalAt: string | null;
   mayHaveBeenSent: boolean;
   memorySelection: MemorySelectionSnapshot | null;
+  /** Accepted result-gate projections only; never connector payloads or provider parts. */
+  toolEvidence?: ToolEvidence[];
 }
 export type ChatEvent = { type: 'snapshot'; sequence: number; run: RunSnapshot }
   | { type: 'text'; sequence: number; text: string; provisional: true }
@@ -42,10 +47,11 @@ export interface AcceptInput {
 }
 /** Host startup authority, not an authenticated browser/client request. */
 export interface ChatRecoveryContext { assistantId: string; authorityEpoch: string }
-export interface EnrollInput { title: string; timeZone: string; idempotencyKey: string }
-export interface ConversationStatus { sessionId: string; provider: string; model: string; state: 'active' | 'revoked' | 'route_changed'; revision: number; permittedClasses: DataClass[]; latestRunId: string | null }
+export interface EnrollInput { title: string; timeZone: string; idempotencyKey: string; consent?: boolean; remember?: boolean }
+export interface ConversationStatus { scope: 'conversation' | 'standing'; sessionId: string; provider: string; model: string; state: 'active' | 'revoked' | 'route_changed'; revision: number; permittedClasses: DataClass[]; latestRunId: string | null }
 export interface ChatPort {
   enroll(input: EnrollInput, context: DomainContext): ConversationStatus;
+  standingConsent(context: DomainContext): ConversationStatus | null;
   conversation(sessionId: string, context: DomainContext): ConversationStatus;
   revoke(sessionId: string, context: DomainContext): ConversationStatus;
   correctRoutingLabel(input: RoutingLabelCorrection, context: DomainContext): RoutingLabel;
@@ -62,6 +68,7 @@ export interface ClassificationSubject {
   sourceRefs?: readonly SourceRef[];
 }
 export interface ChatConfig {
+  tools?: ChatToolsComposition;
   ownerProfile?: OwnerProfileSnapshot;
   store: StorePort & { readonly assistantId: string }; domain: DomainPort; model: ModelPort | null;
   route: { provider: string; model: string; available: boolean; allows(classes: readonly DataClass[]): boolean;

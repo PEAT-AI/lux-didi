@@ -4,7 +4,7 @@ import {DatabaseSync} from 'node:sqlite';
 import {randomUUID} from 'node:crypto';
 import {readFile} from 'node:fs/promises';
 import {join, extname} from 'node:path';
-export async function startFixture() {
+export async function startFixture({configured = false} = {}) {
   const headers = JSON.parse(await readFile(join(import.meta.dirname, '../security-headers.json'),'utf8'));
   const db = new DatabaseSync(':memory:');
   db.exec('CREATE TABLE records (id TEXT PRIMARY KEY, kind TEXT, value TEXT)');
@@ -38,7 +38,9 @@ export async function startFixture() {
     if (req.method !== 'GET' && req.headers['x-didi-csrf'] !== 'synthetic-csrf') return error('CSRF_INVALID','Missing CSRF token.',403);
     if (req.method !== 'GET' && (req.headers['x-didi-authority-epoch'] !== epoch || !req.headers['idempotency-key'])) return error('INVALID_HEADERS','Missing authority or idempotency key');
     if(path === '/api/v1/auth/logout') { paired=false; res.setHeader('Set-Cookie','didi=; Max-Age=0; HttpOnly; SameSite=Strict; Path=/'); return ok({loggedOut:true}); }
-    if (path === '/api/v1/status') return ok({assistantId:'synthetic-didi',authorityEpoch:epoch,serviceMode:'synthetic-test',capabilities:{memory:true,commitments:true,notifications:false,model:false},model:{configured:false},sources:[]});
+    if (path === '/api/v1/status') return ok({assistantId:'synthetic-didi',authorityEpoch:epoch,serviceMode:'synthetic-test',ownerProfile:{status:'default',displayName:'Lux Didi'},capabilities:{memory:true,commitments:true,notifications:false,model:false},model:{configured:false},sources:[]});
+    if (path === '/api/v1/chat/status') return ok(configured ? {status:'configured',provider:'synthetic',model:'synthetic-model',consent:null} : {status:'unconfigured'});
+    if (path === '/api/v1/live/connections') return ok([{id:'calendar',state:'missing',tools:0,lastHandshakeAt:null,reasonCode:'credential_missing'}]);
     if (path === '/api/v1/live/current') return ok(live);
     if (path === '/api/v1/sessions' && req.method==='GET') return ok({items:all('session'),nextCursor:null});
     if (path === '/api/v1/sessions' && req.method==='POST') return ok(put('session',{id:randomUUID(),...body,startedAt:new Date().toISOString(),endedAt:null,revision:1}));

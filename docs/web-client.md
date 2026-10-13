@@ -233,3 +233,83 @@ The unit tests are `node --test test/markdown.test.ts test/live-view.test.ts`, r
 by `npm --prefix web run check` before the shared-renderer browser pass, which adds
 a fixture-served Interface 3 payload asserting the orb is in speaking mode and a
 rendered source anchor exists.
+
+## Live view freshness
+
+A failed Live poll shows a stale banner with the last successful poll time while
+keeping the transcript visible. The next successful poll clears the banner;
+a 404 still means no session, not an unreachable service.
+
+## Conversation boundaries
+
+A changed projection `since` starts a fresh transcript. Pages with the same
+session start accumulate by sequence number; a cursor from the old session is
+not reused for the new conversation.
+
+## Inspecting tool answers
+
+Every tool result has an expandable card with its status, markdown and sources.
+Error results show their status without markdown. The Latest answer summary
+continues to show the newest accepted answer.
+
+A `remember_note` result is different: it renders as an evidence card (`web/src/live-view.ts`). A successful result shows **Remembered** with the saved words; a named decline code (`already_remembered`, `private_memory_unsupported`, `owner_transcript_not_final`, `owner_text_mismatch`, or a tool refusal) shows **Not remembered** with a one-line honest reason; any other bare result code, including the service's `handler_outcome` (which at this revision covers both a saved and a declined note), shows a neutral **Memory** card that reports the outcome was not given. Cards link to the memory list. The Live projection carries only name, status, markdown and sources (`server/live/types.ts`), so the card never invents the note's kind or time; it renders the result text the service projects.
+
+## Connections
+
+The read-only Connections card polls `/api/v1/live/connections` every 10 seconds
+while the page is visible, using its existing browser cookie. Each row shows the
+endpoint id, state, tool count, last handshake and a fixed repair hint for a
+sanitized reason code. Raw diagnostics, credentials and configuration are never
+rendered. Failed polls mark the displayed connection values as stale.
+
+## Live summary
+
+The read-only Live summary reads `GET /api/v1/live/summary` with the existing
+browser cookie (the operator bearer is accepted too); the operator-only
+`/api/v1/live/status` still refuses the cookie. The response is a closed
+whitelist, `{modelId, voice, personaName, limits: {sessionMs, idleMs},
+profileEnabled}`, carrying the configured model and voice, the persona display
+name and the session and idle limits, and nothing else: no key reference, no
+endpoint, no provider credential and no persona or system prompt text. When Live
+is unconfigured or disabled the route still answers 200 with `profileEnabled`
+false and the other fields null.
+## Didi settings summary
+
+The Settings tab carries one read-only "Didi settings" panel so the owner can see
+what this Didi is running with without opening a file or a terminal. It renders
+only fields the page already fetches: the persona name, conversation model and
+service mode from `GET /api/v1/status`, and every configured connector from
+`GET /api/v1/live/connections` with a fixed state name (`Configured`,
+`Connected`, `Failed`, `Credential missing`) and a one-line next step. Session and
+idle limits are shown in whole minutes when a Live status payload carries them.
+
+The panel also names, by file name only, where each setting lives on disk under
+the operator config dir (`live.json`, `profile.json`, `gemini-primary.json`,
+`provider-config/mcp.json`) and labels them "changes need a restart of Lux Didi".
+File contents are never read or shown. The view whitelists and escapes each field
+by name, so a secret-looking field on a route payload cannot reach the page. A
+failed route shows "Unavailable" for that group rather than stale values.
+
+`GET /api/v1/live/status` is operator-bearer-only, so the page instead reads the
+browser-safe `GET /api/v1/live/summary` for the Live model, voice, persona name and
+the session and idle limits, shown in whole minutes. When the route answers with
+`profileEnabled` false the panel shows "Live profile disabled" rather than invent
+a model or voice. A failed or forbidden summary leaves the connector rows intact
+and shows "Unavailable" for those Live rows only, never a stale value; the panel
+renders only the whitelisted keys `modelId`, `voice`, `personaName`,
+`limits.sessionMs`, `limits.idleMs` and `profileEnabled`.
+
+
+## Live summary
+
+The read-only Live summary reads `GET /api/v1/live/summary` with the existing
+browser cookie (the operator bearer is accepted too); the operator-only
+`/api/v1/live/status` still refuses the cookie. The response is a closed
+whitelist, `{modelId, voice, personaName, limits: {sessionMs, idleMs},
+profileEnabled}`, carrying the configured model and voice, the persona display
+name and the session and idle limits, and nothing else: no key reference, no
+endpoint, no provider credential and no persona or system prompt text. When Live
+is unconfigured or disabled the route still answers 200 with `profileEnabled`
+false and the other fields null.
+
+The Live page projection may include optional `pastSession` metadata. Past sessions render as the last Live session, not a current error. `endedAt` is the persisted terminal timestamp; an orphan has null `endedAt` and an unknown outcome, with `lastObservedAt` shown explicitly as last seen. Active session labels are unchanged.

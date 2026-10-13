@@ -241,6 +241,41 @@ export function sourceReferences(tx: Transaction, ownerId: string): SourceRefRec
     .map(mapSourceRef);
 }
 
+/** A real remember kind when the owner gave one, `note` when none was given. */
+export type EntryKind = 'fact' | 'preference' | 'task' | 'note';
+/** Where a stored memory came from, read once from the domain's own source reference. */
+export type EntryOrigin = 'live-voice' | 'chat' | 'page' | 'unknown';
+
+const REMEMBER_KIND = /(?:^|\s)kind:(fact|preference|task)(?:\s|$)/i;
+const originToken = (token: string, value: string) =>
+  new RegExp(`(?:^|[^a-z])${value}(?:[^a-z]|$)`).test(token);
+
+/**
+ * The real remember kind carried by the Live `remember_note` source note, or
+ * `note` when no source recorded one. Derived once here, never in the client.
+ */
+export function entryKind(sourceRefs: readonly SourceRefRecord[]): EntryKind {
+  for (const ref of sourceRefs) {
+    const match = REMEMBER_KIND.exec(ref.note ?? '');
+    if (match) return match[1]!.toLowerCase() as EntryKind;
+  }
+  return 'note';
+}
+
+/**
+ * The entry's origin from its stored source reference: Live voice, chat, page,
+ * or `unknown` when no source reference records one.
+ */
+export function entryOrigin(sourceRefs: readonly SourceRefRecord[]): EntryOrigin {
+  for (const ref of sourceRefs) {
+    if (ref.provider === 'live-voice') return 'live-voice';
+    const token = `${ref.provider ?? ''} ${ref.label}`.toLowerCase();
+    if (originToken(token, 'chat')) return 'chat';
+    if (originToken(token, 'page')) return 'page';
+  }
+  return 'unknown';
+}
+
 /** Upper bound on one trusted batch resolution request. */
 export const MAX_RESOLVE_ENTRIES = 32;
 
@@ -406,4 +441,29 @@ export function preference(tx: Transaction, key: string): PreferenceRecord {
 export function preferenceOrNull(tx: Transaction, key: string): PreferenceRecord | null {
   const row = tx.get(`SELECT * FROM preferences WHERE key = ?`, [key]);
   return row ? mapPreference(row) : null;
+}
+
+/** Content-free deletion journal; runtime transaction owns atomicity. */
+export function deleteEntry(tx: Transaction, id: string, deletedAt: string, actor: string): import('../contracts/domain.js').EntryTombstone {
+  const existing = tx.get('SELECT * FROM entry_tombstones WHERE entry_id = ?', [id]);
+  if (existing) return { entryId: id, deletedAt: String(existing.deleted_at), actor: String(existing.actor), reasonCode: 'owner_request' };
+  readEntry(tx, id);
+  // Live owns exactly one source turn per remembered entry. Only its canonical
+  // UUID:sequence identity is retained, never arbitrary source labels or text.
+  const source = tx.get("SELECT external_id FROM source_references WHERE owner_kind = 'entry' AND owner_id = ? AND provider = 'live-voice'", [id]);
+  const key = source?.external_id;
+  const sourceKey = typeof key === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:\d+$/.test(key) ? key : null;
+  tx.run("DELETE FROM source_references WHERE owner_kind = 'entry' AND owner_id = ?", [id]);
+  tx.run('DELETE FROM entries WHERE id = ?', [id]);
+  tx.run('INSERT INTO entry_tombstones(entry_id, deleted_at, actor, reason_code, source_kind, source_key) VALUES (?, ?, ?, ?, ?, ?)', [id, deletedAt, actor, 'owner_request', sourceKey ? 'live-voice' : null, sourceKey]);
+  return { entryId: id, deletedAt, actor, reasonCode: 'owner_request' };
+}
+
+
+/** Source-turn identity survives deletion so a retained transcript cannot recreate a note. */
+export function rememberedLiveEntry(tx: Transaction, sourceKey: string): string | null {
+  const active = tx.get("SELECT owner_id FROM source_references WHERE owner_kind = 'entry' AND provider = 'live-voice' AND external_id = ?", [sourceKey]);
+  if (active) return String(active.owner_id);
+  const deleted = tx.get("SELECT entry_id FROM entry_tombstones WHERE source_kind = 'live-voice' AND source_key = ?", [sourceKey]);
+  return deleted ? String(deleted.entry_id) : null;
 }

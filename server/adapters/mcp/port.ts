@@ -119,8 +119,10 @@ export interface ResultStorePort {
 }
 export type DiscoveryResult =
   | { state: 'discovered'; endpointId: string; schemaDigest: string; tools: readonly ToolDefinition[]; observedAt: number }
-  | { state: 'unavailable'; reason: string };
+  | { state: 'unavailable'; reason: string; exception?: { class: string; code: string } };
 export interface CompletedResult {
+  /** Parsed MCP result or JSON-RPC error, separate from exact retained wire bytes. */
+  decodedResult: unknown;
   state: 'completed' | 'tool-error' | 'protocol-error';
   protocolErrorCode?: number;
   source: ResultScope;

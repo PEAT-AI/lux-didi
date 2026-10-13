@@ -19,6 +19,7 @@ if test -n "$(git status --porcelain -- server web scripts/build-asset-bundle.sh
   exit 1
 fi
 work=$(mktemp -d "${TMPDIR:-/tmp}/didi-asset-check.XXXXXX")
+work=$(cd "$work" && pwd -P)
 trap 'rm -rf "$work"' EXIT
 bundle="$work/bundle"
 state="$work/state"

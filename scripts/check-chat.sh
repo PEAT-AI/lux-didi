@@ -13,15 +13,14 @@ fi
 out="$(mktemp -d "${TMPDIR:-/tmp}/didi-chat.XXXXXX")"
 trap 'rm -rf "$out"' EXIT
 cd "$root"
-mkdir -p "$out/source/adapters/model" "$out/source/test"
-cp -R server/chat server/domain server/runtime server/contracts server/prompt server/http server/live "$out/source/"
-cp -R server/tools server/connectors "$out/source/"
-cp -R server/adapters/live-voice server/adapters/mcp "$out/source/adapters/"
-mkdir -p "$out/source/host"
-cp server/host/connected.ts "$out/source/host/"
-cp -R server/config "$out/source/"
+# Stage the complete server source tree so any server import resolves together,
+# exactly as the whole-server build does; only the selected tests are staged below.
+mkdir -p "$out/source/test"
+find server -mindepth 1 -maxdepth 1 -type d \
+  ! -name node_modules ! -name dist ! -name test \
+  -exec cp -R {} "$out/source/" \;
+find server -mindepth 1 -maxdepth 1 -type f -name '*.ts' -exec cp {} "$out/source/" \;
 ln -s "$deps" "$out/node_modules"
-cp server/adapters/model/*.ts "$out/source/adapters/model/"
 cp server/test/chat.test.ts server/test/chat-process.ts server/test/prompt.test.ts server/test/model.test.ts server/test/runtime.test.ts server/test/http.test.ts "$out/source/test/"
 printf '{"type":"module"}\n' > "$out/package.json"
 mapfile_compat=()

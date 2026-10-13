@@ -9,6 +9,7 @@ const LABELS: Record<LiveState, string> = {
   listening: 'Listening',
   speaking: 'Speaking',
   thinking: 'Thinking',
+  rebuilding: 'Reconnecting to the voice service',
   ended: 'Session ended',
   error: 'Something went wrong',
 };
@@ -16,7 +17,7 @@ export function liveStateLabel(state: LiveState): string { return LABELS[state] 
 
 const VOICE: Record<LiveState, VoiceState> = {
   idle: 'CONNECTED', listening: 'LISTENING', speaking: 'SPEAKING',
-  thinking: 'PROCESSING', ended: 'DISCONNECTED', error: 'ERROR',
+  thinking: 'PROCESSING', rebuilding: 'CONNECTED', ended: 'DISCONNECTED', error: 'ERROR',
 };
 export function liveVoiceState(state: LiveState): VoiceState { return VOICE[state] ?? 'CONNECTED'; }
 
@@ -32,6 +33,14 @@ export function liveToolName(live: LiveCurrent): string | undefined {
 /** The one visible state label, including the tool name while thinking.
  * main.ts and liveMarkup share it so the orb caption and the panel never disagree. */
 export function liveLabel(live: LiveCurrent | undefined): string {
+  const past = live?.pastSession;
+  if (past) {
+    const time = new Date(past.endedAt ?? past.lastObservedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    if (past.outcome === 'unknown' || past.outcome === 'outcome_unknown') return `Last Live session has an unknown end (last seen at ${time})`;
+    if (past.endedAt === null) return `Last Live session has an unknown end (last seen at ${time})`;
+    const normal = ['closed', 'cancelled', 'revoked', 'expired'].includes(past.outcome);
+    return `Last Live session ended${normal ? '' : ' with an error'} at ${time}`;
+  }
   const state = live?.state;
   if (state === 'thinking') {
     const tool = live ? liveToolName(live) : undefined;
@@ -46,9 +55,9 @@ export function liveDelay(state: LiveState | undefined, hidden: boolean): number
   return state === undefined || state === 'idle' ? 4000 : 1000;
 }
 
-/** Merge cursor paged entries by seq, newest value winning; a new snapshot replaces nothing. */
+/** Merge cursor paged entries by seq, newest value winning; a changed session start replaces the accumulated transcript. */
 export function mergeLive(previous: LiveCurrent | undefined, next: LiveCurrent): LiveCurrent {
-  if (!previous) return { ...next, entries: [...next.entries] };
+  if (!previous || previous.since !== next.since) return { ...next, entries: [...next.entries] };
   const bySeq = new Map<number, LiveEntry>();
   for (const entry of previous.entries) bySeq.set(entry.seq, entry);
   for (const entry of next.entries) bySeq.set(entry.seq, entry);
@@ -63,6 +72,20 @@ export function liveTranscript(live: LiveCurrent): LiveLine[] {
     if (entry.kind === 'outputTranscription' && entry.text) lines.push({ role: 'naya', text: entry.text });
   }
   return lines;
+}
+
+export interface LivePollState { live?: LiveCurrent; lastSuccess?: Date; stale?: boolean }
+/** The polling boundary preserves the last projection on failure, never raw errors. */
+export async function pollLiveView(previous: LivePollState, fetch: (cursor?: string | number) => Promise<LiveCurrent>, now: () => Date = () => new Date()): Promise<LivePollState> {
+  try {
+    let next = await fetch(previous.live?.cursor);
+    // A cursor belongs to a session: reload its first page when the latest session changes.
+    if (previous.live && previous.live.since !== next.since) next = await fetch();
+    return { live: mergeLive(previous.live, next), lastSuccess: now(), stale: false };
+  } catch (error) {
+    if (typeof error === 'object' && error !== null && 'status' in error && error.status === 404) return { lastSuccess: now(), stale: false };
+    return { ...previous, stale: true };
+  }
 }
 
 export interface LiveAnswer { markdown: string; sources: LiveSource[] }
@@ -84,8 +107,37 @@ function sourcesMarkup(sources: LiveSource[]): string {
   }).join('')}</ul>`;
 }
 
+/** A typed remember_note result code is a snake_case token; the saved note is the owner's spoken words. */
+const REMEMBER_CODE = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/;
+const REMEMBER_DECLINES: Record<string, string> = {
+  already_remembered: 'Naya already had this note saved.',
+  private_memory_unsupported: 'Private or sensitive notes are not saved in memory.',
+  owner_transcript_not_final: 'The note was not saved because your spoken words were not final.',
+  owner_text_mismatch: 'The note was not saved because it did not match your spoken words.',
+  tool_result_denied: 'The note was not saved.',
+  tool_refused: 'The note was not saved.',
+};
+/** The Live projection carries only name/status/markdown/sources. A saved note is claimed only when
+ * the projected text is the owner's words; a bare result code is neither those words nor a typed
+ * decline the card knows, so the outcome stays unconfirmed. The server owns kind/time and the codes. */
+function rememberCardMarkup(entry: LiveEntry): string {
+  const text = entry.tool?.markdown ?? '';
+  const seq = entry.seq;
+  const link = '<a class="live-remember-link" href="#recall-form">Open your memory list</a>';
+  const known = REMEMBER_DECLINES[text];
+  if (entry.tool?.status === 'error' || known) {
+    const reason = known ?? (text || 'The note was not saved.');
+    return `<article class="live-remember declined" data-result-seq="${seq}"><h2>Not remembered</h2><p class="muted">${escapeHtml(reason)}</p></article>`;
+  }
+  if (!text || REMEMBER_CODE.test(text)) {
+    const detail = text ? ` (${escapeHtml(text)})` : '';
+    return `<article class="live-remember" data-result-seq="${seq}"><h2>Memory</h2><p class="muted">Naya did not report whether the note was saved${detail}.</p>${link}</article>`;
+  }
+  return `<article class="live-remember" data-result-seq="${seq}"><h2>Remembered</h2><p class="live-remember-text">${escapeHtml(text)}</p>${link}</article>`;
+}
+
 /** Full section markup, id="live-panel" so the poller can replace it in place. */
-export function liveMarkup(live: LiveCurrent | undefined): string {
+export function liveMarkup(live: LiveCurrent | undefined, poll: LivePollState = {}): string {
   const state = live?.state;
   const label = liveLabel(live);
   const lines = live ? liveTranscript(live) : [];
@@ -95,16 +147,22 @@ export function liveMarkup(live: LiveCurrent | undefined): string {
     ${renderMarkdown(job.markdown)}
     ${!job.delivered && job.state !== 'in_progress' ? '<p class="muted">Call Naya back: choose Start Live voice in the native app to pick up this result.</p>' : ''}
   </article>`).join('');
+  const latest = live?.entries.at(-1);
+  const restored = state !== 'rebuilding' && latest?.kind === 'continuity' && latest.event === 'resumed'
+    ? `<p role="status" data-continuity-seq="${latest.seq}">Connection restored</p>` : '';
   const error = state === 'error' ? '<p class="muted" role="status">Naya reported an error. The live session has stopped.</p>' : '';
   const muted = live?.muted ? '<p class="muted live-muted" role="status">Microphone muted</p>' : '';
   const transcript = lines.length
-    ? lines.map(line => `<li class="entry"><strong>${line.role === 'user' ? 'You' : 'Naya'}</strong><p>${escapeHtml(line.text)}</p></li>`).join('')
-    : '<li class="empty"><p class="muted">No live transcription yet.</p></li>';
+    ? `<ol class="entries live-transcript">${lines.map(line => `<li class="entry"><strong>${line.role === 'user' ? 'You' : 'Naya'}</strong><p>${escapeHtml(line.text)}</p></li>`).join('')}</ol>`
+    : '<div class="entries live-transcript empty"><p class="muted">No live transcription yet.</p></div>';
   return `<section class="panel live" id="live-panel" aria-label="Naya live conversation">
     <p class="live-state" role="status" aria-live="polite">${escapeHtml(label)}</p>
     ${muted}
-    <ol class="entries live-transcript">${transcript}</ol>
-    ${error}
+    ${poll.stale ? `<p class="live-stale" role="status">Live view stale${poll.lastSuccess ? ' since ' + escapeHtml(poll.lastSuccess.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })) : ', no successful poll yet'}, service unreachable</p>` : ''}
+    ${transcript}
+    ${error}${restored}
+    ${(live?.entries ?? []).filter(entry => entry.kind === 'toolResult' && entry.tool?.name !== 'remember_note').map(entry => `<details class="live-tool-result" data-result-seq="${entry.seq}"><summary>${escapeHtml(entry.tool?.name ?? 'Tool result')} (${escapeHtml(entry.tool?.status ?? 'unknown')})</summary>${entry.tool?.status !== 'error' && entry.tool?.markdown ? renderMarkdown(entry.tool.markdown) + sourcesMarkup(entry.tool.sources ?? []) : ''}</details>`).join('')}
+    ${(live?.entries ?? []).filter(entry => entry.kind === 'toolResult' && entry.tool?.name === 'remember_note').map(remaining => rememberCardMarkup(remaining)).join('')}
     ${jobs}
     ${result ? `<div class="live-result"><h2>Latest answer</h2>${renderMarkdown(result.markdown)}${sourcesMarkup(result.sources)}</div>` : ''}
   </section>`;

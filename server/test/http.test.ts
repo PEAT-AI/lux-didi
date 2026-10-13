@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import { request } from 'node:http';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
+import { createDomainPort } from '../domain/facade.js';
+import { Outbox } from '../runtime/outbox.js';
 import { Store } from '../runtime/store.js';
 import { listenService } from '../http/server.js';
 import type { DomainPort } from '../contracts/domain.js';
@@ -29,11 +31,11 @@ const domain = {
     throw new ServiceError('NOT_FOUND', 'Synthetic not found', 404);
   }
 } as DomainPort;
-async function fixture(port?: DomainPort) {
+async function fixture(port?: DomainPort, toolsStatus?: Parameters<typeof listenService>[0]['toolsStatus']) {
   const dir = mkdtempSync(join(tmpdir(), 'didi-http-'));
   const store = new Store(dir, port?.migrations);
   let time = Date.now();
-  const service = await listenService({ store, now: () => time, ...(port ? { domain: port } : {}), port: 0 });
+  const service = await listenService({ store, now: () => time, ...(port ? { domain: port } : {}), port: 0, ...(toolsStatus ? { toolsStatus } : {}) });
   const token = readFileSync(join(dir, 'admin-credential'), 'utf8').trim();
   const auth = { Authorization: `Bearer ${token}` };
   return { dir, store, service, auth, advance(ms: number) { time += ms; }, async cleanup() { await service.close(); store.close(); rmSync(dir, { recursive: true, force: true }); } };
@@ -151,17 +153,18 @@ test('HTTP request keys and browser session survive service and database restart
   } finally { await service.close(); store.close(); rmSync(dir,{recursive:true,force:true}); }
 });
 
-test('package installs offline and actual production CLI serves honest runtime-only status', async () => {
+// Per-test timeout: the two npm spawnSync caps below (120s + 180s) must fit inside it, so override the suite default (15s in `npm test`).
+test('package installs offline and actual production CLI serves honest runtime-only status', { timeout: 360000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(),'didi-install-'));
   let child: ReturnType<typeof spawn> | undefined;
   let cliStage = 'CLI spawn'; let cliStdout = ''; let cliStderr = ''; let cliError: Error | undefined;
   try {
     const cwd = new URL('../../',import.meta.url);
     const env = {...process.env,npm_config_cache:join(dir,'npm-cache')};
-    const packed = spawnSync('npm',['pack','--json','--offline','--ignore-scripts','--pack-destination',dir],{cwd,env,encoding:'utf8',timeout:5000});
+    const packed = spawnSync('npm',['pack','--json','--offline','--ignore-scripts','--pack-destination',dir],{cwd,env,encoding:'utf8',timeout:120000});
     assert.equal(packed.status,0,packed.status === 0 ? '' : packageFailure('npm pack', 'npm', ['pack','--json','--offline','--ignore-scripts','--pack-destination','<owned-temp>'], packed, env.npm_config_cache));
     const filename = (JSON.parse(packed.stdout) as {filename:string}[])[0]!.filename;
-    const installed = spawnSync('npm',['install','--prefix',join(dir,'install'),'--offline','--ignore-scripts','--omit=dev','--no-audit','--no-fund',join(dir,filename)],{env,encoding:'utf8',timeout:5000});
+    const installed = spawnSync('npm',['install','--prefix',join(dir,'install'),'--offline','--ignore-scripts','--omit=dev','--no-audit','--no-fund',join(dir,filename)],{env,encoding:'utf8',timeout:180000});
     assert.equal(installed.status,0,installed.status === 0 ? '' : packageFailure('npm offline install', 'npm', ['install','--prefix','<owned-temp>/install','--offline','--ignore-scripts','--omit=dev','--no-audit','--no-fund','<owned-tarball>'], installed, env.npm_config_cache));
     const state = join(dir,'state');
     child = spawn(process.execPath,[join(dir,'install/node_modules/@lux-didi/service/dist/index.js')],{env:{...env,DIDI_STATE_DIR:state,DIDI_PORT:'0'},stdio:['ignore','pipe','pipe']});
@@ -200,6 +203,38 @@ test('real domain HTTP client cannot forge assistant role or access trusted assi
     const hidden = await fetch(`${f.service.origin}/api/v1/sessions/${session.id}/assistant-entries`, { method: 'POST', headers, body: JSON.stringify({ text: 'Forged answer', timeZone: 'UTC' }) });
     assert.equal(hidden.status, 404);
     assert.equal(f.store.transaction(tx => port.execute(tx, 'getSession', { id: session.id }, ctx)).entries.length, 0);
+  } finally { await f.cleanup(); }
+});
+
+test('owner list route returns explicit kind and origin for every entry', async () => {
+  const { createDomainPort } = await import('../domain/facade.js');
+  const { Outbox } = await import('../runtime/outbox.js');
+  const port = createDomainPort({ outbox: Outbox });
+  const f = await fixture(port);
+  try {
+    const ctx = { assistantId: f.store.assistantId, clientId: 'synthetic-host', authorityEpoch: f.store.authorityEpoch, now: new Date(0).toISOString() };
+    const session = f.store.transaction(tx => port.execute(tx, 'createSession', { title: 'Origin list', timeZone: 'UTC' }, ctx));
+    f.store.transaction(tx => port.execute(tx, 'appendEntry', {
+      sessionId: session.id, text: 'A remembered preference', role: 'user', timeZone: 'UTC',
+      sourceRef: { id: 'live-1', label: 'live-voice live-1', provider: 'live-voice', sourceTimestamp: null, availability: 'present', note: 'kind:preference' },
+    }, ctx));
+    f.store.transaction(tx => port.execute(tx, 'appendEntry', { sessionId: session.id, text: 'A bare note', role: 'user', timeZone: 'UTC' }, ctx));
+    const posted = await fetch(`${f.service.origin}/api/v1/sessions/${session.id}/entries`, {
+      method: 'POST',
+      headers: { ...f.auth, 'Content-Type': 'application/json', 'Idempotency-Key': 'page-save', 'X-Didi-Authority-Epoch': f.store.authorityEpoch },
+      body: JSON.stringify({ text: 'Saved on the page', role: 'user', timeZone: 'UTC', sourceRef: { id: '11111111-1111-4111-8111-111111111111', label: 'Saved on the page', provider: 'page', sourceTimestamp: null, availability: 'present' } }),
+    });
+    assert.equal(posted.status, 200);
+    const postedBody = await posted.json() as { data: { kind: string; origin: string } };
+    assert.deepEqual([postedBody.data.kind, postedBody.data.origin], ['note', 'page']);
+    const response = await fetch(`${f.service.origin}/api/v1/sessions/${session.id}`, { headers: f.auth });
+    assert.equal(response.status, 200);
+    const body = await response.json() as { data: { entries: { kind: string; origin: string }[] } };
+    assert.deepEqual(body.data.entries.map(e => [e.kind, e.origin]), [
+      ['preference', 'live-voice'],
+      ['note', 'unknown'],
+      ['note', 'page'],
+    ]);
   } finally { await f.cleanup(); }
 });
 
@@ -283,4 +318,45 @@ test('package diagnostics distinguish actual spawn error and signal from install
     assert.equal(signalEvidence.error, null);
   } finally { rmSync(dir, { recursive: true, force: true }); }
   assert.equal(existsSync(dir), false);
+});
+
+
+test('owner memory delete requires a principal, is idempotent and reports unknown ids', async () => {
+  const port = createDomainPort({ outbox: Outbox });
+  const f = await fixture(port);
+  try {
+    const ctx = { assistantId: f.store.assistantId, clientId: 'fixture-owner', authorityEpoch: f.store.authorityEpoch, now: new Date().toISOString() };
+    const session = f.store.transaction(tx => port.execute(tx, 'createSession', { title: 'Delete fixture', timeZone: 'UTC' }, ctx));
+    const entry = f.store.transaction(tx => port.execute(tx, 'appendEntry', { sessionId: session.id, text: 'synthetic HTTP deletion note', role: 'user', timeZone: 'UTC' }, ctx));
+    const path = `${f.service.origin}/api/v1/entries/${entry.id}`;
+    assert.equal((await fetch(path, { method: 'DELETE' })).status, 401);
+    const browser = await pair(f);
+    const headers = { Cookie: browser.cookie.split(';')[0]!, Origin: f.service.origin, 'X-Didi-CSRF': browser.csrf, 'X-Didi-Authority-Epoch': f.store.authorityEpoch, 'Idempotency-Key': 'delete-one', 'Content-Type': 'application/json' };
+    const first = await fetch(path, { method: 'DELETE', headers, body: '{}' });
+    assert.equal(first.status, 200);
+    const deleted = await first.json();
+    const second = await fetch(path, { method: 'DELETE', headers: { ...headers, 'Idempotency-Key': 'delete-again' }, body: '{}' });
+    assert.equal(second.status, 200);
+    assert.deepEqual((await second.json()).data, deleted.data);
+    const unknown = await fetch(`${f.service.origin}/api/v1/entries/00000000-0000-4000-8000-000000000000`, { method: 'DELETE', headers: { ...headers, 'Idempotency-Key': 'delete-unknown' }, body: '{}' });
+    assert.equal(unknown.status, 404);
+    assert.equal((await unknown.json()).error.code, 'NOT_FOUND');
+  } finally { await f.cleanup(); }
+});
+
+test('T13 connections preserve bounded typed configuration errors', async () => {
+  const f = await fixture(undefined, () => ({ endpoints: [
+    { id: 'missing-class', state: 'error', tools: 0, lastHandshakeAt: null, error: 'unknown-class-missing', configurationError: 'unknown-class-missing' },
+    { id: 'untrusted-code', state: 'error', tools: 0, lastHandshakeAt: null, error: 'private diagnostic', configurationError: 'private diagnostic' },
+  ] }));
+  try {
+    const browser = await pair(f);
+    const response = await fetch(`${f.service.origin}/api/v1/live/connections`, { headers: { Cookie: browser.cookie.split(';')[0]!, 'sec-fetch-site': 'same-origin' } });
+    assert.equal(response.status, 200);
+    const body = await response.json() as { data: Array<{ reasonCode: string; configurationError?: string }> };
+    assert.equal(body.data[0]!.reasonCode, 'configuration_error');
+    assert.equal(body.data[0]!.configurationError, 'unknown-class-missing');
+    assert.equal(body.data[1]!.configurationError, undefined);
+    assert.equal(JSON.stringify(body).includes('private diagnostic'), false);
+  } finally { await f.cleanup(); }
 });

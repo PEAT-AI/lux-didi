@@ -1,3 +1,4 @@
+import { ConnectorCompositionError } from '../connectors/index.js';
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { WebSocketServer, type WebSocket, type RawData } from 'ws';
@@ -19,6 +20,7 @@ export interface LiveStatusPayload {
   voice?: string;
   dataClasses?: string[];
   profileIdentity?: string;
+  limits?: { sessionMs: number; idleMs: number };
 }
 
 /** The one operator-facing Live surface. Implemented by the host composition, never by a browser. */
@@ -46,6 +48,7 @@ const statusText: Record<number, string> = { 400: 'Bad Request', 401: 'Unauthori
 /** Map an owner or guard failure to a closed HTTP error. Never leaks prompt/key bytes. */
 export function liveServiceError(error: unknown): ServiceError {
   if (error instanceof ServiceError) return error;
+  if (error instanceof ConnectorCompositionError) return new ServiceError('CONNECTOR_COMPOSITION_ERROR', 'Connector composition failed', 503);
   if (!(error instanceof LiveError)) return new ServiceError('INTERNAL_ERROR', 'Internal service error', 500);
   switch (error.code) {
     case 'not_found': return new ServiceError('NOT_FOUND', error.message, 404);
@@ -59,6 +62,10 @@ export function liveServiceError(error: unknown): ServiceError {
 
 function markerFrame(marker: LivePublicMarker): Record<string, unknown> {
   const frame: Record<string, unknown> = { type: marker.kind, sequence: marker.sequence, journalSequence: marker.journalSequence };
+  if (marker.kind === 'continuity') {
+    frame['event'] = marker.event;
+    if (marker.reason !== undefined) frame['reason'] = marker.reason;
+  }
   if (marker.text !== null) frame['text'] = marker.text;
   if (marker.finished !== null) frame['finished'] = marker.finished;
   if (marker.value !== null) frame['value'] = marker.value;
@@ -134,8 +141,13 @@ export function createLiveUpgrader(options: LiveUpgradeOptions) {
       try { attachment = options.live.attach(sessionId!, context!); }
       catch (error) {
         const code = error instanceof LiveError || error instanceof ServiceError ? error.code : 'internal';
-        // Only fixed typed codes and the session identity, never exception messages or payloads.
-        console.error(JSON.stringify({ event: 'live_attach_rejected', liveSessionId: sessionId, code }));
+        // Only bounded class names and an allowlisted code token, never free text or payloads.
+        const diagnostics = code === 'internal' ? {
+          class: error instanceof Error && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(error.constructor.name) ? error.constructor.name : 'Unknown',
+          ...(error instanceof Error && error.constructor === Error && error.message === 'connection_policy_missing_or_corrupt'
+            ? { detail: error.message } : {}),
+        } : {};
+        console.error(JSON.stringify({ event: 'live_attach_rejected', liveSessionId: sessionId, code, ...diagnostics }));
         // Typed codes are ASCII; reserve 16 bytes for the prefix in the 123-byte close reason.
         ws.close(1008, `attach_rejected:${code.slice(0, 107)}`);
         return;
@@ -177,7 +189,9 @@ export function createLiveUpgrader(options: LiveUpgradeOptions) {
       const terminal = snapshot.terminal as { state: string; code?: string };
       ws.send(JSON.stringify({ type: 'terminal', state: terminal.state, code: terminal.code ?? null, complete: snapshot.journal.complete }), { binary: false });
     }
-    ws.close(1000, 'terminal');
+    const code = snapshot?.terminal && 'code' in snapshot.terminal ? snapshot.terminal.code : undefined;
+    if (snapshot && !snapshot.ready && code && /^[a-z][a-z0-9_]{0,63}$/.test(code)) ws.close(1008, `attach_rejected:${code}`);
+    else ws.close(1000, 'terminal');
   }
 
   return {

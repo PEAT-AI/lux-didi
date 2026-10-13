@@ -38,7 +38,7 @@ async function fixture(configured = true, options: { credentials?: Credentials; 
       Cookie: auth.cookie, Origin: host.descriptor.origin, 'X-Didi-CSRF': auth.csrf, 'X-Didi-Authority-Epoch': host.store.authorityEpoch, 'Idempotency-Key': key, 'Content-Type': 'application/json', ...extra }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   }
   return { dir, captured, get host() { return host; }, get auth() { return auth; }, get credentialCalls() { return credentialCalls; }, call,
-    async enroll(key = 'enroll') { const r = await call('/conversations', { title: 'Explicit Naya conversation', timeZone: 'UTC' }, key); assert.equal(r.status, 200, await r.clone().text()); return (await r.json()).data; },
+    async enroll(key = 'enroll') { const r = await call('/conversations', { title: 'Explicit Naya conversation', timeZone: 'UTC', consent: true }, key); assert.equal(r.status, 200, await r.clone().text()); return (await r.json()).data; },
     async restart(model?: string) {
       await host.close();
       if (model) { const p = join(dir, 'provider-config', 'profile.json'); const data = JSON.parse(await readFile(p, 'utf8')); data.modelId = model; await writeFile(p, JSON.stringify(data), { mode: 0o600 }); }
@@ -62,7 +62,7 @@ async function final(f: Awaited<ReturnType<typeof fixture>>, runId: string) {
 test('CONNECTED absent config is sanitized; unavailable enrollment creates nothing and local capture works', async () => {
   const f = await fixture(false);
   try {
-    const status = await f.call('/chat/status'); assert.equal(status.status, 200); assert.deepEqual((await status.json()).data, { status: 'unconfigured' });
+    const status = await f.call('/chat/status'); assert.equal(status.status, 200); assert.deepEqual((await status.json()).data, { status: 'unconfigured', consent: null });
     const denied = await f.call('/conversations', { title: 'Not enrolled', timeZone: 'UTC' }); assert.equal(denied.status, 503);
     assert.equal((await (await f.call('/sessions')).json()).data.items.length, 0);
     const local = await f.call('/sessions', { title: 'Local only', timeZone: 'UTC' }, 'local-session'); assert.equal(local.status, 200);
@@ -73,7 +73,7 @@ test('CONNECTED absent config is sanitized; unavailable enrollment creates nothi
 test('CONNECTED actual adapter/HTTP atomic private enrollment and whole-turn context, replay and restart', async () => {
   const f = await fixture();
   try {
-    const status = (await (await f.call('/chat/status')).json()).data; assert.deepEqual(status, { status: 'configured', provider: 'gemini', model: 'gemini-connected-test' });
+    const status = (await (await f.call('/chat/status')).json()).data; assert.deepEqual(status, { status: 'configured', provider: 'gemini', model: 'gemini-connected-test', consent: null });
     const local = (await (await f.call('/sessions', { title: 'EXCLUDED_OTHER_SESSION_CANARY', timeZone: 'UTC' }, 'local')).json()).data;
     assert.equal((await f.call(`/sessions/${local.id}/entries`, { text: 'EXCLUDED_LOCAL_NOTE_CANARY', role: 'user', timeZone: 'UTC' }, 'local-entry')).status, 200);
     assert.equal((await (await f.call(`/sessions/${local.id}`)).json()).data.entries[0].text, 'EXCLUDED_LOCAL_NOTE_CANARY');
@@ -84,7 +84,8 @@ test('CONNECTED actual adapter/HTTP atomic private enrollment and whole-turn con
     const today = (await (await f.call(`/plan?date=${new Date().toISOString().slice(0, 10)}&timeZone=UTC`)).json()).data;
     assert.ok(today.unscheduled.some((item: { title: string }) => item.title === 'EXCLUDED_TODAY_CANARY'));
     const enrolled = await f.enroll();
-    const replayEnrollment = await f.enroll(); assert.equal(replayEnrollment.sessionId, enrolled.sessionId);
+    assert.deepEqual(enrolled, { sessionId: enrolled.sessionId, scope: 'conversation', provider: 'gemini', model: 'gemini-connected-test', state: 'active', revision: 1, permittedClasses: ['ordinary', 'private'], latestRunId: null });
+    const replayEnrollment = await f.enroll(); assert.deepEqual(replayEnrollment, enrolled);
     const domain = createDomainPort({ outbox: Outbox });
     assert.deepEqual(f.host.store.transaction(tx => domain.getRoutingLabel(tx, { kind: 'session', id: enrolled.sessionId })).dataClass, 'private');
     const accepted = await f.call('/chat', { sessionId: enrolled.sessionId, text: 'Help me choose one small next step.' }, 'first-turn'); assert.equal(accepted.status, 200, await accepted.clone().text());
@@ -125,6 +126,14 @@ test('CONNECTED actual adapter/HTTP atomic private enrollment and whole-turn con
 test('CONNECTED exact DTO/auth gates deny before credentials or adapter transport', async () => {
   const f = await fixture();
   try {
+    const withoutConsent = { title: 'No grant', timeZone: 'UTC' };
+    // Auth rejects before consent; an authenticated enrollment still requires a grant.
+    assert.equal((await f.call('/conversations', withoutConsent, 'no-consent-origin', { Origin: 'http://evil.invalid' })).status, 403);
+    const denied = await f.call('/conversations', withoutConsent, 'no-consent');
+    assert.equal(denied.status, 409);
+    const error = (await denied.json()).error;
+    assert.equal(error.code, 'CONFLICT'); assert.match(error.message, /consent_required/);
+    assert.equal(f.credentialCalls, 0); assert.equal(f.captured.length, 0);
     const c = await f.enroll();
     for (const field of ['assistantId', 'clientId', 'labels', 'endpoint', 'toolPolicy', 'sourceRefs']) {
       assert.equal((await f.call('/chat', { sessionId: c.sessionId, text: 'forged', [field]: 'injected' }, field)).status, 400);
@@ -179,8 +188,8 @@ test('CONNECTED private-denying and unsupported profiles keep local host alive a
     try {
       const status = (await (await f.call('/chat/status')).json()).data;
       assert.equal(status.status, options.model ? 'error' : 'configured');
-      if (options.model) assert.deepEqual(status, { status: 'error', code: 'ADAPTER_CONFIGURATION_INVALID' });
-      assert.equal((await f.call('/conversations', { title: 'No grant', timeZone: 'UTC' })).status, 503);
+      if (options.model) assert.deepEqual(status, { status: 'error', code: 'ADAPTER_CONFIGURATION_INVALID', consent: null });
+      assert.equal((await f.call('/conversations', { title: 'No grant', timeZone: 'UTC', consent: true })).status, 503);
       assert.equal((await (await f.call('/sessions')).json()).data.items.length, 0);
       assert.equal((await f.call('/sessions', { title: 'Still local', timeZone: 'UTC' }, 'local')).status, 200);
       assert.equal(f.credentialCalls, 0); assert.equal(f.captured.length, 0);
@@ -228,7 +237,7 @@ test('CONNECTED terminal SQLite failure after persisted revoke still aborts outs
   const { chat } = composeChat(store, domain, join(dir, 'provider-config'), { credentials: gate.credentials, transport: async () => { calls++; return sse(); } });
   const context = { assistantId: store.assistantId, authorityEpoch: store.authorityEpoch, clientId: 'trusted-fixture', now: new Date().toISOString() };
   try {
-    const c = chat.enroll({ title: 'Fault control', timeZone: 'UTC', idempotencyKey: 'enroll' }, context);
+    const c = chat.enroll({ title: 'Fault control', timeZone: 'UTC', idempotencyKey: 'enroll', consent: true }, context);
     const run = chat.accept({ sessionId: c.sessionId, text: 'Revocation must abort despite storage failure.', idempotencyKey: 'turn' }, context);
     await gate.waiting; assert.equal(chat.revoke(c.sessionId, context).state, 'revoked'); gate.release();
     // Recovery of intent is truthful, not a completed answer or an automatic retry.
@@ -298,7 +307,7 @@ test('CONNECTED actual in-flight host process crash recovers unknown with no pro
     const ready = await phase('ready'); const descriptor = ready.descriptor as { origin: string; authorityEpoch: string };
     const token = (await readFile(join(dir, 'admin-credential'), 'utf8')).trim();
     const call = (path: string, body: unknown, key: string) => fetch(descriptor.origin + '/api/v1' + path, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'X-Didi-Authority-Epoch': descriptor.authorityEpoch, 'Idempotency-Key': key }, body: JSON.stringify(body) });
-    const c = (await (await call('/conversations', { title: 'Crash proof', timeZone: 'UTC' }, 'enroll')).json()).data;
+    const c = (await (await call('/conversations', { title: 'Crash proof', timeZone: 'UTC', consent: true }, 'enroll')).json()).data;
     const sent = phase('transport'); const run = (await (await call('/chat', { sessionId: c.sessionId, text: 'Interrupted in-flight.' }, 'turn')).json()).data;
     await sent; const exited = once(child, 'exit'); child.kill('SIGKILL'); await exited;
     let retries = 0; host = await startHost({ dataDir: dir, webRoot, port: 0, modelTesting: { credentials: { resolve: async () => { retries++; return syntheticKey; } }, transport: async () => { retries++; return sse(); } } });

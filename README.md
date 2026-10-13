@@ -2,31 +2,40 @@
 
 Lux Didi is a Mac-first local assistant in early development: a warm, direct and witty companion with a voice, durable private recall, proactive follow-through on the commitments a person actually makes, and authorized local control. It is designed to be useful when installed alone on one Mac with one Google account, and to become more useful, never dependent, when optional Lux or company integrations are connected.
 
-## Status: early local development baseline
+## Status: local Mac prerelease
 
-This repository is no longer a plan only. Accepted `main` contains working code, but it is not a shipped product and there is no packaged release.
+This tree contains a locally packaged, ad-hoc-signed Mac app with bundled Node,
+the authoritative TypeScript service and the shared web client. It is an early
+prerelease, with synthetic checks and separate real-account and hardware gates.
+It is not a notarized public release or a proven clean-machine installation.
 
-Today's tree has three components:
+- `server/` owns the SQLite store, local notes, memory and commitments. It serves
+  the web client on loopback and composes connected chat, MCP tools and Live when
+  their profiles and required authority are configured.
+- `web/` contains the same-origin client, connected conversations, tool evidence,
+  memory controls and read-only Settings. It stores no private records in browser
+  storage and makes no external font, analytics or CDN requests.
+- `Sources/LuxDidi/` contains the menu-bar app, service supervision, native web
+  view, local Save note and Send to Naya actions, microphone/audio integration,
+  Getting started, shortcuts, notifications and protected operator settings.
 
-- `server/` is the authoritative local service, written in TypeScript for Node. It owns a SQLite store through `node:sqlite`, serves an HTTP API on the loopback interface, and includes a durable domain module for memory and commitments, a prompt compiler, a model adapter and an MCP adapter.
-- `web/` is the shared web client, a small Vite and TypeScript progressive web app served from the same origin as the service. It keeps no private records in browser storage.
-- `Sources/LuxDidi/` is a thin Mac shell, an AppKit menu-bar agent that hosts SwiftUI screens. Its domain port is deliberately disconnected, so it shows an explicitly empty state rather than a fake account.
+Installation owns the application bundle only. It preserves existing owner
+configuration and creates no provider profiles, connector catalogs or network
+grants. A fresh unconfigured app can save local notes and memory; connected chat
+and Live need explicit setup. Model and connector configuration is selected using
+the existing protected `--configure --config-dir` command.
 
-The host entry composes the service, the domain module and the built web client on `127.0.0.1` only. It supports local capture, source-backed recall, commitments, corrections and Today without a configured model. Model calls, MCP execution, notifications, audio and native web-view integration are present in the tree or planned but are not wired by that host.
-
-The repository has no CI workflow. Verification is done by the scripts in `scripts/` and by each lane's own declared checks, not by a hosted pipeline.
-
-Two documents cover the detail:
-
-- [docs/implementation-status.md](docs/implementation-status.md) records what is implemented, what current `main` integrates end to end, what exists only on branches outside `main`, and which end-to-end proofs are still unresolved.
-- [docs/local-development.md](docs/local-development.md) gives the supported prerequisites and the build, start, data, pairing and stop commands for the current baseline.
+See [the user guide](docs/user-guide.md), [Mac installation](docs/macos-install.md),
+[implementation status](docs/implementation-status.md) and
+[local development](docs/local-development.md). The repository has no hosted CI
+workflow; canonical checks are in `scripts/`.
 
 ## Package boundaries
 
-- One process is the only writer. The service owns the store and the durable domain. The web client calls it over the same origin and keeps no records of its own, and the Mac shell is not connected yet.
-- `server/` is a private npm package in the `lux-didi` scope, ESM only, Node 26 or newer, built with `tsc` into `dist/`. The package includes runtime, HTTP, contracts, domain, host, chat, configuration and prompt modules, model and MCP adapters, the knowledge connector and the Live voice adapter. The MCP client dependency is bundled into the package.
-- `web/` is a private package, `didi-web`, Node 26 or newer, pinned in its own lock file. It makes no external font, image, analytics or CDN request, and it applies its own content security policy.
-- The Mac shell is compiled from the Swift sources with the Xcode Command Line Tools. It is not domain integrated and it is not a packaged application.
+The service is the only store writer. The native and web clients use its local
+API. `server/` is an ESM TypeScript package requiring Node 26 or newer, with the
+MCP dependency bundled. The Mac producer bundles Node, service and web assets
+into one app. The native sources compile with the Xcode Command Line Tools.
 
 ## Reuse and provenance
 

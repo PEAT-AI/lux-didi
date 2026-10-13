@@ -1,10 +1,10 @@
-# Standalone tools owner
+# Canonical tools owner
 
-`server/tools` is an additive portable owner, **not installed Chat or host tool calling**. It implements the accepted model journal and result gate without changing their signatures. It uses the existing Store and MCP registry/adapter, and the accepted Lux knowledge reader. It adds exactly three tables under the typed `tools` version-1 migration: `tool_connections`, `tool_runs`, and `tool_calls`. There is no Chat foreign key, second database, refusal table or independent authorization registry.
+`server/tools` is an additive portable owner, **shared by the host composition and Live acceptance**. It implements the accepted model journal and result gate without changing their signatures. It uses the existing Store and MCP registry/adapter, and the accepted Lux knowledge reader. Its typed `tools` version-1 migration adds `tool_connections`, `tool_runs`, and `tool_calls`. Version 2 adds the immutable `tool_connection_semantics` discriminator table without rewriting legacy policies. There is no Chat foreign key, second database, refusal table or independent authorization registry.
 
 ## Trusted composition
 
-Supply `toolsMigrations` when opening the existing Store, then construct one `createToolsOwner` for that Store object lifetime. Store acquires the exclusive `writer.sqlite` lock before tools initialization. Owner construction atomically seals only its own pending intents `unknown`, once. It does not replay, retry, rekey, recover another owner's rows, or use the persistent authority epoch as a process-start identifier. A second owner on the same Store object is rejected, even with a different owner ID. Application composition remains future work; never create a replacement owner over a live Store.
+Supply `toolsMigrations` when opening the existing Store, then construct one `createToolsOwner` for that Store object lifetime. Store acquires the exclusive `writer.sqlite` lock before tools initialization. Owner construction atomically seals only its own pending intents `unknown`, once. It does not replay, retry, rekey, recover another owner's rows, or use the persistent authority epoch as a process-start identifier. A second owner on the same Store object is rejected, even with a different owner ID. Host composition constructs this owner once; never create a replacement owner over a live Store.
 
 The trusted `lookupAuthority(runId, signal)` returns live owner/actor/run/epoch/revision, the exact provider/model route, permitted classes, connection IDs, and the accepted run hash (or null). It must read application authority, not echo HostContext, connection configuration, or model input. Host grants are not this owner's permission source.
 
@@ -20,9 +20,9 @@ Policy changes commit **before** projecting suspend/revoke into the existing MCP
 
 The accepted loop commits journal intent before executor dispatch. Duplicate exact intent returns existing and stops uncertain; a collision throws, without creating a replacement refusal or invoking the tool again. Targetless refusal can create a terminal record only for a fresh identity. Call IDs are retained uniquely within an owner/run, including across execution keys.
 
-Executors validate exact committed identity/arguments/scope, await live authoritative lookup, and reread all persisted policies synchronously before calling the accepted reader. The reader forwards the signal to actual MCP dispatch. Abort before dispatch causes zero calls; abort after potentially remote completion remains unknown. Unknown completion cannot be overwritten later. Terminal snapshots contain detached model-visible JSON, intent binding hash, result ID and exact UTF8-byte SHA256 in one atomic transaction. There are no remote calls inside SQLite transactions. A failed result write is latched for that execution so the loop cannot manufacture a replacement failed receipt and continue. The latch only denies fallback writes; it is not another authorization authority.
+Executors validate exact committed identity/arguments/scope, await live authoritative lookup, and reread the selected connection policy synchronously before calling the accepted reader. The reader forwards the signal to actual MCP dispatch. Abort before dispatch causes zero calls; abort after potentially remote completion remains unknown. Unknown completion cannot be overwritten later. Terminal snapshots contain detached model-visible JSON, intent binding hash, result ID and exact UTF8-byte SHA256 in one atomic transaction. There are no remote calls inside SQLite transactions. A failed result write is latched for that execution so the loop cannot manufacture a replacement failed receipt and continue. The latch only denies fallback writes; it is not another authorization authority.
 
-Before **every** provider request, including initial requests and runs with no connections or no result references, the result gate verifies authoritative scope, accepted hash, exact route/classes, all bound enabled policies and current registry projection. The persisted-policy reread occurs after awaited lookup, catching revocation during the await. It validates each exact result reference/hash and stored execution/name/call/arguments binding. Unknown/pending, foreign, missing, corrupt or disallowed results deny the whole request. Returned response objects are detached copies. The accepted loop retains coverage/order and response matching checks; this owner does not replace them. Gate/storage failure stops the next provider request rather than stripping evidence and continuing.
+Before **every** provider request, including initial requests and runs with no connections or no result references, the result gate verifies authoritative scope, accepted hash, exact route/classes, the current enabled policy and registry projection for each result being released. The persisted-policy reread occurs after awaited lookup, catching revocation during the await. It validates each exact result reference/hash and stored execution/name/call/arguments binding. Unknown/pending, foreign, missing, corrupt or disallowed results deny the whole request. Returned response objects are detached copies. The accepted loop retains coverage/order and response matching checks; this owner does not replace them. Gate/storage failure stops the next provider request rather than stripping evidence and continuing.
 
 ## Lux evidence coverage
 
@@ -41,3 +41,44 @@ Still explicitly absent: Chat/host connection loader and acceptance wiring; actu
 ## Runtime composition (W-C)
 
 `server/host/runtime.ts` constructs one `composeMcpRuntime` at startup on the already-open Store. It builds a single registry, adapter and `createToolsOwner`, discovers every configured endpoint (bounded, never blocking startup), and returns a `LiveToolsComposition` shape `{ owner, connectionIds() }`. `connectionIds()` returns the ids of the configured, enabled, egress-allowed endpoints at call time. The composition is passed to `composeLive` as the trailing argument and exposed on the host result as `tools`; a missing or unreachable endpoint yields a typed error state and a refused connector call, never fabricated empty data. The grant evaluator is unchanged: discovery alone never grants authority.
+
+### Explicit voice remembering
+
+Live sessions declare the gateway-owned `remember_note` tool with `text` (1 to 500 characters) and `kind` (`fact`, `preference`, or `task`), and no other arguments. It executes locally, not over MCP. The **owner-trusted explicit voice memory rule** permits only this built-in write identity in `owner-trusted-reads`; explicit grant mode leaves it unapproved, and a remote MCP tool with the same name receives none of its permission. Other writes remain unapproved. Original argument validation, owner authority checks, intent journaling, result authorization and result journaling still apply.
+
+The gateway saves the owner's finalized input transcription, not the model's proposed note. The latest finalized explicit remember command in a bounded 64-fragment journal window supplies the payload. The model text must match that payload after case, whitespace and terminal-punctuation normalization, or be a normalized substring of it. A missing finalized command refuses with `owner_transcript_not_final`; a mismatch refuses with `owner_text_mismatch`. One finalized utterance can produce only one entry; a repeat refuses with `already_remembered` and identifies the existing entry. Provenance identifies `live-voice`, the Live session id and the finalized utterance journal sequence. The entry's existing source-reference note retains `kind:<kind>` without changing its owner-authored content.
+
+Voice remembering writes **ordinary memory only**. An explicit request to classify the note as private or sensitive refuses with `private_memory_unsupported`; it is never silently downgraded. Private notes must use an owner-controlled workflow, not this voice tool. Live-voice entries have **no deletion control yet**. Durable memory deletion is deferred to a separate wagon, not available through the Live projection or the selected-memory picker.
+
+A successful result is only `{remembered: true, entryId}`; refusals return `{remembered: false, code}` (duplicate refusals additionally identify the existing entry). Note text is never echoed in the tool result. Naya confirms aloud only after success and otherwise reports the refusal. Saving does not modify the running session's `accepted_prompt_snapshot` or `prompt_identity`: recall occurs at the next session CREATE.
+
+
+## Text chat consumption
+
+Text chat consumes the canonical owner and the host's existing connection
+selection; it does not create another evaluator, journal, result gate or schema
+derivation. A frozen conversation acceptance limits which original read
+declarations can be supplied. Every actual dispatch remains subject to live
+owner authorization and registry revocation. The acceptance binds the provider,
+model, route, permitted classes and connection policy identity, and cannot be
+reused after those route inputs change. New approvals require a new conversation.
+
+The shared model tool loop has a four-request bound in chat. Every provider
+request, including an evidence follow-up, requires current conversation consent.
+The model sees only the result gate's accepted projection; browser cards are
+bounded markdown and permitted sources from that same boundary, not raw MCP
+content or tool_calls JSON. Chat reuses the canonical gate at the finite loop
+boundary before projecting the last accepted results. Denial remains denial,
+never a connector-specific fallback or authority synthesized from model output.
+
+## Connection-scoped admission (T8-FIX, council option B)
+
+Acceptance freezes the admitted connection ID set and the route's explicit allowed-class set. Host IDs are the intersection of owner-approved local connections and usable current grants, not every endpoint with a healthy handshake. Discovery can make a connection available to a later run, but never adds it to an existing snapshot. Each execution selects only its own bound connection: unrelated connections cannot poison an otherwise authorized read. Connection policy `route.identity` is retained for legacy/audit compatibility; it is not a model-route approval and is never compared with the run route identity.
+
+Before MCP dispatch and again before result release, the owner checks admitted membership, live authority, current approval generation/hash, local READ classification, original-schema validation and approval binding, connector restrictions, source class and result scope/freshness. Source class must be a member of each explicit applicable class set, including the run route's set; there is no ordinal class hierarchy at either gate. The bounded local `unknownClass` supplies the source classification when no approved local tool/source classification is more specific. Intent and terminal result JSON both journal the run's `routeIdentity`; terminal hashes bind it to the original intent.
+
+New explicit owner approval adopts `bindingMode: 'connection'` and records that semantic discriminator in the version-2 table. Migration alone grants no authority to legacy rows, even if their route identity equals an endpoint ID. Host reconciliation may adopt unambiguous endpoint-bound legacy rows only from explicit bounded local configuration under the existing owner-trusted-read approval; ambiguous legacy routes fail closed. Null/absent classifications cannot become executable connection approvals. There is no wildcard route identity.
+
+Startup preserves persisted approval fields, bounds and revocations. It compares canonical security-relevant content and uses owner CAS only when it changes; unchanged restarts do not bump generation. Newly discovered tool names, endpoint changes or classification lowering require explicit owner approval. Classification tightening and removal of previously approved tools apply immediately. Classification ordering is used only to distinguish a tightening config change from a lowering, never to authorize data release.
+
+T8-FIX-R1 invariant coverage uses real host composition with fake connector/model transports: the actual Live acceptance builder, and the public `snapshotRun` API with chat-style route identity. W-U owns the later real ChatService extension. R4 admits this integration file to the canonical compiler; no ChatService composition is fabricated here.

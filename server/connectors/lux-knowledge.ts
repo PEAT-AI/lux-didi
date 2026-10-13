@@ -25,6 +25,7 @@ export interface LuxKnowledgeSearchInput { query: string; limit: number }
 export interface LuxKnowledgeGetInput { ids: number[] }
 
 export interface HttpLuxKnowledgeSource {
+  toolName: string;
   endpointId: string;
   url: string;
   account: string;
@@ -34,6 +35,7 @@ export interface HttpLuxKnowledgeSource {
 }
 /** Transport-specific provenance: stdio carries no url, only the safe binding digest. */
 export interface StdioLuxKnowledgeSource {
+  toolName: string;
   endpointId: string;
   transport: 'stdio';
   bindingDigest: string;
@@ -46,6 +48,7 @@ export type LuxKnowledgeSource = HttpLuxKnowledgeSource | StdioLuxKnowledgeSourc
 
 /** Opaque local evidence. Classification is constant `unknown`; markdown can never change it. */
 export interface LuxKnowledgeEvidence {
+  decodedResult: unknown;
   classification: 'unknown';
   capability: 'local-only';
   tool: LuxKnowledgeTool;
@@ -211,6 +214,7 @@ export function createLuxKnowledgeReader(options: LuxKnowledgeOptions): LuxKnowl
     if (signal?.aborted) return { state: 'unknown', reason: 'cancelled-after-dispatch' };
     const evidence: LuxKnowledgeEvidence = {
       classification: 'unknown',
+      decodedResult: structuredClone(result.decodedResult),
       capability: 'local-only',
       tool,
       source: { ...result.source },

@@ -91,6 +91,11 @@ try {
     const status = await api('/status');
     assert.deepEqual(status.capabilities, { memory: true, commitments: true, notifications: false, model: false });
     assert.equal(status.model.configured, false);
+    assert.equal(status.ownerProfile.displayName, 'Lux Didi');
+    await page.locator('#connected-route').waitFor();
+    assert.equal(await page.locator('#connected-error').count(), 0);
+    assert.doesNotMatch(await page.locator('body').innerText(), /Cannot read properties|displayName/);
+    assert.equal(await page.locator('#live-panel ol').count(), 0);
     assert.ok(await page.locator('#ask-didi').isDisabled());
   });
   await step('shipped conversation captures meaningful durable text', async () => {

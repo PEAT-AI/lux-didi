@@ -3,7 +3,17 @@ set -euo pipefail
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 app="$1"; proof="$2"; node="$3"
 work="$(mktemp -d "${TMPDIR:-/tmp}/didi-native-real-host.XXXXXX")"
-trap 'rm -rf "$work"' EXIT
+cleanup() {
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    chmod 700 "$work"
+    printf 'REAL-HOST FAILURE status=%s retained-work=%s\n' "$status" "$work" >&2
+  else
+    rm -rf "$work"
+  fi
+  exit "$status"
+}
+trap cleanup EXIT
 mkdir "$work/source" "$proof/real-host"
 chmod 700 "$proof/real-host"
 git archive HEAD server web | tar -x -C "$work/source"
@@ -11,8 +21,9 @@ git archive HEAD server web | tar -x -C "$work/source"
 # Offline/null npm config prevents cloud calls and reading real npm credentials.
 export npm_config_userconfig=/dev/null npm_config_globalconfig="$work/absent-global-config"
 cache="${LUX_COMPANION_NPM_CACHE:?explicit warmed npm cache required}"
-npm --prefix "$work/source/server" ci --offline --ignore-scripts --no-audit --no-fund --cache "$cache"
-npm --prefix "$work/source/web" ci --offline --ignore-scripts --no-audit --no-fund --cache "$cache"
+helper="$(cd "$(dirname "$0")/../.." && pwd)/scripts/npm-ci-offline.sh"
+bash "$helper" "$work/source/server" ci --offline --ignore-scripts --no-audit --no-fund --cache "$cache"
+bash "$helper" "$work/source/web" ci --offline --ignore-scripts --no-audit --no-fund --cache "$cache"
 "$node" "$work/source/server/node_modules/typescript/bin/tsc" -p "$work/source/server/tsconfig.json"
 npm --prefix "$work/source/web" run build
 resources="$app/Contents/Resources"
@@ -107,7 +118,7 @@ for i,r in enumerate(reports):
  assert r['serviceStop']['pid']==r['service']['pid']
  assert r['credentialCleanup']['cleaned'] and r['newRecord']['visibleInCanonicalUI']
  assert r['native']['exitEvidence']=='external-driver-required' and 'exited' not in r['native']
- assert r['visual']['pageSnapshot'] and len(r['visual']['accessibility'])==3
+ assert r['visual']['pageSnapshot'] and len(r['visual']['accessibility'])==4
  for previous in reports[:i]:
   expected=previous['newRecord']
   assert any(all(old[k]==expected[k] for k in ('sessionId','entryId','text')) and old['visibleInCanonicalUI'] for old in r['priorRecords'])

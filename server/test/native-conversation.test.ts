@@ -33,7 +33,7 @@ async function fixture(options: { credentials?: Credentials; transport?: Transpo
   }
   async function read<T>(auth: Auth, path: string): Promise<T> { const response = await call(auth, path); assert.equal(response.status, 200, await response.clone().text()); return (await response.json()).data as T; }
   async function enroll(auth: Auth, title = 'Native conversation', key = 'native-enroll') {
-    const response = await call(auth, '/conversations', { title, timeZone: 'UTC' }, key);
+    const response = await call(auth, '/conversations', { title, timeZone: 'UTC', consent: true }, key);
     assert.equal(response.status, 200, await response.clone().text());
     return (await response.json()).data as { sessionId: string };
   }

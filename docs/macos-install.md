@@ -35,8 +35,8 @@ Installs an already built and verified app into an explicit user-local
 Applications target. It validates before swap, preserves the prior app as a
 uniquely named `Lux Didi.app.rollback-<UTC>` and restores it if post-swap
 validation fails. It never deletes or reseeds user data, never uses `--force`,
-and never touches an unrelated application. No persistent user install is
-performed until the root accepts the final paired implementation.
+and never touches an unrelated application. It does not create or migrate MCP or Live configuration, install connector servers,
+or grant network access. Existing configuration files and symlinks remain untouched.
 
 ### Exact install command
 
@@ -50,7 +50,7 @@ Configure the existing native executable; there is no second writer language,
 no new UI and no in-app editor.
 
 ```
-"/Applications/Lux Didi.app/Contents/MacOS/LuxDidi" --configure \
+"$HOME/Applications/Lux Didi.app/Contents/MacOS/LuxDidi" --configure \
   [--config-dir /abs/dir] [--owner-profile /abs/file.json]
 ```
 

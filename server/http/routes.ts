@@ -4,8 +4,8 @@ export type DomainRoute = { kind: 'domain'; operation: DomainOperation; input: D
 export type ConnectedRoute = { kind: 'connected'; action: 'status' | 'enroll' | 'conversation' | 'revoke' | 'accept' | 'run' | 'cancel' | 'events' | 'conversationEvents'; id: string | null; input: Record<string, unknown>; mutation: boolean };
 export type SelectionRoute = { kind: 'selection'; clear: boolean; mutation: boolean; input: Record<string, unknown> };
 export type LiveRoute = { kind: 'live'; action: 'status' | 'pendingJobs' | 'create' | 'snapshot' | 'journal' | 'revoke' | 'audio'; id: string | null; input: Record<string, unknown>; mutation: boolean };
-export type Route = { kind: 'liveCurrent'; mutation: false; cursor: number } | DomainRoute | ConnectedRoute | SelectionRoute | LiveRoute | { kind: 'health' | 'status' | 'pairing' | 'pair' | 'session' | 'logout' | 'chat' | 'toolsStatus'; mutation: boolean };
-type DirectKind = 'health' | 'status' | 'pairing' | 'pair' | 'session' | 'logout' | 'chat' | 'toolsStatus';
+export type Route = { kind: 'liveCurrent'; mutation: false; cursor: number } | DomainRoute | ConnectedRoute | SelectionRoute | LiveRoute | { kind: 'health' | 'status' | 'pairing' | 'pair' | 'session' | 'logout' | 'chat' | 'toolsStatus' | 'liveConnections' | 'clientDiagnostics' | 'liveSummary'; mutation: boolean };
+type DirectKind = 'health' | 'status' | 'pairing' | 'pair' | 'session' | 'logout' | 'chat' | 'toolsStatus' | 'liveConnections' | 'clientDiagnostics' | 'liveSummary';
 const bad = (message: string): never => { throw new ServiceError('BAD_REQUEST', message); };
 export function object(value: unknown): Record<string, unknown> { if (!value || typeof value !== 'object' || Array.isArray(value)) return bad('JSON object required'); return value as Record<string, unknown>; }
 export function fields(body: Record<string, unknown>, allowed: readonly string[], required: readonly string[] = []): void {
@@ -89,7 +89,7 @@ export function resolveRoute(method: string, url: URL, body?: Record<string, unk
     const mutation = !['status', 'conversation', 'run'].includes(action);
     matched([mutation ? 'POST' : 'GET']); query(url, []);
     if (body) {
-      if (action === 'enroll') { fields(body, ['title', 'timeZone'], ['title', 'timeZone']); text(body.title, 500); zone(body.timeZone); }
+      if (action === 'enroll') { fields(body, ['title', 'timeZone', 'consent', 'remember'], ['title', 'timeZone']); text(body.title, 500); zone(body.timeZone); for (const key of ['consent', 'remember']) if (body[key] !== undefined && typeof body[key] !== 'boolean') throw new ServiceError('BAD_REQUEST', 'Consent controls must be boolean'); }
       else if (action === 'accept') { fields(body, ['sessionId', 'text', 'retryOf', 'selectedMemoryEntryIds'], ['sessionId', 'text']); uuid(body.sessionId); text(body.text); if (body.retryOf !== undefined) uuid(body.retryOf); if (body.selectedMemoryEntryIds !== undefined) memoryIds(body.selectedMemoryEntryIds); }
       else fields(body, []);
     }
@@ -104,7 +104,7 @@ export function resolveRoute(method: string, url: URL, body?: Record<string, unk
     }
     return { kind: 'selection', clear, mutation: method === 'POST', input: body ?? {} };
   }
-  const special: Record<string, [string, DirectKind]> = { '/health': ['GET', 'health'], '/api/v1/status': ['GET', 'status'], '/api/v1/tools/status': ['GET', 'toolsStatus'], '/api/v1/auth/pairing': ['POST', 'pairing'], '/api/v1/auth/pair': ['POST', 'pair'], '/api/v1/auth/session': ['GET', 'session'], '/api/v1/auth/logout': ['POST', 'logout'] };
+  const special: Record<string, [string, DirectKind]> = { '/api/v1/diagnostics/client': ['POST', 'clientDiagnostics'], '/api/v1/live/summary': ['GET', 'liveSummary'], '/health': ['GET', 'health'], '/api/v1/status': ['GET', 'status'], '/api/v1/tools/status': ['GET', 'toolsStatus'], '/api/v1/live/connections': ['GET', 'liveConnections'], '/api/v1/auth/pairing': ['POST', 'pairing'], '/api/v1/auth/pair': ['POST', 'pair'], '/api/v1/auth/session': ['GET', 'session'], '/api/v1/auth/logout': ['POST', 'logout'] };
   const direct = special[path];
   if (direct) {
     matched([direct[0]]); query(url, []);
@@ -118,8 +118,13 @@ export function resolveRoute(method: string, url: URL, body?: Record<string, unk
   let operation: DomainOperation;
   let input: Record<string, unknown> = body ? { ...body } : {};
   const session = /^\/api\/v1\/sessions\/([^/]+)(\/entries)?$/.exec(path);
+  const entry = /^\/api\/v1\/entries\/([^/]+)$/.exec(path);
   const commitment = /^\/api\/v1\/commitments\/([^/]+)(?:\/(complete|cancel|reopen))?$/.exec(path);
-  if (path === '/api/v1/sessions') {
+  if (entry) {
+    matched(['DELETE']); query(url, []); uuid(entry[1]);
+    if (body) fields(body, []);
+    operation = 'deleteEntry'; input = { id: entry[1] };
+  } else if (path === '/api/v1/sessions') {
     matched(['GET', 'POST']); query(url, []);
     operation = method === 'GET' ? 'listSessions' : 'createSession';
     if (body) { fields(body, ['title', 'timeZone'], ['title', 'timeZone']); text(body.title, 1000); zone(body.timeZone); }
@@ -161,4 +166,18 @@ export function resolveRoute(method: string, url: URL, body?: Record<string, unk
   // All paths explicitly matched above. No default dispatch to domain or tools.
   if (!expected.length) throw new ServiceError('NOT_FOUND', 'Route not found', 404);
   return { kind: 'domain', operation, input: input as DomainOperations[DomainOperation]['input'], mutation: method !== 'GET' };
+}
+
+const diagnosticCodes = {
+  service: ['service_unreachable', 'unexpected_response', 'connection_refused', 'invalidIntent', 'statusMismatch', 'grantMismatch', 'invalidDestination', 'forbiddenHeader', 'invalidFrame', 'invalidAudio', 'queueOverflow', 'staleOperation', 'unavailable', 'conflict', 'transport', 'http', 'socketClosed'],
+  audio: ['unsupportedFormat', 'allocationFailed', 'converterUnavailable', 'permissionDenied', 'permissionRestricted', 'voiceProcessingUnavailable', 'deviceUnavailable'],
+};
+export function clientDiagnostic(body: Record<string, unknown>): Record<string, unknown> {
+  const { event, failureClass, code, detail } = body;
+  if (event !== 'live_precreate_failed' || (failureClass !== 'audio' && failureClass !== 'service') || typeof code !== 'string' || !diagnosticCodes[failureClass].includes(code)
+    || Object.keys(body).some(key => !['event', 'failureClass', 'code', 'detail'].includes(key))
+    || ('detail' in body && (!['http', 'socketClosed'].includes(code) || !Number.isSafeInteger(detail)))) {
+    throw new ServiceError('BAD_REQUEST', 'Invalid client diagnostic');
+  }
+  return { event, failureClass, code, ...('detail' in body ? { detail } : {}) };
 }

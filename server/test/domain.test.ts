@@ -649,3 +649,33 @@ test('trusted assistant append forces assistant role and participates in caller 
     assert.equal(read.entries.length, 1); assert.equal(read.entries[0]!.text, 'Durable answer');
   } finally { cleanup(h); }
 });
+
+test('owner deletion is an exported domain operation', () => {
+  const h = fixture();
+  try {
+    const ctx = context(nextNow());
+    const session = h.store.transaction(tx => h.port.execute(tx, 'createSession', { title: 'Delete fixture', timeZone: 'UTC' }, ctx));
+    const entry = h.store.transaction(tx => h.port.execute(tx, 'appendEntry', { sessionId: session.id, text: 'synthetic deletion fixture', role: 'user', timeZone: 'UTC' }, ctx));
+    const tombstone = h.store.transaction(tx => Reflect.apply(h.port.execute, h.port, [tx, 'deleteEntry', { id: entry.id }, ctx]));
+    assert.deepEqual(tombstone, { entryId: entry.id, deletedAt: ctx.now, actor: ctx.clientId, reasonCode: 'owner_request' });
+    assert.deepEqual(h.store.transaction(tx => h.port.execute(tx, 'getSession', { id: session.id }, ctx)).entries, []);
+  } finally { cleanup(h); }
+});
+
+test('owner list derives kind and origin from what the domain stores', () => {
+  const h = fixture();
+  try {
+    const ctx = context(nextNow());
+    const session = h.store.transaction(tx => h.port.execute(tx, 'createSession', { title: 'Composed list', timeZone: 'UTC' }, ctx));
+    const live = h.store.transaction(tx => h.port.execute(tx, 'appendEntry', {
+      sessionId: session.id, text: 'I prefer window seats', role: 'user', timeZone: 'UTC',
+      sourceRef: { id: 'live-1', label: 'live-voice live-1', provider: 'live-voice', accountId: 'live-1', externalId: 'live-1:1', sourceTimestamp: null, availability: 'present', note: 'kind:preference' },
+    }, ctx));
+    const bare = h.store.transaction(tx => h.port.execute(tx, 'appendEntry', { sessionId: session.id, text: 'No recorded source', role: 'user', timeZone: 'UTC' }, ctx));
+    const read = h.store.transaction(tx => h.port.execute(tx, 'getSession', { id: session.id }, ctx));
+    assert.deepEqual(read.entries.map(e => [e.id, e.kind, e.origin]), [
+      [live.id, 'preference', 'live-voice'],
+      [bare.id, 'note', 'unknown'],
+    ]);
+  } finally { cleanup(h); }
+});

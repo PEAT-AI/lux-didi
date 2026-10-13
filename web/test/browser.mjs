@@ -12,6 +12,19 @@ async function step(name,fn){const start=performance.now(); await fn(); timings.
 try {
   browser=await chromium.launch({channel:'chromium',headless:true,args:['--use-angle=metal','--enable-gpu','--ignore-gpu-blocklist']});
   const context=await browser.newContext({viewport:{width:1440,height:1000}}); const page=await context.newPage();page.setDefaultTimeout(8000);
+  await page.addInitScript(() => {
+    const describe = element => element ? {tag:element.tagName,id:element.id,text:element.tagName === 'BODY' ? '' : (element.textContent || '').trim().slice(0,80)} : null;
+    const events = []; window.__keyboardProof = {events};
+    const record = (event, extra = {}) => events.push({at:performance.now(),event,active:describe(document.activeElement),...extra});
+    for (const kind of ['focusin','focusout','keydown','keyup','click','hashchange']) document.addEventListener(kind, event => record(kind,{key:event.key,target:describe(event.target),defaultPrevented:event.defaultPrevented}),true);
+    let previousMain, previousSkip;
+    new MutationObserver(() => {
+      const main = document.getElementById('main'), skip = document.querySelector('.skip');
+      if (main !== previousMain || skip !== previousSkip) record('root-replaced',{oldMainConnected:previousMain?.isConnected,oldSkipConnected:previousSkip?.isConnected});
+      previousMain=main; previousSkip=skip;
+    }).observe(document,{subtree:true,childList:true});
+    new PerformanceObserver(list => { for (const item of list.getEntries()) if(item.name.includes('/api/')) record('response',{path:new URL(item.name).pathname,end:item.responseEnd}); }).observe({type:'resource',buffered:true});
+  });
   const shellResponse=await page.goto(fixture.url);
   const csp=shellResponse.headers()['content-security-policy'];
   for(const directive of ["frame-src 'none'","frame-ancestors 'none'","connect-src 'self'"])assert(csp.includes(directive));
@@ -130,6 +143,104 @@ try {
     await page.getByText('Synthetic notebook',{exact:true}).waitFor(); await page.getByText('Source unavailable',{exact:true}).waitFor();
     await page.getByRole('button',{name:'Open conversation source'}).click(); await page.locator('.entry').filter({hasText:'Remember the synthetic blue notebook'}).waitFor();
   });
+  await step('memory Search button never wraps its label and review shots land',async()=>{
+    const review=process.env.DIDI_WEB_REVIEW||artifacts;
+    await mkdir(review,{recursive:true});
+    const measureSearch=()=>page.evaluate(()=>{
+      const btn=[...document.querySelectorAll('button')].find(b=>b.textContent.trim()==='Search');
+      if(!btn) throw new Error('Search button not found on the Memory tab');
+      const range=document.createRange(); range.selectNodeContents(btn);
+      const lines=range.getClientRects().length;
+      const style=getComputedStyle(btn);
+      const lineHeight=style.lineHeight==='normal'?parseFloat(style.fontSize)*1.5:parseFloat(style.lineHeight);
+      const chrome=parseFloat(style.paddingTop)+parseFloat(style.paddingBottom)+parseFloat(style.borderTopWidth)+parseFloat(style.borderBottomWidth);
+      const minHeight=parseFloat(style.minHeight)||0;
+      return {lines,height:btn.getBoundingClientRect().height,single:Math.max(lineHeight+chrome,minHeight)};
+    });
+    await page.getByRole('button',{name:'Memory',exact:true}).click();
+    await page.getByLabel('Filter memories').fill('');
+    await page.getByRole('button',{name:'Search',exact:true}).waitFor();
+    const desktop=await measureSearch();
+    assert.equal(desktop.lines,1,`Search label wraps at 1440px (${desktop.lines} lines)`);
+    assert.ok(desktop.height<=desktop.single+1,`Search button ${desktop.height}px exceeds one line ${desktop.single}px at 1440px`);
+    await page.screenshot({path:`${review}/desktop-memory.png`,fullPage:true});
+    await page.setViewportSize({width:375,height:900});
+    await page.getByRole('button',{name:'Search',exact:true}).waitFor();
+    const phone=await measureSearch();
+    assert.equal(phone.lines,1,`Search label wraps at 375px (${phone.lines} lines)`);
+    assert.ok(phone.height<=phone.single+1,`Search button ${phone.height}px exceeds one line ${phone.single}px at 375px`);
+    await page.screenshot({path:`${review}/375-memory.png`,fullPage:true});
+    await page.setViewportSize({width:1440,height:1000});
+    await page.getByRole('button',{name:'Conversation',exact:true}).click();
+  });
+  await step('rendered memory deletion confirms, preserves pending/failed entries and reloads server payload',async()=>{
+    const text='Synthetic browser deletion canary';
+    await page.getByLabel('Local note · not sent to a model').fill(text);
+    await page.getByRole('button',{name:'Save message',exact:true}).click();
+    await page.locator('.entry').filter({hasText:text}).waitFor();
+    // Read it back through recall and the conversation GET, not client capture state.
+    await page.getByRole('button',{name:'Memory',exact:true}).click();
+    await page.getByLabel('Search your memory').fill(text);
+    await page.getByRole('button',{name:'Search',exact:true}).click();
+    await page.getByRole('button',{name:'Open conversation source',exact:true}).click();
+    const row=page.locator('.entry').filter({hasText:text});
+    await row.waitFor();
+    const id=await row.getByRole('button',{name:'Delete memory',exact:true}).getAttribute('data-delete-memory');
+    assert(id);
+    const write=fixture.requests.findLast(r=>r.method==='POST'&&r.path.endsWith('/entries')&&r.body.text===text);
+    assert(write);
+    const sessionPath=write.path.replace(/\/entries$/,'');
+    const envelope=await (await page.request.get(`${fixture.url}${sessionPath}`)).json();
+    const original=envelope.data.entries.find(entry=>entry.id===id);
+    assert.equal(original.text,text);
+    const retained={...original,id:'00000000-0000-4000-8000-000000000050',text:'New retained entry from the server reload'};
+    let deleted=false,releaseDelete,receivedDelete,releaseReload,receivedReload;
+    let arrival=new Promise(resolve=>{receivedDelete=resolve;});
+    const reloadArrival=new Promise(resolve=>{receivedReload=resolve;});
+    const reloadRelease=new Promise(resolve=>{releaseReload=resolve;});
+    await page.route(`${fixture.url}/api/v1/entries/${id}`,async route=>{
+      const response=new Promise(resolve=>{releaseDelete=resolve;});
+      receivedDelete(route.request());
+      await route.fulfill(await response);
+    });
+    await page.route(`${fixture.url}${sessionPath}`,async route=>{
+      if(!deleted){await route.continue();return;}
+      receivedReload();
+      await reloadRelease;
+      await route.fulfill({json:{...envelope,data:{...envelope.data,entries:[...envelope.data.entries.filter(entry=>entry.id!==id),retained]}}});
+    });
+    await page.route('**/api/v1/recall?*',async route=>{
+      const response=await route.fetch();const payload=await response.json();
+      if(deleted){payload.data.hits=payload.data.hits.filter(hit=>hit.entryId!==id);payload.data.totalMatches=payload.data.hits.length;}
+      await route.fulfill({response,json:payload});
+    });
+    const confirmDelete=async()=>{
+      const requestPromise=page.waitForRequest(request=>request.url()===`${fixture.url}/api/v1/entries/${id}`&&request.method()==='DELETE');
+      const dialogPromise=page.waitForEvent('dialog');
+      const click=row.getByRole('button',{name:'Delete memory',exact:true}).click();
+      const dialog=await dialogPromise;
+      assert.equal(dialog.type(),'confirm');assert.match(dialog.message(),/Delete this memory permanently/);
+      await dialog.accept();await click;await requestPromise;
+      const request=await arrival;assert.equal(request.method(),'DELETE');assert.deepEqual(request.postDataJSON(),{});
+    };
+    await confirmDelete();
+    assert.equal(await row.isVisible(),true,'pending DELETE must retain the entry');
+    releaseDelete({status:503,json:{error:{code:'WRITE_FAILED',message:'Could not delete this memory.'}}});
+    await page.getByRole('alert').filter({hasText:'Could not delete this memory.'}).waitFor();
+    assert.equal(await row.isVisible(),true,'failed DELETE must retain the entry');
+    arrival=new Promise(resolve=>{receivedDelete=resolve;});
+    await confirmDelete();
+    assert.equal(await row.isVisible(),true,'retry must not optimistically filter the entry');
+    deleted=true;
+    const reloadRequest=page.waitForRequest(request=>request.url()===`${fixture.url}${sessionPath}`&&request.method()==='GET');
+    releaseDelete({json:{...envelope,data:{entryId:id,deletedAt:'2026-01-01T00:00:00.000Z',actor:'browser-fixture',reasonCode:'owner_request'}}});
+    await reloadRequest;await reloadArrival;
+    assert.equal(await row.isVisible(),true,'DELETE success alone must not replace the server list');
+    releaseReload();
+    await row.waitFor({state:'detached'});
+    await page.locator('.entry').filter({hasText:retained.text}).waitFor();
+    assert.equal(await page.getByRole('alert').filter({hasText:'Could not delete this memory.'}).count(),0);
+  });
   await step('offline cannot claim saved; preserves draft; no offline writer',async()=>{
     await page.getByLabel('Local note · not sent to a model').fill('Offline draft stays here'); await context.setOffline(true); await page.getByText('Offline',{exact:true}).waitFor();
     assert.equal(await page.getByRole('button',{name:'Save message',exact:true}).isDisabled(),true);
@@ -137,14 +248,24 @@ try {
     await context.setOffline(false); await page.getByText('Connected',{exact:true}).waitFor();
   });
   await step('private cache isolation and keyboard access',async()=>{
-    await page.evaluate(async()=>{await navigator.serviceWorker.ready;}); await page.reload();
+    await page.evaluate(async()=>{await navigator.serviceWorker.ready;});
+    let releaseBootstrap; const lateBootstrap = new Promise(resolve=>releaseBootstrap=resolve);
+    await page.route('**/api/v1/chat/status',async route=>{const response=await route.fetch();await lateBootstrap;await route.fulfill({response});});
+    await page.reload();
     await page.getByText('Connected',{exact:true}).waitFor();
     const paths=await page.evaluate(async()=>{const keys=await caches.keys(); const urls=[];for(const k of keys){for(const r of await (await caches.open(k)).keys())urls.push(new URL(r.url).pathname);}return urls;});
     assert(paths.length>0); assert(!paths.some(p=>p.startsWith('/api/'))); assert(!paths.some(p=>p.includes('pair')));
     await page.keyboard.press('Tab');
+    await writeFile(`${artifacts}/keyboard-after-tab.json`,JSON.stringify(await page.evaluate(()=>window.__keyboardProof),null,2));
+    await page.evaluate(()=>window.__keyboardProof.releaseAt=performance.now());
+    releaseBootstrap();
+    await page.waitForFunction(()=>window.__keyboardProof.events.some(event=>event.event==='root-replaced' && event.at >= window.__keyboardProof.releaseAt));
+    await writeFile(`${artifacts}/keyboard-after-bootstrap.json`,JSON.stringify(await page.evaluate(()=>window.__keyboardProof),null,2));
     await page.getByRole('link',{name:'Skip to content'}).waitFor();
     assert.equal(await page.getByRole('link',{name:'Skip to content'}).evaluate(el=>el===document.activeElement),true);
-    await page.keyboard.press('Enter'); assert.equal(await page.locator('#main').evaluate(el=>el===document.activeElement),true);
+    await page.keyboard.press('Enter');
+    await writeFile(`${artifacts}/keyboard-after-enter.json`,JSON.stringify(await page.evaluate(()=>window.__keyboardProof),null,2));
+    assert.equal(await page.locator('#main').evaluate(el=>el===document.activeElement),true);
     assert.equal(await page.getByRole('navigation',{name:'Main navigation'}).count(),1);
     assert.equal(await page.locator('label[for=message]').count(),1);
     await page.getByRole('button',{name:'Settings',exact:true}).click(); await page.getByText('Mac companion',{exact:true}).waitFor();

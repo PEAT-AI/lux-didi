@@ -21,6 +21,6 @@ printf 'HOST_ENTRY_SOURCE=%s NODE=%s NPM=%s PLATFORM=%s\n' "$(git rev-parse HEAD
 cp -R "$builder/dist" "$work/runtime/dist"
 cp "$builder/package.json" "$builder/package-lock.json" "$work/runtime/"
 cp "$builder/test/host-entry.test.mjs" "$work/runtime/test/"
-(cd "$work/runtime" && npm ci --offline --omit=dev --ignore-scripts --no-audit --no-fund)
+bash scripts/npm-ci-offline.sh "$work/runtime" ci --offline --omit=dev --ignore-scripts --no-audit --no-fund
 node --test --test-reporter=tap --test-timeout=15000 "$work/runtime/test/host-entry.test.mjs" | tee "$work/test.log"
 grep -Eq '^# tests [1-9][0-9]*$' "$work/test.log" || { echo 'Zero selected host entry tests' >&2; exit 1; }

@@ -114,3 +114,67 @@ downloads and subframes are refused rather than rendered.
 Same-user process separation is not a security sandbox, and this document does not claim that it is.
 Hidden-view graphics-context loss and cookie behaviour across a content-process termination are open
 questions with measurements attached, not established facts.
+
+Connection-scoped tools admission freezes the owner-approved usable connection IDs and the model route's allowed data-class set when the run is accepted. A connection's policy is source/local-operation authority, not a model-route approval. The canonical owner checks the selected connection's current approval and effective locally configured source class before MCP dispatch and again at result release, using exact class-set membership, and journals the run route identity in intent and result rows. Discovery cannot expand an existing run, missing source classification disables only its connection, and an in-flight revocation withholds the result rather than releasing stale evidence.
+
+The installer supplies no Live allowed-class set, MCP catalog or network grant. It preserves existing owner files. The owner explicitly configures the model route classes and source classifications; a missing profile remains unconfigured.
+
+### Remembered connected-chat provider disclosure
+
+Remembering the connected-chat provider disclosure is an explicit owner action, not a browser preference. The server records a standing grant with the owner, provider, route, model, permitted data classes and disclosure revision. Existing conversation grants keep their original scope. Neither localStorage nor a UI checkbox can substitute for the server's consent resolution during generation.
+
+A standing grant applies only to its exact validated tuple. Revocation or a changed route, provider, model, permitted-class policy or disclosure revision makes it unusable. In particular, ordinary-route consent cannot authorize a private route. The UI's standing-consent indicator and revoke control reflect the server payload, and a revoked grant cannot authorize a new conversation. A conversation-scoped grant can still authorize its own conversation under its existing validation rules.
+
+Standing chat disclosure does not authorize connector reads, broaden connector grants, enroll Live voice, or authorize microphone capture. Those authority boundaries remain unchanged.
+
+## Memory deletion boundary
+
+The paired owner can delete an entry through `DELETE /api/v1/entries/:id`, using the
+existing cookie principal, origin/CSRF protection, authority epoch, and request-key
+contract. The admin credential path is unchanged. Entry text and entry source metadata
+are removed from the domain tables atomically, leaving a content-free tombstone
+(entry id, deletion time, actor, reason code, and a canonical Live source-turn identity when present). This is a local deletion journal, not an
+outbox delivery: deletion must not dispatch any network side effect.
+
+This does not scrub old provider requests, quoted chat messages, Live transcripts,
+or frozen `chat_run_context.resolved_records` / Live accepted-prompt snapshots.
+Already accepted chat runs read back their frozen resolved records for composition;
+preventing that later dispatch is tracked separately. Domain-row erasure is not a
+claim of forensic erasure of SQLite free pages, WAL files, filesystem snapshots,
+or backups. New domain reads, recall queries, and Live CREATEs exclude deleted ids. The content-free Live source-turn key prevents remember_note from recreating a deleted note from the same retained voice turn; the existing already_remembered outcome carries only its deleted entry id.
+
+Provider resumption handles are provider-opaque secrets, retained by the live
+owner only and sent only in provider setup. They never appear in projections,
+client events, logs or errors. Resumption restores provider-side continuity; the
+service reconstructs no conversation history, adds no recap instruction and
+replays no PCM. Accepted prompt, memory and tool authority snapshots remain
+frozen across connection replacement, except that owner memory deletion redacts the
+deleted memory record from the retained prompt. Tool authority is not expanded by redaction.
+
+
+### Retained copies after owner memory deletion
+
+The authenticated HTTP delete composes the domain deletion with chat-context,
+Live-snapshot and runtime-response redaction in one SQLite transaction. Each owner
+scrubs its own table; an error rolls back all changes. Chat frozen records become
+content-free entry references, and dispatch separately revalidates surviving
+records against the domain before composing a prompt. Live removes the matching
+memory record without changing surviving notes, and maintains its replay identity.
+For an active Live session, the manager stages its retained request update and
+writes one content-free scrub journal row through its normal counter-maintaining
+journal path. The in-process update is published only after the transaction
+commits, before any later connection replacement can run. Inactive sessions need
+only the persisted snapshot scrub.
+Runtime keeps the original request fingerprints but replaces cached owner responses
+containing the deleted text with a content-free NOT_FOUND response. It does not
+re-execute the original mutation on replay.
+
+Conversation transcripts and model output that quoted a note are conversation
+history, including chat_runs.partial_text and live_journal transcriptions. They
+are outside memory deletion; the owner removes those by deleting the conversation.
+The provider connection that is CURRENTLY open already holds the deleted note in
+its context and nothing we send can un-tell it. The scrub guarantees only that no
+later setup (rebuild or new session) carries it. The delete response's typed
+`liveSessionRetainsUntilRebuild` flag is true when an active Live connection still
+holds the entry at deletion time. The page then confirms honestly:
+"Naya's current live conversation still has this note until it reconnects or ends."

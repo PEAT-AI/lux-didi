@@ -4,6 +4,7 @@ import CryptoKit
 import ApplicationServices
 
 @MainActor enum OwnedWindowProof {
+    static let expectedControlNames: Set<String> = ["Start recording", "Stop recording", NativeConnectedSend.label, NativeNoteAction.label]
     private(set) static var captureStage = "unstarted"
     private(set) static var captureEvidence: [String: Any] = [:]
     struct Observation { let trace: [String: Any]; let controls: [[String: Any]] }
@@ -117,7 +118,7 @@ import ApplicationServices
         let childStatus = AXUIElementCopyAttributeValue(matching[0], kAXChildrenAttribute as CFString, &value)
         result.code = String(childStatus.rawValue)
         result.childCount = (value as? [AXUIElement])?.count ?? 0
-        let expected: Set<String> = ["Start recording", "Stop recording", "Send text"]
+        let expected = expectedControlNames
         let windowFrame = rectangle(matching[0])
         var visited = 0; var found: [String: Control] = [:]
         func visit(_ element: AXUIElement, depth: Int) {
@@ -138,7 +139,7 @@ import ApplicationServices
     // Never serialize arbitrary labels, text values, page content or credentials.
     static func accessibilityTrace(_ window: NSWindow) -> [[String: Any]] {
         var trace: [[String: Any]] = []
-        let expected: Set<String> = ["Start recording", "Stop recording", "Send text"]
+        let expected = expectedControlNames
         func visit(_ value: Any, depth: Int) {
             guard depth < 16, trace.count < 64 else { return }
             let element = value as? NSAccessibilityProtocol

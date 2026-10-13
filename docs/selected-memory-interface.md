@@ -60,3 +60,51 @@ used. No note text is copied into a URL, localStorage, analytics or an error mes
   synthetic note fixture and the real GPU browser proof (desktop 1440, mobile 390).
 
 Run both through `scripts/check-selected-memory-ui.sh`.
+
+## Owner deletion
+
+Every entry shown in the local conversation, recall results, or selected-note picker has a
+Delete memory control with one confirmation. The browser calls authenticated
+`DELETE /api/v1/entries/:id` with an empty JSON object, then reloads the conversation and recall payloads from the
+service. It does not optimistically filter records. Failed deletes leave the previous
+payload visible; a failed reload reports an error rather than claiming a fresh list.
+Deletion is unavailable while a connected generation is active. Successful deletion
+invalidates the picker's cached selection and refreshes it from the service.
+
+The owner physically removes the entry and its source references in one transaction,
+and retains only entry id, deletion time, browser actor, and `owner_request` in a
+domain tombstone, with a content-free Live session/turn dedup key when applicable. A repeated remember_note for that voice turn returns already_remembered and writes nothing. Repeating deletion returns that same tombstone; unknown ids return
+NOT_FOUND. New recall and Live CREATE selection cannot resolve the removed entry.
+Historical chat context snapshots and Live transcripts are not rewritten. In particular,
+a previously accepted chat run can still compose its frozen resolved-record snapshot;
+that read-back is a separate follow-up and is not covered by this deletion boundary.
+
+### Live remember finalization
+
+`remember_note` persists only the owner's verbatim transcription, never model output or a model paraphrase. An explicit provider input transcription `finished: true` finalizes the owner turn immediately. When that flag is absent, the provider's tool call or first model output establishes a model-turn boundary; the owner finalizes the latest input journal row only after 300 ms without a newer input transcription. A newer input frame invalidates that boundary and requires a new one. An admitted remember tool waits at most 1500 ms for finalization, journaling exactly one typed `remember_deferred` row with `waitedMs` for the wait. If no finalization occurs within that bound, the existing `owner_transcript_not_final` refusal remains. The 300 ms default is a quiet-window safeguard, not permission to derive text from model words.
+
+## Memory list (web)
+
+The Memory tab renders an at-a-glance list of the current conversation's stored entries, newest
+first, from the existing owner list route (`GET /api/v1/sessions/:id`, which returns `{ session, entries }`). No route shape changes.
+
+- `web/src/memory-list.ts` owns the list. Each item shows its kind, its origin and the local
+  created time. The domain now derives both once in `server/domain/memory.ts` and returns them on
+  every entry: `kind` is `fact`, `preference` or `task` when the Live `remember_note` source note
+  recorded one and `note` otherwise; `origin` is `live-voice`, `chat`, `page` or `unknown`, read from
+  the entry's stored source reference (`unknown` when it records none). The badge renders only for a
+  real kind (`note` shows none, W-FIX2), and the origin line renders for every entry.
+- The writers record that reference: Live `remember_note` writes `provider: live-voice`
+  (`server/live/index.ts`), the page saver posts `provider: page` (`saveLocalNote` in `web/src/main.ts`,
+  ruling WKIND-R1), and the connected chat writes `provider: chat` on both entries of a run, keyed by
+  the conversation id (`server/chat/index.ts`, ruling WKIND-R2). Entries from any other writer read
+  `origin: unknown` honestly.
+- The filter box narrows the already-fetched list in the browser by text, case-insensitively, across
+  the text, kind and origin. Nothing is sent to the service and no new request is made.
+- The list shows its count and an honest empty state ("Didi remembers nothing yet.") and never
+  invents a memory it did not receive.
+- Deletion keeps W-X's confirm-and-server-confirmation behaviour: the same `Delete memory` control
+  and `deleteMemoryAndReload` helper, so a cancelled or failed delete leaves the displayed list
+  untouched.
+
+The Memory tab mounts the list from `memory()` in `web/src/main.ts` (ruling WMEM2-R1 grants that file for the mount only): it calls `memoryListMarkup(entries, { filter: memoryFilter, disabled })` and binds the `#memory-filter` input to a client-side re-render. Nothing else in that file changes.

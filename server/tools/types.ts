@@ -1,3 +1,4 @@
+import type { RememberNotePort } from './remember.js';
 import type { StorePort, Transaction } from '../contracts/storage.js';
 import type { McpPort } from '../adapters/mcp/port.js';
 import type { McpRegistry } from '../adapters/mcp/registry.js';
@@ -8,6 +9,8 @@ export interface HttpConnectionEndpoint { id: string; url: string; account: stri
 export interface StdioConnectionEndpoint { id: string; transport: 'stdio'; command: string; args: readonly string[]; env?: Readonly<Record<string, string>>; account: string; resource: string; credentialRef: null }
 export type ConnectionEndpoint = HttpConnectionEndpoint | StdioConnectionEndpoint;
 export interface ConnectionPolicy {
+  /** Missing only on legacy inputs. Explicit owner approval adopts connection semantics. */
+  bindingMode?: 'connection';
   schemaVersion: 1; ownerId: string; connectionId: string; generation: number; enabled: boolean;
   /** The Didi connector that owns this connection's read envelope, tool table and projector. */
   connector: string;
@@ -28,7 +31,13 @@ export interface RunSnapshot { acceptance: RunAcceptance; connections: BoundConn
 /** Separate trusted metadata boundary, not parsed from reader markdown or arbitrary MCP fields. */
 export interface TrustedRestrictions { localOnly: boolean; nonDisclosure: boolean; dataClasses: readonly DataClass[] }
 export interface ModelSnapshot { response: JsonObject; dataClasses: readonly DataClass[] }
+export interface ToolFailureEvent {
+  event: 'tool_failure'; code: 'mcp_transport_error' | 'mcp_result_invalid' | 'connector_error' | 'handler_outcome';
+  tool: string; connector: string; errorClass: 'Error' | 'SyntaxError' | 'UnknownThrow'; messageHead: string;
+}
 export interface ToolsOwnerOptions {
+  log?: (event: ToolFailureEvent) => void;
+  grantMode?: 'explicit' | 'owner-trusted-reads';
   store: StorePort; ownerId: string; registry: McpRegistry; port: McpPort;
   lookupAuthority(runId: string, signal: AbortSignal): Promise<LiveAuthority | null>;
   /** Reports a connector-classified connection status after a call; null clears it (R4). */
@@ -45,5 +54,7 @@ export interface ToolsOwner {
   projectConnection(connectionId: string): void;
   snapshotRun(tx: Transaction, acceptance: RunAcceptance): { sha256: string };
   definitions(runId: string): ToolDefinition[];
+  liveDefinitions(runId: string, rememberNote: RememberNotePort): ToolDefinition[];
+  liveRememberApproved(): boolean;
   complete(call: ToolCallIntent, response: JsonObject, dataClasses: readonly DataClass[]): ToolResultRef;
 }

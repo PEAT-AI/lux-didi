@@ -1,12 +1,12 @@
 import type { McpPort } from '../adapters/mcp/port.js';
 import { bindingDigestOf, sourceBindingOf } from '../adapters/mcp/port.js';
-import type { LuxKnowledgeResult } from '../connectors/lux-knowledge.js';
+import type { ConnectorResult } from '../connectors/index.js';
 import type { DataClass } from '../adapters/model/types.js';
 import type { ConnectionPolicy, ModelSnapshot, TrustedRestrictions } from './types.js';
 import { canonicalJSON, detached, sha256 } from './canonical.js';
 
 /** Only a complete, integrity-checked text envelope becomes model-visible evidence. */
-export function projectLuxResult(evidence: LuxKnowledgeResult, policy: ConnectionPolicy, port: McpPort, restrictions?: TrustedRestrictions): ModelSnapshot {
+export function projectLuxResult(evidence: ConnectorResult & { requestedIds?: readonly number[] }, policy: ConnectionPolicy, port: McpPort, restrictions?: TrustedRestrictions): ModelSnapshot {
   if (evidence.state !== 'completed') throw Error('result_not_completed');
   const source = evidence.source;
   // HTTP compares the exact url; stdio compares the owner-minted binding digest. No raw locator is read.
@@ -30,10 +30,9 @@ export function projectLuxResult(evidence: LuxKnowledgeResult, policy: Connectio
   }
   const bytes = Buffer.concat(chunks);
   if (bytes.byteLength !== payload.byteLength || sha256(bytes) !== payload.sha256) throw Error('entity_hash_mismatch');
-  const packet: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
-  if (!isRecord(packet) || packet['jsonrpc'] !== '2.0' || !['string', 'number'].includes(typeof packet['id']) || !onlyKeys(packet, ['jsonrpc', 'id', 'result']) || !isRecord(packet['result'])) throw Error('unsupported_mcp_envelope');
-  const result = packet['result'];
-  if (!onlyKeys(result, ['content', 'isError']) || result['isError'] === true || (result['isError'] !== undefined && typeof result['isError'] !== 'boolean') || !Array.isArray(result['content'])) throw Error('unsupported_mcp_result');
+  const result = evidence.decodedResult;
+  if (!isRecord(result)) throw Error('unsupported_mcp_result');
+  if (!onlyKeys(result, ['content', 'isError', 'structuredContent', '_meta']) || result['isError'] === true || (result['isError'] !== undefined && typeof result['isError'] !== 'boolean') || !Array.isArray(result['content'])) throw Error('unsupported_mcp_result');
   const texts: string[] = [];
   for (const content of result['content']) {
     if (!isRecord(content) || !onlyKeys(content, ['type', 'text']) || content['type'] !== 'text' || typeof content['text'] !== 'string') throw Error('unsupported_mcp_content');

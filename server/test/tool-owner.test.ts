@@ -17,7 +17,7 @@ import type { HostContext, ModelPort, ModelRequest, ModelResult, ToolCallIntent,
 import { createToolsOwner, toolsMigrations, validatePolicy } from '../tools/index.js';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
 import { projectLuxResult } from '../tools/lux-knowledge.js';
-import type { ConnectionPolicy, LiveAuthority, RunAcceptance } from '../tools/types.js';
+import type { ConnectionPolicy, LiveAuthority, RunAcceptance, ToolsOwnerOptions, ToolFailureEvent } from '../tools/types.js';
 
 const tools: McpTool[] = [
   { name: 'search_knowledge', inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, include_sensitive: { type: 'boolean' } }, required: ['query', 'limit', 'include_sensitive'], additionalProperties: false } },
@@ -27,7 +27,7 @@ const route = { identity: 'synthetic-route', provider: 'gemini' as const, modelI
 // This suite drives the HTTP arm; the union's stdio arm has no url.
 const policyUrl = (e: ConnectionPolicy['endpoint']): string => (e as { transport?: unknown }).transport === 'stdio' ? '' : (e as { url: string }).url;
 function policy(overrides: Partial<ConnectionPolicy> = {}): ConnectionPolicy {
-  return { schemaVersion: 1, ownerId: 'owner', connectionId: 'lux', generation: 1, enabled: true, connector: 'lux-knowledge',
+  return { schemaVersion: 1, bindingMode: 'connection', ownerId: 'owner', connectionId: 'lux', generation: 1, enabled: true, connector: 'lux-knowledge',
     endpoint: { id: 'endpoint', url: 'https://synthetic.invalid/mcp', account: 'account', resource: 'resource', credentialRef: 'private:synthetic-reference' },
     toolNames: ['search_knowledge', 'get_insight'], schemaDigest: canonicalToolDigest(tools),
     sourcePolicy: { id: 'synthetic-policy', revision: 1, unknownClass: 'private', allowedClasses: ['private'] },
@@ -38,7 +38,7 @@ const request: ModelRequest = { system: 'synthetic', promptVersion: '1', content
 function modelResult(name?: string, args: Record<string, unknown> = { query: 'synthetic', limit: 1 }): ModelResult {
   return { status: 'complete', text: name ? '' : 'done', providerContent: { role: 'model', parts: name ? [{ functionCall: { name, args, id: 'call' } }] : [{ text: 'done' }] }, reason: 'complete', prompt: { version: '1', hash: 'synthetic', omittedContextIds: [] }, timings: { kind: 'synthetic', totalMs: 0, firstTextMs: null } };
 }
-interface FixtureOptions { policy?: ConnectionPolicy; bindings?: string[]; result?: unknown; memoryBytes?: number }
+interface FixtureOptions { log?: ToolsOwnerOptions['log']; policy?: ConnectionPolicy; bindings?: string[]; result?: unknown; memoryBytes?: number }
 async function fixture(t: TestContext, options: FixtureOptions = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'didi-owner-test-'));
   let store = new Store(dir, toolsMigrations);
@@ -71,7 +71,7 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
   let live: LiveAuthority | null = { ...acceptance, acceptedRunHash: '' };
   let lookup: (() => Promise<LiveAuthority | null>) | undefined;
   const lookupAuthority = async () => lookup ? lookup() : structuredClone(live);
-  const owner = createToolsOwner({ store, ownerId: 'owner', registry, port, lookupAuthority });
+  const owner = createToolsOwner({ store, ownerId: 'owner', registry, port, lookupAuthority, ...(options.log ? { log: options.log } : {}) });
   owner.applyConnection(p);
   assert.equal((await port.discover(endpoint.id)).state, 'discovered');
   if (p.enabled) owner.projectConnection('lux');
@@ -91,7 +91,7 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
   return { dir, get store() { return store; }, owner, port, reader, registry, acceptance, host, signal, calls, intent, binding, execute, run, definitions,
     setLive: (value: LiveAuthority | null) => { live = value; }, getLive: () => structuredClone(live!),
     setLookup: (value: () => Promise<LiveAuthority | null>) => { lookup = value; }, setDispatch: (value: () => void) => { onDispatch = value; }, setResult: (value: unknown) => { result = value; },
-    reopen: () => { store.close(); store = new Store(dir, toolsMigrations); return createToolsOwner({ store, ownerId: 'owner', registry, port, lookupAuthority }); },
+    reopen: () => { store.close(); store = new Store(dir, toolsMigrations); return createToolsOwner({ store, ownerId: 'owner', registry, port, lookupAuthority, ...(options.log ? { log: options.log } : {}) }); },
   };
 }
 
@@ -169,16 +169,20 @@ test('policy identical apply is a SQL no-op; generation/identity/delete and immu
 });
 
 test('persisted disable survives reopen and stale projected registry grants cannot dispatch', async t => {
-  const f = await fixture(t); const oldGrant = f.registry.currentGrant('endpoint')!;
+  const f = await fixture(t);
+  const initialCall = { ...f.intent('initial-result'), callId: 'initial-result' };
+  f.owner.journal.intent(initialCall); const initialResult = await f.execute(initialCall);
+  assert.equal(initialResult.status, 'completed'); if (initialResult.status !== 'completed') throw Error('initial read failed');
+  const oldGrant = f.registry.currentGrant('endpoint')!;
   f.owner.applyConnection(policy({ generation: 2, enabled: false }));
   assert.equal(f.registry.currentGrant('endpoint'), undefined);
   // Even a stale external projection restored after revoke is not authority.
   f.registry.enable('endpoint'); f.registry.observed('endpoint', tools, f.registry.revision('endpoint'));
   f.registry.approve({ ...oldGrant, generation: 3 });
   assert.throws(() => f.owner.journal.intent(f.intent()), /policy/);
-  assert.equal(f.calls.length, 0);
+  assert.equal(f.calls.length, 1, 'stale dispatch did not add a connector invocation');
   const reopened = f.reopen();
-  assert.equal((await reopened.resultGate.authorize(f.host, [], ['ordinary'], f.signal)).state, 'refused');
+  assert.equal((await reopened.resultGate.authorize(f.host, [f.binding(initialResult.result, initialCall)], ['ordinary'], f.signal)).state, 'refused');
   assert.throws(() => reopened.projectConnection('lux'), /disabled/);
 });
 
@@ -198,7 +202,8 @@ test('every request denies empty-binding authority and every accepted connection
     f.setLive(original);
   }
   f.owner.applyConnection(policy({ generation: 2, sourcePolicy: { ...policy().sourcePolicy, revision: 2 } }));
-  assert.equal((await f.owner.resultGate.authorize(f.host, [], ['ordinary'], f.signal)).state, 'refused');
+  assert.equal((await f.owner.resultGate.authorize(f.host, [], ['ordinary'], f.signal)).state, 'allowed');
+  assert.throws(() => f.owner.journal.intent(f.intent()), /intent_policy_denied/);
 });
 
 test('unbound run still needs live authority, including initial request', async t => {
@@ -209,23 +214,26 @@ test('unbound run still needs live authority, including initial request', async 
 
 test('revoke while awaiting authority is caught by final synchronous persisted reread', async t => {
   const f = await fixture(t); const original = f.getLive();
+  f.owner.journal.intent(f.intent()); const completed = await f.execute();
+  assert.equal(completed.status, 'completed'); if (completed.status !== 'completed') throw Error('initial read failed');
   let resolve!: (value: LiveAuthority) => void;
   f.setLookup(() => new Promise(r => { resolve = r; }));
-  const gate = f.owner.resultGate.authorize(f.host, [], ['ordinary'], f.signal);
+  const gate = f.owner.resultGate.authorize(f.host, [f.binding(completed.result)], ['ordinary'], f.signal);
   f.owner.applyConnection(policy({ generation: 2, enabled: false })); resolve(original);
-  assert.equal((await gate).state, 'refused'); assert.equal(f.calls.length, 0);
+  assert.equal((await gate).state, 'refused'); assert.equal(f.calls.length, 1, 'completed result is withheld after revoke');
 });
 
-test('all bound connections checked even zero refs from another connection', async t => {
+test('unrelated connection revocation does not poison empty continuation; its own intent is denied', async t => {
   const f = await fixture(t);
-  const second = policy({ connectionId: 'second', endpoint: { ...policy().endpoint, id: 'second-endpoint' } });
-  f.registry.register({ id: 'second-endpoint', url: policyUrl(second.endpoint), account: 'account', resource: 'resource' });
+  const second = policy({ connectionId: 'second', endpoint: { ...policy().endpoint, id: 'second-endpoint', account: 'second', resource: 'second' } });
+  f.registry.register({ id: 'second-endpoint', url: policyUrl(second.endpoint), account: 'second', resource: 'second' });
   f.owner.applyConnection(second);
   const acceptance = { ...f.acceptance, runId: 'two', connectionIds: ['lux', 'second'] };
   const accepted = f.store.transaction(tx => f.owner.snapshotRun(tx, acceptance));
   f.setLive({ ...acceptance, acceptedRunHash: accepted.sha256 });
   f.owner.applyConnection({ ...second, generation: 2, enabled: false });
-  assert.equal((await f.owner.resultGate.authorize({ ...f.host, runId: 'two' }, [], ['ordinary'], f.signal)).state, 'refused');
+  assert.equal((await f.owner.resultGate.authorize({ ...f.host, runId: 'two' }, [], ['ordinary'], f.signal)).state, 'allowed');
+  assert.throws(() => f.owner.journal.intent({ ...f.intent(), runId: 'two', accountId: 'second', resourceId: 'second' }), /intent_policy_denied/);
 });
 
 test('result ref, execution/name/call/scope/hash binding and detached immutable bytes survive reopen', async t => {
@@ -265,17 +273,14 @@ test('search/get strict arguments, provenance and requested IDs remain unverifie
   assert.equal((value['source'] as Record<string, unknown>)['account'], 'account');
 });
 
-for (const bad of [null, 'absent'] as const) test(`unknown source policy ${bad} denies before initial provider`, async t => {
+for (const bad of [null, 'absent'] as const) test(`unknown source policy ${bad} is not an executable connection approval`, async t => {
   const p = policy(); p.sourcePolicy.unknownClass = null;
   if (bad === 'absent') delete (p.sourcePolicy as Partial<typeof p.sourcePolicy>).unknownClass;
-  if (bad === 'absent') {
-    const dir = mkdtempSync(join(tmpdir(), 'didi-owner-test-')); const store = new Store(dir, toolsMigrations);
-    t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
-    const owner = createToolsOwner({ store, ownerId: 'owner', registry: new McpRegistry(), port: {} as McpPort, lookupAuthority: async () => null });
-    assert.throws(() => owner.applyConnection(p)); return;
-  }
-  const f = await fixture(t, { policy: p }); let requests = 0;
-  assert.equal((await f.run({ generate: async () => { requests++; return modelResult(); } })).status, 'denied'); assert.equal(requests, 0);
+  const dir = mkdtempSync(join(tmpdir(), 'didi-owner-test-')); const store = new Store(dir, toolsMigrations);
+  t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
+  const owner = createToolsOwner({ store, ownerId: 'owner', registry: new McpRegistry(), port: {} as McpPort, lookupAuthority: async () => null });
+  assert.throws(() => owner.applyConnection(p));
+  assert.equal(store.transaction(tx => tx.all('SELECT * FROM tool_connections')).length, 0);
 });
 
 for (const [label, result, memoryBytes] of [
@@ -519,4 +524,56 @@ test('endpoint union: stdio arm validates; HTTP nullability and cross-arm reject
   // Unknown transport and a non-absolute command are refused.
   assert.throws(() => validatePolicy(asPolicy({ ...http.endpoint, transport: 'sse' })));
   assert.throws(() => validatePolicy(asPolicy({ ...stdioEndpoint, command: 'echo' })));
+});
+
+for (const legacyRoute of ['endpoint', 'ambiguous-model-route']) test(`migration does not turn legacy ${legacyRoute} into route approval`, async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-legacy-policy-'));
+  const legacy = policy(); delete legacy.bindingMode; legacy.route.identity = legacyRoute;
+  const bytes = canonicalJSON(legacy); const hash = sha256(bytes);
+  const oldStore = new Store(dir, toolsMigrations.filter(m => m.version === 1));
+  oldStore.transaction(tx => tx.run('INSERT INTO tool_connections VALUES (?,?,?,?,?,?,?)', ['owner', 'lux', 'endpoint', 1, 1, bytes, hash])); oldStore.close();
+  const store = new Store(dir, toolsMigrations);
+  t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
+  const owner = createToolsOwner({ store, ownerId: 'owner', registry: new McpRegistry(), port: {} as McpPort, lookupAuthority: async () => null });
+  const acceptance: RunAcceptance = { ownerId: 'owner', actorId: 'actor', runId: 'legacy-run', authorityEpoch: store.authorityEpoch, revision: 1, route: { identity: legacyRoute, provider: 'gemini', modelId: 'synthetic', allowedClasses: ['private'] }, allowedClasses: ['private'], connectionIds: ['lux'] };
+  store.transaction(tx => owner.snapshotRun(tx, acceptance));
+  assert.throws(() => owner.journal.intent({ runId: acceptance.runId, actorId: 'actor', authorityEpoch: store.authorityEpoch, revision: 1, executionId: 'legacy-read', toolName: 'search_knowledge', argumentsHash: sha256('{}'), accountId: 'account', resourceId: 'resource' }), /intent_policy_denied/);
+  assert.throws(() => owner.projectConnection('lux'), /connection_not_executable/);
+  assert.equal((await owner.restoreConnection('lux', () => {})).state, 'refused');
+  assert.equal(store.transaction(tx => tx.get('SELECT policy_sha256 FROM tool_connections'))!.policy_sha256, hash);
+  assert.equal(store.transaction(tx => tx.all('SELECT * FROM tool_connection_semantics')).length, 0);
+});
+
+for (const code of ['mcp_transport_error', 'mcp_result_invalid', 'connector_error', 'handler_outcome'] as const) test(`thrown ${code} survives owner journal and tool response`, async t => {
+  const f = await fixture(t); const seen: ModelRequest[] = [];
+  const model: ModelPort = { generate: async req => { seen.push(structuredClone(req)); return seen.length === 1 ? modelResult('search_knowledge') : modelResult(); } };
+  const registry = f.definitions().map(tool => ({ ...tool, async execute() {
+    if (code === 'handler_outcome') throw Error('synthetic unclassified');
+    throw Object.assign(Error('synthetic failure, not a response payload'), { code });
+  } }));
+  const outcome = await runTools({ model, request, registry, host: f.host, authority: { isCurrent: async () => true }, maxSteps: 3,
+    control: { signal: f.signal, deadlineMs: Date.now() + 5000 }, journal: f.owner.journal, resultGate: f.owner.resultGate });
+  assert.equal(outcome.status, 'complete');
+  const response = seen[1]!.contents.at(-1)!.parts[0]!.functionResponse!.response;
+  assert.equal(response['reason'], code);
+  const row = f.store.transaction(tx => tx.get('SELECT state, result_json FROM tool_calls WHERE execution_id=?', ['run:1:0']));
+  assert.equal(row?.state, 'failed');
+  assert.equal(JSON.parse(String(row?.result_json)).response.reason, code);
+});
+
+test('a thrown MCP transport failure is logged without exception payload and remains unknown', async t => {
+  const events: ToolFailureEvent[] = []; const f = await fixture(t, { log: event => events.push(event) });
+  t.mock.method(f.port, 'call', async () => { throw Object.assign(Error('synthetic-private-payload must not reach logging'), { code: 'mcp_transport_error' }); });
+  const outcome = await f.run({ generate: async () => modelResult('search_knowledge') });
+  assert.equal(outcome.status, 'uncertain'); assert.equal(outcome.reason, 'mcp_transport_error');
+  assert.deepEqual(events, [{ event: 'tool_failure', code: 'mcp_transport_error', tool: 'search_knowledge', connector: 'lux-knowledge', errorClass: 'Error', messageHead: 'mcp_transport_error' }]);
+  assert(!JSON.stringify(events).includes('synthetic-private-payload'));
+});
+test('a connector-rejected decoded content shape is logged and returned with mcp_result_invalid', async t => {
+  const events: ToolFailureEvent[] = []; const f = await fixture(t, { log: event => events.push(event), result: { content: [{ type: 'text', text: 'synthetic', annotations: { priority: 0.5 } }] } });
+  const seen: ModelRequest[] = [];
+  const outcome = await f.run({ generate: async req => { seen.push(structuredClone(req)); return seen.length === 1 ? modelResult('search_knowledge') : modelResult(); } });
+  assert.equal(outcome.status, 'complete');
+  assert.equal(seen[1]!.contents.at(-1)!.parts[0]!.functionResponse!.response['reason'], 'mcp_result_invalid');
+  assert.deepEqual(events, [{ event: 'tool_failure', code: 'mcp_result_invalid', tool: 'search_knowledge', connector: 'lux-knowledge', errorClass: 'Error', messageHead: 'mcp_result_invalid' }]);
 });

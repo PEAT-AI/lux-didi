@@ -100,3 +100,24 @@ ix_source_references_owner` for the helper (`owner_id=?`) and the batch resolver
 expected). The upgrade is additive on the populated v1+v2 schema: rows, source refs and prior
 table bytes are unchanged, `index_info` is exactly `[owner_id, owner_kind]`, `integrity_check` is
 `ok`, reopen is idempotent, and a name collision rolls back with no partial metadata.
+
+### Voice memory writes and frozen prompts
+
+The built-in Live `remember_note` writes only an explicitly requested, finalized owner utterance as ordinary memory. It does not change the running session's accepted prompt snapshot or prompt identity. A later CREATE selects and recalls the note using the ordinary memory section. Live-voice entries have no deletion control yet; removing a note from the selected-memory picker only removes that local selection, not the durable entry. Private or sensitive voice classification is refused, not downgraded. See [tool-owner.md](tool-owner.md) for the built-in authorization and provenance rule.
+
+
+## Owner deletion and retained selections
+
+Owner memory deletion replaces matching chat_run_context.resolved_records with
+content-free tombstone references in the same transaction as the canonical entry
+delete. The original requested IDs remain as selection provenance, not text.
+Before dispatch, frozen records are revalidated through the domain resolver;
+deleted entries are omitted even when a domain deletion bypassed the HTTP
+composition. Surviving accepted records retain their frozen content and routing
+checks. Deleted entry labels no longer gate a future dispatch that omits them.
+
+Live's accepted prompt snapshot and runtime's idempotent response cache are also
+redacted by their respective owners within that delete transaction. Cached
+responses retain fingerprints and replay a content-free NOT_FOUND result rather
+than rerunning a mutation. Quoted conversation output and transcriptions are not
+selected memory copies and are removed with the conversation instead.

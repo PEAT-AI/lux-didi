@@ -6,9 +6,49 @@ private struct Case: Decodable {
     let partial: Bool?
 }
 private struct Input: Decodable { let canonical: [Case]; let malformed: [Case] }
+private struct ConsumerHTTP: LiveOperatorHTTP {
+    func status(for intent: LiveBeginIntent) async throws -> LiveOperatorStatus {
+        LiveOperatorStatus(origin: intent.origin, assistantID: intent.assistantID, authorityEpoch: intent.authorityEpoch,
+            provider: intent.provider, model: intent.model, voice: intent.voice, profileIdentity: intent.profileIdentity, dataClasses: ["ordinary"])
+    }
+    func create(for intent: LiveBeginIntent, key: String) async throws -> LiveSnapshot {
+        LiveSnapshot(liveSessionId: UUID().uuidString.lowercased(), assistantId: intent.assistantID,
+            authorityEpoch: intent.authorityEpoch, idempotencyKey: key, profileIdentity: intent.profileIdentity,
+            grant: LiveGrant(provider: intent.provider, model: intent.model, voice: intent.voice,
+                chosenInputClass: "ordinary", permittedClasses: ["ordinary"], revision: 1),
+            lifecycle: "accepted", dispatchIntent: false, consumerState: "detached", terminal: nil)
+    }
+    func snapshot(sessionID: String, for intent: LiveBeginIntent) async throws -> LiveSnapshot { throw LiveClientError.unavailable }
+    func journal(sessionID: String, cursor: Int?, for intent: LiveBeginIntent) async throws -> LiveJournalPage { throw LiveClientError.unavailable }
+    func revoke(sessionID: String, for intent: LiveBeginIntent) async throws { throw LiveClientError.unavailable }
+}
+private actor ConsumerSocket: LiveSocket {
+    let frames: [String]
+    var index = 0
+    private(set) var controls = 0
+    private(set) var cancelled = false
+    init(_ frames: [String]) { self.frames = frames }
+    func receive() async throws -> LiveFrame {
+        guard index < frames.count && !cancelled else { throw LiveClientError.invalidFrame }
+        let wire = frames[index]; index += 1
+        return try LiveSocketTransport.decode(.string(wire))
+    }
+    func sendPCM(_ data: Data) async throws { throw LiveClientError.invalidFrame }
+    func sendControl(_ control: LiveControl) async throws { controls += 1 }
+    func cancel() async { cancelled = true }
+}
+private struct ConsumerSockets: LiveSocketConnecting {
+    let socket: ConsumerSocket
+    func connect(_ binding: LiveSocketBinding) async throws -> any LiveSocket { socket }
+}
+private actor ConsumerSink: LiveAudioSink {
+    private(set) var writes = 0
+    func write(_ pcm: Data) async throws { writes += 1 }
+    func flush() async throws { }
+}
 
 @main struct CanonicalFrames {
-    static func main() throws {
+    static func main() async throws {
         let input = try JSONDecoder().decode(Input.self, from: FileHandle.standardInput.readDataToEndOfFile())
         var rejected: [String] = [], malformedAccepted: [String] = []
         var partialStayedUnknown = true
@@ -26,10 +66,42 @@ private struct Input: Decodable { let canonical: [Case]; let malformed: [Case] }
             do { _ = try LiveSocketTransport.decode(.string(item.wire)); malformedAccepted.append(item.label) }
             catch LiveClientError.invalidFrame { }
         }
-        let pass = rejected.isEmpty && malformedAccepted.isEmpty && partialStayedUnknown
+        var consumerClosed = false, toolCausedNoAction = false, toolBeforeReadyRefused = false
+        if rejected.isEmpty && malformedAccepted.isEmpty && partialStayedUnknown {
+            let frames = Array(input.canonical.prefix(while: { $0.label != "terminal-failed" })).map(\.wire)
+            let socket = ConsumerSocket(frames), sink = ConsumerSink()
+            let coordinator = LiveSessionCoordinator(http: ConsumerHTTP(), sockets: ConsumerSockets(socket: socket), sink: sink)
+            await coordinator.begin(LiveBeginIntent(origin: URL(string: "http://127.0.0.1:8080")!, assistantID: "synthetic",
+                authorityEpoch: "synthetic-epoch", provider: "gemini", model: "synthetic", voice: "synthetic",
+                profileIdentity: "synthetic", inputClass: "ordinary"))
+            let deadline = ContinuousClock.now + .seconds(3)
+            while ContinuousClock.now < deadline {
+                if case .terminal(let terminal) = await coordinator.state {
+                    consumerClosed = terminal.state == .closed; break
+                }
+                if case .outcomeUnknown = await coordinator.state { break }
+                try await Task.sleep(for: .milliseconds(2))
+            }
+            let controls = await socket.controls, writes = await sink.writes
+            toolCausedNoAction = controls == 0 && writes == 0
+            await socket.cancel()
+            let premature = ConsumerSocket([input.canonical.first(where: { $0.label == "toolCall-null" })!.wire])
+            let beforeReady = LiveSessionCoordinator(http: ConsumerHTTP(), sockets: ConsumerSockets(socket: premature), sink: ConsumerSink())
+            await beforeReady.begin(LiveBeginIntent(origin: URL(string: "http://127.0.0.1:8080")!, assistantID: "synthetic",
+                authorityEpoch: "synthetic-epoch", provider: "gemini", model: "synthetic", voice: "synthetic",
+                profileIdentity: "synthetic", inputClass: "ordinary"))
+            let prematureDeadline = ContinuousClock.now + .seconds(3)
+            while ContinuousClock.now < prematureDeadline {
+                if case .outcomeUnknown(.invalidFrame) = await beforeReady.state { toolBeforeReadyRefused = true; break }
+                try await Task.sleep(for: .milliseconds(2))
+            }
+            await premature.cancel()
+        }
+        let pass = rejected.isEmpty && malformedAccepted.isEmpty && partialStayedUnknown && consumerClosed && toolCausedNoAction && toolBeforeReadyRefused
         let receipt: [String: Any] = ["canonicalCount": input.canonical.count, "canonicalRejected": rejected,
             "malformedCount": input.malformed.count, "malformedAccepted": malformedAccepted,
-            "partialStayedUnknown": partialStayedUnknown, "success": pass]
+            "partialStayedUnknown": partialStayedUnknown, "actualConsumerClosed": consumerClosed,
+            "toolCausedNoAudioOrControl": toolCausedNoAction, "toolBeforeReadyRefused": toolBeforeReadyRefused, "success": pass]
         try FileHandle.standardOutput.write(contentsOf: JSONSerialization.data(withJSONObject: receipt, options: [.sortedKeys]))
         try FileHandle.standardOutput.write(contentsOf: Data([10]))
         exit(pass ? 0 : 1)

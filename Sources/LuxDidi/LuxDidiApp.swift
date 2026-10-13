@@ -75,6 +75,13 @@ import Security
                         self?.liveAuthorityOwner.unavailable()
                         self?.error = "Local service restarting. Lost Live requires an explicit Start."
                     }
+                    owner.onCredentialUnavailable = { [weak self, weak owner] _ in
+                        self?.shell?.clear()
+                        self?.liveAuthorityOwner.unavailable()
+                        self?.bootstrapFailureCode = owner?.startupFailureCode
+                        self?.bootstrapFailureDiagnostic = owner?.startupFailureDiagnostic
+                        self?.error = "Didi couldn’t verify its saved connection. Reconnect the service explicitly."
+                    }
                     return
                 }
             } catch { self.error = NativeServiceError.invalidRuntime.localizedDescription; return }
@@ -94,10 +101,12 @@ import Security
             if let supervisor {
                 let connection = try await supervisor.start()
                 let descriptor = connection.descriptor
-                let allowed = { supervisor.isCurrent(connection) }
+                let allowed = { () -> Bool in
+                    guard supervisor.isCurrent(connection) else { return false }
+                    return (try? connection.credential()) != nil
+                }
                 let credential = { () throws -> String in
-                    guard allowed() else { throw CompanionError.unavailable }
-                    return try descriptor.credential()
+                    return try connection.credential()
                 }
                 if let client {
                     await client.rebind(descriptor: descriptor, credential: credential, expectedEpoch: connection.authorityEpoch, connectionGuard: allowed)
@@ -386,7 +395,8 @@ struct RootView: View {
             Button("Disconnect") { Task { await model.logout() } }
             if let shell = model.shell {
                 Text("Service: \(shell.descriptor.origin)")
-                Text("Credential reference: \(shell.descriptor.credentialService)")
+                if model.supervisor != nil { Text("Connection stored for this installation") }
+                else { Text("Credential reference: \(shell.descriptor.credentialService)") }
             }
             Button("Quit Didi") { NSApp.terminate(nil) }
         }

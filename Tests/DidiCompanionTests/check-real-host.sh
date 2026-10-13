@@ -70,7 +70,9 @@ def valid_launch(launch, native_pid, node_pid):
  assert launch['serviceIdentity']['pid']==node_pid and node_pid not in (native_pid,launch['observerPid'])
  assert launch['serviceKernel']['rawStatus']==0 and launch['nativeDisposed'] and launch['observerDisposed'] and not launch['forced']
 for i,r in enumerate(reports):
- assert set(r)==set('type schemaVersion phase success runId installId proofId reopened source native service priorRecords newRecord observations visual serviceStop credentialCleanup error'.split())
+ assert set(r)==set('type schemaVersion phase success runId installId proofId reopened source native service priorRecords newRecord observations visual serviceStop error'.split())
+ assert set(r['observations'])==set('credentialSource credentialValidated bootstrap canonicalUIReady priorRecallComplete newSaved'.split())
+ assert r['observations']['credentialSource']=='canonical-file' and r['observations']['credentialValidated'] is True
  assert set(r['visual'])==set('windowId screenCapturePermission pageSnapshot nativeChrome nativeChromeLimitation accessibility rootVisualReviewRequired'.split())
  diagnostic=json.load(open(f'{root}/run-{i+1}.json.diagnostics.json'))
  assert diagnostic['nativePid']==r['native']['pid'] and diagnostic['windowId']==r['visual']['windowId']
@@ -87,7 +89,7 @@ for i,r in enumerate(reports):
  assert isinstance(activation['attempted'],bool) and (isinstance(activation['requestSent'],bool) if activation['attempted'] else activation['requestSent'] is None)
  assert loop['disposed'] is True and loop['count']>=0
  assert (loop['firstUptimeNanoseconds'] is None and loop['lastUptimeNanoseconds'] is None) if loop['count']==0 else 0 < loop['firstUptimeNanoseconds'] <= loop['lastUptimeNanoseconds']
- assert r['type']=='LuxDidiInstalledProof' and r['schemaVersion']==1
+ assert r['type']=='LuxDidiInstalledProof' and r['schemaVersion']==2
  assert r['phase']=='complete' and r['success'] is True
  launch=json.load(open(os.path.join(root,'launch-'+str(i+1),'observer.json')))
  assert launch['identity']['pid']==r['native']['pid'] and launch['identity']['uid']==os.getuid()
@@ -116,7 +118,7 @@ for i,r in enumerate(reports):
  assert r['source']['releaseCommit']==commit
  assert r['service']['readyVerified'] and r['serviceStop']['observedExited']
  assert r['serviceStop']['pid']==r['service']['pid']
- assert r['credentialCleanup']['cleaned'] and r['newRecord']['visibleInCanonicalUI']
+ assert r['newRecord']['visibleInCanonicalUI']
  assert r['native']['exitEvidence']=='external-driver-required' and 'exited' not in r['native']
  assert r['visual']['pageSnapshot'] and len(r['visual']['accessibility'])==4
  for previous in reports[:i]:
@@ -142,10 +144,11 @@ for mode in ('cancel-pre','eof-pre','bad-nonce','cancel-service','eof-service'):
   assert launched['serviceIdentity']['pid']==negative['serviceStop']['pid']
   assert launched['serviceKernel']['rawStatus']==0 and launched['serviceKernel']['flags'] & 0x84000000 == 0x84000000
   assert negative['serviceStop']['observedExited'] and negative['serviceStop']['exitStatus']==0
-  assert negative['credentialCleanup']['cleaned']
  else:
   assert launched['released'] is False and launched['serviceIdentity'] is None
-  assert negative['observations']['credentialImported'] is False
-print('PASS: real gate cancellation/EOF/nonce refusal, awaited Node/credential cleanup and listener disposal')
+  assert negative['observations']['credentialValidated'] is False
+ assert negative['schemaVersion']==2 and negative['observations']['credentialSource']=='canonical-file'
+ assert 'credentialCleanup' not in negative and 'credentialImported' not in negative['observations']
+print('PASS: real gate cancellation/EOF/nonce refusal, awaited Node cleanup and listener disposal')
 
 PY

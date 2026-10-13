@@ -82,13 +82,11 @@ import CryptoKit
             _ = await OwnedVerificationLaunchGate.perform(window: window) { _ in false }
             await Task { @MainActor in
                 await model.shutdown()
-                do { try model.installedProof?.cleanCredential() }
-                catch { fputs("INSTALLED-PROOF FAILED: configuration credential cleanup\n", stderr) }
             }.value; fputs("INSTALLED-PROOF FAILED: configuration or ownership rejected\n", stderr); return false
         }
         let runtime = owner.runtime
         let permission = CGPreflightScreenCaptureAccess()
-        var observations: [String: Any] = ["credentialImported": false, "bootstrap": false, "canonicalUIReady": false, "priorRecallComplete": false, "newSaved": false]
+        var observations: [String: Any] = ["credentialSource": "canonical-file", "credentialValidated": false, "bootstrap": false, "canonicalUIReady": false, "priorRecallComplete": false, "newSaved": false]
         let null = NSNull()
         var report: [String: Any] = ["phase": "running", "success": false, "runId": UUID().uuidString.lowercased(),
             "source": [:], "native": ["pid": Int(getpid()), "cleanQuitRequested": false, "exitEvidence": "external-driver-required"],
@@ -96,7 +94,7 @@ import CryptoKit
             "visual": ["windowId": window.windowNumber > 0 ? window.windowNumber as Any : null, "screenCapturePermission": permission,
                        "pageSnapshot": null, "nativeChrome": null, "nativeChromeLimitation": "Native chrome not visually verified.", "accessibility": [], "rootVisualReviewRequired": true],
             "serviceStop": ["requested": false, "observedExited": false, "pid": null, "exitStatus": null, "terminationReason": null, "procedure": "private-stdin-close-and-bounded-owned-escalation"],
-            "credentialCleanup": ["scope": "synthetic-proof-only", "attempted": false, "cleaned": false, "errorCode": null], "error": null]
+            "error": null]
         var failure: Error?
         let gated = await OwnedVerificationLaunchGate.perform(window: window) { gate in
         do {
@@ -111,7 +109,7 @@ import CryptoKit
             guard let connection = owner.currentConnection, let client = model.client else { throw InstalledProofError.unavailable }
             try gate?.bindService(pid: connection.pid, executable: runtime.node.path, serviceNonce: connection.nonce)
             try Task.checkCancellation()
-            observations["credentialImported"] = owner.credentialImported; observations["bootstrap"] = true
+            observations["credentialValidated"] = owner.credentialValidated; observations["bootstrap"] = true
             report["service"] = ["pid": Int(connection.pid), "nonce": connection.nonce, "origin": connection.descriptor.origin,
                                   "authorityEpoch": connection.authorityEpoch, "assistantId": connection.assistantId, "readyVerified": true]
             let web = try await pageReady(model); observations["canonicalUIReady"] = true
@@ -169,15 +167,11 @@ import CryptoKit
         return failure == nil
         }
         if !gated { failure = failure ?? InstalledProofError.unavailable }
-        observations["credentialImported"] = owner.credentialImported; report["observations"] = observations
+        observations["credentialValidated"] = owner.credentialValidated; report["observations"] = observations
         // Joined, cancellation-independent finalization on every work/gate outcome.
         await Task { @MainActor in
         await model.shutdown()
         if let stopped = owner.lastStop { report["serviceStop"] = stopped }
-        if owner.credentialImported {
-            do { try proof.cleanCredential(); report["credentialCleanup"] = ["scope": "synthetic-proof-only", "attempted": true, "cleaned": true, "errorCode": null] }
-            catch { report["credentialCleanup"] = ["scope": "synthetic-proof-only", "attempted": true, "cleaned": false, "errorCode": code(error)]; failure = failure ?? error }
-        }
         if failure == nil, owner.lastStop?["observedExited"] as? Bool != true { failure = InstalledProofError.unavailable }
         report["native"] = ["pid": Int(getpid()), "cleanQuitRequested": true, "exitEvidence": "external-driver-required"]
         }.value

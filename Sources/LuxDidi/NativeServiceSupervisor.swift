@@ -142,6 +142,7 @@ struct OwnedServiceConnection {
     let pid: Int32
     let nonce: String
     let assistantId: String
+    let credential: @MainActor () throws -> String
 }
 
 @MainActor final class NativeServiceSupervisor: ObservableObject {
@@ -153,7 +154,7 @@ struct OwnedServiceConnection {
     private var child: OwnedServiceChild?
     private var connection: OwnedServiceConnection?
     private var operation: UUID?
-    private(set) var credentialImported = false
+    private(set) var credentialValidated = false
     private(set) var lastStop: [String: Any]?
     private(set) var startupFailureCode: String?
     private(set) var startupFailureDiagnostic: StartupFailureDiagnostic?
@@ -169,6 +170,7 @@ struct OwnedServiceConnection {
     }
     @Published private(set) var state: NativeServiceState = .stopped
     var onUnavailable: (() -> Void)?
+    var onCredentialUnavailable: ((NativeServiceError) -> Void)?
     var onRecovered: (() -> Void)?
     var onRestartStatus: ((Bool) -> Void)?
     private var wakeObserver: NSObjectProtocol?
@@ -283,6 +285,37 @@ struct OwnedServiceConnection {
         recovery.childExited(recovery.generation)
         Task { await owner.stop() }
     }
+    private func credential(owner: OwnedServiceChild, nonce: String, initial: Data) throws -> String {
+        guard child === owner, owner.isRunning, state == .running, connection?.nonce == nonce else {
+            throw NativeServiceError.exited
+        }
+        do {
+            let current = try NativeCredentialImport.readCredential(state: stateURL)
+            guard current == initial else { throw NativeServiceError.credentialMismatch }
+            return String(decoding: current, as: UTF8.self)
+        } catch {
+            let failure = (error as? NativeServiceError) ?? .unsafeCredential
+            recovery.stop(); restartTask?.cancel(); restartTask = nil
+            if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
+            wakeObserver = nil
+            owner.onUnexpectedExit = nil; owner.onInvalidOutput = nil
+            operation = nil; state = .unavailable; connection = nil; credentialValidated = false
+            startupFailureCode = "canonical-file/" + String(describing: failure)
+            let category: StartupFailureDiagnostic.Category
+            switch failure {
+            case .unsafeState: category = .unsafeState
+            case .credentialMismatch: category = .credentialMismatch
+            default: category = .unsafeCredential
+            }
+            startupFailureDiagnostic = StartupFailureDiagnostic(stage: .canonicalFile, category: category, operation: .none, status: nil)
+            onCredentialUnavailable?(failure)
+            Task {
+                await owner.stop(); observeStop(owner)
+                if child === owner { child = nil }
+            }
+            throw failure
+        }
+    }
     func start(recovering: Bool = false) async throws -> OwnedServiceConnection {
         if let connection, isCurrent(connection) { return connection }
         guard !Task.isCancelled else { throw NativeServiceError.exited }
@@ -291,8 +324,8 @@ struct OwnedServiceConnection {
         var launched: OwnedServiceChild?
         var stage = "state"
         var diagnosticStage: StartupFailureDiagnostic.Stage = .state
-        var keychainFailure: (NativeCredentialImport.FailureOperation, Int32)?
         startupFailureCode = nil
+        credentialValidated = false
         startupFailureDiagnostic = nil
         state = .starting; connection = nil
         if let child { await child.stop(); observeStop(child); self.child = nil }
@@ -335,14 +368,17 @@ struct OwnedServiceConnection {
                   let origin = ready["origin"] as? String, let epoch = ready["authorityEpoch"] as? String, UUID(uuidString: epoch) != nil,
                   let assistant = ready["assistantId"] as? String, UUID(uuidString: assistant) != nil else { throw NativeServiceError.invalidReady }
             _ = try ServiceDescriptor(origin: origin, credentialService: credentialService, credentialAccount: credentialAccount)
-            stage = "canonical-file-and-import"
-            diagnosticStage = .canonicalImport
-            let reference = try NativeCredentialImport.importCredential(state: stateURL, installId: credentialAccount, service: credentialService,
-                observeFailure: { keychainFailure = ($0, $1) })
-            credentialImported = true
+            stage = "canonical-file"
+            diagnosticStage = .canonicalFile
+            let initial = try NativeCredentialImport.readCredential(state: stateURL)
+            credentialValidated = true
             guard owned.isRunning, state == .starting else { throw NativeServiceError.exited }
-            let descriptor = try ServiceDescriptor(origin: origin, credentialService: reference.service, credentialAccount: reference.account)
-            let result = OwnedServiceConnection(descriptor: descriptor, authorityEpoch: epoch, pid: owned.pid, nonce: nonce, assistantId: assistant)
+            let descriptor = try ServiceDescriptor(origin: origin, credentialService: credentialService, credentialAccount: credentialAccount)
+            let result = OwnedServiceConnection(descriptor: descriptor, authorityEpoch: epoch, pid: owned.pid, nonce: nonce, assistantId: assistant,
+                credential: { [weak self, weak owned] in
+                    guard let self, let owned else { throw NativeServiceError.exited }
+                    return try self.credential(owner: owned, nonce: nonce, initial: initial)
+                })
             connection = result; state = .running
             if !recovering { recovery.activate() }
             observeWake()
@@ -351,7 +387,6 @@ struct OwnedServiceConnection {
             startupFailureCode = stage + "/" + ((error as? NativeServiceError).map { String(describing: $0) } ?? "platformFailure")
             let category: StartupFailureDiagnostic.Category
             var status: Int32?
-            var failureOperation: StartupFailureDiagnostic.Operation = .none
             switch error as? NativeServiceError {
             case .invalidRuntime: category = .invalidRuntime
             case .invalidNode: category = .invalidNode
@@ -361,20 +396,13 @@ struct OwnedServiceConnection {
             case .credentialMismatch: category = .credentialMismatch
             case .keychain(let code):
                 category = .keychain; status = code
-                if let failure = keychainFailure, failure.1 == code {
-                    switch failure.0 {
-                    case .policyRecheck: failureOperation = .policyRecheck
-                    case .copyMatching: failureOperation = .copyMatching
-                    case .add: failureOperation = .add
-                    }
-                }
             case .invalidReady: category = .invalidReady
             case .exited: category = .exited
             case .timeout: category = .timeout
             case .alreadyStarting: category = .alreadyStarting
             case nil: category = .unknown
             }
-            startupFailureDiagnostic = StartupFailureDiagnostic(stage: diagnosticStage, category: category, operation: failureOperation, status: status)
+            startupFailureDiagnostic = StartupFailureDiagnostic(stage: diagnosticStage, category: category, operation: .none, status: status)
             if let launched { await launched.stop(); observeStop(launched) }
             if operation == ticket {
                 child = nil; state = .unavailable; connection = nil

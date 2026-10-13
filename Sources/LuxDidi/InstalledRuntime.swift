@@ -100,12 +100,7 @@ enum NativeCredentialImport {
         defer { close(fd) }
         guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFDIR, info.st_uid == geteuid(), info.st_mode & 0o777 == 0o700 else { throw NativeServiceError.unsafeState }
     }
-    @MainActor static func importCredential(state: URL, installId: String, service: String = NativeCredentialImport.service,
-                                 add: (CFDictionary, UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus = SecItemAdd,
-                                 policyCheck: @MainActor () -> OSStatus = NativeKeychainPolicy.check,
-                                 observeFailure: (FailureOperation, Int32) -> Void = { _, _ in }) throws -> NativeCredentialReference {
-        let policy = policyCheck()
-        guard policy == errSecSuccess else { observeFailure(.policyRecheck, policy); throw NativeServiceError.keychain(policy) }
+    static func readCredential(state: URL) throws -> Data {
         let directory = open(state.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard directory >= 0 else { throw NativeServiceError.unsafeState }
         defer { close(directory) }
@@ -123,7 +118,15 @@ enum NativeCredentialImport {
         if bytes.last == 10 { bytes.removeLast() }
         guard bytes.count == 43, bytes.allSatisfy({ (48...57).contains($0) || (65...90).contains($0) ||
             (97...122).contains($0) || $0 == 45 || $0 == 95 }) else { throw NativeServiceError.unsafeCredential }
-        let data = Data(bytes)
+        return Data(bytes)
+    }
+    @MainActor static func importCredential(state: URL, installId: String, service: String = NativeCredentialImport.service,
+                                 add: (CFDictionary, UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus = SecItemAdd,
+                                 policyCheck: @MainActor () -> OSStatus = NativeKeychainPolicy.check,
+                                 observeFailure: (FailureOperation, Int32) -> Void = { _, _ in }) throws -> NativeCredentialReference {
+        let policy = policyCheck()
+        guard policy == errSecSuccess else { observeFailure(.policyRecheck, policy); throw NativeServiceError.keychain(policy) }
+        let data = try readCredential(state: state)
         let context = LAContext(); context.interactionNotAllowed = true
         let base: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
                                   kSecAttrAccount as String: installId, kSecUseAuthenticationContext as String: context,

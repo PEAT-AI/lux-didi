@@ -1,7 +1,7 @@
 import Foundation
 
 struct StartupFailureDiagnostic {
-    enum Stage: String { case state, nodeProbe = "node-probe", spawn, readyFrame = "ready-frame", canonicalImport = "canonical-file-and-import", bootstrap, unknown }
+    enum Stage: String { case state, nodeProbe = "node-probe", spawn, readyFrame = "ready-frame", canonicalImport = "canonical-file-and-import", canonicalFile = "canonical-file", bootstrap, unknown }
     enum Category: String {
         case invalidRuntime, invalidNode, invalidOperatorSettings, unsafeState, unsafeCredential, credentialMismatch, keychain, invalidReady, exited, timeout, alreadyStarting
         case invalidConfiguration, credentialUnavailable, unavailable, authentication, invalidResponse, rejected, unresolvedCapture, unknown
@@ -89,6 +89,7 @@ enum NativeDiagnosticsSnapshot {
         case .spawn: allowed = [.invalidRuntime]
         case .readyFrame: allowed = [.invalidReady, .exited, .timeout]
         case .canonicalImport: allowed = [.unsafeState, .unsafeCredential, .credentialMismatch, .keychain, .exited]
+        case .canonicalFile: allowed = [.unsafeState, .unsafeCredential, .credentialMismatch, .exited]
         case .bootstrap: allowed = [.invalidConfiguration, .credentialUnavailable, .unavailable, .authentication, .invalidResponse, .rejected, .unresolvedCapture]
         case .unknown: return unknown
         }

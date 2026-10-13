@@ -460,9 +460,10 @@ for (const framing of ['single', 'multiline', 'keepalive'] as const) {
         if (slice.state !== 'available') throw Error('missing slice');
         chunks.push(slice.bytes);
       }
-      const packet = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-      assert.equal(packet.jsonrpc, '2.0');
-      assert.equal(packet.result.content[0].text, 'synthetic α payload');
+      assert.deepEqual(Buffer.concat(chunks), f.responseEntities[0], 'SSE wire entity stays exact');
+      assert('decodedResult' in result, 'adapter separately returns the decoded MCP result');
+      const decoded = result.decodedResult as { content: { text: string }[] };
+      assert.equal(decoded.content[0]?.text, 'synthetic α payload');
     } finally { await adapter.close(); await f.close(); }
   });
 }

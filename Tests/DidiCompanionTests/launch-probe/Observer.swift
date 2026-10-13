@@ -22,18 +22,46 @@ import AppKit
     var kernel: Int32 = -1
     var failureIdentity: [String: Any] = [:]
     var launchFailure: [String: Any] = [:]
-    // Passive ordered launch trace (R51). Records the launch submission and completion boundaries, the
-    // real returned application and error flags, the previous launched child's exit state and a
-    // self/observer/foreign-unclassified frontmost category only. Recording only: no new, reordered or
-    // retried launch call and no synchronization barrier; no foreign identity or window inventory.
+    // Private passive metadata only; no foreign process IDs, paths or window content.
     var launchTrace: [[String: Any]] = []
     var launchTraceOrdinal = 0
     var lastLaunched: NSRunningApplication?
+    var activationObservers: [NSObjectProtocol] = []
+    func activationSnapshot(_ application: NSRunningApplication? = nil) -> [String: Any] {
+        func holder(_ app: NSRunningApplication?) -> [String: Any] {
+            ["available": app != nil, "bundleIdentifier": app?.bundleIdentifier as Any? ?? NSNull(),
+             "name": app?.localizedName as Any? ?? NSNull()]
+        }
+        let workspace = NSWorkspace.shared
+        let session = CGSessionCopyCurrentDictionary() as? [String: Any]
+        let console = kCGSessionOnConsoleKey as String
+        let lock = "CGSSessionScreenIsLocked"
+        return ["frontmost": holder(workspace.frontmostApplication), "menuBar": holder(workspace.menuBarOwningApplication),
+            "targetIsActive": (application ?? target)?.isActive as Any? ?? NSNull(),
+            "sessionAvailable": session != nil, "consolePresent": session?[console] != nil,
+            "console": (session?[console] as? Bool) as Any? ?? NSNull(),
+            "lockPresent": session?[lock] != nil, "locked": (session?[lock] as? Bool) as Any? ?? NSNull()]
+    }
+    func observeActivation() {
+        for name in [NSWorkspace.didActivateApplicationNotification, NSWorkspace.didDeactivateApplicationNotification] {
+            activationObservers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                MainActor.assumeIsolated {
+                    guard let self, !self.settled else { return }
+                    let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+                    let category = app.map { $0.processIdentifier == getpid() ? "observer" :
+                        (self.target == nil ? "target-unbound" :
+                        ($0.processIdentifier == self.target?.processIdentifier ? "self" : "foreign-unclassified")) } ?? "unavailable"
+                    self.trace("observer:" + name.rawValue, ["eventApplicationClass": category])
+                }
+            })
+        }
+    }
     @discardableResult
-    func trace(_ event: String, _ extra: [String: Any] = [:]) -> Int {
+    func trace(_ event: String, _ extra: [String: Any] = [:], application: NSRunningApplication? = nil) -> Int {
         launchTraceOrdinal += 1
         var entry: [String: Any] = ["ordinal": launchTraceOrdinal,
-            "monotonicMs": Int(ProcessInfo.processInfo.systemUptime * 1000), "event": event]
+            "monotonicMs": Int(ProcessInfo.processInfo.systemUptime * 1000), "event": event,
+            "activationSnapshot": activationSnapshot(application)]
         for (key, value) in extra { entry[key] = value }
         launchTrace.append(entry)
         return launchTraceOrdinal
@@ -79,6 +107,7 @@ import AppKit
         guard verification ? args.count >= 5 : args.count == 5 else {
             fputs("LaunchServices probe FAIL: argument count observed=\(args.count) verification=\(verification) required=5\n", stderr); exit(1)
         }
+        observeActivation()
         if verification, ProcessInfo.processInfo.environment["LUX_OBSERVER_FORCE_FAILURE"] == "1" {
             fail("forced observer failure"); return
         }
@@ -96,6 +125,7 @@ import AppKit
         deadline?.setEventHandler { [self] in MainActor.assumeIsolated { timeout() } }
         deadline?.resume()
         let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
         configuration.createsNewApplicationInstance = true
         configuration.promptsUserIfNeeded = false
         configuration.addsToRecentItems = false
@@ -106,13 +136,13 @@ import AppKit
         if args[4].hasPrefix("held-") { environment["LUX_VERIFICATION_HOLD_OBSERVATION"] = "1" }
         configuration.environment = environment
         trace("observer:launch-submitted", ["previousChildExited": previousChildExited(),
-            "frontmostCategory": frontmostCategory()])
+            "frontmostCategory": frontmostCategory(), "activates": configuration.activates])
         NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: bundle), configuration: configuration) { app, error in
             Task { @MainActor in
                 guard !self.settled else { return }
                 self.trace("observer:launch-completed", ["launchError": error != nil,
                     "returnedApplication": app != nil, "previousChildExited": self.previousChildExited(),
-                    "frontmostCategory": self.frontmostCategory()])
+                    "frontmostCategory": self.frontmostCategory()], application: app)
                 if let app { self.lastLaunched = app }
                 guard error == nil, let app, app.bundleURL.map({ physicalPath($0.path) }) == self.bundle else {
                     let failure = error as NSError?
@@ -202,6 +232,9 @@ import AppKit
     }
     func dispose() {
         settled = true; deadline?.cancel(); watch?.cancel()
+        activationObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
+        activationObservers.removeAll()
+        trace("observer:disposed", ["activationObserversRemaining": activationObservers.count])
         if directory >= 0 { close(directory); directory = -1 }
         if kernel >= 0 { close(kernel); kernel = -1 }
         if serviceFD >= 0 { close(serviceFD); serviceFD = -1 }
@@ -209,6 +242,7 @@ import AppKit
     }
     func complete(_ raw: Int64, flags: UInt32, filter: Int16) {
         guard !settled, let record else { return }
+        trace("observer:native-exit", ["rawStatus": raw, "flags": flags, "filter": filter])
         var serviceKernel: [String: Any] = [:]
         if verification, serviceFD >= 0 {
             var status: Int64 = -1, serviceFlags: UInt32 = 0, serviceFilter: Int16 = 0
@@ -338,11 +372,13 @@ import AppKit
         } catch { fail("service binding errorCode=\((error as NSError).code)") }
     }
     func timeout() {
+        trace("observer:deadline", ["cancelSent": cancelSent])
         guard verification, !cancelSent else { fail("cleanup deadline verification=\(verification) cancelSent=\(cancelSent)"); return }
         send("cancel"); deadline?.schedule(deadline: .now() + 10)
     }
     func fail(_ reason: String) {
         guard !settled else { return }; settled = true
+        trace("observer:failure", ["reason": reason])
         if verification, let nativeFacts = facts, kernel >= 0 {
             // Normal nonce cancellation first; only bound, rechecked owned identities may be forced.
             send("cancel")
@@ -388,6 +424,7 @@ import AppKit
             "redialSuppressed": redialSuppressed, "socketPath": "/tmp/didi-verification-" + nonce + ".sock",
             "socketPresentAtFailure": FileManager.default.fileExists(atPath: "/tmp/didi-verification-" + nonce + ".sock")]
         output["launchConditions"] = launchFailure
+        output["launchTrace"] = launchTrace
         output["childLogs"] = ["stdout.log", "stderr.log"].filter { FileManager.default.fileExists(atPath: root + "/" + $0) }.map { root + "/" + $0 }
         output.merge(extra) { _, new in new }
         try? atomic(output, to: root + "/observer.json")

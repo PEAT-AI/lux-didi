@@ -453,10 +453,14 @@ for (const framing of ['single', 'multiline', 'keepalive'] as const) {
       const result = await adapter.call(request);
       assert.equal(result.state, 'completed');
       if (result.state !== 'completed' || result.payload.state !== 'available') throw Error('missing result');
-      const slice = adapter.readSlice({ ...result.source, handle: result.payload.handle, offset: 0, length: result.payload.byteLength });
-      assert.equal(slice.state, 'available');
-      if (slice.state !== 'available') throw Error('missing slice');
-      const packet = JSON.parse(new TextDecoder().decode(slice.bytes));
+      const chunks: Uint8Array[] = [];
+      for (let offset = 0; offset < result.payload.byteLength; offset += 97) {
+        const slice = adapter.readSlice({ ...result.source, handle: result.payload.handle, offset, length: Math.min(97, result.payload.byteLength - offset) });
+        assert.equal(slice.state, 'available');
+        if (slice.state !== 'available') throw Error('missing slice');
+        chunks.push(slice.bytes);
+      }
+      const packet = JSON.parse(Buffer.concat(chunks).toString('utf8'));
       assert.equal(packet.jsonrpc, '2.0');
       assert.equal(packet.result.content[0].text, 'synthetic α payload');
     } finally { await adapter.close(); await f.close(); }

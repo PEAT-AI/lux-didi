@@ -51,6 +51,16 @@ trap cleanup EXIT
 cd "$root"
 mkdir -p "$work/cache"
 node="$(command -v node)"
+# The fixture must exercise the same self-contained runtime policy as the native build.
+python3 - "$node" <<'PY'
+import subprocess, sys
+deps = [line.strip().split(' (')[0] for line in subprocess.run(
+    ['otool', '-L', sys.argv[1]], capture_output=True, text=True, check=True
+).stdout.splitlines()[1:] if line.strip()]
+bad = [dep for dep in deps if not dep.startswith(('/usr/lib/', '/System/', '@loader_path/'))]
+assert not bad, f'COMPANION FAIL: staged Node violates installed dependency policy: {bad[:5]}'
+print('PASS companion Node matches installed dependency policy')
+PY
 start=$SECONDS
 /usr/bin/nice -n 10 xcrun swiftc -j 1 -num-threads 1 -whole-module-optimization -D COMPANION_TEST -parse-as-library -module-cache-path "$work/cache" Sources/LuxDidi/*.swift Tests/DidiCompanionTests/*.swift -o "$work/runtime"
 printf 'DURATION companion-compile=%ss\n' "$((SECONDS-start))"

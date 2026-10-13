@@ -543,3 +543,20 @@ for (const legacyRoute of ['endpoint', 'ambiguous-model-route']) test(`migration
   assert.equal(store.transaction(tx => tx.get('SELECT policy_sha256 FROM tool_connections'))!.policy_sha256, hash);
   assert.equal(store.transaction(tx => tx.all('SELECT * FROM tool_connection_semantics')).length, 0);
 });
+
+for (const code of ['mcp_transport_error', 'mcp_result_invalid', 'connector_error', 'handler_outcome'] as const) test(`thrown ${code} survives owner journal and tool response`, async t => {
+  const f = await fixture(t); const seen: ModelRequest[] = [];
+  const model: ModelPort = { generate: async req => { seen.push(structuredClone(req)); return seen.length === 1 ? modelResult('search_knowledge') : modelResult(); } };
+  const registry = f.definitions().map(tool => ({ ...tool, async execute() {
+    if (code === 'handler_outcome') throw Error('synthetic unclassified');
+    throw Object.assign(Error('synthetic failure, not a response payload'), { code });
+  } }));
+  const outcome = await runTools({ model, request, registry, host: f.host, authority: { isCurrent: async () => true }, maxSteps: 3,
+    control: { signal: f.signal, deadlineMs: Date.now() + 5000 }, journal: f.owner.journal, resultGate: f.owner.resultGate });
+  assert.equal(outcome.status, 'complete');
+  const response = seen[1]!.contents.at(-1)!.parts[0]!.functionResponse!.response;
+  assert.equal(response['reason'], code);
+  const row = f.store.transaction(tx => tx.get('SELECT status, result_json FROM tool_results WHERE execution_id=?', ['run:1:0']));
+  assert.equal(row?.status, 'failed');
+  assert.equal(JSON.parse(String(row?.result_json)).response.reason, code);
+});

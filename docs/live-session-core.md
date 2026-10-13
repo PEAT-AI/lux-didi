@@ -89,7 +89,9 @@ store.close();
   `generationComplete`, `turnComplete`, `waitingForInput` and one sanitized terminal record.
   PCM, thoughts, `modelText`, resumption handles and raw errors never persist.
 - Count and byte limits end the session with a durable `journal_limit` terminal record,
-  preserving every committed fragment.
+  preserving every committed fragment. The effective `live.json` profile may override
+  `limits.sessionMs` and `limits.idleMs`; omitted limits use the core defaults of
+  15 minutes per session and 1 minute idle. Installation supplies no timer profile.
 - Audio goes to a single bounded consumer channel; an undrained consumer terminates visibly.
 - A failed store write aborts the adapter and never fabricates a durable outcome.
 
@@ -108,3 +110,54 @@ bash scripts/check-live-session.sh
 Builds the canonical service, runs this owner suite together with the accepted Live adapter
 regression suite, and verifies the packaged tarball publishes `dist/live`. The packaging gate
 `bash scripts/check-package.sh` covers the ordinary service artifact.
+
+## Release 4: frozen ordinary memory
+
+CREATE resolves durable entries through the domain memory layer and uses both the entry and
+parent-session routing labels. Only ordinary entries qualify, even when the configured route
+permits private or sensitive data. Unknown labels do not qualify. There is no voice write-back:
+transcriptions, interruption, completion and terminal events remain in `live_journal` only.
+
+The effective instruction, including tool conduct, selected historical notes and any deferred
+pickup instruction, is committed in `accepted_prompt_snapshot`. Its full text is hashed into
+`prompt_identity`, which contributes to the session fingerprint. Same-key replay returns the
+original snapshot without reading memory again. Attach sends the stored instruction unchanged.
+A subsequent CREATE can see revised notes and gets a new identity when effective text changes.
+
+Memory records are JSON-delimited, stable by entry id, and never clipped. The complete instruction
+must fit the existing 20,000-character trusted budget. Memory records yield before any static
+persona layer. An oversized static baseline raises `instruction_too_large`; memory resolution
+failure raises `memory_unavailable`, before provider dispatch. Selected ids and budget omissions
+are retained privately with the session. Safe session, profile and Live status projections expose
+only memory status and selected/omitted counts, never ids or note text. Empty recall is `empty`.
+
+A pickup session captures the deferred job id and its state/result identity at CREATE. An attach
+with a changed or missing pickup job raises `pickup_changed` before dispatch. The sanitized
+WebSocket rejection carries that reason; create a new session instead of retrying the stale one.
+The additive Live v4 migration adds `memory_provenance`; install migrations remain one-time.
+
+## Provider continuity inside one Live session
+
+The live owner moves `active -> rebuilding -> active` on a provider goAway or a
+recoverable transport loss. `rebuilding` is non-terminal: the consumer and
+`live_session_id` remain the same. The owner durably saves the latest usable
+resumption handle before using it, clears it when the provider revokes resumption,
+and increments a connection generation before replacing the adapter. Old
+connection callbacks cannot append journal rows, dispatch tools, update handles,
+or settle the session. One continuity row records `rebuilding` and one records
+`resumed` after setup completes.
+
+The replacement uses the original accepted prompt, memory provenance and admitted
+tool declarations without re-running selection or authority resolution. Pending
+tool calls receive `tool_call_lost_on_resume` results; no old call response is sent
+on the replacement connection. Queued PCM and speech captured during rebuilding
+are dropped, not replayed. At most two recovery attempts are admitted, each with
+setup bounded by the goAway time remaining or ten seconds and the remaining
+session and idle budget. The original session deadline never moves. A missing
+handle, exhausted budget, third loss or failed resumed setup ends once through
+the normal settlement path with `resume_failed`. Session and idle timeouts are
+final, never recovery triggers.
+
+### Live remember finalization
+
+`remember_note` persists only the owner's verbatim transcription, never model output or a model paraphrase. An explicit provider input transcription `finished: true` finalizes the owner turn immediately. When that flag is absent, the provider's tool call or first model output establishes a model-turn boundary; the owner finalizes the latest input journal row only after 300 ms without a newer input transcription. A newer input frame invalidates that boundary and requires a new one. An admitted remember tool waits at most 1500 ms for finalization, journaling exactly one typed `remember_deferred` row with `waitedMs` for the wait. If no finalization occurs within that bound, the existing `owner_transcript_not_final` refusal remains. The 300 ms default is a quiet-window safeguard, not permission to derive text from model words.

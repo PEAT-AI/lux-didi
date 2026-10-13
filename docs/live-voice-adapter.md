@@ -100,3 +100,35 @@ These references document transport behavior. Local offline tests do not establi
 Optional `languageCode` is a bare ISO 639-1 code (`ar` becomes `ar-XA`). Setup includes `historyConfig.initialHistoryInClientContent`, sliding-window compression with `targetTokens: 32000` and no trigger threshold, and LOW start-of-speech sensitivity. Models other than 3.8 Live receive `thinkingConfig: {thinkingLevel: 'minimal'}`.
 
 A `toolCall` event carries the entire provider batch, and `toolCallCancellation` carries cancelled ids. The host answers all outstanding ids in exactly one `sendToolResponse({responses})` call, producing one `toolResponse.functionResponses` frame. Microphone frames while a batch is unanswered are dropped, not queued, and counted by `session.droppedAudioFrames` and the final outcome's additive `droppedAudioFrames` field when nonzero. Once answered, continuous input resumes. Tool authorization and execution remain outside the adapter; the fixed endpoint, transport headers, limits, credential scrubbing and no-reconnect behavior are unchanged.
+
+An upstream 1007 close before setup readiness is classified as `provider_setup_rejected`; provider close reason text is never included in the outcome.
+
+Provider frames are validated independently for every known key: setupComplete, serverContent, toolCall, toolCallCancellation, goAway, sessionResumptionUpdate and voiceActivity. Voice activity ACTIVITY_START and ACTIVITY_END project through waitingForInput markers to listening and thinking; empty serverContent objects and empty modelTurn parts are valid informational content when accompanied by voiceActivity. Unknown informational siblings (including usageMetadata) are ignored, counted up to 65,535 per session, and logged as structured stderr key names only, once per retained name (at most 32 identifier-shaped names of 64 characters). Values are never logged. Empty top-level frames, malformed known content or tool calls, setupComplete after ready, provider errors, and serverContent before ready remain fail-closed.
+
+After setup readiness, empty `serverContent` frames are informational, with or without siblings: they are counted on the session and their key name is logged once through the bounded `live_provider_informational_key` event. Gemini voice activity uses `voiceActivity: {type: 'ACTIVITY_START' | 'ACTIVITY_END'}` to emit the existing waiting-for-input activity events; the legacy `voiceActivityType` field remains accepted. Content before readiness, malformed model-turn parts and malformed tool calls still fail closed.
+
+## Connection resumption contract
+
+Each adapter owns exactly one provider connection and never reconnects itself.
+Setup always includes `sessionResumption: {}`; a handle supplied by the live owner
+changes it to `{handle}`. Updates are typed private owner events
+`resumptionHandle` with a handle or null, never public markers. A typed `goAway`
+event carries `timeLeftMs`; it stops outbound admission without finishing the
+connection. The owner may replace the draining connection immediately.
+
+Outcomes classify network failures and transport closes 1006/1011 as recoverable,
+as well as completion of a provider drain. Policy/setup rejection (including
+1008), authentication, quota, protocol errors and local session, idle or deadline
+expiry are final. Limits supplied by the owner override connection timers,
+including the remaining session/idle budget on resumed connections. Recovery
+attempts and durable continuity belong only to the live owner.
+
+
+At the socket boundary, any non-101 HTTP upgrade response is a final
+`provider_setup_rejected`, including 401/403 authentication and 429 quota
+refusals. Established WebSocket `WS_ERR_*` protocol failures are final
+`protocol_error` (message-length overflow remains `incoming_limit`). Unknown
+socket errors are final, not inferred network failures. Known network errno
+failures such as `ECONNRESET`, `ETIMEDOUT` and `EPIPE`, abnormal close1006 without
+a prior protocol failure, server-error close1011 and provider drains retain
+recoverability. HTTP refusal bodies and error text are never diagnostics.

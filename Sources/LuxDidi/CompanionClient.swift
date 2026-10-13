@@ -100,10 +100,11 @@ enum CaptureStatus: Equatable { case idle, sending, saved, cancelled, unknown, f
     private var pending: Capture?
     private(set) var captureStatus: CaptureStatus = .idle
     var captureReceipt: CaptureReceipt? { pending?.receipt }
-    init(descriptor: ServiceDescriptor, credential: @escaping () throws -> String, expectedEpoch: String? = nil, connectionGuard: @escaping () -> Bool = { true }) {
+    init(descriptor: ServiceDescriptor, credential: @escaping () throws -> String, expectedEpoch: String? = nil, connectionGuard: @escaping () -> Bool = { true }, protocolClasses: [AnyClass]? = nil) {
         self.descriptor = descriptor; self.credential = credential
         self.expectedEpoch = expectedEpoch; self.connectionGuard = connectionGuard
         let config = URLSessionConfiguration.ephemeral
+        if let protocolClasses { config.protocolClasses = protocolClasses }
         config.httpCookieStorage = nil; config.httpShouldSetCookies = false
         config.urlCache = nil; config.requestCachePolicy = .reloadIgnoringLocalCacheData
         config.timeoutIntervalForRequest = 8; config.timeoutIntervalForResource = 12
@@ -133,8 +134,29 @@ enum CaptureStatus: Equatable { case idle, sending, saved, cancelled, unknown, f
             return request
         })
     }
+    func connectedRead(_ path: String) async throws -> [String: Any] {
+        let (value, _) = try await request(path, bearer: false, page: true)
+        return value
+    }
+    func connectedAccept(sessionID: String, text: String, key: String, authority: String) async throws -> [String: Any] {
+        let (value, _) = try await request("api/v1/chat", method: "POST",
+            body: ["sessionId": sessionID, "text": text],
+            bearer: false, page: true, key: key, authority: authority)
+        return value
+    }
+    func liveConnections() async throws -> [NativeLiveConnection] {
+        let (value, _) = try await requestPayload("api/v1/live/connections", bearer: false, page: true)
+        guard let rows = value as? [[String: Any]] else { throw CompanionError.invalidResponse }
+        return try JSONDecoder().decode([NativeLiveConnection].self, from: JSONSerialization.data(withJSONObject: rows))
+    }
     private func request(_ path: String, method: String = "GET", body: [String: Any]? = nil, query: [URLQueryItem] = [],
                          bearer: Bool = true, page: Bool = false, key: String? = nil, authority: String? = nil) async throws -> ([String: Any], HTTPURLResponse) {
+        let (value, response) = try await requestPayload(path, method: method, body: body, query: query, bearer: bearer, page: page, key: key, authority: authority)
+        guard let dictionary = value as? [String: Any] else { throw CompanionError.invalidResponse }
+        return (dictionary, response)
+    }
+    private func requestPayload(_ path: String, method: String = "GET", body: [String: Any]? = nil, query: [URLQueryItem] = [],
+                         bearer: Bool = true, page: Bool = false, key: String? = nil, authority: String? = nil) async throws -> (Any, HTTPURLResponse) {
         guard connectionGuard() else { throw CompanionError.unavailable }
         var parts = URLComponents(url: descriptor.baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false)!
         if !query.isEmpty { parts.queryItems = query }
@@ -160,7 +182,7 @@ enum CaptureStatus: Equatable { case idle, sending, saved, cancelled, unknown, f
         if http.statusCode == 401 { throw CompanionError.authentication }
         guard (200...299).contains(http.statusCode) else { throw CompanionError.rejected(http.statusCode) }
         guard let envelope = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let value = envelope["data"] as? [String: Any] else { throw CompanionError.invalidResponse }
+              let value = envelope["data"] else { throw CompanionError.invalidResponse }
         return (value, http)
     }
     func bootstrap() async throws -> HTTPCookie {
@@ -232,6 +254,22 @@ enum CaptureStatus: Equatable { case idle, sending, saved, cancelled, unknown, f
             // Even a later definitive rejection cannot erase an earlier unknown result.
             captureStatus = .unknown
             throw error
+        }
+    }
+}
+
+struct NativeLiveConnection: Decodable, Identifiable {
+    let id: String
+    let state: String
+    let reasonCode: String?
+    var reason: String? {
+        switch reasonCode {
+        case "credential_missing": return "Credential missing or invalid"
+        case "unreachable": return "Connector unreachable"
+        case "discovery_failed": return "Tool discovery failed"
+        case "handshake_failed": return "Connector handshake failed"
+        case "unknown": return "Connector error"
+        default: return nil
         }
     }
 }

@@ -82,4 +82,48 @@ export const liveMigrations: readonly SchemaMigration[] = [{
     `CREATE INDEX live_journal_session ON live_journal(live_session_id, journal_id)`,
     `CREATE TABLE live_tool_acceptances (live_session_id TEXT PRIMARY KEY REFERENCES live_sessions(live_session_id), acceptance_json TEXT NOT NULL, accepted_run_hash TEXT NOT NULL)`,
   ],
-}];
+}, { owner: 'live', version: 4, statements: [
+  `ALTER TABLE live_sessions ADD COLUMN memory_provenance TEXT`
+]}, { owner: 'live', version: 5, statements: [
+  `ALTER TABLE live_sessions ADD COLUMN resumption_handle TEXT`,
+  `ALTER TABLE live_sessions ADD COLUMN connection_generation INTEGER NOT NULL DEFAULT 0`,
+    `CREATE TABLE live_journal_resumable (
+       journal_id INTEGER PRIMARY KEY AUTOINCREMENT,
+       live_session_id TEXT NOT NULL REFERENCES live_sessions(live_session_id),
+       provider_sequence INTEGER,
+       kind TEXT NOT NULL CHECK (kind IN ('inputTranscription','outputTranscription','ready','interrupted','generationComplete','turnComplete','waitingForInput','terminal','toolCall','toolResult','continuity')),
+       text TEXT,
+       tool_json TEXT,
+       finished INTEGER CHECK (finished IS NULL OR finished IN (0,1)),
+       value INTEGER CHECK (value IS NULL OR value IN (0,1)),
+       terminal_outcome TEXT,
+       rejected_kind TEXT,
+       rejected_sequence INTEGER,
+       payload_bytes INTEGER NOT NULL,
+       arrived_at INTEGER NOT NULL
+     )`,
+  `INSERT INTO live_journal_resumable SELECT * FROM live_journal`,
+  `DROP TABLE live_journal`,
+  `ALTER TABLE live_journal_resumable RENAME TO live_journal`,
+  `CREATE INDEX live_journal_session ON live_journal(live_session_id, journal_id)`
+]}, { owner: 'live', version: 6, statements: [
+    `CREATE TABLE live_journal_remember (
+       journal_id INTEGER PRIMARY KEY AUTOINCREMENT,
+       live_session_id TEXT NOT NULL REFERENCES live_sessions(live_session_id),
+       provider_sequence INTEGER,
+       kind TEXT NOT NULL CHECK (kind IN ('inputTranscription','outputTranscription','ready','interrupted','generationComplete','turnComplete','waitingForInput','terminal','toolCall','toolResult','continuity','remember_deferred')),
+       text TEXT,
+       tool_json TEXT,
+       finished INTEGER CHECK (finished IS NULL OR finished IN (0,1)),
+       value INTEGER CHECK (value IS NULL OR value IN (0,1)),
+       terminal_outcome TEXT,
+       rejected_kind TEXT,
+       rejected_sequence INTEGER,
+       payload_bytes INTEGER NOT NULL,
+       arrived_at INTEGER NOT NULL
+     )`,
+  `INSERT INTO live_journal_remember SELECT * FROM live_journal`,
+  `DROP TABLE live_journal`,
+  `ALTER TABLE live_journal_remember RENAME TO live_journal`,
+  `CREATE INDEX live_journal_session ON live_journal(live_session_id, journal_id)`
+]}];

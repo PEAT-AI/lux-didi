@@ -81,6 +81,7 @@ the owner or credentials are touched. A paired browser cookie/CSRF never authori
 | method | path | notes |
 | --- | --- | --- |
 | GET | `/api/v1/live/status` | safe configured model/voice/classes/profile identity |
+| GET | `/api/v1/live/summary` | cookie-safe closed whitelist: `modelId`, `voice`, `personaName`, `limits{sessionMs,idleMs}`, `profileEnabled` |
 | POST | `/api/v1/live-sessions` | `{ inputClass }` + `Idempotency-Key`; returns a frozen snapshot |
 | GET | `/api/v1/live-sessions/:id` | snapshot |
 | GET | `/api/v1/live-sessions/:id/journal` | bounded `?cursor&limit` page |
@@ -166,3 +167,15 @@ asks for the pending outcome first, briefly. Normal starts use `user_first`
 (the adapter default), preserving `turnComplete: false` history and waiting for
 the user. No completion or notification switches an existing session to
 model-first; only the user's explicit pickup or callback opens this new session.
+
+### Explicit voice remembering
+
+Live sessions declare the gateway-owned `remember_note` tool with `text` (1 to 500 characters) and `kind` (`fact`, `preference`, or `task`), and no other arguments. It executes locally, not over MCP. The **owner-trusted explicit voice memory rule** permits only this built-in write identity in `owner-trusted-reads`; explicit grant mode leaves it unapproved, and a remote MCP tool with the same name receives none of its permission. Other writes remain unapproved. Original argument validation, owner authority checks, intent journaling, result authorization and result journaling still apply.
+
+The gateway saves the owner's finalized input transcription, not the model's proposed note. The latest finalized explicit remember command in a bounded 64-fragment journal window supplies the payload. The model text must match that payload after case, whitespace and terminal-punctuation normalization, or be a normalized substring of it. A missing finalized command refuses with `owner_transcript_not_final`; a mismatch refuses with `owner_text_mismatch`. One finalized utterance can produce only one entry; a repeat refuses with `already_remembered` and identifies the existing entry. Provenance identifies `live-voice`, the Live session id and the finalized utterance journal sequence. The entry's existing source-reference note retains `kind:<kind>` without changing its owner-authored content.
+
+Voice remembering writes **ordinary memory only**. An explicit request to classify the note as private or sensitive refuses with `private_memory_unsupported`; it is never silently downgraded. Private notes must use an owner-controlled workflow, not this voice tool. Live-voice entries have **no deletion control yet**. Durable memory deletion is deferred to a separate wagon, not available through the Live projection or the selected-memory picker.
+
+A successful result is only `{remembered: true, entryId}`; refusals return `{remembered: false, code}` (duplicate refusals additionally identify the existing entry). Note text is never echoed in the tool result. Naya confirms aloud only after success and otherwise reports the refusal. Saving does not modify the running session's `accepted_prompt_snapshot` or `prompt_identity`: recall occurs at the next session CREATE.
+
+An upstream 1007 close before ready journals `provider_setup_rejected` without provider reason text and closes the client with `1008 attach_rejected:provider_setup_rejected`; post-ready terminal closes remain `1000 terminal`.

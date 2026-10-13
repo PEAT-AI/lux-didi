@@ -158,7 +158,7 @@ import CryptoKit
             consumer["capture"] = OwnedWindowProof.captureEvidence
             report["axConsumer"] = consumer
             report["visual"] = visual
-            guard Set(controls.compactMap({ $0["name"] as? String })) == ["Start recording", "Stop recording", "Send text"], controls.allSatisfy({ $0["visible"] as? Bool == true }) else { throw InstalledProofError.accessibility }
+            guard Set(controls.compactMap({ $0["name"] as? String })) == OwnedWindowProof.expectedControlNames, controls.allSatisfy({ $0["visible"] as? Bool == true }) else { throw InstalledProofError.accessibility }
             // Keep this same owned host alive for the script's actual status and
             // P1/P2 HTTP assertions, under the existing private gate deadline.
             try proof.write(report)

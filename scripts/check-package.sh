@@ -41,7 +41,7 @@ cp -R "$builder/dist" "$work/runtime/dist"
 mkdir -p "$work/runtime/adapters/mcp"
 cp "$builder/adapters/mcp/SDK-LICENSE.txt" "$work/runtime/adapters/mcp/"
 # This is a separate locked production install, not a pruned or dirty developer tree.
-(cd "$work/runtime" && npm ci --offline --omit=dev --ignore-scripts --no-audit --no-fund)
+bash scripts/npm-ci-offline.sh "$work/runtime" ci --offline --omit=dev --ignore-scripts --no-audit --no-fund
 export DIDI_PACKAGE_SOURCE="$builder"
 cd "$work/runtime"
 for file in dist/test/http.test.js dist/test/package.test.js; do

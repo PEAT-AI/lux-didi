@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -106,4 +108,36 @@ test('a tool outside the read grant refuses before dispatch', async t => {
   const result = await reader(f.adapter, f.registry, digest).getThread({ postId: 'post-1' });
   assert.equal(result.state, 'refused');
   assert.equal(result.state === 'refused' ? result.reason : '', 'tool-not-granted');
+});
+
+// Fake MCP HTTP server at the real guarded-fetch seam, no listening socket or corpus.
+test('mattermost_whoami projects an SSE MCP entity from separately decodedResult', async t => {
+  const sdk = new Server({ name: 'synthetic-sse', version: '1' }, { capabilities: { tools: {} } });
+  const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: false });
+  const tool = { name: 'mattermost_whoami', inputSchema: { type: 'object' } };
+  sdk.setRequestHandler('tools/list', () => ({ tools: [tool] }) as never);
+  sdk.setRequestHandler('tools/call', () => ({ content: [{ type: 'text', text: JSON.stringify({ username: 'Synthetic SSE', display_name: 'Synthetic Reader' }) }], structuredContent: { marker: 'synthetic-unclassified' }, isError: false }) as never);
+  await sdk.connect(transport);
+  t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+    const request = new Request(input, init);
+    return request.method === 'GET' ? new Response(null, { status: 405 }) : transport.handleRequest(request);
+  });
+  const registry = new McpRegistry();
+  registry.register({ id: 'sse', url: 'http://127.0.0.1:18766/mcp', account: 'synthetic', resource: 'synthetic' });
+  registry.enable('sse'); registry.allowEgress('sse');
+  const adapter = createMcpAdapter({ registry, store: new MemoryResultStore() });
+  t.after(async () => { await adapter.close(); await sdk.close(); });
+  const discovery = await adapter.discover('sse'); assert.equal(discovery.state, 'discovered');
+  if (discovery.state !== 'discovered') throw Error('discovery failed');
+  registry.approve({ endpointId: 'sse', schemaDigest: discovery.schemaDigest, toolNames: ['mattermost_whoami'], effect: 'read', account: 'synthetic', resource: 'synthetic', generation: 1 });
+  const result = await createMattermostReader({ port: adapter, registry, config: { endpointId: 'sse', account: 'synthetic', resource: 'synthetic', schemaDigest: discovery.schemaDigest, generation: 1, maxLimit: 60, queryChars: 200 } }).whoami();
+  assert.equal(result.state, 'completed');
+  if (result.state !== 'completed' || result.response.state !== 'available') throw Error('missing result');
+  const wire = adapter.readSlice({ ...result.source, handle: result.response.handle, offset: 0, length: 16 });
+  assert.equal(wire.state, 'available');
+  if (wire.state === 'available') assert.match(new TextDecoder().decode(wire.bytes), /^event:|^data:/);
+  const projected = projectMattermostResult(adapter, result); assert.equal(projected.ok, true);
+  if (!projected.ok) throw Error('projection failed');
+  assert(projected.projection.text.includes('Synthetic SSE'));
+  assert(!projected.projection.text.includes('synthetic-unclassified'));
 });

@@ -1,4 +1,4 @@
-import type { LiveCurrent } from './protocol';
+import type { LiveCurrent, EntryDeletionResponse } from './protocol';
 export class ApiError extends Error {
   constructor(public code: string, message: string, public status: number) { super(message); }
 }
@@ -60,6 +60,20 @@ export async function fetchLive(cursor: string | number | undefined, signal?: Ab
   return request<LiveCurrent>(`/live/current${query}`, { signal });
 }
 
+/** The browser-safe Live summary whitelist returned by GET /api/v1/live/summary. */
+export interface LiveSummary {
+  modelId: string | null;
+  voice: string | null;
+  personaName: string | null;
+  limits: { sessionMs: number; idleMs: number } | null;
+  profileEnabled: boolean;
+}
+
+/** Read-only Live summary. GET with the page cookie; the operator bearer is accepted too. */
+export async function fetchLiveSummary(signal?: AbortSignal): Promise<LiveSummary> {
+  return request<LiveSummary>('/live/summary', { signal });
+}
+
 /** Fetch SSE uses the same current browser authority; no URL tokens or resend. */
 export async function stream(path: string, signal: AbortSignal, onFrame: (value: unknown) => void, onOpen?: () => void): Promise<void> {
   if (!epoch || !csrfToken) throw new ApiError('NOT_CONNECTED', 'Reconnect before subscribing.', 0);
@@ -84,4 +98,8 @@ export async function stream(path: string, signal: AbortSignal, onFrame: (value:
       if (done) break;
     }
   } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
+}
+
+export function deleteMemoryEntry(id: string, signal?: AbortSignal): Promise<EntryDeletionResponse> {
+  return request<EntryDeletionResponse>(`/entries/${encodeURIComponent(id)}`, { method: 'DELETE', body: {}, ...(signal ? { signal } : {}) });
 }

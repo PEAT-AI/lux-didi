@@ -11,6 +11,7 @@ export type LiveLifecycle = 'accepted' | 'opening' | 'active' | 'terminal';
 export type LiveConsumerState = 'detached' | 'attached' | 'ended' | 'backpressure';
 export type LiveInvalidationReason = 'revoked' | 'authority' | 'profile';
 export type LiveErrorCode =
+  | 'memory_unavailable' | 'instruction_too_large' | 'pickup_changed'
   | 'invalid_config' | 'invalid_request' | 'invalid_context' | 'stale_authority' | 'not_found'
   | 'idempotency_conflict' | 'terminal' | 'already_attached' | 'not_ready' | 'invalidated'
   | 'expired' | 'invalid_audio' | 'persistence_failed';
@@ -32,11 +33,24 @@ export interface LiveLimits {
   wsBufferedBytes: number;
 }
 
+export interface LiveMemoryRecord { readonly id: string; readonly text: string; readonly dataClass: DataClass | 'unknown' }
+export type LiveMemorySource = (tx: import('../contracts/storage.js').Transaction) => readonly LiveMemoryRecord[];
+export interface LiveMemoryProvenance {
+  readonly status: 'empty' | 'selected' | 'partial' | 'omitted';
+  readonly selectedIds: readonly string[];
+  readonly omitted: readonly { readonly id: string; readonly reason: 'budget' }[];
+}
+export interface LiveMemoryProjection { readonly status: LiveMemoryProvenance['status']; readonly selected: number; readonly omitted: number }
+
 export interface AcceptedPromptSnapshot {
+  readonly memory?: LiveMemoryProvenance;
+  readonly pickup?: { readonly jobId: string; readonly identity: string };
+
   readonly schemaVersion: 1; readonly ownerProfile: OwnerProfileSnapshot;
   readonly compilerVersion: string; readonly system: string; readonly dataClasses: readonly DataClass[];
 }
 export interface LiveProfile {
+  readonly overlay?: import('../prompt/live-persona.js').PersonaOverlay;
   readonly acceptedPrompt?: AcceptedPromptSnapshot;
   readonly provider: 'gemini';
   readonly liveModelId: string;
@@ -52,7 +66,7 @@ export type LiveToolsComposition = {
   owner: ReturnType<typeof createToolsOwner>; connectionIds(): string[];
   registerAuthoritySource?(source: (runId: string, signal: AbortSignal) => Promise<import('../tools/types.js').LiveAuthority | null>): void;
 };
-export interface LiveToolProjection { name: string; status: 'completed' | 'error'; markdown: string; sources: { title: string; url?: string }[] }
+export interface LiveToolProjection { code?: 'tool_call_lost_on_resume'; callId?: string; name: string; status: 'completed' | 'error'; markdown: string; sources: { title: string; url?: string }[] }
 export interface PendingLiveJob {
   id: string; originSessionId: string; state: 'in_progress' | 'completed' | 'failed' | 'unknown';
   createdAt: number; markdown: string; delivered: boolean;
@@ -62,13 +76,16 @@ export interface LivePendingService {
   createWithPending(inputClass: DataClass, idempotencyKey: string, context: LiveContext, pickupJobId?: string): LiveSessionSnapshot;
 }
 export interface LivePageProjection {
+  pastSession?: { outcome: LiveTerminalOutcome['state'] | 'unknown'; endedAt: number | null; lastObservedAt: number };
   jobs?: PendingLiveJob[];
-  state: 'idle' | 'listening' | 'thinking' | 'speaking' | 'ended' | 'error'; since: number | null;
-  entries: { seq: number; kind: 'inputTranscription' | 'outputTranscription' | 'toolCall' | 'toolResult' | 'interrupted' | 'turnComplete' | 'terminal'; text?: string; tool?: { name: string; status: 'called' | 'completed' | 'error'; markdown?: string; sources?: { title: string; url?: string }[] } }[];
+  memory?: LiveMemoryProjection;
+  state: 'idle' | 'listening' | 'thinking' | 'speaking' | 'rebuilding' | 'ended' | 'error'; since: number | null;
+  entries: { seq: number; kind: 'continuity' | 'inputTranscription' | 'outputTranscription' | 'toolCall' | 'toolResult' | 'interrupted' | 'turnComplete' | 'terminal'; event?: 'rebuilding' | 'resumed'; reason?: string; text?: string; tool?: { name: string; status: 'called' | 'completed' | 'error'; markdown?: string; sources?: { title: string; url?: string }[] } }[];
   cursor: number;
 }
 export interface LiveOwnerConfig {
   readonly tools?: LiveToolsComposition;
+  readonly memorySource?: LiveMemorySource;
   readonly store: LiveStorePort;
   readonly voice: LiveVoicePort;
   readonly profile: LiveProfile;
@@ -94,17 +111,20 @@ export type LiveTerminalOutcome =
 export interface LiveSessionSnapshot {
   liveSessionId: string; assistantId: string; authorityEpoch: string; idempotencyKey: string;
   clientId: string; auditId: string; lifecycle: LiveLifecycle; dispatchIntent: boolean; ready: boolean;
+  memory: LiveMemoryProjection;
   profileIdentity: string; promptIdentity: string; grant: LiveGrantSnapshot; consumerState: LiveConsumerState;
   journal: { events: number; bytes: number; maxEvents: number; maxBytes: number; complete: boolean };
   terminal: LiveTerminalOutcome | null; createdAt: number; updatedAt: number;
 }
 
 export type JournalKind =
-  | 'toolCall' | 'toolResult'
+  | 'toolCall' | 'toolResult' | 'continuity' | 'remember_deferred'
   | 'inputTranscription' | 'outputTranscription' | 'ready' | 'interrupted' | 'generationComplete'
   | 'turnComplete' | 'waitingForInput' | 'terminal';
 
 export interface LiveFragment {
+  waitedMs?: number;
+  event?: 'rebuilding' | 'resumed'; reason?: string;
   tool?: LiveToolProjection;
   liveSessionId: string; journalSequence: number; providerSequence: number | null; kind: JournalKind;
   text: string | null; finished: boolean | null; value: boolean | null; rejectedKind: JournalKind | null;
@@ -119,6 +139,7 @@ export interface LiveFragmentPage {
 
 /** One already-committed journal marker projected for the client. */
 export interface LivePublicMarker {
+  readonly event?: 'rebuilding' | 'resumed'; readonly reason?: string;
   readonly tool?: LiveToolProjection;
   readonly kind: JournalKind;
   readonly sequence: number | null;
@@ -148,6 +169,7 @@ export interface LiveAttachment {
 
 /** Safe operator-visible identity. Never carries key bytes or prompt text. */
 export interface LiveProfileProjection {
+  readonly memory: LiveMemoryProjection;
   readonly provider: LiveProvider;
   readonly model: string;
   readonly voice: string;

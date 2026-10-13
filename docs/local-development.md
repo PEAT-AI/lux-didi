@@ -30,6 +30,10 @@ npm --prefix server ci
 npm --prefix web ci
 ```
 
+Several checks install offline (`npm ci --offline`) from the npm cache. Warm it once with `bash scripts/warm-npm-cache.sh`, which fills the user cache (or the cache `npm_config_cache` points at) with every tarball locked in `server/package-lock.json` and `web/package-lock.json` and touches no `node_modules` in the repository.
+Offline installs run through `scripts/npm-ci-offline.sh <dir>`: it runs the site's exact install, keeps npm's own output, exits non-zero, and never falls back to the network.
+When that wrapper fails it prints one line naming the failing directory, npm's error code (for example `ENOTCACHED`), the missing `package@version` when npm names it, and the fix command `bash scripts/warm-npm-cache.sh`.
+
 ## Build
 
 The supported build is the wrapper, which cleans this worktree's generated output and builds both packages with their canonical configuration.
@@ -159,3 +163,20 @@ python3 scripts/backlog_validate.py --all --report planning/backlog-validation.m
 ## How this page was verified
 
 Every command above was cross-checked against the current sources of this tree at `6a66898a392e052a31b59ef009dcae03b1c5aae8`: `scripts/run-local.sh`, `server/package.json`, `web/package.json`, `server/tsconfig.json`, `server/host/index.ts`, `server/host/runtime.ts`, `server/index.ts`, the `scripts/check-*.sh` producers, `Tests/DidiMacTests/check-mac.sh`, and the existing runtime records in [local-runtime.md](local-runtime.md) and [service-runtime.md](service-runtime.md). The commands were not re-executed for this document.
+
+### Companion gate failure evidence
+
+Run `bash Tests/DidiCompanionTests/check-companion.sh` through the managed declared
+check when working in a worker lane. The observer reports failing verification
+guards to stderr with status values, not payloads or credentials. The gate always
+exercises a no-launch forced-failure diagnostic before its real native checks.
+On failure, `COMPANION FAILURE` and `REAL-HOST FAILURE` print retained work paths;
+`PROOF-DIR` identifies the retained proof directory. Keep these directories while
+reviewing `observer.json` and its named child logs. Successful runs remove their
+disposable work as before. Failure status is propagated unchanged.
+
+The companion gate selects Node from the accepted asset bundle, using the same
+source as the native install gate and `build-macos-app.sh`. Without an existing
+accepted asset input, the gate invokes the canonical asset producer. Its fixture
+Node must satisfy the native build's self-contained dependency policy; the gate
+never substitutes a PATH/Homebrew Node or patches loader references.

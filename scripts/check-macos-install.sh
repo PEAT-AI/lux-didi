@@ -332,7 +332,7 @@ PY
   fx_origin="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["service"]["origin"])' "$proof/fx-p1.json")"
   fx_epoch="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["service"]["authorityEpoch"])' "$proof/fx-p1.json")"
   fxtoken="$(tr -d '\n' < "$fstate/admin-credential")"
-  curl --fail-with-body -sS -X POST "$fx_origin/api/v1/conversations" -H "Authorization: Bearer $fxtoken" -H "Origin: $fx_origin" -H "Content-Type: application/json" -H "X-Didi-Authority-Epoch: $fx_epoch" -H "Idempotency-Key: $(uuidgen)" --data '{"title":"synthetic fixture","timeZone":"UTC"}' > "$proof/fx-enroll.json"
+  curl --fail-with-body -sS -X POST "$fx_origin/api/v1/conversations" -H "Authorization: Bearer $fxtoken" -H "Origin: $fx_origin" -H "Content-Type: application/json" -H "X-Didi-Authority-Epoch: $fx_epoch" -H "Idempotency-Key: $(uuidgen)" --data '{"title":"synthetic fixture","timeZone":"UTC","consent":true}' > "$proof/fx-enroll.json"
   sid="$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1])).get("data") or {};print(d.get("sessionId") or "")' "$proof/fx-enroll.json")"
   [ -n "$sid" ] || { echo "MACOS-INSTALL FAIL: session creation returned no actual sessionId" >&2; exit 1; }
   fkey="$(uuidgen)"
@@ -472,6 +472,7 @@ fi
 # Prepare: build synthetic accepted assets and compose the production app. Native
 # compilation and bundling stay outside the browser lease.
 work="$(mktemp -d "${TMPDIR:-/tmp}/didi-macos-install.XXXXXX")"
+work="$(cd "$work" && pwd -P)"
 trap 'rm -rf "$work"' EXIT
 parent="${LUX_DIDI_PROOF_DIR:-${TMPDIR:-/tmp}}"
 mkdir -p "$parent"

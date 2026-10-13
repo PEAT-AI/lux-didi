@@ -105,6 +105,7 @@ public enum LiveClientState: Sendable, Equatable {
     case terminal(LiveTerminal)
     case outcomeUnknown(LiveClientError)
     case failed(LiveClientError)
+    case rebuilding
 }
 
 /// No preference, native REST/bootstrap, credential owner, device, UI, persistence, or reconnect binding.
@@ -128,13 +129,19 @@ public actor LiveSessionCoordinator {
     private var operation: UInt64 = 0
     private var pendingBytes = 0
     private var pendingFrames = 0
+    public private(set) var captureEpoch: UInt64 = 0
+    private var captureMuted = false
+    private var captureSubmissions = 0
+    private var captureDrainWaiters: [CheckedContinuation<Void, Never>] = []
+    private let beforeCaptureSubmission: (@Sendable () async -> Void)?
     private let maxPendingBytes = 131072
     private let maxPendingFrames = 4
     private var inputEnded = false
     private var reading = false
 
-    public init(http: any LiveOperatorHTTP, sockets: any LiveSocketConnecting, sink: any LiveAudioSink) {
+    public init(http: any LiveOperatorHTTP, sockets: any LiveSocketConnecting, sink: any LiveAudioSink, beforeCaptureSubmission: (@Sendable () async -> Void)? = nil) {
         self.http = http; self.sockets = sockets; self.sink = sink
+        self.beforeCaptureSubmission = beforeCaptureSubmission
         (events, stateEvents) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(16))
     }
 
@@ -149,7 +156,7 @@ public actor LiveSessionCoordinator {
         await oldSocket?.cancel()
         guard current(token, op) else { return }
         do { try await sink.flush() }
-        catch { if current(token, op) { state = .failed(.unavailable) }; return }
+        catch { if current(token, op) { state = .failed(safe(error, fallback: .unavailable)) }; return }
         guard current(token, op) else { return }
         let task = Task { await self.performCreate(token, op) }
         operationTask = task
@@ -184,7 +191,8 @@ public actor LiveSessionCoordinator {
         do { snapshot = try await http.create(for: frozen, key: key) }
         catch {
             if current(token, op) {
-                state = (error as? LiveClientError) == .conflict ? .failed(.conflict) : .createUnknown
+                if let reason = error as? LiveClientError, case .http = reason { state = .failed(reason) }
+                else { state = (error as? LiveClientError) == .conflict ? .failed(.conflict) : .createUnknown }
             }
             return
         }
@@ -213,13 +221,22 @@ public actor LiveSessionCoordinator {
         do {
             while !Task.isCancelled {
                 let frame = try await connection.receive()
-                guard generation == token, !Task.isCancelled, state == .attaching || state == .active else { return }
+                guard generation == token, !Task.isCancelled, state == .attaching || state == .active || state == .rebuilding else { return }
                 switch frame {
+                case .continuity(let event):
+                    if event == "rebuilding", state == .active {
+                        state = .rebuilding
+                        try await sink.flush()
+                    } else if event == "resumed", state == .rebuilding {
+                        state = .active
+                    }
                 case .pcm(let pcm):
+                    if state == .rebuilding { continue }
                     guard state == .active else { throw LiveClientError.invalidFrame }
                     try await sink.write(pcm)
                     guard generation == token, !Task.isCancelled else { return }
                 case .marker(let marker):
+                    if state == .rebuilding { continue }
                     guard marker.sequence > previousSequence else { throw LiveClientError.invalidFrame }
                     previousSequence = marker.sequence
                     if marker.kind == .ready {
@@ -241,14 +258,35 @@ public actor LiveSessionCoordinator {
                 }
             }
         } catch {
-            guard generation == token, !Task.isCancelled, state == .attaching || state == .active else { return }
+            guard generation == token, !Task.isCancelled, state == .attaching || state == .active || state == .rebuilding else { return }
             state = .outcomeUnknown(safe(error, fallback: .transport)); socket = nil
             try? await sink.flush()
             await connection.cancel()
         }
     }
 
-    public func sendPCM(_ pcm: Data) async throws {
+    /// Advance the capture fence before waiting. The caller acknowledges mute only on return.
+    public func setCaptureMuted(_ muted: Bool, epoch: UInt64) async {
+        guard epoch >= captureEpoch else { return }
+        captureEpoch = epoch; captureMuted = muted
+        if muted, captureSubmissions > 0 {
+            await withCheckedContinuation { captureDrainWaiters.append($0) }
+        }
+    }
+
+    public func sendPCM(_ pcm: Data, captureEpoch submittedEpoch: UInt64? = nil) async throws {
+        if let submittedEpoch, captureMuted || submittedEpoch != captureEpoch { return }
+        if submittedEpoch != nil { captureSubmissions += 1 }
+        defer {
+            if submittedEpoch != nil {
+                captureSubmissions -= 1
+                if captureSubmissions == 0 {
+                    let waiters = captureDrainWaiters; captureDrainWaiters.removeAll()
+                    for waiter in waiters { waiter.resume() }
+                }
+            }
+        }
+        if state == .rebuilding { return }
         try LiveSocketTransport.validatePCM(pcm)
         guard state == .active, !inputEnded, let connection = socket else { throw LiveClientError.unavailable }
         let token = generation
@@ -262,6 +300,11 @@ public actor LiveSessionCoordinator {
             if generation == token { pendingFrames -= 1; pendingBytes -= pcm.count }
         }
         do {
+            if submittedEpoch != nil, let beforeCaptureSubmission { await beforeCaptureSubmission() }
+            // Last outbound boundary: a drained frame may have suspended before reaching this actor.
+            if let submittedEpoch, captureMuted || submittedEpoch != captureEpoch { return }
+            try Task.checkCancellation()
+            guard generation == token, state == .active else { throw LiveClientError.staleOperation }
             try await connection.sendPCM(pcm)
             guard generation == token, state == .active else { throw LiveClientError.staleOperation }
         } catch {
@@ -368,7 +411,12 @@ public actor LiveSessionCoordinator {
     }
     private var settled: Bool { if case .terminal = state { return true }; return false }
     private func current(_ token: UInt64, _ op: UInt64) -> Bool { generation == token && operation == op }
-    private func safe(_ error: Error, fallback: LiveClientError) -> LiveClientError { (error as? LiveClientError) ?? fallback }
+    private func safe(_ error: Error, fallback: LiveClientError) -> LiveClientError {
+        if let reason = error as? LiveClientError { return reason }
+        if error is URLError { return .transport }
+        if error is DecodingError { return .invalidFrame }
+        return fallback
+    }
     private func validateIntent(_ frozen: LiveBeginIntent) throws {
         guard !frozen.assistantID.isEmpty, frozen.provider == "gemini", !frozen.model.isEmpty, !frozen.voice.isEmpty,
               ["ordinary", "private", "sensitive"].contains(frozen.inputClass) else { throw LiveClientError.invalidIntent }

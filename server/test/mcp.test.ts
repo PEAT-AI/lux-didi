@@ -25,6 +25,7 @@ interface FixtureOptions {
   jsonResponse?: boolean;
   callStatus?: number;
   malformedCall?: boolean;
+  callFraming?: 'single' | 'multiline' | 'keepalive' | 'empty';
 }
 async function fixture(options: FixtureOptions = {}) {
   const observed: { method: string; origin: string | undefined; host: string | undefined; auth: string | undefined; path: string }[] = [];
@@ -59,6 +60,13 @@ async function fixture(options: FixtureOptions = {}) {
         const envelope = await response.json() as Record<string, unknown>;
         envelope.result = { content: [{ type: 'unsupported', text: 'invalid wire result' }] };
         response = new Response(JSON.stringify(envelope), { status: 200, headers: response.headers });
+      }
+      if (packet.method === 'tools/call' && options.callFraming) {
+        const json = await response.text();
+        const frame = options.callFraming === 'empty' ? ': keepalive\n\n'
+          : options.callFraming === 'multiline' ? `event: message\ndata: ${json.slice(0, json.indexOf(',') + 1)}\ndata: ${json.slice(json.indexOf(',') + 1)}\n\n`
+          : `${options.callFraming === 'keepalive' ? ': heartbeat\r\n\r\n' : ''}event: message\r\ndata: ${json}\r\n\r\n`;
+        response = new Response(frame, { status: 200, headers: { 'content-type': 'text/event-stream; charset=utf-8' } });
       }
       if (packet.method === 'tools/call' && options.callStatus) {
         void response.body?.cancel().catch(() => {});
@@ -434,4 +442,40 @@ test('registry restoration is distinct from new approval and retains exact scope
   restorable.restore(grant); assert.deepEqual(registry.currentGrant('x'), grant);
   assert.throws(() => registry.approve(grant));
   registry.revoke('x'); assert.throws(() => restorable.restore(grant));
+});
+
+// D11b d11b-mcp.jsonl records 6/10/14/15: shape only, no knowledge text.
+const recordedProviderShape = { content: [{ type: 'text', text: 'synthetic α payload' }], structuredContent: { synthetic: true }, isError: false };
+for (const framing of ['single', 'multiline', 'keepalive'] as const) {
+  test(`SSE ${framing} response publishes a decoded JSON-RPC result`, async () => {
+    const f = await fixture({ jsonResponse: true, callFraming: framing, call: () => recordedProviderShape });
+    const { adapter, registry } = setup(f.url);
+    try {
+      await approve(adapter, registry);
+      const result = await adapter.call(request);
+      assert.equal(result.state, 'completed');
+      if (result.state !== 'completed' || result.payload.state !== 'available') throw Error('missing result');
+      const chunks: Uint8Array[] = [];
+      for (let offset = 0; offset < result.payload.byteLength; offset += 97) {
+        const slice = adapter.readSlice({ ...result.source, handle: result.payload.handle, offset, length: Math.min(97, result.payload.byteLength - offset) });
+        assert.equal(slice.state, 'available');
+        if (slice.state !== 'available') throw Error('missing slice');
+        chunks.push(slice.bytes);
+      }
+      assert.deepEqual(Buffer.concat(chunks), f.responseEntities[0], 'SSE wire entity stays exact');
+      assert('decodedResult' in result, 'adapter separately returns the decoded MCP result');
+      const decoded = result.decodedResult as { content: { text: string }[] };
+      assert.equal(decoded.content[0]?.text, 'synthetic α payload');
+      assert.deepEqual(result.decodedResult, recordedProviderShape);
+    } finally { await adapter.close(); await f.close(); }
+  });
+}
+test('SSE without a JSON-RPC response returns a bounded transport code', async () => {
+  const f = await fixture({ jsonResponse: true, callFraming: 'empty' });
+  const { adapter, registry } = setup(f.url);
+  try {
+    await approve(adapter, registry);
+    const result = await adapter.call(request);
+    assert.deepEqual(result, { state: 'unknown', reason: 'mcp_transport_error' });
+  } finally { await adapter.close(); await f.close(); }
 });

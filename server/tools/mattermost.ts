@@ -1,3 +1,4 @@
+import type { ConnectorEvidence, ConnectorResult } from '../connectors/index.js';
 import type { McpPort, StoredPayload } from '../adapters/mcp/port.js';
 import type { MattermostEvidence, MattermostResult, MattermostTool } from '../connectors/mattermost.js';
 import { MATTERMOST_AUTH_NEEDED } from '../connectors/mattermost.js';
@@ -28,7 +29,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-export function readMattermostPayload(port: McpPort, evidence: MattermostEvidence): { ok: true; text: string } | { ok: false; reason: string } {
+export function readMattermostPayload(port: McpPort, evidence: ConnectorEvidence): { ok: true; text: string } | { ok: false; reason: string } {
   const payload: StoredPayload = evidence.response;
   if (payload.state !== 'available' || payload.encoding !== 'http-response-entity' || !Number.isSafeInteger(payload.byteLength) || payload.byteLength < 1 || !/^[a-f0-9]{64}$/.test(payload.sha256) || payload.expiresAt <= Date.now()) return { ok: false, reason: 'entity_unavailable_or_oversize' };
   const chunks: Uint8Array[] = [];
@@ -40,12 +41,10 @@ export function readMattermostPayload(port: McpPort, evidence: MattermostEvidenc
   }
   const bytes = Buffer.concat(chunks);
   if (bytes.byteLength !== payload.byteLength || sha256(bytes) !== payload.sha256) return { ok: false, reason: 'entity_hash_mismatch' };
-  return { ok: true, text: new TextDecoder('utf-8', { fatal: true }).decode(bytes) };
+  return decodeMcpContentText(evidence.decodedResult);
 }
 
-export function decodeMcpContentText(payloadText: string): { ok: true; text: string } | { ok: false; reason: string } {
-  let parsed: unknown;
-  try { parsed = JSON.parse(payloadText); } catch { return { ok: false, reason: 'unsupported_mcp_envelope' }; }
+export function decodeMcpContentText(parsed: unknown): { ok: true; text: string } | { ok: false; reason: string } {
   if (!isRecord(parsed)) return { ok: false, reason: 'unsupported_mcp_envelope' };
   const result = isRecord(parsed['result']) ? parsed['result'] : parsed;
   const content = result['content'];
@@ -54,9 +53,9 @@ export function decodeMcpContentText(payloadText: string): { ok: true; text: str
 }
 
 /** Configured/auth-needed status for a non-completed read: a missing session is never an empty success. */
-export function mattermostToolStatus(evidence: MattermostEvidence): ConnectorStatus | undefined {
+export function mattermostToolStatus(evidence: ConnectorEvidence): ConnectorStatus | undefined {
   if (evidence.state === 'completed') return undefined;
-  const content = decodeMcpContentText(evidence.projection.text);
+  const content = decodeMcpContentText(evidence.decodedResult);
   if (!content.ok) return { state: 'error', reason: 'tool call failed; no content' };
   return AUTH_MARKER.test(content.text)
     ? { state: 'configured', reason: MATTERMOST_AUTH_NEEDED }
@@ -79,7 +78,7 @@ function renderPost(post: Record<string, unknown>): string[] {
 }
 
 /** Pure Markdown projection of one Mattermost tool's decoded data. */
-export function renderMattermostTool(tool: MattermostTool, data: unknown): MattermostProjection {
+export function renderMattermostTool(tool: string, data: unknown): MattermostProjection {
   if (typeof data === 'string') return boundedProjection(data);
   if (!isRecord(data)) return boundedProjection(JSON.stringify(data));
   if (tool === 'mattermost_whoami') {
@@ -96,15 +95,13 @@ export function renderMattermostTool(tool: MattermostTool, data: unknown): Matte
   return boundedProjection(posts.flatMap(entry => (isRecord(entry) ? renderPost(entry) : [`- ${String(entry)}`])).join('\n\n'));
 }
 
-export function projectMattermostResult(port: McpPort, evidence: MattermostResult): { ok: true; projection: MattermostProjection } | { ok: false; reason: string } {
+export function projectMattermostResult(port: McpPort, evidence: ConnectorResult): { ok: true; projection: MattermostProjection } | { ok: false; reason: string } {
   if (evidence.state === 'refused' || evidence.state === 'unknown') return { ok: false, reason: evidence.reason };
   if (evidence.state !== 'completed') return { ok: false, reason: `tool-error: ${evidence.state}` };
   const payload = readMattermostPayload(port, evidence);
   if (!payload.ok) return { ok: false, reason: payload.reason };
-  const content = decodeMcpContentText(payload.text);
-  if (!content.ok) return { ok: false, reason: content.reason };
-  let data: unknown = content.text;
-  try { data = JSON.parse(content.text); } catch { data = content.text; }
+  let data: unknown = payload.text;
+  try { data = JSON.parse(payload.text); } catch { data = payload.text; }
   return { ok: true, projection: renderMattermostTool(evidence.tool, data) };
 }
 

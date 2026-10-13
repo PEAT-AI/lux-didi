@@ -1,6 +1,7 @@
-import type { EntryRecord, RecallResult, ResolvedEntryRecord, SessionRecord, SourceRefRecord } from './memory.js';
+import type { EntryKind, EntryRecord, EntryOrigin, RecallResult, ResolvedEntryRecord, SessionRecord, SourceRefRecord } from './memory.js';
 import type { CommitmentRecord, CommitmentStatus, DailyPlan, HistoryRecord } from './commitments.js';
 import type { ResolvedEntry } from './contract.js';
+import { entryKind, entryOrigin } from './memory.js';
 import { toIso } from './util.js';
 
 // Transport-blind DTO serializers. Shapes follow SERVICE-CONTRACT and
@@ -33,6 +34,8 @@ export interface EntryDTO {
   sequence: number;
   role: 'user' | 'assistant' | 'system';
   text: string;
+  kind: EntryKind;
+  origin: EntryOrigin;
   capturedAt: string;
   sourceRefs: SourceRefDTO[];
 }
@@ -125,6 +128,8 @@ export function toEntryDTO(e: EntryRecord, sourceRefs: SourceRefRecord[]): Entry
     sequence: e.sequence,
     role: e.role,
     text: e.text,
+    kind: entryKind(sourceRefs),
+    origin: entryOrigin(sourceRefs),
     capturedAt: toIso(e.capturedAt)!,
     sourceRefs: sourceRefs.map(toSourceRefDTO),
   };

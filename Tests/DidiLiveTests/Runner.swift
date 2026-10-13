@@ -1,11 +1,123 @@
+import AudioToolbox
 import Foundation
 @testable import DidiOwner
+
+// Session-local HTTP fixture, never installs a global URLProtocol or uses the network.
+final class PendingCallsFixture: URLProtocol, @unchecked Sendable {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var responses: [Result<Data, URLError>] = []
+    static func load(_ values: [Result<Data, URLError>]) { lock.withLock { responses = values } }
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        let result = Self.lock.withLock { Self.responses.isEmpty ? .failure(URLError(.badServerResponse)) : Self.responses.removeFirst() }
+        switch result {
+        case .failure(let error): client?.urlProtocol(self, didFailWithError: error)
+        case .success(let data):
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: data)
+            client?.urlProtocolDidFinishLoading(self)
+        }
+    }
+    override func stopLoading() {}
+}
 
 struct Envelope<Value: Decodable>: Decodable { let data: Value }
 struct HostStatus: Decodable { let assistantId: String; let authorityEpoch: String }
 struct StatusWire: Decodable {
     let status: String; let provider: String?; let model: String?; let voice: String?
     let profileIdentity: String?; let dataClasses: [String]?
+}
+
+// In-process HTTP fixture: captures the complete request, without a real timeout or server.
+final class DiagnosticHTTPFixture: URLProtocol, @unchecked Sendable {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var requests: [URLRequest] = []
+    nonisolated(unsafe) private static var status: Int? = 204
+    static func reset(status: Int?) { lock.lock(); defer { lock.unlock() }; requests = []; self.status = status }
+    static func captured() -> [URLRequest] { lock.lock(); defer { lock.unlock() }; return requests }
+    override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "diagnostic.fixture" }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        var captured = request
+        if captured.httpBody == nil, let stream = captured.httpBodyStream {
+            stream.open(); defer { stream.close() }
+            var data = Data(); var bytes = [UInt8](repeating: 0, count: 512)
+            while stream.hasBytesAvailable {
+                let count = stream.read(&bytes, maxLength: bytes.count)
+                if count <= 0 { break }; data.append(contentsOf: bytes.prefix(count))
+            }
+            captured.httpBody = data
+        }
+        Self.lock.lock(); Self.requests.append(captured); let status = Self.status; Self.lock.unlock()
+        if let status {
+            client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: status,
+                httpVersion: "HTTP/1.1", headerFields: nil)!, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocolDidFinishLoading(self)
+        } else { client?.urlProtocol(self, didFailWithError: URLError(.cannotConnectToHost)) }
+    }
+    override func stopLoading() {}
+}
+
+@MainActor func checkClientDiagnostics() async throws {
+    let config = URLSessionConfiguration.ephemeral
+    config.protocolClasses = [DiagnosticHTTPFixture.self]
+    config.httpCookieStorage = nil; config.httpShouldSetCookies = false
+    let session = URLSession(configuration: config)
+    defer { session.invalidateAndCancel() }
+    let origin = URL(string: "http://diagnostic.fixture")!
+    let http = NativeLiveOperatorHTTP(authority: (origin, { url, _ in
+        var request = URLRequest(url: url)
+        request.setValue("Bearer synthetic-operator", forHTTPHeaderField: "Authorization")
+        return request
+    }))
+    let cases: [(Error, String, String, Int?)] = [
+        (NativeLiveAudioError.permissionDenied, "audio", "permissionDenied", nil),
+        (NativeLiveAudioError.permissionRestricted, "audio", "permissionRestricted", nil),
+        (NativeLiveAudioError.unsupportedFormat, "audio", "unsupportedFormat", nil),
+        (NativeLiveAudioError.allocationFailed, "audio", "allocationFailed", nil),
+        (NativeLiveAudioError.converterUnavailable, "audio", "converterUnavailable", nil),
+        (NativeLiveAudioError.deviceMissing, "audio", "deviceUnavailable", nil),
+        (NativeLiveAudioError.formatUnavailable, "audio", "unsupportedFormat", nil),
+        (NativeLiveAudioError.captureNotConfigured, "audio", "deviceUnavailable", nil),
+        (NativeLiveAudioError.voiceProcessingFailed(code: nil), "audio", "voiceProcessingUnavailable", nil),
+        (NativeLiveAudioError.voiceProcessingFailed(code: -50), "audio", "voiceProcessingUnavailable", nil),
+        (NativeLiveAudioError.engineFormatMismatch(code: -10868), "audio", "unsupportedFormat", nil),
+        (NativeLiveAudioError.engineFailed(code: -10875), "audio", "deviceUnavailable", nil),
+        (NativeLiveAudioError.engineFailed(code: -50), "audio", "deviceUnavailable", nil),
+        (LiveClientError.invalidAudio, "service", "invalidAudio", nil),
+        (URLError(.cannotConnectToHost), "service", "service_unreachable", nil),
+        (LiveClientError.http(status: 503, code: "private text"), "service", "http", 503),
+        (LiveClientError.socketClosed(code: 1006, reason: "private text"), "service", "socketClosed", 1006),
+        (DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "private path")), "service", "unexpected_response", nil),
+        (ProbeError.assertion("private error"), "service", "connection_refused", nil),
+    ]
+    // Exact server/http/routes.ts audio allowlist; the audio branch admits no detail key.
+    let routeAudioCodes: Set<String> = ["unsupportedFormat", "allocationFailed", "converterUnavailable",
+        "permissionDenied", "permissionRestricted", "voiceProcessingUnavailable", "deviceUnavailable"]
+    for status in [204, 429, nil] as [Int?] {
+        for (error, failureClass, code, detail) in cases {
+            DiagnosticHTTPFixture.reset(status: status)
+            let sentence = NativeLivePresentation.failure(error)
+            await http.postPrecreateFailure(error, using: session)
+            let requests = DiagnosticHTTPFixture.captured()
+            try require(requests.count == 1, "diagnostic is attempted exactly once, including rate limit and transport failure")
+            let request = requests[0]
+            try require(request.url == origin.appendingPathComponent("api/v1/diagnostics/client") && request.httpMethod == "POST", "diagnostic route and method")
+            try require(request.value(forHTTPHeaderField: "Authorization") == "Bearer synthetic-operator" && request.value(forHTTPHeaderField: "Cookie") == nil, "operator bearer without cookies")
+            var expected: [String: Any] = ["event": "live_precreate_failed", "failureClass": failureClass, "code": code]
+            if let detail { expected["detail"] = detail }
+            let body = try JSONSerialization.data(withJSONObject: expected, options: [.sortedKeys])
+            if failureClass == "audio" {
+                let payload = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
+                try require(Set(payload.keys) == ["event", "failureClass", "code"] && routeAudioCodes.contains(payload["code"] as? String ?? ""),
+                            "every audio case produces exactly the route's accepted closed schema without detail")
+            }
+            try require(request.httpBody == body && body.count <= 512, "exact closed diagnostic body, no textual details")
+            try require(NativeLivePresentation.failure(error) == sentence, "diagnostic failures cannot replace the typed sentence")
+        }
+    }
 }
 
 actor Gate {
@@ -19,6 +131,8 @@ actor TestHTTP: LiveOperatorHTTP {
     let fixture: Fixture
     let session = isolatedSession()
     var loseCreate = false
+    var unreachableStatus = false
+    func makeStatusUnreachable() { unreachableStatus = true }
     var wrongGrant = false
     var wrongEpoch = false
     var wrongStatus = false
@@ -51,6 +165,7 @@ actor TestHTTP: LiveOperatorHTTP {
         return data
     }
     func status(for intent: LiveBeginIntent) async throws -> LiveOperatorStatus {
+        if unreachableStatus { throw URLError(.cannotConnectToHost) }
         let host = try JSONDecoder().decode(Envelope<HostStatus>.self, from: await raw("/api/v1/status")).data
         let live = try JSONDecoder().decode(Envelope<StatusWire>.self, from: await raw("/api/v1/live/status")).data
         guard live.status == "configured", let provider = live.provider, let model = live.model,
@@ -153,8 +268,27 @@ actor GatedSocket: LiveSocket {
     func cancel() async { closed = true; await underlying.cancel(); await gate.release() }
 }
 struct GatedSockets: LiveSocketConnecting {
-    let underlying: CountedSockets; let gate: Gate
+    let underlying: any LiveSocketConnecting; let gate: Gate
     func connect(_ binding: LiveSocketBinding) async throws -> any LiveSocket { try await GatedSocket(underlying.connect(binding), gate) }
+}
+
+actor ContinuitySocket: LiveSocket, LiveSocketConnecting {
+    private var frames: [LiveFrame] = []
+    private var waiter: CheckedContinuation<LiveFrame, Error>?
+    private(set) var inputs: [Data] = []
+    private(set) var connections = 0
+    func connect(_ binding: LiveSocketBinding) -> any LiveSocket { connections += 1; return self }
+    func push(_ frame: LiveFrame) {
+        if let pending = waiter { waiter = nil; pending.resume(returning: frame) }
+        else { frames.append(frame) }
+    }
+    func receive() async throws -> LiveFrame {
+        if !frames.isEmpty { return frames.removeFirst() }
+        return try await withCheckedThrowingContinuation { waiter = $0 }
+    }
+    func sendPCM(_ data: Data) { inputs.append(data) }
+    func sendControl(_ command: LiveControl) {}
+    func cancel() { waiter?.resume(throwing: LiveClientError.transport); waiter = nil }
 }
 
 actor ScriptedSocket: LiveSocket {
@@ -200,6 +334,53 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
 @main struct NativeLiveTests {
     static func main() async {
         do {
+            try await checkClientDiagnostics()
+            try require(NativeLivePresentation.failure(URLError(.cannotConnectToHost)) == "Live service is unreachable. Reconnect the service and try again.", "transport failure is actionable")
+            try require(NativeLivePresentation.failure(LiveClientError.transport) == NativeLivePresentation.failure(URLError(.timedOut)), "coordinator preserves transport class")
+            try require(NativeLivePresentation.failure(LiveClientError.unavailable) == "Live voice is not configured. Check the Live service settings.", "unconfigured failure is actionable")
+            try require(NativeLivePresentation.failure(DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "private"))) == "Live service returned an unexpected response. Reconnect the service and try again.", "decoding failure never leaks response")
+            for event in ["rebuilding", "resumed", "future_event"] {
+                let wire = "{\"type\":\"continuity\",\"sequence\":null,\"journalSequence\":2,\"event\":\"\(event)\",\"reason\":\"go_away\"}"
+                _ = try LiveSocketTransport.decode(.string(wire))
+            }
+            let oldProfile = try JSONDecoder().decode(NativeLiveOperatorHTTP.Profile.self, from: Data("{\"status\":\"unconfigured\"}".utf8))
+            try require(oldProfile.limits == nil, "old status remains decodable")
+            let limits = try JSONDecoder().decode(NativeLiveLimits.self, from: Data("{\"sessionMs\":900000,\"idleMs\":60000}".utf8))
+            try require(NativeLivePresentation.ended("resume_failed", limits: nil) == "Naya's connection could not be resumed. Start Live again.", "resume_failed exact typed sentence")
+            try require(limits.sentence == "Session limit 15 min, idle limit 1 min.", "configured limits are plain text")
+            try require(NativeLivePresentation.ended("session_timeout", limits: limits) == "Session limit reached (15 min). Start again to continue.", "session limit explains next action")
+            try require(NativeLivePresentation.ended("idle_timeout", limits: limits) == "Ended after 1 min without speech. Start again when ready.", "idle limit explains next action")
+            let split: [(NativeLiveAudioError, String, String)] = [
+                (.deviceMissing, "device_missing", "No microphone found: connect one or select it in System Settings, Sound, Input."),
+                (.formatUnavailable, "format_unavailable", "Live audio format is unavailable; select a working microphone and output device."),
+                (.captureNotConfigured, "capture_not_configured", "Live microphone capture is not configured; start Live again."),
+                (.voiceProcessingFailed(code: -50), "voice_processing_failed", "Voice processing could not be enabled; check the microphone and output device."),
+                (.engineFormatMismatch(code: -10868), "engine_format_mismatch", "Live audio could not start because the microphone and output formats do not match; select a working output device."),
+                (.engineFailed(code: -50), "engine_failed", "Live audio engine could not start; check the microphone and output device.")
+            ]
+            for (audio, code, sentence) in split {
+                try require(audio.rawValue == code && NativeLivePresentation.failure(audio) == sentence, "distinct step code and owner sentence")
+            }
+            try require(kAudioUnitErr_FailedInitialization == -10875 && kAudioUnitErr_FormatNotSupported == -10868,
+                        "installed SDK keeps FailedInitialization distinct from FormatNotSupported")
+            try require(NativeLiveAudioError.engineFailure(NSError(domain: "com.apple.coreaudio.avfaudio", code: -10868)).rawValue == "engine_format_mismatch", "exact AVFAudio unsupported-format status retains format diagnosis")
+            try require(NativeLiveAudioError.engineFailure(NSError(domain: "com.apple.coreaudio.avfaudio", code: -10875)).rawValue == "engine_failed", "generic AVFAudio failed initialization is not guessed to be a format mismatch")
+            let misleading = NSError(domain: "com.apple.coreaudio.avfaudio", code: -10875,
+                userInfo: [NSLocalizedDescriptionKey: "client-side input and output formats do not match"])
+            try require(NativeLiveAudioError.engineFailure(misleading).rawValue == "engine_failed", "localized format wording cannot override the exact status classification")
+            try require(NativeLiveAudioError.engineFailure(NSError(domain: "unrelated", code: -10868)).rawValue == "engine_failed", "numeric coincidence outside AVFAudio is not a format diagnosis")
+            try require(NativeLiveAudioError.engineFailure(NSError(domain: "other", code: -50)).rawValue == "engine_failed", "other start failures are not masked as format mismatch")
+            for audio in [NativeLiveAudioError.permissionDenied, .permissionRestricted, .voiceProcessingFailed(code: nil), .deviceMissing, .unsupportedFormat, .allocationFailed, .converterUnavailable] {
+                try require(NativeLivePresentation.failure(audio) == audio.errorDescription, "each real audio error keeps its typed sentence")
+            }
+            try require(NativeLivePresentation.failure(LiveClientError.http(status: 503, code: "not_ready")) == "Live service HTTP 503: not_ready.", "HTTP failure remains typed")
+            let httpReason = LiveClientError.http(status: 403, code: "profile_denied")
+            try require(httpReason.errorDescription == "Live service HTTP 403: profile_denied.", "HTTP status and typed code are visible")
+            let closeReason = LiveClientError.socketClosed(code: 1008, reason: "attach_rejected:internal")
+            try require(closeReason.errorDescription == "Live socket closed (1008): attach_rejected:internal.", "socket close reason is visible")
+            try require(LiveClientError.boundedCloseReason(Data("attach_rejected:internal\nSECRET".utf8)) == nil, "unsafe multiline reason rejected")
+            try require(LiveClientError.transport.errorDescription == nil, "unknown transport keeps generic fallback")
+
             let fixture = try JSONDecoder().decode(Fixture.self, from: FileHandle.standardInput.readDataToEndOfFile())
             let pendingWire = Data("[{\"id\":\"job1\",\"state\":\"in_progress\",\"markdown\":\"Working\"},{\"id\":\"job2\",\"state\":\"failed\",\"markdown\":\"Actual failure\"}]".utf8)
             let pendingCalls = try JSONDecoder().decode([NativePendingLiveJob].self, from: pendingWire)
@@ -220,6 +401,11 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
                 await Gate().wait() // parent owns a bounded readiness/kill protocol, no autonomous client requests
                 return
             }
+            for code in ["provider_setup_rejected", "protocol_error"] {
+                let frame = try LiveSocketTransport.decode(.string("{\"type\":\"terminal\",\"state\":\"failed\",\"code\":\"\(code)\",\"complete\":true}"))
+                guard case .terminal(let terminal, _) = frame else { throw ProbeError.assertion("typed terminal frame") }
+                try require(terminal.code == code, "provider terminal code retained")
+            }
             if CommandLine.arguments.contains("--mutation") {
                 // Compiled mutated transport only removes Cookie preflight. Behavioral check must catch that at the real host.
                 let transport = LiveSocketTransport(requests: TestRequests(fixture: fixture, alteration: "cookie"))
@@ -234,6 +420,21 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
                 print("PASS cookie preflight sensitivity baseline")
                 return
             }
+            let unreachableHTTP = TestHTTP(fixture)
+            await unreachableHTTP.makeStatusUnreachable()
+            let unreachableSockets = CountedSockets(fixture)
+            let unreachableClient = LiveSessionCoordinator(http: unreachableHTTP, sockets: unreachableSockets, sink: SilentSink())
+            await unreachableClient.begin(intent(fixture))
+            let unreachableState = await unreachableClient.state
+            try require(unreachableState == .failed(.transport), "coordinator preserves unreachable status transport cause")
+            guard case .failed(let unreachableReason) = unreachableState else {
+                throw ProbeError.assertion("unreachable status must fail before CREATE")
+            }
+            try require(NativeLivePresentation.failure(unreachableReason) == "Live service is unreachable. Reconnect the service and try again.", "coordinator failure renders actionable transport sentence, not generic fallback")
+            try require(await unreachableHTTP.requests == 0, "unreachable status issues no CREATE request")
+            try require(await unreachableSockets.attempts == 0, "unreachable status opens no socket")
+            await unreachableHTTP.finish()
+
             var previous = ContinuousClock.now
             var durations: [(String, Duration)] = []
             func record(_ name: String) {
@@ -260,7 +461,32 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
                 let companion = CompanionClient(descriptor: descriptor, credential: { fixture.token }, expectedEpoch: fixture.authorityEpoch)
                 return (companion, NativeLiveOperatorHTTP(authority: companion.authenticatedRequestBuilder()))
             }
+            let callbackHTTP = await MainActor.run {
+                let config = URLSessionConfiguration.ephemeral
+                config.protocolClasses = [PendingCallsFixture.self]
+                return NativeLiveOperatorHTTP(authority: companion.authenticatedRequestBuilder(), configuration: config)
+            }
+            let hostWire = try JSONSerialization.data(withJSONObject: ["data": ["assistantId": "naya", "authorityEpoch": fixture.authorityEpoch]])
+            let callbackWire = Data("{\"data\":[{\"id\":\"ready-a\",\"state\":\"completed\",\"markdown\":\"private result\"},{\"id\":\"ready-b\",\"state\":\"failed\",\"markdown\":\"private failure\"}]}".utf8)
+            PendingCallsFixture.load([.success(hostWire), .success(callbackWire), .failure(URLError(.notConnectedToInternet)), .success(hostWire), .success(Data("{\"data\":[]}".utf8))])
+            let readyCallbacks = try await callbackHTTP.pendingCalls()
+            try require(readyCallbacks.map(\.id) == ["ready-a", "ready-b"] && readyCallbacks.allSatisfy(\.isReady), "native HTTP fixture returns concurrent ready callbacks")
+            do {
+                _ = try await callbackHTTP.pendingCalls()
+                try require(false, "callback HTTP poll must propagate offline, not stale data")
+            } catch is URLError { }
+            let goneCallbacks = try await callbackHTTP.pendingCalls()
+            try require(goneCallbacks.isEmpty, "native HTTP fixture reconciles job gone after poll error")
+            print("PASS native callback HTTP ready/error/gone fixture")
+            record("callbacks")
             let nativeIntent = try await nativeHTTP.beginIntent()
+            do {
+                _ = try await nativeHTTP.snapshot(sessionID: "00000000-0000-4000-8000-000000000000", for: nativeIntent)
+                throw ProbeError.assertion("missing native snapshot must fail")
+            } catch let error as LiveClientError {
+                try require(error == .http(status: 404, code: "NOT_FOUND"), "actual native HTTP preserves status and typed code")
+            }
+
             let pickupID = "10000000-0000-4000-8000-000000000001"
             let pickedHTTP = await MainActor.run {
                 NativeLiveOperatorHTTP(authority: companion.authenticatedRequestBuilder(), pickupJobID: pickupID)
@@ -322,6 +548,92 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             try require(await scriptedSink.queued.isEmpty, "terminal discards queued playback")
             await scripted.stop(); await scriptedHTTP.finish()
             print("PASS silent scripted PCM/interrupted/terminal output ordering")
+
+            // R-SEC-5: admission is suspended before the final outbound epoch check.
+            let muteHTTP = TestHTTP(fixture), muteSocket = ContinuitySocket(), admissionGate = Gate()
+            let muteFence = LiveSessionCoordinator(http: muteHTTP, sockets: muteSocket, sink: SilentSink(), beforeCaptureSubmission: { await admissionGate.wait() })
+            await muteSocket.push(.marker(LiveMarker(kind: .ready, sequence: 1, journalSequence: 0, text: nil, finished: nil, value: nil)))
+            await muteFence.begin(frozen)
+            try await until { await muteFence.state == .active }
+            let staleCapture = Task { try await muteFence.sendPCM(Data([9, 0]), captureEpoch: 0) }
+            try await until { await admissionGate.arrivals == 1 }
+            let muteAcknowledged = Gate()
+            let muteRequest = Task {
+                await muteFence.setCaptureMuted(true, epoch: 1)
+                await muteAcknowledged.wait()
+            }
+            try await until { await muteFence.captureEpoch == 1 }
+            try require(await muteAcknowledged.arrivals == 0, "mute not acknowledged while admitted submission is suspended")
+            await admissionGate.release()
+            try await staleCapture.value
+            try await until { await muteAcknowledged.arrivals == 1 }
+            try require(await muteSocket.inputs.isEmpty, "old admitted capture never reaches transport after mute epoch")
+            await muteAcknowledged.release(); await muteRequest.value
+            await muteFence.setCaptureMuted(false, epoch: 2)
+            try await muteFence.sendPCM(Data([9, 0]), captureEpoch: 0)
+            try require(await muteSocket.inputs.isEmpty, "unmute cannot revive an older capture epoch")
+            let freshCapture = Task { try await muteFence.sendPCM(Data([7, 0]), captureEpoch: 2) }
+            try await until { await admissionGate.arrivals == 2 }
+            await admissionGate.release(); try await freshCapture.value
+            try require(await muteSocket.inputs == [Data([7, 0])], "new epoch sends normally after unmute")
+            await muteFence.stop(); await muteHTTP.finish()
+            print("PASS suspended capture mute epoch fence + delayed acknowledgement + unmute cannot revive stale PCM")
+
+            // WFIX1-R4: bytes handed to a suspended transport may complete, but mute
+            // rejects all post-request capture and withholds the UI acknowledgement.
+            let transportMuteHTTP = TestHTTP(fixture), transportMuteSocket = ContinuitySocket(), transportGate = Gate()
+            let transportMute = LiveSessionCoordinator(http: transportMuteHTTP,
+                sockets: GatedSockets(underlying: transportMuteSocket, gate: transportGate), sink: SilentSink())
+            await transportMuteSocket.push(.marker(LiveMarker(kind: .ready, sequence: 1, journalSequence: 0, text: nil, finished: nil, value: nil)))
+            await transportMute.begin(frozen)
+            try await until { await transportMute.state == .active }
+            let consentedFrame = Task { try await transportMute.sendPCM(Data([3, 0]), captureEpoch: 0) }
+            try await until { await transportGate.arrivals == 1 }
+            let mutedUIAcknowledgement = Gate()
+            let ownerMuteRequest = Task {
+                await transportMute.setCaptureMuted(true, epoch: 1)
+                // NativeLiveConversation updates its muted UI state only after this return.
+                await mutedUIAcknowledgement.wait()
+            }
+            try await until { await transportMute.captureEpoch == 1 }
+            try await transportMute.sendPCM(Data([5, 0]), captureEpoch: 1)
+            try require(await transportGate.arrivals == 1, "post-request captured frame never enters transport")
+            try require(await transportMuteSocket.inputs.isEmpty, "transport submission remains deterministically suspended")
+            try require(await mutedUIAcknowledgement.arrivals == 0, "muted UI acknowledgement withheld while pre-request submission is suspended")
+            await transportGate.release(); try await consentedFrame.value
+            try await until { await mutedUIAcknowledgement.arrivals == 1 }
+            try require(await transportMuteSocket.inputs == [Data([3, 0])], "only consented pre-request PCM may complete before muted acknowledgement")
+            try await transportMute.sendPCM(Data([7, 0]), captureEpoch: 1)
+            try require(await transportGate.arrivals == 1, "post-request capture remains rejected after muted acknowledgement")
+            await mutedUIAcknowledgement.release(); await ownerMuteRequest.value
+            await transportMute.stop(); await transportMuteHTTP.finish()
+            print("PASS suspended transport mute: post-request capture rejected + pre-request send may complete + muted acknowledgement after drain")
+
+            let continuityHTTP = TestHTTP(fixture), continuitySocket = ContinuitySocket(), continuitySink = SilentSink()
+            let continuity = LiveSessionCoordinator(http: continuityHTTP, sockets: continuitySocket, sink: continuitySink)
+            await continuitySocket.push(.marker(LiveMarker(kind: .ready, sequence: 1, journalSequence: 0, text: nil, finished: nil, value: nil)))
+            await continuity.begin(frozen)
+            try await until { await continuity.state == .active }
+            let continuityID = await continuity.sessionID
+            await continuitySocket.push(.pcm(Data([7, 0])))
+            try await until { await continuitySink.queued.count == 1 }
+            await continuitySocket.push(.continuity(event: "rebuilding"))
+            try await until {
+                let state = await continuity.state, empty = await continuitySink.queued.isEmpty
+                return state == .rebuilding && empty
+            }
+            try await continuity.sendPCM(Data(repeating: 0, count: 640))
+            try require(await continuitySocket.inputs.isEmpty, "rebuilding drops captured input")
+            await continuitySocket.push(.continuity(event: "future_event"))
+            await continuitySocket.push(.continuity(event: "resumed"))
+            try await until { await continuity.state == .active }
+            try require(await continuity.sessionID == continuityID, "resumed preserves session identity")
+            try await continuity.sendPCM(Data(repeating: 0, count: 640))
+            try require(await continuitySocket.inputs.count == 1, "resumed accepts input")
+            await continuitySocket.push(.terminal(LiveTerminal(state: .failed, code: "resume_failed"), complete: true))
+            try await until { await continuity.state == .terminal(LiveTerminal(state: .failed, code: "resume_failed")) }
+            try require(await continuitySocket.connections == 1, "terminal resume failure never reconnects")
+            print("PASS continuity rebuilding flush/drop/resume identity + unknown event + terminal no restart")
 
             // Fresh coordinator does zero work. Loss happens AFTER actual server commit; explicit retry keeps exact key/meaning.
             let http = TestHTTP(fixture); let sockets = CountedSockets(fixture); let sink = SilentSink()
@@ -401,6 +713,15 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             let external = try await LiveSocketTransport(requests: TestRequests(fixture: fixture, alteration: "")).connect(
                 LiveSocketBinding(origin: frozen.origin, sessionID: activeSnapshot.liveSessionId, authorityEpoch: frozen.authorityEpoch, profileIdentity: frozen.profileIdentity))
             guard case .marker(let externalReady) = try await external.receive(), externalReady.kind == .ready else { throw ProbeError.assertion("external consumed snapshot") }
+            let duplicate = try await LiveSocketTransport(requests: TestRequests(fixture: fixture, alteration: "")).connect(
+                LiveSocketBinding(origin: frozen.origin, sessionID: activeSnapshot.liveSessionId, authorityEpoch: frozen.authorityEpoch, profileIdentity: frozen.profileIdentity))
+            do {
+                _ = try await duplicate.receive()
+                throw ProbeError.assertion("duplicate attach must close")
+            } catch let error as LiveClientError {
+                try require(error == .socketClosed(code: 1008, reason: "attach_rejected:already_attached"), "actual native socket preserves close reason")
+            }
+            await duplicate.cancel()
             try await activeReplay.retryCreate()
             try require(await activeReplay.state == .outcomeUnknown(.unavailable), "active consumed replay remains honest unknown")
             try require(await activeSockets.attempts == 0, "active consumed replay zero automatic attach")

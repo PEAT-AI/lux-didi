@@ -1,3 +1,4 @@
+import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/ajv';
 import type { CallRequest, CallResult, CompletedResult, McpPort, ReadGrant, ResultScope, StoredPayload } from '../adapters/mcp/port.js';
 import type { McpRegistry } from '../adapters/mcp/registry.js';
 
@@ -38,6 +39,7 @@ export interface MongooseConfig {
 
 /** Opaque local evidence, mirroring the Lux knowledge connector shape. */
 export interface MongooseEvidence {
+  decodedResult: unknown;
   state: 'completed' | 'tool-error' | 'protocol-error';
   tool: MongooseTool;
   source: ResultScope;
@@ -118,6 +120,8 @@ export function createMongooseReader(options: MongooseOptions): MongooseReader {
     queryChars: Math.min(positive(config.queryChars, MONGOOSE_DEFAULTS.queryChars), MONGOOSE_DEFAULTS.queryChars),
   };
 
+  const schemaValidator = new AjvJsonSchemaValidator();
+
   async function dispatch(tool: MongooseTool, args: Record<string, unknown>, signal?: AbortSignal): Promise<MongooseResult> {
     const request: CallRequest = {
       endpointId: settings.endpointId,
@@ -128,6 +132,9 @@ export function createMongooseReader(options: MongooseOptions): MongooseReader {
       resource: settings.resource,
     };
     if (signal?.aborted) return { state: 'refused', reason: 'cancelled-before-dispatch' };
+    // Validate the actual bounded dispatch arguments against the original discovered schema.
+    const original = port.visibleTools(settings.endpointId).find(definition => definition.name === tool);
+    if (!original || !schemaValidator.getValidator(original.inputSchema)(args).valid) return { state: 'refused', reason: 'original-schema-arguments-refused' };
     const result = await port.call(request, signal);
     if (isFailed(result)) return { state: result.state, reason: result.reason };
     if (signal?.aborted) return { state: 'unknown', reason: 'cancelled-after-dispatch' };
@@ -137,6 +144,7 @@ export function createMongooseReader(options: MongooseOptions): MongooseReader {
       source: { ...result.source },
       observedAt: result.freshness.receivedAt,
       coverage: structuredClone(result.coverage),
+      decodedResult: structuredClone(result.decodedResult),
       projection: structuredClone(result.projection),
       response: structuredClone(result.payload),
     };

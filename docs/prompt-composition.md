@@ -173,3 +173,23 @@ unconfigured model/permissions. Root full-content approval, independent exact-SH
 review, later host transaction integration and permitted model behavioral trials
 are separate gates. This ships only the public component, not complete persona,
 memory, voice or distribution readiness.
+
+## Live session memory
+
+The Live composer supports a `memory` section between overlay and the final voice anchor.
+At session CREATE, composition extends the frozen persona baseline in this order: base, tool
+conduct, overlay, historical memory, voice anchor last. A deferred pickup note, when present,
+precedes memory and is included in the same accepted instruction. The preface labels notes as
+the owner's past notes, historical context and not instructions. Each entry is one whole,
+JSON-serialized delimited record, sorted by id. No record is partially truncated.
+
+The CREATE instruction has a 20,000-character total trusted budget, not an additional memory
+allowance. Whole memory records yield first; the static baseline is never silently truncated at
+CREATE. Selection provenance records omitted ids with reason `budget`. Safe projections expose
+counts/status only. Attach neither recomposes nor resolves memory: it uses the accepted text
+byte for byte, including tool and pickup conduct. Voice journal events never become durable
+memory entries in this release.
+
+### Voice memory writes and frozen prompts
+
+The built-in Live `remember_note` writes only an explicitly requested, finalized owner utterance as ordinary memory. It does not change the running session's accepted prompt snapshot or prompt identity. A later CREATE selects and recalls the note using the ordinary memory section. Live-voice entries have no deletion control yet; removing a note from the selected-memory picker only removes that local selection, not the durable entry. Private or sensitive voice classification is refused, not downgraded. See [tool-owner.md](tool-owner.md) for the built-in authorization and provenance rule.

@@ -1,17 +1,21 @@
+import { ConnectorCompositionError } from '../connectors/index.js';
+import { domainMigrations } from '../domain/schema.js';
 import { createToolsOwner, toolsMigrations } from '../tools/index.js';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import type { LiveAuthority } from '../tools/types.js';
 import type { LiveToolsComposition } from '../live/types.js';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { TestContext } from 'node:test';
 import { once } from 'node:events';
 import { fork } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { request } from 'node:http';
+import { request, createServer } from 'node:http';
+import { composeMcpRuntime } from '../host/mcp.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -52,7 +56,7 @@ function writePrivate(dir: string, name: string, text: string): void {
   chmodSync(path, 0o600);
 }
 
-interface HarnessOptions { toolsFactory?: (store: Store) => LiveToolsComposition; now?: () => number; config?: unknown; rawLive?: string; profile?: LiveProfile; withKey?: boolean; credentials?: { resolve(reference: string): Promise<string | undefined> } }
+interface HarnessOptions { realMcp?: boolean; failedMcp?: boolean; toolsFactory?: (store: Store) => LiveToolsComposition; now?: () => number; config?: unknown; rawLive?: string; profile?: LiveProfile; withKey?: boolean; credentials?: { resolve(reference: string): Promise<string | undefined> } }
 
 interface Harness {
   f: Awaited<ReturnType<typeof fixture>>;
@@ -67,14 +71,58 @@ interface Harness {
 async function harness(t: TestContext, options: HarnessOptions = {}): Promise<Harness> {
   const f = await fixture(t);
   const dir = mkdtempSync(join(tmpdir(), 'didi-live-gateway-'));
-  const store = new Store(join(dir, 'state'), [...liveMigrations, ...(options.toolsFactory ? toolsMigrations : [])]);
+  const store = new Store(join(dir, 'state'), [...domainMigrations, ...liveMigrations, ...(options.toolsFactory || options.realMcp ? toolsMigrations : [])]);
   const config = join(dir, 'provider-config');
   mkdirSync(config, { recursive: true, mode: 0o700 });
   chmodSync(config, 0o700);
   if (options.rawLive !== undefined) writePrivate(config, 'live.json', options.rawLive);
   else if (options.config !== undefined) writePrivate(config, 'live.json', `${JSON.stringify(options.config)}\n`);
   if (options.withKey !== false) writePrivate(config, 'gemini-primary.json', `${JSON.stringify({ schemaVersion: 1, keyReference: 'gemini-primary', key: CANARY })}\n`);
-  const { service: live } = composeLive(store, config, { socketFactory: f.socketFactory, ...(options.profile ? { profile: options.profile } : {}), ...(options.credentials ? { credentials: options.credentials } : {}) }, options.now, undefined, options.toolsFactory?.(store));
+  let tools = options.toolsFactory?.(store);
+  if (options.realMcp) {
+    // Same SDK endpoint/HTTP bridge as knowledge-connector.test.ts and mcp-config.test.ts.
+    const sdk = new Server({ name: 'synthetic-knowledge', version: '1' }, { capabilities: { tools: {} } });
+    sdk.setRequestHandler('tools/list', () => ({ tools: [{ name: 'search_knowledge', inputSchema: { type: 'object' } }] }) as never);
+    const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
+    await sdk.connect(transport);
+    const endpoint = createServer(async (req, res) => {
+      try {
+        const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
+        const bytes = Buffer.concat(chunks);
+        const headers = new Headers();
+        for (const [key, value] of Object.entries(req.headers)) if (value !== undefined) headers.set(key, Array.isArray(value) ? value.join(',') : value);
+        const request = new Request(`http://${req.headers.host}${req.url}`, { method: req.method ?? 'GET', headers, ...(bytes.length ? { body: new Uint8Array(bytes) } : {}) });
+        const response = await transport.handleRequest(request);
+        res.writeHead(response.status, Object.fromEntries(response.headers));
+        if (!response.body) { res.end(); return; }
+        const reader = response.body.getReader();
+        res.on('close', () => { void reader.cancel().catch(() => {}); });
+        while (!res.destroyed) { const chunk = await reader.read(); if (chunk.done) break; res.write(chunk.value); }
+        res.end();
+      } catch { if (!res.headersSent) res.writeHead(500); res.end(); }
+    });
+    endpoint.listen(0, '127.0.0.1'); await once(endpoint, 'listening');
+    t.after(async () => { endpoint.closeAllConnections(); await new Promise<void>(resolve => endpoint.close(() => resolve())); await transport.close(); await sdk.close(); });
+    const address = endpoint.address(); assert(address && typeof address !== 'string');
+    const url = `http://127.0.0.1:${address.port}`;
+    const entry = (id: string, path: string) => ({ id, url: url + path, transport: 'streamable-http', connector: 'lux-knowledge', account: 'fixture', resource: 'knowledge', credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'ordinary' });
+    writePrivate(config, 'mcp.json', JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [entry('healthy', '/'), ...(options.failedMcp ? [{ ...entry('failed', '/'), credentialRef: 'missing-credential' }] : [])] }));
+    const sources: Array<(runId: string, signal: AbortSignal) => Promise<LiveAuthority | null>> = [];
+    const lookupAuthority = async (runId: string, signal: AbortSignal) => {
+      for (const source of sources) { const authority = await source(runId, signal); if (authority) return authority; }
+      return null;
+    };
+    const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir: config, lookupAuthority });
+    t.after(async () => { await runtime.close(); });
+    // Keep the missing-policy regression first: the base reaches attach, then closes internal.
+    assert.deepEqual(runtime.connectionIds(), ['healthy'], JSON.stringify(runtime.status()));
+    if (options.failedMcp) {
+      assert.equal(runtime.status().endpoints.find(e => e.id === 'failed')?.state, 'error');
+      assert.equal(runtime.status().endpoints.find(e => e.id === 'failed')?.error, 'credential missing-credential missing or invalid');
+    }
+    tools = { owner: runtime.owner, connectionIds: () => runtime.connectionIds(), registerAuthoritySource: source => { sources.push(source); } };
+  }
+  const { service: live } = composeLive(store, config, { socketFactory: f.socketFactory, ...(options.profile ? { profile: options.profile } : {}), ...(options.credentials ? { credentials: options.credentials } : {}) }, options.now, undefined, tools);
   const running = await listenService({ store, live, port: 0 });
   t.after(async () => {
     await running.close();
@@ -167,6 +215,7 @@ test('live status is local validation; absent, disabled and malformed files neve
   const ready = await json(enabled.origin, '/api/v1/live/status', { headers: bearer(enabled) });
   assert.equal(ready.body.data.status, 'configured');
   assert.equal(ready.body.data.model, MODEL);
+  assert.deepEqual(ready.body.data.limits, { sessionMs: 900_000, idleMs: 60_000 });
 });
 
 test('live operator routes reject browsers, origins and duplicate headers before the owner', async t => {
@@ -185,8 +234,8 @@ test('live operator routes reject browsers, origins and duplicate headers before
   assert.equal(h.f.attempts, 0, 'guards run before any provider open');
 });
 
-test('Swift create, grant acceptance and pinned audio upgrade stay attached', async t => {
-  const h = await harness(t, { config: configJson(true) });
+for (const mode of ['failed', 'healthy', 'fixture-only'] as const) test(`Swift sequence reaches ready (${mode})`, { timeout: 5000 }, async t => {
+  const h = await harness(t, { config: configJson(true), realMcp: mode !== 'fixture-only', failedMcp: mode === 'failed' });
   // LiveSessionCoordinator.performCreate: status, create, validate the returned grant, connect.
   const status = await json(h.origin, '/api/v1/live/status', { headers: bearer(h) });
   assert.equal(status.status, 200);
@@ -210,9 +259,8 @@ test('Swift create, grant acceptance and pinned audio upgrade stay attached', as
     ws.on('close', (code, reason) => reject(new Error(`closed before ready: ${code}:${reason}`)));
     ws.on('message', (data, binary) => { if (!binary && JSON.parse(data.toString()).type === 'ready') resolve(); });
   });
-  await h.f.frame(1);
-  h.f.send({ setupComplete: {} });
-  await ready;
+  const setup = (async () => { await h.f.frame(1); h.f.send({ setupComplete: {} }); })();
+  await Promise.race([ready, setup.then(() => ready)]);
   // The coordinator sends capture only after ready; FoundationLiveSocket sends PCM as binary,
   // and endAudioStream as one text JSON control, not a terminal close.
   ws.send(Buffer.from(pcm));
@@ -231,8 +279,10 @@ test('Swift create, grant acceptance and pinned audio upgrade stay attached', as
 
 for (const [label, error, code] of [
   ['typed', new LiveError('invalidated', CANARY), 'invalidated'],
+  ['pickup', new LiveError('pickup_changed', CANARY), 'pickup_changed'],
   ['authorization', new ServiceError('FORBIDDEN', CANARY, 403), 'FORBIDDEN'],
   ['unknown', new Error(CANARY), 'internal'],
+  ['known-code', new Error('connection_policy_missing_or_corrupt'), 'internal'],
 ] as const) {
   test(`attach rejection reports sanitized ${label} code once`, async t => {
     const h = await harness(t, { config: configJson(true) });
@@ -250,7 +300,7 @@ for (const [label, error, code] of [
     assert.equal(closeCode, 1008);
     assert.equal(reason.toString(), `attach_rejected:${code}`);
     assert.ok(Buffer.byteLength(reason) <= 123);
-    assert.deepEqual(events, [[JSON.stringify({ event: 'live_attach_rejected', liveSessionId: id, code })]]);
+    assert.deepEqual(events, [[JSON.stringify({ event: 'live_attach_rejected', liveSessionId: id, code, ...(code === 'internal' ? { class: 'Error', ...(label === 'known-code' ? { detail: 'connection_policy_missing_or_corrupt' } : {}) } : {}) })]]);
     assert.equal(JSON.stringify(events).includes(CANARY), false);
     assert.equal(h.f.attempts, 0);
   });
@@ -740,4 +790,133 @@ test('trusted composition registers current Live authority and refuses after ter
   t.after(() => second.terminate()); await once(second, 'open'); await h.f.frame(2); h.f.send({ setupComplete: {} }); await once(second, 'message');
   assert.notEqual(await lookup!(secondId, signal), null);
   second.send(JSON.stringify({ type: 'close' })); await once(second, 'close'); assert.equal(await lookup!(secondId, signal), null);
+});
+
+
+test('host Live status exposes only counts from the committed memory snapshot', async t => {
+  const h = await harness(t, { config: configJson(true), withKey: false });
+  h.store.transaction(tx => {
+    tx.run('INSERT INTO sessions VALUES (?,?,?,NULL,?,1,?,?)', ['memory-session', 'Fixture', 1, 'UTC', 1, 1]);
+    tx.run('INSERT INTO entries VALUES (?,?,1,?,?,?, ?,1)', ['memory-entry', 'memory-session', 'user', 'Fixture durable owner note', 1, 'UTC']);
+    for (const [kind, id] of [['session', 'memory-session'], ['entry', 'memory-entry']]) tx.run('INSERT INTO routing_labels VALUES (?,?,1,?,?,?)', [kind!, id!, 'ordinary', 'owner_review', 1]);
+  });
+  const created = await createBody(h, 'memory-wire');
+  assert.equal(created.status, 200);
+  const status = await json(h.origin, '/api/v1/live/status', { headers: bearer(h) });
+  assert.deepEqual(status.body.data.memory, { status: 'selected', selected: 1, omitted: 0 });
+  assert.ok(!JSON.stringify(status.body).includes('Fixture durable owner note'));
+  assert.ok(!JSON.stringify(status.body).includes('memory-entry'));
+  const id = created.body.data.liveSessionId;
+  const stored = h.store.transaction(tx => JSON.parse(String(tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [id])!['accepted_prompt_snapshot'])));
+  assert.match(stored.system, /Fixture durable owner note/);
+});
+
+test('CREATE maps a typed connector composition defect to a bounded visible envelope', async t => {
+  const h = await harness(t, { config: configJson(true), toolsFactory: store => {
+    const registry = new McpRegistry();
+    const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic-token' });
+    t.after(() => port.close());
+    const owner = createToolsOwner({ store, ownerId: store.assistantId, registry, port, lookupAuthority: async () => null });
+    owner.snapshotRun = () => { throw new ConnectorCompositionError('unknown_connector', 'missing-endpoint', 'missing-kind'); };
+    return { owner, connectionIds: () => [], registerAuthoritySource: () => {} };
+  } });
+  const created = await createBody(h, 'composition-error');
+  assert.equal(created.status, 503);
+  assert.equal(created.body.error.code, 'CONNECTOR_COMPOSITION_ERROR');
+  assert.equal(created.body.error.message, 'Connector composition failed');
+  assert.ok(created.body.requestId);
+});
+
+test('pre-ready provider 1007 is journaled and closes with typed attach rejection', async t => {
+  const h = await harness(t, { config: configJson(true) });
+  const created = await createBody(h, 'setup-rejected');
+  assert.equal(created.status, 200);
+  const id = created.body.data.liveSessionId;
+  const ws = new WebSocket(`${h.origin.replace('http', 'ws')}/api/v1/live-sessions/${id}/audio`, { headers: bearer(h) });
+  const frames: string[] = [];
+  ws.on('message', bytes => frames.push(bytes.toString()));
+  const closed = once(ws, 'close');
+  await once(ws, 'open');
+  await h.f.frame(1);
+  h.f.remoteClose(CANARY, 1007);
+  const [closeCode, reason] = await closed;
+  assert.equal(closeCode, 1008);
+  assert.equal(reason.toString(), 'attach_rejected:provider_setup_rejected');
+  const snapshot = h.live.snapshot(id);
+  assert.equal(snapshot.ready, false);
+  assert.deepEqual(snapshot.terminal, { state: 'failed', code: 'provider_setup_rejected' });
+  assert.equal(JSON.stringify(snapshot).includes(CANARY), false);
+  assert.equal(frames.some(frame => JSON.parse(frame).code === 'provider_setup_rejected'), true);
+});
+
+test('canonical host resumes one journal and never exposes the handle on the wire or host log', async t => {
+  const f = await fixture(t);
+  const dir = mkdtempSync(join(tmpdir(), 'didi-live-host-resume-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const configDir = join(dir, 'config'); mkdirSync(configDir, { mode: 0o700 });
+  writePrivate(configDir, 'live.json', `${JSON.stringify(configJson(true, { limits: { idleMs: 2000, sessionMs: 4000, handshakeMs: 1000, closeMs: 50 } }))}\n`);
+  const dataDir = join(dir, 'state');
+  const host = await startHost({ dataDir, configDir, webRoot: fileURLToPath(new URL('../../../web/dist', import.meta.url)), port: 0,
+    liveTesting: { socketFactory: f.socketFactory, credentials: { resolve: async () => CANARY } } });
+  t.after(() => host.close());
+  const headers = { authorization: `Bearer ${host.store.adminCredential}`, 'x-didi-authority-epoch': host.store.authorityEpoch };
+  const created = await json(host.service.origin, '/api/v1/live-sessions', { method: 'POST', headers: { ...headers, 'idempotency-key': 'host-resume', 'content-type': 'application/json' }, body: JSON.stringify({ inputClass: 'ordinary' }) });
+  assert.equal(created.status, 200);
+  const id = created.body.data.liveSessionId;
+  const frozen = host.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot,memory_provenance FROM live_sessions WHERE live_session_id=?', [id]));
+  const ws = new WebSocket(`${host.service.origin.replace('http', 'ws')}/api/v1/live-sessions/${id}/audio`, { headers: { ...headers, 'x-didi-live-profile': created.body.data.profileIdentity } });
+  t.after(() => ws.terminate());
+  const frames: Record<string, unknown>[] = [];
+  const waiters = new Map<string, (frame: Record<string, unknown>) => void>();
+  const key = (frame: Record<string, unknown>) => `${frame.type}:${frame.event ?? ''}`;
+  ws.on('message', (bytes: Data, binary: boolean) => {
+    if (binary) return;
+    const frame = JSON.parse(bytes.toString()) as Record<string, unknown>;
+    frames.push(frame); const waitKey = waiters.has(key(frame)) ? key(frame) : `${frame.type}:*`;
+    const notify = waiters.get(waitKey);
+    if (notify) { waiters.delete(waitKey); notify(frame); }
+  });
+  const next = (type: string, event?: string) => {
+    const waitKey = event === undefined ? `${type}:*` : `${type}:${event}`;
+    const found = frames.find(frame => frame.type === type && (event === undefined || frame.event === event));
+    return found ? Promise.resolve(found) : new Promise<Record<string, unknown>>(resolve => waiters.set(waitKey, resolve));
+  };
+  const closed = once(ws, 'close');
+  await f.frame(1); f.send({ setupComplete: {} }); await next('ready');
+  const handle = 'synthetic-canonical-host-resumption-secret';
+  f.send({ sessionResumptionUpdate: { resumable: true, newHandle: handle }, goAway: { timeLeft: '10s' } });
+  await f.frame(2);
+  // Assert the actual serialized shape before waiting on resumed: missing fields fail promptly.
+  const rebuilding = await next('continuity');
+  assert.deepEqual(rebuilding, { type: 'continuity', event: 'rebuilding', reason: 'go_away', sequence: null, journalSequence: rebuilding.journalSequence });
+  assert.equal(typeof rebuilding.journalSequence, 'number');
+  const pageToken = 'r'.repeat(43);
+  host.store.transaction(tx => tx.run('INSERT INTO runtime_sessions VALUES (?,?,?,?)', [createHash('sha256').update(pageToken).digest('hex'), 'resume-page', 'csrf', Date.now() + 60_000]));
+  const projection = await json(host.service.origin, '/api/v1/live/current', { headers: { cookie: `didi_session=${pageToken}` } });
+  assert.equal(projection.status, 200);
+  assert.equal(projection.body.data.state, 'rebuilding');
+  const status = await json(host.service.origin, '/api/v1/live/status', { headers });
+  assert.equal(status.status, 200);
+  assert.equal(status.body.data.status, 'configured');
+  const snapshot = await json(host.service.origin, `/api/v1/live-sessions/${id}`, { headers });
+  assert.equal(snapshot.status, 200);
+  assert.equal(snapshot.body.data.liveSessionId, id);
+  assert.equal(JSON.stringify([frames, projection.body, status.body, snapshot.body]).includes(handle), false);
+  assert.equal(readFileSync(join(dataDir, 'logs', 'host.log'), 'utf8').includes(handle), false);
+  f.send({ setupComplete: {} });
+  const resumed = await next('continuity', 'resumed');
+  assert.deepEqual(resumed, { type: 'continuity', event: 'resumed', sequence: null, journalSequence: resumed.journalSequence });
+  assert.ok(Number(resumed.journalSequence) > Number(rebuilding.journalSequence));
+  assert.deepEqual(host.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot,memory_provenance FROM live_sessions WHERE live_session_id=?', [id])), frozen);
+  // The explicit client close control intentionally closes before terminal delivery.
+  // End from the provider instead, keeping the consumer attached for the terminal fact.
+  f.remoteClose('', 1000); await closed;
+  assert.equal(frames.filter(frame => frame.type === 'terminal').length, 1);
+  assert.equal(frames.find(frame => frame.type === 'terminal')!.code, 'remote_closed');
+  const rows = host.store.transaction(tx => tx.all('SELECT journal_id,kind FROM live_journal WHERE live_session_id=? ORDER BY journal_id', [id]));
+  assert.equal(rows.filter(row => row.kind === 'terminal').length, 1);
+  assert.equal(new Set(rows.map(row => row.journal_id)).size, rows.length);
+  assert.ok(rows.every((row, index) => index === 0 || Number(rows[index - 1]!.journal_id) < Number(row.journal_id)));
+  assert.equal(readFileSync(join(dataDir, 'logs', 'host.log'), 'utf8').includes(handle), false);
+  assert.equal(JSON.stringify(frames).includes(handle), false);
 });

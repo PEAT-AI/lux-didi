@@ -1,9 +1,11 @@
+import './live-remember.test.js';
+import './live-declarations.test.js';
 import assert from 'node:assert/strict';
 import { describe, test, type TestContext } from 'node:test';
 import WebSocket from 'ws';
 import { GeminiLiveVoiceAdapter, LiveVoiceError } from '../adapters/live-voice/index.js';
 import type { GeminiLiveVoiceOptions, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceRequest } from '../adapters/live-voice/index.js';
-import { CANARY, collect, control, deferred, fixture as providerFixture, options, pcm, ready as providerReady, request } from './live-voice-fixture.js';
+import { CANARY, speechActivityFrames, collect, control, deferred, fixture as providerFixture, options, pcm, ready as providerReady, request } from './live-voice-fixture.js';
 
 const code = (expected: string) => (error: unknown) => error instanceof LiveVoiceError && error.code === expected && error.message === expected;
 const audio = () => ({ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from(pcm).toString('base64') } });
@@ -64,6 +66,7 @@ test('wire setup/history snapshots, readiness, PCM and three independent output 
   await f.frame(1);
   assert.equal(f.frames.length, 1);
   assert.deepEqual(f.frames[0], { setup: {
+    sessionResumption: {},
     model: 'models/explicit-live-test', generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'ExplicitVoice' } } }, thinkingConfig: { thinkingLevel: 'minimal' } },
     historyConfig: { initialHistoryInClientContent: true }, contextWindowCompression: { slidingWindow: { targetTokens: 32000 } },
     realtimeInputConfig: { automaticActivityDetection: { startOfSpeechSensitivity: 'START_SENSITIVITY_LOW' } },
@@ -83,14 +86,15 @@ test('wire setup/history snapshots, readiness, PCM and three independent output 
   f.send({ serverContent: { modelTurn: { parts: [audio()] }, generationComplete: true } });
   f.send({ serverContent: { turnComplete: true, waitingForInput: true, interactionStatus: 'IDLE' } });
   f.send({ serverContent: { inputTranscription: { text: 'late independent input', finished: true } } });
-  f.send({ sessionResumptionUpdate: { resumable: true, newHandle: CANARY } });
-  f.send({ goAway: { timeLeft: '1s' } });
-  assert.deepEqual(await session.done, { status: 'failed', code: 'go_away' }); await captured.done;
-  assert.deepEqual(captured.events.map(e => e.type), ['ready', 'audio', 'modelText', 'outputTranscription', 'generationComplete', 'turnComplete', 'interrupted', 'turnComplete', 'audio', 'generationComplete', 'turnComplete', 'waitingForInput', 'interactionStatus', 'inputTranscription', 'resumptionAvailability', 'goAway', 'outcome']);
+  f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-adapter-resumption-secret' } });
+  f.send({ goAway: { timeLeft: '1s' } }); f.remoteClose('', 1000);
+  assert.deepEqual(await session.done, { status: 'failed', code: 'go_away', recoverable: true }); await captured.done;
+  assert.deepEqual(captured.events.map(e => e.type), ['ready', 'audio', 'modelText', 'outputTranscription', 'modelTurnStarted', 'generationComplete', 'turnComplete', 'interrupted', 'turnComplete', 'audio', 'modelTurnStarted', 'generationComplete', 'turnComplete', 'waitingForInput', 'interactionStatus', 'inputTranscription', 'resumptionHandle', 'goAway', 'outcome']);
   assert.deepEqual(captured.events.map(e => e.sequence), captured.events.map((_, i) => i + 1));
   const output = captured.events.find((e): e is Extract<LiveVoiceEvent, { type: 'audio' }> => e.type === 'audio')!;
   assert.deepEqual(output.pcm, pcm); assert.equal(output.mimeType, 'audio/pcm;rate=24000');
-  assert.equal(captured.events.some(e => 'turnId' in e || 'heard' in e || 'handle' in e), false); noCanary(captured.events);
+  assert.ok(captured.events.some(e => e.type === 'resumptionHandle' && e.handle === 'synthetic-adapter-resumption-secret'));
+  assert.equal(captured.events.some(e => 'turnId' in e || 'heard' in e), false); noCanary(captured.events);
   assert.equal(f.attempts, 1); assert.equal(f.frames.length, 4);
 });
 
@@ -185,13 +189,13 @@ test('split and combined protocol fields preserve late input, thought and unknow
   f.send({ harmlessFutureField: { value: 1 } });
   f.send({ serverContent: { generationComplete: true } });
   f.send({ serverContent: { interrupted: true, turnComplete: true, inputTranscription: { text: 'late' }, outputTranscription: { text: 'out' }, modelTurn: { parts: [{ text: 'text only' }] } } });
-  f.send({ goAway: { timeLeft: '0.5s' } }); await session.done; await captured.done;
-  assert.deepEqual(captured.events.map(e => e.type), ['ready', 'generationComplete', 'modelText', 'inputTranscription', 'outputTranscription', 'interrupted', 'turnComplete', 'goAway', 'outcome']);
+  f.send({ goAway: { timeLeft: '0.5s' } }); f.remoteClose('', 1000); await session.done; await captured.done;
+  assert.deepEqual(captured.events.map(e => e.type), ['ready', 'generationComplete', 'modelText', 'inputTranscription', 'outputTranscription', 'modelTurnStarted', 'interrupted', 'turnComplete', 'goAway', 'outcome']);
 });
 
 for (const [name, payload, expected] of [
   ['empty object', {}, 'protocol_error'], ['invalid JSON', 'raw', 'protocol_error'], ['array', [], 'protocol_error'],
-  ['empty content', { serverContent: {} }, 'protocol_error'], ['null transcription', { serverContent: { inputTranscription: null } }, 'protocol_error'],
+  ['null content', { serverContent: null }, 'protocol_error'], ['null transcription', { serverContent: { inputTranscription: null } }, 'protocol_error'],
   ['bad completion flag', { serverContent: { turnComplete: 'true' } }, 'protocol_error'], ['bad text', { serverContent: { outputTranscription: { text: 3 } } }, 'protocol_error'],
   ['bad rate', { serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=16000', data: 'AAA=' } }] } } }, 'protocol_error'],
   ['bad base64', { serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: '!!' } }] } } }, 'protocol_error'],
@@ -211,10 +215,11 @@ for (const [name, payload, expected] of [
 }
 
 test('duplicate setupComplete and server content before setup fail closed', async t => {
-  for (const duplicate of [true, false]) {
+  for (const variant of ['duplicate', 'content', 'empty']) {
+    const duplicate = variant === 'duplicate';
     const f = await fixture(t); const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory })).open(request(), control());
     await f.frame(1); if (duplicate) { f.send({ setupComplete: {} }); await session.ready; }
-    f.send(duplicate ? { setupComplete: {} } : { serverContent: { turnComplete: true } });
+    f.send(duplicate ? { setupComplete: {} } : { serverContent: variant === 'empty' ? {} : { turnComplete: true } });
     assert.equal((await session.done).code, 'protocol_error');
   }
 });
@@ -237,7 +242,7 @@ test('actual ws error and disconnect have no replay', async t => {
   const f = await fixture(t); let client!: WebSocket;
   const session = new GeminiLiveVoiceAdapter(options({ socketFactory: (url, config) => { client = f.socketFactory(url, config); return client; } })).open(request(), control());
   const captured = collect(session); await f.frame(1); f.send({ setupComplete: {} }); await session.ready;
-  client.emit('error', Error(CANARY)); assert.equal((await session.done).code, 'transport_error'); await captured.done;
+  client.emit('error', Object.assign(Error(CANARY), { code: 'ECONNRESET' })); assert.equal((await session.done).code, 'transport_error'); await captured.done;
   assert.equal(f.attempts, 1); noCanary(captured.events);
 });
 
@@ -338,6 +343,7 @@ test('Live tool batches use one response frame and suppress microphone audio unt
   f.send({ setupComplete: {} }); await session.ready;
   assert.equal((await events.next()).value?.type, 'ready');
   f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x' } }, { id: 'c2', name: 'search_knowledge', args: { query: 'y' } }] } });
+  assert.equal((await events.next()).value?.type, 'modelTurnStarted');
   const event: LiveVoiceEvent | undefined = (await events.next()).value;
   assert.equal(event?.type, 'toolCall');
   if (event?.type !== 'toolCall') throw Error('missing tool call');
@@ -359,6 +365,7 @@ test('3.8 Live omits thinking config and cancellation releases an unanswered bat
   assert.equal('thinkingConfig' in setup.generationConfig, false);
   f.send({ setupComplete: {} }); await session.ready; await events.next();
   f.send({ toolCall: { functionCalls: [{ id: 'one', name: 'test', args: {} }, { id: 'two', name: 'test', args: {} }] } });
+  assert.equal((await events.next()).value?.type, 'modelTurnStarted');
   assert.equal((await events.next()).value?.type, 'toolCall');
   assert.throws(() => session.sendToolResponse({ responses: [{ id: 'one', name: 'test', response: {} }] }), code('invalid_request'));
   session.sendAudio({ pcm, dataClass: 'ordinary' }); assert.equal(session.droppedAudioFrames, 1);
@@ -388,4 +395,51 @@ test('binary invalid UTF-8 inside otherwise valid JSON is protocol_error', async
   f.sendRaw(Buffer.concat([Buffer.from('{"futureField":"'), Buffer.from([0xff]), Buffer.from('"}') ]));
   await assert.rejects(session.ready, code('protocol_error'));
   await session.done;
+});
+
+test('provider fixture rejects unsupported setup schema with 1007 before ready', async t => {
+  const f = await providerFixture(t);
+  const session = new GeminiLiveVoiceAdapter(options(f)).open({ ...request(), tools: [
+    { name: 'invalid', description: 'Invalid original schema', parameters: { type: 'OBJECT', properties: { nested: { type: 'OBJECT', additionalProperties: false } } } },
+  ] }, control());
+  const captured = collect(session);
+  await assert.rejects(session.ready, code('provider_setup_rejected'));
+  assert.equal((await session.done).code, 'provider_setup_rejected');
+  await captured.done;
+  assert.equal(captured.events.some(event => event.type === 'ready'), false);
+  noCanary(captured.events);
+});
+
+test('provider 1007 after ready remains remote_closed, not setup rejection', async t => {
+  const { f, session, captured } = await providerReady(t);
+  f.remoteClose(CANARY, 1007);
+  assert.deepEqual(await session.done, { status: 'failed', code: 'remote_closed' });
+  await captured.done;
+  noCanary(captured.events);
+});
+
+test('speech activity siblings and informational keys preserve the next audio frame', async t => {
+  const f = await providerFixture(t);
+  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory })).open(request(), control());
+  t.after(() => session.close());
+  await f.frame(1); f.send({ setupComplete: {} }); await session.ready;
+  // Read directly so a terminal before audio fails instead of looking like success.
+  const events = session.events[Symbol.asyncIterator]();
+  session.sendAudio({ pcm, dataClass: 'ordinary' });
+  await f.frame(2);
+  // Informational keys must be consumed before audio makes the reader return.
+  f.send({ usageMetadata: { synthetic: true } });
+  speechActivityFrames(value => f.send(value));
+  const observed: LiveVoiceEvent[] = [];
+  for (let i = 0; i < 4; i++) {
+    const next = await events.next();
+    assert.equal(next.done, false);
+    observed.push(next.value!);
+    assert.notEqual(next.value!.type, 'outcome');
+    if (next.value!.type === 'audio') break;
+  }
+  assert.ok(observed.some(e => e.type === 'audio'));
+  assert.equal(session.unknownTopLevelKeys, 4);
+  assert.deepEqual(observed.filter(e => e.type === 'waitingForInput').map(e => e.value), [true, false]);
+  session.close();
 });

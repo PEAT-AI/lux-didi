@@ -40,3 +40,15 @@ change. No change to the CHAT POST body, idempotency fingerprint, consent semant
 persistent authority epoch. No new selection database or token, bearer fallback, native transcript
 renderer, JavaScript authority bridge or generic polling loop. Draft persistence and the Send API are
 unchanged: in-flight drafts are never retargeted, and reselecting a conversation recovers its saved run.
+
+## Native connected-send composition
+
+The native **Send to Naya** action reads status and `/conversation-selection`
+through CompanionClient's paired page cookie, then reads the named conversation
+for server-resolved consent. An active conversation (including valid standing
+consent resolved by the service) is required. No native consent mutation exists.
+It prepares the existing PendingRequestStore envelope and marks dispatch unknown
+before POST `/chat`, reusing the frozen destination, text and idempotency key on
+retry. A successful named run acknowledgement clears the outbox. Authority or
+selection changes cannot retarget an uncertain request. The page's existing
+conversation event subscription renders the answer. **Save note** is unchanged.

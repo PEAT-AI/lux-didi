@@ -1,4 +1,7 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import * as memory from '../domain/memory.js';
+import * as labels from '../domain/labels.js';
+import { resolveLiveMemory } from '../host/live.js';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
@@ -23,6 +26,7 @@ import { NAYA_BASE, NAYA_TOOLS, composeLiveInstruction } from '../prompt/live-pe
 import { GeminiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
 import type { LiveVoiceLimits, LiveVoiceRequest } from '../adapters/live-voice/index.js';
 import { chatMigrations } from '../chat/index.js';
+import { domainMigrations } from '../domain/schema.js';
 import { createDomainPort } from '../domain/facade.js';
 import { Outbox } from '../runtime/outbox.js';
 import { Store } from '../runtime/store.js';
@@ -53,6 +57,7 @@ interface Harness {
   ctx: LiveContext;
   dir: string;
   calls: { name: string; args: unknown }[];
+  readonly memorySelections: number;
   advance(ms: number): void;
 }
 
@@ -63,15 +68,20 @@ async function harness(t: TestContext, overrides: {
   model?: string;
   tools?: boolean;
   beforeTool?: () => Promise<void>;
+  beforeGate?: () => Promise<void>;
   toolError?: boolean;
   scheduler?: DeadlineClock;
+  system?: string;
+  overlay?: { schemaVersion: 1; text: string; accent?: string };
+  memoryFailure?: boolean;
 } = {}): Promise<Harness> {
   const f = await fixture(t);
   const dir = mkdtempSync(join(tmpdir(), 'didi-live-session-'));
   const domain = createDomainPort({ outbox: Outbox });
   const store = new Store(dir, [...domain.migrations, ...chatMigrations, ...liveMigrations, ...(overrides.tools ? toolsMigrations : [])]);
   let clock = NOW;
-  const profile = validateLiveProfile(profileInput(overrides.limits, overrides.model));
+  let memorySelections = 0;
+  const profile = validateLiveProfile({ ...profileInput({ handshakeMs: 1000, idleMs: 2000, sessionMs: 4000, closeMs: 50, ...Object.fromEntries(Object.entries(overrides.adapterLimits ?? {}).filter(([key]) => ['handshakeMs', 'idleMs', 'sessionMs', 'closeMs'].includes(key))), ...overrides.limits }, overrides.model), ...(overrides.overlay ? { overlay: overrides.overlay } : {}), ...(overrides.system !== undefined ? { prompt: { text: overrides.system, dataClass: 'ordinary' } } : {}) });
   const voice = new GeminiLiveVoiceAdapter(options({
     socketFactory: f.socketFactory, modelId: profile.liveModelId, voice: profile.voice, keyReference: profile.keyReference,
     route: { enabled: true, provider: 'gemini', modelId: profile.liveModelId, dataClasses: profile.route.dataClasses },
@@ -82,6 +92,10 @@ async function harness(t: TestContext, overrides: {
   const requests: LiveVoiceRequest[] = [];
   const open = voice.open.bind(voice);
   t.mock.method(voice, 'open', (input: LiveVoiceRequest, ctl: Parameters<typeof voice.open>[1]) => {
+    if (input.resumptionHandle) {
+      assert.equal(store.transaction(tx => tx.get("SELECT resumption_handle FROM live_sessions WHERE lifecycle='active'"))?.resumption_handle === input.resumptionHandle, true, 'handle is durable before open');
+      assert.ok(ctl.limits!.handshakeMs! <= profile.limits.handshakeMs, 'profile handshake override reaches resumed setup');
+    }
     requests.push(structuredClone(input)); return open(input, ctl);
   });
   let owner!: LiveSessionOwner;
@@ -110,6 +124,10 @@ async function harness(t: TestContext, overrides: {
     });
     const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic-token', budgets: { maxResponseBytes: 12000, projectionChars: 10, timeoutMs: 1000 } });
     const toolOwner = createToolsOwner({ store, ownerId: store.assistantId, registry, port, lookupAuthority: async runId => owner?.lookupAuthority(runId) ?? owner?.lookupJobAuthority(runId) ?? null });
+    if (overrides.beforeGate) {
+      const authorize = toolOwner.resultGate.authorize.bind(toolOwner.resultGate);
+      t.mock.method(toolOwner.resultGate, 'authorize', async (...args: Parameters<typeof authorize>) => { await overrides.beforeGate!(); return authorize(...args); });
+    }
     toolOwner.applyConnection({ schemaVersion: 1, ownerId: store.assistantId, connectionId: 'lux', generation: 1, enabled: true, connector: 'lux-knowledge',
       endpoint: { ...endpoint, credentialRef: null }, toolNames: ['search_knowledge', 'get_insight'], schemaDigest: canonicalToolDigest(schemas),
       sourcePolicy: { id: 'live-fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
@@ -120,9 +138,22 @@ async function harness(t: TestContext, overrides: {
     tools = { owner: toolOwner, connectionIds: () => ['lux'] };
     t.after(async () => { await port.close(); await transport.close(); await sdk.close(); });
   }
-  owner = createLiveSessionOwner({ store, voice, profile, ...(tools ? { tools } : {}), now: () => overrides.scheduler?.now ?? clock, ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
+  const memorySource = (tx: import('../contracts/storage.js').Transaction) => {
+    memorySelections += 1;
+    if (overrides.memoryFailure) throw new Error('synthetic memory failure');
+    const ids = tx.all('SELECT id FROM entries ORDER BY id').map(row => String(row['id']));
+    return ids.flatMap(id => memory.resolveEntries(tx, [id])).map(record => {
+      const entry = labels.current(tx, { kind: 'entry', id: record.entryId }).dataClass;
+      const parent = labels.current(tx, { kind: 'session', id: record.sessionId }).dataClass;
+      const dataClass = entry === 'unknown' || parent === 'unknown' ? 'unknown' as const
+        : entry === 'sensitive' || parent === 'sensitive' ? 'sensitive' as const
+        : entry === 'private' || parent === 'private' ? 'private' as const : 'ordinary' as const;
+      return { id: record.entryId, text: record.text, dataClass };
+    });
+  };
+  owner = createLiveSessionOwner({ store, voice, profile, ...{ memorySource }, ...(tools ? { tools } : {}), now: () => overrides.scheduler?.now ?? clock, ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
   t.after(async () => { await owner.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
-  return { requests, calls, f, store, owner, ctx: context(store), dir, advance: ms => { if (overrides.scheduler) overrides.scheduler.now += ms; else clock += ms; } };
+  return { requests, calls, get memorySelections() { return memorySelections; }, f, store, owner, ctx: context(store), dir, advance: ms => { if (overrides.scheduler) overrides.scheduler.now += ms; else clock += ms; } };
 }
 
 async function attached(h: Harness, key = 'k1') {
@@ -135,20 +166,114 @@ async function attached(h: Harness, key = 'k1') {
   return { session, attachment };
 }
 
+function accepted(h: Harness, id: string): { system: string; memory: { status: string; selectedIds: string[]; omitted: { id: string; reason: string }[] }; pickup?: { jobId: string; identity: string } } {
+  return h.store.transaction(tx => JSON.parse(String(tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [id])!['accepted_prompt_snapshot'])));
+}
+
+function assertFrozenInstruction(h: Harness, id: string, request: number) {
+  const snapshot = accepted(h, id);
+  assert.equal(h.requests[request]!.system.text, snapshot.system);
+  const digest = createHash('sha256').update(JSON.stringify({ text: snapshot.system, dataClass: 'ordinary' })).digest('hex');
+  assert.equal(h.owner.get(id).promptIdentity, digest);
+}
+
+function note(h: Harness, id: string, text: string, entryClass = 'ordinary', parentClass = 'ordinary') {
+  h.store.transaction(tx => {
+    tx.run('INSERT INTO sessions VALUES (?,?,?,NULL,?,1,?,?)', [`parent-${id}`, 'Fixture', NOW, 'UTC', NOW, NOW]);
+    tx.run('INSERT INTO entries VALUES (?,?,1,?,?,?, ?,1)', [id, `parent-${id}`, 'user', text, NOW, 'UTC']);
+    for (const [kind, subject, dataClass] of [['entry', id, entryClass], ['session', `parent-${id}`, parentClass]]) {
+      tx.run('INSERT INTO routing_labels VALUES (?,?,1,?,?,?)', [kind!, subject!, dataClass!, 'owner_review', NOW]);
+    }
+  });
+}
+
+test('Live memory is frozen at CREATE, fresh at the next CREATE, and covered by the fingerprint', async t => {
+  const h = await harness(t);
+  note(h, 'note-a', 'Fixture old owner note');
+  const first = h.owner.create({ idempotencyKey: 'memory-old', inputClass: 'ordinary' }, h.ctx);
+  h.store.transaction(tx => tx.run('UPDATE entries SET text=?, revision=2 WHERE id=?', ['Fixture revised owner note', 'note-a']));
+  assert.equal(h.owner.create({ idempotencyKey: 'memory-old', inputClass: 'ordinary' }, h.ctx).liveSessionId, first.liveSessionId, 'same-key replay never re-resolves memory');
+  const attachment = h.owner.attach({ liveSessionId: first.liveSessionId }, h.ctx);
+  await h.f.frame(1); h.f.send({ setupComplete: {} }); await attachment.ready;
+  assertFrozenInstruction(h, first.liveSessionId, 0);
+  assert.match(h.requests[0]!.system.text, /Fixture old owner note/);
+  assert.ok(!h.requests[0]!.system.text.includes('Fixture revised owner note'));
+  h.owner.revoke(first.liveSessionId); await attachment.done;
+  const fresh = h.owner.create({ idempotencyKey: 'memory-new', inputClass: 'ordinary' }, h.ctx);
+  assert.match(accepted(h, fresh.liveSessionId).system, /Fixture revised owner note/);
+  assert.notEqual(fresh.promptIdentity, first.promptIdentity);
+  assert.equal(h.store.transaction(tx => tx.get('SELECT fingerprint FROM live_sessions WHERE live_session_id=?', [first.liveSessionId])!['fingerprint']), createHash('sha256').update(JSON.stringify({ inputClass: 'ordinary', profile: first.profileIdentity, prompt: first.promptIdentity, pickupJobId: null })).digest('hex'));
+});
+
+test('Live memory recalls ordinary entries only, including parent labels, and reports an empty selection', async t => {
+  const h = await harness(t);
+  const empty = h.owner.create({ idempotencyKey: 'empty-memory', inputClass: 'ordinary' }, h.ctx);
+  assert.equal(accepted(h, empty.liveSessionId).memory.status, 'empty');
+  note(h, 'ordinary', 'Fixture ordinary note');
+  note(h, 'private', 'Fixture private canary', 'private');
+  note(h, 'sensitive', 'Fixture sensitive canary', 'sensitive');
+  note(h, 'private-parent', 'Fixture parent private canary', 'ordinary', 'private');
+  const session = h.owner.create({ idempotencyKey: 'class-memory', inputClass: 'ordinary' }, h.ctx);
+  const snapshot = accepted(h, session.liveSessionId);
+  assert.match(snapshot.system, /Fixture ordinary note/);
+  for (const forbidden of ['Fixture private canary', 'Fixture sensitive canary', 'Fixture parent private canary']) assert.ok(!snapshot.system.includes(forbidden));
+  assert.deepEqual(snapshot.memory.selectedIds, ['ordinary']);
+  assert.deepEqual(h.store.transaction(resolveLiveMemory).map(record => record.id), ['ordinary']);
+  assert.deepEqual(h.owner.profileProjection().memory, { status: 'selected', selected: 1, omitted: 0 });
+  assert.deepEqual(h.owner.current().memory, { status: 'selected', selected: 1, omitted: 0 });
+});
+
+test('Live memory budget keeps whole records, reports overflow, and rejects oversized static instructions and resolution failure', async t => {
+  const h = await harness(t);
+  note(h, 'a', 'Fixture whole note');
+  const initial = h.owner.create({ idempotencyKey: 'measure-memory', inputClass: 'ordinary' }, h.ctx);
+  const remaining = 20000 - accepted(h, initial.liveSessionId).system.length;
+  h.store.transaction(tx => tx.run('UPDATE entries SET text=? WHERE id=?', ['Fixture whole note' + 'x'.repeat(remaining), 'a']));
+  note(h, 'b', 'Fixture overflow note');
+  const boundary = h.owner.create({ idempotencyKey: 'boundary-memory', inputClass: 'ordinary' }, h.ctx);
+  const snapshot = accepted(h, boundary.liveSessionId);
+  assert.equal(snapshot.system.length, 20000);
+  assert.deepEqual(snapshot.memory.selectedIds, ['a']);
+  assert.deepEqual(snapshot.memory.omitted, [{ id: 'b', reason: 'budget' }]);
+  assert.ok(!snapshot.system.includes('Fixture overflow note'));
+  assert.ok(snapshot.system.includes(JSON.stringify({ id: 'a', text: 'Fixture whole note' + 'x'.repeat(remaining) })), 'the selected record survives byte for byte');
+  const oversized = await harness(t, { system: 'x'.repeat(4096), tools: true, overlay: { schemaVersion: 1, text: 'x'.repeat(16000) } });
+  assert.throws(() => oversized.owner.create({ idempotencyKey: 'oversized', inputClass: 'ordinary' }, oversized.ctx), (error: unknown) => error instanceof LiveError && String(error.code) === 'instruction_too_large');
+  const failed = await harness(t, { memoryFailure: true });
+  assert.throws(() => failed.owner.create({ idempotencyKey: 'failed-memory', inputClass: 'ordinary' }, failed.ctx), (error: unknown) => error instanceof LiveError && String(error.code) === 'memory_unavailable');
+  assert.equal(oversized.requests.length + failed.requests.length, 0);
+});
+
+test('Live transcripts and completion, interruption and terminal events stay journal-only', async t => {
+  const h = await harness(t);
+  note(h, 'existing', 'Fixture existing note');
+  const { session, attachment } = await attached(h, 'journal-only');
+  const before = h.store.transaction(tx => Number(tx.get('SELECT COUNT(*) AS n FROM entries')!['n']));
+  h.f.send({ serverContent: { inputTranscription: { text: 'Fixture voice input', finished: true }, outputTranscription: { text: 'Fixture voice output', finished: true }, turnComplete: true } });
+  await drain(h, session.liveSessionId, 4);
+  h.f.send({ serverContent: { interrupted: true } });
+  await drain(h, session.liveSessionId, 5);
+  h.owner.revoke(session.liveSessionId); await attachment.done;
+  const kinds = h.store.transaction(tx => tx.all('SELECT kind FROM live_journal WHERE live_session_id=?', [session.liveSessionId]).map(row => row['kind']));
+  for (const kind of ['inputTranscription', 'outputTranscription', 'turnComplete', 'interrupted', 'terminal']) assert.ok(kinds.includes(kind));
+  assert.equal(h.store.transaction(tx => Number(tx.get('SELECT COUNT(*) AS n FROM entries')!['n'])), before);
+});
+
 test('a session with a tool declaration carries the tools conduct; without one composes exactly as before', async t => {
   const withTools = await harness(t, { tools: true });
-  const { attachment: withAttachment } = await attached(withTools);
+  const { session: withSession, attachment: withAttachment } = await attached(withTools);
+  assertFrozenInstruction(withTools, withSession.liveSessionId, 0);
   assert.equal(withTools.requests.length, 1);
   assert.ok(withTools.requests[0]!.system.text.includes(NAYA_TOOLS),
     'the authored tools conduct is in the attached system instruction');
-  await withAttachment.done;
+  withAttachment.close(); await withAttachment.done;
 
   const withoutTools = await harness(t, {});
   const { attachment: withoutAttachment } = await attached(withoutTools);
   assert.equal(withoutTools.requests.length, 1);
   assert.equal(withoutTools.requests[0]!.system.text, 'Synthetic system', 'no declarations compose exactly as before');
   assert.ok(!withoutTools.requests[0]!.system.text.includes('# Tools'));
-  await withoutAttachment.done;
+  withoutAttachment.close(); await withoutAttachment.done;
 });
 
 async function drain(h: Harness, liveSessionId: string, expected: number): Promise<LiveSessionSnapshot> {
@@ -525,7 +650,7 @@ test('live migrations preserve a populated accepted Store byte-for-byte', async 
   before.transaction(tx => {
     tx.run('INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?)', ['s1', 'Prior session', 1, null, 'UTC', 1, 1, 1]);
     tx.run('INSERT INTO entries VALUES (?,?,?,?,?,?,?,?)', ['e1', 's1', 1, 'user', 'preserved text', 2, 'UTC', 1]);
-    tx.run('INSERT INTO chat_consents VALUES (?,?,?,?,?,?,?,?,?,?,?)', ['s1', before.assistantId, 'gemini', MODEL, 'route', 1, '["ordinary"]', '2026-01-01T00:00:00.000Z', null, 'consent-key', 'fingerprint']);
+    tx.run('INSERT INTO chat_consents(session_id,owner_assistant_id,provider,model,route_identity,revision,permitted_classes,granted_at,revoked_at,idempotency_key,fingerprint) VALUES (?,?,?,?,?,?,?,?,?,?,?)', ['s1', before.assistantId, 'gemini', MODEL, 'route', 1, '["ordinary"]', '2026-01-01T00:00:00.000Z', null, 'consent-key', 'fingerprint']);
   });
   const journalColumns = 'journal_id,live_session_id,provider_sequence,kind,text,finished,value,terminal_outcome,rejected_kind,rejected_sequence,payload_bytes,arrived_at';
   before.transaction(tx => {
@@ -555,7 +680,9 @@ test('live migrations preserve a populated accepted Store byte-for-byte', async 
     consents: tx.all('SELECT * FROM chat_consents ORDER BY session_id'),
     outbox: tx.all('SELECT * FROM runtime_outbox ORDER BY id'),
   }));
-  assert.deepEqual(current, prior, 'accepted CHAT and Domain rows stay meaningful');
+  assert.ok(current.liveSessions.every(row => row['resumption_handle'] === null && row['connection_generation'] === 0));
+  assert.ok(current.liveSessions.every(row => row['memory_provenance'] === null), 'additive v4 provenance is null on legacy rows');
+  assert.deepEqual({ ...current, liveSessions: current.liveSessions.map(({ memory_provenance: _newColumn, resumption_handle: _handle, connection_generation: _generation, ...legacy }) => legacy) }, { ...prior, liveSessions: prior.liveSessions.map(row => ({ ...row })) }, 'all pre-existing Live, CHAT and Domain values stay byte-identical');
   assert.deepEqual(migrated.transaction(tx => tx.all('SELECT journal_id,tool_json FROM live_journal ORDER BY journal_id').map(row => ({ ...row }))),
     [41, 42, 43].map(journal_id => ({ journal_id, tool_json: null })));
   migrated.transaction(tx => {
@@ -564,8 +691,16 @@ test('live migrations preserve a populated accepted Store byte-for-byte', async 
     assert.deepEqual(tx.all('SELECT journal_id,kind FROM live_journal WHERE journal_id>43 ORDER BY journal_id').map(row => ({ ...row })),
       [{ journal_id: 44, kind: 'toolCall' }, { journal_id: 45, kind: 'toolResult' }]);
   });
+  migrated.transaction(tx => {
+    const id = String(current.liveSessions[0]!['live_session_id']);
+    tx.run("INSERT INTO live_journal(live_session_id,kind,text,payload_bytes,arrived_at) VALUES (?,'remember_deferred','299',3,?)", [id, NOW]);
+    const row = tx.get("SELECT kind,text FROM live_journal WHERE live_session_id=? AND kind='remember_deferred'", [id]);
+    assert.deepEqual({ ...row }, { kind: 'remember_deferred', text: '299' });
+    assert.throws(() => tx.run("INSERT INTO live_journal(live_session_id,kind,payload_bytes,arrived_at) VALUES (?,'unknown_kind',0,?)", [id, NOW]));
+  });
   const owners = migrated.transaction(tx => tx.all('SELECT owner, MAX(version) AS version FROM runtime_migrations GROUP BY owner ORDER BY owner'));
-  assert.deepEqual(owners.map(row => [String(row['owner']), Number(row['version'])]), [['chat', 4], ['domain', 3], ['live', 3]]);
+  assert.deepEqual(owners.map(row => [String(row['owner']), Number(row['version'])]),
+    [chatMigrations, domainMigrations, liveMigrations].map(migrations => [migrations[0]!.owner, Math.max(...migrations.map(migration => migration.version))]));
 });
 
 test('a failed store write aborts visibly and never fabricates a durable outcome', async t => {
@@ -855,7 +990,7 @@ test('attach wins before deadline including opening, and expiry wins after it wi
   await attachment.ready;
   h.advance(100); scheduler.runDue();
   assert.equal(h.owner.get(row.liveSessionId).lifecycle, 'active');
-  assert.equal(scheduler.pending.size, 0);
+  assert.equal(scheduler.pending.size, 2, 'only active session and idle budgets remain');
   t.mock.restoreAll();
   const past = h.owner.create({ idempotencyKey: 'deadline-attach-late', inputClass: 'ordinary' }, h.ctx);
   h.advance(21);
@@ -895,7 +1030,7 @@ test('Live persists the exact typed accepted instruction before intent and corru
   const run = owner.create({ idempotencyKey: 'owner-frozen', inputClass: 'ordinary' }, h.ctx);
   const row = h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot,dispatch_intent FROM live_sessions WHERE live_session_id=?', [run.liveSessionId]))!;
   assert.equal(row.dispatch_intent, 0);
-  assert.deepEqual(JSON.parse(String(row.accepted_prompt_snapshot)), acceptedPrompt);
+  assert.deepEqual(JSON.parse(String(row.accepted_prompt_snapshot)), { ...acceptedPrompt, memory: { status: 'empty', selectedIds: [], omitted: [] } });
   acceptedPrompt.system = 'SYNTHETIC B';
   assert.equal(JSON.parse(String(h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [run.liveSessionId]))!.accepted_prompt_snapshot)).system, 'SYNTHETIC exact accepted A');
   h.store.transaction(tx => tx.run('UPDATE live_sessions SET accepted_prompt_snapshot=? WHERE live_session_id=?', ['{"schemaVersion":999}', run.liveSessionId]));
@@ -999,6 +1134,12 @@ test('Live answers a slow tool batch truthfully, continues the turn, and retains
   await tick();
   assert.equal(h.owner.lookupAuthority(session.liveSessionId), null);
   const callback = h.owner.createWithPending({ inputClass: 'ordinary', idempotencyKey: 'callback' }, h.ctx);
+  const frozenJob = new LiveToolJobs(h.store, () => NOW).forSession(callback.liveSessionId)!;
+  assert.equal(accepted(h, callback.liveSessionId).pickup?.jobId, frozenJob.id);
+  frozenJob.state = 'failed'; new LiveToolJobs(h.store, () => NOW).save(frozenJob);
+  assert.throws(() => h.owner.attach({ liveSessionId: callback.liveSessionId }, h.ctx), (error: unknown) => error instanceof LiveError && String(error.code) === 'pickup_changed');
+  assert.equal(h.requests.length, 1, 'changed pickup state is rejected before dispatch');
+  frozenJob.state = 'completed'; new LiveToolJobs(h.store, () => NOW).save(frozenJob);
   const pickedUp = h.owner.attach({ liveSessionId: callback.liveSessionId }, h.ctx);
   await h.f.frame(3);
   h.f.send({ setupComplete: {} });
@@ -1008,6 +1149,8 @@ test('Live answers a slow tool batch truthfully, continues the turn, and retains
   assert.match(history.clientContent.turns[0]!.parts[0]!.text, /Synthetic insight/);
   assert.equal((history.clientContent as typeof history.clientContent & { turnComplete: boolean }).turnComplete, true);
   assert.equal((h.requests[1] as LiveVoiceRequest & { opening?: string }).opening, 'model_first');
+  assertFrozenInstruction(h, callback.liveSessionId, 1);
+  assert.match(accepted(h, callback.liveSessionId).system, /user has just picked up/i);
   assert.match(h.requests[1]!.system.text, /user has just picked up/i);
   assert.match(h.requests[1]!.system.text, /briefly/i);
   h.f.send({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from(pcm).toString('base64') } }] },
@@ -1026,7 +1169,7 @@ test('Live accepts a frozen real tool snapshot and projects only result-gated Ma
   const { session, attachment } = await attached(h);
   assert.equal(h.owner.lookupAuthority(session.liveSessionId)?.actorId, h.ctx.clientId);
   const setup = (h.f.frames[0] as { setup: { tools: { functionDeclarations: { name: string; parameters: any }[] }[] } }).setup;
-  assert.equal(setup.tools[0]!.functionDeclarations.length, 2);
+  assert.deepEqual(setup.tools[0]!.functionDeclarations.map(tool => tool.name).sort(), ['get_insight', 'remember_note', 'search_knowledge']);
   const derived = setup.tools[0]!.functionDeclarations.find(d => d.name === 'get_insight')!;
   assert.equal(derived.parameters.properties.ids.type, 'STRING');
   const outputs = attachment.output[Symbol.asyncIterator]();
@@ -1041,7 +1184,7 @@ test('Live accepts a frozen real tool snapshot and projects only result-gated Ma
   assert.equal(page.entries.filter(e => e.kind === 'toolCall').length, 2);
   const result = page.entries.find(e => e.kind === 'toolResult')!.tool!;
   assert.equal(result.status, 'completed'); assert.match(result.markdown!, /Synthetic insight/);
-  assert.deepEqual(result.sources, [{ title: 'Evidence', url: 'https://example.test/evidence' }, { title: '123' }]);
+  assert.deepEqual(result.sources, [{ title: '123' }, { title: 'Evidence', url: 'https://example.test/evidence' }], 'cards follow first occurrence in approved evidence');
   assert.equal(JSON.stringify(page).includes('liveSessionId'), false);
   assert.equal(JSON.stringify(page).includes('args'), false);
   assert.equal(JSON.stringify(page).includes(CANARY), false);
@@ -1137,7 +1280,8 @@ test('loadLiveConfig composes the Naya instruction and fails closed on an invali
   const status = loadLiveConfig({ configDir, ownerId: 'synthetic-owner' });
   assert.equal(status.status, 'configured');
   if (status.status === 'configured') {
-    const expected = composeLiveInstruction({ base: NAYA_BASE, overlay, language: 'de' });
+    const expected = composeLiveInstruction({ base: NAYA_BASE, accent: overlay.accent, language: 'de' });
+    assert.deepEqual(status.config.profile.overlay, overlay);
     assert.equal(status.config.profile.language, 'de');
     assert.equal(status.config.profile.prompt.text, expected.text);
     assert.equal(status.config.profile.acceptedPrompt?.system, expected.text);
@@ -1146,4 +1290,241 @@ test('loadLiveConfig composes the Naya instruction and fails closed on an invali
   const bad = loadLiveConfig({ configDir, ownerId: 'synthetic-owner' });
   assert.equal(bad.status, 'error');
   if (bad.status === 'error') assert.equal(bad.code, 'invalid_overlay');
+});
+
+test('provider voice activity journals listening and thinking without retaining its payload', async t => {
+  const h = await harness(t);
+  const { session, attachment } = await attached(h);
+  h.f.send({ serverContent: {}, voiceActivity: { voiceActivityType: 'ACTIVITY_END', synthetic: 'not-journalled' } });
+  await drain(h, session.liveSessionId, 2);
+  assert.equal(h.owner.current().state, 'thinking');
+  h.f.send({ serverContent: {}, voiceActivity: { voiceActivityType: 'ACTIVITY_START' } });
+  await drain(h, session.liveSessionId, 3);
+  assert.equal(h.owner.current().state, 'listening');
+  const page = h.owner.listFragments({ liveSessionId: session.liveSessionId, limit: 10 });
+  assert.deepEqual(page.fragments.filter(f => f.kind === 'waitingForInput').map(f => f.value), [false, true]);
+  assert.equal(JSON.stringify(page).includes('not-journalled'), false);
+  attachment.close();
+  await attachment.done;
+});
+
+test('resumption keeps journal identity and frozen authority with the real adapter', async t => {
+  const h = await harness(t);
+  const { session, attachment } = await attached(h, 'resume-identity');
+  const frozen = h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot,memory_provenance FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]));
+  const handle = 'synthetic-owner-resumption-secret';
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: handle } });
+  h.f.send({ goAway: { timeLeft: '10s' } });
+  await h.f.frame(2);
+  const setup = (h.f.frames[1] as { setup: { sessionResumption: { handle: string } } }).setup;
+  assert.equal(setup.sessionResumption.handle === handle, true);
+  const saved = h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot,memory_provenance,resumption_handle,connection_generation FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!;
+  assert.deepEqual({ accepted_prompt_snapshot: saved.accepted_prompt_snapshot, memory_provenance: saved.memory_provenance }, { ...frozen });
+  assert.equal(saved.resumption_handle === handle, true);
+  assert.equal(saved.connection_generation, 1);
+  assert.equal(h.memorySelections, 1, 'memory selection is never re-run');
+  assert.deepEqual(h.requests[1]!.tools, h.requests[0]!.tools);
+  assert.deepEqual(h.requests[1]!.system, h.requests[0]!.system);
+  assert.equal(h.owner.current().state, 'rebuilding');
+  const beforeLate = h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.length;
+  h.f.clients[0]!.emit('message', Buffer.from(JSON.stringify({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-stale-secret' }, toolCall: { functionCalls: [{ id: 'stale-call', name: 'not_admitted', args: {} }] }, serverContent: { inputTranscription: { text: 'stale row' } } })));
+  h.f.clients[0]!.emit('close', 1008);
+  await tick();
+  assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.length, beforeLate, 'old callbacks cannot append or settle');
+  assert.equal(h.store.transaction(tx => tx.get('SELECT resumption_handle FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!.resumption_handle === handle, true, 'old handle cannot replace the current candidate');
+  assert.equal(JSON.stringify(h.owner.current()).includes(handle), false);
+  h.f.send({ setupComplete: {} });
+  // The public committed marker, not a timer, is the resumption acknowledgement.
+  const output = attachment.output[Symbol.asyncIterator]();
+  await continuity(output, 'resumed');
+  assert.equal(h.owner.current().state, 'listening');
+  attachment.close(); await attachment.done;
+  const rows = h.store.transaction(tx => tx.all('SELECT journal_id,kind FROM live_journal WHERE live_session_id=? ORDER BY journal_id', [session.liveSessionId]));
+  assert.equal(rows.filter(r => r.kind === 'terminal').length, 1);
+  assert.equal(rows.filter(r => r.kind === 'continuity').length, 2);
+  assert.equal(new Set(rows.map(r => r.journal_id)).size, rows.length);
+});
+
+test('pending tool call at the resume cut gets one lost result and never dispatches on the new connection', async t => {
+  const entered = deferred<void>(), release = deferred<void>();
+  const h = await harness(t, { tools: true, beforeGate: async () => { entered.resolve(); await release.promise; } });
+  t.after(() => release.resolve());
+  const { session, attachment } = await attached(h, 'resume-lost-tool');
+  const acceptance = h.store.transaction(tx => tx.get('SELECT acceptance_json,accepted_run_hash FROM live_tool_acceptances WHERE live_session_id=?', [session.liveSessionId]));
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-tool-resumption-secret' }, toolCall: { functionCalls: [{ id: 'lost-call', name: 'lux_search_knowledge', args: { query: 'test', limit: 1 } }] } });
+  await entered.promise;
+  assert.equal(h.calls.length, 0);
+  h.f.send({ goAway: { timeLeft: '10s' } });
+  await h.f.frame(2);
+  assert.equal(h.owner.current().state, 'rebuilding');
+  const cut = h.owner.listFragments({ liveSessionId: session.liveSessionId });
+  const lost = cut.fragments.filter(row => row.tool?.code === 'tool_call_lost_on_resume');
+  assert.equal(lost.length, 1);
+  assert.equal(lost[0]!.tool!.callId, 'lost-call');
+  const rebuilding = cut.fragments.find(row => row.kind === 'continuity');
+  assert.equal(rebuilding?.event, 'rebuilding');
+  assert.equal(rebuilding?.text, null, 'continuity is typed, not transcript text');
+  assert.deepEqual(h.store.transaction(tx => tx.get('SELECT acceptance_json,accepted_run_hash FROM live_tool_acceptances WHERE live_session_id=?', [session.liveSessionId])), acceptance);
+  h.f.send({ setupComplete: {} });
+  const output = attachment.output[Symbol.asyncIterator]();
+  await continuity(output, 'resumed');
+  release.resolve();
+  // Let the rejected old dispatch gate and its catch finish without a clock wait.
+  await tick(); await tick();
+  assert.equal(h.calls.length, 0, 'old pending call is never dispatched');
+  assert.equal(h.f.frames.some(frame => 'toolResponse' in (frame as object)), false);
+  const after = h.owner.listFragments({ liveSessionId: session.liveSessionId });
+  assert.equal(after.fragments.filter(row => row.tool?.code === 'tool_call_lost_on_resume').length, 1);
+  assert.equal(after.fragments.length, cut.fragments.length + 1, 'only the resumed row crosses the generation fence');
+  attachment.close(); await attachment.done;
+});
+
+async function continuity(output: AsyncIterator<import('../live/types.js').LiveOutputChunk>, event: 'rebuilding' | 'resumed') {
+  for (;;) {
+    const item = await output.next();
+    assert.equal(item.done, false, 'consumer remains attached across the resume');
+    if (item.value.kind === 'marker' && item.value.marker.kind === 'continuity' && item.value.marker.event === event) return item.value.marker;
+  }
+}
+
+test('resumed setup policy rejection ends once with resume_failed', async t => {
+  const h = await harness(t);
+  const { session, attachment } = await attached(h, 'resume-policy');
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-policy-resumption-secret' }, goAway: { timeLeft: '10s' } });
+  await h.f.frame(2); h.f.remoteClose('', 1008);
+  assert.deepEqual((await attachment.done).terminal, { state: 'failed', code: 'resume_failed' });
+  assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(r => r.kind === 'terminal').length, 1);
+});
+
+test('third recoverable loss ends the same session without a fourth connection', async t => {
+  const h = await harness(t);
+  const { session, attachment } = await attached(h, 'resume-attempts');
+  const output = attachment.output[Symbol.asyncIterator]();
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-attempt-resumption-secret' } });
+  for (let connection = 2; connection <= 3; connection++) {
+    h.f.send({ goAway: { timeLeft: '10s' } }); await h.f.frame(connection);
+    h.f.send({ setupComplete: {} }); await continuity(output, 'resumed');
+  }
+  h.f.remoteClose('', 1011);
+  assert.deepEqual((await attachment.done).terminal, { state: 'failed', code: 'resume_failed' });
+  assert.equal(h.f.connections, 3);
+  assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(r => r.kind === 'terminal').length, 1);
+});
+
+test('revoked resumption handle is cleared before a recoverable loss', async t => {
+  const h = await harness(t);
+  const { session, attachment } = await attached(h, 'resume-cleared');
+  const output = attachment.output[Symbol.asyncIterator]();
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-cleared-resumption-secret' }, serverContent: { inputTranscription: { text: 'saved' } } });
+  await transcription(output, 'saved');
+  assert.equal(h.store.transaction(tx => tx.get('SELECT resumption_handle FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!.resumption_handle !== null, true);
+  h.f.send({ sessionResumptionUpdate: { resumable: false }, serverContent: { inputTranscription: { text: 'cleared' } } });
+  await transcription(output, 'cleared');
+  assert.equal(h.store.transaction(tx => tx.get('SELECT resumption_handle FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!.resumption_handle, null);
+  h.f.remoteClose('', 1011);
+  assert.deepEqual((await attachment.done).terminal, { state: 'failed', code: 'resume_failed' });
+  assert.equal(h.f.connections, 1);
+});
+
+test('resumption cannot extend the original session budget or idle expiry', async t => {
+  for (const limit of ['sessionMs', 'idleMs'] as const) {
+    const scheduler = new DeadlineClock();
+    const h = await harness(t, { scheduler, limits: { sessionMs: 1000, idleMs: 1000, [limit]: 100 } });
+    const { attachment } = await attached(h, `resume-${limit}`);
+    const output = attachment.output[Symbol.asyncIterator]();
+    h.advance(60);
+    h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-budget-resumption-secret' }, goAway: { timeLeft: '10s' } });
+    await h.f.frame(2); h.f.send({ setupComplete: {} }); await continuity(output, 'resumed');
+    h.advance(40); scheduler.runDue();
+    const terminal = (await attachment.done).terminal!;
+    assert.equal(terminal.state, 'failed');
+    assert.equal('code' in terminal && terminal.code, limit === 'sessionMs' ? 'session_timeout' : 'idle_timeout');
+    assert.equal(h.f.connections, 2);
+  }
+});
+
+async function transcription(output: AsyncIterator<import('../live/types.js').LiveOutputChunk>, text: string) {
+  for (;;) {
+    const item = await output.next(); assert.equal(item.done, false);
+    if (item.value.kind === 'marker' && item.value.marker.text === text) return;
+  }
+}
+
+
+test('queued PCM is dropped at the cut and capture during rebuilding is never replayed', async t => {
+  const h = await harness(t);
+  const { attachment } = await attached(h, 'resume-media');
+  attachment.sendAudio({ pcm }); await h.f.frame(2);
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-media-resumption-secret' }, serverContent: { modelTurn: { parts: [audio()] } }, goAway: { timeLeft: '10s' } });
+  await h.f.frame(3);
+  const output = attachment.output[Symbol.asyncIterator]();
+  for (;;) {
+    const item = await output.next(); assert.equal(item.done, false);
+    assert.notEqual(item.value.kind, 'audio', 'old queued output PCM is discarded');
+    if (item.value.kind === 'marker' && item.value.marker.kind === 'continuity') break;
+  }
+  attachment.sendAudio({ pcm }); attachment.endAudioStream();
+  assert.equal(h.f.frames.length, 3, 'capture during rebuilding is dropped');
+  h.f.send({ setupComplete: {}, serverContent: { modelTurn: { parts: [audio()] } } });
+  await continuity(output, 'resumed');
+  const resumedAudio = await output.next();
+  assert.equal(resumedAudio.value.kind, 'audio');
+  assert.equal(h.f.frames.length, 3, 'no old PCM replay follows setupComplete');
+  attachment.close(); await attachment.done;
+});
+
+
+test('an exhausted original budget never opens a replacement connection', async t => {
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, limits: { sessionMs: 100, idleMs: 1000 } });
+  const { attachment } = await attached(h, 'resume-exhausted');
+  h.advance(100); // Recoverable loss wins before the fake timer callback runs.
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-exhausted-resumption-secret' }, goAway: { timeLeft: '10s' } });
+  assert.deepEqual((await attachment.done).terminal, { state: 'failed', code: 'resume_failed' });
+  assert.equal(h.f.connections, 1);
+});
+
+for (const outcome of ['failed', 'closed', 'unknown'] as const) {
+  test(`page projects past Live ${outcome} with truthful timing`, async t => {
+    const h = await harness(t);
+    const session = h.owner.create({ idempotencyKey: 'past', inputClass: 'ordinary' }, h.ctx);
+    const terminal = outcome === 'unknown' ? null : JSON.stringify({ state: outcome, code: 'fixture' });
+    h.store.transaction(tx => tx.run("UPDATE live_sessions SET lifecycle='active',terminal_outcome=?,terminal_at=?,updated_at=? WHERE live_session_id=?", [terminal, outcome === 'unknown' ? null : NOW + 1000, NOW + 2000, session.liveSessionId]));
+    const page = h.owner.current();
+    assert.equal(page.state, 'ended');
+    assert.deepEqual((page as typeof page & { pastSession?: unknown }).pastSession, { outcome, endedAt: outcome === 'unknown' ? null : NOW + 1000, lastObservedAt: NOW + 2000 });
+  });
+}
+test('active page does not carry past session metadata', async t => {
+  const h = await harness(t);
+  await attached(h);
+  assert.equal(h.owner.current().state, 'listening');
+  assert.equal((h.owner.current() as { pastSession?: unknown }).pastSession, undefined);
+});
+
+
+for (const status of [401, 403, 429]) test(`resumed HTTP upgrade refusal ${status} ends without another recovery attempt`, async t => {
+  const h = await harness(t);
+  const { session, attachment } = await attached(h, `resume-refused-${status}`);
+  h.f.refuseUpgrades(status);
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-refused-resumption-secret' }, goAway: { timeLeft: '10s' } });
+  assert.deepEqual((await attachment.done).terminal, { state: 'failed', code: 'resume_failed' });
+  assert.equal(h.f.attempts, 2, 'one original connection and one rejected resume, never a second recovery');
+  assert.equal(h.f.connections, 1);
+  assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(row => row.kind === 'terminal').length, 1);
+});
+
+test('established WebSocket protocol error ends without resumption despite a saved handle', async t => {
+  const h = await harness(t);
+  const { session, attachment } = await attached(h, 'resume-protocol-final');
+  const output = attachment.output[Symbol.asyncIterator]();
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-protocol-resumption-secret' } });
+  h.f.send({ serverContent: { inputTranscription: { text: 'protocol sentinel' } } });
+  await transcription(output, 'protocol sentinel');
+  assert.equal(h.store.transaction(tx => tx.get('SELECT resumption_handle FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!.resumption_handle !== null, true);
+  // If the defect reconnects, refuse setup immediately rather than waiting a real timeout.
+  h.f.refuseUpgrades(403); h.f.invalidOpcode();
+  assert.deepEqual((await attachment.done).terminal, { state: 'failed', code: 'protocol_error' });
+  assert.equal(h.f.attempts, 1);
+  assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(row => row.kind === 'terminal').length, 1);
 });

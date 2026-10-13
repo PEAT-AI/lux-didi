@@ -45,4 +45,16 @@ export const chatMigrations: readonly SchemaMigration[] = [{ owner: 'chat', vers
     schema_version INTEGER NOT NULL, snapshot_json TEXT NOT NULL)`,
   `INSERT INTO chat_run_owner_profile(run_id,schema_version,snapshot_json)
     SELECT run_id,1,json_object('schemaVersion',1,'kind','default','ownerId',owner_assistant_id,'displayName','Lux Didi') FROM chat_runs`
+] }, { owner: 'chat', version: 5, statements: [
+  `ALTER TABLE chat_consents ADD COLUMN scope TEXT NOT NULL DEFAULT 'conversation'`,
+  `CREATE TABLE chat_consent_enrollments (
+    session_id TEXT PRIMARY KEY REFERENCES sessions(id), owner_assistant_id TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL, fingerprint TEXT NOT NULL,
+    UNIQUE(owner_assistant_id,idempotency_key))`
+] }, { owner: 'chat', version: 6, statements: [
+  `CREATE TABLE chat_capability_acceptances (
+    session_id TEXT PRIMARY KEY, provider TEXT NOT NULL, model TEXT NOT NULL,
+    route_identity TEXT NOT NULL, permitted_classes TEXT NOT NULL,
+    policy_identity TEXT NOT NULL, capabilities_json TEXT NOT NULL,
+    connection_ids TEXT NOT NULL)`
 ] }];

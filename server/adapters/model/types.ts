@@ -56,7 +56,8 @@ export type ToolCallIntent = Omit<ExecutionContext, 'signal'> & {
 export type ToolCallRefusal = Omit<ToolCallIntent, 'accountId' | 'resourceId'> & {
   accountId?: string; resourceId?: string;
 };
-export type ToolOutcome = { status: 'completed'; result: ToolResultRef } | { status: 'failed' | 'unknown' };
+export type ToolFailureCode = 'mcp_transport_error' | 'mcp_result_invalid' | 'connector_error' | 'handler_outcome';
+export type ToolOutcome = { status: 'completed'; result: ToolResultRef } | { status: 'failed' | 'unknown'; code?: ToolFailureCode };
 export interface ToolCallJournal {
   intent(call: ToolCallIntent): 'fresh' | 'existing';
   refuse(call: ToolCallRefusal, reason: string): ToolResultRef;

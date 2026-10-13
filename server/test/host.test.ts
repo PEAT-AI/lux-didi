@@ -1,3 +1,5 @@
+// The declared host check also exercises the real installer's isolated seed block (R5).
+import './install-template.test.js';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -8,6 +10,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { pairLocal, startHost, type RuntimeDescriptor } from '../host/runtime.js';
+import { HostLog } from '../host/log.js';
 import { Store } from '../runtime/store.js';
 import { listenService } from '../http/server.js';
 
@@ -16,7 +19,13 @@ const webRoot = resolve(import.meta.dirname, '../../../web/dist');
 test('host serves the accepted build with security policy, never API or private files', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'didi-host-static-'));
   const store = new Store(dir);
-  const service = await listenService({ store, port: 0, webRoot });
+  const endpoints = [
+    { id: 'missing', state: 'missing', tools: 0, lastHandshakeAt: null, error: 'credential private.json missing or invalid', config: 'SECRET CONFIG' },
+    { id: 'ready', state: 'configured', tools: 0, lastHandshakeAt: null },
+    { id: 'online', state: 'connected', tools: 3, lastHandshakeAt: '2026-10-12T14:52:00.000Z' },
+    { id: 'offline', state: 'error', tools: 0, lastHandshakeAt: null, error: 'RAW SECRET https://secret.invalid/?token=PRIVATE' },
+  ];
+  const service = await listenService({ store, port: 0, webRoot, toolsStatus: () => ({ endpoints }) });
   try {
     const response = await fetch(service.origin);
     assert.equal(response.status, 200, 'the real shell must be available without API authentication');
@@ -60,6 +69,20 @@ test('host serves the accepted build with security policy, never API or private 
     assert.equal(paired.status, 200);
     const cookie = paired.headers.get('set-cookie')!.split(';')[0]!;
     const { data: { csrfToken } } = await paired.json();
+    const connections = await fetch(service.origin + '/api/v1/live/connections', { headers: { Cookie: cookie, 'Sec-Fetch-Site': 'same-origin' } });
+    assert.equal(connections.status, 200);
+    assert.equal(connections.headers.get('cache-control'), 'no-store');
+    assert.equal(connections.headers.get('access-control-allow-origin'), null);
+    const projection = (await connections.json()).data;
+    assert.deepEqual(projection.map((row: { state: string }) => row.state), ['missing', 'configured', 'connected', 'error']);
+    assert.deepEqual(projection.map((row: { reasonCode: string | null }) => row.reasonCode), ['credential_missing', null, null, 'unknown']);
+    for (const row of projection) assert.deepEqual(Object.keys(row).sort(), ['id', 'lastHandshakeAt', 'reasonCode', 'state', 'tools']);
+    assert.doesNotMatch(JSON.stringify(projection), /SECRET|PRIVATE|secret.invalid|private.json/);
+    assert.equal((await fetch(service.origin + '/api/v1/live/connections')).status, 401);
+    assert.equal((await fetch(service.origin + '/api/v1/live/connections', { headers: { Cookie: cookie, Origin: 'https://evil.invalid' } })).status, 403);
+    assert.equal((await fetch(service.origin + '/api/v1/tools/status', { headers: { Cookie: cookie } })).status, 403);
+    assert.equal((await fetch(service.origin + '/api/v1/live/connections', { headers: { Cookie: cookie, 'Sec-Fetch-Site': 'cross-site' } })).status, 403);
+    assert.equal((await fetch(service.origin + '/api/v1/live/connections', { headers: { Authorization: `Bearer ${store.adminCredential}` } })).status, 403);
     const browserStatus = await fetch(service.origin + '/api/v1/status', { headers: { Cookie: cookie } });
     assert.equal(browserStatus.status, 200);
     assert.deepEqual((await browserStatus.json()).data.capabilities, { memory: false, commitments: false, notifications: false, model: false });
@@ -139,6 +162,13 @@ test('canonical compiler emits every published production unit and no unpublishe
 test('actual host connects durable domain, supersedes reminders, exposes conflicts and survives process restart', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'didi-host-domain-'));
   let host = await startHost({ dataDir: dir, webRoot, port: 0 });
+  const startup = JSON.parse((await readFile(join(dir, 'logs', 'host.log'), 'utf8')).split('\n')[0]!);
+  assert.deepEqual(Object.keys(startup).sort(), ['configDir', 'endpoints', 'event', 'pid', 'releaseCommit', 'timestamp']);
+  assert.equal(startup.event, 'host_started');
+  assert.equal(startup.releaseCommit, 'unknown');
+  assert.equal(startup.configDir, 'seeded');
+  assert.equal(startup.endpoints, 0);
+  assert.equal(JSON.stringify(startup).includes(dir), false);
   let child: ChildProcess | undefined;
   try {
     const credential = host.store.adminCredential;
@@ -357,6 +387,12 @@ for (const scenario of ['both', 'existing-live', 'default', 'absent'] as const) 
       const existingLive = live + '\n';
       if (scenario === 'existing-live') await writeFile(join(effective, 'live.json'), existingLive, { mode: 0o600 });
       host = await startHost({ dataDir: dir, webRoot, configDir: effective, port: 0 });
+      if (scenario === 'both' || scenario === 'existing-live') {
+        const diagnostics = await readFile(join(dir, 'logs', 'host.log'), 'utf8');
+        assert.match(diagnostics, /"event":"config_seeded"/);
+        assert.ok(!diagnostics.includes('SECRET'));
+      }
+
       for (const name of ['live.json', 'mcp.json']) {
         if (scenario === 'absent') await assert.rejects(readFile(join(effective, name)), { code: 'ENOENT' });
         else {
@@ -366,8 +402,127 @@ for (const scenario of ['both', 'existing-live', 'default', 'absent'] as const) 
       }
       assert.equal((await stat(effective)).mode & 0o777, 0o700);
       const seeded = scenario === 'both' ? ['live.json', 'mcp.json'] : scenario === 'existing-live' ? ['mcp.json'] : [];
-      assert.deepEqual(logs, seeded.map(name => `config_seeded file=${name} from=provider-config`));
+      const seedRecords = (await readFile(join(dir, 'logs', 'host.log'), 'utf8')).split('\n').filter(line => line.includes('config_seeded')).map(line => JSON.parse(line).file);
+      assert.deepEqual(seedRecords, seeded);
+      assert.deepEqual(logs, [], 'host stdout is reserved for JSON protocol frames');
       if (effective !== defaults) for (const name of ['gemini-primary.json', 'profile.json', 'admin-credential']) await assert.rejects(readFile(join(effective, name)), { code: 'ENOENT' });
     } finally { await host?.close(); await rm(dir, { recursive: true, force: true }); }
   });
 }
+
+// Real installed endpoint identities and connector kinds, with synthetic transports only.
+for (const missingMongoose of [true, false]) {
+  test(`real five-endpoint host CREATE composes company readers (mongoose missing=${missingMongoose})`, async t => {
+    const dir = await mkdtemp(join(tmpdir(), 'didi-real-shape-'));
+    t.after(() => rm(dir, { recursive: true, force: true }));
+    const config = join(dir, 'provider-config');
+    await mkdir(config, { mode: 0o700 });
+    const tools = [
+      'search_knowledge', 'get_insight', 'gmail_get_profile', 'gmail_list', 'gmail_read',
+      'gcal_calendars', 'gcal_list', 'mattermost_whoami', 'mattermost_get_channel_history',
+      'mattermost_get_thread', 'mattermost_search', 'mattermost_list_channels', 'ask_mongoose',
+      'search_mongoose', 'get_knowledge_item', 'read_knowledge_body', 'get_company_profile', 'list_tickets', 'get_ticket',
+    ].map(name => ({ name, inputSchema: { type: 'object', properties: {}, additionalProperties: true } }));
+    const reply = (message: { id?: unknown; method: string }) => message.id === undefined ? undefined : {
+      jsonrpc: '2.0', id: message.id, result: message.method === 'initialize'
+        ? { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'fake', version: '1' } }
+        : message.method === 'tools/list' ? { tools } : {},
+    };
+    const endpoint = createServer(async (req, res) => {
+      if (req.method !== 'POST') { res.writeHead(405); res.end(); return; }
+      const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      const response = reply(JSON.parse(Buffer.concat(chunks).toString()));
+      if (response && req.url && 'tools' in response.result) {
+        const family = req.url.slice(1);
+        response.result.tools = tools.filter(tool => family === 'gmail' ? tool.name.startsWith('gmail_') : family === 'calendar' ? tool.name.startsWith('gcal_') : family === 'lux-knowledge' ? ['search_knowledge', 'get_insight'].includes(tool.name) : !tool.name.startsWith('mattermost_') && !tool.name.startsWith('gmail_') && !tool.name.startsWith('gcal_') && !['search_knowledge', 'get_insight'].includes(tool.name));
+      }
+      res.writeHead(response ? 200 : 202, { 'content-type': 'application/json' });
+      res.end(response ? JSON.stringify(response) : undefined);
+    });
+    endpoint.listen(0, '127.0.0.1'); await once(endpoint, 'listening');
+    t.after(async () => { endpoint.closeAllConnections(); await new Promise<void>(done => endpoint.close(() => done())); });
+    const address = endpoint.address(); assert(address && typeof address !== 'string');
+    const url = `http://127.0.0.1:${address.port}`;
+    const child = join(dir, 'fake-mattermost.cjs');
+    await writeFile(child, `const tools=${JSON.stringify(tools)}; const reply=${reply.toString()}; require('node:readline').createInterface({input:process.stdin}).on('line', line => { const response=reply(JSON.parse(line)); if(response) console.log(JSON.stringify(response)); });`);
+    const http = (id: string, connector: string, credentialRef: string | null = null) => ({ id, connector, transport: 'streamable-http', url: url + '/' + id, account: 'synthetic', resource: id, credentialRef, enabled: true, allowEgress: true, unknownClass: 'ordinary' });
+    await writeFile(join(config, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [
+      http('lux-knowledge', 'lux-knowledge'), http('gmail', 'google'), http('calendar', 'google'),
+      { id: 'mattermost', connector: 'mattermost', transport: 'stdio', command: process.execPath, args: [child], env: { HOME: dir, PATH: process.env.PATH ?? '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' }, account: 'synthetic', resource: 'mattermost', credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'ordinary' },
+      http('mongoose', 'mongoose', missingMongoose ? 'missing-credential' : null),
+    ] }), { mode: 0o600 });
+    await writeFile(join(config, 'live.json'), JSON.stringify({ schemaVersion: 1, enabled: true, provider: 'gemini', modelId: 'models/live-gateway-test', voice: 'LiveVoice', keyReference: 'gemini-primary', dataClasses: ['ordinary'], preferences: { dataClass: 'ordinary', language: 'en-US', register: 'plain', humor: 'dry', verbosity: 'balanced' } }), { mode: 0o600 });
+    await writeFile(join(config, 'gemini-primary.json'), JSON.stringify({ schemaVersion: 1, keyReference: 'gemini-primary', key: 'synthetic-test-key' }), { mode: 0o600 });
+    const host = await startHost({ dataDir: join(dir, 'state'), configDir: config, webRoot, port: 0 });
+    t.after(() => host.close());
+    const headers = { Authorization: `Bearer ${host.store.adminCredential}`, 'Content-Type': 'application/json', 'Idempotency-Key': randomUUID(), 'X-Didi-Authority-Epoch': host.descriptor.authorityEpoch };
+    const status = await fetch(host.descriptor.origin + '/api/v1/tools/status', { headers });
+    assert.equal(status.status, 200);
+    const reports = (await status.json()).data.endpoints as Array<{ id: string; state: string; tools: number }>;
+    assert.deepEqual(reports.map(report => [report.id, report.state, report.tools]).sort(), [
+      ['lux-knowledge', 'connected', 2], ['gmail', 'connected', 3], ['calendar', 'connected', 2],
+      ['mattermost', 'connected', 5], ['mongoose', missingMongoose ? 'error' : 'connected', missingMongoose ? 0 : 7],
+    ].sort());
+    const response = await fetch(host.descriptor.origin + '/api/v1/live-sessions', { method: 'POST', headers, body: JSON.stringify({ inputClass: 'ordinary' }) });
+    const body = await response.json();
+    assert.equal(response.status, 200, JSON.stringify(body));
+    assert.ok(body.data.liveSessionId);
+    assert.equal(body.data.lifecycle, 'accepted');
+  });
+}
+
+test('host rejects an unknown connector kind before discovery and names it', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'didi-unknown-connector-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const config = join(dir, 'provider-config'); await mkdir(config, { mode: 0o700 });
+  await writeFile(join(config, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [{ id: 'unknown-endpoint', connector: 'unknown-kind', transport: 'streamable-http', url: 'http://127.0.0.1:1/', account: 'synthetic', resource: 'synthetic', credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'ordinary' }] }), { mode: 0o600 });
+  await assert.rejects(async () => {
+    const host = await startHost({ dataDir: join(dir, 'state'), configDir: config, webRoot, port: 0 });
+    await host.close();
+  }, error => {
+    assert(error instanceof Error);
+    assert.equal(error.name, 'ConnectorCompositionError');
+    assert.match(error.message, /unknown-endpoint/);
+    assert.match(error.message, /unknown-kind/);
+    return true;
+  });
+});
+
+// Small limits exercise the production rotation algorithm without producing host load.
+test('durable diagnostics rotate privately and persist only safe structured events', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'didi-log-'));
+  try {
+    const log = new HostLog(root, 220);
+    for (let n = 0; n < 12; n++) log.event({ event: 'config_seeded', file: 'providers.json', from: 'provider-config' });
+    log.event({ event: 'live_attach_rejected', code: 'internal', message: 'SECRET-message', bearer: 'SECRET-bearer', key: 'SECRET-key' });
+    for (const name of ['host.log', 'host.log.1', 'host.log.2']) {
+      const path = join(root, 'logs', name);
+      assert.equal((await stat(path)).mode & 0o777, 0o600);
+      const text = await readFile(path, 'utf8');
+      assert.ok(!text.includes('SECRET'));
+      for (const line of text.trim().split('\n')) {
+        const record = JSON.parse(line);
+        assert.ok(!Number.isNaN(Date.parse(record.timestamp)));
+        assert.equal(record.pid, process.pid);
+        assert.ok(['config_seeded', 'live_attach_rejected'].includes(record.event));
+      }
+      assert.ok(Buffer.byteLength(text) <= 220);
+    }
+    const newest = await readFile(join(root, 'logs', 'host.log'), 'utf8');
+    assert.match(newest, /live_attach_rejected/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('provider terminal diagnostics retain only bounded class and code', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'didi-terminal-log-'));
+  try {
+    const log = new HostLog(root);
+    for (const code of ['provider_setup_rejected', 'protocol_error']) log.terminal({ state: 'failed', code, message: 'SECRET-provider' });
+    log.terminal({ state: 'failed', code: 'SECRET invalid code' });
+    const text = await readFile(join(root, 'logs', 'host.log'), 'utf8');
+    const records = text.trim().split('\n').map(line => JSON.parse(line));
+    assert.deepEqual(records.map(({ event, class: kind, code }) => ({ event, class: kind, code })),
+      ['provider_setup_rejected', 'protocol_error'].map(code => ({ event: 'host_error', class: 'LiveTerminal', code })));
+    assert.ok(!text.includes('SECRET'));
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

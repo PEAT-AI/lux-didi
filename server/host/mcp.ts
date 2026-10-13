@@ -1,13 +1,15 @@
+import { CONNECTOR_DESCRIPTORS, ConnectorCompositionError } from '../connectors/index.js';
 import type { Store } from '../runtime/store.js';
 import { McpRegistry } from '../adapters/mcp/registry.js';
-import { assertToolsOwnerBinding, createToolsOwner } from '../tools/index.js';
-import type { ConnectionRestoreResult, LiveAuthority, ToolsOwner } from '../tools/types.js';
+import { assertToolsOwnerBinding, createToolsOwner, validatePolicy } from '../tools/index.js';
+import type { ConnectionPolicy, ConnectionRestoreResult, LiveAuthority, ToolsOwner, ToolsOwnerOptions } from '../tools/types.js';
 import { loadMcpConfiguration, loadMcpEndpoints, type McpEndpointEntry } from '../config/mcp.js';
 import { fields, parseJson, readPrivate } from '../config/files.js';
 import { join } from 'node:path';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import type { McpPort } from '../adapters/mcp/port.js';
+import { canonicalJSON, sha256 } from '../tools/canonical.js';
 import { CONNECTOR_ENVELOPES } from '../connectors/index.js';
 
 export interface McpConnectionBundle {
@@ -56,7 +58,7 @@ export function composeMcpConnection(options: { store: Store; owner: ToolsOwner;
 }
 
 export type McpEndpointState = 'missing' | 'configured' | 'connected' | 'error';
-export interface McpEndpointReport { id: string; state: McpEndpointState; tools: number; lastHandshakeAt: string | null; error?: string }
+export interface McpEndpointReport { id: string; state: McpEndpointState; tools: number; lastHandshakeAt: string | null; error?: string; configurationError?: 'unknown-class-missing' | 'unknown-class-invalid' | 'owner-approval-required' | 'ambiguous-legacy-policy'; exception?: { class: string; code: string } }
 export interface McpRuntimeComposition {
   registry: McpRegistry;
   port: McpPort;
@@ -70,6 +72,7 @@ export interface McpRuntimeComposition {
 const connectorEnvelopes: Readonly<Record<string, readonly string[]>> = CONNECTOR_ENVELOPES;
 /** Compose the MCP runtime once at startup: one registry, adapter and owner. Never blocks on a remote. */
 export async function composeMcpRuntime(options: {
+  log?: ToolsOwnerOptions['log'];
   store: Store; ownerId: string; configDir: string;
   lookupAuthority(runId: string, signal: AbortSignal): Promise<LiveAuthority | null>;
   now?: () => number;
@@ -85,14 +88,17 @@ export async function composeMcpRuntime(options: {
       ? { id: previous.id, state: 'connected', tools: previous.tools, lastHandshakeAt: previous.lastHandshakeAt }
       : { id: previous.id, state: 'configured', tools: previous.tools, lastHandshakeAt: previous.lastHandshakeAt, error: status.reason });
   };
-  const owner = createToolsOwner({ store, ownerId, registry, port, lookupAuthority: options.lookupAuthority, reportToolStatus });
   const selection = loadMcpEndpoints({ configDir });
+  const owner = createToolsOwner({ grantMode: selection.state === 'missing' ? 'explicit' : selection.catalog.grantMode, store, ownerId, registry, port, lookupAuthority: options.lookupAuthority, reportToolStatus, ...(options.log ? { log: options.log } : {}) });
   if (selection.state === 'missing') {
     return { registry, port, owner, connectionIds: () => [], status: () => ({ endpoints: [] }), refresh: async () => {}, close: () => port.close() };
   }
   const { grantMode, endpoints } = selection.catalog;
-  const generations = new Map<string, number>();
-  const digests = new Map<string, string>();
+  // Reject local capability mismatches before any transport starts, including disabled entries.
+  for (const entry of endpoints) {
+    if (!Object.hasOwn(CONNECTOR_DESCRIPTORS, entry.connector)) throw new ConnectorCompositionError('unknown_connector', entry.id, entry.connector);
+  }
+  const usable = new Set<string>();
   const active = endpoints.filter(entry => entry.enabled && entry.allowEgress);
   for (const entry of endpoints) {
     if (entry.enabled) {
@@ -108,6 +114,11 @@ export async function composeMcpRuntime(options: {
   }
   const connect = async (entry: McpEndpointEntry): Promise<void> => {
     const previous = reports.get(entry.id);
+    usable.delete(entry.id);
+    if (entry.configurationError || entry.unknownClass === null) {
+      const code = entry.configurationError ?? 'unknown-class-missing';
+      reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: code, configurationError: code }); return;
+    }
     // A missing or malformed credential is a visible, typed status; discovery never runs with a blank bearer.
     if (entry.credentialRef) {
       try { readMcpCredential(configDir, entry.credentialRef); }
@@ -115,27 +126,85 @@ export async function composeMcpRuntime(options: {
     }
     try {
       const discovery = await port.discover(entry.id);
-      if (discovery.state !== 'discovered') { reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: discovery.reason }); return; }
-      let granted = 0;
-      if (grantMode === 'owner-trusted-reads') {
-        const envelope = connectorEnvelopes[entry.connector] ?? [];
-        const names = discovery.tools.map(tool => tool.name).filter(name => envelope.includes(name));
-        if (names.length) {
-          const generation = (generations.get(entry.id) ?? 0) + 1;
-          registry.approve({ endpointId: entry.id, schemaDigest: discovery.schemaDigest, toolNames: names, effect: 'read', account: entry.account, resource: entry.resource, generation });
-          generations.set(entry.id, generation);
-          if (digests.has(entry.id) && digests.get(entry.id) !== discovery.schemaDigest) console.error(`[mcp] envelope re-approved after digest change: ${entry.id}`);
-          digests.set(entry.id, discovery.schemaDigest);
-        }
-        granted = names.length;
+      if (discovery.state !== 'discovered') { reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: discovery.reason, ...(discovery.exception ? { exception: discovery.exception } : {}) }); return; }
+      const envelope = connectorEnvelopes[entry.connector] ?? [];
+      const names = grantMode === 'owner-trusted-reads'
+        ? discovery.tools.map(tool => tool.name).filter(name => envelope.includes(name)).sort()
+        : [];
+      // Healthy discovery without an approved envelope is status-only, not an empty owner policy.
+      if (!names.length) {
+        reports.set(entry.id, { id: entry.id, state: 'connected', tools: 0, lastHandshakeAt: new Date(discovery.observedAt).toISOString() });
+        return;
       }
+      // Reconcile through the owner's CAS intent API, never fabricate a registry-only grant.
+      // The owner validates the existing row (including its hash) before accepting the intent.
+      const row = store.transaction(tx => tx.get('SELECT policy_json,policy_sha256,generation FROM tool_connections WHERE owner_id=? AND connection_id=?', [ownerId, entry.id]));
+      const policy: ConnectionPolicy = {
+        schemaVersion: 1, bindingMode: 'connection', ownerId, connectionId: entry.id, generation: row ? Number(row.generation) : 1,
+        enabled: true, connector: entry.connector,
+        endpoint: entry.transport === 'stdio'
+          ? { id: entry.id, transport: 'stdio', command: entry.command, args: [...entry.args], env: { ...entry.env }, account: entry.account, resource: entry.resource, credentialRef: null }
+          : { id: entry.id, url: entry.url, account: entry.account, resource: entry.resource, credentialRef: entry.credentialRef },
+        toolNames: names, schemaDigest: discovery.schemaDigest,
+        sourcePolicy: { id: entry.id, revision: 1, unknownClass: entry.unknownClass, allowedClasses: [entry.unknownClass] },
+        route: { identity: entry.id, allowedClasses: [entry.unknownClass] },
+        bounds: { maxQueryChars: 16384, maxSearchLimit: 100, maxGetIds: 100, maxEntityBytes: 1048576, maxResultBytes: 1048576 },
+      };
+      if (row) {
+        const bytes = String(row.policy_json);
+        if (sha256(bytes) !== row.policy_sha256) throw Error('connection_policy_binding');
+        const stored = validatePolicy(JSON.parse(bytes) as ConnectionPolicy);
+        if (stored.ownerId !== ownerId || stored.connectionId !== entry.id || stored.generation !== Number(row.generation)) throw Error('connection_policy_binding');
+        const legacy = stored.bindingMode === undefined;
+        if (legacy && stored.route.identity !== stored.endpoint.id) {
+          reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'ambiguous-legacy-policy', configurationError: 'ambiguous-legacy-policy' }); return;
+        }
+        const rank = { ordinary: 0, private: 1, sensitive: 2 };
+        const oldClass = stored.sourcePolicy.unknownClass;
+        const widened = names.some(name => !stored.toolNames.includes(name));
+        if (canonicalJSON(stored.endpoint) !== canonicalJSON(policy.endpoint) || widened || (oldClass !== null && rank[entry.unknownClass] < rank[oldClass])) {
+          reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'owner-approval-required', configurationError: 'owner-approval-required' }); return;
+        }
+        // Persisted approval fields are authoritative. A restart cannot re-enable a revocation.
+        policy.enabled = stored.enabled; policy.bounds = stored.bounds;
+        policy.sourcePolicy = { ...stored.sourcePolicy, unknownClass: entry.unknownClass };
+        policy.route = stored.route;
+        if (oldClass !== entry.unknownClass) {
+          // Null legacy classifications were never executable approvals. Explicit local config
+          // supplies the initial bounded class; later changes may only tighten without approval.
+          const replaceClass = (set: typeof stored.sourcePolicy.allowedClasses) => oldClass === null ? [entry.unknownClass!] : [...new Set(set.map(c => c === oldClass ? entry.unknownClass! : c))];
+          policy.sourcePolicy.allowedClasses = replaceClass(stored.sourcePolicy.allowedClasses);
+          policy.sourcePolicy.revision += 1;
+          policy.route = { ...stored.route, allowedClasses: replaceClass(stored.route.allowedClasses) };
+        }
+        if (canonicalJSON(policy) !== bytes) { policy.generation += 1; owner.applyConnectionIntent({ expectedPolicySha256: String(row.policy_sha256), policy }); }
+      } else owner.applyConnectionIntent({ expectedPolicySha256: null, policy });
+      const restored = await owner.restoreConnection(entry.id, () => {
+        const current = loadMcpEndpoints({ configDir });
+        if (current.state !== 'configured' || current.catalog.grantMode !== grantMode
+          || canonicalJSON(current.catalog.endpoints.find(endpoint => endpoint.id === entry.id) ?? null) !== canonicalJSON(entry)) {
+          throw Error('endpoint-binding-mismatch');
+        }
+      });
+      if (restored.state !== 'restored') { reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: restored.reason }); return; }
+      usable.add(entry.id);
+      const granted = names.length;
       reports.set(entry.id, { id: entry.id, state: 'connected', tools: granted, lastHandshakeAt: new Date(now()).toISOString() });
-    } catch { reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'discovery-unavailable' }); }
+    } catch (error) {
+      const localCodes = ['invalid_policy_shape', 'invalid_policy_version', 'invalid_policy_text', 'invalid_positive_integer', 'invalid_read_tools', 'invalid_unknown_class', 'invalid_data_classes', 'connection_owner_mismatch', 'connection_predecessor_mismatch', 'connection_identity_or_generation', 'connection_policy_missing_or_corrupt', 'projection_endpoint_mismatch', 'invalid-local-read-grant'];
+      const exception = {
+        class: error instanceof Error && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(error.constructor.name) ? error.constructor.name : 'Unknown',
+        code: error instanceof Error && error.constructor === Error && localCodes.includes(error.message) ? error.message : 'unknown',
+      };
+      reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'discovery-unavailable', exception });
+    }
   };
   await Promise.all(active.map(connect));
   return {
     registry, port, owner,
-    connectionIds: () => active.map(entry => entry.id),
+    // Live calls this inside its acceptance transaction: do not open a nested store transaction.
+    // Only the canonical owner projects grants after validating connection semantics/class.
+    connectionIds: () => active.filter(entry => usable.has(entry.id) && reports.get(entry.id)?.state === 'connected' && !!registry.currentGrant(entry.id)).map(entry => entry.id),
     status: () => ({ endpoints: [...reports.values()].map(report => ({ ...report })) }),
     refresh: async () => { await Promise.all(active.map(connect)); },
     close: () => port.close(),

@@ -1,3 +1,4 @@
+import type { IncomingMessage } from 'node:http';
 import { once } from 'node:events';
 import type { TestContext } from 'node:test';
 import WebSocket, { WebSocketServer } from 'ws';
@@ -20,7 +21,13 @@ export function options(overrides: Partial<GeminiLiveVoiceOptions> = {}): Gemini
 }
 export type FrameMode = 'text' | 'binary';
 export async function fixture(t: TestContext, frameMode: FrameMode = 'binary') {
-  const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+  let refusalStatus: number | undefined;
+  const server = new WebSocketServer({ port: 0, host: '127.0.0.1',
+    verifyClient: (_info: { origin: string; secure: boolean; req: IncomingMessage }, accept: (accepted: boolean, code?: number, message?: string) => void) => {
+      if (refusalStatus !== undefined) accept(false, refusalStatus, 'Fixture refusal');
+      else accept(true);
+    },
+  });
   await once(server, 'listening');
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('fixture address');
@@ -28,6 +35,7 @@ export async function fixture(t: TestContext, frameMode: FrameMode = 'binary') {
   let attempts = 0;
   let destination = '';
   const frames: unknown[] = [];
+  const clients: WebSocket[] = [];
   const waiters = new Map<number, () => void>();
   let noteClosed: () => void = () => {};
   const closed = new Promise<void>(resolve => { noteClosed = resolve; });
@@ -38,7 +46,18 @@ export async function fixture(t: TestContext, frameMode: FrameMode = 'binary') {
     socket.on('error', () => {});
     socket.on('close', () => noteClosed());
     socket.on('message', bytes => {
-      frames.push(JSON.parse(bytes.toString()));
+      const frame = JSON.parse(bytes.toString());
+      frames.push(frame);
+      // Gemini rejects unsupported schema keys in setup, including nested objects.
+      const hasAdditionalProperties = (value: unknown): boolean => {
+        if (!value || typeof value !== 'object') return false;
+        if (Array.isArray(value)) return value.some(hasAdditionalProperties);
+        return Object.entries(value).some(([key, child]) => key === 'additionalProperties' || hasAdditionalProperties(child));
+      };
+      if (frame.setup?.tools?.some((tool: { functionDeclarations?: { parameters?: unknown }[] }) =>
+        tool.functionDeclarations?.some(declaration => hasAdditionalProperties(declaration.parameters)))) {
+        socket.close(1007, `Invalid additionalProperties tools.function_declarations.parameters ${CANARY}`);
+      }
       for (const [n, notify] of waiters) if (frames.length >= n) { waiters.delete(n); notify(); }
     });
     resolve();
@@ -48,10 +67,11 @@ export async function fixture(t: TestContext, frameMode: FrameMode = 'binary') {
     await new Promise<void>(resolve => server.close(() => resolve()));
   });
   return {
-    server, frames, connected, closed, get attempts() { return attempts; }, get connections() { return connections; }, get destination() { return destination; },
+    server, frames, clients, connected, closed, get attempts() { return attempts; }, get connections() { return connections; }, get destination() { return destination; },
     socketFactory: ((url, config) => {
       attempts++; destination = url;
-      return new WebSocket(`ws://127.0.0.1:${address.port}`, config);
+      const client = new WebSocket(`ws://127.0.0.1:${address.port}`, config);
+      clients.push(client); return client;
     }) satisfies NonNullable<GeminiLiveVoiceOptions['socketFactory']>,
     async frame(n: number): Promise<void> {
       if (frames.length >= n) return;
@@ -59,7 +79,12 @@ export async function fixture(t: TestContext, frameMode: FrameMode = 'binary') {
     },
     send(value: unknown) { peer!.send(JSON.stringify(value), { binary: frameMode === 'binary' }); },
     sendRaw(value: string | Buffer) { peer!.send(value, { binary: frameMode === 'binary' }); },
-    remoteClose(reason = '') { peer!.close(1000, reason); },
+    refuseUpgrades(status: number) { refusalStatus = status; },
+    invalidOpcode() {
+      // Reserved opcode3 drives the real ws receiver protocol-error interface.
+      (peer! as unknown as { _socket: { write(frame: Buffer): void } })._socket.write(Buffer.from([0x83, 0]));
+    },
+    remoteClose(reason = '', code = 1000) { peer!.close(code, reason); },
     terminate() { peer!.terminate(); },
     get peer() { return peer!; },
   };
@@ -82,4 +107,12 @@ export function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>(r => { resolve = r; });
   return { promise, resolve };
+}
+
+// The smoke retained only top-level names; these are synthetic minimal shapes.
+export function speechActivityFrames(send: (value: unknown) => void) {
+  send({ serverContent: {}, voiceActivity: { type: 'ACTIVITY_START' }, usageMetadata: {} });
+  send({ serverContent: {} });
+  send({ serverContent: { modelTurn: { parts: [] } }, voiceActivity: { type: 'ACTIVITY_END' } });
+  send({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from(pcm).toString('base64') } }] } } });
 }

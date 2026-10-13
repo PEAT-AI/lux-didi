@@ -1,3 +1,4 @@
+import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/ajv';
 import type { CallRequest, CallResult, CompletedResult, McpPort, ReadGrant, ResultScope, StoredPayload } from '../adapters/mcp/port.js';
 import type { McpRegistry } from '../adapters/mcp/registry.js';
 
@@ -37,6 +38,7 @@ export interface MattermostConfig {
 
 /** Opaque local evidence, mirroring the Lux knowledge connector shape. */
 export interface MattermostEvidence {
+  decodedResult: unknown;
   state: 'completed' | 'tool-error' | 'protocol-error';
   tool: MattermostTool;
   source: ResultScope;
@@ -114,6 +116,8 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     queryChars: Math.min(positive(config.queryChars, MATTERMOST_DEFAULTS.queryChars), MATTERMOST_DEFAULTS.queryChars),
   };
 
+  const schemaValidator = new AjvJsonSchemaValidator();
+
   async function dispatch(tool: MattermostTool, args: Record<string, unknown>, signal?: AbortSignal): Promise<MattermostResult> {
     const request: CallRequest = {
       endpointId: settings.endpointId,
@@ -124,6 +128,9 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       resource: settings.resource,
     };
     if (signal?.aborted) return { state: 'refused', reason: 'cancelled-before-dispatch' };
+    // Validate the actual bounded dispatch arguments against the original discovered schema.
+    const original = port.visibleTools(settings.endpointId).find(definition => definition.name === tool);
+    if (!original || !schemaValidator.getValidator(original.inputSchema)(args).valid) return { state: 'refused', reason: 'original-schema-arguments-refused' };
     const result = await port.call(request, signal);
     if (isFailed(result)) return { state: result.state, reason: result.reason };
     if (signal?.aborted) return { state: 'unknown', reason: 'cancelled-after-dispatch' };
@@ -133,6 +140,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       source: { ...result.source },
       observedAt: result.freshness.receivedAt,
       coverage: structuredClone(result.coverage),
+      decodedResult: structuredClone(result.decodedResult),
       projection: structuredClone(result.projection),
       response: structuredClone(result.payload),
     };

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { StorePort } from '../contracts/storage.js';
+import type { StorePort, Transaction } from '../contracts/storage.js';
 import { Outbox } from '../runtime/outbox.js';
 import type { HostContext } from '../adapters/model/types.js';
 import type { LiveAuthority } from './types.js';
@@ -25,8 +25,8 @@ const prefix = 'live-job:';
 export class LiveToolJobs {
   constructor(private readonly store: StorePort, private readonly now: () => number) {}
 
-  list(): ToolJob[] {
-    return this.store.transaction(tx => {
+  list(tx?: Transaction): ToolJob[] {
+    const read = (tx: Transaction): ToolJob[] => {
       // Match the outbox's unknown-on-expired-claim rule without claiming unrelated reminder work.
       tx.run("UPDATE runtime_outbox SET state='unknown',claim_token=NULL,lease_until=NULL WHERE entity_id LIKE ? AND state='claimed' AND lease_until<=?", [`${prefix}%`, this.now()]);
       return tx.all('SELECT id,payload,state FROM runtime_outbox WHERE entity_id LIKE ? ORDER BY due_at,id', [`${prefix}%`])
@@ -35,16 +35,18 @@ export class LiveToolJobs {
         if (row.state === 'unknown') return { ...job, state: 'unknown' as const };
         return job;
       });
-    });
+    };
+    return tx ? read(tx) : this.store.transaction(read);
   }
 
-  pending(): ToolJob[] { return this.list().filter(job => job.deferred && !job.delivered); }
-  forSession(sessionId: string): ToolJob | undefined { return this.list().find(job => job.deliverySessionId === sessionId); }
+  pending(tx?: Transaction): ToolJob[] { return this.list(tx).filter(job => job.deferred && !job.delivered); }
+  forSession(sessionId: string, tx?: Transaction): ToolJob | undefined { return this.list(tx).find(job => job.deliverySessionId === sessionId); }
 
-  save(job: ToolJob): void {
-    this.store.transaction(tx => {
+  save(job: ToolJob, tx?: Transaction): void {
+    const write = (tx: Transaction): void => {
       tx.run('UPDATE runtime_outbox SET payload=? WHERE id=?', [JSON.stringify(job), job.id]);
-    });
+    };
+    if (tx) write(tx); else this.store.transaction(write);
   }
 
   async run(host: HostContext, authority: LiveAuthority, budgetMs: number, schedule: JobTimer,

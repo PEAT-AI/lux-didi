@@ -68,6 +68,10 @@ class Domain implements DomainPort {
     const op = operation as DomainOperation;
     labels.validateWriteLabel(op, writeLabel);
     switch (op) {
+      case 'deleteEntry': {
+        const i = input as DomainOperations['deleteEntry']['input'];
+        return memory.deleteEntry(tx, i.id, context.now, context.clientId) as DomainOperations[K]['output'];
+      }
       case 'createSession': {
         const i = input as DomainOperations['createSession']['input'];
         const clock = clockAt(context);
@@ -128,9 +132,21 @@ class Domain implements DomainPort {
       case 'appendAssistantEntry': {
         const i = input as DomainOperations['appendAssistantEntry']['input'];
         const clock = clockAt(context);
+        const source = i.sourceRef
+          ? {
+              id: i.sourceRef.id,
+              label: i.sourceRef.label,
+              provider: i.sourceRef.provider,
+              accountId: i.sourceRef.accountId,
+              externalId: i.sourceRef.externalId,
+              sourceTimestamp: isoToMs(i.sourceRef.sourceTimestamp),
+              availability: i.sourceRef.availability,
+              note: i.sourceRef.note,
+            }
+          : undefined;
         const entry = memory.appendEntry(tx, {
           sessionId: i.sessionId, text: i.text, capturedAt: clock.now(),
-          timeZone: i.timeZone, role: 'assistant',
+          timeZone: i.timeZone, role: 'assistant', source,
         }, clock);
         if (writeLabel) labels.stamp(tx, { kind: 'entry', id: entry.id }, writeLabel, clock.now());
         return dto.toEntryDTO(entry, memory.sourceReferences(tx, entry.id)) as DomainOperations[K]['output'];

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fork } from 'node:child_process';
 import { once } from 'node:events';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { openMemoryFixture, result, ROUTE_CLASSES } from './memory-context-process.js';
 import { Store } from '../runtime/store.js';
 import { Outbox } from '../runtime/outbox.js';
@@ -385,8 +385,8 @@ test('two client principals share one owner: a record under one principal is sel
   } finally { f.close(); }
 });
 
-// 12. Additive migration on a prior clean v1 schema preserves old hashes and consent.
-test('additive chat v3 migration upgrades a populated v1+v2 DB and preserves old records, fingerprint and consent', async () => {
+// 12. Upgrading a populated legacy schema preserves old hashes and consent.
+test('additive chat migrations upgrade a populated v1+v2 DB and preserve old records, fingerprint and consent', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'mem-migrate-'));
   const model = new CountingModel();
   try {
@@ -395,23 +395,50 @@ test('additive chat v3 migration upgrades a populated v1+v2 DB and preserves old
     const source = f1.createSession('Source');
     const record = f1.append(source.id, 'Old record', sourceRef());
     assert.equal(record.id.length > 0, true);
-    const sending = f1.enroll();
-    const run = f1.chat.accept({ sessionId: sending.id, text: 'Old turn', idempotencyKey: 'old' }, f1.context);
-    const before = f1.store.transaction(tx => tx.get('SELECT fingerprint,idempotency_key,session_id,state FROM chat_runs WHERE run_id=?', [run.runId]));
+    const sending = f1.createSession('Synthetic');
+    // Current ChatService enrollment and acceptance require the current schema.
+    // Seed the v2 consent and run directly, including the empty-selection hash.
+    const routeIdentity = JSON.stringify({ version: 1, provider: 'synthetic', model: 'counting',
+      endpoint: 'https://generativelanguage.googleapis.com', apiVersion: 'v1beta',
+      keyReference: 'synthetic-key', allowedClasses: [...ROUTE_CLASSES].sort(), policyVersion: 1 });
+    f1.store.transaction(tx => tx.run(`INSERT INTO chat_consents
+      (session_id,owner_assistant_id,provider,model,route_identity,revision,
+       permitted_classes,granted_at,revoked_at,idempotency_key,fingerprint)
+      VALUES (?,?,?,?,?,1,?,?,NULL,?,?)`,
+    [sending.id, f1.context.assistantId, 'synthetic', 'counting', routeIdentity,
+      JSON.stringify(ROUTE_CLASSES), f1.context.now, 'old-consent', 'old-consent-fingerprint']));
+    const userEntry = f1.append(sending.id, 'Old turn');
+    const run = { runId: randomUUID() };
+    const fingerprint = createHash('sha256').update(JSON.stringify({ sessionId: sending.id, text: 'Old turn', retryOf: null })).digest('hex');
+    f1.store.transaction(tx => tx.run(`INSERT INTO chat_runs
+      (run_id,session_id,user_entry_id,owner_assistant_id,accepting_client_id,
+       idempotency_key,fingerprint,authority_epoch,provider,model,prompt_version,state,outcome,accepted_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,'terminal','cancelled',?)`,
+    [run.runId, sending.id, userEntry.id, f1.context.assistantId, f1.context.clientId,
+      'old', fingerprint, f1.context.authorityEpoch, 'fake', 'fake', 'v1', f1.context.now]));
+    const before = f1.store.transaction(tx => tx.get('SELECT * FROM chat_runs WHERE run_id=?', [run.runId]));
+    const entriesBefore = f1.store.transaction(tx => tx.all('SELECT * FROM entries ORDER BY id'));
     const consentBefore = f1.store.transaction(tx => tx.get('SELECT * FROM chat_consents WHERE session_id=?', [sending.id]));
     f1.store.close();
     const f2 = openMemoryFixture(dir, model, {}, chatMigrations);
     try {
-      assert.deepEqual(chatVersions(f2.store), [1, 2, 3]);
+      assert.deepEqual(chatVersions(f2.store), chatMigrations.map(migration => migration.version));
       assert.equal(f2.store.transaction(tx => tx.get("SELECT name FROM sqlite_master WHERE type='table' AND name='chat_run_context'"))!.name, 'chat_run_context');
       assert.equal(Number(f2.store.transaction(tx => tx.get('SELECT COUNT(*) c FROM chat_run_context', []))!.c), 0);
-      const after = f2.store.transaction(tx => tx.get('SELECT fingerprint,idempotency_key,session_id FROM chat_runs WHERE run_id=?', [run.runId]));
-      assert.deepEqual({ ...after }, { fingerprint: before!.fingerprint, idempotency_key: before!.idempotency_key, session_id: before!.session_id });
-      assert.deepEqual(f2.store.transaction(tx => tx.get('SELECT * FROM chat_consents WHERE session_id=?', [sending.id])), consentBefore);
+      const after = f2.store.transaction(tx => tx.get('SELECT * FROM chat_runs WHERE run_id=?', [run.runId]));
+      assert.ok(after);
+      for (const [column, value] of Object.entries(before!)) assert.deepEqual(after[column], value, column);
+      assert.deepEqual(f2.store.transaction(tx => tx.all('SELECT * FROM entries ORDER BY id')), entriesBefore);
+      const consentAfter = f2.store.transaction(tx => tx.get('SELECT * FROM chat_consents WHERE session_id=?', [sending.id]));
+      assert.deepEqual({ ...consentAfter }, { ...consentBefore, scope: 'conversation' });
       const replay = f2.chat.accept({ sessionId: sending.id, text: 'Old turn', idempotencyKey: 'old' }, f2.context);
       assert.equal(replay.runId, run.runId);
       assert.equal(model.calls.length, 0);
       assert.throws(() => f2.chat.accept({ sessionId: sending.id, text: 'Old turn', idempotencyKey: 'old', selectedMemoryEntryIds: [record.id] }, f2.context), error('idempotency_conflict'));
+      const enrolled = f2.enroll();
+      assert.notEqual(enrolled.id, sending.id);
+      assert.equal(f2.store.transaction(tx => tx.get('SELECT scope FROM chat_consents WHERE session_id=?', [enrolled.id]))!.scope,
+        'conversation');
     } finally { f2.store.close(); }
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
@@ -453,7 +480,7 @@ test('domain v3 owner index upgrades a populated schema preserving rows, refs an
     f1.store.close();
     const f2 = openMemoryFixture(dir, model, {}, chatMigrations, domainMigrations);
     try {
-      assert.deepEqual(domainVersions(f2.store), [1, 2, 3]);
+      assert.deepEqual(domainVersions(f2.store), [1, 2, 3, 4]);
       const indexSql = String(f2.store.transaction(tx => tx.get("SELECT sql FROM sqlite_master WHERE type='index' AND name='ix_source_references_owner'", []))!.sql);
       assert.match(indexSql, /source_references\(owner_id, owner_kind\)/);
       assert.deepEqual(f2.store.transaction(tx => tx.all('SELECT * FROM entries ORDER BY id', [])), entriesBefore);
@@ -468,7 +495,7 @@ test('domain v3 owner index upgrades a populated schema preserving rows, refs an
     } finally { raw.close(); }
     const f3 = openMemoryFixture(dir, model, {}, chatMigrations, domainMigrations);
     try {
-      assert.deepEqual(domainVersions(f3.store), [1, 2, 3]);
+      assert.deepEqual(domainVersions(f3.store), [1, 2, 3, 4]);
       assert.deepEqual(f3.store.transaction(tx => tx.all('SELECT * FROM source_references ORDER BY id', [])), refsBefore);
     } finally { f3.store.close(); }
   } finally { rmSync(dir, { recursive: true, force: true }); }

@@ -1,3 +1,5 @@
+import { connectorDescriptor } from '../connectors/index.js';
+import type { ConnectionPolicy } from '../tools/types.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage } from 'node:http';
@@ -33,12 +35,12 @@ async function body(req: IncomingMessage): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
-interface FixtureOptions { text?: string; requireBearer?: boolean }
+interface FixtureOptions { text?: string; requireBearer?: boolean; tools?: Array<{ name: string; inputSchema: Record<string, unknown> }> }
 async function fixture(options: FixtureOptions = {}) {
   const calls: { name: unknown; arguments: unknown }[] = [];
   const requireBearer = options.requireBearer ?? true;
   const sdk = new Server({ name: 'synthetic-mongoose', version: '1' }, { capabilities: { tools: { listChanged: false } } });
-  sdk.setRequestHandler('tools/list', () => ({ tools: [...readTools, ...writeTools] }) as never);
+  sdk.setRequestHandler('tools/list', () => ({ tools: options.tools ?? [...readTools, ...writeTools] }) as never);
   sdk.setRequestHandler('tools/call', request => {
     const params = request.params as { name: string; arguments: Record<string, unknown> };
     calls.push({ name: params.name, arguments: params.arguments });
@@ -186,7 +188,7 @@ test('owner-trusted-reads grants exactly the connector envelope through the runt
     mkdirSync(configDir, { recursive: true, mode: 0o700 });
     writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({
       schemaVersion: 1, grantMode: 'owner-trusted-reads',
-      endpoints: [{ id: 'mongoose', transport: 'streamable-http', url: f.url, connector: 'mongoose', account: ACCOUNT, resource: RESOURCE, credentialRef: null, enabled: true, allowEgress: true }],
+      endpoints: [{ id: 'mongoose', transport: 'streamable-http', url: f.url, connector: 'mongoose', account: ACCOUNT, resource: RESOURCE, credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'ordinary' }],
     }), { mode: 0o600 });
     store = new Store(join(dir, 'data'), toolsMigrations);
     runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null });
@@ -195,10 +197,87 @@ test('owner-trusted-reads grants exactly the connector envelope through the runt
     assert.deepEqual([...grant.toolNames].sort(), [...MONGOOSE_TOOLS].sort());
     assert.equal(grant.toolNames.includes('create_ticket' as never), false);
     assert.equal(runtime.status().endpoints[0]?.tools, MONGOOSE_TOOLS.length);
+    assert.equal(runtime.status().endpoints[0]?.state, 'connected');
+    assert.deepEqual(runtime.connectionIds(), ['mongoose']);
+    await runtime.refresh();
+    assert.equal(runtime.status().endpoints[0]?.state, 'connected');
+    assert.deepEqual(runtime.connectionIds(), ['mongoose']);
+    assert.deepEqual(runtime.registry.currentGrant('mongoose')?.toolNames.slice().sort(), [...MONGOOSE_TOOLS].sort());
   } finally {
     if (runtime) await runtime.close();
     if (store) store.close();
     await f.close();
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+for (const [connector, tool] of [['mongoose', 'search_mongoose'], ['mattermost', 'mattermost_search']] as const) {
+  test(`${connector} Live descriptor validates bounds and dispatches against the original MCP schema`, async () => {
+    const f = await fixture({ requireBearer: false, tools: [{ name: tool, inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer', maximum: 1 } }, required: ['query'], additionalProperties: false } }] });
+    const dir = mkdtempSync(join(tmpdir(), 'didi-company-descriptor-'));
+    const store = new Store(join(dir, 'data'), toolsMigrations);
+    let runtime: Awaited<ReturnType<typeof composeMcpRuntime>> | undefined;
+    try {
+      const configDir = join(dir, 'provider-config'); mkdirSync(configDir, { recursive: true, mode: 0o700 });
+      writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [{ id: connector, connector, transport: 'streamable-http', url: f.url, account: ACCOUNT, resource: RESOURCE, credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'ordinary' }] }), { mode: 0o600 });
+      runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null });
+      const row = store.transaction(tx => tx.get('SELECT policy_json FROM tool_connections WHERE owner_id=? AND connection_id=?', [store.assistantId, connector]));
+      assert.ok(row);
+      const policy = JSON.parse(String(row.policy_json)) as ConnectionPolicy;
+      const descriptor = connectorDescriptor(connector); assert.ok(descriptor);
+      const declaration = descriptor.declarations(policy).find(candidate => candidate.name === tool); assert.ok(declaration);
+      assert.equal(declaration.validate({ query: 'agri', limit: 2 }), true, 'local bounds allow two results');
+      assert.equal(declaration.validate({ query: '', limit: 1 }), false);
+      assert.equal(declaration.validate({ query: 'agri', limit: 101 }), false);
+      assert.equal(declaration.validate({ query: 'agri', limit: 1, write: true }), false);
+      const reader = descriptor.createReader({ port: runtime.port, registry: runtime.registry, endpoint: policy.endpoint, schemaDigest: policy.schemaDigest, generation: policy.generation, policy });
+      const refused = await reader.call(tool, { query: 'agri', limit: 2 });
+      assert.equal(refused.state, 'refused', 'original MCP schema is stricter than the local declaration');
+      assert.equal(f.calls.length, 0, 'schema rejection happens before remote dispatch');
+      const accepted = await reader.call(tool, { query: 'agri', limit: 1 });
+      assert.equal(accepted.state, 'completed');
+      assert.deepEqual(f.calls, [{ name: tool, arguments: { query: 'agri', limit: 1 } }]);
+      if (accepted.state === 'completed') {
+        assert.throws(() => descriptor.project(accepted, runtime!.port, { ...policy, sourcePolicy: { ...policy.sourcePolicy, unknownClass: null } }), /unknown_source_denied/);
+        // The synthetic fixture's opaque payload is explicitly classified, never production consent.
+        const classified = { ...policy, sourcePolicy: { ...policy.sourcePolicy, unknownClass: 'ordinary' as const } };
+        const snapshot = descriptor.project(accepted, runtime.port, classified);
+        assert.equal(snapshot.response['tool'], tool);
+        assert.equal(typeof snapshot.response['text'], 'string');
+        assert.deepEqual(snapshot.dataClasses, ['ordinary']);
+      }
+    } finally { await runtime?.close(); store.close(); await f.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
+}
+
+// Fake MCP HTTP server at the real guarded-fetch seam, no listening socket or corpus.
+test('search_mongoose projects an SSE MCP entity from separately decodedResult', async t => {
+  const sdk = new Server({ name: 'synthetic-sse', version: '1' }, { capabilities: { tools: {} } });
+  const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: false });
+  const tool = { name: 'search_mongoose', inputSchema: { type: 'object' } };
+  sdk.setRequestHandler('tools/list', () => ({ tools: [tool] }) as never);
+  sdk.setRequestHandler('tools/call', () => ({ content: [{ type: 'text', text: JSON.stringify({ items: [{ id: 'synthetic-id', title: 'Synthetic SSE', body: 'Public synthetic body' }] }) }], structuredContent: { marker: 'synthetic-unclassified' }, isError: false }) as never);
+  await sdk.connect(transport);
+  t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+    const request = new Request(input, init);
+    return request.method === 'GET' ? new Response(null, { status: 405 }) : transport.handleRequest(request);
+  });
+  const registry = new McpRegistry();
+  registry.register({ id: 'sse', url: 'http://127.0.0.1:18766/mcp', account: 'synthetic', resource: 'synthetic' });
+  registry.enable('sse'); registry.allowEgress('sse');
+  const adapter = createMcpAdapter({ registry, store: new MemoryResultStore() });
+  t.after(async () => { await adapter.close(); await sdk.close(); });
+  const discovery = await adapter.discover('sse'); assert.equal(discovery.state, 'discovered');
+  if (discovery.state !== 'discovered') throw Error('discovery failed');
+  registry.approve({ endpointId: 'sse', schemaDigest: discovery.schemaDigest, toolNames: ['search_mongoose'], effect: 'read', account: 'synthetic', resource: 'synthetic', generation: 1 });
+  const result = await createMongooseReader({ port: adapter, registry, config: { endpointId: 'sse', account: 'synthetic', resource: 'synthetic', schemaDigest: discovery.schemaDigest, generation: 1, maxSearchLimit: 10, maxListLimit: 10, queryChars: 200 } }).search({ query: 'synthetic' });
+  assert.equal(result.state, 'completed');
+  if (result.state !== 'completed' || result.response.state !== 'available') throw Error('missing result');
+  const wire = adapter.readSlice({ ...result.source, handle: result.response.handle, offset: 0, length: 16 });
+  assert.equal(wire.state, 'available');
+  if (wire.state === 'available') assert.match(new TextDecoder().decode(wire.bytes), /^event:|^data:/);
+  const projected = projectMongooseResult(adapter, result); assert.equal(projected.ok, true);
+  if (!projected.ok) throw Error('projection failed');
+  assert(projected.projection.text.includes('Synthetic SSE'));
+  assert(!projected.projection.text.includes('synthetic-unclassified'));
 });

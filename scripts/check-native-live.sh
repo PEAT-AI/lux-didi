@@ -14,9 +14,9 @@ printf '# isolated synthetic test global config\n' > "$work/npm-global"
 export npm_config_userconfig="$work/npm-user" npm_config_globalconfig="$work/npm-global"
 printf 'NATIVE-LIVE source=%s UTC=%s\n' "$(git rev-parse HEAD)" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 # Committed locks, offline only; canonical web/dist is intentionally separate from all fixture state.
-npm --prefix server ci --offline --ignore-scripts --no-audit --no-fund
+bash scripts/npm-ci-offline.sh server
 npm --prefix server run build
-npm --prefix web ci --offline --ignore-scripts --no-audit --no-fund
+bash scripts/npm-ci-offline.sh web
 npm --prefix web run build
 # R2: existing authority owner uses its production compiler policy, once.
 # enable-testing exports existing constructors only to test fixtures, not new production code.
@@ -37,6 +37,13 @@ swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-
   Sources/LuxDidi/NativeLiveOperatorHTTP.swift Sources/LuxDidi/NativeLiveAudioDevice.swift \
   Sources/LuxDidi/NativeLiveConversation.swift Tests/DidiLiveTests/NativeLiveAudioRunner.swift -o "$work/native-audio"
 "$work/native-audio"
+# Physical-device proof uses the production graph with no tap, output or permission request.
+swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
+  Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \
+  "${owner_flags[@]}" \
+  Sources/LuxDidi/NativeLiveOperatorHTTP.swift Sources/LuxDidi/NativeLiveAudioDevice.swift \
+  Tests/DidiLiveTests/NativeLiveEngineProbe.swift -o "$work/native-engine-probe"
+"$work/native-engine-probe"
 # Compile the actual app source surface without launching audio or installing an app.
 swiftc -parse-as-library Sources/LuxDidi/*.swift -o "$work/native-app"
 # Isolated mutation sensitivity: compile a scratch copy, never alter the committed source or weaken a gate.

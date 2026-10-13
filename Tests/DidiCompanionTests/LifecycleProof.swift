@@ -29,9 +29,25 @@ import Darwin
         let fm = FileManager.default
         let root = fm.temporaryDirectory.appendingPathComponent("didi-lifecycle-" + UUID().uuidString)
         try fm.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        var succeeded = false
         let service = "ai.peat.lux-didi.proof." + UUID().uuidString
 #if COMPANION_TEST
         NativeServiceSupervisor.diagnosticSink = { record in diagnose("supervisor:probe", record) }
+        try expect(OwnedWindowProof.expectedControlNames == ["Start recording", "Stop recording", "Send to Naya", "Save note"], "owned AX extraction expects exact current four actions")
+        try expect(NativeProbeFailure.classify(NativeServiceError.timeout, readErrno: 0) == .timeout, "probe timeout retains its cause")
+        try expect(NativeProbeFailure.classify(NativeServiceError.exited, readErrno: 0) == .eofBeforeFrame, "probe EOF retains its cause")
+        try expect(NativeProbeFailure.classify(NativeServiceError.exited, readErrno: EIO) == .readFailed, "probe read failure retains its cause")
+        try expect(NativeProbeFailure.classify(NativeServiceError.invalidReady, readErrno: 0) == .malformedFraming, "probe framing retains its cause")
+        for (frame, cause) in [("not JSON", NativeProbeFailure.nonJSON), ("{\"major\":26}", .invalidFields)] {
+            do {
+                try NativeServiceSupervisor.validateProbeFrame(Data(frame.utf8), major: 26)
+                try expect(false, "invalid probe frame must fail")
+            } catch {
+                try expect(NativeProbeFailure.classify(error, readErrno: 0) == cause, "probe frame retains typed classification")
+            }
+        }
+        try NativeServiceSupervisor.validateProbeFrame(Data("{\"major\":26,\"sqlite\":true}".utf8), major: 26)
+        print("PASS probe diagnostic seams: timeout, EOF, read, framing, non-JSON and invalid fields")
 #endif
         var accounts: [String] = []
         var children: [NativeServiceSupervisor] = []
@@ -40,9 +56,10 @@ import Darwin
                 let context = LAContext(); context.interactionNotAllowed = true
                 SecItemDelete([kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account, kSecUseAuthenticationContext as String: context] as CFDictionary)
             }
-            try? fm.removeItem(at: root)
+            if succeeded { try? fm.removeItem(at: root) }
+            else { diagnose("fixture:retained", ["root": root.path]) }
         }
-        func setup(_ mode: String, state: URL? = nil, changes: [String: Any] = [:]) throws -> (InstalledRuntime, URL) {
+        func setup(_ mode: String, state: URL? = nil, changes: [String: Any] = [:], nodeExecutable: URL? = nil) throws -> (InstalledRuntime, URL) {
             let id = UUID().uuidString.lowercased()
             accounts.append(id)
             let bundle = root.appendingPathComponent(id)
@@ -54,13 +71,13 @@ import Darwin
             try fm.createDirectory(at: macos, withIntermediateDirectories: true)
             // Production nodePath is Contents/MacOS/node: a regular owner-executable in
             // the real bundle-relative layout, never the old absolute form.
-            let realNode = URL(fileURLWithPath: node).resolvingSymlinksInPath()
+            let realNode = (nodeExecutable ?? URL(fileURLWithPath: node)).resolvingSymlinksInPath()
             let bundledNode = macos.appendingPathComponent("node")
             do { try fm.linkItem(atPath: realNode.path, toPath: bundledNode.path) }
             catch { try fm.copyItem(atPath: realNode.path, toPath: bundledNode.path) }
             var staged = stat()
             let stagedStatOK = lstat(bundledNode.path, &staged) == 0
-            diagnose("fixture:node-staged", ["case": mode, "relativeNodePath": "Contents/MacOS/node", "nodeMajor": 26,
+            diagnose("fixture:node-staged", ["case": mode, "relativeNodePath": "Contents/MacOS/node", "nodePath": bundledNode.path, "sourceNodePath": realNode.path, "nodeMajor": 26,
                 "statOK": stagedStatOK, "isSymlink": stagedStatOK && (staged.st_mode & S_IFMT) == S_IFLNK,
                 "isRegular": stagedStatOK && (staged.st_mode & S_IFMT) == S_IFREG,
                 "ownerExecutable": stagedStatOK && (staged.st_mode & 0o100) != 0,
@@ -219,9 +236,14 @@ import Darwin
                 do { _ = try await child.start(); try expect(false, "invalid ready must fail: " + mode) }
                 catch { try expect(!child.isRunning && !itemExists(bad.0.installId), "bad readiness gets no Keychain credential: " + mode) }
             }
-            let invalidNode = supervisor(try setup("normal", changes: ["nodePath": "/usr/bin/false"]))
+            let invalidFixture = try setup("normal", nodeExecutable: URL(fileURLWithPath: "/usr/bin/false"))
+            try expect(invalidFixture.0.node.path.hasPrefix("/"), "non-Node fixture executable resolves to an absolute path")
+            let invalidNode = supervisor(invalidFixture)
             do { _ = try await invalidNode.start(); try expect(false, "non-Node executable must fail") }
-            catch { try expect(!invalidNode.isRunning, "actual Node/SQLite probe refuses wrong executable") }
+            catch NativeServiceError.invalidNode {
+                try expect(!invalidNode.isRunning, "actual Node/SQLite probe refuses wrong executable")
+                diagnose("fixture:non-node-refused", ["typedReason": "invalidNode", "running": invalidNode.isRunning])
+            }
 
             for kind in ["mode", "symlink", "directory"] {
                 let bad = try setup("normal")
@@ -273,6 +295,7 @@ import Darwin
             throw error
         }
         for child in children { await child.stop() }
+        succeeded = true
         print("NATIVE-LIFECYCLE PASS duration=\(Date().timeIntervalSince(started))s ownedProcesses=cleaned canonicalCredential=retained Keychain=synthetic-only install=not-performed")
     }
 }

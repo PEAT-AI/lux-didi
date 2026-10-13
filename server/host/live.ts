@@ -1,3 +1,6 @@
+import * as memory from '../domain/memory.js';
+import * as labels from '../domain/labels.js';
+import type { LiveMemorySource } from '../live/types.js';
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
 import { credentialsFor } from '../config/index.js';
 import { loadLiveConfig, type LiveConfiguredProfile, type LiveConfigStatus } from '../config/live.js';
@@ -19,6 +22,7 @@ function statusFromProfile(profile: LiveProfile): LiveStatusPayload {
   return {
     service: 'live', status: 'configured', provider: 'gemini', model: profile.liveModelId, voice: profile.voice,
     dataClasses: [...profile.route.dataClasses], profileIdentity: liveProfileIdentity(profile),
+    limits: { sessionMs: profile.limits.sessionMs, idleMs: profile.limits.idleMs },
   };
 }
 
@@ -52,7 +56,7 @@ class HostLiveService implements LiveService {
   }
   current(cursor = 0): LivePageProjection { return this.owner.current(cursor); }
   lookupAuthority(runId: string) { return this.owner.lookupAuthority(runId); }
-  status(): LiveStatusPayload { return statusFromProfile(this.profile); }
+  status(): LiveStatusPayload { return { ...statusFromProfile(this.profile), ...{ memory: this.owner.profileProjection().memory } }; }
   create(inputClass: DataClass, idempotencyKey: string, context: LiveContext): LiveSessionSnapshot {
     return this.owner.create({ inputClass, idempotencyKey }, context);
   }
@@ -107,7 +111,20 @@ export function composeLive(store: Store, configDir: string, testing?: LiveTesti
     },
     ...(testing?.socketFactory ? { socketFactory: testing.socketFactory } : {}),
   });
-  const owner = createLiveSessionOwner({ store, voice, profile, ...(tools ? { tools } : {}), ...(now ? { now } : {}) });
+  const owner = createLiveSessionOwner({ store, voice, profile, memorySource: resolveLiveMemory, ...(tools ? { tools } : {}), ...(now ? { now } : {}) });
   tools?.registerAuthoritySource?.(async (runId, signal) => signal.aborted ? null : owner.lookupAuthority(runId) ?? owner.lookupJobAuthority(runId));
   return { service: new HostLiveService(profile, owner), status };
 }
+
+/** Same durable entries and routing labels as text chat. Unknown or non-ordinary labels never leave this port. */
+export const resolveLiveMemory: LiveMemorySource = tx => {
+  const ids = tx.all('SELECT id,session_id FROM entries ORDER BY id').filter(row =>
+    labels.current(tx, { kind: 'entry', id: String(row['id']) }).dataClass === 'ordinary'
+    && labels.current(tx, { kind: 'session', id: String(row['session_id']) }).dataClass === 'ordinary'
+  ).map(row => String(row['id']));
+  const records: ReturnType<typeof memory.resolveEntries> = [];
+  for (let offset = 0; offset < ids.length; offset += memory.MAX_RESOLVE_ENTRIES) {
+    records.push(...memory.resolveEntries(tx, ids.slice(offset, offset + memory.MAX_RESOLVE_ENTRIES)));
+  }
+  return records.map(record => ({ id: record.entryId, text: record.text, dataClass: 'ordinary' }));
+};

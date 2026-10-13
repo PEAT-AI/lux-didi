@@ -37,11 +37,40 @@ fi
 # LaunchServices registration, native launch or capture. One outer tempdir and
 # one trap own all prepared state for both phases.
 work="$(mktemp -d "${TMPDIR:-/tmp}/didi-companion-check.XXXXXX")"
-cleanup() { rm -rf "$work"; }
+cleanup() {
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    chmod 700 "$work"
+    printf 'COMPANION FAILURE status=%s retained-work=%s proof=%s\n' "$status" "$work" "${proof:-not-created}" >&2
+  else
+    rm -rf "$work"
+  fi
+  exit "$status"
+}
 trap cleanup EXIT
 cd "$root"
 mkdir -p "$work/cache"
-node="$(command -v node)"
+# Use the same accepted asset source as scripts/check-macos-install.sh and
+# scripts/build-macos-app.sh, never a relocatable PATH/Homebrew executable.
+assets="${LUX_ASSET_BUNDLE:-}"
+if [ -z "$assets" ]; then
+  assets="$work/assets"
+  npm_config_userconfig=/dev/null npm_config_globalconfig="$work/absent-npm-config" bash scripts/build-asset-bundle.sh "$assets"
+fi
+assets="$(cd "$assets" && pwd)"
+node="$assets/Resources/node/bin/node"
+printf 'COMPANION-NODE source=%s\n' "$node"
+[ -x "$node" ] || { echo "COMPANION FAIL: accepted asset Node missing: $node" >&2; exit 1; }
+# The fixture must exercise the same self-contained runtime policy as the native build.
+python3 - "$node" <<'PY'
+import subprocess, sys
+deps = [line.strip().split(' (')[0] for line in subprocess.run(
+    ['otool', '-L', sys.argv[1]], capture_output=True, text=True, check=True
+).stdout.splitlines()[1:] if line.strip()]
+bad = [dep for dep in deps if not dep.startswith(('/usr/lib/', '/System/', '@loader_path/'))]
+assert not bad, f'COMPANION FAIL: staged Node violates installed dependency policy: {bad[:5]}'
+print('PASS companion Node matches installed dependency policy')
+PY
 start=$SECONDS
 /usr/bin/nice -n 10 xcrun swiftc -j 1 -num-threads 1 -whole-module-optimization -D COMPANION_TEST -parse-as-library -module-cache-path "$work/cache" Sources/LuxDidi/*.swift Tests/DidiCompanionTests/*.swift -o "$work/runtime"
 printf 'DURATION companion-compile=%ss\n' "$((SECONDS-start))"
@@ -60,6 +89,22 @@ mkdir -p "$proof"
 otool -Iv "$app/Contents/MacOS/LuxDidi" | grep -E 'SecItem(Add|CopyMatching|Delete)|SecKeychain(Set|Get)UserInteractionAllowed' > "$proof/keychain-binary-imports.txt"
 /usr/bin/nice -n 10 xcrun clang -Wall -Wextra -Werror -c Tests/DidiCompanionTests/launch-probe/Kernel.c -o "$work/VerificationKernel.o"
 /usr/bin/nice -n 10 xcrun swiftc -j 1 -num-threads 1 -parse-as-library -import-objc-header Tests/DidiCompanionTests/launch-probe/Kernel.h Tests/DidiCompanionTests/launch-probe/Identity.swift Tests/DidiCompanionTests/launch-probe/Observer.swift "$work/VerificationKernel.o" -o "$work/verification-observer"
+# Exercise diagnostics without launching a bundle or touching user state.
+forced_proof="$proof/forced-observer-failure"
+mkdir -m 700 "$forced_proof"
+forced_status=0
+LUX_OBSERVER_FORCE_FAILURE=1 "$work/verification-observer" --verification "$app" "$forced_proof" diagnostic-nonce run >"$forced_proof/stdout.log" 2>"$forced_proof/stderr.log" || forced_status=$?
+python3 - "$forced_proof" "$forced_status" <<'PY'
+import json, pathlib, sys
+proof = pathlib.Path(sys.argv[1])
+assert sys.argv[2] == '1', sys.argv[2]
+assert 'forced observer failure' in (proof / 'stderr.log').read_text()
+record = json.loads((proof / 'observer.json').read_text())
+assert record['pass'] is False and record['reason'] == 'forced observer failure'
+assert all((proof / name).is_file() for name in ('stdout.log', 'stderr.log'))
+assert set(record['childLogs']) == {str(proof / name) for name in ('stdout.log', 'stderr.log')}
+print('PASS forced observer failure: reason, exit status and retained evidence')
+PY
 # The nested real-app compilation also runs outside the lease, into prepared artifacts.
 export LUX_MAC_ARTIFACTS="$work/mac"
 bash Tests/DidiMacTests/check-mac.sh --prepare "$LUX_MAC_ARTIFACTS"

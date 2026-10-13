@@ -38,7 +38,8 @@ let opSeq = 0;
 async function operator(path, body = {}) {
   const token = (await readFile(join(state, 'admin-credential'), 'utf8')).trim();
   const response = await fetch(descriptor.origin + '/api/v1' + path, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'X-Didi-Authority-Epoch': descriptor.authorityEpoch, 'Idempotency-Key': `op-${++opSeq}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  return { status: response.status, data: await response.json().then(value => value.data).catch(() => undefined) };
+  const payload = await response.json().catch(() => ({}));
+  return { status: response.status, data: payload.data, error: payload.error };
 }
 async function api(path) {
   return page.evaluate(async target => {
@@ -82,9 +83,10 @@ try {
   const pairing = await operator('/auth/pairing');
   await page.locator('#pair-code').fill(pairing.data.pairingCode); await page.locator('#pair-form').evaluate(form => form.requestSubmit());
   await page.waitForFunction(() => document.querySelector('#connected-route')?.textContent.includes('gemini-connected-test'));
-  const enrolledA = await operator('/conversations', { title: 'Native A', timeZone: 'UTC' });
-  const enrolledB = await operator('/conversations', { title: 'Native B', timeZone: 'UTC' });
-  assert.equal(enrolledA.status, 200, JSON.stringify(enrolledA.data)); assert.equal(enrolledB.status, 200, JSON.stringify(enrolledB.data));
+  const enrolledA = await operator('/conversations', { title: 'Native A', timeZone: 'UTC', consent: true });
+  const enrolledB = await operator('/conversations', { title: 'Native B', timeZone: 'UTC', consent: true });
+  assert.equal(enrolledA.status, 200, JSON.stringify(enrolledA.data ?? enrolledA.error ?? null));
+  assert.equal(enrolledB.status, 200, JSON.stringify(enrolledB.data ?? enrolledB.error ?? null));
   const a = enrolledA.data, b = enrolledB.data;
   assert.ok(a.sessionId && b.sessionId);
   await page.reload();

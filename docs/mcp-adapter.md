@@ -117,9 +117,10 @@ its code. Authorized full payload retrieval is separate:
 
 - `payload.state=available` carries an opaque handle, original byte length, SHA-256,
   explicit epoch-ms expiry and encoding `http-response-entity`.
-- Original bytes are the exact retained decoded HTTP response entity, including the
-  original JSON-RPC envelope or SSE framing, **not reserialized SDK output** and not
+- Original bytes are the exact retained HTTP response entity, including the
+  original JSON-RPC envelope or SSE framing, not reserialized SDK output and not
   compressed network packets. Server-side test capture independently checks equality.
+  `decodedResult` carries the parsed result or JSON-RPC error separately.
 - `readSlice({handle, endpointId, generation, account, resource, offset, length})`
   returns bounded bytes, or `refused`, `expired`, `unavailable`. The original endpoint,
   exact URL, grant/digest/tool, generation, account and resource are revalidated on
@@ -177,3 +178,35 @@ close an existing local source, with no tool execution/content query. Its public
 runtime commit and receipt commit, if present, must be recorded as observed freshness
 metadata: a mismatch is not an invented failure or assumed identity. The synthetic
 protocol checks do not claim that live integration was verified.
+
+## Streamable HTTP response entities
+
+POST responses may be `application/json` or `text/event-stream`. JSON entities
+retain their exact bytes and use the SDK JSON-RPC parser. For SSE, the adapter
+bounds the complete entity before decoding UTF-8 frames, ignores comments,
+keep-alives and non-data fields, joins multiple `data` lines with a newline,
+and selects the JSON-RPC result or error whose id matches the request. The
+selected response is serialized as JSON for the SDK, while the result store retains
+the exact original SSE entity. Result hashes and slices always describe the original
+entity. The adapter returns the SDK-decoded result or error in `decodedResult`;
+connectors inspect that field after verifying the bounded stored entity, never
+parse transport bytes themselves.
+Optional `structuredContent` and `_meta` are accepted but never forwarded as
+unclassified model content; only permitted text content is projected.
+
+An empty SSE entity, missing matching response, invalid UTF-8 or malformed data
+payload produces the bounded `mcp_transport_error` code, not an uncaught JSON
+parse exception. An invalid decoded result uses `mcp_result_invalid`; other
+classified connector exceptions use `connector_error`. `handler_outcome` is
+reserved for unclassified handler outcomes. These codes survive the tool journal
+and model-visible response. Unknown transport outcomes remain unknown; there is
+no automatic retry of a dispatched call. Diagnostics contain safe error class
+and bounded message-code metadata, never remote response text.
+
+The host supplies its existing `HostLog` through the optional tools-owner log sink.
+MCP composition only forwards this sink; admission and policy synthesis are
+unchanged. A `tool_failure` event retains bounded code, registered tool/connector
+names, a closed error class and a message head of at most 120 characters. The
+message head is the safe code token, never the arbitrary exception message,
+stack, transport payload or knowledge text. Extra fields are dropped at the host
+log boundary. Omitting the sink preserves standalone adapter/owner composition.

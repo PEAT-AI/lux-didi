@@ -1,3 +1,5 @@
+import { loadMcpEndpoints } from '../config/mcp.js';
+import { HostLog, captureHostDiagnostics } from './log.js';
 import { loadOwnerProfile } from '../config/owner-profile.js';
 import { ConfigError, readPrivate, validateRoot } from '../config/files.js';
 import { homedir, platform } from 'node:os';
@@ -74,7 +76,7 @@ async function publish(path: string, descriptor: RuntimeDescriptor): Promise<voi
   } finally { await rm(temporary, { force: true }); }
 }
 // Only non-secret catalogs migrate from the installer default, never credentials.
-async function seedProviderConfig(dataDir: string, effectiveDir: string): Promise<void> {
+async function seedProviderConfig(dataDir: string, effectiveDir: string, log: HostLog): Promise<void> {
   const defaultDir = join(dataDir, 'provider-config');
   if (effectiveDir === defaultDir) return;
   for (const name of ['live.json', 'mcp.json']) {
@@ -92,7 +94,7 @@ async function seedProviderConfig(dataDir: string, effectiveDir: string): Promis
       const file = await open(temporary, 'wx', 0o600);
       try { await file.writeFile(content); await file.sync(); } finally { await file.close(); }
       await rename(temporary, destination);
-      console.log(`config_seeded file=${name} from=provider-config`);
+      log.event({ event: 'config_seeded', file: name, from: 'provider-config' });
     } finally { await rm(temporary, { force: true }); }
   }
 }
@@ -107,28 +109,57 @@ export async function startHost(config: HostConfig) {
   const descriptorRelative = relative(webRoot, descriptorPath);
   if (!descriptorPath.endsWith('.json') || (!isAbsolute(descriptorRelative) && descriptorRelative !== '..' && !descriptorRelative.startsWith(`..${sep}`))) throw new Error('Descriptor must be a JSON file outside the web build');
   const domain = createDomainPort({ outbox: Outbox }); // No authorized device/target: reminders remain unbound.
-  const store = new Store(dataDir, hostMigrations);
+  const log = new HostLog(dataDir);
+  let releaseCommit = 'unknown';
+  // Installed service layout is fixed by build-macos-app.sh; source starts have no manifest.
+  try {
+    const manifest = JSON.parse(await readFile(new URL('../../../../../../didi-runtime.json', import.meta.url), 'utf8'));
+    if (typeof manifest.releaseCommit === 'string' && /^[0-9a-f]{40}$/.test(manifest.releaseCommit)) releaseCommit = manifest.releaseCommit;
+  } catch { /* Development starts have no installed release metadata. */ }
+  const effectiveConfigDir = resolve(config.configDir ?? join(dataDir, 'provider-config'));
+  let endpoints = 0;
+  let configKind: 'effective' | 'seeded' = config.configDir === undefined ? 'seeded' : 'effective';
+  try {
+    let selection = loadMcpEndpoints({ configDir: effectiveConfigDir });
+    if (selection.state === 'missing') {
+      configKind = 'seeded';
+      selection = loadMcpEndpoints({ configDir: join(dataDir, 'provider-config') });
+    }
+    if (selection.state === 'configured') endpoints = selection.catalog.endpoints.length;
+  } catch { /* Composition below owns invalid configuration errors. */ }
+  log.event({ event: 'host_started', releaseCommit, configDir: configKind, endpoints });
+  const stopDiagnostics = captureHostDiagnostics(log);
+  let store: Store;
+  try { store = new Store(dataDir, hostMigrations); } catch (error) { log.error(error); stopDiagnostics(); throw error; }
   try {
     const owner = loadOwnerProfile({ ...(config.ownerProfilePath !== undefined ? { path: config.ownerProfilePath } : {}), ownerId: store.assistantId });
     if (owner.status === 'error') throw new ConfigError('invalid_profile');
     const providerConfigDir = resolve(config.configDir ?? join(dataDir, 'provider-config'));
-    await seedProviderConfig(dataDir, providerConfigDir);
+    await seedProviderConfig(dataDir, providerConfigDir, log);
     // R3: authority is pluggable; sources are consulted in registration order and never fabricated.
     const authoritySources: AuthoritySource[] = [];
     const lookupAuthority: AuthoritySource = async (runId, signal) => {
       for (const source of authoritySources) { const value = await source(runId, signal); if (value) return value; }
       return null;
     };
-    const mcp = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir: providerConfigDir, lookupAuthority });
+    const mcp = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir: providerConfigDir, lookupAuthority, log: event => log.event(event) });
     const liveTools: LiveToolsComposition = {
       owner: mcp.owner,
       connectionIds: () => mcp.connectionIds(),
       registerAuthoritySource: source => { authoritySources.push(source); },
       lookupAuthority,
     };
-    const { chat, status } = composeChat(store, domain, providerConfigDir, config.modelTesting, config.now, owner.snapshot);
+    const { chat, status } = composeChat(store, domain, providerConfigDir, config.modelTesting, config.now, owner.snapshot, liveTools);
     const composeLiveWithTools = composeLive as unknown as (...args: unknown[]) => ReturnType<typeof composeLive>;
     const { service: live } = composeLiveWithTools(store, providerConfigDir, config.liveTesting, config.now, owner.snapshot, liveTools);
+    // Observe the actual durable provider settlement, which does not emit console text.
+    const attach = live.attach.bind(live);
+    live.attach = (...args) => {
+      const attachment = attach(...args);
+      void attachment.done.then(snapshot => log.terminal(snapshot.terminal), error => log.error(error))
+        .catch(() => console.error('diagnostics_unavailable'));
+      return attachment;
+    };
     const service = await listenService({ store, domain, chat, live, modelStatus: status, ownerProfileStatus: { status: owner.status, displayName: owner.snapshot.displayName }, toolsStatus: () => mcp.status(), webRoot, port, ...(config.now ? { now: config.now } : {}) });
     try {
       const descriptor: RuntimeDescriptor = { schemaVersion: 1, origin: service.origin, authorityEpoch: store.authorityEpoch, assistantId: store.assistantId, pid: process.pid, startedAt: new Date().toISOString() };
@@ -137,8 +168,8 @@ export async function startHost(config: HostConfig) {
       return { store, chat, service, descriptor, descriptorPath, tools: liveTools, async close() {
         if (closed) return; closed = true;
         chat.shutdown();
-        try { await service.close(); await live.shutdown(); await mcp.close(); } finally { store.close(); }
+        try { await service.close(); await live.shutdown(); await mcp.close(); } finally { store.close(); stopDiagnostics(); }
       } };
     } catch (error) { await service.close(); throw error; }
-  } catch (error) { store.close(); throw error; }
+  } catch (error) { log.error(error); stopDiagnostics(); store.close(); throw error; }
 }

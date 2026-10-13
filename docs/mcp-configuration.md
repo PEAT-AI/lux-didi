@@ -68,16 +68,44 @@ Child stdout/stderr are never forwarded to the parent's sinks, and neither comma
 
 ## Installed endpoint catalog and owner-trusted-reads
 
-`scripts/install-macos-app.sh` writes `<dataDir>/provider-config/mcp.json` once, if absent, at `0700` (directory) and `0600` (file). It holds no secret: endpoints name a `credentialRef` at most. Shape:
+The owner supplies `mcp.json` in the selected protected configuration directory
+with directory mode `0700` and file mode `0600`. The installer writes no catalog.
+An endpoint names a `credentialRef` rather than embedding a secret. Shape:
 
 `{ "schemaVersion": 1, "grantMode": "explicit" | "owner-trusted-reads", "endpoints": [ { "id", "transport": "streamable-http", "url", "connector", "account", "resource", "credentialRef", "enabled", "allowEgress" } ] }`
 
 An endpoint may instead bind a local executable (stdio): `{ "id", "transport": "stdio", "command", "args", "env", "connector", "account", "resource", "credentialRef": null, "enabled", "allowEgress" }`. `command` is an absolute path (no PATH lookup), `args` is an ordered string list, and `env` must contain every SDK `DEFAULT_INHERITED_ENV_VARS` key plus non-empty `HOME` and `PATH` (`validateApprovedStdioEnv`). `credentialRef` is strictly null.
 
-`grantMode` defaults to `explicit` when absent. `validateEndpointUrl` still permits plain HTTP only for literal loopback. The installed default binds `lux-knowledge` to `http://127.0.0.1:8765/mcp` with `connector: "lux-knowledge"` and `grantMode: "owner-trusted-reads"`, two stdio endpoints `gmail` (`--family gmail`) and `calendar` (`--family calendar`) running the local `google-mcp` helper with `connector: "google"`, the remote `mongoose` StreamableHTTP endpoint `https://mongoose.dev.peat-cloud.com/mcp/` with `connector: "mongoose"` and `credentialRef: "mongoose-mcp"` (bearer supplied out of band, never in this file), and the stdio `mattermost` child `node <HOME>/GitHub/mattermost-mcp/dist/index.cjs` with `connector: "mattermost"` reading its own stored session.
+`grantMode` defaults to `explicit` when absent. `validateEndpointUrl` permits plain HTTP only for literal loopback. There is no installed endpoint catalog. The owner supplies the actual server URLs or installed executable bindings, account/resource identities, classifications, credential references and approval mode for their own connectors.
 
 Under `owner-trusted-reads`, after each successful discovery the host approves exactly the tools in the Didi connector's local read envelope for that endpoint (lux-knowledge: `search_knowledge`, `get_insight`; google: `gmail_get_profile`, `gmail_list`, `gmail_read`, `gcal_calendars`, `gcal_list`; mongoose: `ask_mongoose`, `search_mongoose`, `get_knowledge_item`, `read_knowledge_body`, `get_company_profile`, `list_tickets`, `get_ticket`; mattermost: `mattermost_whoami`, `mattermost_get_channel_history`, `mattermost_get_thread`, `mattermost_search`, `mattermost_list_channels`) at the discovered schema digest, one generation higher; anything outside the envelope, and every write or unknown effect, is never auto-approved, whatever the remote `readOnlyHint` says. A changed digest re-approves only the envelope. The existing grant evaluator enforces every call unchanged. A Mattermost child with no session reports `auth needed: run mattermost_login once` as a configured status, never an empty success.
 
-Google read tools project to bounded Markdown (a Gmail list renders `subject, from, date` plus one `https://mail.google.com/mail/u/0/#inbox/<id>` source line per message; a message body is bounded to 4,000 characters with an explicit truncation note; a calendar list renders `time, title, location` with the event `htmlLink` source). Until Rob runs `gcal --auth` once, a calendar tool call fails with the helper's typed `credential-missing` error and the status reports `configured` with reason `auth needed: run gcal --auth`, never an empty success. The `gcal_list` default today window is computed as a single UTC day; the helper exposes no time zone, so a local-day boundary is best effort.
+A Calendar connector requires its own documented account sign-in and scopes, supplied by the owner. Missing account authorization remains a typed unavailable state, never an empty success. Lux Didi ships no universal Calendar sign-in command.
 
 Status: `GET /api/v1/tools/status` (operator bearer only) returns `{ endpoints: [{ id, state, tools, lastHandshakeAt, error? }] }` with states `missing` (no file), `configured` (present, not connected), `connected` (handshake done) and `error`.
+
+A connection becomes a Live acceptance id only after successful credential validation and discovery, durable canonical ConnectionPolicy reconciliation through the tools owner, and projection of that policy into the registry. The endpoint and discovered schema digest are bound to the durable generation; owner-trusted reads grant only the connector read envelope. Disabled endpoints, denied egress, missing credentials, failed discovery or policy reconciliation remain visible in endpoint status but are not acceptance ids. Refresh reconciles the policy before making the connection usable again.
+
+### Live connector composition
+
+Supported connector kinds are `lux-knowledge`, `google`, `mattermost`, and `mongoose`. Endpoint IDs are independent of the connector kind: separate `gmail` and `calendar` endpoints both use `google`. Each supported kind has a local read envelope and a Live reader descriptor. Model declarations accept only bounded read arguments; the company readers also validate the actual dispatched arguments against the original discovered MCP schema. Remote write tools never become Live declarations.
+
+An unknown connector kind fails host startup before transport discovery with `ConnectorCompositionError`, naming the endpoint ID and connector kind, even for a disabled endpoint. A known connector with no approved discovered reads remains healthy and status-only; a missing credential remains a visible connector error and is not accepted into a Live run. A typed connector composition defect during CREATE returns HTTP 503 with the bounded error code `CONNECTOR_COMPOSITION_ERROR`, not a generic `INTERNAL_ERROR`.
+
+The paired browser may read `GET /api/v1/live/connections`, protected by the same
+browser-principal and same-origin checks as `/api/v1/live/current`, with
+`Cache-Control: no-store` and no CORS grant. Its envelope data is an array of
+allowlisted `{id, state, tools, lastHandshakeAt, reasonCode}` rows; `reasonCode`
+is null for healthy connections or one of `credential_missing`, `unreachable`,
+`discovery_failed`, `handshake_failed`, `unknown`. Diagnostics and configuration
+payloads are not returned. `/api/v1/tools/status` remains operator bearer-only.
+
+## Required source classification per catalog entry
+
+Every `mcp.json` endpoint, HTTP or stdio, must explicitly supply `unknownClass` as `ordinary`, `private` or `sensitive`, for example `"unknownClass": "private"`. This value is owner-controlled local configuration, not remote MCP metadata. It is the connection's approved fallback source class. No value is inferred from connector descriptions, transport, credentials, route identity or an ordinal privacy hierarchy.
+
+Missing and invalid values produce the typed endpoint status `unknown-class-missing` or `unknown-class-invalid`. Only that endpoint is non-executable; the remaining configured connections still start. A healthy handshake is status-only unless the connection has current owner approval and a usable grant. The installer supplies no endpoint catalog or classifications. The owner must classify each configured source as `ordinary`, `private` or `sensitive` according to its actual data. Synthetic test catalogs use explicit `ordinary` values.
+
+Reconciliation retains persisted source-policy revisions, allowed classes, bounds and disabled approval across restarts. Unchanged content causes no CAS and no generation bump. A tighter fallback class changes policy revision/generation immediately; lowering classification, adding tool names or changing endpoint binding returns `owner-approval-required` until the existing explicit connection intent approval is applied. Ambiguous legacy rows return `ambiguous-legacy-policy`. Editing a catalog never re-enables a revoked stored approval.
+
+Installer template upgrades treat the stored PATH as a substitution, preserve its current value, and add unknownClass per entry only when every other byte matches the historical template.

@@ -1,0 +1,69 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, statSync, existsSync, symlinkSync, readlinkSync, copyFileSync, chmodSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
+import { loadMcpEndpoints } from '../config/mcp.js';
+import { loadLiveConfig } from '../config/live.js';
+const installer = resolve('scripts/install-macos-app.sh');
+function fixture() {
+  const root = mkdtempSync(join(tmpdir(), 'didi-install-portable-'));
+  const home = join(root, 'home'), app = join(root, 'build/Lux Didi.app');
+  mkdirSync(join(app, 'Contents/MacOS'), { recursive: true });
+  mkdirSync(home);
+  writeFileSync(join(app, 'Contents/Info.plist'), '<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>org.example.synthetic-didi</string><key>CFBundleExecutable</key><string>LuxDidi</string><key>CFBundlePackageType</key><string>APPL</string></dict></plist>');
+  copyFileSync('/usr/bin/true', join(app, 'Contents/MacOS/LuxDidi'));
+  const signed = spawnSync('/usr/bin/codesign', ['--force', '--sign', '-', app], { encoding: 'utf8' });
+  assert.equal(signed.status, 0, signed.stderr);
+  const run = (extra: Record<string, string> = {}) => spawnSync('/bin/bash', [installer, app], { env: { ...process.env, HOME: home, ...extra }, encoding: 'utf8', timeout: 15000 });
+  return { root, home, app, run };
+}
+test('fresh installation creates no connector or provider authority configuration', () => {
+  const f = fixture();
+  try {
+    const result = f.run(); assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /INSTALL-MACOS-APP PASS/);
+    assert.ok(existsSync(join(f.home, 'Applications/Lux Didi.app/Contents/MacOS/LuxDidi')));
+    assert.equal(existsSync(join(f.home, 'Library')), false);
+    const configDir = join(f.home, 'provider-config');
+    assert.deepEqual(loadMcpEndpoints({ configDir }), { state: 'missing' });
+    assert.deepEqual(loadLiveConfig({ configDir, ownerId: 'synthetic-owner' }), { status: 'unconfigured' });
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+test('successful upgrade and failed post-swap verification preserve owner files and symlinks', () => {
+  const f = fixture();
+  try {
+    const snapshots: { path: string; bytes: string; ino: bigint; mtime: bigint; link?: string }[] = [];
+    for (const location of ['provider-config', 'provider-38']) {
+      const dir = join(f.home, 'Library/Application Support/ai.peat.lux-didi', location);
+      mkdirSync(dir, { recursive: true }); chmodSync(dir, 0o700);
+      for (const kind of ['mcp', 'live']) {
+        const path = join(dir, `${kind}.json`), bytes = `owner-controlled ${location} ${kind}\n`;
+        if (location === 'provider-38') { const source = join(f.root, `${kind}.json`); writeFileSync(source, bytes); symlinkSync(source, path); }
+        else writeFileSync(path, bytes, { mode: 0o600 });
+        const stat = statSync(path, { bigint: true });
+        snapshots.push({ path, bytes, ino: stat.ino, mtime: stat.mtimeNs, ...(location === 'provider-38' ? { link: readlinkSync(path) } : {}) });
+      }
+    }
+    const first = f.run(); assert.equal(first.status, 0, first.stderr);
+    const verifyOwnerFiles = () => {
+      for (const snapshot of snapshots) {
+        assert.equal(readFileSync(snapshot.path, 'utf8'), snapshot.bytes);
+        const stat = statSync(snapshot.path, { bigint: true });
+        assert.equal(stat.ino, snapshot.ino); assert.equal(stat.mtimeNs, snapshot.mtime);
+        if (snapshot.link) assert.equal(readlinkSync(snapshot.path), snapshot.link);
+      }
+    };
+    verifyOwnerFiles();
+    const target = join(f.home, 'Applications/Lux Didi.app');
+    writeFileSync(join(target, 'prior-install'), 'preserve prior app');
+    const bin = join(f.root, 'bin'); mkdirSync(bin);
+    writeFileSync(join(bin, 'codesign'), '#!/bin/bash\nfor arg in "$@"; do if [ "$arg" = "$DIDI_FAIL_TARGET" ]; then exit 23; fi; done\nexec /usr/bin/codesign "$@"\n', { mode: 0o700 });
+    const failed = f.run({ PATH: `${bin}:${process.env.PATH}`, DIDI_FAIL_TARGET: target });
+    assert.equal(failed.status, 1, failed.stderr);
+    assert.match(failed.stderr, /prior app restored/);
+    assert.equal(readFileSync(join(target, 'prior-install'), 'utf8'), 'preserve prior app');
+    verifyOwnerFiles();
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});

@@ -67,10 +67,17 @@ separate and untouched.
 {"schemaVersion":1,"enabled":true,"provider":"gemini","modelId":"models/gemini-3.1-flash-live-preview","voice":"Aoede","keyReference":"gemini-primary","dataClasses":["ordinary"],"preferences":{"dataClass":"ordinary","language":"en","register":"plain","humor":"dry","verbosity":"brief"}}
 ```
 
-The installer seeds this file, owner-only, only when absent; it never overwrites
-an existing profile. The Live system instruction is not this file: it is
+The owner supplies this file in the selected protected configuration directory.
+The installer creates no profile and leaves existing files untouched. The Live system instruction is not this file: it is
 composed from the public Naya base, an optional local overlay and the terminal
 language anchor (see `docs/prompt-composition.md`).
+
+The optional `limits` block carries per-profile timer overrides: `limits.sessionMs`
+(the longest single session) and `limits.idleMs` (silence before the session ends),
+both whole milliseconds. The effective profile determines the limits; an omitted
+key falls back to the built-in default (`sessionMs` 900000, 15 minutes, and
+`idleMs` 60000, 1 minute). A value outside 1 to 2147483647
+is a typed validation error.
 
 `<dataDir>/persona-overlay.json`, at most 16 KiB, is the optional private local
 persona layer, outside Git. It is a closed record
@@ -311,9 +318,10 @@ Synthetic protected files and local fake transport/socket fixtures make no
 private/production account or model calls.
 
 The operator-selected config directory is the host's effective directory; without
-an override it is `provider-config` under the data directory. Before composing
-Live and MCP, the host seeds only missing `live.json` and `mcp.json` files from
-that default directory into the effective directory, using atomic writes with
-mode 0600 in a protected 0700 directory. Existing effective files take precedence;
-if neither directory has a file, its absent/disabled behavior is unchanged.
-Credentials and profiles are never seeded by this step.
+an override it is `provider-config` under the data directory. For compatibility,
+the host copies an existing default `live.json` profile or `mcp.json` catalog to
+an effective directory only when that destination file is absent. The copy uses
+atomic writes with mode 0600 in a protected 0700 directory; existing effective
+files take precedence. This copies owner-provided files, not generated templates,
+and never copies credentials. A fresh installation creates no default catalogs,
+so there is nothing to copy and the missing configuration remains unconfigured.

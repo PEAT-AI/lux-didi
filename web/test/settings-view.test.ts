@@ -98,3 +98,9 @@ test('connector-specific setup instructions render safely', () => {
   assert.match(html, /see RUNBOOK/);
   assert.match(html, /Copy diagnostics/);
 });
+
+test('settings view puts each section heading in its own section for vertical rhythm', () => {
+  const html = settingsMarkup({ status, connections });
+  assert.match(html, /<section class="settings-section"><h3>Connectors<\/h3>/);
+  assert.match(html, /<section class="settings-section">\s*<h3>Where these settings live<\/h3>/);
+});

@@ -130,6 +130,36 @@ try {
     await page.getByText('Synthetic notebook',{exact:true}).waitFor(); await page.getByText('Source unavailable',{exact:true}).waitFor();
     await page.getByRole('button',{name:'Open conversation source'}).click(); await page.locator('.entry').filter({hasText:'Remember the synthetic blue notebook'}).waitFor();
   });
+  await step('memory Search button never wraps its label and review shots land',async()=>{
+    const review=process.env.DIDI_WEB_REVIEW||'/Users/rob/.lux/reports/lux-didi-night-A/smoke/fix2';
+    await mkdir(review,{recursive:true});
+    const measureSearch=()=>page.evaluate(()=>{
+      const btn=[...document.querySelectorAll('button')].find(b=>b.textContent.trim()==='Search');
+      if(!btn) throw new Error('Search button not found on the Memory tab');
+      const range=document.createRange(); range.selectNodeContents(btn);
+      const lines=range.getClientRects().length;
+      const style=getComputedStyle(btn);
+      const lineHeight=style.lineHeight==='normal'?parseFloat(style.fontSize)*1.5:parseFloat(style.lineHeight);
+      const chrome=parseFloat(style.paddingTop)+parseFloat(style.paddingBottom)+parseFloat(style.borderTopWidth)+parseFloat(style.borderBottomWidth);
+      const minHeight=parseFloat(style.minHeight)||0;
+      return {lines,height:btn.getBoundingClientRect().height,single:Math.max(lineHeight+chrome,minHeight)};
+    });
+    await page.getByRole('button',{name:'Memory',exact:true}).click();
+    await page.getByLabel('Filter memories').fill('');
+    await page.getByRole('button',{name:'Search',exact:true}).waitFor();
+    const desktop=await measureSearch();
+    assert.equal(desktop.lines,1,`Search label wraps at 1440px (${desktop.lines} lines)`);
+    assert.ok(desktop.height<=desktop.single+1,`Search button ${desktop.height}px exceeds one line ${desktop.single}px at 1440px`);
+    await page.screenshot({path:`${review}/desktop-memory.png`,fullPage:true});
+    await page.setViewportSize({width:375,height:900});
+    await page.getByRole('button',{name:'Search',exact:true}).waitFor();
+    const phone=await measureSearch();
+    assert.equal(phone.lines,1,`Search label wraps at 375px (${phone.lines} lines)`);
+    assert.ok(phone.height<=phone.single+1,`Search button ${phone.height}px exceeds one line ${phone.single}px at 375px`);
+    await page.screenshot({path:`${review}/375-memory.png`,fullPage:true});
+    await page.setViewportSize({width:1440,height:1000});
+    await page.getByRole('button',{name:'Conversation',exact:true}).click();
+  });
   await step('rendered memory deletion confirms, preserves pending/failed entries and reloads server payload',async()=>{
     const text='Synthetic browser deletion canary';
     await page.getByLabel('Local note · not sent to a model').fill(text);

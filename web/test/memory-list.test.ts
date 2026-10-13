@@ -27,6 +27,16 @@ test('memory item kind prefers the domain kind note and falls back to the role',
   assert.equal(memoryItemKind(fixture({ sourceRefs: [], role: 'assistant' })), 'assistant');
 });
 
+test('memory list renders no kind badge for a role-only entry', () => {
+  const markup = memoryListMarkup([fixture({ sourceRefs: [], role: 'user' })]);
+  assert.doesNotMatch(markup, /class="memory-kind"/, 'a role is not a kind and must not render a badge');
+  assert.match(markup, /<time datetime="2026-10-11T16:00:00\.000Z">/, 'the date still renders without a kind');
+});
+
+test('memory list renders a badge for a real remember_note kind', () => {
+  assert.match(memoryListMarkup([fixture({ sourceRefs: [{ note: 'kind:preference' }] })]), /class="memory-kind"[^>]*>preference</);
+});
+
 test('memory item source names Live voice and other providers honestly', () => {
   assert.equal(memoryItemSource(fixture()), 'Live voice via remember_note');
   assert.equal(memoryItemSource(fixture({ sourceRefs: [{ label: 'Chat', provider: 'chat' }] })), 'Chat');

@@ -205,10 +205,22 @@ test('later sensitive tool evidence raises the completed Chat reply class', asyn
   assert.equal(f.store.transaction(tx => f.domain.getRoutingLabel(tx, { kind: 'entry', id: run.finalEntryId! })).dataClass, 'sensitive');
 });
 
-test('broader Chat consent preserves independent connector class denial', async t => {
+test('configured Chat consent preserves independent connector class denial', async t => {
   const f = await fixture(t); await f.sensitiveOnly();
   const run = await f.turn(f.session());
   assert.equal(run.outcome, 'complete'); assert.equal(f.executions(), 0);
   assert.equal(f.requests.length, 1);
   assert.ok(!f.requests[0]!.declarations?.some(d => d.name === 'search_knowledge'));
+});
+
+
+test('sensitive-capable Chat consent does not widen a private-only connector policy', async t => {
+  const f = await fixture(t, ['ordinary', 'private', 'sensitive']); await f.privateOnly();
+  const before = f.store.transaction(tx => tx.get('SELECT policy_json,policy_sha256 FROM tool_connections WHERE connection_id=?', [f.endpoint.id]));
+  const session = f.session(); const run = await f.turn(session);
+  assert.equal(run.outcome, 'complete'); assert.equal(f.executions(), 1);
+  assert.deepEqual(f.chat.conversation(session, f.context).permittedClasses, ['ordinary', 'private', 'sensitive']);
+  assert.ok(f.requests.every(request => !request.dataClasses.includes('sensitive')));
+  assert.equal(f.store.transaction(tx => f.domain.getRoutingLabel(tx, { kind: 'entry', id: run.finalEntryId! })).dataClass, 'private');
+  assert.deepEqual(f.store.transaction(tx => tx.get('SELECT policy_json,policy_sha256 FROM tool_connections WHERE connection_id=?', [f.endpoint.id])), before);
 });

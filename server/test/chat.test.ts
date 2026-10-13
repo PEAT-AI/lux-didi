@@ -542,8 +542,8 @@ test('sensitive actual Chat request persists a sensitive reply and history refus
     narrower.recover(f.recoveryContext);
     assert.throws(() => narrower.accept({ sessionId: f.session.id, text: 'Refuse', idempotencyKey: 'narrow' }, f.context), error('unavailable'));
     assert.equal(f.model.calls.length, 2);
-    assert.equal(f.entries()[0]!.role, 'user');
-    assert.equal(f.store.transaction(tx => f.domain.getRoutingLabel(tx, { kind: 'entry', id: f.entries()[0]!.id })).dataClass, 'private');
+    const captured = f.entries()[0]!; assert.equal(captured.role, 'user');
+    assert.equal(f.store.transaction(tx => f.domain.getRoutingLabel(tx, { kind: 'entry', id: captured.id })).dataClass, 'private');
     narrower.shutdown(); chat.shutdown();
   } finally { f.close(); }
 });

@@ -135,10 +135,15 @@ export class ChatService implements ChatPort {
     })).slice(0, 16);
   }
 
-  async #generate(run: RunSnapshot, context: DomainContext, request: ModelRequest, registry: ToolDefinition[], control: ModelControl): Promise<Pick<ModelResult, 'status' | 'text'>> {
+  async #generate(run: RunSnapshot, context: DomainContext, request: ModelRequest, registry: ToolDefinition[], control: ModelControl): Promise<Pick<ModelResult, 'status' | 'text'> & { dataClass: 'private' | 'sensitive' }> {
     const model = this.#config.model!;
     const tools = this.#config.tools;
-    if (!tools) return model.generate(request, control);
+    let dataClass: 'private' | 'sensitive' = 'private';
+    const generate = (outgoing: ModelRequest, outgoingControl: ModelControl) => {
+      if (outgoing.dataClasses.includes('sensitive')) dataClass = 'sensitive';
+      return model.generate(outgoing, outgoingControl);
+    };
+    if (!tools) { const result = await generate(request, control); return { status: result.status, text: result.text, dataClass }; }
     const active = this.#toolAuthorities.get(run.runId)!;
     const host = { runId: run.runId, actorId: context.clientId, authorityEpoch: context.authorityEpoch,
       revision: active.authority.revision, grants: registry.map(t => ({ tool: t.name, effect: t.effect, accountId: t.accountId, resourceId: t.resourceId })) };
@@ -153,7 +158,7 @@ export class ChatService implements ChatPort {
         tx.run('UPDATE chat_runs SET trace=? WHERE run_id=?', [JSON.stringify({ ...trace, toolEvidence }), run.runId]);
       });
       // runTools retains originals for validation; the canonical helper alone derives provider schemas.
-      return model.generate({ ...next, declarations: declarationsFor(registry).declarations }, nextControl);
+      return generate({ ...next, declarations: declarationsFor(registry).declarations }, nextControl);
     } }, request, registry, host, control, maxSteps: 4,
       authority: { isCurrent: async () => this.lookupAuthority(run.runId) !== null },
       journal: tools.owner.journal, resultGate: tools.owner.resultGate });
@@ -168,7 +173,7 @@ export class ChatService implements ChatPort {
         tx.run('UPDATE chat_runs SET trace=? WHERE run_id=?', [JSON.stringify({ ...trace, toolEvidence }), run.runId]);
       });
     }
-    return { status: loop.status === 'limit' ? 'truncated' : loop.status === 'uncertain' ? 'error' : loop.status, text: loop.text };
+    return { status: loop.status === 'limit' ? 'truncated' : loop.status === 'uncertain' ? 'error' : loop.status, text: loop.text, dataClass };
   }
 
   #row(tx: Transaction, runId: string, context: DomainContext) {
@@ -264,7 +269,7 @@ export class ChatService implements ChatPort {
       const route = this.#config.route;
       if (!route.available || !route.allows(['private'])) throw new ChatError('unavailable');
       const session = this.#config.domain.execute(tx, 'createSession', { title: input.title, timeZone: input.timeZone }, this.#context(context), { writer: 'capture', dataClass: 'private' });
-      const permitted = (['ordinary', 'private'] as const).filter(c => route.allowedClasses.includes(c));
+      const permitted = [...route.allowedClasses];
       if (standing) {
         tx.run('INSERT INTO chat_consent_enrollments VALUES (?,?,?,?)', [session.id, context.assistantId, input.idempotencyKey, fingerprint]);
       } else {
@@ -487,7 +492,7 @@ export class ChatService implements ChatPort {
     }
   }
   #publish(run: RunSnapshot) { this.#emit(run.runId, { type: 'snapshot', sequence: run.sequence, run }); }
-  #finish(run: RunSnapshot, context: DomainContext, outcome: Outcome, text = ''): RunSnapshot {
+  #finish(run: RunSnapshot, context: DomainContext, outcome: Outcome, text = '', dataClass: 'private' | 'sensitive' = 'private'): RunSnapshot {
     this.#authorize(context);
     const final = this.#config.store.transaction(tx => {
       const row = this.#row(tx, run.runId, context);
@@ -495,7 +500,7 @@ export class ChatService implements ChatPort {
       let entryId: string | null = null;
       if (outcome === 'complete') {
         const session = this.#config.domain.execute(tx, 'getSession', { id: run.sessionId }, this.#context(context)).session;
-        const entry = this.#config.domain.execute(tx, 'appendAssistantEntry', { sessionId: run.sessionId, text, timeZone: session.timeZone, sourceRef: { id: randomUUID(), label: 'Connected chat', provider: 'chat', externalId: run.sessionId, sourceTimestamp: null, availability: 'present' } }, this.#context(context), { writer: 'model', dataClass: 'private' });
+        const entry = this.#config.domain.execute(tx, 'appendAssistantEntry', { sessionId: run.sessionId, text, timeZone: session.timeZone, sourceRef: { id: randomUUID(), label: 'Connected chat', provider: 'chat', externalId: run.sessionId, sourceTimestamp: null, availability: 'present' } }, this.#context(context), { writer: 'model', dataClass });
         entryId = entry.id;
       }
       const max = this.#config.maxPartialChars ?? 100000;
@@ -616,7 +621,7 @@ export class ChatService implements ChatPort {
       if (result === 'aborted') return;
       if (result === 'deadline') { this.#finish(run, context, 'deadline'); controller.abort(); return; }
       const outcome = this.#outcome(result);
-      try { this.#finish(run, context, outcome, result.text); }
+      try { this.#finish(run, context, outcome, result.text, result.dataClass); }
       catch { this.#finish(run, context, 'persistence_failed', result.text); }
     } catch (error) {
       const outcome = error instanceof ContextFailure ? error.outcome : error instanceof ChatError && error.code === 'unavailable' ? 'unavailable' : 'error';

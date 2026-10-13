@@ -6,7 +6,16 @@ import Security
 
 @MainActor final class AppModel: ObservableObject {
     @Published var draft = ""
-    @Published var error: String?
+    @Published private var operationError: String?
+    var error: String? {
+        get {
+            if supervisor?.state == .unavailable, supervisor?.startupFailureDiagnostic?.stage == .canonicalFile {
+                return "Didi couldn’t verify its saved connection. Reconnect the service explicitly."
+            }
+            return operationError
+        }
+        set { operationError = newValue }
+    }
     @Published var captureStatus: CaptureStatus = .idle
     @Published var notificationStatus: NotificationCapability = .unknown
     @Published var hotkeyStatus = "Registering…"
@@ -39,6 +48,9 @@ import Security
     private var connectedSender: NativeConnectedSend?
     private(set) var installedProof: PreparedInstalledProof?
     private(set) var bootstrapFailureCode: String?
+    #if COMPANION_TEST
+    func bindCredentialSupervisorForProof(_ owner: NativeServiceSupervisor) { supervisor = owner }
+    #endif
     private(set) var bootstrapFailureDiagnostic: StartupFailureDiagnostic?
     init(proofRequest: InstalledProofRequest? = nil, fixtureClient: CompanionClient? = nil, fixtureOutbox: URL? = nil) {
         liveLogsDirectory = (proofRequest?.state ?? (try? InstalledRuntime.applicationState()))?.appendingPathComponent("logs", isDirectory: true)

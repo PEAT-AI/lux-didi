@@ -126,7 +126,7 @@ manifest/resource release boundary; same-UID malicious code is not a sandbox cla
 Only after readiness, native opens canonical admin-credential relative to a
 validated private directory FD using O_NOFOLLOW, checking regular/current-owner
 0600 and bounded/header-safe bytes. Store's single terminal LF is file framing:
-native removes that LF before validation, Keychain comparison/import and bearer
+native removes that LF before validation and bearer
 use; only the canonical 43-character base64url token is accepted. Interior or
 repeated LF, CR, whitespace and malformed tokens remain rejected. An unframed
 canonical token remains compatible. At earliest executable entry, before AppKit,
@@ -137,14 +137,27 @@ Keychain boundary checks established policy and current false readback, retainin
 LAContext and per-call authentication-UI fail. The deprecated public lifetime
 policy covers legacy login-keychain creation UI that per-call flags do not.
 Framework-internal flag changes/compatibility and an existing locked login keychain
-remain untested residuals, not a blanket no-UI guarantee. It imports to fixed
-service ai.peat.lux-didi.admin/account lowercase installId. A differing
-existing item is an explicit blocker, never silent credential rotation/deletion
-or ACL broadening. The canonical service file remains. Synthetic unique Keychain
-services exist only in proof builds and are removed by their test owner.
+remain untested residuals, not a blanket no-UI guarantee for external Keychain mode.
+Owned installed mode selects the canonical file directly after verified owned
+readiness, without querying, importing or synchronizing a Keychain mirror.
+Each native request guard and credential resolution first checks the live owned
+connection, strictly rereads the file and compares it to that connection's initial
+validated bytes. An unsafe file or changed token retires the connection, stops its
+owned host and disables automatic recovery. The visible error requires explicit
+Reconnect; restoring the file cannot revive the old provider. A fresh owned start
+accepts its current strict file as authority. This deliberately removes the extra
+native code-specific Keychain denial/lock gate and historical mirrored-byte pin;
+the host already authenticates with this same owner-readable plaintext file.
+External descriptor-only mode keeps its existing Keychain source and policy.
+An invalid installed resource never downgrades into external mode or an error-driven
+source fallback. Existing owner Keychain items remain untouched. Synthetic unique
+Keychain services exist only in external-source proof controls and are removed by
+their test owner.
 
 Every installed native REST request checks current owned-child identity before
-credential lookup/dispatch. Explicit restart rebinds only after fresh readiness,
+strict credential validation/dispatch, including native page-cookie requests.
+Browser requests directly using their existing cookie remain a separate authority;
+there is no new browser request interceptor. Explicit restart rebinds only after fresh readiness,
 retaining unresolved text/UUID/epoch rather than silently saving a new request.
 Bootstrap checks the readiness epoch against authenticated status. Unexpected
 child exit clears the page and requires explicit reconnect; there is no automatic
@@ -170,14 +183,16 @@ owned0600 `didi-installed-proof.json` lifecycle marker with type
 `didi-installed-proof-state`, schemaVersion1, installId and stable proofId.
 No business records are stored in the marker, and reopening never deletes or
 reseeds service data. The real installed manifest, verified owned HOST process,
-canonical private credential file, noninteractive synthetic-scoped Keychain
-account and normal bootstrap/client/UI paths are used; there is no fixture HOST
+canonical private credential file and normal bootstrap/client/UI paths are used;
+there is no installed Keychain account or fixture HOST
 fallback. Normal install credentials are not read or changed.
 
-Version1 JSON reports use type `LuxDidiInstalledProof`, schemaVersion1,
+Version2 JSON reports use type `LuxDidiInstalledProof`, schemaVersion2,
 phase (`running`, `complete`, `failed`), success, runId, installId, proofId,
 reopened, source, native, service, priorRecords, newRecord, observations, visual,
-serviceStop, credentialCleanup and error. Record fields are exact sessionId,
+serviceStop and error. Observations contain credentialSource `canonical-file`,
+credentialValidated, bootstrap, canonicalUIReady, priorRecallComplete and newSaved.
+There is no import or Keychain-cleanup success claim. Record fields are exact sessionId,
 entryId, full synthetic text and visibleInCanonicalUI. Previous records come
 from authoritative untruncated recall/session APIs and are verified in the
 canonical UI before one new native synthetic save. Source identity records the
@@ -204,4 +219,4 @@ or OS grant prompts are introduced by proof mode.
 
 
 ### Private installed-proof diagnostics
-The consumer-facing `LuxDidiInstalledProof` schema 1 retains its exact R10 report and visual keys. AX consumer/direct-tree diagnostics, WebKit diagnostics, and a capture-error diagnostic are serialized only in a private sibling `<report>.diagnostics.json` (mode 0600). The sidecar binds `nativePid`, `windowId`, `sourceSHA`, `proofId`, `installId`, and `runId` to that same invocation. It never substitutes for truthful canonical `accessibility`, `nativeChrome`, `error`, or externally observed native exit. Connected same-process WebKit accessibility traversal runs on AppKit's thread; a single bounded own-window observation supplies both the report and the controls gate. Only the application's own PID/windows are inspected, with no permission requests.
+The consumer-facing `LuxDidiInstalledProof` schema 2 has exact report and visual keys. Schema 1 reports are not accepted by its current verifier. AX consumer/direct-tree diagnostics, WebKit diagnostics, and a capture-error diagnostic are serialized only in a private sibling `<report>.diagnostics.json` (mode 0600). The sidecar remains schema1 and binds `nativePid`, `windowId`, `sourceSHA`, `proofId`, `installId`, and `runId` to that same invocation. It never substitutes for truthful canonical `accessibility`, `nativeChrome`, `error`, or externally observed native exit. Connected same-process WebKit accessibility traversal runs on AppKit's thread; a single bounded own-window observation supplies both the report and the controls gate. Only the application's own PID/windows are inspected, with no permission requests.

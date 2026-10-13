@@ -100,19 +100,21 @@ enum NativeCredentialImport {
         defer { close(fd) }
         guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFDIR, info.st_uid == geteuid(), info.st_mode & 0o777 == 0o700 else { throw NativeServiceError.unsafeState }
     }
-    static func readCredential(state: URL) throws -> Data {
+    static func readCredential(state: URL,
+                               inspect: (Int32, UnsafeMutablePointer<stat>) -> Int32 = fstat,
+                               readBytes: (Int32, UnsafeMutableRawPointer?, Int) -> Int = Darwin.read) throws -> Data {
         let directory = open(state.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard directory >= 0 else { throw NativeServiceError.unsafeState }
         defer { close(directory) }
         var info = stat()
-        guard fstat(directory, &info) == 0, info.st_mode & S_IFMT == S_IFDIR, info.st_uid == geteuid(), info.st_mode & 0o777 == 0o700 else { throw NativeServiceError.unsafeState }
+        guard inspect(directory, &info) == 0, info.st_mode & S_IFMT == S_IFDIR, info.st_uid == geteuid(), info.st_mode & 0o777 == 0o700 else { throw NativeServiceError.unsafeState }
         let file = openat(directory, "admin-credential", O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
         guard file >= 0 else { throw NativeServiceError.unsafeCredential }
         defer { close(file) }
-        guard fstat(file, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_uid == geteuid(), info.st_mode & 0o777 == 0o600,
+        guard inspect(file, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_uid == geteuid(), info.st_mode & 0o777 == 0o600,
               info.st_size > 0, info.st_size <= 4096 else { throw NativeServiceError.unsafeCredential }
         var bytes = [UInt8](repeating: 0, count: Int(info.st_size))
-        let count = bytes.withUnsafeMutableBytes { read(file, $0.baseAddress, $0.count) }
+        let count = bytes.withUnsafeMutableBytes { readBytes(file, $0.baseAddress, $0.count) }
         guard count == bytes.count else { throw NativeServiceError.unsafeCredential }
         // Canonical Store serializes its token with one terminal LF, not bearer data.
         if bytes.last == 10 { bytes.removeLast() }

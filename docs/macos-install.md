@@ -89,6 +89,17 @@ no new UI and no in-app editor.
 
 ## Limits
 
+Owned installed connections use the existing strict private host credential file
+directly, so native rebuilds do not depend on a Keychain item's code-hash permission.
+Each native request validates the same live owned connection and file bytes.
+An unsafe or changed file retires that connection and requires explicit Reconnect;
+a new owned start accepts the current valid file. External descriptor connections
+retain their Keychain authority. Existing Keychain items are not migrated or changed.
+The schema2 installed proof records the actual canonical-file source and validation,
+with observed child cleanup rather than an invented Keychain import/cleanup claim.
+Changed-executable upgrade acceptance requires two meaningful fresh-process runs
+with preserved installId, config and state; a signature check alone does not prove it.
+
 The first artifact is a local, ad-hoc-signed prerelease. Same-Mac relocation is
 not cross-Mac Gatekeeper acceptance; quarantine is never cleared and paid
 signing/notarization are later work. Real provider/Google/voice parity is

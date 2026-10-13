@@ -28,6 +28,8 @@ import Foundation
                          "visual": ["windowId": 7, "nativeChrome": NSNull(), "nativeChromeError": ["code": -3811]],
                          "axConsumer": ["code": "0"], "axDirectTrace": [["knownLabel": true]], "wkDiagnostics": ["ready": true]])
         let wire = try JSONSerialization.jsonObject(with: Data(contentsOf: report)) as! [String: Any]
+        try LifecycleProof.expect(wire["schemaVersion"] as? Int == 2 && wire["type"] as? String == "LuxDidiInstalledProof", "installed proof reports schema2")
+        try LifecycleProof.expect(wire["credentialCleanup"] == nil, "file authority reports no invented Keychain cleanup")
         let visual = wire["visual"] as! [String: Any]
         try LifecycleProof.expect(wire["axConsumer"] == nil && wire["axDirectTrace"] == nil && wire["wkDiagnostics"] == nil && visual["nativeChromeError"] == nil,
                                   "R10 wire excludes private diagnostic extensions")

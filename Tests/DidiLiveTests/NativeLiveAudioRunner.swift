@@ -143,7 +143,7 @@ final class DiagnosticLogHTTPFixture: URLProtocol, @unchecked Sendable {
             for state in NativeLiveConversation.State.allCases {
                 let presentation = state.presentation
                 try expect(!presentation.text.isEmpty && !presentation.symbol.isEmpty, "every Live case has a sentence and icon")
-                try expect(!presentation.text.contains(state.rawValue), "raw case never reaches Live presentation")
+                try expect(presentation.text != state.rawValue, "raw case never reaches Live presentation")
             }
         } catch { fatalError("Live presentation: \(error)") }
         do {

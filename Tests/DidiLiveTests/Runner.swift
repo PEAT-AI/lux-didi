@@ -508,6 +508,36 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             await scripted.stop(); await scriptedHTTP.finish()
             print("PASS silent scripted PCM/interrupted/terminal output ordering")
 
+            // R-SEC-5: admission is suspended before the final outbound epoch check.
+            let muteHTTP = TestHTTP(fixture), muteSocket = ContinuitySocket(), admissionGate = Gate()
+            let muteFence = LiveSessionCoordinator(http: muteHTTP, sockets: muteSocket, sink: SilentSink(), beforeCaptureSubmission: { await admissionGate.wait() })
+            await muteSocket.push(.marker(LiveMarker(kind: .ready, sequence: 1, journalSequence: 0, text: nil, finished: nil, value: nil)))
+            await muteFence.begin(frozen)
+            try await until { await muteFence.state == .active }
+            let staleCapture = Task { try await muteFence.sendPCM(Data([9, 0]), captureEpoch: 0) }
+            try await until { await admissionGate.arrivals == 1 }
+            let muteAcknowledged = Gate()
+            let muteRequest = Task {
+                await muteFence.setCaptureMuted(true, epoch: 1)
+                await muteAcknowledged.wait()
+            }
+            try await until { await muteFence.captureEpoch == 1 }
+            try require(await muteAcknowledged.arrivals == 0, "mute not acknowledged while admitted submission is suspended")
+            await admissionGate.release()
+            try await staleCapture.value
+            try await until { await muteAcknowledged.arrivals == 1 }
+            try require(await muteSocket.inputs.isEmpty, "old admitted capture never reaches transport after mute epoch")
+            await muteAcknowledged.release(); await muteRequest.value
+            await muteFence.setCaptureMuted(false, epoch: 2)
+            try await muteFence.sendPCM(Data([9, 0]), captureEpoch: 0)
+            try require(await muteSocket.inputs.isEmpty, "unmute cannot revive an older capture epoch")
+            let freshCapture = Task { try await muteFence.sendPCM(Data([7, 0]), captureEpoch: 2) }
+            try await until { await admissionGate.arrivals == 2 }
+            await admissionGate.release(); try await freshCapture.value
+            try require(await muteSocket.inputs == [Data([7, 0])], "new epoch sends normally after unmute")
+            await muteFence.stop(); await muteHTTP.finish()
+            print("PASS suspended capture mute epoch fence + delayed acknowledgement + unmute cannot revive stale PCM")
+
             let continuityHTTP = TestHTTP(fixture), continuitySocket = ContinuitySocket(), continuitySink = SilentSink()
             let continuity = LiveSessionCoordinator(http: continuityHTTP, sockets: continuitySocket, sink: continuitySink)
             await continuitySocket.push(.marker(LiveMarker(kind: .ready, sequence: 1, journalSequence: 0, text: nil, finished: nil, value: nil)))

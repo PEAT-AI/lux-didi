@@ -208,9 +208,15 @@ test('Live remember provenance refusals do not write memory', async t => {
     ['remember that this is sensitive', 'this is sensitive', 'private_memory_unsupported'],
   ] as const) {
     await t.test(code, async st => {
-      const h = await harness(st, { tools: true });
+      const scheduler = new RememberClock();
+      const h = await harness(st, { tools: true, scheduler });
       await attached(h);
-      const result = await remember(h, utterance, { text, kind: 'fact' }, 2);
+      const resultPromise = remember(h, utterance, { text, kind: 'fact' }, 2);
+      if (utterance === undefined) {
+        await until(() => [...scheduler.pending].some(item => item.at === NOW + 1500));
+        scheduler.advance(1500);
+      }
+      const result = await resultPromise;
       assert.deepEqual(result, { remembered: false, code });
       assert.equal(rows(h).length, 0);
     });

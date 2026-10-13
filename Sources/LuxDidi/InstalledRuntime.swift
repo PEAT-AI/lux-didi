@@ -108,7 +108,7 @@ enum NativeCredentialImport {
         defer { close(directory) }
         var info = stat()
         guard inspect(directory, &info) == 0, info.st_mode & S_IFMT == S_IFDIR, info.st_uid == geteuid(), info.st_mode & 0o777 == 0o700 else { throw NativeServiceError.unsafeState }
-        let file = openat(directory, "admin-credential", O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        let file = openat(directory, "admin-credential", O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
         guard file >= 0 else { throw NativeServiceError.unsafeCredential }
         defer { close(file) }
         guard inspect(file, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_uid == geteuid(), info.st_mode & 0o777 == 0o600,

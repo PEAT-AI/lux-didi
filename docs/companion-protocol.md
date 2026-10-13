@@ -160,8 +160,9 @@ Browser requests directly using their existing cookie remain a separate authorit
 there is no new browser request interceptor. Explicit restart rebinds only after fresh readiness,
 retaining unresolved text/UUID/epoch rather than silently saving a new request.
 Bootstrap checks the readiness epoch against authenticated status. Unexpected
-child exit clears the page and requires explicit reconnect; there is no automatic
-restart/retry loop. Hide/close retains the child. Quit first awaits bounded scoped
+child exit clears the page and retains the existing bounded automatic child recovery.
+Canonical credential invalidity cancels that recovery and requires explicit Reconnect.
+Hide/close retains the child. Quit first awaits bounded scoped
 logout, then closes stdin, then applies bounded TERM/owned-PID KILL only if needed.
 The actual HOST's supervised EOF contract owns crash cleanup; protocol fixtures
 are not combined HOST/web installation proof. No launchd or installation effect

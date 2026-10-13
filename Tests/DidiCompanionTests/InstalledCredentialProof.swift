@@ -84,6 +84,9 @@ private final class CredentialProofTransport: URLProtocol {
             try fm.createDirectory(at: file, withIntermediateDirectories: false)
             try refuses("file type") { _ = try NativeCredentialImport.readCredential(state: state) }
             try fm.removeItem(at: file)
+            try check(mkfifo(file.path, 0o600) == 0, "actual FIFO fixture created")
+            try refuses("actual FIFO refuses without blocking") { _ = try NativeCredentialImport.readCredential(state: state) }
+            try fm.removeItem(at: file)
             let alias = root.appendingPathComponent("state-alias")
             try fm.createSymbolicLink(at: alias, withDestinationURL: state)
             try refuses("directory symlink") { _ = try NativeCredentialImport.readCredential(state: alias) }
@@ -149,8 +152,16 @@ private final class CredentialProofTransport: URLProtocol {
                 try check(try Data(fresh.credential().utf8) == token, "explicit reconnect accepts restored valid canonical token")
                 model.error = nil
                 try check(model.error == nil, "explicit reconnect clears credential error without process latch")
+                let refreshedClient = CompanionClient(descriptor: fresh.descriptor, credential: fresh.credential, expectedEpoch: fresh.authorityEpoch,
+                    connectionGuard: { owner.isCurrent(fresh) && (try? fresh.credential()) != nil }, protocolClasses: [CredentialProofTransport.self])
+                let refreshedModel = AppModel(fixtureClient: refreshedClient, fixtureOutbox: root.appendingPathComponent("refresh-outbox"))
+                refreshedModel.bindCredentialSupervisorForProof(owner)
                 try refuses("old provider stays retired after reconnect") { _ = try connection.credential() }
                 try write(Data(repeating: 67, count: 43))
+                await refreshedModel.refreshLiveDetails()
+                refreshedModel.error = nil
+                try check(owner.state == .unavailable && refreshedModel.error?.contains("Reconnect") == true,
+                          "actual refresh mutation and late clear preserve explicit reconnect error")
                 try refuses("held token rotation refuses current provider") { _ = try fresh.credential() }
                 let rotated = try await owner.start()
                 try check(try rotated.credential() == String(repeating: "C", count: 43), "new owned start accepts current file authority without historical pin")

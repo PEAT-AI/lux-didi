@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import plistlib
 from pathlib import Path
 import subprocess
 import sys
@@ -21,7 +22,12 @@ summary = {"type": "InstalledCredentialFocusedEvidence", "sourceCommit": commit,
            "nodeSHA256": expected_node, "nodeVersion": node_version, "ownerAppOrDataTouched": False, "paidCI": False, "success": False}
 with tempfile.TemporaryDirectory(prefix="didi-credential-compile-") as temporary:
     work = Path(temporary)
-    executable = work / "runtime"
+    app = work / "Credential Proof.app"
+    executable = app / "Contents/MacOS/LuxDidi"
+    executable.parent.mkdir(parents=True)
+    info = plistlib.loads((source / "Resources/Info.plist").read_bytes())
+    info["CFBundleIdentifier"] = "ai.peat.lux-didi.credential-proof"
+    (app / "Contents/Info.plist").write_bytes(plistlib.dumps(info))
     command = ["xcrun", "swiftc", "-j", "1", "-num-threads", "1", "-whole-module-optimization",
                "-D", "COMPANION_TEST", "-parse-as-library", "-module-cache-path", str(work / "cache")]
     command += [str(path) for path in sorted((source / "Sources/LuxDidi").glob("*.swift"))]

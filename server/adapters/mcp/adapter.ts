@@ -13,6 +13,41 @@ export interface McpAdapterOptions {
   assertCredentialCurrent?: (reference: string) => void;
 }
 class PolicyError extends Error { constructor(readonly reason: string) { super(reason); } }
+/** Transport decoding stays here; connectors only inspect decoded MCP results. */
+export class McpResultError extends Error { readonly code = 'mcp_result_invalid'; }
+export function decodeMcpResult(bytes: Uint8Array): unknown {
+  try {
+    const packet: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+    if (packet === null || typeof packet !== 'object' || Array.isArray(packet)) throw new McpResultError('mcp_result_invalid');
+    const record = packet as Record<string, unknown>;
+    if (record['jsonrpc'] === '2.0') {
+      if (!('result' in record) || 'error' in record) throw new McpResultError('mcp_result_invalid');
+      return record['result'];
+    }
+    return packet; // stdio stores the SDK-decoded result, without an HTTP envelope.
+  } catch { throw new McpResultError('mcp_result_invalid'); }
+}
+function decodeSseResponse(bytes: Uint8Array, requestId: unknown): Uint8Array {
+  try {
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes).replace(/^\uFEFF/, '');
+    for (const frame of text.split(/\r\n\r\n|\n\n|\r\r/)) {
+      const data: string[] = [];
+      for (const line of frame.split(/\r\n|\n|\r/)) {
+        if (line === 'data') data.push('');
+        else if (line.startsWith('data:')) data.push(line.slice(5).replace(/^ /, ''));
+      }
+      if (!data.length) continue;
+      const packet: unknown = JSON.parse(data.join('\n'));
+      if (packet !== null && typeof packet === 'object' && !Array.isArray(packet)) {
+        const record = packet as Record<string, unknown>;
+        if (record['jsonrpc'] === '2.0' && record['id'] === requestId && ('result' in record || 'error' in record)) {
+          return new TextEncoder().encode(JSON.stringify(packet));
+        }
+      }
+    }
+  } catch { throw new PolicyError('mcp_transport_error'); }
+  throw new PolicyError('mcp_transport_error');
+}
 interface Operation { scope: ResultScope; signal: AbortSignal; dispatched: boolean; bytes?: Uint8Array; requestId?: string | number; explicitErrorCode?: number }
 interface Session { client: Client; config: EndpointConfig; operation?: Operation }
 const allowedHeaders = new Set(['accept', 'content-type', 'mcp-session-id', 'mcp-protocol-version', 'last-event-id', 'mcp-method', 'mcp-name']);
@@ -74,7 +109,7 @@ function guardedFetch(session: Session, options: McpAdapterOptions, budgets: Mcp
       });
       return new Response(stream, { status: response.status, statusText: response.statusText, headers: response.headers });
     }
-    // POST entity capture is bounded, exact, and passed unchanged to the SDK parser.
+    // Bound the entity before decoding SSE; JSON entities retain their exact bytes.
     if (request.method !== 'POST' || !response.body) return response;
     const reader = response.body.getReader(); const chunks: Uint8Array[] = []; let length = 0;
     try {
@@ -88,8 +123,12 @@ function guardedFetch(session: Session, options: McpAdapterOptions, budgets: Mcp
     } catch (error) { void reader.cancel().catch(() => {}); throw error; }
     const bytes = new Uint8Array(length); let offset = 0;
     for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
-    if (operation) operation.bytes = bytes;
-    return new Response(bytes, { status: response.status, statusText: response.statusText, headers: response.headers });
+    const isSse = response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase() === 'text/event-stream';
+    const decoded = isSse ? decodeSseResponse(bytes, packet?.id) : bytes;
+    if (operation) operation.bytes = decoded;
+    const responseHeaders = new Headers(response.headers);
+    if (isSse) { responseHeaders.set('content-type', 'application/json'); responseHeaders.delete('content-length'); }
+    return new Response(decoded, { status: response.status, statusText: response.statusText, headers: responseHeaders });
   };
 }
 function bounded<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {

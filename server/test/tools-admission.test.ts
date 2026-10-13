@@ -31,7 +31,7 @@ function result(name?: string, args: Record<string, unknown> = {}): ModelResult 
   return { status: 'complete', text: name ? '' : 'done', providerContent: { role: 'model', parts: name ? [{ functionCall: { name, args, id: 'call' } }] : [{ text: 'done' }] }, reason: 'complete', prompt: { version: '1', hash: 'synthetic', omittedContextIds: [] }, timings: { kind: 'synthetic', totalMs: 0, firstTextMs: null } };
 }
 
-async function harness(t: TestContext, builder: 'live' | 'chat-shaped') {
+async function harness(t: TestContext, builder: 'live' | 'chat-shaped', failure?: 'transport' | 'result') {
   const dir = mkdtempSync(join(tmpdir(), 'didi-admission-'));
   const configDir = join(dir, 'config'); mkdirSync(configDir, { mode: 0o700 });
   let store = new Store(join(dir, 'data'), [...domainMigrations, ...liveMigrations, ...toolsMigrations]);
@@ -65,6 +65,10 @@ async function harness(t: TestContext, builder: 'live' | 'chat-shaped') {
     const request = new Request(input, init);
     const id = new URL(request.url).pathname.slice(1);
     const transport = readers.get(id); assert(transport, request.url);
+    if (failure && id === 'lux-knowledge' && request.method === 'POST') {
+      const packet = await request.clone().json() as { method?: string; id?: unknown };
+      if (packet.method === 'tools/call') return new Response(failure === 'transport' ? ': keepalive\n\n' : `data: ${JSON.stringify({ jsonrpc: '2.0', id: packet.id, result: { content: 'invalid' } })}\n\n`, { headers: { 'content-type': 'text/event-stream' } });
+    }
     return request.method === 'GET' ? new Response(null, { status: 405 }) : transport.handleRequest(request);
   });
   const runtimes: Awaited<ReturnType<typeof composeMcpRuntime>>[] = [];
@@ -182,4 +186,23 @@ for (const builder of ['live', 'chat-shaped'] as const) test(`connection-scoped 
   const withheld = h.store.transaction(tx => tx.all('SELECT state,result_json FROM tool_calls WHERE run_id=?', [inFlightRun.host.runId]));
   assert.equal(withheld.length, 1); assert.notEqual(withheld[0]!.state, 'completed');
 
+});
+
+for (const failure of ['transport', 'result'] as const) test(`MCP ${failure} failure retains a bounded code through the real owner`, async t => {
+  const h = await harness(t, 'live', failure);
+  const runtime = await h.start(); const run = await h.accept(runtime);
+  const observed = await h.read(runtime, run.host, ['lux-knowledge']);
+  const expected = failure === 'transport' ? 'mcp_transport_error' : 'mcp_result_invalid';
+  const rows = h.store.transaction(tx => tx.all('SELECT status, result_json FROM tool_results WHERE run_id=?', [run.host.runId]));
+  assert.equal(rows.length, 1);
+  const result = JSON.parse(String(rows[0]!.result_json));
+  assert.equal(result.response.reason, expected);
+  if (failure === 'transport') {
+    assert.equal(rows[0]!.status, 'unknown');
+    assert.equal(observed.outcome.reason, expected);
+  } else {
+    assert.equal(rows[0]!.status, 'failed');
+    const responses = observed.seen.flatMap(request => request.contents.flatMap(c => c.parts.flatMap(p => p.functionResponse ? [p.functionResponse.response] : [])));
+    assert(responses.some(response => response['reason'] === expected));
+  }
 });

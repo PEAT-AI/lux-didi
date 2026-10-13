@@ -198,13 +198,14 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
         return persistTerminal(tx, call, 'refused', { response: { status: 'refused', reason: 'tool_refused' }, dataClasses: [] }, true);
       });
     },
-    fail(input, status, _reason) {
+    fail(input, status, reason) {
       const call = callDTO(input);
       if (persistenceFailures.has(call.executionId)) throw Error('result_persistence_failed');
       if (status !== 'failed' && status !== 'unknown') throw Error('invalid_terminal_status');
       return store.transaction(tx => {
         if (exactIntent(tx, call).state !== 'intent') throw Error('terminal_immutable'); validateCallRun(tx, call);
-        return persistTerminal(tx, call, status, { response: { status, reason: status === 'unknown' ? 'tool_unknown' : 'tool_failed' }, dataClasses: [] });
+        const code = ['mcp_transport_error', 'mcp_result_invalid', 'connector_error', 'handler_outcome'].includes(reason) ? reason : status === 'unknown' ? 'tool_unknown' : 'tool_failed';
+        return persistTerminal(tx, call, status, { response: { status, reason: code }, dataClasses: [] });
       });
     },
   };
@@ -371,7 +372,8 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
               });
               if (!call) return { status: 'failed' };
               const evidence = await reader.call(name, args as Record<string, unknown>, context.signal);
-              if (context.signal.aborted || evidence.state === 'unknown') return { status: 'unknown' };
+              if (context.signal.aborted) return { status: 'unknown' };
+              if (evidence.state === 'unknown') return { status: 'unknown', code: 'mcp_transport_error' };
               if (evidence.state !== 'completed') {
                 const status = evidence.state === 'tool-error' || evidence.state === 'protocol-error' ? descriptor.status?.(evidence) : undefined;
                 if (!status) return { status: 'failed' };
@@ -382,7 +384,13 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
               }
               reportToolStatus?.(p.endpoint.id, null);
               let value: ModelSnapshot;
-              try { value = descriptor.project(evidence, port, p); } catch { return { status: 'failed' }; }
+              try { value = descriptor.project(evidence, port, p); } catch (error) {
+                const code = error instanceof SyntaxError || (error instanceof Error && ('code' in error && error.code === 'mcp_result_invalid' || error.message === 'unsupported_mcp_result' || error.message === 'unsupported_mcp_content')) ? 'mcp_result_invalid'
+                  : error instanceof Error ? 'connector_error' : 'handler_outcome';
+                // Only safe class/code metadata, never remote payloads or arbitrary exception text.
+                console.error('connector projection failed', { errorClass: error instanceof Error ? error.constructor.name : typeof error, messageHead: code });
+                return { status: 'failed', code };
+              }
               return { status: 'completed', result: complete(call, value.response, value.dataClasses) };
             },
           });

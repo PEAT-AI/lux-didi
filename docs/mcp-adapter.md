@@ -177,3 +177,26 @@ close an existing local source, with no tool execution/content query. Its public
 runtime commit and receipt commit, if present, must be recorded as observed freshness
 metadata: a mismatch is not an invented failure or assumed identity. The synthetic
 protocol checks do not claim that live integration was verified.
+
+## Streamable HTTP response entities
+
+POST responses may be `application/json` or `text/event-stream`. JSON entities
+retain their exact bytes and use the SDK JSON-RPC parser. For SSE, the adapter
+bounds the complete entity before decoding UTF-8 frames, ignores comments,
+keep-alives and non-data fields, joins multiple `data` lines with a newline,
+and selects the JSON-RPC result or error whose id matches the request. The
+selected response is serialized as JSON for the SDK and result store. For SSE,
+result hashes and slices describe this decoded JSON response, not wire framing.
+No connector parses an HTTP entity itself: the lux-knowledge projection delegates
+to the adapter's `decodeMcpResult` after verifying the bounded stored entity.
+Optional `structuredContent` and `_meta` are accepted but never forwarded as
+unclassified model content; only permitted text content is projected.
+
+An empty SSE entity, missing matching response, invalid UTF-8 or malformed data
+payload produces the bounded `mcp_transport_error` code, not an uncaught JSON
+parse exception. An invalid decoded result uses `mcp_result_invalid`; other
+classified connector exceptions use `connector_error`. `handler_outcome` is
+reserved for unclassified handler outcomes. These codes survive the tool journal
+and model-visible response. Unknown transport outcomes remain unknown; there is
+no automatic retry of a dispatched call. Diagnostics contain safe error class
+and bounded message-code metadata, never remote response text.

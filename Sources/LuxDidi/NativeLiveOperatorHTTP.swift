@@ -158,6 +158,7 @@ struct NativePendingLiveJob: Decodable, Equatable, Sendable {
         var request = try build(origin.appendingPathComponent(binding.audioPath), binding.authorityEpoch)
         var parts = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)!
         parts.scheme = "ws"; request.url = parts.url
+        request.setValue("127.0.0.1:" + String(binding.origin.port!), forHTTPHeaderField: "Host")
         request.setValue(binding.profileIdentity, forHTTPHeaderField: "x-didi-live-profile")
         return request
     }

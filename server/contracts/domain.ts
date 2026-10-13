@@ -1,7 +1,7 @@
 import type { SchemaMigration, Transaction } from './storage.js';
 export interface SourceRef { id: string; label: string; provider?: string; accountId?: string; externalId?: string; sourceTimestamp: string | null; availability: 'present' | 'missing'; note?: string }
 export interface Session { id: string; title: string; startedAt: string; endedAt: string | null; timeZone: string; revision: number }
-export interface Entry { id: string; sessionId: string; sequence: number; role: 'user' | 'assistant' | 'system'; text: string; capturedAt: string; sourceRefs: SourceRef[] }
+export interface Entry { id: string; sessionId: string; sequence: number; role: 'user' | 'assistant' | 'system'; text: string; kind: 'fact' | 'preference' | 'task' | 'note'; origin: 'live-voice' | 'chat' | 'page' | 'unknown'; capturedAt: string; sourceRefs: SourceRef[] }
 /** Exact frozen record for an explicit local-memory selection; source metadata preserved verbatim. */
 export interface ResolvedEntry {
   entryId: string;

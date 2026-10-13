@@ -17,7 +17,7 @@ const fixture = (overrides: Partial<MemoryListItem> = {}): MemoryListItem => ({
 test('memory list renders kind, origin and local created time from a payload entry', () => {
   const markup = memoryListMarkup([fixture()]);
   assert.match(markup, /class="memory-kind"[^>]*>fact</);
-  assert.match(markup, /class="memory-origin"[^>]*>Live voice via remember_note</);
+  assert.match(markup, /class="memory-source"[^>]*>Live voice via remember_note</);
   assert.match(markup, /data-delete-memory="entry-1"/);
   const local = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date('2026-10-11T16:00:00.000Z'));
   assert.ok(markup.includes(local), `expected local created time ${local} in markup`);
@@ -32,7 +32,7 @@ test('memory item kind is the explicit domain kind, note when none was given', (
 test('memory list renders no kind badge for a note and still shows an origin line', () => {
   const markup = memoryListMarkup([fixture({ kind: 'note', origin: 'unknown', sourceRefs: [] })]);
   assert.doesNotMatch(markup, /class="memory-kind"/, 'note is not a real kind and must not render a badge');
-  assert.match(markup, /class="memory-origin"[^>]*>Origin unknown</);
+  assert.match(markup, /class="memory-source"[^>]*>Origin unknown</);
   assert.match(markup, /<time datetime="2026-10-11T16:00:00\.000Z">/, 'the date still renders without a kind');
 });
 

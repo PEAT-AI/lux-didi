@@ -34,12 +34,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Extracts the first text content item from a stored MCP payload, accepting either the full
- * JSON-RPC message or the bare result object (as the adapter stores it).
+ * Extracts the original permitted first text content item from the adapter-decoded result.
+ * Transport framing is never interpreted by the connector.
  */
-export function decodeMcpContentText(payloadText: string): { ok: true; text: string } | { ok: false; reason: string } {
-  let parsed: unknown;
-  try { parsed = JSON.parse(payloadText); } catch { return { ok: false, reason: 'unsupported_mcp_envelope' }; }
+export function decodeMcpContentText(parsed: unknown): { ok: true; text: string } | { ok: false; reason: string } {
   if (!isRecord(parsed)) return { ok: false, reason: 'unsupported_mcp_envelope' };
   const result = isRecord(parsed['result']) ? parsed['result'] : parsed;
   const content = result['content'];
@@ -52,15 +50,13 @@ export function decodeMcpContentText(payloadText: string): { ok: true; text: str
  * JSON-RPC message or the bare result object, mirroring the adapter's stored bytes.
  */
 export function decodeGoogleEnvelope(payloadText: string): { ok: true; envelope: Record<string, unknown> } | { ok: false; reason: string } {
-  const content = decodeMcpContentText(payloadText);
-  if (!content.ok) return content;
   let envelope: unknown;
-  try { envelope = JSON.parse(content.text); } catch { return { ok: false, reason: 'unsupported_mcp_envelope' }; }
+  try { envelope = JSON.parse(payloadText); } catch { return { ok: false, reason: 'unsupported_mcp_envelope' }; }
   if (!isRecord(envelope)) return { ok: false, reason: 'unsupported_mcp_envelope' };
   return { ok: true, envelope };
 }
 
-/** Reads the whole stored payload once, verifying the hash before decoding. */
+/** Verifies the whole original entity, then consumes the separately decoded MCP result. */
 export function readGooglePayload(port: McpPort, evidence: GoogleEvidence): { ok: true; text: string } | { ok: false; reason: string } {
   const payload: StoredPayload = evidence.response;
   if (payload.state !== 'available' || payload.encoding !== 'http-response-entity') return { ok: false, reason: 'payload_unavailable' };
@@ -73,7 +69,7 @@ export function readGooglePayload(port: McpPort, evidence: GoogleEvidence): { ok
   }
   const bytes = Buffer.concat(chunks);
   if (bytes.byteLength !== payload.byteLength || sha256(bytes) !== payload.sha256) return { ok: false, reason: 'entity_hash_mismatch' };
-  return { ok: true, text: new TextDecoder('utf-8', { fatal: true }).decode(bytes) };
+  return decodeMcpContentText(evidence.decodedResult);
 }
 
 /** The helper's typed credential error is a tool-error whose text starts with a stable code. */
@@ -89,7 +85,7 @@ export function credentialFailure(text: string): boolean {
  */
 export function googleToolStatus(evidence: GoogleEvidence): GoogleStatus | undefined {
   if (evidence.state === 'completed') return undefined;
-  const content = decodeMcpContentText(evidence.projection.text);
+  const content = decodeMcpContentText(evidence.decodedResult);
   if (!content.ok) return { state: 'error', reason: 'tool call failed; no content' };
   return credentialFailure(content.text)
     ? { state: 'configured', reason: 'auth needed: run gcal --auth' }

@@ -40,13 +40,11 @@ export function readMongoosePayload(port: McpPort, evidence: MongooseEvidence): 
   }
   const bytes = Buffer.concat(chunks);
   if (bytes.byteLength !== payload.byteLength || sha256(bytes) !== payload.sha256) return { ok: false, reason: 'entity_hash_mismatch' };
-  return { ok: true, text: new TextDecoder('utf-8', { fatal: true }).decode(bytes) };
+  return decodeMcpContentText(evidence.decodedResult);
 }
 
 /** Extracts the first text content item from the stored envelope (full JSON-RPC message or bare result). */
-export function decodeMcpContentText(payloadText: string): { ok: true; text: string } | { ok: false; reason: string } {
-  let parsed: unknown;
-  try { parsed = JSON.parse(payloadText); } catch { return { ok: false, reason: 'unsupported_mcp_envelope' }; }
+export function decodeMcpContentText(parsed: unknown): { ok: true; text: string } | { ok: false; reason: string } {
   if (!isRecord(parsed)) return { ok: false, reason: 'unsupported_mcp_envelope' };
   const result = isRecord(parsed['result']) ? parsed['result'] : parsed;
   const content = result['content'];
@@ -64,7 +62,7 @@ export function credentialFailure(text: string): boolean {
 /** Configured/auth-needed status for a non-completed read, never an empty success. */
 export function mongooseToolStatus(evidence: MongooseEvidence): ConnectorStatus | undefined {
   if (evidence.state === 'completed') return undefined;
-  const content = decodeMcpContentText(evidence.projection.text);
+  const content = decodeMcpContentText(evidence.decodedResult);
   if (!content.ok) return { state: 'error', reason: 'tool call failed; no content' };
   return credentialFailure(content.text)
     ? { state: 'configured', reason: 'bearer missing or rejected: provision the mongoose-mcp credential' }
@@ -96,10 +94,8 @@ export function projectMongooseResult(port: McpPort, evidence: MongooseResult): 
   if (evidence.state !== 'completed') return { ok: false, reason: `tool-error: ${evidence.state}` };
   const payload = readMongoosePayload(port, evidence);
   if (!payload.ok) return { ok: false, reason: payload.reason };
-  const content = decodeMcpContentText(payload.text);
-  if (!content.ok) return { ok: false, reason: content.reason };
-  let data: unknown = content.text;
-  try { data = JSON.parse(content.text); } catch { data = content.text; }
+  let data: unknown = payload.text;
+  try { data = JSON.parse(payload.text); } catch { data = payload.text; }
   return { ok: true, projection: renderMongooseTool(evidence.tool, data) };
 }
 

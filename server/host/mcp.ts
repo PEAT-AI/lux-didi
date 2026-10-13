@@ -2,7 +2,7 @@ import { CONNECTOR_DESCRIPTORS, ConnectorCompositionError } from '../connectors/
 import type { Store } from '../runtime/store.js';
 import { McpRegistry } from '../adapters/mcp/registry.js';
 import { assertToolsOwnerBinding, createToolsOwner, validatePolicy } from '../tools/index.js';
-import type { ConnectionPolicy, ConnectionRestoreResult, LiveAuthority, ToolsOwner } from '../tools/types.js';
+import type { ConnectionPolicy, ConnectionRestoreResult, LiveAuthority, ToolsOwner, ToolsOwnerOptions } from '../tools/types.js';
 import { loadMcpConfiguration, loadMcpEndpoints, type McpEndpointEntry } from '../config/mcp.js';
 import { fields, parseJson, readPrivate } from '../config/files.js';
 import { join } from 'node:path';
@@ -72,6 +72,7 @@ export interface McpRuntimeComposition {
 const connectorEnvelopes: Readonly<Record<string, readonly string[]>> = CONNECTOR_ENVELOPES;
 /** Compose the MCP runtime once at startup: one registry, adapter and owner. Never blocks on a remote. */
 export async function composeMcpRuntime(options: {
+  log?: ToolsOwnerOptions['log'];
   store: Store; ownerId: string; configDir: string;
   lookupAuthority(runId: string, signal: AbortSignal): Promise<LiveAuthority | null>;
   now?: () => number;
@@ -88,7 +89,7 @@ export async function composeMcpRuntime(options: {
       : { id: previous.id, state: 'configured', tools: previous.tools, lastHandshakeAt: previous.lastHandshakeAt, error: status.reason });
   };
   const selection = loadMcpEndpoints({ configDir });
-  const owner = createToolsOwner({ grantMode: selection.state === 'missing' ? 'explicit' : selection.catalog.grantMode, store, ownerId, registry, port, lookupAuthority: options.lookupAuthority, reportToolStatus });
+  const owner = createToolsOwner({ grantMode: selection.state === 'missing' ? 'explicit' : selection.catalog.grantMode, store, ownerId, registry, port, lookupAuthority: options.lookupAuthority, reportToolStatus, ...(options.log ? { log: options.log } : {}) });
   if (selection.state === 'missing') {
     return { registry, port, owner, connectionIds: () => [], status: () => ({ endpoints: [] }), refresh: async () => {}, close: () => port.close() };
   }

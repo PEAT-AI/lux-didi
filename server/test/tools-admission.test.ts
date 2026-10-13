@@ -91,7 +91,7 @@ async function harness(t: TestContext, builder: 'live' | 'chat-shaped', failure?
       await resetReaders();
     }
     writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: endpoints.map(e => ({ id: e.id, connector: e.connector, transport: 'streamable-http', url: `http://127.0.0.1:18765/${e.id}`, account: e.id, resource: e.id, credentialRef: null, enabled: enabled.includes(e.id), allowEgress: true, unknownClass: Object.hasOwn(sourceClasses, e.id) ? sourceClasses[e.id] : 'private' })) }), { mode: 0o600 });
-    const runtime = await composeMcpRuntime(Object.assign({ store, ownerId: store.assistantId, configDir, lookupAuthority }, { log: (event: unknown) => log.event(event) })); runtimes.push(runtime); return runtime;
+    const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority, log: event => log.event(event) }); runtimes.push(runtime); return runtime;
   };
   const accept = async (runtime: Awaited<ReturnType<typeof start>>, allowedClasses: DataClass[] = ['ordinary', 'private']) => {
     let acceptance: RunAcceptance;

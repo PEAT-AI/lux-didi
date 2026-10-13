@@ -202,3 +202,11 @@ reserved for unclassified handler outcomes. These codes survive the tool journal
 and model-visible response. Unknown transport outcomes remain unknown; there is
 no automatic retry of a dispatched call. Diagnostics contain safe error class
 and bounded message-code metadata, never remote response text.
+
+The host supplies its existing `HostLog` through the optional tools-owner log sink.
+MCP composition only forwards this sink; admission and policy synthesis are
+unchanged. A `tool_failure` event retains bounded code, registered tool/connector
+names, a closed error class and a message head of at most 120 characters. The
+message head is the safe code token, never the arbitrary exception message,
+stack, transport payload or knowledge text. Extra fields are dropped at the host
+log boundary. Omitting the sink preserves standalone adapter/owner composition.

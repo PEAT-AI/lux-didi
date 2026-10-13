@@ -23,6 +23,7 @@ import {
 } from './types.js';
 
 const pickupInstruction = 'The user has just picked up. Deliver the pending job result first, briefly, then resume the conversation. If the outcome failed or is unknown, state that truthfully.';
+const deferredPickupMessage = 'The work is still running. Its result will be available when you start another conversation.';
 
 interface ActiveSession {
   inputFinal?: boolean;
@@ -356,7 +357,7 @@ export class LiveSessionOwner {
     return this.#jobs.list().filter(job => job.deferred && (!pendingOnly || !job.delivered)).map(job => ({
       id: job.id, originSessionId: job.originSessionId, state: job.state, createdAt: job.createdAt, delivered: job.delivered,
       markdown: job.result?.accepted.map(result => typeof result.response.text === 'string' ? result.response.text : JSON.stringify(result.response)).join('\n\n')
-        || (job.state === 'in_progress' ? "I'm on it, I'll call you when it's done." : job.state === 'completed' ? 'Completed, delivery pending.' : `Background job ${job.state}.`),
+        || (job.state === 'in_progress' ? deferredPickupMessage : job.state === 'completed' ? 'Completed, delivery pending.' : `Background job ${job.state}.`),
     }));
   }
 
@@ -856,9 +857,9 @@ export class LiveSessionOwner {
         if (!(this.#settled(handle) || generation !== handle.generation)) {
           const status = execution.job.state === 'in_progress' ? 'in progress' : execution.job.state;
           for (const call of event.calls) publish('toolResult', { name: call.name, status: 'error',
-            markdown: status === 'in progress' ? "I'm on it, I'll call you when it's done." : `Background job ${status}.`, sources: [] });
+            markdown: status === 'in progress' ? deferredPickupMessage : `Background job ${status}.`, sources: [] });
           const responses = event.calls.filter(call => handle.pendingCallIds.has(call.id)).map(call => ({ id: call.id, name: call.name,
-            response: { jobId: execution.job.id, status, message: status === 'in progress' ? "I'm on it, I'll call you when it's done." : `Background job ${status}.` } }));
+            response: { jobId: execution.job.id, status, message: status === 'in progress' ? deferredPickupMessage : `Background job ${status}.` } }));
           try { if (responses.length) handle.session.sendToolResponse({ responses }); } catch { /* cancelled provider batch */ }
           for (const call of event.calls) handle.pendingCallIds.delete(call.id);
           handle.thinking = false;

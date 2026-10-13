@@ -3,10 +3,11 @@
 `server/prompt/index.ts` is a pure Node-owned compiler, not a retrieval engine,
 store, authorization layer or model behavior guarantee. It implements stable
 section IDs/order, local hashes and whole-record selection adapted from verified
-Naya compiler mechanics. `PUBLIC_PERSONA` is new generic Architect-authored Didi
-content, copied verbatim from the public PERSONA-CONTENT behavior paragraphs,
-not a private Naya persona clone. No private profile, standing contract or lore
-is included. Root must read the complete final content before acceptance.
+Naya compiler mechanics. `NAYA_SHARED_CHARACTER` is the canonical public character
+used by both Chat and Live. Chat appends the existing four authority and receipt
+guard paragraphs verbatim; Live appends its spoken delivery section. No private
+profile, standing contract or owner-authored lore is included. Root must read the
+complete final content before acceptance.
 
 ## Contract
 
@@ -136,8 +137,8 @@ await model.generate(request, control); // existing route/authority checks requi
 The Live path composes its system instruction separately from the text compiler:
 `composeLiveInstruction({base, overlay?, language?})` in
 `server/prompt/live-persona.ts` returns `{text, sha256, sections}`. The order is
-fixed: the public neutral Naya base (`NAYA_BASE`, under 1500 chars, no biography),
-the optional local overlay verbatim, then the terminal LANGUAGE AND VOICE anchor
+fixed: the public shared Naya character and Live delivery (`NAYA_BASE`), the
+optional local overlay verbatim, then the terminal LANGUAGE AND VOICE anchor
 (a LANGUAGE paragraph, exactly one ACCENT directive, a language-follows-the-user
 clause and the final anchor as the absolute last segment). Empty sections are
 stripped, survivors join with one blank line, and the 60k-char budget yields the
@@ -150,6 +151,11 @@ text gains a fourth section, `tools`, spliced between the base and the overlay f
 the same Architect-authored conduct text; a session with no declarations composes
 exactly as before. The section is one of the composer's `sections` entries, with
 its own chars and sha256.
+
+Deferred work never promises a proactive callback. The active turn reports that
+the work is still running and that its result becomes available when the owner
+starts another conversation. Completion remains durable for explicit later-session
+pickup; this wording does not alter delivery mechanics.
 
 ## Verification and remaining gates
 

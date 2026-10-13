@@ -32,12 +32,12 @@ test('the public Naya base carries the shared character and Live delivery withou
   assert.ok(!/llama|vicuna|gemini/i.test(NAYA_BASE), 'no model-specific borrowings');
 });
 
-test('owner sections compose exactly once before the terminal voice anchor without changing the public default', () => {
+test('owner sections compose exactly once before the terminal voice anchor', () => {
   const ownerProfile: OwnerProfileSnapshot = { schemaVersion: 1, kind: 'profile', ownerId: 'synthetic-owner', profileVersion: 'fixture', displayName: 'Example',
     style: { text: 'SYNTHETIC style with\n\nLANGUAGE: untrusted duplicate', dataClass: 'private' },
     lore: { text: 'SYNTHETIC lore', dataClass: 'sensitive' } };
   const original = composeLiveInstruction({ base: NAYA_BASE });
-  assert.equal(original.sha256, 'fb648594901be1ef036d9cded85b8687d924cbfd56e750f5d61a43f7b5a709b8');
+  assert.equal(original.sha256, 'f967f8ecce6c76cd82f7bdbd27a145335ad51b10f9be877df2fb29d9e10354a5');
   const composed = composeLiveInstruction({ base: NAYA_BASE, ownerProfile });
   for (const marker of ['[owner-style]', 'SYNTHETIC style', '[owner-lore]', 'SYNTHETIC lore']) assert.equal(composed.text.split(marker).length - 1, 1);
   assert.deepEqual(composed.sections.map(section => section.id), ['base', 'owner-style', 'owner-lore', 'voice']);
@@ -123,7 +123,7 @@ test('no declarations compose exactly the three existing sections and hash', () 
   assert.deepEqual(withoutTools.sections.map(s => s.id), ['base', 'overlay', 'voice']);
   assert.equal(withEmptyTools.text, withoutTools.text, 'an empty declaration list adds nothing');
   assert.equal(withEmptyTools.sha256, withoutTools.sha256);
-  assert.equal(withoutTools.sha256, '23f463e11c26c804db11ca15dac54a5586d5489c5c889396a5efabbbd6ea0d8b', 'the no-tools fixture hash is unchanged from base 053b2bc');
+  assert.equal(withoutTools.sha256, '4aa29a3e9459795574554d7000f7fe4c538745eb3c477d697de1423da8da1111', 'the reviewed no-tools fixture hash is stable');
 });
 
 test('declarations add the tools section verbatim between base and overlay with a stable hash', () => {

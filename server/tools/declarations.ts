@@ -81,7 +81,8 @@ export async function runToolCalls(owner: { journal: ToolCallJournal; resultGate
         }
       } catch (error) {
         record.status = dispatched ? (tool?.effect === 'write' ? 'unknown' : 'failed') : 'refused';
-        record.reason = dispatched ? 'handler_interrupted_or_failed' : 'authority_or_validation_failed';
+        const code = error instanceof Error && 'code' in error && typeof error.code === 'string' && ['mcp_transport_error', 'mcp_result_invalid', 'connector_error', 'handler_outcome'].includes(error.code) ? error.code : 'handler_outcome';
+        record.reason = dispatched ? (error instanceof Interrupted ? 'handler_interrupted_or_failed' : code) : 'authority_or_validation_failed';
         if (error instanceof Interrupted) interrupted = error;
       }
       tools.push(record);

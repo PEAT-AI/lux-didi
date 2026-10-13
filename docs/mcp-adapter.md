@@ -117,9 +117,10 @@ its code. Authorized full payload retrieval is separate:
 
 - `payload.state=available` carries an opaque handle, original byte length, SHA-256,
   explicit epoch-ms expiry and encoding `http-response-entity`.
-- Original bytes are the exact retained decoded HTTP response entity, including the
-  original JSON-RPC envelope or SSE framing, **not reserialized SDK output** and not
-  compressed network packets. Server-side test capture independently checks equality.
+- JSON response bytes retain the exact HTTP entity and JSON-RPC envelope, not
+  reserialized SDK output or compressed network packets. Server-side test capture
+  independently checks equality. SSE response bytes instead contain the selected,
+  decoded JSON-RPC response; framing is not included in its hash or slices.
 - `readSlice({handle, endpointId, generation, account, resource, offset, length})`
   returns bounded bytes, or `refused`, `expired`, `unavailable`. The original endpoint,
   exact URL, grant/digest/tool, generation, account and resource are revalidated on

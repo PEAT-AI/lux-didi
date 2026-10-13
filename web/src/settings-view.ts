@@ -113,9 +113,9 @@ export function settingsMarkup(input: SettingsInput): string {
 <p class="muted">Read-only summary of what this Didi is running with. Values come from the running service; this page cannot change them.</p>
 <dl class="settings-facts">${liveRows(input.summary, input.summaryUnavailable === true)}${serviceRows(input.status, input.statusUnavailable === true, summaryPersona(input))}
 <dt>Service mode</dt><dd>${input.statusUnavailable === true ? unavailable() : escapeHtml(text(record(input.status)?.serviceMode, 40) ?? 'loopback')}</dd></dl>
-${connectorsSection(input.connections, input.connectionsUnavailable === true)}
-<h3>Where these settings live</h3>
+<section class="settings-section">${connectorsSection(input.connections, input.connectionsUnavailable === true)}</section>
+<section class="settings-section"><h3>Where these settings live</h3>
 <dl class="settings-files">${FILE_ROWS.map(([what, file]) => `<dt>${escapeHtml(what)}</dt><dd><code>${escapeHtml(file)}</code></dd>`).join('')}</dl>
-<p class="settings-restart">Changes to these files need a restart of Lux Didi. This page is read-only.</p>
+<p class="settings-restart">Changes to these files need a restart of Lux Didi. This page is read-only.</p></section>
 </section>`;
 }

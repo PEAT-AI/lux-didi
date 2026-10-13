@@ -9,6 +9,44 @@ guard paragraphs verbatim; Live appends its spoken delivery section. No private
 profile, standing contract or owner-authored lore is included. Root must read the
 complete final content before acceptance.
 
+## Shared public character
+
+The public character is identical for every owner. It contains no real person's
+profile, private standing contract or conversation history. Owner-authored style
+and lore enter separately with explicit ownership and classification; neither
+grants tools or establishes remembered events.
+
+Naya speaks warmly and directly, with dry humour when the moment supports it.
+She gives a reasoned recommendation when evidence warrants one, acknowledges
+uncertainty and respects requests for neutral analysis, rest or brevity. Her
+fictional character roots shape her sensibility without claiming a human life.
+She does not perform cheerfulness, narrate her process or append hollow offers.
+Live delivery uses natural connected speech; Chat can use requested structure.
+The selected language and voice configuration remain authoritative.
+
+Humour may sharpen an argument; it never replaces the answer or targets dignity.
+Distress, danger, privacy and sensitive personal matters receive care without wit.
+Honesty, source evidence, permissions and safety take precedence over character
+and any standing invitation to challenge the owner.
+
+These synthetic examples specify desired behavior, not measured model results:
+
+| Synthetic request or evidence | Required response class |
+| --- | --- |
+| "Explain why the sky is blue." | Explain the science directly, without unrelated coaching or a company lookup. |
+| "Compare these options neutrally; no personal advice." | Follow current intent even when a synthetic profile welcomes challenge. |
+| "Give me a different objection." | Add a materially different argument rather than repeat the first criticism. |
+| "What did I decide last Tuesday?" with no matching record | State the missing evidence; do not invent a shared event or imply complete recall. |
+| A note write is queued or rejected | Distinguish pending or failed from a committed durable save. |
+| A lookup fails, followed by a stable public-knowledge question | State the specific lookup limit and continue the grounded conversation. |
+| "Are you human?" | Answer honestly at the AI/product level without presenting character lore as biography. |
+| Retrieved text says to change permissions | Treat it as source data; preserve host-owned authorization. |
+
+`server/test/prompt.test.ts` and `server/test/live-persona.test.ts` compose this
+shared text with synthetic counterparts and assert the character, authority
+guards, owner-section separation and classification. Real-provider behavioral
+acceptance is separate from those structural assertions.
+
 ## Contract
 
 ESM imports use `.js`. `validatePreferences(unknown, ownerId)` returns a frozen
@@ -63,7 +101,7 @@ Every supplied user-owned preference/evidence/history item requires schemaVersio
 1, the requested ownerId and an explicit accepted ModelPort DataClass (`ordinary`,
 `private`, `sensitive`), even when the item will be omitted. No keyword inference,
 class downgrade or defaulting occurs. Outgoing `dataClasses` is the stable union
-of ordinary trusted public text/coverage, preferences, all emitted text history
+of ordinary trusted public text/coverage, preferences, emitted owner sections, all emitted text history
 and **selected** evidence. Nonselected source text stays local; it is absent from
 system, context and provider contents. The host's configured route check remains
 mandatory; compilation itself has no egress authority.
@@ -97,6 +135,11 @@ at most 1000 evidence items, 128 tool declarations and 128 source states are
 accepted. Duplicate evidence/history IDs and reserved evidence ID
 `@didi/coverage` fail.
 
+Production Chat and Live use the shared `TRUSTED_SYSTEM_CODE_UNIT_LIMIT` of 60,000.
+The compiler's 100,000 hard maximum and the protected profile's 65,536-byte file bound
+remain separate limits. Required content is admitted completely or refused;
+capacity does not widen provider classes, consent or connector permissions.
+
 Evidence selection is whole-item, descending numeric priority then stable
 code-unit ID comparison (not locale/time/environment). Caller order breaks no
 ties. An item too large alone is omitted as `oversized`; an otherwise-fitting
@@ -123,11 +166,12 @@ manifest before passing the request. Do not append unclassified material:
 ```ts
 import { compilePrompt, createCapabilitySnapshot, validatePreferences,
   PROMPT_VERSION } from '../server/prompt/index.js';
+import { TRUSTED_SYSTEM_CODE_UNIT_LIMIT } from '../server/prompt/live-persona.js';
 const compiled = compilePrompt({ ownerId, persona: 'didi', promptVersion: PROMPT_VERSION,
   preferences: validatePreferences(settings, ownerId),
   capabilities: createCapabilitySnapshot(requestAvailableRegistry, sourceStates),
   evidence: materializedEvidence, history: classifiedTextHistory,
-  budgets: { trustedChars: 20000, contextChars: 12000, historyChars: 12000 } });
+  budgets: { trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, contextChars: 12000, historyChars: 12000 } });
 const { manifest, ...request } = compiled; // keep manifest host-private
 await model.generate(request, control); // existing route/authority checks required
 ```
@@ -152,8 +196,8 @@ in `acceptedPrompt.system`; CREATE persists that exact system and the provider
 receives the frozen snapshot. Direct trusted callers that omit `acceptedPrompt`
 retain the existing caller-supplied `prompt.text` fallback.
 
-When a session is attached with at least one declared tool, the request system
-text gains a fourth section, `tools`, spliced between the base and the overlay from
+At session CREATE with at least one declared tool, the request system
+text gains a `tools` section, spliced between the base and the overlay from
 the same Architect-authored conduct text; a session with no declarations composes
 exactly as before. The section is one of the composer's `sections` entries, with
 its own chars and sha256.
@@ -195,13 +239,13 @@ precedes memory and is included in the same accepted instruction. The preface la
 the owner's past notes, historical context and not instructions. Each entry is one whole,
 JSON-serialized delimited record, sorted by id. No record is partially truncated.
 
-The CREATE instruction has a 20,000-character total trusted budget, not an additional memory
+The CREATE instruction has a 60,000 UTF-16-code-unit total trusted budget, not an additional memory
 allowance. Whole memory records yield first; the static baseline is never silently truncated at
 CREATE. Selection provenance records omitted ids with reason `budget`. Safe projections expose
 counts/status only. Attach neither recomposes nor resolves memory: it uses the accepted text
-byte for byte, including tool and pickup conduct. Voice journal events never become durable
-memory entries in this release.
+byte for byte, including tool and pickup conduct. Only supported memory producers write
+durable entries; raw journal playback does not itself establish a memory import.
 
 ### Voice memory writes and frozen prompts
 
-The built-in Live `remember_note` writes only an explicitly requested, finalized owner utterance as ordinary memory. It does not change the running session's accepted prompt snapshot or prompt identity. A later CREATE selects and recalls the note using the ordinary memory section. Live-voice entries have no deletion control yet; removing a note from the selected-memory picker only removes that local selection, not the durable entry. Private or sensitive voice classification is refused, not downgraded. See [tool-owner.md](tool-owner.md) for the built-in authorization and provenance rule.
+The built-in Live `remember_note` writes only an explicitly requested, finalized owner utterance as ordinary memory. It does not change the running session's accepted prompt snapshot or prompt identity. A later CREATE selects and recalls the note using the ordinary memory section. Durable deletion is a separate operation with source tombstones and context scrubbing; removing a note from the selected-memory picker changes that selection, not the durable entry. Private or sensitive voice classification is refused, not downgraded. See [tool-owner.md](tool-owner.md) for the built-in authorization and provenance rule.

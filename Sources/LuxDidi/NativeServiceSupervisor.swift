@@ -4,6 +4,20 @@ import AppKit
 import Darwin
 import Security
 
+// Probe failures retain a status-only cause while the service boundary still reports invalidNode.
+enum NativeProbeFailure: String, Error {
+    case timeout, eofBeforeFrame, readFailed, malformedFraming, nonJSON, invalidFields, other
+    static func classify(_ error: Error, readErrno: Int32) -> Self {
+        if let cause = error as? Self { return cause }
+        switch error as? NativeServiceError {
+        case .timeout: return .timeout
+        case .exited: return readErrno == 0 ? .eofBeforeFrame : .readFailed
+        case .invalidReady: return .malformedFraming
+        default: return .other
+        }
+    }
+}
+
 // One process handle and private pipes. All signals target this live owned handle only.
 @MainActor private final class OwnedServiceChild {
     let process = Process()
@@ -12,6 +26,10 @@ import Security
     private var reader: Task<Void, Never>?
     private var frame: Data?
     private var failure: Error?
+    // First-frame transport metadata only, never the bytes or inherited environment.
+    private(set) var firstFrameBytes: Int?
+    private(set) var firstFrameReadStatus = "pending"
+    private(set) var firstFrameReadErrno: Int32 = 0
     private var frameWaiter: CheckedContinuation<Data, Error>?
     private var exitWaiters: [CheckedContinuation<Void, Never>] = []
     private var stopping = false
@@ -39,37 +57,43 @@ import Security
             defer { try? stream.close() }
             var buffer = Data()
             var delivered = false
+            var terminalReadErrno: Int32 = 0
             while !Task.isCancelled {
                 var bytes = [UInt8](repeating: 0, count: 1025)
                 let count = bytes.withUnsafeMutableBytes { Darwin.read(descriptor, $0.baseAddress, $0.count) }
                 if count < 0 && errno == EINTR { continue }
-                if count <= 0 { break }
-                if delivered { await self?.invalidOutput(); return }
+                if count <= 0 { terminalReadErrno = count < 0 ? errno : 0; break }
+                if delivered { await self?.invalidOutput(bytes: buffer.count + count); return }
                 buffer.append(contentsOf: bytes.prefix(count))
-                guard buffer.count <= 1024 else { await self?.invalidOutput(); return }
+                guard buffer.count <= 1024 else { await self?.invalidOutput(bytes: buffer.count); return }
                 if let newline = buffer.firstIndex(of: 10) {
-                    guard newline == buffer.index(before: buffer.endIndex) else { await self?.invalidOutput(); return }
+                    guard newline == buffer.index(before: buffer.endIndex) else { await self?.invalidOutput(bytes: buffer.count); return }
                     delivered = true
                     await self?.received(Data(buffer.dropLast()))
                 }
             }
-            await self?.endedOutput()
+            await self?.endedOutput(bytes: buffer.count, readErrno: terminalReadErrno)
         }
     }
     func writeStart(_ data: Data) throws { try input.fileHandleForWriting.write(contentsOf: data) }
     func closeInput() { try? input.fileHandleForWriting.close() }
     private func received(_ data: Data) {
         guard failure == nil else { return }
+        firstFrameBytes = data.count; firstFrameReadStatus = "frame"
         frame = data
         frameWaiter?.resume(returning: data); frameWaiter = nil
     }
-    private func invalidOutput() {
+    private func invalidOutput(bytes: Int? = nil) {
+        if let bytes { firstFrameBytes = bytes }
+        firstFrameReadStatus = "invalid-framing"
         failure = NativeServiceError.invalidReady
         frameWaiter?.resume(throwing: NativeServiceError.invalidReady); frameWaiter = nil
         if !stopping { onInvalidOutput?() }
     }
-    private func endedOutput() {
+    private func endedOutput(bytes: Int, readErrno: Int32) {
         if frame == nil {
+            firstFrameBytes = bytes; firstFrameReadErrno = readErrno
+            firstFrameReadStatus = readErrno == 0 ? "eof" : "read-failed"
             failure = NativeServiceError.exited
             frameWaiter?.resume(throwing: NativeServiceError.exited); frameWaiter = nil
         } else if isRunning && !stopping { invalidOutput() }
@@ -85,6 +109,7 @@ import Security
         if let frame { return frame }
         let deadline = Task { [weak self] in
             do { try await Task.sleep(nanoseconds: timeout) } catch { return }
+            self?.firstFrameReadStatus = "timeout"
             self?.failure = NativeServiceError.timeout
             self?.frameWaiter?.resume(throwing: NativeServiceError.timeout); self?.frameWaiter = nil
         }
@@ -211,6 +236,11 @@ struct OwnedServiceConnection {
     // content, no credentials and no path outside the owned fixture are recorded.
     static var diagnosticSink: (([String: Any]) -> Void)?
 #endif
+    static func validateProbeFrame(_ data: Data, major: Int) throws {
+        guard let object = try? JSONSerialization.jsonObject(with: data) else { throw NativeProbeFailure.nonJSON }
+        guard let value = object as? [String: Any],
+              value["major"] as? Int == major, value["sqlite"] as? Bool == true else { throw NativeProbeFailure.invalidFields }
+    }
     private func probeNode() async throws {
         let probe = OwnedServiceChild()
 #if COMPANION_TEST
@@ -230,12 +260,18 @@ struct OwnedServiceConnection {
                 "sqliteTrue": (parsed?["sqlite"] as? Bool) == true])
             stage = "probe-guard"
 #endif
-            guard let value = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  value["major"] as? Int == runtime.nodeMajor, value["sqlite"] as? Bool == true else { throw NativeServiceError.invalidNode }
+            try Self.validateProbeFrame(data, major: runtime.nodeMajor)
             await probe.stop()
         } catch {
 #if COMPANION_TEST
-            Self.diagnosticSink?(["stage": "probe-failed", "failedAt": stage])
+            Self.diagnosticSink?(["stage": "probe-failed", "failedAt": stage,
+                "cause": NativeProbeFailure.classify(error, readErrno: probe.firstFrameReadErrno).rawValue,
+                "readStatus": probe.firstFrameReadStatus, "readErrno": Int(probe.firstFrameReadErrno),
+                "firstFrameBytes": probe.firstFrameBytes as Any? ?? NSNull(),
+                "probeRunning": probe.isRunning,
+                "probeExitStatus": stage == "probe-launch" || probe.isRunning ? NSNull() : probe.process.terminationStatus as Any,
+                "probeExitReason": stage == "probe-launch" || probe.isRunning ? NSNull() : probe.process.terminationReason.rawValue as Any,
+                "errorCode": (error as NSError).code])
 #endif
             await probe.stop(); throw NativeServiceError.invalidNode
         }

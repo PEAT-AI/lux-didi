@@ -36,6 +36,7 @@ export interface GoogleConfig {
 
 /** Opaque local evidence, mirroring the Lux knowledge connector shape. */
 export interface GoogleEvidence {
+  decodedResult?: unknown;
   state: 'completed' | 'tool-error' | 'protocol-error';
   tool: GoogleTool;
   source: ResultScope;
@@ -146,6 +147,7 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
       source: { ...result.source },
       observedAt: result.freshness.receivedAt,
       coverage: structuredClone(result.coverage),
+      decodedResult: structuredClone(result.decodedResult),
       projection: structuredClone(result.projection),
       response: structuredClone(result.payload),
     };

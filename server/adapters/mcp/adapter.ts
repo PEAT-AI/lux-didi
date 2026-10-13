@@ -13,7 +13,28 @@ export interface McpAdapterOptions {
   assertCredentialCurrent?: (reference: string) => void;
 }
 class PolicyError extends Error { constructor(readonly reason: string) { super(reason); } }
-interface Operation { scope: ResultScope; signal: AbortSignal; dispatched: boolean; bytes?: Uint8Array; requestId?: string | number; explicitErrorCode?: number }
+function decodeSseResponse(bytes: Uint8Array, requestId: unknown): Uint8Array {
+  try {
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes).replace(/^\uFEFF/, '');
+    for (const frame of text.split(/\r\n\r\n|\n\n|\r\r/)) {
+      const data: string[] = [];
+      for (const line of frame.split(/\r\n|\n|\r/)) {
+        if (line === 'data') data.push('');
+        else if (line.startsWith('data:')) data.push(line.slice(5).replace(/^ /, ''));
+      }
+      if (!data.length) continue;
+      const packet: unknown = JSON.parse(data.join('\n'));
+      if (packet !== null && typeof packet === 'object' && !Array.isArray(packet)) {
+        const record = packet as Record<string, unknown>;
+        if (record['jsonrpc'] === '2.0' && record['id'] === requestId && ('result' in record || 'error' in record)) {
+          return new TextEncoder().encode(JSON.stringify(packet));
+        }
+      }
+    }
+  } catch { throw new PolicyError('mcp_transport_error'); }
+  throw new PolicyError('mcp_transport_error');
+}
+interface Operation { scope: ResultScope; signal: AbortSignal; dispatched: boolean; bytes?: Uint8Array; requestId?: string | number; explicitErrorCode?: number; explicitError?: unknown; receivedResult?: boolean }
 interface Session { client: Client; config: EndpointConfig; operation?: Operation }
 const allowedHeaders = new Set(['accept', 'content-type', 'mcp-session-id', 'mcp-protocol-version', 'last-event-id', 'mcp-method', 'mcp-name']);
 
@@ -74,7 +95,7 @@ function guardedFetch(session: Session, options: McpAdapterOptions, budgets: Mcp
       });
       return new Response(stream, { status: response.status, statusText: response.statusText, headers: response.headers });
     }
-    // POST entity capture is bounded, exact, and passed unchanged to the SDK parser.
+    // Bound the entity before decoding SSE; JSON entities retain their exact bytes.
     if (request.method !== 'POST' || !response.body) return response;
     const reader = response.body.getReader(); const chunks: Uint8Array[] = []; let length = 0;
     try {
@@ -88,8 +109,12 @@ function guardedFetch(session: Session, options: McpAdapterOptions, budgets: Mcp
     } catch (error) { void reader.cancel().catch(() => {}); throw error; }
     const bytes = new Uint8Array(length); let offset = 0;
     for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
+    const isSse = response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase() === 'text/event-stream';
+    const decoded = isSse ? decodeSseResponse(bytes, packet?.id) : bytes;
     if (operation) operation.bytes = bytes;
-    return new Response(bytes, { status: response.status, statusText: response.statusText, headers: response.headers });
+    const responseHeaders = new Headers(response.headers);
+    if (isSse) { responseHeaders.set('content-type', 'application/json'); responseHeaders.delete('content-length'); }
+    return new Response(new Uint8Array(decoded), { status: response.status, statusText: response.statusText, headers: responseHeaders });
   };
 }
 function bounded<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -144,18 +169,19 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
     const onmessage = transport.onmessage;
     transport.onmessage = message => {
       const operation = session.operation;
-      if (operation && isJSONRPCErrorResponse(message) && message.id === operation.requestId) operation.explicitErrorCode = message.error.code;
+      if (operation && isJSONRPCErrorResponse(message) && message.id === operation.requestId) { operation.explicitErrorCode = message.error.code; operation.explicitError = structuredClone(message.error); }
+      if (operation && 'id' in message && message.id === operation.requestId && 'result' in message) operation.receivedResult = true;
       onmessage?.(message);
     };
     if (!client.getServerCapabilities()?.tools) throw new PolicyError('tools-unavailable');
     return session;
   }
-  function completed(scope: ResultScope, bytes: Uint8Array, result: unknown, state: CompletedResult['state'], protocolErrorCode?: number): CompletedResult {
+  function completed(scope: ResultScope, bytes: Uint8Array, result: unknown, state: CompletedResult['state'], protocolErrorCode?: number, decodedResult: unknown = result): CompletedResult {
     const full = JSON.stringify(result); const text = full.slice(0, budgets.projectionChars);
     let payload: StoredPayload;
     try { payload = options.store.put(scope, bytes); } catch { payload = { state: 'unavailable', reason: 'store-unavailable' }; }
     return {
-      state, ...(protocolErrorCode === undefined ? {} : { protocolErrorCode }), source: scope,
+      state, decodedResult: structuredClone(decodedResult), ...(protocolErrorCode === undefined ? {} : { protocolErrorCode }), source: scope,
       coverage: { completeCorpus: false, basis: 'single-tool-result', remoteSideEffects: 'unverified' },
       freshness: { receivedAt: Date.now(), sourceVersion: 'unknown' },
       projection: { text, omitted: text.length !== full.length, originalCharacters: full.length, omittedCharacters: full.length - text.length }, payload,
@@ -221,13 +247,13 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
         return completed(scope, operation.bytes, result, result.isError ? 'tool-error' : 'completed');
       } catch (error) {
         if (operation.dispatched) {
-          if (error instanceof ProtocolError && operation.explicitErrorCode !== undefined && operation.bytes && options.registry.authorizesScope(scope)) return completed(scope, operation.bytes, { error: { code: operation.explicitErrorCode } }, 'protocol-error', operation.explicitErrorCode);
+          if (error instanceof ProtocolError && operation.explicitErrorCode !== undefined && operation.bytes && options.registry.authorizesScope(scope)) return completed(scope, operation.bytes, { error: { code: operation.explicitErrorCode } }, 'protocol-error', operation.explicitErrorCode, operation.explicitError);
           // HTTP SDK cancellation aborts the request, rather than notifying. Use its
           // supported notification API with the SDK-owned id; never wait indefinitely.
           if (localSignal.aborted && operation.requestId !== undefined) await bounded(session.client.notification({ method: 'notifications/cancelled', params: { requestId: operation.requestId, reason: 'local cancellation' } }), AbortSignal.timeout(200)).catch(() => {});
           // No call retry or reconnect here. A later explicit discovery can reconnect only.
           suspend(request.endpointId); await retire(request.endpointId);
-          return { state: 'unknown', reason: error instanceof PolicyError ? error.reason : 'protocol-or-transport-outcome-unknown' };
+          return { state: 'unknown', reason: error instanceof PolicyError ? error.reason : operation.receivedResult ? 'mcp_result_invalid' : 'protocol-or-transport-outcome-unknown' };
         }
         return { state: 'refused', reason: error instanceof PolicyError ? error.reason : 'pre-dispatch-refused' };
       } finally { delete session.operation; busy.delete(request.endpointId); }

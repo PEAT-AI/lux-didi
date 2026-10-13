@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -11,6 +11,7 @@ import { liveMigrations, validateLiveProfile } from '../live/index.js';
 import { toolsMigrations } from '../tools/schema.js';
 import { composeMcpRuntime } from '../host/mcp.js';
 import { composeLive } from '../host/live.js';
+import { HostLog, safeEvent } from '../host/log.js';
 import { sha256 } from '../tools/canonical.js';
 import { runTools } from '../adapters/model/loop.js';
 import type { DataClass, HostContext, ModelPort, ModelRequest, ModelResult, ToolCallIntent } from '../adapters/model/types.js';
@@ -31,9 +32,10 @@ function result(name?: string, args: Record<string, unknown> = {}): ModelResult 
   return { status: 'complete', text: name ? '' : 'done', providerContent: { role: 'model', parts: name ? [{ functionCall: { name, args, id: 'call' } }] : [{ text: 'done' }] }, reason: 'complete', prompt: { version: '1', hash: 'synthetic', omittedContextIds: [] }, timings: { kind: 'synthetic', totalMs: 0, firstTextMs: null } };
 }
 
-async function harness(t: TestContext, builder: 'live' | 'chat-shaped') {
+async function harness(t: TestContext, builder: 'live' | 'chat-shaped', failure?: 'transport' | 'result') {
   const dir = mkdtempSync(join(tmpdir(), 'didi-admission-'));
   const configDir = join(dir, 'config'); mkdirSync(configDir, { mode: 0o700 });
+  const log = new HostLog(dir);
   let store = new Store(join(dir, 'data'), [...domainMigrations, ...liveMigrations, ...toolsMigrations]);
   const sources: ((runId: string, signal: AbortSignal) => Promise<LiveAuthority | null>)[] = [];
   const chatAuthorities = new Map<string, LiveAuthority>();
@@ -48,13 +50,13 @@ async function harness(t: TestContext, builder: 'live' | 'chat-shaped') {
     readers.clear(); sdks.clear();
     for (const entry of endpoints) {
     const sdk = new Server({ name: entry.id, version: '1' }, { capabilities: { tools: {} } });
-    const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
+    const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: entry.id !== 'lux-knowledge' });
     sdk.setRequestHandler('tools/list', () => ({ tools: visible.has(entry.id) ? [{ name: entry.tool, inputSchema: entry.id === 'lux-knowledge' ? { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, include_sensitive: { type: 'boolean' } }, required: ['query', 'limit', 'include_sensitive'], additionalProperties: false } : entry.connector === 'google' ? { type: 'object', properties: { maxResults: { type: 'integer' }, pageToken: { type: 'string' }, q: { type: 'string' } }, additionalProperties: false } : { type: 'object', properties: {}, additionalProperties: false } }] : [] }) as never);
     sdk.setRequestHandler('tools/call', async () => {
       counts.set(entry.id, counts.get(entry.id)! + 1);
       await dispatch?.(entry.id);
-      const text = entry.connector === 'google' ? JSON.stringify({ family: entry.id === 'gmail' ? 'gmail' : 'calendar', tool: entry.tool, method: entry.tool, account: { configured: 'configured', provider: null }, data: entry.id === 'gmail' ? { messages: [{ id: 'synthetic', headers: { Subject: 'Synthetic mail', From: 'Synthetic sender <synthetic@example.invalid>', Date: 'Synthetic date' } }] } : { calendars: [{ id: 'synthetic', summary: 'Synthetic calendar' }] } }) : `synthetic ${entry.id} read`;
-      return { content: [{ type: 'text', text }] } as never;
+      const text = entry.connector === 'google' ? JSON.stringify({ family: entry.id === 'gmail' ? 'gmail' : 'calendar', tool: entry.tool, method: entry.tool, account: { configured: 'configured', provider: null }, data: entry.id === 'gmail' ? { messages: [{ id: 'synthetic', headers: { Subject: 'Synthetic mail', From: 'Synthetic sender <synthetic@example.invalid>', Date: 'Synthetic date' } }] } : { calendars: [{ id: 'synthetic', summary: 'Synthetic calendar' }] } }) : entry.id === 'lux-knowledge' ? 'synthetic lux-knowledge read; knowledge results: 1\n**#1** Synthetic result' : `synthetic ${entry.id} read`;
+      return { content: [{ type: 'text', text }], ...(entry.id === 'lux-knowledge' ? { structuredContent: { unclassified_marker: 'synthetic-private-unclassified' }, isError: false } : {}) } as never;
     });
     await sdk.connect(transport); readers.set(entry.id, transport); sdks.set(entry.id, sdk);
     }
@@ -65,6 +67,10 @@ async function harness(t: TestContext, builder: 'live' | 'chat-shaped') {
     const request = new Request(input, init);
     const id = new URL(request.url).pathname.slice(1);
     const transport = readers.get(id); assert(transport, request.url);
+    if (failure && id === 'lux-knowledge' && request.method === 'POST') {
+      const packet = await request.clone().json() as { method?: string; id?: unknown };
+      if (packet.method === 'tools/call') return new Response(failure === 'transport' ? ': keepalive\n\n' : `data: ${JSON.stringify({ jsonrpc: '2.0', id: packet.id, result: { content: 'invalid' } })}\n\n`, { headers: { 'content-type': 'text/event-stream' } });
+    }
     return request.method === 'GET' ? new Response(null, { status: 405 }) : transport.handleRequest(request);
   });
   const runtimes: Awaited<ReturnType<typeof composeMcpRuntime>>[] = [];
@@ -85,7 +91,7 @@ async function harness(t: TestContext, builder: 'live' | 'chat-shaped') {
       await resetReaders();
     }
     writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: endpoints.map(e => ({ id: e.id, connector: e.connector, transport: 'streamable-http', url: `http://127.0.0.1:18765/${e.id}`, account: e.id, resource: e.id, credentialRef: null, enabled: enabled.includes(e.id), allowEgress: true, unknownClass: Object.hasOwn(sourceClasses, e.id) ? sourceClasses[e.id] : 'private' })) }), { mode: 0o600 });
-    const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority }); runtimes.push(runtime); return runtime;
+    const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority, log: event => log.event(event) }); runtimes.push(runtime); return runtime;
   };
   const accept = async (runtime: Awaited<ReturnType<typeof start>>, allowedClasses: DataClass[] = ['ordinary', 'private']) => {
     let acceptance: RunAcceptance;
@@ -113,7 +119,7 @@ async function harness(t: TestContext, builder: 'live' | 'chat-shaped') {
     const outcome = await runTools({ model, request: { system: 'synthetic', promptVersion: '1', contents: [{ role: 'user', parts: [{ text: 'read' }] }], dataClasses: ['ordinary'], context: { items: [], selectedIds: [], maxChars: 100 } }, registry: runtime.owner.definitions(host.runId), host, authority: { isCurrent: async () => (await lookupAuthority(host.runId, signal)) !== null }, maxSteps: 3, control: { signal, deadlineMs: Date.now() + 5000 }, journal: runtime.owner.journal, resultGate: runtime.owner.resultGate });
     return { outcome, seen };
   };
-  return { get store() { return store; }, start, accept, read, counts, revealAll: () => { visible = new Set(all); }, setDispatch: (hook: typeof dispatch) => { dispatch = hook; } };
+  return { logRows: () => readFileSync(join(dir, 'logs', 'host.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line) as Record<string, unknown>), get store() { return store; }, start, accept, read, counts, revealAll: () => { visible = new Set(all); }, setDispatch: (hook: typeof dispatch) => { dispatch = hook; } };
 }
 
 for (const builder of ['live', 'chat-shaped'] as const) test(`connection-scoped admission through host composition (${builder}, T8-FIX-R1)`, async t => {
@@ -182,4 +188,56 @@ for (const builder of ['live', 'chat-shaped'] as const) test(`connection-scoped 
   const withheld = h.store.transaction(tx => tx.all('SELECT state,result_json FROM tool_calls WHERE run_id=?', [inFlightRun.host.runId]));
   assert.equal(withheld.length, 1); assert.notEqual(withheld[0]!.state, 'completed');
 
+});
+
+for (const failure of ['transport', 'result'] as const) test(`MCP ${failure} failure retains a bounded code through the real owner`, async t => {
+  const h = await harness(t, 'live', failure);
+  const runtime = await h.start(); const run = await h.accept(runtime);
+  const observed = await h.read(runtime, run.host, ['lux-knowledge']);
+  const expected = failure === 'transport' ? 'mcp_transport_error' : 'mcp_result_invalid';
+  const rows = h.store.transaction(tx => tx.all('SELECT state, result_json FROM tool_calls WHERE run_id=?', [run.host.runId]));
+  assert.equal(rows.length, 1);
+  const result = JSON.parse(String(rows[0]!.result_json));
+  assert.equal(result.response.reason, expected);
+  assert.equal(rows[0]!.state, 'unknown', 'SDK-rejected result preserves the existing unknown-outcome contract');
+  assert.equal(observed.outcome.reason, expected);
+  const logs = h.logRows(); assert.equal(logs.length, 1);
+  assert.equal(logs[0]!['event'], 'tool_failure'); assert.equal(logs[0]!['code'], expected);
+  assert.equal(logs[0]!['tool'], 'search_knowledge'); assert.equal(logs[0]!['connector'], 'lux-knowledge');
+  assert.equal(logs[0]!['errorClass'], 'Error'); assert.equal(logs[0]!['messageHead'], expected);
+  assert(!('payload' in logs[0]!));
+});
+
+test('host log accepts only bounded tool-failure metadata and drops extra payload fields', () => {
+  const event = { event: 'tool_failure', code: 'mcp_result_invalid', tool: 'search_knowledge', connector: 'lux-knowledge', errorClass: 'McpResultError', messageHead: 'mcp_result_invalid' };
+  assert.deepEqual(safeEvent({ ...event, payload: 'synthetic forbidden content' }), event);
+  assert.equal(safeEvent({ ...event, code: 'arbitrary_code' }), undefined);
+  assert.equal(safeEvent({ ...event, messageHead: 'x'.repeat(121) }), undefined);
+  assert.equal(safeEvent({ ...event, messageHead: 'synthetic knowledge text' }), undefined);
+});
+
+test('Live knowledge SSE response completes with one result and no unclassified structuredContent', async t => {
+  const h = await harness(t, 'live'); const runtime = await h.start(); const run = await h.accept(runtime);
+  const observed = await h.read(runtime, run.host, ['lux-knowledge']);
+  assert.equal(observed.outcome.status, 'complete');
+  const rows = h.store.transaction(tx => tx.all('SELECT state, result_json FROM tool_calls WHERE run_id=?', [run.host.runId]));
+  assert.equal(rows.length, 1); assert.equal(rows[0]!.state, 'completed');
+  const saved = JSON.parse(String(rows[0]!.result_json));
+  assert.equal(saved.response.status, 'completed');
+  assert.match(saved.response.text, /knowledge results: 1/);
+  const responses = observed.seen[1]!.contents.flatMap(c => c.parts.flatMap(p => p.functionResponse ? [p.functionResponse.response] : []));
+  assert.equal(responses.length, 1); assert.equal(responses[0]!['text'], saved.response.text);
+  assert(!JSON.stringify(responses).includes('synthetic-private-unclassified'));
+  assert(!('structuredContent' in responses[0]!));
+});
+
+test('bounded tool_failure metadata is written to host.log without an attached payload', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-tool-failure-log-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const log = new HostLog(dir);
+  log.event({ event: 'tool_failure', code: 'mcp_transport_error', tool: 'search_knowledge', connector: 'lux-knowledge', errorClass: 'Error', messageHead: 'mcp_transport_error', payload: 'synthetic-private-payload' });
+  const text = readFileSync(join(dir, 'logs', 'host.log'), 'utf8');
+  const row = JSON.parse(text);
+  assert.equal(row.event, 'tool_failure'); assert.equal(row.code, 'mcp_transport_error');
+  assert.equal(row.messageHead, 'mcp_transport_error'); assert.equal(row.errorClass, 'Error');
+  assert(!text.includes('synthetic-private-payload')); assert(!('payload' in row));
 });

@@ -39,6 +39,7 @@ export interface MongooseConfig {
 
 /** Opaque local evidence, mirroring the Lux knowledge connector shape. */
 export interface MongooseEvidence {
+  decodedResult?: unknown;
   state: 'completed' | 'tool-error' | 'protocol-error';
   tool: MongooseTool;
   source: ResultScope;
@@ -143,6 +144,7 @@ export function createMongooseReader(options: MongooseOptions): MongooseReader {
       source: { ...result.source },
       observedAt: result.freshness.receivedAt,
       coverage: structuredClone(result.coverage),
+      decodedResult: structuredClone(result.decodedResult),
       projection: structuredClone(result.projection),
       response: structuredClone(result.payload),
     };

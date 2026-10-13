@@ -1,3 +1,6 @@
+import { projectGoogleResult } from '../tools/google.js';
+import { randomUUID } from 'node:crypto';
+import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -306,4 +309,36 @@ test('a credential-failing call flips the calendar endpoint to configured/auth-n
     rmSync(dir, { recursive: true, force: true });
     rmSync(childDir, { recursive: true, force: true });
   }
+});
+
+// Fake MCP HTTP server at the real guarded-fetch seam, no listening socket or corpus.
+test('gmail_list projects an SSE MCP entity from separately decodedResult', async t => {
+  const sdk = new Server({ name: 'synthetic-sse', version: '1' }, { capabilities: { tools: {} } });
+  const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: false });
+  const tool = { name: 'gmail_list', inputSchema: { type: 'object' } };
+  sdk.setRequestHandler('tools/list', () => ({ tools: [tool] }) as never);
+  sdk.setRequestHandler('tools/call', () => ({ content: [{ type: 'text', text: JSON.stringify({ family: 'gmail', tool: 'gmail_list', method: 'gmail_list', account: { configured: 'synthetic', provider: null }, data: { messages: [{ id: 'sse-id', headers: { Subject: 'Synthetic SSE', From: 'sse@example.invalid', Date: 'synthetic-date' } }] } }) }], structuredContent: { marker: 'synthetic-unclassified' }, isError: false }) as never);
+  await sdk.connect(transport);
+  t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+    const request = new Request(input, init);
+    return request.method === 'GET' ? new Response(null, { status: 405 }) : transport.handleRequest(request);
+  });
+  const registry = new McpRegistry();
+  registry.register({ id: 'sse', url: 'http://127.0.0.1:18766/mcp', account: 'synthetic', resource: 'synthetic' });
+  registry.enable('sse'); registry.allowEgress('sse');
+  const adapter = createMcpAdapter({ registry, store: new MemoryResultStore() });
+  t.after(async () => { await adapter.close(); await sdk.close(); });
+  const discovery = await adapter.discover('sse'); assert.equal(discovery.state, 'discovered');
+  if (discovery.state !== 'discovered') throw Error('discovery failed');
+  registry.approve({ endpointId: 'sse', schemaDigest: discovery.schemaDigest, toolNames: ['gmail_list'], effect: 'read', account: 'synthetic', resource: 'synthetic', generation: 1 });
+  const result = await createGoogleReader({ port: adapter, registry, config: { endpointId: 'sse', account: 'synthetic', resource: 'synthetic', schemaDigest: discovery.schemaDigest, generation: 1, family: 'gmail' } }).gmailList({ maxResults: 1 });
+  assert.equal(result.state, 'completed');
+  if (result.state !== 'completed' || result.response.state !== 'available') throw Error('missing result');
+  const wire = adapter.readSlice({ ...result.source, handle: result.response.handle, offset: 0, length: 16 });
+  assert.equal(wire.state, 'available');
+  if (wire.state === 'available') assert.match(new TextDecoder().decode(wire.bytes), /^event:|^data:/);
+  const projected = projectGoogleResult(adapter, result); assert.equal(projected.ok, true);
+  if (!projected.ok) throw Error('projection failed');
+  assert(projected.projection.text.includes('Synthetic SSE'));
+  assert(!projected.projection.text.includes('synthetic-unclassified'));
 });

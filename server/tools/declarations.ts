@@ -75,11 +75,14 @@ export async function runToolCalls(owner: { journal: ToolCallJournal; resultGate
         });
         if (dispatched) {
           if (!outcome || !['completed', 'failed', 'unknown'].includes(outcome.status)) throw Error('invalid_tool_outcome');
-          record.status = outcome.status; record.reason = 'handler_outcome';
+          record.status = outcome.status;
+          const code = outcome.status === 'completed' ? undefined : outcome.code;
+          record.reason = code && ['mcp_transport_error', 'mcp_result_invalid', 'connector_error', 'handler_outcome'].includes(code) ? code : 'handler_outcome';
         }
       } catch (error) {
         record.status = dispatched ? (tool?.effect === 'write' ? 'unknown' : 'failed') : 'refused';
-        record.reason = dispatched ? 'handler_interrupted_or_failed' : 'authority_or_validation_failed';
+        const code = error instanceof Error && 'code' in error && typeof error.code === 'string' && ['mcp_transport_error', 'mcp_result_invalid', 'connector_error', 'handler_outcome'].includes(error.code) ? error.code : 'handler_outcome';
+        record.reason = dispatched ? (error instanceof Interrupted ? 'handler_interrupted_or_failed' : code) : 'authority_or_validation_failed';
         if (error instanceof Interrupted) interrupted = error;
       }
       tools.push(record);
@@ -93,7 +96,7 @@ export async function runToolCalls(owner: { journal: ToolCallJournal; resultGate
       } catch { return fatal('error', 'tool_journal_failed'); }
       if (!validRef(ref)) return fatal('denied', 'tool_result_denied');
       if (interrupted) return fatal(interrupted.status, interrupted.status);
-      if (record.status === 'unknown') return fatal('uncertain', 'unknown_tool_outcome');
+      if (record.status === 'unknown') return fatal('uncertain', record.reason === 'handler_outcome' ? 'unknown_tool_outcome' : record.reason);
       // Empty host-only placeholder; only the gate may reconstruct provider JSON.
       const binding: ToolResultBinding = { executionId, name: call.name, ...(call.id !== undefined ? { callId: call.id } : {}),
         contentIndex: ctx.contentIndex, partIndex: responses.length, result: structuredClone(ref) };

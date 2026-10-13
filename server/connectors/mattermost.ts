@@ -38,6 +38,7 @@ export interface MattermostConfig {
 
 /** Opaque local evidence, mirroring the Lux knowledge connector shape. */
 export interface MattermostEvidence {
+  decodedResult?: unknown;
   state: 'completed' | 'tool-error' | 'protocol-error';
   tool: MattermostTool;
   source: ResultScope;
@@ -139,6 +140,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       source: { ...result.source },
       observedAt: result.freshness.receivedAt,
       coverage: structuredClone(result.coverage),
+      decodedResult: structuredClone(result.decodedResult),
       projection: structuredClone(result.projection),
       response: structuredClone(result.payload),
     };

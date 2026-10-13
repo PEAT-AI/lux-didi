@@ -30,10 +30,9 @@ export function projectLuxResult(evidence: LuxKnowledgeResult, policy: Connectio
   }
   const bytes = Buffer.concat(chunks);
   if (bytes.byteLength !== payload.byteLength || sha256(bytes) !== payload.sha256) throw Error('entity_hash_mismatch');
-  const packet: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
-  if (!isRecord(packet) || packet['jsonrpc'] !== '2.0' || !['string', 'number'].includes(typeof packet['id']) || !onlyKeys(packet, ['jsonrpc', 'id', 'result']) || !isRecord(packet['result'])) throw Error('unsupported_mcp_envelope');
-  const result = packet['result'];
-  if (!onlyKeys(result, ['content', 'isError']) || result['isError'] === true || (result['isError'] !== undefined && typeof result['isError'] !== 'boolean') || !Array.isArray(result['content'])) throw Error('unsupported_mcp_result');
+  const result = evidence.decodedResult;
+  if (!isRecord(result)) throw Error('unsupported_mcp_result');
+  if (!onlyKeys(result, ['content', 'isError', 'structuredContent', '_meta']) || result['isError'] === true || (result['isError'] !== undefined && typeof result['isError'] !== 'boolean') || !Array.isArray(result['content'])) throw Error('unsupported_mcp_result');
   const texts: string[] = [];
   for (const content of result['content']) {
     if (!isRecord(content) || !onlyKeys(content, ['type', 'text']) || content['type'] !== 'text' || typeof content['text'] !== 'string') throw Error('unsupported_mcp_content');

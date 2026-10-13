@@ -46,6 +46,7 @@ export type LuxKnowledgeSource = HttpLuxKnowledgeSource | StdioLuxKnowledgeSourc
 
 /** Opaque local evidence. Classification is constant `unknown`; markdown can never change it. */
 export interface LuxKnowledgeEvidence {
+  decodedResult?: unknown;
   classification: 'unknown';
   capability: 'local-only';
   tool: LuxKnowledgeTool;
@@ -211,6 +212,7 @@ export function createLuxKnowledgeReader(options: LuxKnowledgeOptions): LuxKnowl
     if (signal?.aborted) return { state: 'unknown', reason: 'cancelled-after-dispatch' };
     const evidence: LuxKnowledgeEvidence = {
       classification: 'unknown',
+      decodedResult: structuredClone(result.decodedResult),
       capability: 'local-only',
       tool,
       source: { ...result.source },

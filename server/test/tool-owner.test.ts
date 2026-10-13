@@ -556,7 +556,7 @@ for (const code of ['mcp_transport_error', 'mcp_result_invalid', 'connector_erro
   assert.equal(outcome.status, 'complete');
   const response = seen[1]!.contents.at(-1)!.parts[0]!.functionResponse!.response;
   assert.equal(response['reason'], code);
-  const row = f.store.transaction(tx => tx.get('SELECT status, result_json FROM tool_results WHERE execution_id=?', ['run:1:0']));
-  assert.equal(row?.status, 'failed');
+  const row = f.store.transaction(tx => tx.get('SELECT state, result_json FROM tool_calls WHERE execution_id=?', ['run:1:0']));
+  assert.equal(row?.state, 'failed');
   assert.equal(JSON.parse(String(row?.result_json)).response.reason, code);
 });

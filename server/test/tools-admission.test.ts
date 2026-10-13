@@ -193,15 +193,15 @@ for (const failure of ['transport', 'result'] as const) test(`MCP ${failure} fai
   const runtime = await h.start(); const run = await h.accept(runtime);
   const observed = await h.read(runtime, run.host, ['lux-knowledge']);
   const expected = failure === 'transport' ? 'mcp_transport_error' : 'mcp_result_invalid';
-  const rows = h.store.transaction(tx => tx.all('SELECT status, result_json FROM tool_results WHERE run_id=?', [run.host.runId]));
+  const rows = h.store.transaction(tx => tx.all('SELECT state, result_json FROM tool_calls WHERE run_id=?', [run.host.runId]));
   assert.equal(rows.length, 1);
   const result = JSON.parse(String(rows[0]!.result_json));
   assert.equal(result.response.reason, expected);
   if (failure === 'transport') {
-    assert.equal(rows[0]!.status, 'unknown');
+    assert.equal(rows[0]!.state, 'unknown');
     assert.equal(observed.outcome.reason, expected);
   } else {
-    assert.equal(rows[0]!.status, 'failed');
+    assert.equal(rows[0]!.state, 'failed');
     const responses = observed.seen.flatMap(request => request.contents.flatMap(c => c.parts.flatMap(p => p.functionResponse ? [p.functionResponse.response] : [])));
     assert(responses.some(response => response['reason'] === expected));
   }

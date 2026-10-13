@@ -274,8 +274,9 @@ async function until(predicate: () => boolean) {
 }
 
 test('Live remember defers the 1 ms tool boundary and persists only owner bytes', async t => {
+  for (const output of ['text', 'audio', 'transcription'] as const) await t.test(output, async st => {
   const scheduler = new RememberClock();
-  const h = await harness(t, { tools: true, scheduler });
+  const h = await harness(st, { tools: true, scheduler });
   const { session } = await attached(h);
   h.f.send({ serverContent: { inputTranscription: { text: 'remember that mint ' } } });
   h.f.send({ serverContent: { inputTranscription: { text: 'is Friday' } } });
@@ -284,15 +285,38 @@ test('Live remember defers the 1 ms tool boundary and persists only owner bytes'
   const result = remember(h, undefined, { text: 'mint is Friday', kind: 'fact' }, 2);
   await until(() => [...scheduler.pending].some(item => item.at === NOW + 1501));
   assert.equal(rows(h).length, 0);
-  h.f.send({ serverContent: { modelTurn: { parts: [{ text: 'A paraphrase must not be saved.' }] } } });
+  h.f.send({ serverContent: output === 'audio'
+    ? { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from([0, 0]).toString('base64') } }] } }
+    : output === 'transcription'
+      ? { outputTranscription: { text: 'A paraphrase must not be saved.' } }
+      : { modelTurn: { parts: [{ text: 'A paraphrase must not be saved.' }] } } });
   await drain();
   await until(() => [...scheduler.pending].some(item => item.at === NOW + 300));
   scheduler.advance(299); await drain();
   assert.equal((await result).remembered, true);
   assert.equal(rows(h)[0]?.text, 'mint is Friday');
-  const deferred = h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(row => String(row.kind) === 'remember_deferred');
+  const deferred = h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(row => row.kind === 'remember_deferred');
   assert.equal(deferred.length, 1);
-  assert.equal((deferred[0] as unknown as { waitedMs: number })?.waitedMs, 299);
+  assert.equal(deferred[0]?.waitedMs, 299);
+  });
+});
+
+test('Live remember resumes on an explicit final input frame before the quiet deadline', async t => {
+  const scheduler = new RememberClock();
+  const h = await harness(t, { tools: true, scheduler });
+  const { session } = await attached(h);
+  h.f.send({ serverContent: { inputTranscription: { text: 'remember that mint ' } } });
+  await until(() => h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.some(row => row.kind === 'inputTranscription'));
+  scheduler.advance(1);
+  const result = remember(h, undefined, { text: 'mint is Friday', kind: 'fact' }, 2);
+  await until(() => [...scheduler.pending].some(item => item.at === NOW + 1501));
+  scheduler.advance(99);
+  h.f.send({ serverContent: { inputTranscription: { text: 'is Friday', finished: true } } });
+  assert.equal((await result).remembered, true);
+  assert.equal(rows(h)[0]?.text, 'mint is Friday');
+  const deferred = h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(row => row.kind === 'remember_deferred');
+  assert.equal(deferred.length, 1);
+  assert.equal(deferred[0]?.waitedMs, 99);
 });
 
 test('Live remember refuses after 1500 ms when newer speech invalidates the turn boundary', async t => {
@@ -309,9 +333,9 @@ test('Live remember refuses after 1500 ms when newer speech invalidates the turn
   scheduler.advance(1499); await drain();
   assert.deepEqual(await result, { remembered: false, code: 'owner_transcript_not_final' });
   assert.equal(rows(h).length, 0);
-  const deferred = h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(row => String(row.kind) === 'remember_deferred');
+  const deferred = h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(row => row.kind === 'remember_deferred');
   assert.equal(deferred.length, 1);
-  assert.equal((deferred[0] as unknown as { waitedMs: number })?.waitedMs, 1500);
+  assert.equal(deferred[0]?.waitedMs, 1500);
 });
 
 test('Live memory port writes ordinary owner payload with the real domain transaction', async t => {

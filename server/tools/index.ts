@@ -374,8 +374,9 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
               const evidence = await reader.call(name, args as Record<string, unknown>, context.signal);
               if (context.signal.aborted) return { status: 'unknown' };
               if (evidence.state === 'unknown') {
-                options.log?.({ event: 'tool_failure', code: 'mcp_transport_error', tool: name, connector: p.connector, errorClass: 'Error', messageHead: 'mcp_transport_error' });
-                return { status: 'unknown', code: 'mcp_transport_error' };
+                const code = evidence.reason === 'mcp_result_invalid' ? 'mcp_result_invalid' : 'mcp_transport_error';
+                options.log?.({ event: 'tool_failure', code, tool: name, connector: p.connector, errorClass: 'Error', messageHead: code });
+                return { status: 'unknown', code };
               }
               if (evidence.state !== 'completed') {
                 const status = evidence.state === 'tool-error' || evidence.state === 'protocol-error' ? descriptor.status?.(evidence) : undefined;

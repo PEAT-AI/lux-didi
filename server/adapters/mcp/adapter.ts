@@ -34,7 +34,7 @@ function decodeSseResponse(bytes: Uint8Array, requestId: unknown): Uint8Array {
   } catch { throw new PolicyError('mcp_transport_error'); }
   throw new PolicyError('mcp_transport_error');
 }
-interface Operation { scope: ResultScope; signal: AbortSignal; dispatched: boolean; bytes?: Uint8Array; requestId?: string | number; explicitErrorCode?: number; explicitError?: unknown }
+interface Operation { scope: ResultScope; signal: AbortSignal; dispatched: boolean; bytes?: Uint8Array; requestId?: string | number; explicitErrorCode?: number; explicitError?: unknown; receivedResult?: boolean }
 interface Session { client: Client; config: EndpointConfig; operation?: Operation }
 const allowedHeaders = new Set(['accept', 'content-type', 'mcp-session-id', 'mcp-protocol-version', 'last-event-id', 'mcp-method', 'mcp-name']);
 
@@ -170,6 +170,7 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
     transport.onmessage = message => {
       const operation = session.operation;
       if (operation && isJSONRPCErrorResponse(message) && message.id === operation.requestId) { operation.explicitErrorCode = message.error.code; operation.explicitError = structuredClone(message.error); }
+      if (operation && 'id' in message && message.id === operation.requestId && 'result' in message) operation.receivedResult = true;
       onmessage?.(message);
     };
     if (!client.getServerCapabilities()?.tools) throw new PolicyError('tools-unavailable');
@@ -252,7 +253,7 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
           if (localSignal.aborted && operation.requestId !== undefined) await bounded(session.client.notification({ method: 'notifications/cancelled', params: { requestId: operation.requestId, reason: 'local cancellation' } }), AbortSignal.timeout(200)).catch(() => {});
           // No call retry or reconnect here. A later explicit discovery can reconnect only.
           suspend(request.endpointId); await retire(request.endpointId);
-          return { state: 'unknown', reason: error instanceof PolicyError ? error.reason : 'protocol-or-transport-outcome-unknown' };
+          return { state: 'unknown', reason: error instanceof PolicyError ? error.reason : operation.receivedResult ? 'mcp_result_invalid' : 'protocol-or-transport-outcome-unknown' };
         }
         return { state: 'refused', reason: error instanceof PolicyError ? error.reason : 'pre-dispatch-refused' };
       } finally { delete session.operation; busy.delete(request.endpointId); }

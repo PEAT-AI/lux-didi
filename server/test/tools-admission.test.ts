@@ -198,14 +198,8 @@ for (const failure of ['transport', 'result'] as const) test(`MCP ${failure} fai
   assert.equal(rows.length, 1);
   const result = JSON.parse(String(rows[0]!.result_json));
   assert.equal(result.response.reason, expected);
-  if (failure === 'transport') {
-    assert.equal(rows[0]!.state, 'unknown');
-    assert.equal(observed.outcome.reason, expected);
-  } else {
-    assert.equal(rows[0]!.state, 'failed');
-    const responses = observed.seen.flatMap(request => request.contents.flatMap(c => c.parts.flatMap(p => p.functionResponse ? [p.functionResponse.response] : [])));
-    assert(responses.some(response => response['reason'] === expected));
-  }
+  assert.equal(rows[0]!.state, 'unknown', 'SDK-rejected result preserves the existing unknown-outcome contract');
+  assert.equal(observed.outcome.reason, expected);
 });
 
 test('host log accepts only bounded tool-failure metadata and drops extra payload fields', () => {

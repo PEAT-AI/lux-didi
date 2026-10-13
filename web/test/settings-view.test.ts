@@ -86,3 +86,9 @@ test('marks every on-disk setting with its file name and a restart note', () => 
   for (const file of ['live.json', 'profile.json', 'gemini-primary.json', 'provider-config/mcp.json']) assert.match(html, new RegExp(file.replace('.', '\\.')));
   assert.match(html, /need a restart of Lux Didi/);
 });
+
+test('settings view puts each section heading in its own section for vertical rhythm', () => {
+  const html = settingsMarkup({ status, connections });
+  assert.match(html, /<section class="settings-section"><h3>Connectors<\/h3>/);
+  assert.match(html, /<section class="settings-section">\s*<h3>Where these settings live<\/h3>/);
+});

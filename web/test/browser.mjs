@@ -218,6 +218,33 @@ try {
     await page.getByRole('button',{name:'Settings',exact:true}).click(); await page.getByText('Mac companion',{exact:true}).waitFor();
     await page.screenshot({path:`${artifacts}/desktop-settings.png`,fullPage:true});
   });
+  await step('memory Search button never wraps its label and review shots land',async()=>{
+    const review=process.env.DIDI_WEB_REVIEW||'/Users/rob/.lux/reports/lux-didi-night-A/smoke/fix2';
+    await mkdir(review,{recursive:true});
+    const measureSearch=()=>page.evaluate(()=>{
+      const btn=[...document.querySelectorAll('button')].find(b=>b.textContent.trim()==='Search');
+      if(!btn) throw new Error('Search button not found on the Memory tab');
+      const range=document.createRange(); range.selectNodeContents(btn);
+      const lines=range.getClientRects().length;
+      const style=getComputedStyle(btn);
+      const lineHeight=style.lineHeight==='normal'?parseFloat(style.fontSize)*1.5:parseFloat(style.lineHeight);
+      const chrome=parseFloat(style.paddingTop)+parseFloat(style.paddingBottom)+parseFloat(style.borderTopWidth)+parseFloat(style.borderBottomWidth);
+      return {lines,height:btn.getBoundingClientRect().height,oneLine:lineHeight+chrome};
+    });
+    await page.getByRole('button',{name:'Memory',exact:true}).click();
+    await page.getByRole('button',{name:'Search',exact:true}).waitFor();
+    const desktop=await measureSearch();
+    assert.equal(desktop.lines,1,`Search label wraps at 1440px (${desktop.lines} lines)`);
+    assert.ok(desktop.height<=desktop.oneLine+1,`Search button ${desktop.height}px exceeds one line ${desktop.oneLine}px at 1440px`);
+    await page.screenshot({path:`${review}/desktop-memory.png`,fullPage:true});
+    await page.setViewportSize({width:375,height:900});
+    await page.getByRole('button',{name:'Search',exact:true}).waitFor();
+    const phone=await measureSearch();
+    assert.equal(phone.lines,1,`Search label wraps at 375px (${phone.lines} lines)`);
+    assert.ok(phone.height<=phone.oneLine+1,`Search button ${phone.height}px exceeds one line ${phone.oneLine}px at 375px`);
+    await page.screenshot({path:`${review}/375-memory.png`,fullPage:true});
+    await page.setViewportSize({width:1440,height:1000});
+  });
   await step('375px phone and 768px tablet have no overflow',async()=>{
     for(const width of [375,768]){await page.setViewportSize({width,height:900});
       for(const tab of ['Conversation','Today','Memory','Settings']){await page.getByRole('button',{name:tab,exact:true}).click();

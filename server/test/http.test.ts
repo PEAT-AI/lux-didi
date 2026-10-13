@@ -219,12 +219,21 @@ test('owner list route returns explicit kind and origin for every entry', async 
       sourceRef: { id: 'live-1', label: 'live-voice live-1', provider: 'live-voice', sourceTimestamp: null, availability: 'present', note: 'kind:preference' },
     }, ctx));
     f.store.transaction(tx => port.execute(tx, 'appendEntry', { sessionId: session.id, text: 'A bare note', role: 'user', timeZone: 'UTC' }, ctx));
+    const posted = await fetch(`${f.service.origin}/api/v1/sessions/${session.id}/entries`, {
+      method: 'POST',
+      headers: { ...f.auth, 'Content-Type': 'application/json', 'Idempotency-Key': 'page-save', 'X-Didi-Authority-Epoch': f.store.authorityEpoch },
+      body: JSON.stringify({ text: 'Saved on the page', role: 'user', timeZone: 'UTC', sourceRef: { id: '11111111-1111-4111-8111-111111111111', label: 'Saved on the page', provider: 'page', sourceTimestamp: null, availability: 'present' } }),
+    });
+    assert.equal(posted.status, 200);
+    const postedBody = await posted.json() as { data: { kind: string; origin: string } };
+    assert.deepEqual([postedBody.data.kind, postedBody.data.origin], ['note', 'page']);
     const response = await fetch(`${f.service.origin}/api/v1/sessions/${session.id}`, { headers: f.auth });
     assert.equal(response.status, 200);
     const body = await response.json() as { data: { entries: { kind: string; origin: string }[] } };
     assert.deepEqual(body.data.entries.map(e => [e.kind, e.origin]), [
       ['preference', 'live-voice'],
       ['note', 'unknown'],
+      ['note', 'page'],
     ]);
   } finally { await f.cleanup(); }
 });

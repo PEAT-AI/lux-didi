@@ -76,10 +76,15 @@ import AppKit
     var root: String { args[2] }
     var nonce: String { args[3] }
     func start() {
-        guard verification ? args.count >= 5 : args.count == 5 else { exit(1) }
+        guard verification ? args.count >= 5 : args.count == 5 else {
+            fputs("LaunchServices probe FAIL: argument count observed=\(args.count) verification=\(verification) required=5\n", stderr); exit(1)
+        }
+        if verification, ProcessInfo.processInfo.environment["LUX_OBSERVER_FORCE_FAILURE"] == "1" {
+            fail("forced observer failure"); return
+        }
         if verification {
             do { try Data(nonce.utf8).write(to: URL(fileURLWithPath: root + "/nonce")); chmod(root + "/nonce", 0o600) }
-            catch { fail("nonce marker"); return }
+            catch { fail("nonce marker errorCode=\((error as NSError).code)"); return }
         }
         directory = open(root, O_EVTONLY)
         guard directory >= 0 else { fail("directory") ; return }
@@ -114,7 +119,7 @@ import AppKit
                     self.launchFailure = ["launchErrorDomain": failure?.domain as Any? ?? NSNull(),
                         "launchErrorCode": failure?.code as Any? ?? NSNull(), "launchReturnedApplication": app != nil,
                         "launchBundleMatches": app?.bundleURL.map({ physicalPath($0.path) }) == self.bundle]
-                    self.fail("own launch identity")
+                    self.fail("own launch identity errorPresent=\(error != nil) returnedApplication=\(app != nil) bundleMatches=\(app?.bundleURL.map { physicalPath($0.path) } == self.bundle)")
                     return
                 }
                 self.target = app
@@ -123,12 +128,12 @@ import AppKit
                     self.failureIdentity = ["observed": record, "expectedUID": Int(getuid()),
                         "expectedExecutable": self.expectedExecutable,
                         "returnedPID": Int(app.processIdentifier), "returnedBundle": self.bundle]
-                    guard facts.uid == getuid(), record["executable"] as? String == self.expectedExecutable else { self.fail("own kernel identity"); return }
+                    guard facts.uid == getuid(), record["executable"] as? String == self.expectedExecutable else { self.fail("own kernel identity uid=\(facts.uid) expectedUid=\(getuid()) executableMatches=\(record["executable"] as? String == self.expectedExecutable)"); return }
                     self.record = record
                     self.kernel = probe_register(app.processIdentifier)
                     guard self.kernel >= 0 else { self.fail("kernel registration errno=\(errno)"); return }
                     self.handshake()
-                } catch { self.fail("kernel identity") }
+                } catch { self.fail("kernel identity errorCode=\((error as NSError).code)") }
             }
         }
     }
@@ -157,7 +162,7 @@ import AppKit
                 var mixed = current; mixed.pid = getpid()
                 pidReuseRefused = probe_cleanup(reused, expectedExecutable) != 0
                 driverMixupRefused = probe_cleanup(mixed, expectedExecutable) != 0
-                guard pidReuseRefused, driverMixupRefused else { fail("cleanup identity negative controls"); return }
+                guard pidReuseRefused, driverMixupRefused else { fail("cleanup identity negative controls pidReuseRefused=\(pidReuseRefused) driverMixupRefused=\(driverMixupRefused)"); return }
             }
             facts = current // Cleanup authority only after complete kernel + bundle + nonce identity.
             if verification {
@@ -179,7 +184,7 @@ import AppKit
                 let bytes = Array(nonce.utf8)
                 let count = bytes.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
                 close(fd)
-                guard count == bytes.count else { fail("partial release"); return }
+                guard count == bytes.count else { fail("partial release written=\(count) expectedBytes=\(bytes.count)"); return }
                 released = true
             }
             let kernelFD = kernel
@@ -189,11 +194,11 @@ import AppKit
                 let result = probe_wait(kernelFD, waitSeconds, &raw, &flags, &filter)
                 let error = errno
                 Task { @MainActor in
-                    guard result == 0 else { self.fail("kernel event errno=\(error)"); return }
+                    guard result == 0 else { self.fail("kernel event result=\(result) errno=\(error)"); return }
                     self.complete(raw, flags: flags, filter: filter)
                 }
             }
-        } catch { fail("identity record") }
+        } catch { fail("identity record errorCode=\((error as NSError).code)") }
     }
     func dispose() {
         settled = true; deadline?.cancel(); watch?.cancel()
@@ -207,7 +212,7 @@ import AppKit
         var serviceKernel: [String: Any] = [:]
         if verification, serviceFD >= 0 {
             var status: Int64 = -1, serviceFlags: UInt32 = 0, serviceFilter: Int16 = 0
-            guard probe_wait(serviceFD, 10, &status, &serviceFlags, &serviceFilter) == 0 else { fail("service kernel exit"); return }
+            guard probe_wait(serviceFD, 10, &status, &serviceFlags, &serviceFilter) == 0 else { fail("service kernel exit rawStatus=\(status) flags=\(serviceFlags) filter=\(serviceFilter)"); return }
             serviceKernel = ["rawStatus": status, "flags": serviceFlags, "filter": serviceFilter, "statusRequested": true]
         }
         let release = (try? JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: root + "/release.json")))) as? [String: Any]
@@ -231,10 +236,19 @@ import AppKit
             try atomic(output, to: root + "/observer.json")
             if verification {
                 let expected = ["run", "held-positive", "held-driver"].contains(args[4]) ? raw == 0 : raw == 256
-                guard expected, !forced, nativeDisposition?["disposed"] as? Bool == true else { exit(1) }
+                guard expected, !forced, nativeDisposition?["disposed"] as? Bool == true else {
+                    let disposed = nativeDisposition?["disposed"] as? Bool == true
+                    let reason = "verification completion rawStatus=\(raw) expectedStatus=\(["run", "held-positive", "held-driver"].contains(args[4]) ? 0 : 256) forced=\(forced) nativeDisposed=\(disposed) releasePresent=\(release != nil)"
+                    output["pass"] = false; output["reason"] = reason
+                    try atomic(output, to: root + "/observer.json")
+                    fputs("LaunchServices probe FAIL: " + reason + "\n", stderr); exit(1)
+                }
             }
             exit(0)
-        } catch { fputs("probe report failure\n", stderr); exit(1) }
+        } catch {
+            let code = (error as NSError).code
+            fputs("LaunchServices probe FAIL: report write path=\(root)/observer.json errorCode=\(code)\n", stderr); exit(1)
+        }
     }
     // Files are private proof transport, never application HTTP authority.
     func privateNotice(_ name: String) throws -> ([String: Any], ino_t) {
@@ -283,7 +297,7 @@ import AppKit
                 acknowledgementInode = inode; acknowledgementOutcome = outcome; heldStimulusSent = true
                 send(outcome == "completed" ? "observe:" + stage : "cancel")
             }
-        } catch { fail("private observation transport") }
+        } catch { fail("private observation transport errorCode=\((error as NSError).code)") }
     }
     // Runtime negative stimuli, not substitutes fabricated from evidence JSON.
     func exerciseHeldProbe() {
@@ -321,10 +335,10 @@ import AppKit
             guard serviceFD >= 0 else { fail("service registration"); return }
             if args[4] == "cancel-service" { send("cancel") }
             if args[4] == "eof-service" { close(control); control = -1 }
-        } catch { fail("service binding") }
+        } catch { fail("service binding errorCode=\((error as NSError).code)") }
     }
     func timeout() {
-        guard verification, !cancelSent else { fail("cleanup deadline"); return }
+        guard verification, !cancelSent else { fail("cleanup deadline verification=\(verification) cancelSent=\(cancelSent)"); return }
         send("cancel"); deadline?.schedule(deadline: .now() + 10)
     }
     func fail(_ reason: String) {
@@ -374,9 +388,10 @@ import AppKit
             "redialSuppressed": redialSuppressed, "socketPath": "/tmp/didi-verification-" + nonce + ".sock",
             "socketPresentAtFailure": FileManager.default.fileExists(atPath: "/tmp/didi-verification-" + nonce + ".sock")]
         output["launchConditions"] = launchFailure
+        output["childLogs"] = ["stdout.log", "stderr.log"].filter { FileManager.default.fileExists(atPath: root + "/" + $0) }.map { root + "/" + $0 }
         output.merge(extra) { _, new in new }
         try? atomic(output, to: root + "/observer.json")
-        fputs("LaunchServices probe FAIL: " + reason + "\n", stderr); exit(1)
+        fputs("LaunchServices probe FAIL: " + reason + " path=\(root) directoryFD=\(directory) kernelFD=\(kernel) serviceFD=\(serviceFD) identityPresent=\(facts != nil) released=\(released) forced=\(forced) errno=\(errno)\n", stderr); exit(1)
     }
 
 }

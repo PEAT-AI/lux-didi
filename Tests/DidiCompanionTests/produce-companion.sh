@@ -37,7 +37,16 @@ fi
 # LaunchServices registration, native launch or capture. One outer tempdir and
 # one trap own all prepared state for both phases.
 work="$(mktemp -d "${TMPDIR:-/tmp}/didi-companion-check.XXXXXX")"
-cleanup() { rm -rf "$work"; }
+cleanup() {
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    chmod 700 "$work"
+    printf 'COMPANION FAILURE status=%s retained-work=%s proof=%s\n' "$status" "$work" "${proof:-not-created}" >&2
+  else
+    rm -rf "$work"
+  fi
+  exit "$status"
+}
 trap cleanup EXIT
 cd "$root"
 mkdir -p "$work/cache"
@@ -73,6 +82,7 @@ assert 'forced observer failure' in (proof / 'stderr.log').read_text()
 record = json.loads((proof / 'observer.json').read_text())
 assert record['pass'] is False and record['reason'] == 'forced observer failure'
 assert all((proof / name).is_file() for name in ('stdout.log', 'stderr.log'))
+assert set(record['childLogs']) == {str(proof / name) for name in ('stdout.log', 'stderr.log')}
 print('PASS forced observer failure: reason, exit status and retained evidence')
 PY
 # The nested real-app compilation also runs outside the lease, into prepared artifacts.

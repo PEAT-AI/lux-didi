@@ -163,3 +163,14 @@ python3 scripts/backlog_validate.py --all --report planning/backlog-validation.m
 ## How this page was verified
 
 Every command above was cross-checked against the current sources of this tree at `6a66898a392e052a31b59ef009dcae03b1c5aae8`: `scripts/run-local.sh`, `server/package.json`, `web/package.json`, `server/tsconfig.json`, `server/host/index.ts`, `server/host/runtime.ts`, `server/index.ts`, the `scripts/check-*.sh` producers, `Tests/DidiMacTests/check-mac.sh`, and the existing runtime records in [local-runtime.md](local-runtime.md) and [service-runtime.md](service-runtime.md). The commands were not re-executed for this document.
+
+### Companion gate failure evidence
+
+Run `bash Tests/DidiCompanionTests/check-companion.sh` through the managed declared
+check when working in a worker lane. The observer reports failing verification
+guards to stderr with status values, not payloads or credentials. The gate always
+exercises a no-launch forced-failure diagnostic before its real native checks.
+On failure, `COMPANION FAILURE` and `REAL-HOST FAILURE` print retained work paths;
+`PROOF-DIR` identifies the retained proof directory. Keep these directories while
+reviewing `observer.json` and its named child logs. Successful runs remove their
+disposable work as before. Failure status is propagated unchanged.

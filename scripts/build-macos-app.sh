@@ -47,7 +47,10 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp Resources/Info.plist "$app/Contents/Info.plist"
 
 # Canonical native compile identity. Production never defines COMPANION_TEST.
+minimum_macos="$(/usr/bin/plutil -extract LSMinimumSystemVersion raw Resources/Info.plist)"
+[[ "$minimum_macos" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]] || { echo 'build-macos-app.sh: macOS minimum must be a numeric version' >&2; exit 2; }
 /usr/bin/nice -n 10 xcrun swiftc -j 1 -num-threads 1 -whole-module-optimization \
+  -target "arm64-apple-macosx$minimum_macos" \
   -module-cache-path "$cache" -parse-as-library Sources/LuxDidi/*.swift \
   -o "$app/Contents/MacOS/LuxDidi"
 

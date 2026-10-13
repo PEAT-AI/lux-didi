@@ -78,9 +78,18 @@ public struct LiveMarker: Sendable, Equatable {
     public let value: Bool?
 }
 
+public enum LiveToolMarkerKind: String, Sendable { case toolCall, toolResult }
+/// Validated progress only; tool authorization and durable results remain service-owned.
+public struct LiveToolMarker: Sendable, Equatable {
+    public let kind: LiveToolMarkerKind
+    public let sequence: Int?
+    public let journalSequence: Int
+}
+
 public enum LiveFrame: Sendable, Equatable {
     case pcm(Data)
     case marker(LiveMarker)
+    case tool(LiveToolMarker)
     case terminal(LiveTerminal, complete: Bool)
     case continuity(event: String)
 }
@@ -158,9 +167,11 @@ public struct LiveSocketTransport: LiveSocketConnecting, Sendable {
                   let object = try? JSONSerialization.jsonObject(with: Data(string.utf8)) as? [String: Any],
                   let type = object["type"] as? String else { throw LiveClientError.invalidFrame }
             if type == "continuity" {
-                guard object["sequence"] is NSNull,
+                guard Set(object.keys).isSubset(of: ["type", "sequence", "journalSequence", "event", "reason"]),
+                      object["sequence"] is NSNull,
                       let journalSequence = integer(object["journalSequence"]), journalSequence > 0,
-                      let event = object["event"] as? String else { throw LiveClientError.invalidFrame }
+                      let event = object["event"] as? String, ["rebuilding", "resumed"].contains(event),
+                      object["reason"] == nil || object["reason"] is String else { throw LiveClientError.invalidFrame }
                 return .continuity(event: event)
             }
             if type == "terminal" {
@@ -172,6 +183,26 @@ public struct LiveSocketTransport: LiveSocketConnecting, Sendable {
                 guard code == nil || LiveClientError.boundedCode(code) != nil else { throw LiveClientError.invalidFrame }
                 return .terminal(LiveTerminal(state: state, code: code), complete: complete)
             }
+            if let kind = LiveToolMarkerKind(rawValue: type) {
+                guard Set(object.keys) == Set(["type", "sequence", "journalSequence", "tool"]),
+                      object["sequence"] is NSNull || integer(object["sequence"]).map({ $0 > 0 }) == true,
+                      let journal = integer(object["journalSequence"]), journal > 0,
+                      let tool = object["tool"] as? [String: Any],
+                      let name = tool["name"] as? String, !name.isEmpty,
+                      let status = tool["status"] as? String else { throw LiveClientError.invalidFrame }
+                switch kind {
+                case .toolCall:
+                    guard Set(tool.keys) == Set(["name", "status"]), status == "called" else { throw LiveClientError.invalidFrame }
+                case .toolResult:
+                    guard Set(tool.keys) == Set(["name", "status", "markdown", "sources"]),
+                          ["completed", "error"].contains(status), tool["markdown"] is String,
+                          let sources = tool["sources"] as? [[String: Any]], sources.allSatisfy({ source in
+                              Set(source.keys).isSubset(of: ["title", "url"]) && source["title"] is String
+                                  && (source["url"] == nil || source["url"] is String)
+                          }) else { throw LiveClientError.invalidFrame }
+                }
+                return .tool(LiveToolMarker(kind: kind, sequence: integer(object["sequence"]), journalSequence: journal))
+            }
             guard let kind = LiveMarkerKind(rawValue: type),
                   Set(object.keys).isSubset(of: ["type", "sequence", "journalSequence", "text", "finished", "value"]),
                   let sequence = integer(object["sequence"]), sequence > 0,
@@ -181,7 +212,8 @@ public struct LiveSocketTransport: LiveSocketConnecting, Sendable {
             let value = boolean(object["value"])
             switch kind {
             case .inputTranscription, .outputTranscription:
-                guard text != nil, finished != nil, object["value"] == nil else { throw LiveClientError.invalidFrame }
+                guard text != nil, object["finished"] == nil || finished != nil,
+                      object["value"] == nil else { throw LiveClientError.invalidFrame }
             case .waitingForInput:
                 guard value != nil, object["text"] == nil, object["finished"] == nil else { throw LiveClientError.invalidFrame }
             default:

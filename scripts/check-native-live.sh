@@ -30,6 +30,9 @@ swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-
   Tests/DidiLiveTests/Fixture.swift Tests/DidiLiveTests/Stage0.swift -o "$work/stage0"
 swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
   Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \
+  Tests/DidiLiveTests/CanonicalFrames.swift -o "$work/canonical-frames"
+swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
+  Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \
   "${owner_flags[@]}" Sources/LuxDidi/NativeLiveOperatorHTTP.swift \
   Tests/DidiLiveTests/Fixture.swift Tests/DidiLiveTests/Runner.swift -o "$work/native-live"
 swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
@@ -70,6 +73,7 @@ node --test --test-reporter=tap --test-timeout=30000 \
   server/dist/test/live-gateway.test.js server/dist/test/live-session.test.js
 # Independent gates all run even when an upstream owner defect fails one; any failure remains producer failure.
 status=0
+node Tests/DidiLiveTests/canonical-frames.mjs "$work/canonical-frames" "$work/canonical-frames-work" || status=1
 node Tests/DidiLiveTests/process.mjs "$work/native-live" "$work" || status=1
 node Tests/DidiLiveTests/gateway.mjs "$work/stage0" "$work" "$work/native-live" "$work/native-live-mutated" || status=1
 for mode in production-native-request native-lifetime-retained native-lifetime-fresh; do

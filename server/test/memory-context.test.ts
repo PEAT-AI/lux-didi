@@ -422,7 +422,7 @@ test('additive chat migrations upgrade a populated v1+v2 DB and preserve old rec
     f1.store.close();
     const f2 = openMemoryFixture(dir, model, {}, chatMigrations);
     try {
-      assert.deepEqual(chatVersions(f2.store), [1, 2, 3, 4, 5]);
+      assert.deepEqual(chatVersions(f2.store), chatMigrations.map(migration => migration.version));
       assert.equal(f2.store.transaction(tx => tx.get("SELECT name FROM sqlite_master WHERE type='table' AND name='chat_run_context'"))!.name, 'chat_run_context');
       assert.equal(Number(f2.store.transaction(tx => tx.get('SELECT COUNT(*) c FROM chat_run_context', []))!.c), 0);
       const after = f2.store.transaction(tx => tx.get('SELECT * FROM chat_runs WHERE run_id=?', [run.runId]));

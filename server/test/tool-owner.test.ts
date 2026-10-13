@@ -570,7 +570,7 @@ test('a thrown MCP transport failure is logged without exception payload and rem
   assert(!JSON.stringify(events).includes('synthetic-private-payload'));
 });
 test('a connector-rejected decoded content shape is logged and returned with mcp_result_invalid', async t => {
-  const events: ToolFailureEvent[] = []; const f = await fixture(t, { log: event => events.push(event), result: { content: [{ type: 'image', mimeType: 'image/png', data: 'synthetic' }] } });
+  const events: ToolFailureEvent[] = []; const f = await fixture(t, { log: event => events.push(event), result: { content: [{ type: 'text', text: 'synthetic', annotations: { priority: 0.5 } }] } });
   const seen: ModelRequest[] = [];
   const outcome = await f.run({ generate: async req => { seen.push(structuredClone(req)); return seen.length === 1 ? modelResult('search_knowledge') : modelResult(); } });
   assert.equal(outcome.status, 'complete');

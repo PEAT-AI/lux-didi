@@ -194,7 +194,7 @@ final class DiagnosticLogHTTPFixture: URLProtocol, @unchecked Sendable {
             recovery.changed(); recovery.stop(); await recovery.pending?.value
             try audioRequire(builds == 2, "Stop fences queued recovery")
             let failedRecovery = NativeAudioRouteRecovery(input: { input }, release: { releases += 1 },
-                rebuild: { throw NativeLiveAudioError.deviceUnavailable }, paused: { _ in }, failed: { failures += 1 })
+                rebuild: { throw NativeLiveAudioError.deviceMissing }, paused: { _ in }, failed: { failures += 1 })
             failedRecovery.begin(); failedRecovery.changed(); await failedRecovery.pending?.value
             try audioRequire(failures == 1 && !failedRecovery.authorized, "failed rebuild releases authorization")
             input = ""

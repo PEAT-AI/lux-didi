@@ -56,6 +56,7 @@ struct NativePendingLiveJob: Decodable, Equatable, Sendable {
         else { code = "connection_refused" }
         var body: [String: Any] = ["event": "live_precreate_failed",
                                    "failureClass": error is NativeLiveAudioError ? "audio" : "service", "code": code]
+        if let audio = error as? NativeLiveAudioError, let detail = audio.diagnosticDetail { body["detail"] = detail }
         if let reason = error as? LiveClientError {
             switch reason {
             case .http(let status, _): body["detail"] = status
@@ -211,8 +212,43 @@ enum NativeLivePresentation {
     }
 }
 
-enum NativeLiveAudioError: String, LocalizedError {
-    case unsupportedFormat, allocationFailed, converterUnavailable, permissionDenied, permissionRestricted, voiceProcessingUnavailable, deviceUnavailable
+enum NativeLiveAudioError: LocalizedError {
+    case unsupportedFormat, allocationFailed, converterUnavailable, permissionDenied, permissionRestricted
+    case deviceMissing, formatUnavailable, captureNotConfigured
+    case voiceProcessingFailed(code: Int?)
+    case engineFormatMismatch(code: Int), engineFailed(code: Int)
+
+    var rawValue: String {
+        switch self {
+        case .unsupportedFormat: return "unsupportedFormat"
+        case .allocationFailed: return "allocationFailed"
+        case .converterUnavailable: return "converterUnavailable"
+        case .permissionDenied: return "permissionDenied"
+        case .permissionRestricted: return "permissionRestricted"
+        case .deviceMissing: return "device_missing"
+        case .formatUnavailable: return "format_unavailable"
+        case .captureNotConfigured: return "capture_not_configured"
+        case .voiceProcessingFailed: return "voice_processing_failed"
+        case .engineFormatMismatch: return "engine_format_mismatch"
+        case .engineFailed: return "engine_failed"
+        }
+    }
+    /// The bounded diagnostic route admits an integer, never NSError text or a device label.
+    var diagnosticDetail: Int? {
+        switch self {
+        case .voiceProcessingFailed(let code): return code
+        case .engineFormatMismatch(let code), .engineFailed(let code): return code
+        default: return nil
+        }
+    }
+    static func engineFailure(_ error: NSError) -> NativeLiveAudioError {
+        // -10875 is FailedInitialization, diagnosed on this graph as a VP client-format mismatch.
+        // Only the CoreAudio domain and its observed status (or FormatNotSupported) get that diagnosis.
+        if error.domain == "com.apple.coreaudio.avfaudio", [-10875, -10868].contains(error.code) {
+            return .engineFormatMismatch(code: error.code)
+        }
+        return .engineFailed(code: error.code)
+    }
     var errorDescription: String? {
         switch self {
         case .unsupportedFormat: return "Live audio format is unsupported."
@@ -220,8 +256,12 @@ enum NativeLiveAudioError: String, LocalizedError {
         case .converterUnavailable: return "Live microphone format could not be converted."
         case .permissionDenied: return "Microphone permission was denied. Allow microphone access in System Settings."
         case .permissionRestricted: return "Microphone access is restricted. Check this Mac’s privacy restrictions."
-        case .voiceProcessingUnavailable: return "Voice processing could not be enabled. Check the microphone and output device."
-        case .deviceUnavailable: return "Live audio device is unavailable. Select a working microphone and output device."
+        case .deviceMissing: return "No microphone found: connect one or select it in System Settings, Sound, Input."
+        case .formatUnavailable: return "Live audio format is unavailable; select a working microphone and output device."
+        case .captureNotConfigured: return "Live microphone capture is not configured; start Live again."
+        case .voiceProcessingFailed: return "Voice processing could not be enabled; check the microphone and output device."
+        case .engineFormatMismatch: return "Live audio could not start because the microphone and output formats do not match; select a working output device."
+        case .engineFailed: return "Live audio engine could not start; check the microphone and output device."
         }
     }
 }

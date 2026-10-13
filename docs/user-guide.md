@@ -55,3 +55,5 @@ adding it. The runbook is the operator handoff at
 A configured connector connects when Live needs it. If a connector fails, use
 **Copy diagnostics** in the menu bar and paste that support snapshot for help.
 It copies safe status information, not credential files or conversation text.
+
+If Live cannot start, its message now distinguishes a missing microphone, unavailable audio format, voice-processing failure, or audio-engine startup failure. Check the microphone and output device in System Settings, Sound, then try Live again; the local diagnostic records a numeric audio error when available, not a device label. Voice processing stays enabled, and Live never silently starts without it.

@@ -201,7 +201,7 @@ final class NativeCaptureBuffer: @unchecked Sendable {
         input: { [unowned self] in self.inputDevice().id },
         release: { [weak self] in self?.releaseAudio() },
         rebuild: { [weak self] in
-            guard let self, let send = self.sendFrame else { throw NativeLiveAudioError.deviceUnavailable }
+            guard let self, let send = self.sendFrame else { throw NativeLiveAudioError.captureNotConfigured }
             try self.build(send: send)
         },
         paused: { [weak self] _ in guard let self else { return }; self.onInputChange?(self.inputDevice().name) },
@@ -282,8 +282,23 @@ final class NativeCaptureBuffer: @unchecked Sendable {
         do { try build(send: send); recovery.begin() }
         catch { sendFrame = nil; throw error }
     }
+    /// Test with an attached mixer standing in for the output node, without opening hardware.
+    static func connectPlayback(engine: AVAudioEngine, player: AVAudioPlayerNode,
+                                outputNode: AVAudioNode, outputFormat: AVAudioFormat? = nil) throws {
+        let hardwareOutput = outputFormat ?? outputNode.inputFormat(forBus: 0)
+        guard hardwareOutput.sampleRate > 0, hardwareOutput.channelCount > 0 else {
+            throw NativeLiveAudioError.formatUnavailable
+        }
+        guard let output = AVAudioFormat(standardFormatWithSampleRate: 24000, channels: 1) else {
+            throw NativeLiveAudioError.unsupportedFormat
+        }
+        engine.attach(player)
+        engine.connect(player, to: engine.mainMixerNode, format: output)
+        // VP output requires its input-bus format, not the player's 24 kHz mono client format.
+        engine.connect(engine.mainMixerNode, to: outputNode, format: hardwareOutput)
+    }
     private func build(send: @escaping @Sendable (Data, UInt64) async throws -> Void) throws {
-        guard !inputDevice().id.isEmpty else { throw NativeLiveAudioError.deviceUnavailable }
+        guard !inputDevice().id.isEmpty else { throw NativeLiveAudioError.deviceMissing }
         if let captureInput {
             let capture = try NativeCaptureBuffer(converter: NativePCMConverter(input: captureInput))
             capture.setMuted(muted); self.capture = capture
@@ -295,21 +310,21 @@ final class NativeCaptureBuffer: @unchecked Sendable {
             do {
                 try engine.inputNode.setVoiceProcessingEnabled(true)
                 try engine.outputNode.setVoiceProcessingEnabled(true)
-            } catch { throw NativeLiveAudioError.voiceProcessingUnavailable }
+            } catch { throw NativeLiveAudioError.voiceProcessingFailed(code: (error as NSError).code) }
             guard engine.inputNode.isVoiceProcessingEnabled, engine.outputNode.isVoiceProcessingEnabled else {
-                throw NativeLiveAudioError.voiceProcessingUnavailable
+                throw NativeLiveAudioError.voiceProcessingFailed(code: nil)
             }
             let hardware = engine.inputNode.outputFormat(forBus: 0)
-            guard hardware.sampleRate > 0, hardware.channelCount > 0 else { throw NativeLiveAudioError.deviceUnavailable }
+            guard hardware.sampleRate > 0, hardware.channelCount > 0 else { throw NativeLiveAudioError.formatUnavailable }
             let capture = try NativeCaptureBuffer(converter: NativePCMConverter(input: hardware))
             capture.setMuted(muted)
-            guard let output = AVAudioFormat(standardFormatWithSampleRate: 24000, channels: 1) else {
-                throw NativeLiveAudioError.unsupportedFormat
-            }
-            engine.attach(player); engine.connect(player, to: engine.mainMixerNode, format: output)
+            try Self.connectPlayback(engine: engine, player: player, outputNode: engine.outputNode)
             engine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: hardware) { buffer, _ in capture.append(buffer) }
             self.engine = engine; self.player = player; self.capture = capture
-            engine.prepare(); try engine.start(); player.play()
+            engine.prepare()
+            do { try engine.start() }
+            catch { throw NativeLiveAudioError.engineFailure(error as NSError) }
+            player.play()
             route = "Microphone: " + Self.defaultDevice(input: true).name + " · Output: " + Self.defaultDevice(input: false).name
             activateCapture(capture, send: send)
             let token = captureGeneration
@@ -322,7 +337,7 @@ final class NativeCaptureBuffer: @unchecked Sendable {
         } catch {
             if self.engine != nil { releaseAudio() }
             else { engine.stop() }
-            throw (error as? NativeLiveAudioError) ?? NativeLiveAudioError.deviceUnavailable
+            throw (error as? NativeLiveAudioError) ?? NativeLiveAudioError.engineFailed(code: (error as NSError).code)
         }
     }
     private func activateCapture(_ capture: NativeCaptureBuffer, send: @escaping @Sendable (Data, UInt64) async throws -> Void) {

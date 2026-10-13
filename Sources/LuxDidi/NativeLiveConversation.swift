@@ -185,7 +185,9 @@ enum State: String, CaseIterable {
             let handle = try FileHandle(forWritingTo: file)
             defer { try? handle.close() }
             try handle.seekToEnd()
-            var record = try JSONSerialization.data(withJSONObject: ["event": "live_precreate_failed", "failureClass": error is NativeLiveAudioError ? "audio" : "service", "code": code], options: [.sortedKeys])
+            var fields: [String: Any] = ["event": "live_precreate_failed", "failureClass": error is NativeLiveAudioError ? "audio" : "service", "code": code]
+            if let audio = error as? NativeLiveAudioError, let detail = audio.diagnosticDetail { fields["detail"] = detail }
+            var record = try JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys])
             record.append(10); try handle.write(contentsOf: record)
         } catch { /* Logging must not change the failure or restart Live. */ }
         return diagnostic

@@ -414,7 +414,7 @@ export class ChatService implements ChatPort {
         if (old.session_id !== input.sessionId || old.state !== 'terminal') throw new ChatError('invalid_retry');
       }
       const ctx = this.#context(context);
-      const entry = this.#config.domain.execute(tx, 'appendEntry', { sessionId: input.sessionId, text: input.text, role: 'user', timeZone: session.timeZone }, ctx, { writer: 'capture', dataClass: 'private' });
+      const entry = this.#config.domain.execute(tx, 'appendEntry', { sessionId: input.sessionId, text: input.text, role: 'user', timeZone: session.timeZone, sourceRef: { id: randomUUID(), label: 'Connected chat', provider: 'chat', externalId: input.sessionId, sourceTimestamp: null, availability: 'present' } }, ctx, { writer: 'capture', dataClass: 'private' });
       const runId = (this.#config.id ?? randomUUID)();
       tx.run(`INSERT INTO chat_runs(run_id,session_id,user_entry_id,owner_assistant_id,accepting_client_id,idempotency_key,fingerprint,authority_epoch,provider,model,prompt_version,state,retry_of,accepted_at)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,'accepted',?,?)`,
@@ -497,7 +497,7 @@ export class ChatService implements ChatPort {
       let entryId: string | null = null;
       if (outcome === 'complete') {
         const session = this.#config.domain.execute(tx, 'getSession', { id: run.sessionId }, this.#context(context)).session;
-        const entry = this.#config.domain.execute(tx, 'appendAssistantEntry', { sessionId: run.sessionId, text, timeZone: session.timeZone }, this.#context(context), { writer: 'model', dataClass: 'private' });
+        const entry = this.#config.domain.execute(tx, 'appendAssistantEntry', { sessionId: run.sessionId, text, timeZone: session.timeZone, sourceRef: { id: randomUUID(), label: 'Connected chat', provider: 'chat', externalId: run.sessionId, sourceTimestamp: null, availability: 'present' } }, this.#context(context), { writer: 'model', dataClass: 'private' });
         entryId = entry.id;
       }
       const max = this.#config.maxPartialChars ?? 100000;

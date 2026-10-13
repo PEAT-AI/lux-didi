@@ -241,6 +241,41 @@ export function sourceReferences(tx: Transaction, ownerId: string): SourceRefRec
     .map(mapSourceRef);
 }
 
+/** A real remember kind when the owner gave one, `note` when none was given. */
+export type EntryKind = 'fact' | 'preference' | 'task' | 'note';
+/** Where a stored memory came from, read once from the domain's own source reference. */
+export type EntryOrigin = 'live-voice' | 'chat' | 'page' | 'unknown';
+
+const REMEMBER_KIND = /(?:^|\s)kind:(fact|preference|task)(?:\s|$)/i;
+const originToken = (token: string, value: string) =>
+  new RegExp(`(?:^|[^a-z])${value}(?:[^a-z]|$)`).test(token);
+
+/**
+ * The real remember kind carried by the Live `remember_note` source note, or
+ * `note` when no source recorded one. Derived once here, never in the client.
+ */
+export function entryKind(sourceRefs: readonly SourceRefRecord[]): EntryKind {
+  for (const ref of sourceRefs) {
+    const match = REMEMBER_KIND.exec(ref.note ?? '');
+    if (match) return match[1]!.toLowerCase() as EntryKind;
+  }
+  return 'note';
+}
+
+/**
+ * The entry's origin from its stored source reference: Live voice, chat, page,
+ * or `unknown` when no source reference records one.
+ */
+export function entryOrigin(sourceRefs: readonly SourceRefRecord[]): EntryOrigin {
+  for (const ref of sourceRefs) {
+    if (ref.provider === 'live-voice') return 'live-voice';
+    const token = `${ref.provider ?? ''} ${ref.label}`.toLowerCase();
+    if (originToken(token, 'chat')) return 'chat';
+    if (originToken(token, 'page')) return 'page';
+  }
+  return 'unknown';
+}
+
 /** Upper bound on one trusted batch resolution request. */
 export const MAX_RESOLVE_ENTRIES = 32;
 

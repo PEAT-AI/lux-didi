@@ -86,13 +86,19 @@ that read-back is a separate follow-up and is not covered by this deletion bound
 ## Memory list (web)
 
 The Memory tab renders an at-a-glance list of the current conversation's stored entries, newest
-first, from the existing owner list route (`GET /api/v1/sessions/:id/entries`). No route changes.
+first, from the existing owner list route (`GET /api/v1/sessions/:id`, which returns `{ session, entries }`). No route shape changes.
 
-- `web/src/memory-list.ts` owns the list. Each item shows its kind, its origin when the payload
-  carries one, and the local created time. The kind is the Live remember kind carried in the source
-  note (`kind:fact`, `kind:preference`, `kind:task`); any other entry falls back to its stored role
-  (`user`, `assistant`, `system`). The origin is `Live voice via remember_note` for a `live-voice`
-  source, otherwise the source label. An entry without a source renders no origin line.
+- `web/src/memory-list.ts` owns the list. Each item shows its kind, its origin and the local
+  created time. The domain now derives both once in `server/domain/memory.ts` and returns them on
+  every entry: `kind` is `fact`, `preference` or `task` when the Live `remember_note` source note
+  recorded one and `note` otherwise; `origin` is `live-voice`, `chat`, `page` or `unknown`, read from
+  the entry's stored source reference (`unknown` when it records none). The badge renders only for a
+  real kind (`note` shows none, W-FIX2), and the origin line renders for every entry.
+- The writers record that reference: Live `remember_note` writes `provider: live-voice`
+  (`server/live/index.ts`), the page saver posts `provider: page` (`saveLocalNote` in `web/src/main.ts`,
+  ruling WKIND-R1), and the connected chat writes `provider: chat` on both entries of a run, keyed by
+  the conversation id (`server/chat/index.ts`, ruling WKIND-R2). Entries from any other writer read
+  `origin: unknown` honestly.
 - The filter box narrows the already-fetched list in the browser by text, case-insensitively, across
   the text, kind and origin. Nothing is sent to the service and no new request is made.
 - The list shows its count and an honest empty state ("Didi remembers nothing yet.") and never

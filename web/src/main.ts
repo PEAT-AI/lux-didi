@@ -157,7 +157,7 @@ async function saveLocalNote() {
   const text=messageDraft.trim();
   await mutate(async signal=>{
     const current=await ensureSession(signal);
-    const entry=await request<Entry>(`/sessions/${encodeURIComponent(current.id)}/entries`,{method:'POST',body:{text,role:'user',timeZone:zone},signal});if(!entries.some(e=>e.id===entry.id))entries.push(entry);messageDraft='';notice='Message saved.';
+    const entry=await request<Entry>(`/sessions/${encodeURIComponent(current.id)}/entries`,{method:'POST',body:{text,role:'user',timeZone:zone,sourceRef:{id:crypto.randomUUID(),label:'Saved on the page',provider:'page',sourceTimestamp:null,availability:'present'}},signal});if(!entries.some(e=>e.id===entry.id))entries.push(entry);messageDraft='';notice='Message saved.';
   });
 }
 async function changeCommitment(c: Commitment, action: 'edit'|'complete'|'reopen'|'cancel') {

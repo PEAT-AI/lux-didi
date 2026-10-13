@@ -1,46 +1,38 @@
 const escape = (value: string) => value.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 
-export interface MemorySourceRef {
-  label?: string;
-  provider?: string;
-  accountId?: string;
-  externalId?: string;
-  sourceTimestamp?: string | null;
-  availability?: 'present' | 'missing';
-  note?: string;
-}
-
-/** The owner list route shape: kind is either the source note (`kind:<x>`) or the entry role. */
+/** The owner list route shape: the domain carries an explicit kind and origin per entry. */
 export interface MemoryListItem {
   id: string;
   text?: string;
   snippet?: string;
   role?: string;
+  kind?: string;
+  origin?: string;
   capturedAt?: string | null;
   sourceTimestamp?: string | null;
-  sourceRefs?: MemorySourceRef[];
 }
 
-const KIND_NOTE = /(?:^|\s)kind:([a-z]+)/i;
+const REAL_KINDS = new Set(['fact', 'preference', 'task']);
 const createdAt = (item: MemoryListItem) => item.capturedAt ?? item.sourceTimestamp ?? '';
 
-/** The domain carries the Live remember kind in the source note; every other entry keeps its role. */
+/** The explicit kind the domain already carries; `note` when none was given. */
 export function memoryItemKind(item: MemoryListItem): string {
-  return memoryItemKindNote(item) ?? item.role ?? 'note';
+  return item.kind ?? 'note';
 }
 
-/** The real kind carried by the remember_note source note, or null when the entry has none (role-only). */
+/** The badge kind: only a real remember kind earns a badge, `note` shows none (W-FIX2). */
 export function memoryItemKindNote(item: MemoryListItem): string | null {
-  const note = item.sourceRefs?.map(ref => ref.note).find(note => note && KIND_NOTE.test(note));
-  return note?.match(KIND_NOTE)?.[1]?.toLowerCase() ?? null;
+  return item.kind && REAL_KINDS.has(item.kind) ? item.kind : null;
 }
 
-/** Name the origin only when the payload carries it: Live voice, otherwise the source label. */
-export function memoryItemSource(item: MemoryListItem): string | null {
-  const ref = item.sourceRefs?.find(ref => ref.provider ?? ref.label);
-  if (!ref) return null;
-  if (ref.provider === 'live-voice') return 'Live voice via remember_note';
-  return ref.label ?? ref.provider ?? null;
+/** The origin line: every entry names where it came from, `unknown` included. */
+export function memoryItemOrigin(item: MemoryListItem): string {
+  switch (item.origin) {
+    case 'live-voice': return 'Live voice via remember_note';
+    case 'chat': return 'Saved from chat';
+    case 'page': return 'Saved from the page';
+    default: return 'Origin unknown';
+  }
 }
 
 export function memoryItemText(item: MemoryListItem): string {
@@ -57,17 +49,17 @@ export function memoryItemCreated(item: MemoryListItem): string | null {
 export function filterMemoryItems<T extends MemoryListItem>(items: T[], query: string): T[] {
   const needle = query.trim().toLowerCase();
   if (!needle) return [...items];
-  return items.filter(item => [memoryItemText(item), memoryItemKind(item), memoryItemSource(item) ?? ''].join(' ').toLowerCase().includes(needle));
+  return items.filter(item => [memoryItemText(item), memoryItemKind(item), memoryItemOrigin(item)].join(' ').toLowerCase().includes(needle));
 }
 
 const newestFirst = <T extends MemoryListItem>(items: T[]): T[] => [...items].sort((a, b) => Date.parse(createdAt(b)) - Date.parse(createdAt(a)));
 
 export function memoryListItemMarkup(item: MemoryListItem, disabled = false): string {
   const kind = memoryItemKindNote(item);
-  const source = memoryItemSource(item);
+  const origin = memoryItemOrigin(item);
   const created = memoryItemCreated(item);
   const stamp = createdAt(item);
-  return `<article class="memory-item" data-memory-id="${escape(item.id)}"><header class="memory-meta">${kind ? `<span class="memory-kind">${escape(kind)}</span>` : ''}${source ? `<span class="memory-source">${escape(source)}</span>` : ''}${created ? `<time datetime="${escape(stamp)}">${escape(created)}</time>` : ''}</header><p>${escape(memoryItemText(item))}</p>${memoryDeleteControl(item.id, disabled)}</article>`;
+  return `<article class="memory-item" data-memory-id="${escape(item.id)}"><header class="memory-meta">${kind ? `<span class="memory-kind">${escape(kind)}</span>` : ''}<span class="memory-source">${escape(origin)}</span>${created ? `<time datetime="${escape(stamp)}">${escape(created)}</time>` : ''}</header><p>${escape(memoryItemText(item))}</p>${memoryDeleteControl(item.id, disabled)}</article>`;
 }
 
 /** Render the page's whole memory list: count, client-side filter box, newest-first items, honest empty state. */

@@ -661,3 +661,21 @@ test('owner deletion is an exported domain operation', () => {
     assert.deepEqual(h.store.transaction(tx => h.port.execute(tx, 'getSession', { id: session.id }, ctx)).entries, []);
   } finally { cleanup(h); }
 });
+
+test('owner list derives kind and origin from what the domain stores', () => {
+  const h = fixture();
+  try {
+    const ctx = context(nextNow());
+    const session = h.store.transaction(tx => h.port.execute(tx, 'createSession', { title: 'Composed list', timeZone: 'UTC' }, ctx));
+    const live = h.store.transaction(tx => h.port.execute(tx, 'appendEntry', {
+      sessionId: session.id, text: 'I prefer window seats', role: 'user', timeZone: 'UTC',
+      sourceRef: { id: 'live-1', label: 'live-voice live-1', provider: 'live-voice', accountId: 'live-1', externalId: 'live-1:1', sourceTimestamp: null, availability: 'present', note: 'kind:preference' },
+    }, ctx));
+    const bare = h.store.transaction(tx => h.port.execute(tx, 'appendEntry', { sessionId: session.id, text: 'No recorded source', role: 'user', timeZone: 'UTC' }, ctx));
+    const read = h.store.transaction(tx => h.port.execute(tx, 'getSession', { id: session.id }, ctx));
+    assert.deepEqual(read.entries.map(e => [e.id, e.kind, e.origin]), [
+      [live.id, 'preference', 'live-voice'],
+      [bare.id, 'note', 'unknown'],
+    ]);
+  } finally { cleanup(h); }
+});

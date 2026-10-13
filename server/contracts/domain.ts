@@ -1,7 +1,7 @@
 import type { SchemaMigration, Transaction } from './storage.js';
 export interface SourceRef { id: string; label: string; provider?: string; accountId?: string; externalId?: string; sourceTimestamp: string | null; availability: 'present' | 'missing'; note?: string }
 export interface Session { id: string; title: string; startedAt: string; endedAt: string | null; timeZone: string; revision: number }
-export interface Entry { id: string; sessionId: string; sequence: number; role: 'user' | 'assistant' | 'system'; text: string; capturedAt: string; sourceRefs: SourceRef[] }
+export interface Entry { id: string; sessionId: string; sequence: number; role: 'user' | 'assistant' | 'system'; text: string; kind: 'fact' | 'preference' | 'task' | 'note'; origin: 'live-voice' | 'chat' | 'page' | 'unknown'; capturedAt: string; sourceRefs: SourceRef[] }
 /** Exact frozen record for an explicit local-memory selection; source metadata preserved verbatim. */
 export interface ResolvedEntry {
   entryId: string;
@@ -23,7 +23,7 @@ export interface DomainOperations {
   getSession: { input: { id: string }; output: { session: Session; entries: Entry[]; nextCursor: string | null } };
   appendEntry: { input: { sessionId: string; text: string; role: 'user'; timeZone: string; sourceRef?: SourceRef }; output: Entry };
   /** Trusted in-process completion only; never routed from public append-entry HTTP. */
-  appendAssistantEntry: { input: { sessionId: string; text: string; timeZone: string }; output: Entry };
+  appendAssistantEntry: { input: { sessionId: string; text: string; timeZone: string; sourceRef?: SourceRef }; output: Entry };
   recall: { input: { q: string; limit: number }; output: { hits: { sessionId: string; entryId?: string; snippet: string; sourceRefs: SourceRef[]; sourceTimestamp: string | null }[]; totalMatches: number; truncated: boolean; nextCursor: string | null } };
   /** Trusted in-process batch read by exact id; never a public route and never a full scan. */
   resolveEntries: { input: { entryIds: string[] }; output: { records: ResolvedEntry[] } };

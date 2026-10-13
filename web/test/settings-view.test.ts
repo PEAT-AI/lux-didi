@@ -54,9 +54,9 @@ test('maps each connector state to its sentence and one-line next step', () => {
   assert.deepEqual(connectorState(connections[0]), { id: 'knowledge', state: 'Connected', next: 'no action needed' });
   assert.deepEqual(connectorState(connections[2]), { id: 'maps', state: 'Configured', next: 'a Live session connects on demand' });
   assert.equal(connectorState(connections[1])?.state, 'Credential missing');
-  assert.match(connectorState(connections[1])!.next, /credential file under provider-config/);
+  assert.match(connectorState(connections[1])!.next, /credential under the effective data directory/);
   assert.equal(connectorState(connections[3])?.state, 'Failed');
-  assert.match(connectorState(connections[3])!.next, /start the service/);
+  assert.match(connectorState(connections[3])!.next, /Copy diagnostics/);
   const html = settingsMarkup({ status, connections });
   for (const label of ['Connected', 'Configured', 'Credential missing', 'Failed']) assert.match(html, new RegExp(label));
 });
@@ -85,4 +85,22 @@ test('marks every on-disk setting with its file name and a restart note', () => 
   const html = settingsMarkup({ status, connections });
   for (const file of ['live.json', 'profile.json', 'gemini-primary.json', 'provider-config/mcp.json']) assert.match(html, new RegExp(file.replace('.', '\\.')));
   assert.match(html, /need a restart of Lux Didi/);
+});
+
+test('connector-specific setup instructions render safely', () => {
+  const html = settingsMarkup({ connections: [
+    { id: 'calendar', state: 'missing', reasonCode: 'credential_missing' },
+    { id: 'mongoose', state: 'missing', reasonCode: 'credential_missing' },
+    { id: 'gmail', state: 'error', reasonCode: 'unreachable' },
+  ] });
+  assert.match(html, /uv run --package lux-gcal gcal --auth/);
+  assert.match(html, /provider-38\/mongoose-mcp.json/);
+  assert.match(html, /see RUNBOOK/);
+  assert.match(html, /Copy diagnostics/);
+});
+
+test('settings view puts each section heading in its own section for vertical rhythm', () => {
+  const html = settingsMarkup({ status, connections });
+  assert.match(html, /<section class="settings-section"><h3>Connectors<\/h3>/);
+  assert.match(html, /<section class="settings-section">\s*<h3>Where these settings live<\/h3>/);
 });

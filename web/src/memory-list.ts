@@ -26,10 +26,13 @@ const createdAt = (item: MemoryListItem) => item.capturedAt ?? item.sourceTimest
 
 /** The domain carries the Live remember kind in the source note; every other entry keeps its role. */
 export function memoryItemKind(item: MemoryListItem): string {
+  return memoryItemKindNote(item) ?? item.role ?? 'note';
+}
+
+/** The real kind carried by the remember_note source note, or null when the entry has none (role-only). */
+export function memoryItemKindNote(item: MemoryListItem): string | null {
   const note = item.sourceRefs?.map(ref => ref.note).find(note => note && KIND_NOTE.test(note));
-  const carried = note?.match(KIND_NOTE)?.[1];
-  if (carried) return carried.toLowerCase();
-  return item.role ?? 'note';
+  return note?.match(KIND_NOTE)?.[1]?.toLowerCase() ?? null;
 }
 
 /** Name the origin only when the payload carries it: Live voice, otherwise the source label. */
@@ -60,11 +63,11 @@ export function filterMemoryItems<T extends MemoryListItem>(items: T[], query: s
 const newestFirst = <T extends MemoryListItem>(items: T[]): T[] => [...items].sort((a, b) => Date.parse(createdAt(b)) - Date.parse(createdAt(a)));
 
 export function memoryListItemMarkup(item: MemoryListItem, disabled = false): string {
-  const kind = memoryItemKind(item);
+  const kind = memoryItemKindNote(item);
   const source = memoryItemSource(item);
   const created = memoryItemCreated(item);
   const stamp = createdAt(item);
-  return `<article class="memory-item" data-memory-id="${escape(item.id)}"><header class="memory-meta"><span class="memory-kind">${escape(kind)}</span>${source ? `<span class="memory-source">${escape(source)}</span>` : ''}${created ? `<time datetime="${escape(stamp)}">${escape(created)}</time>` : ''}</header><p>${escape(memoryItemText(item))}</p>${memoryDeleteControl(item.id, disabled)}</article>`;
+  return `<article class="memory-item" data-memory-id="${escape(item.id)}"><header class="memory-meta">${kind ? `<span class="memory-kind">${escape(kind)}</span>` : ''}${source ? `<span class="memory-source">${escape(source)}</span>` : ''}${created ? `<time datetime="${escape(stamp)}">${escape(created)}</time>` : ''}</header><p>${escape(memoryItemText(item))}</p>${memoryDeleteControl(item.id, disabled)}</article>`;
 }
 
 /** Render the page's whole memory list: count, client-side filter box, newest-first items, honest empty state. */

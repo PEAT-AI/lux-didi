@@ -129,13 +129,19 @@ public actor LiveSessionCoordinator {
     private var operation: UInt64 = 0
     private var pendingBytes = 0
     private var pendingFrames = 0
+    public private(set) var captureEpoch: UInt64 = 0
+    private var captureMuted = false
+    private var captureSubmissions = 0
+    private var captureDrainWaiters: [CheckedContinuation<Void, Never>] = []
+    private let beforeCaptureSubmission: (@Sendable () async -> Void)?
     private let maxPendingBytes = 131072
     private let maxPendingFrames = 4
     private var inputEnded = false
     private var reading = false
 
-    public init(http: any LiveOperatorHTTP, sockets: any LiveSocketConnecting, sink: any LiveAudioSink) {
+    public init(http: any LiveOperatorHTTP, sockets: any LiveSocketConnecting, sink: any LiveAudioSink, beforeCaptureSubmission: (@Sendable () async -> Void)? = nil) {
         self.http = http; self.sockets = sockets; self.sink = sink
+        self.beforeCaptureSubmission = beforeCaptureSubmission
         (events, stateEvents) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(16))
     }
 
@@ -259,7 +265,27 @@ public actor LiveSessionCoordinator {
         }
     }
 
-    public func sendPCM(_ pcm: Data) async throws {
+    /// Advance the capture fence before waiting. The caller acknowledges mute only on return.
+    public func setCaptureMuted(_ muted: Bool, epoch: UInt64) async {
+        guard epoch >= captureEpoch else { return }
+        captureEpoch = epoch; captureMuted = muted
+        if muted, captureSubmissions > 0 {
+            await withCheckedContinuation { captureDrainWaiters.append($0) }
+        }
+    }
+
+    public func sendPCM(_ pcm: Data, captureEpoch submittedEpoch: UInt64? = nil) async throws {
+        if let submittedEpoch, captureMuted || submittedEpoch != captureEpoch { return }
+        if submittedEpoch != nil { captureSubmissions += 1 }
+        defer {
+            if submittedEpoch != nil {
+                captureSubmissions -= 1
+                if captureSubmissions == 0 {
+                    let waiters = captureDrainWaiters; captureDrainWaiters.removeAll()
+                    for waiter in waiters { waiter.resume() }
+                }
+            }
+        }
         if state == .rebuilding { return }
         try LiveSocketTransport.validatePCM(pcm)
         guard state == .active, !inputEnded, let connection = socket else { throw LiveClientError.unavailable }
@@ -274,6 +300,11 @@ public actor LiveSessionCoordinator {
             if generation == token { pendingFrames -= 1; pendingBytes -= pcm.count }
         }
         do {
+            if submittedEpoch != nil, let beforeCaptureSubmission { await beforeCaptureSubmission() }
+            // Last outbound boundary: a drained frame may have suspended before reaching this actor.
+            if let submittedEpoch, captureMuted || submittedEpoch != captureEpoch { return }
+            try Task.checkCancellation()
+            guard generation == token, state == .active else { throw LiveClientError.staleOperation }
             try await connection.sendPCM(pcm)
             guard generation == token, state == .active else { throw LiveClientError.staleOperation }
         } catch {

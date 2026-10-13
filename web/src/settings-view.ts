@@ -1,6 +1,7 @@
 // Read-only projection of the running Didi service settings. Pure mapping and markup only.
 // Every rendered field is whitelisted and escaped by name; no provider, config or route payload is
 // ever interpolated wholesale, so a secret-looking field cannot reach the page.
+import { nextStep, reasonCodes } from './next-steps.ts';
 import { escapeHtml } from './markdown.ts';
 import type { LiveSummary } from './api.ts';
 
@@ -11,15 +12,6 @@ const FILE_ROWS: [string, string][] = [
   ['Model credential reference', 'gemini-primary.json'],
   ['Connectors', 'provider-config/mcp.json'],
 ];
-
-/** One-line next step per connector reason code. Fixed text, never a provider payload. */
-const NEXT_STEP: Record<string, [string, string]> = {
-  credential_missing: ['Credential missing', 'add the credential file under provider-config, then restart Lux Didi'],
-  unreachable: ['Failed', 'start the service, then restart Lux Didi'],
-  discovery_failed: ['Failed', 'check the service tool configuration, then restart Lux Didi'],
-  handshake_failed: ['Failed', 'check the service is ready, then restart Lux Didi'],
-  unknown: ['Failed', 'check the local service configuration, then restart Lux Didi'],
-};
 
 export interface SettingsInput {
   /** Envelope data from GET /api/v1/status. */
@@ -55,11 +47,12 @@ export function connectorState(value: unknown): { id: string; state: string; nex
   if (!row) return undefined;
   const id = typeof row.id === 'string' && /^[\w.-]{1,128}$/.test(row.id) ? row.id : undefined;
   if (!id) return undefined;
-  const state = text(row.state);
-  if (state === 'connected') return { id, state: 'Connected', next: 'no action needed' };
-  if (state === 'configured') return { id, state: 'Configured', next: 'a Live session connects on demand' };
-  const reason = typeof row.reasonCode === 'string' && Object.hasOwn(NEXT_STEP, row.reasonCode) ? row.reasonCode : 'unknown';
-  const [label, next] = state === 'missing' ? NEXT_STEP.credential_missing! : NEXT_STEP[reason]!;
+  const state = text(row.state) ?? 'unknown';
+  if (state === 'connected') return { id, state: 'Connected', next: nextStep(id, state).text };
+  if (state === 'configured') return { id, state: 'Configured', next: nextStep(id, state).text };
+  const reason = typeof row.reasonCode === 'string' && reasonCodes.some(reason => reason === row.reasonCode) ? row.reasonCode : 'unknown';
+  const label = state === 'missing' || reason === 'credential_missing' ? 'Credential missing' : 'Failed';
+  const next = nextStep(id, state, reason).text;
   return { id, state: label, next };
 }
 
@@ -113,9 +106,9 @@ export function settingsMarkup(input: SettingsInput): string {
 <p class="muted">Read-only summary of what this Didi is running with. Values come from the running service; this page cannot change them.</p>
 <dl class="settings-facts">${liveRows(input.summary, input.summaryUnavailable === true)}${serviceRows(input.status, input.statusUnavailable === true, summaryPersona(input))}
 <dt>Service mode</dt><dd>${input.statusUnavailable === true ? unavailable() : escapeHtml(text(record(input.status)?.serviceMode, 40) ?? 'loopback')}</dd></dl>
-${connectorsSection(input.connections, input.connectionsUnavailable === true)}
-<h3>Where these settings live</h3>
+<section class="settings-section">${connectorsSection(input.connections, input.connectionsUnavailable === true)}</section>
+<section class="settings-section"><h3>Where these settings live</h3>
 <dl class="settings-files">${FILE_ROWS.map(([what, file]) => `<dt>${escapeHtml(what)}</dt><dd><code>${escapeHtml(file)}</code></dd>`).join('')}</dl>
-<p class="settings-restart">Changes to these files need a restart of Lux Didi. This page is read-only.</p>
+<p class="settings-restart">Changes to these files need a restart of Lux Didi. This page is read-only.</p></section>
 </section>`;
 }

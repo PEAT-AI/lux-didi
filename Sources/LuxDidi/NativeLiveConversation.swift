@@ -5,7 +5,34 @@ import DidiOwner
 #endif
 
 @MainActor final class NativeLiveConversation: ObservableObject {
-    enum State: String { case idle, connecting, listening, speaking, muted, ended, failed, outcomeUnknown, pausedForInput, rebuilding }
+enum State: String, CaseIterable {
+    case idle, connecting, listening, speaking, muted, ended, failed, outcomeUnknown, pausedForInput, rebuilding
+    var sentence: String {
+        switch self {
+        case .idle: return "Ready for Live voice"
+        case .connecting: return "Connecting"
+        case .listening: return "Listening"
+        case .speaking: return "Speaking"
+        case .muted: return "Microphone muted"
+        case .ended: return "Live voice stopped"
+        case .failed: return "Live voice failed"
+        case .outcomeUnknown: return "Live outcome unknown"
+        case .pausedForInput: return "Microphone changed; Resume required"
+        case .rebuilding: return "Reconnecting"
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .listening: return "mic.fill"
+        case .speaking: return "waveform"
+        case .muted: return "mic.slash.fill"
+        case .connecting, .rebuilding: return "ellipsis.circle"
+        case .pausedForInput: return "pause.circle"
+        case .idle, .ended, .failed, .outcomeUnknown: return "mic.slash"
+        }
+    }
+    var presentation: (text: String, symbol: String) { (sentence, symbol) }
+}
     /// Continuity changes presentation, never the owner's mute choice or audio device.
     static func continuityPresentation(_ event: LiveClientState, muted: Bool) -> State? {
         switch event {
@@ -27,6 +54,7 @@ import DidiOwner
     private let logsDirectory: URL?
     private var limits: NativeLiveLimits?
     private var muted = false, speaking = false
+    private var muteTask: Task<Void, Never>?
     var isMuted: Bool { muted }
     var isCapturing: Bool { state == .connecting || state == .pausedForInput || device.isCapturing }
     init(authority: (origin: URL, request: NativeLiveRequestBuilder), dictationIsCapturing: @escaping () -> Bool, pickupJobID: String? = nil, logsDirectory: URL? = nil) {
@@ -112,9 +140,13 @@ import DidiOwner
         }
         startTask = Task { [weak self, coordinator, http] in
             do {
+                // Reset capture authority before a new explicit start.
+                guard let epoch = self?.device.captureEpoch else { return }
+                await coordinator.setCaptureMuted(false, epoch: epoch)
+                try Task.checkCancellation()
                 // Prepare the single duplex engine before the socket can deliver model PCM.
-                try await self?.device.start { frame in
-                    if await coordinator.state == .active { try await coordinator.sendPCM(frame) }
+                try await self?.device.startFenced { frame, epoch in
+                    if await coordinator.state == .active { try await coordinator.sendPCM(frame, captureEpoch: epoch) }
                 }
                 try Task.checkCancellation()
                 guard let self, self.generation == token else { return }
@@ -160,9 +192,16 @@ import DidiOwner
     }
     func toggleMute() {
         guard [.listening, .speaking, .muted, .pausedForInput].contains(state) else { return }
+        guard muteTask == nil else { return }
         muted.toggle(); device.setMuted(muted)
-        guard state != .pausedForInput else { return }
-        state = muted ? .muted : (speaking ? .speaking : .listening)
+        let epoch = device.captureEpoch, requestedMute = muted, token = generation
+        muteTask = Task { [weak self, coordinator] in
+            await coordinator.setCaptureMuted(requestedMute, epoch: epoch)
+            guard let self else { return }
+            self.muteTask = nil
+            guard self.generation == token, self.state != .pausedForInput else { return }
+            self.state = requestedMute ? .muted : (self.speaking ? .speaking : .listening)
+        }
     }
     /// Stop capture and presentation synchronously before asynchronous transport cleanup.
     func stopCapture() {

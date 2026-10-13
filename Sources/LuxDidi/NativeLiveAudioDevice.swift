@@ -195,7 +195,8 @@ final class NativeCaptureBuffer: @unchecked Sendable {
         recovery.changed()
     }
     func finishRouteRecovery() async { await recovery.pending?.value }
-    private var sendFrame: (@Sendable (Data) async throws -> Void)?
+    private var sendFrame: (@Sendable (Data, UInt64) async throws -> Void)?
+    private(set) var captureEpoch: UInt64 = 0
     private lazy var recovery = NativeAudioRouteRecovery(
         input: { [unowned self] in self.inputDevice().id },
         release: { [weak self] in self?.releaseAudio() },
@@ -213,6 +214,29 @@ final class NativeCaptureBuffer: @unchecked Sendable {
                 await self.interrupt()
             }
         })
+    /// Support exports use CoreAudio transport classes, never the local device name.
+    var diagnosticsRoute: String {
+        "Input: " + Self.routeClassification(input: true) + "; Output: " + Self.routeClassification(input: false)
+    }
+    private static func routeClassification(input: Bool) -> String {
+        var property = AudioObjectPropertyAddress(
+            mSelector: input ? kAudioHardwarePropertyDefaultInputDevice : kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var device = AudioDeviceID(0), size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &property, 0, nil, &size, &device) == noErr,
+              device != kAudioObjectUnknown else { return "unknown" }
+        property.mSelector = kAudioDevicePropertyTransportType
+        var transport = UInt32(0)
+        size = UInt32(MemoryLayout<UInt32>.size)
+        guard AudioObjectGetPropertyData(device, &property, 0, nil, &size, &transport) == noErr else { return "unknown" }
+        switch transport {
+        case kAudioDeviceTransportTypeBuiltIn: return "built-in"
+        case kAudioDeviceTransportTypeBluetooth, kAudioDeviceTransportTypeBluetoothLE: return "Bluetooth"
+        case kAudioDeviceTransportTypeUSB: return "USB"
+        case kAudioDeviceTransportTypePCI, kAudioDeviceTransportTypeFireWire, kAudioDeviceTransportTypeThunderbolt: return "external wired"
+        default: return "unknown"
+        }
+    }
     private static func defaultDevice(input: Bool) -> (id: String, name: String) {
         var property = AudioObjectPropertyAddress(
             mSelector: input ? kAudioHardwarePropertyDefaultInputDevice : kAudioHardwarePropertyDefaultOutputDevice,
@@ -239,6 +263,9 @@ final class NativeCaptureBuffer: @unchecked Sendable {
     private var captureGeneration: UInt64 = 0
 
     func start(send: @escaping @Sendable (Data) async throws -> Void) async throws {
+        try await startFenced { data, _ in try await send(data) }
+    }
+    func startFenced(send: @escaping @Sendable (Data, UInt64) async throws -> Void) async throws {
         guard engine == nil, !isCapturing else { throw LiveClientError.unavailable }
         if captureInput == nil {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
@@ -255,7 +282,7 @@ final class NativeCaptureBuffer: @unchecked Sendable {
         do { try build(send: send); recovery.begin() }
         catch { sendFrame = nil; throw error }
     }
-    private func build(send: @escaping @Sendable (Data) async throws -> Void) throws {
+    private func build(send: @escaping @Sendable (Data, UInt64) async throws -> Void) throws {
         guard !inputDevice().id.isEmpty else { throw NativeLiveAudioError.deviceUnavailable }
         if let captureInput {
             let capture = try NativeCaptureBuffer(converter: NativePCMConverter(input: captureInput))
@@ -298,7 +325,7 @@ final class NativeCaptureBuffer: @unchecked Sendable {
             throw (error as? NativeLiveAudioError) ?? NativeLiveAudioError.deviceUnavailable
         }
     }
-    private func activateCapture(_ capture: NativeCaptureBuffer, send: @escaping @Sendable (Data) async throws -> Void) {
+    private func activateCapture(_ capture: NativeCaptureBuffer, send: @escaping @Sendable (Data, UInt64) async throws -> Void) {
         isCapturing = true; captureGeneration &+= 1
         let token = captureGeneration
         // Exactly one drain task. Playback never owns or pauses the capture path.
@@ -310,7 +337,8 @@ final class NativeCaptureBuffer: @unchecked Sendable {
                         self.inputLevel = level; self.droppedFrames = drops
                         if failed { await self.interrupt(); return }
                         guard let frame else { break }
-                        do { try Task.checkCancellation(); try await send(frame) }
+                        let epoch = self.captureEpoch
+                        do { try Task.checkCancellation(); try await send(frame, epoch) }
                         catch {
                             guard self.captureGeneration == token, !Task.isCancelled else { return }
                             await self.interrupt(); return
@@ -320,7 +348,7 @@ final class NativeCaptureBuffer: @unchecked Sendable {
             }
         onCapturePrepared?(capture)
     }
-    func setMuted(_ muted: Bool) { self.muted = muted; capture?.setMuted(muted); inputLevel = 0 }
+    func setMuted(_ muted: Bool) { if self.muted != muted { captureEpoch &+= 1 }; self.muted = muted; capture?.setMuted(muted); inputLevel = 0 }
     private func interrupt() async {
         stop()
         await onInterruption?()
@@ -359,7 +387,7 @@ final class NativeCaptureBuffer: @unchecked Sendable {
         outputGeneration &+= 1; player?.stop(); queuedOutput = 0; onOutput?(false)
     }
     func stop() {
-        recovery.stop(); sendFrame = nil; muted = false
+        captureEpoch &+= 1; recovery.stop(); sendFrame = nil; muted = false
     }
     private func releaseAudio() {
         captureGeneration &+= 1

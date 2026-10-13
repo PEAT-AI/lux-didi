@@ -2,7 +2,8 @@ import Foundation
 
 /// Plain inputs for the "Copy diagnostics" support snapshot.
 ///
-/// Every value is a short label the app already renders. Nothing here is read
+/// Audio routes admit only closed classifications, never device or owner labels.
+/// Other values are short support labels. Nothing here is read
 /// from secrets, keychain items, cookies, tokens, transcripts, memory, persona
 /// text, mail or file contents; a value that still looks like a credential is
 /// replaced by `unknown` before it reaches the clipboard.
@@ -57,7 +58,9 @@ enum NativeDiagnosticsSnapshot {
         let connectors = (input.connections ?? []).map(scrub)
         lines.append("Connectors: " + (connectors.isEmpty ? "none" : ""))
         lines.append(contentsOf: connectors.map { "  - " + $0 })
-        lines.append("Audio route: " + scrub(input.audioRoute))
+        let classifications = ["built-in", "external wired", "Bluetooth", "USB", "unknown"]
+        let routes = classifications.flatMap { input in classifications.map { "Input: " + input + "; Output: " + $0 } }
+        lines.append("Audio route: " + (routes.contains(input.audioRoute ?? "") ? input.audioRoute! : "Input: unknown; Output: unknown"))
         lines.append("Last pre-CREATE failure: " + scrub(input.preCreateFailureClass) + "/" + scrub(input.preCreateFailureCode))
         return lines.joined(separator: "\n") + "\n"
     }

@@ -26,7 +26,8 @@ Never invent a tool result, a source or a date.`;
 
 const maxOverlayBytes = 16 * 1024;
 const maxOptionalBytes = 4096;
-const budgetChars = 60_000;
+/** One provisional production ceiling for complete trusted Chat and Live instructions. */
+export const TRUSTED_SYSTEM_CODE_UNIT_LIMIT = 60_000;
 const separator = '\n\n';
 const overlayKeys = ['schemaVersion', 'text', 'greeting', 'accent'];
 
@@ -187,7 +188,7 @@ export function composeLiveInstruction(input: ComposeLiveInstructionInput): Comp
     entries.push({ id: 'voice', text: voice });
     return entries;
   };
-  const fits = (entries: Entry[]): boolean => assemble(entries.map(entry => entry.text)).length <= budgetChars;
+  const fits = (entries: Entry[]): boolean => assemble(entries.map(entry => entry.text)).length <= TRUSTED_SYSTEM_CODE_UNIT_LIMIT;
 
   let memory = input.memory?.length ? input.memory : undefined;
   let overlay = overlayText;
@@ -196,7 +197,7 @@ export function composeLiveInstruction(input: ComposeLiveInstructionInput): Comp
   if (!fits(select(overlay, tools, memory))) {
     if (overlay !== undefined) {
       const others = [base, ...(tools !== undefined ? [tools] : []), ...owner.map(section => section.text), voice];
-      const remaining = budgetChars - assemble(others).length - separator.length;
+      const remaining = TRUSTED_SYSTEM_CODE_UNIT_LIMIT - assemble(others).length - separator.length;
       overlay = remaining <= 0 ? undefined : overlay.slice(0, remaining).replace(/\s+$/, '');
     }
     if (!fits(select(overlay, tools, memory))) tools = undefined;

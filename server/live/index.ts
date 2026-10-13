@@ -7,7 +7,7 @@ import { declarationsFor, runToolCalls, authorizeToolBatch } from '../tools/decl
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
 import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection } from './types.js';
-import { publicOwnerProfile, PROMPT_VERSION, composeLiveSessionInstruction } from '../prompt/index.js';
+import { publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, composeLiveSessionInstruction } from '../prompt/index.js';
 import { validateAcceptedPrompt } from './config.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type { DataClass, LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort, LiveVoiceSession, LiveVoiceRequest } from '../adapters/live-voice/index.js';
@@ -313,7 +313,7 @@ export class LiveSessionOwner {
       catch { throw new LiveError('memory_unavailable'); }
       let composed: ReturnType<typeof composeLiveSessionInstruction>;
       try { composed = composeLiveSessionInstruction({ text: configuredPrompt.system, tools: toolNames,
-        records: records.filter(record => record.dataClass === 'ordinary'), trustedChars: 20000,
+        records: records.filter(record => record.dataClass === 'ordinary'), trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
         ...(this.#profile.overlay ? { overlay: this.#profile.overlay } : {}),
         ...(pickup ? { pickupNote: pickupInstruction } : {}) }); }
       catch (error) { if (error instanceof Error && 'code' in error && error.code === 'instruction_too_large') throw new LiveError('instruction_too_large'); throw error; }

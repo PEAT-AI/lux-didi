@@ -4,7 +4,7 @@ import type { Store } from '../runtime/store.js';
 import { ChatService, type ChatToolsComposition } from '../chat/index.js';
 import { loadProviderConfig } from '../config/index.js';
 import { GeminiAdapter, type Credentials, type Transport } from '../adapters/model/index.js';
-import { validatePreferences } from '../prompt/index.js';
+import { TRUSTED_SYSTEM_CODE_UNIT_LIMIT, validatePreferences } from '../prompt/index.js';
 
 export type ConnectedStatus = { status: 'unconfigured' } | { status: 'error'; code: string }
   | { status: 'disabled' | 'configured'; provider: 'gemini'; model: string };
@@ -36,7 +36,7 @@ export function composeChat(store: Store, domain: DomainPort, configDir: string,
       if (label.dataClass === 'unknown') return null;
       return { ownerId: store.assistantId, dataClass: label.dataClass, revision: label.revision };
     },
-    context: { sources: [], budgets: { trustedChars: 20000, contextChars: 12000, historyChars: 12000 } },
+    context: { sources: [], budgets: { trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, contextChars: 12000, historyChars: 12000 } },
     ...(testing?.deadlineMs ? { deadlineMs: testing.deadlineMs } : {}),
     ...(now ? { now } : {})
   });

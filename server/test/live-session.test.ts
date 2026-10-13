@@ -12,7 +12,7 @@ import { LiveToolJobs, type ToolJobResult, type JobTimer } from '../tools/jobs.j
 import type { LiveAuthority } from '../tools/types.js';
 import { liveProfileIdentity } from '../live/config.js';
 import type { ToolDefinition, HostContext } from '../adapters/model/types.js';
-import { PROMPT_VERSION } from '../prompt/index.js';
+import { PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT } from '../prompt/index.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { TestContext } from 'node:test';
@@ -22,7 +22,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadLiveConfig } from '../config/live.js';
-import { NAYA_BASE, NAYA_TOOLS, composeLiveInstruction } from '../prompt/live-persona.js';
+import { NAYA_BASE, NAYA_TOOLS, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
 import { GeminiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
 import type { LiveVoiceLimits, LiveVoiceRequest } from '../adapters/live-voice/index.js';
 import { chatMigrations } from '../chat/index.js';
@@ -72,6 +72,8 @@ async function harness(t: TestContext, overrides: {
   toolError?: boolean;
   scheduler?: DeadlineClock;
   system?: string;
+  acceptedPrompt?: (ownerId: string) => NonNullable<ReturnType<typeof validateLiveProfile>['acceptedPrompt']>;
+  routeClasses?: readonly ('ordinary' | 'private' | 'sensitive')[];
   overlay?: { schemaVersion: 1; text: string; accent?: string };
   memoryFailure?: boolean;
 } = {}): Promise<Harness> {
@@ -81,7 +83,11 @@ async function harness(t: TestContext, overrides: {
   const store = new Store(dir, [...domain.migrations, ...chatMigrations, ...liveMigrations, ...(overrides.tools ? toolsMigrations : [])]);
   let clock = NOW;
   let memorySelections = 0;
-  const profile = validateLiveProfile({ ...profileInput({ handshakeMs: 1000, idleMs: 2000, sessionMs: 4000, closeMs: 50, ...Object.fromEntries(Object.entries(overrides.adapterLimits ?? {}).filter(([key]) => ['handshakeMs', 'idleMs', 'sessionMs', 'closeMs'].includes(key))), ...overrides.limits }, overrides.model), ...(overrides.overlay ? { overlay: overrides.overlay } : {}), ...(overrides.system !== undefined ? { prompt: { text: overrides.system, dataClass: 'ordinary' } } : {}) });
+  const initialProfile = profileInput({ handshakeMs: 1000, idleMs: 2000, sessionMs: 4000, closeMs: 50, ...Object.fromEntries(Object.entries(overrides.adapterLimits ?? {}).filter(([key]) => ['handshakeMs', 'idleMs', 'sessionMs', 'closeMs'].includes(key))), ...overrides.limits }, overrides.model);
+  const profile = validateLiveProfile({ ...initialProfile,
+    ...(overrides.routeClasses ? { route: { ...initialProfile.route, dataClasses: overrides.routeClasses } } : {}),
+    ...(overrides.overlay ? { overlay: overrides.overlay } : {}), ...(overrides.system !== undefined ? { prompt: { text: overrides.system, dataClass: 'ordinary' } } : {}),
+    ...(overrides.acceptedPrompt ? { acceptedPrompt: overrides.acceptedPrompt(store.assistantId) } : {}) });
   const voice = new GeminiLiveVoiceAdapter(options({
     socketFactory: f.socketFactory, modelId: profile.liveModelId, voice: profile.voice, keyReference: profile.keyReference,
     route: { enabled: true, provider: 'gemini', modelId: profile.liveModelId, dataClasses: profile.route.dataClasses },
@@ -227,21 +233,19 @@ test('Live memory budget keeps whole records, reports overflow, and rejects over
   const h = await harness(t);
   note(h, 'a', 'Fixture whole note');
   const initial = h.owner.create({ idempotencyKey: 'measure-memory', inputClass: 'ordinary' }, h.ctx);
-  const remaining = 20000 - accepted(h, initial.liveSessionId).system.length;
+  const remaining = TRUSTED_SYSTEM_CODE_UNIT_LIMIT - accepted(h, initial.liveSessionId).system.length;
   h.store.transaction(tx => tx.run('UPDATE entries SET text=? WHERE id=?', ['Fixture whole note' + 'x'.repeat(remaining), 'a']));
   note(h, 'b', 'Fixture overflow note');
   const boundary = h.owner.create({ idempotencyKey: 'boundary-memory', inputClass: 'ordinary' }, h.ctx);
   const snapshot = accepted(h, boundary.liveSessionId);
-  assert.equal(snapshot.system.length, 20000);
+  assert.equal(snapshot.system.length, TRUSTED_SYSTEM_CODE_UNIT_LIMIT);
   assert.deepEqual(snapshot.memory.selectedIds, ['a']);
   assert.deepEqual(snapshot.memory.omitted, [{ id: 'b', reason: 'budget' }]);
   assert.ok(!snapshot.system.includes('Fixture overflow note'));
   assert.ok(snapshot.system.includes(JSON.stringify({ id: 'a', text: 'Fixture whole note' + 'x'.repeat(remaining) })), 'the selected record survives byte for byte');
-  const oversized = await harness(t, { system: 'x'.repeat(4096), tools: true, overlay: { schemaVersion: 1, text: 'x'.repeat(16000) } });
-  assert.throws(() => oversized.owner.create({ idempotencyKey: 'oversized', inputClass: 'ordinary' }, oversized.ctx), (error: unknown) => error instanceof LiveError && String(error.code) === 'instruction_too_large');
   const failed = await harness(t, { memoryFailure: true });
   assert.throws(() => failed.owner.create({ idempotencyKey: 'failed-memory', inputClass: 'ordinary' }, failed.ctx), (error: unknown) => error instanceof LiveError && String(error.code) === 'memory_unavailable');
-  assert.equal(oversized.requests.length + failed.requests.length, 0);
+  assert.equal(failed.requests.length, 0);
 });
 
 test('Live transcripts and completion, interruption and terminal events stay journal-only', async t => {
@@ -517,12 +521,42 @@ test('profile validation rejects text-model fallback and bounds, and validation 
   assert.throws(() => h.owner.create({ idempotencyKey: 'class', inputClass: 'private' }, h.ctx), (error: unknown) => error instanceof LiveError && error.code === 'invalid_request');
 });
 
-test('accepted complete system uses the existing 20k bound while generic prompt text stays at 4096', () => {
+test('accepted complete system uses the shared 60k bound while generic prompt text stays at 4096', () => {
   const ownerProfile = { schemaVersion: 1 as const, kind: 'default' as const, ownerId: 'assistant-test', displayName: 'Lux Didi' as const };
-  const acceptedPrompt = { schemaVersion: 1, ownerProfile, compilerVersion: PROMPT_VERSION, system: 'A'.repeat(20_000), dataClasses: ['ordinary'] };
-  assert.equal(validateLiveProfile({ ...profileInput(), acceptedPrompt }).acceptedPrompt?.system.length, 20_000);
-  assert.throws(() => validateLiveProfile({ ...profileInput(), acceptedPrompt: { ...acceptedPrompt, system: 'A'.repeat(20_001) } }), LiveConfigError);
+  const acceptedPrompt = { schemaVersion: 1, ownerProfile, compilerVersion: PROMPT_VERSION, system: 'A'.repeat(60_000), dataClasses: ['ordinary'] };
+  assert.equal(validateLiveProfile({ ...profileInput(), acceptedPrompt }).acceptedPrompt?.system.length, 60_000);
+  assert.throws(() => validateLiveProfile({ ...profileInput(), acceptedPrompt: { ...acceptedPrompt, system: 'A'.repeat(60_001) } }), LiveConfigError);
   assert.throws(() => validateLiveProfile({ ...profileInput(), prompt: { text: 'A'.repeat(4097), dataClass: 'ordinary' } }), LiveConfigError);
+});
+
+test('tool-enabled Live CREATE freezes an expanded classified owner system byte for byte', async t => {
+  const style = `SYNTHETIC style ${'S'.repeat(10_000)}`;
+  const lore = `SYNTHETIC lore ${'L'.repeat(13_955)}`;
+  let expectedSystem = '';
+  const h = await harness(t, { tools: true, routeClasses: ['ordinary', 'private', 'sensitive'], acceptedPrompt: ownerId => {
+    const ownerProfile = { schemaVersion: 1 as const, kind: 'profile' as const, ownerId, profileVersion: 'fixture', displayName: 'Example',
+      style: { text: style, dataClass: 'private' as const }, lore: { text: lore, dataClass: 'sensitive' as const } };
+    expectedSystem = composeLiveInstruction({ base: NAYA_BASE, ownerProfile, language: 'en' }).text;
+    return { schemaVersion: 1, ownerProfile, compilerVersion: PROMPT_VERSION,
+      system: expectedSystem, dataClasses: ['ordinary', 'private', 'sensitive'] };
+  } });
+  const created = h.owner.create({ idempotencyKey: 'expanded-owner-tools', inputClass: 'ordinary' }, h.ctx);
+  const frozen = h.store.transaction(tx => JSON.parse(String(tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [created.liveSessionId])!['accepted_prompt_snapshot'])));
+  assert.ok(frozen.system.length > 20_000);
+  assert.equal(frozen.system, composeLiveSessionInstruction({ text: expectedSystem, tools: ['search_knowledge', 'get_insight'], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT }).text);
+  assert.equal(frozen.system.split(style).length - 1, 1);
+  assert.equal(frozen.system.split(lore).length - 1, 1);
+  assert.deepEqual(frozen.dataClasses, ['ordinary', 'private', 'sensitive']);
+});
+
+test('tool-enabled Live CREATE rejects a complete system whose required tool conduct exceeds the shared ceiling', async t => {
+  const h = await harness(t, { tools: true, acceptedPrompt: ownerId => ({
+    schemaVersion: 1, ownerProfile: { schemaVersion: 1, kind: 'default', ownerId, displayName: 'Lux Didi' },
+    compilerVersion: PROMPT_VERSION, system: 'A'.repeat(TRUSTED_SYSTEM_CODE_UNIT_LIMIT), dataClasses: ['ordinary'],
+  }) });
+  assert.throws(() => h.owner.create({ idempotencyKey: 'expanded-tools-overflow', inputClass: 'ordinary' }, h.ctx),
+    (error: unknown) => error instanceof LiveError && error.code === 'instruction_too_large');
+  assert.equal(h.requests.length, 0);
 });
 
 test('waitingForInput keeps its boolean and ready stays a durable fact', async t => {
@@ -1287,7 +1321,7 @@ test('loadLiveConfig keeps public prompt bytes and composes classified owner sec
   const overlay = { schemaVersion: 1 as const, text: 'SYNTHETIC local overlay persona', greeting: 'Synthetic greeting', accent: 'Synthetic accent' };
   writePrivate(dataDir, 'persona-overlay.json', JSON.stringify(overlay));
   const style = `SYNTHETIC owner style ${'S'.repeat(3000)}`;
-  const lore = `SYNTHETIC owner lore ${'L'.repeat(3000)}`;
+  const lore = `SYNTHETIC owner lore ${'L'.repeat(13_955)}`;
   const ownerProfile = { schemaVersion: 1 as const, kind: 'profile' as const, ownerId: 'synthetic-owner', profileVersion: 'fixture', displayName: 'Example',
     style: { text: style, dataClass: 'private' as const }, lore: { text: lore, dataClass: 'sensitive' as const } };
   const status = loadLiveConfig({ configDir, ownerId: 'synthetic-owner', ownerProfile });

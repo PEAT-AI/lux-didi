@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { GeminiAdapter } from '../adapters/model/gemini.js';
 import type { ToolDefinition } from '../adapters/model/types.js';
-import { compilePrompt, compileVoiceInstruction, createCapabilitySnapshot, validatePreferences, PUBLIC_PERSONA, PROMPT_VERSION, PromptCompileError, type CompileInput, type Evidence } from '../prompt/index.js';
+import { compilePrompt, compileVoiceInstruction, createCapabilitySnapshot, validateOwnerProfile, validatePreferences, PUBLIC_PERSONA, PROMPT_VERSION, PromptCompileError, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, type CompileInput, type Evidence } from '../prompt/index.js';
 
 const rawPreferences = { schemaVersion: 1, ownerId: 'alice', dataClass: 'private', language: 'en', register: 'plain', humor: 'dry', verbosity: 'brief' };
 const tool: ToolDefinition = { name: 'read_note', description: 'Read a note', parameters: { type: 'object', properties: { id: { type: 'string' } } }, effect: 'read', accountId: 'account', resourceId: 'notes', validate: () => true, execute: async () => ({ status: 'completed', result: { id: 'read_note', sha256: createHash('sha256').update('read_note synthetic result').digest('hex') } }) };
@@ -264,8 +264,23 @@ test('owner text is never truncated and unknown classes/fields and wrong owner a
   for (const ownerProfile of [
     { ...syntheticOwner, ownerId: 'other' }, { ...syntheticOwner, hidden: 'override' },
     { ...syntheticOwner, style: { text: 'x', dataClass: 'unknown' } },
-    { ...syntheticOwner, lore: { text: 'x'.repeat(4097), dataClass: 'ordinary' } },
+    { ...syntheticOwner, lore: { text: 'x'.repeat(TRUSTED_SYSTEM_CODE_UNIT_LIMIT + 1), dataClass: 'ordinary' } },
   ]) assert.throws(() => compilePrompt({ ...input(), ownerProfile } as CompileInput));
   rejects('budget', () => compilePrompt({ ...input(), ownerProfile: syntheticOwner,
     budgets: { ...input().budgets, trustedChars: 1 } } as CompileInput));
+});
+
+test('owner fields retain expanded UTF-16 content exactly under the shared complete-system ceiling', () => {
+  const ownerProfile = { ...syntheticOwner,
+    style: { text: `SYNTHETIC style ${'S'.repeat(4096)}`, dataClass: 'private' as const },
+    lore: { text: `SYNTHETIC lore ${'🐍'.repeat(6977)}`, dataClass: 'sensitive' as const } };
+  const validated = validateOwnerProfile(ownerProfile, ownerProfile.ownerId);
+  assert.deepEqual(validated, ownerProfile);
+  const base = input();
+  const compiled = compilePrompt({ ...base, ownerProfile,
+    budgets: { ...base.budgets, trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT } } as CompileInput);
+  assert.equal(compiled.system.split(ownerProfile.style.text).length - 1, 1);
+  assert.equal(compiled.system.split(ownerProfile.lore.text).length - 1, 1);
+  assert.equal(ownerProfile.lore.text.length, 13_969);
+  assert.ok(Buffer.byteLength(ownerProfile.lore.text, 'utf8') > ownerProfile.lore.text.length);
 });

@@ -282,7 +282,7 @@ test('explicit owner activation is closed, protected, immutable and never falls 
   assert.deepEqual(accepted.snapshot, raw);
   for (const invalid of [{ ...raw, ownerId: 'other' }, { ...raw, extra: true },
     { ...raw, style: { text: 'x', dataClass: 'unknown' } }, { ...raw, displayName: 'unsafe\nlabel' },
-    { ...raw, lore: { text: 'x'.repeat(4097), dataClass: 'ordinary' } }]) {
+    { ...raw, lore: { text: 'x'.repeat(60001), dataClass: 'ordinary' } }]) {
     writeFileSync(path, JSON.stringify(invalid));
     assert.equal(load().status, 'error');
     assert.ok(!JSON.stringify(load()).includes(path));
@@ -292,4 +292,19 @@ test('explicit owner activation is closed, protected, immutable and never falls 
   chmodSync(path, 0o600); const link = join(dir, 'symlink.json'); symlinkSync(path, link);
   assert.equal(loadOwnerProfile({ path: link, ownerId: 'synthetic-owner' }).status, 'error');
   chmodSync(dir, 0o755); assert.equal(load().status, 'error');
+});
+
+test('owner profile file bytes remain distinct from expanded UTF-16 owner section admission', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'owner-profile-unicode-test-')); chmodSync(dir, 0o700);
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, 'synthetic.json');
+  const base = { schemaVersion: 1, kind: 'profile', ownerId: 'synthetic-owner', profileVersion: 'fixture', displayName: 'Example',
+    style: { text: 'SYNTHETIC style', dataClass: 'ordinary' }, lore: { text: '', dataClass: 'private' } };
+  const accepted = { ...base, lore: { ...base.lore, text: '🐍'.repeat(13_955) } };
+  writeFileSync(path, JSON.stringify(accepted), { mode: 0o600 });
+  assert.equal(loadOwnerProfile({ path, ownerId: 'synthetic-owner' }).status, 'configured');
+  const byteOversize = { ...base, lore: { ...base.lore, text: '🐍'.repeat(16_384) } };
+  assert.ok(byteOversize.lore.text.length < 60_000);
+  writeFileSync(path, JSON.stringify(byteOversize));
+  assert.deepEqual(loadOwnerProfile({ path, ownerId: 'synthetic-owner' }), { status: 'error', code: 'too_large' });
 });

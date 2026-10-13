@@ -85,6 +85,12 @@ final class DiagnosticLogHTTPFixture: URLProtocol, @unchecked Sendable {
     })
     let cases: [(Error, String, String, Int?)] = [
         (NativeLiveAudioError.permissionDenied, "audio", "permissionDenied", nil),
+        (NativeLiveAudioError.deviceMissing, "audio", "device_missing", nil),
+        (NativeLiveAudioError.formatUnavailable, "audio", "format_unavailable", nil),
+        (NativeLiveAudioError.captureNotConfigured, "audio", "capture_not_configured", nil),
+        (NativeLiveAudioError.voiceProcessingFailed(code: -50), "audio", "voice_processing_failed", -50),
+        (NativeLiveAudioError.engineFormatMismatch(code: -10875), "audio", "engine_format_mismatch", -10875),
+        (NativeLiveAudioError.engineFailed(code: -50), "audio", "engine_failed", -50),
         (URLError(.cannotConnectToHost), "service", "service_unreachable", nil),
         (LiveClientError.http(status: 503, code: "private description"), "service", "http", 503),
         (LiveClientError.socketClosed(code: 1006, reason: "private path"), "service", "socketClosed", 1006),
@@ -96,7 +102,9 @@ final class DiagnosticLogHTTPFixture: URLProtocol, @unchecked Sendable {
             DiagnosticLogHTTPFixture.reset(status: status)
             let presented = conversation.failure
             let task = conversation.logFailure(error, beforeCreate: true, diagnosticSession: session)
-            var nativeLine = try JSONSerialization.data(withJSONObject: ["event": "live_precreate_failed", "failureClass": failureClass, "code": code], options: [.sortedKeys])
+            var nativeRecord: [String: Any] = ["event": "live_precreate_failed", "failureClass": failureClass, "code": code]
+            if error is NativeLiveAudioError, let detail { nativeRecord["detail"] = detail }
+            var nativeLine = try JSONSerialization.data(withJSONObject: nativeRecord, options: [.sortedKeys])
             nativeLine.append(10)
             let file = directory.appendingPathComponent("native-live.log")
             try audioRequire(try Data(contentsOf: file) == nativeLine, "native line exists immediately and retains exact JSONL format")
@@ -146,6 +154,26 @@ final class DiagnosticLogHTTPFixture: URLProtocol, @unchecked Sendable {
                 try audioRequire(presentation.text != state.rawValue, "raw case never reaches Live presentation")
             }
         } catch { fatalError("Live presentation: \(error)") }
+        do {
+            // An attached mixer stands in for the output node: no hardware, tap or engine start.
+            let graph = AVAudioEngine(), player = AVAudioPlayerNode(), output = AVAudioMixerNode()
+            graph.attach(output)
+            let required = output.inputFormat(forBus: 0)
+            try NativeLiveAudioDevice.connectPlayback(engine: graph, player: player, outputNode: output)
+            let negotiated = graph.mainMixerNode.outputFormat(forBus: 0)
+            try audioRequire(negotiated.sampleRate == required.sampleRate && negotiated.channelCount == required.channelCount,
+                             "mixer output negotiates the output node input bus format")
+            let converted = player.outputFormat(forBus: 0)
+            try audioRequire(converted.sampleRate == 24000 && converted.channelCount == 1,
+                             "player keeps 24 kHz mono conversion")
+            let invalidGraph = AVAudioEngine(), invalidPlayer = AVAudioPlayerNode(), invalidOutput = AVAudioMixerNode()
+            invalidGraph.attach(invalidOutput)
+            do {
+                try NativeLiveAudioDevice.connectPlayback(engine: invalidGraph, player: invalidPlayer,
+                    outputNode: invalidOutput, outputFormat: AVAudioFormat(standardFormatWithSampleRate: 0, channels: 2)!)
+                throw NSError(domain: "invalid output format accepted", code: 1)
+            } catch NativeLiveAudioError.formatUnavailable { }
+        } catch { fatalError("Playback negotiation: \(error)") }
         do {
             let routeTestStarted = Date()
             var builds = 0, releases = 0, paused = "", failures = 0

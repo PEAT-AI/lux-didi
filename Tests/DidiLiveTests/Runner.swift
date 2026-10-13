@@ -73,6 +73,12 @@ final class DiagnosticHTTPFixture: URLProtocol, @unchecked Sendable {
     }))
     let cases: [(Error, String, String, Int?)] = [
         (NativeLiveAudioError.permissionDenied, "audio", "permissionDenied", nil),
+        (NativeLiveAudioError.deviceMissing, "audio", "device_missing", nil),
+        (NativeLiveAudioError.formatUnavailable, "audio", "format_unavailable", nil),
+        (NativeLiveAudioError.captureNotConfigured, "audio", "capture_not_configured", nil),
+        (NativeLiveAudioError.voiceProcessingFailed(code: -50), "audio", "voice_processing_failed", -50),
+        (NativeLiveAudioError.engineFormatMismatch(code: -10875), "audio", "engine_format_mismatch", -10875),
+        (NativeLiveAudioError.engineFailed(code: -50), "audio", "engine_failed", -50),
         (LiveClientError.invalidAudio, "service", "invalidAudio", nil),
         (URLError(.cannotConnectToHost), "service", "service_unreachable", nil),
         (LiveClientError.http(status: 503, code: "private text"), "service", "http", 503),
@@ -329,7 +335,20 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             try require(limits.sentence == "Session limit 15 min, idle limit 1 min.", "configured limits are plain text")
             try require(NativeLivePresentation.ended("session_timeout", limits: limits) == "Session limit reached (15 min). Start again to continue.", "session limit explains next action")
             try require(NativeLivePresentation.ended("idle_timeout", limits: limits) == "Ended after 1 min without speech. Start again when ready.", "idle limit explains next action")
-            for audio in [NativeLiveAudioError.permissionDenied, .permissionRestricted, .voiceProcessingUnavailable, .deviceUnavailable, .unsupportedFormat, .allocationFailed, .converterUnavailable] {
+            let split: [(NativeLiveAudioError, String, String)] = [
+                (.deviceMissing, "device_missing", "No microphone found: connect one or select it in System Settings, Sound, Input."),
+                (.formatUnavailable, "format_unavailable", "Live audio format is unavailable; select a working microphone and output device."),
+                (.captureNotConfigured, "capture_not_configured", "Live microphone capture is not configured; start Live again."),
+                (.voiceProcessingFailed(code: -50), "voice_processing_failed", "Voice processing could not be enabled; check the microphone and output device."),
+                (.engineFormatMismatch(code: -10875), "engine_format_mismatch", "Live audio could not start because the microphone and output formats do not match; select a working output device."),
+                (.engineFailed(code: -50), "engine_failed", "Live audio engine could not start; check the microphone and output device.")
+            ]
+            for (audio, code, sentence) in split {
+                try require(audio.rawValue == code && NativeLivePresentation.failure(audio) == sentence, "distinct step code and owner sentence")
+            }
+            try require(NativeLiveAudioError.engineFailure(NSError(domain: "com.apple.coreaudio.avfaudio", code: -10875)).rawValue == "engine_format_mismatch", "observed OSStatus retains format diagnosis")
+            try require(NativeLiveAudioError.engineFailure(NSError(domain: "other", code: -50)).rawValue == "engine_failed", "other start failures are not masked as format mismatch")
+            for audio in [NativeLiveAudioError.permissionDenied, .permissionRestricted, .voiceProcessingFailed(code: nil), .deviceMissing, .unsupportedFormat, .allocationFailed, .converterUnavailable] {
                 try require(NativeLivePresentation.failure(audio) == audio.errorDescription, "each real audio error keeps its typed sentence")
             }
             try require(NativeLivePresentation.failure(LiveClientError.http(status: 503, code: "not_ready")) == "Live service HTTP 503: not_ready.", "HTTP failure remains typed")

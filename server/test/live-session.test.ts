@@ -549,6 +549,16 @@ test('tool-enabled Live CREATE freezes an expanded classified owner system byte 
   assert.deepEqual(frozen.dataClasses, ['ordinary', 'private', 'sensitive']);
 });
 
+test('tool-enabled Live CREATE rejects a complete system whose required tool conduct exceeds the shared ceiling', async t => {
+  const h = await harness(t, { tools: true, acceptedPrompt: ownerId => ({
+    schemaVersion: 1, ownerProfile: { schemaVersion: 1, kind: 'default', ownerId, displayName: 'Lux Didi' },
+    compilerVersion: PROMPT_VERSION, system: 'A'.repeat(TRUSTED_SYSTEM_CODE_UNIT_LIMIT), dataClasses: ['ordinary'],
+  }) });
+  assert.throws(() => h.owner.create({ idempotencyKey: 'expanded-tools-overflow', inputClass: 'ordinary' }, h.ctx),
+    (error: unknown) => error instanceof LiveError && error.code === 'instruction_too_large');
+  assert.equal(h.requests.length, 0);
+});
+
 test('waitingForInput keeps its boolean and ready stays a durable fact', async t => {
   const h = await harness(t);
   const { session, attachment } = await attached(h);

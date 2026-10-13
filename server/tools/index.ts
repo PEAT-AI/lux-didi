@@ -371,7 +371,12 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
                 return expected;
               });
               if (!call) return { status: 'failed' };
-              const evidence = await reader.call(name, args as Record<string, unknown>, context.signal);
+              let evidence: Awaited<ReturnType<typeof reader.call>>;
+              try { evidence = await reader.call(name, args as Record<string, unknown>, context.signal); } catch (error) {
+                const code = error instanceof Error && 'code' in error && ['mcp_transport_error', 'mcp_result_invalid', 'connector_error', 'handler_outcome'].includes(String(error.code)) ? error.code as 'mcp_transport_error' | 'mcp_result_invalid' | 'connector_error' | 'handler_outcome' : 'handler_outcome';
+                options.log?.({ event: 'tool_failure', code, tool: name, connector: p.connector, errorClass: error instanceof SyntaxError ? 'SyntaxError' : error instanceof Error ? 'Error' : 'UnknownThrow', messageHead: code });
+                return { status: code === 'mcp_transport_error' ? 'unknown' : 'failed', code };
+              }
               if (context.signal.aborted) return { status: 'unknown' };
               if (evidence.state === 'unknown') {
                 const code = evidence.reason === 'mcp_result_invalid' ? 'mcp_result_invalid' : 'mcp_transport_error';

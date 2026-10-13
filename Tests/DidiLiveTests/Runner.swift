@@ -73,12 +73,17 @@ final class DiagnosticHTTPFixture: URLProtocol, @unchecked Sendable {
     }))
     let cases: [(Error, String, String, Int?)] = [
         (NativeLiveAudioError.permissionDenied, "audio", "permissionDenied", nil),
-        (NativeLiveAudioError.deviceMissing, "audio", "device_missing", nil),
-        (NativeLiveAudioError.formatUnavailable, "audio", "format_unavailable", nil),
-        (NativeLiveAudioError.captureNotConfigured, "audio", "capture_not_configured", nil),
-        (NativeLiveAudioError.voiceProcessingFailed(code: -50), "audio", "voice_processing_failed", -50),
-        (NativeLiveAudioError.engineFormatMismatch(code: -10875), "audio", "engine_format_mismatch", -10875),
-        (NativeLiveAudioError.engineFailed(code: -50), "audio", "engine_failed", -50),
+        (NativeLiveAudioError.permissionRestricted, "audio", "permissionRestricted", nil),
+        (NativeLiveAudioError.unsupportedFormat, "audio", "unsupportedFormat", nil),
+        (NativeLiveAudioError.allocationFailed, "audio", "allocationFailed", nil),
+        (NativeLiveAudioError.converterUnavailable, "audio", "converterUnavailable", nil),
+        (NativeLiveAudioError.deviceMissing, "audio", "deviceUnavailable", nil),
+        (NativeLiveAudioError.formatUnavailable, "audio", "unsupportedFormat", nil),
+        (NativeLiveAudioError.captureNotConfigured, "audio", "deviceUnavailable", nil),
+        (NativeLiveAudioError.voiceProcessingFailed(code: nil), "audio", "voiceProcessingUnavailable", nil),
+        (NativeLiveAudioError.voiceProcessingFailed(code: -50), "audio", "voiceProcessingUnavailable", nil),
+        (NativeLiveAudioError.engineFormatMismatch(code: -10875), "audio", "unsupportedFormat", nil),
+        (NativeLiveAudioError.engineFailed(code: -50), "audio", "deviceUnavailable", nil),
         (LiveClientError.invalidAudio, "service", "invalidAudio", nil),
         (URLError(.cannotConnectToHost), "service", "service_unreachable", nil),
         (LiveClientError.http(status: 503, code: "private text"), "service", "http", 503),
@@ -86,6 +91,9 @@ final class DiagnosticHTTPFixture: URLProtocol, @unchecked Sendable {
         (DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "private path")), "service", "unexpected_response", nil),
         (ProbeError.assertion("private error"), "service", "connection_refused", nil),
     ]
+    // Exact server/http/routes.ts audio allowlist; the audio branch admits no detail key.
+    let routeAudioCodes: Set<String> = ["unsupportedFormat", "allocationFailed", "converterUnavailable",
+        "permissionDenied", "permissionRestricted", "voiceProcessingUnavailable", "deviceUnavailable"]
     for status in [204, 429, nil] as [Int?] {
         for (error, failureClass, code, detail) in cases {
             DiagnosticHTTPFixture.reset(status: status)
@@ -99,6 +107,11 @@ final class DiagnosticHTTPFixture: URLProtocol, @unchecked Sendable {
             var expected: [String: Any] = ["event": "live_precreate_failed", "failureClass": failureClass, "code": code]
             if let detail { expected["detail"] = detail }
             let body = try JSONSerialization.data(withJSONObject: expected, options: [.sortedKeys])
+            if failureClass == "audio" {
+                let payload = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
+                try require(Set(payload.keys) == ["event", "failureClass", "code"] && routeAudioCodes.contains(payload["code"] as? String ?? ""),
+                            "every audio case produces exactly the route's accepted closed schema without detail")
+            }
             try require(request.httpBody == body && body.count <= 512, "exact closed diagnostic body, no textual details")
             try require(NativeLivePresentation.failure(error) == sentence, "diagnostic failures cannot replace the typed sentence")
         }

@@ -113,8 +113,13 @@ final class DiagnosticLogHTTPFixture: URLProtocol, @unchecked Sendable {
             try audioRequire(conversation.failure == presented, "diagnostic cannot change the owner's presentation")
             let requests = DiagnosticLogHTTPFixture.captured()
             try audioRequire(requests.count == 1, "one diagnostic from actual logFailure, no retry")
-            var expected: [String: Any] = ["event": "live_precreate_failed", "failureClass": failureClass, "code": code]
-            if let detail { expected["detail"] = detail }
+            // HTTP stays compatible; the immediate local journal above remains precise.
+            let legacyAudioCodes = ["device_missing": "deviceUnavailable", "capture_not_configured": "deviceUnavailable",
+                "engine_failed": "deviceUnavailable", "format_unavailable": "unsupportedFormat",
+                "engine_format_mismatch": "unsupportedFormat", "voice_processing_failed": "voiceProcessingUnavailable"]
+            let httpCode = error is NativeLiveAudioError ? (legacyAudioCodes[code] ?? code) : code
+            var expected: [String: Any] = ["event": "live_precreate_failed", "failureClass": failureClass, "code": httpCode]
+            if !(error is NativeLiveAudioError), let detail { expected["detail"] = detail }
             try audioRequire(requests[0].httpBody == JSONSerialization.data(withJSONObject: expected, options: [.sortedKeys]), "native log boundary posts only the server vocabulary")
             DiagnosticLogHTTPFixture.reset(status: status)
             let suppressed = conversation.logFailure(error, beforeCreate: false, diagnosticSession: session)

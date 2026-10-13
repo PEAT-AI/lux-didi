@@ -17,7 +17,7 @@ export function liveStateLabel(state: LiveState): string { return LABELS[state] 
 
 const VOICE: Record<LiveState, VoiceState> = {
   idle: 'CONNECTED', listening: 'LISTENING', speaking: 'SPEAKING',
-  thinking: 'PROCESSING', rebuilding: 'CONNECTED', ended: 'DISCONNECTED', error: 'ERROR',
+  thinking: 'PROCESSING', rebuilding: 'RECONNECTING', ended: 'DISCONNECTED', error: 'ERROR',
 };
 export function liveVoiceState(state: LiveState): VoiceState { return VOICE[state] ?? 'CONNECTED'; }
 

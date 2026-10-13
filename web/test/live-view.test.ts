@@ -56,6 +56,7 @@ test('maps live state to the orb VoiceState', () => {
   assert.equal(liveVoiceState('listening'), 'LISTENING');
   assert.equal(liveVoiceState('thinking'), 'PROCESSING');
   assert.equal(liveVoiceState('speaking'), 'SPEAKING');
+  assert.equal(liveVoiceState('rebuilding'), 'RECONNECTING');
   assert.equal(liveVoiceState('ended'), 'DISCONNECTED');
   assert.equal(liveVoiceState('error'), 'ERROR');
 });

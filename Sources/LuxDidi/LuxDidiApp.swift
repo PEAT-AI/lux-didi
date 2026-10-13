@@ -272,6 +272,7 @@ import Security
     }
     func startLive(pickupJobID: String? = nil) {
         guard let client else { error = "Connect the local service before starting Live voice."; return }
+        if live?.isCapturing == false { liveAuthorityOwner.clear() }
         let conversation = liveAuthorityOwner.ownerStart {
             NativeLiveConversation(authority: client.authenticatedRequestBuilder(), dictationIsCapturing: { [weak self] in
                 self?.voice.state.phase == .recording

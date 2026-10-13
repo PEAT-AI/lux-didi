@@ -9,6 +9,8 @@ import { startHost } from '../../server/dist/host/runtime.js';
 import { defaultLiveLimits } from '../../server/dist/live/index.js';
 
 const [binary, work, nativeBinary, mutatedBinary] = process.argv.slice(2);
+const focused = process.argv[6];
+assert.ok(focused === undefined || ['--production-native-request', '--native-lifetime-retained', '--native-lifetime-fresh'].includes(focused));
 assert.ok(binary && work);
 const webRoot = resolve('web/dist');
 const state = join(work, 'state');
@@ -20,10 +22,12 @@ let opens = 0;
 let trapRequests = 0;
 const upgrades = [];
 const upstreamFrames = [];
+const upstreamConnections = [];
 const upstream = new WebSocketServer({ host: '127.0.0.1', port: 0 });
 await once(upstream, 'listening');
 const upstreamOrigin = `ws://127.0.0.1:${upstream.address().port}`;
 upstream.on('connection', socket => {
+  upstreamConnections.push(socket);
   socket.on('error', () => {});
   socket.on('message', raw => {
     const value = JSON.parse(raw.toString());
@@ -73,6 +77,43 @@ try {
       epoch: req.headers['x-didi-authority-epoch'], profile: req.headers['x-didi-live-profile'],
       cookie: req.headers.cookie !== undefined, origin: req.headers.origin !== undefined });
   });
+  if (focused) {
+    const fixture = { ...host.descriptor, token, profileIdentity: status.profileIdentity,
+      redirectSessionID: '00000000-0000-4000-8000-000000000001' };
+    const child = spawn(binary, [focused], { stdio: ['pipe', 'pipe', 'inherit'] });
+    let output = '';
+    let lateAudioSent = false;
+    let lateAudioRefused = false;
+    child.stdout.on('data', bytes => {
+      const text = bytes.toString(); output += text; process.stdout.write(text);
+      if (!lateAudioSent && output.includes('NATIVE LIFETIME OLD RELEASED')) {
+        if (upstreamConnections.length !== 2) { lateAudioRefused = true; return; }
+        lateAudioSent = true;
+        upstreamConnections[0].send(JSON.stringify({ serverContent: { modelTurn: { parts: [{
+          inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from([1, 0]).toString('base64') },
+        }] } } }));
+      }
+    });
+    const timer = setTimeout(() => child.kill('SIGKILL'), 15000);
+    child.stdin.end(JSON.stringify(fixture));
+    const [code, signal] = await once(child, 'exit'); clearTimeout(timer);
+    assert.equal(signal, null, 'focused actual native completed without forced disposal');
+    assert.equal(lateAudioRefused, false, 'late PCM targets exactly the first of two owned provider sockets');
+    assert.equal(code, focused === '--native-lifetime-retained' ? 1 : 0);
+    if (focused === '--native-lifetime-retained') assert.match(output, /NATIVE LIFETIME RED retained=true serviceActive=true presentationConnecting=true/);
+    else if (focused === '--native-lifetime-fresh') {
+      assert.match(output, /NATIVE LIFETIME PASS/); assert.equal(lateAudioSent, true);
+      assert.equal(upstreamFrames.filter(frame => frame.realtimeInput?.audio).length, 0, 'released capture emits no late PCM');
+    } else {
+      assert.match(output, /PRODUCTION NATIVE ATTACH PASS/);
+      assert.equal(opens, 1); assert.equal(credentialReads, 1); assert.equal(upgrades.length, 1);
+      assert.equal(upgrades[0].host, new URL(host.descriptor.origin).host);
+      assert.equal(upgrades[0].authorizationCount, 1); assert.equal(upgrades[0].authorizationMatches, true);
+      assert.equal(upgrades[0].cookie, false); assert.equal(upgrades[0].origin, false);
+    }
+    assert.equal(trapRequests, 0);
+    console.log(`FOCUSED NATIVE PASS mode=${focused} opens=${opens} lateOldAudio=${lateAudioSent} childPID=${child.pid} unforced=true`);
+  } else {
   const redirectSession = await json('/api/v1/live-sessions', { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': 'stage0-bound-redirect' }, body: JSON.stringify({ inputClass: 'ordinary' }) });
   // Inject a redirect at the BOUND canonical host's audio route. All other paths use the accepted upgrader unchanged.
   const acceptedUpgraders = host.service.server.listeners('upgrade');
@@ -152,9 +193,11 @@ try {
   assert.equal(snapshot.lifecycle, 'terminal', 'UPSTREAM: accepted-unused must settle without client attach');
   assert.equal(snapshot.terminal?.state, 'expired');
   console.log('PASS accepted-unused expiry with zero opens');
+  }
 } finally {
   await host?.close();
   for (const peer of upstream.clients) peer.terminate();
   await new Promise(resolve => upstream.close(resolve));
   await new Promise(resolve => trap.close(resolve));
+  if (focused) console.log('FOCUSED NATIVE CLEANUP hostClosed=true providerClosed=true trapClosed=true');
 }

@@ -23,10 +23,14 @@ npm --prefix web run build
 swiftc -j 1 -num-threads 1 -whole-module-optimization -parse-as-library \
   -emit-module -emit-library -enable-testing -module-name DidiOwner \
   -emit-module-path "$work/DidiOwner.swiftmodule" \
-  Sources/LuxDidi/CompanionClient.swift Sources/LuxDidi/NativeKeychainPolicy.swift -o "$work/libDidiOwner.dylib"
+  Sources/LuxDidi/CompanionClient.swift Sources/LuxDidi/NativeKeychainPolicy.swift \
+  Sources/LuxDidi/NativeServiceRecovery.swift -o "$work/libDidiOwner.dylib"
 owner_flags=(-D DIDI_OWNER_MODULE -I "$work" -L "$work" -lDidiOwner -Xlinker -rpath -Xlinker "$work")
 swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
   Tests/DidiLiveTests/Fixture.swift Tests/DidiLiveTests/Stage0.swift -o "$work/stage0"
+swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
+  Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \
+  Tests/DidiLiveTests/CanonicalFrames.swift -o "$work/canonical-frames"
 swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
   Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \
   "${owner_flags[@]}" Sources/LuxDidi/NativeLiveOperatorHTTP.swift \
@@ -37,6 +41,12 @@ swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-
   Sources/LuxDidi/NativeLiveOperatorHTTP.swift Sources/LuxDidi/NativeLiveAudioDevice.swift \
   Sources/LuxDidi/NativeLiveConversation.swift Tests/DidiLiveTests/NativeLiveAudioRunner.swift -o "$work/native-audio"
 "$work/native-audio"
+swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
+  Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \
+  "${owner_flags[@]}" \
+  Sources/LuxDidi/NativeLiveOperatorHTTP.swift Sources/LuxDidi/NativeLiveAudioDevice.swift \
+  Sources/LuxDidi/NativeLiveConversation.swift Tests/DidiLiveTests/Fixture.swift \
+  Tests/DidiLiveTests/NativeLifetime.swift -o "$work/native-lifetime"
 # Physical-device proof uses the production graph with no tap, output or permission request.
 swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
   Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \
@@ -63,7 +73,12 @@ node --test --test-reporter=tap --test-timeout=30000 \
   server/dist/test/live-gateway.test.js server/dist/test/live-session.test.js
 # Independent gates all run even when an upstream owner defect fails one; any failure remains producer failure.
 status=0
+node Tests/DidiLiveTests/canonical-frames.mjs "$work/canonical-frames" "$work/canonical-frames-work" || status=1
 node Tests/DidiLiveTests/process.mjs "$work/native-live" "$work" || status=1
 node Tests/DidiLiveTests/gateway.mjs "$work/stage0" "$work" "$work/native-live" "$work/native-live-mutated" || status=1
+for mode in production-native-request native-lifetime-retained native-lifetime-fresh; do
+  mkdir "$work/$mode"
+  node Tests/DidiLiveTests/gateway.mjs "$work/native-lifetime" "$work/$mode" unused unused "--$mode" || status=1
+done
 if [ "$status" -ne 0 ]; then exit "$status"; fi
 echo 'NATIVE-LIVE CHECK PASS'

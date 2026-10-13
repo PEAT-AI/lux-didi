@@ -30,6 +30,7 @@ async function localSource(t: TestContext) {
   const sessions = new Map<string, { account: string; sdk: Server; transport: WebStandardStreamableHTTPServerTransport }>();
   let list: ToolDefinition[] = structuredClone(tools); let repeat = false; let oversized = false; let toolHttp = 0; let executed = 0;
   let beforeList: (() => Promise<void>) | undefined;
+  let callDelayMs = 0;
   async function newSession(account: string) {
     const id = randomUUID();
     const sdk = new Server({ name: `synthetic-${account}`, version: '1' }, { capabilities: { tools: {} } });
@@ -40,12 +41,14 @@ async function localSource(t: TestContext) {
       const index = req.params?.cursor === 'second' ? 1 : 0;
       return { tools: [list[index]!], ...(index === 0 || repeat ? { nextCursor: 'second' } : {}) } as never;
     });
-    sdk.setRequestHandler('tools/call', req => {
+    sdk.setRequestHandler('tools/call', async req => {
       executed++;
+      if (callDelayMs) await new Promise(resolve => setTimeout(resolve, callDelayMs));
       const args = req.params.arguments ?? {};
       const ids = args['ids'] as number[] | undefined;
       const ownId = account === 'alpha' ? 101 : 202;
-      const text = req.params.name === 'search_knowledge' ? `${ownId}: nonempty ${account} synthetic search` : ids?.includes(ownId) ? `${ownId}: nonempty ${account} synthetic insight` : 'not found in selected account';
+      const text = req.params.name === 'gmail_list' ? JSON.stringify({ data: { messages: [{ id: 'synthetic-message' }] } })
+        : req.params.name === 'search_knowledge' ? `${ownId}: nonempty ${account} synthetic search` : ids?.includes(ownId) ? `${ownId}: nonempty ${account} synthetic insight` : 'not found in selected account';
       return { content: [{ type: 'text', text }] } as never;
     });
     await sdk.connect(transport); const session = { account, sdk, transport }; sessions.set(id, session); return session;
@@ -74,7 +77,8 @@ async function localSource(t: TestContext) {
   return { url: `http://127.0.0.1:${address.port}/mcp`, tokens, get toolHttp() { return toolHttp; }, get executed() { return executed; },
     changeCatalog: (changed: boolean) => { list = structuredClone(tools); if (changed) list[0]!.description = 'changed'; },
     catalogNames: (names: string[]) => { list = structuredClone(tools); names.forEach((name, index) => { list[index]!.name = name; }); },
-    repeat: (value: boolean) => { repeat = value; }, oversized: (value: boolean) => { oversized = value; }, beforeList: (value: (() => Promise<void>) | undefined) => { beforeList = value; } };
+    repeat: (value: boolean) => { repeat = value; }, oversized: (value: boolean) => { oversized = value; }, beforeList: (value: (() => Promise<void>) | undefined) => { beforeList = value; },
+    callDelay: (value: number) => { callDelayMs = value; } };
 }
 async function configFixture(t: TestContext, url = 'https://synthetic.invalid/mcp', account = 'alpha') {
   const config = await import(configModule); const host = await import(hostModule);
@@ -379,4 +383,75 @@ test('owner-created synthetic catalog preserves explicit bounded source classes 
     assert.equal(rejected.catalog.endpoints[1]!.unknownClass, null);
     assert.equal(rejected.catalog.endpoints[1]!.configurationError, 'unknown-class-invalid');
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+
+async function deadlineRuntime(t: TestContext, entries: { id: string; connector: string; url: string }[]) {
+  const host = await import(hostModule);
+  const dir = mkdtempSync(join(tmpdir(), 'didi-call-deadline-')); chmodSync(dir, 0o700);
+  const store = new Store(join(dir, 'data'), toolsMigrations);
+  const configDir = join(dir, 'config'); mkdirSync(configDir, { mode: 0o700 });
+  privateJSON(join(configDir, 'synthetic.json'), { schemaVersion: 1, token: 'alpha-secret' });
+  privateJSON(join(configDir, 'mcp.json'), { schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: entries.map(entry => ({
+    ...entry, transport: 'streamable-http', account: 'alpha', resource: 'synthetic-corpus', credentialRef: 'synthetic',
+    enabled: true, allowEgress: true, unknownClass: 'ordinary',
+  })) });
+  t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
+  const runtime = await host.composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null });
+  t.after(() => runtime.close());
+  function call(id: string, toolName: string, signal?: AbortSignal) {
+    const grant = runtime.registry.currentGrant(id); assert.ok(grant);
+    return runtime.port.call({ endpointId: id, toolName, arguments: {}, generation: grant.generation,
+      account: 'alpha', resource: 'synthetic-corpus' }, signal);
+  }
+  return { runtime, call };
+}
+
+test('host Google call budget admits a real slow read while other connectors retain five seconds', async t => {
+  const google = await localSource(t); google.catalogNames(['gmail_list', 'gmail_get_profile']); google.callDelay(5500);
+  const ordinary = await localSource(t); ordinary.callDelay(5500);
+  const { runtime, call } = await deadlineRuntime(t, [
+    { id: 'google', connector: 'google', url: google.url },
+    { id: 'knowledge', connector: 'lux-knowledge', url: ordinary.url },
+  ]);
+  const [result, unchanged] = await Promise.all([call('google', 'gmail_list'), call('knowledge', 'search_knowledge')]);
+  assert.equal(result.state, 'completed'); assert.equal(google.executed, 1);
+  if (result.state !== 'completed' || result.payload.state !== 'available') throw Error('missing real slow read');
+  const grant = runtime.registry.currentGrant('google'); assert.ok(grant);
+  const slice = runtime.port.readSlice({ endpointId: 'google', generation: grant.generation, account: 'alpha',
+    resource: 'synthetic-corpus', handle: result.payload.handle, offset: 0, length: result.payload.byteLength });
+  assert.equal(slice.state, 'available');
+  if (slice.state === 'available') {
+    const entity = JSON.parse(Buffer.from(slice.bytes).toString());
+    assert.equal(JSON.parse(entity.result.content[0].text).data.messages.length, 1);
+  }
+  assert.equal(unchanged.state, 'unknown');
+  if (unchanged.state === 'unknown') assert.equal(unchanged.reason, 'timeout-or-cancelled');
+  assert.equal(ordinary.executed, 1);
+});
+
+test('host Google discovery preserves the five-second startup bound', async t => {
+  const google = await localSource(t); google.catalogNames(['gmail_list', 'gmail_get_profile']);
+  google.beforeList(() => new Promise(() => {}));
+  const began = performance.now();
+  const { runtime } = await deadlineRuntime(t, [{ id: 'google', connector: 'google', url: google.url }]);
+  assert.ok(performance.now() - began < 6000, 'slow Google discovery cannot consume a thirty-second call budget');
+  const report = runtime.status().endpoints[0]; assert.equal(report?.state, 'error');
+  assert.equal(report?.error, 'timeout-or-cancelled'); assert.equal(google.executed, 0);
+});
+
+test('host Google earlier cancellation retires its call and preserves frozen authority', async t => {
+  const google = await localSource(t); google.catalogNames(['gmail_list', 'gmail_get_profile']); google.callDelay(5500);
+  const { runtime, call } = await deadlineRuntime(t, [{ id: 'google', connector: 'google', url: google.url }]);
+  const controller = new AbortController();
+  const pending = call('google', 'gmail_list', controller.signal);
+  const suspended = runtime.port.whenSuspended('google');
+  const deadline = performance.now() + 1000;
+  while (google.executed === 0) { assert.ok(performance.now() < deadline); await new Promise<void>(resolve => setImmediate(resolve)); }
+  const began = performance.now(); controller.abort();
+  const result = await pending; await suspended;
+  assert.ok(performance.now() - began < 1000);
+  assert.equal(result.state, 'unknown');
+  assert.equal(runtime.registry.currentGrant('google'), undefined);
+  assert.equal(google.executed, 1);
 });

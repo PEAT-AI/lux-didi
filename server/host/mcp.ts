@@ -79,7 +79,10 @@ export async function composeMcpRuntime(options: {
 }): Promise<McpRuntimeComposition> {
   const { store, ownerId, configDir } = options; const now = options.now ?? Date.now;
   const registry = new McpRegistry();
-  const port = createMcpAdapter({ registry, store: new MemoryResultStore(), resolveCredential: async reference => readMcpCredential(configDir, reference) });
+  const selection = loadMcpEndpoints({ configDir });
+  const callTimeoutMsByEndpoint = new Map(selection.state === 'configured'
+    ? selection.catalog.endpoints.filter(entry => entry.connector === 'google').map(entry => [entry.id, 30000] as const) : []);
+  const port = createMcpAdapter({ registry, store: new MemoryResultStore(), callTimeoutMsByEndpoint, resolveCredential: async reference => readMcpCredential(configDir, reference) });
   const reports = new Map<string, McpEndpointReport>();
   const reportToolStatus = (connectionId: string, status: { state: 'configured'; reason: string } | null): void => {
     const previous = reports.get(connectionId);
@@ -88,7 +91,6 @@ export async function composeMcpRuntime(options: {
       ? { id: previous.id, state: 'connected', tools: previous.tools, lastHandshakeAt: previous.lastHandshakeAt }
       : { id: previous.id, state: 'configured', tools: previous.tools, lastHandshakeAt: previous.lastHandshakeAt, error: status.reason });
   };
-  const selection = loadMcpEndpoints({ configDir });
   const owner = createToolsOwner({ grantMode: selection.state === 'missing' ? 'explicit' : selection.catalog.grantMode, store, ownerId, registry, port, lookupAuthority: options.lookupAuthority, reportToolStatus, ...(options.log ? { log: options.log } : {}) });
   if (selection.state === 'missing') {
     return { registry, port, owner, connectionIds: () => [], status: () => ({ endpoints: [] }), refresh: async () => {}, close: () => port.close() };

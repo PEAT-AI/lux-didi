@@ -249,6 +249,10 @@ public actor LiveSessionCoordinator {
                             guard generation == token, !Task.isCancelled else { return }
                         }
                     }
+                case .tool:
+                    if state == .rebuilding { continue }
+                    guard state == .active else { throw LiveClientError.invalidFrame }
+                    // Tool results may reuse the call sequence; they do not advance provider order.
                 case .terminal(let terminal, _):
                     state = .terminal(terminal)
                     socket = nil

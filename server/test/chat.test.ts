@@ -496,3 +496,63 @@ test('real Store restart retains accepted Chat A and explicit interrupted-run re
     assert.ok(f.model.calls[0]!.system.includes(b.style.text)); restarted.shutdown();
   } finally { reopened?.close(); if (!originalClosed) f.store.close(); rmSync(f.dir, { recursive: true, force: true }); }
 });
+
+
+test('new consent freezes the complete configured class ceiling without upgrading old consent', () => {
+  const f = fixture();
+  try {
+    const prior = f.store.transaction(tx => tx.get('SELECT * FROM chat_consents WHERE session_id=?', [f.session.id]));
+    const route = { ...f.config.route, allowedClasses: ['ordinary', 'private', 'sensitive'] as const };
+    const chat = new ChatService({ ...f.config, route }); chat.recover(f.recoveryContext);
+    assert.equal(chat.conversation(f.session.id, f.context).state, 'route_changed');
+    assert.throws(() => chat.accept({ sessionId: f.session.id, text: 'Synthetic', idempotencyKey: 'old' }, f.context), error('route_changed'));
+    assert.equal(f.model.calls.length, 0);
+    assert.deepEqual(f.store.transaction(tx => tx.get('SELECT * FROM chat_consents WHERE session_id=?', [f.session.id])), prior);
+    const fresh = chat.enroll({ title: 'New', timeZone: 'UTC', idempotencyKey: 'fresh' }, f.context);
+    assert.equal(fresh.state, 'active'); assert.deepEqual(fresh.permittedClasses, route.allowedClasses);
+    chat.shutdown();
+  } finally { f.close(); }
+});
+
+test('sensitive actual Chat request persists a sensitive reply and history refuses a narrower route', async () => {
+  const f = fixture({ route: { provider: 'synthetic', model: 'counting', available: true, allows: () => true,
+    endpoint: 'https://generativelanguage.googleapis.com', apiVersion: 'v1beta', keyReference: 'gemini-primary', allowedClasses: ['ordinary', 'private', 'sensitive'] } });
+  try {
+    // Isolate the reply-label regression from the separate enrollment regression on the old source.
+    f.store.transaction(tx => tx.run('UPDATE chat_consents SET permitted_classes=? WHERE session_id=?', ['["ordinary","private","sensitive"]', f.session.id]));
+    const classify: ChatConfig['classify'] = (subject, tx) => {
+      if (subject.kind === 'recall') return null;
+      const label = f.domain.getRoutingLabel(tx, { kind: subject.kind, id: subject.id });
+      return label.dataClass === 'unknown' ? null : { ownerId: f.store.assistantId, dataClass: label.dataClass, revision: label.revision };
+    };
+    const ownerProfile = { schemaVersion: 1 as const, kind: 'profile' as const, ownerId: f.store.assistantId, profileVersion: 'synthetic', displayName: 'Synthetic',
+      style: { text: 'Synthetic sensitive style', dataClass: 'sensitive' as const }, lore: { text: '', dataClass: 'ordinary' as const } };
+    const chat = new ChatService({ ...f.config, classify, ownerProfile }); chat.recover(f.recoveryContext);
+    const accepted = chat.accept({ sessionId: f.session.id, text: 'Synthetic', idempotencyKey: 'sensitive' }, f.context);
+    for await (const event of chat.subscribe(accepted.runId, f.context)) if (event.type === 'snapshot' && event.run.state === 'terminal') {
+      assert.equal(event.run.outcome, 'complete');
+      const label = f.store.transaction(tx => f.domain.getRoutingLabel(tx, { kind: 'entry', id: event.run.finalEntryId! }));
+      assert.equal(label.dataClass, 'sensitive'); break;
+    }
+    assert.ok(f.model.calls[0]!.dataClasses.includes('sensitive'));
+    const history = chat.accept({ sessionId: f.session.id, text: 'Again', idempotencyKey: 'history' }, f.context);
+    for await (const event of chat.subscribe(history.runId, f.context)) if (event.type === 'snapshot' && event.run.state === 'terminal') break;
+    assert.ok(f.model.calls[1]!.dataClasses.includes('sensitive'));
+    const narrower = new ChatService({ ...f.config, classify, route: { ...f.config.route, allows: classes => !classes.includes('sensitive') } });
+    narrower.recover(f.recoveryContext);
+    assert.throws(() => narrower.accept({ sessionId: f.session.id, text: 'Refuse', idempotencyKey: 'narrow' }, f.context), error('unavailable'));
+    assert.equal(f.model.calls.length, 2);
+    const captured = f.entries()[0]!; assert.equal(captured.role, 'user');
+    assert.equal(f.store.transaction(tx => f.domain.getRoutingLabel(tx, { kind: 'entry', id: captured.id })).dataClass, 'private');
+    narrower.shutdown(); chat.shutdown();
+  } finally { f.close(); }
+});
+
+test('ordinary actual requests retain the private model-reply floor', async () => {
+  const f = fixture();
+  try {
+    const done = await terminal(f, f.accept());
+    assert.deepEqual(f.model.calls[0]!.dataClasses, ['ordinary']);
+    assert.equal(f.store.transaction(tx => f.domain.getRoutingLabel(tx, { kind: 'entry', id: done.finalEntryId! })).dataClass, 'private');
+  } finally { f.close(); }
+});

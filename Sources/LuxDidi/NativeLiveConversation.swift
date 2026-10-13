@@ -57,11 +57,11 @@ enum State: String, CaseIterable {
     private var muteTask: Task<Void, Never>?
     var isMuted: Bool { muted }
     var isCapturing: Bool { state == .connecting || state == .pausedForInput || device.isCapturing }
-    init(authority: (origin: URL, request: NativeLiveRequestBuilder), dictationIsCapturing: @escaping () -> Bool, pickupJobID: String? = nil, logsDirectory: URL? = nil) {
+    init(authority: (origin: URL, request: NativeLiveRequestBuilder), dictationIsCapturing: @escaping () -> Bool, pickupJobID: String? = nil, logsDirectory: URL? = nil, audioDevice: NativeLiveAudioDevice? = nil) {
         self.logsDirectory = logsDirectory
         self.http = NativeLiveOperatorHTTP(authority: authority, pickupJobID: pickupJobID)
         self.dictationIsCapturing = dictationIsCapturing
-        let device = NativeLiveAudioDevice(); self.device = device
+        let device = audioDevice ?? NativeLiveAudioDevice(); self.device = device
         coordinator = LiveSessionCoordinator(http: http, sockets: LiveSocketTransport(requests: http), sink: device)
         device.onOutput = { [weak self] speaking in
             guard let self else { return }

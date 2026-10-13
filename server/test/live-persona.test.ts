@@ -19,11 +19,17 @@ function writePrivate(dir: string, name: string, text: string): void {
   chmodSync(path, 0o600);
 }
 
-test('the public Naya base is new, short, neutral and names no biography', () => {
-  assert.ok(NAYA_BASE.length > 0 && NAYA_BASE.length < 1500, `base must stay under 1500 chars, got ${NAYA_BASE.length}`);
-  assert.match(NAYA_BASE, /Naya/);
+test('the public Naya base carries the shared character and Live delivery without conflicting legacy rules', () => {
+  assert.match(NAYA_BASE, /^# Naya\n\nYou are Naya, the AI companion in Lux Didi/);
+  for (const exact of [
+    'These are character roots, not a claim that you are human or lived there',
+    'When asked for your opinion, take a position, explain its strongest reason, and engage with the strongest objection.',
+    'Speak naturally in the conversation language defined by the host',
+    'When the person has finished, close briefly; do not introduce another task or demand a reply.',
+  ]) assert.equal(NAYA_BASE.split(exact).length - 1, 1);
+  for (const conflict of ['usually one to three sentences', 'does not describe a training history, a maker or any biography']) assert.ok(!NAYA_BASE.includes(conflict));
   assert.ok(!NAYA_BASE.includes('—') && !NAYA_BASE.includes('–'), 'no dash prose');
-  assert.ok(!/farmer|llama|vicuna|gemini/i.test(NAYA_BASE), 'no model-specific or recon borrowings');
+  assert.ok(!/llama|vicuna|gemini/i.test(NAYA_BASE), 'no model-specific borrowings');
 });
 
 test('owner sections compose exactly once before the terminal voice anchor without changing the public default', () => {
@@ -103,6 +109,10 @@ test('the tools conduct text is authored, generic and names no connector beyond 
   assert.match(NAYA_TOOLS, /^# Tools\n\n/);
   assert.match(NAYA_TOOLS, /knowledge base is the first stop/);
   assert.match(NAYA_TOOLS, /Never invent a tool result, a source or a date\./);
+  assert.match(NAYA_TOOLS, /available when you start another conversation/);
+  assert.ok(!NAYA_TOOLS.includes('call back'));
+  assert.ok(!NAYA_TOOLS.includes('say in a few words that Naya is looking'));
+  assert.ok(!NAYA_TOOLS.includes('offer what Naya can still do'));
   assert.ok(!NAYA_TOOLS.includes('—') && !NAYA_TOOLS.includes('–'), 'no dash prose');
 });
 

@@ -1125,9 +1125,10 @@ test('Live answers a slow tool batch truthfully, continues the turn, and retains
   await tick();
   assert.equal(new LiveToolJobs(h.store, () => NOW).pending().length, 1, 'dispatch must create a durable job before deferral');
   await h.f.frame(2);
-  const response = h.f.frames[1] as { toolResponse: { functionResponses: { response: { status: string; jobId: string } }[] } };
+  const response = h.f.frames[1] as { toolResponse: { functionResponses: { response: { status: string; jobId: string; message: string } }[] } };
   assert.equal(response.toolResponse.functionResponses[0]!.response.status, 'in progress');
   assert.ok(response.toolResponse.functionResponses[0]!.response.jobId);
+  assert.equal(response.toolResponse.functionResponses[0]!.response.message, 'The work is still running. Its result will be available when you start another conversation.');
   assert.equal(h.owner.current().state, 'listening');
   assert.equal(new LiveToolJobs(h.store, () => NOW).pending()[0]!.state, 'in_progress');
   h.owner.revoke(session.liveSessionId);

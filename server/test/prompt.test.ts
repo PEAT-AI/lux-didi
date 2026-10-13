@@ -25,7 +25,15 @@ const wireContext = (result: ReturnType<typeof compilePrompt>) => 'Untrusted sou
 test('public template is content-versioned; sections/order/hashes are deterministic', () => {
   const a = compilePrompt(input()); const b = compilePrompt(input());
   assert.deepEqual(a, b);
-  assert.match(PUBLIC_PERSONA, /^You are Didi, a personal AI assistant\./);
+  assert.match(PUBLIC_PERSONA, /^You are Naya, the AI companion in Lux Didi/);
+  for (const exact of [
+    'These are character roots, not a claim that you are human or lived there',
+    'A familiar tone does not prove shared history',
+    'When asked for your opinion, take a position, explain its strongest reason, and engage with the strongest objection.',
+    'A proposed tool call is not an executed action.',
+  ]) assert.equal(PUBLIC_PERSONA.split(exact).length - 1, 1);
+  assert.ok(!PUBLIC_PERSONA.includes('You are Didi, a personal AI assistant.'));
+  assert.ok(!PUBLIC_PERSONA.includes('Keep spoken answers brief'));
   assert.ok(a.system.includes(PUBLIC_PERSONA));
   assert.equal(PROMPT_VERSION, 'didi-v1-' + createHash('sha256').update(PUBLIC_PERSONA + '\n\n' + a.system.split('[rules]\n')[1]!.split('\n\n[preferences]')[0]!).digest('hex'));
   assert.deepEqual(a.manifest.sections.map(s => s.id), ['persona', 'rules', 'preferences', 'capabilities']);

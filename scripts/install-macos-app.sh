@@ -72,7 +72,21 @@ seed_shipped_config() {
   if [ ! -e "$file" ]; then mv "$candidate" "$file"; return; fi
   if cmp -s "$file" "$candidate"; then rm "$candidate"; return; fi
   for old in "$@"; do
-    if cmp -s "$file" <(printf '%s\n' "$old"); then mv "$candidate" "$file"; return; fi
+    if node - "$file" "$candidate" <(printf '%s\n' "$old") <<'NODE'
+const fs = require('node:fs');
+const [file, candidate, previous] = process.argv.slice(2);
+const stored = fs.readFileSync(file, 'utf8');
+const old = fs.readFileSync(previous, 'utf8');
+// Only rendered PATH string values vary; all other bytes must still match.
+const pathValue = /("PATH":)"(?:\\.|[^"\\])*"/g;
+const normalize = text => text.replace(pathValue, '$1"<PATH>"');
+if (normalize(stored) !== normalize(old)) process.exit(1);
+const paths = [...stored.matchAll(pathValue)].map(match => match[0]);
+let index = 0;
+const desired = fs.readFileSync(candidate, 'utf8').replace(pathValue, match => paths[index++] ?? match);
+fs.writeFileSync(candidate, desired);
+NODE
+    then mv "$candidate" "$file"; return; fi
   done
   rm "$candidate"
 }

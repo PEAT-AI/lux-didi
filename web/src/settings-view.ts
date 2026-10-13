@@ -2,6 +2,7 @@
 // Every rendered field is whitelisted and escaped by name; no provider, config or route payload is
 // ever interpolated wholesale, so a secret-looking field cannot reach the page.
 import { escapeHtml } from './markdown.ts';
+import type { LiveSummary } from './api.ts';
 
 /** Where each setting lives on disk, by file name under the operator config dir. Never file contents. */
 const FILE_ROWS: [string, string][] = [
@@ -27,8 +28,9 @@ export interface SettingsInput {
   /** Envelope data from GET /api/v1/live/connections. */
   connections?: unknown;
   connectionsUnavailable?: boolean;
-  /** Envelope data from the operator bearer-only GET /api/v1/live/status, when it is available. */
-  live?: unknown;
+  /** Envelope data from GET /api/v1/live/summary, when the browser could read it. */
+  summary?: LiveSummary;
+  summaryUnavailable?: boolean;
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -61,12 +63,17 @@ export function connectorState(value: unknown): { id: string; state: string; nex
   return { id, state: label, next };
 }
 
-function liveRows(live: unknown): string {
-  const row = record(live);
-  const configured = row?.status === 'configured';
-  const model = configured ? text(row?.model, 120) : undefined;
-  const voice = configured ? text(row?.voice, 60) : undefined;
-  const limits = record(row?.limits);
+function liveRows(summary: unknown, summaryUnavailable: boolean): string {
+  const row = summaryUnavailable ? undefined : record(summary);
+  const unavailableRows = `<dt>Live model</dt><dd>${unavailable()}</dd>
+<dt>Live voice</dt><dd>${unavailable()}</dd>
+<dt>Session limit</dt><dd>${unavailable()}</dd>
+<dt>Idle limit</dt><dd>${unavailable()}</dd>`;
+  if (!row) return unavailableRows;
+  if (row.profileEnabled !== true) return `<dt>Live profile</dt><dd>${unavailable('Live profile disabled')}</dd>`;
+  const model = text(row.modelId, 120);
+  const voice = text(row.voice, 60);
+  const limits = record(row.limits);
   const session = limitMinutes(limits?.sessionMs);
   const idle = limitMinutes(limits?.idleMs);
   return `<dt>Live model</dt><dd>${model ? escapeHtml(model) : unavailable()}</dd>
@@ -75,13 +82,21 @@ function liveRows(live: unknown): string {
 <dt>Idle limit</dt><dd>${idle ?? unavailable()}</dd>`;
 }
 
-function serviceRows(status: unknown, statusUnavailable: boolean): string {
-  if (statusUnavailable) return `<dt>Persona name</dt><dd>${unavailable()}</dd><dt>Conversation model</dt><dd>${unavailable()}</dd>`;
+/** The persona display name the Live summary carries, only while the Live profile is enabled. */
+function summaryPersona(input: SettingsInput): string | undefined {
+  if (input.summaryUnavailable === true) return undefined;
+  const row = record(input.summary);
+  return row?.profileEnabled === true ? text(row.personaName, 120) : undefined;
+}
+
+function serviceRows(status: unknown, statusUnavailable: boolean, summaryName?: string): string {
+  const persona = summaryName ?? (statusUnavailable ? undefined : text(record(record(status)?.ownerProfile)?.displayName, 120));
+  const personaCell = persona ? escapeHtml(persona) : unavailable(statusUnavailable ? 'Unavailable' : 'Not reported');
+  if (statusUnavailable) return `<dt>Persona name</dt><dd>${personaCell}</dd><dt>Conversation model</dt><dd>${unavailable()}</dd>`;
   const row = record(status);
-  const persona = text(record(row?.ownerProfile)?.displayName, 120);
   const model = record(row?.model);
   const modelLabel = model?.configured === true ? [text(model.provider, 60), text(model.model, 120)].filter(Boolean).join(' ') || 'Configured' : 'Not configured';
-  return `<dt>Persona name</dt><dd>${persona ? escapeHtml(persona) : unavailable('Not reported')}</dd>
+  return `<dt>Persona name</dt><dd>${personaCell}</dd>
 <dt>Conversation model</dt><dd>${escapeHtml(modelLabel)}</dd>`;
 }
 
@@ -96,7 +111,7 @@ export function settingsMarkup(input: SettingsInput): string {
   return `<section id="settings-summary" class="panel didi-settings" aria-label="Didi settings">
 <h2>Didi settings</h2>
 <p class="muted">Read-only summary of what this Didi is running with. Values come from the running service; this page cannot change them.</p>
-<dl class="settings-facts">${liveRows(input.live)}${serviceRows(input.status, input.statusUnavailable === true)}
+<dl class="settings-facts">${liveRows(input.summary, input.summaryUnavailable === true)}${serviceRows(input.status, input.statusUnavailable === true, summaryPersona(input))}
 <dt>Service mode</dt><dd>${input.statusUnavailable === true ? unavailable() : escapeHtml(text(record(input.status)?.serviceMode, 40) ?? 'loopback')}</dd></dl>
 ${connectorsSection(input.connections, input.connectionsUnavailable === true)}
 <h3>Where these settings live</h3>

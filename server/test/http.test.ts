@@ -31,11 +31,11 @@ const domain = {
     throw new ServiceError('NOT_FOUND', 'Synthetic not found', 404);
   }
 } as DomainPort;
-async function fixture(port?: DomainPort) {
+async function fixture(port?: DomainPort, toolsStatus?: Parameters<typeof listenService>[0]['toolsStatus']) {
   const dir = mkdtempSync(join(tmpdir(), 'didi-http-'));
   const store = new Store(dir, port?.migrations);
   let time = Date.now();
-  const service = await listenService({ store, now: () => time, ...(port ? { domain: port } : {}), port: 0 });
+  const service = await listenService({ store, now: () => time, ...(port ? { domain: port } : {}), port: 0, ...(toolsStatus ? { toolsStatus } : {}) });
   const token = readFileSync(join(dir, 'admin-credential'), 'utf8').trim();
   const auth = { Authorization: `Bearer ${token}` };
   return { dir, store, service, auth, advance(ms: number) { time += ms; }, async cleanup() { await service.close(); store.close(); rmSync(dir, { recursive: true, force: true }); } };
@@ -309,5 +309,22 @@ test('owner memory delete requires a principal, is idempotent and reports unknow
     const unknown = await fetch(`${f.service.origin}/api/v1/entries/00000000-0000-4000-8000-000000000000`, { method: 'DELETE', headers: { ...headers, 'Idempotency-Key': 'delete-unknown' }, body: '{}' });
     assert.equal(unknown.status, 404);
     assert.equal((await unknown.json()).error.code, 'NOT_FOUND');
+  } finally { await f.cleanup(); }
+});
+
+test('T13 connections preserve bounded typed configuration errors', async () => {
+  const f = await fixture(undefined, () => ({ endpoints: [
+    { id: 'missing-class', state: 'error', tools: 0, lastHandshakeAt: null, error: 'unknown-class-missing', configurationError: 'unknown-class-missing' },
+    { id: 'untrusted-code', state: 'error', tools: 0, lastHandshakeAt: null, error: 'private diagnostic', configurationError: 'private diagnostic' },
+  ] }));
+  try {
+    const browser = await pair(f);
+    const response = await fetch(`${f.service.origin}/api/v1/live/connections`, { headers: { Cookie: browser.cookie.split(';')[0]!, 'sec-fetch-site': 'same-origin' } });
+    assert.equal(response.status, 200);
+    const body = await response.json() as { data: Array<{ reasonCode: string; configurationError?: string }> };
+    assert.equal(body.data[0]!.reasonCode, 'configuration_error');
+    assert.equal(body.data[0]!.configurationError, 'unknown-class-missing');
+    assert.equal(body.data[1]!.configurationError, undefined);
+    assert.equal(JSON.stringify(body).includes('private diagnostic'), false);
   } finally { await f.cleanup(); }
 });

@@ -3,9 +3,10 @@ import type { LivePendingService } from '../live/types.js';
 import { createServer } from 'node:http';
 import type { IncomingMessage, ServerResponse, Server } from 'node:http';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
-import { Store } from '../runtime/store.js';
-import type { DomainPort } from '../contracts/domain.js';
-import { ChatError, type ChatPort } from '../chat/index.js';
+import { Store, scrubDeletedMemoryResponses } from '../runtime/store.js';
+import type { DomainPort, EntryTombstone } from '../contracts/domain.js';
+import { ChatError, redactDeletedMemoryContext, type ChatPort } from '../chat/index.js';
+import { redactDeletedMemorySnapshots } from '../live/index.js';
 import type { ConnectedStatus } from '../host/connected.js';
 import { ServiceError } from '../contracts/errors.js';
 import { clientDiagnostic, object, resolveRoute } from './routes.js';
@@ -30,6 +31,7 @@ async function readBody(req: IncomingMessage, limit = 65536): Promise<Record<str
 }
 interface Principal { clientId: string; mode: 'bearer' | 'browser'; tokenHash?: string; csrfToken?: string }
 export interface ServiceOptions { ownerProfileStatus?: { status: 'default' | 'configured'; displayName: string }; store: Store; domain?: DomainPort; port?: number; now?: () => number; webRoot?: string; chat?: ChatPort; modelStatus?: ConnectedStatus; live?: LiveService; toolsStatus?: () => { endpoints: unknown[] } }
+export interface EntryDeletionResponse extends EntryTombstone { liveSessionRetainsUntilRebuild: boolean }
 export interface RunningService { server: Server; origin: string; close(): Promise<void> }
 export async function listenService(options: ServiceOptions): Promise<RunningService> {
   const { store, domain, chat, live } = options;
@@ -147,7 +149,9 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
             const state = ['missing', 'configured', 'connected', 'error'].includes(String(row.state)) ? String(row.state) : 'error';
             // Classify privately; return only closed reason tokens, never the original diagnostic.
             const error = typeof row.error === 'string' ? row.error : '';
+            const configurationError = ['unknown-class-missing', 'unknown-class-invalid', 'owner-approval-required', 'ambiguous-legacy-policy'].includes(String(row.configurationError)) ? String(row.configurationError) : undefined;
             const reasonCode = state === 'connected' || (state === 'configured' && !error) ? null
+              : configurationError ? 'configuration_error'
               : /^credential .* missing or invalid$/.test(error) ? 'credential_missing'
               : /unreachable|ECONNREFUSED|ENOTFOUND|ETIMEDOUT/.test(error) ? 'unreachable'
               : /discovery/.test(error) ? 'discovery_failed'
@@ -157,6 +161,7 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
               tools: typeof row.tools === 'number' && Number.isSafeInteger(row.tools) && row.tools >= 0 ? row.tools : 0,
               lastHandshakeAt: typeof row.lastHandshakeAt === 'string' && /^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/.test(row.lastHandshakeAt) && Number.isFinite(Date.parse(row.lastHandshakeAt)) ? row.lastHandshakeAt : null,
               reasonCode,
+              ...(configurationError ? { configurationError } : {}),
             };
           });
           send(res, 200, success(endpoints)); return;
@@ -258,14 +263,30 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
       if (typeof key !== 'string' || !/^[A-Za-z0-9_.:-]{1,128}$/.test(key)) throw new ServiceError('BAD_REQUEST', 'Idempotency-Key required');
       if (req.headers['x-didi-authority-epoch'] !== store.authorityEpoch) throw new ServiceError('STALE_AUTHORITY', 'Authority epoch does not match', 409);
       const fingerprint = hash(canonical({ method, path: url.pathname, input: route.input }));
+      let publishLiveRedaction = () => {};
       const response = store.transaction(tx => {
         const prior = tx.get('SELECT * FROM runtime_requests WHERE assistant_id=? AND client_id=? AND request_key=?', [store.assistantId, actor.clientId, key]);
         if (prior) { if (prior.fingerprint !== fingerprint) throw new ServiceError('CONFLICT', 'Idempotency key reused with different request', 409); return JSON.parse(String(prior.response)) as unknown; }
+        let deletedText: string | undefined;
+        let liveSessionRetainsUntilRebuild = false;
+        const deletedId = domainRoute.operation === 'deleteEntry' ? (domainRoute.input as { id: string }).id : undefined;
+        if (deletedId !== undefined) {
+          try { deletedText = domain.execute(tx, 'resolveEntries', { entryIds: [deletedId] }, context).records[0]?.text; }
+          catch (error) { if (!(error instanceof ServiceError && error.code === 'NOT_FOUND')) throw error; }
+        }
         const data = domain.execute(tx, domainRoute.operation, domainRoute.input, context);
+        if (deletedId !== undefined) {
+          redactDeletedMemoryContext(tx, deletedId);
+          const liveRedaction = redactDeletedMemorySnapshots(store, tx, deletedId);
+          publishLiveRedaction = liveRedaction.publish;
+          liveSessionRetainsUntilRebuild = liveRedaction.liveSessionRetainsUntilRebuild;
+          scrubDeletedMemoryResponses(tx, store.assistantId, deletedText);
+        }
         if (data && typeof (data as unknown as { then?: unknown }).then === 'function') throw new Error('Domain operation must be synchronous');
-        const result = success(data);
+        const result = success(deletedId === undefined ? data : { ...(data as EntryTombstone), liveSessionRetainsUntilRebuild } satisfies EntryDeletionResponse);
         tx.run('INSERT INTO runtime_requests VALUES (?,?,?,?,?)', [store.assistantId, actor.clientId, key, fingerprint, JSON.stringify(result)]); return result;
       });
+      publishLiveRedaction();
       send(res, 200, response);
     } catch (error) {
       const typed = error instanceof ServiceError ? error : error instanceof ChatError

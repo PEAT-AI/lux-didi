@@ -26,6 +26,7 @@ import { NAYA_BASE, NAYA_TOOLS, composeLiveInstruction } from '../prompt/live-pe
 import { GeminiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
 import type { LiveVoiceLimits, LiveVoiceRequest } from '../adapters/live-voice/index.js';
 import { chatMigrations } from '../chat/index.js';
+import { domainMigrations } from '../domain/schema.js';
 import { createDomainPort } from '../domain/facade.js';
 import { Outbox } from '../runtime/outbox.js';
 import { Store } from '../runtime/store.js';
@@ -698,7 +699,8 @@ test('live migrations preserve a populated accepted Store byte-for-byte', async 
     assert.throws(() => tx.run("INSERT INTO live_journal(live_session_id,kind,payload_bytes,arrived_at) VALUES (?,'unknown_kind',0,?)", [id, NOW]));
   });
   const owners = migrated.transaction(tx => tx.all('SELECT owner, MAX(version) AS version FROM runtime_migrations GROUP BY owner ORDER BY owner'));
-  assert.deepEqual(owners.map(row => [String(row['owner']), Number(row['version'])]), [['chat', 6], ['domain', 4], ['live', 6]]);
+  assert.deepEqual(owners.map(row => [String(row['owner']), Number(row['version'])]),
+    [chatMigrations, domainMigrations, liveMigrations].map(migrations => [migrations[0]!.owner, Math.max(...migrations.map(migration => migration.version))]));
 });
 
 test('a failed store write aborts visibly and never fabricates a durable outcome', async t => {

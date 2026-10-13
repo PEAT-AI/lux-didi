@@ -34,7 +34,7 @@ function decodeSseResponse(bytes: Uint8Array, requestId: unknown): Uint8Array {
   } catch { throw new PolicyError('mcp_transport_error'); }
   throw new PolicyError('mcp_transport_error');
 }
-interface Operation { scope: ResultScope; signal: AbortSignal; dispatched: boolean; bytes?: Uint8Array; requestId?: string | number; explicitErrorCode?: number }
+interface Operation { scope: ResultScope; signal: AbortSignal; dispatched: boolean; bytes?: Uint8Array; requestId?: string | number; explicitErrorCode?: number; explicitError?: unknown }
 interface Session { client: Client; config: EndpointConfig; operation?: Operation }
 const allowedHeaders = new Set(['accept', 'content-type', 'mcp-session-id', 'mcp-protocol-version', 'last-event-id', 'mcp-method', 'mcp-name']);
 

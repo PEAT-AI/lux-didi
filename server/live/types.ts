@@ -118,11 +118,12 @@ export interface LiveSessionSnapshot {
 }
 
 export type JournalKind =
-  | 'toolCall' | 'toolResult' | 'continuity'
+  | 'toolCall' | 'toolResult' | 'continuity' | 'remember_deferred'
   | 'inputTranscription' | 'outputTranscription' | 'ready' | 'interrupted' | 'generationComplete'
   | 'turnComplete' | 'waitingForInput' | 'terminal';
 
 export interface LiveFragment {
+  waitedMs?: number;
   event?: 'rebuilding' | 'resumed'; reason?: string;
   tool?: LiveToolProjection;
   liveSessionId: string; journalSequence: number; providerSequence: number | null; kind: JournalKind;

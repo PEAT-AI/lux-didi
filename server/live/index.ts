@@ -24,6 +24,11 @@ import {
 const pickupInstruction = 'The user has just picked up. Deliver the pending job result first, briefly, then resume the conversation. If the outcome failed or is unknown, state that truthfully.';
 
 interface ActiveSession {
+  inputFinal?: boolean;
+  inputAt?: number;
+  inputJournalId?: number;
+  inputFinalTimer?: ReturnType<JobTimer>;
+  inputFinalWaiters?: Set<() => void>;
   generation: number; attempts: number; rebuilding: boolean;
   request: LiveVoiceRequest; deadlineMs: number; deadlineAt: number; idleAt: number; goAwayUntil: number | undefined;
   sessionTimer: ReturnType<JobTimer> | undefined; idleTimer: ReturnType<JobTimer> | undefined;
@@ -473,7 +478,7 @@ export class LiveSessionOwner {
     if (this.#tools) {
       const saved = this.#store.transaction(tx => tx.get('SELECT acceptance_json FROM live_tool_acceptances WHERE live_session_id=?', [liveSessionId]));
       if (!saved) throw new LiveError('invalidated');
-      registry = Object.freeze(this.#tools.owner.liveDefinitions(liveSessionId, (tx, id, args) => rememberOwnerNote(tx, id, args, this.#now())).map(tool => Object.freeze({ ...tool, parameters: structuredClone(tool.parameters) })));
+      registry = Object.freeze(this.#tools.owner.liveDefinitions(liveSessionId, (tx, id, args) => this.#active.get(id)?.inputFinal ? rememberOwnerNote(tx, id, args, this.#now()) : { remembered: false, code: 'owner_transcript_not_final' }).map(tool => Object.freeze({ ...tool, parameters: structuredClone(tool.parameters) })));
       host = { runId: liveSessionId, actorId: context.clientId, authorityEpoch: context.authorityEpoch, revision,
         grants: registry.filter(tool => tool.effect === 'read' || this.#tools!.owner.liveRememberApproved() && tool.name === 'remember_note' && tool.accountId === 'gateway:live-voice' && tool.resourceId === 'owner-memory').map(tool => ({ tool: tool.name, effect: tool.effect, accountId: tool.accountId, resourceId: tool.resourceId })) };
     }
@@ -629,6 +634,10 @@ export class LiveSessionOwner {
     try {
       for await (const event of session.events) {
         if (this.#settled(handle) || generation !== handle.generation) break;
+        if (event.type === 'modelTurnStarted') {
+          this.#beginModelTurn(handle);
+          continue;
+        }
         if (event.type === 'resumptionHandle') {
           this.#store.transaction(tx => tx.run('UPDATE live_sessions SET resumption_handle=? WHERE live_session_id=?', [event.handle, handle.liveSessionId]));
           continue;
@@ -659,6 +668,11 @@ export class LiveSessionOwner {
         if (event.type === 'waitingForInput') { handle.thinking = !event.value; if (event.value) handle.speaking = false; }
         if (event.type === 'audio') { handle.thinking = false; handle.speaking = true; this.#pushChunk(handle, { kind: 'audio', pcm: event.pcm }); continue; }
         if (event.type === 'outcome') { outcome = event.outcome; continue; }
+        if (event.type === 'inputTranscription') {
+          handle.inputFinalTimer?.cancel();
+          handle.inputAt = this.#now();
+          handle.inputFinal = event.finished === true;
+        }
         const kind = journalKind(event.type);
         if (kind === null) continue;
         const persisted = this.#persist(handle, event, kind);
@@ -685,6 +699,47 @@ export class LiveSessionOwner {
     handle.loopDone.resolve();
   }
 
+  #beginModelTurn(handle: ActiveSession): void {
+    if (handle.inputFinal || handle.inputAt === undefined || handle.inputJournalId === undefined) return;
+    handle.inputFinalTimer?.cancel();
+    const journalId = handle.inputJournalId, generation = handle.generation;
+    handle.inputFinalTimer = this.#schedule(() => {
+      if (this.#settled(handle) || handle.generation !== generation || handle.inputJournalId !== journalId) return;
+      try {
+        this.#store.transaction(tx => tx.run("UPDATE live_journal SET finished=1 WHERE journal_id=? AND live_session_id=? AND kind='inputTranscription'", [journalId, handle.liveSessionId]));
+      } catch (error) {
+        handle.persistFailure = error;
+        handle.abort.abort();
+        handle.done.reject(error);
+        return;
+      }
+      handle.inputFinal = true;
+      for (const resolve of handle.inputFinalWaiters ?? []) resolve();
+    }, Math.max(0, 300 - (this.#now() - handle.inputAt)));
+    handle.inputFinalTimer.unref();
+  }
+
+  async #waitForOwnerTranscript(handle: ActiveSession, sequence: number): Promise<void> {
+    if (handle.inputFinal) return;
+    const started = this.#now();
+    await new Promise<void>(resolve => {
+      const finish = () => {
+        timer.cancel();
+        handle.inputFinalWaiters?.delete(finish);
+        handle.abort.signal.removeEventListener('abort', finish);
+        resolve();
+      };
+      const timer = this.#schedule(finish, 1500);
+      timer.unref();
+      (handle.inputFinalWaiters ??= new Set()).add(finish);
+      handle.abort.signal.addEventListener('abort', finish, { once: true });
+    });
+    if (!this.#settled(handle)) {
+      const retained = this.#persist(handle, { type: 'remember_deferred', sequence, text: String(Math.max(0, this.#now() - started)) }, 'remember_deferred');
+      if (retained === 'overflow') this.#settle(handle, { state: 'journal_limit' }, false, 'ended', { kind: 'remember_deferred', sequence });
+    }
+  }
+
   async #toolBatch(handle: ActiveSession, event: Extract<LiveVoiceEvent, { type: 'toolCall' }>, generation: number): Promise<void> {
     handle.thinking = true;
     let inlineJob: ToolJob | undefined;
@@ -709,6 +764,8 @@ export class LiveSessionOwner {
       const host = structuredClone(handle.host), step = ++handle.toolStep;
       const jobAbort = new AbortController();
       const control = { signal: jobAbort.signal, deadlineMs: handle.deadlineMs };
+      if (event.calls.some(call => call.name === 'remember_note')) await this.#waitForOwnerTranscript(handle, event.sequence);
+      if (this.#settled(handle) || generation !== handle.generation) return;
       const execution = await this.#jobs.run(host, authority, this.#profile.limits.toolDeferralMs, this.#schedule, async () => {
         if (this.#settled(handle) || generation !== handle.generation) throw new LiveError('invalidated');
         const raw = await runToolCalls(this.#tools!.owner, event.calls, { registry: handle.registry, host,
@@ -769,7 +826,7 @@ export class LiveSessionOwner {
     handle.thinking = handle.pendingCallIds.size > 0;
   }
 
-  #persist(handle: ActiveSession, event: { type: 'continuity'; sequence: number; text: string } | LiveVoiceEvent | { type: 'toolCall' | 'toolResult'; sequence: number; tool: LiveToolProjection }, kind: JournalKind): number | 'overflow' {
+  #persist(handle: ActiveSession, event: { type: 'continuity' | 'remember_deferred'; sequence: number; text: string } | LiveVoiceEvent | { type: 'toolCall' | 'toolResult'; sequence: number; tool: LiveToolProjection }, kind: JournalKind): number | 'overflow' {
     const text = 'text' in event ? event.text : null;
     const finished = 'finished' in event && event.finished !== undefined ? (event.finished ? 1 : 0) : null;
     const value = event.type === 'waitingForInput' ? (event.value ? 1 : 0) : null;

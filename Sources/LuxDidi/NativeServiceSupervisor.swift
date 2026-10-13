@@ -142,6 +142,7 @@ struct OwnedServiceConnection {
     let pid: Int32
     let nonce: String
     let assistantId: String
+    let credential: @MainActor () throws -> String
 }
 
 @MainActor final class NativeServiceSupervisor: ObservableObject {
@@ -153,9 +154,10 @@ struct OwnedServiceConnection {
     private var child: OwnedServiceChild?
     private var connection: OwnedServiceConnection?
     private var operation: UUID?
-    private(set) var credentialImported = false
+    private(set) var credentialValidated = false
     private(set) var lastStop: [String: Any]?
     private(set) var startupFailureCode: String?
+    private(set) var startupFailureDiagnostic: StartupFailureDiagnostic?
     var currentConnection: OwnedServiceConnection? {
         guard let connection, isCurrent(connection) else { return nil }; return connection
     }
@@ -168,6 +170,7 @@ struct OwnedServiceConnection {
     }
     @Published private(set) var state: NativeServiceState = .stopped
     var onUnavailable: (() -> Void)?
+    var onCredentialUnavailable: ((NativeServiceError) -> Void)?
     var onRecovered: (() -> Void)?
     var onRestartStatus: ((Bool) -> Void)?
     private var wakeObserver: NSObjectProtocol?
@@ -282,6 +285,37 @@ struct OwnedServiceConnection {
         recovery.childExited(recovery.generation)
         Task { await owner.stop() }
     }
+    private func credential(owner: OwnedServiceChild, nonce: String, initial: Data) throws -> String {
+        guard child === owner, owner.isRunning, state == .running, connection?.nonce == nonce else {
+            throw NativeServiceError.exited
+        }
+        do {
+            let current = try NativeCredentialImport.readCredential(state: stateURL)
+            guard current == initial else { throw NativeServiceError.credentialMismatch }
+            return String(decoding: current, as: UTF8.self)
+        } catch {
+            let failure = (error as? NativeServiceError) ?? .unsafeCredential
+            recovery.stop(); restartTask?.cancel(); restartTask = nil
+            if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
+            wakeObserver = nil
+            owner.onUnexpectedExit = nil; owner.onInvalidOutput = nil
+            operation = nil; state = .unavailable; connection = nil; credentialValidated = false
+            startupFailureCode = "canonical-file/" + String(describing: failure)
+            let category: StartupFailureDiagnostic.Category
+            switch failure {
+            case .unsafeState: category = .unsafeState
+            case .credentialMismatch: category = .credentialMismatch
+            default: category = .unsafeCredential
+            }
+            startupFailureDiagnostic = StartupFailureDiagnostic(stage: .canonicalFile, category: category, operation: .none, status: nil)
+            onCredentialUnavailable?(failure)
+            Task {
+                await owner.stop(); observeStop(owner)
+                if child === owner { child = nil }
+            }
+            throw failure
+        }
+    }
     func start(recovering: Bool = false) async throws -> OwnedServiceConnection {
         if let connection, isCurrent(connection) { return connection }
         guard !Task.isCancelled else { throw NativeServiceError.exited }
@@ -289,13 +323,17 @@ struct OwnedServiceConnection {
         let ticket = UUID(); operation = ticket
         var launched: OwnedServiceChild?
         var stage = "state"
+        var diagnosticStage: StartupFailureDiagnostic.Stage = .state
         startupFailureCode = nil
+        credentialValidated = false
+        startupFailureDiagnostic = nil
         state = .starting; connection = nil
         if let child { await child.stop(); observeStop(child); self.child = nil }
         do {
             guard operation == ticket, state == .starting else { throw NativeServiceError.exited }
             try NativeCredentialImport.prepareState(stateURL)
             stage = "node-probe"
+            diagnosticStage = .nodeProbe
             try await probeNode()
             guard operation == ticket, state == .starting, !Task.isCancelled else { throw NativeServiceError.exited }
             // Revalidate selected artifacts after the await; never attach a cached descriptor.
@@ -309,6 +347,7 @@ struct OwnedServiceConnection {
             owned.onUnexpectedExit = { [weak self, weak owned] in if let owned { self?.unavailable(owned) } }
             owned.onInvalidOutput = { [weak self, weak owned] in if let owned { self?.unavailable(owned) } }
             stage = "spawn"
+            diagnosticStage = .spawn
             // Native forwards only the two existing host path flags; the host entry
             // owns credential/profile validation, snapshots and policy.
             var hostArguments = [runtime.serverEntry.path, "--supervised", "--data-dir", stateURL.path, "--web-root", runtime.webRoot.path, "--port", "0"]
@@ -320,6 +359,7 @@ struct OwnedServiceConnection {
             var start = try JSONSerialization.data(withJSONObject: ["type": "start", "schemaVersion": 1, "nonce": nonce])
             start.append(10); try owned.writeStart(start)
             stage = "ready-frame"
+            diagnosticStage = .readyFrame
             let readyData = try await owned.firstFrame(timeout: 6_000_000_000)
             guard let ready = try JSONSerialization.jsonObject(with: readyData) as? [String: Any],
                   Set(ready.keys) == ["type", "schemaVersion", "nonce", "pid", "origin", "authorityEpoch", "assistantId"],
@@ -328,18 +368,41 @@ struct OwnedServiceConnection {
                   let origin = ready["origin"] as? String, let epoch = ready["authorityEpoch"] as? String, UUID(uuidString: epoch) != nil,
                   let assistant = ready["assistantId"] as? String, UUID(uuidString: assistant) != nil else { throw NativeServiceError.invalidReady }
             _ = try ServiceDescriptor(origin: origin, credentialService: credentialService, credentialAccount: credentialAccount)
-            stage = "canonical-file-and-import"
-            let reference = try NativeCredentialImport.importCredential(state: stateURL, installId: credentialAccount, service: credentialService)
-            credentialImported = true
+            stage = "canonical-file"
+            diagnosticStage = .canonicalFile
+            let initial = try NativeCredentialImport.readCredential(state: stateURL)
+            credentialValidated = true
             guard owned.isRunning, state == .starting else { throw NativeServiceError.exited }
-            let descriptor = try ServiceDescriptor(origin: origin, credentialService: reference.service, credentialAccount: reference.account)
-            let result = OwnedServiceConnection(descriptor: descriptor, authorityEpoch: epoch, pid: owned.pid, nonce: nonce, assistantId: assistant)
+            let descriptor = try ServiceDescriptor(origin: origin, credentialService: credentialService, credentialAccount: credentialAccount)
+            let result = OwnedServiceConnection(descriptor: descriptor, authorityEpoch: epoch, pid: owned.pid, nonce: nonce, assistantId: assistant,
+                credential: { [weak self, weak owned] in
+                    guard let self, let owned else { throw NativeServiceError.exited }
+                    return try self.credential(owner: owned, nonce: nonce, initial: initial)
+                })
             connection = result; state = .running
             if !recovering { recovery.activate() }
             observeWake()
             return result
         } catch {
             startupFailureCode = stage + "/" + ((error as? NativeServiceError).map { String(describing: $0) } ?? "platformFailure")
+            let category: StartupFailureDiagnostic.Category
+            var status: Int32?
+            switch error as? NativeServiceError {
+            case .invalidRuntime: category = .invalidRuntime
+            case .invalidNode: category = .invalidNode
+            case .invalidOperatorSettings: category = .invalidOperatorSettings
+            case .unsafeState: category = .unsafeState
+            case .unsafeCredential: category = .unsafeCredential
+            case .credentialMismatch: category = .credentialMismatch
+            case .keychain(let code):
+                category = .keychain; status = code
+            case .invalidReady: category = .invalidReady
+            case .exited: category = .exited
+            case .timeout: category = .timeout
+            case .alreadyStarting: category = .alreadyStarting
+            case nil: category = .unknown
+            }
+            startupFailureDiagnostic = StartupFailureDiagnostic(stage: diagnosticStage, category: category, operation: .none, status: status)
             if let launched { await launched.stop(); observeStop(launched) }
             if operation == ticket {
                 child = nil; state = .unavailable; connection = nil

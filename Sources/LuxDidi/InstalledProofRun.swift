@@ -19,18 +19,21 @@ import CryptoKit
         let literal = String(data: try JSONSerialization.data(withJSONObject: record.text, options: [.fragmentsAllowed]), encoding: .utf8)!
         let check = "document.body.innerText.includes(\(literal))"
         if try await js(web, check) as? Bool == true { return true }
-        // Ordinary visible navigation only. No privileged JS/API/command bridge.
-        for tab in ["Conversation", "Conversations"] {
-            _ = try await js(web, "Array.from(document.querySelectorAll('button,a,[role=button]')).find(e=>e.innerText.trim()==='\(tab)')?.click(); true")
-        }
-        let count = try await js(web, "Array.from(document.querySelectorAll('button,a,[role=button]')).filter(e=>e.innerText.includes('Native capture')&&e.getBoundingClientRect().width>0).length") as? Int ?? 0
-        for index in 0..<min(count, 20) {
-            _ = try await js(web, "Array.from(document.querySelectorAll('button,a,[role=button]')).filter(e=>e.innerText.includes('Native capture')&&e.getBoundingClientRect().width>0)[\(index)]?.click(); true")
-            let until = Date().addingTimeInterval(0.5)
-            while Date() < until {
-                if try await js(web, check) as? Bool == true { return true }
-                try await Task.sleep(nanoseconds: 50_000_000)
+        let selector = String(data: try JSONSerialization.data(withJSONObject: "[data-session=\"" + record.sessionId + "\"]", options: [.fragmentsAllowed]), encoding: .utf8)!
+        _ = try await js(web, "document.querySelector('[data-tab=\"Conversation\"]')?.click(); true")
+        let until = Date().addingTimeInterval(0.5)
+        var opened = false
+        while Date() < until {
+            let snapshot = try await js(web, "(() => { const row=document.querySelector(\(selector)); return { connectionReady:document.querySelector('#connection-state')?.textContent.trim()==='Connected', listLoading:!!document.querySelector('#main .loading'), rowReady:!!row&&row.getBoundingClientRect().width>0, selected:!!row&&row.classList.contains('selected') }; })()") as? [String: Any] ?? [:]
+            if snapshot["connectionReady"] as? Bool == true, snapshot["listLoading"] as? Bool == false {
+                if !opened, snapshot["rowReady"] as? Bool == true {
+                    opened = try await js(web, "(() => { const row=document.querySelector(\(selector)); if(!row||row.getBoundingClientRect().width<=0)return false; row.click(); return true; })()") as? Bool == true
+                } else if opened, snapshot["selected"] as? Bool == true,
+                          try await js(web, check) as? Bool == true {
+                    return true
+                }
             }
+            try await Task.sleep(nanoseconds: 50_000_000)
         }
         return false
     }
@@ -82,13 +85,11 @@ import CryptoKit
             _ = await OwnedVerificationLaunchGate.perform(window: window) { _ in false }
             await Task { @MainActor in
                 await model.shutdown()
-                do { try model.installedProof?.cleanCredential() }
-                catch { fputs("INSTALLED-PROOF FAILED: configuration credential cleanup\n", stderr) }
             }.value; fputs("INSTALLED-PROOF FAILED: configuration or ownership rejected\n", stderr); return false
         }
         let runtime = owner.runtime
         let permission = CGPreflightScreenCaptureAccess()
-        var observations: [String: Any] = ["credentialImported": false, "bootstrap": false, "canonicalUIReady": false, "priorRecallComplete": false, "newSaved": false]
+        var observations: [String: Any] = ["credentialSource": "canonical-file", "credentialValidated": false, "bootstrap": false, "canonicalUIReady": false, "priorRecallComplete": false, "newSaved": false]
         let null = NSNull()
         var report: [String: Any] = ["phase": "running", "success": false, "runId": UUID().uuidString.lowercased(),
             "source": [:], "native": ["pid": Int(getpid()), "cleanQuitRequested": false, "exitEvidence": "external-driver-required"],
@@ -96,7 +97,7 @@ import CryptoKit
             "visual": ["windowId": window.windowNumber > 0 ? window.windowNumber as Any : null, "screenCapturePermission": permission,
                        "pageSnapshot": null, "nativeChrome": null, "nativeChromeLimitation": "Native chrome not visually verified.", "accessibility": [], "rootVisualReviewRequired": true],
             "serviceStop": ["requested": false, "observedExited": false, "pid": null, "exitStatus": null, "terminationReason": null, "procedure": "private-stdin-close-and-bounded-owned-escalation"],
-            "credentialCleanup": ["scope": "synthetic-proof-only", "attempted": false, "cleaned": false, "errorCode": null], "error": null]
+            "error": null]
         var failure: Error?
         let gated = await OwnedVerificationLaunchGate.perform(window: window) { gate in
         do {
@@ -111,7 +112,7 @@ import CryptoKit
             guard let connection = owner.currentConnection, let client = model.client else { throw InstalledProofError.unavailable }
             try gate?.bindService(pid: connection.pid, executable: runtime.node.path, serviceNonce: connection.nonce)
             try Task.checkCancellation()
-            observations["credentialImported"] = owner.credentialImported; observations["bootstrap"] = true
+            observations["credentialValidated"] = owner.credentialValidated; observations["bootstrap"] = true
             report["service"] = ["pid": Int(connection.pid), "nonce": connection.nonce, "origin": connection.descriptor.origin,
                                   "authorityEpoch": connection.authorityEpoch, "assistantId": connection.assistantId, "readyVerified": true]
             let web = try await pageReady(model); observations["canonicalUIReady"] = true
@@ -169,15 +170,11 @@ import CryptoKit
         return failure == nil
         }
         if !gated { failure = failure ?? InstalledProofError.unavailable }
-        observations["credentialImported"] = owner.credentialImported; report["observations"] = observations
+        observations["credentialValidated"] = owner.credentialValidated; report["observations"] = observations
         // Joined, cancellation-independent finalization on every work/gate outcome.
         await Task { @MainActor in
         await model.shutdown()
         if let stopped = owner.lastStop { report["serviceStop"] = stopped }
-        if owner.credentialImported {
-            do { try proof.cleanCredential(); report["credentialCleanup"] = ["scope": "synthetic-proof-only", "attempted": true, "cleaned": true, "errorCode": null] }
-            catch { report["credentialCleanup"] = ["scope": "synthetic-proof-only", "attempted": true, "cleaned": false, "errorCode": code(error)]; failure = failure ?? error }
-        }
         if failure == nil, owner.lastStop?["observedExited"] as? Bool != true { failure = InstalledProofError.unavailable }
         report["native"] = ["pid": Int(getpid()), "cleanQuitRequested": true, "exitEvidence": "external-driver-required"]
         }.value

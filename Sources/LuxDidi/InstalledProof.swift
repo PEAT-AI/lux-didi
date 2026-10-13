@@ -1,7 +1,5 @@
 import Foundation
 import Darwin
-import Security
-import LocalAuthentication
 
 enum InstalledProofError: LocalizedError {
     case invalidArguments, unsafePath, invalidMarker, unavailable, missingUI, persistence, accessibility, captureRequired
@@ -101,9 +99,9 @@ struct PreparedInstalledProof {
     var screenshot: URL { report.appendingPathExtension("native-window.png") }
     func write(_ outcomes: [String: Any]) throws {
         var value = outcomes
-        value["type"] = "LuxDidiInstalledProof"; value["schemaVersion"] = 1
+        value["type"] = "LuxDidiInstalledProof"; value["schemaVersion"] = 2
         value["installId"] = installId; value["proofId"] = proofId; value["reopened"] = reopened
-        // R10 has exact consumer key sets. Private diagnostics belong beside it,
+        // The versioned proof has exact consumer key sets. Private diagnostics belong beside it,
         // with the same-run identity, never in the versioned consumer wire.
         var diagnostic: [String: Any] = ["type": "LuxDidiInstalledProofDiagnostics", "schemaVersion": 1,
             "installId": installId, "proofId": proofId, "runId": value["runId"] ?? NSNull(),
@@ -130,15 +128,5 @@ struct PreparedInstalledProof {
         defer { close(file); try? FileManager.default.removeItem(at: pending) }
         let count = data.withUnsafeBytes { Darwin.write(file, $0.baseAddress, $0.count) }
         guard count == data.count, fsync(file) == 0, rename(pending.path, output.path) == 0 else { throw InstalledProofError.unsafePath }
-    }
-    @MainActor func cleanCredential() throws {
-        let policy = NativeKeychainPolicy.check()
-        guard policy == errSecSuccess else { throw NativeServiceError.keychain(policy) }
-        let context = LAContext(); context.interactionNotAllowed = true
-        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: NativeCredentialImport.service,
-                                   kSecAttrAccount as String: credentialAccount, kSecUseAuthenticationContext as String: context,
-                                   kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail]
-        let status = SecItemDelete(query as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else { throw NativeServiceError.keychain(status) }
     }
 }

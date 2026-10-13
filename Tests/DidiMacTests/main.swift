@@ -195,6 +195,30 @@ for field in ["1.2.3", "0e11a5835643966ac8ea8cc532ebb16202803146", "Version 14.5
 }
 let diagnosticsEmpty = NativeDiagnosticsSnapshot.render(DiagnosticsSnapshotInput())
 expect(diagnosticsEmpty.contains("unknown"), "missing diagnostics inputs render unknown")
+for operation in [StartupFailureDiagnostic.Operation.policyRecheck, .copyMatching, .add] {
+    for status in [Int32.min, -25308, Int32.max] {
+        let failure = StartupFailureDiagnostic(stage: .canonicalImport, category: .keychain, operation: operation, status: status)
+        let text = NativeDiagnosticsSnapshot.render(DiagnosticsSnapshotInput(startupFailure: failure))
+        expect(text.contains("category=keychain operation=" + operation.rawValue + " status=" + String(status)), "closed startup operation and Int32 status render")
+    }
+}
+for failure in [StartupFailureDiagnostic(stage: .unknown, category: .keychain, operation: .copyMatching, status: -25308),
+                StartupFailureDiagnostic(stage: .canonicalImport, category: .unknown, operation: .none, status: nil),
+                StartupFailureDiagnostic(stage: .canonicalImport, category: .keychain, operation: .copyMatching, status: nil),
+                StartupFailureDiagnostic(stage: .bootstrap, category: .authentication, operation: .add, status: -1),
+                StartupFailureDiagnostic(stage: .state, category: .authentication, operation: .none, status: nil),
+                StartupFailureDiagnostic(stage: .bootstrap, category: .invalidNode, operation: .none, status: nil),
+                StartupFailureDiagnostic(stage: .readyFrame, category: .keychain, operation: .copyMatching, status: -25308),
+                StartupFailureDiagnostic(stage: .canonicalImport, category: .keychain, operation: .none, status: -25308),
+                StartupFailureDiagnostic(stage: .canonicalImport, category: .keychain, operation: .copyMatching, status: 0)] {
+    expect(NativeDiagnosticsSnapshot.startupFailure(failure) == "unknown", "invalid or unknown startup diagnostic maps to fixed unknown")
+}
+expect(NativeDiagnosticsSnapshot.startupFailure(nil) == "unknown", "success has no stale startup failure")
+for (stage, category) in [(StartupFailureDiagnostic.Stage.state, .unsafeState), (.nodeProbe, .invalidNode), (.nodeProbe, .invalidReady),
+                          (.spawn, .invalidRuntime), (.readyFrame, .timeout), (.canonicalImport, .credentialMismatch), (.bootstrap, .authentication)] as [(StartupFailureDiagnostic.Stage, StartupFailureDiagnostic.Category)] {
+    let failure = StartupFailureDiagnostic(stage: stage, category: category, operation: .none, status: nil)
+    expect(NativeDiagnosticsSnapshot.startupFailure(failure).contains("stage=" + stage.rawValue + " category=" + category.rawValue), "reachable startup pair is retained")
+}
 let diagnosticsSecret = NativeDiagnosticsSnapshot.render(DiagnosticsSnapshotInput(
     appVersion: "Bearer abc.def.ghi",
     serviceState: "cookie=session%3Dxyz",

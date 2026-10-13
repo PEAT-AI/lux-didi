@@ -143,11 +143,11 @@ import Darwin
             let first = try await owned.start()
             try expect(owned.isRunning && first.pid > 0, "actual owned live Node child and listener accepted")
             try expect(!fm.fileExists(atPath: marker.path), "ambient NODE_OPTIONS injection never executes")
-            try expect(first.descriptor.credentialService == service && first.descriptor.credentialAccount == valid.0.installId, "credential reference derived from install identity")
+            try expect(owned.credentialValidated && !itemExists(valid.0.installId), "installed file source validated without a Keychain mirror")
             let canonical = try Data(contentsOf: valid.1.appendingPathComponent("admin-credential"))
             try expect(canonical.count == 44 && canonical.last == 10, "fixture matches canonical Store credential file framing")
             let token = Data(canonical.dropLast())
-            try expect(Data(try first.descriptor.credential().utf8) == token, "actual noninteractive Keychain import matches canonical private token")
+            try expect(Data(try first.credential().utf8) == token, "actual owned file source matches canonical private token")
             // Store writes an owner-only base64url token followed by one LF.
             // Exercise canonical framing and retain the existing no-LF coverage too.
             let framed = try setup("normal")
@@ -263,26 +263,28 @@ import Darwin
             while owned.isRunning && Date() < eofDeadline { try await Task.sleep(nanoseconds: 20_000_000) }
             try expect(!owned.isRunning, "private supervision EOF exits actual child")
             var credentialReads = 0
-            let staleClient = CompanionClient(descriptor: first.descriptor, credential: { credentialReads += 1; return try first.descriptor.credential() }, expectedEpoch: first.authorityEpoch, connectionGuard: { owned.isCurrent(first) })
+            let staleClient = CompanionClient(descriptor: first.descriptor, credential: { credentialReads += 1; return try first.credential() }, expectedEpoch: first.authorityEpoch, connectionGuard: { owned.isCurrent(first) })
             do { _ = try await staleClient.bootstrap(); try expect(false, "dead peer must not receive authentication") }
             catch { try expect(credentialReads == 0, "dead owned connection refuses before credential lookup/dispatch") }
             let restarted = try await owned.start()
             try expect(restarted.pid != first.pid && restarted.descriptor.origin != first.descriptor.origin, "explicit restart uses fresh child readiness not stale port")
-            try expect(Data(try restarted.descriptor.credential().utf8) == token, "restart retains canonical credential without silent rotation")
+            try expect(Data(try restarted.credential().utf8) == token, "restart retains canonical credential")
             try expect(Data(contentsOf: valid.1.appendingPathComponent("admin-credential")) == canonical, "restart preserves canonical credential file bytes")
             await owned.stop()
             try expect(!owned.isRunning, "bounded clean stop releases own child")
             var changed = token; changed[0] = token[0] == 65 ? 66 : 65
             try (changed + Data([10])).write(to: valid.1.appendingPathComponent("admin-credential"))
-            do { _ = try await owned.start(); try expect(false, "credential mismatch must not rotate Keychain") }
-            catch NativeServiceError.credentialMismatch { try expect(!owned.isRunning && Data(try first.descriptor.credential().utf8) == token, "canonical mismatch leaves existing Keychain value untouched") }
+            let rotated = try await owned.start()
+            try expect(Data(try rotated.credential().utf8) == changed, "fresh explicit startup accepts current canonical file authority")
+            try expect(!itemExists(valid.0.installId), "fresh startup never synchronizes a Keychain mirror")
+            await owned.stop()
             try canonical.write(to: valid.1.appendingPathComponent("admin-credential"))
             let stubborn = supervisor(try setup("stubborn"))
             _ = try await stubborn.start()
             let stoppedAt = Date()
             await stubborn.stop()
             try expect(!stubborn.isRunning && Date().timeIntervalSince(stoppedAt) < 3, "bounded termination escalation targets stubborn owned child only")
-            try expect(itemExists(valid.0.installId), "unrelated owner credential survives other stops")
+            try expect(!itemExists(valid.0.installId), "installed source never creates a Keychain item")
         } catch {
             // Only bounded nonsecret markers from this disposable fixture root.
             for state in try fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) where state.lastPathComponent.hasPrefix("state-") {

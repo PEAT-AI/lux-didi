@@ -42,6 +42,8 @@ import Darwin
             kSecAttrAccount as String: account, kSecUseAuthenticationContext as String: context,
             kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail]
         var addCalls = 0
+        var failureOperations: [(NativeCredentialImport.FailureOperation, Int32)] = []
+        let observeFailure: (NativeCredentialImport.FailureOperation, Int32) -> Void = { failureOperations.append(($0, $1)) }
         let realAdd: (CFDictionary, UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus = { attributes, result in
             var item = attributes as! [String: Any]
             item[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
@@ -57,20 +59,45 @@ import Darwin
         report["stage"] = "before-import"; try write()
         var outcome = false
         do {
-            let reference = try NativeCredentialImport.importCredential(state: state, installId: account, service: service, add: realAdd)
+            let reference = try NativeCredentialImport.importCredential(state: state, installId: account, service: service, add: realAdd, observeFailure: observeFailure)
             report["credentialReturned"] = true
             let descriptor = try ServiceDescriptor(origin: "http://127.0.0.1:1", credentialService: reference.service, credentialAccount: reference.account)
             let equal = try descriptor.credential() == token
-            _ = try NativeCredentialImport.importCredential(state: state, installId: account, service: service, add: realAdd)
+            _ = try NativeCredentialImport.importCredential(state: state, installId: account, service: service, add: realAdd, observeFailure: observeFailure)
             let retained = try descriptor.credential()
             let equalReimport = equal && addCalls == 1 && retained == token
             report["equalReimport"] = equalReimport
-            outcome = mode == "inherited" && equalReimport
+            outcome = mode == "inherited" && equalReimport && failureOperations.isEmpty
+            var policyFailureCaptured = false
+            do {
+                _ = try NativeCredentialImport.importCredential(state: state, installId: account, service: service,
+                    policyCheck: { errSecInteractionNotAllowed }, observeFailure: { operation, status in
+                        if case .policyRecheck = operation { policyFailureCaptured = status == errSecInteractionNotAllowed }
+                    })
+                outcome = false
+            } catch NativeServiceError.keychain(let status) {
+                outcome = outcome && status == errSecInteractionNotAllowed && policyFailureCaptured
+            }
+            report["policyFailureCaptured"] = policyFailureCaptured
+            _ = try NativeCredentialImport.importCredential(state: state, installId: account, service: service, add: realAdd, observeFailure: observeFailure)
+            outcome = outcome && failureOperations.isEmpty && addCalls == 1
         } catch NativeServiceError.keychain(let status) {
             report["typedRefusal"] = Int(status)
             outcome = mode == "missing" && addCalls == 1 && [errSecInteractionNotAllowed, errSecNoDefaultKeychain, errSecNotAvailable].contains(status)
+            if failureOperations.count == 1, case .add = failureOperations[0].0 {
+                outcome = outcome && failureOperations[0].1 == status
+            } else { outcome = false }
         } catch {
             report["unexpectedError"] = "native-import-or-credential"
+        }
+        report["failureOperations"] = failureOperations.map { operation, status in
+            let name: String
+            switch operation {
+            case .policyRecheck: name = "policyRecheck"
+            case .copyMatching: name = "copyMatching"
+            case .add: name = "add"
+            }
+            return ["operation": name, "status": Int(status)] as [String: Any]
         }
         report["stage"] = "before-cleanup"; try write()
         let cleaned = SecItemDelete(query as CFDictionary)

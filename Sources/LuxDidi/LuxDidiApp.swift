@@ -6,7 +6,16 @@ import Security
 
 @MainActor final class AppModel: ObservableObject {
     @Published var draft = ""
-    @Published var error: String?
+    @Published private var operationError: String?
+    var error: String? {
+        get {
+            if supervisor?.state == .unavailable, supervisor?.startupFailureDiagnostic?.stage == .canonicalFile {
+                return "Didi couldn’t verify its saved connection. Reconnect the service explicitly."
+            }
+            return operationError
+        }
+        set { operationError = newValue }
+    }
     @Published var captureStatus: CaptureStatus = .idle
     @Published var notificationStatus: NotificationCapability = .unknown
     @Published var hotkeyStatus = "Registering…"
@@ -39,6 +48,10 @@ import Security
     private var connectedSender: NativeConnectedSend?
     private(set) var installedProof: PreparedInstalledProof?
     private(set) var bootstrapFailureCode: String?
+    #if COMPANION_TEST
+    func bindCredentialSupervisorForProof(_ owner: NativeServiceSupervisor) { supervisor = owner }
+    #endif
+    private(set) var bootstrapFailureDiagnostic: StartupFailureDiagnostic?
     init(proofRequest: InstalledProofRequest? = nil, fixtureClient: CompanionClient? = nil, fixtureOutbox: URL? = nil) {
         liveLogsDirectory = (proofRequest?.state ?? (try? InstalledRuntime.applicationState()))?.appendingPathComponent("logs", isDirectory: true)
         if let fixtureClient, let fixtureOutbox {
@@ -74,6 +87,13 @@ import Security
                         self?.liveAuthorityOwner.unavailable()
                         self?.error = "Local service restarting. Lost Live requires an explicit Start."
                     }
+                    owner.onCredentialUnavailable = { [weak self, weak owner] _ in
+                        self?.shell?.clear()
+                        self?.liveAuthorityOwner.unavailable()
+                        self?.bootstrapFailureCode = owner?.startupFailureCode
+                        self?.bootstrapFailureDiagnostic = owner?.startupFailureDiagnostic
+                        self?.error = "Didi couldn’t verify its saved connection. Reconnect the service explicitly."
+                    }
                     return
                 }
             } catch { self.error = NativeServiceError.invalidRuntime.localizedDescription; return }
@@ -93,10 +113,12 @@ import Security
             if let supervisor {
                 let connection = try await supervisor.start()
                 let descriptor = connection.descriptor
-                let allowed = { supervisor.isCurrent(connection) }
+                let allowed = { () -> Bool in
+                    guard supervisor.isCurrent(connection) else { return false }
+                    return (try? connection.credential()) != nil
+                }
                 let credential = { () throws -> String in
-                    guard allowed() else { throw CompanionError.unavailable }
-                    return try descriptor.credential()
+                    return try connection.credential()
                 }
                 if let client {
                     await client.rebind(descriptor: descriptor, credential: credential, expectedEpoch: connection.authorityEpoch, connectionGuard: allowed)
@@ -108,10 +130,26 @@ import Security
             }
             guard let client, let shell else { throw CompanionError.invalidConfiguration }
             bootstrapFailureCode = nil
+            bootstrapFailureDiagnostic = nil
             await shell.load(cookie: try await client.bootstrap())
             await refreshLiveDetails(); error = nil
         } catch {
             bootstrapFailureCode = supervisor?.startupFailureCode ?? "bootstrap/" + ((error as? CompanionError).map { String(describing: $0) } ?? "platformFailure")
+            if let diagnostic = supervisor?.startupFailureDiagnostic { bootstrapFailureDiagnostic = diagnostic }
+            else {
+                let category: StartupFailureDiagnostic.Category
+                switch error as? CompanionError {
+                case .invalidConfiguration: category = .invalidConfiguration
+                case .credentialUnavailable: category = .credentialUnavailable
+                case .unavailable: category = .unavailable
+                case .authentication: category = .authentication
+                case .invalidResponse: category = .invalidResponse
+                case .rejected: category = .rejected
+                case .unresolvedCapture: category = .unresolvedCapture
+                case nil: category = .unknown
+                }
+                bootstrapFailureDiagnostic = StartupFailureDiagnostic(stage: .bootstrap, category: category, operation: .none, status: nil)
+            }
             self.error = error.localizedDescription; shell?.clear()
         }
     }
@@ -369,7 +407,8 @@ struct RootView: View {
             Button("Disconnect") { Task { await model.logout() } }
             if let shell = model.shell {
                 Text("Service: \(shell.descriptor.origin)")
-                Text("Credential reference: \(shell.descriptor.credentialService)")
+                if model.supervisor != nil { Text("Connection stored for this installation") }
+                else { Text("Credential reference: \(shell.descriptor.credentialService)") }
             }
             Button("Quit Didi") { NSApp.terminate(nil) }
         }
@@ -542,6 +581,7 @@ struct RootView: View {
                 audioRoute: self.model.live?.device.diagnosticsRoute,
                 preCreateFailureClass: failure?.failureClass,
                 preCreateFailureCode: failure?.code,
+                startupFailure: self.model.bootstrapFailureDiagnostic,
                 capturedAt: ISO8601DateFormatter().string(from: Date()))
         }, write: { text in
             let pasteboard = NSPasteboard.general

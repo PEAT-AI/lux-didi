@@ -37,6 +37,15 @@ import Darwin
         guard policy == errSecSuccess else {
             fputs("COMPANION POLICY: unavailable (\(policy))\n", stderr); exit(2)
         }
+        if CommandLine.arguments.count == 5, CommandLine.arguments[1] == "--installed-credential-child" {
+            Task {
+                do {
+                    try await InstalledCredentialProof.run(node: CommandLine.arguments[2], source: CommandLine.arguments[3], output: CommandLine.arguments[4])
+                    exit(0)
+                } catch { fputs("INSTALLED-CREDENTIAL child failed\n", stderr); exit(1) }
+            }
+            dispatchMain()
+        }
         if CommandLine.arguments.count == 5, CommandLine.arguments[1] == "--keychain-sdk-child" {
             do {
                 let passed = try KeychainSDKProof.run(mode: CommandLine.arguments[2], state: URL(fileURLWithPath: CommandLine.arguments[3]), output: URL(fileURLWithPath: CommandLine.arguments[4]))

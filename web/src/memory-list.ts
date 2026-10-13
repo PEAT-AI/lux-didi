@@ -1,16 +1,6 @@
 const escape = (value: string) => value.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 
-export interface MemorySourceRef {
-  label?: string;
-  provider?: string;
-  accountId?: string;
-  externalId?: string;
-  sourceTimestamp?: string | null;
-  availability?: 'present' | 'missing';
-  note?: string;
-}
-
-/** The owner list route shape: kind is either the source note (`kind:<x>`) or the entry role. */
+/** The owner list route shape: the domain carries an explicit kind and origin per entry. */
 export interface MemoryListItem {
   id: string;
   text?: string;
@@ -20,7 +10,6 @@ export interface MemoryListItem {
   origin?: string;
   capturedAt?: string | null;
   sourceTimestamp?: string | null;
-  sourceRefs?: MemorySourceRef[];
 }
 
 const REAL_KINDS = new Set(['fact', 'preference', 'task']);

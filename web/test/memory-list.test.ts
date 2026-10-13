@@ -10,7 +10,6 @@ const fixture = (overrides: Partial<MemoryListItem> = {}): MemoryListItem => ({
   kind: 'fact',
   origin: 'live-voice',
   capturedAt: '2026-10-11T16:00:00.000Z',
-  sourceRefs: [{ label: 'live-voice live-1', provider: 'live-voice', accountId: 'live-1', externalId: 'x', sourceTimestamp: '2026-10-11T16:00:00.000Z', availability: 'present', note: 'kind:fact' }],
   ...overrides,
 });
 
@@ -30,7 +29,7 @@ test('memory item kind is the explicit domain kind, note when none was given', (
 });
 
 test('memory list renders no kind badge for a note and still shows an origin line', () => {
-  const markup = memoryListMarkup([fixture({ kind: 'note', origin: 'unknown', sourceRefs: [] })]);
+  const markup = memoryListMarkup([fixture({ kind: 'note', origin: 'unknown' })]);
   assert.doesNotMatch(markup, /class="memory-kind"/, 'note is not a real kind and must not render a badge');
   assert.match(markup, /class="memory-source"[^>]*>Origin unknown</);
   assert.match(markup, /<time datetime="2026-10-11T16:00:00\.000Z">/, 'the date still renders without a kind');

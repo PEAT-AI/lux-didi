@@ -73,7 +73,7 @@ otool -Iv "$app/Contents/MacOS/LuxDidi" | grep -E 'SecItem(Add|CopyMatching|Dele
 forced_proof="$proof/forced-observer-failure"
 mkdir -m 700 "$forced_proof"
 forced_status=0
-LUX_OBSERVER_FORCE_FAILURE=1 "$work/verification-observer" --verification "$work/absent.app" "$forced_proof" diagnostic-nonce run >"$forced_proof/stdout.log" 2>"$forced_proof/stderr.log" || forced_status=$?
+LUX_OBSERVER_FORCE_FAILURE=1 "$work/verification-observer" --verification "$app" "$forced_proof" diagnostic-nonce run >"$forced_proof/stdout.log" 2>"$forced_proof/stderr.log" || forced_status=$?
 python3 - "$forced_proof" "$forced_status" <<'PY'
 import json, pathlib, sys
 proof = pathlib.Path(sys.argv[1])

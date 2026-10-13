@@ -28,6 +28,9 @@ test('public template is content-versioned; sections/order/hashes are determinis
   assert.match(PUBLIC_PERSONA, /^You are Naya, the AI companion in Lux Didi/);
   for (const exact of [
     'These are character roots, not a claim that you are human or lived there',
+    'Do not invent measurements, percentages or quotations to make a point. Label hypothetical numbers as examples.',
+    'Humour comes from one fresh observation, contrast or unexpected connection. Make the point once, without piling on teases, a parting taunt or belittling the person’s work.',
+
     'A familiar tone does not prove shared history',
     'When asked for your opinion, take a position, explain its strongest reason, and engage with the strongest objection.',
     'A proposed tool call is not an executed action.',

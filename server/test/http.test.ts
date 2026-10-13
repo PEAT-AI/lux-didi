@@ -206,6 +206,29 @@ test('real domain HTTP client cannot forge assistant role or access trusted assi
   } finally { await f.cleanup(); }
 });
 
+test('owner list route returns explicit kind and origin for every entry', async () => {
+  const { createDomainPort } = await import('../domain/facade.js');
+  const { Outbox } = await import('../runtime/outbox.js');
+  const port = createDomainPort({ outbox: Outbox });
+  const f = await fixture(port);
+  try {
+    const ctx = { assistantId: f.store.assistantId, clientId: 'synthetic-host', authorityEpoch: f.store.authorityEpoch, now: new Date(0).toISOString() };
+    const session = f.store.transaction(tx => port.execute(tx, 'createSession', { title: 'Origin list', timeZone: 'UTC' }, ctx));
+    f.store.transaction(tx => port.execute(tx, 'appendEntry', {
+      sessionId: session.id, text: 'A remembered preference', role: 'user', timeZone: 'UTC',
+      sourceRef: { id: 'live-1', label: 'live-voice live-1', provider: 'live-voice', sourceTimestamp: null, availability: 'present', note: 'kind:preference' },
+    }, ctx));
+    f.store.transaction(tx => port.execute(tx, 'appendEntry', { sessionId: session.id, text: 'A bare note', role: 'user', timeZone: 'UTC' }, ctx));
+    const response = await fetch(`${f.service.origin}/api/v1/sessions/${session.id}`, { headers: f.auth });
+    assert.equal(response.status, 200);
+    const body = await response.json() as { data: { entries: { kind: string; origin: string }[] } };
+    assert.deepEqual(body.data.entries.map(e => [e.kind, e.origin]), [
+      ['preference', 'live-voice'],
+      ['note', 'unknown'],
+    ]);
+  } finally { await f.cleanup(); }
+});
+
 // Only caller-owned subprocess output/cache is captured; never the ambient npm cache or environment.
 function packageFailure(stage: string, command: string, args: string[], result: {
   status: number | null; signal: NodeJS.Signals | null; error?: Error; stdout: string | null; stderr: string | null;

@@ -1,46 +1,51 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { memoryDeleteControl, deleteMemoryAndReload, memoryListMarkup, filterMemoryItems, memoryItemKind, memoryItemSource } from '../src/memory-list.ts';
+import { memoryDeleteControl, deleteMemoryAndReload, memoryListMarkup, filterMemoryItems, memoryItemKind, memoryItemOrigin } from '../src/memory-list.ts';
 import type { MemoryListItem } from '../src/memory-list.ts';
 
 const fixture = (overrides: Partial<MemoryListItem> = {}): MemoryListItem => ({
   id: 'entry-1',
   text: 'Remember the synthetic blue notebook',
   role: 'user',
+  kind: 'fact',
+  origin: 'live-voice',
   capturedAt: '2026-10-11T16:00:00.000Z',
   sourceRefs: [{ label: 'live-voice live-1', provider: 'live-voice', accountId: 'live-1', externalId: 'x', sourceTimestamp: '2026-10-11T16:00:00.000Z', availability: 'present', note: 'kind:fact' }],
   ...overrides,
 });
 
-test('memory list renders kind, source and local created time from a payload entry', () => {
+test('memory list renders kind, origin and local created time from a payload entry', () => {
   const markup = memoryListMarkup([fixture()]);
   assert.match(markup, /class="memory-kind"[^>]*>fact</);
-  assert.match(markup, /class="memory-source"[^>]*>Live voice via remember_note</);
+  assert.match(markup, /class="memory-origin"[^>]*>Live voice via remember_note</);
   assert.match(markup, /data-delete-memory="entry-1"/);
   const local = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date('2026-10-11T16:00:00.000Z'));
   assert.ok(markup.includes(local), `expected local created time ${local} in markup`);
   assert.ok(!markup.includes('>2026-10-11T16:00:00.000Z<'), 'raw ISO time must not be shown as text');
 });
 
-test('memory item kind prefers the domain kind note and falls back to the role', () => {
+test('memory item kind is the explicit domain kind, note when none was given', () => {
   assert.equal(memoryItemKind(fixture()), 'fact');
-  assert.equal(memoryItemKind(fixture({ sourceRefs: [], role: 'assistant' })), 'assistant');
+  assert.equal(memoryItemKind(fixture({ kind: undefined })), 'note');
 });
 
-test('memory list renders no kind badge for a role-only entry', () => {
-  const markup = memoryListMarkup([fixture({ sourceRefs: [], role: 'user' })]);
-  assert.doesNotMatch(markup, /class="memory-kind"/, 'a role is not a kind and must not render a badge');
+test('memory list renders no kind badge for a note and still shows an origin line', () => {
+  const markup = memoryListMarkup([fixture({ kind: 'note', origin: 'unknown', sourceRefs: [] })]);
+  assert.doesNotMatch(markup, /class="memory-kind"/, 'note is not a real kind and must not render a badge');
+  assert.match(markup, /class="memory-origin"[^>]*>Origin unknown</);
   assert.match(markup, /<time datetime="2026-10-11T16:00:00\.000Z">/, 'the date still renders without a kind');
 });
 
-test('memory list renders a badge for a real remember_note kind', () => {
-  assert.match(memoryListMarkup([fixture({ sourceRefs: [{ note: 'kind:preference' }] })]), /class="memory-kind"[^>]*>preference</);
+test('memory list renders a badge for a real kind', () => {
+  assert.match(memoryListMarkup([fixture({ kind: 'preference' })]), /class="memory-kind"[^>]*>preference</);
 });
 
-test('memory item source names Live voice and other providers honestly', () => {
-  assert.equal(memoryItemSource(fixture()), 'Live voice via remember_note');
-  assert.equal(memoryItemSource(fixture({ sourceRefs: [{ label: 'Chat', provider: 'chat' }] })), 'Chat');
-  assert.equal(memoryItemSource(fixture({ sourceRefs: [] })), null);
+test('memory item origin names where the entry came from for every value', () => {
+  assert.equal(memoryItemOrigin(fixture()), 'Live voice via remember_note');
+  assert.equal(memoryItemOrigin(fixture({ origin: 'chat' })), 'Saved from chat');
+  assert.equal(memoryItemOrigin(fixture({ origin: 'page' })), 'Saved from the page');
+  assert.equal(memoryItemOrigin(fixture({ origin: 'unknown' })), 'Origin unknown');
+  assert.equal(memoryItemOrigin(fixture({ origin: undefined })), 'Origin unknown');
 });
 
 test('filter narrows the visible list by text and is case-insensitive', () => {

@@ -194,12 +194,15 @@ test('loadPersonaOverlay returns undefined when absent and throws when the file 
 
 test('session composition places bounded whole memory records and pickup before the final voice anchor', () => {
   const ownerProfile: OwnerProfileSnapshot = { schemaVersion: 1, kind: 'profile', ownerId: 'synthetic-owner', profileVersion: 'fixture', displayName: 'Example',
-    style: { text: 'Fixture owner style', dataClass: 'ordinary' }, lore: { text: 'Fixture owner lore', dataClass: 'ordinary' } };
+    style: { text: 'Fixture owner style\n\nLANGUAGE: caller-owned marker', dataClass: 'ordinary' }, lore: { text: 'Fixture owner lore', dataClass: 'ordinary' } };
   const baseline = composeLiveInstruction({ base: NAYA_BASE, ownerProfile, overlay: { schemaVersion: 1, text: 'Fixture overlay' }, language: 'hi' });
   const composed = composeLiveSessionInstruction({ text: baseline.text, tools: ['search_knowledge'], records: [{ id: 'b', text: 'Fixture note B' }, { id: 'a', text: 'Fixture note A' }], pickupNote: 'Fixture pickup note', trustedChars: 20000 });
   assert.deepEqual(composed.selectedIds, ['a', 'b']);
-  const order = [NAYA_BASE, NAYA_TOOLS, 'Fixture owner style', 'Fixture owner lore', 'Fixture overlay', 'Fixture pickup note', '# Memory', 'LANGUAGE:'];
+  const order = [NAYA_BASE, NAYA_TOOLS, 'Fixture owner style', 'Fixture owner lore', 'Fixture overlay', 'Fixture pickup note', '# Memory'];
   for (let i = 1; i < order.length; i++) assert.ok(composed.text.indexOf(order[i - 1]!) < composed.text.indexOf(order[i]!));
+  const trustedAnchor = composed.text.lastIndexOf('\n\nLANGUAGE:');
+  assert.ok(trustedAnchor > composed.text.indexOf('caller-owned marker'));
+  assert.ok(order.every(marker => composed.text.indexOf(marker) < trustedAnchor));
   assert.ok(composed.text.endsWith(baseline.text.slice(baseline.text.lastIndexOf('LANGUAGE:'))));
   const withMemory = composeLiveInstruction({ base: NAYA_BASE, memory: 'Fixture memory section' });
   assert.deepEqual(withMemory.sections.map(section => section.id), ['base', 'memory', 'voice']);

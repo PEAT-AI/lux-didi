@@ -1285,8 +1285,10 @@ test('loadLiveConfig keeps public prompt bytes and composes classified owner sec
   writePrivate(configDir, 'live.json', `${JSON.stringify(live)}\n`);
   const overlay = { schemaVersion: 1 as const, text: 'SYNTHETIC local overlay persona', greeting: 'Synthetic greeting', accent: 'Synthetic accent' };
   writePrivate(dataDir, 'persona-overlay.json', JSON.stringify(overlay));
+  const style = `SYNTHETIC owner style ${'S'.repeat(3000)}`;
+  const lore = `SYNTHETIC owner lore ${'L'.repeat(3000)}`;
   const ownerProfile = { schemaVersion: 1 as const, kind: 'profile' as const, ownerId: 'synthetic-owner', profileVersion: 'fixture', displayName: 'Example',
-    style: { text: 'SYNTHETIC owner style', dataClass: 'private' as const }, lore: { text: 'SYNTHETIC owner lore', dataClass: 'sensitive' as const } };
+    style: { text: style, dataClass: 'private' as const }, lore: { text: lore, dataClass: 'sensitive' as const } };
   const status = loadLiveConfig({ configDir, ownerId: 'synthetic-owner', ownerProfile });
   assert.equal(status.status, 'configured');
   if (status.status === 'configured') {
@@ -1296,6 +1298,8 @@ test('loadLiveConfig keeps public prompt bytes and composes classified owner sec
     assert.equal(status.config.profile.language, 'de');
     assert.equal(status.config.profile.prompt.text, expected.text);
     assert.equal(status.config.profile.acceptedPrompt?.system, accepted.text);
+    assert.ok(accepted.text.length > 4096);
+    assert.equal(accepted.text.split(style).length - 1, 1); assert.equal(accepted.text.split(lore).length - 1, 1);
     assert.deepEqual(status.config.profile.acceptedPrompt?.dataClasses, ['ordinary', 'private', 'sensitive']);
   }
   writePrivate(dataDir, 'persona-overlay.json', '{ not json');

@@ -66,7 +66,7 @@ async function fixture() {
       ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   }
   async function enroll(auth: Auth) {
-    const response = await call(auth, '/conversations', { title: 'Selected notes', timeZone: 'UTC' }, 'selmem-enroll');
+    const response = await call(auth, '/conversations', { title: 'Selected notes', timeZone: 'UTC', consent: true }, 'selmem-enroll');
     assert.equal(response.status, 200, await response.clone().text());
     return (await response.json()).data as { sessionId: string };
   }

@@ -7,26 +7,24 @@ enum ShortcutStatus {
         code == 0 ? "registered" : "Unavailable (OSStatus \(code)); use the menu bar"
     }
 }
-struct LiveStatusPresentation {
-    let state: String
-    let pendingCall: Bool
-    init(state: String, pendingCall: Bool, dictationCapturing: Bool = false) {
-        self.state = dictationCapturing ? "listening" : (["idle", "ended", "failed", "outcomeUnknown"].contains(state) ? "stopped" : state)
-        self.pendingCall = pendingCall
-    }
-    var text: String {
-        let label = state == "pausedForInput" ? "microphone changed; Resume required" : (state == "rebuilding" ? "Reconnecting" : state)
-        return "Naya: \(label)" + (pendingCall ? "; Naya is calling" : "")
-    }
-    var symbol: String {
-        switch state {
-        case "listening": return "mic.fill"
-        case "speaking": return "waveform"
-        case "muted": return "mic.slash.fill"
-        case "connecting", "rebuilding": return "ellipsis.circle"
-        case "pausedForInput": return "pause.circle"
-        default: return "mic.slash"
+extension NotificationCapability {
+    var presentation: String {
+        switch self {
+        case .notDetermined: return "Not asked yet"
+        case .authorized, .provisional: return "Allowed"
+        case .denied: return "Off: use the menu bar badge"
+        case .unknown: return "Unavailable: use the menu bar badge"
         }
+    }
+}
+struct LiveStatusPresentation {
+    let pendingCall: Bool
+    let text: String
+    let symbol: String
+    init(presentation: (text: String, symbol: String), pendingCall: Bool, dictationCapturing: Bool = false) {
+        self.pendingCall = pendingCall
+        text = "Naya: " + (dictationCapturing ? "Dictating" : presentation.text) + (pendingCall ? "; Naya is calling" : "")
+        symbol = dictationCapturing ? "mic.fill" : presentation.symbol
     }
 }
 /// The same explicit owner actions serve menu and shortcuts. Show has no capture authority.

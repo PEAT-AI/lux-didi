@@ -186,3 +186,11 @@ the socket terminal frame is `{type: "terminal", state: "failed", code: "resume_
 not resume. Start again.** A terminal snapshot ends the device as usual. The
 night-master native lane owns coordinator, wire decoding, capture control and
 presentation changes together; this server wagon does not edit Swift.
+
+### Native support exports and capture mute
+
+Copy diagnostics exports only input/output route classifications: built-in, external wired, Bluetooth, USB or unknown. Device names remain local to the Live view and never enter the support snapshot.
+
+The Live bar and status item use the same exhaustive state sentence/icon mapping. Notification permission labels are human descriptions, and local dictation controls say Dictate and Stop dictating.
+
+Captured frames carry the capture epoch assigned at dequeue. Mute advances that epoch before its acknowledgement, and the coordinator checks it again at the final transport submission boundary. Older frames are dropped, including after unmute. The muted lifecycle presentation is acknowledged only after previously admitted submissions have drained. Bytes already submitted to the transport cannot be recalled by mute.

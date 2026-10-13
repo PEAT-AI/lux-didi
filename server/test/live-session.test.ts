@@ -517,6 +517,14 @@ test('profile validation rejects text-model fallback and bounds, and validation 
   assert.throws(() => h.owner.create({ idempotencyKey: 'class', inputClass: 'private' }, h.ctx), (error: unknown) => error instanceof LiveError && error.code === 'invalid_request');
 });
 
+test('accepted complete system uses the existing 20k bound while generic prompt text stays at 4096', () => {
+  const ownerProfile = { schemaVersion: 1 as const, kind: 'default' as const, ownerId: 'assistant-test', displayName: 'Lux Didi' as const };
+  const acceptedPrompt = { schemaVersion: 1, ownerProfile, compilerVersion: PROMPT_VERSION, system: 'A'.repeat(20_000), dataClasses: ['ordinary'] };
+  assert.equal(validateLiveProfile({ ...profileInput(), acceptedPrompt }).acceptedPrompt?.system.length, 20_000);
+  assert.throws(() => validateLiveProfile({ ...profileInput(), acceptedPrompt: { ...acceptedPrompt, system: 'A'.repeat(20_001) } }), LiveConfigError);
+  assert.throws(() => validateLiveProfile({ ...profileInput(), prompt: { text: 'A'.repeat(4097), dataClass: 'ordinary' } }), LiveConfigError);
+});
+
 test('waitingForInput keeps its boolean and ready stays a durable fact', async t => {
   const h = await harness(t);
   const { session, attachment } = await attached(h);
@@ -1266,28 +1274,32 @@ test('Live attach setup carries the composed Naya instruction and the bare langu
   attachment.close();
 });
 
-test('loadLiveConfig composes the Naya instruction and fails closed on an invalid overlay', async t => {
+test('loadLiveConfig keeps public prompt bytes and composes classified owner sections into the accepted Live system', async t => {
   const root = mkdtempSync(join(tmpdir(), 'didi-live-config-'));
   const dataDir = join(root, 'data'); const configDir = join(dataDir, 'provider-config');
   mkdirSync(configDir, { recursive: true, mode: 0o700 });
   chmodSync(dataDir, 0o700); chmodSync(configDir, 0o700);
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const live = { schemaVersion: 1, enabled: true, provider: 'gemini', modelId: 'models/gemini-3.1-flash-live-preview', voice: 'Aoede', keyReference: 'gemini-primary',
-    dataClasses: ['ordinary'], preferences: { dataClass: 'ordinary', language: 'de-de', register: 'plain', humor: 'dry', verbosity: 'brief' } };
+    dataClasses: ['ordinary', 'private', 'sensitive'], preferences: { dataClass: 'ordinary', language: 'de-de', register: 'plain', humor: 'dry', verbosity: 'brief' } };
   writePrivate(configDir, 'live.json', `${JSON.stringify(live)}\n`);
   const overlay = { schemaVersion: 1 as const, text: 'SYNTHETIC local overlay persona', greeting: 'Synthetic greeting', accent: 'Synthetic accent' };
   writePrivate(dataDir, 'persona-overlay.json', JSON.stringify(overlay));
-  const status = loadLiveConfig({ configDir, ownerId: 'synthetic-owner' });
+  const ownerProfile = { schemaVersion: 1 as const, kind: 'profile' as const, ownerId: 'synthetic-owner', profileVersion: 'fixture', displayName: 'Example',
+    style: { text: 'SYNTHETIC owner style', dataClass: 'private' as const }, lore: { text: 'SYNTHETIC owner lore', dataClass: 'sensitive' as const } };
+  const status = loadLiveConfig({ configDir, ownerId: 'synthetic-owner', ownerProfile });
   assert.equal(status.status, 'configured');
   if (status.status === 'configured') {
     const expected = composeLiveInstruction({ base: NAYA_BASE, accent: overlay.accent, language: 'de' });
+    const accepted = composeLiveInstruction({ base: NAYA_BASE, ownerProfile, accent: overlay.accent, language: 'de' });
     assert.deepEqual(status.config.profile.overlay, overlay);
     assert.equal(status.config.profile.language, 'de');
     assert.equal(status.config.profile.prompt.text, expected.text);
-    assert.equal(status.config.profile.acceptedPrompt?.system, expected.text);
+    assert.equal(status.config.profile.acceptedPrompt?.system, accepted.text);
+    assert.deepEqual(status.config.profile.acceptedPrompt?.dataClasses, ['ordinary', 'private', 'sensitive']);
   }
   writePrivate(dataDir, 'persona-overlay.json', '{ not json');
-  const bad = loadLiveConfig({ configDir, ownerId: 'synthetic-owner' });
+  const bad = loadLiveConfig({ configDir, ownerId: 'synthetic-owner', ownerProfile });
   assert.equal(bad.status, 'error');
   if (bad.status === 'error') assert.equal(bad.code, 'invalid_overlay');
 });

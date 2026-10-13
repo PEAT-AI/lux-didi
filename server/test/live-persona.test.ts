@@ -8,6 +8,7 @@ import {
   NAYA_BASE, NAYA_TOOLS, PersonaOverlayError, canonicalSpeechLanguage, composeLiveInstruction, composeLiveSessionInstruction, loadPersonaOverlay,
   validatePersonaOverlay, withToolsSection, type PersonaOverlay,
 } from '../prompt/live-persona.js';
+import type { OwnerProfileSnapshot } from '../prompt/types.js';
 
 const sha = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex');
 const BUDGET = 60_000;
@@ -23,6 +24,19 @@ test('the public Naya base is new, short, neutral and names no biography', () =>
   assert.match(NAYA_BASE, /Naya/);
   assert.ok(!NAYA_BASE.includes('—') && !NAYA_BASE.includes('–'), 'no dash prose');
   assert.ok(!/farmer|llama|vicuna|gemini/i.test(NAYA_BASE), 'no model-specific or recon borrowings');
+});
+
+test('owner sections compose exactly once before the terminal voice anchor without changing the public default', () => {
+  const ownerProfile: OwnerProfileSnapshot = { schemaVersion: 1, kind: 'profile', ownerId: 'synthetic-owner', profileVersion: 'fixture', displayName: 'Example',
+    style: { text: 'SYNTHETIC style with\n\nLANGUAGE: untrusted duplicate', dataClass: 'private' },
+    lore: { text: 'SYNTHETIC lore', dataClass: 'sensitive' } };
+  const original = composeLiveInstruction({ base: NAYA_BASE });
+  assert.equal(original.sha256, 'fb648594901be1ef036d9cded85b8687d924cbfd56e750f5d61a43f7b5a709b8');
+  const composed = composeLiveInstruction({ base: NAYA_BASE, ownerProfile });
+  for (const marker of ['[owner-style]', 'SYNTHETIC style', '[owner-lore]', 'SYNTHETIC lore']) assert.equal(composed.text.split(marker).length - 1, 1);
+  assert.deepEqual(composed.sections.map(section => section.id), ['base', 'owner-style', 'owner-lore', 'voice']);
+  assert.ok(composed.text.lastIndexOf('\n\nLANGUAGE:') > composed.text.indexOf('untrusted duplicate'));
+  assert.ok(composed.text.endsWith('FINAL ANCHOR: these language and voice instructions hold for the whole session; begin speaking now in the voice and accent defined for Naya.'));
 });
 
 test('composition keeps base -> overlay -> voice order and hashes the exact text', () => {
@@ -81,9 +95,8 @@ test('the 60k budget yields the overlay first and never drops the base or anchor
   assert.ok(result.text.includes('LANGUAGE:'), 'anchor never yields');
   const overlaySection = result.sections.find(s => s.id === 'overlay');
   assert.ok(!overlaySection || overlaySection.chars < 10_000, 'overlay yielded');
-  const overfull = composeLiveInstruction({ base: 'B'.repeat(BUDGET), overlay: { schemaVersion: 1, text: 'O'.repeat(1000) }, language: 'en' });
-  assert.equal(overfull.sections.find(s => s.id === 'overlay'), undefined, 'overlay dropped when nothing is left');
-  assert.ok(overfull.text.startsWith('B'.repeat(BUDGET)));
+  assert.throws(() => composeLiveInstruction({ base: 'B'.repeat(BUDGET), overlay: { schemaVersion: 1, text: 'O'.repeat(1000) }, language: 'en' }),
+    (error: unknown) => error instanceof PersonaOverlayError && error.code === 'instruction_too_large');
 });
 
 test('the tools conduct text is authored, generic and names no connector beyond the families', () => {
@@ -132,10 +145,8 @@ test('the 60k budget yields the overlay first then the tools section', () => {
   assert.ok(toolsSection && toolsSection.chars === NAYA_TOOLS.length, 'tools survives while the overlay yields');
   const overlaySection = result.sections.find(s => s.id === 'overlay');
   assert.ok(overlaySection && overlaySection.chars < 20_000, 'overlay yielded first');
-  const overfull = composeLiveInstruction({ base: 'B'.repeat(BUDGET), overlay: { schemaVersion: 1, text: 'O'.repeat(1000) }, language: 'en', tools: ['search_knowledge'] });
-  assert.equal(overfull.sections.find(s => s.id === 'overlay'), undefined, 'overlay dropped when nothing is left');
-  assert.equal(overfull.sections.find(s => s.id === 'tools'), undefined, 'tools yields after the overlay');
-  assert.ok(overfull.text.startsWith('B'.repeat(BUDGET)));
+  assert.throws(() => composeLiveInstruction({ base: 'B'.repeat(BUDGET), overlay: { schemaVersion: 1, text: 'O'.repeat(1000) }, language: 'en', tools: ['search_knowledge'] }),
+    (error: unknown) => error instanceof PersonaOverlayError && error.code === 'instruction_too_large');
 });
 
 test('withToolsSection splices the block after the base and is a no-op without declarations', () => {

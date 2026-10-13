@@ -2,7 +2,7 @@ import { liveVoiceTimerDefaults } from '../adapters/live-voice/types.js';
 import { createHash } from 'node:crypto';
 import type { DataClass } from '../adapters/live-voice/index.js';
 import { validatePersonaOverlay } from '../prompt/live-persona.js';
-import { ownerProfileClasses, PROMPT_VERSION, validateOwnerProfile } from '../prompt/index.js';
+import { ownerProfileClasses, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, validateOwnerProfile } from '../prompt/index.js';
 import { LiveConfigError, type AcceptedPromptSnapshot, type LiveLimits, type LiveProfile, type LiveMemoryProvenance } from './types.js';
 
 const classes: readonly DataClass[] = ['ordinary', 'private', 'sensitive'];
@@ -135,6 +135,6 @@ export function liveProfileIdentity(profile: LiveProfile): string {
 }
 
 function acceptedInstruction(value: unknown): string {
-  if (typeof value !== 'string' || !value.length || value.length > 20000) fail('invalid_prompt');
+  if (typeof value !== 'string' || !value.length || value.length > TRUSTED_SYSTEM_CODE_UNIT_LIMIT) fail('invalid_prompt');
   return value;
 }

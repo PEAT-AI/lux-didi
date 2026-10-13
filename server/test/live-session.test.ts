@@ -690,8 +690,15 @@ test('live migrations preserve a populated accepted Store byte-for-byte', async 
     assert.deepEqual(tx.all('SELECT journal_id,kind FROM live_journal WHERE journal_id>43 ORDER BY journal_id').map(row => ({ ...row })),
       [{ journal_id: 44, kind: 'toolCall' }, { journal_id: 45, kind: 'toolResult' }]);
   });
+  migrated.transaction(tx => {
+    const id = String(current.liveSessions[0]!['live_session_id']);
+    tx.run("INSERT INTO live_journal(live_session_id,kind,text,payload_bytes,arrived_at) VALUES (?,'remember_deferred','299',3,?)", [id, NOW]);
+    const row = tx.get("SELECT kind,text FROM live_journal WHERE live_session_id=? AND kind='remember_deferred'", [id]);
+    assert.deepEqual(row, { kind: 'remember_deferred', text: '299' });
+    assert.throws(() => tx.run("INSERT INTO live_journal(live_session_id,kind,payload_bytes,arrived_at) VALUES (?,'unknown_kind',0,?)", [id, NOW]));
+  });
   const owners = migrated.transaction(tx => tx.all('SELECT owner, MAX(version) AS version FROM runtime_migrations GROUP BY owner ORDER BY owner'));
-  assert.deepEqual(owners.map(row => [String(row['owner']), Number(row['version'])]), [['chat', 6], ['domain', 4], ['live', 5]]);
+  assert.deepEqual(owners.map(row => [String(row['owner']), Number(row['version'])]), [['chat', 6], ['domain', 4], ['live', 6]]);
 });
 
 test('a failed store write aborts visibly and never fabricates a durable outcome', async t => {

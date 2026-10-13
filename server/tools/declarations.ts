@@ -75,7 +75,9 @@ export async function runToolCalls(owner: { journal: ToolCallJournal; resultGate
         });
         if (dispatched) {
           if (!outcome || !['completed', 'failed', 'unknown'].includes(outcome.status)) throw Error('invalid_tool_outcome');
-          record.status = outcome.status; record.reason = outcome.code ?? 'handler_outcome';
+          record.status = outcome.status;
+          const code = outcome.status === 'completed' ? undefined : outcome.code;
+          record.reason = code && ['mcp_transport_error', 'mcp_result_invalid', 'connector_error', 'handler_outcome'].includes(code) ? code : 'handler_outcome';
         }
       } catch (error) {
         record.status = dispatched ? (tool?.effect === 'write' ? 'unknown' : 'failed') : 'refused';

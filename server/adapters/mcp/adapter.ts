@@ -128,7 +128,7 @@ function guardedFetch(session: Session, options: McpAdapterOptions, budgets: Mcp
     if (operation) operation.bytes = decoded;
     const responseHeaders = new Headers(response.headers);
     if (isSse) { responseHeaders.set('content-type', 'application/json'); responseHeaders.delete('content-length'); }
-    return new Response(decoded, { status: response.status, statusText: response.statusText, headers: responseHeaders });
+    return new Response(new Uint8Array(decoded), { status: response.status, statusText: response.statusText, headers: responseHeaders });
   };
 }
 function bounded<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {

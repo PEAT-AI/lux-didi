@@ -680,6 +680,10 @@ export class LiveSessionOwner {
           this.#settle(handle, { state: 'journal_limit' }, false, 'ended', { kind, sequence: event.sequence });
           break;
         }
+        if (event.type === 'inputTranscription') {
+          handle.inputJournalId = persisted;
+          if (handle.inputFinal) for (const resolve of handle.inputFinalWaiters ?? []) resolve();
+        }
         this.#pushChunk(handle, { kind: 'marker', marker: markerOf(event, kind, persisted) });
       }
     } catch (error) { handle.persistFailure = error; }

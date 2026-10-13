@@ -324,7 +324,7 @@ class Session implements LiveVoiceSession {
         events.push({ type, text: this.text(transcription.text), ...('finished' in transcription ? { finished: transcription.finished as boolean } : {}) });
       }
     }
-    if ('modelTurn' in value) events.push({ type: 'modelTurnStarted' });
+    if ('modelTurn' in value || 'outputTranscription' in value) events.push({ type: 'modelTurnStarted' });
     for (const type of ['interrupted', 'generationComplete', 'turnComplete'] as const) {
       if (type in value) {
         if (typeof value[type] !== 'boolean') fail('protocol_error');

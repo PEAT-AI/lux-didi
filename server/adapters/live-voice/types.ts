@@ -42,6 +42,7 @@ export interface LiveVoiceOutcome {
 }
 export type LiveVoiceEvent = { sequence: number } & (
   | { type: 'ready' }
+  | { type: 'modelTurnStarted' }
   | { type: 'toolCall'; calls: LiveToolCall[] }
   | { type: 'toolCallCancellation'; ids: string[] }
   | { type: 'audio'; pcm: Uint8Array; mimeType: 'audio/pcm;rate=24000' }

@@ -48,6 +48,7 @@ interface Harness {
 }
 
 async function harness(t: TestContext, overrides: {
+  scheduler?: RememberClock;
   limits?: Record<string, number>;
   adapterLimits?: Partial<LiveVoiceLimits>;
   credentials?: { resolve(reference: string): Promise<string | undefined> };
@@ -130,7 +131,7 @@ async function harness(t: TestContext, overrides: {
       return { id: record.entryId, text: record.text, dataClass };
     });
   };
-  owner = createLiveSessionOwner({ store, voice, profile, ...{ memorySource }, ...(tools ? { tools } : {}), now: () => clock });
+  owner = createLiveSessionOwner({ store, voice, profile, ...{ memorySource }, ...(tools ? { tools } : {}), now: () => overrides.scheduler?.now ?? clock, ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
   t.after(async () => { await owner.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
   return { requests, calls, remoteRememberGranted, f, store, owner, ctx: context(store), dir, advance: ms => { clock += ms; } };
 }
@@ -207,9 +208,15 @@ test('Live remember provenance refusals do not write memory', async t => {
     ['remember that this is sensitive', 'this is sensitive', 'private_memory_unsupported'],
   ] as const) {
     await t.test(code, async st => {
-      const h = await harness(st, { tools: true });
+      const scheduler = new RememberClock();
+      const h = await harness(st, { tools: true, scheduler });
       await attached(h);
-      const result = await remember(h, utterance, { text, kind: 'fact' }, 2);
+      const resultPromise = remember(h, utterance, { text, kind: 'fact' }, 2);
+      if (utterance === undefined) {
+        await until(() => [...scheduler.pending].some(item => item.at === NOW + 1500));
+        scheduler.advance(1500);
+      }
+      const result = await resultPromise;
       assert.deepEqual(result, { remembered: false, code });
       assert.equal(rows(h).length, 0);
     });
@@ -245,16 +252,91 @@ test('Live remember normalizes commands and pointers but stores the entire owner
   assert.equal(rows(h)[0]?.text, 'Mint is Friday, after lunch.');
 });
 
-test('Live remember waits for finalized owner turns and assembles transcript fragments', async t => {
-  const h = await harness(t, { tools: true });
-  await attached(h);
-  h.f.send({ serverContent: { inputTranscription: { text: 'remember that mint ', finished: false } } });
-  assert.deepEqual(await remember(h, undefined, { text: 'mint is Friday', kind: 'fact' }, 2), { remembered: false, code: 'owner_transcript_not_final' });
-  h.f.send({ serverContent: { inputTranscription: { text: 'is Friday', finished: true } } });
-  assert.equal((await remember(h, undefined, { text: 'mint is Friday', kind: 'fact' }, 3)).remembered, true);
+class RememberClock {
+  now = NOW;
+  pending = new Set<{ at: number; callback: () => void }>();
+  schedule = (callback: () => void, ms: number) => {
+    const item = { at: this.now + ms, callback };
+    this.pending.add(item);
+    return { unref() {}, cancel: () => { this.pending.delete(item); } };
+  };
+  advance(ms: number) {
+    this.now += ms;
+    for (const item of [...this.pending]) if (item.at <= this.now) {
+      this.pending.delete(item); item.callback();
+    }
+  }
+}
+const drain = async () => { for (let i = 0; i < 8; i++) await new Promise<void>(resolve => setImmediate(resolve)); };
+async function until(predicate: () => boolean) {
+  for (let i = 0; i < 1000 && !predicate(); i++) await new Promise<void>(resolve => setImmediate(resolve));
+  assert.ok(predicate(), 'fixture reached the observable boundary');
+}
+
+test('Live remember defers the 1 ms tool boundary and persists only owner bytes', async t => {
+  for (const output of ['text', 'audio', 'transcription'] as const) await t.test(output, async st => {
+  const scheduler = new RememberClock();
+  const h = await harness(st, { tools: true, scheduler });
+  const { session } = await attached(h);
+  h.f.send({ serverContent: { inputTranscription: { text: 'remember that mint ' } } });
+  h.f.send({ serverContent: { inputTranscription: { text: 'is Friday' } } });
+  await until(() => h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(row => row.kind === 'inputTranscription').length === 2);
+  scheduler.advance(1);
+  const result = remember(h, undefined, { text: 'mint is Friday', kind: 'fact' }, 2);
+  await until(() => [...scheduler.pending].some(item => item.at === NOW + 1501));
+  assert.equal(rows(h).length, 0);
+  h.f.send({ serverContent: output === 'audio'
+    ? { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from([0, 0]).toString('base64') } }] } }
+    : output === 'transcription'
+      ? { outputTranscription: { text: 'A paraphrase must not be saved.' } }
+      : { modelTurn: { parts: [{ text: 'A paraphrase must not be saved.' }] } } });
+  await drain();
+  await until(() => [...scheduler.pending].some(item => item.at === NOW + 300));
+  scheduler.advance(299); await drain();
+  assert.equal((await result).remembered, true);
   assert.equal(rows(h)[0]?.text, 'mint is Friday');
+  const deferred = h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(row => row.kind === 'remember_deferred');
+  assert.equal(deferred.length, 1);
+  assert.equal(deferred[0]?.waitedMs, 299);
+  });
 });
 
+test('Live remember resumes on an explicit final input frame before the quiet deadline', async t => {
+  const scheduler = new RememberClock();
+  const h = await harness(t, { tools: true, scheduler });
+  const { session } = await attached(h);
+  h.f.send({ serverContent: { inputTranscription: { text: 'remember that mint ' } } });
+  await until(() => h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.some(row => row.kind === 'inputTranscription'));
+  scheduler.advance(1);
+  const result = remember(h, undefined, { text: 'mint is Friday', kind: 'fact' }, 2);
+  await until(() => [...scheduler.pending].some(item => item.at === NOW + 1501));
+  scheduler.advance(99);
+  h.f.send({ serverContent: { inputTranscription: { text: 'is Friday', finished: true } } });
+  assert.equal((await result).remembered, true);
+  assert.equal(rows(h)[0]?.text, 'mint is Friday');
+  const deferred = h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(row => row.kind === 'remember_deferred');
+  assert.equal(deferred.length, 1);
+  assert.equal(deferred[0]?.waitedMs, 99);
+});
+
+test('Live remember refuses after 1500 ms when newer speech invalidates the turn boundary', async t => {
+  const scheduler = new RememberClock();
+  const h = await harness(t, { tools: true, scheduler });
+  const { session } = await attached(h);
+  h.f.send({ serverContent: { inputTranscription: { text: 'remember that mint ', finished: false } } });
+  await until(() => h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.some(row => row.kind === 'inputTranscription'));
+  const result = remember(h, undefined, { text: 'mint is Friday', kind: 'fact' }, 2);
+  await until(() => [...scheduler.pending].some(item => item.at === NOW + 1500));
+  scheduler.advance(1);
+  h.f.send({ serverContent: { inputTranscription: { text: 'is Friday' } } });
+  await until(() => h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(row => row.kind === 'inputTranscription').length === 2);
+  scheduler.advance(1499); await drain();
+  assert.deepEqual(await result, { remembered: false, code: 'owner_transcript_not_final' });
+  assert.equal(rows(h).length, 0);
+  const deferred = h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(row => row.kind === 'remember_deferred');
+  assert.equal(deferred.length, 1);
+  assert.equal(deferred[0]?.waitedMs, 1500);
+});
 
 test('Live memory port writes ordinary owner payload with the real domain transaction', async t => {
   const h = await harness(t, { tools: true });

@@ -238,6 +238,7 @@ class Session implements LiveVoiceSession {
         const calls = message.toolCall.functionCalls;
         if (calls.some(c => !object(c) || typeof c.id !== 'string' || !c.id || typeof c.name !== 'string' || !c.name || !object(c.args)) || new Set(calls.map(c => c.id)).size !== calls.length) fail('protocol_error');
         this.pendingCalls = structuredClone(calls) as LiveToolCall[];
+        this.emit({ type: 'modelTurnStarted' });
         this.emit({ type: 'toolCall', calls: structuredClone(this.pendingCalls) });
       }
       if ('toolCallCancellation' in message) {
@@ -323,6 +324,7 @@ class Session implements LiveVoiceSession {
         events.push({ type, text: this.text(transcription.text), ...('finished' in transcription ? { finished: transcription.finished as boolean } : {}) });
       }
     }
+    if (events.some(event => event.type === 'audio' || event.type === 'modelText' || event.type === 'outputTranscription')) events.push({ type: 'modelTurnStarted' });
     for (const type of ['interrupted', 'generationComplete', 'turnComplete'] as const) {
       if (type in value) {
         if (typeof value[type] !== 'boolean') fail('protocol_error');

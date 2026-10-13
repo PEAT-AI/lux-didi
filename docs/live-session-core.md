@@ -156,3 +156,7 @@ session and idle budget. The original session deadline never moves. A missing
 handle, exhausted budget, third loss or failed resumed setup ends once through
 the normal settlement path with `resume_failed`. Session and idle timeouts are
 final, never recovery triggers.
+
+### Live remember finalization
+
+`remember_note` persists only the owner's verbatim transcription, never model output or a model paraphrase. An explicit provider input transcription `finished: true` finalizes the owner turn immediately. When that flag is absent, the provider's tool call or first model output establishes a model-turn boundary; the owner finalizes the latest input journal row only after 300 ms without a newer input transcription. A newer input frame invalidates that boundary and requires a new one. An admitted remember tool waits at most 1500 ms for finalization, journaling exactly one typed `remember_deferred` row with `waitedMs` for the wait. If no finalization occurs within that bound, the existing `owner_transcript_not_final` refusal remains. The 300 ms default is a quiet-window safeguard, not permission to derive text from model words.

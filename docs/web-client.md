@@ -262,6 +262,17 @@ endpoint id, state, tool count, last handshake and a fixed repair hint for a
 sanitized reason code. Raw diagnostics, credentials and configuration are never
 rendered. Failed polls mark the displayed connection values as stale.
 
+## Live summary
+
+The read-only Live summary reads `GET /api/v1/live/summary` with the existing
+browser cookie (the operator bearer is accepted too); the operator-only
+`/api/v1/live/status` still refuses the cookie. The response is a closed
+whitelist, `{modelId, voice, personaName, limits: {sessionMs, idleMs},
+profileEnabled}`, carrying the configured model and voice, the persona display
+name and the session and idle limits, and nothing else: no key reference, no
+endpoint, no provider credential and no persona or system prompt text. When Live
+is unconfigured or disabled the route still answers 200 with `profileEnabled`
+false and the other fields null.
 ## Didi settings summary
 
 The Settings tab carries one read-only "Didi settings" panel so the owner can see

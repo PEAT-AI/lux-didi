@@ -1,3 +1,4 @@
+import { HostLog } from '../host/log.js';
 import type { LivePendingService } from '../live/types.js';
 import { createServer } from 'node:http';
 import type { IncomingMessage, ServerResponse, Server } from 'node:http';
@@ -8,7 +9,7 @@ import { ChatError, redactDeletedMemoryContext, type ChatPort } from '../chat/in
 import { redactDeletedMemorySnapshots } from '../live/index.js';
 import type { ConnectedStatus } from '../host/connected.js';
 import { ServiceError } from '../contracts/errors.js';
-import { object, resolveRoute } from './routes.js';
+import { clientDiagnostic, object, resolveRoute } from './routes.js';
 import { ConversationSelection, NO_SELECTION } from './conversationSelection.js';
 import { createStaticHandler } from './static.js';
 import type { DataClass } from '../adapters/live-voice/index.js';
@@ -22,10 +23,10 @@ function canonical(value: unknown): string {
   if (value !== null && typeof value === 'object') return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`).join(',')}}`;
   return JSON.stringify(value);
 }
-async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+async function readBody(req: IncomingMessage, limit = 65536): Promise<Record<string, unknown>> {
   if (req.headers['content-type'] !== 'application/json' && req.headers['content-type'] !== 'application/json; charset=utf-8') throw new ServiceError('BAD_REQUEST', 'JSON Content-Type required');
   const chunks: Buffer[] = []; let size = 0;
-  for await (const chunk of req) { size += (chunk as Buffer).length; if (size > 65536) { req.resume(); throw new ServiceError('PAYLOAD_TOO_LARGE', 'Request body exceeds limit', 413); } chunks.push(chunk as Buffer); }
+  for await (const chunk of req) { size += (chunk as Buffer).length; if (size > limit) { req.resume(); throw new ServiceError(limit === 512 ? 'BAD_REQUEST' : 'PAYLOAD_TOO_LARGE', 'Request body exceeds limit', limit === 512 ? 400 : 413); } chunks.push(chunk as Buffer); }
   try { return object(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } catch (error) { if (error instanceof ServiceError) throw error; throw new ServiceError('BAD_REQUEST', 'Malformed JSON'); }
 }
 interface Principal { clientId: string; mode: 'bearer' | 'browser'; tokenHash?: string; csrfToken?: string }
@@ -42,6 +43,8 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
   let origin = '';
   const pairing = new Map<string, number>();
   const selection = new ConversationSelection();
+  const diagnosticLog = new HostLog(store.directory);
+  const diagnosticTimes = new Map<string, number[]>();
   const liveClients = () => new Set(store.transaction(tx => tx.all('SELECT DISTINCT client_id FROM runtime_sessions WHERE expires_at>?', [now()])).map(row => String(row.client_id)));
   const send = (res: ServerResponse, status: number, payload: unknown) => {
     res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' }); res.end(JSON.stringify(payload));
@@ -90,6 +93,16 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
       }
       // Live is operator-bearer only and must run before the generic cookie/Bearer principal so a
       // browser cookie/CSRF or any Origin gets 403 before the owner or credentials are touched.
+      if (route.kind === 'clientDiagnostics') {
+        const operator = operatorPrincipal(req, store, origin);
+        const diagnostic = clientDiagnostic(await readBody(req, 512));
+        const received = now();
+        const times = (diagnosticTimes.get(operator.clientId) ?? []).filter(time => time > received - 60000);
+        if (times.length >= 30) throw new ServiceError('rate_limited', 'Client diagnostic rate limit exceeded', 429);
+        diagnosticLog.event({ event: 'client_diagnostic', source: 'native', diagnostic, receivedAt: new Date(received).toISOString() });
+        times.push(received); diagnosticTimes.set(operator.clientId, times);
+        res.writeHead(204, { 'Cache-Control': 'no-store' }); res.end(); return;
+      }
       if (route.kind === 'live') {
         if (!live) throw new ServiceError('MODEL_NOT_CONFIGURED', 'Live route is not locally configured', 503);
         const principal = operatorPrincipal(req, store, origin);

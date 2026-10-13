@@ -85,6 +85,7 @@ failure codes in `logs/native-live.log` (0600), without error bodies or credenti
 Show conversation focuses the existing authenticated embedded view. Connections
 is read-only and uses the page cookie, never the Live bearer credential. It
 refreshes every ten seconds only while its window is visible and not minimized.
+The native client POSTs its typed pre-CREATE failure to `/api/v1/diagnostics/client`; Swift wiring lands with W-NAT2's follow-up.
 
 ## Local service recovery
 
@@ -147,6 +148,7 @@ The pre-CREATE boundary is explicit: the start catch is pre-CREATE, and a
 coordinator failure is pre-CREATE only while no created session ID exists.
 After CREATE completes, failures emit neither this native log line nor this
 POST; the service journal and terminal outcome already record them.
+
 ## Provider continuity wire contract
 
 A provider replacement does not create a new Live session or change the accepted

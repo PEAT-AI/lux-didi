@@ -6,8 +6,8 @@
 <key>CFBundleName</key><string>Lux Didi</string>
 <key>CFBundleDisplayName</key><string>Lux Didi</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleVersion</key><string>2</string>
-<key>CFBundleShortVersionString</key><string>0.1.1</string>
+<key>CFBundleVersion</key><string>3</string>
+<key>CFBundleShortVersionString</key><string>0.1.2</string>
 <key>LSMinimumSystemVersion</key><string>26.0</string>
 <key>LSUIElement</key><true/>
 <key>NSMicrophoneUsageDescription</key><string>Record only when you choose Record, to draft a message on this Mac.</string>

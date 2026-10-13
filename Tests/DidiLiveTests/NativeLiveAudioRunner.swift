@@ -140,6 +140,13 @@ final class DiagnosticLogHTTPFixture: URLProtocol, @unchecked Sendable {
     }
     @MainActor static func main() async {
         do {
+            for state in NativeLiveConversation.State.allCases {
+                let presentation = state.presentation
+                try expect(!presentation.text.isEmpty && !presentation.symbol.isEmpty, "every Live case has a sentence and icon")
+                try expect(!presentation.text.contains(state.rawValue), "raw case never reaches Live presentation")
+            }
+        } catch { fatalError("Live presentation: \(error)") }
+        do {
             let routeTestStarted = Date()
             var builds = 0, releases = 0, paused = "", failures = 0
             var input = "Built-in microphone"

@@ -33,6 +33,7 @@ import Darwin
         let service = "ai.peat.lux-didi.proof." + UUID().uuidString
 #if COMPANION_TEST
         NativeServiceSupervisor.diagnosticSink = { record in diagnose("supervisor:probe", record) }
+        try expect(OwnedWindowProof.expectedControlNames == ["Start recording", "Stop recording", "Send to Naya", "Save note"], "owned AX extraction expects exact current four actions")
         try expect(NativeProbeFailure.classify(NativeServiceError.timeout, readErrno: 0) == .timeout, "probe timeout retains its cause")
         try expect(NativeProbeFailure.classify(NativeServiceError.exited, readErrno: 0) == .eofBeforeFrame, "probe EOF retains its cause")
         try expect(NativeProbeFailure.classify(NativeServiceError.exited, readErrno: EIO) == .readFailed, "probe read failure retains its cause")

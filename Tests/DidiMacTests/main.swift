@@ -317,3 +317,21 @@ expect(pickupOrder == ["validate", "stop", "start"], "pickup validates before in
 print("MAC-CALLBACK-SEAMS PASS duration=\(String(format: "%.3f", Date().timeIntervalSince(testStarted)))s")
 
 expect(LiveStatusPresentation(state: "rebuilding", pendingCall: false).text == "Naya: Reconnecting", "continuity status is Reconnecting")
+
+// Getting started uses fixture values only and copies whitelisted commands.
+let onboardingDefaults = UserDefaults(suiteName: "DidiGettingStartedTests")!
+onboardingDefaults.removePersistentDomain(forName: "DidiGettingStartedTests")
+expect(NativeGettingStartedOnce.consume(onboardingDefaults), "first build launch presents setup")
+expect(!NativeGettingStartedOnce.consume(onboardingDefaults), "setup never auto-presents twice")
+onboardingDefaults.removePersistentDomain(forName: "DidiGettingStartedTests")
+for id in NativeNextSteps.connectorIDs {
+    for reason in NativeNextSteps.reasonCodes {
+        expect(!NativeNextSteps.lookup(id: id, state: "error", reason: reason).text.isEmpty, "every next step is mapped")
+    }
+}
+let calendarStep = NativeNextSteps.lookup(id: "calendar", state: "missing", reason: "credential_missing")
+expect(calendarStep.command == "cd /Users/rob/GitHub/lux-cli && uv run --package lux-gcal gcal --auth", "copy is exactly the safe calendar command")
+expect(NativeNextSteps.lookup(id: "mongoose", state: "missing", reason: nil).command == nil, "credential path is not a copy command")
+let onboardingRows = NativeGettingStartedItems.rows(microphone: "denied", notifications: "denied", login: "off", connections: [("calendar", "missing", "credential_missing"), ("mongoose", "connected", nil)])
+expect(onboardingRows.count == 7, "fixture includes permissions, login, shortcuts and every connection")
+expect(onboardingRows.contains { $0.title == "calendar" && $0.detail.contains("gcal --auth") }, "fixture projects exact connector next step")

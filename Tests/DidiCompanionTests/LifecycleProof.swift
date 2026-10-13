@@ -58,7 +58,7 @@ import Darwin
             if succeeded { try? fm.removeItem(at: root) }
             else { diagnose("fixture:retained", ["root": root.path]) }
         }
-        func setup(_ mode: String, state: URL? = nil, changes: [String: Any] = [:]) throws -> (InstalledRuntime, URL) {
+        func setup(_ mode: String, state: URL? = nil, changes: [String: Any] = [:], nodeExecutable: URL? = nil) throws -> (InstalledRuntime, URL) {
             let id = UUID().uuidString.lowercased()
             accounts.append(id)
             let bundle = root.appendingPathComponent(id)
@@ -70,7 +70,7 @@ import Darwin
             try fm.createDirectory(at: macos, withIntermediateDirectories: true)
             // Production nodePath is Contents/MacOS/node: a regular owner-executable in
             // the real bundle-relative layout, never the old absolute form.
-            let realNode = URL(fileURLWithPath: node).resolvingSymlinksInPath()
+            let realNode = (nodeExecutable ?? URL(fileURLWithPath: node)).resolvingSymlinksInPath()
             let bundledNode = macos.appendingPathComponent("node")
             do { try fm.linkItem(atPath: realNode.path, toPath: bundledNode.path) }
             catch { try fm.copyItem(atPath: realNode.path, toPath: bundledNode.path) }
@@ -235,7 +235,9 @@ import Darwin
                 do { _ = try await child.start(); try expect(false, "invalid ready must fail: " + mode) }
                 catch { try expect(!child.isRunning && !itemExists(bad.0.installId), "bad readiness gets no Keychain credential: " + mode) }
             }
-            let invalidNode = supervisor(try setup("normal", changes: ["nodePath": "/usr/bin/false"]))
+            let invalidFixture = try setup("normal", nodeExecutable: URL(fileURLWithPath: "/usr/bin/false"))
+            try expect(invalidFixture.0.node.path.hasPrefix("/"), "non-Node fixture executable resolves to an absolute path")
+            let invalidNode = supervisor(invalidFixture)
             do { _ = try await invalidNode.start(); try expect(false, "non-Node executable must fail") }
             catch NativeServiceError.invalidNode {
                 try expect(!invalidNode.isRunning, "actual Node/SQLite probe refuses wrong executable")

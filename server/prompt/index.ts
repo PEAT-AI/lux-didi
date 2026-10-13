@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import type { DataClass, FunctionDeclaration, ToolDefinition } from '../adapters/model/types.js';
 import { PromptCompileError, type OwnerProfileSnapshot, type CapabilitySnapshot, type CompileInput, type CompiledPrompt, type Evidence, type HistoryItem, type SourceAvailability, type ValidatedPreferences, type VoiceInstruction, type VoiceInstructionInput } from './types.js';
 import { PUBLIC_PERSONA, PROMPT_VERSION, TRUSTED_RULES } from './template.js';
-import { ownerProfileSections } from './live-persona.js';
+import { ownerProfileSections, TRUSTED_SYSTEM_CODE_UNIT_LIMIT } from './live-persona.js';
 export * from './types.js';
 export * from './live-persona.js';
 export { PUBLIC_PERSONA, PROMPT_VERSION } from './template.js';
@@ -121,7 +121,7 @@ export function validateOwnerProfile(raw: unknown, ownerId: string): OwnerProfil
   if (displayName.trim() !== displayName || /[\u0000-\u001f\u007f-\u009f]/.test(displayName)) fail('schema');
   const part = (raw: unknown) => {
     const p = fields(raw, ['text', 'dataClass']);
-    if (typeof p['text'] !== 'string' || p['text'].length > 4096
+    if (typeof p['text'] !== 'string' || p['text'].length > TRUSTED_SYSTEM_CODE_UNIT_LIMIT
       || Buffer.from(p['text'], 'utf8').toString('utf8') !== p['text']) fail('schema');
     if (!classes.includes(p['dataClass'] as DataClass)) fail('classification');
     return Object.freeze({ text: p['text'] as string, dataClass: p['dataClass'] as DataClass });

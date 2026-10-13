@@ -26,7 +26,7 @@ This example is entirely synthetic:
 
 All fields are required and additional fields are rejected, including in `style` and `lore`. The owner ID must exactly match the local Store; this does not change it. Schema version is integer `1` and the file discriminator is `profile`. Each classification must be exactly `ordinary`, `private` or `sensitive`; unknown labels are errors. Both style and lore contribute classes, even though they enter system text. Classifying private material as ordinary does not make it public: choose labels conservatively.
 
-`profileVersion` is nonempty and at most 80 UTF-16 code units. `displayName` is nonempty, trimmed, control-character-free, at most 80 UTF-16 code units. Each authored text is at most 4,096 UTF-16 code units (empty strings allowed); the complete file is at most 65,536 bytes and must be valid UTF-8 JSON. These are upper bounds, not guaranteed capacity: the complete canonical prompt must also fit the existing text and Live budgets. Live's complete accepted instruction is limited to 20,000 code units. Oversize instructions fail; authored content is never truncated.
+`profileVersion` is nonempty and at most 80 UTF-16 code units. `displayName` is nonempty, trimmed, control-character-free, at most 80 UTF-16 code units. Each authored text is at most 60,000 UTF-16 code units (empty strings allowed); the complete file is at most 65,536 bytes and must be valid UTF-8 JSON. These are independent upper bounds, not guaranteed capacity: the complete canonical prompt must fit the shared 60,000 UTF-16 code-unit trusted-system ceiling after required rules, capabilities, tools and voice anchors are composed. Oversize instructions fail; authored content is never truncated.
 
 ## Authority and provider gating
 

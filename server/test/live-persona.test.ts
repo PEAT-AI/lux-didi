@@ -224,4 +224,8 @@ test('tool-enabled Live CREATE retains expanded owner bytes and yields memory on
   assert.deepEqual(composed.selectedIds, ['fits']);
   assert.deepEqual(composed.omitted, [{ id: 'whole-oversize', reason: 'budget' }]);
   assert.ok(!composed.text.includes('M'.repeat(128)));
+  const oversized: OwnerProfileSnapshot = { ...ownerProfile,
+    lore: { text: 'L'.repeat(TRUSTED_SYSTEM_CODE_UNIT_LIMIT), dataClass: 'sensitive' } };
+  assert.throws(() => composeLiveInstruction({ base: NAYA_BASE, ownerProfile: oversized, language: 'en' }),
+    (error: unknown) => error instanceof PersonaOverlayError && error.code === 'instruction_too_large');
 });

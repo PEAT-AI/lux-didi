@@ -12,7 +12,7 @@ import { LiveToolJobs, type ToolJobResult, type JobTimer } from '../tools/jobs.j
 import type { LiveAuthority } from '../tools/types.js';
 import { liveProfileIdentity } from '../live/config.js';
 import type { ToolDefinition, HostContext } from '../adapters/model/types.js';
-import { PROMPT_VERSION } from '../prompt/index.js';
+import { PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT } from '../prompt/index.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { TestContext } from 'node:test';
@@ -227,21 +227,19 @@ test('Live memory budget keeps whole records, reports overflow, and rejects over
   const h = await harness(t);
   note(h, 'a', 'Fixture whole note');
   const initial = h.owner.create({ idempotencyKey: 'measure-memory', inputClass: 'ordinary' }, h.ctx);
-  const remaining = 20000 - accepted(h, initial.liveSessionId).system.length;
+  const remaining = TRUSTED_SYSTEM_CODE_UNIT_LIMIT - accepted(h, initial.liveSessionId).system.length;
   h.store.transaction(tx => tx.run('UPDATE entries SET text=? WHERE id=?', ['Fixture whole note' + 'x'.repeat(remaining), 'a']));
   note(h, 'b', 'Fixture overflow note');
   const boundary = h.owner.create({ idempotencyKey: 'boundary-memory', inputClass: 'ordinary' }, h.ctx);
   const snapshot = accepted(h, boundary.liveSessionId);
-  assert.equal(snapshot.system.length, 20000);
+  assert.equal(snapshot.system.length, TRUSTED_SYSTEM_CODE_UNIT_LIMIT);
   assert.deepEqual(snapshot.memory.selectedIds, ['a']);
   assert.deepEqual(snapshot.memory.omitted, [{ id: 'b', reason: 'budget' }]);
   assert.ok(!snapshot.system.includes('Fixture overflow note'));
   assert.ok(snapshot.system.includes(JSON.stringify({ id: 'a', text: 'Fixture whole note' + 'x'.repeat(remaining) })), 'the selected record survives byte for byte');
-  const oversized = await harness(t, { system: 'x'.repeat(4096), tools: true, overlay: { schemaVersion: 1, text: 'x'.repeat(16000) } });
-  assert.throws(() => oversized.owner.create({ idempotencyKey: 'oversized', inputClass: 'ordinary' }, oversized.ctx), (error: unknown) => error instanceof LiveError && String(error.code) === 'instruction_too_large');
   const failed = await harness(t, { memoryFailure: true });
   assert.throws(() => failed.owner.create({ idempotencyKey: 'failed-memory', inputClass: 'ordinary' }, failed.ctx), (error: unknown) => error instanceof LiveError && String(error.code) === 'memory_unavailable');
-  assert.equal(oversized.requests.length + failed.requests.length, 0);
+  assert.equal(failed.requests.length, 0);
 });
 
 test('Live transcripts and completion, interruption and terminal events stay journal-only', async t => {

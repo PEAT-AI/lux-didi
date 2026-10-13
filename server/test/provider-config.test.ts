@@ -282,7 +282,7 @@ test('explicit owner activation is closed, protected, immutable and never falls 
   assert.deepEqual(accepted.snapshot, raw);
   for (const invalid of [{ ...raw, ownerId: 'other' }, { ...raw, extra: true },
     { ...raw, style: { text: 'x', dataClass: 'unknown' } }, { ...raw, displayName: 'unsafe\nlabel' },
-    { ...raw, lore: { text: 'x'.repeat(4097), dataClass: 'ordinary' } }]) {
+    { ...raw, lore: { text: 'x'.repeat(60001), dataClass: 'ordinary' } }]) {
     writeFileSync(path, JSON.stringify(invalid));
     assert.equal(load().status, 'error');
     assert.ok(!JSON.stringify(load()).includes(path));

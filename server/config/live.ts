@@ -1,4 +1,4 @@
-import { canonicalSpeechLanguage, composeLiveInstruction, loadPersonaOverlay, NAYA_BASE, PersonaOverlayError, publicOwnerProfile, type OwnerProfileSnapshot } from '../prompt/index.js';
+import { canonicalSpeechLanguage, composeLiveInstruction, loadPersonaOverlay, NAYA_BASE, PersonaOverlayError, publicOwnerProfile, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, type OwnerProfileSnapshot } from '../prompt/index.js';
 import { dirname, join } from 'node:path';
 import type { DataClass } from '../adapters/live-voice/index.js';
 import { compileVoiceInstruction, createCapabilitySnapshot, PROMPT_VERSION, validatePreferences, type ValidatedPreferences } from '../prompt/index.js';
@@ -93,7 +93,7 @@ export function loadLiveConfig(options: { configDir: string; ownerId: string; ow
     const ownerProfile = options.ownerProfile ?? publicOwnerProfile(options.ownerId);
     const instruction = compileVoiceInstruction({
       ownerId: options.ownerId, ownerProfile, promptVersion: PROMPT_VERSION, preferences,
-      capabilities: createCapabilitySnapshot([], []), trustedChars: 20000,
+      capabilities: createCapabilitySnapshot([], []), trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
     });
     const accepted = composeLiveInstruction({
       base: NAYA_BASE, ownerProfile,

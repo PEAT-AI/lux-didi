@@ -137,7 +137,7 @@ test('mattermost_whoami projects an SSE MCP entity from separately decodedResult
   assert.equal(wire.state, 'available');
   if (wire.state === 'available') assert.match(new TextDecoder().decode(wire.bytes), /^event:|^data:/);
   const projected = projectMattermostResult(adapter, result); assert.equal(projected.ok, true);
-  if (!projected.ok) throw Error(projected.reason);
+  if (!projected.ok) throw Error('projection failed');
   assert(projected.projection.text.includes('Synthetic SSE'));
   assert(!projected.projection.text.includes('synthetic-unclassified'));
 });

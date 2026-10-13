@@ -73,7 +73,7 @@ Live baseline remains the Naya base plus its terminal language anchor. When an
 owner profile is explicitly selected, its exact classified style and lore sections
 join the accepted Live system between that base and anchor. The optional local
 overlay joins later at session CREATE. The complete accepted instruction has the
-existing 20,000-character limit and fails closed rather than truncating required
+shared 60,000 UTF-16 code-unit limit and fails closed rather than truncating required
 owner sections (see `docs/prompt-composition.md`).
 
 The optional `limits` block carries per-profile timer overrides: `limits.sessionMs`

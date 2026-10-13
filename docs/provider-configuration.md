@@ -68,9 +68,13 @@ separate and untouched.
 ```
 
 The owner supplies this file in the selected protected configuration directory.
-The installer creates no profile and leaves existing files untouched. The Live system instruction is not this file: it is
-composed from the public Naya base, an optional local overlay and the terminal
-language anchor (see `docs/prompt-composition.md`).
+The installer creates no profile and leaves existing files untouched. The public
+Live baseline remains the Naya base plus its terminal language anchor. When an
+owner profile is explicitly selected, its exact classified style and lore sections
+join the accepted Live system between that base and anchor. The optional local
+overlay joins later at session CREATE. The complete accepted instruction has the
+existing 20,000-character limit and fails closed rather than truncating required
+owner sections (see `docs/prompt-composition.md`).
 
 The optional `limits` block carries per-profile timer overrides: `limits.sessionMs`
 (the longest single session) and `limits.idleMs` (silence before the session ends),

@@ -1304,6 +1304,37 @@ test('loadLiveConfig keeps public prompt bytes and composes classified owner sec
   if (bad.status === 'error') assert.equal(bad.code, 'invalid_overlay');
 });
 
+test('configured owner system survives CREATE and attach open byte for byte before provider setup', async t => {
+  const f = await fixture(t);
+  const root = mkdtempSync(join(tmpdir(), 'didi-live-owner-reopen-'));
+  const dataDir = join(root, 'data'); const configDir = join(dataDir, 'provider-config'); const storeDir = join(root, 'store');
+  mkdirSync(configDir, { recursive: true, mode: 0o700 }); chmodSync(dataDir, 0o700); chmodSync(configDir, 0o700);
+  const domain = createDomainPort({ outbox: Outbox });
+  const store = new Store(storeDir, [...domain.migrations, ...chatMigrations, ...liveMigrations]);
+  t.after(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
+  const live = { schemaVersion: 1, enabled: true, provider: 'gemini', modelId: 'models/gemini-3.1-flash-live-preview', voice: 'Aoede', keyReference: 'gemini-primary',
+    dataClasses: ['ordinary', 'private'], preferences: { dataClass: 'ordinary', language: 'en', register: 'plain', humor: 'dry', verbosity: 'brief' } };
+  writePrivate(configDir, 'live.json', JSON.stringify(live));
+  const ownerProfile = { schemaVersion: 1 as const, kind: 'profile' as const, ownerId: store.assistantId, profileVersion: 'fixture', displayName: 'Example',
+    style: { text: 'SYNTHETIC reopen style', dataClass: 'private' as const }, lore: { text: 'SYNTHETIC reopen lore', dataClass: 'ordinary' as const } };
+  const status = loadLiveConfig({ configDir, ownerId: store.assistantId, ownerProfile });
+  assert.equal(status.status, 'configured'); if (status.status !== 'configured') return;
+  const expected = status.config.profile.acceptedPrompt!.system;
+  const adapter = () => new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory,
+    modelId: status.config.profile.liveModelId, voice: status.config.profile.voice, keyReference: status.config.profile.keyReference,
+    route: { enabled: true, provider: 'gemini', modelId: status.config.profile.liveModelId, dataClasses: status.config.profile.route.dataClasses },
+    credentials: { resolve: async () => CANARY } }));
+  const first = createLiveSessionOwner({ store, profile: status.config.profile, voice: adapter(), now: () => NOW });
+  const created = first.create({ idempotencyKey: 'owner-create', inputClass: 'ordinary' }, context(store));
+  const persisted = store.transaction(tx => JSON.parse(String(tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [created.liveSessionId])!['accepted_prompt_snapshot'])));
+  assert.equal(persisted.system, expected); assert.deepEqual(persisted.dataClasses, ['ordinary', 'private']);
+  const attachment = first.attach({ liveSessionId: created.liveSessionId }, context(store));
+  await f.frame(1);
+  const frame = JSON.parse(JSON.stringify(f.frames[0]));
+  assert.equal(frame.setup.systemInstruction.parts[0].text, expected);
+  attachment.close(); await attachment.done; await first.shutdown();
+});
+
 test('provider voice activity journals listening and thinking without retaining its payload', async t => {
   const h = await harness(t);
   const { session, attachment } = await attached(h);

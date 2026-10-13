@@ -55,7 +55,7 @@ async function harness(t: TestContext, builder: 'live' | 'chat-shaped', failure?
       counts.set(entry.id, counts.get(entry.id)! + 1);
       await dispatch?.(entry.id);
       const text = entry.connector === 'google' ? JSON.stringify({ family: entry.id === 'gmail' ? 'gmail' : 'calendar', tool: entry.tool, method: entry.tool, account: { configured: 'configured', provider: null }, data: entry.id === 'gmail' ? { messages: [{ id: 'synthetic', headers: { Subject: 'Synthetic mail', From: 'Synthetic sender <synthetic@example.invalid>', Date: 'Synthetic date' } }] } : { calendars: [{ id: 'synthetic', summary: 'Synthetic calendar' }] } }) : entry.id === 'lux-knowledge' ? 'Synthetic knowledge results: 1\n**#1** Synthetic result' : `synthetic ${entry.id} read`;
-      return { content: [{ type: 'text', text }], ...(entry.id === 'lux-knowledge' ? { structuredContent: { unclassified_marker: 'synthetic-private-unclassified' } } : {}) } as never;
+      return { content: [{ type: 'text', text }], ...(entry.id === 'lux-knowledge' ? { structuredContent: { unclassified_marker: 'synthetic-private-unclassified' }, isError: false } : {}) } as never;
     });
     await sdk.connect(transport); readers.set(entry.id, transport); sdks.set(entry.id, sdk);
     }

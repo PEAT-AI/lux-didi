@@ -444,9 +444,11 @@ test('registry restoration is distinct from new approval and retains exact scope
   registry.revoke('x'); assert.throws(() => restorable.restore(grant));
 });
 
+// D11b d11b-mcp.jsonl records 6/10/14/15: shape only, no knowledge text.
+const recordedProviderShape = { content: [{ type: 'text', text: 'synthetic α payload' }], structuredContent: { synthetic: true }, isError: false };
 for (const framing of ['single', 'multiline', 'keepalive'] as const) {
   test(`SSE ${framing} response publishes a decoded JSON-RPC result`, async () => {
-    const f = await fixture({ jsonResponse: true, callFraming: framing });
+    const f = await fixture({ jsonResponse: true, callFraming: framing, call: () => recordedProviderShape });
     const { adapter, registry } = setup(f.url);
     try {
       await approve(adapter, registry);
@@ -464,6 +466,7 @@ for (const framing of ['single', 'multiline', 'keepalive'] as const) {
       assert('decodedResult' in result, 'adapter separately returns the decoded MCP result');
       const decoded = result.decodedResult as { content: { text: string }[] };
       assert.equal(decoded.content[0]?.text, 'synthetic α payload');
+      assert.deepEqual(result.decodedResult, recordedProviderShape);
     } finally { await adapter.close(); await f.close(); }
   });
 }

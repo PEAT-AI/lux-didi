@@ -21,6 +21,8 @@ export const MATTERMOST_MESSAGE_CHARS = 4000;
 export const MATTERMOST_MESSAGES = 60;
 export const KNOWLEDGE_EXCERPT_CHARS = 1200;
 export const KNOWLEDGE_HITS = 20;
+/** A get_insight fetch returns the whole body up to this generous final bound. */
+export const KNOWLEDGE_BODY_CHARS = 12000;
 
 export interface ShapedResult {
   text: string;
@@ -54,8 +56,16 @@ function header(source: Record<string, unknown>, name: string): string {
 export function cutAtSentence(text: string, limit: number): { text: string; omitted: number } {
   if (text.length <= limit) return { text, omitted: 0 };
   const head = text.slice(0, limit);
-  const boundary = Math.max(head.lastIndexOf('\n'), head.lastIndexOf('. '), head.lastIndexOf('! '), head.lastIndexOf('? '));
-  const cut = boundary > limit / 2 ? head.slice(0, boundary + 1) : head;
+  let boundary = -1;
+  for (const marker of ['\n', '. ', '! ', '? ']) boundary = Math.max(boundary, head.lastIndexOf(marker));
+  let cut: string;
+  if (boundary > 0) cut = head.slice(0, boundary + 1);
+  else {
+    // No sentence end: fall back to the last whole word, never a raw character index.
+    let space = -1;
+    for (let index = head.length - 1; index >= 0; index--) { if (/\s/u.test(head[index]!)) { space = index; break; } }
+    cut = space > 0 ? head.slice(0, space) : head;
+  }
   return { text: cut.trimEnd(), omitted: text.length - cut.length };
 }
 /** Join list items under a count ceiling. `followUp` names a real argument the model can pass to
@@ -275,17 +285,28 @@ export function shapeMattermost(tool: string, data: unknown): ShapedResult {
 
 // --- lux-knowledge -------------------------------------------------------------------------
 
-function knowledgeHit(hit: Record<string, unknown>): { text: string; omitted: number; original: number } {
+function knowledgeHeading(hit: Record<string, unknown>): string {
   const title = field(hit, 'insight_title', 'title', 'name') || `insight ${scalar(hit['id']) || '(untitled)'}`;
   const kind = field(hit, 'insight_type', 'type');
   const date = field(hit, 'updated_at', 'created_at', 'date', 'meeting_date_local');
   const meta = [kind, date].filter(Boolean).join(' | ');
+  const id = scalar(hit['id']);
+  return `## ${title}${meta ? ` (${meta})` : ''}${id ? ` [id ${id}]` : ''}`;
+}
+/** A search hit's excerpt. The cut names get_insight, which returns the full body (not this bound). */
+function knowledgeExcerpt(hit: Record<string, unknown>): { text: string; omitted: number; original: number } {
   const body = field(hit, 'content', 'excerpt', 'snippet', 'summary');
   const cut = cutAtSentence(body, KNOWLEDGE_EXCERPT_CHARS);
   const id = scalar(hit['id']);
-  const followUp = id ? `call get_insight with ids=[${id}] and include_links=false for the full insight` : 'final, ask for the full insight by its id';
-  const note = cut.omitted > 0 ? `\n[omitted: ${cut.omitted} characters; ${followUp}]` : '';
-  return { text: `## ${title}${meta ? ` (${meta})` : ''}${id ? ` [id ${id}]` : ''}\n${cut.text}${note}`, omitted: cut.omitted, original: body.length };
+  const note = cut.omitted > 0 ? `\n[omitted: ${cut.omitted} characters; ${id ? `call get_insight with ids=[${id}] and include_links=false for the full insight` : 'final, ask for the full insight by its id'}]` : '';
+  return { text: `${knowledgeHeading(hit)}\n${cut.text}${note}`, omitted: cut.omitted, original: body.length };
+}
+/** A get_insight body, returned in full up to a generous final bound (OUTCOME 1). */
+function knowledgeBody(hit: Record<string, unknown>): { text: string; omitted: number; original: number } {
+  const body = field(hit, 'content', 'text', 'body');
+  const cut = cutAtSentence(body, KNOWLEDGE_BODY_CHARS);
+  const note = cut.omitted > 0 ? `\n[omitted: ${cut.omitted} characters; final, this read has no paging argument]` : '';
+  return { text: `${knowledgeHeading(hit)}\n${cut.text}${note}`, omitted: cut.omitted, original: body.length };
 }
 
 /** Shape a lux-knowledge result. JSON hits become title/type/date/excerpt; anything else is kept. */
@@ -305,7 +326,7 @@ export function shapeLuxKnowledge(tool: string, raw: string): ShapedResult {
     if (tool === 'get_insight') {
       const body = field(parsed, 'content', 'text', 'body');
       if (body || parsed['insights'] === undefined && parsed['results'] === undefined) {
-        const hit = knowledgeHit(parsed);
+        const hit = knowledgeBody(parsed);
         return { text: hit.text, partial: hit.omitted > 0, originalCharacters: hit.original, omittedCharacters: hit.omitted };
       }
     }
@@ -316,7 +337,7 @@ export function shapeLuxKnowledge(tool: string, raw: string): ShapedResult {
 }
 
 function knowledgeList(hits: Record<string, unknown>[]): ShapedResult {
-  const shapedHits = hits.map(knowledgeHit);
+  const shapedHits = hits.map(knowledgeExcerpt);
   const body = listed(shapedHits.map(hit => hit.text), KNOWLEDGE_HITS, 'hits', `call search_knowledge again with limit=${hits.length} for the rest`);
   return { text: body.text, partial: body.omitted > 0, originalCharacters: shapedHits.map(hit => hit.text).join('\n\n').length, omittedCharacters: body.omitted };
 }

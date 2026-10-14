@@ -91,10 +91,15 @@ test('lux search keeps title, type, date, id and a substantial excerpt, and name
   assert.equal(shaped.text.includes('Insight 21'), false);
 });
 
-test('lux get_insight cuts an over-long body with the get_insight ids follow-up named', () => {
-  const shaped = shapeLuxKnowledge('get_insight', JSON.stringify({ id: 7, insight_title: 'Deep body', content: 'Sentence one. '.repeat(400) }));
-  assert.equal(shaped.partial, true);
-  assert.match(shaped.text, /call get_insight with ids=\[7\]/);
+test('lux get_insight returns the full body, so the search excerpt follow-up is honest', () => {
+  const content = 'Sentence one. '.repeat(400); // ~5600 chars, over the 1200 excerpt bound but under the body bound
+  const shaped = shapeLuxKnowledge('get_insight', JSON.stringify({ id: 7, insight_title: 'Deep body', content }));
+  assert.equal(shaped.partial, false);
+  assert.equal(shaped.text.includes('[omitted:'), false);
+  assert.equal(shaped.text.includes(content), true, 'the whole insight body must reach the model');
+  const excerpt = shapeLuxKnowledge('search_knowledge', JSON.stringify({ results: [{ id: 7, insight_title: 'Deep body', content }] }));
+  assert.equal(excerpt.partial, true);
+  assert.match(excerpt.text, /call get_insight with ids=\[7\]/);
 });
 
 test('plain non-JSON knowledge payloads pass through untouched', () => {
@@ -109,4 +114,11 @@ test('cutAtSentence and cleanMailBody strip MIME boilerplate without mid-sentenc
   const cut = cutAtSentence('Alpha. Beta. Gamma.', 12);
   assert.equal(cut.text, 'Alpha. Beta.');
   assert.equal(cut.omitted, ' Gamma.'.length);
+});
+
+test('a boundary-free run-on is cut at the last whole word, never mid-word', () => {
+  const cut = cutAtSentence('This is one very long runon sentence that never has a period until the very end here', 30);
+  assert.equal(cut.text, 'This is one very long runon');
+  assert.equal(/\s/u.test(cut.text.at(-1) ?? ''), false, 'the cut never ends mid-word or on whitespace');
+  assert.equal(cut.omitted > 0, true);
 });

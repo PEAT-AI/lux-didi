@@ -290,6 +290,57 @@ private func checkSevenChannelConversion() throws {
                      "seven-channel processed input on channel six must survive current mono conversion")
 }
 
+private func checkPrimaryChannelConversion() throws {
+    let layout = AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_DiscreteInOrder | 7)!
+    let multichannel = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48000, interleaved: false, channelLayout: layout)
+    let mono = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 1)!
+    func converted(_ format: AVAudioFormat, scenario: String, explicit: Bool) throws -> (Data, [NSNumber]) {
+        let owner = try NativePCMConverter(input: format)
+        let converter = Mirror(reflecting: owner).children.first(where: { $0.label == "converter" })!.value as! AVAudioConverter
+        if explicit { converter.channelMap = [0] }
+        var pcm = Data()
+        for index in 0..<8 {
+            let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1024)!
+            buffer.frameLength = 1024
+            for channel in 0..<Int(format.channelCount) {
+                for frame in 0..<1024 {
+                    let position = Double(index * 1024 + frame)
+                    let primary = Float(sin(position * 2 * .pi * 440 / 48000) * 0.25)
+                    let value: Float
+                    if channel == 0 || scenario == "uniform" { value = primary }
+                    else if scenario == "unrelated" { value = Float(cos(position * 2 * .pi * Double(700 + channel * 100) / 48000) * 0.5) }
+                    else { value = 0 }
+                    buffer.floatChannelData![channel][frame] = value
+                }
+            }
+            pcm.append(try owner.append(buffer))
+        }
+        pcm.append(try owner.finish())
+        return (pcm, converter.channelMap)
+    }
+    let (monoCurrent, _) = try converted(mono, scenario: "primary", explicit: false)
+    let (monoExplicit, _) = try converted(mono, scenario: "primary", explicit: true)
+    try audioRequire(monoCurrent == monoExplicit && monoCurrent.contains { $0 != 0 }, "explicit first-channel map preserves mono bytes")
+    var rows: [[String: Any]] = []
+    var currentPrimary: Data?, currentUniform: Data?
+    for scenario in ["primary", "uniform", "unrelated"] {
+        let (current, currentMap) = try converted(multichannel, scenario: scenario, explicit: false)
+        let (candidate, candidateMap) = try converted(multichannel, scenario: scenario, explicit: true)
+        try audioRequire(candidate == monoCurrent, "explicit first-channel map preserves primary PCM without mixing unrelated channels")
+        rows.append(["scenario": scenario, "currentMap": currentMap, "candidateMap": candidateMap,
+                     "currentBytes": current.count, "currentNonzeroSamples": current.withUnsafeBytes { $0.bindMemory(to: Int16.self).filter { $0 != 0 }.count },
+                     "candidateNonzeroSamples": candidate.withUnsafeBytes { $0.bindMemory(to: Int16.self).filter { $0 != 0 }.count },
+                     "candidateEqualsMono": candidate == monoCurrent])
+        if scenario == "primary" { currentPrimary = current }
+        if scenario == "uniform" { currentUniform = current }
+    }
+    let record: [String: Any] = ["layoutTag": layout.layoutTag, "inputChannels": 7, "inputSampleRate": 48000,
+                               "monoByteIdentity": monoCurrent == monoExplicit, "rows": rows, "hardware": false, "provider": false]
+    FileHandle.standardOutput.write(try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]) + Data([10]))
+    try audioRequire(currentPrimary == monoCurrent && currentUniform == monoCurrent,
+                     "actual converter preserves first-channel input and observed uniform seven-channel input")
+}
+
 @main struct NativeLiveAudioRunner {
     static func tone(_ format: AVAudioFormat, start: Int, count: Int) throws -> AVAudioPCMBuffer {
         guard format.channelCount == 2, format.commonFormat == .pcmFormatFloat32, !format.isInterleaved else {
@@ -306,6 +357,11 @@ private func checkSevenChannelConversion() throws {
         return buffer
     }
     @MainActor static func main() async {
+        if CommandLine.arguments.dropFirst().contains("--primary-channel-only") {
+            do { try checkPrimaryChannelConversion() }
+            catch { FileHandle.standardError.write(Data("Primary-channel conversion: \(error)\n".utf8)); exit(1) }
+            return
+        }
         if CommandLine.arguments.dropFirst().contains("--seven-channel-only") {
             do { try checkSevenChannelConversion() }
             catch { FileHandle.standardError.write(Data("Seven-channel conversion: \(error)\n".utf8)); exit(1) }

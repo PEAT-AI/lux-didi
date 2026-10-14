@@ -212,6 +212,7 @@ function schedulePoll(){if(pollTimer)clearTimeout(pollTimer);if(!document.hidden
 // Live projection poll: 1 Hz while active, 4 s while idle or terminal, paused while hidden. The route is W-B's;
 // a missing or failed route leaves the last honest state and never fabricates one.
 async function pollLive(){
+  if(liveTimer)clearTimeout(liveTimer);
   liveTimer=undefined;
   if(document.hidden||pairingRequired||liveBusy)return;
   liveBusy=true;

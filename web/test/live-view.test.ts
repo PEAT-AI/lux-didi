@@ -347,3 +347,26 @@ for (const kind of ['authority', 'offline-success', 'offline-failure', 'logout']
     if(kind==='logout')assert.equal(liveTimerArmed,false);
   });
 }
+
+
+test('manual Live refresh cancels the scheduled handle before held logout', async () => {
+  const source=readFileSync(new URL('../src/main.ts',import.meta.url),'utf8');
+  const poll=source.slice(source.indexOf('async function pollLive(){'),source.indexOf('async function pollConnections(){'));
+  const schedule=source.slice(source.indexOf('function scheduleLive(){'),source.indexOf('function paintLive(){'));
+  let id=0,release!:()=>void;const timers=new Map<number,{fn:()=>void,delay:number}>();
+  const gate=new Promise<void>(resolve=>{release=resolve;});
+  const projection:LiveCurrent={state:'listening',since:'synthetic-timer-session',cursor:0,entries:[]};
+  const context:any={document:{hidden:false},pairingRequired:false,liveBusy:false,liveTimer:undefined,
+    livePoll:{live:projection},live:projection,liveDelay,pollLiveView,AbortSignal,
+    setTimeout:(fn:()=>void,delay:number)=>{const handle=++id;timers.set(handle,{fn,delay});return handle;},
+    clearTimeout:(handle:number)=>{timers.delete(handle);},fetchLive:async()=>{await gate;return projection;},paintLive:()=>{}};
+  createContext(context);runInContext(poll+schedule,context);
+  context.scheduleLive();assert.equal(timers.size,1);
+  const pending=context.pollLive();assert.equal(context.liveBusy,true);
+  const timerCountDuringManualPoll=timers.size;
+  context.pairingRequired=true;context.livePoll={};context.live=undefined;
+  release();await pending;
+  assert.equal(timerCountDuringManualPoll,0,'manual refresh owns cancellation of the pending poll');
+  assert.equal(timers.size,0,'logout must leave no lost Live timer');
+  assert.equal(context.liveTimer,undefined);assert.equal(context.liveBusy,false);
+});

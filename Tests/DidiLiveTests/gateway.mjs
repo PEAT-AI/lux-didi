@@ -25,6 +25,8 @@ const upstreamFrames = [];
 const upstreamConnections = [];
 const holdMode = focused === '--native-listening-hold';
 const clientClosures = [];
+const clientSockets = [];
+const observations = [];
 let audioAtInjectionMarker = 0;
 let audioAtStop = 0;
 let activeChild;
@@ -82,7 +84,15 @@ try {
     return (await response.json()).data;
   }
   const status = await json('/api/v1/live/status');
+  host.service.server.prependListener('request', req => {
+    if (holdMode && req.url === '/api/v1/status' && req.headers['x-synthetic-observation'] === 'hold') {
+      observations.push({ clientCount: clientSockets.length, closedCount: clientClosures.length,
+        open: clientSockets.length === 1 && !clientSockets[0].destroyed,
+        upstreamOpen: upstreamConnections.length === 1 && upstreamConnections[0].readyState === WebSocket.OPEN });
+    }
+  });
   host.service.server.prependListener('upgrade', (req, socket) => {
+    clientSockets.push(socket);
     const started = performance.now();
     socket.once('close', () => clientClosures.push({ elapsedMs: performance.now() - started }));
     const names = req.rawHeaders.filter((_value, index) => index % 2 === 0).map(name => name.toLowerCase());
@@ -123,13 +133,14 @@ try {
       const audio = upstreamFrames.filter(frame => frame.realtimeInput?.audio).map(frame => frame.realtimeInput.audio);
       const sizes = audio.map(frame => Buffer.from(frame.data, 'base64').length);
       const nonzero = audio.every(frame => Buffer.from(frame.data, 'base64').some(byte => byte !== 0));
-      console.log(JSON.stringify({ event: 'native-listening-hold', childPID: child.pid, code, signal, injected, audioAtInjectionMarker, frames: audio.length, sizes, nonzero, audioAtStop, clientClosures, opens, credentialReads, trapRequests }));
+      console.log(JSON.stringify({ event: 'native-listening-hold', childPID: child.pid, code, signal, injected, audioAtInjectionMarker, frames: audio.length, sizes, nonzero, audioAtStop, observations, clientClosures, opens, credentialReads, trapRequests }));
       assert.ok(audio.length >= 1);
       assert.ok(sizes.every(size => size === 640)); assert.equal(nonzero, true);
       assert.ok(audio.every(frame => frame.mimeType === 'audio/pcm;rate=16000'));
       assert.equal(audio.length, audioAtStop, 'stopped buffer emitted no additional PCM');
       assert.equal(opens, 1); assert.equal(credentialReads, 1);
       assert.match(output, /stoppedBufferFence=true capture=false engine=false/);
+      assert.deepEqual(observations, [{ clientCount: 1, closedCount: 0, open: true, upstreamOpen: true }], 'actual native upgraded socket is open before Stop');
       assert.equal(code, 0, 'actual persistent native session remains healthy beyond fifteen seconds');
       assert.match(output, /NATIVE LISTENING HOLD PASS/);
     } else assert.equal(code, focused === '--native-lifetime-retained' ? 1 : 0);

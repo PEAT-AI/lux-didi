@@ -5,6 +5,7 @@ import Foundation
 @MainActor private final class LifetimeAuthority {
     let companion: CompanionClient
     var refuseSocket = true
+    var observation = false
     init(_ fixture: Fixture) throws {
         companion = CompanionClient(descriptor: try ServiceDescriptor(origin: fixture.origin,
             credentialService: "synthetic", credentialAccount: "fixture"),
@@ -14,6 +15,9 @@ import Foundation
         var request = try companion.authenticatedRequestBuilder().request(url, epoch)
         if refuseSocket && url.path.hasSuffix("/audio") {
             request.setValue("synthetic=refused", forHTTPHeaderField: "Cookie")
+        }
+        if observation && url.path == "/api/v1/status" {
+            request.setValue("hold", forHTTPHeaderField: "X-Synthetic-Observation")
         }
         return request
     }
@@ -111,7 +115,10 @@ private func observeUntil(_ condition: @escaping @Sendable () async -> Bool) asy
                 let captureActive = device.isCapturing
                 let enginePresent = device.hasEngine
                 let elapsed = started.duration(to: .now)
-                print("NATIVE LISTENING OBSERVED coordinator=\(state) native=\(conversation.state.rawValue) capture=\(captureActive) engine=\(enginePresent) elapsed=\(elapsed)")
+                try FileHandle.standardOutput.write(contentsOf: Data("NATIVE LISTENING OBSERVED coordinator=\(state) native=\(conversation.state.rawValue) capture=\(captureActive) engine=\(enginePresent) elapsed=\(elapsed)\n".utf8))
+                authority.observation = true
+                _ = try await NativeLiveOperatorHTTP(authority: (origin, requests)).beginIntent()
+                authority.observation = false
                 conversation.stopCapture()
                 capture!.append(buffer)
                 let stoppedFence = capture!.next().0 == nil && !device.isCapturing && !device.hasEngine

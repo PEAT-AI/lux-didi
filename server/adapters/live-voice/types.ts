@@ -19,7 +19,7 @@ export interface GeminiLiveVoiceOptions {
 }
 export interface LiveToolCall { id: string; name: string; args: JsonObject }
 export interface LiveToolResponse { id: string; name: string; response: JsonObject }
-export const liveVoiceTimerDefaults = Object.freeze({ handshakeMs: 15_000, idleMs: 60_000, sessionMs: 900_000, closeMs: 1000 });
+export const liveVoiceTimerDefaults = Object.freeze({ handshakeMs: 15_000, idleMs: 300_000, sessionMs: 3_600_000, closeMs: 1000 });
 export interface LiveVoiceRequest {
   resumptionHandle?: string;
   opening?: 'user_first' | 'model_first';

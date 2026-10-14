@@ -43,10 +43,8 @@ function decodeSseResponse(bytes: Uint8Array, requestId: unknown): Uint8Array {
 }
 interface Operation { scope: ResultScope; signal: AbortSignal; timeoutMs: number; dispatched: boolean; bytes?: Uint8Array; requestId?: string | number; explicitErrorCode?: number; explicitError?: unknown; receivedResult?: boolean }
 interface Session { client: Client; config: EndpointConfig; operation?: Operation; child?: ChildExit; pipeClosed?: boolean; dead?: boolean }
-/** Two respawns per connector per session; the next child death suspends with a logged stage. */
+/** Two respawns per connector per session; the third child death suspends with a logged stage. */
 const MAX_RESPAWNS = 2;
-/** Transport-dead stages: the connector session is suspended and retired after these. */
-const DEAD_TRANSPORT_STAGES: ReadonlySet<string> = new Set(['child_exited', 'pipe_closed', 'sdk_protocol_rejected']);
 /**
  * One closed, privacy-safe stage for a dispatched call failure; never an SDK or remote message.
  * External cancellation and the local deadline are distinguished before the SDK's own errors.
@@ -179,7 +177,7 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
   const callTimeouts = new Map(options.callTimeoutMsByEndpoint);
   for (const timeout of callTimeouts.values()) if (!Number.isSafeInteger(timeout) || timeout <= 0) throw new Error('invalid-adapter-budget');
   const sessions = new Map<string, Session>(); const busy = new Set<string>();
-  const respawns = new Map<string, number>(); const created = new Set<string>();
+  const deaths = new Map<string, number>();
   const suspended = new Set<string>(); const waiters = new Map<string, Set<() => void>>();
   const schemaValidator = new AjvJsonSchemaValidator();
   let closed = false;
@@ -191,20 +189,15 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
     const session = sessions.get(id); sessions.delete(id);
     if (session) await bounded(session.client.close(), AbortSignal.timeout(200)).catch(() => {});
   }
-  async function sessionFor(config: EndpointConfig, forCall = false): Promise<Session> {
+  async function sessionFor(config: EndpointConfig): Promise<Session> {
     const existing = sessions.get(config.id);
     if (existing && !existing.dead) return existing;
     if (existing) await retire(config.id);
-    if (forCall && created.has(config.id)) {
-      const next = (respawns.get(config.id) ?? 0) + 1;
-      if (next > MAX_RESPAWNS) throw new PolicyError('respawn-budget-exhausted');
-      respawns.set(config.id, next);
-    }
-    created.add(config.id);
     const client = new Client({ name: 'lux-didi-optional-mcp', version: '0.1.0' }, { enforceStrictCapabilities: true });
     const session: Session = { client, config };
-    // A dropped transport marks the session dead for respawn, never suspends the connector here.
-    client.onerror = () => { session.dead = true; }; // No remote error/header/body is logged.
+    // A dropped transport marks the session dead for respawn. A resource-budget breach is still fatal
+    // and suspends the connector; no remote error/header/body is ever logged.
+    client.onerror = (error: unknown) => { if (error instanceof PolicyError) suspend(config.id); else session.dead = true; };
     client.onclose = () => { session.dead = true; };
     client.setNotificationHandler('notifications/tools/list_changed', async () => { suspend(config.id); });
     const transport = isStdioEndpoint(config)
@@ -282,8 +275,8 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
       let session = sessions.get(request.endpointId);
       if (session?.dead) { await retire(request.endpointId); session = undefined; }
       if (!session) {
-        try { session = await sessionFor(config, true); }
-        catch { busy.delete(request.endpointId); return { state: 'refused', reason: 'respawn-exhausted' }; }
+        try { session = await sessionFor(config); }
+        catch { busy.delete(request.endpointId); return { state: 'refused', reason: 'discovery-required' }; }
       }
       const timeoutMs = callTimeouts.get(request.endpointId) ?? budgets.timeoutMs;
       const deadline = AbortSignal.timeout(timeoutMs);
@@ -308,10 +301,12 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
           // HTTP SDK cancellation aborts the request, rather than notifying. Use its
           // supported notification API with the SDK-owned id; never wait indefinitely.
           if (localSignal.aborted && operation.requestId !== undefined) await bounded(session.client.notification({ method: 'notifications/cancelled', params: { requestId: operation.requestId, reason: 'local cancellation' } }), AbortSignal.timeout(200)).catch(() => {});
-          // A dead transport is retired; the stdio child respawns on the next call until the budget is spent.
+          // A dead transport is retired; the stdio child respawns on the next call, up to two deaths.
           // A soft failure (timeout, cancellation, invalid_result) leaves the connector usable. Never retry this call.
-          if (DEAD_TRANSPORT_STAGES.has(stage)) {
-            if (stage === 'sdk_protocol_rejected' || (respawns.get(request.endpointId) ?? 0) >= MAX_RESPAWNS) suspend(request.endpointId);
+          if (stage === 'sdk_protocol_rejected') { suspend(request.endpointId); await retire(request.endpointId); }
+          else if (stage === 'child_exited' || stage === 'pipe_closed') {
+            const count = (deaths.get(request.endpointId) ?? 0) + 1; deaths.set(request.endpointId, count);
+            if (count > MAX_RESPAWNS) suspend(request.endpointId);
             await retire(request.endpointId);
           }
           return { state: 'unknown', reason: stage };

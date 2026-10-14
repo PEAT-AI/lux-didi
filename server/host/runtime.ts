@@ -5,6 +5,7 @@ import { ConfigError, readPrivate, validateRoot } from '../config/files.js';
 import { homedir, platform } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { lstat, mkdir, open, readFile, rename, rm } from 'node:fs/promises';
+import { lstatSync, readFileSync, rmSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { createDomainPort, domainMigrations } from '../domain/index.js';
 import { Outbox } from '../runtime/outbox.js';
@@ -98,6 +99,33 @@ async function seedProviderConfig(dataDir: string, effectiveDir: string, log: Ho
     } finally { await rm(temporary, { force: true }); }
   }
 }
+// A descriptor is authority only while it names a live host. Node can prove liveness, not
+// direct-child, so a descriptor naming a dead pid (or no readable host) is removed; the
+// native supervisor owns the direct-child proof.
+function descriptorPid(path: string): { pid?: number } | 'absent' {
+  try {
+    const info = lstatSync(path);
+    if (!info.isFile() || info.isSymbolicLink() || (process.getuid && info.uid !== process.getuid())) return 'absent';
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as { pid?: unknown };
+    return typeof parsed.pid === 'number' && Number.isInteger(parsed.pid) && parsed.pid > 0 ? { pid: parsed.pid } : {};
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'absent';
+    return {}; // Malformed or unreadable owner-only file: it cannot name a live host.
+  }
+}
+function rmDescriptorQuietly(path: string): void { try { rmSync(path, { force: true }); } catch { /* already gone */ } }
+function clearStaleDescriptor(path: string): void {
+  const found = descriptorPid(path);
+  if (found === 'absent' || found.pid === process.pid) return;
+  if (found.pid === undefined) { rmDescriptorQuietly(path); return; }
+  try { process.kill(found.pid, 0); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ESRCH') rmDescriptorQuietly(path); }
+}
+function removeOwnDescriptor(path: string): void {
+  const found = descriptorPid(path);
+  if (found !== 'absent' && found.pid === process.pid) rmDescriptorQuietly(path);
+}
+
 export async function startHost(config: HostConfig) {
   const dataDir = resolve(config.dataDir), webRoot = resolve(config.webRoot);
   const port = config.port ?? 8765;
@@ -108,8 +136,21 @@ export async function startHost(config: HostConfig) {
   const descriptorPath = resolve(config.descriptor ?? join(dataDir, 'host-runtime.json'));
   const descriptorRelative = relative(webRoot, descriptorPath);
   if (!descriptorPath.endsWith('.json') || (!isAbsolute(descriptorRelative) && descriptorRelative !== '..' && !descriptorRelative.startsWith(`..${sep}`))) throw new Error('Descriptor must be a JSON file outside the web build');
-  const domain = createDomainPort({ outbox: Outbox }); // No authorized device/target: reminders remain unbound.
+  // A crashed predecessor can leave a descriptor naming a dead host. Clear it before this
+  // start so a start that also fails leaves no stale descriptor behind.
+  clearStaleDescriptor(descriptorPath);
   const log = new HostLog(dataDir);
+  let exitLogged = false, exitSignal: NodeJS.Signals | undefined;
+  let startupStage = 'log';
+  const logExit = (stage: string, reason: 'close' | 'exit'): void => {
+    if (exitLogged) return;
+    exitLogged = true;
+    // Exit logging is best effort: the state directory may already be gone.
+    try { log.event({ event: 'host_exit', stage, reason, ...(exitSignal ? { signal: exitSignal } : { code: process.exitCode ?? 0 }) }); } catch { /* nothing durable to write */ }
+  };
+  for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => { exitSignal = signal; });
+  process.once('exit', () => { removeOwnDescriptor(descriptorPath); logExit(startupStage, 'exit'); });
+  const domain = createDomainPort({ outbox: Outbox }); // No authorized device/target: reminders remain unbound.
   let releaseCommit = 'unknown';
   // Installed service layout is fixed by build-macos-app.sh; source starts have no manifest.
   try {
@@ -130,8 +171,10 @@ export async function startHost(config: HostConfig) {
   log.event({ event: 'host_started', releaseCommit, configDir: configKind, endpoints });
   const stopDiagnostics = captureHostDiagnostics(log);
   let store: Store;
+  startupStage = 'store';
   try { store = new Store(dataDir, hostMigrations); } catch (error) { log.error(error); stopDiagnostics(); throw error; }
   try {
+    startupStage = 'owner';
     const owner = loadOwnerProfile({ ...(config.ownerProfilePath !== undefined ? { path: config.ownerProfilePath } : {}), ownerId: store.assistantId });
     if (owner.status === 'error') throw new ConfigError('invalid_profile');
     const providerConfigDir = resolve(config.configDir ?? join(dataDir, 'provider-config'));
@@ -160,13 +203,17 @@ export async function startHost(config: HostConfig) {
         .catch(() => console.error('diagnostics_unavailable'));
       return attachment;
     };
+    startupStage = 'listen';
     const service = await listenService({ store, domain, chat, live, modelStatus: status, ownerProfileStatus: { status: owner.status, displayName: owner.snapshot.displayName }, toolsStatus: () => mcp.status(), webRoot, port, ...(config.now ? { now: config.now } : {}) });
     try {
       const descriptor: RuntimeDescriptor = { schemaVersion: 1, origin: service.origin, authorityEpoch: store.authorityEpoch, assistantId: store.assistantId, pid: process.pid, startedAt: new Date().toISOString() };
       await publish(descriptorPath, descriptor); // Never use a stale descriptor as authority or carry bearer material.
+      startupStage = 'ready';
       let closed = false;
       return { store, chat, service, descriptor, descriptorPath, tools: liveTools, async close() {
         if (closed) return; closed = true;
+        logExit('ready', 'close');
+        removeOwnDescriptor(descriptorPath);
         chat.shutdown();
         try { await service.close(); await live.shutdown(); await mcp.close(); } finally { store.close(); stopDiagnostics(); }
       } };

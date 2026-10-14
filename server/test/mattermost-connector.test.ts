@@ -11,7 +11,7 @@ import { McpRegistry } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import type { EndpointConfig, McpPort } from '../adapters/mcp/port.js';
 import { createMattermostReader, MATTERMOST_AUTH_NEEDED, MATTERMOST_TOOLS } from '../connectors/index.js';
-import { mattermostToolStatus, projectMattermostResult, MATTERMOST_FIELD_CHARS } from '../tools/mattermost.js';
+import { mattermostToolStatus, projectMattermostResult } from '../tools/mattermost.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const child = join(here, 'fixtures', 'stdio-mattermost-child.mjs');
@@ -57,7 +57,7 @@ test('channel history projects Markdown with bounded fields and permalink source
   assert.match(projected.projection.text, /source: https:\/\/chat\.peat-cloud\.com\/team\/pl\/abcdef1234567890abcdefghij/);
 });
 
-test('a long message body is clipped to 600 characters per field', async t => {
+test('a long message body is kept in full (no per-field clip)', async t => {
   const f = setup('ok');
   t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
   const digest = await approve(f.adapter, f.registry);
@@ -67,8 +67,8 @@ test('a long message body is clipped to 600 characters per field', async t => {
   assert.equal(projected.ok, true);
   if (!projected.ok) return;
   const long = 'L'.repeat(700);
-  assert.ok(projected.projection.text.includes(`${long.slice(0, MATTERMOST_FIELD_CHARS)}...`), 'the bound must clip the long body to 600 characters');
-  assert.equal(projected.projection.text.includes(long), false, 'the unbounded body must never appear');
+  assert.ok(projected.projection.text.includes(long), 'the full message body must reach the model');
+  assert.equal(projected.projection.text.includes('[omitted:'), false, 'a body under the message bound is not cut');
 });
 
 test('only the read envelope is eligible; a granted writer refuses the whole call', async t => {

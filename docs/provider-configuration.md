@@ -79,8 +79,8 @@ owner sections (see `docs/prompt-composition.md`).
 The optional `limits` block carries per-profile timer overrides: `limits.sessionMs`
 (the longest single session) and `limits.idleMs` (silence before the session ends),
 both whole milliseconds. The effective profile determines the limits; an omitted
-key falls back to the built-in default (`sessionMs` 900000, 15 minutes, and
-`idleMs` 60000, 1 minute). A value outside 1 to 2147483647
+key falls back to the built-in default (`sessionMs` 3600000, 1 hour, and
+`idleMs` 300000, 5 minutes). A value outside 1 to 2147483647
 is a typed validation error.
 
 `<dataDir>/persona-overlay.json`, at most 16 KiB, is the optional private local

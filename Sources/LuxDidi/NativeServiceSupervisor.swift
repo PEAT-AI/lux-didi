@@ -37,10 +37,11 @@ enum NativeProbeFailure: String, Error {
     var onInvalidOutput: (() -> Void)?
     var isRunning: Bool { process.isRunning }
     var pid: Int32 { process.processIdentifier }
-    func launch(executable: URL, arguments: [String]) throws {
+    func launch(executable: URL, arguments: [String], launchId: String) throws {
         process.executableURL = executable; process.arguments = arguments
         // No inherited Node/loader/search-path/auth environment. Executable is explicit.
-        process.environment = ["HOME": NSHomeDirectory(), "TMPDIR": NSTemporaryDirectory(), "LANG": "en_US.UTF-8"]
+        // LUX_LAUNCH_ID is the one native launch id, handed to the host so both logs correlate.
+        process.environment = ["HOME": NSHomeDirectory(), "TMPDIR": NSTemporaryDirectory(), "LANG": "en_US.UTF-8", "LUX_LAUNCH_ID": launchId]
         process.standardInput = input; process.standardOutput = output; process.standardError = FileHandle.nullDevice
         for handle in [input.fileHandleForWriting, input.fileHandleForReading, output.fileHandleForReading, output.fileHandleForWriting] {
             guard fcntl(handle.fileDescriptor, F_SETFD, FD_CLOEXEC) != -1 else { throw NativeServiceError.invalidRuntime }
@@ -157,6 +158,8 @@ struct OwnedServiceConnection {
     private(set) var credentialValidated = false
     private(set) var lastStop: [String: Any]?
     var logDirectory: URL?
+    /// W10 B1: one launch id per native launch, shared with the host child and the native log lines.
+    var launchId: String = ProcessInfo.processInfo.environment["LUX_LAUNCH_ID"] ?? UUID().uuidString
     // W10 native host-lifecycle records, written by the supervisor because a dead host cannot log.
     private func appendLog(_ fields: [String: Any]) {
         guard let directory = logDirectory else { return }
@@ -167,7 +170,7 @@ struct OwnedServiceConnection {
         envelope["mono"] = ProcessInfo.processInfo.systemUptime * 1000
         envelope["level"] = "info"
         envelope["process"] = "native"
-        envelope["launchId"] = ProcessInfo.processInfo.environment["LUX_LAUNCH_ID"] ?? "unknown"
+        envelope["launchId"] = launchId
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             let file = directory.appendingPathComponent("native-live.log")
@@ -279,7 +282,7 @@ struct OwnedServiceConnection {
         var stage = "probe-launch"
 #endif
         do {
-            try probe.launch(executable: runtime.node, arguments: ["--input-type=module", "-e", "import {DatabaseSync} from 'node:sqlite'; const db=new DatabaseSync(':memory:'); db.close(); process.stdout.write(JSON.stringify({major:Number(process.versions.node.split('.')[0]),sqlite:true})+'\\n');"])
+            try probe.launch(executable: runtime.node, arguments: ["--input-type=module", "-e", "import {DatabaseSync} from 'node:sqlite'; const db=new DatabaseSync(':memory:'); db.close(); process.stdout.write(JSON.stringify({major:Number(process.versions.node.split('.')[0]),sqlite:true})+'\\n');"], launchId: launchId)
 #if COMPANION_TEST
             stage = "probe-first-frame"
 #endif
@@ -402,7 +405,7 @@ struct OwnedServiceConnection {
                 if let configDir = settings.configDir { hostArguments.append(contentsOf: ["--config-dir", configDir.path]) }
                 if let ownerProfilePath = settings.ownerProfilePath { hostArguments.append(contentsOf: ["--owner-profile", ownerProfilePath.path]) }
             }
-            try owned.launch(executable: runtime.node, arguments: hostArguments)
+            try owned.launch(executable: runtime.node, arguments: hostArguments, launchId: launchId)
             var start = try JSONSerialization.data(withJSONObject: ["type": "start", "schemaVersion": 1, "nonce": nonce])
             start.append(10); try owned.writeStart(start)
             lastStage = "ready-frame"

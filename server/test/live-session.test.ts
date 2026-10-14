@@ -1880,8 +1880,8 @@ test('W10: a failure before session acceptance correlates by attemptId', async t
   t.after(stop);
   const logPath = join(dir, 'logs', 'host.log');
   h.f.refuseUpgrades(500);
-  const session = h.owner.create({ idempotencyKey: 'a3', inputClass: 'ordinary' }, h.ctx);
-  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId, attemptId: 'attempt-a3' }, h.ctx);
+  const session = h.owner.create({ idempotencyKey: 'a3', inputClass: 'ordinary', attemptId: 'attempt-a3' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
   await untilLogged(logPath, 'live.session_terminal', 1);
   const lines = readFileSync(logPath, 'utf8').trim().split('\n').map(line => JSON.parse(line) as { event: string; attemptId?: string });
   const attempt = lines.find(entry => entry.event === 'live.attempt_start');

@@ -27,6 +27,8 @@ import Security
     @Published private(set) var connectionsError: String?
     private var checkingConnections = false
     private let liveLogsDirectory: URL?
+    /// W10 B1: one launch id per native launch, shared by the supervisor (host child env) and Live voice logs.
+    private let launchId = UUID().uuidString
     @Published var connecting = false
     @Published private(set) var serviceRestarting = false
     let voice = NativeVoice()
@@ -76,6 +78,7 @@ import Security
                     let owner = try NativeServiceSupervisor(runtime: runtime, proof: prepared, operatorSettings: operatorSettings)
                     supervisor = owner
                     owner.logDirectory = liveLogsDirectory
+                    owner.launchId = launchId
                     owner.onRestartStatus = { [weak self, weak owner] restarting in
                         self?.serviceRestarting = restarting
                         if !restarting, owner?.isRunning == false {
@@ -280,7 +283,7 @@ import Security
         let conversation = liveAuthorityOwner.ownerStart {
             NativeLiveConversation(authority: client.authenticatedRequestBuilder(), dictationIsCapturing: { [weak self] in
                 self?.voice.state.phase == .recording
-            }, pickupJobID: pickupJobID, logsDirectory: liveLogsDirectory)
+            }, pickupJobID: pickupJobID, logsDirectory: liveLogsDirectory, launchId: launchId)
         }
         conversation.start()
         orbLevels = NativeOrbLevelPublisher(device: conversation.device, web: shell?.webView)

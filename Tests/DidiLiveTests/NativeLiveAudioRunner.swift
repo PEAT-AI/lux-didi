@@ -108,8 +108,8 @@ final class DiagnosticLogHTTPFixture: URLProtocol, @unchecked Sendable {
             let nativeLine = try Data(contentsOf: file)
             let nativeRecord = try JSONSerialization.jsonObject(with: Data(nativeLine.dropLast())) as! [String: Any]
             let expectedKeys: Set<String> = error is NativeLiveAudioError && detail != nil
-                ? ["event", "failureClass", "code", "detail", "ts", "mono", "level", "process", "launchId"]
-                : ["event", "failureClass", "code", "ts", "mono", "level", "process", "launchId"]
+                ? ["event", "failureClass", "code", "detail", "ts", "mono", "level", "process", "launchId", "attemptId"]
+                : ["event", "failureClass", "code", "ts", "mono", "level", "process", "launchId", "attemptId"]
             try audioRequire(Set(nativeRecord.keys) == expectedKeys && nativeRecord["event"] as? String == "live_precreate_failed"
                 && nativeRecord["failureClass"] as? String == failureClass && nativeRecord["code"] as? String == code,
                 "native line has the exact typed JSONL schema plus timestamp")

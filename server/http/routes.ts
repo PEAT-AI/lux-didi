@@ -60,7 +60,8 @@ export function resolveRoute(method: string, url: URL, body?: Record<string, unk
     matched(['POST']); query(url, []);
     const input = body ? object(body) : {};
     if (body) {
-      fields(input, ['inputClass', 'pickupJobId'], ['inputClass']);
+      fields(input, ['inputClass', 'pickupJobId', 'attemptId'], ['inputClass']);
+      if (input['attemptId'] !== undefined && (typeof input['attemptId'] !== 'string' || !/^[A-Za-z0-9._:-]{1,128}$/.test(input['attemptId']))) bad('Invalid attemptId');
       if (input['pickupJobId'] !== undefined && (typeof input['pickupJobId'] !== 'string' || !/^[a-f0-9-]{36}$/.test(input['pickupJobId']))) bad('Invalid pickupJobId');
       if (!['ordinary', 'private', 'sensitive'].includes(String(input['inputClass']))) bad('Invalid inputClass');
     }

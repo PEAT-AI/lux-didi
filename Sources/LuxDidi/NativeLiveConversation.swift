@@ -53,6 +53,8 @@ enum State: String, CaseIterable {
     private var generation: UInt64 = 0
     private let logsDirectory: URL?
     private let launchId: String
+    private var attemptId: String?
+    private var liveAttemptSessionId: String?
     // W10: one canonical native envelope, fractional seconds and a monotonic clock.
     private static func logTimestamp(_ date: Date = Date()) -> String {
         let formatter = ISO8601DateFormatter()
@@ -67,9 +69,9 @@ enum State: String, CaseIterable {
     private var captureDiagnosticOwner: UInt64?
     var isMuted: Bool { muted }
     var isCapturing: Bool { state == .connecting || state == .pausedForInput || device.isCapturing }
-    init(authority: (origin: URL, request: NativeLiveRequestBuilder), dictationIsCapturing: @escaping () -> Bool, pickupJobID: String? = nil, logsDirectory: URL? = nil, audioDevice: NativeLiveAudioDevice? = nil) {
+    init(authority: (origin: URL, request: NativeLiveRequestBuilder), dictationIsCapturing: @escaping () -> Bool, pickupJobID: String? = nil, logsDirectory: URL? = nil, audioDevice: NativeLiveAudioDevice? = nil, launchId: String? = nil) {
         self.logsDirectory = logsDirectory
-        self.launchId = ProcessInfo.processInfo.environment["LUX_LAUNCH_ID"] ?? "unknown"
+        self.launchId = launchId ?? ProcessInfo.processInfo.environment["LUX_LAUNCH_ID"] ?? "unknown"
         self.http = NativeLiveOperatorHTTP(authority: authority, pickupJobID: pickupJobID)
         self.dictationIsCapturing = dictationIsCapturing
         let device = audioDevice ?? NativeLiveAudioDevice(); self.device = device
@@ -110,6 +112,9 @@ enum State: String, CaseIterable {
             failure = "Stop dictation before starting Live voice."; state = .failed; return
         }
         generation &+= 1; let token = generation
+        // W10 B2: allocate the attemptId before precreate/capture so a failure before acceptance still correlates.
+        let attempt = UUID().uuidString
+        attemptId = attempt; liveAttemptSessionId = nil
         failure = nil; state = .connecting; muted = false; speaking = false
         observer?.cancel()
         observer = Task { [weak self, coordinator] in
@@ -150,7 +155,7 @@ enum State: String, CaseIterable {
                 }
             }
         }
-        startTask = Task { [weak self, coordinator, http] in
+        startTask = Task { [weak self, coordinator, http, attempt] in
             do {
                 // Reset capture authority before a new explicit start.
                 guard let epoch = self?.device.captureEpoch else { return }
@@ -167,11 +172,12 @@ enum State: String, CaseIterable {
                 guard let self, self.generation == token else { return }
                 self.emitAudioConfig()
                 self.startAudioFlow()
-                let intent = try await http.beginIntent()
+                let intent = try await http.beginIntent(attemptId: attempt)
                 self.limits = http.limits
                 try Task.checkCancellation()
                 guard self.generation == token else { return }
                 await coordinator.begin(intent)
+                if let sessionID = await coordinator.sessionID { self.liveAttemptSessionId = sessionID }
             } catch {
                 guard let self, self.generation == token else { return }
                 self.stopAudioAndSummarize(); await coordinator.close()
@@ -194,6 +200,8 @@ enum State: String, CaseIterable {
         else if let audio = error as? NativeLiveAudioError { code = audio.rawValue }
         else { code = "connection_refused" }
         var fields: [String: Any] = ["event": "live_precreate_failed", "failureClass": error is NativeLiveAudioError ? "audio" : "service", "code": code]
+        // W10 B2: a failure before acceptance still carries an attemptId.
+        if attemptId == nil { attemptId = UUID().uuidString }
         if let audio = error as? NativeLiveAudioError, let detail = audio.diagnosticDetail { fields["detail"] = detail }
         appendLocalDiagnostic(fields)
         return diagnostic
@@ -206,6 +214,8 @@ enum State: String, CaseIterable {
         envelope["level"] = "info"
         envelope["process"] = "native"
         envelope["launchId"] = launchId
+        if let attemptId { envelope["attemptId"] = attemptId }
+        if let liveAttemptSessionId { envelope["liveSessionId"] = liveAttemptSessionId }
         do {
             try FileManager.default.createDirectory(at: logsDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             let file = logsDirectory.appendingPathComponent("native-live.log")

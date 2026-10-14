@@ -9,11 +9,12 @@ public struct LiveBeginIntent: Sendable, Equatable {
     public let voice: String
     public let profileIdentity: String
     public let inputClass: String
+    public let attemptId: String
     public init(origin: URL, assistantID: String, authorityEpoch: String, provider: String,
-                model: String, voice: String, profileIdentity: String, inputClass: String) {
+                model: String, voice: String, profileIdentity: String, inputClass: String, attemptId: String = "unknown") {
         self.origin = origin; self.assistantID = assistantID; self.authorityEpoch = authorityEpoch
         self.provider = provider; self.model = model; self.voice = voice
-        self.profileIdentity = profileIdentity; self.inputClass = inputClass
+        self.profileIdentity = profileIdentity; self.inputClass = inputClass; self.attemptId = attemptId
     }
 }
 

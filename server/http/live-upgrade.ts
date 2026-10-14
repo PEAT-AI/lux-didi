@@ -32,7 +32,7 @@ export interface LiveService {
   readonly maxIncomingBytes: number;
   readonly maxBufferedBytes: number;
   status(): LiveStatusPayload;
-  create(inputClass: DataClass, idempotencyKey: string, context: LiveContext): LiveSessionSnapshot;
+  create(inputClass: DataClass, idempotencyKey: string, context: LiveContext, attemptId?: string): LiveSessionSnapshot;
   snapshot(liveSessionId: string): LiveSessionSnapshot;
   journal(liveSessionId: string, cursor: number | undefined, limit: number | undefined): LiveFragmentPage;
   revoke(liveSessionId: string): void;

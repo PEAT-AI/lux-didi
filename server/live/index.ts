@@ -231,6 +231,8 @@ export class LiveSessionOwner {
   #expiryTimer: ReturnType<NonNullable<LiveOwnerConfig['schedule']>> | undefined;
   readonly #profileIdentity: string;
   readonly #active = new Map<string, ActiveSession>();
+  // W10 B2: attemptId supplied by native with the create request, kept until the session opens.
+  readonly #attempts = new Map<string, string>();
   #revision = 1;
   #invalidated = false;
   #providerMemory = new WeakMap<ActiveSession, Map<string, number>>();
@@ -360,6 +362,12 @@ export class LiveSessionOwner {
       return this.#snapshot(tx, tx.get('SELECT * FROM live_sessions WHERE live_session_id=?', [liveSessionId])!);
     });
     this.#armExpiry();
+    // W10 B2: native may have allocated the attemptId before precreate; record and log it at create.
+    const providedAttempt = typeof input.attemptId === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(input.attemptId) ? input.attemptId : undefined;
+    if (providedAttempt !== undefined && snapshot.lifecycle === 'accepted' && !this.#attempts.has(snapshot.liveSessionId)) {
+      this.#attempts.set(snapshot.liveSessionId, providedAttempt);
+      emitHostEvent('live.attempt_start', { attemptId: providedAttempt, liveSessionId: snapshot.liveSessionId });
+    }
     return snapshot;
   }
 
@@ -573,9 +581,12 @@ export class LiveSessionOwner {
 
   #open(liveSessionId: string, inputClass: DataClass, revision: number, acceptedPrompt: AcceptedPromptSnapshot, context: LiveContext, attemptId?: string): LiveAttachment {
     const abort = new AbortController();
-    // Native may allocate the attemptId before precreate; otherwise the host owns it.
-    const attempt = attemptId ?? randomUUID();
-    emitHostEvent('live.attempt_start', { attemptId: attempt, liveSessionId });
+    // Native allocates the attemptId before precreate and sends it with the create; else the host owns it.
+    const attempt = attemptId ?? this.#attempts.get(liveSessionId) ?? randomUUID();
+    if (!this.#attempts.has(liveSessionId)) {
+      this.#attempts.set(liveSessionId, attempt);
+      emitHostEvent('live.attempt_start', { attemptId: attempt, liveSessionId });
+    }
     const dataClasses = classes.filter(c => c === inputClass || acceptedPrompt.dataClasses.includes(c));
     let registry: readonly ToolDefinition[] = [], host: HostContext | undefined;
     if (this.#tools) {
@@ -624,7 +635,7 @@ export class LiveSessionOwner {
       if (handle.generation !== 0 || this.#settled(handle)) return;
       handle.ready = true;
       emitHostEvent('live.session_open', { attemptId: handle.attemptId, liveSessionId, generation: handle.generation });
-      emitHostEvent('audio.config', { attemptId: handle.attemptId, liveSessionId, generation: handle.generation, ...(this.#profile.language !== undefined ? { languageCode: this.#profile.language } : {}) });
+      emitHostEvent('audio.config', { attemptId: handle.attemptId, liveSessionId, generation: handle.generation, ...(this.#profile.language !== undefined ? { languageCode: this.#profile.language } : {}), voice: this.#profile.voice });
       emitHostEvent('live.state_change', { attemptId: handle.attemptId, liveSessionId, from: 'idle', to: 'listening' });
       const job = this.#jobs.forSession(liveSessionId);
       if (job) { job.delivered = true; this.#jobs.save(job); }
@@ -1030,6 +1041,7 @@ export class LiveSessionOwner {
     handle.terminal = true;
     handle.terminalOutcome = outcome;
     handle.diagnosticTerminalCode = 'code' in outcome ? outcome.code : outcome.state;
+    this.#attempts.delete(handle.liveSessionId);
     emitHostEvent('live.session_terminal', { attemptId: handle.attemptId, liveSessionId: handle.liveSessionId, generation: handle.generation, code: handle.diagnosticTerminalCode });
     handle.sessionTimer?.cancel(); handle.idleTimer?.cancel(); handle.audioFlowTimer?.cancel();
     handle.session.close();

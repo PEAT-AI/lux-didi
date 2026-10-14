@@ -4,7 +4,7 @@
 // argv[2] = mode (ok | hang-call | exit-on-call | signal-on-call | close-pipe-on-call | invalid-result | malformed | silent | crash)
 // argv[3] = optional pid file; argv[4] = tools/call payload (default 'stdio-pong').
 // When argv[3] is given the child also dumps its resolved environment to "<pid>.env".
-import { closeSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, writeFileSync } from 'node:fs';
 import { Server } from '@modelcontextprotocol/server';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 
@@ -47,6 +47,8 @@ if (mode === 'invalid-result') {
     if (mode === 'hang-first-call') { calls += 1; return calls === 1 ? new Promise(() => {}) : { content: [{ type: 'text', text: payload }] }; }
     if (mode === 'slow-call') return new Promise(resolve => setTimeout(() => resolve({ content: [{ type: 'text', text: payload }] }), 5400));
     if (mode === 'exit-on-call') process.exit(7);
+    // Crash only the first child's first call; a respawned child sees the marker and serves.
+    if (mode === 'exit-once') { if (!existsSync(`${pidFile}.exited`)) { writeFileSync(`${pidFile}.exited`, '1'); process.exit(7); } return { content: [{ type: 'text', text: payload }] }; }
     if (mode === 'signal-on-call') process.kill(process.pid, 'SIGKILL');
     // Close stdout but stay alive: a pipe closure, not a child exit.
     if (mode === 'close-pipe-on-call') { setInterval(() => {}, 1000); closeSync(1); return new Promise(() => {}); }

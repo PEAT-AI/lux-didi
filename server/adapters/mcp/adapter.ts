@@ -42,7 +42,9 @@ function decodeSseResponse(bytes: Uint8Array, requestId: unknown): Uint8Array {
   throw new PolicyError('sdk_protocol_rejected');
 }
 interface Operation { scope: ResultScope; signal: AbortSignal; timeoutMs: number; dispatched: boolean; bytes?: Uint8Array; requestId?: string | number; explicitErrorCode?: number; explicitError?: unknown; receivedResult?: boolean }
-interface Session { client: Client; config: EndpointConfig; operation?: Operation; child?: ChildExit; pipeClosed?: boolean }
+interface Session { client: Client; config: EndpointConfig; operation?: Operation; child?: ChildExit; pipeClosed?: boolean; dead?: boolean }
+/** Two respawns per connector per session; the next child death suspends with a logged stage. */
+const MAX_RESPAWNS = 2;
 /** Transport-dead stages: the connector session is suspended and retired after these. */
 const DEAD_TRANSPORT_STAGES: ReadonlySet<string> = new Set(['child_exited', 'pipe_closed', 'sdk_protocol_rejected']);
 /**
@@ -177,6 +179,7 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
   const callTimeouts = new Map(options.callTimeoutMsByEndpoint);
   for (const timeout of callTimeouts.values()) if (!Number.isSafeInteger(timeout) || timeout <= 0) throw new Error('invalid-adapter-budget');
   const sessions = new Map<string, Session>(); const busy = new Set<string>();
+  const respawns = new Map<string, number>(); const created = new Set<string>();
   const suspended = new Set<string>(); const waiters = new Map<string, Set<() => void>>();
   const schemaValidator = new AjvJsonSchemaValidator();
   let closed = false;
@@ -188,12 +191,21 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
     const session = sessions.get(id); sessions.delete(id);
     if (session) await bounded(session.client.close(), AbortSignal.timeout(200)).catch(() => {});
   }
-  async function sessionFor(config: EndpointConfig): Promise<Session> {
-    const existing = sessions.get(config.id); if (existing) return existing;
+  async function sessionFor(config: EndpointConfig, forCall = false): Promise<Session> {
+    const existing = sessions.get(config.id);
+    if (existing && !existing.dead) return existing;
+    if (existing) await retire(config.id);
+    if (forCall && created.has(config.id)) {
+      const next = (respawns.get(config.id) ?? 0) + 1;
+      if (next > MAX_RESPAWNS) throw new PolicyError('respawn-budget-exhausted');
+      respawns.set(config.id, next);
+    }
+    created.add(config.id);
     const client = new Client({ name: 'lux-didi-optional-mcp', version: '0.1.0' }, { enforceStrictCapabilities: true });
     const session: Session = { client, config };
-    client.onerror = () => { suspend(config.id); }; // No remote error/header/body is logged.
-    client.onclose = () => { suspend(config.id); };
+    // A dropped transport marks the session dead for respawn, never suspends the connector here.
+    client.onerror = () => { session.dead = true; }; // No remote error/header/body is logged.
+    client.onclose = () => { session.dead = true; };
     client.setNotificationHandler('notifications/tools/list_changed', async () => { suspend(config.id); });
     const transport = isStdioEndpoint(config)
       ? new StdioClientTransport({ command: config.command, args: [...config.args], ...(config.env ? { env: { ...config.env } } : {}), stderr: 'pipe' })
@@ -265,9 +277,14 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
       if (closed || busy.has(request.endpointId) || signal?.aborted) return { state: 'refused', reason: closed ? 'adapter-closed' : signal?.aborted ? 'cancelled-before-dispatch' : 'endpoint-busy' };
       let scope: ResultScope;
       try { scope = options.registry.authorize(request); } catch { return { state: 'refused', reason: 'local-read-grant-refused' }; }
-      const session = sessions.get(request.endpointId);
-      if (!session) return { state: 'refused', reason: 'discovery-required' };
+      const config = options.registry.endpoint(request.endpointId);
       busy.add(request.endpointId);
+      let session = sessions.get(request.endpointId);
+      if (session?.dead) { await retire(request.endpointId); session = undefined; }
+      if (!session) {
+        try { session = await sessionFor(config, true); }
+        catch { busy.delete(request.endpointId); return { state: 'refused', reason: 'respawn-exhausted' }; }
+      }
       const timeoutMs = callTimeouts.get(request.endpointId) ?? budgets.timeoutMs;
       const deadline = AbortSignal.timeout(timeoutMs);
       const localSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
@@ -291,9 +308,12 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
           // HTTP SDK cancellation aborts the request, rather than notifying. Use its
           // supported notification API with the SDK-owned id; never wait indefinitely.
           if (localSignal.aborted && operation.requestId !== undefined) await bounded(session.client.notification({ method: 'notifications/cancelled', params: { requestId: operation.requestId, reason: 'local cancellation' } }), AbortSignal.timeout(200)).catch(() => {});
-          // A dead transport is suspended and retired for the session; timeout, cancellation and
-          // invalid_result fail this call only and leave the connector usable. Never retry a dispatched call.
-          if (DEAD_TRANSPORT_STAGES.has(stage)) { suspend(request.endpointId); await retire(request.endpointId); }
+          // A dead transport is retired; the stdio child respawns on the next call until the budget is spent.
+          // A soft failure (timeout, cancellation, invalid_result) leaves the connector usable. Never retry this call.
+          if (DEAD_TRANSPORT_STAGES.has(stage)) {
+            if (stage === 'sdk_protocol_rejected' || (respawns.get(request.endpointId) ?? 0) >= MAX_RESPAWNS) suspend(request.endpointId);
+            await retire(request.endpointId);
+          }
           return { state: 'unknown', reason: stage };
         }
         return { state: 'refused', reason: error instanceof PolicyError ? error.reason : 'pre-dispatch-refused' };

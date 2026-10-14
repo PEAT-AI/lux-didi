@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import * as memory from '../domain/memory.js';
 import * as labels from '../domain/labels.js';
 import { resolveLiveMemory } from '../host/live.js';
+import { safeEvent } from '../host/log.js';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
@@ -1584,6 +1585,23 @@ async function transcription(output: AsyncIterator<import('../live/types.js').Li
   }
 }
 
+
+test('the exact live diagnostics object the owner emits is accepted by the host log whitelist', async t => {
+  const lines: string[] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => {
+    if (typeof args[0] === 'string' && args[0].includes('live_session_diagnostics')) lines.push(args[0]);
+  });
+  const h = await harness(t);
+  const { attachment } = await attached(h, 'diagnostics-whitelist');
+  attachment.close(); await attachment.done;
+  for (let attempt = 0; attempt < 20 && lines.length === 0; attempt++) await tick();
+  assert.equal(lines.length, 1);
+  const emitted = JSON.parse(lines[0]!) as Record<string, unknown>;
+  assert.equal(emitted.event, 'live_session_diagnostics');
+  const accepted = safeEvent(emitted);
+  assert.ok(accepted, 'the host log whitelist accepts the exact emitted diagnostics object, never silently dropping it');
+  assert.equal(accepted.terminalCode, emitted.terminalCode);
+});
 
 test('queued PCM is dropped at the cut and capture during rebuilding is never replayed', async t => {
   const diagnosticLines: string[] = [];

@@ -80,8 +80,10 @@ export async function composeMcpRuntime(options: {
   const { store, ownerId, configDir } = options; const now = options.now ?? Date.now;
   const registry = new McpRegistry();
   const selection = loadMcpEndpoints({ configDir });
+  // One rule: every configured read connector gets the longer call deadline, so a real hybrid
+  // archive search cannot hit the five-second default. Connect and discovery stay on budgets.timeoutMs.
   const callTimeoutMsByEndpoint = new Map(selection.state === 'configured'
-    ? selection.catalog.endpoints.filter(entry => entry.connector === 'google').map(entry => [entry.id, 30000] as const) : []);
+    ? selection.catalog.endpoints.map(entry => [entry.id, 30000] as const) : []);
   const port = createMcpAdapter({ registry, store: new MemoryResultStore(), callTimeoutMsByEndpoint, resolveCredential: async reference => readMcpCredential(configDir, reference) });
   const reports = new Map<string, McpEndpointReport>();
   const reportToolStatus = (connectionId: string, status: { state: 'configured'; reason: string } | null): void => {

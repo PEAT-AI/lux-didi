@@ -569,6 +569,13 @@ test('a thrown MCP transport failure is logged without exception payload and rem
   assert.deepEqual(events, [{ event: 'tool_failure', code: 'timeout', tool: 'search_knowledge', connector: 'lux-knowledge', errorClass: 'Error', messageHead: 'timeout' }]);
   assert(!JSON.stringify(events).includes('synthetic-private-payload'));
 });
+test('an oversize unknown outcome is logged as invalid_result, never a generic transport code', async t => {
+  const events: ToolFailureEvent[] = []; const f = await fixture(t, { log: event => events.push(event) });
+  t.mock.method(f.port, 'call', async () => ({ state: 'unknown', reason: 'response-oversize' }));
+  const outcome = await f.run({ generate: async () => modelResult('search_knowledge') });
+  assert.equal(outcome.status, 'uncertain');
+  assert.deepEqual(events, [{ event: 'tool_failure', code: 'invalid_result', tool: 'search_knowledge', connector: 'lux-knowledge', errorClass: 'Error', messageHead: 'invalid_result' }]);
+});
 test('a connector-rejected decoded content shape is logged and returned with invalid_result', async t => {
   const events: ToolFailureEvent[] = []; const f = await fixture(t, { log: event => events.push(event), result: { content: [{ type: 'text', text: 'synthetic', annotations: { priority: 0.5 } }] } });
   const seen: ModelRequest[] = [];

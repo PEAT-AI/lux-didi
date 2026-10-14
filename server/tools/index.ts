@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
-import type { DataClass, HostContext, JsonObject, ToolCallIntent, ToolCallRefusal, ToolDefinition, ToolResultBinding, ToolResultGate, ToolResultRef } from '../adapters/model/types.js';
+import type { DataClass, HostContext, JsonObject, ToolCallIntent, ToolCallRefusal, ToolDefinition, ToolFailureCode, ToolResultBinding, ToolResultGate, ToolResultRef } from '../adapters/model/types.js';
 import { isMcpFailureStage, isToolFailureCode } from '../adapters/model/types.js';
 import { validateEndpointUrl, validateApprovedStdioEnv } from '../adapters/mcp/registry.js';
 import { endpointBinding } from '../adapters/mcp/port.js';
@@ -13,6 +13,11 @@ export { toolsMigrations } from './schema.js';
 export type * from './types.js';
 
 const ownedStores = new WeakSet<object>();
+/** One closed stage for a dispatched call's unknown outcome: a stage itself, else the policy reason's closest stage. */
+function dispatchedFailureCode(reason: string): ToolFailureCode {
+  if (isMcpFailureStage(reason)) return reason;
+  return reason === 'response-oversize' ? 'invalid_result' : 'sdk_protocol_rejected';
+}
 const transactionDefinitions = new WeakMap<ToolsOwner, (runId: string, tx?: Transaction) => ToolDefinition[]>();
 const ownerBindings = new WeakMap<object, Pick<ToolsOwnerOptions, 'store' | 'registry' | 'ownerId'>>();
 /** Factory identity check: no second owner, port or registry may substitute for canonical authority. */
@@ -380,7 +385,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
               }
               if (context.signal.aborted) return { status: 'unknown' };
               if (evidence.state === 'unknown') {
-                const code = isMcpFailureStage(evidence.reason) ? evidence.reason : 'sdk_protocol_rejected';
+                const code = dispatchedFailureCode(evidence.reason);
                 options.log?.({ event: 'tool_failure', code, tool: name, connector: p.connector, errorClass: 'Error', messageHead: code });
                 return { status: 'unknown', code };
               }

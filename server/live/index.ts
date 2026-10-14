@@ -77,11 +77,6 @@ function journalKind(type: string): JournalKind | null { return (persistedKinds 
 // Wire-38: barge-in sends serverContent.interrupted, never toolCallCancellation, and a late
 // toolResponse is accepted silently. A batch dispatched before that interruption is answered
 // once, marked after_barge_in so the UI can show why the answer may not match the pending turn.
-function afterBargeIn(projection: LiveToolProjection): LiveToolProjection {
-  const marked: { code?: LiveToolProjection['code'] | 'after_barge_in' } = { ...projection };
-  marked.code = 'after_barge_in';
-  return marked as LiveToolProjection;
-}
 function markerOf(event: LiveVoiceEvent, kind: JournalKind, journalSequence: number): LivePublicMarker {
   return {
     kind, sequence: event.sequence, journalSequence,
@@ -707,7 +702,6 @@ export class LiveSessionOwner {
         adapterGenerations: values.length, ownerAudioCalls: handle.ownerAudioCalls, ownerAudioBytes: handle.ownerAudioBytes,
         ownerRebuildingDropCalls: handle.ownerRebuildingDropCalls, ownerRebuildingDropBytes: handle.ownerRebuildingDropBytes,
         adapterAudioCalls: sum('audioCalls'), adapterAudioBytes: sum('audioBytes'),
-        pendingToolDropCalls: sum('pendingToolDropCalls'), pendingToolDropBytes: sum('pendingToolDropBytes'),
         drainingDropCalls: sum('drainingDropCalls'), drainingDropBytes: sum('drainingDropBytes'),
         localWriteEnqueuedCalls: sum('localWriteEnqueuedCalls'), localWriteEnqueuedPCMBytes: sum('localWriteEnqueuedPCMBytes'),
         localWriteCallbackSuccessCalls: sum('localWriteCallbackSuccessCalls'), localWriteCallbackSuccessPCMBytes: sum('localWriteCallbackSuccessPCMBytes'),
@@ -928,7 +922,7 @@ export class LiveSessionOwner {
     if ((this.#settled(handle) || generation !== handle.generation)) { retainUndelivered(); return; }
     for (const [index, projection] of projections.entries()) {
       const id = event.calls[index]!.id;
-      if (handle.pendingCallIds.has(id)) publish('toolResult', handle.bargeInCallIds.has(id) ? afterBargeIn(projection) : projection);
+      if (handle.pendingCallIds.has(id)) publish('toolResult', handle.bargeInCallIds.has(id) ? { ...projection, code: 'after_barge_in' } : projection);
     }
     responses = responses.filter(response => handle.pendingCallIds.has(response.id));
     if (!(this.#settled(handle) || generation !== handle.generation)) {

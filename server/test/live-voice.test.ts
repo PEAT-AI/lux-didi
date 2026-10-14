@@ -140,7 +140,7 @@ test('wire setup/history snapshots, readiness, PCM and three independent output 
   assert.equal(f.attempts, 1); assert.equal(f.frames.length, 4);
   assert.deepEqual(session.diagnostics?.(), {
     audioCalls: 1, audioBytes: pcm.byteLength,
-    pendingToolDropCalls: 0, pendingToolDropBytes: 0, drainingDropCalls: 1, drainingDropBytes: pcm.byteLength,
+    drainingDropCalls: 1, drainingDropBytes: pcm.byteLength,
     localWriteEnqueuedCalls: 1, localWriteEnqueuedPCMBytes: pcm.byteLength,
     localWriteCallbackSuccessCalls: 1, localWriteCallbackSuccessPCMBytes: pcm.byteLength,
     localWriteCallbackErrorCalls: 0, localWriteCallbackErrorPCMBytes: 0,
@@ -445,6 +445,11 @@ test('microphone audio during a pending blocking call is forwarded live and byte
   await f.frame(1);
   const setup = (f.frames[0] as { setup: Record<string, any> }).setup;
   assert.deepEqual(setup.tools, [{ functionDeclarations: [{ name: 'search_knowledge', description: 'Search', parameters: { type: 'OBJECT' } }] }]);
+  assert.equal(setup.generationConfig.speechConfig.languageCode, 'ar-XA');
+  assert.deepEqual(setup.generationConfig.thinkingConfig, { thinkingLevel: 'minimal' });
+  assert.equal(setup.historyConfig, undefined);
+  assert.deepEqual(setup.contextWindowCompression, { slidingWindow: { targetTokens: 32000 } });
+  assert.deepEqual(setup.realtimeInputConfig, { automaticActivityDetection: { startOfSpeechSensitivity: 'START_SENSITIVITY_LOW' } });
   f.send({ setupComplete: {} }); await session.ready;
   assert.equal((await events.next()).value?.type, 'ready');
   f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x' } }, { id: 'c2', name: 'search_knowledge', args: { query: 'y' } }] } });
@@ -460,7 +465,6 @@ test('microphone audio during a pending blocking call is forwarded live and byte
   assert.deepEqual(f.frames[1], { realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: Buffer.from(first).toString('base64') } } }, 'first pending frame reaches the provider');
   assert.deepEqual(f.frames[2], { realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: Buffer.from(second).toString('base64') } } }, 'second pending frame follows byte-exact');
   assert.equal(f.frames.some(frame => 'toolResponse' in (frame as object)), false, 'the batch is still unanswered');
-  assert.equal(session.droppedAudioFrames, 0);
   session.sendToolResponse({ responses: [{ id: 'c1', name: 'search_knowledge', response: { markdown: 'one' } }, { id: 'c2', name: 'search_knowledge', response: { markdown: 'two' } }] });
   await f.frame(4);
   assert.deepEqual(f.frames[3], { toolResponse: { functionResponses: [{ id: 'c1', name: 'search_knowledge', response: { markdown: 'one' } }, { id: 'c2', name: 'search_knowledge', response: { markdown: 'two' } }] } }, 'one response frame answers both ids');
@@ -492,7 +496,7 @@ test('3.8 Live omits thinking config and cancellation releases an unanswered bat
   assert.equal((await events.next()).value?.type, 'modelTurnStarted');
   assert.equal((await events.next()).value?.type, 'toolCall');
   assert.throws(() => session.sendToolResponse({ responses: [{ id: 'one', name: 'test', response: {} }] }), code('invalid_request'));
-  session.sendAudio({ pcm, dataClass: 'ordinary' }); assert.equal(session.droppedAudioFrames, 0);
+  session.sendAudio({ pcm, dataClass: 'ordinary' });
   f.send({ serverContent: { modelTurn: { parts: [audio()] } } });
   assert.equal((await events.next()).value?.type, 'audio', 'provider output remains admitted while a tool batch is pending');
   assert.equal((await events.next()).value?.type, 'modelTurnStarted');

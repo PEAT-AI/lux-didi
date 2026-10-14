@@ -135,10 +135,9 @@ class Session implements LiveVoiceSession {
   private pendingCalls: LiveToolCall[] = [];
   private informationalKeys = new Set<string>();
   unknownTopLevelKeys = 0;
-  droppedAudioFrames = 0;
   private initialTurnComplete = false;
   private readonly diagnostic = {
-    audioCalls: 0, audioBytes: 0, pendingToolDropCalls: 0, pendingToolDropBytes: 0, drainingDropCalls: 0, drainingDropBytes: 0,
+    audioCalls: 0, audioBytes: 0, drainingDropCalls: 0, drainingDropBytes: 0,
     localWriteEnqueuedCalls: 0, localWriteEnqueuedPCMBytes: 0, localWriteCallbackSuccessCalls: 0, localWriteCallbackSuccessPCMBytes: 0,
     localWriteCallbackErrorCalls: 0, localWriteCallbackErrorPCMBytes: 0, localWriteCallbackPendingCalls: 0, localWriteCallbackPendingPCMBytes: 0,
     inputTranscriptionEvents: 0, inputTranscriptionCharacters: 0, generationCompleteEvents: 0, turnCompleteEvents: 0,
@@ -449,7 +448,7 @@ class Session implements LiveVoiceSession {
   private finish(code: LiveVoiceErrorCode) {
     if (this.terminal) return;
     const status = code === 'closed' ? 'closed' : code === 'cancelled' ? 'cancelled' : code === 'deadline' ? 'deadline' : 'failed';
-    this.terminal = Object.freeze({ status, code, ...(this.recoverable || code === 'go_away' || code === 'transport_error' ? { recoverable: true } : {}), ...(this.droppedAudioFrames ? { droppedAudioFrames: this.droppedAudioFrames } : {}) });
+    this.terminal = Object.freeze({ status, code, ...(this.recoverable || code === 'go_away' || code === 'transport_error' ? { recoverable: true } : {}) });
     for (const timer of this.timers) clearTimeout(timer);
     this.timers.clear(); this.signal.removeEventListener('abort', this.onAbort);
     this.initial = undefined; this.secret = '';

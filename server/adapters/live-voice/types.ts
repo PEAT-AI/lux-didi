@@ -37,10 +37,12 @@ export type LiveVoiceErrorCode =
   | 'backpressure' | 'event_limit' | 'handshake_timeout' | 'idle_timeout' | 'session_timeout' | 'go_away';
 export interface LiveVoiceOutcome {
   recoverable?: boolean;
+  droppedAudioFrames?: number;
   status: 'closed' | 'cancelled' | 'deadline' | 'failed'; code: LiveVoiceErrorCode;
 }
 export interface LiveVoiceDiagnostics {
   audioCalls: number; audioBytes: number;
+  pendingToolDropCalls: number; pendingToolDropBytes: number;
   drainingDropCalls: number; drainingDropBytes: number;
   localWriteEnqueuedCalls: number; localWriteEnqueuedPCMBytes: number;
   localWriteCallbackSuccessCalls: number; localWriteCallbackSuccessPCMBytes: number;
@@ -56,7 +58,6 @@ export type LiveVoiceEvent = { sequence: number } & (
   | { type: 'modelTurnStarted' }
   | { type: 'toolCall'; calls: LiveToolCall[] }
   | { type: 'toolCallCancellation'; ids: string[] }
-  | { type: 'toolCallSuperseded'; ids: string[]; reason: 'speech' | 'buffer_full' }
   | { type: 'audio'; pcm: Uint8Array; mimeType: 'audio/pcm;rate=24000' }
   | { type: 'inputTranscription' | 'outputTranscription'; text: string; finished?: boolean }
   | { type: 'modelText'; text: string; thought: boolean }
@@ -71,6 +72,7 @@ export interface LiveVoiceSession {
   readonly ready: Promise<void>;
   readonly events: AsyncIterable<LiveVoiceEvent>;
   readonly done: Promise<LiveVoiceOutcome>;
+  readonly droppedAudioFrames: number;
   // Includes informational empty serverContent frames after readiness.
   readonly unknownTopLevelKeys?: number;
   readonly diagnostics?: () => Readonly<LiveVoiceDiagnostics>;

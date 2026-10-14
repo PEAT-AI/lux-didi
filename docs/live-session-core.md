@@ -158,13 +158,13 @@ handle, exhausted budget, third loss or failed resumed setup ends once through
 the normal settlement path with `resume_failed`. Session and idle timeouts are
 final, never recovery triggers.
 
-A pending tool batch is also superseded on the live connection when the adapter
-buffers sustained user speech or reaches its audio high-water mark (issue 210).
-The adapter sends one neutral terminal `toolResponse` for the still-outstanding
-ids and flushes the buffered audio in order; the owner moves those ids to a
-superseded set, so the late completion is journalled as a `toolResult` marker
-carrying status `error` with the set-aside notice and is never sent to the provider. The tool
-keeps running and its result stays available as an undelivered pending job.
+A barge-in during a pending tool batch is signalled by `serverContent.interrupted`, never
+by `toolCallCancellation` (wire-38, `wire-38-report.md`). The batch keeps running and its
+result is still sent once when it completes, because the server accepts a late
+toolResponse after an interruption silently. When an `interrupted` arrives after a batch
+was dispatched, the owner records that batch's `toolResult` projection with disposition
+`after_barge_in` so the UI can show the answer may not match the interrupted turn. The
+explicit provider cancellation path is unchanged.
 
 ### Live remember finalization
 

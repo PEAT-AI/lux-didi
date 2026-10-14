@@ -1226,7 +1226,7 @@ test('Live answers a slow tool batch truthfully, continues the turn, and retains
   assert.equal(h.owner.pendingJobs().length, 0, 'only explicit pickup consumes the pending result');
 });
 
-test('a superseded tool batch records the late completion and never answers the provider', async t => {
+test('a tool result after a barge-in interruption is sent once and recorded after_barge_in', async t => {
   let finish!: () => void;
   const slow = new Promise<void>(resolve => { finish = resolve; });
   const h = await harness(t, { tools: true, beforeTool: () => slow });
@@ -1235,23 +1235,21 @@ test('a superseded tool batch records the late completion and never answers the 
   assert.equal((await outputs.next()).value?.marker.kind, 'ready');
   h.f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
   while (!h.calls.length) await tick();
-  const loud = new Uint8Array(16_000); for (let i = 0; i < loud.length; i += 2) { loud[i] = 0xff; loud[i + 1] = 0x7f; }
-  attachment.sendAudio({ pcm: loud });
-  await h.f.frame(3);
-  const neutral = h.f.frames[1] as { toolResponse: { functionResponses: { id: string; response: { result?: string } }[] } };
-  assert.equal(neutral.toolResponse.functionResponses[0]!.id, 'c1');
-  assert.match(String(neutral.toolResponse.functionResponses[0]!.response.result), /set aside/);
-  assert.equal(h.owner.current().state, 'listening', 'supersession resumes the session while the tool keeps running');
+  h.f.send({ serverContent: { interrupted: true } });
+  await tick();
   finish(); await tick(); await tick();
-  assert.equal(h.f.frames.filter(frame => 'toolResponse' in (frame as object)).length, 1, 'late completion never answers the provider');
-  let superseded = false;
-  for (let i = 0; i < 20 && !superseded; i++) {
+  await h.f.frame(2);
+  const response = h.f.frames[1] as { toolResponse: { functionResponses: { id: string }[] } };
+  assert.deepEqual(response.toolResponse.functionResponses.map(item => item.id), ['c1'], 'the late result is sent exactly once');
+  assert.equal(h.f.frames.filter(frame => 'toolResponse' in (frame as object)).length, 1);
+  let marked = false;
+  for (let i = 0; i < 20 && !marked; i++) {
     const item = await outputs.next();
     if (item.done) break;
-    if (item.value.kind === 'marker' && item.value.marker.kind === 'toolResult' && item.value.marker.tool?.status === 'error' && /set aside/.test(item.value.marker.tool.markdown)) superseded = true;
+    if (item.value.kind === 'marker' && item.value.marker.kind === 'toolResult'
+      && (item.value.marker.tool as { code?: string } | undefined)?.code === 'after_barge_in') marked = true;
   }
-  assert.equal(superseded, true, 'the late completion is recorded with a superseded disposition');
-  assert.equal(new LiveToolJobs(h.store, () => NOW).pending()[0]!.delivered, false, 'the superseded result is retained for pickup');
+  assert.equal(marked, true, 'the batch disposition after_barge_in is recorded');
   h.owner.revoke(session.liveSessionId);
 });
 

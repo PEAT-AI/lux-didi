@@ -8,16 +8,6 @@ import { LiveVoiceError, liveVoiceTimerDefaults } from './types.js';
 const networkErrors = new Set(['ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ECONNREFUSED', 'ECONNABORTED', 'ENETUNREACH', 'EHOSTUNREACH', 'ENOTFOUND', 'EAI_AGAIN']);
 const ENDPOINT = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent';
 const FRESH_OPENING = 'Greet the person briefly to begin the conversation.';
-// While a blocking tool batch is unanswered the adapter buffers microphone PCM instead of
-// dropping it (issue 210). Ten seconds of 16 kHz mono 16-bit is the high-water mark; the
-// high-water mark or sustained local speech energy supersedes the batch, so the buffered
-// audio is forwarded in order behind one neutral terminal tool response.
-const AUDIO_BUFFER_HIGH_WATER_BYTES = 320_000; // 10 s * 16000 samples/s * 2 bytes
-const AUDIO_SPEECH_RMS_THRESHOLD = 1024; // Int16 RMS; a room's noise floor sits far below
-const AUDIO_SPEECH_MIN_BYTES = 16_000; // 0.5 s of sustained above-threshold energy
-const AUDIO_FLUSH_INTERVAL_MS = 20;
-const AUDIO_FLUSH_BYTES_PER_TICK = 640; // 20 ms of 16 kHz mono 16-bit, real-time pacing
-const AUDIO_SUPERSEDED_NOTICE = 'The user kept talking; this result was set aside and is available if they ask again.';
 const DEFAULTS: Readonly<LiveVoiceLimits> = Object.freeze({
   maxIncomingBytes: 1024 * 1024, maxOutgoingBytes: 1024 * 1024, maxBufferedBytes: 2 * 1024 * 1024,
   maxEventBytes: 1024 * 1024, maxEvents: 128, maxRequestBytes: 256 * 1024, maxHistoryTurns: 128,
@@ -143,15 +133,12 @@ class Session implements LiveVoiceSession {
   private closeTimer: ReturnType<typeof setTimeout> | undefined;
   private cleaned = false;
   private pendingCalls: LiveToolCall[] = [];
-  private bufferedAudio: Uint8Array[] = [];
-  private bufferedBytes = 0;
-  private flushTimer: ReturnType<typeof setTimeout> | undefined;
-  private speechRunBytes = 0;
   private informationalKeys = new Set<string>();
   unknownTopLevelKeys = 0;
+  droppedAudioFrames = 0;
   private initialTurnComplete = false;
   private readonly diagnostic = {
-    audioCalls: 0, audioBytes: 0, drainingDropCalls: 0, drainingDropBytes: 0,
+    audioCalls: 0, audioBytes: 0, pendingToolDropCalls: 0, pendingToolDropBytes: 0, drainingDropCalls: 0, drainingDropBytes: 0,
     localWriteEnqueuedCalls: 0, localWriteEnqueuedPCMBytes: 0, localWriteCallbackSuccessCalls: 0, localWriteCallbackSuccessPCMBytes: 0,
     localWriteCallbackErrorCalls: 0, localWriteCallbackErrorPCMBytes: 0, localWriteCallbackPendingCalls: 0, localWriteCallbackPendingPCMBytes: 0,
     inputTranscriptionEvents: 0, inputTranscriptionCharacters: 0, generationCompleteEvents: 0, turnCompleteEvents: 0,
@@ -276,7 +263,6 @@ class Session implements LiveVoiceSession {
         if (!object(message.toolCallCancellation) || !Array.isArray(message.toolCallCancellation.ids) || message.toolCallCancellation.ids.some(id => typeof id !== 'string')) fail('protocol_error');
         const ids = message.toolCallCancellation.ids as string[];
         this.pendingCalls = this.pendingCalls.filter(c => !ids.includes(c.id));
-        if (!this.pendingCalls.length) { this.speechRunBytes = 0; if (this.bufferedBytes) this.scheduleFlush(); }
         this.emit({ type: 'toolCallCancellation', ids });
       }
       if ('setupComplete' in message) {
@@ -433,7 +419,7 @@ class Session implements LiveVoiceSession {
     if (!object(input) || !Array.isArray(input.responses) || !this.pendingCalls.length || input.responses.length !== this.pendingCalls.length ||
       new Set(input.responses.map(r => r.id)).size !== input.responses.length || input.responses.some(r => !object(r) || !object(r.response) || !this.pendingCalls.some(c => c.id === r.id && c.name === r.name))) fail('invalid_request');
     const frame = JSON.stringify({ toolResponse: { functionResponses: input.responses } });
-    if (this.write(frame)) { this.pendingCalls = []; this.speechRunBytes = 0; if (this.bufferedBytes) this.scheduleFlush(); }
+    if (this.write(frame)) this.pendingCalls = [];
   }
   sendAudio(input: { pcm: Uint8Array; dataClass: DataClass }): void {
     if (this.draining) {
@@ -445,17 +431,8 @@ class Session implements LiveVoiceSession {
     if (!object(input) || !(input.pcm instanceof Uint8Array) || !input.pcm.byteLength || input.pcm.byteLength % 2) fail('invalid_audio');
     if (!classes.includes(input.dataClass) || !this.declared.includes(input.dataClass)) fail('route_denied');
     this.diagnostic.audioCalls++; this.diagnostic.audioBytes += input.pcm.byteLength;
-    if (this.pendingCalls.length) {
-      // Ordered, bounded FIFO: accepted bytes are never silently discarded.
-      const owned = Uint8Array.from(input.pcm);
-      this.bufferedAudio.push(owned); this.bufferedBytes += owned.byteLength;
-      this.detectSpeech(owned);
-      if (this.bufferedBytes >= AUDIO_BUFFER_HIGH_WATER_BYTES) this.supersede('buffer_full');
-      else if (this.speechRunBytes >= AUDIO_SPEECH_MIN_BYTES) this.supersede('speech');
-      return;
-    }
-    // A flush already in progress keeps its order: append rather than jump the queue.
-    if (this.bufferedBytes) { const owned = Uint8Array.from(input.pcm); this.bufferedAudio.push(owned); this.bufferedBytes += owned.byteLength; return; }
+    // Wire-38 confirmed Gemini 3.8 Live accepts realtimeInput while a BLOCKING call is pending
+    // and answers the new question, so every frame is forwarded live in order (issue 210).
     // Size bound precedes the owned copy/base64 allocation. Never queue or resend audio.
     const overhead = Buffer.byteLength(JSON.stringify({ realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: '' } } }));
     if (Math.ceil(input.pcm.byteLength / 3) * 4 + overhead > this.settings.limits.maxOutgoingBytes) { this.finish('outgoing_limit'); fail('outgoing_limit'); }
@@ -466,46 +443,13 @@ class Session implements LiveVoiceSession {
     if (this.draining) return;
     if (!this.checkpoint()) fail(this.terminal!.code);
     if (!this.isReady) fail('not_ready');
-    this.flushAudio(Number.MAX_SAFE_INTEGER);
     if (!this.write(JSON.stringify({ realtimeInput: { audioStreamEnd: true } }))) fail(this.terminal!.code);
-  }
-  private detectSpeech(frame: Uint8Array): void {
-    const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
-    let sum = 0;
-    for (let i = 0; i < frame.byteLength; i += 2) { const sample = view.getInt16(i, true); sum += sample * sample; }
-    const count = frame.byteLength >> 1;
-    const rms = count ? Math.sqrt(sum / count) : 0;
-    this.speechRunBytes = rms >= AUDIO_SPEECH_RMS_THRESHOLD ? this.speechRunBytes + frame.byteLength : 0;
-  }
-  private supersede(reason: 'speech' | 'buffer_full'): void {
-    if (!this.pendingCalls.length || this.draining) return;
-    const ids = this.pendingCalls.map(call => call.id);
-    const responses = this.pendingCalls.map(call => ({ id: call.id, name: call.name, response: { result: AUDIO_SUPERSEDED_NOTICE } }));
-    if (!this.write(JSON.stringify({ toolResponse: { functionResponses: responses } }))) return;
-    this.pendingCalls = []; this.speechRunBytes = 0;
-    this.emit({ type: 'toolCallSuperseded', ids, reason });
-    this.scheduleFlush();
-  }
-  private scheduleFlush(): void {
-    if (this.flushTimer || !this.bufferedBytes) return;
-    const timer = setTimeout(() => { this.timers.delete(timer); this.flushTimer = undefined; this.flushAudio(); }, AUDIO_FLUSH_INTERVAL_MS);
-    this.flushTimer = timer; this.timers.add(timer);
-  }
-  private flushAudio(budget = AUDIO_FLUSH_BYTES_PER_TICK): void {
-    this.clear(this.flushTimer); this.flushTimer = undefined;
-    while (this.bufferedAudio.length && (budget > 0 || this.bufferedAudio[0]!.byteLength > AUDIO_FLUSH_BYTES_PER_TICK)) {
-      const frame = this.bufferedAudio[0]!;
-      const data = Buffer.from(frame).toString('base64');
-      if (!this.write(JSON.stringify({ realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data } } }), frame.byteLength)) return;
-      this.bufferedAudio.shift(); this.bufferedBytes -= frame.byteLength; budget -= frame.byteLength;
-    }
-    if (this.bufferedAudio.length && !this.terminal) this.scheduleFlush();
   }
   close(): void { if (this.checkpoint()) this.finish('closed'); }
   private finish(code: LiveVoiceErrorCode) {
     if (this.terminal) return;
     const status = code === 'closed' ? 'closed' : code === 'cancelled' ? 'cancelled' : code === 'deadline' ? 'deadline' : 'failed';
-    this.terminal = Object.freeze({ status, code, ...(this.recoverable || code === 'go_away' || code === 'transport_error' ? { recoverable: true } : {}) });
+    this.terminal = Object.freeze({ status, code, ...(this.recoverable || code === 'go_away' || code === 'transport_error' ? { recoverable: true } : {}), ...(this.droppedAudioFrames ? { droppedAudioFrames: this.droppedAudioFrames } : {}) });
     for (const timer of this.timers) clearTimeout(timer);
     this.timers.clear(); this.signal.removeEventListener('abort', this.onAbort);
     this.initial = undefined; this.secret = '';

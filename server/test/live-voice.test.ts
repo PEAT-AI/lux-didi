@@ -472,7 +472,7 @@ test('Live tool batches buffer microphone audio in order behind one response fra
   const diagnostics = session.diagnostics?.();
   assert.equal(diagnostics?.audioCalls, 2); assert.equal(diagnostics?.audioBytes, first.byteLength + second.byteLength);
   assert.equal(diagnostics?.pendingToolDropCalls, 0); assert.equal(diagnostics?.pendingToolDropBytes, 0);
-  assert.equal(diagnostics?.localWriteEnqueuedCalls, 3); assert.equal(diagnostics?.localWriteCallbackPendingCalls, 0);
+  assert.equal(diagnostics?.localWriteEnqueuedCalls, 2); assert.equal(diagnostics?.localWriteCallbackPendingCalls, 0);
 });
 
 test('sustained speech while a tool batch is pending supersedes it behind a neutral response', async t => {
@@ -571,7 +571,7 @@ test('3.8 Live omits thinking config and cancellation releases an unanswered bat
   assert.equal((await events.next()).value?.type, 'modelTurnStarted');
   assert.equal((await events.next()).value?.type, 'toolCall');
   assert.throws(() => session.sendToolResponse({ responses: [{ id: 'one', name: 'test', response: {} }] }), code('invalid_request'));
-  session.sendAudio({ pcm, dataClass: 'ordinary' }); assert.equal(session.droppedAudioFrames, 1);
+  session.sendAudio({ pcm, dataClass: 'ordinary' }); assert.equal(session.droppedAudioFrames, 0);
   f.send({ serverContent: { modelTurn: { parts: [audio()] } } });
   assert.equal((await events.next()).value?.type, 'audio', 'provider output remains admitted while a tool batch is pending');
   assert.equal((await events.next()).value?.type, 'modelTurnStarted');

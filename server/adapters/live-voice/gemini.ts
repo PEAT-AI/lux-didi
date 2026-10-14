@@ -277,6 +277,7 @@ class Session implements LiveVoiceSession {
         if (!object(message.toolCallCancellation) || !Array.isArray(message.toolCallCancellation.ids) || message.toolCallCancellation.ids.some(id => typeof id !== 'string')) fail('protocol_error');
         const ids = message.toolCallCancellation.ids as string[];
         this.pendingCalls = this.pendingCalls.filter(c => !ids.includes(c.id));
+        if (!this.pendingCalls.length && this.bufferedBytes) this.scheduleFlush();
         this.emit({ type: 'toolCallCancellation', ids });
       }
       if ('setupComplete' in message) {

@@ -1226,6 +1226,35 @@ test('Live answers a slow tool batch truthfully, continues the turn, and retains
   assert.equal(h.owner.pendingJobs().length, 0, 'only explicit pickup consumes the pending result');
 });
 
+test('a superseded tool batch records the late completion and never answers the provider', async t => {
+  let finish!: () => void;
+  const slow = new Promise<void>(resolve => { finish = resolve; });
+  const h = await harness(t, { tools: true, beforeTool: () => slow });
+  const { session, attachment } = await attached(h);
+  const outputs = attachment.output[Symbol.asyncIterator]();
+  assert.equal((await outputs.next()).value?.marker.kind, 'ready');
+  h.f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
+  while (!h.calls.length) await tick();
+  const loud = new Uint8Array(16_000); for (let i = 0; i < loud.length; i += 2) { loud[i] = 0xff; loud[i + 1] = 0x7f; }
+  attachment.sendAudio({ pcm: loud });
+  await h.f.frame(3);
+  const neutral = h.f.frames[1] as { toolResponse: { functionResponses: { id: string; response: { result?: string } }[] } };
+  assert.equal(neutral.toolResponse.functionResponses[0]!.id, 'c1');
+  assert.match(String(neutral.toolResponse.functionResponses[0]!.response.result), /set aside/);
+  assert.equal(h.owner.current().state, 'listening', 'supersession resumes the session while the tool keeps running');
+  finish(); await tick(); await tick();
+  assert.equal(h.f.frames.filter(frame => 'toolResponse' in (frame as object)).length, 1, 'late completion never answers the provider');
+  let superseded = false;
+  for (let i = 0; i < 20 && !superseded; i++) {
+    const item = await outputs.next();
+    if (item.done) break;
+    if (item.value.kind === 'marker' && item.value.marker.kind === 'toolResult' && item.value.marker.tool?.code === 'tool_call_superseded') superseded = true;
+  }
+  assert.equal(superseded, true, 'the late completion is recorded with a superseded disposition');
+  assert.equal(new LiveToolJobs(h.store, () => NOW).pending()[0]!.delivered, false, 'the superseded result is retained for pickup');
+  h.owner.revoke(session.liveSessionId);
+});
+
 test('Live accepts a frozen real tool snapshot and projects only result-gated Markdown', async t => {
   const h = await harness(t, { tools: true });
   const { session, attachment } = await attached(h);

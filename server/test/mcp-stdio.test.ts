@@ -428,3 +428,28 @@ test('a caller-cancelled stdio call records cancelled, not timeout', { skip: pro
     if (result.state === 'unknown') assert.equal(result.reason, 'cancelled');
   } finally { await adapter.close(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+// W4-R2: every configured read connector gets the longer call deadline; connect/discovery stay on the default.
+test('every configured connector admits a real slow read on the call deadline', { skip: process.platform === 'win32' }, async () => {
+  const host = await import('../host/mcp.js');
+  const dir = mkdtempSync(join(tmpdir(), 'didi-deadline-'));
+  const configDir = join(dir, 'config'); mkdirSync(configDir, { mode: 0o700 });
+  const { dir: childDir, pidFile } = scratch();
+  const endpoint = { id: 'slow', transport: 'stdio' as const, command: process.execPath, args: [child, 'slow-call', pidFile, 'stdio-pong'],
+    env: { HOME: join(dir, 'home'), PATH: process.env.PATH ?? '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' },
+    connector: 'lux-knowledge', account: ACCOUNT, resource: RESOURCE, credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'ordinary' as const };
+  const mcpFile = join(configDir, 'mcp.json');
+  writeFileSync(mcpFile, JSON.stringify({ schemaVersion: 1, grantMode: 'explicit', endpoints: [endpoint] }), { mode: 0o600 }); chmodSync(mcpFile, 0o600);
+  const store = new Store(join(dir, 'data'), toolsMigrations);
+  const runtime = await host.composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null });
+  try {
+    const discovery = await runtime.port.discover('slow');
+    assert.equal(discovery.state, 'discovered');
+    if (discovery.state !== 'discovered') return;
+    runtime.registry.approve({ endpointId: 'slow', schemaDigest: discovery.schemaDigest, toolNames: ['echo'], effect: 'read', account: ACCOUNT, resource: RESOURCE, generation: 1 });
+    const started = Date.now();
+    const result = await runtime.port.call({ endpointId: 'slow', toolName: 'echo', arguments: {}, generation: 1, account: ACCOUNT, resource: RESOURCE });
+    assert.equal(result.state, 'completed', JSON.stringify(result));
+    assert.ok(Date.now() - started >= 5000, 'a configured connector call must not fall back to the five-second default');
+  } finally { await runtime.close(); store.close(); rmSync(dir, { recursive: true, force: true }); rmSync(childDir, { recursive: true, force: true }); }
+});

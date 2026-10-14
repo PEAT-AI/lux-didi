@@ -42,6 +42,7 @@ if (mode === 'invalid-result') {
   server.setRequestHandler('tools/list', () => ({ tools: [{ name: 'echo', description: 'Synthetic stdio echo', inputSchema: { type: 'object' } }] }));
   server.setRequestHandler('tools/call', () => {
     if (mode === 'hang-call') return new Promise(() => {});
+    if (mode === 'slow-call') return new Promise(resolve => setTimeout(() => resolve({ content: [{ type: 'text', text: payload }] }), 5400));
     if (mode === 'exit-on-call') process.exit(7);
     if (mode === 'signal-on-call') process.kill(process.pid, 'SIGKILL');
     // Close stdout but stay alive: a pipe closure, not a child exit.

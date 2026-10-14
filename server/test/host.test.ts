@@ -532,7 +532,7 @@ test('Live session diagnostics persist only the closed content-free counter sche
   try {
     const log = new HostLog(root);
     const numeric = ['adapterGenerations','ownerAudioCalls','ownerAudioBytes','ownerRebuildingDropCalls','ownerRebuildingDropBytes',
-      'adapterAudioCalls','adapterAudioBytes','drainingDropCalls','drainingDropBytes',
+      'adapterAudioCalls','adapterAudioBytes','pendingToolDropCalls','pendingToolDropBytes','drainingDropCalls','drainingDropBytes',
       'localWriteEnqueuedCalls','localWriteEnqueuedPCMBytes','localWriteCallbackSuccessCalls','localWriteCallbackSuccessPCMBytes',
       'localWriteCallbackErrorCalls','localWriteCallbackErrorPCMBytes','localWriteCallbackPendingCalls','localWriteCallbackPendingPCMBytes',
       'inputTranscriptionEvents','inputTranscriptionCharacters','generationCompleteEvents','turnCompleteEvents','outputAudioFrames','outputAudioPCMBytes',

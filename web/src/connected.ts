@@ -163,6 +163,7 @@ export class ConnectedView {
       ${c.state === 'active' ? this.#notesSection() : ''}
       <form id="connected-send-form"><label for="connected-draft">Message for this connected conversation</label><textarea id="connected-draft" rows="3" placeholder="One small next step…" ${c.state !== 'active' ? 'disabled' : ''}>${escape(this.#draft)}</textarea><button id="connected-send" ${c.state !== 'active' || this.#busy || (r && r.state !== 'terminal') ? 'disabled' : ''}>Send to ${escape(c.provider)} / ${escape(c.model)}</button><small>Send captures exactly one user turn. Local Save does not send. A failed acceptance keeps your draft; nothing is automatically retried.</small></form>` : ''}
       ${this.#error ? `<p id="connected-error" role="alert">${escape(this.#error)}</p>` : ''}
+      ${this.#pending && !c ? `<div id="connected-recovery" role="alert" data-recovery="pending-conversation-missing"><p>Unresolved turn: its conversation is not in the current list. The pending acceptance key and text are retained; nothing was resent.</p><button id="connected-recover" class="quiet">Retry the saved turn</button><button id="connected-reload" class="quiet">Reload history</button></div>` : ''}
     </section>`;
     panel.querySelector<HTMLInputElement>('#connected-consent')?.addEventListener('change', event => { this.#consent = (event.target as HTMLInputElement).checked; this.attach(); });
     panel.querySelector<HTMLInputElement>('#connected-remember')?.addEventListener('change', event => { this.#remember = (event.target as HTMLInputElement).checked; });
@@ -179,7 +180,8 @@ export class ConnectedView {
       this.#conversations.unshift({ title: 'Naya connected conversation', conversation: grant }); return this.select(grant.sessionId, lifetime);
     }); });
     panel.querySelector<HTMLSelectElement>('#connected-history')?.addEventListener('change', event => { const next = (event.target as HTMLSelectElement).value, selection = this.select(next), lifetime = this.#lifetime(); void selection.catch(error => { if (this.#current(lifetime)) { this.#error = error instanceof Error ? error.message : 'Could not open that connected conversation.'; this.attach(); } }); });
-    panel.querySelector('#connected-recover')?.addEventListener('click', () => { if (c) void this.#action(lifetime => this.select(c.sessionId, lifetime)); });
+    panel.querySelector('#connected-recover')?.addEventListener('click', () => { if (this.#pending) void this.#action(lifetime => this.#recoverPending(lifetime)); else if (c) void this.#action(lifetime => this.select(c.sessionId, lifetime)); });
+    panel.querySelector('#connected-reload')?.addEventListener('click', () => { void this.refresh(this.#owner); });
     panel.querySelector('#connected-revoke')?.addEventListener('click', () => { if (c) void this.#action(async lifetime => {
       await request(`/conversations/${c.sessionId}/revoke`, { method: 'POST', body: {}, signal: lifetime.local }); this.#check(lifetime);
       const status = await request<RouteStatus>('/chat/status', { signal: lifetime.local }); this.#check(lifetime); this.#status = status;
@@ -266,6 +268,19 @@ export class ConnectedView {
       const entries = (await request<{ entries: Entry[] }>(`/sessions/${c.sessionId}`, { signal: lifetime.local })).entries; this.#check(lifetime); this.#entries = entries;
       void this.#watch(run.runId, lifetime); return this.#lifetime();
     });
+  }
+  /** Retry the exact retained turn by its idempotency key; a list omission never deletes it. */
+  async #recoverPending(lifetime: ViewLifetime) {
+    const pending = this.#pending; if (!pending) return;
+    const run = await request<Run>('/chat', {
+      method: 'POST',
+      body: { sessionId: pending.sessionId, text: pending.text, ...(pending.selectedMemoryEntryIds.length ? { selectedMemoryEntryIds: pending.selectedMemoryEntryIds } : {}) },
+      idempotencyKey: pending.key,
+      signal: AbortSignal.any([lifetime.local, AbortSignal.timeout(8000)]),
+    });
+    this.#check(lifetime);
+    this.#pending = undefined; this.#save();
+    return this.select(run.sessionId, lifetime);
   }
   async #watch(runId: string, actionLifetime?: ViewLifetime) {
     if (this.#busy && !actionLifetime) return;

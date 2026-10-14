@@ -136,8 +136,8 @@ let shortcutRegistration = LiveShortcutRegistration { _, id in
     registeredKeys.append(id)
     return id == 1 ? -9878 : 0
 }
-expect(registeredKeys == [1, 2], "shortcut registrations are separate even when Start conflicts")
-expect(shortcutRegistration.startStatus.contains("Unavailable") && shortcutRegistration.muteStatus == "registered", "conflict does not hide independent mute registration")
+expect(registeredKeys == [1, 2, 3], "shortcut registrations are separate even when Start conflicts")
+expect(shortcutRegistration.startStatus.contains("Unavailable") && shortcutRegistration.muteStatus == "registered" && shortcutRegistration.windowStatus == "registered", "conflict does not hide independent mute registration")
 var shown = 0, started = 0, muted = 0, stopped = 0
 var active = false
 let actions = NativeSummonActions(show: { shown += 1 }, isCapturing: { active }, start: {

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   NAYA_BASE, NAYA_TOOLS, MEMORY_SECTION_CHAR_LIMIT, PersonaOverlayError, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, canonicalSpeechLanguage, composeLiveInstruction, composeLiveSessionInstruction, loadPersonaOverlay,
-  validatePersonaOverlay, withToolsSection, type PersonaOverlay,
+  validatePersonaOverlay, withToolsSection, buildEarlierConversationsSection, EARLIER_CONVERSATIONS_HEADER, type PersonaOverlay,
 } from '../prompt/live-persona.js';
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
 
@@ -261,4 +261,69 @@ test('runtime context is inserted right after the base and before the tools', ()
   assert.equal(result.text.indexOf(NAYA_BASE), 0);
   assert.ok(result.text.indexOf(runtimeContext) > result.text.indexOf(NAYA_BASE));
   assert.ok(result.text.indexOf(runtimeContext) < result.text.indexOf(NAYA_TOOLS));
+});
+
+// --- W13: earlier-conversations injection section --------------------------------------------
+
+const DAY = 24 * 60 * 60 * 1000;
+
+test('the earlier-conversations header is the authored verbatim constant', () => {
+  assert.equal(EARLIER_CONVERSATIONS_HEADER,
+    "Short summaries of earlier conversations, written automatically. Use them as background when they are relevant; do not bring them up unprompted, do not say that you remember, and do not ask the owner to confirm them. They can be wrong; the owner's words now win.");
+});
+
+test('earlier-conversations selection is newest first, whole summaries only, capped at 6 items and 3000 chars', () => {
+  const now = Date.UTC(2026, 9, 20, 12, 0);
+  const candidates = Array.from({ length: 8 }, (_, i) => ({ id: `s${i}`, endedAt: now - i * 3_600_000, summary: `summary number ${i}` }));
+  const result = buildEarlierConversationsSection(candidates, { now, timeZone: 'UTC' });
+  assert.equal(result.selectedIds.length, 6);
+  assert.deepEqual(result.selectedIds, ['s0', 's1', 's2', 's3', 's4', 's5']);
+  assert.deepEqual(result.omitted.map(o => o.id), ['s6', 's7']);
+
+  const big = buildEarlierConversationsSection([
+    { id: 'a', endedAt: now, summary: 'x'.repeat(2_500) },
+    { id: 'b', endedAt: now - 1, summary: 'y'.repeat(600) },
+    { id: 'c', endedAt: now - 2, summary: 'small' },
+  ], { now, timeZone: 'UTC' });
+  assert.deepEqual(big.selectedIds, ['a', 'c'], 'b no longer fits the 3000-char budget; c still does');
+  assert.ok(big.omitted.some(o => o.id === 'b' && o.reason === 'budget'));
+  assert.ok(big.section.length <= EARLIER_CONVERSATIONS_HEADER.length + 3_000 + 16);
+});
+
+test('earlier-conversations excludes summaries older than 14 days as stale', () => {
+  const now = Date.UTC(2026, 9, 20, 12, 0);
+  const result = buildEarlierConversationsSection([
+    { id: 'fresh', endedAt: now - 13 * DAY, summary: 'fresh' },
+    { id: 'stale', endedAt: now - 15 * DAY, summary: 'stale' },
+  ], { now, timeZone: 'UTC' });
+  assert.deepEqual(result.selectedIds, ['fresh']);
+  assert.deepEqual(result.omitted, [{ id: 'stale', reason: 'stale' }]);
+});
+
+test('earlier-conversations prefixes an absolute local date and part of day in the owner timezone', () => {
+  const endedAt = Date.UTC(2026, 9, 13, 12, 30);
+  const kolkata = buildEarlierConversationsSection([{ id: 'a', endedAt, summary: 'Shipped the thing.' }], { now: endedAt + 1, timeZone: 'Asia/Kolkata' });
+  const losAngeles = buildEarlierConversationsSection([{ id: 'a', endedAt, summary: 'Shipped the thing.' }], { now: endedAt + 1, timeZone: 'America/Los_Angeles' });
+  assert.ok(kolkata.section.includes('Tue 13 Oct, evening: Shipped the thing.'), kolkata.section);
+  assert.ok(losAngeles.section.includes('Tue 13 Oct, morning: Shipped the thing.'), losAngeles.section);
+});
+
+test('the earlier-conversations section sits right after # Memory and yields before it under the cap', () => {
+  const baseline = composeLiveInstruction({ base: NAYA_BASE, language: 'en' });
+  const now = Date.UTC(2026, 9, 20, 12, 0);
+  const section = buildEarlierConversationsSection([{ id: 'a', endedAt: now, summary: 'SYNTHETIC prior conversation' }], { now, timeZone: 'UTC' }).section;
+  const composed = composeLiveSessionInstruction({ text: baseline.text, tools: ['search_knowledge'],
+    records: [{ id: 'fits', text: 'SYNTHETIC retained memory' }], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, earlierConversations: section });
+  assert.ok(composed.earlierConversationsIncluded);
+  const memoryAt = composed.text.indexOf('# Memory');
+  const earlierAt = composed.text.indexOf('# Earlier conversations');
+  assert.ok(earlierAt > memoryAt && earlierAt < composed.text.indexOf(NAYA_TOOLS), 'section sits between memory and tools');
+
+  // With no room left after the records, the earlier section yields while memory stays.
+  const huge = composeLiveSessionInstruction({ text: baseline.text, tools: [],
+    records: [{ id: 'fits', text: 'SYNTHETIC retained memory' }], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
+    earlierConversations: 'E'.repeat(TRUSTED_SYSTEM_CODE_UNIT_LIMIT) });
+  assert.equal(huge.earlierConversationsIncluded, false);
+  assert.ok(!huge.text.includes('EEEE'));
+  assert.ok(huge.text.includes('SYNTHETIC retained memory'));
 });

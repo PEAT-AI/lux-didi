@@ -167,6 +167,46 @@ final class DiagnosticLogHTTPFixture: URLProtocol, @unchecked Sendable {
     print("PASS production capture callback off-main, nonzero 640-byte PCM, mute and stop fences; no audio engine")
 }
 
+@MainActor private func checkTerminalCaptureSummary() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("didi-capture-summary-" + UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 1)!
+    let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4800)!
+    buffer.frameLength = 4800
+    buffer.floatChannelData![0].initialize(repeating: 0.25, count: 4800)
+    let device = NativeLiveAudioDevice(captureInput: format,
+        defaultInput: { (id: "synthetic", name: "Synthetic input") })
+    device.onCapturePrepared = { capture in capture.append(buffer) }
+    let authority: (origin: URL, request: NativeLiveRequestBuilder) =
+        (URL(string: "http://127.0.0.1:1")!, { _, _ in throw LiveClientError.unavailable })
+    let conversation = NativeLiveConversation(authority: authority, dictationIsCapturing: { false },
+        logsDirectory: directory, audioDevice: device)
+    conversation.start()
+    let deadline = ContinuousClock.now + .seconds(3)
+    while conversation.state != .failed {
+        try audioRequire(ContinuousClock.now < deadline, "actual start reaches refused HTTP failure")
+        await Task.yield()
+    }
+    await conversation.stop()
+    let file = directory.appendingPathComponent("native-live.log")
+    let records = try String(contentsOf: file, encoding: .utf8).split(separator: "\n").map {
+        try JSONSerialization.jsonObject(with: Data($0.utf8)) as! [String: Any]
+    }
+    let summaries = records.filter { $0["event"] as? String == "native_capture_summary" }
+    try audioRequire(summaries.count == 1, "one summary for actual capture lifetime on failure then repeated Stop")
+    let summary = summaries[0]
+    try audioRequire(summary["tapBuffers"] as? Int == 1 && (summary["convertedBytes"] as? Int ?? 0) > 0
+        && summary["convertFailures"] as? Int == 0 && (summary["maxRMS"] as? Double ?? 0) > 0,
+        "summary preserves locked capture counts before teardown")
+    try audioRequire(summary["inputSampleRate"] as? Int == 48000 && summary["inputChannels"] as? Int == 1
+        && summary["localSocketSendCompleted"] as? Int == 0 && summary["sendErrors"] as? Int == 0,
+        "numeric format and zero local sends after refused authority")
+    device.stop(); await conversation.stop()
+    try audioRequire(try String(contentsOf: file, encoding: .utf8).split(separator: "\n").count == records.count,
+        "duplicate Stop emits no duplicate summary")
+    print("PASS actual NativeLiveConversation Start/failure/Stop content-free capture summary; no engine or request dispatch")
+}
+
 @main struct NativeLiveAudioRunner {
     static func tone(_ format: AVAudioFormat, start: Int, count: Int) throws -> AVAudioPCMBuffer {
         guard format.channelCount == 2, format.commonFormat == .pcmFormatFloat32, !format.isInterleaved else {
@@ -183,6 +223,11 @@ final class DiagnosticLogHTTPFixture: URLProtocol, @unchecked Sendable {
         return buffer
     }
     @MainActor static func main() async {
+        if CommandLine.arguments.dropFirst().contains("--capture-summary-only") {
+            do { try await checkTerminalCaptureSummary() }
+            catch { fatalError("Capture summary: \(error)") }
+            return
+        }
         if CommandLine.arguments.dropFirst().contains("--capture-tap-only") {
             do { try await checkCaptureTapExecutor() }
             catch { fatalError("Capture tap: \(error)") }
@@ -246,6 +291,7 @@ final class DiagnosticLogHTTPFixture: URLProtocol, @unchecked Sendable {
                              "missing input immediately releases capture and requests Restart")
             try audioRequire(paused != "invalid pause", "missing input must never offer Resume")
             print("PASS route storm, input consent, Resume, Stop fencing, missing input and failed rebuild")
+            try await checkTerminalCaptureSummary()
             try await checkCaptureTapExecutor()
             try await checkConversationDiagnostics()
             guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 44100, channels: 2, interleaved: false) else {

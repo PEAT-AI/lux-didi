@@ -33,6 +33,14 @@ export interface DomainOperations {
   updateCommitment: { input: { id: string; expectedRevision: number; title?: string; notes?: string; dueAt?: string | null; timeZone?: string }; output: Commitment };
   transitionCommitment: { input: { id: string; expectedRevision: number; operation: 'complete' | 'cancel' | 'reopen' }; output: Commitment };
   plan: { input: { date: string; timeZone: string }; output: { date: string; timeZone: string; items: { commitment: Commitment; isOverdue: boolean }[]; unscheduled: Commitment[]; nextCursor: string | null } };
+  /** W13 owner control: the conversation summaries shown in the memory list, and cascade delete. */
+  listSummaries: { input: Record<string, never>; output: { items: SummaryItem[] } };
+  deleteSummary: { input: { id: string }; output: { deletedIds: string[]; notFound: boolean } };
+}
+export interface SummaryItem {
+  id: string; liveSessionId: string; status: 'complete' | 'skipped' | 'failed';
+  summary: string | null; endedAt: string | null; model: string | null; inputChars: number | null;
+  inputTruncated: boolean; injectedSummaryIds: string[]; createdAt: string;
 }
 /** Routing policy only, not semantic sensitivity detection. Recall uses its underlying subjects. */
 export interface RoutingSubject { kind: 'session' | 'entry' | 'commitment'; id: string }

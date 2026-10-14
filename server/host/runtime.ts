@@ -13,6 +13,9 @@ import { Store } from '../runtime/store.js';
 import { listenService } from '../http/server.js';
 import { createStaticHandler } from '../http/static.js';
 import { chatMigrations } from '../chat/index.js';
+import { loadProviderConfig } from '../config/index.js';
+import { GeminiAdapter } from '../adapters/model/index.js';
+import { createSummarizer, SUMMARY_MODEL_ID } from '../services/summarize.js';
 import { liveMigrations } from '../live/index.js';
 import { toolsMigrations } from '../tools/index.js';
 import { composeChat, type ModelTesting } from './connected.js';
@@ -187,16 +190,30 @@ export async function startHost(config: HostConfig) {
       return null;
     };
     const mcp = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir: providerConfigDir, lookupAuthority, log: event => log.event(event) });
-    const liveTools: LiveToolsComposition = {
+    // W13: one async distillation per ended Live session, plus the host-start reconciler.
+    const providerLoaded = loadProviderConfig({ configDir: providerConfigDir, ownerId: store.assistantId });
+    let summaryModel: GeminiAdapter | null = null;
+    if (providerLoaded.status === 'ready') {
+      try { summaryModel = new GeminiAdapter({ modelId: SUMMARY_MODEL_ID, keyReference: providerLoaded.profile.keyReference,
+        route: providerLoaded.route, credentials: config.modelTesting?.credentials ?? providerLoaded.credentials,
+        ...(config.modelTesting?.transport ? { transport: config.modelTesting.transport } : {}) }); }
+      catch { summaryModel = null; }
+    }
+    const summarizer = createSummarizer({ store, model: summaryModel, modelId: SUMMARY_MODEL_ID,
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, now: config.now ?? Date.now, log: event => log.event(event) });
+    const liveTools: LiveToolsComposition & { onSessionTerminal?: (liveSessionId: string) => void; log?: (event: { event: string } & Record<string, unknown>) => void } = {
       owner: mcp.owner,
       connectionIds: () => mcp.connectionIds(),
       status: () => mcp.status(),
       registerAuthoritySource: source => { authoritySources.push(source); },
       lookupAuthority,
+      onSessionTerminal: liveSessionId => summarizer.schedule(liveSessionId),
+      log: event => log.event(event),
     };
     const { chat, status } = composeChat(store, domain, providerConfigDir, config.modelTesting, config.now, owner.snapshot, liveTools);
     const composeLiveWithTools = composeLive as unknown as (...args: unknown[]) => ReturnType<typeof composeLive>;
     const { service: live } = composeLiveWithTools(store, providerConfigDir, config.liveTesting, config.now, owner.snapshot, liveTools);
+    void summarizer.reconcile().catch(error => log.error(error));
     // Observe the actual durable provider settlement, which does not emit console text.
     const attach = live.attach.bind(live);
     live.attach = (...args) => {

@@ -121,4 +121,25 @@ export const domainMigrations: SchemaMigration[] = [
       `CREATE INDEX ix_entry_tombstones_source ON entry_tombstones(source_kind, source_key)`,
     ],
   },
+  {
+    owner: 'domain',
+    version: 5,
+    statements: [
+      `CREATE TABLE conversation_summaries (
+        id TEXT PRIMARY KEY,
+        live_session_id TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL CHECK (status IN ('complete','skipped','failed')),
+        summary TEXT,
+        ended_at INTEGER,
+        model TEXT,
+        input_chars INTEGER,
+        input_truncated INTEGER NOT NULL CHECK (input_truncated IN (0,1)),
+        injected_summary_ids TEXT NOT NULL,
+        retry_count INTEGER NOT NULL,
+        error_code TEXT,
+        created_at INTEGER NOT NULL
+      )`,
+      `CREATE INDEX ix_conversation_summaries_ended ON conversation_summaries(status, ended_at DESC)`,
+    ],
+  },
 ];

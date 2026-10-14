@@ -77,6 +77,8 @@ try {
     await page.waitForFunction(() => document.querySelector('.conversation-grid .thread .entries')?.textContent.includes('EXCLUDED_BROWSER_LOCAL_CANARY'));
     assert.equal(requests.filter(r => r.path === '/api/v1/chat' && r.method === 'POST').length, 0);
     assert.ok(await page.locator('#ask-didi').isDisabled());
+    // W5 collapses the route consent behind a disclosure; open it as a user must before agreeing.
+    await page.locator('details.connected-chat > summary').click();
     assert.match(await page.locator('.connected-disclosure').innerText(), /current and earlier selected turns/);
     await page.locator('#connected-consent').check(); await page.locator('#connected-start').click(); await page.locator('#connected-draft').waitFor();
     assert.match(await page.locator('#connected-send').innerText(), /gemini \/ gemini-connected-test/);

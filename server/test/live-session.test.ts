@@ -1236,7 +1236,13 @@ test('a tool result after a barge-in interruption is sent once and recorded afte
   h.f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
   while (!h.calls.length) await tick();
   h.f.send({ serverContent: { interrupted: true } });
-  await tick();
+  let sawInterrupted = false;
+  while (!sawInterrupted) {
+    const item = await outputs.next();
+    if (item.done) break;
+    if (item.value.kind === 'marker' && item.value.marker.kind === 'interrupted') sawInterrupted = true;
+  }
+  assert.equal(sawInterrupted, true, 'the interrupted fact is journaled before the tool completes');
   finish(); await tick(); await tick();
   await h.f.frame(2);
   const response = h.f.frames[1] as { toolResponse: { functionResponses: { id: string }[] } };

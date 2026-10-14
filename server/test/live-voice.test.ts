@@ -126,7 +126,10 @@ test('wire setup/history snapshots, readiness, PCM and three independent output 
   f.send({ serverContent: { turnComplete: true, waitingForInput: true, interactionStatus: 'IDLE' } });
   f.send({ serverContent: { inputTranscription: { text: 'late independent input', finished: true } } });
   f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-adapter-resumption-secret' } });
-  f.send({ goAway: { timeLeft: '1s' } }); f.remoteClose('', 1000);
+  f.send({ goAway: { timeLeft: '1s' } });
+  while (!captured.events.some(event => event.type === 'goAway')) await new Promise<void>(resolve => setImmediate(resolve));
+  session.sendAudio({ pcm, dataClass: 'ordinary' });
+  f.remoteClose('', 1000);
   assert.deepEqual(await session.done, { status: 'failed', code: 'go_away', recoverable: true }); await captured.done;
   assert.deepEqual(captured.events.map(e => e.type), ['ready', 'audio', 'modelText', 'outputTranscription', 'modelTurnStarted', 'generationComplete', 'turnComplete', 'interrupted', 'turnComplete', 'audio', 'modelTurnStarted', 'generationComplete', 'turnComplete', 'waitingForInput', 'interactionStatus', 'inputTranscription', 'resumptionHandle', 'goAway', 'outcome']);
   assert.deepEqual(captured.events.map(e => e.sequence), captured.events.map((_, i) => i + 1));
@@ -135,6 +138,18 @@ test('wire setup/history snapshots, readiness, PCM and three independent output 
   assert.ok(captured.events.some(e => e.type === 'resumptionHandle' && e.handle === 'synthetic-adapter-resumption-secret'));
   assert.equal(captured.events.some(e => 'turnId' in e || 'heard' in e), false); noCanary(captured.events);
   assert.equal(f.attempts, 1); assert.equal(f.frames.length, 4);
+  assert.deepEqual(session.diagnostics?.(), {
+    audioCalls: 1, audioBytes: pcm.byteLength,
+    pendingToolDropCalls: 0, pendingToolDropBytes: 0, drainingDropCalls: 1, drainingDropBytes: pcm.byteLength,
+    localWriteEnqueuedCalls: 1, localWriteEnqueuedPCMBytes: pcm.byteLength,
+    localWriteCallbackSuccessCalls: 1, localWriteCallbackSuccessPCMBytes: pcm.byteLength,
+    localWriteCallbackErrorCalls: 0, localWriteCallbackErrorPCMBytes: 0,
+    localWriteCallbackPendingCalls: 0, localWriteCallbackPendingPCMBytes: 0,
+    inputTranscriptionEvents: 1, inputTranscriptionCharacters: 'late independent input'.length,
+    generationCompleteEvents: 2, turnCompleteEvents: 3,
+    outputAudioFrames: 2, outputAudioPCMBytes: pcm.byteLength * 2,
+    outputAudioAfterInitialTurnFrames: 1, outputAudioAfterInitialTurnPCMBytes: pcm.byteLength,
+  });
 });
 
 test('empty history sends no fabricated turn; close has one requested terminal outcome', async t => {
@@ -221,6 +236,23 @@ test('permission/settings snapshots resist mutation and no-revoke control sends 
   await f.frame(2); session.close(); await session.done; await captured.done;
   assert.deepEqual(f.frames[1], { realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: Buffer.from(pcm).toString('base64') } } });
   assert.equal(f.frames.length, 2); assert.equal(f.attempts, 1);
+});
+
+test('diagnostics retain an outstanding local audio write callback without delaying close', async t => {
+  const { f, session, captured } = await ready(t);
+  const socket = f.clients[0]!;
+  const send = socket.send.bind(socket) as (data: string, callback?: (error?: Error) => void) => void;
+  t.mock.method(socket, 'send', (data: string, callback?: (error?: Error) => void) => {
+    if (data.includes('realtimeInput') && data.includes('audio/pcm')) return;
+    send(data, callback);
+  });
+  session.sendAudio({ pcm, dataClass: 'ordinary' });
+  assert.equal(session.diagnostics?.().localWriteCallbackPendingCalls, 1);
+  session.close(); assert.deepEqual(await session.done, { status: 'closed', code: 'closed' }); await captured.done;
+  const diagnostics = session.diagnostics?.();
+  assert.equal(diagnostics?.localWriteEnqueuedCalls, 1); assert.equal(diagnostics?.localWriteEnqueuedPCMBytes, pcm.byteLength);
+  assert.equal(diagnostics?.localWriteCallbackPendingCalls, 1); assert.equal(diagnostics?.localWriteCallbackPendingPCMBytes, pcm.byteLength);
+  assert.equal(diagnostics?.localWriteCallbackSuccessCalls, 0); assert.equal(diagnostics?.localWriteCallbackErrorCalls, 0);
 });
 
 test('split and combined protocol fields preserve late input, thought and unknown additions', async t => {
@@ -394,6 +426,10 @@ test('Live tool batches use one response frame and suppress microphone audio unt
   assert.deepEqual(f.frames[1], { toolResponse: { functionResponses: [{ id: 'c1', name: 'search_knowledge', response: { markdown: 'one' } }, { id: 'c2', name: 'search_knowledge', response: { error: 'denied' } }] } });
   session.sendAudio({ pcm, dataClass: 'ordinary' }); await f.frame(3);
   session.close(); assert.equal((await session.done).droppedAudioFrames, 1);
+  const diagnostics = session.diagnostics?.();
+  assert.equal(diagnostics?.audioCalls, 2); assert.equal(diagnostics?.audioBytes, pcm.byteLength * 2);
+  assert.equal(diagnostics?.pendingToolDropCalls, 1); assert.equal(diagnostics?.pendingToolDropBytes, pcm.byteLength);
+  assert.equal(diagnostics?.localWriteEnqueuedCalls, 1); assert.equal(diagnostics?.localWriteCallbackPendingCalls, 0);
 });
 
 test('3.8 Live omits thinking config and cancellation releases an unanswered batch', async t => {

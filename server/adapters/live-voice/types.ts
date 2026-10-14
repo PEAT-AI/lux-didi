@@ -40,6 +40,19 @@ export interface LiveVoiceOutcome {
   droppedAudioFrames?: number;
   status: 'closed' | 'cancelled' | 'deadline' | 'failed'; code: LiveVoiceErrorCode;
 }
+export interface LiveVoiceDiagnostics {
+  audioCalls: number; audioBytes: number;
+  pendingToolDropCalls: number; pendingToolDropBytes: number;
+  drainingDropCalls: number; drainingDropBytes: number;
+  localWriteEnqueuedCalls: number; localWriteEnqueuedPCMBytes: number;
+  localWriteCallbackSuccessCalls: number; localWriteCallbackSuccessPCMBytes: number;
+  localWriteCallbackErrorCalls: number; localWriteCallbackErrorPCMBytes: number;
+  localWriteCallbackPendingCalls: number; localWriteCallbackPendingPCMBytes: number;
+  inputTranscriptionEvents: number; inputTranscriptionCharacters: number;
+  generationCompleteEvents: number; turnCompleteEvents: number;
+  outputAudioFrames: number; outputAudioPCMBytes: number;
+  outputAudioAfterInitialTurnFrames: number; outputAudioAfterInitialTurnPCMBytes: number;
+}
 export type LiveVoiceEvent = { sequence: number } & (
   | { type: 'ready' }
   | { type: 'modelTurnStarted' }
@@ -62,6 +75,7 @@ export interface LiveVoiceSession {
   readonly droppedAudioFrames: number;
   // Includes informational empty serverContent frames after readiness.
   readonly unknownTopLevelKeys?: number;
+  readonly diagnostics?: () => Readonly<LiveVoiceDiagnostics>;
   sendToolResponse(input: { responses: LiveToolResponse[] }): void;
   sendAudio(input: { pcm: Uint8Array; dataClass: DataClass }): void;
   endAudioStream(): void;

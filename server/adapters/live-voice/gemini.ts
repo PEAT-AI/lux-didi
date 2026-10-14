@@ -1,7 +1,7 @@
 import type { ClientRequest, IncomingMessage } from 'node:http';
 import WebSocket from 'ws';
 import type { RawData } from 'ws';
-import type { DataClass, GeminiLiveVoiceOptions, LiveVoiceControl, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession, LiveSocketFactory, LiveVoiceErrorCode, LiveToolResponse, LiveToolCall } from './types.js';
+import type { DataClass, GeminiLiveVoiceOptions, LiveVoiceControl, LiveVoiceDiagnostics, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession, LiveSocketFactory, LiveVoiceErrorCode, LiveToolResponse, LiveToolCall } from './types.js';
 import { LiveVoiceError, liveVoiceTimerDefaults } from './types.js';
 
 // Fixed official v1beta endpoint. Neither destination nor credentials are public events.
@@ -134,6 +134,15 @@ class Session implements LiveVoiceSession {
   private informationalKeys = new Set<string>();
   unknownTopLevelKeys = 0;
   droppedAudioFrames = 0;
+  private initialTurnComplete = false;
+  private readonly diagnostic = {
+    audioCalls: 0, audioBytes: 0, pendingToolDropCalls: 0, pendingToolDropBytes: 0, drainingDropCalls: 0, drainingDropBytes: 0,
+    localWriteEnqueuedCalls: 0, localWriteEnqueuedPCMBytes: 0, localWriteCallbackSuccessCalls: 0, localWriteCallbackSuccessPCMBytes: 0,
+    localWriteCallbackErrorCalls: 0, localWriteCallbackErrorPCMBytes: 0, localWriteCallbackPendingCalls: 0, localWriteCallbackPendingPCMBytes: 0,
+    inputTranscriptionEvents: 0, inputTranscriptionCharacters: 0, generationCompleteEvents: 0, turnCompleteEvents: 0,
+    outputAudioFrames: 0, outputAudioPCMBytes: 0, outputAudioAfterInitialTurnFrames: 0, outputAudioAfterInitialTurnPCMBytes: 0,
+  } satisfies LiveVoiceDiagnostics;
+  readonly diagnostics = (): Readonly<LiveVoiceDiagnostics> => Object.freeze({ ...this.diagnostic });
   private creatingSocket = false;
   constructor(private readonly settings: Settings, private readonly declared: readonly DataClass[], setup: string, initial: string | undefined,
     private readonly signal: AbortSignal, private readonly deadlineMs: number, private readonly idleResetMs: number) {
@@ -314,6 +323,8 @@ class Session implements LiveVoiceSession {
             || !blob.data.length || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(blob.data)) fail('protocol_error');
           const pcm = Buffer.from(blob.data, 'base64');
           if (!pcm.length || pcm.length % 2 || pcm.toString('base64') !== blob.data) fail('protocol_error');
+          this.diagnostic.outputAudioFrames++; this.diagnostic.outputAudioPCMBytes += pcm.length;
+          if (this.initialTurnComplete) { this.diagnostic.outputAudioAfterInitialTurnFrames++; this.diagnostic.outputAudioAfterInitialTurnPCMBytes += pcm.length; }
           events.push({ type: 'audio', pcm: new Uint8Array(pcm), mimeType: 'audio/pcm;rate=24000' });
         }
         if ('text' in part) events.push({ type: 'modelText', text: this.text(part.text), thought: part.thought === true });
@@ -323,14 +334,20 @@ class Session implements LiveVoiceSession {
       if (type in value) {
         const transcription = value[type];
         if (!object(transcription) || ('finished' in transcription && typeof transcription.finished !== 'boolean')) fail('protocol_error');
-        events.push({ type, text: this.text(transcription.text), ...('finished' in transcription ? { finished: transcription.finished as boolean } : {}) });
+        const text = this.text(transcription.text);
+        if (type === 'inputTranscription') { this.diagnostic.inputTranscriptionEvents++; this.diagnostic.inputTranscriptionCharacters += text.length; }
+        events.push({ type, text, ...('finished' in transcription ? { finished: transcription.finished as boolean } : {}) });
       }
     }
     if (events.some(event => event.type === 'audio' || event.type === 'modelText' || event.type === 'outputTranscription')) events.push({ type: 'modelTurnStarted' });
     for (const type of ['interrupted', 'generationComplete', 'turnComplete'] as const) {
       if (type in value) {
         if (typeof value[type] !== 'boolean') fail('protocol_error');
-        if (value[type]) events.push({ type });
+        if (value[type]) {
+          if (type === 'generationComplete') this.diagnostic.generationCompleteEvents++;
+          if (type === 'turnComplete') { this.diagnostic.turnCompleteEvents++; this.initialTurnComplete = true; }
+          events.push({ type });
+        }
       }
     }
     if ('waitingForInput' in value) {
@@ -362,7 +379,7 @@ class Session implements LiveVoiceSession {
     else { this.queue.push({ event, bytes }); this.queueBytes += bytes; }
     return true;
   }
-  private write(frame: string): boolean {
+  private write(frame: string, pcmBytes = 0): boolean {
     if (!this.checkpoint()) return false;
     const socket = this.socket;
     // A closing socket is not evidence of a network failure: let onClose classify it.
@@ -372,9 +389,21 @@ class Session implements LiveVoiceSession {
     if (socket.bufferedAmount + bytes > this.settings.limits.maxBufferedBytes) { this.finish('backpressure'); return false; }
     try {
       if (!this.checkpoint()) return false;
-      socket.send(frame, error => { if (error && this.checkpoint()) this.socketFailure(error); });
+      if (pcmBytes) { this.diagnostic.localWriteCallbackPendingCalls++; this.diagnostic.localWriteCallbackPendingPCMBytes += pcmBytes; }
+      socket.send(frame, error => {
+        if (pcmBytes) {
+          this.diagnostic.localWriteCallbackPendingCalls--; this.diagnostic.localWriteCallbackPendingPCMBytes -= pcmBytes;
+          if (error) { this.diagnostic.localWriteCallbackErrorCalls++; this.diagnostic.localWriteCallbackErrorPCMBytes += pcmBytes; }
+          else { this.diagnostic.localWriteCallbackSuccessCalls++; this.diagnostic.localWriteCallbackSuccessPCMBytes += pcmBytes; }
+        }
+        if (error && this.checkpoint()) this.socketFailure(error);
+      });
+      if (pcmBytes) { this.diagnostic.localWriteEnqueuedCalls++; this.diagnostic.localWriteEnqueuedPCMBytes += pcmBytes; }
       this.touch(); return !this.terminal;
-    } catch (error) { this.socketFailure(error); return false; }
+    } catch (error) {
+      if (pcmBytes) { this.diagnostic.localWriteCallbackPendingCalls--; this.diagnostic.localWriteCallbackPendingPCMBytes -= pcmBytes; }
+      this.socketFailure(error); return false;
+    }
   }
   sendToolResponse(input: { responses: LiveToolResponse[] }): void {
     if (this.draining) return;
@@ -386,17 +415,23 @@ class Session implements LiveVoiceSession {
     if (this.write(frame)) this.pendingCalls = [];
   }
   sendAudio(input: { pcm: Uint8Array; dataClass: DataClass }): void {
-    if (this.draining) return;
+    if (this.draining) {
+      if (object(input) && input.pcm instanceof Uint8Array && input.pcm.byteLength > 0) { this.diagnostic.drainingDropCalls++; this.diagnostic.drainingDropBytes += input.pcm.byteLength; }
+      return;
+    }
     if (!this.checkpoint()) fail(this.terminal!.code);
     if (!this.isReady) fail('not_ready');
     if (!object(input) || !(input.pcm instanceof Uint8Array) || !input.pcm.byteLength || input.pcm.byteLength % 2) fail('invalid_audio');
     if (!classes.includes(input.dataClass) || !this.declared.includes(input.dataClass)) fail('route_denied');
-    if (this.pendingCalls.length) { this.droppedAudioFrames++; return; }
+    this.diagnostic.audioCalls++; this.diagnostic.audioBytes += input.pcm.byteLength;
+    if (this.pendingCalls.length) {
+      this.droppedAudioFrames++; this.diagnostic.pendingToolDropCalls++; this.diagnostic.pendingToolDropBytes += input.pcm.byteLength; return;
+    }
     // Size bound precedes the owned copy/base64 allocation. Never queue or resend audio.
     const overhead = Buffer.byteLength(JSON.stringify({ realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: '' } } }));
     if (Math.ceil(input.pcm.byteLength / 3) * 4 + overhead > this.settings.limits.maxOutgoingBytes) { this.finish('outgoing_limit'); fail('outgoing_limit'); }
     const data = Buffer.from(input.pcm).toString('base64');
-    if (!this.write(JSON.stringify({ realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data } } }))) fail(this.terminal!.code);
+    if (!this.write(JSON.stringify({ realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data } } }), input.pcm.byteLength)) fail(this.terminal!.code);
   }
   endAudioStream(): void {
     if (this.draining) return;

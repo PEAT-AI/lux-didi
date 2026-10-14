@@ -526,3 +526,24 @@ test('provider terminal diagnostics retain only bounded class and code', async (
     assert.ok(!text.includes('SECRET'));
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test('Live session diagnostics persist only the closed content-free counter schema', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'didi-live-diagnostics-log-'));
+  try {
+    const log = new HostLog(root);
+    const numeric = ['adapterGenerations','ownerAudioCalls','ownerAudioBytes','ownerRebuildingDropCalls','ownerRebuildingDropBytes',
+      'adapterAudioCalls','adapterAudioBytes','pendingToolDropCalls','pendingToolDropBytes','drainingDropCalls','drainingDropBytes',
+      'localWriteEnqueuedCalls','localWriteEnqueuedPCMBytes','localWriteCallbackSuccessCalls','localWriteCallbackSuccessPCMBytes',
+      'localWriteCallbackErrorCalls','localWriteCallbackErrorPCMBytes','localWriteCallbackPendingCalls','localWriteCallbackPendingPCMBytes',
+      'inputTranscriptionEvents','inputTranscriptionCharacters','generationCompleteEvents','turnCompleteEvents','outputAudioFrames','outputAudioPCMBytes',
+      'outputAudioAfterInitialTurnFrames','outputAudioAfterInitialTurnPCMBytes'];
+    const event = Object.fromEntries(numeric.map((key, index) => [key, index]));
+    log.event({ event: 'live_session_diagnostics', terminalCode: 'client_closed', ...event });
+    log.event({ event: 'live_session_diagnostics', terminalCode: 'client_closed', ...event, text: 'SECRET-transcript' });
+    const text = await readFile(join(root, 'logs', 'host.log'), 'utf8');
+    const records = text.trim().split('\n').map(line => JSON.parse(line));
+    assert.equal(records.length, 1); assert.equal(records[0].event, 'live_session_diagnostics');
+    assert.equal(records[0].terminalCode, 'client_closed'); assert.equal(records[0].outputAudioPCMBytes, numeric.indexOf('outputAudioPCMBytes'));
+    assert.equal(text.includes('SECRET'), false); assert.equal('liveSessionId' in records[0], false);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

@@ -252,6 +252,10 @@ private func checkFormatChangeRebuild() throws {
     let summaries = records.filter { $0["event"] as? String == "native_capture_summary" }
     try audioRequire(summaries.count == 1, "one summary for actual capture lifetime on failure then repeated Stop")
     let summary = summaries[0]
+    let configs = records.filter { $0["event"] as? String == "audio.config" }
+    try audioRequire(!configs.isEmpty, "capture start writes an audio.config record")
+    let flows = records.filter { $0["event"] as? String == "audio.flow" }
+    try audioRequire(flows.contains { $0["final"] as? Bool == true }, "stop writes a FINAL audio.flow record")
     try audioRequire(summary["tapBuffers"] as? Int == 1 && (summary["convertedBytes"] as? Int ?? 0) > 0
         && summary["convertFailures"] as? Int == 0 && (summary["maxRMS"] as? Double ?? 0) > 0,
         "summary preserves locked capture counts before teardown")

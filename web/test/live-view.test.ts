@@ -286,3 +286,27 @@ test('empty cursor pages preserve entries while equal-cursor projection changes 
   const previousExtra={...previous,memory:{status:'empty'}};
   assert.notEqual(mergeLive(previousExtra,{...previousExtra,memory:{status:'selected'},entries:[]} as LiveCurrent),previousExtra);
 });
+
+
+test('unchanged terminal polling updates successful time without changing projection identity', async () => {
+  const live: LiveCurrent={state:'ended',since:'session-a',cursor:1,entries:[{seq:1,kind:'terminal'}]};
+  const previous={live,lastSuccess:new Date(1000),stale:false};
+  const next=await pollLiveView(previous,async cursor=>{assert.equal(cursor,1);return {...live,entries:[]};},()=>new Date(2000));
+  assert.equal(next.live,live);assert.equal(next.lastSuccess?.getTime(),2000);
+  const stale=await pollLiveView(next,async()=>{throw new Error('synthetic unavailable');});
+  const staleAgain=await pollLiveView(stale,async()=>{throw new Error('synthetic unavailable');});
+  assert.equal(staleAgain.live,live);assert.equal(staleAgain.lastSuccess,stale.lastSuccess);
+  assert.equal(staleAgain.stale,true);
+});
+
+test('new session fetches an uncursored initial page before resetting retained projection', async () => {
+  const previous={live:{state:'ended' as const,since:'session-a',cursor:900,entries:[{seq:900,kind:'terminal' as const}]}};
+  const cursors:(string|number|undefined)[]=[];
+  const next=await pollLiveView(previous,async cursor=>{
+    cursors.push(cursor);
+    return {state:'listening',since:'session-b',cursor:cursor===undefined?1:900,entries:cursor===undefined?[{seq:1,kind:'inputTranscription',text:'new initial entry'}]:[]};
+  });
+  assert.deepEqual(cursors,[900,undefined]);
+  assert.equal(next.live?.since,'session-b');assert.equal(next.live?.entries.length,1);
+  assert.equal(next.live?.entries[0]?.text,'new initial entry');
+});

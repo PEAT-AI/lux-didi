@@ -49,15 +49,19 @@ export function liveLabel(live: LiveCurrent | undefined): string {
   return liveStateLabel(state ?? 'idle');
 }
 
-/** 1 Hz while the projection is active, 4 s while idle, paused while the document is hidden. */
+/** 1 Hz while active, 4 s while idle or terminal, paused while the document is hidden. */
 export function liveDelay(state: LiveState | undefined, hidden: boolean): number | undefined {
   if (hidden) return undefined;
-  return state === undefined || state === 'idle' ? 4000 : 1000;
+  return state === undefined || state === 'idle' || state === 'ended' || state === 'error' ? 4000 : 1000;
 }
 
 /** Merge cursor paged entries by seq, newest value winning; a changed session start replaces the accumulated transcript. */
 export function mergeLive(previous: LiveCurrent | undefined, next: LiveCurrent): LiveCurrent {
   if (!previous || previous.since !== next.since) return { ...next, entries: [...next.entries] };
+  if (!next.entries.length) {
+    if (JSON.stringify({ ...previous, entries: undefined }) === JSON.stringify({ ...next, entries: undefined })) return previous;
+    return { ...next, entries: previous.entries };
+  }
   const bySeq = new Map<number, LiveEntry>();
   for (const entry of previous.entries) bySeq.set(entry.seq, entry);
   for (const entry of next.entries) bySeq.set(entry.seq, entry);

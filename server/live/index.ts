@@ -557,7 +557,7 @@ export class LiveSessionOwner {
     const history = this.#jobHistory(liveSessionId, inputClass);
     const declarations = registry.length ? declarationsFor(registry).declarations : [];
     const system = acceptedPrompt.system;
-    const request: LiveVoiceRequest = { opening: history ? 'model_first' : 'user_first',
+    const request: LiveVoiceRequest = { opening: 'model_first',
       system: { text: system, dataClass: dataClasses[dataClasses.length - 1]! }, history: history ?? [], dataClasses,
       ...(this.#profile.language !== undefined ? { languageCode: this.#profile.language } : {}),
       ...(declarations.length ? { tools: declarations } : {}) };

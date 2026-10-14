@@ -46,7 +46,7 @@ test('explicit user-first opening preserves incomplete history and model-first o
   }
 });
 
-test('empty-history model-first sends one server-owned Companion greeting before public ready', async t => {
+test('empty-history model-first sends one server-owned Companion greeting without client audio', async t => {
   const f = await fixture(t);
   const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory })).open({
     ...request(), opening: 'model_first', history: [],
@@ -55,10 +55,31 @@ test('empty-history model-first sends one server-owned Companion greeting before
   const events = session.events[Symbol.asyncIterator]();
   await f.frame(1);
   f.send({ setupComplete: {} });
-  await session.ready;
+  await Promise.all([session.ready, f.frame(2)]);
   assert.deepEqual(f.frames[1], { realtimeInput: { text: 'Greet the person briefly to begin the conversation.' } });
-  assert.equal((await events.next()).value?.type, 'ready', 'opening write completes before public ready');
+  assert.equal((await events.next()).value?.type, 'ready');
   assert.equal(f.frames.length, 2, 'exactly one fresh opening directive is sent without PCM');
+});
+
+test('a failed fresh opening write never resolves public ready', async t => {
+  const f = await fixture(t);
+  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory })).open({
+    ...request(), opening: 'model_first', history: [],
+  }, control());
+  t.after(() => session.close());
+  const captured = collect(session);
+  await f.frame(1);
+  const socket = f.clients[0]!;
+  const send = socket.send.bind(socket) as (data: string, callback?: (error?: Error) => void) => void;
+  t.mock.method(socket, 'send', (data: string, callback?: (error?: Error) => void) => {
+    if (data.includes('Greet the person briefly')) throw Error('synthetic opening write failure');
+    send(data, callback);
+  });
+  f.send({ setupComplete: {} });
+  await assert.rejects(session.ready, code('provider_error'));
+  assert.equal((await session.done).code, 'provider_error');
+  await captured.done;
+  assert.equal(captured.events.some(event => event.type === 'ready'), false);
 });
 
 test('invalid opening modes are refused before credentials or dispatch', t => {

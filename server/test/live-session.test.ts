@@ -169,6 +169,9 @@ async function attached(h: Harness, key = 'k1') {
   await h.f.frame(1);
   h.f.send({ setupComplete: {} });
   await attachment.ready;
+  await h.f.frame(2);
+  assert.deepEqual(h.f.frames[1], { realtimeInput: { text: 'Greet the person briefly to begin the conversation.' } });
+  h.f.frames.splice(1, 1);
   return { session, attachment };
 }
 
@@ -179,6 +182,11 @@ test('fresh owner Start selects model-first with no fabricated history', async t
   await h.f.frame(1);
   assert.equal(h.requests[0]!.opening, 'model_first');
   assert.deepEqual(h.requests[0]!.history, []);
+  h.f.send({ setupComplete: {} });
+  await Promise.all([attachment.ready, h.f.frame(2)]);
+  assert.deepEqual(h.f.frames[1], { realtimeInput: { text: 'Greet the person briefly to begin the conversation.' } });
+  const persisted = JSON.stringify(h.store.transaction(tx => tx.all('SELECT kind,text FROM live_journal WHERE live_session_id=?', [session.liveSessionId])));
+  assert.equal(persisted.includes('Greet the person'), false, 'the server-owned directive is not user transcription or history');
   h.owner.revoke(session.liveSessionId);
   await attachment.done;
 });
@@ -388,13 +396,14 @@ test('audio is rejected before ready and PCM never reaches the store', async t =
   assert.throws(() => attachment.endAudioStream(), (error: unknown) => error instanceof LiveError && error.code === 'not_ready');
   await h.f.frame(1);
   h.f.send({ setupComplete: {} });
-  await attachment.ready;
+  await Promise.all([attachment.ready, h.f.frame(2)]);
+  assert.deepEqual(h.f.frames[1], { realtimeInput: { text: 'Greet the person briefly to begin the conversation.' } });
   attachment.sendAudio({ pcm });
-  await h.f.frame(2);
-  assert.deepEqual(h.f.frames[1], { realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: Buffer.from(pcm).toString('base64') } } });
-  attachment.endAudioStream();
   await h.f.frame(3);
-  assert.deepEqual(h.f.frames[2], { realtimeInput: { audioStreamEnd: true } });
+  assert.deepEqual(h.f.frames[2], { realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: Buffer.from(pcm).toString('base64') } } });
+  attachment.endAudioStream();
+  await h.f.frame(4);
+  assert.deepEqual(h.f.frames[3], { realtimeInput: { audioStreamEnd: true } });
   attachment.close();
   await attachment.done;
 });
@@ -1163,7 +1172,7 @@ test('Live answers a slow tool batch truthfully, continues the turn, and retains
   const slow = new Promise<void>(resolve => { finish = resolve; });
   const h = await harness(t, { tools: true, scheduler, limits: { toolDeferralMs: 1000 }, beforeTool: () => slow });
   const { session } = await attached(h);
-  assert.equal((h.requests[0] as LiveVoiceRequest & { opening?: string }).opening, 'user_first');
+  assert.equal((h.requests[0] as LiveVoiceRequest & { opening?: string }).opening, 'model_first');
   h.f.send({ toolCall: { functionCalls: [{ id: 'slow1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
   while (!h.calls.length) await tick();
   h.advance(1000); scheduler.runDue();

@@ -1297,6 +1297,10 @@ test('a tool result after a barge-in interruption is sent once and recorded afte
   assert.equal((await outputs.next()).value?.marker.kind, 'ready');
   h.f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
   while (!h.calls.length) await tick();
+  // W10 item 8: the toolCall row must not persist a placeholder outcome as failure.
+  const callRows = h.store.transaction(tx => tx.all("SELECT tool_json FROM live_journal WHERE live_session_id=? AND kind='toolCall'", [session.liveSessionId]).map(row => JSON.parse(String(row['tool_json'])) as { status?: string }));
+  assert.equal(callRows.length, 1, 'one toolCall row is journaled');
+  assert.equal('status' in callRows[0]!, false, 'a toolCall row carries no outcome until the result arrives');
   h.f.send({ serverContent: { interrupted: true } });
   let sawInterrupted = false;
   while (!sawInterrupted) {

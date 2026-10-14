@@ -182,3 +182,32 @@ restart/crash, and shared browser proof. `bash scripts/check-package.sh` remains
 offline tarball gate. Neither proof makes live model, audio, OS permission or
 installed native claims. Test transport/resolver controls exist only as trusted
 in-process construction options, never as a public route, CLI or environment mode.
+
+## Call timeline logging (W10)
+
+Every native and host event is one JSONL line with a shared envelope: `ts`
+(ISO-8601 UTC with milliseconds), `mono` (monotonic milliseconds,
+`process.hrtime.bigint()` in Node and `ProcessInfo.systemUptime` in Swift),
+`level`, `process`, `event`, and correlation ids (`launchId`, `attemptId`,
+`liveSessionId`, `generation`, `turnSeq`, `toolCallId`, `pid`).
+
+The host writes typed events through `emitHostEvent(kind, fields)` in
+`server/host/log.ts`. Each kind has a closed field schema. A field outside the
+schema is dropped and counted as one `log.schema_violation`; it is never written.
+Values are only numbers, booleans, closed enums, ids and timestamps, so no owner
+content can reach a line. Provider frame rejections log the parser stage, the
+frame kind, the known top-level Live keys and the byte length, and count unknown
+keys without naming them.
+
+Read one call back in order, read-only, from `host.log*` and `native-live.log*`:
+
+```
+node scripts/call-timeline.mjs --last
+node scripts/call-timeline.mjs --session <liveSessionId> --json
+node scripts/call-timeline.mjs --attempt <attemptId>
+node scripts/call-timeline.mjs --last --dir <logs directory>
+```
+
+The timeline is a read-only merge of the two logs, ordered by `ts` across
+processes and by `mono` within a process. It opens no SQLite, prunes nothing and
+writes nothing.

@@ -756,6 +756,10 @@ export class LiveSessionOwner {
         generationCompleteEvents: sum('generationCompleteEvents'), turnCompleteEvents: sum('turnCompleteEvents'),
         outputAudioFrames: sum('outputAudioFrames'), outputAudioPCMBytes: sum('outputAudioPCMBytes'),
         outputAudioAfterInitialTurnFrames: sum('outputAudioAfterInitialTurnFrames'), outputAudioAfterInitialTurnPCMBytes: sum('outputAudioAfterInitialTurnPCMBytes') }));
+      // W10 terminal audio.flow: one FINAL host row for the whole call's audio byte flow.
+      emitHostEvent('audio.flow', { side: 'host', attemptId: handle.attemptId, liveSessionId: handle.liveSessionId, generation: handle.generation,
+        bytesFromNative: sum('localWriteEnqueuedPCMBytes'), bytesToProvider: sum('localWriteCallbackSuccessPCMBytes'),
+        bytesFromProvider: sum('outputAudioPCMBytes'), bytesToNative: sum('localWriteCallbackSuccessPCMBytes') });
     });
   }
 

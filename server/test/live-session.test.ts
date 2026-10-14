@@ -34,7 +34,7 @@ import { Store } from '../runtime/store.js';
 import type { Transaction } from '../contracts/storage.js';
 import { createLiveSessionOwner, LiveConfigError, LiveError, liveMigrations, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, control, deferred, fixture, options, pcm } from './live-voice-fixture.js';
-import { CONNECTOR_DESCRIPTORS } from '../connectors/index.js';
+import { CONNECTOR_DESCRIPTORS, MATTERMOST_TOOLS } from '../connectors/index.js';
 import { buildRuntimeContext } from '../prompt/index.js';
 
 const MODEL = 'models/live-session-test';
@@ -89,6 +89,7 @@ async function harness(t: TestContext, overrides: {
   credentials?: { resolve(reference: string): Promise<string | undefined> };
   model?: string;
   tools?: boolean;
+  mattermost?: boolean;
   beforeTool?: () => Promise<void>;
   beforeGate?: () => Promise<void>;
   toolError?: boolean;
@@ -147,9 +148,31 @@ async function harness(t: TestContext, overrides: {
       return { content: [{ type: 'text', text: '#123: Synthetic insight\n[Evidence](https://example.test/evidence)' }], ...(overrides.toolError ? { isError: true } : {}) };
     });
     await sdk.connect(transport);
+    let mattermostEndpoint: { id: string; url: string; account: string; resource: string } | undefined;
+    let mattermostSdk: Server | undefined;
+    let mattermostTransport: WebStandardStreamableHTTPServerTransport | undefined;
+    const mattermostSchemas = MATTERMOST_TOOLS.map(name => ({ name, inputSchema: { type: 'object' } }));
+    if (overrides.mattermost) {
+      mattermostEndpoint = { id: 'mattermost', url: 'https://fixture.invalid/mattermost', account: 'account', resource: 'resource' };
+      registry.register(mattermostEndpoint); registry.enable(mattermostEndpoint.id); registry.allowEgress(mattermostEndpoint.id);
+      mattermostSdk = new Server({ name: 'live-mattermost-fixture', version: '1' }, { capabilities: { tools: { listChanged: false } } });
+      mattermostTransport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
+      mattermostSdk.setRequestHandler('tools/list', () => ({ tools: structuredClone(mattermostSchemas) }) as never);
+      mattermostSdk.setRequestHandler('tools/call', req => {
+        calls.push({ name: req.params.name, args: req.params.arguments });
+        const text = req.params.name === 'mattermost_list_channels'
+          ? JSON.stringify({ channels: [{ name: 'town-square', display_name: 'Town Square' }] })
+          : req.params.name === 'mattermost_whoami'
+            ? JSON.stringify({ username: 'robert', display_name: 'Robert Peat' })
+            : JSON.stringify({ posts: [{ channel: 'town-square', author: 'Rob', time: '2026-10-11T10:00:00Z', text: 'Standup at ten', permalink: 'https://chat.peat-cloud.com/team/pl/abcdef1234567890abcdefghij' }] });
+        return { content: [{ type: 'text', text }] };
+      });
+      await mattermostSdk.connect(mattermostTransport);
+    }
     t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
       const request = new Request(input, init);
       if (request.method === 'GET') return new Response(null, { status: 405 });
+      if (mattermostTransport && mattermostEndpoint && request.url === mattermostEndpoint.url) return mattermostTransport.handleRequest(request);
       return transport.handleRequest(request);
     });
     const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic-token', budgets: { maxResponseBytes: 12000, projectionChars: 10, timeoutMs: 1000 } });
@@ -164,9 +187,18 @@ async function harness(t: TestContext, overrides: {
       route: { identity: liveProfileIdentity(profile), allowedClasses: ['ordinary'] },
       bounds: { maxQueryChars: 80, maxSearchLimit: 3, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 } });
     assert.equal((await port.discover(endpoint.id)).state, 'discovered');
+    if (overrides.mattermost && mattermostEndpoint) {
+      toolOwner.applyConnection({ schemaVersion: 1, ownerId: store.assistantId, connectionId: 'mattermost', generation: 1, enabled: true, connector: 'mattermost',
+        endpoint: { ...mattermostEndpoint, credentialRef: null }, toolNames: [...MATTERMOST_TOOLS], schemaDigest: canonicalToolDigest(mattermostSchemas),
+        sourcePolicy: { id: 'live-fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
+        route: { identity: liveProfileIdentity(profile), allowedClasses: ['ordinary'] },
+        bounds: { maxQueryChars: 200, maxSearchLimit: 60, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 } });
+      assert.equal((await port.discover(mattermostEndpoint.id)).state, 'discovered');
+      toolOwner.projectConnection('mattermost');
+    }
     toolOwner.projectConnection('lux');
-    tools = { owner: toolOwner, connectionIds: () => ['lux'] };
-    t.after(async () => { await port.close(); await transport.close(); await sdk.close(); });
+    tools = { owner: toolOwner, connectionIds: () => overrides.mattermost ? ['lux', 'mattermost'] : ['lux'] };
+    t.after(async () => { await port.close(); await transport.close(); await sdk.close(); if (mattermostSdk) await mattermostSdk.close(); });
   }
   const memorySource = (tx: import('../contracts/storage.js').Transaction) => {
     memorySelections += 1;
@@ -1807,6 +1839,55 @@ test('Mattermost declarations carry the channel-resolution micro-contract', () =
   assert.match(descriptions.get('mattermost_list_channels')!, /Call it at most once per question/);
   assert.match(descriptions.get('mattermost_list_channels')!, /ids stay valid for the whole session, so reuse them/);
   assert.match(descriptions.get('mattermost_search')!, /search first, no channel list needed/);
-  assert.match(descriptions.get('mattermost_get_channel_history')!, /channel is a channel id from mattermost_list_channels/);
+  assert.match(descriptions.get('mattermost_get_channel_history')!, /channel is a channel name or display name; no channel list needed/);
   assert.match(descriptions.get('mattermost_get_thread')!, /postId is a post id taken from a channel history/);
+});
+
+function toolResponseCount(h: Harness): number {
+  return h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).length;
+}
+
+async function settleLiveTool(h: Harness, id: string, name: string, args: unknown): Promise<void> {
+  const before = toolResponseCount(h);
+  h.f.send({ toolCall: { functionCalls: [{ id, name, args }] } });
+  for (let i = 0; i < 2000 && toolResponseCount(h) === before; i++) await tick();
+  assert.equal(toolResponseCount(h), before + 1, `no tool response for ${id}`);
+}
+
+test('a replayed Live question reaches the connector once per allowlisted read', async t => {
+  const h = await harness(t, { tools: true, mattermost: true });
+  await attached(h, 'cache-replay');
+  const channelId = 'abcdefghijklmnopqrstuvwxzy';
+  await settleLiveTool(h, 'l1', 'mattermost_list_channels', { limit: 12 });
+  await settleLiveTool(h, 'l2', 'mattermost_list_channels', { limit: 12 });
+  await settleLiveTool(h, 'l3', 'mattermost_list_channels', { limit: 12 });
+  await settleLiveTool(h, 's1', 'mattermost_search', { query: 'standup', limit: 12 });
+  await settleLiveTool(h, 's2', 'mattermost_search', { query: 'standup', limit: 12 });
+  await settleLiveTool(h, 'h1', 'mattermost_get_channel_history', { channel: channelId, limit: 12 });
+  await settleLiveTool(h, 'h2', 'mattermost_get_channel_history', { channel: channelId, limit: 12 });
+  const count = (name: string) => h.calls.filter(call => call.name === name).length;
+  assert.equal(count('mattermost_list_channels'), 1, 'three identical list calls reach the connector once');
+  assert.equal(count('mattermost_search'), 2, 'a search is never cached');
+  assert.equal(count('mattermost_get_channel_history'), 2, 'a history read is never cached');
+});
+
+test('a new Live session starts with an empty read cache', async t => {
+  const first = await harness(t, { tools: true, mattermost: true });
+  await attached(first, 'cache-session-one');
+  await settleLiveTool(first, 'o1', 'mattermost_list_channels', { limit: 12 });
+  assert.equal(first.calls.filter(call => call.name === 'mattermost_list_channels').length, 1);
+  const second = await harness(t, { tools: true, mattermost: true });
+  await attached(second, 'cache-session-two');
+  await settleLiveTool(second, 'o2', 'mattermost_list_channels', { limit: 12 });
+  assert.equal(second.calls.filter(call => call.name === 'mattermost_list_channels').length, 1, 'the second session reads the connector afresh');
+});
+
+test('a cached read expires after ten minutes even inside one session', async t => {
+  const h = await harness(t, { tools: true, mattermost: true });
+  await attached(h, 'cache-ttl');
+  await settleLiveTool(h, 't1', 'mattermost_list_channels', { limit: 12 });
+  assert.equal(h.calls.filter(call => call.name === 'mattermost_list_channels').length, 1);
+  h.advance(10 * 60 * 1000);
+  await settleLiveTool(h, 't2', 'mattermost_list_channels', { limit: 12 });
+  assert.equal(h.calls.filter(call => call.name === 'mattermost_list_channels').length, 2, 'an expired entry is read again');
 });

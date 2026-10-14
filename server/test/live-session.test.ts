@@ -1863,7 +1863,7 @@ test('W10: a fake-provider call reconstructs the ordered call timeline', async t
   let cursor = -1;
   for (const name of order) {
     const at = names.indexOf(name, cursor + 1);
-    assert.ok(at > cursor, `${name} must follow the previous event in the timeline`);
+    assert.ok(at > cursor, `${name} must follow the previous event in the timeline: ${names.join(',')}`);
     cursor = at;
   }
   assert.ok(names.filter(name => name === 'provider.turn').length >= 4, 'three turnComplete plus the interruption');

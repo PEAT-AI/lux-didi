@@ -8,7 +8,7 @@ export async function startFixture({configured = false} = {}) {
   const headers = JSON.parse(await readFile(join(import.meta.dirname, '../security-headers.json'),'utf8'));
   const db = new DatabaseSync(':memory:');
   db.exec('CREATE TABLE records (id TEXT PRIMARY KEY, kind TEXT, value TEXT)');
-  const requests = []; const epoch = 'synthetic-authority-1'; let paired = false;
+  const requests = []; let epoch = 'synthetic-authority-1'; let paired = false;
   let failEntry = false, conflict = false, heldEntry, heldPlan;
   // Interface 3 projection shape (W-D develops against this until W-B's route lands).
   let live = { state: 'idle', since: new Date().toISOString(), entries: [], cursor: 0 };
@@ -67,5 +67,5 @@ export async function startFixture({configured = false} = {}) {
     return error('NOT_FOUND','Route not found.',404);
   });
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
-  return {url:`http://127.0.0.1:${server.address().port}`,requests,failNextEntry:()=>{failEntry=true;},conflictNextWrite:()=>{conflict=true;},setLive:payload=>{live=payload;},holdNextEntry:()=>{let release;heldEntry=new Promise(r=>release=r);return ()=>release();},holdNextPlan:()=>{let release;heldPlan=new Promise(r=>release=r);return ()=>release();},close:async()=>{await new Promise(resolve=>server.close(resolve)); db.close();}};
+  return {url:`http://127.0.0.1:${server.address().port}`,requests,failNextEntry:()=>{failEntry=true;},conflictNextWrite:()=>{conflict=true;},setLive:payload=>{live=payload;},setEpoch:value=>{epoch=value;},holdNextEntry:()=>{let release;heldEntry=new Promise(r=>release=r);return ()=>release();},holdNextPlan:()=>{let release;heldPlan=new Promise(r=>release=r);return ()=>release();},close:async()=>{await new Promise(resolve=>server.close(resolve)); db.close();}};
 }

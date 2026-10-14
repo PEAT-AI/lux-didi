@@ -134,3 +134,25 @@ for (const retained of [true, false]) {
       : 'Memory deleted.']);
   });
 }
+
+test('a conversation summary renders as a memory item with its origin and a delete control', () => {
+  const summary = fixture({ id: 'summary-1', kind: undefined, origin: 'conversation summary',
+    text: 'The owner asked about their plate; Naya found two meetings.', capturedAt: '2026-10-14T18:00:00.000Z' });
+  assert.equal(memoryItemOrigin(summary), 'Conversation summary');
+  const markup = memoryListMarkup([summary]);
+  assert.match(markup, /class="memory-source"[^>]*>Conversation summary</);
+  assert.match(markup, /data-delete-memory="summary-1"/);
+  assert.doesNotMatch(markup, /class="memory-kind"/, 'a summary carries no remember kind badge');
+});
+
+test('a cascade summary delete reports how many summaries were removed', async () => {
+  const notices: string[] = [];
+  await deleteMemoryAndReload('summary-1', {
+    confirm: () => true,
+    remove: async () => ({ deletedIds: ['summary-1', 'summary-2', 'summary-3'], notFound: false }),
+    reload: async () => [],
+    apply: () => {},
+    deleted: (message: string) => notices.push(message),
+  });
+  assert.deepEqual(notices, ['Deleted 3 conversation summaries.']);
+});

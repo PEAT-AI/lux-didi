@@ -340,7 +340,7 @@ test('Live tool batches use one response frame and suppress microphone audio unt
   assert.deepEqual(setup.tools, [{ functionDeclarations: [{ name: 'search_knowledge', description: 'Search', parameters: { type: 'OBJECT' } }] }]);
   assert.equal(setup.generationConfig.speechConfig.languageCode, 'ar-XA');
   assert.deepEqual(setup.generationConfig.thinkingConfig, { thinkingLevel: 'minimal' });
-  assert.deepEqual(setup.historyConfig, { initialHistoryInClientContent: true });
+  assert.equal(setup.historyConfig, undefined);
   assert.deepEqual(setup.contextWindowCompression, { slidingWindow: { targetTokens: 32000 } });
   assert.deepEqual(setup.realtimeInputConfig, { automaticActivityDetection: { startOfSpeechSensitivity: 'START_SENSITIVITY_LOW' } });
   f.send({ setupComplete: {} }); await session.ready;

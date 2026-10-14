@@ -156,6 +156,31 @@ struct OwnedServiceConnection {
     private var operation: UUID?
     private(set) var credentialValidated = false
     private(set) var lastStop: [String: Any]?
+    var logDirectory: URL?
+    // W10 native host-lifecycle records, written by the supervisor because a dead host cannot log.
+    private func appendLog(_ fields: [String: Any]) {
+        guard let directory = logDirectory else { return }
+        var envelope = fields
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        envelope["ts"] = formatter.string(from: Date())
+        envelope["mono"] = ProcessInfo.processInfo.systemUptime * 1000
+        envelope["level"] = "info"
+        envelope["process"] = "native"
+        envelope["launchId"] = ProcessInfo.processInfo.environment["LUX_LAUNCH_ID"] ?? "unknown"
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            let file = directory.appendingPathComponent("native-live.log")
+            if !FileManager.default.fileExists(atPath: file.path) {
+                guard FileManager.default.createFile(atPath: file.path, contents: nil, attributes: [.posixPermissions: 0o600]) else { return }
+            }
+            let handle = try FileHandle(forWritingTo: file)
+            defer { try? handle.close() }
+            try handle.seekToEnd()
+            var record = try JSONSerialization.data(withJSONObject: envelope, options: [.sortedKeys])
+            record.append(10); try handle.write(contentsOf: record)
+        } catch { /* logging must never change supervision */ }
+    }
     // Last startup stage reached by start(), for a privacy-safe exit record.
     private var lastStage = "state"
     private var hostRefusedCode: String?
@@ -170,6 +195,7 @@ struct OwnedServiceConnection {
                     "exitStatus": Int(owned.process.terminationStatus),
                     "terminationReason": owned.process.terminationReason == .exit ? "exit" : "uncaughtSignal",
                     "procedure": "private-stdin-close-and-bounded-owned-escalation"]
+        appendLog(["event": "host.exit", "stage": lastStage, "reason": "exit", "code": Int(owned.process.terminationStatus)])
     }
     @Published private(set) var state: NativeServiceState = .stopped
     var onUnavailable: (() -> Void)?
@@ -409,6 +435,7 @@ struct OwnedServiceConnection {
                     return try self.credential(owner: owned, nonce: nonce, initial: initial)
                 })
             connection = result; state = .running; lastStage = "running"
+            appendLog(["event": "host.started", "pid": Int(owned.pid)])
             if !recovering { recovery.activate() }
             observeWake()
             return result
@@ -439,7 +466,10 @@ struct OwnedServiceConnection {
             throw error
         }
     }
-    func stop() async {
+    func stop() async { await stop(reason: "owner") }
+    func stop(reason: String) async {
+        // W10 M9: record who stopped the host and why before the child is signalled.
+        appendLog(["event": "host.stop_requested", "actor": "native_supervisor", "reason": reason])
         recovery.stop(); restartTask?.cancel(); restartTask = nil
         if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
         wakeObserver = nil

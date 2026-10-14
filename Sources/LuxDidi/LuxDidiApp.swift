@@ -75,6 +75,7 @@ import Security
                     catch { self.error = NativeServiceError.invalidOperatorSettings.localizedDescription; return }
                     let owner = try NativeServiceSupervisor(runtime: runtime, proof: prepared, operatorSettings: operatorSettings)
                     supervisor = owner
+                    owner.logDirectory = liveLogsDirectory
                     owner.onRestartStatus = { [weak self, weak owner] restarting in
                         self?.serviceRestarting = restarting
                         if !restarting, owner?.isRunning == false {
@@ -309,7 +310,7 @@ import Security
     }
     func shutdown() async {
         await logout()
-        await supervisor?.stop()
+        await supervisor?.stop(reason: "app_shutdown")
     }
 }
 

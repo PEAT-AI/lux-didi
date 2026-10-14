@@ -63,6 +63,7 @@ enum State: String, CaseIterable {
     private var muted = false, speaking = false
     private var muteTask: Task<Void, Never>?
     private var captureSummaryTask: Task<Void, Never>?
+    private var audioFlowTask: Task<Void, Never>?
     private var captureDiagnosticOwner: UInt64?
     var isMuted: Bool { muted }
     var isCapturing: Bool { state == .connecting || state == .pausedForInput || device.isCapturing }
@@ -84,6 +85,7 @@ enum State: String, CaseIterable {
             guard let self else { return }
             self.state = .pausedForInput
             self.failure = "Microphone changed to " + name + ". Resume?"
+            self.emitAudioConfig()
         }
         device.onResume = { [weak self] in
             guard let self, self.state == .pausedForInput else { return }
@@ -163,6 +165,8 @@ enum State: String, CaseIterable {
                 }
                 try Task.checkCancellation()
                 guard let self, self.generation == token else { return }
+                self.emitAudioConfig()
+                self.startAudioFlow()
                 let intent = try await http.beginIntent()
                 self.limits = http.limits
                 try Task.checkCancellation()
@@ -215,7 +219,30 @@ enum State: String, CaseIterable {
             record.append(10); try handle.write(contentsOf: record)
         } catch { /* Logging must not change capture or session state. */ }
     }
+    // W10: audio.config on capture start and every route change, and a 5 s audio.flow heartbeat.
+    private func emitAudioConfig() {
+        let config = device.liveAudioConfiguration()
+        appendLocalDiagnostic(["event": "audio.config", "inputRate": Int(config.sampleRate), "channels": config.channels,
+            "channelMap": config.channelMap.map(String.init).joined(separator: ","), "voiceProcessing": config.voiceProcessing])
+    }
+    private func startAudioFlow() {
+        audioFlowTask?.cancel()
+        audioFlowTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                guard let self, !Task.isCancelled else { return }
+                guard self.device.isCapturing else { return }
+                self.emitAudioFlow(isFinal: false)
+            }
+        }
+    }
+    private func emitAudioFlow(isFinal: Bool) {
+        let counters = device.liveAudioFlowCounters()
+        appendLocalDiagnostic(["event": "audio.flow", "side": "native", "final": isFinal,
+            "underruns": counters.underruns, "lateFramesAfterFlush": counters.lateAfterFlush])
+    }
     private func stopAudioAndSummarize() {
+        audioFlowTask?.cancel(); audioFlowTask = nil
         device.stop()
         guard let native = device.takeCaptureSummary(), let owner = captureDiagnosticOwner else { return }
         let nativeState = state.rawValue
@@ -245,6 +272,10 @@ enum State: String, CaseIterable {
                     uniquingKeysWith: { _, new in new })
             }
             self.appendLocalDiagnostic(fields)
+            self.appendLocalDiagnostic(["event": "audio.flow", "side": "native", "final": true,
+                "tapFrames": capture.tapBuffers, "converterBytesOut": capture.convertedBytes,
+                "ringDropped": capture.ringDrops, "ringResidual": capture.residualBytes, "wsBytesSent": capture.sentBytes,
+                "underruns": native.playback.underruns, "lateFramesAfterFlush": native.playback.lateAfterFlush])
         }
     }
     func toggleMute() {
@@ -263,6 +294,7 @@ enum State: String, CaseIterable {
     /// Stop capture and presentation synchronously before asynchronous transport cleanup.
     func stopCapture() {
         generation &+= 1; startTask?.cancel(); startTask = nil
+        audioFlowTask?.cancel(); audioFlowTask = nil
         observer?.cancel(); observer = nil
         stopAudioAndSummarize()
         state = .ended

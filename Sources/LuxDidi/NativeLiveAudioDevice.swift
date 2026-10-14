@@ -336,6 +336,12 @@ final class NativeCaptureBuffer: @unchecked Sendable {
         defer { terminalCaptureSummary = nil }
         return terminalCaptureSummary
     }
+    /// W10: non-consuming counters and resolved input configuration for the native audio events.
+    func liveAudioFlowCounters() -> (underruns: Int, lateAfterFlush: Int) { (playback.underruns, playback.lateAfterFlush) }
+    func liveAudioConfiguration() -> (sampleRate: Double, channels: Int, channelMap: [Int], voiceProcessing: Bool) {
+        let format = captureInput ?? engine?.inputNode.inputFormat(forBus: 0)
+        return (format?.sampleRate ?? 0, Int(format?.channelCount ?? 0), [0], engine?.inputNode.isVoiceProcessingEnabled ?? false)
+    }
 
     func start(send: @escaping @Sendable (Data) async throws -> Void) async throws {
         try await startFenced { data, _ in try await send(data) }

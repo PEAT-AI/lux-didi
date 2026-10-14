@@ -93,7 +93,7 @@ test('a granted google endpoint calls the real child with bounded defaults and b
     assert.equal((listEnvelope['received'] as Record<string, unknown>)['maxResults'], 10);
     const listProjection = renderGoogleTool('gmail_list', (listEnvelope['data'] as Record<string, unknown>));
     assert.equal(listProjection.partial, false);
-    assert.match(listProjection.text, /Synthetic subject line, Synthetic Sender, Mon, 1 Jan 2024/);
+    assert.match(listProjection.text, /Synthetic subject line \| Synthetic Sender \| Mon, 1 Jan 2024/);
     assert.match(listProjection.text, /source: https:\/\/mail\.google\.com\/mail\/u\/0\/#inbox\/m1/);
 
     const outOfBudget = await gmail.gmailList({ maxResults: 999 });
@@ -106,7 +106,7 @@ test('a granted google endpoint calls the real child with bounded defaults and b
     const readProjection = renderGoogleTool('gmail_read', (readEnvelope['data'] as Record<string, unknown>));
     assert.equal(readProjection.partial, true);
     assert.match(readProjection.text, /subject: Synthetic subject line/);
-    assert.match(readProjection.text, /body truncated/);
+    assert.match(readProjection.text, /body truncated|\[omitted: \d+ characters of body; final/);
 
     const events = completed(await calendar.gcalList({}));
     payloadPorts.set(events, adapter);

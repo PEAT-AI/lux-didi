@@ -1,13 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage } from 'node:http';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { once } from 'node:events';
 import { randomUUID, createHash } from 'node:crypto';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
-import type { ToolDefinition, CallRequest, McpPort } from '../adapters/mcp/port.js';
+import type { ToolDefinition, CallRequest, McpPort, EndpointConfig } from '../adapters/mcp/port.js';
 
 // Explicitly synthetic public protocol fixture; no real accounts, model or corpus.
 const tool: ToolDefinition = { name: 'read', description: 'Synthetic text', inputSchema: { type: 'object' }, annotations: { readOnlyHint: false } };
@@ -520,4 +524,31 @@ test('call timeout override retains the HTTP response byte limit', async () => {
     if (result.state === 'unknown') assert.equal(result.reason, 'response-oversize');
     assert.equal(f.counter, 1);
   } finally { await adapter.close(); await f.close(); }
+});
+
+// Warm-connector audit (W7): the same child process serves two sequential calls, and concurrent
+// calls to one endpoint are refused, so a provider batch must fan out across endpoints, not within
+// one (see the author report: batch dispatch is serial in tools/declarations.ts).
+test('one long-lived stdio client serves two sequential calls and never forks per call', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-warm-'));
+  const pidFile = join(dir, 'child.pid');
+  const child = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'test', 'fixtures', 'stdio-mcp-child.mjs');
+  const endpoint: EndpointConfig = { id: 'warm', transport: 'stdio', command: process.execPath, args: [child, 'ok', pidFile, 'stdio-pong'], env: { HOME: dir, PATH: process.env.PATH ?? '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' }, account: 'local', resource: 'warm-fixture' } as unknown as EndpointConfig;
+  const registry = new McpRegistry();
+  registry.register(endpoint);
+  registry.enable('warm'); registry.allowEgress('warm');
+  const adapter = createMcpAdapter({ registry, store: new MemoryResultStore(), budgets: { timeoutMs: 4000 } });
+  try {
+    const discovery = await adapter.discover('warm');
+    assert.equal(discovery.state, 'discovered');
+    if (discovery.state !== 'discovered') return;
+    registry.approve({ endpointId: 'warm', schemaDigest: discovery.schemaDigest, toolNames: ['echo'], effect: 'read', account: 'local', resource: 'warm-fixture', generation: 1 });
+    const req: CallRequest = { endpointId: 'warm', toolName: 'echo', arguments: {}, generation: 1, account: 'local', resource: 'warm-fixture' };
+    assert.equal((await adapter.call(req)).state, 'completed');
+    const first = readFileSync(pidFile, 'utf8');
+    assert.equal((await adapter.call(req)).state, 'completed');
+    assert.equal(readFileSync(pidFile, 'utf8'), first, 'the same child pid must serve both sequential calls');
+    const pair = await Promise.all([adapter.call(req), adapter.call(req)]);
+    assert.equal(pair.some(result => result.state === 'refused' && result.reason === 'endpoint-busy'), true, 'a concurrent same-endpoint call is refused as endpoint-busy');
+  } finally { await adapter.close(); rmSync(dir, { recursive: true, force: true }); }
 });

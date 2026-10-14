@@ -1840,7 +1840,9 @@ test('W10: a fake-provider call reconstructs the ordered call timeline', async t
   const stop = captureHostDiagnostics(new HostLog(dir));
   t.after(stop);
   const logPath = join(dir, 'logs', 'host.log');
-  const { attachment } = await attached(h, 'a1');
+  const session = h.owner.create({ idempotencyKey: 'a1', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId, attemptId: 'a1-attempt' }, h.ctx);
+  await h.f.frame(1); h.f.send({ setupComplete: {} }); await attachment.ready; await h.f.frame(2); h.f.frames.splice(1, 1);
   void (async () => { for await (const chunk of attachment.output) { void chunk; } })();
   for (let i = 0; i < 3; i++) {
     h.f.send({ serverContent: { outputTranscription: { text: `out-${i}`, finished: true }, generationComplete: true, turnComplete: true } });
@@ -1857,7 +1859,7 @@ test('W10: a fake-provider call reconstructs the ordered call timeline', async t
   await untilLogged(logPath, 'live.reconnect', 1);
   h.f.clients.at(-1)!.close();
   await untilLogged(logPath, 'live.session_terminal', 1);
-  const output = execFileSync(process.execPath, [join(import.meta.dirname, '../../../scripts/call-timeline.mjs'), '--last', '--json', '--dir', join(dir, 'logs')], { encoding: 'utf8' });
+  const output = execFileSync(process.execPath, [join(import.meta.dirname, '../../../scripts/call-timeline.mjs'), '--attempt', 'a1-attempt', '--json', '--dir', join(dir, 'logs')], { encoding: 'utf8' });
   const names = (JSON.parse(output) as { event: string }[]).map(entry => entry.event);
   const order = ['live.attempt_start', 'live.session_open', 'provider.turn', 'tool.call_start', 'tool.call_end', 'live.reconnect', 'live.session_terminal'];
   let cursor = -1;

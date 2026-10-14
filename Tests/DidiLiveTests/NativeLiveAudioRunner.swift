@@ -155,14 +155,15 @@ final class DiagnosticLogHTTPFixture: URLProtocol, @unchecked Sendable {
     buffer.frameLength = 1024
     for index in 0..<1024 { buffer.floatChannelData![0][index] = 0.25 }
     for _ in 0..<4 {
-        try audioRequire(DidiInvokeTapOffMain({ buffer, _ in capture.append(buffer) }, buffer), "Objective-C capture tap executes off main")
+        try audioRequire(DidiInvokeTapOffMain(capture.makeTap(), buffer), "Objective-C capture tap executes off main")
     }
     let frame = capture.next().0
     try audioRequire(frame?.count == 640 && frame!.contains(where: { $0 != 0 }), "actual off-main tap converts nonzero PCM16/16k")
     capture.setMuted(true)
-    try audioRequire(DidiInvokeTapOffMain({ buffer, _ in capture.append(buffer) }, buffer) && capture.next().0 == nil, "muted callback emits no PCM")
+    try audioRequire(DidiInvokeTapOffMain(capture.makeTap(), buffer) && capture.next().0 == nil, "muted callback emits no PCM")
+    capture.setMuted(false)
     capture.stop()
-    try audioRequire(DidiInvokeTapOffMain({ buffer, _ in capture.append(buffer) }, buffer) && capture.next().0 == nil, "stopped callback emits no PCM")
+    try audioRequire(DidiInvokeTapOffMain(capture.makeTap(), buffer) && capture.next().0 == nil, "stopped callback emits no PCM")
     print("PASS production capture callback off-main, nonzero 640-byte PCM, mute and stop fences; no audio engine")
 }
 

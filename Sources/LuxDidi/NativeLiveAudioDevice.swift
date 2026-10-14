@@ -82,6 +82,9 @@ final class NativeCaptureBuffer: @unchecked Sendable {
         self.converter = converter
         (stream, signal) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(1))
     }
+    func makeTap() -> AVAudioNodeTapBlock {
+        { [self] buffer, _ in append(buffer) }
+    }
     func append(_ input: AVAudioPCMBuffer) {
         lock.lock(); defer { lock.unlock() }
         guard !stopped else { return }
@@ -337,7 +340,7 @@ final class NativeCaptureBuffer: @unchecked Sendable {
             let capture = try NativeCaptureBuffer(converter: NativePCMConverter(input: hardware))
             capture.setMuted(muted)
             try Self.connectPlayback(engine: engine, player: player, outputNode: engine.outputNode)
-            engine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: hardware) { buffer, _ in capture.append(buffer) }
+            engine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: hardware, block: capture.makeTap())
             self.engine = engine; self.player = player; self.capture = capture
             engine.prepare()
             do { try engine.start() }

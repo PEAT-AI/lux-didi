@@ -58,6 +58,7 @@ export type LiveVoiceEvent = { sequence: number } & (
   | { type: 'modelTurnStarted' }
   | { type: 'toolCall'; calls: LiveToolCall[] }
   | { type: 'toolCallCancellation'; ids: string[] }
+  | { type: 'toolCallSuperseded'; ids: string[]; reason: 'speech' | 'buffer_full' }
   | { type: 'audio'; pcm: Uint8Array; mimeType: 'audio/pcm;rate=24000' }
   | { type: 'inputTranscription' | 'outputTranscription'; text: string; finished?: boolean }
   | { type: 'modelText'; text: string; thought: boolean }

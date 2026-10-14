@@ -435,7 +435,7 @@ test('expired deadline and unrepresentable initial frame have zero credential/so
   assert.equal(keys, 0); assert.equal(sockets, 0);
 });
 
-test('Live tool batches use one response frame and suppress microphone audio until answered', async t => {
+test('Live tool batches buffer microphone audio in order behind one response frame, zero dropped', async t => {
   const f = await fixture(t);
   const modelId = 'models/gemini-3.1-flash-live-preview';
   const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory, modelId, route: { enabled: true, provider: 'gemini', modelId, dataClasses: ['ordinary', 'private'] } })).open({ ...request(), languageCode: 'ar', tools: [
@@ -458,17 +458,94 @@ test('Live tool batches use one response frame and suppress microphone audio unt
   assert.equal(event?.type, 'toolCall');
   if (event?.type !== 'toolCall') throw Error('missing tool call');
   assert.deepEqual(event.calls.map(c => c.id), ['c1', 'c2']);
-  session.sendAudio({ pcm, dataClass: 'ordinary' });
-  assert.equal(session.droppedAudioFrames, 1);
+  const first = new Uint8Array([1, 0, 2, 0]); const second = new Uint8Array([3, 0, 4, 0]);
+  session.sendAudio({ pcm: first, dataClass: 'ordinary' });
+  session.sendAudio({ pcm: second, dataClass: 'ordinary' });
+  assert.equal(session.droppedAudioFrames, 0);
   session.sendToolResponse({ responses: [{ id: 'c1', name: 'search_knowledge', response: { markdown: 'one' } }, { id: 'c2', name: 'search_knowledge', response: { error: 'denied' } }] });
   await f.frame(2);
   assert.deepEqual(f.frames[1], { toolResponse: { functionResponses: [{ id: 'c1', name: 'search_knowledge', response: { markdown: 'one' } }, { id: 'c2', name: 'search_knowledge', response: { error: 'denied' } }] } });
-  session.sendAudio({ pcm, dataClass: 'ordinary' }); await f.frame(3);
-  session.close(); assert.equal((await session.done).droppedAudioFrames, 1);
+  await f.frame(4);
+  assert.deepEqual(f.frames[2], { realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: Buffer.from(first).toString('base64') } } });
+  assert.deepEqual(f.frames[3], { realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: Buffer.from(second).toString('base64') } } });
+  session.close(); assert.equal((await session.done).droppedAudioFrames, undefined);
   const diagnostics = session.diagnostics?.();
-  assert.equal(diagnostics?.audioCalls, 2); assert.equal(diagnostics?.audioBytes, pcm.byteLength * 2);
-  assert.equal(diagnostics?.pendingToolDropCalls, 1); assert.equal(diagnostics?.pendingToolDropBytes, pcm.byteLength);
-  assert.equal(diagnostics?.localWriteEnqueuedCalls, 1); assert.equal(diagnostics?.localWriteCallbackPendingCalls, 0);
+  assert.equal(diagnostics?.audioCalls, 2); assert.equal(diagnostics?.audioBytes, first.byteLength + second.byteLength);
+  assert.equal(diagnostics?.pendingToolDropCalls, 0); assert.equal(diagnostics?.pendingToolDropBytes, 0);
+  assert.equal(diagnostics?.localWriteEnqueuedCalls, 3); assert.equal(diagnostics?.localWriteCallbackPendingCalls, 0);
+});
+
+test('sustained speech while a tool batch is pending supersedes it behind a neutral response', async t => {
+  const f = await fixture(t);
+  const modelId = 'models/gemini-3.1-flash-live-preview';
+  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory, modelId, route: { enabled: true, provider: 'gemini', modelId, dataClasses: ['ordinary', 'private'] } })).open({ ...request(), tools: [
+    { name: 'search_knowledge', description: 'Search', parameters: { type: 'OBJECT' } },
+  ] }, control());
+  const events = session.events[Symbol.asyncIterator](); t.after(() => session.close());
+  await f.frame(1); f.send({ setupComplete: {} }); await session.ready;
+  assert.equal((await events.next()).value?.type, 'ready');
+  f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x' } }] } });
+  assert.equal((await events.next()).value?.type, 'modelTurnStarted');
+  assert.equal((await events.next()).value?.type, 'toolCall');
+  const loud = new Uint8Array(16_000); for (let i = 0; i < loud.length; i += 2) { loud[i] = 0xff; loud[i + 1] = 0x7f; }
+  session.sendAudio({ pcm: loud, dataClass: 'ordinary' });
+  assert.equal((await events.next()).value?.type, 'toolCallSuperseded');
+  await f.frame(2);
+  const neutral = (f.frames[1] as { toolResponse: { functionResponses: { id: string; name: string; response: { result?: string } }[] } }).toolResponse.functionResponses;
+  assert.deepEqual(neutral.map(response => response.id), ['c1']);
+  assert.match(String(neutral[0]!.response.result), /set aside/);
+  await f.frame(3);
+  assert.deepEqual(f.frames[2], { realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: Buffer.from(loud).toString('base64') } } });
+  assert.throws(() => session.sendToolResponse({ responses: [{ id: 'c1', name: 'search_knowledge', response: { markdown: 'late' } }] }), code('invalid_request'));
+  session.sendAudio({ pcm: new Uint8Array([9, 0]), dataClass: 'ordinary' }); await f.frame(4);
+  assert.equal('realtimeInput' in (f.frames[3] as object), true);
+  session.close();
+});
+
+test('the audio buffer high-water mark supersedes a pending batch with no eviction or reorder', async t => {
+  const f = await fixture(t);
+  const modelId = 'models/gemini-3.1-flash-live-preview';
+  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory, modelId, route: { enabled: true, provider: 'gemini', modelId, dataClasses: ['ordinary', 'private'] } })).open({ ...request(), tools: [
+    { name: 'search_knowledge', description: 'Search', parameters: { type: 'OBJECT' } },
+  ] }, control());
+  const events = session.events[Symbol.asyncIterator](); t.after(() => session.close());
+  await f.frame(1); f.send({ setupComplete: {} }); await session.ready;
+  assert.equal((await events.next()).value?.type, 'ready');
+  f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x' } }] } });
+  assert.equal((await events.next()).value?.type, 'modelTurnStarted');
+  assert.equal((await events.next()).value?.type, 'toolCall');
+  const chunk = new Uint8Array(64_000);
+  for (let i = 0; i < 5; i++) session.sendAudio({ pcm: chunk, dataClass: 'ordinary' });
+  assert.equal((await events.next()).value?.type, 'toolCallSuperseded');
+  assert.equal(session.droppedAudioFrames, 0);
+  await f.frame(7);
+  assert.equal('toolResponse' in (f.frames[1] as object), true);
+  for (let i = 0; i < 5; i++) {
+    const frame = f.frames[2 + i] as { realtimeInput: { audio: { data: string } } };
+    assert.equal(Buffer.from(frame.realtimeInput.audio.data, 'base64').equals(Buffer.from(chunk)), true, `frame ${i} preserved in order`);
+  }
+  session.close();
+});
+
+test('provider cancellation releases the batch so later audio is not superseded', async t => {
+  const f = await fixture(t);
+  const modelId = 'models/gemini-3.1-flash-live-preview';
+  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory, modelId, route: { enabled: true, provider: 'gemini', modelId, dataClasses: ['ordinary', 'private'] } })).open({ ...request(), tools: [
+    { name: 'search_knowledge', description: 'Search', parameters: { type: 'OBJECT' } },
+  ] }, control());
+  const events = session.events[Symbol.asyncIterator](); t.after(() => session.close());
+  await f.frame(1); f.send({ setupComplete: {} }); await session.ready;
+  assert.equal((await events.next()).value?.type, 'ready');
+  f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x' } }] } });
+  assert.equal((await events.next()).value?.type, 'modelTurnStarted');
+  assert.equal((await events.next()).value?.type, 'toolCall');
+  f.send({ toolCallCancellation: { ids: ['c1'] } });
+  assert.equal((await events.next()).value?.type, 'toolCallCancellation');
+  const loud = new Uint8Array(16_000); for (let i = 0; i < loud.length; i += 2) { loud[i] = 0xff; loud[i + 1] = 0x7f; }
+  session.sendAudio({ pcm: loud, dataClass: 'ordinary' }); await f.frame(2);
+  assert.equal('realtimeInput' in (f.frames[1] as object), true);
+  assert.equal(f.frames.some(frame => 'toolResponse' in (frame as object)), false, 'no response for a cancelled id');
+  session.close();
 });
 
 test('3.8 Live omits thinking config and cancellation releases an unanswered batch', async t => {

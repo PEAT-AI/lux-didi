@@ -66,7 +66,7 @@ export type LiveToolsComposition = {
   owner: ReturnType<typeof createToolsOwner>; connectionIds(): string[];
   registerAuthoritySource?(source: (runId: string, signal: AbortSignal) => Promise<import('../tools/types.js').LiveAuthority | null>): void;
 };
-export interface LiveToolProjection { code?: 'tool_call_lost_on_resume'; callId?: string; name: string; status: 'completed' | 'error'; markdown: string; sources: { title: string; url?: string }[] }
+export interface LiveToolProjection { code?: 'tool_call_lost_on_resume' | 'tool_call_superseded'; callId?: string; name: string; status: 'completed' | 'error'; markdown: string; sources: { title: string; url?: string }[] }
 export interface PendingLiveJob {
   id: string; originSessionId: string; state: 'in_progress' | 'completed' | 'failed' | 'unknown';
   createdAt: number; markdown: string; delivered: boolean;

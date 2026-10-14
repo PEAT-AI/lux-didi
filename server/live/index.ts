@@ -40,6 +40,7 @@ interface ActiveSession {
   seenIds: Set<string>;
   thinking: boolean;
   pendingCallIds: Set<string>;
+  supersededCallIds: Set<string>;
   speaking: boolean;
   liveSessionId: string;
   session: LiveVoiceSession;
@@ -579,7 +580,7 @@ export class LiveSessionOwner {
       generation: 0, attempts: 0, rebuilding: false, request: structuredClone(request),
       deadlineMs, deadlineAt, idleAt: this.#now() + this.#profile.limits.idleMs, goAwayUntil: undefined,
       sessionTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
-      registry, host, toolStep: 0, seenIds: new Set(), thinking: false, speaking: false, pendingCallIds: new Set(),
+      registry, host, toolStep: 0, seenIds: new Set(), thinking: false, speaking: false, pendingCallIds: new Set(), supersededCallIds: new Set(),
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
       consumerState: 'attached', journalEvents: 0, journalBytes: 0, adapterOutcome: undefined,
@@ -657,7 +658,7 @@ export class LiveSessionOwner {
       if (journalSequence === 'overflow') { this.#settle(handle, { state: 'journal_limit' }, false, 'ended', null); return false; }
       this.#pushChunk(handle, { kind: 'marker', marker: { kind: 'toolResult', sequence: null, journalSequence, text: null, finished: null, value: null, tool } });
     }
-    handle.pendingCallIds.clear(); handle.pendingCalls.clear();
+    handle.pendingCallIds.clear(); handle.pendingCalls.clear(); handle.supersededCallIds.clear();
     this.#continuity(handle, 'rebuilding', reason);
     if (this.#settled(handle)) return false;
     try {
@@ -771,6 +772,11 @@ export class LiveSessionOwner {
           }); continue;
         }
         if (event.type === 'toolCallCancellation') { for (const id of event.ids) handle.pendingCallIds.delete(id); handle.thinking = handle.pendingCallIds.size > 0; continue; }
+        if (event.type === 'toolCallSuperseded') {
+          for (const id of event.ids) { handle.pendingCallIds.delete(id); handle.supersededCallIds.add(id); }
+          handle.thinking = handle.pendingCallIds.size > 0;
+          continue;
+        }
         if (event.type === 'interrupted' || event.type === 'turnComplete' || event.type === 'generationComplete') handle.speaking = false;
         if (event.type === 'waitingForInput') { handle.thinking = !event.value; if (event.value) handle.speaking = false; }
         if (event.type === 'audio') { handle.thinking = false; handle.speaking = true; this.#pushChunk(handle, { kind: 'audio', pcm: event.pcm }); continue; }
@@ -916,7 +922,11 @@ export class LiveSessionOwner {
       });
     }
     if ((this.#settled(handle) || generation !== handle.generation)) { retainUndelivered(); return; }
-    for (const [index, projection] of projections.entries()) if (handle.pendingCallIds.has(event.calls[index]!.id)) publish('toolResult', projection);
+    for (const [index, projection] of projections.entries()) {
+      const id = event.calls[index]!.id;
+      if (handle.pendingCallIds.has(id)) publish('toolResult', projection);
+      else if (handle.supersededCallIds.has(id)) publish('toolResult', { ...projection, code: 'tool_call_superseded' });
+    }
     responses = responses.filter(response => handle.pendingCallIds.has(response.id));
     if (!(this.#settled(handle) || generation !== handle.generation)) {
       try {
@@ -930,7 +940,7 @@ export class LiveSessionOwner {
       inlineJob.deferred = !inlineJob.delivered;
       this.#jobs.save(inlineJob);
     }
-    for (const call of event.calls) handle.pendingCallIds.delete(call.id);
+    for (const call of event.calls) { handle.pendingCallIds.delete(call.id); handle.supersededCallIds.delete(call.id); }
     handle.thinking = handle.pendingCallIds.size > 0;
   }
 

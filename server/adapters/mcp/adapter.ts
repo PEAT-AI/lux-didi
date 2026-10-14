@@ -14,7 +14,13 @@ export interface McpAdapterOptions {
   assertCredentialCurrent?: (reference: string) => void;
 }
 class PolicyError extends Error { constructor(readonly reason: string) { super(reason); } }
-interface ChildExit { readonly exitCode: number | null; readonly signalCode: string | null; readonly stdout?: { once(event: string, listener: () => void): unknown } | null }
+interface ChildExit { readonly exitCode: number | null; readonly signalCode: string | null; readonly pid?: number; readonly stdout?: { once(event: string, listener: () => void): unknown } | null; kill(signal?: NodeJS.Signals): boolean }
+/** The child may ignore the MCP close; after the bounded close it is SIGKILLed so the host can exit. */
+function killChild(child: ChildExit | undefined): void {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  if (typeof child.pid !== 'number' || child.pid <= 0) return;
+  try { child.kill('SIGKILL'); } catch { /* already gone */ }
+}
 /** The SDK discards the child's exit code; hold the ChildProcess it spawned for classification only. */
 function childProcess(transport: unknown): ChildExit | undefined {
   const candidate = (transport as unknown as { _process?: unknown })._process;
@@ -187,7 +193,11 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
   }
   async function retire(id: string): Promise<void> {
     const session = sessions.get(id); sessions.delete(id);
-    if (session) await bounded(session.client.close(), AbortSignal.timeout(200)).catch(() => {});
+    if (session) {
+      await bounded(session.client.close(), AbortSignal.timeout(200)).catch(() => {});
+      // The SDK close keeps running past the bound; kill the child so a surviving stdio transport cannot hold the host open.
+      killChild(session.child);
+    }
   }
   async function sessionFor(config: EndpointConfig): Promise<Session> {
     const existing = sessions.get(config.id);

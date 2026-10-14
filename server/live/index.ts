@@ -57,6 +57,7 @@ interface ActiveSession {
   adapterOutcome: LiveVoiceOutcome | undefined;
   diagnosticSnapshots: Promise<Readonly<LiveVoiceDiagnostics> | undefined>[];
   ownerAudioCalls: number; ownerAudioBytes: number; ownerRebuildingDropCalls: number; ownerRebuildingDropBytes: number;
+  terminalOutcome: LiveTerminalOutcome | null;
   diagnosticTerminalCode: string; diagnosticsEmitted: boolean;
   loopDone: { promise: Promise<void>; resolve: () => void };
   done: { promise: Promise<LiveSessionSnapshot>; resolve: (value: LiveSessionSnapshot) => void; reject: (error: unknown) => void };
@@ -587,7 +588,7 @@ export class LiveSessionOwner {
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
       consumerState: 'attached', journalEvents: 0, journalBytes: 0, adapterOutcome: undefined,
-      diagnosticSnapshots: [], ownerAudioCalls: 0, ownerAudioBytes: 0, ownerRebuildingDropCalls: 0, ownerRebuildingDropBytes: 0,
+      diagnosticSnapshots: [], ownerAudioCalls: 0, ownerAudioBytes: 0, ownerRebuildingDropCalls: 0, ownerRebuildingDropBytes: 0, terminalOutcome: null,
       diagnosticTerminalCode: 'outcome_unknown', diagnosticsEmitted: false,
       loopDone: deferred<void>(), done: deferred<LiveSessionSnapshot>(), resolveDone: () => {}, persistFailure: undefined,
     };
@@ -681,7 +682,15 @@ export class LiveSessionOwner {
 
   #sendAudio(handle: ActiveSession, pcm: Uint8Array): void {
     handle.ownerAudioCalls++; handle.ownerAudioBytes += pcm.byteLength;
-    if (handle.rebuilding) { handle.ownerRebuildingDropCalls++; handle.ownerRebuildingDropBytes += pcm.byteLength; return; }
+    // A late mic frame after the session settled is dropped and counted, never thrown:
+    // throwing here makes the HTTP layer close the socket generic 1002 before the typed terminal frame.
+    if (handle.rebuilding || (handle.terminal && !handle.invalidated)) {
+      handle.ownerRebuildingDropCalls++; handle.ownerRebuildingDropBytes += pcm.byteLength;
+      // The settle diagnostics were already emitted, so a late drop is counted and reported here.
+      if (handle.terminal) console.error(JSON.stringify({ event: 'live_late_frame_dropped', liveSessionId: handle.liveSessionId,
+        dropCalls: handle.ownerRebuildingDropCalls, dropBytes: handle.ownerRebuildingDropBytes }));
+      return;
+    }
     this.#guardHandle(handle);
     if (!(pcm instanceof Uint8Array) || !pcm.length || pcm.length % 2 !== 0) throw new LiveError('invalid_audio');
     this.#armIdle(handle, this.#profile.limits.idleMs);
@@ -734,7 +743,11 @@ export class LiveSessionOwner {
     handle.consumerState = 'ended';
     handle.consumer?.discard();
     try { this.#store.transaction(tx => tx.run("UPDATE live_sessions SET consumer_state='ended', updated_at=? WHERE live_session_id=?", [this.#now(), handle.liveSessionId])); }
-    catch { /* detach is best-effort; the store may already be closing */ }
+    catch (error) {
+      // A failed detach write is logged, never swallowed; #snapshot reconciles the row against this handle.
+      console.error(JSON.stringify({ event: 'live_detach_write_failed', liveSessionId: handle.liveSessionId,
+        class: error instanceof Error && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(error.constructor.name) ? error.constructor.name : 'Unknown' }));
+    }
   }
 
   async #consume(handle: ActiveSession): Promise<void> {
@@ -970,6 +983,7 @@ export class LiveSessionOwner {
   #settle(handle: ActiveSession, outcome: LiveTerminalOutcome, complete: boolean, consumerState: LiveConsumerState, rejected: { kind: JournalKind; sequence: number } | null): void {
     if (handle.terminal) return;
     handle.terminal = true;
+    handle.terminalOutcome = outcome;
     handle.diagnosticTerminalCode = 'code' in outcome ? outcome.code : outcome.state;
     handle.sessionTimer?.cancel(); handle.idleTimer?.cancel();
     handle.session.close();
@@ -977,10 +991,15 @@ export class LiveSessionOwner {
     try {
       journalSequence = this.#store.transaction(tx => this.#terminalInTx(tx, handle.liveSessionId, outcome, complete, this.#now(), consumerState, rejected));
     } catch (error) {
+      // The durable write failed, but the typed terminal fact must still reach the app. Log the failure
+      // (bounded fields only) and resolve done with the in-memory outcome so the socket sends the real code.
       handle.persistFailure = error;
+      console.error(JSON.stringify({ event: 'live_terminal_write_failed', liveSessionId: handle.liveSessionId,
+        code: handle.diagnosticTerminalCode,
+        class: error instanceof Error && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(error.constructor.name) ? error.constructor.name : 'Unknown' }));
       handle.consumer?.close();
       handle.abort.abort();
-      handle.done.reject(error);
+      handle.resolveDone();
       return;
     }
     // The terminal fact is durable before it is emitted; committed markers stay queued on overflow.
@@ -1061,7 +1080,7 @@ export class LiveSessionOwner {
         keyReference: String(grant['key_reference']), permittedClasses: JSON.parse(String(grant['permitted_classes'])) as DataClass[],
         chosenInputClass: String(grant['chosen_input_class']) as DataClass, revision: Number(grant['revision']), grantedAt: Number(grant['granted_at']),
       },
-      consumerState: String(row['consumer_state']) as LiveSessionSnapshot['consumerState'],
+      consumerState: this.#consumerStateOf(row),
       journal: { events: Number(row['journal_events']), bytes: Number(row['journal_bytes']), maxEvents: limits.journalMaxEvents, maxBytes: limits.journalMaxBytes, complete: Number(row['journal_complete']) === 1 },
       terminal: parseTerminal(row['terminal_outcome']),
       createdAt: Number(row['created_at']), updatedAt: Number(row['updated_at']),
@@ -1069,11 +1088,22 @@ export class LiveSessionOwner {
   }
 
   #readSnapshot(liveSessionId: string): LiveSessionSnapshot {
-    return this.#store.transaction(tx => {
+    const snapshot = this.#store.transaction(tx => {
       const row = tx.get('SELECT * FROM live_sessions WHERE live_session_id=?', [liveSessionId]);
       if (!row) throw new LiveError('not_found');
       return this.#snapshot(tx, row);
     });
+    // A settle whose durable write failed still reports the real typed outcome to the caller.
+    const override = this.#active.get(liveSessionId)?.terminalOutcome;
+    return override && snapshot.terminal === null ? { ...snapshot, terminal: override } : snapshot;
+  }
+
+  /** A failed detach write leaves the row 'attached'; the in-memory handle is the truth on read. */
+  #consumerStateOf(row: SQLRow): LiveSessionSnapshot['consumerState'] {
+    const stored = String(row['consumer_state']) as LiveSessionSnapshot['consumerState'];
+    if (stored !== 'attached') return stored;
+    const handle = this.#active.get(String(row['live_session_id']));
+    return handle && !this.#settled(handle) && handle.consumerState === 'attached' ? 'attached' : 'ended';
   }
 
   #guardOpen(): void { if (this.#closed) throw new LiveError('terminal', 'owner is shut down'); }

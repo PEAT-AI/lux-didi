@@ -364,6 +364,30 @@ test('one ordered authenticated audio upgrade carries PCM, markers and the termi
   assert.ok(journal.body.data.fragments.some((f: { kind: string }) => f.kind === 'interrupted'));
 });
 
+test('a settled session delivers the typed terminal and closes 1000 while a late mic frame arrives', async t => {
+  // The session budget is not reset by client audio, so it settles while the microphone keeps sending frames.
+  const h = await harness(t, { config: configJson(true, { limits: { sessionMs: 200, idleMs: 5000, handshakeMs: 1000, closeMs: 50 } }) });
+  const created = await createBody(h, 'late-mic');
+  const id = created.body.data.liveSessionId;
+  const ws = new WebSocket(`${h.origin.replace('http', 'ws')}/api/v1/live-sessions/${id}/audio`, { headers: bearer(h) });
+  const frames: Array<{ text?: string }> = [];
+  ws.on('message', (data: Data, isBinary: boolean) => { if (!isBinary) frames.push({ text: data.toString() }); });
+  t.after(() => ws.terminate());
+  await once(ws, 'open');
+  await h.f.frame(1); h.f.send({ setupComplete: {} });
+  await waitFor(() => frames.some(f => f.text && JSON.parse(f.text).type === 'ready'));
+  const closed = once(ws, 'close');
+  // The provider goes idle, settling the session, while the microphone keeps sending frames.
+  const pump = setInterval(() => { if (ws.readyState === WebSocket.OPEN) ws.send(Buffer.from(pcm)); }, 40);
+  t.after(() => clearInterval(pump));
+  const [code] = await closed;
+  clearInterval(pump);
+  const terminal = frames.map(f => f.text).filter((text): text is string => text !== undefined).map(text => JSON.parse(text) as { type: string; state?: string; code?: string | null }).find(frame => frame.type === 'terminal');
+  assert.ok(terminal, 'the typed terminal frame is delivered before the close');
+  assert.equal(terminal.code, 'session_timeout');
+  assert.equal(code, 1000, 'a settled session closes 1000, never a generic 1002');
+});
+
 test('malformed handshakes never consume the grant or open a provider', async t => {
   const h = await harness(t, { config: configJson(true) });
   const created = await createBody(h, 'neg-1');

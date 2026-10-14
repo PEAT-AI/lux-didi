@@ -241,6 +241,55 @@ final class DiagnosticLogHTTPFixture: URLProtocol, @unchecked Sendable {
 }
 private enum RefusalForCaptureSummary: Error { case failed }
 
+
+private func sevenChannelBuffer(_ format: AVAudioFormat, active: Int?, offset: Int) -> AVAudioPCMBuffer {
+    let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1024)!
+    buffer.frameLength = 1024
+    for channel in 0..<7 {
+        for frame in 0..<1024 {
+            buffer.floatChannelData![channel][frame] = channel == active
+                ? Float(sin(Double(offset + frame) * 2 * .pi * 440 / 48000) * 0.25) : 0
+        }
+    }
+    return buffer
+}
+
+private func checkSevenChannelConversion() throws {
+    let layout = AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_DiscreteInOrder | 7)!
+    let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48000, interleaved: false, channelLayout: layout)
+    var rows: [[String: Any]] = []
+    for active in 0..<7 {
+        for mode in ["default", "downmix", "explicit"] {
+            let owner = try NativePCMConverter(input: format)
+            let converter = Mirror(reflecting: owner).children.first(where: { $0.label == "converter" })!.value as! AVAudioConverter
+            if mode == "downmix" { converter.downmix = true }
+            if mode == "explicit" { converter.channelMap = [NSNumber(value: active)] }
+            var pcm = Data()
+            for index in 0..<8 { pcm.append(try owner.append(sevenChannelBuffer(format, active: active, offset: index * 1024))) }
+            pcm.append(try owner.finish())
+            let nonzero = pcm.withUnsafeBytes { $0.bindMemory(to: Int16.self).filter { $0 != 0 }.count }
+            rows.append(["activeChannel": active, "mode": mode, "bytes": pcm.count, "nonzeroSamples": nonzero,
+                         "downmix": converter.downmix, "channelMap": converter.channelMap])
+            try audioRequire(!pcm.isEmpty, "seven-channel conversion produces samples")
+            if mode == "explicit" { try audioRequire(nonzero > 0, "explicit input channel is a nonzero positive control") }
+        }
+        let capture = NativeCaptureBuffer(converter: try NativePCMConverter(input: format))
+        for index in 0..<8 { capture.append(sevenChannelBuffer(format, active: active, offset: index * 1024)) }
+        let statistics = capture.stop()
+        rows.append(["activeChannel": active, "mode": "capture-owner", "bytes": statistics.convertedBytes,
+                     "maxRMS": statistics.maxRMS, "tapBuffers": statistics.tapBuffers,
+                     "convertFailures": statistics.convertFailures])
+    }
+    let record: [String: Any] = ["inputChannels": 7, "inputSampleRate": 48000, "interleaved": false,
+                               "layoutTag": format.channelLayout?.layoutTag ?? 0, "rows": rows,
+                               "hardware": false, "provider": false]
+    let data = try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys])
+    FileHandle.standardOutput.write(data + Data([10]))
+    let defaultLast = rows.first { $0["activeChannel"] as? Int == 6 && $0["mode"] as? String == "default" }!
+    try audioRequire((defaultLast["nonzeroSamples"] as! Int) > 0,
+                     "seven-channel processed input on channel six must survive current mono conversion")
+}
+
 @main struct NativeLiveAudioRunner {
     static func tone(_ format: AVAudioFormat, start: Int, count: Int) throws -> AVAudioPCMBuffer {
         guard format.channelCount == 2, format.commonFormat == .pcmFormatFloat32, !format.isInterleaved else {
@@ -257,6 +306,11 @@ private enum RefusalForCaptureSummary: Error { case failed }
         return buffer
     }
     @MainActor static func main() async {
+        if CommandLine.arguments.dropFirst().contains("--seven-channel-only") {
+            do { try checkSevenChannelConversion() }
+            catch { FileHandle.standardError.write(Data("Seven-channel conversion: \(error)\n".utf8)); exit(1) }
+            return
+        }
         if CommandLine.arguments.dropFirst().contains("--capture-summary-only") {
             do { try await checkTerminalCaptureSummary() }
             catch { fatalError("Capture summary: \(error)") }

@@ -1,9 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, statSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { DatabaseSync } from 'node:sqlite';
 import { Store } from '../runtime/store.js';
 import { Outbox } from '../runtime/outbox.js';
 import type { OutboxEvent } from '../runtime/outbox.js';
@@ -73,6 +74,38 @@ test('failed migration rolls back DDL and metadata; gaps, reserved owner and dow
     assert.throws(() => new Store(dir, [{ owner: 'runtime', version: 1, statements: [] }]), /reserved/);
     const s2 = new Store(dir, migrations); s2.close();
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('credential admission failure after migration rolls back the schema upgrade and fails typed', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-admission-'));
+  const v1 = [{ owner: 'domain', version: 1, statements: ['CREATE TABLE marker(id TEXT)'] }];
+  const v2 = [...v1, { owner: 'domain', version: 2, statements: ['CREATE TABLE marker2(id TEXT)'] }];
+  try {
+    new Store(dir, v1).close();
+    writeFileSync(join(dir, 'admin-credential'), 'not-a-valid-credential\n', { mode: 0o600 });
+    assert.throws(() => new Store(dir, v2), (error: { code?: string }) => error.code === 'CREDENTIAL_ADMISSION_FAILED');
+    const db = new DatabaseSync(join(dir, 'state.sqlite'));
+    try { assert.equal((db.prepare("SELECT MAX(version) AS v FROM runtime_migrations WHERE owner='domain'").get() as { v: number }).v, 1); }
+    finally { db.close(); }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('host startup surfaces the typed credential admission failure and leaves no committed migration', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-admission-host-'));
+  const web = mkdtempSync(join(tmpdir(), 'didi-admission-web-'));
+  try {
+    writeFileSync(join(web, 'index.html'), '<!doctype html><script src="/assets/app.js"></script><link rel="stylesheet" href="/assets/app.css">\n');
+    mkdirSync(join(web, 'assets'));
+    for (const name of ['sw.js', 'manifest.webmanifest', 'icon.svg', 'assets/app.js', 'assets/app.css']) writeFileSync(join(web, name), '');
+    new Store(dir, []).close();
+    writeFileSync(join(dir, 'admin-credential'), 'not-a-valid-credential\n', { mode: 0o600 });
+    const host = spawnSync(process.execPath, [join(import.meta.dirname, '../host/index.js'), '--data-dir', dir, '--web-root', web, '--port', '0'], { encoding: 'utf8', timeout: 10000 });
+    assert.notEqual(host.status, 0);
+    assert.match(host.stderr, /CREDENTIAL_ADMISSION_FAILED/);
+    const db = new DatabaseSync(join(dir, 'state.sqlite'));
+    try { assert.equal((db.prepare('SELECT COUNT(*) AS n FROM runtime_migrations').get() as { n: number }).n, 0); }
+    finally { db.close(); }
+  } finally { rmSync(dir, { recursive: true, force: true }); rmSync(web, { recursive: true, force: true }); }
 });
 
 const triggerSchema = [

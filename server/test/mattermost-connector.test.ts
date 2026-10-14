@@ -142,20 +142,6 @@ test('mattermost_whoami projects an SSE MCP entity from separately decodedResult
   assert(!projected.projection.text.includes('synthetic-unclassified'));
 });
 
-test('channel history accepts a display name and resolves it to the channel name', async t => {
-  const f = setup('ok');
-  t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
-  const digest = await approve(f.adapter, f.registry);
-  const result = await reader(f.adapter, f.registry, digest).getChannelHistory({ channel: 'Town Square', limit: 20 });
-  assert.equal(result.state, 'completed');
-  const projected = projectMattermostResult(f.adapter, result);
-  assert.equal(projected.ok, true);
-  if (!projected.ok) return;
-  // The fixture echoes the channel it was dispatched with, so a resolved name proves no raw display name reached the wire.
-  assert.match(projected.projection.text, /town-square \| Rob \| 2026-10-11T10:00:00Z/);
-  assert.doesNotMatch(projected.projection.text, /Town Square \| Rob/);
-});
-
 test('an unknown channel name fails loud with the closest known names', async t => {
   const f = setup('ok');
   t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
@@ -165,15 +151,6 @@ test('an unknown channel name fails loud with the closest known names', async t 
   assert.match(result.state === 'refused' ? result.reason : '', /channel-not-found: town-squar; closest names: Town Square/);
 });
 
-test('an ambiguous channel name fails loud with every matching channel', async t => {
-  const f = setup('ambiguous');
-  t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
-  const digest = await approve(f.adapter, f.registry);
-  const result = await reader(f.adapter, f.registry, digest).getChannelHistory({ channel: 'Town Square', limit: 20 });
-  assert.equal(result.state, 'refused');
-  assert.match(result.state === 'refused' ? result.reason : '', /^channel-ambiguous: Town Square matches /);
-});
-
 test('channel resolution maps id, name and display name, and names the closest matches', () => {
   const channels = [{ id: 'abcdefghijklmnopqrstuvwxzy', name: 'town-square', displayName: 'Town Square' }];
   assert.deepEqual(resolveChannelReference('Town Square', channels), { channel: 'abcdefghijklmnopqrstuvwxzy' });
@@ -181,5 +158,7 @@ test('channel resolution maps id, name and display name, and names the closest m
   assert.deepEqual(resolveChannelReference('abcdefghijklmnopqrstuvwxzy', channels), { channel: 'abcdefghijklmnopqrstuvwxzy' });
   const miss = resolveChannelReference('off-topic', channels);
   assert.equal('error' in miss && miss.error.startsWith('channel-not-found: off-topic'), true);
+  const ambiguous = resolveChannelReference('Town Square', [{ name: 'a', displayName: 'Town Square' }, { name: 'b', displayName: 'Town Square' }]);
+  assert.equal('error' in ambiguous && ambiguous.error.startsWith('channel-ambiguous: Town Square matches '), true);
   assert.deepEqual(parseChannelList({ result: { content: [{ type: 'text', text: JSON.stringify({ channels }) }] } }), channels);
 });

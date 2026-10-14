@@ -270,3 +270,20 @@ test('a later list refresh that contains the missing conversation reconciles the
   assert.equal(JSON.parse(storage.get('didi-connected:O1')!).pending.sessionId, 'MISSING');
   view.reset();
 });
+
+test('a definitively refused send clears the pending key and leaves start usable', async () => {
+  const view = await setup({ sessionId: 'S1', draft: 'refused turn' }); await view.refresh('O1');
+  routes = async path => path === '/chat'
+    ? new Response(JSON.stringify({ error: { code: 'CONSENT_REVOKED', message: 'This conversation is no longer consented.' } }), { status: 403 })
+    : undefined;
+  panel.querySelector('#connected-draft').fire('input', { value: 'refused turn' });
+  panel.querySelector('#connected-send-form').fire('submit'); await tick(); await tick(); await tick();
+  assert.equal(calls.includes('/chat'), true);
+  assert.match(panel.html, /This conversation is no longer consented/);
+  assert.equal(JSON.parse(storage.get('didi-connected:O1')!).pending, undefined, 'a definitive refusal must not retain the acceptance key');
+  panel.querySelector('#connected-consent').fire('change', { checked: true });
+  const reads = calls.length;
+  panel.querySelector('#connected-start').fire('click'); await tick(); await tick();
+  assert.equal(calls.slice(reads).includes('/conversations'), true, 'start stays usable after a definitive refusal');
+  view.reset();
+});

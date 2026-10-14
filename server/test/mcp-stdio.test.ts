@@ -395,7 +395,7 @@ test('a dispatched stdio call failure records one fixed stage per cause', { skip
     const registry = new McpRegistry();
     registry.register(config('stage-stdio', c.mode, pidFile));
     registry.enable('stage-stdio'); registry.allowEgress('stage-stdio');
-    const adapter = adapterFor(registry, c.timeoutMs ?? 4000);
+    const adapter = createMcpAdapter({ registry, store: new MemoryResultStore(), budgets: { timeoutMs: 4000 }, ...(c.timeoutMs ? { callTimeoutMsByEndpoint: new Map([['stage-stdio', c.timeoutMs]]) } : {}) });
     try {
       const discovery = await adapter.discover('stage-stdio');
       assert.equal(discovery.state, 'discovered', `${c.mode} discovery`);

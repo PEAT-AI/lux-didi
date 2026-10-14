@@ -48,17 +48,23 @@ interface Session { client: Client; config: EndpointConfig; operation?: Operatio
  * External cancellation and the local deadline are distinguished before the SDK's own errors.
  */
 function failureStage(error: unknown, operation: Operation, session: Session, cancelled: boolean, timedOut: boolean): string {
-  if (session.child && (session.child.exitCode !== null || session.child.signalCode !== null)) return 'child_exited';
-  if (session.pipeClosed) return 'pipe_closed';
-  if (error instanceof PolicyError) return error.reason === 'timeout-or-cancelled' ? (cancelled ? 'cancelled' : 'timeout') : error.reason;
+  const exited = session.child !== undefined && (session.child.exitCode !== null || session.child.signalCode !== null);
+  if (error instanceof PolicyError) {
+    if (error.reason !== 'timeout-or-cancelled') return error.reason;
+    if (cancelled) return 'cancelled';
+    if (exited) return 'child_exited';
+    if (session.pipeClosed) return 'pipe_closed';
+    return 'timeout';
+  }
   if (error instanceof SdkError) {
-    if (error.code === SdkErrorCode.ConnectionClosed) return 'pipe_closed';
+    if (error.code === SdkErrorCode.ConnectionClosed) return exited ? 'child_exited' : 'pipe_closed';
     if (error.code === SdkErrorCode.RequestTimeout) return cancelled ? 'cancelled' : 'timeout';
     if (error.code === SdkErrorCode.InvalidResult || error.code === SdkErrorCode.UnsupportedResultType) return 'invalid_result';
   }
   if (error instanceof ProtocolError) return 'sdk_protocol_rejected';
   if (cancelled) return 'cancelled';
   if (timedOut) return 'timeout';
+  if (session.pipeClosed) return 'pipe_closed';
   if (operation.receivedResult) return 'invalid_result';
   return 'sdk_protocol_rejected';
 }
@@ -278,12 +284,14 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
       } catch (error) {
         if (operation.dispatched) {
           if (error instanceof ProtocolError && operation.explicitErrorCode !== undefined && operation.bytes && options.registry.authorizesScope(scope)) return completed(scope, operation.bytes, { error: { code: operation.explicitErrorCode } }, 'protocol-error', operation.explicitErrorCode, operation.explicitError);
+          // Classify before retiring the child, so a local shutdown never rewrites the cause.
+          const stage = failureStage(error, operation, session, signal?.aborted === true, deadline.aborted);
           // HTTP SDK cancellation aborts the request, rather than notifying. Use its
           // supported notification API with the SDK-owned id; never wait indefinitely.
           if (localSignal.aborted && operation.requestId !== undefined) await bounded(session.client.notification({ method: 'notifications/cancelled', params: { requestId: operation.requestId, reason: 'local cancellation' } }), AbortSignal.timeout(200)).catch(() => {});
           // No call retry or reconnect here. A later explicit discovery can reconnect only.
           suspend(request.endpointId); await retire(request.endpointId);
-          return { state: 'unknown', reason: failureStage(error, operation, session, signal?.aborted === true, deadline.aborted) };
+          return { state: 'unknown', reason: stage };
         }
         return { state: 'refused', reason: error instanceof PolicyError ? error.reason : 'pre-dispatch-refused' };
       } finally { delete session.operation; busy.delete(request.endpointId); }

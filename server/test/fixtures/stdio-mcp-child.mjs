@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Synthetic stdio MCP child for check-mcp-stdio.sh.
 // No real accounts, network access, credentials or application files are touched.
-// argv[2] = mode (ok | hang-call | exit-on-call | signal-on-call | close-pipe-on-call | invalid-result | malformed | silent | crash)// argv[3] = optional pid file; argv[4] = tools/call payload (default 'stdio-pong').
+// argv[2] = mode (ok | hang-call | exit-on-call | signal-on-call | close-pipe-on-call | invalid-result | malformed | silent | crash)
+// argv[3] = optional pid file; argv[4] = tools/call payload (default 'stdio-pong').
 // When argv[3] is given the child also dumps its resolved environment to "<pid>.env".
 import { closeSync, writeFileSync } from 'node:fs';
 import { Server } from '@modelcontextprotocol/server';
@@ -32,8 +33,7 @@ if (mode === 'invalid-result') {
     }
   });
   await new Promise(() => {});
-}
-if (mode === 'silent' || mode === 'malformed') {
+} else if (mode === 'silent' || mode === 'malformed') {
   if (mode === 'malformed') process.stdout.write('not-json-handshake\n');
   // Stay alive but never complete a handshake.
   setInterval(() => {}, 1000);

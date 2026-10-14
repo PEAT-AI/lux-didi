@@ -108,12 +108,33 @@ public enum LiveClientState: Sendable, Equatable {
     case rebuilding
 }
 
+struct LiveCaptureDiagnostics: Sendable {
+    var outerEntered = 0, outerNotActive = 0, entered = 0
+    var mutedDrops = 0, epochDrops = 0, rebuildingDrops = 0
+    var lateMutedDrops = 0, lateEpochDrops = 0, lateInactiveDrops = 0
+    var localSocketSendCompleted = 0, sendErrors = 0
+}
+struct LiveCaptureDiagnosticSnapshot: Sendable {
+    let owner: UInt64?
+    let counters: LiveCaptureDiagnostics
+    let epoch: UInt64
+    let muted: Bool
+    let state: String
+    let pendingFrames: Int
+}
+
 /// No preference, native REST/bootstrap, credential owner, device, UI, persistence, or reconnect binding.
 public actor LiveSessionCoordinator {
     public let events: AsyncStream<LiveClientState>
     private let stateEvents: AsyncStream<LiveClientState>.Continuation
     public private(set) var state: LiveClientState = .idle {
-        didSet { stateEvents.yield(state) }
+        didSet {
+            switch state {
+            case .terminal, .failed, .outcomeUnknown: freezeCaptureDiagnostics()
+            default: break
+            }
+            stateEvents.yield(state)
+        }
     }
     public private(set) var generation: UInt64 = 0
     public private(set) var sessionID: String?
@@ -131,6 +152,43 @@ public actor LiveSessionCoordinator {
     private var pendingFrames = 0
     public private(set) var captureEpoch: UInt64 = 0
     private var captureMuted = false
+    private var captureDiagnosticOwner: UInt64?
+    private var captureDiagnostics = LiveCaptureDiagnostics()
+    private var terminalCaptureDiagnostics: LiveCaptureDiagnosticSnapshot?
+    private func captureDiagnosticSnapshot() -> LiveCaptureDiagnosticSnapshot {
+        let label: String
+        switch state {
+        case .idle: label = "idle"
+        case .checking: label = "checking"
+        case .creating: label = "creating"
+        case .createUnknown: label = "createUnknown"
+        case .attaching: label = "attaching"
+        case .active: label = "active"
+        case .closing: label = "closing"
+        case .terminal: label = "terminal"
+        case .outcomeUnknown: label = "outcomeUnknown"
+        case .failed: label = "failed"
+        case .rebuilding: label = "rebuilding"
+        }
+        return LiveCaptureDiagnosticSnapshot(owner: captureDiagnosticOwner, counters: captureDiagnostics,
+            epoch: captureEpoch, muted: captureMuted, state: label, pendingFrames: pendingFrames)
+    }
+    private func freezeCaptureDiagnostics() {
+        if terminalCaptureDiagnostics?.owner != captureDiagnosticOwner || terminalCaptureDiagnostics == nil {
+            terminalCaptureDiagnostics = captureDiagnosticSnapshot()
+        }
+    }
+    func captureSummary(owner: UInt64) -> LiveCaptureDiagnosticSnapshot? {
+        if let terminalCaptureDiagnostics, terminalCaptureDiagnostics.owner == owner { return terminalCaptureDiagnostics }
+        return captureDiagnosticOwner == owner ? captureDiagnosticSnapshot() : nil
+    }
+    func captureStateForSubmission(owner: UInt64) -> LiveClientState {
+        if captureDiagnosticOwner == owner {
+            captureDiagnostics.outerEntered += 1
+            if state != .active { captureDiagnostics.outerNotActive += 1 }
+        }
+        return state
+    }
     private var captureSubmissions = 0
     private var captureDrainWaiters: [CheckedContinuation<Void, Never>] = []
     private let beforeCaptureSubmission: (@Sendable () async -> Void)?
@@ -270,16 +328,27 @@ public actor LiveSessionCoordinator {
     }
 
     /// Advance the capture fence before waiting. The caller acknowledges mute only on return.
-    public func setCaptureMuted(_ muted: Bool, epoch: UInt64) async {
+    public func setCaptureMuted(_ muted: Bool, epoch: UInt64, diagnosticOwner: UInt64? = nil) async {
         guard epoch >= captureEpoch else { return }
+        if let diagnosticOwner {
+            captureDiagnosticOwner = diagnosticOwner; captureDiagnostics = LiveCaptureDiagnostics()
+        }
         captureEpoch = epoch; captureMuted = muted
         if muted, captureSubmissions > 0 {
             await withCheckedContinuation { captureDrainWaiters.append($0) }
         }
     }
 
-    public func sendPCM(_ pcm: Data, captureEpoch submittedEpoch: UInt64? = nil) async throws {
-        if let submittedEpoch, captureMuted || submittedEpoch != captureEpoch { return }
+    public func sendPCM(_ pcm: Data, captureEpoch submittedEpoch: UInt64? = nil, diagnosticOwner: UInt64? = nil) async throws {
+        let owner = captureDiagnosticOwner
+        let count = diagnosticOwner == nil || diagnosticOwner == owner
+        if count { captureDiagnostics.entered += 1 }
+        if let submittedEpoch, captureMuted || submittedEpoch != captureEpoch {
+            if count {
+                if captureMuted { captureDiagnostics.mutedDrops += 1 } else { captureDiagnostics.epochDrops += 1 }
+            }
+            return
+        }
         if submittedEpoch != nil { captureSubmissions += 1 }
         defer {
             if submittedEpoch != nil {
@@ -290,11 +359,15 @@ public actor LiveSessionCoordinator {
                 }
             }
         }
-        if state == .rebuilding { return }
-        try LiveSocketTransport.validatePCM(pcm)
-        guard state == .active, !inputEnded, let connection = socket else { throw LiveClientError.unavailable }
+        if state == .rebuilding { if count { captureDiagnostics.rebuildingDrops += 1 }; return }
+        do { try LiveSocketTransport.validatePCM(pcm) }
+        catch { if count { captureDiagnostics.sendErrors += 1 }; throw error }
+        guard state == .active, !inputEnded, let connection = socket else {
+            if count { captureDiagnostics.sendErrors += 1 }; throw LiveClientError.unavailable
+        }
         let token = generation
         guard pendingFrames < maxPendingFrames, pcm.count <= maxPendingBytes - pendingBytes else {
+            if count { captureDiagnostics.sendErrors += 1 }
             state = .outcomeUnknown(.queueOverflow); socket = nil; receiveTask?.cancel()
             await connection.cancel()
             throw LiveClientError.queueOverflow
@@ -306,12 +379,25 @@ public actor LiveSessionCoordinator {
         do {
             if submittedEpoch != nil, let beforeCaptureSubmission { await beforeCaptureSubmission() }
             // Last outbound boundary: a drained frame may have suspended before reaching this actor.
-            if let submittedEpoch, captureMuted || submittedEpoch != captureEpoch { return }
+            if let submittedEpoch, captureMuted || submittedEpoch != captureEpoch {
+                if count && captureDiagnosticOwner == owner {
+                    if captureMuted { captureDiagnostics.lateMutedDrops += 1 } else { captureDiagnostics.lateEpochDrops += 1 }
+                }
+                return
+            }
             try Task.checkCancellation()
-            guard generation == token, state == .active else { throw LiveClientError.staleOperation }
+            guard generation == token, state == .active else {
+                if count && captureDiagnosticOwner == owner { captureDiagnostics.lateInactiveDrops += 1 }
+                throw LiveClientError.staleOperation
+            }
             try await connection.sendPCM(pcm)
-            guard generation == token, state == .active else { throw LiveClientError.staleOperation }
+            if count && captureDiagnosticOwner == owner { captureDiagnostics.localSocketSendCompleted += 1 }
+            guard generation == token, state == .active else {
+                if count && captureDiagnosticOwner == owner { captureDiagnostics.lateInactiveDrops += 1 }
+                throw LiveClientError.staleOperation
+            }
         } catch {
+            if count && captureDiagnosticOwner == owner { captureDiagnostics.sendErrors += 1 }
             if generation == token, state == .active {
                 state = .outcomeUnknown(safe(error, fallback: .transport)); socket = nil; receiveTask?.cancel()
                 await connection.cancel()
@@ -331,6 +417,7 @@ public actor LiveSessionCoordinator {
     }
 
     public func close() async {
+        freezeCaptureDiagnostics()
         guard state != .idle, !settled else { return }
         guard let frozen = intent, let id = sessionID else {
             operation &+= 1; operationTask?.cancel(); receiveTask?.cancel()
@@ -355,6 +442,7 @@ public actor LiveSessionCoordinator {
     }
 
     public func revoke() async {
+        freezeCaptureDiagnostics()
         guard state != .idle, !settled else { return }
         operation &+= 1; operationTask?.cancel(); receiveTask?.cancel()
         let token = generation, op = operation
@@ -403,6 +491,7 @@ public actor LiveSessionCoordinator {
 
     /// Explicit stop forgets in-flight identity; constructing a fresh actor does zero work.
     public func stop() async {
+        freezeCaptureDiagnostics()
         generation &+= 1; operation &+= 1
         operationTask?.cancel(); receiveTask?.cancel()
         operationTask = nil; receiveTask = nil

@@ -55,6 +55,8 @@ enum State: String, CaseIterable {
     private var limits: NativeLiveLimits?
     private var muted = false, speaking = false
     private var muteTask: Task<Void, Never>?
+    private var captureSummaryTask: Task<Void, Never>?
+    private var captureDiagnosticOwner: UInt64?
     var isMuted: Bool { muted }
     var isCapturing: Bool { state == .connecting || state == .pausedForInput || device.isCapturing }
     init(authority: (origin: URL, request: NativeLiveRequestBuilder), dictationIsCapturing: @escaping () -> Bool, pickupJobID: String? = nil, logsDirectory: URL? = nil, audioDevice: NativeLiveAudioDevice? = nil) {
@@ -122,17 +124,17 @@ enum State: String, CaseIterable {
                     } else if outcome.state == .failed {
                         self.failure = outcome.code.map { "Live service: " + $0 + "." } ?? "Live service failed."
                     }
-                    self.device.stop()
+                    self.stopAudioAndSummarize()
                     self.state = outcome.state == .failed ? .failed : (outcome.state == .outcome_unknown ? .outcomeUnknown : .ended)
                 case .failed(let reason):
-                    self.device.stop(); self.state = .failed
+                    self.stopAudioAndSummarize(); self.state = .failed
                     self.failure = NativeLivePresentation.failure(reason)
                     self.logFailure(reason, beforeCreate: beforeCreate)
                 case .createUnknown:
-                    self.device.stop(); self.state = .outcomeUnknown
+                    self.stopAudioAndSummarize(); self.state = .outcomeUnknown
                     self.failure = "Live start outcome is unknown. Check the conversation before starting again."
                 case .outcomeUnknown(let reason):
-                    self.device.stop(); self.state = .outcomeUnknown
+                    self.stopAudioAndSummarize(); self.state = .outcomeUnknown
                     self.failure = reason.errorDescription ?? "Live outcome is unknown. No automatic reconnect."
                 default: break
                 }
@@ -142,11 +144,14 @@ enum State: String, CaseIterable {
             do {
                 // Reset capture authority before a new explicit start.
                 guard let epoch = self?.device.captureEpoch else { return }
-                await coordinator.setCaptureMuted(false, epoch: epoch)
+                await coordinator.setCaptureMuted(false, epoch: epoch, diagnosticOwner: token)
                 try Task.checkCancellation()
+                if self?.generation == token { self?.captureDiagnosticOwner = token }
                 // Prepare the single duplex engine before the socket can deliver model PCM.
                 try await self?.device.startFenced { frame, epoch in
-                    if await coordinator.state == .active { try await coordinator.sendPCM(frame, captureEpoch: epoch) }
+                    if await coordinator.captureStateForSubmission(owner: token) == .active {
+                        try await coordinator.sendPCM(frame, captureEpoch: epoch, diagnosticOwner: token)
+                    }
                 }
                 try Task.checkCancellation()
                 guard let self, self.generation == token else { return }
@@ -157,7 +162,7 @@ enum State: String, CaseIterable {
                 await coordinator.begin(intent)
             } catch {
                 guard let self, self.generation == token else { return }
-                self.device.stop(); await coordinator.close()
+                self.stopAudioAndSummarize(); await coordinator.close()
                 guard self.generation == token else { return }
                 self.failure = NativeLivePresentation.failure(error)
                 self.logFailure(error, beforeCreate: true)
@@ -169,29 +174,62 @@ enum State: String, CaseIterable {
     func logFailure(_ error: Error, beforeCreate: Bool, diagnosticSession: URLSession? = nil) -> Task<Void, Never>? {
         guard beforeCreate else { return nil }
         let diagnostic = Task { [http] in await http.postPrecreateFailure(error, using: diagnosticSession) }
-        guard let logsDirectory else { return diagnostic }
+        guard logsDirectory != nil else { return diagnostic }
         let code: String
         if error is URLError { code = "service_unreachable" }
         else if error is DecodingError { code = "unexpected_response" }
         else if let reason = error as? LiveClientError { code = reason.rawValue }
         else if let audio = error as? NativeLiveAudioError { code = audio.rawValue }
         else { code = "connection_refused" }
+        var fields: [String: Any] = ["event": "live_precreate_failed", "failureClass": error is NativeLiveAudioError ? "audio" : "service", "code": code,
+                             "timestamp": ISO8601DateFormatter().string(from: Date())]
+        if let audio = error as? NativeLiveAudioError, let detail = audio.diagnosticDetail { fields["detail"] = detail }
+        appendLocalDiagnostic(fields)
+        return diagnostic
+    }
+    private func appendLocalDiagnostic(_ fields: [String: Any]) {
+        guard let logsDirectory else { return }
         do {
             try FileManager.default.createDirectory(at: logsDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             let file = logsDirectory.appendingPathComponent("native-live.log")
             if !FileManager.default.fileExists(atPath: file.path) {
-                guard FileManager.default.createFile(atPath: file.path, contents: nil, attributes: [.posixPermissions: 0o600]) else { return diagnostic }
+                guard FileManager.default.createFile(atPath: file.path, contents: nil, attributes: [.posixPermissions: 0o600]) else { return }
             }
             let handle = try FileHandle(forWritingTo: file)
             defer { try? handle.close() }
             try handle.seekToEnd()
-            var fields: [String: Any] = ["event": "live_precreate_failed", "failureClass": error is NativeLiveAudioError ? "audio" : "service", "code": code,
-                                         "timestamp": ISO8601DateFormatter().string(from: Date())]
-            if let audio = error as? NativeLiveAudioError, let detail = audio.diagnosticDetail { fields["detail"] = detail }
             var record = try JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys])
             record.append(10); try handle.write(contentsOf: record)
-        } catch { /* Logging must not change the failure or restart Live. */ }
-        return diagnostic
+        } catch { /* Logging must not change capture or session state. */ }
+    }
+    private func stopAudioAndSummarize() {
+        device.stop()
+        guard let native = device.takeCaptureSummary(), let owner = captureDiagnosticOwner else { return }
+        let nativeState = state.rawValue
+        captureSummaryTask = Task { [coordinator] in
+            let transport = await coordinator.captureSummary(owner: owner)
+            let capture = native.capture
+            var fields: [String: Any] = ["event": "native_capture_summary",
+                "timestamp": ISO8601DateFormatter().string(from: Date()), "nativeState": nativeState,
+                "tapBuffers": capture.tapBuffers, "convertedBytes": capture.convertedBytes,
+                "convertFailures": capture.convertFailures, "maxRMS": capture.maxRMS,
+                "ringDrops": capture.ringDrops, "drainFrames": native.drainFrames,
+                "inputSampleRate": capture.inputSampleRate, "inputChannels": capture.inputChannels,
+                "captureEpoch": native.captureEpoch, "captureGeneration": native.captureGeneration,
+                "captureWasMuted": native.muted, "coordinatorSnapshotMatched": transport != nil]
+            if let transport {
+                let counts = transport.counters
+                fields.merge(["outerEntered": counts.outerEntered, "outerNotActive": counts.outerNotActive,
+                    "sendEntered": counts.entered, "mutedDrops": counts.mutedDrops, "epochDrops": counts.epochDrops,
+                    "rebuildingDrops": counts.rebuildingDrops, "lateMutedDrops": counts.lateMutedDrops,
+                    "lateEpochDrops": counts.lateEpochDrops, "lateInactiveDrops": counts.lateInactiveDrops,
+                    "localSocketSendCompleted": counts.localSocketSendCompleted, "sendErrors": counts.sendErrors,
+                    "coordinatorCaptureEpoch": transport.epoch, "coordinatorCaptureMuted": transport.muted,
+                    "coordinatorState": transport.state, "pendingSendFrames": transport.pendingFrames],
+                    uniquingKeysWith: { _, new in new })
+            }
+            self.appendLocalDiagnostic(fields)
+        }
     }
     func toggleMute() {
         guard [.listening, .speaking, .muted, .pausedForInput].contains(state) else { return }
@@ -210,13 +248,14 @@ enum State: String, CaseIterable {
     func stopCapture() {
         generation &+= 1; startTask?.cancel(); startTask = nil
         observer?.cancel(); observer = nil
-        device.stop()
+        stopAudioAndSummarize()
         state = .ended
     }
     func stop() async {
         stopCapture()
         let token = generation
         await coordinator.close()
+        await captureSummaryTask?.value
         guard generation == token else { return }
         let outcome = await coordinator.state
         guard generation == token else { return }

@@ -78,6 +78,7 @@ export interface LiveVoiceSession {
   readonly diagnostics?: () => Readonly<LiveVoiceDiagnostics>;
   sendToolResponse(input: { responses: LiveToolResponse[] }): void;
   sendAudio(input: { pcm: Uint8Array; dataClass: DataClass }): void;
+  sendText(input: { text: string }): void;
   endAudioStream(): void;
   close(): void;
 }

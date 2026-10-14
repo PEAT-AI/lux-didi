@@ -70,6 +70,7 @@ class HostLiveService implements LiveService {
   }
   revoke(liveSessionId: string): void { this.owner.revoke(liveSessionId); }
   attach(liveSessionId: string, context: LiveContext): LiveAttachment { return this.owner.attach({ liveSessionId }, context); }
+  text(text: string): void { this.owner.text(text); }
   shutdown(): Promise<void> { return this.owner.shutdown(); }
 }
 
@@ -87,6 +88,7 @@ class UnconfiguredLive implements LiveService {
   journal(): never { return unavailable('LIVE_NOT_CONFIGURED'); }
   revoke(): never { return unavailable('LIVE_NOT_CONFIGURED'); }
   attach(): never { return unavailable('LIVE_NOT_CONFIGURED'); }
+  text(): never { return unavailable('LIVE_NOT_CONFIGURED'); }
   async shutdown(): Promise<void> {}
 }
 

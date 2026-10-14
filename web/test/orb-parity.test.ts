@@ -34,7 +34,7 @@ test('classic renderer preserves Vicuna layer inputs without Didi-specific band 
 });
 
 test('inactive orb composes Vicuna disabled and neutral canvas opacity', () => {
-  assert.match(style, /data-state=IDLE[^}]+grayscale\(\.82\) brightness\(\.96\) opacity\(\.45\)/);
+  assert.match(style, /data-state=IDLE[^}]+grayscale\(\.82\) brightness\(\.96\) opacity\(\.9\)/);
 });
 
 test('a native level sample folds into a bounded five-band frame', () => {
@@ -58,5 +58,24 @@ test('the renderer accepts a posted level frame and exposes the Vicuna presence 
 });
 
 test('the orb canvas matches the Vicuna narrow size proportion', () => {
-  assert.match(style, /\.orb-stage canvas\{width:344px;height:344px\}/);
+  assert.match(style, /\.orb-stage canvas\{width:600px;height:600px\}/);
+});
+
+test('the orb stage uses the Vicuna dark gradient and a visible presence glow', () => {
+  assert.match(style, /\.orb-stage\{[^}]*linear-gradient\(180deg,#111827 0%,#1f2937 100%\)/);
+  assert.match(style, /\.orb-stage \.presence-glow\{width:720px;height:720px\}/);
+});
+
+test('the connected consent wall is a closed disclosure', () => {
+  const connected = readFileSync(new URL('../src/connected.ts', import.meta.url), 'utf8');
+  assert.match(connected, /<details class="connected-chat"><summary><span>Connected text chat<\/span>/);
+  assert.match(connected, /id="connected-disclosure"|class="connected-disclosure"/);
+  assert.match(connected, /<\/details>/);
+});
+
+test('typed text to Naya is an input under the voice card that posts to the live text endpoint', () => {
+  const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
+  assert.match(main, /id="live-text-form"/);
+  assert.match(main, /id="live-text"/);
+  assert.ok(main.includes("request<{ sent: boolean }>('/live/text'"));
 });

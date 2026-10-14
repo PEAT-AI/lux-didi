@@ -23,7 +23,7 @@ let sessions: Session[] = [], entries: Entry[] = [], session: Session | undefine
 let plan: Plan | undefined, recall: Recall | undefined;
 let recent: Commitment[] = [], editing: Commitment | undefined, detail: CommitmentDetail | undefined;
 let draftOwner: string | undefined;
-let messageDraft = '', titleDraft = '', queryDraft = '', editTitle = '', editNotes = '', editDue = '', memoryFilter = '';
+let messageDraft = '', titleDraft = '', queryDraft = '', editTitle = '', editNotes = '', editDue = '', memoryFilter = '', liveTextDraft = '';
 let notice = '', error = '', busy = false, readBusy = false, pairingBusy = false;
 let pairingRequired = false, sessionMore = false, entriesMore = false;
 let controller: AbortController | undefined;
@@ -80,7 +80,7 @@ function orbMarkup() {
 function conversation() {
   return `<section class="voice-heading"><div><p class="eyebrow">NAYA VOICE</p><h1>Here with you.</h1></div><button id="new-conversation" class="secondary" ${disabled(busy)}>New conversation</button></section>
   ${orbMarkup()}${liveMarkup(live,livePoll,liveDetailsOpen)}
-  <section class="voice-text" aria-labelledby="voice-text-heading"><div class="voice-text-heading"><p class="eyebrow">OPTIONAL TEXT</p><h2 id="voice-text-heading">Type when it is easier.</h2><p>Text is here when you want it.</p></div><div id="connected-panel"></div></section>
+  <section class="voice-text" aria-labelledby="voice-text-heading"><div class="voice-text-heading"><p class="eyebrow">OPTIONAL TEXT</p><h2 id="voice-text-heading">Type when it is easier.</h2><p>Text is here when you want it.</p></div><form id="live-text-form" class="live-text"><label for="live-text">Type to Naya</label><input id="live-text" type="text" maxlength="4000" autocomplete="off" placeholder="Type to Naya, or save a local note." value="${e(liveTextDraft)}"><button type="submit">${liveActive() ? 'Send to Naya' : 'Save note'}</button></form><div id="connected-panel"></div></section>
   <details id="conversation-history" class="conversation-history"${historyOpen ? ' open' : ''}><summary><span>Saved conversation history</span><small>Local notes and earlier conversations</small></summary><div class="conversation-grid"><aside class="panel conversations" aria-label="Conversations"><h2>Your conversations</h2>${sessions.length ? sessions.map(s => `<button data-session="${e(s.id)}" class="session ${session?.id === s.id ? 'selected' : ''}"><strong>${e(s.title)}</strong><small>${e(datetime(s.startedAt))}</small></button>`).join('') : '<p class="muted">No conversations yet.</p>'}${sessionMore ? '<p class="muted">More conversations are available in the service. This view shows the first page.</p>' : ''}</aside>
   <section class="panel thread" aria-label="Conversation">${sessions.length ? `<div class="mobile-conversations"><label for="conversation-select">Choose a conversation</label><select id="conversation-select"><option value="">Start a new conversation</option>${sessions.map(s=>`<option value="${e(s.id)}" ${session?.id===s.id?'selected':''}>${e(s.title)}</option>`).join('')}</select></div>` : ''}<div class="thread-heading"><span class="dot"></span><h2>${e(session?.title ?? 'Start where you are')}</h2></div>
   <div class="entries">${entries.length ? entries.map(entryMarkup).join('') : `<div class="empty"><span class="empty-icon" aria-hidden="true">✳</span><h3>What’s on your mind?</h3><p>Save a thought, make a plan, or pick up a conversation.</p></div>`}${entriesMore ? '<p class="muted">There are more messages in this conversation. This view shows the first page.</p>' : ''}</div>
@@ -141,8 +141,8 @@ function bind() {
   document.getElementById('conversation-select')?.addEventListener('change',ev=>{const id=(ev.target as HTMLSelectElement).value;if(id)void openSession(id);else{session=undefined;entries=[];render();}});
   document.querySelector<HTMLDetailsElement>('#conversation-history')?.addEventListener('toggle',event=>{historyOpen=(event.target as HTMLDetailsElement).open;});
   bindLiveDisclosure();
-  input('message',v=>messageDraft=v); input('commitment-title',v=>titleDraft=v);input('recall-query',v=>queryDraft=v);input('edit-title',v=>editTitle=v);input('edit-notes',v=>editNotes=v);input('edit-due',v=>editDue=v);input('memory-filter',v=>{memoryFilter=v;render();});
-  form('message-form',()=>void saveLocalNote());button('ask-didi',()=>document.getElementById('connected-panel')?.scrollIntoView());
+  input('message',v=>messageDraft=v); input('live-text',v=>liveTextDraft=v); input('commitment-title',v=>titleDraft=v);input('recall-query',v=>queryDraft=v);input('edit-title',v=>editTitle=v);input('edit-notes',v=>editNotes=v);input('edit-due',v=>editDue=v);input('memory-filter',v=>{memoryFilter=v;render();});
+  form('message-form',()=>void saveLocalNote());form('live-text-form',()=>void sendLiveText());button('ask-didi',()=>document.getElementById('connected-panel')?.scrollIntoView());
   form('commitment-form',()=>{if(!titleDraft.trim())return;void mutate(async (signal,version)=>{await request<Commitment>('/commitments',{method:'POST',body:{title:titleDraft.trim(),dueAt:null,timeZone:zone},signal});assertAuthority(version);titleDraft='';await loadPlan();assertAuthority(version);notice='Commitment saved.';});});
   form('edit-form',()=>{if(!editing || !editTitle.trim())return;void changeCommitment(editing,'edit');});
   form('recall-form',()=>void searchRecall());
@@ -172,6 +172,20 @@ async function saveLocalNote() {
     const current=await ensureSession(signal,version);
     const entry=await request<Entry>(`/sessions/${encodeURIComponent(current.id)}/entries`,{method:'POST',body:{text,role:'user',timeZone:zone,sourceRef:{id:crypto.randomUUID(),label:'Saved on the page',provider:'page',sourceTimestamp:null,availability:'present'}},signal});assertAuthority(version);if(!entries.some(e=>e.id===entry.id))entries.push(entry);messageDraft='';notice='Message saved.';
   });
+}
+function liveActive() { return !!live && live.state !== 'idle' && live.state !== 'ended'; }
+// Item 2: typed text goes into the active Live session; with no Live session it is a local note.
+async function sendLiveText() {
+  const text = liveTextDraft.trim();
+  if (!text) return;
+  if (liveActive()) {
+    try { await request<{ sent: boolean }>('/live/text', { method: 'POST', body: { text } }); liveTextDraft = ''; notify('Sent to Naya.'); }
+    catch (err) { failure(err); }
+    return;
+  }
+  messageDraft = text;
+  await saveLocalNote();
+  liveTextDraft = '';
 }
 async function changeCommitment(c: Commitment, action: 'edit'|'complete'|'reopen'|'cancel') {
   await mutate(async (signal,version)=>{

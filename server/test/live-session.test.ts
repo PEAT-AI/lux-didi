@@ -175,6 +175,16 @@ async function attached(h: Harness, key = 'k1') {
   return { session, attachment };
 }
 
+test('typed text reaches the adapter as a realtime text turn and journals a You turn', async t => {
+  const h = await harness(t);
+  await attached(h, 'typed');
+  h.owner.text('What is on my plate?');
+  await h.f.frame(2);
+  assert.deepEqual(h.f.frames.at(-1), { realtimeInput: { text: 'What is on my plate?' } });
+  const entry = h.owner.current().entries.findLast(e => e.kind === 'inputTranscription');
+  assert.equal(entry?.text, 'What is on my plate?');
+});
+
 test('fresh owner Start selects model-first with no fabricated history', async t => {
   const h = await harness(t);
   const session = h.owner.create({ idempotencyKey: 'fresh-opening', inputClass: 'ordinary' }, h.ctx);

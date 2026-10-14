@@ -544,7 +544,7 @@ for (const legacyRoute of ['endpoint', 'ambiguous-model-route']) test(`migration
   assert.equal(store.transaction(tx => tx.all('SELECT * FROM tool_connection_semantics')).length, 0);
 });
 
-for (const code of ['mcp_transport_error', 'mcp_result_invalid', 'connector_error', 'handler_outcome'] as const) test(`thrown ${code} survives owner journal and tool response`, async t => {
+for (const code of ['timeout', 'cancelled', 'child_exited', 'pipe_closed', 'sdk_protocol_rejected', 'invalid_result', 'connector_error', 'handler_outcome'] as const) test(`thrown ${code} survives owner journal and tool response`, async t => {
   const f = await fixture(t); const seen: ModelRequest[] = [];
   const model: ModelPort = { generate: async req => { seen.push(structuredClone(req)); return seen.length === 1 ? modelResult('search_knowledge') : modelResult(); } };
   const registry = f.definitions().map(tool => ({ ...tool, async execute() {
@@ -563,17 +563,17 @@ for (const code of ['mcp_transport_error', 'mcp_result_invalid', 'connector_erro
 
 test('a thrown MCP transport failure is logged without exception payload and remains unknown', async t => {
   const events: ToolFailureEvent[] = []; const f = await fixture(t, { log: event => events.push(event) });
-  t.mock.method(f.port, 'call', async () => { throw Object.assign(Error('synthetic-private-payload must not reach logging'), { code: 'mcp_transport_error' }); });
+  t.mock.method(f.port, 'call', async () => { throw Object.assign(Error('synthetic-private-payload must not reach logging'), { code: 'timeout' }); });
   const outcome = await f.run({ generate: async () => modelResult('search_knowledge') });
-  assert.equal(outcome.status, 'uncertain'); assert.equal(outcome.reason, 'mcp_transport_error');
-  assert.deepEqual(events, [{ event: 'tool_failure', code: 'mcp_transport_error', tool: 'search_knowledge', connector: 'lux-knowledge', errorClass: 'Error', messageHead: 'mcp_transport_error' }]);
+  assert.equal(outcome.status, 'uncertain'); assert.equal(outcome.reason, 'timeout');
+  assert.deepEqual(events, [{ event: 'tool_failure', code: 'timeout', tool: 'search_knowledge', connector: 'lux-knowledge', errorClass: 'Error', messageHead: 'timeout' }]);
   assert(!JSON.stringify(events).includes('synthetic-private-payload'));
 });
-test('a connector-rejected decoded content shape is logged and returned with mcp_result_invalid', async t => {
+test('a connector-rejected decoded content shape is logged and returned with invalid_result', async t => {
   const events: ToolFailureEvent[] = []; const f = await fixture(t, { log: event => events.push(event), result: { content: [{ type: 'text', text: 'synthetic', annotations: { priority: 0.5 } }] } });
   const seen: ModelRequest[] = [];
   const outcome = await f.run({ generate: async req => { seen.push(structuredClone(req)); return seen.length === 1 ? modelResult('search_knowledge') : modelResult(); } });
   assert.equal(outcome.status, 'complete');
-  assert.equal(seen[1]!.contents.at(-1)!.parts[0]!.functionResponse!.response['reason'], 'mcp_result_invalid');
-  assert.deepEqual(events, [{ event: 'tool_failure', code: 'mcp_result_invalid', tool: 'search_knowledge', connector: 'lux-knowledge', errorClass: 'Error', messageHead: 'mcp_result_invalid' }]);
+  assert.equal(seen[1]!.contents.at(-1)!.parts[0]!.functionResponse!.response['reason'], 'invalid_result');
+  assert.deepEqual(events, [{ event: 'tool_failure', code: 'invalid_result', tool: 'search_knowledge', connector: 'lux-knowledge', errorClass: 'Error', messageHead: 'invalid_result' }]);
 });

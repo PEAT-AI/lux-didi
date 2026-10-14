@@ -380,3 +380,51 @@ test('a stdio binding missing an inherited SDK env key, or HOME/PATH, is refused
   assert.throws(() => registry.register(make('env-empty-home', { ...full, HOME: '' })));
   assert.throws(() => registry.register(make('env-empty-path', { ...full, PATH: '' })));
 });
+
+// Each dispatched stdio call failure records one closed, privacy-safe stage instead of a generic one.
+test('a dispatched stdio call failure records one fixed stage per cause', { skip: process.platform === 'win32' }, async () => {
+  const cases: { mode: string; timeoutMs?: number; stage: string }[] = [
+    { mode: 'hang-call', timeoutMs: 300, stage: 'timeout' },
+    { mode: 'exit-on-call', stage: 'child_exited' },
+    { mode: 'signal-on-call', stage: 'child_exited' },
+    { mode: 'close-pipe-on-call', timeoutMs: 300, stage: 'pipe_closed' },
+    { mode: 'invalid-result', stage: 'invalid_result' },
+  ];
+  for (const c of cases) {
+    const { dir, pidFile } = scratch();
+    const registry = new McpRegistry();
+    registry.register(config('stage-stdio', c.mode, pidFile));
+    registry.enable('stage-stdio'); registry.allowEgress('stage-stdio');
+    const adapter = adapterFor(registry, c.timeoutMs ?? 4000);
+    try {
+      const discovery = await adapter.discover('stage-stdio');
+      assert.equal(discovery.state, 'discovered', `${c.mode} discovery`);
+      if (discovery.state !== 'discovered') continue;
+      registry.approve({ endpointId: 'stage-stdio', schemaDigest: discovery.schemaDigest, toolNames: ['echo'], effect: 'read', account: ACCOUNT, resource: RESOURCE, generation: 1 });
+      const result = await adapter.call(request('stage-stdio'));
+      assert.equal(result.state, 'unknown', `${c.mode} state ${JSON.stringify(result)}`);
+      if (result.state === 'unknown') assert.equal(result.reason, c.stage, `${c.mode} stage`);
+    } finally { await adapter.close(); rmSync(dir, { recursive: true, force: true }); }
+  }
+});
+
+test('a caller-cancelled stdio call records cancelled, not timeout', { skip: process.platform === 'win32' }, async () => {
+  const { dir, pidFile } = scratch();
+  const registry = new McpRegistry();
+  registry.register(config('stage-stdio', 'hang-call', pidFile));
+  registry.enable('stage-stdio'); registry.allowEgress('stage-stdio');
+  const adapter = adapterFor(registry);
+  try {
+    const discovery = await adapter.discover('stage-stdio');
+    assert.equal(discovery.state, 'discovered');
+    if (discovery.state !== 'discovered') return;
+    registry.approve({ endpointId: 'stage-stdio', schemaDigest: discovery.schemaDigest, toolNames: ['echo'], effect: 'read', account: ACCOUNT, resource: RESOURCE, generation: 1 });
+    const controller = new AbortController();
+    const pending = adapter.call(request('stage-stdio'), controller.signal);
+    await new Promise(resolve => setTimeout(resolve, 150));
+    controller.abort();
+    const result = await pending;
+    assert.equal(result.state, 'unknown');
+    if (result.state === 'unknown') assert.equal(result.reason, 'cancelled');
+  } finally { await adapter.close(); rmSync(dir, { recursive: true, force: true }); }
+});

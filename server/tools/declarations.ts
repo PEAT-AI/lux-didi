@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import { createHash } from 'node:crypto';
 import { controlled, Interrupted } from '../adapters/model/control.js';
+import { isToolFailureCode } from '../adapters/model/types.js';
 import type { Authority, DataClass, FunctionDeclaration, HostContext, JsonObject, ModelControl, Part, ToolCallIntent, ToolCallJournal, ToolCallRefusal, ToolDefinition, ToolOutcome, ToolRecord, ToolResultBinding, ToolResultGate, ToolResultRef, LoopResult } from '../adapters/model/types.js';
 
 /** Provider schemas are presentation only. Validation and approval retain the originals. */
@@ -77,11 +78,11 @@ export async function runToolCalls(owner: { journal: ToolCallJournal; resultGate
           if (!outcome || !['completed', 'failed', 'unknown'].includes(outcome.status)) throw Error('invalid_tool_outcome');
           record.status = outcome.status;
           const code = outcome.status === 'completed' ? undefined : outcome.code;
-          record.reason = code && ['mcp_transport_error', 'mcp_result_invalid', 'connector_error', 'handler_outcome'].includes(code) ? code : 'handler_outcome';
+          record.reason = code && isToolFailureCode(code) ? code : 'handler_outcome';
         }
       } catch (error) {
         record.status = dispatched ? (tool?.effect === 'write' ? 'unknown' : 'failed') : 'refused';
-        const code = error instanceof Error && 'code' in error && typeof error.code === 'string' && ['mcp_transport_error', 'mcp_result_invalid', 'connector_error', 'handler_outcome'].includes(error.code) ? error.code : 'handler_outcome';
+        const code = error instanceof Error && 'code' in error && typeof error.code === 'string' && isToolFailureCode(error.code) ? error.code : 'handler_outcome';
         record.reason = dispatched ? (error instanceof Interrupted ? 'handler_interrupted_or_failed' : code) : 'authority_or_validation_failed';
         if (error instanceof Interrupted) interrupted = error;
       }

@@ -1,10 +1,9 @@
 #!/usr/bin/env node
 // Synthetic stdio MCP child for check-mcp-stdio.sh.
 // No real accounts, network access, credentials or application files are touched.
-// argv[2] = mode (ok | hang-call | malformed | silent | crash)
-// argv[3] = optional pid file; argv[4] = tools/call payload (default 'stdio-pong').
+// argv[2] = mode (ok | hang-call | exit-on-call | signal-on-call | close-pipe-on-call | invalid-result | malformed | silent | crash)// argv[3] = optional pid file; argv[4] = tools/call payload (default 'stdio-pong').
 // When argv[3] is given the child also dumps its resolved environment to "<pid>.env".
-import { writeFileSync } from 'node:fs';
+import { closeSync, writeFileSync } from 'node:fs';
 import { Server } from '@modelcontextprotocol/server';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 
@@ -17,6 +16,23 @@ if (pidFile) {
 }
 
 if (mode === 'crash') process.exit(7);
+if (mode === 'invalid-result') {
+  // Raw JSON-RPC child: the SDK Server refuses to emit a malformed result, so a hand-driven
+  // server is required to exercise the client's invalid-result rejection. Synthetic only.
+  let buf = '';
+  process.stdin.on('data', chunk => {
+    buf += chunk.toString(); let i;
+    while ((i = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, i); buf = buf.slice(i + 1);
+      if (!line.trim()) continue;
+      const msg = JSON.parse(line);
+      if (msg.method === 'initialize') process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'stdio-synthetic-raw-fixture', version: '1' } } }) + '\n');
+      else if (msg.method === 'tools/list') process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { tools: [{ name: 'echo', description: 'Synthetic raw stdio echo', inputSchema: { type: 'object' } }] } }) + '\n');
+      else if (msg.method === 'tools/call') process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'not-a-content-type', text: payload }] } }) + '\n');
+    }
+  });
+  await new Promise(() => {});
+}
 if (mode === 'silent' || mode === 'malformed') {
   if (mode === 'malformed') process.stdout.write('not-json-handshake\n');
   // Stay alive but never complete a handshake.
@@ -24,6 +40,13 @@ if (mode === 'silent' || mode === 'malformed') {
 } else {
   const server = new Server({ name: 'stdio-synthetic-fixture', version: '1' }, { capabilities: { tools: {} } });
   server.setRequestHandler('tools/list', () => ({ tools: [{ name: 'echo', description: 'Synthetic stdio echo', inputSchema: { type: 'object' } }] }));
-  server.setRequestHandler('tools/call', () => (mode === 'hang-call' ? new Promise(() => {}) : { content: [{ type: 'text', text: payload }] }));
+  server.setRequestHandler('tools/call', () => {
+    if (mode === 'hang-call') return new Promise(() => {});
+    if (mode === 'exit-on-call') process.exit(7);
+    if (mode === 'signal-on-call') process.kill(process.pid, 'SIGKILL');
+    // Close stdout but stay alive: a pipe closure, not a child exit.
+    if (mode === 'close-pipe-on-call') { setInterval(() => {}, 1000); closeSync(1); return new Promise(() => {}); }
+    return { content: [{ type: 'text', text: payload }] };
+  });
   await server.connect(new StdioServerTransport());
 }

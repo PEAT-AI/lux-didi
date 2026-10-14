@@ -56,7 +56,17 @@ export type ToolCallIntent = Omit<ExecutionContext, 'signal'> & {
 export type ToolCallRefusal = Omit<ToolCallIntent, 'accountId' | 'resourceId'> & {
   accountId?: string; resourceId?: string;
 };
-export type ToolFailureCode = 'mcp_transport_error' | 'mcp_result_invalid' | 'connector_error' | 'handler_outcome';
+/** Closed, privacy-safe stage for a dispatched MCP call that failed. */
+export const MCP_FAILURE_STAGES = ['timeout', 'cancelled', 'child_exited', 'pipe_closed', 'sdk_protocol_rejected', 'invalid_result'] as const;
+export type McpFailureStage = (typeof MCP_FAILURE_STAGES)[number];
+export const TOOL_FAILURE_CODES = [...MCP_FAILURE_STAGES, 'connector_error', 'handler_outcome'] as const;
+export type ToolFailureCode = (typeof TOOL_FAILURE_CODES)[number];
+export function isMcpFailureStage(value: string): value is McpFailureStage {
+  return (MCP_FAILURE_STAGES as readonly string[]).includes(value);
+}
+export function isToolFailureCode(value: string): value is ToolFailureCode {
+  return (TOOL_FAILURE_CODES as readonly string[]).includes(value);
+}
 export type ToolOutcome = { status: 'completed'; result: ToolResultRef } | { status: 'failed' | 'unknown'; code?: ToolFailureCode };
 export interface ToolCallJournal {
   intent(call: ToolCallIntent): 'fresh' | 'existing';

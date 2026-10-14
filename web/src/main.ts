@@ -29,6 +29,7 @@ let controller: AbortController | undefined;
 let pollTimer: ReturnType<typeof setTimeout> | undefined, backoff = 30000;
 let live: LiveCurrent | undefined;
 let livePoll: LivePollState = {};
+let paintedLivePoll: LivePollState | undefined;
 let connections: unknown = [];
 let connectionsStale = false;
 let statusUnavailable = false;
@@ -116,6 +117,7 @@ function render() {
   const canvas=document.getElementById('didi-orb') as HTMLCanvasElement | null;
   if(canvas)orb=new Orb(canvas,appliedOrbState=orbState());
   if (focusId) { const next=document.getElementById(focusId) as HTMLInputElement | HTMLTextAreaElement | null; next?.focus({preventScroll:true}); if(selection && next && selection[0]!==null) next.setSelectionRange(selection[0],selection[1]); }
+  paintedLivePoll=document.getElementById('live-panel') ? livePoll : undefined;
 }
 function button(id: string, action: () => void) { document.getElementById(id)?.addEventListener('click', action); }
 function form(id: string, action: () => void) { document.getElementById(id)?.addEventListener('submit', ev => { ev.preventDefault(); action(); }); }
@@ -207,13 +209,19 @@ async function connect(background=false) {
   render();schedulePoll();void pollLive();void pollConnections();
 }
 function schedulePoll(){if(pollTimer)clearTimeout(pollTimer);if(!document.hidden&&!pairingRequired)pollTimer=setTimeout(()=>void connect(true),backoff);}
-// Live projection poll: 1 Hz while active, 4 s while idle, paused while hidden. The route is W-B's;
+// Live projection poll: 1 Hz while active, 4 s while idle or terminal, paused while hidden. The route is W-B's;
 // a missing or failed route leaves the last honest state and never fabricates one.
 async function pollLive(){
+  if(liveTimer)clearTimeout(liveTimer);
   liveTimer=undefined;
   if(document.hidden||pairingRequired||liveBusy)return;
   liveBusy=true;
-  try{livePoll=await pollLiveView(livePoll,cursor=>fetchLive(cursor,AbortSignal.timeout(8000)));live=livePoll.live;paintLive();}
+  try{
+    const prior=livePoll;
+    const next=await pollLiveView(prior,cursor=>fetchLive(cursor,AbortSignal.timeout(8000)));
+    if(livePoll!==prior)return;
+    livePoll=next;live=livePoll.live;paintLive();
+  }
   finally{liveBusy=false;scheduleLive();}
 }
 async function pollConnections(){
@@ -235,12 +243,16 @@ function scheduleLive(){
 }
 function paintLive(){
   const panel=document.getElementById('live-panel');
-  const expanded=Array.from(panel?.querySelectorAll<HTMLDetailsElement>('details[open]')??[]).map(card=>card.dataset.resultSeq);
-  if(panel){panel.outerHTML=liveMarkup(live,livePoll);for(const card of document.querySelectorAll<HTMLDetailsElement>('#live-panel details'))if(expanded.includes(card.dataset.resultSeq))card.open=true;}
-  const caption=document.querySelector('.orb-caption');if(caption)caption.innerHTML=orbCaptionMarkup();
+  const replacePanel=paintedLivePoll?.live!==live || !!paintedLivePoll?.stale!==!!livePoll.stale || !!livePoll.stale && paintedLivePoll?.lastSuccess!==livePoll.lastSuccess;
+  if(panel && replacePanel){
+    const expanded=Array.from(panel.querySelectorAll<HTMLDetailsElement>('details[open]')).map(card=>card.dataset.resultSeq);
+    panel.outerHTML=liveMarkup(live,livePoll);for(const card of document.querySelectorAll<HTMLDetailsElement>('#live-panel details'))if(expanded.includes(card.dataset.resultSeq))card.open=true;
+  }
+  paintedLivePoll=panel ? livePoll : undefined;
+  const caption=document.querySelector('.orb-caption');const markup=orbCaptionMarkup();if(caption && caption.innerHTML!==markup)caption.innerHTML=markup;
   const next=orbState();if(next!==appliedOrbState){appliedOrbState=next;orb?.setState(next);}
 }
-onAuthorityChanged(()=>{connectedView.reset();live=undefined;livePoll={};connections=[];connectionsStale=false;statusUnavailable=false;status=undefined;sessions=[];entries=[];session=undefined;plan=undefined;recall=undefined;recent=[];connection='Disconnected';});
+onAuthorityChanged(()=>{connectedView.reset();live=undefined;livePoll={};connections=[];connectionsStale=false;statusUnavailable=false;status=undefined;sessions=[];entries=[];session=undefined;plan=undefined;recall=undefined;recent=[];connection='Disconnected';render();});
 window.addEventListener('offline',()=>{connectedView.detach();connection='Offline';livePoll={...livePoll,stale:true};connectionsStale=true;statusUnavailable=true;if(connectionsTimer)clearTimeout(connectionsTimer);if(pollTimer)clearTimeout(pollTimer);if(liveTimer)clearTimeout(liveTimer);render();});
 window.addEventListener('online',()=>void connect());
 document.addEventListener('visibilitychange',()=>{if(document.hidden){if(connectionsTimer)clearTimeout(connectionsTimer);if(pollTimer)clearTimeout(pollTimer);if(liveTimer)clearTimeout(liveTimer);}else{void connect(true);}});

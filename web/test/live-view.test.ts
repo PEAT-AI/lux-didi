@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { readFileSync } from 'node:fs';
+import { createContext, runInContext } from 'node:vm';
 import { liveStateLabel, liveVoiceState, liveToolName, liveLabel, liveDelay, mergeLive, liveTranscript, liveResult, liveMarkup } from '../src/live-view.ts';
 import './connector-status.test.ts';
 import { pollLiveView } from '../src/live-view.ts';
@@ -251,4 +253,120 @@ test('remembered note text is escaped and never rendered as raw markup', () => {
   const html = liveMarkup(live);
   assert.doesNotMatch(html, /<img/);
   assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
+});
+
+
+test('terminal Live uses idle cadence while active and hidden cadence stay unchanged', () => {
+  assert.equal(liveDelay('ended', false), 4000);
+  assert.equal(liveDelay('error', false), 4000);
+  assert.equal(liveDelay('rebuilding', false), 1000);
+  assert.equal(liveDelay('ended', true), undefined);
+});
+
+test('unchanged empty cursor page retains complete Live projection without traversing entries', () => {
+  const entries = new Proxy([{seq:1,kind:'outputTranscription',text:'retained'}], {
+    get(target, key, receiver) { if (key === Symbol.iterator) throw new Error('retained-entry iteration'); return Reflect.get(target,key,receiver); },
+  }) as LiveCurrent['entries'];
+  const previous: LiveCurrent = {state:'ended',since:'session-a',cursor:1,entries};
+  const next: LiveCurrent = {...previous,entries:[]};
+  assert.equal(mergeLive(previous,next),previous);
+});
+
+test('empty cursor pages preserve entries while equal-cursor projection changes remain visible', () => {
+  const previous: LiveCurrent = {state:'ended',since:'session-a',cursor:1,entries:[{seq:1,kind:'outputTranscription',text:'retained'}]};
+  const changes: Partial<LiveCurrent>[] = [
+    {state:'error'}, {muted:true}, {cursor:2},
+    {pastSession:{outcome:'failed',endedAt:1,lastObservedAt:1}},
+    {jobs:[{id:'synthetic-job',originSessionId:'session-a',state:'completed',createdAt:1,markdown:'**Complete**',delivered:false}]},
+  ];
+  for (const change of changes) {
+    const merged=mergeLive(previous,{...previous,...change,entries:[]});
+    assert.notEqual(merged,previous);
+    assert.equal(merged.entries,previous.entries);
+    for (const [key,value] of Object.entries(change)) assert.deepEqual(merged[key as keyof LiveCurrent],value);
+  }
+  const previousExtra={...previous,memory:{status:'empty'}};
+  assert.notEqual(mergeLive(previousExtra,{...previousExtra,memory:{status:'selected'},entries:[]} as LiveCurrent),previousExtra);
+});
+
+
+test('unchanged terminal polling updates successful time without changing projection identity', async () => {
+  const live: LiveCurrent={state:'ended',since:'session-a',cursor:1,entries:[{seq:1,kind:'terminal'}]};
+  const previous={live,lastSuccess:new Date(1000),stale:false};
+  const next=await pollLiveView(previous,async cursor=>{assert.equal(cursor,1);return {...live,entries:[]};},()=>new Date(2000));
+  assert.equal(next.live,live);assert.equal(next.lastSuccess?.getTime(),2000);
+  const stale=await pollLiveView(next,async()=>{throw new Error('synthetic unavailable');});
+  const staleAgain=await pollLiveView(stale,async()=>{throw new Error('synthetic unavailable');});
+  assert.equal(staleAgain.live,live);assert.equal(staleAgain.lastSuccess,stale.lastSuccess);
+  assert.equal(staleAgain.stale,true);
+});
+
+test('new session fetches an uncursored initial page before resetting retained projection', async () => {
+  const previous={live:{state:'ended' as const,since:'session-a',cursor:900,entries:[{seq:900,kind:'terminal' as const}]}};
+  const cursors:(string|number|undefined)[]=[];
+  const next=await pollLiveView(previous,async cursor=>{
+    cursors.push(cursor);
+    return {state:'listening',since:'session-b',cursor:cursor===undefined?1:900,entries:cursor===undefined?[{seq:1,kind:'inputTranscription',text:'new initial entry'}]:[]};
+  });
+  assert.deepEqual(cursors,[900,undefined]);
+  assert.equal(next.live?.since,'session-b');assert.equal(next.live?.entries.length,1);
+  assert.equal(next.live?.entries[0]?.text,'new initial entry');
+});
+
+for (const kind of ['authority', 'offline-success', 'offline-failure', 'logout']) {
+  test(`held Live response cannot overwrite ${kind} reset`, async () => {
+    const source=readFileSync(new URL('../src/main.ts',import.meta.url),'utf8');
+    const poll=source.slice(source.indexOf('async function pollLive(){'),source.indexOf('async function pollConnections(){'));
+    const prefix=kind==='authority'?'onAuthorityChanged(':kind==='logout'?"  button('logout',":"window.addEventListener('offline',";
+    const resetSource=source.split('\n').find(line=>line.startsWith(prefix));
+    assert(resetSource);
+    const original={live:{state:'ended' as const,since:'synthetic-session',cursor:1,entries:[{seq:1,kind:'terminal' as const}]},stale:false};
+    let release!:()=>void;const gate=new Promise<void>(resolve=>{release=resolve;});
+    let callback!:()=>void,scheduled=0,liveTimerArmed=false;
+    const paints:unknown[]=[];
+    const context:any={document:{hidden:false},pairingRequired:false,liveBusy:false,liveTimer:1,pollTimer:1,connectionsTimer:1,
+      livePoll:original,live:original.live,pollLiveView,AbortSignal,clearTimeout:()=>{},
+      fetchLive:async()=>{await gate;if(kind==='authority'||kind==='offline-failure')throw new Error('synthetic unavailable');return {...original.live,entries:[]};},
+      scheduleLive:()=>{scheduled++;liveTimerArmed=!context.pairingRequired;},
+      paintLive:()=>{paints.push(context.live);},render:()=>{paints.push(context.live);},
+      onAuthorityChanged:(fn:()=>void)=>{callback=fn;},window:{addEventListener:(_name:string,fn:()=>void)=>{callback=fn;}},
+      button:(_name:string,fn:()=>void)=>{callback=fn;},logout:async()=>{},
+      mutate:(action:()=>Promise<void>)=>{context.mutation=action().then(()=>context.render());},
+      connectedView:{reset:()=>{},detach:()=>{}},connections:[],connectionsStale:false,statusUnavailable:false,status:{},
+      sessions:[],entries:[],session:undefined,plan:undefined,recall:undefined,recent:[],connection:'Connected'};
+    createContext(context);runInContext(poll+resetSource,context);
+    const pending=context.pollLive();assert.equal(context.liveBusy,true);
+    callback();if(kind==='logout')await context.mutation;
+    const reset=context.livePoll;assert.notEqual(reset,original);
+    const paintCount=paints.length;
+    if(kind==='authority'||kind==='logout')assert.equal(paints.at(-1),undefined);
+    else assert.equal(context.livePoll.stale,true);
+    release();await pending;
+    assert.equal(context.livePoll,reset);assert.equal(paints.length,paintCount);
+    assert.equal(context.liveBusy,false);assert.equal(scheduled,1);
+    if(kind==='logout')assert.equal(liveTimerArmed,false);
+  });
+}
+
+
+test('manual Live refresh cancels the scheduled handle before held logout', async () => {
+  const source=readFileSync(new URL('../src/main.ts',import.meta.url),'utf8');
+  const poll=source.slice(source.indexOf('async function pollLive(){'),source.indexOf('async function pollConnections(){'));
+  const schedule=source.slice(source.indexOf('function scheduleLive(){'),source.indexOf('function paintLive(){'));
+  let id=0,release!:()=>void;const timers=new Map<number,{fn:()=>void,delay:number}>();
+  const gate=new Promise<void>(resolve=>{release=resolve;});
+  const projection:LiveCurrent={state:'listening',since:'synthetic-timer-session',cursor:0,entries:[]};
+  const context:any={document:{hidden:false},pairingRequired:false,liveBusy:false,liveTimer:undefined,
+    livePoll:{live:projection},live:projection,liveDelay,pollLiveView,AbortSignal,
+    setTimeout:(fn:()=>void,delay:number)=>{const handle=++id;timers.set(handle,{fn,delay});return handle;},
+    clearTimeout:(handle:number)=>{timers.delete(handle);},fetchLive:async()=>{await gate;return projection;},paintLive:()=>{}};
+  createContext(context);runInContext(poll+schedule,context);
+  context.scheduleLive();assert.equal(timers.size,1);
+  const pending=context.pollLive();assert.equal(context.liveBusy,true);
+  const timerCountDuringManualPoll=timers.size;
+  context.pairingRequired=true;context.livePoll={};context.live=undefined;
+  release();await pending;
+  assert.equal(timerCountDuringManualPoll,0,'manual refresh owns cancellation of the pending poll');
+  assert.equal(timers.size,0,'logout must leave no lost Live timer');
+  assert.equal(context.liveTimer,undefined);assert.equal(context.liveBusy,false);
 });

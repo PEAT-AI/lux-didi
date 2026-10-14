@@ -195,9 +195,12 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
     if (existing) await retire(config.id);
     const client = new Client({ name: 'lux-didi-optional-mcp', version: '0.1.0' }, { enforceStrictCapabilities: true });
     const session: Session = { client, config };
-    // A dropped transport marks the session dead for respawn. A resource-budget breach is still fatal
-    // and suspends the connector; no remote error/header/body is ever logged.
-    client.onerror = (error: unknown) => { if (error instanceof PolicyError) suspend(config.id); else session.dead = true; };
+    // A dropped transport marks the session dead for respawn. A soft policy breach (the call's own
+    // timeout or an oversize result) is not fatal; any other transport policy breach suspends.
+    client.onerror = (error: unknown) => {
+      const soft = error instanceof PolicyError && (error.reason === 'timeout-or-cancelled' || error.reason === 'response-oversize');
+      if (!soft && error instanceof PolicyError) suspend(config.id); else session.dead = true;
+    };
     client.onclose = () => { session.dead = true; };
     client.setNotificationHandler('notifications/tools/list_changed', async () => { suspend(config.id); });
     const transport = isStdioEndpoint(config)

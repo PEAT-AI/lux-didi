@@ -146,9 +146,15 @@ export interface InjectionCandidate { id: string; endedAt: number; summary: stri
 
 /** Every complete summary that could be injected, newest first. The budget is applied by the prompt builder. */
 export function injectionCandidates(tx: Transaction): InjectionCandidate[] {
+  if (!hasTable(tx)) return [];
   return tx.all("SELECT id, ended_at, summary FROM conversation_summaries WHERE status='complete' AND summary IS NOT NULL ORDER BY ended_at DESC, rowid DESC")
     .map(row => ({ id: String(row['id']), endedAt: Number(row['ended_at']), summary: String(row['summary']) }))
     .filter(row => Number.isFinite(row.endedAt));
+}
+
+/** The domain migration owns this table; a store built without it has no summaries. */
+export function hasTable(tx: Transaction): boolean {
+  return !!tx.get("SELECT name FROM sqlite_master WHERE type='table' AND name='conversation_summaries'");
 }
 
 /** The injected summary ids recorded on a live session's own create-time provenance. */

@@ -1,8 +1,9 @@
 // Read-only presentation of the Interface 3 live projection (W-B provides the route).
 // Pure mapping and markup only: no scheduling, no network, no fabricated state.
 import { escapeHtml, renderMarkdown } from './markdown.ts';
+import { toolConnector, toolPhrase, toolPhrases } from './tool-phrases.ts';
 import type { VoiceState } from './orb.ts';
-import type { LiveCurrent, LiveEntry, LiveSource, LiveState } from './protocol.ts';
+import type { LiveCurrent, LiveEntry, LiveSource, LiveState, LiveTool } from './protocol.ts';
 
 const LABELS: Record<LiveState, string> = {
   idle: 'Ready when you are',
@@ -21,17 +22,23 @@ const VOICE: Record<LiveState, VoiceState> = {
 };
 export function liveVoiceState(state: LiveState): VoiceState { return VOICE[state] ?? 'CONNECTED'; }
 
-/** The tool whose call is in flight, so the thinking label can name it. */
-export function liveToolName(live: LiveCurrent): string | undefined {
+/** Tool names whose call is in flight: the calls after the last tool result.
+ * A batch of several calls is one set, so the activity line reads as one line. */
+export function pendingToolNames(live: LiveCurrent): string[] {
+  let lastResult = -1;
   for (let index = live.entries.length - 1; index >= 0; index--) {
-    const entry = live.entries[index]!;
-    if (entry.kind === 'toolCall' && entry.tool?.name) return entry.tool.name;
+    if (live.entries[index]!.kind === 'toolResult') { lastResult = index; break; }
   }
-  return undefined;
+  const names: string[] = [];
+  for (let index = lastResult + 1; index < live.entries.length; index++) {
+    const entry = live.entries[index]!;
+    if (entry.kind === 'toolCall' && entry.tool?.name) names.push(entry.tool.name);
+  }
+  return names;
 }
 
-/** The one visible state label, including the tool name while thinking.
- * main.ts and liveMarkup share it so the orb caption and the panel never disagree. */
+/** The one visible state label. A tool name is never folded into it; the
+ * activity line owns the phrase. Shared so the orb caption and panel agree. */
 export function liveLabel(live: LiveCurrent | undefined): string {
   const past = live?.pastSession;
   if (past) {
@@ -41,12 +48,53 @@ export function liveLabel(live: LiveCurrent | undefined): string {
     const normal = ['closed', 'cancelled', 'revoked', 'expired'].includes(past.outcome);
     return `Last Live session ended${normal ? '' : ' with an error'} at ${time}`;
   }
-  const state = live?.state;
-  if (state === 'thinking') {
-    const tool = live ? liveToolName(live) : undefined;
-    return tool ? `Thinking (${tool})` : liveStateLabel('thinking');
+  return liveStateLabel(live?.state ?? 'idle');
+}
+
+/** After this long a pending call adds its elapsed seconds to the activity line. */
+export const SLOW_TOOL_MS = 4000;
+
+export type LiveActivityKind = 'thinking' | 'tools' | 'done' | 'failed';
+export interface LiveActivity { kind: LiveActivityKind; text: string }
+
+/** The tool result's own sentence, or a calm connector sentence when the
+ * projection carries only a reason code. Never the raw code. */
+function failureSentence(tool: LiveTool): string {
+  const markdown = (tool.markdown ?? '').trim();
+  const code = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/;
+  if (markdown && /\s/.test(markdown) && !code.test(markdown)) return markdown;
+  return `${toolConnector(tool.name)} did not answer`;
+}
+
+/** What Naya is doing right now, as one human line, or undefined when there is
+ * no activity to show (listening, speaking, idle). */
+export function liveActivity(live: LiveCurrent | undefined): LiveActivity | undefined {
+  if (!live) return undefined;
+  const pending = pendingToolNames(live);
+  if (pending.length) return { kind: 'tools', text: toolPhrases(pending) };
+  const last = live.entries.at(-1);
+  if (last?.kind === 'toolResult' && last.tool) {
+    // W3 records a batch the user barged in on as disposition 'after_barge_in'. The
+    // result still reached Naya, so it is a quiet done, never a failure.
+    const tool = last.tool as LiveTool & { disposition?: string };
+    if (tool.disposition === 'after_barge_in') return { kind: 'done', text: 'Found it, ask if you want it' };
+    if (tool.status === 'error') return { kind: 'failed', text: failureSentence(tool) };
+    return { kind: 'done', text: 'Done' };
   }
-  return liveStateLabel(state ?? 'idle');
+  if (live.state === 'thinking') return { kind: 'thinking', text: 'Thinking' };
+  return undefined;
+}
+
+/** The activity line under the orb. A slow pending call appends its elapsed
+ * seconds only after SLOW_TOOL_MS, so the line stays calm while it waits. */
+export function activityMarkup(activity: LiveActivity | undefined, elapsedMs = 0): string {
+  if (!activity) return '';
+  const slow = activity.kind === 'tools' && elapsedMs >= SLOW_TOOL_MS;
+  const text = slow ? `${activity.text} (${Math.floor(elapsedMs / 1000)}s)` : activity.text;
+  const indicator = activity.kind === 'done'
+    ? '<span class="activity-mark" aria-hidden="true">&#10003;</span>'
+    : '<span class="activity-indicator" aria-hidden="true"></span>';
+  return `<p class="activity-line activity-${activity.kind}" role="status" aria-live="polite">${indicator}<span class="activity-text">${escapeHtml(text)}</span></p>`;
 }
 
 /** 1 Hz while active, 4 s while idle or terminal, paused while the document is hidden. */
@@ -71,9 +119,16 @@ export function mergeLive(previous: LiveCurrent | undefined, next: LiveCurrent):
 export interface LiveLine { role: 'user' | 'naya'; text: string }
 export function liveTranscript(live: LiveCurrent): LiveLine[] {
   const lines: LiveLine[] = [];
+  let boundary = true;
   for (const entry of live.entries) {
-    if (entry.kind === 'inputTranscription' && entry.text) lines.push({ role: 'user', text: entry.text });
-    if (entry.kind === 'outputTranscription' && entry.text) lines.push({ role: 'naya', text: entry.text });
+    const role = entry.kind === 'inputTranscription' ? 'user' : entry.kind === 'outputTranscription' ? 'naya' : undefined;
+    if (role && entry.text) {
+      const previous = lines.at(-1);
+      if (!boundary && previous?.role === role) previous.text += entry.text;
+      else lines.push({ role, text: entry.text });
+      boundary = false;
+    }
+    if (entry.kind === 'turnComplete' || entry.kind === 'interrupted' || entry.kind === 'terminal') boundary = true;
   }
   return lines;
 }
@@ -141,11 +196,12 @@ function rememberCardMarkup(entry: LiveEntry): string {
 }
 
 /** Full section markup, id="live-panel" so the poller can replace it in place. */
-export function liveMarkup(live: LiveCurrent | undefined, poll: LivePollState = {}): string {
+export function liveMarkup(live: LiveCurrent | undefined, poll: LivePollState = {}, detailsOpen = false): string {
   const state = live?.state;
   const label = liveLabel(live);
   const lines = live ? liveTranscript(live) : [];
   const result = live ? liveResult(live) : undefined;
+  const latestTurn = [...lines].reverse().find(line => line.role === 'naya') ?? lines.at(-1);
   const jobs = (live?.jobs ?? []).map(job => `<article class="live-job" data-job-id="${escapeHtml(job.id)}">
     <h2>${job.state === 'in_progress' ? 'Background task in progress' : 'Background task ' + escapeHtml(job.state)}</h2>
     ${renderMarkdown(job.markdown)}
@@ -157,17 +213,23 @@ export function liveMarkup(live: LiveCurrent | undefined, poll: LivePollState = 
   const error = state === 'error' ? '<p class="muted" role="status">Naya reported an error. The live session has stopped.</p>' : '';
   const muted = live?.muted ? '<p class="muted live-muted" role="status">Microphone muted</p>' : '';
   const transcript = lines.length
-    ? `<ol class="entries live-transcript">${lines.map(line => `<li class="entry"><strong>${line.role === 'user' ? 'You' : 'Naya'}</strong><p>${escapeHtml(line.text)}</p></li>`).join('')}</ol>`
+    ? `<div class="entries live-transcript">${lines.map(line => `<article class="entry"><strong>${line.role === 'user' ? 'You' : 'Naya'}</strong><p>${escapeHtml(line.text)}</p></article>`).join('')}</div>`
     : '<div class="entries live-transcript empty"><p class="muted">No live transcription yet.</p></div>';
   return `<section class="panel live" id="live-panel" aria-label="Naya live conversation">
     <p class="live-state" role="status" aria-live="polite">${escapeHtml(label)}</p>
     ${muted}
     ${poll.stale ? `<p class="live-stale" role="status">Live view stale${poll.lastSuccess ? ' since ' + escapeHtml(poll.lastSuccess.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })) : ', no successful poll yet'}, service unreachable</p>` : ''}
-    ${transcript}
     ${error}${restored}
-    ${(live?.entries ?? []).filter(entry => entry.kind === 'toolResult' && entry.tool?.name !== 'remember_note').map(entry => `<details class="live-tool-result" data-result-seq="${entry.seq}"><summary>${escapeHtml(entry.tool?.name ?? 'Tool result')} (${escapeHtml(entry.tool?.status ?? 'unknown')})</summary>${entry.tool?.status !== 'error' && entry.tool?.markdown ? renderMarkdown(entry.tool.markdown) + sourcesMarkup(entry.tool.sources ?? []) : ''}</details>`).join('')}
-    ${(live?.entries ?? []).filter(entry => entry.kind === 'toolResult' && entry.tool?.name === 'remember_note').map(remaining => rememberCardMarkup(remaining)).join('')}
-    ${jobs}
     ${result ? `<div class="live-result"><h2>Latest answer</h2>${renderMarkdown(result.markdown)}${sourcesMarkup(result.sources)}</div>` : ''}
+    ${latestTurn ? `<article class="live-latest-turn"><span>${latestTurn.role === 'naya' ? 'Latest spoken answer' : 'Latest turn'}</span><p>${escapeHtml(latestTurn.text)}</p></article>` : ''}
+    <details id="live-details" class="live-details"${detailsOpen ? ' open' : ''}>
+      <summary>Conversation history and activity</summary>
+      ${transcript}
+      <div class="live-activity" aria-label="Live activity">
+        ${(live?.entries ?? []).filter(entry => entry.kind === 'toolResult' && entry.tool?.name !== 'remember_note').map(entry => `<details class="live-tool-result" data-result-seq="${entry.seq}"><summary>${escapeHtml(toolPhrase(entry.tool?.name ?? ''))} (${escapeHtml(entry.tool?.status ?? 'unknown')})</summary>${entry.tool?.status !== 'error' && entry.tool?.markdown ? renderMarkdown(entry.tool.markdown) + sourcesMarkup(entry.tool.sources ?? []) : ''}</details>`).join('')}
+        ${(live?.entries ?? []).filter(entry => entry.kind === 'toolResult' && entry.tool?.name === 'remember_note').map(remaining => rememberCardMarkup(remaining)).join('')}
+        ${jobs}
+      </div>
+    </details>
   </section>`;
 }

@@ -2,8 +2,9 @@
 
 The Mac menu-bar/hotkey shell hosts the service's one shared responsive web UI in
 WKWebView. Swift no longer duplicates Conversation/Today/Memory business screens
-or owns a business store. Local native controls remain a narrow draft/record/save
-strip and service setup/unavailable/reconnect state. See
+or owns a business store. A compact native Naya voice rail owns consent, lifecycle
+and Start, Mute and Stop. Note capture and connection details remain native but
+start collapsed below the shared conversation page. See
 [companion protocol](companion-protocol.md) for trust and credential boundaries.
 
 ## Lifecycle
@@ -66,6 +67,11 @@ uses a marked isolated state directory and the actual installed HOST/shared UI.
 Reopen preserves prior service records; the lifecycle marker contains identity
 only. The report distinguishes observed functional persistence/accessibility
 from native-chrome visual review, and leaves native exit to the external driver.
+It first captures the actual production RootView with the secondary disclosures
+collapsed, then opens note capture through its accessibility action before the
+existing control assertion and expanded whole-window capture. The expected
+accessible controls stay Start recording, Stop recording, Send to Naya and Save
+note.
 No real appdata, permission prompt, live microphone, playback or notification
 is involved. See [the companion protocol](companion-protocol.md) for rejection,
 reinstall/relocation and versioned reporting semantics.
@@ -80,11 +86,13 @@ public default; a configured invalid store refuses before the host is spawned.
 Launch only forwards the two existing host path flags. See
 [building and installing the Mac app](macos-install.md).
 
-The Live panel includes Show conversation, which focuses its embedded conversation
-rather than opening a browser. Configured session and idle limits appear beside
-Start; a limit-ended session explains how to continue explicitly. The read-only
-Connections card shows each connector's state and safe reason, with ten-second
-refreshes only while visible. Unavailable connection status is shown explicitly.
+The shared conversation page is always present, so the native window does not add
+a second conversation control or transcript. Configured session and idle limits
+appear in Connection details; a limit-ended session explains how to continue
+explicitly. The read-only Connections card shows each connector's state and safe
+reason, with ten-second refreshes only while its disclosure is open. Unavailable
+connection status is shown explicitly. The app scopes Aqua appearance to its own
+window and SwiftUI root.
 
 ## Live routes and local service recovery
 

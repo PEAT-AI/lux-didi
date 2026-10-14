@@ -19,6 +19,8 @@ cp "$root"/server/adapters/model/*.ts "$out/source/adapters/model/"
 cp "$root"/server/adapters/mcp/*.ts "$out/source/adapters/mcp/"
 cp "$root/server/test/tool-owner.test.ts" "$out/source/test/"
 cp "$root/server/test/live-shape.test.ts" "$out/source/test/"
+mkdir -p "$out/source/test/fixtures"
+cp "$root"/server/test/fixtures/*.ts "$out/source/test/fixtures/"
 printf '{"type":"module"}\n' > "$out/package.json"
 ln -s "$deps" "$out/node_modules"
 node "$deps/typescript/bin/tsc" --target ES2023 --module NodeNext --moduleResolution NodeNext \

@@ -1,9 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  cleanMailBody, cutAtSentence, shapeGcalList, shapeGmailList, shapeGmailRead, shapeLuxKnowledge, shapeMattermost,
+  cleanMailBody, cutAtSentence, noEmptyResult, shapeGcalList, shapeGmailList, shapeGmailRead, shapeLuxKnowledge, shapeMattermost,
   KNOWLEDGE_HITS, MATTERMOST_MESSAGE_CHARS,
 } from '../tools/live-shape.js';
+import {
+  CHANNELS, ITEMS, REST_POSTS, SEARCH_EMPTY, SEARCH_RESULTS, THREAD, UNRECOGNISED,
+} from './fixtures/mattermost-shapes.js';
 
 // Rich, clean shaping of synthetic tool results. No real account, message or corpus.
 const HEADERS = { Subject: 'Launch plan', From: 'Dana <dana@example.invalid>', To: 'rob@example.invalid', Cc: 'kim@example.invalid', Date: 'Mon, 1 Jan 2024 00:00:00 +0000' };
@@ -121,4 +124,57 @@ test('a boundary-free run-on is cut at the last whole word, never mid-word', () 
   assert.equal(cut.text, 'This is one very long runon');
   assert.equal(/\s/u.test(cut.text.at(-1) ?? ''), false, 'the cut never ends mid-word or on whitespace');
   assert.equal(cut.omitted > 0, true);
+});
+
+// --- W12: every Mattermost read shape is recognised, and an empty read is never silent ---
+
+test('mattermost search results (results array) shape with author, channel and permalink', () => {
+  const shaped = shapeMattermost('mattermost_search', SEARCH_RESULTS);
+  assert.match(shaped.text, /harbour \| river \| 2026-10-11T10:00:00\.000Z/);
+  assert.match(shaped.text, /Mooring drift log is ready/);
+  assert.match(shaped.text, /source: https:\/\/chat\.example\.invalid\/t\/harbour\/pl\/p1/);
+  assert.equal(shaped.text.length > 0, true);
+});
+
+test('mattermost thread root and replies both shape', () => {
+  const shaped = shapeMattermost('mattermost_get_thread', THREAD);
+  assert.match(shaped.text, /Mooring drift log is ready/);
+  assert.match(shaped.text, /Reviewed the mooring drift log/);
+});
+
+test('mattermost channel list (channels array) shapes display names', () => {
+  const shaped = shapeMattermost('mattermost_list_channels', CHANNELS);
+  assert.match(shaped.text, /- Harbour/);
+  assert.match(shaped.text, /- Dry Dock/);
+});
+
+test('mattermost REST id-map posts are ordered by order and system posts dropped', () => {
+  const shaped = shapeMattermost('mattermost_get_channel_history', REST_POSTS);
+  assert.equal(shaped.text.length > 0, true);
+  assert.equal(shaped.text.indexOf('Crane booked for Tuesday') < shaped.text.indexOf('Tide table pinned'), true);
+  assert.equal(shaped.text.includes('joined the channel'), false);
+});
+
+test('mattermost items wrapper shapes', () => {
+  const shaped = shapeMattermost('mattermost_search', ITEMS);
+  assert.match(shaped.text, /harbour \| river \| 2026-10-11T10:00:00Z/);
+});
+
+test('a genuinely empty Mattermost read returns an explicit note, never an empty string', () => {
+  assert.equal(shapeMattermost('mattermost_search', SEARCH_EMPTY).text, 'No messages matched.');
+  assert.equal(shapeMattermost('mattermost_get_channel_history', { posts: [] }).text, 'No messages in this channel for that window.');
+  assert.equal(shapeMattermost('mattermost_list_channels', { channels: [] }).text, 'No channels.');
+});
+
+test('an unrecognised Mattermost shape fails loud: raw text plus the shape marker', () => {
+  const shaped = shapeMattermost('mattermost_search', UNRECOGNISED);
+  assert.equal(shaped.text.length > 0, true);
+  assert.match(shaped.text, /canvas/);
+  assert.equal(shaped.shape, 'unrecognised');
+});
+
+test('noEmptyResult turns an empty completed projection into an explicit note', () => {
+  assert.equal(noEmptyResult(''), 'No results.');
+  assert.equal(noEmptyResult('  \n '), 'No results.');
+  assert.equal(noEmptyResult('kept'), 'kept');
 });

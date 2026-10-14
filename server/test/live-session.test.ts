@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import * as memory from '../domain/memory.js';
 import * as labels from '../domain/labels.js';
 import { resolveLiveMemory } from '../host/live.js';
-import { safeEvent } from '../host/log.js';
+import { HostLog, captureHostDiagnostics, safeEvent } from '../host/log.js';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
@@ -18,8 +18,9 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { TestContext } from 'node:test';
 import { fork, spawn } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { once } from 'node:events';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadLiveConfig } from '../config/live.js';
@@ -1813,4 +1814,77 @@ test('Mattermost declarations carry the channel-resolution micro-contract', () =
   assert.match(descriptions.get('mattermost_search')!, /search first, no channel list needed/);
   assert.match(descriptions.get('mattermost_get_channel_history')!, /channel is a channel id from mattermost_list_channels/);
   assert.match(descriptions.get('mattermost_get_thread')!, /postId is a post id taken from a channel history/);
+});
+
+// W10: the whole point of the logging change is that one call can be read back in order.
+// These drive the real owner through the fake provider seam and assert the emitted log,
+// not the projection, so a broken call site fails here even when the UI still looks fine.
+async function untilLogged(logPath: string, event: string, count: number): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    let seen = 0;
+    try {
+      for (const line of readFileSync(logPath, 'utf8').split('\n')) if (line.includes(`"event":"${event}"`)) seen += 1;
+    } catch { /* the file appears after the first flush */ }
+    if (seen >= count) return;
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${count} ${event} lines`);
+    await tick();
+  }
+}
+
+test('W10: a fake-provider call reconstructs the ordered call timeline', async t => {
+  const h = await harness(t, { tools: true });
+  const dir = mkdtempSync(join(tmpdir(), 'didi-a1-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const stop = captureHostDiagnostics(new HostLog(dir));
+  t.after(stop);
+  const logPath = join(dir, 'logs', 'host.log');
+  const { attachment } = await attached(h, 'a1');
+  void (async () => { for await (const chunk of attachment.output) { void chunk; } })();
+  for (let i = 0; i < 3; i++) {
+    h.f.send({ serverContent: { outputTranscription: { text: `out-${i}`, finished: true }, generationComplete: true, turnComplete: true } });
+    await untilLogged(logPath, 'provider.turn', i + 1);
+  }
+  h.f.send({ toolCall: { functionCalls: [{ id: 'a1call', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
+  await untilLogged(logPath, 'tool.call_end', 1);
+  h.f.send({ serverContent: { interrupted: true } });
+  await untilLogged(logPath, 'provider.turn', 4);
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'a1-handle' } });
+  h.f.send({ goAway: { timeLeft: '10s' } });
+  await h.f.frame(2);
+  h.f.send({ setupComplete: {} });
+  await untilLogged(logPath, 'live.reconnect', 1);
+  h.f.clients.at(-1)!.close();
+  await untilLogged(logPath, 'live.session_terminal', 1);
+  const output = execFileSync(process.execPath, [join(import.meta.dirname, '../../../scripts/call-timeline.mjs'), '--last', '--json', '--dir', join(dir, 'logs')], { encoding: 'utf8' });
+  const names = (JSON.parse(output) as { event: string }[]).map(entry => entry.event);
+  const order = ['live.attempt_start', 'live.session_open', 'provider.turn', 'tool.call_start', 'tool.call_end', 'live.reconnect', 'live.session_terminal'];
+  let cursor = -1;
+  for (const name of order) {
+    const at = names.indexOf(name, cursor + 1);
+    assert.ok(at > cursor, `${name} must follow the previous event in the timeline`);
+    cursor = at;
+  }
+  assert.ok(names.filter(name => name === 'provider.turn').length >= 4, 'three turnComplete plus the interruption');
+  await attachment.done;
+});
+
+test('W10: a failure before session acceptance correlates by attemptId', async t => {
+  const h = await harness(t);
+  const dir = mkdtempSync(join(tmpdir(), 'didi-a3-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const stop = captureHostDiagnostics(new HostLog(dir));
+  t.after(stop);
+  const logPath = join(dir, 'logs', 'host.log');
+  h.f.refuseUpgrades(500);
+  const session = h.owner.create({ idempotencyKey: 'a3', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId, attemptId: 'attempt-a3' }, h.ctx);
+  await untilLogged(logPath, 'live.session_terminal', 1);
+  const lines = readFileSync(logPath, 'utf8').trim().split('\n').map(line => JSON.parse(line) as { event: string; attemptId?: string });
+  const attempt = lines.find(entry => entry.event === 'live.attempt_start');
+  const terminal = lines.find(entry => entry.event === 'live.session_terminal');
+  assert.equal(attempt?.attemptId, 'attempt-a3');
+  assert.equal(terminal?.attemptId, 'attempt-a3');
+  assert.ok(lines.findIndex(entry => entry.event === 'live.attempt_start') < lines.findIndex(entry => entry.event === 'live.session_terminal'));
+  await attachment.done;
 });

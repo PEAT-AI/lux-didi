@@ -11,8 +11,9 @@ printf '# isolated global config\n' > "$work/npm-global"
 export npm_config_userconfig="$work/npm-user" npm_config_globalconfig="$work/npm-global"
 cd server
 npm run build
-node --test --test-reporter=tap --test-timeout=10000 dist/test/live-voice.test.js | tee "$work/test.log"
+node --test --test-reporter=tap --test-timeout=30000 dist/test/live-voice.test.js dist/test/live-session.test.js | tee "$work/test.log"
 grep -Eq '^# tests [1-9][0-9]*$' "$work/test.log" || { echo 'Zero selected live voice tests' >&2; exit 1; }
+grep -Eq '^# fail 0$' "$work/test.log" || { echo 'Selected live voice and session tests failed' >&2; exit 1; }
 # Use the canonical files inventory and bundled production dependencies, offline.
 npm pack --offline --ignore-scripts --pack-destination "$work" --json > "$work/pack.json"
 mkdir "$work/runtime"

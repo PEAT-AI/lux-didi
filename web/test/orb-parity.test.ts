@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { levelFrame } from '../src/orb.ts';
+import { levelFrame } from '../src/orb-level.ts';
 
 const source = readFileSync(new URL('../src/orb-classic.ts', import.meta.url), 'utf8');
 const style = readFileSync(new URL('../src/style.css', import.meta.url), 'utf8');

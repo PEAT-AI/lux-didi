@@ -1,5 +1,5 @@
 import { loadMcpEndpoints } from '../config/mcp.js';
-import { HostLog, captureHostDiagnostics } from './log.js';
+import { HostLog, captureHostDiagnostics, emitHostEvent, setLogContext } from './log.js';
 import { loadOwnerProfile } from '../config/owner-profile.js';
 import { ConfigError, readPrivate, validateRoot } from '../config/files.js';
 import { homedir, platform } from 'node:os';
@@ -141,6 +141,8 @@ export async function startHost(config: HostConfig) {
   // start so a start that also fails leaves no stale descriptor behind.
   clearStaleDescriptor(descriptorPath);
   const log = new HostLog(dataDir);
+  // One launchId per native launch, carried from the supervisor through the environment.
+  const launchId = typeof process.env.LUX_LAUNCH_ID === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(process.env.LUX_LAUNCH_ID) ? process.env.LUX_LAUNCH_ID : randomUUID();
   let exitLogged = false, exitSignal: NodeJS.Signals | undefined;
   let startupStage = 'log';
   const logExit = (stage: string, reason: 'close' | 'exit'): void => {
@@ -149,7 +151,7 @@ export async function startHost(config: HostConfig) {
     // Exit logging is best effort: the state directory may already be gone.
     try { log.event({ event: 'host_exit', stage, reason, ...(exitSignal ? { signal: exitSignal } : { code: process.exitCode ?? 0 }) }); } catch { /* nothing durable to write */ }
   };
-  for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => { exitSignal = signal; });
+  for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => { exitSignal = signal; emitHostEvent('host.stop_requested', { actor: 'signal', reason: signal }); });
   process.once('exit', () => { removeOwnDescriptor(descriptorPath); logExit(startupStage, 'exit'); });
   const domain = createDomainPort({ outbox: Outbox }); // No authorized device/target: reminders remain unbound.
   let releaseCommit = 'unknown';
@@ -169,8 +171,11 @@ export async function startHost(config: HostConfig) {
     }
     if (selection.state === 'configured') endpoints = selection.catalog.endpoints.length;
   } catch { /* Composition below owns invalid configuration errors. */ }
-  log.event({ event: 'host_started', releaseCommit, configDir: configKind, endpoints });
   const stopDiagnostics = captureHostDiagnostics(log);
+  // The typed logger needs a sink installed before the first line; the legacy
+  // console patch does not carry the correlation envelope.
+  setLogContext({ launchId });
+  emitHostEvent('host.started', { releaseCommit, configDir: configKind, endpoints });
   let store: Store;
   startupStage = 'store';
   try { store = new Store(dataDir, hostMigrations); } catch (error) { log.error(error); stopDiagnostics(); throw error; }

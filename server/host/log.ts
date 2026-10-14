@@ -4,6 +4,85 @@ import { ConfigError } from '../config/files.js';
 import { closeSync, constants, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, renameSync, unlinkSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 
+// W10 typed direct logger. Every event kind has a closed field schema; a field outside it
+// is a programming error: dropped and counted as log.schema_violation, never written.
+// Values are only numbers, booleans, closed enums, ids and timestamps. No free-text field exists.
+export type FieldType = 'id' | 'num' | 'bool' | 'ts';
+export type FieldSpec = FieldType | readonly string[];
+export type KindSchema = Record<string, FieldSpec>;
+
+const idPattern = /^[A-Za-z0-9._:@+-]{1,128}$/;
+const eventPattern = /^[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+$/;
+const tsPattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+// Correlation ids ride on every line when known; never caller text.
+const correlation: KindSchema = {
+  launchId: 'id', attemptId: 'id', liveSessionId: 'id', generation: 'num', turnSeq: 'num', toolCallId: 'id',
+};
+
+const audioFlowFields: KindSchema = {
+  side: ['native', 'host'],
+  tapFrames: 'num', converterBytesOut: 'num', ringEnqueued: 'num', ringDropped: 'num', ringResidual: 'num',
+  wsBytesSent: 'num', playbackScheduled: 'num', playbackRendered: 'num', underruns: 'num', flushedFrames: 'num',
+  lateFramesAfterFlush: 'num', bytesFromNative: 'num', bytesToProvider: 'num', bytesFromProvider: 'num', bytesToNative: 'num',
+};
+
+// One closed schema per event kind. The contract's vocabulary, no per-chunk events.
+export const eventSchemas: Record<string, KindSchema> = {
+  'host.started': { releaseCommit: 'id', configDir: ['effective', 'seeded'], endpoints: 'num' },
+  'host.stop_requested': { actor: ['native_supervisor', 'signal', 'owner', 'user'], reason: 'id' },
+  'host.exit': { stage: ['descriptor', 'log', 'store', 'owner', 'listen', 'ready'], reason: ['close', 'exit'], signal: ['SIGINT', 'SIGTERM'], code: 'num' },
+  'live.attempt_start': {},
+  'live.session_open': { languageCode: 'id', voice: 'id' },
+  'live.state_change': { from: 'id', to: 'id' },
+  'live.reconnect': { reason: 'id', attempt: 'num' },
+  'live.session_terminal': { code: 'id', wsCloseCode: 'num', lastInbound: 'id', lastOutbound: 'id', tokenCount: 'num', frames: 'num', bytes: 'num' },
+  'provider.turn': { reason: ['turnComplete', 'generationComplete', 'interrupted'], frames: 'num', bytes: 'num', firstAudioMs: 'num', onsetMono: 'num', activityStartMono: 'num', interruptedMono: 'num' },
+  'provider.frame_rejected': { stage: ['parsed', 'json'], code: 'id', kind: 'id', bytes: 'num', keyList: 'id', unknownKeys: 'num' },
+  'tool.call_start': { name: 'id' },
+  'tool.call_end': { name: 'id', latencyMs: 'num', outcome: ['success', 'error', 'cancelled', 'after_barge_in'], failureStage: 'id', code: 'id' },
+  'audio.flow': audioFlowFields,
+  'audio.config': { inputRate: 'num', channels: 'num', channelMap: 'id', voiceProcessing: 'bool', languageCode: 'id', voice: 'id' },
+  'log.schema_violation': { kind: 'id', dropped: 'num' },
+};
+
+function fieldOk(value: unknown, spec: FieldSpec): boolean {
+  if (Array.isArray(spec)) return typeof value === 'string' && (spec as readonly string[]).includes(value);
+  switch (spec) {
+    case 'num': return typeof value === 'number' && Number.isFinite(value);
+    case 'bool': return typeof value === 'boolean';
+    case 'id': return typeof value === 'string' && idPattern.test(value);
+    case 'ts': return typeof value === 'string' && tsPattern.test(value);
+    default: return false;
+  }
+}
+
+let logContext: Record<string, unknown> = {};
+export function setLogContext(context: Record<string, unknown>): void { logContext = { ...context }; }
+export function mergeLogContext(context: Record<string, unknown>): void { logContext = { ...logContext, ...context }; }
+export function monoMs(): number { return Number(process.hrtime.bigint() / 1_000_000n); }
+
+export function emitHostEvent(kind: string, fields: Record<string, unknown> = {}): void {
+  const schema = eventSchemas[kind];
+  if (schema === undefined || !eventPattern.test(kind)) { emitViolation('unknown_event', Object.keys(fields).length); return; }
+  const merged = { ...logContext, ...fields };
+  const record: Record<string, unknown> = { ts: new Date().toISOString(), mono: monoMs(), level: 'info', process: 'host', event: kind, pid: process.pid };
+  let dropped = 0;
+  for (const [key, value] of Object.entries(merged)) {
+    if (key === 'ts' || key === 'mono' || key === 'level' || key === 'process' || key === 'event' || key === 'pid') continue;
+    const spec = correlation[key] ?? schema[key];
+    if (spec === undefined || !fieldOk(value, spec)) { dropped += 1; continue; }
+    record[key] = value;
+  }
+  if (dropped > 0) emitViolation(kind, dropped);
+  for (const sink of sinks) sink.write(record);
+}
+
+function emitViolation(kind: string, dropped: number): void {
+  const record = { ts: new Date().toISOString(), mono: monoMs(), level: 'error', process: 'host', event: 'log.schema_violation', pid: process.pid, kind: eventPattern.test(kind) ? kind : 'invalid', dropped };
+  for (const sink of sinks) sink.write(record);
+}
+
 // Only the existing diagnostic schemas cross this boundary, never arbitrary console text.
 export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (!raw || typeof raw !== 'object') return;
@@ -83,6 +162,7 @@ export class HostLog {
     this.path = join(directory, 'host.log');
   }
   event(raw: unknown): void { const event = safeEvent(raw); if (event) this.append(event); }
+  write(record: Record<string, unknown>): void { this.appendLine(Buffer.from(JSON.stringify(record) + '\n')); }
   terminal(raw: unknown): void {
     if (!raw || typeof raw !== 'object') return;
     const code = (raw as { code?: unknown }).code;
@@ -94,7 +174,9 @@ export class HostLog {
     this.append({ event: 'host_error', class: error instanceof ConfigError ? 'ConfigError' : 'Error', ...(error instanceof ConfigError ? { code: error.code } : {}) });
   }
   private append(event: Record<string, unknown>): void {
-    const line = Buffer.from(JSON.stringify({ timestamp: new Date().toISOString(), pid: process.pid, ...event }) + '\n');
+    this.appendLine(Buffer.from(JSON.stringify({ timestamp: new Date().toISOString(), pid: process.pid, ...event }) + '\n'));
+  }
+  private appendLine(line: Buffer): void {
     if (line.length > this.limit) return;
     let fd = openSync(this.path, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
     try {

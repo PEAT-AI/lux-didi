@@ -173,7 +173,7 @@ test('a host that dies right after host_started removes the stale descriptor and
     assert.notEqual(outcome.code, 0);
     await assert.rejects(readFile(join(dataDir, 'host-runtime.json')), /ENOENT/);
     const log = await readFile(join(dataDir, 'logs', 'host.log'), 'utf8');
-    assert.match(log, /"event":"host_started"/);
+    assert.match(log, /"event":"host.started"/);
     const exitLine = log.split('\n').find(line => line.includes('"event":"host_exit"'));
     assert.ok(exitLine, 'host_exit must be logged for the dead host');
     const event = JSON.parse(exitLine);

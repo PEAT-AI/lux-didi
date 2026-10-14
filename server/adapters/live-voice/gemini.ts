@@ -3,6 +3,7 @@ import WebSocket from 'ws';
 import type { RawData } from 'ws';
 import type { DataClass, GeminiLiveVoiceOptions, LiveVoiceControl, LiveVoiceDiagnostics, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession, LiveSocketFactory, LiveVoiceErrorCode, LiveToolResponse, LiveToolCall } from './types.js';
 import { LiveVoiceError, liveVoiceActivityDefaults, liveVoiceTimerDefaults } from './types.js';
+import { emitHostEvent } from '../../host/log.js';
 
 // Fixed official v1beta endpoint. Neither destination nor credentials are public events.
 const networkErrors = new Set(['ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ECONNREFUSED', 'ECONNABORTED', 'ENETUNREACH', 'EHOSTUNREACH', 'ENOTFOUND', 'EAI_AGAIN']);
@@ -17,20 +18,6 @@ const classes: readonly DataClass[] = ['ordinary', 'private', 'sensitive'];
 const timerNames = ['handshakeMs', 'idleMs', 'sessionMs', 'closeMs'] as const;
 // Gemini Live provider field names, used only to name the rejected frame kind, never its values.
 const frameKeys = ['error', 'toolCall', 'toolCallCancellation', 'setupComplete', 'serverContent', 'voiceActivity', 'sessionResumptionUpdate', 'goAway', 'usageMetadata'];
-function keyName(key: string): boolean { return /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(key); }
-// Bounded shape walk: key names only, never a value, text, audio or id.
-function shapePaths(value: unknown, out: string[], prefix: string, depth: number): void {
-  if (out.length >= 24 || depth > 4 || !object(value)) return;
-  for (const key of Object.keys(value)) {
-    if (out.length >= 24) return;
-    if (!keyName(key)) continue;
-    const path = prefix ? `${prefix}.${key}` : key;
-    out.push(path);
-    const child = value[key];
-    if (Array.isArray(child)) { if (child.length && object(child[0])) shapePaths(child[0], out, `${path}[]`, depth + 1); }
-    else if (object(child)) shapePaths(child, out, path, depth + 1);
-  }
-}
 type ObjectValue = Record<string, unknown>;
 type EventBody = LiveVoiceEvent extends infer E ? E extends LiveVoiceEvent ? Omit<E, 'sequence'> : never : never;
 function object(value: unknown): value is ObjectValue { return !!value && typeof value === 'object' && !Array.isArray(value); }
@@ -339,10 +326,12 @@ class Session implements LiveVoiceSession {
   // One bounded, privacy-safe line at the exact parser rejection point: frame kind, top-level
   // and nested key names and byte length, never a value, text, audio or id.
   private reportRejectedFrame(message: unknown, byteLength: number, parsed: boolean, code: LiveVoiceErrorCode): void {
-    const kind = !parsed ? 'invalid_json' : object(message) ? frameKeys.filter(key => Object.hasOwn(message, key)).sort().join('+') || 'unknown' : 'non_object';
-    const keys: string[] = [];
-    if (object(message)) shapePaths(message, keys, '', 0);
-    console.error(JSON.stringify({ event: 'live_frame_rejected', code, kind, bytes: byteLength, keys }));
+    // Top-level keys only, from a closed list of known Live keys; unknown keys are counted, never named.
+    const present = object(message) ? Object.keys(message) : [];
+    const known = present.filter(key => frameKeys.includes(key)).sort();
+    const unknownKeys = present.filter(key => !frameKeys.includes(key)).length;
+    const kind = !parsed ? 'invalid_json' : object(message) ? known.join('+') || 'unknown' : 'non_object';
+    emitHostEvent('provider.frame_rejected', { stage: parsed ? 'parsed' : 'json', code, kind, bytes: byteLength, keyList: known.length ? known.join('+') : 'none', unknownKeys });
   }
   private text(value: unknown): string {
     if (typeof value !== 'string' || (this.secret && (value.includes(this.secret) || value.includes(encodeURIComponent(this.secret))))) fail('protocol_error');

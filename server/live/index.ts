@@ -4,6 +4,7 @@ import * as memory from '../domain/memory.js';
 import * as labels from '../domain/labels.js';
 import { definitionsInTransaction } from '../tools/index.js';
 import { LiveToolJobs, type JobTimer } from '../tools/jobs.js';
+import { emitHostEvent } from '../host/log.js';
 import { declarationsFor, runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
 import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';
@@ -32,6 +33,7 @@ interface ActiveSession {
   inputFinalTimer?: ReturnType<JobTimer>;
   inputFinalWaiters?: Set<() => void>;
   generation: number; attempts: number; rebuilding: boolean;
+  attemptId: string;
   request: LiveVoiceRequest; deadlineMs: number; deadlineAt: number; idleAt: number; goAwayUntil: number | undefined;
   sessionTimer: ReturnType<JobTimer> | undefined; idleTimer: ReturnType<JobTimer> | undefined;
   pendingCalls: Map<string, string>;
@@ -411,7 +413,7 @@ export class LiveSessionOwner {
         if (kind === 'inputTranscription' || kind === 'outputTranscription') entries.push({ seq, kind, text: String(item.text ?? '') });
         else if (kind === 'toolCall' || kind === 'toolResult') {
           const tool = JSON.parse(String(item.tool_json)) as LiveToolProjection;
-          entries.push({ seq, kind, tool: kind === 'toolCall' ? { name: tool.name, status: 'called' } : { name: tool.name, status: tool.status, markdown: tool.markdown, sources: tool.sources.map(source => ({ title: source.title, ...(source.url ? { url: source.url } : {}) })) } });
+          entries.push({ seq, kind, tool: kind === 'toolCall' ? { name: tool.name, status: 'called' } : { name: tool.name, status: tool.status ?? 'error', markdown: tool.markdown, sources: tool.sources.map(source => ({ title: source.title, ...(source.url ? { url: source.url } : {}) })) } });
         } else if (kind === 'continuity') entries.push({ seq, kind, ...JSON.parse(String(item.text)) });
         else if (kind === 'interrupted' || kind === 'turnComplete' || kind === 'terminal') entries.push({ seq, kind });
       }
@@ -447,7 +449,7 @@ export class LiveSessionOwner {
     return page;
   }
 
-  attach(input: { liveSessionId: string }, context: LiveContext): LiveAttachment {
+  attach(input: { liveSessionId: string; attemptId?: string }, context: LiveContext): LiveAttachment {
     this.#guardOpen();
     if (!input || typeof input.liveSessionId !== 'string') throw new LiveError('invalid_request');
     this.#authorize(context);
@@ -478,7 +480,7 @@ export class LiveSessionOwner {
     });
     this.#armExpiry();
     if (prepared === 'expired') throw new LiveError('expired');
-    return this.#open(input.liveSessionId, prepared.inputClass, revision, prepared.acceptedPrompt, context);
+    return this.#open(input.liveSessionId, prepared.inputClass, revision, prepared.acceptedPrompt, context, input.attemptId);
   }
 
   /** The HTTP delete owns the transaction; publish handle changes only after it commits. */
@@ -565,8 +567,11 @@ export class LiveSessionOwner {
     return [{ role: 'user', text, dataClass }];
   }
 
-  #open(liveSessionId: string, inputClass: DataClass, revision: number, acceptedPrompt: AcceptedPromptSnapshot, context: LiveContext): LiveAttachment {
+  #open(liveSessionId: string, inputClass: DataClass, revision: number, acceptedPrompt: AcceptedPromptSnapshot, context: LiveContext, attemptId?: string): LiveAttachment {
     const abort = new AbortController();
+    // Native may allocate the attemptId before precreate; otherwise the host owns it.
+    const attempt = attemptId ?? randomUUID();
+    emitHostEvent('live.attempt_start', { attemptId: attempt, liveSessionId });
     const dataClasses = classes.filter(c => c === inputClass || acceptedPrompt.dataClasses.includes(c));
     let registry: readonly ToolDefinition[] = [], host: HostContext | undefined;
     if (this.#tools) {
@@ -596,6 +601,7 @@ export class LiveSessionOwner {
     this.#store.transaction(tx => tx.run("UPDATE live_sessions SET lifecycle='active', updated_at=? WHERE live_session_id=?", [this.#now(), liveSessionId]));
     const handle: ActiveSession = {
       generation: 0, attempts: 0, rebuilding: false, request: structuredClone(request),
+      attemptId: attempt,
       deadlineMs, deadlineAt, idleAt: this.#now() + this.#profile.limits.idleMs, goAwayUntil: undefined,
       sessionTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
       registry, host, toolStep: 0, seenIds: new Set(), thinking: false, speaking: false, pendingCallIds: new Set(), bargeInCallIds: new Set(),
@@ -613,6 +619,8 @@ export class LiveSessionOwner {
     session.ready.then(() => {
       if (handle.generation !== 0 || this.#settled(handle)) return;
       handle.ready = true;
+      emitHostEvent('live.session_open', { attemptId: handle.attemptId, liveSessionId, generation: handle.generation });
+      emitHostEvent('live.state_change', { attemptId: handle.attemptId, liveSessionId, from: 'idle', to: 'listening' });
       const job = this.#jobs.forSession(liveSessionId);
       if (job) { job.delivered = true; this.#jobs.save(job); }
     }, () => {});
@@ -650,6 +658,7 @@ export class LiveSessionOwner {
   }
 
   #continuity(handle: ActiveSession, event: 'rebuilding' | 'resumed', reason?: string): void {
+    if (event === 'rebuilding') emitHostEvent('live.reconnect', { attemptId: handle.attemptId, liveSessionId: handle.liveSessionId, generation: handle.generation, reason: reason ?? 'unknown', attempt: handle.attempts });
     const journalSequence = this.#persist(handle, { type: 'continuity', sequence: 0, text: JSON.stringify({ event, ...(reason ? { reason } : {}) }) }, 'continuity');
     if (journalSequence === 'overflow') { this.#settle(handle, { state: 'journal_limit' }, false, 'ended', null); return; }
     this.#pushChunk(handle, { kind: 'marker', marker: { kind: 'continuity', event, ...(reason ? { reason } : {}), sequence: null, journalSequence, text: null, finished: null, value: null } });
@@ -778,6 +787,7 @@ export class LiveSessionOwner {
   }
 
   async #consume(handle: ActiveSession): Promise<void> {
+    let turnSeq = 0, turnFrames = 0, turnBytes = 0;
     while (!this.#settled(handle)) {
     const session = handle.session, generation = handle.generation;
     let outcome: LiveVoiceOutcome | undefined;
@@ -817,7 +827,7 @@ export class LiveSessionOwner {
         if (event.type === 'interrupted') { for (const id of handle.pendingCallIds) handle.bargeInCallIds.add(id); handle.speaking = false; }
         if (event.type === 'turnComplete' || event.type === 'generationComplete') handle.speaking = false;
         if (event.type === 'waitingForInput') { handle.thinking = !event.value; if (event.value) handle.speaking = false; }
-        if (event.type === 'audio') { handle.thinking = false; handle.speaking = true; this.#pushChunk(handle, { kind: 'audio', pcm: event.pcm }); continue; }
+        if (event.type === 'audio') { turnFrames += 1; turnBytes += event.pcm.byteLength; handle.thinking = false; handle.speaking = true; this.#pushChunk(handle, { kind: 'audio', pcm: event.pcm }); continue; }
         if (event.type === 'outcome') { outcome = event.outcome; continue; }
         if (event.type === 'inputTranscription') {
           handle.inputFinalTimer?.cancel();
@@ -825,6 +835,11 @@ export class LiveSessionOwner {
           handle.inputFinal = event.finished === true;
         }
         const kind = journalKind(event.type);
+        if (event.type === 'generationComplete' || event.type === 'turnComplete' || event.type === 'interrupted') {
+          turnSeq += 1;
+          emitHostEvent('provider.turn', { attemptId: handle.attemptId, liveSessionId: handle.liveSessionId, generation, turnSeq, reason: event.type, frames: turnFrames, bytes: turnBytes });
+          turnFrames = 0; turnBytes = 0;
+        }
         if (kind === null) continue;
         const persisted = this.#persist(handle, event, kind);
         if (persisted === 'overflow') {
@@ -904,7 +919,7 @@ export class LiveSessionOwner {
       if (sequence === 'overflow') { this.#settle(handle, { state: 'journal_limit' }, false, 'ended', { kind, sequence: event.sequence }); return; }
       this.#pushChunk(handle, { kind: 'marker', marker: { kind, sequence: event.sequence, journalSequence: sequence, text: null, finished: null, value: null, tool } });
     };
-    for (const call of event.calls) publish('toolCall', { name: call.name, status: 'error', markdown: '', sources: [] });
+    for (const call of event.calls) publish('toolCall', { name: call.name, markdown: '', sources: [] });
     if ((this.#settled(handle) || generation !== handle.generation)) return;
     let responses = event.calls.map(call => ({ id: call.id, name: call.name, response: { error: 'Tool not granted' } as JsonObject }));
     let projections: LiveToolProjection[] = event.calls.map(call => ({ name: call.name, status: 'error', markdown: 'Tool not granted', sources: [] }));
@@ -988,6 +1003,7 @@ export class LiveSessionOwner {
     handle.terminal = true;
     handle.terminalOutcome = outcome;
     handle.diagnosticTerminalCode = 'code' in outcome ? outcome.code : outcome.state;
+    emitHostEvent('live.session_terminal', { attemptId: handle.attemptId, liveSessionId: handle.liveSessionId, generation: handle.generation, code: handle.diagnosticTerminalCode });
     handle.sessionTimer?.cancel(); handle.idleTimer?.cancel();
     handle.session.close();
     let journalSequence: number;

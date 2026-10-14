@@ -67,7 +67,7 @@ export type LiveToolsComposition = {
   status?(): { endpoints: readonly { id: string; connector: string; state: string }[] };
   registerAuthoritySource?(source: (runId: string, signal: AbortSignal) => Promise<import('../tools/types.js').LiveAuthority | null>): void;
 };
-export interface LiveToolProjection { code?: 'tool_call_lost_on_resume' | 'after_barge_in'; callId?: string; name: string; status: 'completed' | 'error'; markdown: string; sources: { title: string; url?: string }[] }
+export interface LiveToolProjection { code?: 'tool_call_lost_on_resume' | 'after_barge_in'; callId?: string; name: string; status?: 'completed' | 'error'; markdown: string; sources: { title: string; url?: string }[] }
 export interface PendingLiveJob {
   id: string; originSessionId: string; state: 'in_progress' | 'completed' | 'failed' | 'unknown';
   createdAt: number; markdown: string; delivered: boolean;
@@ -99,7 +99,7 @@ export interface LiveOwnerConfig {
 }
 
 export interface LiveContext { readonly clientId: string; readonly auditId: string; readonly authorityEpoch: string }
-export interface CreateLiveSession { readonly idempotencyKey: string; readonly inputClass: DataClass; readonly pickupJobId?: string }
+export interface CreateLiveSession { readonly idempotencyKey: string; readonly inputClass: DataClass; readonly pickupJobId?: string; readonly attemptId?: string }
 
 export interface LiveGrantSnapshot {
   grantId: string; provider: LiveProvider; model: string; voice: string; keyReference: string;

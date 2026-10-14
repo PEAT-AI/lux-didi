@@ -168,8 +168,13 @@ test('actual host connects durable domain, supersedes reminders, exposes conflic
   const dir = await mkdtemp(join(tmpdir(), 'didi-host-domain-'));
   let host = await startHost({ dataDir: dir, webRoot, port: 0 });
   const startup = JSON.parse((await readFile(join(dir, 'logs', 'host.log'), 'utf8')).split('\n')[0]!);
-  assert.deepEqual(Object.keys(startup).sort(), ['configDir', 'endpoints', 'event', 'pid', 'releaseCommit', 'timestamp']);
-  assert.equal(startup.event, 'host_started');
+  assert.deepEqual(Object.keys(startup).sort(), ['configDir', 'endpoints', 'event', 'launchId', 'level', 'mono', 'pid', 'process', 'releaseCommit', 'ts']);
+  assert.equal(startup.event, 'host.started');
+  assert.equal(startup.level, 'info');
+  assert.equal(startup.process, 'host');
+  assert.match(startup.ts, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+  assert.ok(Number.isFinite(startup.mono) && startup.mono >= 0);
+  assert.equal(typeof startup.launchId, 'string');
   assert.equal(startup.releaseCommit, 'unknown');
   assert.equal(startup.configDir, 'seeded');
   assert.equal(startup.endpoints, 0);

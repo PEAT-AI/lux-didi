@@ -71,17 +71,21 @@ export function mergeLive(previous: LiveCurrent | undefined, next: LiveCurrent):
 export interface LiveLine { role: 'user' | 'naya'; text: string }
 export function liveTranscript(live: LiveCurrent): LiveLine[] {
   const lines: LiveLine[] = [];
-  let boundary = true;
+  // One provider turn can interleave a typed user turn with its streamed Naya fragments, so a
+  // segment accumulates one line per role and emits them in first-appearance (journal) order.
+  // A turnComplete/interrupted/terminal closes the segment.
+  let segment = new Map<'user' | 'naya', LiveLine>();
+  const flush = () => { for (const line of segment.values()) lines.push(line); segment = new Map(); };
   for (const entry of live.entries) {
     const role = entry.kind === 'inputTranscription' ? 'user' : entry.kind === 'outputTranscription' ? 'naya' : undefined;
     if (role && entry.text) {
-      const previous = lines.at(-1);
-      if (!boundary && previous?.role === role) previous.text += entry.text;
-      else lines.push({ role, text: entry.text });
-      boundary = false;
+      const existing = segment.get(role);
+      if (existing) existing.text += entry.text;
+      else segment.set(role, { role, text: entry.text });
     }
-    if (entry.kind === 'turnComplete' || entry.kind === 'interrupted' || entry.kind === 'terminal') boundary = true;
+    if (entry.kind === 'turnComplete' || entry.kind === 'interrupted' || entry.kind === 'terminal') flush();
   }
+  flush();
   return lines;
 }
 

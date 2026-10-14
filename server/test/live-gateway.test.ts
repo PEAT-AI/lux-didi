@@ -261,14 +261,17 @@ for (const mode of ['failed', 'healthy', 'fixture-only'] as const) test(`Swift s
   });
   const setup = (async () => { await h.f.frame(1); h.f.send({ setupComplete: {} }); })();
   await Promise.race([ready, setup.then(() => ready)]);
+  // The owner opens model-first, so frame 1 is the greeting text, not capture.
+  await h.f.frame(2);
+  assert.deepEqual(h.f.frames[1], { realtimeInput: { text: 'Greet the person briefly to begin the conversation.' } });
   // The coordinator sends capture only after ready; FoundationLiveSocket sends PCM as binary,
   // and endAudioStream as one text JSON control, not a terminal close.
   ws.send(Buffer.from(pcm));
-  await h.f.frame(2);
-  ws.send(JSON.stringify({ type: 'endAudioStream' }));
   await h.f.frame(3);
-  assert.deepEqual(h.f.frames[1], { realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: Buffer.from(pcm).toString('base64') } } });
-  assert.deepEqual(h.f.frames[2], { realtimeInput: { audioStreamEnd: true } });
+  ws.send(JSON.stringify({ type: 'endAudioStream' }));
+  await h.f.frame(4);
+  assert.deepEqual(h.f.frames[2], { realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: Buffer.from(pcm).toString('base64') } } });
+  assert.deepEqual(h.f.frames[3], { realtimeInput: { audioStreamEnd: true } });
   const current = await json(h.origin, `/api/v1/live-sessions/${snapshot.liveSessionId}`, { headers: bearer(h) });
   assert.equal(current.status, 200);
   assert.equal(current.body.data.lifecycle, 'active');

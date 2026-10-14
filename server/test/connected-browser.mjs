@@ -152,6 +152,7 @@ try {
     assert.equal((await readFile(join(state, 'wire.jsonl'), 'utf8')).trim().split('\n').length, 2);
   });
   await step('explicit cancel and provider failure render no saved answer, never a fake success', async () => {
+    await page.locator('details.connected-chat > summary').click();
     await page.locator('#connected-consent').check(); await page.locator('#connected-start').click(); await page.locator('#connected-draft:not([disabled])').waitFor();
     child.send('hold-next'); const sent = waitPhase('transport');
     await page.locator('#connected-draft').fill('Cancel this explicitly sent synthetic turn.'); await page.locator('#connected-send').click(); await sent;
@@ -207,6 +208,7 @@ try {
         assert.equal(await page.locator('#connected-consent').isDisabled(), false, 'R66 keeps explicit agreement operable without a route');
         if (!configured) {
           assert.equal(await page.locator('#connected-start').isDisabled(), true);
+          await page.locator('details.connected-chat > summary').click();
           await page.locator('#connected-consent').check();
           assert.equal(await page.locator('#connected-consent').isChecked(), true);
           assert.equal(await page.locator('#connected-start').isDisabled(), true, 'a tick cannot configure a provider or authorize Start');

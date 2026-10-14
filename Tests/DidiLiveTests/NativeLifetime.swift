@@ -83,6 +83,46 @@ private func observeUntil(_ condition: @escaping @Sendable () async -> Bool) asy
                 return
             }
             let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 1)!
+            if CommandLine.arguments.contains("--native-listening-hold") {
+                authority.refuseSocket = false
+                var capture: NativeCaptureBuffer?
+                let device = NativeLiveAudioDevice(captureInput: format,
+                    defaultInput: { (id: "synthetic-1", name: "Synthetic input") })
+                device.onCapturePrepared = { capture = $0 }
+                let conversation = NativeLiveConversation(authority: (origin, requests),
+                    dictationIsCapturing: { false }, audioDevice: device)
+                conversation.start()
+                let actual = try coordinator(conversation)
+                stage = "active-capture"
+                try await observeUntil { await actual.state == .active }
+                try await observeUntil { await MainActor.run { conversation.state == .listening } }
+                try require(!device.hasEngine && device.isCapturing && capture != nil, "synthetic capture has no engine")
+                let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4800)!
+                buffer.frameLength = buffer.frameCapacity
+                buffer.floatChannelData![0].initialize(repeating: 0.1, count: Int(buffer.frameLength))
+                capture!.append(buffer)
+                try FileHandle.standardOutput.write(contentsOf: Data("NATIVE LISTENING INJECTED\n".utf8))
+                stage = "persistent-socket-hold"
+                let started = ContinuousClock.now
+                try await Task.sleep(for: .seconds(18))
+                let state = await actual.state
+                let attached = state == .active
+                let nativeListening = conversation.state == .listening
+                let captureActive = device.isCapturing
+                let enginePresent = device.hasEngine
+                let elapsed = started.duration(to: .now)
+                print("NATIVE LISTENING OBSERVED coordinator=\(state) native=\(conversation.state.rawValue) capture=\(captureActive) engine=\(enginePresent) elapsed=\(elapsed)")
+                conversation.stopCapture()
+                capture!.append(buffer)
+                let stoppedFence = capture!.next().0 == nil && !device.isCapturing && !device.hasEngine
+                await conversation.stop()
+                print("NATIVE LISTENING CLEANUP stoppedBufferFence=\(stoppedFence) capture=\(device.isCapturing) engine=\(device.hasEngine)")
+                try require(stoppedFence, "stopped capture buffer fence")
+                try require(attached && nativeListening && captureActive && !enginePresent,
+                            "valid persistent socket survives beyond fifteen seconds")
+                print("NATIVE LISTENING HOLD PASS")
+                return
+            }
             var inputID = "synthetic-1"
             var published: NativeLiveConversation?
             var released: [NativeLiveConversation] = []

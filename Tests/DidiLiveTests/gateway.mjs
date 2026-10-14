@@ -10,7 +10,7 @@ import { defaultLiveLimits } from '../../server/dist/live/index.js';
 
 const [binary, work, nativeBinary, mutatedBinary] = process.argv.slice(2);
 const focused = process.argv[6];
-assert.ok(focused === undefined || ['--production-native-request', '--native-lifetime-retained', '--native-lifetime-fresh'].includes(focused));
+assert.ok(focused === undefined || ['--production-native-request', '--native-lifetime-retained', '--native-lifetime-fresh', '--native-listening-hold'].includes(focused));
 assert.ok(binary && work);
 const webRoot = resolve('web/dist');
 const state = join(work, 'state');
@@ -23,6 +23,18 @@ let trapRequests = 0;
 const upgrades = [];
 const upstreamFrames = [];
 const upstreamConnections = [];
+const holdMode = focused === '--native-listening-hold';
+const clientClosures = [];
+let audioAtInjectionMarker = 0;
+let audioAtStop = 0;
+let activeChild;
+const overallDeadline = holdMode ? setTimeout(() => {
+  console.error('FOCUSED NATIVE FAIL overall-timeout');
+  if (activeChild && activeChild.exitCode === null && activeChild.signalCode === null) {
+    activeChild.once('close', () => process.exit(3));
+    activeChild.kill('SIGKILL');
+  } else process.exit(3);
+}, 60000) : undefined;
 const upstream = new WebSocketServer({ host: '127.0.0.1', port: 0 });
 await once(upstream, 'listening');
 const upstreamOrigin = `ws://127.0.0.1:${upstream.address().port}`;
@@ -51,7 +63,7 @@ const profile = {
   provider: 'gemini', liveModelId: 'models/native-live-synthetic', voice: 'SyntheticVoice', keyReference: 'fixture-only',
   route: { enabled: true, provider: 'gemini', modelId: 'models/native-live-synthetic', dataClasses: ['ordinary', 'private'] },
   prompt: { text: 'Synthetic silent protocol test', dataClass: 'ordinary' },
-  limits: { ...defaultLiveLimits, unusedMs: 20, handshakeMs: 2000, closeMs: 100, idleMs: 5000, sessionMs: 10000 },
+  limits: { ...defaultLiveLimits, unusedMs: 20, handshakeMs: 2000, closeMs: 100, idleMs: holdMode ? 60000 : 5000, sessionMs: holdMode ? 60000 : 10000 },
 };
 let host;
 try {
@@ -70,7 +82,9 @@ try {
     return (await response.json()).data;
   }
   const status = await json('/api/v1/live/status');
-  host.service.server.prependListener('upgrade', req => {
+  host.service.server.prependListener('upgrade', (req, socket) => {
+    const started = performance.now();
+    socket.once('close', () => clientClosures.push({ elapsedMs: performance.now() - started }));
     const names = req.rawHeaders.filter((_value, index) => index % 2 === 0).map(name => name.toLowerCase());
     upgrades.push({ host: req.headers.host, authorizationCount: names.filter(name => name === 'authorization').length,
       authorizationMatches: req.headers.authorization === headers.Authorization,
@@ -81,11 +95,17 @@ try {
     const fixture = { ...host.descriptor, token, profileIdentity: status.profileIdentity,
       redirectSessionID: '00000000-0000-4000-8000-000000000001' };
     const child = spawn(binary, [focused], { stdio: ['pipe', 'pipe', 'inherit'] });
+    activeChild = child;
     let output = '';
+    let injected = false;
     let lateAudioSent = false;
     let lateAudioRefused = false;
     child.stdout.on('data', bytes => {
       const text = bytes.toString(); output += text; process.stdout.write(text);
+      if (holdMode && !injected && output.includes('NATIVE LISTENING INJECTED')) {
+        injected = true; audioAtInjectionMarker = upstreamFrames.filter(frame => frame.realtimeInput?.audio).length;
+      }
+      if (holdMode && output.includes('NATIVE LISTENING CLEANUP')) audioAtStop = upstreamFrames.filter(frame => frame.realtimeInput?.audio).length;
       if (!lateAudioSent && output.includes('NATIVE LIFETIME OLD RELEASED')) {
         if (upstreamConnections.length !== 2) { lateAudioRefused = true; return; }
         lateAudioSent = true;
@@ -94,17 +114,30 @@ try {
         }] } } }));
       }
     });
-    const timer = setTimeout(() => child.kill('SIGKILL'), 15000);
+    const timer = setTimeout(() => child.kill('SIGKILL'), holdMode ? 35000 : 15000);
     child.stdin.end(JSON.stringify(fixture));
     const [code, signal] = await once(child, 'exit'); clearTimeout(timer);
     assert.equal(signal, null, 'focused actual native completed without forced disposal');
     assert.equal(lateAudioRefused, false, 'late PCM targets exactly the first of two owned provider sockets');
-    assert.equal(code, focused === '--native-lifetime-retained' ? 1 : 0);
+    if (holdMode) {
+      const audio = upstreamFrames.filter(frame => frame.realtimeInput?.audio).map(frame => frame.realtimeInput.audio);
+      const sizes = audio.map(frame => Buffer.from(frame.data, 'base64').length);
+      const nonzero = audio.every(frame => Buffer.from(frame.data, 'base64').some(byte => byte !== 0));
+      console.log(JSON.stringify({ event: 'native-listening-hold', childPID: child.pid, code, signal, injected, audioAtInjectionMarker, frames: audio.length, sizes, nonzero, audioAtStop, clientClosures, opens, credentialReads, trapRequests }));
+      assert.ok(audio.length >= 1);
+      assert.ok(sizes.every(size => size === 640)); assert.equal(nonzero, true);
+      assert.ok(audio.every(frame => frame.mimeType === 'audio/pcm;rate=16000'));
+      assert.equal(audio.length, audioAtStop, 'stopped buffer emitted no additional PCM');
+      assert.equal(opens, 1); assert.equal(credentialReads, 1);
+      assert.match(output, /stoppedBufferFence=true capture=false engine=false/);
+      assert.equal(code, 0, 'actual persistent native session remains healthy beyond fifteen seconds');
+      assert.match(output, /NATIVE LISTENING HOLD PASS/);
+    } else assert.equal(code, focused === '--native-lifetime-retained' ? 1 : 0);
     if (focused === '--native-lifetime-retained') assert.match(output, /NATIVE LIFETIME RED retained=true serviceActive=true presentationConnecting=true/);
     else if (focused === '--native-lifetime-fresh') {
       assert.match(output, /NATIVE LIFETIME PASS/); assert.equal(lateAudioSent, true);
       assert.equal(upstreamFrames.filter(frame => frame.realtimeInput?.audio).length, 0, 'released capture emits no late PCM');
-    } else {
+    } else if (!holdMode) {
       assert.match(output, /PRODUCTION NATIVE ATTACH PASS/);
       assert.equal(opens, 1); assert.equal(credentialReads, 1); assert.equal(upgrades.length, 1);
       assert.equal(upgrades[0].host, new URL(host.descriptor.origin).host);
@@ -195,9 +228,12 @@ try {
   console.log('PASS accepted-unused expiry with zero opens');
   }
 } finally {
+  const closeDeadline = holdMode ? setTimeout(() => { console.error('FOCUSED NATIVE CLEANUP FAIL timeout'); process.exit(3); }, 10000) : undefined;
   await host?.close();
   for (const peer of upstream.clients) peer.terminate();
   await new Promise(resolve => upstream.close(resolve));
   await new Promise(resolve => trap.close(resolve));
+  if (closeDeadline) clearTimeout(closeDeadline);
+  if (overallDeadline) clearTimeout(overallDeadline);
   if (focused) console.log('FOCUSED NATIVE CLEANUP hostClosed=true providerClosed=true trapClosed=true');
 }

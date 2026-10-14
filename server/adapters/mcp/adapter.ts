@@ -73,7 +73,7 @@ function failureStage(error: unknown, operation: Operation, session: Session, ca
 const allowedHeaders = new Set(['accept', 'content-type', 'mcp-session-id', 'mcp-protocol-version', 'last-event-id', 'mcp-method', 'mcp-name']);
 
 /** All HTTP egress passes this supported SDK fetch seam; native Host, no global patch. */
-function guardedFetch(session: Session, options: McpAdapterOptions, budgets: McpBudgets): typeof fetch {
+function guardedFetch(session: Session, options: McpAdapterOptions, budgets: McpBudgets, onFatal: () => void): typeof fetch {
   return async (input, init) => {
     const request = new Request(input, init);
     const config = options.registry.endpoint(session.config.id);
@@ -121,7 +121,7 @@ function guardedFetch(session: Session, options: McpAdapterOptions, budgets: Mcp
             const chunk = await reader.read();
             if (chunk.done) { controller.close(); return; }
             received += chunk.value.length;
-            if (received > budgets.maxResponseBytes) throw new PolicyError('notification-stream-budget');
+            if (received > budgets.maxResponseBytes) { onFatal(); throw new PolicyError('notification-stream-budget'); }
             controller.enqueue(chunk.value);
           } catch (error) { void reader.cancel().catch(() => {}); controller.error(error); }
         },
@@ -195,17 +195,14 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
     if (existing) await retire(config.id);
     const client = new Client({ name: 'lux-didi-optional-mcp', version: '0.1.0' }, { enforceStrictCapabilities: true });
     const session: Session = { client, config };
-    // A dropped transport marks the session dead for respawn. A soft policy breach (the call's own
-    // timeout or an oversize result) is not fatal; any other transport policy breach suspends.
-    client.onerror = (error: unknown) => {
-      const soft = error instanceof PolicyError && (error.reason === 'timeout-or-cancelled' || error.reason === 'response-oversize');
-      if (!soft && error instanceof PolicyError) suspend(config.id); else session.dead = true;
-    };
+    // A dropped transport marks the session dead so the next call respawns. The notification-stream
+    // budget breach is fatal at its source (onFatal), and a soft call error is never fatal here.
+    client.onerror = () => { session.dead = true; }; // No remote error/header/body is ever logged.
     client.onclose = () => { session.dead = true; };
     client.setNotificationHandler('notifications/tools/list_changed', async () => { suspend(config.id); });
     const transport = isStdioEndpoint(config)
       ? new StdioClientTransport({ command: config.command, args: [...config.args], ...(config.env ? { env: { ...config.env } } : {}), stderr: 'pipe' })
-      : new StreamableHTTPClientTransport(new URL(config.url), { fetch: guardedFetch(session, options, budgets), redirectPolicy: 'follow', reconnectionOptions: { maxRetries: 0, initialReconnectionDelay: 1000, maxReconnectionDelay: 1000, reconnectionDelayGrowFactor: 1 } });
+      : new StreamableHTTPClientTransport(new URL(config.url), { fetch: guardedFetch(session, options, budgets, () => suspend(config.id)), redirectPolicy: 'follow', reconnectionOptions: { maxRetries: 0, initialReconnectionDelay: 1000, maxReconnectionDelay: 1000, reconnectionDelayGrowFactor: 1 } });
     sessions.set(config.id, session);
     await bounded(client.connect(transport, { timeout: budgets.timeoutMs }), AbortSignal.timeout(budgets.timeoutMs));
     if (isStdioEndpoint(config)) { const child = childProcess(transport); if (child) { session.child = child; child.stdout?.once('end', () => { session.pipeClosed = true; }); } }

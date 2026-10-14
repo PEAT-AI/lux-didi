@@ -148,11 +148,12 @@ function rememberCardMarkup(entry: LiveEntry): string {
 }
 
 /** Full section markup, id="live-panel" so the poller can replace it in place. */
-export function liveMarkup(live: LiveCurrent | undefined, poll: LivePollState = {}): string {
+export function liveMarkup(live: LiveCurrent | undefined, poll: LivePollState = {}, detailsOpen = false): string {
   const state = live?.state;
   const label = liveLabel(live);
   const lines = live ? liveTranscript(live) : [];
   const result = live ? liveResult(live) : undefined;
+  const latestTurn = [...lines].reverse().find(line => line.role === 'naya') ?? lines.at(-1);
   const jobs = (live?.jobs ?? []).map(job => `<article class="live-job" data-job-id="${escapeHtml(job.id)}">
     <h2>${job.state === 'in_progress' ? 'Background task in progress' : 'Background task ' + escapeHtml(job.state)}</h2>
     ${renderMarkdown(job.markdown)}
@@ -172,11 +173,15 @@ export function liveMarkup(live: LiveCurrent | undefined, poll: LivePollState = 
     ${poll.stale ? `<p class="live-stale" role="status">Live view stale${poll.lastSuccess ? ' since ' + escapeHtml(poll.lastSuccess.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })) : ', no successful poll yet'}, service unreachable</p>` : ''}
     ${error}${restored}
     ${result ? `<div class="live-result"><h2>Latest answer</h2>${renderMarkdown(result.markdown)}${sourcesMarkup(result.sources)}</div>` : ''}
-    ${transcript}
-    <div class="live-activity" aria-label="Live activity">
-      ${(live?.entries ?? []).filter(entry => entry.kind === 'toolResult' && entry.tool?.name !== 'remember_note').map(entry => `<details class="live-tool-result" data-result-seq="${entry.seq}"><summary>${escapeHtml(entry.tool?.name ?? 'Tool result')} (${escapeHtml(entry.tool?.status ?? 'unknown')})</summary>${entry.tool?.status !== 'error' && entry.tool?.markdown ? renderMarkdown(entry.tool.markdown) + sourcesMarkup(entry.tool.sources ?? []) : ''}</details>`).join('')}
-      ${(live?.entries ?? []).filter(entry => entry.kind === 'toolResult' && entry.tool?.name === 'remember_note').map(remaining => rememberCardMarkup(remaining)).join('')}
-      ${jobs}
-    </div>
+    ${latestTurn ? `<article class="live-latest-turn"><span>${latestTurn.role === 'naya' ? 'Latest spoken answer' : 'Latest turn'}</span><p>${escapeHtml(latestTurn.text)}</p></article>` : ''}
+    <details id="live-details" class="live-details"${detailsOpen ? ' open' : ''}>
+      <summary>Conversation history and activity</summary>
+      ${transcript}
+      <div class="live-activity" aria-label="Live activity">
+        ${(live?.entries ?? []).filter(entry => entry.kind === 'toolResult' && entry.tool?.name !== 'remember_note').map(entry => `<details class="live-tool-result" data-result-seq="${entry.seq}"><summary>${escapeHtml(entry.tool?.name ?? 'Tool result')} (${escapeHtml(entry.tool?.status ?? 'unknown')})</summary>${entry.tool?.status !== 'error' && entry.tool?.markdown ? renderMarkdown(entry.tool.markdown) + sourcesMarkup(entry.tool.sources ?? []) : ''}</details>`).join('')}
+        ${(live?.entries ?? []).filter(entry => entry.kind === 'toolResult' && entry.tool?.name === 'remember_note').map(remaining => rememberCardMarkup(remaining)).join('')}
+        ${jobs}
+      </div>
+    </details>
   </section>`;
 }

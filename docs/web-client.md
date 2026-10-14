@@ -214,9 +214,11 @@ caption's own label follows the same live state (they never disagree), and its
 The section folds adjacent transcription fragments from the same role into one
 visible turn until a role change, `turnComplete`, `interrupted` or terminal event.
 Fragment text is concatenated exactly, without adding spaces or removing repeated
-text. The newest accepted `toolResult` is the prominent Latest answer; the full
-transcript and other activity remain visible below it in the same Conversation
-page, with sanitized Markdown and clickable source links.
+text. The newest accepted `toolResult` is the prominent Latest answer, and the
+latest spoken Naya turn stays readable beneath it. The full transcript and tool
+activity remain reachable from a labelled disclosure on the same Conversation
+page, with sanitized Markdown and clickable source links. The disclosure keeps
+the user's open or closed choice across live polling.
 The label never claims that speech was heard or a task finished beyond what the
 projection says; an error state says only that Naya reported an error.
 

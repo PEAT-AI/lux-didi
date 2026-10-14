@@ -31,6 +31,8 @@ let pollTimer: ReturnType<typeof setTimeout> | undefined, backoff = 30000;
 let live: LiveCurrent | undefined;
 let livePoll: LivePollState = {};
 let paintedLivePoll: LivePollState | undefined;
+let liveDetailsOpen = false;
+let historyOpen = false;
 let connections: unknown = [];
 let connectionsStale = false;
 let statusUnavailable = false;
@@ -75,12 +77,14 @@ function orbMarkup() {
   return `<section class="orb-stage" aria-label="Naya voice and activity"><canvas id="didi-orb" width="440" height="440" aria-hidden="true"></canvas><div class="orb-caption">${orbCaptionMarkup()}</div></section>`;
 }
 function conversation() {
-  return `<section class="page-heading"><div><p class="eyebrow">SPACE TO THINK</p><h1>A little clarity.</h1><p>Put it into words. We’ll keep what matters.</p></div><button id="new-conversation" class="secondary" ${disabled(busy)}>New conversation</button></section>
-  ${orbMarkup()}${liveMarkup(live,livePoll)}${connectionsMarkup(connections,connectionsStale)}<div class="conversation-grid"><aside class="panel conversations" aria-label="Conversations"><h2>Your conversations</h2>${sessions.length ? sessions.map(s => `<button data-session="${e(s.id)}" class="session ${session?.id === s.id ? 'selected' : ''}"><strong>${e(s.title)}</strong><small>${e(datetime(s.startedAt))}</small></button>`).join('') : '<p class="muted">No conversations yet.</p>'}${sessionMore ? '<p class="muted">More conversations are available in the service. This view shows the first page.</p>' : ''}</aside>
+  return `<section class="voice-heading"><div><p class="eyebrow">NAYA VOICE</p><h1>Here with you.</h1></div><button id="new-conversation" class="secondary" ${disabled(busy)}>New conversation</button></section>
+  ${orbMarkup()}${liveMarkup(live,livePoll,liveDetailsOpen)}
+  <section class="voice-text" aria-labelledby="voice-text-heading"><div class="voice-text-heading"><p class="eyebrow">OPTIONAL TEXT</p><h2 id="voice-text-heading">Type when it is easier.</h2><p>Text is here when you want it.</p></div><div id="connected-panel"></div></section>
+  <details id="conversation-history" class="conversation-history"${historyOpen ? ' open' : ''}><summary><span>Saved conversation history</span><small>Local notes and earlier conversations</small></summary><div class="conversation-grid"><aside class="panel conversations" aria-label="Conversations"><h2>Your conversations</h2>${sessions.length ? sessions.map(s => `<button data-session="${e(s.id)}" class="session ${session?.id === s.id ? 'selected' : ''}"><strong>${e(s.title)}</strong><small>${e(datetime(s.startedAt))}</small></button>`).join('') : '<p class="muted">No conversations yet.</p>'}${sessionMore ? '<p class="muted">More conversations are available in the service. This view shows the first page.</p>' : ''}</aside>
   <section class="panel thread" aria-label="Conversation">${sessions.length ? `<div class="mobile-conversations"><label for="conversation-select">Choose a conversation</label><select id="conversation-select"><option value="">Start a new conversation</option>${sessions.map(s=>`<option value="${e(s.id)}" ${session?.id===s.id?'selected':''}>${e(s.title)}</option>`).join('')}</select></div>` : ''}<div class="thread-heading"><span class="dot"></span><h2>${e(session?.title ?? 'Start where you are')}</h2></div>
   <div class="entries">${entries.length ? entries.map(entryMarkup).join('') : `<div class="empty"><span class="empty-icon" aria-hidden="true">✳</span><h3>What’s on your mind?</h3><p>Save a thought, make a plan, or pick up a conversation.</p></div>`}${entriesMore ? '<p class="muted">There are more messages in this conversation. This view shows the first page.</p>' : ''}</div>
   <form id="message-form" class="composer"><label for="message">Local note · not sent to a model</label><textarea id="message" rows="3" maxlength="12000" placeholder="A thought, a next step, a thing to remember…">${e(status ? messageDraft : '')}</textarea><div class="composer-foot"><small>${status?.model.configured ? 'Save a message, or ask Didi for help.' : 'No model connected. You can still save messages and commitments.'}</small><div class="button-row"><button type="submit" ${disabled(!writable())}>${busy ? 'Working…' : 'Save message'}</button><button type="button" id="ask-didi" class="secondary" disabled title="Start an explicitly disclosed connected conversation below">Ask Didi</button></div></div></form>
-  </section></div><div id="connected-panel"></div>`;
+  </section></div></details>`;
 }
 function commitmentMarkup(c: Commitment, overdue = false) {
   return `<article class="commitment"><div class="commitment-body"><span class="tag ${c.status === 'active' ? '' : 'completed'}">${c.status === 'completed' ? 'Completed' : c.status === 'cancelled' ? 'Cancelled' : overdue ? 'Overdue' : c.dueAt ? 'Planned' : 'Unscheduled'}</span><h3>${e(c.title)}</h3>${c.notes ? `<p>${e(c.notes)}</p>` : ''}<p class="muted">${e(datetime(c.dueAt))}${c.dueAt ? ` · ${e(c.timeZone)}` : ''}</p>${c.sourceSessionId ? `<button class="quiet" data-source="${e(c.sourceSessionId)}">Open conversation source</button>` : ''}</div><div class="commitment-actions">${c.status === 'active' ? `<button class="secondary" data-complete="${e(c.id)}" aria-label="Complete ${e(c.title)}" ${disabled(!writable())}>Complete</button><button class="quiet" data-edit="${e(c.id)}" aria-label="Edit ${e(c.title)}" ${disabled(busy)}>Edit</button><button class="quiet" data-cancel="${e(c.id)}" ${disabled(!writable())}>Cancel commitment</button>` : `<button class="secondary" data-reopen="${e(c.id)}" aria-label="Reopen ${e(c.title)}" ${disabled(!writable())}>Reopen</button>`}<button class="quiet" data-history="${e(c.id)}" ${disabled(readBusy)}>History</button></div></article>`;
@@ -134,13 +138,15 @@ function bind() {
   for(const action of ['complete','reopen','cancel'] as const) root.querySelectorAll<HTMLElement>(`[data-${action}]`).forEach(el=>el.onclick=()=>{const c=findCommitment(el.dataset[action]!);if(c) void changeCommitment(c,action);});
   root.querySelectorAll<HTMLElement>('[data-capture]').forEach(el=>el.onclick=()=>{const entry=entries.find(v=>v.id===el.dataset.capture);if(entry)void mutate(async (signal,version)=>{await request<Commitment>('/commitments',{method:'POST',body:{title:entry.text,notes:'',dueAt:null,timeZone:zone,sourceSessionId:entry.sessionId,sourceEntryId:entry.id},signal});assertAuthority(version);notice='Commitment saved. Find it in Today.';});});
   document.getElementById('conversation-select')?.addEventListener('change',ev=>{const id=(ev.target as HTMLSelectElement).value;if(id)void openSession(id);else{session=undefined;entries=[];render();}});
+  document.querySelector<HTMLDetailsElement>('#conversation-history')?.addEventListener('toggle',event=>{historyOpen=(event.target as HTMLDetailsElement).open;});
+  bindLiveDisclosure();
   input('message',v=>messageDraft=v); input('commitment-title',v=>titleDraft=v);input('recall-query',v=>queryDraft=v);input('edit-title',v=>editTitle=v);input('edit-notes',v=>editNotes=v);input('edit-due',v=>editDue=v);input('memory-filter',v=>{memoryFilter=v;render();});
   form('message-form',()=>void saveLocalNote());button('ask-didi',()=>document.getElementById('connected-panel')?.scrollIntoView());
   form('commitment-form',()=>{if(!titleDraft.trim())return;void mutate(async (signal,version)=>{await request<Commitment>('/commitments',{method:'POST',body:{title:titleDraft.trim(),dueAt:null,timeZone:zone},signal});assertAuthority(version);titleDraft='';await loadPlan();assertAuthority(version);notice='Commitment saved.';});});
   form('edit-form',()=>{if(!editing || !editTitle.trim())return;void changeCommitment(editing,'edit');});
   form('recall-form',()=>void searchRecall());
   form('pair-form',()=>{const code=(document.getElementById('pair-code') as HTMLInputElement).value;void pairBrowser(code);});
-  button('new-conversation',()=>{session=undefined;entries=[];entriesMore=false;notice='';render();document.getElementById('message')?.focus();});
+  button('new-conversation',()=>{session=undefined;entries=[];entriesMore=false;historyOpen=true;notice='';render();document.getElementById('message')?.focus();});
   button('close-edit',()=>{editing=undefined;render();});button('close-history',()=>{detail=undefined;render();});
   button('refresh-plan',()=>void loadTab()); button('reconnect',()=>void connect());button('reconnect-top',()=>void connect());
   button('logout',()=>void mutate(async()=>{await logout();}));
@@ -201,7 +207,7 @@ async function loadTab() {
 }
 async function openSession(id: string) {
   const version=authorityVersion(),generation=++readGeneration;readBusy=true;render();
-  try {const data=await request<{session:Session;entries:Entry[];nextCursor:string|null}>(`/sessions/${encodeURIComponent(id)}`);if(version===authorityVersion()&&generation===readGeneration){session=data.session;entries=data.entries;entriesMore=!!data.nextCursor;tab='Conversation';notice='';error='';}}
+  try {const data=await request<{session:Session;entries:Entry[];nextCursor:string|null}>(`/sessions/${encodeURIComponent(id)}`);if(version===authorityVersion()&&generation===readGeneration){session=data.session;entries=data.entries;entriesMore=!!data.nextCursor;historyOpen=true;tab='Conversation';notice='';error='';}}
   catch(err){if(version===authorityVersion()&&generation===readGeneration)error=failure(err);}
   finally{if(version===authorityVersion()&&generation===readGeneration){readBusy=false;render();}}
 }
@@ -273,6 +279,7 @@ async function pollConnections(){
     }
   }
 }
+function bindLiveDisclosure(){document.querySelector<HTMLDetailsElement>('#live-details')?.addEventListener('toggle',event=>{liveDetailsOpen=(event.target as HTMLDetailsElement).open;});}
 function scheduleLive(){
   if(liveTimer)clearTimeout(liveTimer);liveTimer=undefined;
   const version=authorityVersion();if(liveDelay(live?.state,document.hidden)!==undefined&&!pairingRequired)liveTimer=setTimeout(()=>{if(version===authorityVersion())void pollLive();},liveDelay(live?.state,document.hidden));
@@ -281,8 +288,9 @@ function paintLive(){
   const panel=document.getElementById('live-panel');
   const replacePanel=paintedLivePoll?.live!==live || !!paintedLivePoll?.stale!==!!livePoll.stale || !!livePoll.stale && paintedLivePoll?.lastSuccess!==livePoll.lastSuccess;
   if(panel && replacePanel){
-    const expanded=Array.from(panel.querySelectorAll<HTMLDetailsElement>('details[open]')).map(card=>card.dataset.resultSeq);
-    panel.outerHTML=liveMarkup(live,livePoll);for(const card of document.querySelectorAll<HTMLDetailsElement>('#live-panel details'))if(expanded.includes(card.dataset.resultSeq))card.open=true;
+    liveDetailsOpen=panel.querySelector<HTMLDetailsElement>('#live-details')?.open ?? liveDetailsOpen;
+    const expanded=Array.from(panel.querySelectorAll<HTMLDetailsElement>('details[data-result-seq][open]')).map(card=>card.dataset.resultSeq);
+    panel.outerHTML=liveMarkup(live,livePoll,liveDetailsOpen);for(const card of document.querySelectorAll<HTMLDetailsElement>('#live-panel details[data-result-seq]'))if(expanded.includes(card.dataset.resultSeq))card.open=true;bindLiveDisclosure();
   }
   paintedLivePoll=panel ? livePoll : undefined;
   const caption=document.querySelector('.orb-caption');const markup=orbCaptionMarkup();if(caption && caption.innerHTML!==markup)caption.innerHTML=markup;

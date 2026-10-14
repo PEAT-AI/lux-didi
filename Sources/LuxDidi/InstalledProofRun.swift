@@ -15,22 +15,32 @@ import CryptoKit
     private static func js(_ web: WKWebView, _ script: String) async throws -> Any? {
         try await web.evaluateJavaScript(script)
     }
+    private static func collapseSavedHistory(_ web: WKWebView) async throws -> Bool {
+        try await js(web, "(() => { const history=document.querySelector('#conversation-history'); const summary=history?.querySelector(':scope > summary'); if(!history||!summary)return false; if(!history.open)return true; summary.click(); return !history.open; })()") as? Bool == true
+    }
     private static func visible(_ record: SyntheticProofRecord, web: WKWebView) async throws -> Bool {
         let literal = String(data: try JSONSerialization.data(withJSONObject: record.text, options: [.fragmentsAllowed]), encoding: .utf8)!
         let check = "document.body.innerText.includes(\(literal))"
-        if try await js(web, check) as? Bool == true { return true }
+        if try await js(web, check) as? Bool == true { return try await collapseSavedHistory(web) }
         let selector = String(data: try JSONSerialization.data(withJSONObject: "[data-session=\"" + record.sessionId + "\"]", options: [.fragmentsAllowed]), encoding: .utf8)!
         _ = try await js(web, "document.querySelector('[data-tab=\"Conversation\"]')?.click(); true")
         let until = Date().addingTimeInterval(0.5)
-        var opened = false
+        var historyOpened = false, opened = false
         while Date() < until {
-            let snapshot = try await js(web, "(() => { const row=document.querySelector(\(selector)); return { connectionReady:document.querySelector('#connection-state')?.textContent.trim()==='Connected', listLoading:!!document.querySelector('#main .loading'), rowReady:!!row&&row.getBoundingClientRect().width>0, selected:!!row&&row.classList.contains('selected') }; })()") as? [String: Any] ?? [:]
+            let snapshot = try await js(web, "(() => { const history=document.querySelector('#conversation-history'); const row=document.querySelector(\(selector)); return { connectionReady:document.querySelector('#connection-state')?.textContent.trim()==='Connected', listLoading:!!document.querySelector('#main .loading'), historyReady:!!history&&history.getBoundingClientRect().width>0, historyOpen:!!history&&history.open, rowReady:!!row&&row.getBoundingClientRect().width>0, selected:!!row&&row.classList.contains('selected') }; })()") as? [String: Any] ?? [:]
             if snapshot["connectionReady"] as? Bool == true, snapshot["listLoading"] as? Bool == false {
+                if !historyOpened {
+                    if snapshot["historyOpen"] as? Bool == true { historyOpened = true }
+                    else if snapshot["historyReady"] as? Bool == true {
+                        historyOpened = try await js(web, "(() => { const history=document.querySelector('#conversation-history'); const summary=history?.querySelector(':scope > summary'); if(!history||!summary||summary.getBoundingClientRect().width<=0)return false; summary.click(); return history.open; })()") as? Bool == true
+                        continue
+                    }
+                }
                 if !opened, snapshot["rowReady"] as? Bool == true {
                     opened = try await js(web, "(() => { const row=document.querySelector(\(selector)); if(!row||row.getBoundingClientRect().width<=0)return false; row.click(); return true; })()") as? Bool == true
                 } else if opened, snapshot["selected"] as? Bool == true,
                           try await js(web, check) as? Bool == true {
-                    return true
+                    return try await collapseSavedHistory(web)
                 }
             }
             try await Task.sleep(nanoseconds: 50_000_000)

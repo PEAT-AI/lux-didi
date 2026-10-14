@@ -35,6 +35,20 @@ test('the label vocabulary never says recording', () => {
   assert.equal(/record/i.test(liveMarkup({ state: 'listening', cursor: 0, entries: [] })), false);
 });
 
+test('voice landing keeps the latest turn readable and secondary activity in a stable disclosure', () => {
+  const live: LiveCurrent = { ...speaking, entries: [
+    { seq: 1, kind: 'inputTranscription', text: 'What should I do next?' },
+    { seq: 2, kind: 'turnComplete' },
+    { seq: 3, kind: 'outputTranscription', text: 'Take one small step.' },
+    { seq: 4, kind: 'toolResult', tool: { name: 'search', status: 'completed', markdown: 'Source detail' } },
+  ] };
+  const closed = liveMarkup(live);
+  assert.match(closed, /class="live-latest-turn"[\s\S]*Take one small step\./);
+  assert.match(closed, /<details id="live-details" class="live-details">/);
+  assert.ok(closed.indexOf('live-latest-turn') < closed.indexOf('live-details'));
+  assert.match(liveMarkup(live, {}, true), /<details id="live-details" class="live-details" open>/);
+});
+
 test('the thinking label names the tool in flight', () => {
   const thinking: LiveCurrent = { state: 'thinking', cursor: 1, entries: [{ seq: 1, kind: 'toolCall', tool: { name: 'search', status: 'called' } }] };
   assert.equal(liveToolName(thinking), 'search');
@@ -206,7 +220,7 @@ test('every tool result is inspectable and errors never show markdown', () => {
     { seq: 5, kind: 'toolResult', tool: { name: 'failed', status: 'error', markdown: 'DO NOT DISPLAY' } },
   ] };
   const html = liveMarkup(live);
-  assert.equal((html.match(/<details/g) ?? []).length, 3);
+  assert.equal((html.match(/<details class="live-tool-result"/g) ?? []).length, 3);
   assert.match(html, /Answer/); assert.match(html, /second source/); assert.match(html, /failed.*error/s);
   assert.doesNotMatch(html, /DO NOT DISPLAY/);
 });
@@ -262,7 +276,7 @@ test('a remembered note renders one evidence card with the saved words', () => {
   assert.equal((html.match(/class="live-remember"/g) ?? []).length, 1);
   assert.match(html, /Remembered/);
   assert.match(html, /the spare key is under the third pot/);
-  assert.equal((html.match(/<details/g) ?? []).length, 0);
+  assert.equal((html.match(/<details class="live-remember"/g) ?? []).length, 0);
 });
 
 test('every declined remember code renders one honest reason line', () => {

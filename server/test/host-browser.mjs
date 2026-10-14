@@ -84,7 +84,7 @@ try {
   await step('secure pairing and truthful capabilities', async () => {
     await page.locator('#pair-code').fill(await operatorCode());
     await submit('#pair-form');
-    await page.locator('#message:not([disabled])').waitFor();
+    await page.waitForFunction(() => document.getElementById('connection-state')?.textContent === 'Connected');
     const cookies = await context.cookies();
     const cookie = cookies.find(item => item.name === 'didi_session');
     assert.ok(cookie?.httpOnly); assert.equal(cookie.sameSite, 'Strict');
@@ -99,8 +99,8 @@ try {
     assert.ok(await page.locator('#ask-didi').isDisabled());
   });
   await step('shipped conversation captures meaningful durable text', async () => {
-    await page.locator('#message').fill('Host browser kestrel launch: review the release checklist before noon.');
-    await page.getByRole('button', { name: 'Save message', exact: true }).click();
+    await page.locator('#live-text').fill('Host browser kestrel launch: review the release checklist before noon.');
+    await page.getByRole('button', { name: 'Save note', exact: true }).click();
     await visible('Message saved.');
     await visible('Host browser kestrel launch: review the release checklist before noon.');
     const sessions = await api('/sessions'); assert.equal(sessions.items.length, 1); sessionId = sessions.items[0].id;
@@ -152,8 +152,9 @@ try {
   await step('actual process/store restart and browser rebootstrap preserve records', async () => {
     const port = Number(new URL(origin).port); await stop(); await start(port);
     assert.equal(descriptor.authorityEpoch, originalEpoch); assert.equal(descriptor.assistantId, originalAssistant);
-    await page.reload(); await page.locator('#message:not([disabled])').waitFor();
-    // Desktop uses the visible conversation list; the select is mobile-only.
+    await page.reload(); await page.waitForFunction(() => document.getElementById('connection-state')?.textContent === 'Connected');
+    // W5 voice-first UI keeps the conversation list in the collapsed history disclosure; open it as a user would.
+    await page.locator('#conversation-history > summary').click();
     await page.locator(`[data-session="${sessionId}"]`).click();
     await visible('Host browser kestrel launch: review the release checklist before noon.');
     const entries = (await api(`/sessions/${sessionId}`)).entries;
@@ -163,14 +164,16 @@ try {
   await step('offline refusal and online recovery without mutation replay', async () => {
     await tab('Conversation'); const before = requests.filter(req => req.method === 'POST').length;
     await context.setOffline(true); await visible('Offline');
-    assert.ok(await page.getByRole('button', { name: 'Save message', exact: true }).isDisabled());
+    // The voice-first typed path stays enabled offline; its submit must be refused with no queued or replayed POST.
+    await page.locator('#live-text').fill('Offline note must not queue or replay.');
+    await page.getByRole('button', { name: 'Save note', exact: true }).click();
     assert.ok(await page.locator('#ask-didi').isDisabled());
-    assert.equal(requests.filter(req => req.method === 'POST').length, before);
+    assert.equal(requests.filter(req => req.method === 'POST').length, before, 'offline submit is not sent');
     await context.setOffline(false);
-    await page.waitForFunction(() => { const button = document.querySelector('#message-form button'); return button && !button.disabled; });
+    await page.waitForFunction(() => document.getElementById('connection-state')?.textContent === 'Connected');
     assert.equal((await api(`/sessions/${sessionId}`)).entries.length, 1, 'offline refusal must not queue/replay');
-    await page.locator('#message').fill('Recovered online: save the next deliberate note.');
-    await page.getByRole('button', { name: 'Save message', exact: true }).click(); await visible('Message saved.');
+    await page.locator('#live-text').fill('Recovered online: save the next deliberate note.');
+    await page.getByRole('button', { name: 'Save note', exact: true }).click(); await visible('Message saved.');
     const recovered = (await api(`/sessions/${sessionId}`)).entries;
     assert.equal(recovered.length, 2); assert.equal(recovered[1].text, 'Recovered online: save the next deliberate note.');
   });

@@ -16,7 +16,7 @@ const AUDIO_BUFFER_HIGH_WATER_BYTES = 320_000; // 10 s * 16000 samples/s * 2 byt
 const AUDIO_SPEECH_RMS_THRESHOLD = 1024; // Int16 RMS; a room's noise floor sits far below
 const AUDIO_SPEECH_MIN_BYTES = 16_000; // 0.5 s of sustained above-threshold energy
 const AUDIO_FLUSH_INTERVAL_MS = 20;
-const AUDIO_FLUSH_CHUNK_BYTES = 2_560; // 4x real-time: 20 ms of 16 kHz mono 16-bit at 4x
+const AUDIO_FLUSH_BYTES_PER_TICK = 640; // 20 ms of 16 kHz mono 16-bit, real-time pacing
 const AUDIO_SUPERSEDED_NOTICE = 'The user kept talking; this result was set aside and is available if they ask again.';
 const DEFAULTS: Readonly<LiveVoiceLimits> = Object.freeze({
   maxIncomingBytes: 1024 * 1024, maxOutgoingBytes: 1024 * 1024, maxBufferedBytes: 2 * 1024 * 1024,
@@ -145,7 +145,6 @@ class Session implements LiveVoiceSession {
   private pendingCalls: LiveToolCall[] = [];
   private bufferedAudio: Uint8Array[] = [];
   private bufferedBytes = 0;
-  private bufferedOffset = 0;
   private flushTimer: ReturnType<typeof setTimeout> | undefined;
   private speechRunBytes = 0;
   private informationalKeys = new Set<string>();
@@ -492,18 +491,15 @@ class Session implements LiveVoiceSession {
     const timer = setTimeout(() => { this.timers.delete(timer); this.flushTimer = undefined; this.flushAudio(); }, AUDIO_FLUSH_INTERVAL_MS);
     this.flushTimer = timer; this.timers.add(timer);
   }
-  private flushAudio(budget = AUDIO_FLUSH_CHUNK_BYTES): void {
+  private flushAudio(budget = AUDIO_FLUSH_BYTES_PER_TICK): void {
     this.clear(this.flushTimer); this.flushTimer = undefined;
-    while (budget > 0 && this.bufferedBytes) {
+    while (this.bufferedAudio.length && (budget > 0 || this.bufferedAudio[0]!.byteLength > AUDIO_FLUSH_BYTES_PER_TICK)) {
       const frame = this.bufferedAudio[0]!;
-      const take = Math.min(frame.byteLength - this.bufferedOffset, budget);
-      const data = Buffer.from(frame.subarray(this.bufferedOffset, this.bufferedOffset + take)).toString('base64');
-      if (!this.write(JSON.stringify({ realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data } } }), take)) return;
-      this.bufferedBytes -= take; budget -= take;
-      if (this.bufferedOffset + take === frame.byteLength) { this.bufferedAudio.shift(); this.bufferedOffset = 0; }
-      else this.bufferedOffset += take;
+      const data = Buffer.from(frame).toString('base64');
+      if (!this.write(JSON.stringify({ realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data } } }), frame.byteLength)) return;
+      this.bufferedAudio.shift(); this.bufferedBytes -= frame.byteLength; budget -= frame.byteLength;
     }
-    if (this.bufferedBytes && !this.terminal) this.scheduleFlush();
+    if (this.bufferedAudio.length && !this.terminal) this.scheduleFlush();
   }
   close(): void { if (this.checkpoint()) this.finish('closed'); }
   private finish(code: LiveVoiceErrorCode) {

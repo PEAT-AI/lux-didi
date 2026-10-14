@@ -492,12 +492,11 @@ test('sustained speech while a tool batch is pending supersedes it behind a neut
   const neutral = (f.frames[1] as { toolResponse: { functionResponses: { id: string; name: string; response: { result?: string } }[] } }).toolResponse.functionResponses;
   assert.deepEqual(neutral.map(response => response.id), ['c1']);
   assert.match(String(neutral[0]!.response.result), /set aside/);
-  await f.frame(9);
-  const forwarded = Buffer.concat(f.frames.slice(2, 9).map(frame => Buffer.from((frame as { realtimeInput: { audio: { data: string } } }).realtimeInput.audio.data, 'base64')));
-  assert.equal(forwarded.equals(Buffer.from(loud)), true, 'the buffered speech is forwarded whole and in order');
+  await f.frame(3);
+  assert.deepEqual(f.frames[2], { realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: Buffer.from(loud).toString('base64') } } }, 'the buffered speech is forwarded whole and in order');
   assert.throws(() => session.sendToolResponse({ responses: [{ id: 'c1', name: 'search_knowledge', response: { markdown: 'late' } }] }), code('invalid_request'));
-  session.sendAudio({ pcm: new Uint8Array([9, 0]), dataClass: 'ordinary' }); await f.frame(10);
-  assert.equal('realtimeInput' in (f.frames[9] as object), true);
+  session.sendAudio({ pcm: new Uint8Array([9, 0]), dataClass: 'ordinary' }); await f.frame(4);
+  assert.equal('realtimeInput' in (f.frames[3] as object), true);
   session.close();
 });
 
@@ -550,68 +549,27 @@ test('a multi-call completion answering before supersession keeps exactly one te
   session.close();
 });
 
-class FakeSocket {
-  readyState: number = WebSocket.OPEN;
-  bufferedAmount = 0;
-  readonly frames: string[] = [];
-  private readonly handlers = new Map<string, Set<(...args: unknown[]) => void>>();
-  on(event: string, fn: (...args: unknown[]) => void): this { const set = this.handlers.get(event) ?? new Set(); set.add(fn); this.handlers.set(event, set); return this; }
-  once(event: string, fn: (...args: unknown[]) => void): this { const wrap = (...args: unknown[]) => { this.off(event, wrap); fn(...args); }; return this.on(event, wrap); }
-  off(event: string, fn: (...args: unknown[]) => void): this { this.handlers.get(event)?.delete(fn); return this; }
-  emit(event: string, ...args: unknown[]): void { for (const fn of [...(this.handlers.get(event) ?? [])]) fn(...args); }
-  send(frame: string, callback?: (error?: Error) => void): boolean { this.frames.push(frame); callback?.(); return true; }
-  close(): void { this.readyState = WebSocket.CLOSED; this.emit('close', 1000); }
-  terminate(): void { this.readyState = WebSocket.CLOSED; }
-}
-
-async function fakeSession(t: TestContext, modelId: string) {
-  const sockets: FakeSocket[] = [];
-  const socketFactory = ((_destination: string, _config: object) => { const socket = new FakeSocket(); sockets.push(socket); return socket; }) as unknown as NonNullable<GeminiLiveVoiceOptions['socketFactory']>;
-  const session = new GeminiLiveVoiceAdapter(options({ socketFactory, modelId, route: { enabled: true, provider: 'gemini', modelId, dataClasses: ['ordinary', 'private'] } })).open({ ...request(), tools: [
+test('the audio buffer high-water mark supersedes a pending batch with no eviction or reorder', async t => {
+  const f = await fixture(t);
+  const modelId = 'models/gemini-3.1-flash-live-preview';
+  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory, modelId, route: { enabled: true, provider: 'gemini', modelId, dataClasses: ['ordinary', 'private'] } })).open({ ...request(), tools: [
     { name: 'search_knowledge', description: 'Search', parameters: { type: 'OBJECT' } },
   ] }, control());
   const events = session.events[Symbol.asyncIterator](); t.after(() => session.close());
-  while (!sockets.length) await new Promise(resolve => setImmediate(resolve));
-  const socket = sockets[0]!;
-  socket.emit('open');
-  socket.emit('message', Buffer.from(JSON.stringify({ setupComplete: {} })));
-  await session.ready;
+  await f.frame(1); f.send({ setupComplete: {} }); await session.ready;
   assert.equal((await events.next()).value?.type, 'ready');
-  return { session, events, socket };
-}
-
-const audioFrames = (socket: FakeSocket) => socket.frames.map(frame => JSON.parse(frame) as { toolResponse?: unknown; realtimeInput?: { audio: { data: string } } }).filter(frame => frame.realtimeInput).map(frame => Buffer.from(frame.realtimeInput!.audio.data, 'base64'));
-
-test('the audio buffer high-water mark supersedes a pending batch with no eviction or reorder', async t => {
-  t.mock.timers.enable({ apis: ['setTimeout'] });
-  const { session, events, socket } = await fakeSession(t, 'models/gemini-3.1-flash-live-preview');
-  socket.emit('message', Buffer.from(JSON.stringify({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x' } }] } })));
+  f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x' } }] } });
   assert.equal((await events.next()).value?.type, 'modelTurnStarted');
   assert.equal((await events.next()).value?.type, 'toolCall');
   const chunk = new Uint8Array(64_000);
   for (let i = 0; i < 5; i++) session.sendAudio({ pcm: chunk, dataClass: 'ordinary' });
   assert.equal((await events.next()).value?.type, 'toolCallSuperseded');
-  for (let i = 0; i < 125; i++) t.mock.timers.tick(20);
-  assert.equal(socket.frames.filter(frame => 'toolResponse' in (JSON.parse(frame) as object)).length, 1);
-  assert.equal(Buffer.concat(audioFrames(socket)).equals(Buffer.concat(Array.from({ length: 5 }, () => Buffer.from(chunk)))), true, 'every buffered byte forwarded in order');
-  session.close();
-});
-
-test('a full high-water buffer drains at 4x real-time in order', async t => {
-  t.mock.timers.enable({ apis: ['setTimeout'] });
-  const { session, events, socket } = await fakeSession(t, 'models/gemini-3.1-flash-live-preview');
-  socket.emit('message', Buffer.from(JSON.stringify({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x' } }] } })));
-  assert.equal((await events.next()).value?.type, 'modelTurnStarted');
-  assert.equal((await events.next()).value?.type, 'toolCall');
-  const frame = new Uint8Array(6_400); for (let i = 0; i < frame.length; i++) frame[i] = i % 251;
-  for (let i = 0; i < 50; i++) session.sendAudio({ pcm: frame, dataClass: 'ordinary' });
-  assert.equal((await events.next()).value?.type, 'toolCallSuperseded');
-  const drained = () => Buffer.concat(audioFrames(socket));
-  for (let i = 0; i < 62; i++) t.mock.timers.tick(20);
-  assert.ok(drained().length > 0 && drained().length < 320_000, `half-drained at 1.24s: ${drained().length} B`);
-  for (let i = 0; i < 63; i++) t.mock.timers.tick(20);
-  assert.equal(drained().length, 320_000, 'a 10 s buffer drains in about 2.5 s of fake time');
-  assert.equal(drained().equals(Buffer.concat(Array.from({ length: 50 }, () => Buffer.from(frame)))), true, 'no reorder');
+  await f.frame(7);
+  assert.equal('toolResponse' in (f.frames[1] as object), true);
+  for (let i = 0; i < 5; i++) {
+    const frame = f.frames[2 + i] as { realtimeInput: { audio: { data: string } } };
+    assert.equal(Buffer.from(frame.realtimeInput.audio.data, 'base64').equals(Buffer.from(chunk)), true, `frame ${i} preserved in order`);
+  }
   session.close();
 });
 

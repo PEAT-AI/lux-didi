@@ -215,7 +215,7 @@ test('live status is local validation; absent, disabled and malformed files neve
   const ready = await json(enabled.origin, '/api/v1/live/status', { headers: bearer(enabled) });
   assert.equal(ready.body.data.status, 'configured');
   assert.equal(ready.body.data.model, MODEL);
-  assert.deepEqual(ready.body.data.limits, { sessionMs: 900_000, idleMs: 60_000 });
+  assert.deepEqual(ready.body.data.limits, { sessionMs: 3_600_000, idleMs: 300_000 });
 });
 
 test('live operator routes reject browsers, origins and duplicate headers before the owner', async t => {

@@ -514,6 +514,15 @@ test('tool deferral budget defaults to four seconds and accepts only bounded int
   }
 });
 
+test('live timer defaults are a 5 minute idle and a 60 minute session, and an explicit config wins', () => {
+  const defaults = validateLiveProfile(profileInput()).limits;
+  assert.equal(defaults.idleMs, 300_000);
+  assert.equal(defaults.sessionMs, 3_600_000);
+  const edited = validateLiveProfile(profileInput({ idleMs: 12_345, sessionMs: 67_890 })).limits;
+  assert.equal(edited.idleMs, 12_345);
+  assert.equal(edited.sessionMs, 67_890);
+});
+
 test('profile validation rejects text-model fallback and bounds, and validation precedes credentials', async t => {
   const cases: unknown[] = [
     { ...profileInput(), provider: 'openai' },

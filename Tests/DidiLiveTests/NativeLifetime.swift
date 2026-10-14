@@ -6,6 +6,7 @@ import Foundation
     let companion: CompanionClient
     var refuseSocket = true
     var observation = false
+    var closeObservation = false
     init(_ fixture: Fixture) throws {
         companion = CompanionClient(descriptor: try ServiceDescriptor(origin: fixture.origin,
             credentialService: "synthetic", credentialAccount: "fixture"),
@@ -18,6 +19,9 @@ import Foundation
         }
         if observation && url.path == "/api/v1/status" {
             request.setValue("hold", forHTTPHeaderField: "X-Synthetic-Observation")
+        }
+        if closeObservation && url.path == "/api/v1/status" {
+            request.setValue("close", forHTTPHeaderField: "X-Synthetic-Observation")
         }
         return request
     }
@@ -87,7 +91,8 @@ private func observeUntil(_ condition: @escaping @Sendable () async -> Bool) asy
                 return
             }
             let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 1)!
-            if CommandLine.arguments.contains("--native-listening-hold") {
+            let lateMode = CommandLine.arguments.contains("--native-listening-late")
+            if CommandLine.arguments.contains("--native-listening-hold") || lateMode {
                 authority.refuseSocket = false
                 var capture: NativeCaptureBuffer?
                 let device = NativeLiveAudioDevice(captureInput: format,
@@ -101,6 +106,9 @@ private func observeUntil(_ condition: @escaping @Sendable () async -> Bool) asy
                 try await observeUntil { await actual.state == .active }
                 try await observeUntil { await MainActor.run { conversation.state == .listening } }
                 try require(!device.hasEngine && device.isCapturing && capture != nil, "synthetic capture has no engine")
+                var outputResets = 0
+                let originalOutput = device.onOutput
+                device.onOutput = { value in originalOutput?(value); if !value { outputResets += 1 } }
                 let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4800)!
                 buffer.frameLength = buffer.frameCapacity
                 buffer.floatChannelData![0].initialize(repeating: 0.1, count: Int(buffer.frameLength))
@@ -119,12 +127,35 @@ private func observeUntil(_ condition: @escaping @Sendable () async -> Bool) asy
                 authority.observation = true
                 _ = try await NativeLiveOperatorHTTP(authority: (origin, requests)).beginIntent()
                 authority.observation = false
+                var trueCloseReleased = !lateMode
+                if lateMode {
+                    stage = "late-bidirectional-frame"
+                    capture!.append(buffer)
+                    try await observeUntil { await MainActor.run { outputResets == 1 } }
+                    let lateState = await actual.state
+                    try require(lateState == .active && conversation.state == .listening && device.isCapturing,
+                                "late marker consumed while actual conversation remains active")
+                    try FileHandle.standardOutput.write(contentsOf: Data("NATIVE LISTENING LATE FRAME RECEIVED\n".utf8))
+                    stage = "abrupt-client-close"
+                    authority.closeObservation = true
+                    _ = try await NativeLiveOperatorHTTP(authority: (origin, requests)).beginIntent()
+                    authority.closeObservation = false
+                    let closeStarted = ContinuousClock.now
+                    do {
+                        try await observeUntil { await MainActor.run { conversation.state != .listening && !device.isCapturing } }
+                        trueCloseReleased = true
+                    } catch { trueCloseReleased = false }
+                    let closedState = await actual.state
+                    print("NATIVE LISTENING TRUE CLOSE coordinator=\(closedState) native=\(conversation.state.rawValue) capture=\(device.isCapturing) elapsed=\(closeStarted.duration(to: .now))")
+                    trueCloseReleased = trueCloseReleased && closedState != .active && !device.hasEngine
+                }
                 conversation.stopCapture()
                 capture!.append(buffer)
                 let stoppedFence = capture!.next().0 == nil && !device.isCapturing && !device.hasEngine
                 await conversation.stop()
                 print("NATIVE LISTENING CLEANUP stoppedBufferFence=\(stoppedFence) capture=\(device.isCapturing) engine=\(device.hasEngine)")
                 try require(stoppedFence, "stopped capture buffer fence")
+                try require(trueCloseReleased, "true transport close releases capture and coordinator within three seconds")
                 try require(attached && nativeListening && captureActive && !enginePresent,
                             "valid persistent socket survives beyond fifteen seconds")
                 print("NATIVE LISTENING HOLD PASS")

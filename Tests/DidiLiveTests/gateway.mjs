@@ -10,7 +10,7 @@ import { defaultLiveLimits } from '../../server/dist/live/index.js';
 
 const [binary, work, nativeBinary, mutatedBinary] = process.argv.slice(2);
 const focused = process.argv[6];
-assert.ok(focused === undefined || ['--production-native-request', '--native-lifetime-retained', '--native-lifetime-fresh', '--native-listening-hold'].includes(focused));
+assert.ok(focused === undefined || ['--production-native-request', '--native-lifetime-retained', '--native-lifetime-fresh', '--native-listening-hold', '--native-listening-late'].includes(focused));
 assert.ok(binary && work);
 const webRoot = resolve('web/dist');
 const state = join(work, 'state');
@@ -23,10 +23,14 @@ let trapRequests = 0;
 const upgrades = [];
 const upstreamFrames = [];
 const upstreamConnections = [];
-const holdMode = focused === '--native-listening-hold';
+const lateMode = focused === '--native-listening-late';
+const holdMode = focused === '--native-listening-hold' || lateMode;
 const clientClosures = [];
 const clientSockets = [];
 const observations = [];
+const closeObservations = [];
+let lateMarkerSent = false;
+let audioAtObservation = 0;
 let audioAtInjectionMarker = 0;
 let audioAtStop = 0;
 let activeChild;
@@ -46,6 +50,10 @@ upstream.on('connection', socket => {
   socket.on('message', raw => {
     const value = JSON.parse(raw.toString());
     upstreamFrames.push(value);
+    if (lateMode && observations.length === 1 && value.realtimeInput?.audio && !lateMarkerSent) {
+      lateMarkerSent = true;
+      socket.send(JSON.stringify({ serverContent: { interrupted: true } }));
+    }
     if (value.setup) socket.send(JSON.stringify({ setupComplete: {} }));
     const audio = first => ({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from([first, 0]).toString('base64') } }] } } });
     if (value.realtimeInput?.audio?.data === Buffer.from([1, 0]).toString('base64')) socket.send(JSON.stringify(audio(1)));
@@ -86,9 +94,17 @@ try {
   const status = await json('/api/v1/live/status');
   host.service.server.prependListener('request', req => {
     if (holdMode && req.url === '/api/v1/status' && req.headers['x-synthetic-observation'] === 'hold') {
+      audioAtObservation = upstreamFrames.filter(frame => frame.realtimeInput?.audio).length;
       observations.push({ clientCount: clientSockets.length, closedCount: clientClosures.length,
         open: clientSockets.length === 1 && !clientSockets[0].destroyed,
         upstreamOpen: upstreamConnections.length === 1 && upstreamConnections[0].readyState === WebSocket.OPEN });
+    }
+    if (lateMode && req.url === '/api/v1/status' && req.headers['x-synthetic-observation'] === 'close') {
+      closeObservations.push({ clientCount: clientSockets.length, closedCount: clientClosures.length,
+        open: clientSockets.length === 1 && !clientSockets[0].destroyed, lateMarkerSent,
+        lateFrames: upstreamFrames.filter(frame => frame.realtimeInput?.audio).length - audioAtObservation });
+      assert.equal(clientSockets.length, 1);
+      clientSockets[0].destroy();
     }
   });
   host.service.server.prependListener('upgrade', (req, socket) => {
@@ -133,7 +149,7 @@ try {
       const audio = upstreamFrames.filter(frame => frame.realtimeInput?.audio).map(frame => frame.realtimeInput.audio);
       const sizes = audio.map(frame => Buffer.from(frame.data, 'base64').length);
       const nonzero = audio.every(frame => Buffer.from(frame.data, 'base64').some(byte => byte !== 0));
-      console.log(JSON.stringify({ event: 'native-listening-hold', childPID: child.pid, code, signal, injected, audioAtInjectionMarker, frames: audio.length, sizes, nonzero, audioAtStop, observations, clientClosures, opens, credentialReads, trapRequests }));
+      console.log(JSON.stringify({ event: 'native-listening-hold', childPID: child.pid, code, signal, injected, audioAtInjectionMarker, frames: audio.length, sizes, nonzero, audioAtStop, observations, closeObservations, lateMarkerSent, clientClosures, opens, credentialReads, trapRequests }));
       assert.ok(audio.length >= 1);
       assert.ok(sizes.every(size => size === 640)); assert.equal(nonzero, true);
       assert.ok(audio.every(frame => frame.mimeType === 'audio/pcm;rate=16000'));
@@ -141,6 +157,13 @@ try {
       assert.equal(opens, 1); assert.equal(credentialReads, 1);
       assert.match(output, /stoppedBufferFence=true capture=false engine=false/);
       assert.deepEqual(observations, [{ clientCount: 1, closedCount: 0, open: true, upstreamOpen: true }], 'actual native upgraded socket is open before Stop');
+      if (lateMode) {
+        assert.equal(closeObservations.length, 1);
+        assert.equal(closeObservations[0].open, true); assert.equal(closeObservations[0].closedCount, 0);
+        assert.equal(lateMarkerSent, true); assert.ok(closeObservations[0].lateFrames >= 1);
+        assert.match(output, /NATIVE LISTENING LATE FRAME RECEIVED/);
+        assert.match(output, /NATIVE LISTENING TRUE CLOSE .* capture=false/);
+      }
       assert.equal(code, 0, 'actual persistent native session remains healthy beyond fifteen seconds');
       assert.match(output, /NATIVE LISTENING HOLD PASS/);
     } else assert.equal(code, focused === '--native-lifetime-retained' ? 1 : 0);

@@ -71,9 +71,16 @@ export function mergeLive(previous: LiveCurrent | undefined, next: LiveCurrent):
 export interface LiveLine { role: 'user' | 'naya'; text: string }
 export function liveTranscript(live: LiveCurrent): LiveLine[] {
   const lines: LiveLine[] = [];
+  let boundary = true;
   for (const entry of live.entries) {
-    if (entry.kind === 'inputTranscription' && entry.text) lines.push({ role: 'user', text: entry.text });
-    if (entry.kind === 'outputTranscription' && entry.text) lines.push({ role: 'naya', text: entry.text });
+    const role = entry.kind === 'inputTranscription' ? 'user' : entry.kind === 'outputTranscription' ? 'naya' : undefined;
+    if (role && entry.text) {
+      const previous = lines.at(-1);
+      if (!boundary && previous?.role === role) previous.text += entry.text;
+      else lines.push({ role, text: entry.text });
+      boundary = false;
+    }
+    if (entry.kind === 'turnComplete' || entry.kind === 'interrupted' || entry.kind === 'terminal') boundary = true;
   }
   return lines;
 }
@@ -141,11 +148,12 @@ function rememberCardMarkup(entry: LiveEntry): string {
 }
 
 /** Full section markup, id="live-panel" so the poller can replace it in place. */
-export function liveMarkup(live: LiveCurrent | undefined, poll: LivePollState = {}): string {
+export function liveMarkup(live: LiveCurrent | undefined, poll: LivePollState = {}, detailsOpen = false): string {
   const state = live?.state;
   const label = liveLabel(live);
   const lines = live ? liveTranscript(live) : [];
   const result = live ? liveResult(live) : undefined;
+  const latestTurn = [...lines].reverse().find(line => line.role === 'naya') ?? lines.at(-1);
   const jobs = (live?.jobs ?? []).map(job => `<article class="live-job" data-job-id="${escapeHtml(job.id)}">
     <h2>${job.state === 'in_progress' ? 'Background task in progress' : 'Background task ' + escapeHtml(job.state)}</h2>
     ${renderMarkdown(job.markdown)}
@@ -157,17 +165,23 @@ export function liveMarkup(live: LiveCurrent | undefined, poll: LivePollState = 
   const error = state === 'error' ? '<p class="muted" role="status">Naya reported an error. The live session has stopped.</p>' : '';
   const muted = live?.muted ? '<p class="muted live-muted" role="status">Microphone muted</p>' : '';
   const transcript = lines.length
-    ? `<ol class="entries live-transcript">${lines.map(line => `<li class="entry"><strong>${line.role === 'user' ? 'You' : 'Naya'}</strong><p>${escapeHtml(line.text)}</p></li>`).join('')}</ol>`
+    ? `<div class="entries live-transcript">${lines.map(line => `<article class="entry"><strong>${line.role === 'user' ? 'You' : 'Naya'}</strong><p>${escapeHtml(line.text)}</p></article>`).join('')}</div>`
     : '<div class="entries live-transcript empty"><p class="muted">No live transcription yet.</p></div>';
   return `<section class="panel live" id="live-panel" aria-label="Naya live conversation">
     <p class="live-state" role="status" aria-live="polite">${escapeHtml(label)}</p>
     ${muted}
     ${poll.stale ? `<p class="live-stale" role="status">Live view stale${poll.lastSuccess ? ' since ' + escapeHtml(poll.lastSuccess.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })) : ', no successful poll yet'}, service unreachable</p>` : ''}
-    ${transcript}
     ${error}${restored}
-    ${(live?.entries ?? []).filter(entry => entry.kind === 'toolResult' && entry.tool?.name !== 'remember_note').map(entry => `<details class="live-tool-result" data-result-seq="${entry.seq}"><summary>${escapeHtml(entry.tool?.name ?? 'Tool result')} (${escapeHtml(entry.tool?.status ?? 'unknown')})</summary>${entry.tool?.status !== 'error' && entry.tool?.markdown ? renderMarkdown(entry.tool.markdown) + sourcesMarkup(entry.tool.sources ?? []) : ''}</details>`).join('')}
-    ${(live?.entries ?? []).filter(entry => entry.kind === 'toolResult' && entry.tool?.name === 'remember_note').map(remaining => rememberCardMarkup(remaining)).join('')}
-    ${jobs}
     ${result ? `<div class="live-result"><h2>Latest answer</h2>${renderMarkdown(result.markdown)}${sourcesMarkup(result.sources)}</div>` : ''}
+    ${latestTurn ? `<article class="live-latest-turn"><span>${latestTurn.role === 'naya' ? 'Latest spoken answer' : 'Latest turn'}</span><p>${escapeHtml(latestTurn.text)}</p></article>` : ''}
+    <details id="live-details" class="live-details"${detailsOpen ? ' open' : ''}>
+      <summary>Conversation history and activity</summary>
+      ${transcript}
+      <div class="live-activity" aria-label="Live activity">
+        ${(live?.entries ?? []).filter(entry => entry.kind === 'toolResult' && entry.tool?.name !== 'remember_note').map(entry => `<details class="live-tool-result" data-result-seq="${entry.seq}"><summary>${escapeHtml(entry.tool?.name ?? 'Tool result')} (${escapeHtml(entry.tool?.status ?? 'unknown')})</summary>${entry.tool?.status !== 'error' && entry.tool?.markdown ? renderMarkdown(entry.tool.markdown) + sourcesMarkup(entry.tool.sources ?? []) : ''}</details>`).join('')}
+        ${(live?.entries ?? []).filter(entry => entry.kind === 'toolResult' && entry.tool?.name === 'remember_note').map(remaining => rememberCardMarkup(remaining)).join('')}
+        ${jobs}
+      </div>
+    </details>
   </section>`;
 }

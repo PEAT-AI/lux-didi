@@ -215,7 +215,12 @@ async function pollLive(){
   liveTimer=undefined;
   if(document.hidden||pairingRequired||liveBusy)return;
   liveBusy=true;
-  try{livePoll=await pollLiveView(livePoll,cursor=>fetchLive(cursor,AbortSignal.timeout(8000)));live=livePoll.live;paintLive();}
+  try{
+    const prior=livePoll;
+    const next=await pollLiveView(prior,cursor=>fetchLive(cursor,AbortSignal.timeout(8000)));
+    if(livePoll!==prior)return;
+    livePoll=next;live=livePoll.live;paintLive();
+  }
   finally{liveBusy=false;scheduleLive();}
 }
 async function pollConnections(){
@@ -246,7 +251,7 @@ function paintLive(){
   const caption=document.querySelector('.orb-caption');const markup=orbCaptionMarkup();if(caption && caption.innerHTML!==markup)caption.innerHTML=markup;
   const next=orbState();if(next!==appliedOrbState){appliedOrbState=next;orb?.setState(next);}
 }
-onAuthorityChanged(()=>{connectedView.reset();live=undefined;livePoll={};connections=[];connectionsStale=false;statusUnavailable=false;status=undefined;sessions=[];entries=[];session=undefined;plan=undefined;recall=undefined;recent=[];connection='Disconnected';});
+onAuthorityChanged(()=>{connectedView.reset();live=undefined;livePoll={};connections=[];connectionsStale=false;statusUnavailable=false;status=undefined;sessions=[];entries=[];session=undefined;plan=undefined;recall=undefined;recent=[];connection='Disconnected';render();});
 window.addEventListener('offline',()=>{connectedView.detach();connection='Offline';livePoll={...livePoll,stale:true};connectionsStale=true;statusUnavailable=true;if(connectionsTimer)clearTimeout(connectionsTimer);if(pollTimer)clearTimeout(pollTimer);if(liveTimer)clearTimeout(liveTimer);render();});
 window.addEventListener('online',()=>void connect());
 document.addEventListener('visibilitychange',()=>{if(document.hidden){if(connectionsTimer)clearTimeout(connectionsTimer);if(pollTimer)clearTimeout(pollTimer);if(liveTimer)clearTimeout(liveTimer);}else{void connect(true);}});

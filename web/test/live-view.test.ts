@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { readFileSync } from 'node:fs';
+import { createContext, runInContext } from 'node:vm';
 import { liveStateLabel, liveVoiceState, liveToolName, liveLabel, liveDelay, mergeLive, liveTranscript, liveResult, liveMarkup } from '../src/live-view.ts';
 import './connector-status.test.ts';
 import { pollLiveView } from '../src/live-view.ts';
@@ -310,3 +312,38 @@ test('new session fetches an uncursored initial page before resetting retained p
   assert.equal(next.live?.since,'session-b');assert.equal(next.live?.entries.length,1);
   assert.equal(next.live?.entries[0]?.text,'new initial entry');
 });
+
+for (const kind of ['authority', 'offline-success', 'offline-failure', 'logout']) {
+  test(`held Live response cannot overwrite ${kind} reset`, async () => {
+    const source=readFileSync(new URL('../src/main.ts',import.meta.url),'utf8');
+    const poll=source.slice(source.indexOf('async function pollLive(){'),source.indexOf('async function pollConnections(){'));
+    const prefix=kind==='authority'?'onAuthorityChanged(':kind==='logout'?"  button('logout',":"window.addEventListener('offline',";
+    const resetSource=source.split('\n').find(line=>line.startsWith(prefix));
+    assert(resetSource);
+    const original={live:{state:'ended' as const,since:'synthetic-session',cursor:1,entries:[{seq:1,kind:'terminal' as const}]},stale:false};
+    let release!:()=>void;const gate=new Promise<void>(resolve=>{release=resolve;});
+    let callback!:()=>void,scheduled=0,liveTimerArmed=false;
+    const paints:unknown[]=[];
+    const context:any={document:{hidden:false},pairingRequired:false,liveBusy:false,liveTimer:1,pollTimer:1,connectionsTimer:1,
+      livePoll:original,live:original.live,pollLiveView,AbortSignal,clearTimeout:()=>{},
+      fetchLive:async()=>{await gate;if(kind==='authority'||kind==='offline-failure')throw new Error('synthetic unavailable');return {...original.live,entries:[]};},
+      scheduleLive:()=>{scheduled++;liveTimerArmed=!context.pairingRequired;},
+      paintLive:()=>{paints.push(context.live);},render:()=>{paints.push(context.live);},
+      onAuthorityChanged:(fn:()=>void)=>{callback=fn;},window:{addEventListener:(_name:string,fn:()=>void)=>{callback=fn;}},
+      button:(_name:string,fn:()=>void)=>{callback=fn;},logout:async()=>{},
+      mutate:(action:()=>Promise<void>)=>{context.mutation=action().then(()=>context.render());},
+      connectedView:{reset:()=>{},detach:()=>{}},connections:[],connectionsStale:false,statusUnavailable:false,status:{},
+      sessions:[],entries:[],session:undefined,plan:undefined,recall:undefined,recent:[],connection:'Connected'};
+    createContext(context);runInContext(poll+resetSource,context);
+    const pending=context.pollLive();assert.equal(context.liveBusy,true);
+    callback();if(kind==='logout')await context.mutation;
+    const reset=context.livePoll;assert.notEqual(reset,original);
+    const paintCount=paints.length;
+    if(kind==='authority'||kind==='logout')assert.equal(paints.at(-1),undefined);
+    else assert.equal(context.livePoll.stale,true);
+    release();await pending;
+    assert.equal(context.livePoll,reset);assert.equal(paints.length,paintCount);
+    assert.equal(context.liveBusy,false);assert.equal(scheduled,1);
+    if(kind==='logout')assert.equal(liveTimerArmed,false);
+  });
+}

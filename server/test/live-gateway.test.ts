@@ -790,7 +790,7 @@ test('trusted composition registers current Live authority and refuses after ter
   ws.close(); if (ws.readyState !== WebSocket.CLOSED) await once(ws, 'close');
   const again = await createBody(h, 'registered-terminal'); const secondId = again.body.data.liveSessionId;
   const second = new WebSocket(`${h.origin.replace('http:', 'ws:')}/api/v1/live-sessions/${secondId}/audio`, { headers: bearer(h) });
-  t.after(() => second.terminate()); await once(second, 'open'); await h.f.frame(2); h.f.send({ setupComplete: {} }); await once(second, 'message');
+  t.after(() => second.terminate()); await once(second, 'open'); await h.f.frame(3); h.f.send({ setupComplete: {} }); await once(second, 'message');
   assert.notEqual(await lookup!(secondId, signal), null);
   second.send(JSON.stringify({ type: 'close' })); await once(second, 'close'); assert.equal(await lookup!(secondId, signal), null);
 });

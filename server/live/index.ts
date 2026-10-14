@@ -1,4 +1,5 @@
 import { sourceCards } from '../tools/source-cards.js';
+import { noEmptyResult } from '../tools/live-shape.js';
 import * as memory from '../domain/memory.js';
 import * as labels from '../domain/labels.js';
 import { definitionsInTransaction } from '../tools/index.js';
@@ -913,7 +914,7 @@ export class LiveSessionOwner {
         const record = batch.tools[index];
         const reason = batch.error?.reason ?? record?.reason ?? 'tool_result_denied';
         const completed = accepted && record?.status === 'completed';
-        const markdown = completed ? (typeof accepted.response.markdown === 'string' ? accepted.response.markdown : typeof accepted.response.text === 'string' ? accepted.response.text : reason) : reason;
+        const markdown = completed ? noEmptyResult(typeof accepted.response.markdown === 'string' ? accepted.response.markdown : typeof accepted.response.text === 'string' ? accepted.response.text : reason) : reason;
         const sources = completed ? sourceCards({ text: accepted.response.text, markdown: accepted.response.markdown, sources: accepted.response.sources }, Infinity) : [];
         projections[index] = { name: call.name, status: completed ? 'completed' : 'error', markdown, sources };
         return { id: call.id, name: call.name, response: completed ? accepted.response : { error: reason } };

@@ -16,6 +16,15 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
       || value.messageHead !== value.code || String(value.messageHead).length > 120) return;
     return { event: 'tool_failure', code: value.code, tool: value.tool, connector: value.connector, errorClass: value.errorClass, messageHead: value.messageHead };
   }
+  if (value.event === 'mattermost_shape') {
+    // Closed shape: tool, recognised shape kind and sizes only, never any message content.
+    const token = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(v);
+    const sizes = ['rawCharacters', 'shapedCharacters', 'itemCount'] as const;
+    if (Object.keys(value).sort().join(',') !== ['event', 'tool', 'shape', ...sizes].sort().join(',')
+      || !token(value.tool) || !token(value.shape)
+      || sizes.some(key => !Number.isSafeInteger(value[key]) || Number(value[key]) < 0)) return;
+    return { event: 'mattermost_shape', tool: value.tool, shape: value.shape, rawCharacters: value.rawCharacters, shapedCharacters: value.shapedCharacters, itemCount: value.itemCount };
+  }
   if (value.event === 'client_diagnostic' && value.source === 'native' && typeof value.receivedAt === 'string' && Number.isFinite(Date.parse(value.receivedAt)) && value.diagnostic && typeof value.diagnostic === 'object' && !Array.isArray(value.diagnostic)) {
     try { return { event: value.event, source: value.source, receivedAt: value.receivedAt, diagnostic: clientDiagnostic(value.diagnostic as Record<string, unknown>) }; } catch { return; }
   }

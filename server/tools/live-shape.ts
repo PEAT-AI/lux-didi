@@ -29,6 +29,10 @@ export interface ShapedResult {
   partial: boolean;
   originalCharacters: number;
   omittedCharacters: number;
+  /** Mattermost only: which upstream shape was recognised, for metadata logging. */
+  shape?: MattermostShape;
+  /** Mattermost only: how many posts or channels the shape carried. */
+  itemCount?: number;
 }
 
 /** The shaped form of an unbounded string: `partial` is true only when the tail was dropped. */
@@ -255,32 +259,95 @@ function isSystemPost(post: Record<string, unknown>): boolean {
   return SYSTEM_TEXT.test(field(post, 'text', 'message'));
 }
 function renderPost(post: Record<string, unknown>): { lines: string[]; omitted: number } {
-  const header2 = [field(post, 'channel', 'channel_name', 'channel_id'), field(post, 'author', 'author_name', 'user_name'), field(post, 'time', 'create_at', 'timestamp')].filter(Boolean).join(' | ');
+  const author = field(post, 'author', 'author_name', 'user_name', 'username');
+  const time = field(post, 'time', 'timestamp') || scalar(post['create_at']);
+  const header2 = [field(post, 'channel', 'channel_name', 'channel_id'), author, time].filter(Boolean).join(' | ');
   const raw = str(post['text'] ?? post['message']);
   const cut = cutAtSentence(raw, MATTERMOST_MESSAGE_CHARS);
   const reactions = reactionCount(post);
   const meta = `${reactions > 0 ? ` (${reactions} reactions)` : ''}${threadPosition(post)}`;
-  const permalink = field(post, 'permalink');
+  const permalink = field(post, 'permalink', 'url');
   return { lines: [`**${header2 || 'message'}${meta}**`, cut.text, ...(cut.omitted > 0 ? [`[omitted: ${cut.omitted} characters; final, a single post has no partial re-read]`] : []), ...(permalink ? [`source: ${permalink}`] : [])], omitted: cut.omitted };
 }
 
+/** The Mattermost output shapes the shaper recognises; `unrecognised` fails loud, never ''. */
+export type MattermostShape =
+  | 'whoami' | 'channels' | 'posts_array' | 'posts_map' | 'items' | 'results' | 'thread' | 'empty' | 'text' | 'unrecognised';
+
+/** A completed projection that shaped to nothing becomes an explicit note, never an empty string. */
+export function noEmptyResult(text: string): string {
+  return text.trim() === '' ? 'No results.' : text;
+}
+
+function emptyMattermostNote(tool: string): string {
+  if (tool === 'mattermost_search') return 'No messages matched.';
+  if (tool === 'mattermost_get_channel_history') return 'No messages in this channel for that window.';
+  if (tool === 'mattermost_get_thread') return 'No messages in this thread.';
+  if (tool === 'mattermost_list_channels') return 'No channels.';
+  return 'No messages.';
+}
+function mattermostNote(tool: string): ShapedResult {
+  return { text: emptyMattermostNote(tool), partial: false, originalCharacters: 0, omittedCharacters: 0, shape: 'empty', itemCount: 0 };
+}
+function mattermostProjection(text: string, shape: MattermostShape, itemCount: number): ShapedResult {
+  return { text, partial: false, originalCharacters: text.length, omittedCharacters: 0, shape, itemCount };
+}
+function rawOf(data: unknown): string {
+  if (typeof data === 'string') return data;
+  try { return JSON.stringify(data) ?? ''; } catch { return String(data); }
+}
+/** An id map of posts, ordered by the `order` id list when present, else by create_at. */
+function postsFromMap(map: Record<string, unknown>, order: unknown): Record<string, unknown>[] {
+  if (Array.isArray(order)) {
+    const ordered = order.map(id => (typeof id === 'string' ? map[id] : undefined)).filter(isRecord);
+    if (ordered.length > 0) return ordered;
+  }
+  return Object.values(map).filter(isRecord).sort((a, b) => Number(scalar(a['create_at'])) - Number(scalar(b['create_at'])));
+}
+/** A shape no branch recognises fails loud: the raw text trimmed by the existing W7 budget. */
+function unrecognisedMattermost(raw: string): ShapedResult {
+  const cut = cutAtSentence(raw, MATTERMOST_MESSAGE_CHARS);
+  const text = `[unrecognised Mattermost shape; raw result follows]\n${cut.text}`;
+  return { text, partial: cut.omitted > 0, originalCharacters: raw.length, omittedCharacters: cut.omitted, shape: 'unrecognised', itemCount: 0 };
+}
+/** Extract the post list from any shape the connector may pass through. */
+function postsOf(data: unknown): { posts: Record<string, unknown>[]; shape: MattermostShape } | undefined {
+  if (Array.isArray(data)) return { posts: data.filter(isRecord), shape: 'items' };
+  if (!isRecord(data)) return undefined;
+  if (Array.isArray(data['posts'])) return { posts: data['posts'].filter(isRecord), shape: 'posts_array' };
+  if (isRecord(data['posts'])) return { posts: postsFromMap(data['posts'], data['order']), shape: 'posts_map' };
+  if (Array.isArray(data['items'])) return { posts: data['items'].filter(isRecord), shape: 'items' };
+  if (isRecord(data['items'])) return { posts: Object.values(data['items']).filter(isRecord), shape: 'items' };
+  if (Array.isArray(data['results'])) return { posts: data['results'].filter(isRecord), shape: 'results' };
+  if (isRecord(data['results'])) return { posts: Object.values(data['results']).filter(isRecord), shape: 'results' };
+  if (isRecord(data['root']) || Array.isArray(data['replies'])) return { posts: [...(isRecord(data['root']) ? [data['root']] : []), ...(Array.isArray(data['replies']) ? data['replies'].filter(isRecord) : [])], shape: 'thread' };
+  return undefined;
+}
+
 export function shapeMattermost(tool: string, data: unknown): ShapedResult {
-  if (typeof data === 'string') return shaped(data);
-  if (!isRecord(data)) return shaped(data === undefined ? '' : String(data));
+  const raw = rawOf(data);
+  if (typeof data === 'string') return data.trim() === '' ? mattermostNote(tool) : shaped(data);
   if (tool === 'mattermost_whoami') {
+    if (!isRecord(data)) return raw.trim() === '' ? mattermostNote(tool) : unrecognisedMattermost(raw);
     const name = field(data, 'username', 'user_name');
     const display = field(data, 'display_name', 'displayName');
-    return shaped([name, display].filter(Boolean).join(' | ') || 'authenticated');
+    return mattermostProjection([name, display].filter(Boolean).join(' | ') || 'authenticated', 'whoami', 1);
   }
   if (tool === 'mattermost_list_channels') {
-    const channels = Array.isArray(data['channels']) ? data['channels'] : [];
-    return shaped(channels.map(entry => isRecord(entry) ? `- ${field(entry, 'display_name', 'name') || str(entry['id'])}` : `- ${String(entry)}`).join('\n'));
+    const list = Array.isArray(data) ? data : isRecord(data) && Array.isArray(data['channels']) ? data['channels'] : undefined;
+    if (!list) return raw.trim() === '' ? mattermostNote(tool) : unrecognisedMattermost(raw);
+    if (list.length === 0) return mattermostNote(tool);
+    const text = list.map(entry => isRecord(entry) ? `- ${field(entry, 'display_name', 'displayName', 'name') || str(entry['id'])}` : `- ${String(entry)}`).join('\n');
+    return mattermostProjection(text, 'channels', list.length);
   }
-  const posts = (Array.isArray(data['posts']) ? data['posts'] : Array.isArray(data['items']) ? data['items'] : []).filter(isRecord).filter(post => !isSystemPost(post));
-  const rendered = posts.map(renderPost);
+  const extracted = postsOf(data);
+  if (!extracted) return raw.trim() === '' ? mattermostNote(tool) : unrecognisedMattermost(raw);
+  const visible = extracted.posts.filter(post => !isSystemPost(post));
+  if (visible.length === 0) return mattermostNote(tool);
+  const rendered = visible.map(renderPost);
   const body = listed(rendered.map(entry => entry.lines.join('\n')), MATTERMOST_MESSAGES, 'messages');
   const omitted = body.omitted + rendered.reduce((sum, entry) => sum + entry.omitted, 0);
-  return { text: body.text, partial: omitted > 0, originalCharacters: rendered.map(l => l.lines.join('\n')).join('\n').length, omittedCharacters: omitted };
+  return { text: body.text, partial: omitted > 0, originalCharacters: rendered.map(l => l.lines.join('\n')).join('\n').length, omittedCharacters: omitted, shape: extracted.shape, itemCount: visible.length };
 }
 
 // --- lux-knowledge -------------------------------------------------------------------------

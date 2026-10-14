@@ -206,6 +206,8 @@ final class NativeCaptureBuffer: @unchecked Sendable {
 
 @MainActor final class NativeLiveAudioDevice: ObservableObject, LiveAudioSink {
     @Published private(set) var inputLevel: Float = 0
+    @Published private(set) var outputLevel: Float = 0
+    @Published private(set) var isPlayingOutput = false
     @Published private(set) var droppedFrames = 0
     @Published private(set) var isCapturing = false
     var hasEngine: Bool { engine != nil }
@@ -449,19 +451,26 @@ final class NativeCaptureBuffer: @unchecked Sendable {
             }
         }
         let token = outputGeneration
-        queuedOutput += 1; onOutput?(true)
+        queuedOutput += 1; onOutput?(true); isPlayingOutput = true
+        var sum: Double = 0
+        pcm.withUnsafeBytes { bytes in
+            for sample in bytes.bindMemory(to: Int16.self) {
+                let value = Double(Int16(littleEndian: sample)) / 32768; sum += value * value
+            }
+        }
+        outputLevel = pcm.isEmpty ? 0 : Float(min(1, sqrt(sum / Double(pcm.count / 2))))
         player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
             Task { @MainActor in
                 guard let self, self.outputGeneration == token else { return }
                 self.queuedOutput -= 1
-                if self.queuedOutput == 0 { self.onOutput?(false) }
+                if self.queuedOutput == 0 { self.onOutput?(false); self.isPlayingOutput = false; self.outputLevel = 0 }
             }
         }
         if !player.isPlaying { player.play() }
     }
     func flush() async throws { flushOutput() }
     private func flushOutput() {
-        outputGeneration &+= 1; player?.stop(); queuedOutput = 0; onOutput?(false)
+        outputGeneration &+= 1; player?.stop(); queuedOutput = 0; onOutput?(false); isPlayingOutput = false; outputLevel = 0
     }
     func stop() {
         let epoch = captureEpoch, captureToken = captureGeneration, wasMuted = muted
@@ -480,6 +489,6 @@ final class NativeCaptureBuffer: @unchecked Sendable {
         drain?.cancel(); drain = nil; capture = nil
         flushOutput()
         if let engine { engine.inputNode.removeTap(onBus: 0); engine.stop() }
-        engine = nil; player = nil; isCapturing = false; inputLevel = 0
+        engine = nil; player = nil; isCapturing = false; inputLevel = 0; outputLevel = 0; isPlayingOutput = false
     }
 }

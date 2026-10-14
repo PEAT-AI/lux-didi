@@ -249,6 +249,7 @@ export function withToolsSection(text: string, tools: readonly string[]): string
 }
 
 /** Verbatim header for the earlier-conversations section (W13). */
+export const EARLIER_CONVERSATIONS_TITLE = '# Earlier conversations';
 export const EARLIER_CONVERSATIONS_HEADER =
   'Short summaries of earlier conversations, written automatically. Use them as background when they are relevant; do not bring them up unprompted, do not say that you remember, and do not ask the owner to confirm them. They can be wrong; the owner\'s words now win.';
 export const EARLIER_CONVERSATIONS_MAX_ITEMS = 6;
@@ -292,7 +293,7 @@ export function buildEarlierConversationsSection(
     if (used + line.length > maxChars) { omitted.push({ id: candidate.id, reason: 'budget' }); continue; }
     lines.push(line); used += line.length; selectedIds.push(candidate.id);
   }
-  return { section: lines.length ? `${EARLIER_CONVERSATIONS_HEADER}\n${lines.join('\n')}` : '', selectedIds, omitted };
+  return { section: lines.length ? `${EARLIER_CONVERSATIONS_TITLE}\n${EARLIER_CONVERSATIONS_HEADER}\n${lines.join('\n')}` : '', selectedIds, omitted };
 }
 
 /** Session CREATE composition over the frozen persona layers. Records yield before any trusted layer. */

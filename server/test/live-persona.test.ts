@@ -287,7 +287,7 @@ test('earlier-conversations selection is newest first, whole summaries only, cap
   ], { now, timeZone: 'UTC' });
   assert.deepEqual(big.selectedIds, ['a', 'c'], 'b no longer fits the 3000-char budget; c still does');
   assert.ok(big.omitted.some(o => o.id === 'b' && o.reason === 'budget'));
-  assert.ok(big.section.length <= EARLIER_CONVERSATIONS_HEADER.length + 3_000 + 16);
+  assert.ok(big.section.length <= EARLIER_CONVERSATIONS_HEADER.length + 3_000 + 64);
 });
 
 test('earlier-conversations excludes summaries older than 14 days as stale', () => {

@@ -107,8 +107,7 @@ test('stream admission and buffered frames cannot publish after authority reset'
   await assert.rejects(reading, { code: 'AUTHORITY_CHANGED' }); assert.equal(frames, 1);
 });
 
-test('lifetime abort while parsing stream refusal or awaiting frame stays an authority error', async () => {
-  for (const phase of ['error-body', 'reader']) {
+for (const phase of ['error-body', 'reader']) test(`lifetime abort during stream ${phase} stays an authority error`, async () => {
     api.clearAuthority(); globalThis.fetch = async () => envelope({ csrfToken: 'csrf1' }); await api.restoreSession();
     const entered = deferred<void>(); let refuse!: (error: Error) => void;
     globalThis.fetch = async (_url, init) => {
@@ -118,9 +117,8 @@ test('lifetime abort while parsing stream refusal or awaiting frame stays an aut
         response.json = async () => new Promise((_resolve, reject) => { refuse = reject; entered.resolve(); });
         return response;
       }
-      return new Response(new ReadableStream({ start(controller) { refuse = error => controller.error(error); }, pull() { entered.resolve(); } }));
+      return new Response(new ReadableStream({ start(controller) { refuse = error => controller.error(error); }, pull() { entered.resolve(); } }, { highWaterMark: 0 }));
     };
     const old = api.stream('/chat/a/events', new AbortController().signal, () => { assert.fail('no old frame'); });
     await entered.promise; api.clearAuthority(); await assert.rejects(old, { code: 'AUTHORITY_CHANGED' });
-  }
 });

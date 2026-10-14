@@ -239,7 +239,7 @@ test('the owner composes the google tool table and a Live-shaped gmail_list call
     const row = store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE execution_id=?', ['run:1:0']));
     const stored = JSON.parse(String(row?.result_json)) as { response: Record<string, unknown> };
     assert.equal(stored.response['tool'], 'gmail_list');
-    assert.match(String(stored.response['text']), /Synthetic subject line, Synthetic Sender, Mon, 1 Jan 2024/);
+    assert.match(String(stored.response['text']), /Synthetic subject line \| Synthetic Sender \| Mon, 1 Jan 2024/);
     assert.match(String(stored.response['text']), /source: https:\/\/mail\.google\.com\/mail\/u\/0\/#inbox\/m1/);
   } finally {
     await adapter.close();

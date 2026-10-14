@@ -169,13 +169,15 @@ test('provider/model route change cannot reuse an existing frozen admission', as
   assert.deepEqual(f.admission(session), before);
 });
 
-test('repeated tool requests are bounded and the last accepted result has an evidence card', async t => {
+test('four bounded tool rounds receive one tools-disabled final synthesis request', async t => {
   const f = await fixture(t); f.repeatCalls(); const run = await f.turn(f.session());
-  assert.equal(f.requests.length, 4, 'finite composition request bound must actually be reached');
+  assert.equal(f.requests.length, 5, 'four tool rounds require one final synthesis request');
   assert.equal(f.executions(), 4);
-  assert.equal(run.outcome, 'truncated');
-  assert.equal(run.finalEntryId, null);
-  assert.equal(run.toolEvidence?.length, 4, 'final bounded tool result is gated and retained without another model request');
+  assert.equal(run.outcome, 'complete');
+  assert.ok(run.finalEntryId);
+  assert.deepEqual(f.requests[4]!.declarations, []);
+  assert.match(JSON.stringify(f.requests[4]), /ACCEPTED/);
+  assert.equal(run.toolEvidence?.length, 4, 'all bounded tool results remain gated in the completed answer');
   assert.doesNotMatch(JSON.stringify(run), /REJECTED/);
 });
 

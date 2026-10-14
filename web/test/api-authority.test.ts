@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { readFileSync } from 'node:fs';
+import { transpileModule, ModuleKind, ScriptTarget } from 'typescript';
 
 Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { onLine: true } });
 Object.defineProperty(globalThis, 'document', { configurable: true, value: { querySelector: () => null } });
-const api = await import('../src/api.ts');
+const source = readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8');
+const compiled = transpileModule(source, { compilerOptions: { module: ModuleKind.ESNext, target: ScriptTarget.ES2022 } }).outputText;
+const api = await import('data:text/javascript;base64,' + Buffer.from(compiled).toString('base64'));
 const envelope = (data: unknown, epoch = 'E1', status = 200) => new Response(JSON.stringify(status === 200 ? { data, authorityEpoch: epoch } : { error: { code: 'UNAUTHORIZED', message: 'synthetic unauthorized' } }), { status });
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; }
 
@@ -57,11 +61,12 @@ test('request-owned key completion cannot remove a newer same-fingerprint key', 
 
 test('authority reset aborts unsignalled local transport and lets existing queue advance', async () => {
   api.clearAuthority(); globalThis.fetch = async () => envelope({ csrfToken: 'csrf1' }); await api.restoreSession();
-  const started = deferred<void>(); let aborted = false;
+  const started = deferred<void>(); let aborted = false; let refuse!: (error: Error) => void;
   globalThis.fetch = async (_url, init) => new Promise<Response>((_resolve, reject) => {
-    started.resolve(); init?.signal?.addEventListener('abort', () => { aborted = true; reject(new DOMException('synthetic abort', 'AbortError')); }, { once: true });
+    refuse = reject; started.resolve(); init?.signal?.addEventListener('abort', () => { aborted = true; reject(new DOMException('synthetic abort', 'AbortError')); }, { once: true });
   });
   const old = api.request('/conversation-selection', { method: 'POST', body: {} }); await started.promise;
   api.clearAuthority();
-  assert.equal(aborted, true); await assert.rejects(old, { code: 'AUTHORITY_CHANGED' });
+  const cancelledByLifetime = aborted; if (!aborted) refuse(new DOMException('fixture releases old transport', 'AbortError'));
+  await assert.rejects(old, { code: 'AUTHORITY_CHANGED' }); assert.equal(cancelledByLifetime, true);
 });

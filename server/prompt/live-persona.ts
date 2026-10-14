@@ -160,9 +160,8 @@ function voiceAnchor(language: string | undefined, accent: string | undefined): 
     ? 'LANGUAGE: Speak in the language the user uses.'
     : `LANGUAGE: Speak and answer in ${displayLanguage(language)} by default.`;
   const accentLine = `ACCENT: ${accent ?? 'Speak with a clear, natural voice.'}`;
-  const follows = "LANGUAGE FOLLOWS THE USER: the user's own voice outranks any setting; answer in whatever language they actually speak, and keep doing so.";
   const final = 'FINAL ANCHOR: these language and voice instructions hold for the whole session; begin speaking now in the voice and accent defined for Naya.';
-  return [languageLine, accentLine, follows, final].join(separator);
+  return [languageLine, accentLine, final].join(separator);
 }
 
 function overlaySection(overlay: PersonaOverlay): string {

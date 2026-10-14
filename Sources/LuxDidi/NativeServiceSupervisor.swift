@@ -156,6 +156,8 @@ struct OwnedServiceConnection {
     private var operation: UUID?
     private(set) var credentialValidated = false
     private(set) var lastStop: [String: Any]?
+    // Last startup stage reached by start(), for a privacy-safe exit record.
+    private var lastStage = "state"
     private(set) var startupFailureCode: String?
     private(set) var startupFailureDiagnostic: StartupFailureDiagnostic?
     var currentConnection: OwnedServiceConnection? {
@@ -282,8 +284,25 @@ struct OwnedServiceConnection {
     private func unavailable(_ owner: OwnedServiceChild) {
         guard child === owner, state != .stopped else { return }
         state = .unavailable; connection = nil
+        if !owner.isRunning {
+            // The direct child is gone: record status-only exit diagnostics and drop a
+            // descriptor that still names it, so no reader trusts a dead host.
+            lastStop = ["requested": false, "observedExited": true, "pid": Int(owner.pid),
+                        "exitStatus": Int(owner.process.terminationStatus),
+                        "terminationReason": owner.process.terminationReason == .exit ? "exit" : "uncaughtSignal",
+                        "stage": lastStage]
+            removeStaleDescriptor(pid: owner.pid)
+        }
         recovery.childExited(recovery.generation)
         Task { await owner.stop() }
+    }
+    // Remove host-runtime.json only while it still names this dead direct child.
+    private func removeStaleDescriptor(pid: Int32) {
+        let url = stateURL.appendingPathComponent("host-runtime.json")
+        guard let data = try? Data(contentsOf: url),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let recorded = object["pid"] as? Int, recorded == Int(pid) else { return }
+        try? FileManager.default.removeItem(at: url)
     }
     private func credential(owner: OwnedServiceChild, nonce: String, initial: Data) throws -> String {
         guard child === owner, owner.isRunning, state == .running, connection?.nonce == nonce else {
@@ -322,7 +341,7 @@ struct OwnedServiceConnection {
         guard state != .starting else { throw NativeServiceError.alreadyStarting }
         let ticket = UUID(); operation = ticket
         var launched: OwnedServiceChild?
-        var stage = "state"
+        lastStage = "state"
         var diagnosticStage: StartupFailureDiagnostic.Stage = .state
         startupFailureCode = nil
         credentialValidated = false
@@ -332,7 +351,7 @@ struct OwnedServiceConnection {
         do {
             guard operation == ticket, state == .starting else { throw NativeServiceError.exited }
             try NativeCredentialImport.prepareState(stateURL)
-            stage = "node-probe"
+            lastStage = "node-probe"
             diagnosticStage = .nodeProbe
             try await probeNode()
             guard operation == ticket, state == .starting, !Task.isCancelled else { throw NativeServiceError.exited }
@@ -346,7 +365,7 @@ struct OwnedServiceConnection {
             let owned = OwnedServiceChild(); child = owned; launched = owned
             owned.onUnexpectedExit = { [weak self, weak owned] in if let owned { self?.unavailable(owned) } }
             owned.onInvalidOutput = { [weak self, weak owned] in if let owned { self?.unavailable(owned) } }
-            stage = "spawn"
+            lastStage = "spawn"
             diagnosticStage = .spawn
             // Native forwards only the two existing host path flags; the host entry
             // owns credential/profile validation, snapshots and policy.
@@ -358,7 +377,7 @@ struct OwnedServiceConnection {
             try owned.launch(executable: runtime.node, arguments: hostArguments)
             var start = try JSONSerialization.data(withJSONObject: ["type": "start", "schemaVersion": 1, "nonce": nonce])
             start.append(10); try owned.writeStart(start)
-            stage = "ready-frame"
+            lastStage = "ready-frame"
             diagnosticStage = .readyFrame
             let readyData = try await owned.firstFrame(timeout: 6_000_000_000)
             guard let ready = try JSONSerialization.jsonObject(with: readyData) as? [String: Any],
@@ -368,7 +387,7 @@ struct OwnedServiceConnection {
                   let origin = ready["origin"] as? String, let epoch = ready["authorityEpoch"] as? String, UUID(uuidString: epoch) != nil,
                   let assistant = ready["assistantId"] as? String, UUID(uuidString: assistant) != nil else { throw NativeServiceError.invalidReady }
             _ = try ServiceDescriptor(origin: origin, credentialService: credentialService, credentialAccount: credentialAccount)
-            stage = "canonical-file"
+            lastStage = "canonical-file"
             diagnosticStage = .canonicalFile
             let initial = try NativeCredentialImport.readCredential(state: stateURL)
             credentialValidated = true
@@ -379,12 +398,12 @@ struct OwnedServiceConnection {
                     guard let self, let owned else { throw NativeServiceError.exited }
                     return try self.credential(owner: owned, nonce: nonce, initial: initial)
                 })
-            connection = result; state = .running
+            connection = result; state = .running; lastStage = "running"
             if !recovering { recovery.activate() }
             observeWake()
             return result
         } catch {
-            startupFailureCode = stage + "/" + ((error as? NativeServiceError).map { String(describing: $0) } ?? "platformFailure")
+            startupFailureCode = lastStage + "/" + ((error as? NativeServiceError).map { String(describing: $0) } ?? "platformFailure")
             let category: StartupFailureDiagnostic.Category
             var status: Int32?
             switch error as? NativeServiceError {

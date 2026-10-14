@@ -21,6 +21,14 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'host_started' && typeof value.releaseCommit === 'string' && /^(?:[0-9a-f]{40}|unknown)$/.test(value.releaseCommit) && (value.configDir === 'effective' || value.configDir === 'seeded') && Number.isSafeInteger(value.endpoints) && Number(value.endpoints) >= 0 && Number(value.endpoints) <= 65535) {
     return { event: value.event, releaseCommit: value.releaseCommit, configDir: value.configDir, endpoints: value.endpoints };
   }
+  if (value.event === 'host_exit' && ['descriptor', 'log', 'store', 'owner', 'listen', 'ready'].includes(String(value.stage))
+    && (value.reason === 'close' || value.reason === 'exit')
+    && (value.signal === undefined || value.signal === 'SIGINT' || value.signal === 'SIGTERM')
+    && (value.code === undefined || (Number.isSafeInteger(value.code) && Number(value.code) >= 0))) {
+    return { event: 'host_exit', stage: value.stage, reason: value.reason,
+      ...(value.signal !== undefined ? { signal: value.signal } : {}),
+      ...(value.code !== undefined ? { code: value.code } : {}) };
+  }
   if (value.event === 'config_seeded' && ['live.json', 'mcp.json', 'providers.json'].includes(String(value.file)) && value.from === 'provider-config') {
     return { event: value.event, file: value.file, from: value.from };
   }

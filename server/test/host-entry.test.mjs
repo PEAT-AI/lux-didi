@@ -132,6 +132,8 @@ test('symlink-addressed supervised host serves durable commands and closes on ow
       const result = await process.closed;
       assert.deepEqual(result, { code: 0, signal: null, stdout: line + '\n', stderr: '' });
       await assert.rejects(fetch(ready.origin + '/api/v1/status', { headers, signal: AbortSignal.timeout(3000) }));
+      // A closed host leaves no descriptor naming it behind.
+      await assert.rejects(readFile(join(dataDir, 'host-runtime.json')), /ENOENT/);
       // Reopening the real Store proves EOF releases the single-writer lease and preserves its identity.
       // The reopen imports the one exported host migration list (domain + chat + live + tools).
       const store = new Store(dataDir, hostMigrations);
@@ -153,6 +155,32 @@ test('explicit missing owner-profile refuses canonical CLI without leaking the s
     assert.notEqual(outcome.code, 0);
     assert.ok(!outcome.stderr.includes(privatePath));
     assert.match(outcome.stderr, /invalid_profile/);
+  });
+});
+
+test('a host that dies right after host_started removes the stale descriptor and logs its exit stage', async t => {
+  await fixture(async ({ dir, linked }) => {
+    const webRoot = join(dir, 'static'), dataDir = join(dir, 'state');
+    await mkdir(join(webRoot, 'assets'), { recursive: true });
+    for (const file of ['index.html', 'assets/fixture.js', 'assets/fixture.css', 'sw.js', 'manifest.webmanifest', 'icon.svg']) {
+      await writeFile(join(webRoot, file), file === 'index.html' ? '<script src="/assets/fixture.js"></script><link href="/assets/fixture.css" rel="stylesheet">' : 'synthetic');
+    }
+    // A prior crash leaves a descriptor naming a host that is not alive.
+    await mkdir(dataDir, { recursive: true });
+    await writeFile(join(dataDir, 'host-runtime.json'), JSON.stringify({ schemaVersion: 1, origin: 'http://127.0.0.1:1', authorityEpoch: 'stale', assistantId: 'stale', pid: 999999, startedAt: new Date().toISOString() }));
+    // The owner profile is rejected after host_started, so the host exits during startup.
+    const outcome = await invoke([linked, '--owner-profile', join(dir, 'missing-owner.json'), '--data-dir', dataDir, '--web-root', webRoot, '--port', '0'], dir);
+    assert.notEqual(outcome.code, 0);
+    await assert.rejects(readFile(join(dataDir, 'host-runtime.json')), /ENOENT/);
+    const log = await readFile(join(dataDir, 'logs', 'host.log'), 'utf8');
+    assert.match(log, /"event":"host_started"/);
+    const exitLine = log.split('\n').find(line => line.includes('"event":"host_exit"'));
+    assert.ok(exitLine, 'host_exit must be logged for the dead host');
+    const event = JSON.parse(exitLine);
+    assert.equal(event.reason, 'exit');
+    assert.equal(event.stage, 'owner');
+    assert.ok(Number.isSafeInteger(event.code) && event.code >= 0);
+    t.diagnostic(`stale descriptor removed; host_exit code=${event.code} stage=${event.stage}`);
   });
 });
 

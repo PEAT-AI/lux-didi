@@ -17,9 +17,12 @@ mkdir -p "$out/source/adapters" "$out/source/live" "$out/source/contracts" "$out
 cp -R "$root/server/config" "$root/server/prompt" "$out/source/"
 cp -R "$root/server/tools" "$root/server/connectors" "$out/source/"
 cp -R "$root/server/adapters/model" "$root/server/adapters/live-voice" "$root/server/adapters/mcp" "$out/source/adapters/"
-cp "$root/server/live/config.ts" "$root/server/live/types.ts" "$out/source/live/"
-cp "$root/server/contracts/storage.ts" "$out/source/contracts/"
-for name in credential-binding provider-config model live-voice prompt; do
+cp -R "$root/server/live/." "$out/source/live/"
+cp -R "$root/server/contracts/." "$out/source/contracts/"
+# The selected tests side-effect import live-remember/live-declarations and host/log,
+# whose transitive modules these directories carry, so the isolated tsc can resolve them.
+cp -R "$root/server/chat" "$root/server/domain" "$root/server/host" "$root/server/http" "$root/server/runtime" "$out/source/"
+for name in credential-binding provider-config model live-voice prompt live-remember live-declarations; do
   cp "$root/server/test/$name.test.ts" "$out/source/test/"
 done
 cp "$root/server/test/live-voice-fixture.ts" "$out/source/test/"

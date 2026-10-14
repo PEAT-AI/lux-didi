@@ -260,6 +260,7 @@ export class ConnectedView {
       try {
         run = await request<Run>('/chat', { method: 'POST', body: { sessionId: c.sessionId, text, ...(selectedIds.length ? { selectedMemoryEntryIds: selectedIds } : {}) }, idempotencyKey: pending.key, signal: AbortSignal.any([lifetime.local, AbortSignal.timeout(8000)]) });
       } catch (error) {
+        if (error instanceof ApiError && error.status >= 400 && error.status < 500) { this.#pending = undefined; this.#save(); }
         if (selectedIds.length && error instanceof ApiError && error.code === 'MODEL_NOT_CONFIGURED') throw new Error('A selected note could not be included: it has no stored classification for this connection, or its class is not permitted by the current grant. Nothing was sent; deselect it or pick another note.');
         throw error;
       }
@@ -272,12 +273,19 @@ export class ConnectedView {
   /** Retry the exact retained turn by its idempotency key; a list omission never deletes it. */
   async #recoverPending(lifetime: ViewLifetime) {
     const pending = this.#pending; if (!pending) return;
-    const run = await request<Run>('/chat', {
-      method: 'POST',
-      body: { sessionId: pending.sessionId, text: pending.text, ...(pending.selectedMemoryEntryIds.length ? { selectedMemoryEntryIds: pending.selectedMemoryEntryIds } : {}) },
-      idempotencyKey: pending.key,
-      signal: AbortSignal.any([lifetime.local, AbortSignal.timeout(8000)]),
-    });
+    let run: Run;
+    try {
+      run = await request<Run>('/chat', {
+        method: 'POST',
+        body: { sessionId: pending.sessionId, text: pending.text, ...(pending.selectedMemoryEntryIds.length ? { selectedMemoryEntryIds: pending.selectedMemoryEntryIds } : {}) },
+        idempotencyKey: pending.key,
+        signal: AbortSignal.any([lifetime.local, AbortSignal.timeout(8000)]),
+      });
+    } catch (error) {
+      // A definitive refusal is not an unknown outcome: never retry it, and let start stay usable.
+      if (error instanceof ApiError && error.status >= 400 && error.status < 500) { this.#pending = undefined; this.#save(); }
+      throw error;
+    }
     this.#check(lifetime);
     this.#pending = undefined; this.#save();
     return this.select(run.sessionId, lifetime);

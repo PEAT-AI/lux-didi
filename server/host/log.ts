@@ -1,4 +1,5 @@
 import { clientDiagnostic } from '../http/routes.js';
+import { TOOL_FAILURE_CODES } from '../adapters/model/types.js';
 import { ConfigError } from '../config/files.js';
 import { closeSync, constants, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, renameSync, unlinkSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
@@ -8,7 +9,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (!raw || typeof raw !== 'object') return;
   const value = raw as Record<string, unknown>;
   if (value.event === 'tool_failure') {
-    const codes = ['mcp_transport_error', 'mcp_result_invalid', 'connector_error', 'handler_outcome'];
+    const codes: readonly string[] = TOOL_FAILURE_CODES;
     const token = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,79}$/.test(v);
     if (typeof value.code !== 'string' || !codes.includes(value.code) || !token(value.tool) || !token(value.connector)
       || !['Error', 'SyntaxError', 'UnknownThrow', 'McpResultError'].includes(String(value.errorClass))

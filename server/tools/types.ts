@@ -2,7 +2,7 @@ import type { RememberNotePort } from './remember.js';
 import type { StorePort, Transaction } from '../contracts/storage.js';
 import type { McpPort } from '../adapters/mcp/port.js';
 import type { McpRegistry } from '../adapters/mcp/registry.js';
-import type { DataClass, JsonObject, ToolCallIntent, ToolCallJournal, ToolDefinition, ToolResultGate, ToolResultRef } from '../adapters/model/types.js';
+import type { DataClass, JsonObject, ToolCallIntent, ToolCallJournal, ToolDefinition, ToolFailureCode, ToolResultGate, ToolResultRef } from '../adapters/model/types.js';
 
 export interface HttpConnectionEndpoint { id: string; url: string; account: string; resource: string; credentialRef: string | null }
 /** Explicit operator-approved local executable binding; credentialRef is strictly null. */
@@ -32,7 +32,7 @@ export interface RunSnapshot { acceptance: RunAcceptance; connections: BoundConn
 export interface TrustedRestrictions { localOnly: boolean; nonDisclosure: boolean; dataClasses: readonly DataClass[] }
 export interface ModelSnapshot { response: JsonObject; dataClasses: readonly DataClass[] }
 export interface ToolFailureEvent {
-  event: 'tool_failure'; code: 'mcp_transport_error' | 'mcp_result_invalid' | 'connector_error' | 'handler_outcome';
+  event: 'tool_failure'; code: ToolFailureCode;
   tool: string; connector: string; errorClass: 'Error' | 'SyntaxError' | 'UnknownThrow'; messageHead: string;
 }
 export interface ToolsOwnerOptions {

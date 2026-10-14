@@ -211,3 +211,13 @@ node scripts/call-timeline.mjs --last --dir <logs directory>
 The timeline is a read-only merge of the two logs, ordered by `ts` across
 processes and by `mono` within a process. It opens no SQLite, prunes nothing and
 writes nothing.
+
+On the native side the same envelope is written to `native-live.log` by
+`NativeLiveConversation.appendLocalDiagnostic` (fractional `ts`, `mono`,
+`level`, `process`, `launchId` from `LUX_LAUNCH_ID`). Capture start and every
+route or device change write one `audio.config`; a `Task` writes an `audio.flow`
+every 5 s and one `audio.flow` with `"final": true` on stop, alongside the
+existing `native_capture_summary`. `NativeServiceSupervisor` writes
+`host.started`, `host.stop_requested` (with the actor and the reason, `owner` or
+`app_shutdown`) and `host.exit` into the same file, because a dead host cannot
+log its own lifecycle.

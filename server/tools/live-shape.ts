@@ -21,8 +21,8 @@ export const MATTERMOST_MESSAGE_CHARS = 4000;
 export const MATTERMOST_MESSAGES = 60;
 export const KNOWLEDGE_EXCERPT_CHARS = 1200;
 export const KNOWLEDGE_HITS = 20;
-/** A get_insight fetch returns the whole body up to this generous final bound. */
-export const KNOWLEDGE_BODY_CHARS = 12000;
+/** A get_insight fetch returns the whole body up to this generous final bound (W7-R4: >= 20000). */
+export const KNOWLEDGE_BODY_CHARS = 20000;
 
 export interface ShapedResult {
   text: string;
@@ -57,7 +57,7 @@ export function cutAtSentence(text: string, limit: number): { text: string; omit
   if (text.length <= limit) return { text, omitted: 0 };
   const head = text.slice(0, limit);
   let boundary = -1;
-  for (const marker of ['\n', '. ', '! ', '? ']) boundary = Math.max(boundary, head.lastIndexOf(marker));
+  for (const marker of ['\n', '.', '!', '?']) boundary = Math.max(boundary, head.lastIndexOf(marker));
   let cut: string;
   if (boundary > 0) cut = head.slice(0, boundary + 1);
   else {
@@ -298,7 +298,7 @@ function knowledgeExcerpt(hit: Record<string, unknown>): { text: string; omitted
   const body = field(hit, 'content', 'excerpt', 'snippet', 'summary');
   const cut = cutAtSentence(body, KNOWLEDGE_EXCERPT_CHARS);
   const id = scalar(hit['id']);
-  const note = cut.omitted > 0 ? `\n[omitted: ${cut.omitted} characters; ${id ? `call get_insight with ids=[${id}] and include_links=false for the full insight` : 'final, ask for the full insight by its id'}]` : '';
+  const note = cut.omitted > 0 ? `\n[omitted: ${cut.omitted} characters; ${id ? `call get_insight with ids=[${id}] for the full insight` : 'final, ask for the full insight by its id'}]` : '';
   return { text: `${knowledgeHeading(hit)}\n${cut.text}${note}`, omitted: cut.omitted, original: body.length };
 }
 /** A get_insight body, returned in full up to a generous final bound (OUTCOME 1). */
@@ -339,5 +339,6 @@ export function shapeLuxKnowledge(tool: string, raw: string): ShapedResult {
 function knowledgeList(hits: Record<string, unknown>[]): ShapedResult {
   const shapedHits = hits.map(knowledgeExcerpt);
   const body = listed(shapedHits.map(hit => hit.text), KNOWLEDGE_HITS, 'hits', `call search_knowledge again with limit=${hits.length} for the rest`);
-  return { text: body.text, partial: body.omitted > 0, originalCharacters: shapedHits.map(hit => hit.text).join('\n\n').length, omittedCharacters: body.omitted };
+  const omitted = body.omitted + shapedHits.reduce((sum, hit) => sum + hit.omitted, 0);
+  return { text: body.text, partial: omitted > 0, originalCharacters: shapedHits.map(hit => hit.text).join('\n\n').length, omittedCharacters: omitted };
 }

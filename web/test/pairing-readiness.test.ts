@@ -48,13 +48,14 @@ function fixture() {
   };
   const calls: { path: string; method: string; signal?: AbortSignal | null }[] = [];
   const held = deferred<Response>(), entered = deferred<void>();
-  let holding = false;
+  let holding = false, pairHolding = false;const pairHeld=deferred<Response>(),pairEntered=deferred<void>();
   const context: any = {
     exports: {}, AbortController, AbortSignal, DOMException, Response, crypto: globalThis.crypto,
     document, navigator: { onLine: true },
     fetch: async (url: string, init: RequestInit = {}) => {
       const path = String(url).replace('/api/v1', ''); calls.push({ path, method: init.method ?? 'GET', signal: init.signal });
       if (holding && path === '/status') { entered.resolve(); return held.promise; }
+      if (path === '/auth/pair' && pairHolding) {pairEntered.resolve();return pairHeld.promise;}
       if (path === '/auth/pair') return new Response(JSON.stringify({error:{code:'UNAUTHORIZED',message:'Synthetic wrong pairing code.'},requestId:'synthetic-pair'}),{status:401});
       if (path === '/auth/session') return new Response(JSON.stringify({ authorityEpoch: 'E1', data: { csrfToken: 'synthetic-csrf' } }));
       throw new Error('unexpected synthetic route');
@@ -78,7 +79,7 @@ function fixture() {
   Object.assign(context, context.exports);
   runInContext(compile(functions.join('\n') + '\n' + reset), context);
   return { context, document, root, calls, fields, held, entered,
-    hold() { holding = true; }, get generation() { return generation; }, get validationBlocks() { return validationBlocks; } };
+    hold() { holding = true; }, holdPair(){pairHolding=true;},pairHeld,pairEntered, get generation() { return generation; }, get validationBlocks() { return validationBlocks; } };
 }
 
 test('pending current reconnect cannot erase an entered pairing code before ordinary submission', async () => {
@@ -140,4 +141,39 @@ test('pairBrowser entry refuses synthetic submission while current reconnect is 
   const dispatched=f.calls.filter(call=>call.path==='/auth/pair').length;
   f.held.resolve(new Response(JSON.stringify({error:{code:'UNAUTHORIZED',message:'Synthetic current session refused.'},requestId:'synthetic-request'}),{status:401}));await connect;
   assert.equal(dispatched,0);
+});
+
+
+test('positive terminal readiness excludes unknown, disconnected, busy and offline states', () => {
+  const f=fixture();for(const connection of ['Connecting','Connected','Disconnected','Offline','Pair this browser']){
+    f.context.connection=connection;f.context.render();const ready=connection==='Pair this browser';
+    assert.equal(f.context.pairingReady(),ready);assert.equal(f.fields.get('pair-code').disabled,!ready);assert.equal(f.fields.get('pair-submit').disabled,!ready);
+  }
+  f.context.connection='Pair this browser';f.context.pairingBusy=true;assert.equal(f.context.pairingReady(),false);
+  f.context.pairingBusy=false;f.context.navigator.onLine=false;assert.equal(f.context.pairingReady(),false);
+  f.context.navigator.onLine=true;f.context.pairingRequired=false;assert.equal(f.context.pairingReady(),false);
+});
+
+test('current connect503 preserves an observed Offline state', async () => {
+  const f=fixture();await f.context.restoreSession();f.hold();const connect=f.context.connect();await f.entered.promise;
+  f.context.connection='Offline';f.held.resolve(new Response(JSON.stringify({error:{code:'MODEL_NOT_CONFIGURED',message:'Synthetic unavailable.'}}),{status:503}));await connect;
+  assert.equal(f.context.connection,'Offline');assert.equal(f.context.pairingReady(),false);
+});
+
+test('two synchronous pair attempts dispatch once while the first acceptance is pending', async () => {
+  const f=fixture();await f.context.restoreSession();f.holdPair();const first=f.context.pairBrowser('synthetic-first-code');await f.pairEntered.promise;
+  await f.context.pairBrowser('synthetic-second-code');assert.equal(f.calls.filter(call=>call.path==='/auth/pair').length,1);
+  assert.equal(f.context.pairingBusy,true);assert.equal(f.context.pairingReady(),false);
+  f.pairHeld.resolve(new Response(JSON.stringify({error:{code:'UNAUTHORIZED',message:'Synthetic wrong code.'}}),{status:401}));await first;
+  assert.equal(f.context.pairingBusy,false);assert.equal(f.context.pairingReady(),true);
+});
+
+test('explicit reconnect401 fences a pending pair response using existing authority lifetime', async () => {
+  const f=fixture();await f.context.restoreSession();f.holdPair();const first=f.context.pairBrowser('synthetic-first-code');await f.pairEntered.promise;
+  const old=f.context.authorityVersion();f.hold();const connect=f.context.connect();await f.entered.promise;
+  f.held.resolve(new Response(JSON.stringify({error:{code:'UNAUTHORIZED',message:'Synthetic current session refused.'}}),{status:401}));await connect;
+  assert.notEqual(f.context.authorityVersion(),old);assert.equal(f.context.pairingReady(),true);const generation=f.generation;
+  f.pairHeld.resolve(new Response(JSON.stringify({authorityEpoch:'E1',data:{csrfToken:'synthetic-obsolete'}})));await first;
+  assert.equal(f.context.connection,'Pair this browser');assert.equal(f.context.pairingBusy,false);assert.equal(f.generation,generation);
+  assert.equal(f.calls.filter(call=>call.path==='/auth/pair').length,1);
 });

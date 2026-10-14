@@ -109,7 +109,9 @@ export async function stream(path: string, signal: AbortSignal, onFrame: (value:
   catch (error) { assertAuthority(version); throw error; }
   assertAuthority(version);
   if (!response.ok) {
-    const body = await response.json(); assertAuthority(version);
+    let body;
+    try { body = await response.json(); } catch (error) { assertAuthority(version); throw error; }
+    assertAuthority(version);
     if (response.status === 401) clearAuthority('unauthenticated');
     else if (response.status === 409 && body.error?.code === 'STALE_AUTHORITY') clearAuthority();
     throw new ApiError(body.error?.code ?? 'STREAM_ERROR', body.error?.message ?? 'Cannot subscribe to this run.', response.status);
@@ -131,7 +133,8 @@ export async function stream(path: string, signal: AbortSignal, onFrame: (value:
       }
       if (done) break;
     }
-  } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
+  } catch (error) { assertAuthority(version); throw error; }
+  finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
 }
 
 export function deleteMemoryEntry(id: string, signal?: AbortSignal): Promise<EntryDeletionResponse> {

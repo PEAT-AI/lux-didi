@@ -77,3 +77,13 @@
 .tool-evidence header span { font-size: .8rem; opacity: .7; }
 .tool-evidence .markdown { overflow-wrap: anywhere; }
 .tool-evidence-sources { margin: .5rem 0 0; padding-left: 1.25rem; font-size: .85rem; }
+
+/* Vicuna orb parity (W5-R3): presence-glow halo outside the classic canvas, size proportion,
+   and reduced-motion. Adapted from voice-blob.component.css. Didi owns layout/labels. */
+.orb-stage{position:relative}
+.orb-stage .presence-glow{position:absolute;top:50%;left:50%;width:412px;height:412px;border-radius:50%;background:radial-gradient(circle,rgba(0,200,150,.12) 0%,transparent 65%);transform:translate(-50%,-50%);pointer-events:none;will-change:transform,opacity;opacity:0;transition:opacity .5s ease-out}
+.orb-stage .presence-glow.visible{opacity:1;animation:presence-glow-pulse 2.8s ease-in-out infinite;transition:opacity .5s ease-in}
+@keyframes presence-glow-pulse{0%,100%{opacity:.3;transform:translate(-50%,-50%) scale(.95)}40%,60%{opacity:.7;transform:translate(-50%,-50%) scale(1.05)}}
+.orb-stage canvas{width:344px;height:344px}
+@media(max-width:600px){.orb-stage{min-height:360px}.orb-stage canvas{width:min(344px,86vw);height:min(344px,86vw)}.orb-stage .presence-glow{width:min(412px,104vw);height:min(412px,104vw)}}
+@media(prefers-reduced-motion:reduce){.orb-stage canvas{transition:none}.orb-stage .presence-glow,.orb-stage .presence-glow.visible{animation:none!important}}

@@ -1,10 +1,18 @@
 /** Didi lifecycle/state adapter for the authorized first-party Canvas renderer.
  * See orb-provenance.md for bounded extraction and MIT noise dependency.
  */
-import { ClassicRenderer, clampFrameDelta, smoothingAlpha, ORB_SMOOTHING_TAU, speakingActivityTarget } from './orb-classic';
+import { ClassicRenderer, clampFrameDelta, smoothingAlpha, ORB_SMOOTHING_TAU, speakingActivityTarget } from './orb-classic.ts';
 export type VoiceState = 'IDLE' | 'CONNECTING' | 'CONNECTED' | 'LISTENING' | 'PROCESSING' | 'SPEAKING' | 'RECONNECTING' | 'ERROR' | 'DISCONNECTED' | 'INTERRUPTED';
 export interface AudioFrame { level: number; low: number; mid: number; high: number; flux: number; timestamp: number }
 export const silentFrame = (): AudioFrame => ({level:0,low:0,mid:0,high:0,flux:0,timestamp:performance.now()});
+/** A bounded level sample posted by the native player/capture tap. Extra bands default to the
+ *  scalar level so a transport need not send five numbers. Values are clamped at this boundary. */
+export interface LevelSample { level: number; low?: number; mid?: number; high?: number; flux?: number }
+export function levelFrame(sample: LevelSample): AudioFrame {
+  const clamp = (value: number | undefined, fallback = 0) => Math.min(1, Math.max(0, Number.isFinite(value) ? value! : fallback));
+  const level = clamp(sample.level);
+  return { level, low: clamp(sample.low, level), mid: clamp(sample.mid, level), high: clamp(sample.high, level), flux: clamp(sample.flux), timestamp: performance.now() };
+}
 export class LatestFrame {
   private frame = silentFrame();
   push(frame: AudioFrame) { this.frame = {...frame}; }
@@ -45,6 +53,9 @@ export class Orb {
     this.motion.addEventListener('change',this.reset);
     document.addEventListener('visibilitychange',this.reset);
     this.resize();
+    // Native player/capture taps post one small level frame here; the renderer owns only the
+    // smoothing and geometry, never capture or transport authority.
+    (globalThis as unknown as { didiOrbLevel?: (sample: LevelSample) => void }).didiOrbLevel = sample => this.audio.push(levelFrame(sample));
   }
   setState(state: VoiceState) { this.state=state; this.reset(); }
   private resize() {

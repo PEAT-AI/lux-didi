@@ -74,7 +74,8 @@ function orbCaptionMarkup() {
   return `<p class="orb-label" role="status" aria-live="polite">${e(orbLabel())}</p>${honesty?'<p class="voice-honesty"><strong>Not listening</strong><span>Voice stays on your Mac. Use its native record control.</span></p>':''}`;
 }
 function orbMarkup() {
-  return `<section class="orb-stage" aria-label="Naya voice and activity"><canvas id="didi-orb" width="440" height="440" aria-hidden="true"></canvas><div class="orb-caption">${orbCaptionMarkup()}</div></section>`;
+  const glow = ['CONNECTED','LISTENING','SPEAKING','PROCESSING'].includes(orbState());
+  return `<section class="orb-stage" data-state="${orbState()}" aria-label="Naya voice and activity"><div class="presence-glow${glow ? ' visible' : ''}" aria-hidden="true"></div><canvas id="didi-orb" width="440" height="440" aria-hidden="true"></canvas><div class="orb-caption">${orbCaptionMarkup()}</div></section>`;
 }
 function conversation() {
   return `<section class="voice-heading"><div><p class="eyebrow">NAYA VOICE</p><h1>Here with you.</h1></div><button id="new-conversation" class="secondary" ${disabled(busy)}>New conversation</button></section>

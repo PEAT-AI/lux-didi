@@ -1,4 +1,5 @@
 import { sourceCards } from '../tools/source-cards.js';
+import { noEmptyResult } from '../tools/live-shape.js';
 import * as memory from '../domain/memory.js';
 import * as labels from '../domain/labels.js';
 import { definitionsInTransaction } from '../tools/index.js';
@@ -40,6 +41,7 @@ interface ActiveSession {
   seenIds: Set<string>;
   thinking: boolean;
   pendingCallIds: Set<string>;
+  bargeInCallIds: Set<string>;
   speaking: boolean;
   liveSessionId: string;
   session: LiveVoiceSession;
@@ -56,6 +58,7 @@ interface ActiveSession {
   adapterOutcome: LiveVoiceOutcome | undefined;
   diagnosticSnapshots: Promise<Readonly<LiveVoiceDiagnostics> | undefined>[];
   ownerAudioCalls: number; ownerAudioBytes: number; ownerRebuildingDropCalls: number; ownerRebuildingDropBytes: number;
+  terminalOutcome: LiveTerminalOutcome | null;
   diagnosticTerminalCode: string; diagnosticsEmitted: boolean;
   loopDone: { promise: Promise<void>; resolve: () => void };
   done: { promise: Promise<LiveSessionSnapshot>; resolve: (value: LiveSessionSnapshot) => void; reject: (error: unknown) => void };
@@ -73,6 +76,9 @@ const maxPage = 500;
 
 function identity(value: unknown): string { return createHash('sha256').update(JSON.stringify(value)).digest('hex'); }
 function journalKind(type: string): JournalKind | null { return (persistedKinds as readonly string[]).includes(type) ? type as JournalKind : null; }
+// Wire-38: barge-in sends serverContent.interrupted, never toolCallCancellation, and a late
+// toolResponse is accepted silently. A batch dispatched before that interruption is answered
+// once, marked after_barge_in so the UI can show why the answer may not match the pending turn.
 function markerOf(event: LiveVoiceEvent, kind: JournalKind, journalSequence: number): LivePublicMarker {
   return {
     kind, sequence: event.sequence, journalSequence,
@@ -592,11 +598,11 @@ export class LiveSessionOwner {
       generation: 0, attempts: 0, rebuilding: false, request: structuredClone(request),
       deadlineMs, deadlineAt, idleAt: this.#now() + this.#profile.limits.idleMs, goAwayUntil: undefined,
       sessionTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
-      registry, host, toolStep: 0, seenIds: new Set(), thinking: false, speaking: false, pendingCallIds: new Set(),
+      registry, host, toolStep: 0, seenIds: new Set(), thinking: false, speaking: false, pendingCallIds: new Set(), bargeInCallIds: new Set(),
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
       consumerState: 'attached', journalEvents: 0, journalBytes: 0, adapterOutcome: undefined,
-      diagnosticSnapshots: [], ownerAudioCalls: 0, ownerAudioBytes: 0, ownerRebuildingDropCalls: 0, ownerRebuildingDropBytes: 0,
+      diagnosticSnapshots: [], ownerAudioCalls: 0, ownerAudioBytes: 0, ownerRebuildingDropCalls: 0, ownerRebuildingDropBytes: 0, terminalOutcome: null,
       diagnosticTerminalCode: 'outcome_unknown', diagnosticsEmitted: false,
       loopDone: deferred<void>(), done: deferred<LiveSessionSnapshot>(), resolveDone: () => {}, persistFailure: undefined,
     };
@@ -670,7 +676,7 @@ export class LiveSessionOwner {
       if (journalSequence === 'overflow') { this.#settle(handle, { state: 'journal_limit' }, false, 'ended', null); return false; }
       this.#pushChunk(handle, { kind: 'marker', marker: { kind: 'toolResult', sequence: null, journalSequence, text: null, finished: null, value: null, tool } });
     }
-    handle.pendingCallIds.clear(); handle.pendingCalls.clear();
+    handle.pendingCallIds.clear(); handle.pendingCalls.clear(); handle.bargeInCallIds.clear();
     this.#continuity(handle, 'rebuilding', reason);
     if (this.#settled(handle)) return false;
     try {
@@ -688,9 +694,30 @@ export class LiveSessionOwner {
     }
   }
 
+  /** Send operator-typed text into the newest active session as a user turn (W5-R4 item 2). */
+  text(text: string): void {
+    if (typeof text !== 'string' || !text.length || text.length > 4000) throw new LiveError('invalid_request');
+    const handle = [...this.#active.values()].filter(candidate => !candidate.terminal).at(-1);
+    if (!handle) throw new LiveError('not_found', 'No active Live session');
+    this.#guardHandle(handle);
+    const event = { type: 'inputTranscription' as const, sequence: 0, text, finished: true };
+    handle.session.sendText({ text });
+    this.#armIdle(handle, this.#profile.limits.idleMs);
+    const journalSequence = this.#persist(handle, event, 'inputTranscription');
+    if (journalSequence === 'overflow') return;
+    this.#pushChunk(handle, { kind: 'marker', marker: markerOf(event, 'inputTranscription', journalSequence) });
+  }
   #sendAudio(handle: ActiveSession, pcm: Uint8Array): void {
     handle.ownerAudioCalls++; handle.ownerAudioBytes += pcm.byteLength;
-    if (handle.rebuilding) { handle.ownerRebuildingDropCalls++; handle.ownerRebuildingDropBytes += pcm.byteLength; return; }
+    // A late mic frame after the session settled is dropped and counted, never thrown:
+    // throwing here makes the HTTP layer close the socket generic 1002 before the typed terminal frame.
+    if (handle.rebuilding || (handle.terminal && !handle.invalidated)) {
+      handle.ownerRebuildingDropCalls++; handle.ownerRebuildingDropBytes += pcm.byteLength;
+      // The settle diagnostics were already emitted, so a late drop is counted and reported here.
+      if (handle.terminal) console.error(JSON.stringify({ event: 'live_late_frame_dropped', liveSessionId: handle.liveSessionId,
+        dropCalls: handle.ownerRebuildingDropCalls, dropBytes: handle.ownerRebuildingDropBytes }));
+      return;
+    }
     this.#guardHandle(handle);
     if (!(pcm instanceof Uint8Array) || !pcm.length || pcm.length % 2 !== 0) throw new LiveError('invalid_audio');
     this.#armIdle(handle, this.#profile.limits.idleMs);
@@ -711,7 +738,6 @@ export class LiveSessionOwner {
         adapterGenerations: values.length, ownerAudioCalls: handle.ownerAudioCalls, ownerAudioBytes: handle.ownerAudioBytes,
         ownerRebuildingDropCalls: handle.ownerRebuildingDropCalls, ownerRebuildingDropBytes: handle.ownerRebuildingDropBytes,
         adapterAudioCalls: sum('audioCalls'), adapterAudioBytes: sum('audioBytes'),
-        pendingToolDropCalls: sum('pendingToolDropCalls'), pendingToolDropBytes: sum('pendingToolDropBytes'),
         drainingDropCalls: sum('drainingDropCalls'), drainingDropBytes: sum('drainingDropBytes'),
         localWriteEnqueuedCalls: sum('localWriteEnqueuedCalls'), localWriteEnqueuedPCMBytes: sum('localWriteEnqueuedPCMBytes'),
         localWriteCallbackSuccessCalls: sum('localWriteCallbackSuccessCalls'), localWriteCallbackSuccessPCMBytes: sum('localWriteCallbackSuccessPCMBytes'),
@@ -744,7 +770,11 @@ export class LiveSessionOwner {
     handle.consumerState = 'ended';
     handle.consumer?.discard();
     try { this.#store.transaction(tx => tx.run("UPDATE live_sessions SET consumer_state='ended', updated_at=? WHERE live_session_id=?", [this.#now(), handle.liveSessionId])); }
-    catch { /* detach is best-effort; the store may already be closing */ }
+    catch (error) {
+      // A failed detach write is logged, never swallowed; #snapshot reconciles the row against this handle.
+      console.error(JSON.stringify({ event: 'live_detach_write_failed', liveSessionId: handle.liveSessionId,
+        class: error instanceof Error && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(error.constructor.name) ? error.constructor.name : 'Unknown' }));
+    }
   }
 
   async #consume(handle: ActiveSession): Promise<void> {
@@ -784,7 +814,8 @@ export class LiveSessionOwner {
           }); continue;
         }
         if (event.type === 'toolCallCancellation') { for (const id of event.ids) handle.pendingCallIds.delete(id); handle.thinking = handle.pendingCallIds.size > 0; continue; }
-        if (event.type === 'interrupted' || event.type === 'turnComplete' || event.type === 'generationComplete') handle.speaking = false;
+        if (event.type === 'interrupted') { for (const id of handle.pendingCallIds) handle.bargeInCallIds.add(id); handle.speaking = false; }
+        if (event.type === 'turnComplete' || event.type === 'generationComplete') handle.speaking = false;
         if (event.type === 'waitingForInput') { handle.thinking = !event.value; if (event.value) handle.speaking = false; }
         if (event.type === 'audio') { handle.thinking = false; handle.speaking = true; this.#pushChunk(handle, { kind: 'audio', pcm: event.pcm }); continue; }
         if (event.type === 'outcome') { outcome = event.outcome; continue; }
@@ -903,14 +934,17 @@ export class LiveSessionOwner {
         const record = batch.tools[index];
         const reason = batch.error?.reason ?? record?.reason ?? 'tool_result_denied';
         const completed = accepted && record?.status === 'completed';
-        const markdown = completed ? (typeof accepted.response.markdown === 'string' ? accepted.response.markdown : typeof accepted.response.text === 'string' ? accepted.response.text : reason) : reason;
+        const markdown = completed ? noEmptyResult(typeof accepted.response.markdown === 'string' ? accepted.response.markdown : typeof accepted.response.text === 'string' ? accepted.response.text : reason) : reason;
         const sources = completed ? sourceCards({ text: accepted.response.text, markdown: accepted.response.markdown, sources: accepted.response.sources }, Infinity) : [];
         projections[index] = { name: call.name, status: completed ? 'completed' : 'error', markdown, sources };
         return { id: call.id, name: call.name, response: completed ? accepted.response : { error: reason } };
       });
     }
     if ((this.#settled(handle) || generation !== handle.generation)) return;
-    for (const [index, projection] of projections.entries()) if (handle.pendingCallIds.has(event.calls[index]!.id)) publish('toolResult', projection);
+    for (const [index, projection] of projections.entries()) {
+      const id = event.calls[index]!.id;
+      if (handle.pendingCallIds.has(id)) publish('toolResult', handle.bargeInCallIds.has(id) ? { ...projection, code: 'after_barge_in' } : projection);
+    }
     responses = responses.filter(response => handle.pendingCallIds.has(response.id));
     if (!(this.#settled(handle) || generation !== handle.generation)) {
       try {
@@ -919,7 +953,7 @@ export class LiveSessionOwner {
         }
       } catch { /* A cancelled provider batch or terminal transport cannot receive late answers. */ }
     }
-    for (const call of event.calls) handle.pendingCallIds.delete(call.id);
+    for (const call of event.calls) { handle.pendingCallIds.delete(call.id); handle.bargeInCallIds.delete(call.id); }
     handle.thinking = handle.pendingCallIds.size > 0;
   }
 
@@ -952,6 +986,7 @@ export class LiveSessionOwner {
   #settle(handle: ActiveSession, outcome: LiveTerminalOutcome, complete: boolean, consumerState: LiveConsumerState, rejected: { kind: JournalKind; sequence: number } | null): void {
     if (handle.terminal) return;
     handle.terminal = true;
+    handle.terminalOutcome = outcome;
     handle.diagnosticTerminalCode = 'code' in outcome ? outcome.code : outcome.state;
     handle.sessionTimer?.cancel(); handle.idleTimer?.cancel();
     handle.session.close();
@@ -959,10 +994,15 @@ export class LiveSessionOwner {
     try {
       journalSequence = this.#store.transaction(tx => this.#terminalInTx(tx, handle.liveSessionId, outcome, complete, this.#now(), consumerState, rejected));
     } catch (error) {
+      // The durable write failed, but the typed terminal fact must still reach the app. Log the failure
+      // (bounded fields only) and resolve done with the in-memory outcome so the socket sends the real code.
       handle.persistFailure = error;
+      console.error(JSON.stringify({ event: 'live_terminal_write_failed', liveSessionId: handle.liveSessionId,
+        code: handle.diagnosticTerminalCode,
+        class: error instanceof Error && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(error.constructor.name) ? error.constructor.name : 'Unknown' }));
       handle.consumer?.close();
       handle.abort.abort();
-      handle.done.reject(error);
+      handle.resolveDone();
       return;
     }
     // The terminal fact is durable before it is emitted; committed markers stay queued on overflow.
@@ -1043,7 +1083,7 @@ export class LiveSessionOwner {
         keyReference: String(grant['key_reference']), permittedClasses: JSON.parse(String(grant['permitted_classes'])) as DataClass[],
         chosenInputClass: String(grant['chosen_input_class']) as DataClass, revision: Number(grant['revision']), grantedAt: Number(grant['granted_at']),
       },
-      consumerState: String(row['consumer_state']) as LiveSessionSnapshot['consumerState'],
+      consumerState: this.#consumerStateOf(row),
       journal: { events: Number(row['journal_events']), bytes: Number(row['journal_bytes']), maxEvents: limits.journalMaxEvents, maxBytes: limits.journalMaxBytes, complete: Number(row['journal_complete']) === 1 },
       terminal: parseTerminal(row['terminal_outcome']),
       createdAt: Number(row['created_at']), updatedAt: Number(row['updated_at']),
@@ -1051,11 +1091,22 @@ export class LiveSessionOwner {
   }
 
   #readSnapshot(liveSessionId: string): LiveSessionSnapshot {
-    return this.#store.transaction(tx => {
+    const snapshot = this.#store.transaction(tx => {
       const row = tx.get('SELECT * FROM live_sessions WHERE live_session_id=?', [liveSessionId]);
       if (!row) throw new LiveError('not_found');
       return this.#snapshot(tx, row);
     });
+    // A settle whose durable write failed still reports the real typed outcome to the caller.
+    const override = this.#active.get(liveSessionId)?.terminalOutcome;
+    return override && snapshot.terminal === null ? { ...snapshot, terminal: override } : snapshot;
+  }
+
+  /** A failed detach write leaves the row 'attached'; the in-memory handle is the truth on read. */
+  #consumerStateOf(row: SQLRow): LiveSessionSnapshot['consumerState'] {
+    const stored = String(row['consumer_state']) as LiveSessionSnapshot['consumerState'];
+    if (stored !== 'attached') return stored;
+    const handle = this.#active.get(String(row['live_session_id']));
+    return handle && !this.#settled(handle) && handle.consumerState === 'attached' ? 'attached' : 'ended';
   }
 
   #guardOpen(): void { if (this.#closed) throw new LiveError('terminal', 'owner is shut down'); }

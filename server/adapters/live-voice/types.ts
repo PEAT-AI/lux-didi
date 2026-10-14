@@ -45,12 +45,10 @@ export type LiveVoiceErrorCode =
   | 'backpressure' | 'event_limit' | 'handshake_timeout' | 'idle_timeout' | 'session_timeout' | 'go_away';
 export interface LiveVoiceOutcome {
   recoverable?: boolean;
-  droppedAudioFrames?: number;
   status: 'closed' | 'cancelled' | 'deadline' | 'failed'; code: LiveVoiceErrorCode;
 }
 export interface LiveVoiceDiagnostics {
   audioCalls: number; audioBytes: number;
-  pendingToolDropCalls: number; pendingToolDropBytes: number;
   drainingDropCalls: number; drainingDropBytes: number;
   localWriteEnqueuedCalls: number; localWriteEnqueuedPCMBytes: number;
   localWriteCallbackSuccessCalls: number; localWriteCallbackSuccessPCMBytes: number;
@@ -80,12 +78,12 @@ export interface LiveVoiceSession {
   readonly ready: Promise<void>;
   readonly events: AsyncIterable<LiveVoiceEvent>;
   readonly done: Promise<LiveVoiceOutcome>;
-  readonly droppedAudioFrames: number;
   // Includes informational empty serverContent frames after readiness.
   readonly unknownTopLevelKeys?: number;
   readonly diagnostics?: () => Readonly<LiveVoiceDiagnostics>;
   sendToolResponse(input: { responses: LiveToolResponse[] }): void;
   sendAudio(input: { pcm: Uint8Array; dataClass: DataClass }): void;
+  sendText(input: { text: string }): void;
   endAudioStream(): void;
   close(): void;
 }

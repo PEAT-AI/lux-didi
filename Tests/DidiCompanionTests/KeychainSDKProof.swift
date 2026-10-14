@@ -21,11 +21,11 @@ import Darwin
             try bytes.write(to: output, options: .atomic)
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: output.path)
         }
-        var interaction = DarwinBoolean(true)
-        let readback = SecKeychainGetUserInteractionAllowed(&interaction)
+        let readback = NativeKeychainPolicy.check()
+        let noninteractive = NativeKeychainPolicy.context?.interactionNotAllowed == true
         report["policyReadbackStatus"] = Int(readback)
-        report["policyReadbackAllowed"] = interaction.boolValue
-        guard readback == errSecSuccess, !interaction.boolValue else {
+        report["policyReadbackAllowed"] = !noninteractive
+        guard readback == errSecSuccess, noninteractive else {
             report["stage"] = "lifetime-policy-not-established"; try write(); return false
         }
         try NativeCredentialImport.prepareState(state)

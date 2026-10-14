@@ -78,6 +78,39 @@
 .tool-evidence .markdown { overflow-wrap: anywhere; }
 .tool-evidence-sources { margin: .5rem 0 0; padding-left: 1.25rem; font-size: .85rem; }
 
+/* Vicuna orb parity (W5-R3): presence-glow halo outside the classic canvas, size proportion,
+   and reduced-motion. Adapted from voice-blob.component.css. Didi owns layout/labels. */
+.orb-stage{position:relative}
+.orb-stage .presence-glow{position:absolute;top:50%;left:50%;width:412px;height:412px;border-radius:50%;background:radial-gradient(circle,rgba(0,200,150,.12) 0%,transparent 65%);transform:translate(-50%,-50%);pointer-events:none;will-change:transform,opacity;opacity:0;transition:opacity .5s ease-out}
+.orb-stage .presence-glow.visible{opacity:1;animation:presence-glow-pulse 2.8s ease-in-out infinite;transition:opacity .5s ease-in}
+@keyframes presence-glow-pulse{0%,100%{opacity:.3;transform:translate(-50%,-50%) scale(.95)}40%,60%{opacity:.7;transform:translate(-50%,-50%) scale(1.05)}}
+.orb-stage canvas{width:344px;height:344px}
+@media(max-width:600px){.orb-stage{min-height:360px}.orb-stage canvas{width:min(344px,86vw);height:min(344px,86vw)}.orb-stage .presence-glow{width:min(412px,104vw);height:min(412px,104vw)}}
+@media(prefers-reduced-motion:reduce){.orb-stage canvas{transition:none}.orb-stage .presence-glow,.orb-stage .presence-glow.visible{animation:none!important}}
+
+/* W5-R4 item 1: Vicuna dark orb stage. Colours copied from Vicuna source
+   src/app/features/dev/orb-lab/orb-lab.component.ts:54 `bg-gradient-to-b from-gray-900 to-gray-800`
+   (Tailwind gray-900 #111827 -> gray-800 #1f2937). Rounded card kept.
+   W5-R6: the stage is 500 px wide around a 600 px canvas (narrow 560 px) so the orb's outer ring
+   spans the same fraction of the stage as Vicuna's (0.266 desktop vs 0.276, 0.343 narrow vs 0.336). */
+.orb-stage{max-width:500px;min-height:500px;background:linear-gradient(180deg,#111827 0%,#1f2937 100%);border-color:#1f2937}
+.orb-stage canvas{width:600px;height:600px}
+.orb-stage .orb-label{color:#e8f0ea}
+.orb-stage .voice-honesty{color:#b7c4bc}
+.orb-stage .voice-honesty span{color:#93a29a}
+.orb-stage .presence-glow{width:720px;height:720px}
+/* W5-R4 item 1c: neutral palette equals Vicuna voice-blob.component.css:74 (opacity .9). */
+.orb-stage canvas[data-state=IDLE],.orb-stage canvas[data-state=DISCONNECTED],.orb-stage canvas[data-state=INTERRUPTED]{filter:grayscale(.82) brightness(.96) opacity(.9)}
+@media(max-width:600px){.orb-stage{min-height:400px}.orb-stage canvas{width:560px;height:560px}.orb-stage .presence-glow{width:min(412px,104vw);height:min(412px,104vw)}}
+/* W5-R4 item 3: collapse the connected consent wall. */
+.connected-chat{margin:10px 0}
+.connected-chat>summary{cursor:pointer;font-weight:600}
+.connected-chat>summary small{display:block;font-weight:400;color:var(--muted)}
+/* W5-R4 item 2: typed text to Naya under the voice card. */
+.live-text{display:flex;flex-wrap:wrap;gap:10px;align-items:center;max-width:680px;margin:14px auto 0}
+.live-text label{font-weight:600}
+.live-text input{flex:1;min-width:200px;padding:10px 12px;border:1px solid var(--border);border-radius:10px;font:inherit}
+
 /* Activity line under the orb: the one place a tool phrase shows, calm and small. */
 .activity-line{display:flex;align-items:center;justify-content:center;gap:8px;max-width:420px;margin:2px auto 0;padding:0 22px 4px;font-size:.84rem;color:var(--muted);animation:activity-in .3s ease-out}
 .activity-line .activity-text{overflow-wrap:anywhere}

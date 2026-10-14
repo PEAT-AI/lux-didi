@@ -152,10 +152,9 @@ class Session implements LiveVoiceSession {
   private pendingCalls: LiveToolCall[] = [];
   private informationalKeys = new Set<string>();
   unknownTopLevelKeys = 0;
-  droppedAudioFrames = 0;
   private initialTurnComplete = false;
   private readonly diagnostic = {
-    audioCalls: 0, audioBytes: 0, pendingToolDropCalls: 0, pendingToolDropBytes: 0, drainingDropCalls: 0, drainingDropBytes: 0,
+    audioCalls: 0, audioBytes: 0, drainingDropCalls: 0, drainingDropBytes: 0,
     localWriteEnqueuedCalls: 0, localWriteEnqueuedPCMBytes: 0, localWriteCallbackSuccessCalls: 0, localWriteCallbackSuccessPCMBytes: 0,
     localWriteCallbackErrorCalls: 0, localWriteCallbackErrorPCMBytes: 0, localWriteCallbackPendingCalls: 0, localWriteCallbackPendingPCMBytes: 0,
     inputTranscriptionEvents: 0, inputTranscriptionCharacters: 0, generationCompleteEvents: 0, turnCompleteEvents: 0,
@@ -465,14 +464,21 @@ class Session implements LiveVoiceSession {
     if (!object(input) || !(input.pcm instanceof Uint8Array) || !input.pcm.byteLength || input.pcm.byteLength % 2) fail('invalid_audio');
     if (!classes.includes(input.dataClass) || !this.declared.includes(input.dataClass)) fail('route_denied');
     this.diagnostic.audioCalls++; this.diagnostic.audioBytes += input.pcm.byteLength;
-    if (this.pendingCalls.length) {
-      this.droppedAudioFrames++; this.diagnostic.pendingToolDropCalls++; this.diagnostic.pendingToolDropBytes += input.pcm.byteLength; return;
-    }
+    // Wire-38 confirmed Gemini 3.8 Live accepts realtimeInput while a BLOCKING call is pending
+    // and answers the new question, so every frame is forwarded live in order (issue 210).
     // Size bound precedes the owned copy/base64 allocation. Never queue or resend audio.
     const overhead = Buffer.byteLength(JSON.stringify({ realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: '' } } }));
     if (Math.ceil(input.pcm.byteLength / 3) * 4 + overhead > this.settings.limits.maxOutgoingBytes) { this.finish('outgoing_limit'); fail('outgoing_limit'); }
     const data = Buffer.from(input.pcm).toString('base64');
     if (!this.write(JSON.stringify({ realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data } } }), input.pcm.byteLength)) fail(this.terminal!.code);
+  }
+  sendText(input: { text: string }): void {
+    if (this.draining) return;
+    if (!this.checkpoint()) fail(this.terminal!.code);
+    if (!this.isReady) fail('not_ready');
+    if (!object(input) || typeof input.text !== 'string' || !input.text.length || input.text.length > 4000) fail('invalid_request');
+    // Same frame as the model-first greeting text: a text turn the model answers by voice.
+    if (!this.write(JSON.stringify({ realtimeInput: { text: input.text } }))) fail(this.terminal!.code);
   }
   endAudioStream(): void {
     if (this.draining) return;
@@ -487,7 +493,7 @@ class Session implements LiveVoiceSession {
     // A post-ready provider-side failure is recoverable through the owner resumption path; pre-ready,
     // auth, route and config failures stay terminal.
     const providerSideFailure = this.isReady && code === 'protocol_error';
-    this.terminal = Object.freeze({ status, code, ...(this.recoverable || code === 'go_away' || code === 'transport_error' || providerSideFailure ? { recoverable: true } : {}), ...(this.droppedAudioFrames ? { droppedAudioFrames: this.droppedAudioFrames } : {}) });
+    this.terminal = Object.freeze({ status, code, ...(this.recoverable || code === 'go_away' || code === 'transport_error' || providerSideFailure ? { recoverable: true } : {}) });
     for (const timer of this.timers) clearTimeout(timer);
     this.timers.clear(); this.signal.removeEventListener('abort', this.onAbort);
     this.initial = undefined; this.secret = '';

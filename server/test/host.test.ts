@@ -13,6 +13,11 @@ import { pairLocal, startHost, type RuntimeDescriptor } from '../host/runtime.js
 import { HostLog } from '../host/log.js';
 import { Store } from '../runtime/store.js';
 import { listenService } from '../http/server.js';
+import { createMcpAdapter } from '../adapters/mcp/adapter.js';
+import { McpRegistry } from '../adapters/mcp/registry.js';
+import { MemoryResultStore } from '../adapters/mcp/store.js';
+import type { EndpointConfig, McpPort } from '../adapters/mcp/port.js';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 
 const webRoot = resolve(import.meta.dirname, '../../../web/dist');
 
@@ -532,7 +537,7 @@ test('Live session diagnostics persist only the closed content-free counter sche
   try {
     const log = new HostLog(root);
     const numeric = ['adapterGenerations','ownerAudioCalls','ownerAudioBytes','ownerRebuildingDropCalls','ownerRebuildingDropBytes',
-      'adapterAudioCalls','adapterAudioBytes','pendingToolDropCalls','pendingToolDropBytes','drainingDropCalls','drainingDropBytes',
+      'adapterAudioCalls','adapterAudioBytes','drainingDropCalls','drainingDropBytes',
       'localWriteEnqueuedCalls','localWriteEnqueuedPCMBytes','localWriteCallbackSuccessCalls','localWriteCallbackSuccessPCMBytes',
       'localWriteCallbackErrorCalls','localWriteCallbackErrorPCMBytes','localWriteCallbackPendingCalls','localWriteCallbackPendingPCMBytes',
       'inputTranscriptionEvents','inputTranscriptionCharacters','generationCompleteEvents','turnCompleteEvents','outputAudioFrames','outputAudioPCMBytes',
@@ -546,4 +551,52 @@ test('Live session diagnostics persist only the closed content-free counter sche
     assert.equal(records[0].terminalCode, 'client_closed'); assert.equal(records[0].outputAudioPCMBytes, numeric.indexOf('outputAudioPCMBytes'));
     assert.equal(text.includes('SECRET'), false); assert.equal('liveSessionId' in records[0], false);
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+// A stdio MCP child that answers initialize/tools/list, then ignores the MCP close and stdin EOF.
+const IGNORE_CLOSE_CHILD = [
+  "import readline from 'node:readline';",
+  "import { writeFileSync } from 'node:fs';",
+  "const pidFile = process.argv[2];",
+  "if (pidFile) writeFileSync(pidFile, String(process.pid));",
+  "const rl = readline.createInterface({ input: process.stdin });",
+  "rl.on('line', line => {",
+  "  let msg; try { msg = JSON.parse(line); } catch { return; }",
+  "  const send = value => process.stdout.write(JSON.stringify(value) + '\\n');",
+  "  if (msg.method === 'initialize') send({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'ignore-close', version: '1' } } });",
+  "  else if (msg.method === 'tools/list') send({ jsonrpc: '2.0', id: msg.id, result: { tools: [{ name: 'echo', description: 'Synthetic echo', inputSchema: { type: 'object' } }] } });",
+  "  else if (msg.method === 'tools/call') send({ jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text: 'pong' }] } });",
+  "});",
+  "setInterval(() => {}, 1000);",
+].join('\n');
+
+function childAlive(pid: number): boolean { try { process.kill(pid, 0); return true; } catch { return false; } }
+async function childDead(pid: number, ms: number): Promise<boolean> {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) { if (!childAlive(pid)) return true; await new Promise(resolve => setTimeout(resolve, 10)); }
+  return !childAlive(pid);
+}
+
+test('host close kills a stdio MCP child that ignores close within the bound', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-host-mcp-kill-'));
+  const script = join(dir, 'ignore-close.mjs');
+  const pidFile = join(dir, 'child.pid');
+  writeFileSync(script, IGNORE_CLOSE_CHILD);
+  const registry = new McpRegistry();
+  const endpoint = {
+    id: 'local-stdio', transport: 'stdio', command: process.execPath, args: [script, pidFile],
+    env: { PATH: process.env.PATH ?? '/usr/bin', HOME: dir, LOGNAME: '', SHELL: '', TERM: '', USER: '' },
+    account: 'local', resource: 'stdio-fixture',
+  } as unknown as EndpointConfig;
+  registry.register(endpoint); registry.enable('local-stdio'); registry.allowEgress('local-stdio');
+  const adapter: McpPort = createMcpAdapter({ registry, store: new MemoryResultStore(), budgets: { timeoutMs: 2000 } });
+  try {
+    assert.equal((await adapter.discover('local-stdio')).state, 'discovered');
+    const pid = Number(readFileSync(pidFile, 'utf8'));
+    assert.equal(childAlive(pid), true, 'the child is alive while the endpoint is in use');
+    const started = Date.now();
+    await adapter.close();
+    assert.ok(Date.now() - started < 1500, 'close must return within its bound even when the child ignores it');
+    assert.equal(await childDead(pid, 800), true, 'the child is killed after the bound, so the host can exit');
+  } finally { await adapter.close(); rmSync(dir, { recursive: true, force: true }); }
 });

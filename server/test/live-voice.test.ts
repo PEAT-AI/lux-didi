@@ -141,7 +141,7 @@ test('wire setup/history snapshots, readiness, PCM and three independent output 
   assert.equal(f.attempts, 1); assert.equal(f.frames.length, 4);
   assert.deepEqual(session.diagnostics?.(), {
     audioCalls: 1, audioBytes: pcm.byteLength,
-    pendingToolDropCalls: 0, pendingToolDropBytes: 0, drainingDropCalls: 1, drainingDropBytes: pcm.byteLength,
+    drainingDropCalls: 1, drainingDropBytes: pcm.byteLength,
     localWriteEnqueuedCalls: 1, localWriteEnqueuedPCMBytes: pcm.byteLength,
     localWriteCallbackSuccessCalls: 1, localWriteCallbackSuccessPCMBytes: pcm.byteLength,
     localWriteCallbackErrorCalls: 0, localWriteCallbackErrorPCMBytes: 0,
@@ -436,7 +436,7 @@ test('expired deadline and unrepresentable initial frame have zero credential/so
   assert.equal(keys, 0); assert.equal(sockets, 0);
 });
 
-test('Live tool batches use one response frame and suppress microphone audio until answered', async t => {
+test('microphone audio during a pending blocking call is forwarded live and byte-exact', async t => {
   const f = await fixture(t);
   const modelId = 'models/gemini-3.1-flash-live-preview';
   const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory, modelId, route: { enabled: true, provider: 'gemini', modelId, dataClasses: ['ordinary', 'private'] } })).open({ ...request(), languageCode: 'ar', tools: [
@@ -459,17 +459,19 @@ test('Live tool batches use one response frame and suppress microphone audio unt
   assert.equal(event?.type, 'toolCall');
   if (event?.type !== 'toolCall') throw Error('missing tool call');
   assert.deepEqual(event.calls.map(c => c.id), ['c1', 'c2']);
-  session.sendAudio({ pcm, dataClass: 'ordinary' });
-  assert.equal(session.droppedAudioFrames, 1);
-  session.sendToolResponse({ responses: [{ id: 'c1', name: 'search_knowledge', response: { markdown: 'one' } }, { id: 'c2', name: 'search_knowledge', response: { error: 'denied' } }] });
-  await f.frame(2);
-  assert.deepEqual(f.frames[1], { toolResponse: { functionResponses: [{ id: 'c1', name: 'search_knowledge', response: { markdown: 'one' } }, { id: 'c2', name: 'search_knowledge', response: { error: 'denied' } }] } });
-  session.sendAudio({ pcm, dataClass: 'ordinary' }); await f.frame(3);
-  session.close(); assert.equal((await session.done).droppedAudioFrames, 1);
+  const first = new Uint8Array([1, 0, 2, 0]); const second = new Uint8Array([3, 0, 4, 0]);
+  session.sendAudio({ pcm: first, dataClass: 'ordinary' });
+  session.sendAudio({ pcm: second, dataClass: 'ordinary' });
+  await f.frame(3);
+  assert.deepEqual(f.frames[1], { realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: Buffer.from(first).toString('base64') } } }, 'first pending frame reaches the provider');
+  assert.deepEqual(f.frames[2], { realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: Buffer.from(second).toString('base64') } } }, 'second pending frame follows byte-exact');
+  assert.equal(f.frames.some(frame => 'toolResponse' in (frame as object)), false, 'the batch is still unanswered');
+  session.sendToolResponse({ responses: [{ id: 'c1', name: 'search_knowledge', response: { markdown: 'one' } }, { id: 'c2', name: 'search_knowledge', response: { markdown: 'two' } }] });
+  await f.frame(4);
+  assert.deepEqual(f.frames[3], { toolResponse: { functionResponses: [{ id: 'c1', name: 'search_knowledge', response: { markdown: 'one' } }, { id: 'c2', name: 'search_knowledge', response: { markdown: 'two' } }] } }, 'one response frame answers both ids');
+  session.close();
   const diagnostics = session.diagnostics?.();
-  assert.equal(diagnostics?.audioCalls, 2); assert.equal(diagnostics?.audioBytes, pcm.byteLength * 2);
-  assert.equal(diagnostics?.pendingToolDropCalls, 1); assert.equal(diagnostics?.pendingToolDropBytes, pcm.byteLength);
-  assert.equal(diagnostics?.localWriteEnqueuedCalls, 1); assert.equal(diagnostics?.localWriteCallbackPendingCalls, 0);
+  assert.equal(diagnostics?.audioCalls, 2); assert.equal(diagnostics?.audioBytes, first.byteLength + second.byteLength);
 });
 
 test('languageCode accepts BCP-47 language-region, keeps ar-XA, and rejects malformed tags', async t => {
@@ -508,7 +510,7 @@ test('3.8 Live omits thinking config and cancellation releases an unanswered bat
   assert.equal((await events.next()).value?.type, 'modelTurnStarted');
   assert.equal((await events.next()).value?.type, 'toolCall');
   assert.throws(() => session.sendToolResponse({ responses: [{ id: 'one', name: 'test', response: {} }] }), code('invalid_request'));
-  session.sendAudio({ pcm, dataClass: 'ordinary' }); assert.equal(session.droppedAudioFrames, 1);
+  session.sendAudio({ pcm, dataClass: 'ordinary' });
   f.send({ serverContent: { modelTurn: { parts: [audio()] } } });
   assert.equal((await events.next()).value?.type, 'audio', 'provider output remains admitted while a tool batch is pending');
   assert.equal((await events.next()).value?.type, 'modelTurnStarted');

@@ -1,9 +1,51 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  cleanMailBody, cutAtSentence, shapeGcalList, shapeGmailList, shapeGmailRead, shapeLuxKnowledge, shapeMattermost,
+  cleanMailBody, cutAtSentence, noEmptyResult, shapeGcalList, shapeGmailList, shapeGmailRead, shapeLuxKnowledge, shapeMattermost,
   KNOWLEDGE_HITS, MATTERMOST_MESSAGE_CHARS,
 } from '../tools/live-shape.js';
+// Synthetic Mattermost upstream shapes (mattermost-mcp src/search/serialize.ts and REST v4
+// /posts). Invented names and text only. These are W12's committed fixtures: every one of them
+// shaped to '' at train head, which is the defect they pin.
+const WHOAMI = { id: 'u1', username: 'river', email: 'river@example.invalid' };
+const SEARCH_RESULTS = {
+  total: 2,
+  returned: 2,
+  results: [
+    { id: 'p1', username: 'river', channel: 'harbour', timestamp: '2026-10-11T10:00:00.000Z', message: 'Mooring drift log is ready', url: 'https://chat.example.invalid/t/harbour/pl/p1', channelName: 'harbour', rootId: '', replyCount: 3, editedAt: null, score: 0.91 },
+    { id: 'p2', username: 'ash', channel: 'harbour', timestamp: '2026-10-11T10:05:00.000Z', message: 'Reviewed the mooring drift log', url: 'https://chat.example.invalid/t/harbour/pl/p2', channelName: 'harbour', rootId: '', replyCount: 0, editedAt: null, score: 0.72 },
+  ],
+};
+const SEARCH_EMPTY = { total: 0, returned: 0, results: [] };
+const THREAD = {
+  root: { id: 'p1', username: 'river', channel: 'harbour', timestamp: '2026-10-11T10:00:00.000Z', message: 'Mooring drift log is ready', url: 'https://chat.example.invalid/t/harbour/pl/p1', channelName: 'harbour', rootId: '', replyCount: 1, editedAt: null },
+  replies: [
+    { id: 'p2', username: 'ash', channel: 'harbour', timestamp: '2026-10-11T10:05:00.000Z', message: 'Reviewed the mooring drift log', url: 'https://chat.example.invalid/t/harbour/pl/p2', channelName: 'harbour', rootId: 'p1', replyCount: 0, editedAt: null },
+  ],
+  attachments: { p1: [{ name: 'drift.csv', extension: 'csv', size: 2048 }] },
+};
+const CHANNELS = {
+  count: 2,
+  channels: [
+    { id: 'c1', name: 'harbour', displayName: 'Harbour', team: 'ops', type: 'O', posts: 128, lastSyncAt: '2026-10-11T10:10:00.000Z', archived: false, archivedAt: null },
+    { id: 'c2', name: 'dry-dock', displayName: 'Dry Dock', team: 'ops', type: 'O', posts: 4, lastSyncAt: '2026-10-01T00:00:00.000Z', archived: true, archivedAt: '2026-10-02T00:00:00.000Z' },
+  ],
+};
+const REST_POSTS = {
+  order: ['r2', 'r1'],
+  posts: {
+    r1: { id: 'r1', create_at: 1760176800000, update_at: 1760176800000, user_id: 'u1', channel_id: 'c1', message: 'Tide table pinned', type: '' },
+    r2: { id: 'r2', create_at: 1760176860000, update_at: 1760176860000, user_id: 'u2', channel_id: 'c1', message: 'Crane booked for Tuesday', type: '' },
+    r3: { id: 'r3', create_at: 1760176920000, update_at: 1760176920000, user_id: 'u1', channel_id: 'c1', message: 'ash joined the channel', type: 'system_join_channel' },
+  },
+};
+const ITEMS = {
+  items: [
+    { channel: 'harbour', author: 'river', time: '2026-10-11T10:00:00Z', text: 'Mooring drift log is ready', permalink: 'https://chat.example.invalid/t/harbour/pl/p1' },
+    { channel: 'harbour', author: 'ash', time: '2026-10-11T10:05:00Z', text: 'Reviewed the mooring drift log', permalink: 'https://chat.example.invalid/t/harbour/pl/p2' },
+  ],
+};
+const UNRECOGNISED = { blocks: [{ kind: 'canvas', ref: 'x1' }], cursor: 'next' };
 
 // Rich, clean shaping of synthetic tool results. No real account, message or corpus.
 const HEADERS = { Subject: 'Launch plan', From: 'Dana <dana@example.invalid>', To: 'rob@example.invalid', Cc: 'kim@example.invalid', Date: 'Mon, 1 Jan 2024 00:00:00 +0000' };
@@ -121,4 +163,62 @@ test('a boundary-free run-on is cut at the last whole word, never mid-word', () 
   assert.equal(cut.text, 'This is one very long runon');
   assert.equal(/\s/u.test(cut.text.at(-1) ?? ''), false, 'the cut never ends mid-word or on whitespace');
   assert.equal(cut.omitted > 0, true);
+});
+
+// --- W12: every Mattermost read shape is recognised, and an empty read is never silent ---
+
+test('mattermost search results (results array) shape with author, channel and permalink', () => {
+  const shaped = shapeMattermost('mattermost_search', SEARCH_RESULTS);
+  assert.match(shaped.text, /harbour \| river \| 2026-10-11T10:00:00\.000Z/);
+  assert.match(shaped.text, /Mooring drift log is ready/);
+  assert.match(shaped.text, /source: https:\/\/chat\.example\.invalid\/t\/harbour\/pl\/p1/);
+  assert.equal(shaped.text.length > 0, true);
+});
+
+test('mattermost thread root and replies both shape', () => {
+  const shaped = shapeMattermost('mattermost_get_thread', THREAD);
+  assert.match(shaped.text, /Mooring drift log is ready/);
+  assert.match(shaped.text, /Reviewed the mooring drift log/);
+});
+
+test('mattermost channel list (channels array) shapes display names', () => {
+  const shaped = shapeMattermost('mattermost_list_channels', CHANNELS);
+  assert.match(shaped.text, /- Harbour/);
+  assert.match(shaped.text, /- Dry Dock/);
+});
+
+test('mattermost REST id-map posts are ordered by order and system posts dropped', () => {
+  const shaped = shapeMattermost('mattermost_get_channel_history', REST_POSTS);
+  assert.equal(shaped.text.length > 0, true);
+  assert.equal(shaped.text.indexOf('Crane booked for Tuesday') < shaped.text.indexOf('Tide table pinned'), true);
+  assert.equal(shaped.text.includes('joined the channel'), false);
+});
+
+test('mattermost items wrapper shapes', () => {
+  const shaped = shapeMattermost('mattermost_search', ITEMS);
+  assert.match(shaped.text, /harbour \| river \| 2026-10-11T10:00:00Z/);
+});
+
+test('a genuinely empty Mattermost read returns an explicit note, never an empty string', () => {
+  assert.equal(shapeMattermost('mattermost_search', SEARCH_EMPTY).text, 'No messages matched.');
+  assert.equal(shapeMattermost('mattermost_get_channel_history', { posts: [] }).text, 'No messages in this channel for that window.');
+  assert.equal(shapeMattermost('mattermost_list_channels', { channels: [] }).text, 'No channels.');
+});
+
+test('an unrecognised Mattermost shape fails loud: raw text plus the shape marker', () => {
+  const shaped = shapeMattermost('mattermost_search', UNRECOGNISED);
+  assert.equal(shaped.text.length > 0, true);
+  assert.match(shaped.text, /canvas/);
+  assert.equal(shaped.shape, 'unrecognised');
+});
+
+test('noEmptyResult turns an empty completed projection into an explicit note', () => {
+  assert.equal(noEmptyResult(''), 'No results.');
+  assert.equal(noEmptyResult('  \n '), 'No results.');
+  assert.equal(noEmptyResult('kept'), 'kept');
+});
+
+test('mattermost whoami (username/email record) reports the operator name', () => {
+  const shaped = shapeMattermost('mattermost_whoami', WHOAMI);
+  assert.match(shaped.text, /river/);
 });

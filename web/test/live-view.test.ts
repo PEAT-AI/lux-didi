@@ -135,6 +135,24 @@ test('transcript folds exact same-role fragments until a truthful turn boundary'
   assert.equal((html.match(/<strong>Naya<\/strong>/g) ?? []).length, 4);
 });
 
+test('a typed turn interleaved with streamed Naya fragments joins one Naya card in journal order', () => {
+  const live: LiveCurrent = { state: 'speaking', cursor: 6, entries: [
+    { seq: 1, kind: 'inputTranscription', text: 'What should I focus on today?' },
+    { seq: 2, kind: 'turnComplete' },
+    { seq: 3, kind: 'outputTranscription', text: 'Hel' },
+    { seq: 4, kind: 'inputTranscription', text: 'Tell me more' },
+    { seq: 5, kind: 'outputTranscription', text: 'lo there' },
+    { seq: 6, kind: 'turnComplete' },
+  ] };
+  assert.deepEqual(liveTranscript(live), [
+    { role: 'user', text: 'What should I focus on today?' },
+    { role: 'naya', text: 'Hello there' },
+    { role: 'user', text: 'Tell me more' },
+  ]);
+  const html = liveMarkup(live);
+  assert.match(html, /Latest spoken answer<\/span><p>Hello there<\/p>/);
+});
+
 test('transcript preserves exact fragment deltas without spaces or deduplication', () => {
   const live: LiveCurrent = { state: 'speaking', cursor: 7, entries: [
     { seq: 1, kind: 'outputTranscription', text: 'Hel' },

@@ -2,6 +2,7 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defaultDataDir, pairLocal, startHost, type HostConfig } from './runtime.js';
 import { supervise } from './supervision.js';
+import { ServiceError } from '../contracts/errors.js';
 
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (argv.length === 1 && argv[0] === '--help') {
@@ -50,10 +51,20 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       process.stdout.on('error', stop);
       process.stdout.write(output);
     } else console.log(`Didi host ${host.descriptor.origin}; local memory/commitments available; model/notifications unavailable`);
-  } catch (error) { supervision?.dispose(); throw error; }
+  } catch (error) {
+    if (supervision && error instanceof ServiceError) {
+      try { process.stdout.write(`${JSON.stringify({ type: 'error', schemaVersion: 1, code: error.code })}\n`); } catch { /* the exit status is the remaining signal */ }
+    }
+    supervision?.dispose();
+    throw error;
+  }
 }
 // Node 26 main-module identity handles symlink spellings and stays false on import.
 // https://nodejs.org/api/esm.html#importmetamain
 if (import.meta.main) {
-  void main().catch(error => { console.error(error instanceof Error ? error.message : 'Host startup failed'); process.exitCode = 1; });
+  void main().catch(error => {
+    const code = error instanceof ServiceError ? error.code : undefined;
+    console.error(error instanceof Error ? (code ? `${code}: ${error.message}` : error.message) : 'Host startup failed');
+    process.exitCode = 1;
+  });
 }

@@ -10,6 +10,8 @@ export interface MattermostProjection {
   partial: boolean;
   originalCharacters: number;
   omittedCharacters: number;
+  shape?: string;
+  itemCount?: number;
 }
 
 export interface ConnectorStatus { state: 'configured' | 'error'; reason: string }
@@ -65,7 +67,10 @@ export function projectMattermostResult(port: McpPort, evidence: ConnectorResult
   if (!payload.ok) return { ok: false, reason: payload.reason };
   let data: unknown = payload.text;
   try { data = JSON.parse(payload.text); } catch { data = payload.text; }
-  return { ok: true, projection: renderMattermostTool(evidence.tool, data) };
+  const projection = renderMattermostTool(evidence.tool, data);
+  // Metadata only: which shape the read took, and its sizes. Never any message content.
+  console.log(JSON.stringify({ event: 'mattermost_shape', tool: evidence.tool, rawCharacters: payload.text.length, shapedCharacters: projection.text.length, itemCount: projection.itemCount ?? 0, shape: projection.shape ?? 'unknown' }));
+  return { ok: true, projection };
 }
 
 export type { MattermostEvidence, MattermostResult, MattermostTool };

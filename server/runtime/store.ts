@@ -12,6 +12,17 @@ function privateFile(path: string): void {
   if (!lstatSync(path).isFile() || lstatSync(path).isSymbolicLink()) throw new Error('State file must be a regular non-symlink file');
   chmodSync(path, 0o600);
 }
+// The schema upgrade and the credential admission are one unit: a refused
+// admission rolls the migration back, so a failed upgrade never commits a
+// newer schema that strands the previous app.
+function admitCredential(directory: string): string {
+  const credentialPath = join(directory, 'admin-credential');
+  if (!existsSync(credentialPath)) writeFileSync(credentialPath, `${randomBytes(32).toString('base64url')}\n`, { flag: 'wx', mode: 0o600 });
+  privateFile(credentialPath);
+  const credential = readFileSync(credentialPath, 'utf8').trim();
+  if (!/^[A-Za-z0-9_-]{43}$/.test(credential)) throw new ServiceError('CREDENTIAL_ADMISSION_FAILED', 'Invalid local admin credential', 500);
+  return credential;
+}
 // SQLite parses the first statement (including compound triggers); sourceSQL is
 // its exact original consumed prefix, not parameter-expanded/normalized SQL.
 function singleStatement(sql: string, sourceSQL: string): void {
@@ -91,15 +102,11 @@ export class Store {
         this.applyMigrations(migrations);
         this.#db.prepare("UPDATE runtime_outbox SET state='unknown', claim_token=NULL, lease_until=NULL WHERE state='claimed'").run();
         for (const key of ['authorityEpoch', 'assistantId']) this.#db.prepare('INSERT OR IGNORE INTO runtime_meta VALUES (?,?)').run(key, randomUUID());
+        this.authorityEpoch = String(this.#db.prepare('SELECT value FROM runtime_meta WHERE key=?').get('authorityEpoch')!.value);
+        this.assistantId = String(this.#db.prepare('SELECT value FROM runtime_meta WHERE key=?').get('assistantId')!.value);
+        this.adminCredential = admitCredential(directory);
         this.#db.exec('COMMIT');
       } catch (error) { this.#db.exec('ROLLBACK'); throw error; }
-      this.authorityEpoch = String(this.#db.prepare('SELECT value FROM runtime_meta WHERE key=?').get('authorityEpoch')!.value);
-      this.assistantId = String(this.#db.prepare('SELECT value FROM runtime_meta WHERE key=?').get('assistantId')!.value);
-      const credentialPath = join(directory, 'admin-credential');
-      if (!existsSync(credentialPath)) writeFileSync(credentialPath, `${randomBytes(32).toString('base64url')}\n`, { flag: 'wx', mode: 0o600 });
-      privateFile(credentialPath);
-      this.adminCredential = readFileSync(credentialPath, 'utf8').trim();
-      if (!/^[A-Za-z0-9_-]{43}$/.test(this.adminCredential)) throw new Error('Invalid local admin credential');
     } catch (error) { this.close(); throw error; }
   }
   private applyMigrations(migrations: readonly SchemaMigration[]): void {

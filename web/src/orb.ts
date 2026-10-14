@@ -1,7 +1,8 @@
 /** Didi lifecycle/state adapter for the authorized first-party Canvas renderer.
  * See orb-provenance.md for bounded extraction and MIT noise dependency.
  */
-import { ClassicRenderer, clampFrameDelta, smoothingAlpha, ORB_SMOOTHING_TAU, speakingActivityTarget } from './orb-classic';
+import { ClassicRenderer, clampFrameDelta, smoothingAlpha, ORB_SMOOTHING_TAU, speakingActivityTarget } from './orb-classic.ts';
+import { levelFrame, type LevelSample } from './orb-level.ts';
 export type VoiceState = 'IDLE' | 'CONNECTING' | 'CONNECTED' | 'LISTENING' | 'PROCESSING' | 'SPEAKING' | 'RECONNECTING' | 'ERROR' | 'DISCONNECTED' | 'INTERRUPTED';
 export interface AudioFrame { level: number; low: number; mid: number; high: number; flux: number; timestamp: number }
 export const silentFrame = (): AudioFrame => ({level:0,low:0,mid:0,high:0,flux:0,timestamp:performance.now()});
@@ -45,6 +46,9 @@ export class Orb {
     this.motion.addEventListener('change',this.reset);
     document.addEventListener('visibilitychange',this.reset);
     this.resize();
+    // Native player/capture taps post one small level frame here; the renderer owns only the
+    // smoothing and geometry, never capture or transport authority.
+    (globalThis as unknown as { didiOrbLevel?: (sample: LevelSample) => void }).didiOrbLevel = sample => this.audio.push(levelFrame(sample));
   }
   setState(state: VoiceState) { this.state=state; this.reset(); }
   private resize() {

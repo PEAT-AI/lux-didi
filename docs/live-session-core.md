@@ -158,6 +158,14 @@ handle, exhausted budget, third loss or failed resumed setup ends once through
 the normal settlement path with `resume_failed`. Session and idle timeouts are
 final, never recovery triggers.
 
+A barge-in during a pending tool batch is signalled by `serverContent.interrupted`, never
+by `toolCallCancellation` (wire-38, `wire-38-report.md`). The batch keeps running and its
+result is still sent once when it completes, because the server accepts a late
+toolResponse after an interruption silently. When an `interrupted` arrives after a batch
+was dispatched, the owner records that batch's `toolResult` projection with disposition
+`after_barge_in` so the UI can show the answer may not match the interrupted turn. The
+explicit provider cancellation path is unchanged.
+
 ### Live remember finalization
 
 `remember_note` persists only the owner's verbatim transcription, never model output or a model paraphrase. An explicit provider input transcription `finished: true` finalizes the owner turn immediately. When that flag is absent, the provider's tool call or first model output establishes a model-turn boundary; the owner finalizes the latest input journal row only after 300 ms without a newer input transcription. A newer input frame invalidates that boundary and requires a new one. An admitted remember tool waits at most 1500 ms for finalization, journaling exactly one typed `remember_deferred` row with `waitedMs` for the wait. If no finalization occurs within that bound, the existing `owner_transcript_not_final` refusal remains. The 300 ms default is a quiet-window safeguard, not permission to derive text from model words.

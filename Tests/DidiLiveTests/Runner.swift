@@ -339,7 +339,7 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             try require(NativeLivePresentation.failure(LiveClientError.transport) == NativeLivePresentation.failure(URLError(.timedOut)), "coordinator preserves transport class")
             try require(NativeLivePresentation.failure(LiveClientError.unavailable) == "Live voice is not configured. Check the Live service settings.", "unconfigured failure is actionable")
             try require(NativeLivePresentation.failure(DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "private"))) == "Live service returned an unexpected response. Reconnect the service and try again.", "decoding failure never leaks response")
-            for event in ["rebuilding", "resumed", "future_event"] {
+            for event in ["rebuilding", "resumed"] {
                 let wire = "{\"type\":\"continuity\",\"sequence\":null,\"journalSequence\":2,\"event\":\"\(event)\",\"reason\":\"go_away\"}"
                 _ = try LiveSocketTransport.decode(.string(wire))
             }

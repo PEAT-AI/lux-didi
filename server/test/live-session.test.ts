@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import * as memory from '../domain/memory.js';
 import * as labels from '../domain/labels.js';
 import { resolveLiveMemory } from '../host/live.js';
+import { safeEvent } from '../host/log.js';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
@@ -522,6 +523,15 @@ test('tool deferral budget defaults to four seconds and accepts only bounded int
   for (const value of [0, 999, 30001, 1000.5, NaN, Infinity]) {
     assert.throws(() => validateLiveProfile(profileInput({ toolDeferralMs: value })), LiveConfigError);
   }
+});
+
+test('live timer defaults are a 5 minute idle and a 60 minute session, and an explicit config wins', () => {
+  const defaults = validateLiveProfile(profileInput()).limits;
+  assert.equal(defaults.idleMs, 300_000);
+  assert.equal(defaults.sessionMs, 3_600_000);
+  const edited = validateLiveProfile(profileInput({ idleMs: 12_345, sessionMs: 67_890 })).limits;
+  assert.equal(edited.idleMs, 12_345);
+  assert.equal(edited.sessionMs, 67_890);
 });
 
 test('profile validation rejects text-model fallback and bounds, and validation precedes credentials', async t => {
@@ -1236,6 +1246,39 @@ test('Live answers a slow tool batch truthfully, continues the turn, and retains
   assert.equal(h.owner.pendingJobs().length, 0, 'only explicit pickup consumes the pending result');
 });
 
+test('a tool result after a barge-in interruption is sent once and recorded after_barge_in', async t => {
+  let finish!: () => void;
+  const slow = new Promise<void>(resolve => { finish = resolve; });
+  const h = await harness(t, { tools: true, beforeTool: () => slow });
+  const { session, attachment } = await attached(h);
+  const outputs = attachment.output[Symbol.asyncIterator]();
+  assert.equal((await outputs.next()).value?.marker.kind, 'ready');
+  h.f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
+  while (!h.calls.length) await tick();
+  h.f.send({ serverContent: { interrupted: true } });
+  let sawInterrupted = false;
+  while (!sawInterrupted) {
+    const item = await outputs.next();
+    if (item.done) break;
+    if (item.value.kind === 'marker' && item.value.marker.kind === 'interrupted') sawInterrupted = true;
+  }
+  assert.equal(sawInterrupted, true, 'the interrupted fact is journaled before the tool completes');
+  finish(); await tick(); await tick();
+  await h.f.frame(2);
+  const response = h.f.frames[1] as { toolResponse: { functionResponses: { id: string }[] } };
+  assert.deepEqual(response.toolResponse.functionResponses.map(item => item.id), ['c1'], 'the late result is sent exactly once');
+  assert.equal(h.f.frames.filter(frame => 'toolResponse' in (frame as object)).length, 1);
+  let marked = false;
+  for (let i = 0; i < 20 && !marked; i++) {
+    const item = await outputs.next();
+    if (item.done) break;
+    if (item.value.kind === 'marker' && item.value.marker.kind === 'toolResult'
+      && (item.value.marker.tool as { code?: string } | undefined)?.code === 'after_barge_in') marked = true;
+  }
+  assert.equal(marked, true, 'the batch disposition after_barge_in is recorded');
+  h.owner.revoke(session.liveSessionId);
+});
+
 test('Live accepts a frozen real tool snapshot and projects only result-gated Markdown', async t => {
   const h = await harness(t, { tools: true });
   const { session, attachment } = await attached(h);
@@ -1522,6 +1565,38 @@ test('third recoverable loss ends the same session without a fourth connection',
   assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(r => r.kind === 'terminal').length, 1);
 });
 
+test('a post-ready rejected frame resumes the same live session for a seventh turn', async t => {
+  const h = await harness(t);
+  const { session, attachment } = await attached(h, 'protocol-resume');
+  void (async () => { for await (const chunk of attachment.output) { void chunk; } })();
+  const handle = 'synthetic-protocol-resume-secret';
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: handle } });
+  for (let i = 0; i < 100; i++) {
+    if (h.store.transaction(tx => tx.get('SELECT resumption_handle FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!['resumption_handle'] === handle) break;
+    await tick();
+  }
+  const base = h.owner.get(session.liveSessionId).journal.events;
+  for (let i = 0; i < 6; i++) {
+    h.f.send({ serverContent: { outputTranscription: { text: `out-${i}`, finished: true }, generationComplete: true, turnComplete: true } });
+    await drain(h, session.liveSessionId, base + (i + 1) * 3);
+  }
+  assert.equal(h.f.attempts, 1);
+  // The rejected frame after ready ends the connection with a recoverable protocol_error.
+  h.f.send({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: 'not-valid-base64!!' } }] } } });
+  await h.f.frame(2);
+  assert.equal(h.f.attempts, 2, 'the owner opens one resumption connection');
+  assert.equal((h.f.frames[1] as { setup: { sessionResumption: { handle: string } } }).setup.sessionResumption.handle, handle);
+  h.f.send({ setupComplete: {} });
+  const before = h.owner.get(session.liveSessionId).journal.events;
+  // A seventh turn arrives on the same live session id.
+  h.f.send({ serverContent: { outputTranscription: { text: 'out-6', finished: true }, turnComplete: true } });
+  await drain(h, session.liveSessionId, before + 2);
+  assert.equal(h.owner.current().state, 'listening');
+  assert.equal(h.store.transaction(tx => tx.all('SELECT live_session_id FROM live_sessions')).length, 1, 'the same live session resumed');
+  assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(r => r.kind === 'terminal').length, 0);
+  attachment.close(); await attachment.done;
+});
+
 test('revoked resumption handle is cleared before a recoverable loss', async t => {
   const h = await harness(t);
   const { session, attachment } = await attached(h, 'resume-cleared');
@@ -1561,6 +1636,23 @@ async function transcription(output: AsyncIterator<import('../live/types.js').Li
   }
 }
 
+
+test('the exact live diagnostics object the owner emits is accepted by the host log whitelist', async t => {
+  const lines: string[] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => {
+    if (typeof args[0] === 'string' && args[0].includes('live_session_diagnostics')) lines.push(args[0]);
+  });
+  const h = await harness(t);
+  const { attachment } = await attached(h, 'diagnostics-whitelist');
+  attachment.close(); await attachment.done;
+  for (let attempt = 0; attempt < 20 && lines.length === 0; attempt++) await tick();
+  assert.equal(lines.length, 1);
+  const emitted = JSON.parse(lines[0]!) as Record<string, unknown>;
+  assert.equal(emitted.event, 'live_session_diagnostics');
+  const accepted = safeEvent(emitted);
+  assert.ok(accepted, 'the host log whitelist accepts the exact emitted diagnostics object, never silently dropping it');
+  assert.equal(accepted.terminalCode, emitted.terminalCode);
+});
 
 test('queued PCM is dropped at the cut and capture during rebuilding is never replayed', async t => {
   const diagnosticLines: string[] = [];
@@ -1644,7 +1736,7 @@ for (const status of [401, 403, 429]) test(`resumed HTTP upgrade refusal ${statu
   assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(row => row.kind === 'terminal').length, 1);
 });
 
-test('established WebSocket protocol error ends without resumption despite a saved handle', async t => {
+test('established WebSocket protocol error resumes through the saved handle', async t => {
   const h = await harness(t);
   const { session, attachment } = await attached(h, 'resume-protocol-final');
   const output = attachment.output[Symbol.asyncIterator]();
@@ -1652,9 +1744,13 @@ test('established WebSocket protocol error ends without resumption despite a sav
   h.f.send({ serverContent: { inputTranscription: { text: 'protocol sentinel' } } });
   await transcription(output, 'protocol sentinel');
   assert.equal(h.store.transaction(tx => tx.get('SELECT resumption_handle FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!.resumption_handle !== null, true);
-  // If the defect reconnects, refuse setup immediately rather than waiting a real timeout.
-  h.f.refuseUpgrades(403); h.f.invalidOpcode();
-  assert.deepEqual((await attachment.done).terminal, { state: 'failed', code: 'protocol_error' });
-  assert.equal(h.f.attempts, 1);
-  assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(row => row.kind === 'terminal').length, 1);
+  // A post-ready protocol error is recoverable, so the owner opens one resumption connection.
+  h.f.invalidOpcode();
+  await h.f.frame(2);
+  assert.equal(h.f.attempts, 2);
+  h.f.send({ setupComplete: {} });
+  await continuity(output, 'resumed');
+  assert.equal(h.owner.current().state, 'listening');
+  assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(row => row.kind === 'terminal').length, 0);
+  attachment.close(); await attachment.done;
 });

@@ -15,6 +15,7 @@ import { Store } from '../runtime/store.js';
 import { composeMcpRuntime } from '../host/mcp.js';
 import { toolsMigrations } from '../tools/index.js';
 import { createLuxKnowledgeReader, LUX_KNOWLEDGE_TOOLS } from '../connectors/index.js';
+import { shapeLuxKnowledge } from '../tools/live-shape.js';
 import type { LuxKnowledgeConfig, LuxKnowledgeEvidence, LuxKnowledgeResult } from '../connectors/index.js';
 
 // Explicitly synthetic public protocol fixture: no real accounts, corpus or credentials.
@@ -157,6 +158,28 @@ test('search round trip: exact arguments, opaque unknown/local-only evidence, ex
     assert.match(result.projection.text, /synthetic α payload/);
     assert.equal(result.projection.omitted, false);
     assert.equal(result.projection.omittedCharacters, 0);
+  } finally { await adapter.close(); await f.close(); }
+});
+
+test('a cut search result names the real search_knowledge limit follow-up; a larger limit returns the next slice', async () => {
+  const all = Array.from({ length: 25 }, (_, index) => ({ id: index + 1, insight_title: `Insight ${index + 1}`, insight_type: 'PATTERN', updated_at: '2026-10-14', content: `Body ${index + 1}.` }));
+  const f = await fixture({ call: (_name, args) => ({ content: [{ type: 'text', text: JSON.stringify({ results: all.slice(0, Number(args['limit'])) }) }] }) });
+  const { adapter, registry } = setup(f.url);
+  try {
+    const { reader } = await readerFor(adapter, registry);
+    const first = complete(await reader.search({ query: 'q', limit: 20 }));
+    const second = complete(await reader.search({ query: 'q', limit: 25 }));
+    const text = (evidence: CompletedEvidence): string => {
+      const content = (evidence.decodedResult as { content?: { text?: string }[] }).content;
+      return content?.[0]?.text ?? '';
+    };
+    assert.equal(JSON.parse(text(first)).results.length, 20);
+    assert.equal(JSON.parse(text(second)).results.length, 25, 'the named larger limit returns the next slice');
+    assert.deepEqual(f.calls.at(-1), { name: 'search_knowledge', arguments: { query: 'q', limit: 25, include_sensitive: false } });
+    const shaped = shapeLuxKnowledge('search_knowledge', text(second));
+    assert.equal(shaped.partial, true);
+    assert.match(shaped.text, /\[omitted: 5 more hits; call search_knowledge again with limit=25 for the rest\]/);
+    assert.equal(shaped.text.includes('Insight 21'), false);
   } finally { await adapter.close(); await f.close(); }
 });
 

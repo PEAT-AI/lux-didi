@@ -3,11 +3,7 @@ import type { McpPort, StoredPayload } from '../adapters/mcp/port.js';
 import type { MattermostEvidence, MattermostResult, MattermostTool } from '../connectors/mattermost.js';
 import { MATTERMOST_AUTH_NEEDED } from '../connectors/mattermost.js';
 import { sha256 } from './canonical.js';
-
-/** Hard projection bound for one Mattermost read. */
-export const MATTERMOST_PROJECTION_CHARS = 4000;
-/** Per-field bound so one long message can never crowd out the rest of a channel read. */
-export const MATTERMOST_FIELD_CHARS = 600;
+import { shapeMattermost } from './live-shape.js';
 
 export interface MattermostProjection {
   text: string;
@@ -19,11 +15,6 @@ export interface MattermostProjection {
 export interface ConnectorStatus { state: 'configured' | 'error'; reason: string }
 
 const AUTH_MARKER = /not authenticated|unauthorized|no session|mattermost_login|token (?:missing|expired)/i;
-
-export function boundedProjection(text: string, bound = MATTERMOST_PROJECTION_CHARS): MattermostProjection {
-  if (text.length <= bound) return { text, partial: false, originalCharacters: text.length, omittedCharacters: 0 };
-  return { text: text.slice(0, bound), partial: true, originalCharacters: text.length, omittedCharacters: text.length - bound };
-}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -62,37 +53,9 @@ export function mattermostToolStatus(evidence: ConnectorEvidence): ConnectorStat
     : { state: 'error', reason: 'tool call failed' };
 }
 
-function clip(value: unknown): string {
-  const text = typeof value === 'string' ? value : '';
-  return text.length > MATTERMOST_FIELD_CHARS ? `${text.slice(0, MATTERMOST_FIELD_CHARS)}...` : text;
-}
-
-function renderPost(post: Record<string, unknown>): string[] {
-  const channel = clip(post['channel'] ?? post['channel_name'] ?? post['channel_id']);
-  const author = clip(post['author'] ?? post['author_name'] ?? post['user_name']);
-  const time = clip(post['time'] ?? post['create_at'] ?? post['timestamp']);
-  const header = [channel, author, time].filter(part => part.length > 0).join(' | ');
-  const body = clip(post['text'] ?? post['message']);
-  const permalink = typeof post['permalink'] === 'string' ? post['permalink'] : undefined;
-  return [`**${header || 'message'}**`, body, ...(permalink ? [`source: ${permalink}`] : [])];
-}
-
-/** Pure Markdown projection of one Mattermost tool's decoded data. */
+/** Rich, clean projection of one Mattermost tool's decoded data (see live-shape.ts). */
 export function renderMattermostTool(tool: string, data: unknown): MattermostProjection {
-  if (typeof data === 'string') return boundedProjection(data);
-  if (!isRecord(data)) return boundedProjection(JSON.stringify(data));
-  if (tool === 'mattermost_whoami') {
-    const name = typeof data['username'] === 'string' ? data['username'] : '';
-    const display = typeof data['display_name'] === 'string' ? data['display_name'] : '';
-    return boundedProjection([name, display].filter(part => part.length > 0).join(' | ') || 'authenticated');
-  }
-  if (tool === 'mattermost_list_channels') {
-    const channels = Array.isArray(data['channels']) ? data['channels'] : [];
-    const lines = channels.map(entry => (isRecord(entry) ? `- ${clip(entry['display_name'] ?? entry['name'])}` : `- ${String(entry)}`));
-    return boundedProjection(lines.join('\n'));
-  }
-  const posts = Array.isArray(data['posts']) ? data['posts'] : (Array.isArray(data['items']) ? data['items'] : []);
-  return boundedProjection(posts.flatMap(entry => (isRecord(entry) ? renderPost(entry) : [`- ${String(entry)}`])).join('\n\n'));
+  return shapeMattermost(tool, data);
 }
 
 export function projectMattermostResult(port: McpPort, evidence: ConnectorResult): { ok: true; projection: MattermostProjection } | { ok: false; reason: string } {

@@ -194,7 +194,7 @@ for (const failure of ['transport', 'result'] as const) test(`MCP ${failure} fai
   const h = await harness(t, 'live', failure);
   const runtime = await h.start(); const run = await h.accept(runtime);
   const observed = await h.read(runtime, run.host, ['lux-knowledge']);
-  const expected = failure === 'transport' ? 'mcp_transport_error' : 'mcp_result_invalid';
+  const expected = failure === 'transport' ? 'sdk_protocol_rejected' : 'invalid_result';
   const rows = h.store.transaction(tx => tx.all('SELECT state, result_json FROM tool_calls WHERE run_id=?', [run.host.runId]));
   assert.equal(rows.length, 1);
   const result = JSON.parse(String(rows[0]!.result_json));
@@ -209,7 +209,7 @@ for (const failure of ['transport', 'result'] as const) test(`MCP ${failure} fai
 });
 
 test('host log accepts only bounded tool-failure metadata and drops extra payload fields', () => {
-  const event = { event: 'tool_failure', code: 'mcp_result_invalid', tool: 'search_knowledge', connector: 'lux-knowledge', errorClass: 'McpResultError', messageHead: 'mcp_result_invalid' };
+  const event = { event: 'tool_failure', code: 'invalid_result', tool: 'search_knowledge', connector: 'lux-knowledge', errorClass: 'McpResultError', messageHead: 'invalid_result' };
   assert.deepEqual(safeEvent({ ...event, payload: 'synthetic forbidden content' }), event);
   assert.equal(safeEvent({ ...event, code: 'arbitrary_code' }), undefined);
   assert.equal(safeEvent({ ...event, messageHead: 'x'.repeat(121) }), undefined);
@@ -234,10 +234,10 @@ test('Live knowledge SSE response completes with one result and no unclassified 
 test('bounded tool_failure metadata is written to host.log without an attached payload', t => {
   const dir = mkdtempSync(join(tmpdir(), 'didi-tool-failure-log-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
   const log = new HostLog(dir);
-  log.event({ event: 'tool_failure', code: 'mcp_transport_error', tool: 'search_knowledge', connector: 'lux-knowledge', errorClass: 'Error', messageHead: 'mcp_transport_error', payload: 'synthetic-private-payload' });
+  log.event({ event: 'tool_failure', code: 'child_exited', tool: 'search_knowledge', connector: 'lux-knowledge', errorClass: 'Error', messageHead: 'child_exited', payload: 'synthetic-private-payload' });
   const text = readFileSync(join(dir, 'logs', 'host.log'), 'utf8');
   const row = JSON.parse(text);
-  assert.equal(row.event, 'tool_failure'); assert.equal(row.code, 'mcp_transport_error');
-  assert.equal(row.messageHead, 'mcp_transport_error'); assert.equal(row.errorClass, 'Error');
+  assert.equal(row.event, 'tool_failure'); assert.equal(row.code, 'child_exited');
+  assert.equal(row.messageHead, 'child_exited'); assert.equal(row.errorClass, 'Error');
   assert(!text.includes('synthetic-private-payload')); assert(!('payload' in row));
 });

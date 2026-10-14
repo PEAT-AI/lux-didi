@@ -20,15 +20,22 @@ struct NativePCMFrameAssembler {
     }
 }
 struct NativePCMFrameRing {
+    /// 25 frames of 640 bytes (20 ms at 16 kHz) hold 500 ms of audio, so a sender stall up to
+    /// half a second drains without dropping a single converted frame.
+    static let capacityForSenderStall = 25
     private var frames: [Data] = []
+    private let capacity: Int
     private(set) var drops = 0
+    init(capacity: Int = NativePCMFrameRing.capacityForSenderStall) { self.capacity = capacity }
     mutating func push(_ frame: Data) {
         precondition(frame.count == 640)
-        if frames.count == 8 { frames.removeFirst(); drops += 1 }
+        if frames.count == capacity { frames.removeFirst(); drops += 1 }
         frames.append(frame)
     }
     mutating func pop() -> Data? { frames.isEmpty ? nil : frames.removeFirst() }
-    mutating func clear() { frames.removeAll(keepingCapacity: true) }
+    var count: Int { frames.count }
+    /// Returns how many still-buffered frames the clear discarded, so the ledger counts them.
+    mutating func clear() -> Int { let discarded = frames.count; frames.removeAll(keepingCapacity: true); return discarded }
 }
 
 /// One converter per capture lifetime. The input callback supplies each buffer exactly once.
@@ -75,12 +82,19 @@ struct NativeCaptureStatistics: Sendable {
     var tapBuffers = 0, convertedBytes = 0, convertFailures = 0, ringDrops = 0
     var maxRMS: Double = 0, inputSampleRate: Double = 0
     var inputChannels = 0
+    // Byte conservation ledger: convertedBytes == sentBytes + droppedBytes + residualBytes.
+    var sentBytes = 0, droppedBytes = 0, residualBytes = 0
+    var balances: Bool { convertedBytes == sentBytes + droppedBytes + residualBytes }
     mutating func add(_ other: NativeCaptureStatistics) {
         tapBuffers += other.tapBuffers; convertedBytes += other.convertedBytes
         convertFailures += other.convertFailures; ringDrops += other.ringDrops
+        sentBytes += other.sentBytes; droppedBytes += other.droppedBytes; residualBytes += other.residualBytes
         maxRMS = max(maxRMS, other.maxRMS)
         inputSampleRate = other.inputSampleRate; inputChannels = other.inputChannels
     }
+}
+struct NativePlaybackStatistics: Sendable {
+    var underruns = 0, lateAfterFlush = 0
 }
 struct NativeAudioCaptureSummary: Sendable {
     let capture: NativeCaptureStatistics
@@ -88,6 +102,7 @@ struct NativeAudioCaptureSummary: Sendable {
     let captureEpoch: UInt64
     let captureGeneration: UInt64
     let muted: Bool
+    let playback: NativePlaybackStatistics
 }
 
 /// The tap and drain task meet only through this locked eight-frame queue.
@@ -126,24 +141,33 @@ final class NativeCaptureBuffer: @unchecked Sendable {
                 }
                 level = data.isEmpty ? 0 : Float(sqrt(sum / Double(data.count / 2)))
                 statistics.maxRMS = max(statistics.maxRMS, Double(level))
+                let priorDrops = ring.drops
                 for frame in assembler.append(data) { ring.push(frame) }
+                statistics.ringDrops = ring.drops
+                statistics.droppedBytes += (ring.drops - priorDrops) * 640
             } catch { failure = true; statistics.convertFailures += 1 }
         }
         signal.yield(())
     }
     func next() -> (Data?, Float, Int, Bool) {
         lock.lock(); defer { lock.unlock() }
-        return (ring.pop(), muted ? 0 : level, ring.drops, failure)
+        let frame = ring.pop()
+        if let frame { statistics.sentBytes += frame.count }
+        return (frame, muted ? 0 : level, ring.drops, failure)
     }
     func setMuted(_ value: Bool) {
         lock.lock(); defer { lock.unlock() }
-        muted = value; ring.clear(); _ = assembler.discardPartial(); level = 0
+        muted = value
+        statistics.droppedBytes += ring.clear() * 640 + assembler.discardPartial()
+        level = 0
     }
     @discardableResult func stop() -> NativeCaptureStatistics {
         lock.lock(); defer { lock.unlock() }
         statistics.ringDrops = ring.drops
+        statistics.droppedBytes += ring.clear() * 640
+        statistics.residualBytes = assembler.discardPartial()
         let snapshot = statistics
-        stopped = true; ring.clear(); _ = assembler.discardPartial(); signal.finish()
+        stopped = true; signal.finish()
         return snapshot
     }
 }
@@ -296,6 +320,13 @@ final class NativeCaptureBuffer: @unchecked Sendable {
     private var configurationObserver: NSObjectProtocol?
     private var queuedOutput = 0
     private var outputGeneration: UInt64 = 0
+    /// Bumped only by a barge-in flush, so a chunk whose turn was flushed in flight is dropped.
+    private var turnGeneration: UInt64 = 0
+    private var scheduledPlaybackFrames = 0
+    private var playback = NativePlaybackStatistics()
+    /// ~80 ms of 24 kHz mono audio (1920 frames) queued before a turn starts, so a bursty
+    /// provider never begins playback on an empty queue and underruns mid-syllable.
+    static let playbackPrebufferFrames = 1920
     private var captureGeneration: UInt64 = 0
     private var captureStatistics = NativeCaptureStatistics()
     private var drainFrames = 0
@@ -387,7 +418,7 @@ final class NativeCaptureBuffer: @unchecked Sendable {
             engine.prepare()
             do { try engine.start() }
             catch { throw NativeLiveAudioError.engineFailure(error as NSError) }
-            player.play()
+            // Playback starts in write(_:) only after the prebuffer fills, never on an empty queue.
             route = "Microphone: " + Self.defaultDevice(input: true).name + " · Output: " + Self.defaultDevice(input: false).name
             activateCapture(capture, send: send)
             let token = captureGeneration
@@ -436,7 +467,10 @@ final class NativeCaptureBuffer: @unchecked Sendable {
         // Paused/rebuilding output is discarded, never buffered or replayed on Resume.
         if recovery.awaitingResume || recovery.pending != nil { return }
         guard let player, let engine, engine.isRunning, pcm.count.isMultiple(of: 2) else { throw LiveClientError.unavailable }
-        if queuedOutput >= 24 { try await flush() }
+        let entryTurn = turnGeneration
+        if queuedOutput >= 24 { flushOutput() }
+        // Barge-in flushed this chunk's turn while it was in flight: never schedule stale audio.
+        guard turnGeneration == entryTurn else { playback.lateAfterFlush += 1; return }
         guard let format = AVAudioFormat(standardFormatWithSampleRate: 24000, channels: 1) else {
             throw NativeLiveAudioError.unsupportedFormat
         }
@@ -451,7 +485,8 @@ final class NativeCaptureBuffer: @unchecked Sendable {
             }
         }
         let token = outputGeneration
-        queuedOutput += 1; onOutput?(true); isPlayingOutput = true
+        if player.isPlaying && queuedOutput == 0 { playback.underruns += 1 }
+        queuedOutput += 1; scheduledPlaybackFrames += Int(buffer.frameLength); onOutput?(true); isPlayingOutput = true
         var sum: Double = 0
         pcm.withUnsafeBytes { bytes in
             for sample in bytes.bindMemory(to: Int16.self) {
@@ -466,18 +501,20 @@ final class NativeCaptureBuffer: @unchecked Sendable {
                 if self.queuedOutput == 0 { self.onOutput?(false); self.isPlayingOutput = false; self.outputLevel = 0 }
             }
         }
-        if !player.isPlaying { player.play() }
+        if !player.isPlaying && scheduledPlaybackFrames >= Self.playbackPrebufferFrames { player.play() }
     }
-    func flush() async throws { flushOutput() }
+    /// Barge-in: invalidate the queued turn so an in-flight chunk cannot be scheduled after the flush.
+    func flush() async throws { flushOutput(); turnGeneration &+= 1 }
     private func flushOutput() {
-        outputGeneration &+= 1; player?.stop(); queuedOutput = 0; onOutput?(false); isPlayingOutput = false; outputLevel = 0
+        outputGeneration &+= 1; player?.stop(); queuedOutput = 0; scheduledPlaybackFrames = 0; onOutput?(false); isPlayingOutput = false; outputLevel = 0
     }
     func stop() {
         let epoch = captureEpoch, captureToken = captureGeneration, wasMuted = muted
         captureEpoch &+= 1; recovery.stop(); sendFrame = nil; muted = false
         if captureLifetimeActive {
             terminalCaptureSummary = NativeAudioCaptureSummary(capture: captureStatistics,
-                drainFrames: drainFrames, captureEpoch: epoch, captureGeneration: captureToken, muted: wasMuted)
+                drainFrames: drainFrames, captureEpoch: epoch, captureGeneration: captureToken, muted: wasMuted,
+                playback: playback)
             captureLifetimeActive = false
         }
     }

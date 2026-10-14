@@ -3,9 +3,10 @@ import './live-declarations.test.js';
 import assert from 'node:assert/strict';
 import { describe, test, type TestContext } from 'node:test';
 import WebSocket from 'ws';
-import { GeminiLiveVoiceAdapter, LiveVoiceError } from '../adapters/live-voice/index.js';
+import { GeminiLiveVoiceAdapter, LiveVoiceError, liveVoiceActivityDefaults } from '../adapters/live-voice/index.js';
 import type { GeminiLiveVoiceOptions, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceRequest } from '../adapters/live-voice/index.js';
 import { CANARY, speechActivityFrames, collect, control, deferred, fixture as providerFixture, options, pcm, ready as providerReady, request } from './live-voice-fixture.js';
+import { safeEvent } from '../host/log.js';
 
 const code = (expected: string) => (error: unknown) => error instanceof LiveVoiceError && error.code === expected && error.message === expected;
 const audio = () => ({ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from(pcm).toString('base64') } });
@@ -108,7 +109,7 @@ test('wire setup/history snapshots, readiness, PCM and three independent output 
     sessionResumption: {},
     model: 'models/explicit-live-test', generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'ExplicitVoice' } } }, thinkingConfig: { thinkingLevel: 'minimal' } },
     contextWindowCompression: { slidingWindow: { targetTokens: 32000 } },
-    realtimeInputConfig: { automaticActivityDetection: { startOfSpeechSensitivity: 'START_SENSITIVITY_LOW' } },
+    realtimeInputConfig: { automaticActivityDetection: { prefixPaddingMs: 300, silenceDurationMs: 1200, startOfSpeechSensitivity: 'START_SENSITIVITY_LOW', endOfSpeechSensitivity: 'END_SENSITIVITY_LOW' } },
     systemInstruction: { parts: [{ text: 'Synthetic system' }] }, inputAudioTranscription: {}, outputAudioTranscription: {},
   } });
   const endpoint = new URL(f.destination);
@@ -140,7 +141,7 @@ test('wire setup/history snapshots, readiness, PCM and three independent output 
   assert.equal(f.attempts, 1); assert.equal(f.frames.length, 4);
   assert.deepEqual(session.diagnostics?.(), {
     audioCalls: 1, audioBytes: pcm.byteLength,
-    pendingToolDropCalls: 0, pendingToolDropBytes: 0, drainingDropCalls: 1, drainingDropBytes: pcm.byteLength,
+    drainingDropCalls: 1, drainingDropBytes: pcm.byteLength,
     localWriteEnqueuedCalls: 1, localWriteEnqueuedPCMBytes: pcm.byteLength,
     localWriteCallbackSuccessCalls: 1, localWriteCallbackSuccessPCMBytes: pcm.byteLength,
     localWriteCallbackErrorCalls: 0, localWriteCallbackErrorPCMBytes: 0,
@@ -435,7 +436,7 @@ test('expired deadline and unrepresentable initial frame have zero credential/so
   assert.equal(keys, 0); assert.equal(sockets, 0);
 });
 
-test('Live tool batches use one response frame and suppress microphone audio until answered', async t => {
+test('microphone audio during a pending blocking call is forwarded live and byte-exact', async t => {
   const f = await fixture(t);
   const modelId = 'models/gemini-3.1-flash-live-preview';
   const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory, modelId, route: { enabled: true, provider: 'gemini', modelId, dataClasses: ['ordinary', 'private'] } })).open({ ...request(), languageCode: 'ar', tools: [
@@ -449,7 +450,7 @@ test('Live tool batches use one response frame and suppress microphone audio unt
   assert.deepEqual(setup.generationConfig.thinkingConfig, { thinkingLevel: 'minimal' });
   assert.equal(setup.historyConfig, undefined);
   assert.deepEqual(setup.contextWindowCompression, { slidingWindow: { targetTokens: 32000 } });
-  assert.deepEqual(setup.realtimeInputConfig, { automaticActivityDetection: { startOfSpeechSensitivity: 'START_SENSITIVITY_LOW' } });
+  assert.deepEqual(setup.realtimeInputConfig, { automaticActivityDetection: { ...liveVoiceActivityDefaults } });
   f.send({ setupComplete: {} }); await session.ready;
   assert.equal((await events.next()).value?.type, 'ready');
   f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x' } }, { id: 'c2', name: 'search_knowledge', args: { query: 'y' } }] } });
@@ -458,17 +459,32 @@ test('Live tool batches use one response frame and suppress microphone audio unt
   assert.equal(event?.type, 'toolCall');
   if (event?.type !== 'toolCall') throw Error('missing tool call');
   assert.deepEqual(event.calls.map(c => c.id), ['c1', 'c2']);
-  session.sendAudio({ pcm, dataClass: 'ordinary' });
-  assert.equal(session.droppedAudioFrames, 1);
-  session.sendToolResponse({ responses: [{ id: 'c1', name: 'search_knowledge', response: { markdown: 'one' } }, { id: 'c2', name: 'search_knowledge', response: { error: 'denied' } }] });
-  await f.frame(2);
-  assert.deepEqual(f.frames[1], { toolResponse: { functionResponses: [{ id: 'c1', name: 'search_knowledge', response: { markdown: 'one' } }, { id: 'c2', name: 'search_knowledge', response: { error: 'denied' } }] } });
-  session.sendAudio({ pcm, dataClass: 'ordinary' }); await f.frame(3);
-  session.close(); assert.equal((await session.done).droppedAudioFrames, 1);
+  const first = new Uint8Array([1, 0, 2, 0]); const second = new Uint8Array([3, 0, 4, 0]);
+  session.sendAudio({ pcm: first, dataClass: 'ordinary' });
+  session.sendAudio({ pcm: second, dataClass: 'ordinary' });
+  await f.frame(3);
+  assert.deepEqual(f.frames[1], { realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: Buffer.from(first).toString('base64') } } }, 'first pending frame reaches the provider');
+  assert.deepEqual(f.frames[2], { realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: Buffer.from(second).toString('base64') } } }, 'second pending frame follows byte-exact');
+  assert.equal(f.frames.some(frame => 'toolResponse' in (frame as object)), false, 'the batch is still unanswered');
+  session.sendToolResponse({ responses: [{ id: 'c1', name: 'search_knowledge', response: { markdown: 'one' } }, { id: 'c2', name: 'search_knowledge', response: { markdown: 'two' } }] });
+  await f.frame(4);
+  assert.deepEqual(f.frames[3], { toolResponse: { functionResponses: [{ id: 'c1', name: 'search_knowledge', response: { markdown: 'one' } }, { id: 'c2', name: 'search_knowledge', response: { markdown: 'two' } }] } }, 'one response frame answers both ids');
+  session.close();
   const diagnostics = session.diagnostics?.();
-  assert.equal(diagnostics?.audioCalls, 2); assert.equal(diagnostics?.audioBytes, pcm.byteLength * 2);
-  assert.equal(diagnostics?.pendingToolDropCalls, 1); assert.equal(diagnostics?.pendingToolDropBytes, pcm.byteLength);
-  assert.equal(diagnostics?.localWriteEnqueuedCalls, 1); assert.equal(diagnostics?.localWriteCallbackPendingCalls, 0);
+  assert.equal(diagnostics?.audioCalls, 2); assert.equal(diagnostics?.audioBytes, first.byteLength + second.byteLength);
+});
+
+test('languageCode accepts BCP-47 language-region, keeps ar-XA, and rejects malformed tags', async t => {
+  const f = await fixture(t);
+  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory })).open({ ...request(), languageCode: 'en-IN' }, control());
+  t.after(() => session.close());
+  await f.frame(1);
+  const setup = (f.frames[0] as { setup: Record<string, any> }).setup;
+  assert.equal(setup.generationConfig.speechConfig.languageCode, 'en-IN');
+  const adapter = new GeminiLiveVoiceAdapter(options());
+  for (const bad of ['e', 'english', 'en-IND', 'en_US', 'en-US-extra', '1n', 'EN']) {
+    assert.throws(() => adapter.open({ ...request(), languageCode: bad }, control()), code('invalid_request'));
+  }
 });
 
 test('3.8 Live omits thinking config and cancellation releases an unanswered batch', async t => {
@@ -494,7 +510,7 @@ test('3.8 Live omits thinking config and cancellation releases an unanswered bat
   assert.equal((await events.next()).value?.type, 'modelTurnStarted');
   assert.equal((await events.next()).value?.type, 'toolCall');
   assert.throws(() => session.sendToolResponse({ responses: [{ id: 'one', name: 'test', response: {} }] }), code('invalid_request'));
-  session.sendAudio({ pcm, dataClass: 'ordinary' }); assert.equal(session.droppedAudioFrames, 1);
+  session.sendAudio({ pcm, dataClass: 'ordinary' });
   f.send({ serverContent: { modelTurn: { parts: [audio()] } } });
   assert.equal((await events.next()).value?.type, 'audio', 'provider output remains admitted while a tool batch is pending');
   assert.equal((await events.next()).value?.type, 'modelTurnStarted');
@@ -532,6 +548,34 @@ test('binary invalid UTF-8 inside otherwise valid JSON is protocol_error', async
   f.sendRaw(Buffer.concat([Buffer.from('{"futureField":"'), Buffer.from([0xff]), Buffer.from('"}') ]));
   await assert.rejects(session.ready, code('protocol_error'));
   await session.done;
+});
+
+// Issue 209: the next real call must name the rejected frame without leaking any value.
+test('a rejected provider frame reports one shape-only diagnostic with no value or id', async t => {
+  const lines: string[] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => { lines.push(args.map(String).join(' ')); };
+  t.after(() => { console.error = original; });
+  const f = await providerFixture(t);
+  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory })).open(request(), control());
+  t.after(() => session.close());
+  await f.frame(1); f.send({ setupComplete: {} }); await session.ready;
+  f.send({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: CANARY } }] } } });
+  const outcome = await session.done;
+  assert.equal(outcome.code, 'protocol_error');
+  const rejected = lines.filter(line => line.includes('"live_frame_rejected"')).map(line => JSON.parse(line));
+  assert.equal(rejected.length, 1, 'exactly one rejection diagnostic');
+  const diagnostic = rejected[0] as { event: string; code: string; kind: string; bytes: number; keys: string[] };
+  assert.equal(diagnostic.event, 'live_frame_rejected');
+  assert.equal(diagnostic.code, 'protocol_error');
+  assert.equal(diagnostic.kind, 'serverContent');
+  assert.ok(Number.isSafeInteger(diagnostic.bytes) && diagnostic.bytes > 0, 'byte length is reported');
+  assert.ok(Array.isArray(diagnostic.keys) && diagnostic.keys.includes('serverContent.modelTurn.parts[].inlineData'), 'nested key names are reported');
+  assert.equal(lines.some(line => line.includes(CANARY)), false, 'no provider value leaks into the diagnostic');
+  assert.equal(JSON.stringify(diagnostic).includes(CANARY), false, 'no provider value leaks into the diagnostic');
+  assert.deepEqual(safeEvent(JSON.parse(JSON.stringify(diagnostic))), diagnostic, 'the diagnostic passes the host log whitelist');
+  assert.equal(safeEvent({ ...diagnostic, leaked: 'text' }), undefined, 'extra keys are refused');
+  assert.equal(safeEvent({ ...diagnostic, keys: ['serverContent', 'bad key name!'] }), undefined, 'a non-key path is refused');
 });
 
 test('provider fixture rejects unsupported setup schema with 1007 before ready', async t => {

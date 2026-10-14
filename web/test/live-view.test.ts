@@ -93,6 +93,32 @@ test('transcript labels user and Naya lines', () => {
   assert.deepEqual(liveTranscript(speaking), [{ role: 'user', text: 'hello' }, { role: 'naya', text: 'Hi there' }]);
 });
 
+test('transcript folds exact same-role fragments until a truthful turn boundary', () => {
+  const live: LiveCurrent = { state: 'speaking', cursor: 11, entries: [
+    { seq: 1, kind: 'inputTranscription', text: 'what is ' },
+    { seq: 2, kind: 'inputTranscription', text: 'on your mind?' },
+    { seq: 3, kind: 'outputTranscription', text: 'I am ' },
+    { seq: 4, kind: 'toolCall', tool: { name: 'search', status: 'called' } },
+    { seq: 5, kind: 'outputTranscription', text: 'ready' },
+    { seq: 6, kind: 'turnComplete' },
+    { seq: 7, kind: 'outputTranscription', text: 'Next' },
+    { seq: 8, kind: 'interrupted' },
+    { seq: 9, kind: 'outputTranscription', text: 'After' },
+    { seq: 10, kind: 'terminal' },
+    { seq: 11, kind: 'outputTranscription', text: 'Terminal tail' },
+  ] };
+  assert.deepEqual(liveTranscript(live), [
+    { role: 'user', text: 'what is on your mind?' },
+    { role: 'naya', text: 'I am ready' },
+    { role: 'naya', text: 'Next' },
+    { role: 'naya', text: 'After' },
+    { role: 'naya', text: 'Terminal tail' },
+  ]);
+  const html = liveMarkup(live);
+  assert.doesNotMatch(html, /<ol class="entries live-transcript"/);
+  assert.equal((html.match(/<strong>Naya<\/strong>/g) ?? []).length, 4);
+});
+
 test('result picks the newest accepted toolResult markdown and sources', () => {
   const result = liveResult(speaking);
   assert.equal(result?.markdown, '**Answer** see [source](https://example.org)');

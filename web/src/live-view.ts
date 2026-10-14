@@ -71,9 +71,16 @@ export function mergeLive(previous: LiveCurrent | undefined, next: LiveCurrent):
 export interface LiveLine { role: 'user' | 'naya'; text: string }
 export function liveTranscript(live: LiveCurrent): LiveLine[] {
   const lines: LiveLine[] = [];
+  let boundary = true;
   for (const entry of live.entries) {
-    if (entry.kind === 'inputTranscription' && entry.text) lines.push({ role: 'user', text: entry.text });
-    if (entry.kind === 'outputTranscription' && entry.text) lines.push({ role: 'naya', text: entry.text });
+    const role = entry.kind === 'inputTranscription' ? 'user' : entry.kind === 'outputTranscription' ? 'naya' : undefined;
+    if (role && entry.text) {
+      const previous = lines.at(-1);
+      if (!boundary && previous?.role === role) previous.text += entry.text;
+      else lines.push({ role, text: entry.text });
+      boundary = false;
+    }
+    if (entry.kind === 'turnComplete' || entry.kind === 'interrupted' || entry.kind === 'terminal') boundary = true;
   }
   return lines;
 }
@@ -157,7 +164,7 @@ export function liveMarkup(live: LiveCurrent | undefined, poll: LivePollState = 
   const error = state === 'error' ? '<p class="muted" role="status">Naya reported an error. The live session has stopped.</p>' : '';
   const muted = live?.muted ? '<p class="muted live-muted" role="status">Microphone muted</p>' : '';
   const transcript = lines.length
-    ? `<ol class="entries live-transcript">${lines.map(line => `<li class="entry"><strong>${line.role === 'user' ? 'You' : 'Naya'}</strong><p>${escapeHtml(line.text)}</p></li>`).join('')}</ol>`
+    ? `<div class="entries live-transcript">${lines.map(line => `<article class="entry"><strong>${line.role === 'user' ? 'You' : 'Naya'}</strong><p>${escapeHtml(line.text)}</p></article>`).join('')}</div>`
     : '<div class="entries live-transcript empty"><p class="muted">No live transcription yet.</p></div>';
   return `<section class="panel live" id="live-panel" aria-label="Naya live conversation">
     <p class="live-state" role="status" aria-live="polite">${escapeHtml(label)}</p>

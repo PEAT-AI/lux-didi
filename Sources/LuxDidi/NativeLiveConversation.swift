@@ -52,6 +52,13 @@ enum State: String, CaseIterable {
     private var startTask: Task<Void, Never>?
     private var generation: UInt64 = 0
     private let logsDirectory: URL?
+    private let launchId: String
+    // W10: one canonical native envelope, fractional seconds and a monotonic clock.
+    private static func logTimestamp(_ date: Date = Date()) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: date)
+    }
     private var limits: NativeLiveLimits?
     private var muted = false, speaking = false
     private var muteTask: Task<Void, Never>?
@@ -61,6 +68,7 @@ enum State: String, CaseIterable {
     var isCapturing: Bool { state == .connecting || state == .pausedForInput || device.isCapturing }
     init(authority: (origin: URL, request: NativeLiveRequestBuilder), dictationIsCapturing: @escaping () -> Bool, pickupJobID: String? = nil, logsDirectory: URL? = nil, audioDevice: NativeLiveAudioDevice? = nil) {
         self.logsDirectory = logsDirectory
+        self.launchId = ProcessInfo.processInfo.environment["LUX_LAUNCH_ID"] ?? "unknown"
         self.http = NativeLiveOperatorHTTP(authority: authority, pickupJobID: pickupJobID)
         self.dictationIsCapturing = dictationIsCapturing
         let device = audioDevice ?? NativeLiveAudioDevice(); self.device = device
@@ -181,14 +189,19 @@ enum State: String, CaseIterable {
         else if let reason = error as? LiveClientError { code = reason.rawValue }
         else if let audio = error as? NativeLiveAudioError { code = audio.rawValue }
         else { code = "connection_refused" }
-        var fields: [String: Any] = ["event": "live_precreate_failed", "failureClass": error is NativeLiveAudioError ? "audio" : "service", "code": code,
-                             "timestamp": ISO8601DateFormatter().string(from: Date())]
+        var fields: [String: Any] = ["event": "live_precreate_failed", "failureClass": error is NativeLiveAudioError ? "audio" : "service", "code": code]
         if let audio = error as? NativeLiveAudioError, let detail = audio.diagnosticDetail { fields["detail"] = detail }
         appendLocalDiagnostic(fields)
         return diagnostic
     }
     private func appendLocalDiagnostic(_ fields: [String: Any]) {
         guard let logsDirectory else { return }
+        var envelope = fields
+        envelope["ts"] = Self.logTimestamp()
+        envelope["mono"] = ProcessInfo.processInfo.systemUptime * 1000
+        envelope["level"] = "info"
+        envelope["process"] = "native"
+        envelope["launchId"] = launchId
         do {
             try FileManager.default.createDirectory(at: logsDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             let file = logsDirectory.appendingPathComponent("native-live.log")
@@ -198,7 +211,7 @@ enum State: String, CaseIterable {
             let handle = try FileHandle(forWritingTo: file)
             defer { try? handle.close() }
             try handle.seekToEnd()
-            var record = try JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys])
+            var record = try JSONSerialization.data(withJSONObject: envelope, options: [.sortedKeys])
             record.append(10); try handle.write(contentsOf: record)
         } catch { /* Logging must not change capture or session state. */ }
     }
@@ -210,7 +223,7 @@ enum State: String, CaseIterable {
             let transport = await coordinator.captureSummary(owner: owner)
             let capture = native.capture
             var fields: [String: Any] = ["event": "native_capture_summary",
-                "timestamp": ISO8601DateFormatter().string(from: Date()), "nativeState": nativeState,
+                "nativeState": nativeState,
                 "tapBuffers": capture.tapBuffers, "convertedBytes": capture.convertedBytes,
                 "convertFailures": capture.convertFailures, "maxRMS": capture.maxRMS,
                 "ringDrops": capture.ringDrops, "drainFrames": native.drainFrames,

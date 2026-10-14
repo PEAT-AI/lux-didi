@@ -1,9 +1,10 @@
-import { ApiError, request, stream } from './api';
+import { ApiError, authorityVersion, assertAuthority, request, stream } from './api';
 import { renderToolEvidence } from './markdown.ts';
 import type { Entry, Session, Recall, MemorySelectionSnapshot, ConnectedRouteStatus, ConnectedConsent, Status, ToolEvidence } from './protocol';
 interface RouteStatus extends ConnectedRouteStatus {}
 interface Conversation { scope: 'conversation' | 'standing'; sessionId: string; provider: string; model: string; state: 'active' | 'revoked' | 'route_changed'; revision: number; permittedClasses: string[]; latestRunId: string | null }
 interface Run { toolEvidence?: ToolEvidence[]; finalEntryId: string | null; runId: string; sessionId: string; state: 'accepted' | 'dispatch_intent' | 'terminal'; outcome: string | null; finalText: string | null; partialText: string; mayHaveBeenSent: boolean; sequence: number; memorySelection: MemorySelectionSnapshot | null }
+interface ViewLifetime { owner: string; generation: number; authority: AbortSignal; local: AbortSignal }
 type RecalledNote = Recall['hits'][number];
 const escape = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 export class ConnectedView {
@@ -17,51 +18,77 @@ export class ConnectedView {
   #memoryQuery = ''; #memoryHits: RecalledNote[] = []; #memorySelected: RecalledNote[] = []; #memoryError = ''; #memoryBusy = false; #memoryOpen = false;
   #error = ''; #busy = false; #controller: AbortController | undefined; #generation = 0; #consent = false; #remember = false;
   #conversationController: AbortController | undefined; #selectionToken = 0;
-  #opChain: Promise<void> = Promise.resolve(); #attaching = new Set<string>();
+  #opChain: Promise<void> = Promise.resolve(); #attaching = new Map<string, object>();
+  #lifecycleController = new AbortController();
   #storage() { return `didi-connected:${this.#owner}`; }
   #save() {
-    if (this.#owner) localStorage.setItem(this.#storage(), JSON.stringify({ sessionId: this.#conversation?.sessionId, draft: this.#draft, pending: this.#pending }));
+    if (this.#owner) localStorage.setItem(this.#storage(), JSON.stringify({ sessionId: this.#pending?.sessionId ?? this.#conversation?.sessionId, draft: this.#draft, pending: this.#pending }));
   }
-  detach() { this.#controller?.abort(); this.#controller = undefined; this.#generation++; }
-  reset() { this.#consent = false; this.#remember = false; this.detach(); this.#closeConversationStream(); this.#owner = ''; this.#displayName = 'Lux Didi'; this.#conversation = undefined; this.#run = undefined; this.#entries = []; this.#conversations = []; this.#draft = ''; this.#pending = undefined; this.#memoryQuery = ''; this.#memoryHits = []; this.#memorySelected = []; this.#memoryError = ''; this.#memoryBusy = false; this.#memoryOpen = false; }
+  #lifetime(): ViewLifetime { return { owner: this.#owner, generation: this.#generation, authority: authorityVersion(), local: this.#lifecycleController.signal }; }
+  #current(lifetime: ViewLifetime) { return lifetime.owner === this.#owner && lifetime.generation === this.#generation && lifetime.authority === authorityVersion() && !lifetime.local.aborted; }
+  #check(lifetime: ViewLifetime) {
+    assertAuthority(lifetime.authority);
+    if (!this.#current(lifetime)) throw new ApiError('VIEW_CHANGED', 'The conversation changed. Recover its current history before trying again.', 0);
+  }
+  detach(preserveBusy = false) { this.#controller?.abort(); this.#controller = undefined; this.#lifecycleController.abort(); this.#lifecycleController = new AbortController(); this.#generation++; if (!preserveBusy) this.#busy = false; this.#memoryBusy = false; }
+  reset() { this.#consent = false; this.#remember = false; this.detach(); this.#selectionToken++; this.#closeConversationStream(); this.#attaching.clear(); this.#owner = ''; this.#displayName = 'Lux Didi'; this.#status = { status: 'unconfigured' }; this.#error = ''; this.#conversation = undefined; this.#run = undefined; this.#entries = []; this.#conversations = []; this.#draft = ''; this.#pending = undefined; this.#memoryQuery = ''; this.#memoryHits = []; this.#memorySelected = []; this.#memoryError = ''; this.#memoryBusy = false; this.#memoryOpen = false; }
   async refresh(owner: string) {
     if (owner !== this.#owner) { this.reset(); this.#owner = owner; }
-    const token = this.#selectionToken;
+    const lifetime = this.#lifetime(), token = this.#selectionToken, draft = this.#draft, restoring = !this.#conversation;
     try {
-      const status = await request<Status>('/status');
-      this.#displayName = status.ownerProfile.displayName;
-      this.#status = await request<RouteStatus>('/chat/status');
-      const sessions = await request<{ items: Session[] }>('/sessions');
-      this.#conversations = [];
+      const status = await request<Status>('/status', { signal: lifetime.local }); this.#check(lifetime);
+      if (status.assistantId !== owner) throw new ApiError('VIEW_CHANGED', 'The current owner changed. Reconnect before restoring this conversation.', 0);
+      const route = await request<RouteStatus>('/chat/status', { signal: lifetime.local }); this.#check(lifetime);
+      const sessions = await request<{ items: Session[] }>('/sessions', { signal: lifetime.local }); this.#check(lifetime);
+      const conversations: { title: string; conversation: Conversation }[] = [];
       for (const session of sessions.items) {
-        try { this.#conversations.push({ title: session.title, conversation: await request<Conversation>(`/conversations/${session.id}`) }); }
-        catch (error) { if (!(error instanceof ApiError) || !['CONFLICT', 'NOT_FOUND'].includes(error.code)) throw error; }
+        try {
+          const conversation = await request<Conversation>(`/conversations/${session.id}`, { signal: lifetime.local }); this.#check(lifetime);
+          conversations.push({ title: session.title, conversation });
+        } catch (error) { this.#check(lifetime); if (!(error instanceof ApiError) || !['CONFLICT', 'NOT_FOUND'].includes(error.code)) throw error; }
       }
+      this.#check(lifetime);
       const saved = JSON.parse(localStorage.getItem(this.#storage()) ?? '{}');
-      this.#draft = typeof saved.draft === 'string' ? saved.draft : '';
-      if (saved.pending && typeof saved.pending.key === 'string' && typeof saved.pending.text === 'string' && typeof saved.pending.sessionId === 'string') this.#pending = { key: saved.pending.key, text: saved.pending.text, sessionId: saved.pending.sessionId, selectedMemoryEntryIds: Array.isArray(saved.pending.selectedMemoryEntryIds) ? saved.pending.selectedMemoryEntryIds.filter((id: unknown): id is string => typeof id === 'string') : [] };
-      const selected = this.#conversations.find(c => c.conversation.sessionId === saved.sessionId) ?? this.#conversations[0];
-      // A choice the user made while this refresh was loading always wins over the restored one.
-      if (token === this.#selectionToken) { if (selected) await this.select(selected.conversation.sessionId); else await this.clearSelection(); }
+      const savedConversation = conversations.find(c => c.conversation.sessionId === saved.sessionId);
+      this.#displayName = status.ownerProfile.displayName; this.#status = route; this.#conversations = conversations;
+      const pending = saved.pending && typeof saved.pending.sessionId === 'string' && typeof saved.pending.key === 'string' && typeof saved.pending.text === 'string'
+        ? { key: saved.pending.key, text: saved.pending.text, sessionId: saved.pending.sessionId, selectedMemoryEntryIds: Array.isArray(saved.pending.selectedMemoryEntryIds) ? saved.pending.selectedMemoryEntryIds.filter((id: unknown): id is string => typeof id === 'string') : [] } : undefined;
+      if (pending && pending.sessionId !== savedConversation?.conversation.sessionId) {
+        this.#pending ??= pending;
+        this.#error = 'Recover saved history before choosing another conversation. The pending session could not be verified; its acceptance key is retained.';
+        this.attach(); return;
+      }
+      if (restoring && savedConversation && draft === this.#draft && token === this.#selectionToken) {
+        this.#draft = typeof saved.draft === 'string' ? saved.draft : '';
+        if (pending) this.#pending = pending;
+      }
+      const selected = conversations.find(c => c.conversation.sessionId === this.#conversation?.sessionId) ?? savedConversation ?? conversations[0];
       this.#error = '';
-    } catch (error) { this.#error = error instanceof Error ? error.message : 'Connected status could not be read.'; }
-    this.attach();
+      this.#check(lifetime);
+      if (token === this.#selectionToken) {
+        if (selected) { await this.select(selected.conversation.sessionId, lifetime); return; }
+        await this.clearSelection(); this.#check(lifetime);
+      }
+      this.attach();
+    } catch (error) { if (this.#current(lifetime)) { this.#error = error instanceof Error ? error.message : 'Connected status could not be read.'; this.attach(); } }
   }
-  async select(sessionId: string) {
-    this.detach(); this.#closeConversationStream(); this.#run = undefined;
-    const generation = this.#generation, token = ++this.#selectionToken;
-    // Establish the conversation subscription before the durable snapshot/gap fill.
-    await this.#openConversationStream(sessionId);
-    if (generation !== this.#generation) return;
-    const conversation = await request<Conversation>(`/conversations/${sessionId}`);
-    const entries = (await request<{ entries: Entry[] }>(`/sessions/${sessionId}`)).entries;
-    if (generation !== this.#generation) return;
-    this.#conversation = conversation; this.#entries = entries;
-    if (conversation.latestRunId) { const run = await request<Run>(`/chat/${conversation.latestRunId}`); if (generation !== this.#generation) return; this.#run = run; }
-    this.#save(); this.attach();
-    await this.#publishSelection(sessionId, token);
-    if (generation !== this.#generation) return;
-    if (this.#run?.state !== 'terminal' && this.#run) void this.#watch(this.#run.runId);
+  async select(sessionId: string, actionLifetime?: ViewLifetime): Promise<ViewLifetime | undefined> {
+    if (!this.#owner || this.#busy && !actionLifetime) return;
+    if (actionLifetime) this.#check(actionLifetime);
+    this.detach(!!actionLifetime); this.#closeConversationStream(); this.#run = undefined;
+    const lifetime = this.#lifetime(), token = ++this.#selectionToken;
+    if (actionLifetime) Object.assign(actionLifetime, lifetime);
+    try {
+      await this.#openConversationStream(sessionId); this.#check(lifetime);
+      const conversation = await request<Conversation>(`/conversations/${sessionId}`, { signal: lifetime.local }); this.#check(lifetime);
+      const entries = (await request<{ entries: Entry[] }>(`/sessions/${sessionId}`, { signal: lifetime.local })).entries; this.#check(lifetime);
+      const run = conversation.latestRunId ? await request<Run>(`/chat/${conversation.latestRunId}`, { signal: lifetime.local }) : undefined; this.#check(lifetime);
+      this.#conversation = conversation; this.#entries = entries; this.#run = run;
+      this.#save(); this.attach();
+      await this.#publishSelection(sessionId, token); this.#check(lifetime);
+      if (run && run.state !== 'terminal') void this.#watch(run.runId, actionLifetime);
+      return this.#lifetime();
+    } catch (error) { if (this.#current(lifetime)) throw error; }
   }
   /** One FIFO chain for every run/selection application; a later user action always applies last. */
   #enqueue(task: () => Promise<void>): Promise<void> {
@@ -71,19 +98,20 @@ export class ConnectedView {
   }
   /** Publish the last explicitly chosen conversation; a superseded write never reaches the service. */
   async #publishSelection(sessionId: string, token: number) {
+    const lifetime = this.#lifetime();
     await this.#enqueue(async () => {
-      if (token !== this.#selectionToken) return;
+      if (!this.#current(lifetime) || token !== this.#selectionToken) return;
       const title = this.#conversations.find(item => item.conversation.sessionId === sessionId)?.title ?? sessionId;
-      try { await request('/conversation-selection', { method: 'POST', body: { sessionId, title } }); }
+      try { await request('/conversation-selection', { method: 'POST', body: { sessionId, title }, signal: lifetime.local }); }
       catch { /* a routing hint that could not be published never blocks the conversation */ }
     });
   }
   /** Clear only this principal's record; a failed clear never blocks logout or history. */
   async clearSelection() {
-    const token = ++this.#selectionToken;
+    const token = ++this.#selectionToken, lifetime = this.#lifetime();
     await this.#enqueue(async () => {
-      if (token !== this.#selectionToken) return;
-      try { await request('/conversation-selection/clear', { method: 'POST', body: {} }); }
+      if (!this.#current(lifetime) || token !== this.#selectionToken) return;
+      try { await request('/conversation-selection/clear', { method: 'POST', body: {}, signal: lifetime.local }); }
       catch { /* logout/expiry drops the record server-side anyway */ }
     });
   }
@@ -101,20 +129,19 @@ export class ConnectedView {
   /** A durable run accepted elsewhere appears here without a refresh; page B is never retargeted to A. */
   async #attachExternal(sessionId: string, runId: string, controller: AbortController) {
     if (this.#run?.runId === runId || this.#attaching.has(runId)) return;
-    this.#attaching.add(runId);
+    const lifetime = this.#lifetime();
+    const marker = {}; this.#attaching.set(runId, marker);
+    const current = () => this.#current(lifetime) && this.#conversationController === controller && this.#conversation?.sessionId === sessionId;
     try {
       await this.#enqueue(async () => {
-        if (this.#conversationController !== controller || this.#conversation?.sessionId !== sessionId || this.#run?.runId === runId) return;
-        const run = await request<Run>(`/chat/${runId}`);
-        if (this.#conversationController !== controller || this.#conversation?.sessionId !== sessionId) return;
-        this.#run = run; this.#save();
-        this.#entries = (await request<{ entries: Entry[] }>(`/sessions/${sessionId}`)).entries;
-        if (this.#conversationController !== controller) return;
-        this.attach();
+        if (!current() || this.#run?.runId === runId) return;
+        const run = await request<Run>(`/chat/${runId}`, { signal: lifetime.local }); if (!current()) return;
+        const entries = (await request<{ entries: Entry[] }>(`/sessions/${sessionId}`, { signal: lifetime.local })).entries; if (!current()) return;
+        this.#run = run; this.#entries = entries; this.#save(); this.attach();
         if (run.state !== 'terminal') void this.#watch(run.runId);
       });
-    } catch (error) { if (this.#conversationController === controller) { this.#error = error instanceof Error ? error.message : 'Could not load the accepted run.'; this.attach(); } }
-    finally { this.#attaching.delete(runId); }
+    } catch (error) { if (current()) { this.#error = error instanceof Error ? error.message : 'Could not load the accepted run.'; this.attach(); } }
+    finally { if (this.#attaching.get(runId) === marker) this.#attaching.delete(runId); }
   }
   attach() {
     if (this.#lastActive !== this.active) { this.#lastActive = this.active; this.onState(); }
@@ -127,7 +154,7 @@ export class ConnectedView {
       <p class="connected-disclosure">Starting a connected conversation sends its current and earlier selected turns to <strong>${escape(this.#status.provider ?? 'the configured provider')} / ${escape(this.#status.model ?? 'no model')}</strong>. It does not automatically send other sessions, Today or recall. Approved read tools may supply bounded evidence for your question under this conversation's frozen capabilities and route; revocation still stops execution. It sends stored local notes only when you explicitly select them for that message, under this connection's existing route and consent; no note is ever included silently and no new permission is granted. Only private conversation material and ordinary material you deliberately review here are permitted. Revocation cannot retract bytes already sent.</p>
       ${this.#status.consent ? connectedConsentIndicator(this.#status.consent) : `<label class="connected-consent" for="connected-consent"><input id="connected-consent" type="checkbox" ${this.#consent ? 'checked' : ''}> I agree to this route for a new conversation.</label><label class="connected-consent" for="connected-remember"><input type="checkbox" id="connected-remember" ${this.#remember ? 'checked' : ''}> Remember for this provider and route (including this model)</label>`}
       <button id="connected-start" class="secondary" ${!available || (!this.#consent && !this.#status.consent) || this.#busy ? 'disabled' : ''}>Start connected conversation</button>
-      ${this.#conversations.length ? `<label>Connected history<select id="connected-history">${this.#conversations.map(item => `<option value="${escape(item.conversation.sessionId)}" ${c?.sessionId === item.conversation.sessionId ? 'selected' : ''}>${escape(item.title)} · ${escape(item.conversation.model)} · ${escape(item.conversation.state)}</option>`).join('')}</select></label>` : ''}
+      ${this.#conversations.length ? `<label>Connected history<select id="connected-history" ${this.#busy ? 'disabled' : ''}>${this.#conversations.map(item => `<option value="${escape(item.conversation.sessionId)}" ${c?.sessionId === item.conversation.sessionId ? 'selected' : ''}>${escape(item.title)} · ${escape(item.conversation.model)} · ${escape(item.conversation.state)}</option>`).join('')}</select></label>` : ''}
       ${c ? `<div class="connected-state"><span class="tag">${escape(c.provider)} / ${escape(c.model)} · ${escape(c.state)}</span>${c.state !== 'active' ? '<p>This conversation is paused. History remains here. Start a new explicitly disclosed conversation to send again.</p>' : ''}<button id="connected-recover" class="quiet">Recover saved history</button><button id="connected-revoke" class="quiet" ${c.state === 'revoked' || this.#busy ? 'disabled' : ''}>Revoke conversation consent</button></div>
       <div id="connected-entries" class="connected-entries">${this.#entries.map(entry => `${entry.id === r?.finalEntryId ? renderToolEvidence(r.toolEvidence ?? []) : ''}<article class="entry ${entry.role}"><header><strong>${entry.role === 'assistant' ? 'Naya · saved answer' : 'You · saved locally'}</strong></header><p>${escape(entry.text)}</p></article>`).join('')}${r && !r.finalEntryId ? renderToolEvidence(r.toolEvidence ?? []) : ''}</div>
       ${r ? `<div id="connected-run" class="callout" role="status" data-run-id="${escape(r.runId)}">${r.state === 'terminal' ? r.outcome === 'complete' ? 'Answer saved durably.' : `No saved answer: ${escape(r.outcome)}.${r.mayHaveBeenSent ? ' Content may have been sent.' : ''}` : 'User turn accepted durably; waiting for a saved answer.'}${r.partialText && r.outcome !== 'complete' ? `<p class="provisional"><strong>Provisional · not a saved answer</strong><br>${escape(r.partialText)}</p>` : ''}${r.state !== 'terminal' ? '<button id="connected-cancel" class="quiet">Cancel model run</button>' : ''}${this.#usage(r)}</div>` : ''}
@@ -137,16 +164,25 @@ export class ConnectedView {
     </section>`;
     panel.querySelector<HTMLInputElement>('#connected-consent')?.addEventListener('change', event => { this.#consent = (event.target as HTMLInputElement).checked; this.attach(); });
     panel.querySelector<HTMLInputElement>('#connected-remember')?.addEventListener('change', event => { this.#remember = (event.target as HTMLInputElement).checked; });
-    panel.querySelector('#connected-standing-revoke')?.addEventListener('click', () => { const grant = this.#status.consent; if (grant) void this.#action(async () => { await request(`/conversations/${grant.sessionId}/revoke`, { method: 'POST', body: {} }); this.#status = await request<RouteStatus>('/chat/status'); this.#consent = false; this.attach(); }); });
-    panel.querySelector('#connected-start')?.addEventListener('click', () => { void this.#action(async () => {
-      if (!this.#consent && !this.#status.consent) return;
-      const grant = await request<Conversation>('/conversations', { method: 'POST', body: { title: 'Naya connected conversation', timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, ...(!this.#status.consent ? { consent: this.#consent, remember: this.#remember } : {}) }, signal: AbortSignal.timeout(8000) });
-      this.#consent = false; this.#remember = false; this.#status = await request<RouteStatus>('/chat/status'); this.#draft = ''; this.#pending = undefined;
-      this.#conversations.unshift({ title: 'Naya connected conversation', conversation: grant }); await this.select(grant.sessionId);
+    panel.querySelector('#connected-standing-revoke')?.addEventListener('click', () => { const grant = this.#status.consent; if (grant) void this.#action(async lifetime => {
+      await request(`/conversations/${grant.sessionId}/revoke`, { method: 'POST', body: {}, signal: lifetime.local }); this.#check(lifetime);
+      const status = await request<RouteStatus>('/chat/status', { signal: lifetime.local }); this.#check(lifetime); this.#status = status; this.#consent = false;
     }); });
-    panel.querySelector<HTMLSelectElement>('#connected-history')?.addEventListener('change', event => { const next = (event.target as HTMLSelectElement).value; void this.select(next).catch(error => { this.#error = error instanceof Error ? error.message : 'Could not open that connected conversation.'; this.attach(); }); });
-    panel.querySelector('#connected-recover')?.addEventListener('click', () => { if (c) void this.#action(() => this.select(c.sessionId)); });
-    panel.querySelector('#connected-revoke')?.addEventListener('click', () => { if (c) void this.#action(async () => { await request(`/conversations/${c.sessionId}/revoke`, { method: 'POST', body: {} }); await this.select(c.sessionId); this.#status = await request<RouteStatus>('/chat/status'); this.attach(); }); });
+    panel.querySelector('#connected-start')?.addEventListener('click', () => { void this.#action(async lifetime => {
+      if (!this.#consent && !this.#status.consent) return;
+      if (this.#pending) throw new Error('Recover saved history before starting another conversation. The pending acceptance key is retained.');
+      const grant = await request<Conversation>('/conversations', { method: 'POST', body: { title: 'Naya connected conversation', timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, ...(!this.#status.consent ? { consent: this.#consent, remember: this.#remember } : {}) }, signal: AbortSignal.any([lifetime.local, AbortSignal.timeout(8000)]) }); this.#check(lifetime);
+      const status = await request<RouteStatus>('/chat/status', { signal: lifetime.local }); this.#check(lifetime);
+      this.#consent = false; this.#remember = false; this.#status = status; this.#draft = ''; this.#pending = undefined;
+      this.#conversations.unshift({ title: 'Naya connected conversation', conversation: grant }); return this.select(grant.sessionId, lifetime);
+    }); });
+    panel.querySelector<HTMLSelectElement>('#connected-history')?.addEventListener('change', event => { const next = (event.target as HTMLSelectElement).value, selection = this.select(next), lifetime = this.#lifetime(); void selection.catch(error => { if (this.#current(lifetime)) { this.#error = error instanceof Error ? error.message : 'Could not open that connected conversation.'; this.attach(); } }); });
+    panel.querySelector('#connected-recover')?.addEventListener('click', () => { if (c) void this.#action(lifetime => this.select(c.sessionId, lifetime)); });
+    panel.querySelector('#connected-revoke')?.addEventListener('click', () => { if (c) void this.#action(async lifetime => {
+      await request(`/conversations/${c.sessionId}/revoke`, { method: 'POST', body: {}, signal: lifetime.local }); this.#check(lifetime);
+      const status = await request<RouteStatus>('/chat/status', { signal: lifetime.local }); this.#check(lifetime); this.#status = status;
+      return this.select(c.sessionId, lifetime);
+    }); });
     panel.querySelector<HTMLTextAreaElement>('#connected-draft')?.addEventListener('input', event => { this.#draft = (event.target as HTMLTextAreaElement).value; this.#save(); });
     panel.querySelector('#connected-send-form')?.addEventListener('submit', event => { event.preventDefault(); if (c) void this.#send(c); });
     panel.querySelector<HTMLInputElement>('#connected-notes-query')?.addEventListener('input', event => { this.#memoryQuery = (event.target as HTMLInputElement).value; });
@@ -155,12 +191,14 @@ export class ConnectedView {
     panel.querySelectorAll<HTMLElement>('[data-remove]').forEach(button => button.addEventListener('click', () => { this.#removeNote(button.dataset.remove!); }));
     panel.querySelector('#connected-notes-clear')?.addEventListener('click', () => { this.#memorySelected = []; this.attach(); });
     panel.querySelector<HTMLDetailsElement>('#connected-notes')?.addEventListener('toggle', event => { this.#memoryOpen = (event.target as HTMLDetailsElement).open; });
-    panel.querySelector('#connected-cancel')?.addEventListener('click', () => { if (r && c) void this.#action(async () => { await request(`/chat/${r.runId}/cancel`, { method: 'POST', body: {} }); await this.select(c.sessionId); }); });
+    panel.querySelector('#connected-cancel')?.addEventListener('click', () => { if (r && c) void this.#action(async lifetime => { await request(`/chat/${r.runId}/cancel`, { method: 'POST', body: {}, signal: lifetime.local }); this.#check(lifetime); return this.select(c.sessionId, lifetime); }); });
   }
-  async #action(action: () => Promise<void>) {
-    if (this.#busy) return; this.#busy = true; this.#error = ''; this.attach();
-    try { await action(); } catch (error) { this.#error = error instanceof Error ? error.message : 'Could not confirm this action. Your draft remains; recover history before explicitly sending again.'; }
-    finally { this.#busy = false; this.attach(); }
+  async #action(action: (lifetime: ViewLifetime) => Promise<ViewLifetime | void>) {
+    if (this.#busy || !this.#owner) return;
+    let lifetime = this.#lifetime(); this.#busy = true; this.#error = ''; this.attach();
+    try { this.#check(lifetime); const selected = await action(lifetime); if (selected) lifetime = selected; }
+    catch (error) { if (this.#current(lifetime)) this.#error = error instanceof Error ? error.message : 'Could not confirm this action. Your draft remains; recover history before explicitly sending again.'; }
+    finally { if (this.#current(lifetime)) { this.#busy = false; this.attach(); if (this.#run && this.#run.state !== 'terminal' && !this.#controller) void this.#watch(this.#run.runId); } }
   }
   /** A short local excerpt for display; never the whole stored record. */
   #excerpt(snippet: string): string { return snippet.length > 160 ? `${snippet.slice(0, 159)}…` : snippet; }
@@ -189,11 +227,12 @@ export class ConnectedView {
     </details>`;
   }
   async #findNotes() {
-    if (this.#memoryBusy) return;
+    if (this.#memoryBusy || !this.#owner) return;
+    const lifetime = this.#lifetime();
     this.#memoryBusy = true; this.#memoryError = ''; this.#memoryOpen = true; this.attach();
-    try { this.#memoryHits = (await request<Recall>(`/recall?q=${encodeURIComponent(this.#memoryQuery)}&limit=20`)).hits; }
-    catch (error) { this.#memoryError = error instanceof Error ? error.message : 'Local notes could not be read.'; }
-    finally { this.#memoryBusy = false; this.attach(); }
+    try { const hits = (await request<Recall>(`/recall?q=${encodeURIComponent(this.#memoryQuery)}&limit=20`, { signal: lifetime.local })).hits; this.#check(lifetime); this.#memoryHits = hits; }
+    catch (error) { if (this.#current(lifetime)) this.#memoryError = error instanceof Error ? error.message : 'Local notes could not be read.'; }
+    finally { if (this.#current(lifetime)) { this.#memoryBusy = false; this.attach(); } }
   }
   #selectNote(id: string) {
     if (this.#memorySelected.some(hit => hit.entryId === id)) return;
@@ -205,41 +244,48 @@ export class ConnectedView {
     const text = this.#draft.trim(); if (!text || c.state !== 'active' || this.#run && this.#run.state !== 'terminal') return;
     // Freeze the message now: later draft or selection edits affect only a future message.
     const selectedIds = [...new Set(this.#memorySelected.map(hit => hit.entryId).filter((id): id is string => !!id))].sort();
-    await this.#action(async () => {
+    await this.#action(async lifetime => {
+      if (this.#conversation?.sessionId !== c.sessionId) return;
       const frozen = this.#pending && this.#pending.text === text && this.#pending.sessionId === c.sessionId
         && JSON.stringify(this.#pending.selectedMemoryEntryIds) === JSON.stringify(selectedIds);
+      if (this.#pending && !frozen) throw new Error('Recover saved history before sending a changed turn or selected notes. The pending acceptance key is retained; nothing was resent.');
       if (!frozen) this.#pending = { key: crypto.randomUUID(), text, sessionId: c.sessionId, selectedMemoryEntryIds: selectedIds };
       const pending = this.#pending!;
       this.#save();
       let run: Run;
       try {
-        run = await request<Run>('/chat', { method: 'POST', body: { sessionId: c.sessionId, text, ...(selectedIds.length ? { selectedMemoryEntryIds: selectedIds } : {}) }, idempotencyKey: pending.key, signal: AbortSignal.timeout(8000) });
+        run = await request<Run>('/chat', { method: 'POST', body: { sessionId: c.sessionId, text, ...(selectedIds.length ? { selectedMemoryEntryIds: selectedIds } : {}) }, idempotencyKey: pending.key, signal: AbortSignal.any([lifetime.local, AbortSignal.timeout(8000)]) });
       } catch (error) {
         if (selectedIds.length && error instanceof ApiError && error.code === 'MODEL_NOT_CONFIGURED') throw new Error('A selected note could not be included: it has no stored classification for this connection, or its class is not permitted by the current grant. Nothing was sent; deselect it or pick another note.');
         throw error;
       }
-      this.#run = run; this.#draft = ''; this.#pending = undefined; this.#save();
-      this.#entries = (await request<{ entries: Entry[] }>(`/sessions/${c.sessionId}`)).entries;
-      void this.#watch(run.runId);
+      this.#check(lifetime);
+      this.#run = run; if (this.#draft.trim() === text) this.#draft = ''; this.#pending = undefined; this.#save();
+      const entries = (await request<{ entries: Entry[] }>(`/sessions/${c.sessionId}`, { signal: lifetime.local })).entries; this.#check(lifetime); this.#entries = entries;
+      void this.#watch(run.runId, lifetime); return this.#lifetime();
     });
   }
-  async #watch(runId: string) {
-    this.detach(); const generation = this.#generation, controller = new AbortController(); this.#controller = controller;
+  async #watch(runId: string, actionLifetime?: ViewLifetime) {
+    if (this.#busy && !actionLifetime) return;
+    this.detach(true); const lifetime = this.#lifetime(), sessionId = this.#conversation?.sessionId, controller = new AbortController(); this.#controller = controller;
+    if (actionLifetime) Object.assign(actionLifetime, lifetime);
+    const current = () => this.#current(lifetime) && this.#controller === controller && this.#conversation?.sessionId === sessionId;
     try {
       await stream(`/chat/${runId}/events`, controller.signal, value => {
-        if (!value || typeof value !== 'object' || generation !== this.#generation) return;
+        if (!value || typeof value !== 'object' || !current()) return;
         const event = value as { type?: string; run?: Run; text?: string; sequence?: number };
         if (event.type === 'snapshot' && event.run) this.#run = event.run;
         else if (event.type === 'text' && typeof event.text === 'string' && this.#run && Number(event.sequence) > this.#run.sequence) { this.#run.partialText += event.text; this.#run.sequence = Number(event.sequence); }
         else if (event.type === 'resync_required') this.#error = 'Stream detached. Recover the saved run; no message was resent.';
         this.attach();
       });
-      if (generation !== this.#generation || !this.#conversation) return;
-      this.#run = await request<Run>(`/chat/${runId}`);
-      this.#entries = (await request<{ entries: Entry[] }>(`/sessions/${this.#conversation.sessionId}`)).entries;
-      if (this.#run.state !== 'terminal') this.#error = 'Stream closed. Recover saved history after reconnecting; no automatic send or retry.';
-    } catch (error) { if (!controller.signal.aborted) this.#error = error instanceof Error ? error.message : 'Stream disconnected; recover the saved run.'; }
-    finally { if (generation === this.#generation) { this.#controller = undefined; this.attach(); } }
+      if (!current() || !sessionId) return;
+      const run = await request<Run>(`/chat/${runId}`, { signal: lifetime.local }); if (!current()) return;
+      const entries = (await request<{ entries: Entry[] }>(`/sessions/${sessionId}`, { signal: lifetime.local })).entries; if (!current()) return;
+      this.#run = run; this.#entries = entries;
+      if (run.state !== 'terminal') this.#error = 'Stream closed. Recover saved history after reconnecting; no automatic send or retry.';
+    } catch (error) { if (current() && !controller.signal.aborted) this.#error = error instanceof Error ? error.message : 'Stream disconnected; recover the saved run.'; }
+    finally { if (current()) { this.#controller = undefined; this.attach(); } }
   }
 }
 

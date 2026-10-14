@@ -70,3 +70,39 @@ test('authority reset aborts unsignalled local transport and lets existing queue
   const cancelledByLifetime = aborted; if (!aborted) refuse(new DOMException('fixture releases old transport', 'AbortError'));
   await assert.rejects(old, { code: 'AUTHORITY_CHANGED' }); assert.equal(cancelledByLifetime, true);
 });
+
+test('only current STALE_AUTHORITY 409 resets; old stale and current CONFLICT do not', async () => {
+  api.clearAuthority(); let resets = 0; api.onAuthorityChanged(() => { resets++; });
+  globalThis.fetch = async () => envelope({ csrfToken: 'csrf1' }); await api.restoreSession();
+  const held = deferred<Response>(); globalThis.fetch = async () => held.promise; const old = api.request('/status');
+  const refusal = (code: string) => new Response(JSON.stringify({ error: { code, message: 'synthetic refusal' }, requestId: 'synthetic-id' }), { status: 409 });
+  globalThis.fetch = async () => refusal('STALE_AUTHORITY');
+  await assert.rejects(api.request('/sessions', { method: 'POST', body: {} }), { code: 'STALE_AUTHORITY' }); assert.equal(resets, 1);
+  globalThis.fetch = async () => envelope({ csrfToken: 'csrf2' }, 'E2'); await api.restoreSession();
+  held.resolve(refusal('STALE_AUTHORITY')); await assert.rejects(old, { code: 'AUTHORITY_CHANGED' }); assert.equal(resets, 1);
+  globalThis.fetch = async () => refusal('CONFLICT'); await assert.rejects(api.request('/commitments/a'), { code: 'CONFLICT' }); assert.equal(resets, 1);
+});
+
+test('late pairing and session responses cannot publish old CSRF', async () => {
+  for (const operation of [() => api.pair('synthetic'), () => api.restoreSession()]) {
+    api.clearAuthority(); const held = deferred<Response>(); globalThis.fetch = async () => held.promise;
+    const old = operation(); api.clearAuthority();
+    globalThis.fetch = async () => envelope({ csrfToken: 'current' }, 'E2'); await api.restoreSession();
+    held.resolve(envelope({ csrfToken: 'old' })); await assert.rejects(old, { code: 'AUTHORITY_CHANGED' });
+    let csrf = ''; globalThis.fetch = async (_url, init) => { csrf = new Headers(init?.headers).get('X-Didi-CSRF')!; return envelope({}, 'E2'); };
+    await api.request('/sessions', { method: 'POST', body: {} }); assert.equal(csrf, 'current');
+  }
+});
+
+test('stream admission and buffered frames cannot publish after authority reset', async () => {
+  api.clearAuthority(); globalThis.fetch = async () => envelope({ csrfToken: 'csrf1' }); await api.restoreSession();
+  const held = deferred<Response>(); globalThis.fetch = async () => held.promise;
+  let opens = 0, frames = 0;
+  const old = api.stream('/chat/a/events', new AbortController().signal, () => { frames++; }, () => { opens++; });
+  api.clearAuthority(); held.resolve(new Response('data: {"type":"snapshot"}\n\n'));
+  await assert.rejects(old, { code: 'AUTHORITY_CHANGED' }); assert.equal(opens, 0); assert.equal(frames, 0);
+  globalThis.fetch = async () => envelope({ csrfToken: 'csrf2' }, 'E2'); await api.restoreSession();
+  globalThis.fetch = async () => new Response('data: {"type":"first"}\n\ndata: {"type":"late"}\n\n');
+  const reading = api.stream('/chat/a/events', new AbortController().signal, () => { frames++; api.clearAuthority(); });
+  await assert.rejects(reading, { code: 'AUTHORITY_CHANGED' }); assert.equal(frames, 1);
+});

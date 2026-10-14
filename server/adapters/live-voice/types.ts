@@ -20,6 +20,14 @@ export interface GeminiLiveVoiceOptions {
 export interface LiveToolCall { id: string; name: string; args: JsonObject }
 export interface LiveToolResponse { id: string; name: string; response: JsonObject }
 export const liveVoiceTimerDefaults = Object.freeze({ handshakeMs: 15_000, idleMs: 60_000, sessionMs: 900_000, closeMs: 1000 });
+// Google Live API automatic activity detection defaults for setup.realtimeInputConfig.automaticActivityDetection.
+// prefixPaddingMs keeps the first syllables, silenceDurationMs tolerates a mid-sentence thinking pause,
+// and the LOW end sensitivity stops a brief pause from ending the turn.
+// https://ai.google.dev/api/live (AutomaticActivityDetection: prefixPaddingMs, silenceDurationMs, startOfSpeechSensitivity, endOfSpeechSensitivity)
+export const liveVoiceActivityDefaults = Object.freeze({
+  prefixPaddingMs: 300, silenceDurationMs: 1200,
+  startOfSpeechSensitivity: 'START_SENSITIVITY_LOW', endOfSpeechSensitivity: 'END_SENSITIVITY_LOW',
+} as const);
 export interface LiveVoiceRequest {
   resumptionHandle?: string;
   opening?: 'user_first' | 'model_first';

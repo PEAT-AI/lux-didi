@@ -3,7 +3,7 @@ import './live-declarations.test.js';
 import assert from 'node:assert/strict';
 import { describe, test, type TestContext } from 'node:test';
 import WebSocket from 'ws';
-import { GeminiLiveVoiceAdapter, LiveVoiceError } from '../adapters/live-voice/index.js';
+import { GeminiLiveVoiceAdapter, LiveVoiceError, liveVoiceActivityDefaults } from '../adapters/live-voice/index.js';
 import type { GeminiLiveVoiceOptions, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceRequest } from '../adapters/live-voice/index.js';
 import { CANARY, speechActivityFrames, collect, control, deferred, fixture as providerFixture, options, pcm, ready as providerReady, request } from './live-voice-fixture.js';
 
@@ -108,7 +108,7 @@ test('wire setup/history snapshots, readiness, PCM and three independent output 
     sessionResumption: {},
     model: 'models/explicit-live-test', generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'ExplicitVoice' } } }, thinkingConfig: { thinkingLevel: 'minimal' } },
     contextWindowCompression: { slidingWindow: { targetTokens: 32000 } },
-    realtimeInputConfig: { automaticActivityDetection: { startOfSpeechSensitivity: 'START_SENSITIVITY_LOW' } },
+    realtimeInputConfig: { automaticActivityDetection: { prefixPaddingMs: 300, silenceDurationMs: 1200, startOfSpeechSensitivity: 'START_SENSITIVITY_LOW', endOfSpeechSensitivity: 'END_SENSITIVITY_LOW' } },
     systemInstruction: { parts: [{ text: 'Synthetic system' }] }, inputAudioTranscription: {}, outputAudioTranscription: {},
   } });
   const endpoint = new URL(f.destination);
@@ -449,7 +449,7 @@ test('Live tool batches use one response frame and suppress microphone audio unt
   assert.deepEqual(setup.generationConfig.thinkingConfig, { thinkingLevel: 'minimal' });
   assert.equal(setup.historyConfig, undefined);
   assert.deepEqual(setup.contextWindowCompression, { slidingWindow: { targetTokens: 32000 } });
-  assert.deepEqual(setup.realtimeInputConfig, { automaticActivityDetection: { startOfSpeechSensitivity: 'START_SENSITIVITY_LOW' } });
+  assert.deepEqual(setup.realtimeInputConfig, { automaticActivityDetection: { ...liveVoiceActivityDefaults } });
   f.send({ setupComplete: {} }); await session.ready;
   assert.equal((await events.next()).value?.type, 'ready');
   f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x' } }, { id: 'c2', name: 'search_knowledge', args: { query: 'y' } }] } });
@@ -469,6 +469,19 @@ test('Live tool batches use one response frame and suppress microphone audio unt
   assert.equal(diagnostics?.audioCalls, 2); assert.equal(diagnostics?.audioBytes, pcm.byteLength * 2);
   assert.equal(diagnostics?.pendingToolDropCalls, 1); assert.equal(diagnostics?.pendingToolDropBytes, pcm.byteLength);
   assert.equal(diagnostics?.localWriteEnqueuedCalls, 1); assert.equal(diagnostics?.localWriteCallbackPendingCalls, 0);
+});
+
+test('languageCode accepts BCP-47 language-region, keeps ar-XA, and rejects malformed tags', async t => {
+  const f = await fixture(t);
+  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory })).open({ ...request(), languageCode: 'en-IN' }, control());
+  t.after(() => session.close());
+  await f.frame(1);
+  const setup = (f.frames[0] as { setup: Record<string, any> }).setup;
+  assert.equal(setup.generationConfig.speechConfig.languageCode, 'en-IN');
+  const adapter = new GeminiLiveVoiceAdapter(options());
+  for (const bad of ['e', 'english', 'en-IND', 'en_US', 'en-US-extra', '1n', 'EN']) {
+    assert.throws(() => adapter.open({ ...request(), languageCode: bad }, control()), code('invalid_request'));
+  }
 });
 
 test('3.8 Live omits thinking config and cancellation releases an unanswered batch', async t => {

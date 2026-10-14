@@ -2,7 +2,7 @@ import type { ClientRequest, IncomingMessage } from 'node:http';
 import WebSocket from 'ws';
 import type { RawData } from 'ws';
 import type { DataClass, GeminiLiveVoiceOptions, LiveVoiceControl, LiveVoiceDiagnostics, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession, LiveSocketFactory, LiveVoiceErrorCode, LiveToolResponse, LiveToolCall } from './types.js';
-import { LiveVoiceError, liveVoiceTimerDefaults } from './types.js';
+import { LiveVoiceError, liveVoiceActivityDefaults, liveVoiceTimerDefaults } from './types.js';
 
 // Fixed official v1beta endpoint. Neither destination nor credentials are public events.
 const networkErrors = new Set(['ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ECONNREFUSED', 'ECONNABORTED', 'ENETUNREACH', 'EHOSTUNREACH', 'ENOTFOUND', 'EAI_AGAIN']);
@@ -85,7 +85,8 @@ export class GeminiLiveVoiceAdapter implements LiveVoicePort {
       checkClass(turn.dataClass);
       return { role: turn.role, parts: [{ text: turn.text }] };
     });
-    if (request.languageCode !== undefined && !/^[a-z]{2}$/.test(request.languageCode)) fail('invalid_request');
+    // BCP-47 language or language-region: a bare primary subtag ("en") or a primary subtag plus region ("en-IN").
+    if (request.languageCode !== undefined && !/^[a-z]{2}(-[A-Za-z]{2})?$/.test(request.languageCode)) fail('invalid_request');
     if (request.tools !== undefined && (!Array.isArray(request.tools) || request.tools.length > 128 || request.tools.some(t => !object(t) || typeof t.name !== 'string' || !t.name || !object(t.parameters)))) fail('invalid_request');
     const system = request.system.text;
     if (Buffer.byteLength(JSON.stringify({ system, history, tools: request.tools })) > settings.limits.maxRequestBytes) fail('invalid_request');
@@ -98,7 +99,7 @@ export class GeminiLiveVoiceAdapter implements LiveVoicePort {
         ...(!live38 ? { thinkingConfig: { thinkingLevel: 'minimal' } } : {}) },
       ...(declarations?.length ? { tools: [{ functionDeclarations: declarations }] } : {}),
       contextWindowCompression: { slidingWindow: { targetTokens: 32000 } },
-      realtimeInputConfig: { automaticActivityDetection: { startOfSpeechSensitivity: 'START_SENSITIVITY_LOW' } },
+      realtimeInputConfig: { automaticActivityDetection: { ...liveVoiceActivityDefaults } },
       systemInstruction: { parts: [{ text: system }] }, inputAudioTranscription: {}, outputAudioTranscription: {},
     } });
     const initial = request.resumptionHandle ? undefined : history.length

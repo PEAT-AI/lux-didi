@@ -1675,7 +1675,7 @@ for (const status of [401, 403, 429]) test(`resumed HTTP upgrade refusal ${statu
   assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(row => row.kind === 'terminal').length, 1);
 });
 
-test('established WebSocket protocol error ends without resumption despite a saved handle', async t => {
+test('established WebSocket protocol error resumes through the saved handle', async t => {
   const h = await harness(t);
   const { session, attachment } = await attached(h, 'resume-protocol-final');
   const output = attachment.output[Symbol.asyncIterator]();
@@ -1683,9 +1683,13 @@ test('established WebSocket protocol error ends without resumption despite a sav
   h.f.send({ serverContent: { inputTranscription: { text: 'protocol sentinel' } } });
   await transcription(output, 'protocol sentinel');
   assert.equal(h.store.transaction(tx => tx.get('SELECT resumption_handle FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!.resumption_handle !== null, true);
-  // If the defect reconnects, refuse setup immediately rather than waiting a real timeout.
-  h.f.refuseUpgrades(403); h.f.invalidOpcode();
-  assert.deepEqual((await attachment.done).terminal, { state: 'failed', code: 'protocol_error' });
-  assert.equal(h.f.attempts, 1);
-  assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(row => row.kind === 'terminal').length, 1);
+  // A post-ready protocol error is recoverable, so the owner opens one resumption connection.
+  h.f.invalidOpcode();
+  await h.f.frame(2);
+  assert.equal(h.f.attempts, 2);
+  h.f.send({ setupComplete: {} });
+  await continuity(output, 'resumed');
+  assert.equal(h.owner.current().state, 'listening');
+  assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(row => row.kind === 'terminal').length, 0);
+  attachment.close(); await attachment.done;
 });

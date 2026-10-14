@@ -35,6 +35,20 @@ test('the label vocabulary never says recording', () => {
   assert.equal(/record/i.test(liveMarkup({ state: 'listening', cursor: 0, entries: [] })), false);
 });
 
+test('voice landing keeps the latest turn readable and secondary activity in a stable disclosure', () => {
+  const live: LiveCurrent = { ...speaking, entries: [
+    { seq: 1, kind: 'inputTranscription', text: 'What should I do next?' },
+    { seq: 2, kind: 'turnComplete' },
+    { seq: 3, kind: 'outputTranscription', text: 'Take one small step.' },
+    { seq: 4, kind: 'toolResult', tool: { name: 'search', status: 'completed', markdown: 'Source detail' } },
+  ] };
+  const closed = liveMarkup(live);
+  assert.match(closed, /class="live-latest-turn"[\s\S]*Take one small step\./);
+  assert.match(closed, /<details id="live-details" class="live-details">/);
+  assert.ok(closed.indexOf('live-latest-turn') < closed.indexOf('live-details'));
+  assert.match(liveMarkup(live, {}, true), /<details id="live-details" class="live-details" open>/);
+});
+
 test('the thinking label names the tool in flight', () => {
   const thinking: LiveCurrent = { state: 'thinking', cursor: 1, entries: [{ seq: 1, kind: 'toolCall', tool: { name: 'search', status: 'called' } }] };
   assert.equal(liveToolName(thinking), 'search');
@@ -93,6 +107,49 @@ test('transcript labels user and Naya lines', () => {
   assert.deepEqual(liveTranscript(speaking), [{ role: 'user', text: 'hello' }, { role: 'naya', text: 'Hi there' }]);
 });
 
+test('transcript folds exact same-role fragments until a truthful turn boundary', () => {
+  const live: LiveCurrent = { state: 'speaking', cursor: 11, entries: [
+    { seq: 1, kind: 'inputTranscription', text: 'what is ' },
+    { seq: 2, kind: 'inputTranscription', text: 'on your mind?' },
+    { seq: 3, kind: 'outputTranscription', text: 'I am ' },
+    { seq: 4, kind: 'toolCall', tool: { name: 'search', status: 'called' } },
+    { seq: 5, kind: 'outputTranscription', text: 'ready' },
+    { seq: 6, kind: 'turnComplete' },
+    { seq: 7, kind: 'outputTranscription', text: 'Next' },
+    { seq: 8, kind: 'interrupted' },
+    { seq: 9, kind: 'outputTranscription', text: 'After' },
+    { seq: 10, kind: 'terminal' },
+    { seq: 11, kind: 'outputTranscription', text: 'Terminal tail' },
+  ] };
+  assert.deepEqual(liveTranscript(live), [
+    { role: 'user', text: 'what is on your mind?' },
+    { role: 'naya', text: 'I am ready' },
+    { role: 'naya', text: 'Next' },
+    { role: 'naya', text: 'After' },
+    { role: 'naya', text: 'Terminal tail' },
+  ]);
+  const html = liveMarkup(live);
+  assert.doesNotMatch(html, /<ol class="entries live-transcript"/);
+  assert.equal((html.match(/<strong>Naya<\/strong>/g) ?? []).length, 4);
+});
+
+test('transcript preserves exact fragment deltas without spaces or deduplication', () => {
+  const live: LiveCurrent = { state: 'speaking', cursor: 7, entries: [
+    { seq: 1, kind: 'outputTranscription', text: 'Hel' },
+    { seq: 2, kind: 'outputTranscription', text: 'lo' },
+    { seq: 3, kind: 'turnComplete' },
+    { seq: 4, kind: 'outputTranscription', text: 'ha' },
+    { seq: 5, kind: 'outputTranscription', text: 'ha' },
+    { seq: 6, kind: 'turnComplete' },
+    { seq: 7, kind: 'inputTranscription', text: 'ok' },
+  ] };
+  assert.deepEqual(liveTranscript(live), [
+    { role: 'naya', text: 'Hello' },
+    { role: 'naya', text: 'haha' },
+    { role: 'user', text: 'ok' },
+  ]);
+});
+
 test('result picks the newest accepted toolResult markdown and sources', () => {
   const result = liveResult(speaking);
   assert.equal(result?.markdown, '**Answer** see [source](https://example.org)');
@@ -140,13 +197,30 @@ test('new session replaces prior entries while same session pages accumulate', (
   assert.equal(mergeLive(speaking, { ...next, since: speaking.since }).entries.length, 4);
 });
 
+test('cursor page replay replaces matching seq and a new session resets it', () => {
+  const first: LiveCurrent = { state: 'speaking', since: 'session-a', cursor: 2, entries: [
+    { seq: 1, kind: 'outputTranscription', text: 'Hel' },
+    { seq: 2, kind: 'outputTranscription', text: 'l' },
+  ] };
+  const replay: LiveCurrent = { state: 'speaking', since: 'session-a', cursor: 3, entries: [
+    { seq: 2, kind: 'outputTranscription', text: 'lo' },
+    { seq: 3, kind: 'turnComplete' },
+  ] };
+  const merged = mergeLive(first, replay);
+  assert.deepEqual(liveTranscript(merged), [{ role: 'naya', text: 'Hello' }]);
+  const reset: LiveCurrent = { state: 'listening', since: 'session-b', cursor: 1, entries: [
+    { seq: 1, kind: 'inputTranscription', text: 'new' },
+  ] };
+  assert.deepEqual(mergeLive(merged, reset).entries, reset.entries);
+});
+
 test('every tool result is inspectable and errors never show markdown', () => {
   const live: LiveCurrent = { ...speaking, entries: [...speaking.entries,
     { seq: 4, kind: 'toolResult', tool: { name: 'second', status: 'completed', markdown: 'Second answer', sources: [{ title: 'second source' }] } },
     { seq: 5, kind: 'toolResult', tool: { name: 'failed', status: 'error', markdown: 'DO NOT DISPLAY' } },
   ] };
   const html = liveMarkup(live);
-  assert.equal((html.match(/<details/g) ?? []).length, 3);
+  assert.equal((html.match(/<details class="live-tool-result"/g) ?? []).length, 3);
   assert.match(html, /Answer/); assert.match(html, /second source/); assert.match(html, /failed.*error/s);
   assert.doesNotMatch(html, /DO NOT DISPLAY/);
 });
@@ -202,7 +276,7 @@ test('a remembered note renders one evidence card with the saved words', () => {
   assert.equal((html.match(/class="live-remember"/g) ?? []).length, 1);
   assert.match(html, /Remembered/);
   assert.match(html, /the spare key is under the third pot/);
-  assert.equal((html.match(/<details/g) ?? []).length, 0);
+  assert.equal((html.match(/<details class="live-remember"/g) ?? []).length, 0);
 });
 
 test('every declined remember code renders one honest reason line', () => {

@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import { createHash } from 'node:crypto';
 import { controlled, Interrupted } from '../adapters/model/control.js';
+import { isToolFailureCode } from '../adapters/model/types.js';
 import type { Authority, DataClass, FunctionDeclaration, HostContext, JsonObject, ModelControl, Part, ToolCallIntent, ToolCallJournal, ToolCallRefusal, ToolDefinition, ToolOutcome, ToolRecord, ToolResultBinding, ToolResultGate, ToolResultRef, LoopResult } from '../adapters/model/types.js';
 
 /** Provider schemas are presentation only. Validation and approval retain the originals. */
@@ -31,11 +32,10 @@ export interface ToolCallsContext {
 const validRef = (ref: ToolResultRef | undefined): ref is ToolResultRef =>
   !!ref && typeof ref.id === 'string' && !!ref.id && typeof ref.sha256 === 'string' && /^[a-f0-9]{64}$/.test(ref.sha256);
 export interface ToolBatch { tools: ToolRecord[]; bindings: ToolResultBinding[]; responses: Part[]; error: { status: LoopResult['status']; reason: string } | undefined; accepted: readonly { binding: ToolResultBinding; response: JsonObject; dataClasses?: readonly DataClass[] }[] }
+interface CallOutcome { record: ToolRecord; binding?: ToolResultBinding; response?: Part; fatal?: { status: LoopResult['status']; reason: string } }
 export async function runToolCalls(owner: { journal: ToolCallJournal; resultGate: ToolResultGate }, calls: readonly { id?: string; name: string; args: JsonObject }[], ctx: ToolCallsContext): Promise<ToolBatch> {
   const { registry, host, seenIds } = ctx;
-  const tools: ToolRecord[] = [], bindings: ToolResultBinding[] = [], responses: Part[] = [];
-  const fatal = (status: LoopResult['status'], reason: string) => ({ tools, bindings, responses, error: { status, reason }, accepted: [] as { binding: ToolResultBinding; response: JsonObject }[] });
-    for (const [index, call] of calls.entries()) {
+  const runOne = async (index: number, call: { id?: string; name: string; args: JsonObject }): Promise<CallOutcome> => {
       const executionId = `${host.runId}:${ctx.step}:${index}`;
       const record: ToolRecord = { ...(call.id !== undefined ? { callId: call.id } : {}), name: call.name, executionId, status: 'refused', reason: 'unknown_tool' };
       const tool = registry.find(t => t.name === call.name);
@@ -77,32 +77,49 @@ export async function runToolCalls(owner: { journal: ToolCallJournal; resultGate
           if (!outcome || !['completed', 'failed', 'unknown'].includes(outcome.status)) throw Error('invalid_tool_outcome');
           record.status = outcome.status;
           const code = outcome.status === 'completed' ? undefined : outcome.code;
-          record.reason = code && ['mcp_transport_error', 'mcp_result_invalid', 'connector_error', 'handler_outcome'].includes(code) ? code : 'handler_outcome';
+          record.reason = code && isToolFailureCode(code) ? code : 'handler_outcome';
         }
       } catch (error) {
         record.status = dispatched ? (tool?.effect === 'write' ? 'unknown' : 'failed') : 'refused';
-        const code = error instanceof Error && 'code' in error && typeof error.code === 'string' && ['mcp_transport_error', 'mcp_result_invalid', 'connector_error', 'handler_outcome'].includes(error.code) ? error.code : 'handler_outcome';
+        const code = error instanceof Error && 'code' in error && typeof error.code === 'string' && isToolFailureCode(error.code) ? error.code : 'handler_outcome';
         record.reason = dispatched ? (error instanceof Interrupted ? 'handler_interrupted_or_failed' : code) : 'authority_or_validation_failed';
         if (error instanceof Interrupted) interrupted = error;
       }
-      tools.push(record);
-      if (journalState === 'failed') return fatal('error', 'tool_journal_failed');
-      if (journalState === 'existing') { record.status = 'unknown'; record.reason = 'tool_intent_exists'; return fatal('uncertain', 'tool_intent_exists'); }
+      if (journalState === 'failed') return { record, fatal: { status: 'error', reason: 'tool_journal_failed' } };
+      if (journalState === 'existing') { record.status = 'unknown'; record.reason = 'tool_intent_exists'; return { record, fatal: { status: 'uncertain', reason: 'tool_intent_exists' } }; }
       let ref: ToolResultRef;
       try {
         ref = record.status === 'completed' && outcome?.status === 'completed' ? outcome.result :
           record.status === 'refused' ? owner.journal.refuse(structuredClone(refusal), record.reason) :
           owner.journal.fail(structuredClone(intent!), record.status as 'failed' | 'unknown', record.reason);
-      } catch { return fatal('error', 'tool_journal_failed'); }
-      if (!validRef(ref)) return fatal('denied', 'tool_result_denied');
-      if (interrupted) return fatal(interrupted.status, interrupted.status);
-      if (record.status === 'unknown') return fatal('uncertain', record.reason === 'handler_outcome' ? 'unknown_tool_outcome' : record.reason);
+      } catch { return { record, fatal: { status: 'error', reason: 'tool_journal_failed' } }; }
+      if (!validRef(ref)) return { record, fatal: { status: 'denied', reason: 'tool_result_denied' } };
+      if (interrupted) return { record, fatal: { status: interrupted.status, reason: interrupted.status } };
+      if (record.status === 'unknown') return { record, fatal: { status: 'uncertain', reason: record.reason === 'handler_outcome' ? 'unknown_tool_outcome' : record.reason } };
       // Empty host-only placeholder; only the gate may reconstruct provider JSON.
       const binding: ToolResultBinding = { executionId, name: call.name, ...(call.id !== undefined ? { callId: call.id } : {}),
-        contentIndex: ctx.contentIndex, partIndex: responses.length, result: structuredClone(ref) };
-      bindings.push(binding);
-      responses.push({ functionResponse: { ...(call.id !== undefined ? { id: call.id } : {}), name: call.name, response: {} } });
-    }
+        contentIndex: ctx.contentIndex, partIndex: 0, result: structuredClone(ref) };
+      return { record, binding, response: { functionResponse: { ...(call.id !== undefined ? { id: call.id } : {}), name: call.name, response: {} } } };
+  };
+  // Dispatch across endpoints in parallel, sequential and ordered within one endpoint (the adapter refuses a
+  // concurrent same-endpoint call). Results keep their original batch order in the combined response.
+  const groups = new Map<string, number[]>();
+  calls.forEach((call, index) => {
+    const key = registry.find(t => t.name === call.name)?.endpointId ?? `unknown:${index}`;
+    const list = groups.get(key) ?? []; list.push(index); groups.set(key, list);
+  });
+  const outcomes: CallOutcome[] = new Array(calls.length);
+  await Promise.all([...groups.values()].map(async indices => {
+    for (const index of indices) outcomes[index] = await runOne(index, calls[index]!);
+  }));
+  const tools: ToolRecord[] = [], bindings: ToolResultBinding[] = [], responses: Part[] = [];
+  const fatal = (status: LoopResult['status'], reason: string) => ({ tools, bindings, responses, error: { status, reason }, accepted: [] as { binding: ToolResultBinding; response: JsonObject }[] });
+  for (const result of outcomes) {
+    tools.push(result.record);
+    if (result.fatal) return fatal(result.fatal.status, result.fatal.reason);
+    bindings.push({ ...result.binding!, partIndex: responses.length });
+    responses.push(result.response!);
+  }
   const batch: ToolBatch = { tools, bindings, responses, error: undefined, accepted: [] };
   return ctx.authorize ? authorizeToolBatch(owner, batch, ctx) : batch;
 }

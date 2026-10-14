@@ -57,7 +57,7 @@ restart. No dynamic watch and no automatic grant rebinding.
   "keyReference": "gemini-primary",
   "dataClasses": ["ordinary"],
   "preferences": { "dataClass": "ordinary", "language": "en-US", "register": "plain", "humor": "dry", "verbosity": "balanced" },
-  "limits": { "sessionMs": 900000 }
+  "limits": { "sessionMs": 3600000 }
 }
 ```
 

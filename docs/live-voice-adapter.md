@@ -41,7 +41,7 @@ await session.done;
 await consume;
 ```
 
-System, text-only whole initial history, declared classes, settings and deadlines are copied/validated before credentials or networking. Empty history is valid for initial audio; no fabricated user turn is sent. Initial history uses `clientContent` with `turnComplete:false`, after actual `setupComplete`. `ready` is not socket-open: exactly one setup requests AUDIO, configured voice and input/output transcription. Automatic activity detection is provider-owned with `START_SENSITIVITY_LOW`. Continuous input supports full duplex; `endAudioStream()` is optional and is never required for each turn. The adapter provides no manual activity or per-turn cancel API.
+System, text-only whole initial history, declared classes, settings and deadlines are copied/validated before credentials or networking. Empty history is valid for initial audio; no fabricated user turn is sent. Initial history uses `clientContent` with `turnComplete:false`, after actual `setupComplete`. `ready` is not socket-open: exactly one setup requests AUDIO, configured voice and input/output transcription. Automatic activity detection is provider-owned; the setup sends `prefixPaddingMs: 300`, `silenceDurationMs: 1200`, `startOfSpeechSensitivity: START_SENSITIVITY_LOW` and `endOfSpeechSensitivity: END_SENSITIVITY_LOW` from `liveVoiceActivityDefaults`, so the first syllables are not clipped and a mid-sentence thinking pause does not end the turn. These are the Google Live API `setup.realtimeInputConfig.automaticActivityDetection` fields (https://ai.google.dev/api/live, AutomaticActivityDetection: prefixPaddingMs, silenceDurationMs, startOfSpeechSensitivity, endOfSpeechSensitivity). Continuous input supports full duplex; `endAudioStream()` is optional and is never required for each turn. The adapter provides no manual activity or per-turn cancel API. `languageCode` accepts a BCP-47 language or language-region tag (`xx` or `xx-YY`) and is passed through unchanged, preserving the existing `ar` to `ar-XA` mapping; the adapter never selects the code, the profile does.
 
 Input is nonempty even-byte PCM16 little-endian 16 kHz. Output requires `audio/pcm;rate=24000` and valid even-byte PCM16 little-endian data. No resampling is performed. Early audio is refused with `not_ready`, never buffered. Each accepted audio frame is sent once, without reconnect, retry, resend or tool replay. A malformed audio argument or disallowed class fails the call without silently writing it. Frame or socket congestion limits terminate the session explicitly.
 
@@ -52,6 +52,8 @@ One session spans multiple turns. Events have a monotonically increasing adapter
 Combined serverContent fields are not discarded. Deterministic projection within one envelope is model parts, input transcription, output transcription, interruption, generation boundary, turn boundary, then activity facts. Ordering across envelopes follows actual ws delivery. Input transcription can arrive after output completion and remains independent evidence; durable association belongs to later orchestration. Interrupted output is followed by turnComplete without generationComplete. Generated audio does not prove playback.
 
 Unknown harmless protocol additions are ignored. Empty envelopes, malformed recognized fields, invalid PCM/rates and premature or repeated setup completion fail closed. Tool batches are surfaced as events; the host executes already-granted tools and answers each batch in one response frame. `goAway` projects the documented duration then closes honestly. Resumption updates expose only availability; raw handles are never emitted or persisted and no resumption is attempted. Sliding-window context compression and documented history/VAD controls are included; no resumption or reconnect is attempted.
+
+When a provider frame is rejected, the adapter emits one bounded stderr diagnostic event `live_frame_rejected` carrying the error code, the frame kind (the recognized top-level key, or `unknown`, `non_object` or `invalid_json`), the wire byte length and a bounded list of top-level and nested key-name paths. It never carries a value, text, audio or id. The host persists it to `host.log` through the closed `safeEvent` whitelist.
 
 ## Failure and resource bounds
 
@@ -117,9 +119,10 @@ event carries `timeLeftMs`; it stops outbound admission without finishing the
 connection. The owner may replace the draining connection immediately.
 
 Outcomes classify network failures and transport closes 1006/1011 as recoverable,
-as well as completion of a provider drain. Policy/setup rejection (including
-1008), authentication, quota, protocol errors and local session, idle or deadline
-expiry are final. Limits supplied by the owner override connection timers,
+as well as completion of a provider drain. A rejected frame after ready is also
+recoverable, so the owner can resume it. Pre-ready failures, policy/setup
+rejection (including 1008), authentication, quota and local session, idle or
+deadline expiry stay final. Limits supplied by the owner override connection timers,
 including the remaining session/idle budget on resumed connections. Recovery
 attempts and durable continuity belong only to the live owner.
 

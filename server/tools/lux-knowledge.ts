@@ -4,6 +4,7 @@ import type { ConnectorResult } from '../connectors/index.js';
 import type { DataClass } from '../adapters/model/types.js';
 import type { ConnectionPolicy, ModelSnapshot, TrustedRestrictions } from './types.js';
 import { canonicalJSON, detached, sha256 } from './canonical.js';
+import { shapeLuxKnowledge } from './live-shape.js';
 
 /** Only a complete, integrity-checked text envelope becomes model-visible evidence. */
 export function projectLuxResult(evidence: ConnectorResult & { requestedIds?: readonly number[] }, policy: ConnectionPolicy, port: McpPort, restrictions?: TrustedRestrictions): ModelSnapshot {
@@ -39,7 +40,7 @@ export function projectLuxResult(evidence: ConnectorResult & { requestedIds?: re
     texts.push(content['text']);
   }
   const response = {
-    status: 'completed', text: texts.join('\n'), source: detached(source), entitySha256: payload.sha256,
+    status: 'completed', text: shapeLuxKnowledge(evidence.tool, texts.join('\n')).text, source: detached(source), entitySha256: payload.sha256,
     sourceVersion: 'unknown', observedAt: evidence.observedAt, coverage: detached(evidence.coverage),
     ...(evidence.requestedIds === undefined ? {} : { requestedIds: [...evidence.requestedIds], requestedIdsVerified: false }),
   };

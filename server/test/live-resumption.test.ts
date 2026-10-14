@@ -101,7 +101,7 @@ for (const status of [301, 400, 401, 403, 429, 500]) test(`HTTP upgrade refusal 
   assert.equal(f.attempts, 1); assert.equal(f.connections, 0); assert.equal(f.frames.length, 0);
 });
 
-test('a real WebSocket protocol violation after setupComplete is final', async t => {
+test('a real WebSocket protocol violation after setupComplete is recoverable through resumption', async t => {
   const f = await fixture(t);
   const errors: unknown[] = [];
   const session = new GeminiLiveVoiceAdapter(options({ socketFactory: (url, config) => {
@@ -114,7 +114,7 @@ test('a real WebSocket protocol violation after setupComplete is final', async t
   f.invalidOpcode();
   const outcome = await session.done; await captured.done;
   assert.ok(errors.includes('WS_ERR_INVALID_OPCODE'), 'the real receiver, not JSON parsing, detected the violation');
-  assert.equal(outcome.code, 'protocol_error'); assert.equal(Boolean(outcome.recoverable), false);
+  assert.equal(outcome.code, 'protocol_error'); assert.equal(Boolean(outcome.recoverable), true);
   assert.equal(f.attempts, 1);
 });
 

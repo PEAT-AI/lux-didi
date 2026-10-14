@@ -195,10 +195,14 @@ Optional `structuredContent` and `_meta` are accepted but never forwarded as
 unclassified model content; only permitted text content is projected.
 
 An empty SSE entity, missing matching response, invalid UTF-8 or malformed data
-payload produces the bounded `mcp_transport_error` code, not an uncaught JSON
-parse exception. An invalid decoded result uses `mcp_result_invalid`; other
+payload produces the bounded `sdk_protocol_rejected` stage, not an uncaught JSON
+parse exception. A decoded result the SDK rejects uses `invalid_result`; other
 classified connector exceptions use `connector_error`. `handler_outcome` is
-reserved for unclassified handler outcomes. These codes survive the tool journal
+reserved for unclassified handler outcomes. A dispatched call failure records
+exactly one closed stage: `timeout`, `cancelled`, `child_exited`, `pipe_closed`,
+`sdk_protocol_rejected` or `invalid_result`. `child_exited` is selected by the
+child's exit code or signal; `pipe_closed` covers a closed stdio or HTTP
+transport with no process exit. These codes survive the tool journal
 and model-visible response. Unknown transport outcomes remain unknown; there is
 no automatic retry of a dispatched call. Diagnostics contain safe error class
 and bounded message-code metadata, never remote response text.

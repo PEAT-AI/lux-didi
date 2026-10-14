@@ -30,7 +30,7 @@ const headers = { Subject: 'Synthetic subject line', From: 'Synthetic Sender <se
 function dataFor(name, args) {
   if (name === 'gmail_get_profile') return { emailAddress: 'owner@example.invalid', messagesTotal: 3, threadsTotal: 2 };
   if (name === 'gmail_list') return { messages: [{ id: 'm1', threadId: 't1', headers }, { id: 'm2', threadId: 't2', headers }] };
-  if (name === 'gmail_read') return { id: args.id ?? 'm1', threadId: 't1', headers, body: 'b'.repeat(5000) };
+  if (name === 'gmail_read') return { id: args.id ?? 'm1', threadId: 't1', headers, body: 'b'.repeat(20000) };
   if (name === 'gcal_calendars') return { calendars: [{ id: 'primary', summary: 'Primary' }, { id: 'work', summary: 'Work' }] };
   if (name === 'gcal_list') return { events: [{ id: 'e1', summary: 'Synthetic standup', location: 'Room 1', start: { dateTime: '2024-01-01T09:00:00Z' }, htmlLink: 'https://calendar.google.com/event?eid=e1' }] };
   return { written: true };

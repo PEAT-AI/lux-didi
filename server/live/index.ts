@@ -780,7 +780,7 @@ export class LiveSessionOwner {
           }); continue;
         }
         if (event.type === 'toolCallCancellation') { for (const id of event.ids) handle.pendingCallIds.delete(id); handle.thinking = handle.pendingCallIds.size > 0; continue; }
-        if (event.type === 'interrupted') { for (const id of handle.pendingCallIds) handle.bargeInCallIds.add(id); handle.speaking = false; continue; }
+        if (event.type === 'interrupted') { for (const id of handle.pendingCallIds) handle.bargeInCallIds.add(id); handle.speaking = false; }
         if (event.type === 'turnComplete' || event.type === 'generationComplete') handle.speaking = false;
         if (event.type === 'waitingForInput') { handle.thinking = !event.value; if (event.value) handle.speaking = false; }
         if (event.type === 'audio') { handle.thinking = false; handle.speaking = true; this.#pushChunk(handle, { kind: 'audio', pcm: event.pcm }); continue; }

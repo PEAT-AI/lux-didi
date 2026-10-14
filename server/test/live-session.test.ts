@@ -1248,7 +1248,7 @@ test('a superseded tool batch records the late completion and never answers the 
   for (let i = 0; i < 20 && !superseded; i++) {
     const item = await outputs.next();
     if (item.done) break;
-    if (item.value.kind === 'marker' && item.value.marker.kind === 'toolResult' && item.value.marker.tool?.code === 'tool_call_superseded') superseded = true;
+    if (item.value.kind === 'marker' && item.value.marker.kind === 'toolResult' && item.value.marker.tool?.status === 'error' && /set aside/.test(item.value.marker.tool.markdown)) superseded = true;
   }
   assert.equal(superseded, true, 'the late completion is recorded with a superseded disposition');
   assert.equal(new LiveToolJobs(h.store, () => NOW).pending()[0]!.delivered, false, 'the superseded result is retained for pickup');

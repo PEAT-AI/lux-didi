@@ -163,7 +163,7 @@ buffers sustained user speech or reaches its audio high-water mark (issue 210).
 The adapter sends one neutral terminal `toolResponse` for the still-outstanding
 ids and flushes the buffered audio in order; the owner moves those ids to a
 superseded set, so the late completion is journalled as a `toolResult` marker
-carrying `code: tool_call_superseded` and is never sent to the provider. The tool
+carrying status `error` with the set-aside notice and is never sent to the provider. The tool
 keeps running and its result stays available as an undelivered pending job.
 
 ### Live remember finalization

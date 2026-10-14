@@ -925,7 +925,7 @@ export class LiveSessionOwner {
     for (const [index, projection] of projections.entries()) {
       const id = event.calls[index]!.id;
       if (handle.pendingCallIds.has(id)) publish('toolResult', projection);
-      else if (handle.supersededCallIds.has(id)) publish('toolResult', { ...projection, code: 'tool_call_superseded' });
+      else if (handle.supersededCallIds.has(id)) publish('toolResult', { name: projection.name, status: 'error', markdown: 'The user kept talking; this result was set aside and is available if they ask again.', sources: [] });
     }
     responses = responses.filter(response => handle.pendingCallIds.has(response.id));
     if (!(this.#settled(handle) || generation !== handle.generation)) {

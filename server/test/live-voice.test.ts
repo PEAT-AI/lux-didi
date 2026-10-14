@@ -399,7 +399,8 @@ test('expired deadline and unrepresentable initial frame have zero credential/so
 
 test('Live tool batches use one response frame and suppress microphone audio until answered', async t => {
   const f = await fixture(t);
-  const session = new GeminiLiveVoiceAdapter(options(f)).open({ ...request(), languageCode: 'ar', tools: [
+  const modelId = 'models/gemini-3.1-flash-live-preview';
+  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory, modelId, route: { enabled: true, provider: 'gemini', modelId, dataClasses: ['ordinary', 'private'] } })).open({ ...request(), languageCode: 'ar', tools: [
     { name: 'search_knowledge', description: 'Search', parameters: { type: 'OBJECT' } },
   ] }, control());
   const events = session.events[Symbol.asyncIterator](); t.after(() => session.close());
@@ -434,21 +435,44 @@ test('Live tool batches use one response frame and suppress microphone audio unt
 
 test('3.8 Live omits thinking config and cancellation releases an unanswered batch', async t => {
   const f = await fixture(t);
-  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory, modelId: 'models/gemini-3.8-live-test', route: { enabled: true, provider: 'gemini', modelId: 'models/gemini-3.8-live-test', dataClasses: ['ordinary', 'private'] } })).open(request(), control());
+  const tools = [
+    { name: 'first', description: 'First', parameters: { type: 'OBJECT', properties: { query: { type: 'STRING', enum: ['one', 'two'] } }, required: ['query'] } },
+    { name: 'second', description: 'Second', parameters: { type: 'OBJECT', properties: { ids: { type: 'ARRAY', items: { type: 'STRING' } } } } },
+  ];
+  const originalTools = structuredClone(tools);
+  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory, modelId: 'models/gemini-3.8-live-test', route: { enabled: true, provider: 'gemini', modelId: 'models/gemini-3.8-live-test', dataClasses: ['ordinary', 'private'] } })).open({ ...request(), tools }, control());
   t.after(() => session.close()); const events = session.events[Symbol.asyncIterator]();
-  await f.frame(1); const setup = (f.frames[0] as { setup: { generationConfig: object } }).setup;
+  await f.frame(1); const setup = (f.frames[0] as { setup: { generationConfig: object; tools: unknown } }).setup;
   assert.equal('thinkingConfig' in setup.generationConfig, false);
+  const expectedTools = [{ functionDeclarations: [
+    { name: 'first', description: 'First', parameters: { type: 'OBJECT', properties: { query: { type: 'STRING', enum: ['one', 'two'] } }, required: ['query'] }, behavior: 'BLOCKING' },
+    { name: 'second', description: 'Second', parameters: { type: 'OBJECT', properties: { ids: { type: 'ARRAY', items: { type: 'STRING' } } } }, behavior: 'BLOCKING' },
+  ] }];
+  assert.deepEqual(setup.tools, expectedTools);
+  assert.equal(JSON.stringify(setup.tools), JSON.stringify(expectedTools), 'serialized declaration and nested schema order is exact');
+  assert.deepEqual(tools, originalTools, 'provider setup never mutates caller declarations');
   f.send({ setupComplete: {} }); await session.ready; await events.next();
   f.send({ toolCall: { functionCalls: [{ id: 'one', name: 'test', args: {} }, { id: 'two', name: 'test', args: {} }] } });
   assert.equal((await events.next()).value?.type, 'modelTurnStarted');
   assert.equal((await events.next()).value?.type, 'toolCall');
   assert.throws(() => session.sendToolResponse({ responses: [{ id: 'one', name: 'test', response: {} }] }), code('invalid_request'));
   session.sendAudio({ pcm, dataClass: 'ordinary' }); assert.equal(session.droppedAudioFrames, 1);
+  f.send({ serverContent: { modelTurn: { parts: [audio()] } } });
+  assert.equal((await events.next()).value?.type, 'audio', 'provider output remains admitted while a tool batch is pending');
+  assert.equal((await events.next()).value?.type, 'modelTurnStarted');
   f.send({ toolCallCancellation: { ids: ['one', 'two'] } });
   assert.equal((await events.next()).value?.type, 'toolCallCancellation');
   session.sendAudio({ pcm, dataClass: 'ordinary' }); await f.frame(2);
   assert.equal('realtimeInput' in (f.frames[1] as object), true);
   session.close();
+});
+
+test('3.8 Live retains the single pending tool batch protocol guard', async t => {
+  const modelId = 'models/gemini-3.8-live';
+  const { f, session, captured } = await ready(t, { modelId, route: { enabled: true, provider: 'gemini', modelId, dataClasses: ['ordinary', 'private'] } });
+  f.send({ toolCall: { functionCalls: [{ id: 'one', name: 'test', args: {} }] } });
+  f.send({ toolCall: { functionCalls: [{ id: 'two', name: 'test', args: {} }] } });
+  assert.equal((await session.done).code, 'protocol_error'); await captured.done;
 });
 
 

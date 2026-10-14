@@ -534,6 +534,31 @@ test('binary invalid UTF-8 inside otherwise valid JSON is protocol_error', async
   await session.done;
 });
 
+// Issue 209: the next real call must name the rejected frame without leaking any value.
+test('a rejected provider frame reports one shape-only diagnostic with no value or id', async t => {
+  const lines: string[] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => { lines.push(args.map(String).join(' ')); };
+  t.after(() => { console.error = original; });
+  const f = await providerFixture(t);
+  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory })).open(request(), control());
+  t.after(() => session.close());
+  await f.frame(1); f.send({ setupComplete: {} }); await session.ready;
+  f.send({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: CANARY } }] } } });
+  const outcome = await session.done;
+  assert.equal(outcome.code, 'protocol_error');
+  const rejected = lines.filter(line => line.includes('"live_frame_rejected"')).map(line => JSON.parse(line));
+  assert.equal(rejected.length, 1, 'exactly one rejection diagnostic');
+  const diagnostic = rejected[0] as { event: string; code: string; kind: string; bytes: number; keys: string[] };
+  assert.equal(diagnostic.event, 'live_frame_rejected');
+  assert.equal(diagnostic.code, 'protocol_error');
+  assert.equal(diagnostic.kind, 'serverContent');
+  assert.ok(Number.isSafeInteger(diagnostic.bytes) && diagnostic.bytes > 0, 'byte length is reported');
+  assert.ok(Array.isArray(diagnostic.keys) && diagnostic.keys.includes('serverContent.modelTurn.parts[].inlineData'), 'nested key names are reported');
+  assert.equal(lines.some(line => line.includes(CANARY)), false, 'no provider value leaks into the diagnostic');
+  assert.equal(JSON.stringify(diagnostic).includes(CANARY), false, 'no provider value leaks into the diagnostic');
+});
+
 test('provider fixture rejects unsupported setup schema with 1007 before ready', async t => {
   const f = await providerFixture(t);
   const session = new GeminiLiveVoiceAdapter(options(f)).open({ ...request(), tools: [

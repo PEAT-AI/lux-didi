@@ -145,7 +145,8 @@ export async function startHost(config: HostConfig) {
   const logExit = (stage: string, reason: 'close' | 'exit'): void => {
     if (exitLogged) return;
     exitLogged = true;
-    log.event({ event: 'host_exit', stage, reason, ...(exitSignal ? { signal: exitSignal } : { code: process.exitCode ?? 0 }) });
+    // Exit logging is best effort: the state directory may already be gone.
+    try { log.event({ event: 'host_exit', stage, reason, ...(exitSignal ? { signal: exitSignal } : { code: process.exitCode ?? 0 }) }); } catch { /* nothing durable to write */ }
   };
   for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => { exitSignal = signal; });
   process.once('exit', () => { removeOwnDescriptor(descriptorPath); logExit(startupStage, 'exit'); });

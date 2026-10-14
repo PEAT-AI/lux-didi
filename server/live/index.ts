@@ -227,6 +227,7 @@ export class LiveSessionOwner {
   readonly #now: () => number;
   readonly #timeZone: string;
   readonly #schedule: NonNullable<LiveOwnerConfig['schedule']>;
+  readonly #audioFlowMs: number | undefined;
   #expiryTimer: ReturnType<NonNullable<LiveOwnerConfig['schedule']>> | undefined;
   readonly #profileIdentity: string;
   readonly #active = new Map<string, ActiveSession>();
@@ -242,6 +243,8 @@ export class LiveSessionOwner {
     this.#store = config.store;
     this.#voice = config.voice;
     this.#profile = validateLiveProfile(config.profile);
+    if (config.audioFlowMs !== undefined && (!Number.isSafeInteger(config.audioFlowMs) || config.audioFlowMs <= 0)) throw new LiveError('invalid_config', 'audioFlowMs must be a positive integer');
+    this.#audioFlowMs = config.audioFlowMs;
     this.#timeZone = config.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
     const now = config.now ?? Date.now;
     this.#now = () => {
@@ -631,12 +634,15 @@ export class LiveSessionOwner {
     this.#active.set(liveSessionId, handle);
     void handle.done.promise.catch(() => {});
     handle.sessionTimer = this.#schedule(() => this.#settle(handle, { state: 'failed', code: 'session_timeout' }, false, 'ended', null), this.#profile.limits.sessionMs);
-    // W10: a periodic host audio.flow every 5 s, rescheduled until the session settles.
-    const armAudioFlow = (): void => {
-      handle.audioFlowTimer = this.#schedule(() => { this.#emitAudioFlow(handle, false); if (!this.#settled(handle)) armAudioFlow(); }, 5000);
-      handle.audioFlowTimer.unref();
-    };
-    armAudioFlow();
+    // W10: a periodic host audio.flow every N ms, rescheduled until the session settles.
+    const flowMs = this.#audioFlowMs;
+    if (flowMs !== undefined) {
+      const armAudioFlow = (): void => {
+        handle.audioFlowTimer = this.#schedule(() => { this.#emitAudioFlow(handle, false); if (!this.#settled(handle)) armAudioFlow(); }, flowMs);
+        handle.audioFlowTimer.unref();
+      };
+      armAudioFlow();
+    }
     this.#armIdle(handle, this.#profile.limits.idleMs);
     void this.#consume(handle);
     const ready = session.ready.then(() => this.#readSnapshot(liveSessionId));

@@ -96,6 +96,8 @@ export interface LiveOwnerConfig {
   readonly timeZone?: string;
   /** Trusted in-process timer seam; not a transport or an error callback. */
   readonly schedule?: (callback: () => void, delayMs: number) => { unref(): void; cancel(): void };
+  /** W10: when set, emit a periodic host audio.flow every N ms and one FINAL row at terminal. */
+  readonly audioFlowMs?: number;
 }
 
 export interface LiveContext { readonly clientId: string; readonly auditId: string; readonly authorityEpoch: string }

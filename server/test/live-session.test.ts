@@ -94,6 +94,7 @@ async function harness(t: TestContext, overrides: {
   beforeGate?: () => Promise<void>;
   toolError?: boolean;
   scheduler?: DeadlineClock;
+  audioFlow?: boolean;
   system?: string;
   acceptedPrompt?: (ownerId: string) => NonNullable<ReturnType<typeof validateLiveProfile>['acceptedPrompt']>;
   routeClasses?: readonly ('ordinary' | 'private' | 'sensitive')[];
@@ -182,7 +183,7 @@ async function harness(t: TestContext, overrides: {
       return { id: record.entryId, text: record.text, dataClass };
     });
   };
-  owner = createLiveSessionOwner({ store, voice, profile, ...{ memorySource }, ...(tools ? { tools } : {}), now: () => overrides.scheduler?.now ?? clock, timeZone: 'Asia/Kolkata', ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
+  owner = createLiveSessionOwner({ store, voice, profile, ...{ memorySource }, ...(tools ? { tools } : {}), now: () => overrides.scheduler?.now ?? clock, timeZone: 'Asia/Kolkata', ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}), ...(overrides.audioFlow ? { audioFlowMs: 5000 } : {}) });
   t.after(async () => { await owner.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
   return { requests, calls, get memorySelections() { return memorySelections; }, f, store, owner, ctx: context(store), dir, advance: ms => { if (overrides.scheduler) overrides.scheduler.now += ms; else clock += ms; } };
 }
@@ -1891,7 +1892,7 @@ test('W10: a failure before session acceptance correlates by attemptId', async t
 
 test('W10: the host emits a periodic audio.flow every five seconds and one FINAL row', async t => {
   const scheduler = new DeadlineClock();
-  const h = await harness(t, { scheduler, limits: { sessionMs: 20000, idleMs: 60000 } });
+  const h = await harness(t, { scheduler, audioFlow: true, limits: { sessionMs: 20000, idleMs: 60000 } });
   const dir = mkdtempSync(join(tmpdir(), 'didi-flow-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const stop = captureHostDiagnostics(new HostLog(dir));
@@ -1910,7 +1911,8 @@ test('W10: the host emits a periodic audio.flow every five seconds and one FINAL
   assert.equal(flows().length, 2, 'the periodic row repeats');
   h.advance(20000); scheduler.runDue();
   await untilLogged(logPath, 'live.session_terminal', 1);
-  await tick(); await tick();
+  const deadline = Date.now() + 5000;
+  while (flows().filter(entry => entry.final === true).length !== 1 && Date.now() < deadline) await tick();
   const final = flows().filter(entry => entry.final === true);
   assert.equal(final.length, 1, 'exactly one FINAL row');
   assert.ok(flows().length >= 3, 'the FINAL row joins the periodic rows');

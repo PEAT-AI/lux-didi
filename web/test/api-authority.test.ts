@@ -122,3 +122,14 @@ for (const phase of ['error-body', 'reader']) test(`lifetime abort during stream
     const old = api.stream('/chat/a/events', new AbortController().signal, () => { assert.fail('no old frame'); });
     await entered.promise; api.clearAuthority(); await assert.rejects(old, { code: 'AUTHORITY_CHANGED' });
 });
+
+test('current stream failure and caller cancellation keep their original semantics', async () => {
+  api.clearAuthority(); let resets=0;api.onAuthorityChanged(()=>{resets++;});
+  globalThis.fetch=async()=>envelope({csrfToken:'csrf1'});await api.restoreSession();
+  globalThis.fetch=async()=>new Response(JSON.stringify({error:{code:'SYNTHETIC_UNAVAILABLE',message:'unavailable'}}),{status:503});
+  await assert.rejects(api.stream('/chat/a/events',new AbortController().signal,()=>{}),{code:'SYNTHETIC_UNAVAILABLE',status:503});
+  const entered=deferred<void>(),caller=new AbortController();
+  globalThis.fetch=async(_url,init)=>new Response(new ReadableStream({start(controller){init?.signal?.addEventListener('abort',()=>controller.error(new DOMException('caller abort','AbortError')),{once:true});},pull(){entered.resolve();}},{highWaterMark:0}));
+  const pending=api.stream('/chat/a/events',caller.signal,()=>{assert.fail('no frame');});await entered.promise;caller.abort();
+  await assert.rejects(pending,{name:'AbortError'});assert.equal(resets,0);
+});

@@ -60,7 +60,7 @@ export async function startFixture({configured = false} = {}) {
     if(cm){const c=get(cm[1]); if(!c) return error('NOT_FOUND','Commitment not found.',404);
       if(req.method==='GET') return ok({commitment:c,history:[]});
       if(conflict){conflict=false; c.revision++; c.title='Changed on another device'; put('commitment',c);}
-      if(body.expectedRevision!==c.revision) return error('REVISION_CONFLICT','Changed on another device.',409);
+      if(body.expectedRevision!==c.revision) return error('CONFLICT','Changed on another device.',409);
       const {expectedRevision,...changes}=body;
       return ok(put('commitment',{...c,...changes,status:cm[2]?({complete:'completed',cancel:'cancelled',reopen:'active'})[cm[2]]:c.status,revision:c.revision+1,updatedAt:new Date().toISOString()}));}
     if(path==='/api/v1/recall') {const q=url.searchParams.get('q')||''; const entries=all('entry').filter(e=>q && e.text.toLowerCase().includes(q.toLowerCase())); return ok({hits:entries.map(e=>({sessionId:e.sessionId,entryId:e.id,snippet:e.text,sourceTimestamp:e.capturedAt,sourceRefs:[{id:'synthetic-source',label:'Synthetic notebook',sourceTimestamp:null,availability:'missing',note:'Original notebook unavailable'}]})),totalMatches:entries.length,truncated:false,nextCursor:null});}

@@ -170,7 +170,7 @@ public struct LiveSocketTransport: LiveSocketConnecting, Sendable {
                 guard Set(object.keys).isSubset(of: ["type", "sequence", "journalSequence", "event", "reason"]),
                       object["sequence"] is NSNull,
                       let journalSequence = integer(object["journalSequence"]), journalSequence > 0,
-                      let event = object["event"] as? String, !event.isEmpty, event.utf8.count <= 64,
+                      let event = object["event"] as? String, ["rebuilding", "resumed"].contains(event),
                       object["reason"] == nil || object["reason"] is String else { throw LiveClientError.invalidFrame }
                 return .continuity(event: event)
             }

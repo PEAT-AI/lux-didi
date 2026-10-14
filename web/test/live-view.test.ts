@@ -252,3 +252,37 @@ test('remembered note text is escaped and never rendered as raw markup', () => {
   assert.doesNotMatch(html, /<img/);
   assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
 });
+
+
+test('terminal Live uses idle cadence while active and hidden cadence stay unchanged', () => {
+  assert.equal(liveDelay('ended', false), 4000);
+  assert.equal(liveDelay('error', false), 4000);
+  assert.equal(liveDelay('rebuilding', false), 1000);
+  assert.equal(liveDelay('ended', true), undefined);
+});
+
+test('unchanged empty cursor page retains complete Live projection without traversing entries', () => {
+  const entries = new Proxy([{seq:1,kind:'outputTranscription',text:'retained'}], {
+    get(target, key, receiver) { if (key === Symbol.iterator) throw new Error('retained-entry iteration'); return Reflect.get(target,key,receiver); },
+  }) as LiveCurrent['entries'];
+  const previous: LiveCurrent = {state:'ended',since:'session-a',cursor:1,entries};
+  const next: LiveCurrent = {...previous,entries:[]};
+  assert.equal(mergeLive(previous,next),previous);
+});
+
+test('empty cursor pages preserve entries while equal-cursor projection changes remain visible', () => {
+  const previous: LiveCurrent = {state:'ended',since:'session-a',cursor:1,entries:[{seq:1,kind:'outputTranscription',text:'retained'}]};
+  const changes: Partial<LiveCurrent>[] = [
+    {state:'error'}, {muted:true}, {cursor:2},
+    {pastSession:{outcome:'failed',endedAt:1,lastObservedAt:1}},
+    {jobs:[{id:'synthetic-job',originSessionId:'session-a',state:'completed',createdAt:1,markdown:'**Complete**',delivered:false}]},
+  ];
+  for (const change of changes) {
+    const merged=mergeLive(previous,{...previous,...change,entries:[]});
+    assert.notEqual(merged,previous);
+    assert.equal(merged.entries,previous.entries);
+    for (const [key,value] of Object.entries(change)) assert.deepEqual(merged[key as keyof LiveCurrent],value);
+  }
+  const previousExtra={...previous,memory:{status:'empty'}};
+  assert.notEqual(mergeLive(previousExtra,{...previousExtra,memory:{status:'selected'},entries:[]} as LiveCurrent),previousExtra);
+});

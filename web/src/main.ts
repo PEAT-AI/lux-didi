@@ -7,10 +7,12 @@ import { ApiError, request, pair, demoMode, onAuthorityChanged, authorityVersion
 import { liveMarkup, liveLabel, liveVoiceState, liveDelay, pollLiveView, liveActivity, activityMarkup, type LivePollState } from './live-view';
 import { connectionsMarkup } from './connector-status';
 import { settingsMarkup } from './settings-view';
+import { isMiniRoute, miniMarkup, miniState, type MiniState } from './mini';
 import type { Session, Entry, Commitment, CommitmentDetail, Plan, Recall, Status, LiveCurrent } from './protocol';
 
 type Tab = 'Conversation' | 'Today' | 'Memory' | 'Settings';
 const root = document.querySelector<HTMLDivElement>('#app')!;
+const miniRoute = isMiniRoute(location.search);
 const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 const tabs: Tab[] = ['Conversation', 'Today', 'Memory', 'Settings'];
 let tab: Tab = 'Conversation';
@@ -119,7 +121,23 @@ function settings() {
 }
 function pairingReady() { return pairingRequired && connection==='Pair this browser' && !pairingBusy && navigator.onLine; }
 function pairing() { return `<section class="panel pairing"><p class="eyebrow">A PRIVATE CONNECTION</p><h1>Hello. Let’s connect.</h1><p>Enter the one-time code shown by your local service. It stays out of the address bar and isn’t saved here.</p><form id="pair-form"><label for="pair-code">One-time pairing code</label><input id="pair-code" type="password" autocomplete="off" spellcheck="false" required ${disabled(!pairingReady())}><button ${disabled(!pairingReady())}>Pair this browser</button></form><p class="muted" role="status">${connection==='Connecting' ? 'Checking the local service. Wait for the check before entering a code.' : !navigator.onLine || connection==='Offline' ? 'You are offline. Check the connection after reconnecting before entering a code.' : connection==='Disconnected' ? 'Check the local service connection before entering a code.' : 'Enter the current one-time code to pair this browser.'}</p><p class="muted">Open your local service or Mac companion to get a code. Codes expire after five minutes and can only be used once.</p><button id="reconnect" class="quiet">Check connection again</button></section>`; }
+const miniGlow: MiniState[] = ['listening', 'thinking', 'speaking', 'tool'];
+function paintMiniStage() {
+  const stage = document.querySelector('.mini-stage');
+  if (!stage) return;
+  const state = miniState(orbState(), liveActivity(live));
+  stage.setAttribute('data-mini-state', state);
+  stage.querySelector('.presence-glow')?.classList.toggle('visible', miniGlow.includes(state));
+}
+function renderMini() {
+  if (!document.documentElement.classList.contains('mini')) document.documentElement.classList.add('mini');
+  orb?.destroy(); orb = undefined;
+  root.innerHTML = miniMarkup(miniState(orbState(), liveActivity(live)), orbCaptionMarkup());
+  const canvas = document.getElementById('didi-orb') as HTMLCanvasElement | null;
+  if (canvas) orb = new Orb(canvas, appliedOrbState = orbState());
+}
 function render() {
+  if (miniRoute) { renderMini(); return; }
   // Keep cursor and unsent text stable across connection checks and action completion.
   const focus = document.activeElement as HTMLInputElement | HTMLTextAreaElement | null;
   const focusId = focus?.id; const selection = focus && (focus.tagName === 'TEXTAREA' || ['text','search','password'].includes(focus.type)) ? [focus.selectionStart,focus.selectionEnd] : null;
@@ -318,6 +336,7 @@ function paintLive(){
   paintedLivePoll=panel ? livePoll : undefined;
   const caption=document.querySelector('.orb-caption');const markup=orbCaptionMarkup();if(caption && caption.innerHTML!==markup)caption.innerHTML=markup;
   const next=orbState();if(next!==appliedOrbState){appliedOrbState=next;orb?.setState(next);}
+  if(miniRoute)paintMiniStage();
 }
 onAuthorityChanged(reason=>{
   ++readGeneration;controller?.abort();controller=undefined;busy=false;readBusy=false;pairingBusy=false;connectionsBusy=false;liveBusy=false;

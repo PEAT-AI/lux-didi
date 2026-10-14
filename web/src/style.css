@@ -125,3 +125,24 @@
 @keyframes activity-in{from{opacity:0;transform:translateY(2px)}to{opacity:1;transform:none}}
 @keyframes activity-fade{0%,72%{opacity:1}100%{opacity:0}}
 @media (prefers-reduced-motion:reduce){.activity-line,.activity-done{animation:none}.activity-indicator{animation:none;opacity:.75}}
+
+/* W15 mini orb: the floating panel's compact orb-only route. A rounded dark
+   stage sized to the 300x300 panel, one orb and the shared voice-landing
+   caption (state line plus one tool phrase), never a transcript. */
+html.mini{background:transparent}
+html.mini body{background:transparent;overflow:hidden}
+.mini-orb{width:300px;height:300px}
+.mini-orb .orb-stage{min-height:300px;height:300px;border:none;border-radius:28px;margin:0;background:radial-gradient(circle at 50% 40%,#242a33 0,#161b21 58%,#0d1014 100%)}
+.mini-orb .orb-stage canvas{width:222px;height:222px}
+.mini-orb .orb-caption{max-width:250px;margin-top:-30px;padding:0 16px 16px}
+.mini-orb .orb-label{font-size:1.05rem;color:#ece7da}
+.mini-orb .voice-honesty{font-size:.7rem;color:#9aa2a8}
+.mini-orb .voice-honesty span{color:#7d858c}
+.mini-orb .activity-line{color:#cfd4da}
+.mini-orb .activity-indicator{background:#7fd4c1}
+.mini-orb .activity-mark{color:#7fd4c1}
+.mini-orb .activity-thinking{color:#e0b877}
+.mini-orb .activity-thinking .activity-indicator{background:#d9a65a}
+.mini-orb .activity-failed{color:#e79a86}
+.mini-orb .activity-failed .activity-indicator{background:#d97f66}
+.mini-orb .orb-stage canvas[data-state=IDLE],.mini-orb .orb-stage canvas[data-state=DISCONNECTED],.mini-orb .orb-stage canvas[data-state=INTERRUPTED]{filter:grayscale(.82) brightness(.9) opacity(.9)}

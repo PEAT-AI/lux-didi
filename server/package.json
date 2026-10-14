@@ -7,7 +7,7 @@
     "node": ">=26.0.0"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && mkdir -p dist/test/fixtures && cp test/fixtures/*.mjs dist/test/fixtures/",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/index.js",
     "test": "node --test --test-timeout=15000 dist/test/runtime.test.js dist/test/http.test.js"

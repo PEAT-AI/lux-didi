@@ -116,8 +116,10 @@ final class DiagnosticLogHTTPFixture: URLProtocol, @unchecked Sendable {
             if error is NativeLiveAudioError, let detail {
                 try audioRequire(nativeRecord["detail"] as? Int == detail, "native audio detail remains exact")
             }
+            let tsFormatter = ISO8601DateFormatter()
+            tsFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
             let timestamp = nativeRecord["ts"] as? String
-            try audioRequire(timestamp != nil && timestamp!.contains(".") && ISO8601DateFormatter().date(from: timestamp!) != nil,
+            try audioRequire(timestamp != nil && timestamp!.contains(".") && tsFormatter.date(from: timestamp!) != nil,
                 "native line ts is ISO 8601 with milliseconds")
             try audioRequire(nativeLine.last == 10, "native line retains JSONL newline")
             await task?.value

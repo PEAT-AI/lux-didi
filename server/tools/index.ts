@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
-import type { DataClass, HostContext, JsonObject, ToolCallIntent, ToolCallRefusal, ToolDefinition, ToolResultBinding, ToolResultGate, ToolResultRef } from '../adapters/model/types.js';
+import type { DataClass, HostContext, JsonObject, ToolCallIntent, ToolCallRefusal, ToolDefinition, ToolFailureCode, ToolResultBinding, ToolResultGate, ToolResultRef } from '../adapters/model/types.js';
+import { isMcpFailureStage, isToolFailureCode } from '../adapters/model/types.js';
 import { validateEndpointUrl, validateApprovedStdioEnv } from '../adapters/mcp/registry.js';
 import { endpointBinding } from '../adapters/mcp/port.js';
 import { ConnectorCompositionError, connectorDescriptor, CONNECTOR_ENVELOPES } from '../connectors/index.js';
@@ -12,6 +13,11 @@ export { toolsMigrations } from './schema.js';
 export type * from './types.js';
 
 const ownedStores = new WeakSet<object>();
+/** One closed stage for a dispatched call's unknown outcome: a stage itself, else the policy reason's closest stage. */
+function dispatchedFailureCode(reason: string): ToolFailureCode {
+  if (isMcpFailureStage(reason)) return reason;
+  return reason === 'response-oversize' ? 'invalid_result' : 'sdk_protocol_rejected';
+}
 const transactionDefinitions = new WeakMap<ToolsOwner, (runId: string, tx?: Transaction) => ToolDefinition[]>();
 const ownerBindings = new WeakMap<object, Pick<ToolsOwnerOptions, 'store' | 'registry' | 'ownerId'>>();
 /** Factory identity check: no second owner, port or registry may substitute for canonical authority. */
@@ -204,7 +210,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
       if (status !== 'failed' && status !== 'unknown') throw Error('invalid_terminal_status');
       return store.transaction(tx => {
         if (exactIntent(tx, call).state !== 'intent') throw Error('terminal_immutable'); validateCallRun(tx, call);
-        const code = ['mcp_transport_error', 'mcp_result_invalid', 'connector_error', 'handler_outcome'].includes(reason) ? reason : status === 'unknown' ? 'tool_unknown' : 'tool_failed';
+        const code = isToolFailureCode(reason) ? reason : status === 'unknown' ? 'tool_unknown' : 'tool_failed';
         return persistTerminal(tx, call, status, { response: { status, reason: code }, dataClasses: [] });
       });
     },
@@ -352,7 +358,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
           if (definitions.some(d => d.name === name)) throw new ConnectorCompositionError('ambiguous_model_tool_name', p.connectionId, p.connector);
           const declaration = declarations.find(candidate => candidate.name === name);
           if (!declaration) throw new ConnectorCompositionError('unknown_connector_tool', p.connectionId, p.connector);
-          definitions.push({ name, description: declaration.description, effect: 'read', accountId: p.endpoint.account, resourceId: p.endpoint.resource, validate: declaration.validate,
+          definitions.push({ name, description: declaration.description, effect: 'read', accountId: p.endpoint.account, resourceId: p.endpoint.resource, endpointId: p.endpoint.id, validate: declaration.validate,
             parameters: declaration.parameters,
             async execute(args, context) {
               if (context.signal.aborted) return { status: 'unknown' };
@@ -373,13 +379,13 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
               if (!call) return { status: 'failed' };
               let evidence: Awaited<ReturnType<typeof reader.call>>;
               try { evidence = await reader.call(name, args as Record<string, unknown>, context.signal); } catch (error) {
-                const code = error instanceof Error && 'code' in error && ['mcp_transport_error', 'mcp_result_invalid', 'connector_error', 'handler_outcome'].includes(String(error.code)) ? error.code as 'mcp_transport_error' | 'mcp_result_invalid' | 'connector_error' | 'handler_outcome' : 'handler_outcome';
+                const code = error instanceof Error && 'code' in error && typeof error.code === 'string' && isToolFailureCode(error.code) ? error.code : 'handler_outcome';
                 options.log?.({ event: 'tool_failure', code, tool: name, connector: p.connector, errorClass: error instanceof SyntaxError ? 'SyntaxError' : error instanceof Error ? 'Error' : 'UnknownThrow', messageHead: code });
-                return { status: code === 'mcp_transport_error' ? 'unknown' : 'failed', code };
+                return { status: code === 'connector_error' || code === 'handler_outcome' ? 'failed' : 'unknown', code };
               }
               if (context.signal.aborted) return { status: 'unknown' };
               if (evidence.state === 'unknown') {
-                const code = evidence.reason === 'mcp_result_invalid' ? 'mcp_result_invalid' : 'mcp_transport_error';
+                const code = dispatchedFailureCode(evidence.reason);
                 options.log?.({ event: 'tool_failure', code, tool: name, connector: p.connector, errorClass: 'Error', messageHead: code });
                 return { status: 'unknown', code };
               }
@@ -394,7 +400,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
               reportToolStatus?.(p.endpoint.id, null);
               let value: ModelSnapshot;
               try { value = descriptor.project(evidence, port, p); } catch (error) {
-                const code = error instanceof SyntaxError || (error instanceof Error && (error.message === 'unsupported_mcp_result' || error.message === 'unsupported_mcp_content')) ? 'mcp_result_invalid'
+                const code = error instanceof SyntaxError || (error instanceof Error && (error.message === 'unsupported_mcp_result' || error.message === 'unsupported_mcp_content')) ? 'invalid_result'
                   : error instanceof Error ? 'connector_error' : 'handler_outcome';
                 // Only safe class/code metadata, never remote payloads or arbitrary exception text.
                 options.log?.({ event: 'tool_failure', code, tool: name, connector: p.connector, errorClass: error instanceof SyntaxError ? 'SyntaxError' : error instanceof Error ? 'Error' : 'UnknownThrow', messageHead: code });

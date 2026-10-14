@@ -214,6 +214,9 @@ enum State: String, CaseIterable {
                 "tapBuffers": capture.tapBuffers, "convertedBytes": capture.convertedBytes,
                 "convertFailures": capture.convertFailures, "maxRMS": capture.maxRMS,
                 "ringDrops": capture.ringDrops, "drainFrames": native.drainFrames,
+                "sentBytes": capture.sentBytes, "droppedBytes": capture.droppedBytes,
+                "residualBytes": capture.residualBytes, "ledgerBalanced": capture.balances,
+                "playbackUnderruns": native.playback.underruns, "lateAfterFlushChunks": native.playback.lateAfterFlush,
                 "inputSampleRate": capture.inputSampleRate, "inputChannels": capture.inputChannels,
                 "captureEpoch": native.captureEpoch, "captureGeneration": native.captureGeneration,
                 "captureWasMuted": native.muted, "coordinatorSnapshotMatched": transport != nil]

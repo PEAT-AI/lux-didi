@@ -151,8 +151,10 @@ export class ConnectedView {
     panel.innerHTML = `<section class="panel connected-conversation" aria-label="Connected Naya conversation">
       <p class="eyebrow">EXPLICITLY CONNECTED · SEPARATE FROM LOCAL NOTES</p><h2>Talk with ${escape(this.#displayName)}</h2>
       <p id="connected-route" role="status">${available ? `Locally configured: ${escape(this.#status.provider)} / ${escape(this.#status.model)}. This is not a reachability check.` : `Model ${escape(this.#status.status)}${this.#status.code ? ` (${escape(this.#status.code)})` : ''}. Local notes, Today and recall still work.`}</p>
+      <details class="connected-chat"><summary><span>Connected text chat</span><small>Talk with ${escape(this.#displayName)} through the connected provider</small></summary>
       <p class="connected-disclosure">Starting a connected conversation sends its current and earlier selected turns to <strong>${escape(this.#status.provider ?? 'the configured provider')} / ${escape(this.#status.model ?? 'no model')}</strong>. It does not automatically send other sessions, Today or recall. Approved read tools may supply bounded evidence for your question under this conversation's frozen capabilities and route; revocation still stops execution. It sends stored local notes only when you explicitly select them for that message, under this connection's existing route and consent; no note is ever included silently and no new permission is granted. Only private conversation material and ordinary material you deliberately review here are permitted. Revocation cannot retract bytes already sent.</p>
       ${this.#status.consent ? connectedConsentIndicator(this.#status.consent) : `<label class="connected-consent" for="connected-consent"><input id="connected-consent" type="checkbox" ${this.#consent ? 'checked' : ''}> I agree to this route for a new conversation.</label><label class="connected-consent" for="connected-remember"><input type="checkbox" id="connected-remember" ${this.#remember ? 'checked' : ''}> Remember for this provider and route (including this model)</label>`}
+      </details>
       <button id="connected-start" class="secondary" ${!available || (!this.#consent && !this.#status.consent) || this.#busy ? 'disabled' : ''}>Start connected conversation</button>
       ${this.#conversations.length ? `<label>Connected history<select id="connected-history" ${this.#busy ? 'disabled' : ''}>${this.#conversations.map(item => `<option value="${escape(item.conversation.sessionId)}" ${c?.sessionId === item.conversation.sessionId ? 'selected' : ''}>${escape(item.title)} · ${escape(item.conversation.model)} · ${escape(item.conversation.state)}</option>`).join('')}</select></label>` : ''}
       ${c ? `<div class="connected-state"><span class="tag">${escape(c.provider)} / ${escape(c.model)} · ${escape(c.state)}</span>${c.state !== 'active' ? '<p>This conversation is paused. History remains here. Start a new explicitly disclosed conversation to send again.</p>' : ''}<button id="connected-recover" class="quiet">Recover saved history</button><button id="connected-revoke" class="quiet" ${c.state === 'revoked' || this.#busy ? 'disabled' : ''}>Revoke conversation consent</button></div>
@@ -161,6 +163,7 @@ export class ConnectedView {
       ${c.state === 'active' ? this.#notesSection() : ''}
       <form id="connected-send-form"><label for="connected-draft">Message for this connected conversation</label><textarea id="connected-draft" rows="3" placeholder="One small next step…" ${c.state !== 'active' ? 'disabled' : ''}>${escape(this.#draft)}</textarea><button id="connected-send" ${c.state !== 'active' || this.#busy || (r && r.state !== 'terminal') ? 'disabled' : ''}>Send to ${escape(c.provider)} / ${escape(c.model)}</button><small>Send captures exactly one user turn. Local Save does not send. A failed acceptance keeps your draft; nothing is automatically retried.</small></form>` : ''}
       ${this.#error ? `<p id="connected-error" role="alert">${escape(this.#error)}</p>` : ''}
+      ${this.#pending && !c ? `<div id="connected-recovery" role="alert" data-recovery="pending-conversation-missing"><p>Unresolved turn: its conversation is not in the current list. The pending acceptance key and text are retained; nothing was resent.</p><button id="connected-recover" class="quiet">Retry the saved turn</button><button id="connected-reload" class="quiet">Reload history</button></div>` : ''}
     </section>`;
     panel.querySelector<HTMLInputElement>('#connected-consent')?.addEventListener('change', event => { this.#consent = (event.target as HTMLInputElement).checked; this.attach(); });
     panel.querySelector<HTMLInputElement>('#connected-remember')?.addEventListener('change', event => { this.#remember = (event.target as HTMLInputElement).checked; });
@@ -177,7 +180,8 @@ export class ConnectedView {
       this.#conversations.unshift({ title: 'Naya connected conversation', conversation: grant }); return this.select(grant.sessionId, lifetime);
     }); });
     panel.querySelector<HTMLSelectElement>('#connected-history')?.addEventListener('change', event => { const next = (event.target as HTMLSelectElement).value, selection = this.select(next), lifetime = this.#lifetime(); void selection.catch(error => { if (this.#current(lifetime)) { this.#error = error instanceof Error ? error.message : 'Could not open that connected conversation.'; this.attach(); } }); });
-    panel.querySelector('#connected-recover')?.addEventListener('click', () => { if (c) void this.#action(lifetime => this.select(c.sessionId, lifetime)); });
+    panel.querySelector('#connected-recover')?.addEventListener('click', () => { if (this.#pending) void this.#action(lifetime => this.#recoverPending(lifetime)); else if (c) void this.#action(lifetime => this.select(c.sessionId, lifetime)); });
+    panel.querySelector('#connected-reload')?.addEventListener('click', () => { void this.refresh(this.#owner); });
     panel.querySelector('#connected-revoke')?.addEventListener('click', () => { if (c) void this.#action(async lifetime => {
       await request(`/conversations/${c.sessionId}/revoke`, { method: 'POST', body: {}, signal: lifetime.local }); this.#check(lifetime);
       const status = await request<RouteStatus>('/chat/status', { signal: lifetime.local }); this.#check(lifetime); this.#status = status;
@@ -256,6 +260,7 @@ export class ConnectedView {
       try {
         run = await request<Run>('/chat', { method: 'POST', body: { sessionId: c.sessionId, text, ...(selectedIds.length ? { selectedMemoryEntryIds: selectedIds } : {}) }, idempotencyKey: pending.key, signal: AbortSignal.any([lifetime.local, AbortSignal.timeout(8000)]) });
       } catch (error) {
+        if (error instanceof ApiError && error.status >= 400 && error.status < 500) { this.#pending = undefined; this.#save(); }
         if (selectedIds.length && error instanceof ApiError && error.code === 'MODEL_NOT_CONFIGURED') throw new Error('A selected note could not be included: it has no stored classification for this connection, or its class is not permitted by the current grant. Nothing was sent; deselect it or pick another note.');
         throw error;
       }
@@ -264,6 +269,26 @@ export class ConnectedView {
       const entries = (await request<{ entries: Entry[] }>(`/sessions/${c.sessionId}`, { signal: lifetime.local })).entries; this.#check(lifetime); this.#entries = entries;
       void this.#watch(run.runId, lifetime); return this.#lifetime();
     });
+  }
+  /** Retry the exact retained turn by its idempotency key; a list omission never deletes it. */
+  async #recoverPending(lifetime: ViewLifetime) {
+    const pending = this.#pending; if (!pending) return;
+    let run: Run;
+    try {
+      run = await request<Run>('/chat', {
+        method: 'POST',
+        body: { sessionId: pending.sessionId, text: pending.text, ...(pending.selectedMemoryEntryIds.length ? { selectedMemoryEntryIds: pending.selectedMemoryEntryIds } : {}) },
+        idempotencyKey: pending.key,
+        signal: AbortSignal.any([lifetime.local, AbortSignal.timeout(8000)]),
+      });
+    } catch (error) {
+      // A definitive refusal is not an unknown outcome: never retry it, and let start stay usable.
+      if (error instanceof ApiError && error.status >= 400 && error.status < 500) { this.#pending = undefined; this.#save(); }
+      throw error;
+    }
+    this.#check(lifetime);
+    this.#pending = undefined; this.#save();
+    return this.select(run.sessionId, lifetime);
   }
   async #watch(runId: string, actionLifetime?: ViewLifetime) {
     if (this.#busy && !actionLifetime) return;

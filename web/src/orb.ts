@@ -1,7 +1,8 @@
 /** Didi lifecycle/state adapter for the authorized first-party Canvas renderer.
  * See orb-provenance.md for bounded extraction and MIT noise dependency.
  */
-import { ClassicRenderer, clampFrameDelta, smoothingAlpha, ORB_SMOOTHING_TAU, speakingActivityTarget } from './orb-classic';
+import { ClassicRenderer, clampFrameDelta, smoothingAlpha, ORB_SMOOTHING_TAU, speakingActivityTarget } from './orb-classic.ts';
+import { levelFrame, type LevelSample } from './orb-level.ts';
 export type VoiceState = 'IDLE' | 'CONNECTING' | 'CONNECTED' | 'LISTENING' | 'PROCESSING' | 'SPEAKING' | 'RECONNECTING' | 'ERROR' | 'DISCONNECTED' | 'INTERRUPTED';
 export interface AudioFrame { level: number; low: number; mid: number; high: number; flux: number; timestamp: number }
 export const silentFrame = (): AudioFrame => ({level:0,low:0,mid:0,high:0,flux:0,timestamp:performance.now()});
@@ -21,6 +22,10 @@ export class Orb {
   private context: CanvasRenderingContext2D | null;
   private classic: ClassicRenderer | undefined;
   private low = 0;
+  private mid = 0;
+  private high = 0;
+  private flux = 0;
+  private hue: number | undefined;
   private activity = 1;
   private durations: number[] = [];
   private lastPaint = 0;
@@ -41,6 +46,9 @@ export class Orb {
     this.motion.addEventListener('change',this.reset);
     document.addEventListener('visibilitychange',this.reset);
     this.resize();
+    // Native player/capture taps post one small level frame here; the renderer owns only the
+    // smoothing and geometry, never capture or transport authority.
+    (globalThis as unknown as { didiOrbLevel?: (sample: LevelSample) => void }).didiOrbLevel = sample => this.audio.push(levelFrame(sample));
   }
   setState(state: VoiceState) { this.state=state; this.reset(); }
   private resize() {
@@ -78,14 +86,28 @@ export class Orb {
     this.level+=(target-this.level)*smoothingAlpha(dt,target>this.level?ORB_SMOOTHING_TAU.playbackAttack:ORB_SMOOTHING_TAU.playbackDecay);
     const low=Math.min(1,Math.max(0,frame.low));
     this.low+=(low-this.low)*smoothingAlpha(dt,low>this.low?ORB_SMOOTHING_TAU.lowAttack:ORB_SMOOTHING_TAU.lowDecay);
-    const activityTarget=active==='speaking'?speakingActivityTarget(this.low):active==='thinking'?0.75:active==='listening'?1:0.3;
+    const mid=Math.min(1,Math.max(0,frame.mid));
+    this.mid+=(mid-this.mid)*smoothingAlpha(dt,mid>this.mid?ORB_SMOOTHING_TAU.midAttack:ORB_SMOOTHING_TAU.midDecay);
+    const high=Math.min(1,Math.max(0,frame.high));
+    this.high+=(high-this.high)*smoothingAlpha(dt,high>this.high?ORB_SMOOTHING_TAU.highAttack:ORB_SMOOTHING_TAU.highDecay);
+    const flux=Math.min(1,Math.max(0,frame.flux));
+    this.flux+=(flux-this.flux)*smoothingAlpha(dt,flux>this.flux?ORB_SMOOTHING_TAU.fluxAttack:ORB_SMOOTHING_TAU.fluxDecay);
+    let activityTarget=0.3, glow=0.2, flare=0.15;
+    if(active==='listening') { activityTarget=0.8+Math.min(this.level*0.2,0.2); glow=0.4; flare=0.25; }
+    else if(active==='speaking') { activityTarget=speakingActivityTarget(this.low); glow=0.5+this.level*0.4; flare=0.4+this.level*0.4; }
+    else if(active==='thinking') { activityTarget=0.75+Math.sin(this.phase*4)*0.05; glow=0.3+Math.sin(this.phase*3)*0.1; flare=0.2; }
+    else if(this.state==='CONNECTED') { activityTarget=0.6; glow=0.15; flare=0.1; }
+    else if(this.state==='RECONNECTING') { activityTarget=0.35+Math.sin(this.phase*0.8)*0.04; glow=0.12; flare=0.06; }
+    else if(this.state==='ERROR') { activityTarget=0.6; glow=0.2; flare=0.15; }
+    else if(this.state==='IDLE'||this.state==='DISCONNECTED'||this.state==='INTERRUPTED') { activityTarget=0.5; glow=0.1; flare=0.05; }
     this.activity+=(activityTarget-this.activity)*smoothingAlpha(dt,activityTarget>this.activity?ORB_SMOOTHING_TAU.activityAttack:ORB_SMOOTHING_TAU.activityDecay);
     if(!still)this.phase+=dt;
     if(this.canvas.dataset.posture!==active)this.canvas.dataset.posture=active;
     const s=this.size,c=s/2;
     ctx.clearRect(0,0,s,s);
-    const hue=this.state==='ERROR'?0:active==='listening'?45:active==='speaking'?160:active==='thinking'?195:active==='quiet'?210:174;
-    this.classic?.draw(c,c,s*0.22,hue,still?0.8:this.phase,active,this.level,still?0.3:this.activity);
+    const hueTarget=this.state==='ERROR'?0:active==='listening'?45:active==='speaking'?160:active==='thinking'?195:['IDLE','DISCONNECTED','RECONNECTING','INTERRUPTED'].includes(this.state)?210:174;
+    this.hue=this.hue===undefined?hueTarget:this.hue+(hueTarget-this.hue)*smoothingAlpha(dt,0.18);
+    this.classic?.draw(c,c,s*0.05,this.hue,still?0.8:this.phase,active,this.level,still?activityTarget:this.activity,glow,flare,this.mid,this.high,this.flux);
   }
 
   destroy() {

@@ -134,22 +134,23 @@ await model.generate(request, control); // existing route/authority checks requi
 ## Live voice instruction (Naya composition)
 
 The Live path composes its system instruction separately from the text compiler:
-`composeLiveInstruction({base, overlay?, language?})` in
-`server/prompt/live-persona.ts` returns `{text, sha256, sections}`. The order is
-fixed: the public neutral Naya base (`NAYA_BASE`, under 1500 chars, no biography),
-the optional local overlay verbatim, then the terminal LANGUAGE AND VOICE anchor
-(a LANGUAGE paragraph, exactly one ACCENT directive, a language-follows-the-user
-clause and the final anchor as the absolute last segment). Empty sections are
-stripped, survivors join with one blank line, and the 60k-char budget yields the
-overlay first while the base and the anchor never yield. The composed text is
-stored as the accepted Live instruction and journaled only by its hash; the local
-overlay and any private text never enter the repository.
+`composeLiveInstruction({base, runtimeContext?, ownerProfile?, overlay?, language?, memory?, tools?})`
+in `server/prompt/live-persona.ts` returns `{text, sha256, sections}`. The order is
+fixed: the public neutral Naya base (`NAYA_BASE`, no biography), the host-generated
+runtime context (`server/prompt/runtime-context.ts`, from the Mac clock and timezone),
+owner lore, historical memory, the tool conduct, owner style, the optional local overlay
+verbatim, then the terminal LANGUAGE AND VOICE anchor (a LANGUAGE paragraph, exactly one
+ACCENT directive, a language-follows-the-user clause and the final anchor as the absolute
+last segment). Empty sections are stripped, survivors join with one blank line, and the
+60k-char budget yields the memory section first while the base, runtime context, tools
+and anchor never yield. The composed text is stored as the accepted Live instruction and
+journaled only by its hash; the local overlay and any private text never enter the
+repository.
 
-When a session is attached with at least one declared tool, the request system
-text gains a fourth section, `tools`, spliced between the base and the overlay from
-the same Architect-authored conduct text; a session with no declarations composes
-exactly as before. The section is one of the composer's `sections` entries, with
-its own chars and sha256.
+When a session is attached with at least one declared tool, the trusted middle gains a
+`tools` section from the same Architect-authored conduct text, placed after memory and
+before owner style; a session with no declarations composes without it. Each section is
+one of the composer's `sections` entries, with its own chars and sha256.
 
 ## Verification and remaining gates
 
@@ -176,19 +177,26 @@ memory, voice or distribution readiness.
 
 ## Live session memory
 
-The Live composer supports a `memory` section between overlay and the final voice anchor.
-At session CREATE, composition extends the frozen persona baseline in this order: base, tool
-conduct, overlay, historical memory, voice anchor last. A deferred pickup note, when present,
-precedes memory and is included in the same accepted instruction. The preface labels notes as
-the owner's past notes, historical context and not instructions. Each entry is one whole,
-JSON-serialized delimited record, sorted by id. No record is partially truncated.
+The Live composer supports a `memory` section between owner lore and the tool conduct.
+At session CREATE, composition extends the frozen persona baseline in this order: base,
+runtime context, owner lore, historical memory, tool conduct, owner style, overlay, voice
+anchor last. A pickup note, when present, follows the overlay and is included in the same
+accepted instruction. The preface labels notes as the owner's past notes, historical
+context and not instructions. Each entry is one whole, JSON-serialized delimited record,
+sorted by id. No record is partially truncated.
 
-The CREATE instruction has a 20,000-character total trusted budget, not an additional memory
-allowance. Whole memory records yield first; the static baseline is never silently truncated at
-CREATE. Selection provenance records omitted ids with reason `budget`. Safe projections expose
+The CREATE instruction has a 60,000-character total trusted budget, not an additional
+memory allowance. The memory section is capped at 15,000 characters; whole memory
+records yield first, and the base, runtime context, tools and anchor never yield.
+Selection provenance records omitted ids with reason `budget`. Safe projections expose
 counts/status only. Attach neither recomposes nor resolves memory: it uses the accepted text
 byte for byte, including tool and pickup conduct. Voice journal events never become durable
 memory entries in this release.
+
+Live never defers a tool call: every call is awaited inline until it completes or the
+connector deadline fails it, and the result or the typed failure is sent back to the
+model in the same turn. There is no background job path and no callback promise in the
+Live system instruction.
 
 ### Voice memory writes and frozen prompts
 

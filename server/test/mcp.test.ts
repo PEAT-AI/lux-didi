@@ -1,13 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage } from 'node:http';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { once } from 'node:events';
 import { randomUUID, createHash } from 'node:crypto';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
-import type { ToolDefinition, CallRequest, McpPort } from '../adapters/mcp/port.js';
+import type { ToolDefinition, CallRequest, McpPort, EndpointConfig } from '../adapters/mcp/port.js';
 
 // Explicitly synthetic public protocol fixture; no real accounts, model or corpus.
 const tool: ToolDefinition = { name: 'read', description: 'Synthetic text', inputSchema: { type: 'object' }, annotations: { readOnlyHint: false } };
@@ -227,7 +231,7 @@ test('timeout and cancellation are unknown after observed side effect, terminate
       const started = Date.now(); const pending = adapter.call(request, controller.signal);
       await dispatched; if (cancel) controller.abort();
       const result = await pending;
-      assert.equal(result.state, 'unknown'); assert.equal(f.counter, 1); assert(Date.now() - started < 1500);
+      assert.equal(result.state, 'unknown'); if (result.state === 'unknown') assert.equal(result.reason, cancel ? 'cancelled' : 'timeout'); assert.equal(adapter.visibleTools('source').length, 1, 'a soft failure must not suspend the connector'); assert.equal(f.counter, 1); assert(Date.now() - started < 1500);
       release();
       await adapter.discover('source'); assert.equal(f.counter, 1);
       assert.equal(adapter.visibleTools('source').length, 0);
@@ -353,7 +357,7 @@ test('malformed remote results and finite discovery page/tool budgets fail expli
     const result = await a.adapter.call(request);
     const wire = JSON.parse(malformed.responseEntities[0]!.toString()) as Record<string, unknown>;
     assert('result' in wire && !('error' in wire), 'actual malformed result, not official server validation error');
-    assert.equal(result.state, 'unknown'); assert.equal(malformed.counter, 1);
+    assert.equal(result.state, 'unknown'); if (result.state === 'unknown') assert.equal(result.reason, 'invalid_result'); assert.equal(a.adapter.visibleTools('source').length, 1, 'an invalid result must not suspend the connector'); assert.equal(malformed.counter, 1);
     assert.equal((await b.discover('source')).state, 'unavailable'); assert.deepEqual(b.visibleTools('source'), []);
   } finally { await a.adapter.close(); await b.close(); await malformed.close(); await normal.close(); }
 });
@@ -477,7 +481,9 @@ test('SSE without a JSON-RPC response returns a bounded transport code', async (
   try {
     await approve(adapter, registry);
     const result = await adapter.call(request);
-    assert.deepEqual(result, { state: 'unknown', reason: 'mcp_transport_error' });
+    assert.deepEqual(result, { state: 'unknown', reason: 'sdk_protocol_rejected' });
+    await adapter.whenSuspended('source');
+    assert.equal(adapter.visibleTools('source').length, 0, 'a transport protocol rejection suspends the connector');
   } finally { await adapter.close(); await f.close(); }
 });
 
@@ -520,4 +526,31 @@ test('call timeout override retains the HTTP response byte limit', async () => {
     if (result.state === 'unknown') assert.equal(result.reason, 'response-oversize');
     assert.equal(f.counter, 1);
   } finally { await adapter.close(); await f.close(); }
+});
+
+// Warm-connector audit (W7): the same child process serves two sequential calls, and concurrent
+// calls to one endpoint are refused, so a provider batch must fan out across endpoints, not within
+// one (see the author report: batch dispatch is serial in tools/declarations.ts).
+test('one long-lived stdio client serves two sequential calls and never forks per call', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-warm-'));
+  const pidFile = join(dir, 'child.pid');
+  const child = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'test', 'fixtures', 'stdio-mcp-child.mjs');
+  const endpoint: EndpointConfig = { id: 'warm', transport: 'stdio', command: process.execPath, args: [child, 'ok', pidFile, 'stdio-pong'], env: { HOME: dir, PATH: process.env.PATH ?? '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' }, account: 'local', resource: 'warm-fixture' } as unknown as EndpointConfig;
+  const registry = new McpRegistry();
+  registry.register(endpoint);
+  registry.enable('warm'); registry.allowEgress('warm');
+  const adapter = createMcpAdapter({ registry, store: new MemoryResultStore(), budgets: { timeoutMs: 4000 } });
+  try {
+    const discovery = await adapter.discover('warm');
+    assert.equal(discovery.state, 'discovered');
+    if (discovery.state !== 'discovered') return;
+    registry.approve({ endpointId: 'warm', schemaDigest: discovery.schemaDigest, toolNames: ['echo'], effect: 'read', account: 'local', resource: 'warm-fixture', generation: 1 });
+    const req: CallRequest = { endpointId: 'warm', toolName: 'echo', arguments: {}, generation: 1, account: 'local', resource: 'warm-fixture' };
+    assert.equal((await adapter.call(req)).state, 'completed');
+    const first = readFileSync(pidFile, 'utf8');
+    assert.equal((await adapter.call(req)).state, 'completed');
+    assert.equal(readFileSync(pidFile, 'utf8'), first, 'the same child pid must serve both sequential calls');
+    const pair = await Promise.all([adapter.call(req), adapter.call(req)]);
+    assert.equal(pair.some(result => result.state === 'refused' && result.reason === 'endpoint-busy'), true, 'a concurrent same-endpoint call is refused as endpoint-busy');
+  } finally { await adapter.close(); rmSync(dir, { recursive: true, force: true }); }
 });

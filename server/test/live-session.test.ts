@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import * as memory from '../domain/memory.js';
 import * as labels from '../domain/labels.js';
 import { resolveLiveMemory } from '../host/live.js';
+import { safeEvent } from '../host/log.js';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
@@ -22,7 +23,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadLiveConfig } from '../config/live.js';
-import { NAYA_BASE, NAYA_TOOLS, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
+import { NAYA_BASE, NAYA_TOOLS, MEMORY_SECTION_CHAR_LIMIT, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
 import { GeminiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
 import type { LiveVoiceLimits, LiveVoiceRequest } from '../adapters/live-voice/index.js';
 import { chatMigrations } from '../chat/index.js';
@@ -33,12 +34,33 @@ import { Store } from '../runtime/store.js';
 import type { Transaction } from '../contracts/storage.js';
 import { createLiveSessionOwner, LiveConfigError, LiveError, liveMigrations, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, control, deferred, fixture, options, pcm } from './live-voice-fixture.js';
+import { CONNECTOR_DESCRIPTORS } from '../connectors/index.js';
+import { buildRuntimeContext } from '../prompt/index.js';
 
 const MODEL = 'models/live-session-test';
 const NOW = 1_700_000_000_000;
 const context = (store: Store): LiveContext => ({ clientId: 'tester', auditId: 'audit-1', authorityEpoch: store.authorityEpoch });
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
 const audio = () => ({ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from(pcm).toString('base64') } });
+
+/** Wrap a store so one exact SQL write fails, proving the failure path without breaking reads. */
+function writeFailingStore(store: Store, marker: string): Store {
+  const original = store.transaction.bind(store);
+  const wrapped = (callback: Parameters<Store['transaction']>[0]) => original(tx => callback(new Proxy(tx, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      if (typeof value !== 'function') return value;
+      if (property === 'run') return (sql: string, ...args: unknown[]) => {
+        if (typeof sql === 'string' && sql.includes(marker)) throw new Error('synthetic_write_failure');
+        return (value as (...a: unknown[]) => unknown).call(target, sql, ...args);
+      };
+      // Bind every other tx method to the real target so SQLite private fields still resolve.
+      return (value as (...a: unknown[]) => unknown).bind(target);
+    },
+  })));
+  store.transaction = wrapped as unknown as typeof store.transaction;
+  return store;
+}
 
 function profileInput(limits?: Record<string, number>, model = MODEL) {
   return {
@@ -76,11 +98,13 @@ async function harness(t: TestContext, overrides: {
   routeClasses?: readonly ('ordinary' | 'private' | 'sensitive')[];
   overlay?: { schemaVersion: 1; text: string; accent?: string };
   memoryFailure?: boolean;
+  failingWrite?: string;
 } = {}): Promise<Harness> {
   const f = await fixture(t);
   const dir = mkdtempSync(join(tmpdir(), 'didi-live-session-'));
   const domain = createDomainPort({ outbox: Outbox });
   const store = new Store(dir, [...domain.migrations, ...chatMigrations, ...liveMigrations, ...(overrides.tools ? toolsMigrations : [])]);
+  if (overrides.failingWrite) writeFailingStore(store, overrides.failingWrite);
   let clock = NOW;
   let memorySelections = 0;
   const initialProfile = profileInput({ handshakeMs: 1000, idleMs: 2000, sessionMs: 4000, closeMs: 50, ...Object.fromEntries(Object.entries(overrides.adapterLimits ?? {}).filter(([key]) => ['handshakeMs', 'idleMs', 'sessionMs', 'closeMs'].includes(key))), ...overrides.limits }, overrides.model);
@@ -157,7 +181,7 @@ async function harness(t: TestContext, overrides: {
       return { id: record.entryId, text: record.text, dataClass };
     });
   };
-  owner = createLiveSessionOwner({ store, voice, profile, ...{ memorySource }, ...(tools ? { tools } : {}), now: () => overrides.scheduler?.now ?? clock, ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
+  owner = createLiveSessionOwner({ store, voice, profile, ...{ memorySource }, ...(tools ? { tools } : {}), now: () => overrides.scheduler?.now ?? clock, timeZone: 'Asia/Kolkata', ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
   t.after(async () => { await owner.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
   return { requests, calls, get memorySelections() { return memorySelections; }, f, store, owner, ctx: context(store), dir, advance: ms => { if (overrides.scheduler) overrides.scheduler.now += ms; else clock += ms; } };
 }
@@ -174,6 +198,16 @@ async function attached(h: Harness, key = 'k1') {
   h.f.frames.splice(1, 1);
   return { session, attachment };
 }
+
+test('typed text reaches the adapter as a realtime text turn and journals a You turn', async t => {
+  const h = await harness(t);
+  await attached(h, 'typed');
+  h.owner.text('What is on my plate?');
+  await h.f.frame(2);
+  assert.deepEqual(h.f.frames.at(-1), { realtimeInput: { text: 'What is on my plate?' } });
+  const entry = h.owner.current().entries.findLast(e => e.kind === 'inputTranscription');
+  assert.equal(entry?.text, 'What is on my plate?');
+});
 
 test('fresh owner Start selects model-first with no fabricated history', async t => {
   const h = await harness(t);
@@ -252,16 +286,16 @@ test('Live memory budget keeps whole records, reports overflow, and rejects over
   const h = await harness(t);
   note(h, 'a', 'Fixture whole note');
   const initial = h.owner.create({ idempotencyKey: 'measure-memory', inputClass: 'ordinary' }, h.ctx);
-  const remaining = TRUSTED_SYSTEM_CODE_UNIT_LIMIT - accepted(h, initial.liveSessionId).system.length;
-  h.store.transaction(tx => tx.run('UPDATE entries SET text=? WHERE id=?', ['Fixture whole note' + 'x'.repeat(remaining), 'a']));
+  assert.deepEqual(accepted(h, initial.liveSessionId).memory.selectedIds, ['a']);
+  h.store.transaction(tx => tx.run('UPDATE entries SET text=? WHERE id=?', ['Fixture whole note' + 'x'.repeat(MEMORY_SECTION_CHAR_LIMIT), 'a']));
   note(h, 'b', 'Fixture overflow note');
   const boundary = h.owner.create({ idempotencyKey: 'boundary-memory', inputClass: 'ordinary' }, h.ctx);
   const snapshot = accepted(h, boundary.liveSessionId);
-  assert.equal(snapshot.system.length, TRUSTED_SYSTEM_CODE_UNIT_LIMIT);
-  assert.deepEqual(snapshot.memory.selectedIds, ['a']);
-  assert.deepEqual(snapshot.memory.omitted, [{ id: 'b', reason: 'budget' }]);
-  assert.ok(!snapshot.system.includes('Fixture overflow note'));
-  assert.ok(snapshot.system.includes(JSON.stringify({ id: 'a', text: 'Fixture whole note' + 'x'.repeat(remaining) })), 'the selected record survives byte for byte');
+  assert.ok(snapshot.system.length <= TRUSTED_SYSTEM_CODE_UNIT_LIMIT);
+  assert.deepEqual(snapshot.memory.selectedIds, ['b']);
+  assert.deepEqual(snapshot.memory.omitted, [{ id: 'a', reason: 'budget' }]);
+  assert.ok(!snapshot.system.includes('x'.repeat(128)));
+  assert.ok(snapshot.system.includes('"text":"Fixture overflow note"'), 'the selected record survives byte for byte');
   const failed = await harness(t, { memoryFailure: true });
   assert.throws(() => failed.owner.create({ idempotencyKey: 'failed-memory', inputClass: 'ordinary' }, failed.ctx), (error: unknown) => error instanceof LiveError && String(error.code) === 'memory_unavailable');
   assert.equal(failed.requests.length, 0);
@@ -408,6 +442,60 @@ test('audio is rejected before ready and PCM never reaches the store', async t =
   await attachment.done;
 });
 
+test('a late mic frame after settle is dropped and counted, never thrown', async t => {
+  const lines: string[] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => {
+    if (typeof args[0] === 'string' && args[0].includes('live_late_frame_dropped')) lines.push(args[0]);
+  });
+  const h = await harness(t);
+  const { attachment } = await attached(h, 'late-frame');
+  // Settle the session from the provider, then deliver a frame the app could not have sent before the end.
+  h.f.remoteClose('', 1000);
+  const terminal = await attachment.done;
+  assert.equal(terminal.lifecycle, 'terminal');
+  assert.ok(terminal.terminal, 'a settled session carries a terminal fact');
+  const providerFrames = h.f.frames.length;
+  assert.doesNotThrow(() => attachment.sendAudio({ pcm }), 'a frame after settle must be dropped, not thrown');
+  // The drop is counted and reported, and the frame never reaches the adapter.
+  assert.equal(h.f.frames.length, providerFrames, 'no late frame reaches the provider');
+  assert.equal(lines.length, 1, 'the late drop is counted once');
+  const dropped = JSON.parse(lines[0]!);
+  assert.equal(dropped.event, 'live_late_frame_dropped');
+  assert.equal(dropped.dropCalls, 1);
+  assert.equal(dropped.dropBytes, pcm.byteLength);
+});
+
+test('a durable terminal write failure still logs the failure and reports the real terminal code', async t => {
+  const lines: string[] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => {
+    if (typeof args[0] === 'string' && args[0].includes('live_terminal_write_failed')) lines.push(args[0]);
+  });
+  const h = await harness(t, { failingWrite: "SET lifecycle='terminal'" });
+  const { attachment } = await attached(h, 'settle-write-fail');
+  h.owner.revoke(attachment.liveSessionId);
+  const snapshot = await attachment.done;
+  assert.ok(snapshot.terminal, 'the typed terminal is reported even when the durable write failed');
+  assert.equal(snapshot.terminal.state, 'revoked');
+  assert.equal(lines.length, 1, 'the durable write failure is logged, not swallowed');
+  assert.equal(JSON.parse(lines[0]!).event, 'live_terminal_write_failed');
+});
+
+test('a failed detach write is logged and a later read no longer reports the session attached', async t => {
+  const lines: string[] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => {
+    if (typeof args[0] === 'string' && args[0].includes('live_detach_write_failed')) lines.push(args[0]);
+  });
+  const h = await harness(t, { failingWrite: "consumer_state='ended'" });
+  const { attachment } = await attached(h, 'detach-write-fail');
+  assert.equal(h.owner.get(attachment.liveSessionId).consumerState, 'attached');
+  attachment.detach();
+  assert.equal(lines.length, 1, 'the failed detach write is logged, not swallowed');
+  assert.equal(JSON.parse(lines[0]!).event, 'live_detach_write_failed');
+  // Reconcile on read: the row still says attached, but the in-memory handle says ended.
+  assert.equal(h.owner.get(attachment.liveSessionId).consumerState, 'ended');
+  assert.notEqual(h.owner.current().state, 'listening', 'a detached session is never projected as listening');
+});
+
 test('single attach, idempotent create replay, conflict, and a terminal session that never reopens', async t => {
   const h = await harness(t);
   const first = h.owner.create({ idempotencyKey: 'dup', inputClass: 'ordinary' }, h.ctx);
@@ -504,14 +592,13 @@ test('expired job leases become unknown without replay or accepting late complet
   assert.equal(executions, 1);
 });
 
-test('tool deferral budget defaults to four seconds and accepts only bounded integer milliseconds', () => {
-  assert.equal((validateLiveProfile(profileInput()).limits as unknown as Record<string, number>).toolDeferralMs, 4000);
-  for (const value of [1000, 4000, 30000]) {
-    assert.equal((validateLiveProfile(profileInput({ toolDeferralMs: value })).limits as unknown as Record<string, number>).toolDeferralMs, value);
-  }
-  for (const value of [0, 999, 30001, 1000.5, NaN, Infinity]) {
-    assert.throws(() => validateLiveProfile(profileInput({ toolDeferralMs: value })), LiveConfigError);
-  }
+test('live timer defaults are a 5 minute idle and a 60 minute session, and an explicit config wins', () => {
+  const defaults = validateLiveProfile(profileInput()).limits;
+  assert.equal(defaults.idleMs, 300_000);
+  assert.equal(defaults.sessionMs, 3_600_000);
+  const edited = validateLiveProfile(profileInput({ idleMs: 12_345, sessionMs: 67_890 })).limits;
+  assert.equal(edited.idleMs, 12_345);
+  assert.equal(edited.sessionMs, 67_890);
 });
 
 test('profile validation rejects text-model fallback and bounds, and validation precedes credentials', async t => {
@@ -563,7 +650,8 @@ test('tool-enabled Live CREATE freezes an expanded classified owner system byte 
   const created = h.owner.create({ idempotencyKey: 'expanded-owner-tools', inputClass: 'ordinary' }, h.ctx);
   const frozen = h.store.transaction(tx => JSON.parse(String(tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [created.liveSessionId])!['accepted_prompt_snapshot'])));
   assert.ok(frozen.system.length > 20_000);
-  assert.equal(frozen.system, composeLiveSessionInstruction({ text: expectedSystem, tools: ['search_knowledge', 'get_insight'], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT }).text);
+  assert.equal(frozen.system, composeLiveSessionInstruction({ text: expectedSystem, tools: ['search_knowledge', 'get_insight'], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
+    runtimeContext: buildRuntimeContext({ now: new Date(NOW), timeZone: 'Asia/Kolkata', connected: ['knowledge base', 'memory'], unavailable: [] }) }).text);
   assert.equal(frozen.system.split(style).length - 1, 1);
   assert.equal(frozen.system.split(lore).length - 1, 1);
   assert.deepEqual(frozen.dataClasses, ['ordinary', 'private', 'sensitive']);
@@ -1146,84 +1234,91 @@ test('legacy null and unsupported accepted Live bindings refuse honestly before 
   }
 });
 
-test('completion after hangup remains delivery pending even before the deferral budget expires', async t => {
-  const scheduler = new DeadlineClock();
+test('Live keeps no background tool job and never delivers a result to an ended session', async t => {
   let finish!: () => void;
   const work = new Promise<void>(resolve => { finish = resolve; });
-  const h = await harness(t, { tools: true, scheduler, beforeTool: () => work });
+  const h = await harness(t, { tools: true, beforeTool: () => work });
   const { session } = await attached(h);
   h.f.send({ toolCall: { functionCalls: [{ id: 'detached1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
   while (!h.calls.length) await tick();
   h.owner.revoke(session.liveSessionId);
   finish();
-  const jobs = new LiveToolJobs(h.store, () => NOW);
-  while (jobs.list()[0]!.state === 'in_progress') await tick();
-  await tick();
-  assert.equal(jobs.pending().length, 1, 'a returned batch is not delivered when the original call has ended');
-  assert.equal(jobs.pending()[0]!.state, 'completed');
-  assert.equal(jobs.pending()[0]!.delivered, false);
-  assert.match(h.owner.pendingJobs()[0]!.markdown, /Synthetic insight/);
+  await tick(); await tick();
+  assert.equal(new LiveToolJobs(h.store, () => NOW).pending().length, 0, 'Live never defers a tool call');
+  assert.equal(h.owner.pendingJobs().length, 0);
   assert.equal(h.f.frames.length, 1, 'completion cannot send to the ended Gemini session');
 });
 
-test('Live answers a slow tool batch truthfully, continues the turn, and retains a durable pending result', async t => {
-  const scheduler = new DeadlineClock();
+test('Live awaits a slow tool call inline and never creates a background job', async t => {
   let finish!: () => void;
   const slow = new Promise<void>(resolve => { finish = resolve; });
-  const h = await harness(t, { tools: true, scheduler, limits: { toolDeferralMs: 1000 }, beforeTool: () => slow });
-  const { session } = await attached(h);
+  const h = await harness(t, { tools: true, beforeTool: () => slow });
+  await attached(h);
   assert.equal((h.requests[0] as LiveVoiceRequest & { opening?: string }).opening, 'model_first');
   h.f.send({ toolCall: { functionCalls: [{ id: 'slow1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
   while (!h.calls.length) await tick();
-  h.advance(1000); scheduler.runDue();
-  await tick();
-  assert.equal(new LiveToolJobs(h.store, () => NOW).pending().length, 1, 'dispatch must create a durable job before deferral');
-  await h.f.frame(2);
-  const response = h.f.frames[1] as { toolResponse: { functionResponses: { response: { status: string; jobId: string } }[] } };
-  assert.equal(response.toolResponse.functionResponses[0]!.response.status, 'in progress');
-  assert.ok(response.toolResponse.functionResponses[0]!.response.jobId);
-  assert.equal(h.owner.current().state, 'listening');
-  assert.equal(new LiveToolJobs(h.store, () => NOW).pending()[0]!.state, 'in_progress');
-  h.owner.revoke(session.liveSessionId);
-  await tick();
-  assert.equal(h.owner.lookupAuthority(session.liveSessionId), null);
+  assert.equal(new LiveToolJobs(h.store, () => NOW).pending().length, 0, 'Live never defers a tool call');
   finish();
-  while (new LiveToolJobs(h.store, () => NOW).pending()[0]!.state === 'in_progress') await tick();
-  assert.equal(new LiveToolJobs(h.store, () => NOW).pending()[0]!.state, 'completed');
-  assert.equal(h.f.frames.length, 2, 'completion must not inject a late result into Gemini');
-  assert.match(h.owner.pendingJobs()[0]!.markdown, /Synthetic insight/);
+  await h.f.frame(2);
+  const response = h.f.frames[1] as { toolResponse: { functionResponses: { id: string; response: unknown }[] } };
+  assert.equal(response.toolResponse.functionResponses[0]!.id, 'slow1');
+  assert.match(JSON.stringify(response.toolResponse.functionResponses[0]!.response), /Synthetic insight/);
+  assert.equal(h.owner.pendingJobs().length, 0, 'no background result is retained');
+});
+
+test('a tool batch resolving late still completes inline in the same turn', async t => {
+  for (const callId of ['late4500', 'late20000']) {
+    const h = await harness(t, { tools: true });
+    await attached(h);
+    h.f.send({ toolCall: { functionCalls: [{ id: callId, name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
+    await h.f.frame(2);
+    const response = h.f.frames[1] as { toolResponse: { functionResponses: { id: string; response: unknown }[] } };
+    assert.equal(response.toolResponse.functionResponses[0]!.id, callId);
+    assert.match(JSON.stringify(response.toolResponse.functionResponses[0]!.response), /Synthetic insight/);
+  }
+});
+
+test('a tool call past its deadline returns the typed timeout failure stage inline', async t => {
+  const h = await harness(t, { tools: true, beforeTool: () => Promise.reject(new Error('connector deadline')) });
+  await attached(h);
+  h.f.send({ toolCall: { functionCalls: [{ id: 'late30', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
+  await h.f.frame(2);
+  const response = h.f.frames[1] as { toolResponse: { functionResponses: { id: string; response: { error?: string } }[] } };
+  assert.ok(response.toolResponse.functionResponses[0]!.response.error, 'the deadline failure is sent inline');
+});
+
+
+test('a tool result after a barge-in interruption is sent once and recorded after_barge_in', async t => {
+  let finish!: () => void;
+  const slow = new Promise<void>(resolve => { finish = resolve; });
+  const h = await harness(t, { tools: true, beforeTool: () => slow });
+  const { session, attachment } = await attached(h);
+  const outputs = attachment.output[Symbol.asyncIterator]();
+  assert.equal((await outputs.next()).value?.marker.kind, 'ready');
+  h.f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
+  while (!h.calls.length) await tick();
+  h.f.send({ serverContent: { interrupted: true } });
+  let sawInterrupted = false;
+  while (!sawInterrupted) {
+    const item = await outputs.next();
+    if (item.done) break;
+    if (item.value.kind === 'marker' && item.value.marker.kind === 'interrupted') sawInterrupted = true;
+  }
+  assert.equal(sawInterrupted, true, 'the interrupted fact is journaled before the tool completes');
+  finish(); await tick(); await tick();
+  await h.f.frame(2);
+  const response = h.f.frames[1] as { toolResponse: { functionResponses: { id: string }[] } };
+  assert.deepEqual(response.toolResponse.functionResponses.map(item => item.id), ['c1'], 'the late result is sent exactly once');
+  assert.equal(h.f.frames.filter(frame => 'toolResponse' in (frame as object)).length, 1);
+  let marked = false;
+  for (let i = 0; i < 20 && !marked; i++) {
+    const item = await outputs.next();
+    if (item.done) break;
+    if (item.value.kind === 'marker' && item.value.marker.kind === 'toolResult'
+      && (item.value.marker.tool as { code?: string } | undefined)?.code === 'after_barge_in') marked = true;
+  }
+  assert.equal(marked, true, 'the batch disposition after_barge_in is recorded');
   h.owner.revoke(session.liveSessionId);
-  await tick();
-  assert.equal(h.owner.lookupAuthority(session.liveSessionId), null);
-  const callback = h.owner.createWithPending({ inputClass: 'ordinary', idempotencyKey: 'callback' }, h.ctx);
-  const frozenJob = new LiveToolJobs(h.store, () => NOW).forSession(callback.liveSessionId)!;
-  assert.equal(accepted(h, callback.liveSessionId).pickup?.jobId, frozenJob.id);
-  frozenJob.state = 'failed'; new LiveToolJobs(h.store, () => NOW).save(frozenJob);
-  assert.throws(() => h.owner.attach({ liveSessionId: callback.liveSessionId }, h.ctx), (error: unknown) => error instanceof LiveError && String(error.code) === 'pickup_changed');
-  assert.equal(h.requests.length, 1, 'changed pickup state is rejected before dispatch');
-  frozenJob.state = 'completed'; new LiveToolJobs(h.store, () => NOW).save(frozenJob);
-  const pickedUp = h.owner.attach({ liveSessionId: callback.liveSessionId }, h.ctx);
-  await h.f.frame(3);
-  h.f.send({ setupComplete: {} });
-  await pickedUp.ready;
-  await h.f.frame(4);
-  const history = h.f.frames[3] as { clientContent: { turns: { parts: { text: string }[] }[] } };
-  assert.match(history.clientContent.turns[0]!.parts[0]!.text, /Synthetic insight/);
-  assert.equal((history.clientContent as typeof history.clientContent & { turnComplete: boolean }).turnComplete, true);
-  assert.equal((h.requests[1] as LiveVoiceRequest & { opening?: string }).opening, 'model_first');
-  assertFrozenInstruction(h, callback.liveSessionId, 1);
-  assert.match(accepted(h, callback.liveSessionId).system, /user has just picked up/i);
-  assert.match(h.requests[1]!.system.text, /user has just picked up/i);
-  assert.match(h.requests[1]!.system.text, /briefly/i);
-  h.f.send({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from(pcm).toString('base64') } }] },
-    outputTranscription: { text: 'Synthetic insight is ready.', finished: true }, turnComplete: true } });
-  await drain(h, callback.liveSessionId, 3);
-  const output = pickedUp.output[Symbol.asyncIterator]();
-  const openingChunks = [(await output.next()).value, (await output.next()).value, (await output.next()).value];
-  assert.ok(openingChunks.some(chunk => chunk?.kind === 'audio'), 'the completed opening produces a first spoken turn in the fixture');
-  assert.ok(h.owner.current().entries.some(entry => entry.kind === 'outputTranscription' && entry.text === 'Synthetic insight is ready.'));
-  assert.equal(h.f.frames.length, 4, 'pickup needs no microphone input or nudge frame');
-  assert.equal(h.owner.pendingJobs().length, 0, 'only explicit pickup consumes the pending result');
 });
 
 test('Live accepts a frozen real tool snapshot and projects only result-gated Markdown', async t => {
@@ -1318,12 +1413,14 @@ test('Live attach setup carries the composed Naya instruction and the bare langu
     modelId: profile.liveModelId, voice: profile.voice, keyReference: profile.keyReference,
     route: { enabled: true, provider: 'gemini', modelId: profile.liveModelId, dataClasses: profile.route.dataClasses },
     credentials: { resolve: async () => CANARY } }));
-  const owner = createLiveSessionOwner({ store: h.store, profile, voice, now: () => NOW }); t.after(() => owner.shutdown());
+  const owner = createLiveSessionOwner({ store: h.store, profile, voice, now: () => NOW, timeZone: 'Asia/Kolkata' }); t.after(() => owner.shutdown());
   const accepted = owner.create({ idempotencyKey: 'wire-naya', inputClass: 'ordinary' }, h.ctx);
   const attachment = owner.attach({ liveSessionId: accepted.liveSessionId }, h.ctx);
   await h.f.frame(1);
   const frame = JSON.parse(JSON.stringify(h.f.frames[0]));
-  assert.equal(frame.setup.systemInstruction.parts[0].text, composed.text);
+  const expectedWithRuntime = composeLiveSessionInstruction({ text: composed.text, tools: [], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
+    runtimeContext: buildRuntimeContext({ now: new Date(NOW), timeZone: 'Asia/Kolkata', connected: [], unavailable: [] }) }).text;
+  assert.equal(frame.setup.systemInstruction.parts[0].text, expectedWithRuntime);
   assert.equal(frame.setup.generationConfig.speechConfig.languageCode, 'de');
   attachment.close();
 });
@@ -1382,14 +1479,16 @@ test('configured owner system survives CREATE and attach open byte for byte befo
     modelId: status.config.profile.liveModelId, voice: status.config.profile.voice, keyReference: status.config.profile.keyReference,
     route: { enabled: true, provider: 'gemini', modelId: status.config.profile.liveModelId, dataClasses: status.config.profile.route.dataClasses },
     credentials: { resolve: async () => CANARY } }));
-  const first = createLiveSessionOwner({ store, profile: status.config.profile, voice: adapter(), now: () => NOW });
+  const first = createLiveSessionOwner({ store, profile: status.config.profile, voice: adapter(), now: () => NOW, timeZone: 'Asia/Kolkata' });
   const created = first.create({ idempotencyKey: 'owner-create', inputClass: 'ordinary' }, context(store));
   const persisted = store.transaction(tx => JSON.parse(String(tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [created.liveSessionId])!['accepted_prompt_snapshot'])));
-  assert.equal(persisted.system, expected); assert.deepEqual(persisted.dataClasses, ['ordinary', 'private']);
+  const expectedWithRuntime = composeLiveSessionInstruction({ text: expected, tools: [], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
+    runtimeContext: buildRuntimeContext({ now: new Date(NOW), timeZone: 'Asia/Kolkata', connected: [], unavailable: [] }) }).text;
+  assert.equal(persisted.system, expectedWithRuntime); assert.deepEqual(persisted.dataClasses, ['ordinary', 'private']);
   const attachment = first.attach({ liveSessionId: created.liveSessionId }, context(store));
   await f.frame(1);
   const frame = JSON.parse(JSON.stringify(f.frames[0]));
-  assert.equal(frame.setup.systemInstruction.parts[0].text, expected);
+  assert.equal(frame.setup.systemInstruction.parts[0].text, expectedWithRuntime);
   attachment.close(); await attachment.done; await first.shutdown();
 });
 
@@ -1512,6 +1611,38 @@ test('third recoverable loss ends the same session without a fourth connection',
   assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(r => r.kind === 'terminal').length, 1);
 });
 
+test('a post-ready rejected frame resumes the same live session for a seventh turn', async t => {
+  const h = await harness(t);
+  const { session, attachment } = await attached(h, 'protocol-resume');
+  void (async () => { for await (const chunk of attachment.output) { void chunk; } })();
+  const handle = 'synthetic-protocol-resume-secret';
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: handle } });
+  for (let i = 0; i < 100; i++) {
+    if (h.store.transaction(tx => tx.get('SELECT resumption_handle FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!['resumption_handle'] === handle) break;
+    await tick();
+  }
+  const base = h.owner.get(session.liveSessionId).journal.events;
+  for (let i = 0; i < 6; i++) {
+    h.f.send({ serverContent: { outputTranscription: { text: `out-${i}`, finished: true }, generationComplete: true, turnComplete: true } });
+    await drain(h, session.liveSessionId, base + (i + 1) * 3);
+  }
+  assert.equal(h.f.attempts, 1);
+  // The rejected frame after ready ends the connection with a recoverable protocol_error.
+  h.f.send({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: 'not-valid-base64!!' } }] } } });
+  await h.f.frame(2);
+  assert.equal(h.f.attempts, 2, 'the owner opens one resumption connection');
+  assert.equal((h.f.frames[1] as { setup: { sessionResumption: { handle: string } } }).setup.sessionResumption.handle, handle);
+  h.f.send({ setupComplete: {} });
+  const before = h.owner.get(session.liveSessionId).journal.events;
+  // A seventh turn arrives on the same live session id.
+  h.f.send({ serverContent: { outputTranscription: { text: 'out-6', finished: true }, turnComplete: true } });
+  await drain(h, session.liveSessionId, before + 2);
+  assert.equal(h.owner.current().state, 'listening');
+  assert.equal(h.store.transaction(tx => tx.all('SELECT live_session_id FROM live_sessions')).length, 1, 'the same live session resumed');
+  assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(r => r.kind === 'terminal').length, 0);
+  attachment.close(); await attachment.done;
+});
+
 test('revoked resumption handle is cleared before a recoverable loss', async t => {
   const h = await harness(t);
   const { session, attachment } = await attached(h, 'resume-cleared');
@@ -1551,6 +1682,23 @@ async function transcription(output: AsyncIterator<import('../live/types.js').Li
   }
 }
 
+
+test('the exact live diagnostics object the owner emits is accepted by the host log whitelist', async t => {
+  const lines: string[] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => {
+    if (typeof args[0] === 'string' && args[0].includes('live_session_diagnostics')) lines.push(args[0]);
+  });
+  const h = await harness(t);
+  const { attachment } = await attached(h, 'diagnostics-whitelist');
+  attachment.close(); await attachment.done;
+  for (let attempt = 0; attempt < 20 && lines.length === 0; attempt++) await tick();
+  assert.equal(lines.length, 1);
+  const emitted = JSON.parse(lines[0]!) as Record<string, unknown>;
+  assert.equal(emitted.event, 'live_session_diagnostics');
+  const accepted = safeEvent(emitted);
+  assert.ok(accepted, 'the host log whitelist accepts the exact emitted diagnostics object, never silently dropping it');
+  assert.equal(accepted.terminalCode, emitted.terminalCode);
+});
 
 test('queued PCM is dropped at the cut and capture during rebuilding is never replayed', async t => {
   const diagnosticLines: string[] = [];
@@ -1634,7 +1782,7 @@ for (const status of [401, 403, 429]) test(`resumed HTTP upgrade refusal ${statu
   assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(row => row.kind === 'terminal').length, 1);
 });
 
-test('established WebSocket protocol error ends without resumption despite a saved handle', async t => {
+test('established WebSocket protocol error resumes through the saved handle', async t => {
   const h = await harness(t);
   const { session, attachment } = await attached(h, 'resume-protocol-final');
   const output = attachment.output[Symbol.asyncIterator]();
@@ -1642,9 +1790,23 @@ test('established WebSocket protocol error ends without resumption despite a sav
   h.f.send({ serverContent: { inputTranscription: { text: 'protocol sentinel' } } });
   await transcription(output, 'protocol sentinel');
   assert.equal(h.store.transaction(tx => tx.get('SELECT resumption_handle FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!.resumption_handle !== null, true);
-  // If the defect reconnects, refuse setup immediately rather than waiting a real timeout.
-  h.f.refuseUpgrades(403); h.f.invalidOpcode();
-  assert.deepEqual((await attachment.done).terminal, { state: 'failed', code: 'protocol_error' });
-  assert.equal(h.f.attempts, 1);
-  assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(row => row.kind === 'terminal').length, 1);
+  // A post-ready protocol error is recoverable, so the owner opens one resumption connection.
+  h.f.invalidOpcode();
+  await h.f.frame(2);
+  assert.equal(h.f.attempts, 2);
+  h.f.send({ setupComplete: {} });
+  await continuity(output, 'resumed');
+  assert.equal(h.owner.current().state, 'listening');
+  assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(row => row.kind === 'terminal').length, 0);
+  attachment.close(); await attachment.done;
+});
+
+test('Mattermost declarations carry the channel-resolution micro-contract', () => {
+  const policy = { bounds: { maxQueryChars: 200, maxSearchLimit: 60 } } as never;
+  const descriptions = new Map(CONNECTOR_DESCRIPTORS['mattermost']!.declarations(policy).map(declaration => [declaration.name, declaration.description]));
+  assert.match(descriptions.get('mattermost_list_channels')!, /Call it at most once per question/);
+  assert.match(descriptions.get('mattermost_list_channels')!, /ids stay valid for the whole session, so reuse them/);
+  assert.match(descriptions.get('mattermost_search')!, /search first, no channel list needed/);
+  assert.match(descriptions.get('mattermost_get_channel_history')!, /channel is a channel id from mattermost_list_channels/);
+  assert.match(descriptions.get('mattermost_get_thread')!, /postId is a post id taken from a channel history/);
 });

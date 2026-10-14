@@ -215,7 +215,7 @@ test('live status is local validation; absent, disabled and malformed files neve
   const ready = await json(enabled.origin, '/api/v1/live/status', { headers: bearer(enabled) });
   assert.equal(ready.body.data.status, 'configured');
   assert.equal(ready.body.data.model, MODEL);
-  assert.deepEqual(ready.body.data.limits, { sessionMs: 900_000, idleMs: 60_000 });
+  assert.deepEqual(ready.body.data.limits, { sessionMs: 3_600_000, idleMs: 300_000 });
 });
 
 test('live operator routes reject browsers, origins and duplicate headers before the owner', async t => {
@@ -261,14 +261,17 @@ for (const mode of ['failed', 'healthy', 'fixture-only'] as const) test(`Swift s
   });
   const setup = (async () => { await h.f.frame(1); h.f.send({ setupComplete: {} }); })();
   await Promise.race([ready, setup.then(() => ready)]);
+  // The owner opens model-first, so frame 1 is the greeting text, not capture.
+  await h.f.frame(2);
+  assert.deepEqual(h.f.frames[1], { realtimeInput: { text: 'Greet the person briefly to begin the conversation.' } });
   // The coordinator sends capture only after ready; FoundationLiveSocket sends PCM as binary,
   // and endAudioStream as one text JSON control, not a terminal close.
   ws.send(Buffer.from(pcm));
-  await h.f.frame(2);
-  ws.send(JSON.stringify({ type: 'endAudioStream' }));
   await h.f.frame(3);
-  assert.deepEqual(h.f.frames[1], { realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: Buffer.from(pcm).toString('base64') } } });
-  assert.deepEqual(h.f.frames[2], { realtimeInput: { audioStreamEnd: true } });
+  ws.send(JSON.stringify({ type: 'endAudioStream' }));
+  await h.f.frame(4);
+  assert.deepEqual(h.f.frames[2], { realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: Buffer.from(pcm).toString('base64') } } });
+  assert.deepEqual(h.f.frames[3], { realtimeInput: { audioStreamEnd: true } });
   const current = await json(h.origin, `/api/v1/live-sessions/${snapshot.liveSessionId}`, { headers: bearer(h) });
   assert.equal(current.status, 200);
   assert.equal(current.body.data.lifecycle, 'active');
@@ -359,6 +362,30 @@ test('one ordered authenticated audio upgrade carries PCM, markers and the termi
   const journal = await json(h.origin, `/api/v1/live-sessions/${snapshot.liveSessionId}/journal`, { headers: bearer(h) });
   assert.equal(journal.body.data.terminal.outcome.state, 'failed');
   assert.ok(journal.body.data.fragments.some((f: { kind: string }) => f.kind === 'interrupted'));
+});
+
+test('a settled session delivers the typed terminal and closes 1000 while a late mic frame arrives', async t => {
+  // The session budget is not reset by client audio, so it settles while the microphone keeps sending frames.
+  const h = await harness(t, { config: configJson(true, { limits: { sessionMs: 200, idleMs: 5000, handshakeMs: 1000, closeMs: 50 } }) });
+  const created = await createBody(h, 'late-mic');
+  const id = created.body.data.liveSessionId;
+  const ws = new WebSocket(`${h.origin.replace('http', 'ws')}/api/v1/live-sessions/${id}/audio`, { headers: bearer(h) });
+  const frames: Array<{ text?: string }> = [];
+  ws.on('message', (data: Data, isBinary: boolean) => { if (!isBinary) frames.push({ text: data.toString() }); });
+  t.after(() => ws.terminate());
+  await once(ws, 'open');
+  await h.f.frame(1); h.f.send({ setupComplete: {} });
+  await waitFor(() => frames.some(f => f.text && JSON.parse(f.text).type === 'ready'));
+  const closed = once(ws, 'close');
+  // The provider goes idle, settling the session, while the microphone keeps sending frames.
+  const pump = setInterval(() => { if (ws.readyState === WebSocket.OPEN) ws.send(Buffer.from(pcm)); }, 40);
+  t.after(() => clearInterval(pump));
+  const [code] = await closed;
+  clearInterval(pump);
+  const terminal = frames.map(f => f.text).filter((text): text is string => text !== undefined).map(text => JSON.parse(text) as { type: string; state?: string; code?: string | null }).find(frame => frame.type === 'terminal');
+  assert.ok(terminal, 'the typed terminal frame is delivered before the close');
+  assert.equal(terminal.code, 'session_timeout');
+  assert.equal(code, 1000, 'a settled session closes 1000, never a generic 1002');
 });
 
 test('malformed handshakes never consume the grant or open a provider', async t => {
@@ -787,7 +814,7 @@ test('trusted composition registers current Live authority and refuses after ter
   ws.close(); if (ws.readyState !== WebSocket.CLOSED) await once(ws, 'close');
   const again = await createBody(h, 'registered-terminal'); const secondId = again.body.data.liveSessionId;
   const second = new WebSocket(`${h.origin.replace('http:', 'ws:')}/api/v1/live-sessions/${secondId}/audio`, { headers: bearer(h) });
-  t.after(() => second.terminate()); await once(second, 'open'); await h.f.frame(2); h.f.send({ setupComplete: {} }); await once(second, 'message');
+  t.after(() => second.terminate()); await once(second, 'open'); await h.f.frame(3); h.f.send({ setupComplete: {} }); await once(second, 'message');
   assert.notEqual(await lookup!(secondId, signal), null);
   second.send(JSON.stringify({ type: 'close' })); await once(second, 'close'); assert.equal(await lookup!(secondId, signal), null);
 });

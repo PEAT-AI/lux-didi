@@ -233,3 +233,57 @@ test('missing or mismatched saved pending context preserves exact storage and re
     assert.equal(storage.get('didi-connected:O1'), before); view.reset();
   }
 });
+
+test('an unresolved turn whose conversation is missing offers an exact-key recovery action', async () => {
+  const pending = { key: 'retained-key', text: 'unresolved turn', sessionId: 'MISSING', selectedMemoryEntryIds: ['note1'] };
+  const view = await setup({ sessionId: 'MISSING', draft: 'unresolved turn', pending });
+  const before = storage.get('didi-connected:O1');
+  await view.refresh('O1');
+  assert.equal(storage.get('didi-connected:O1'), before);
+  assert.equal(calls.includes('/conversation-selection'), false);
+  assert.match(panel.html, /id="connected-recover"/);
+  let chat: RequestInit | undefined;
+  routes = async (path, init) => {
+    if (path !== '/chat') return undefined;
+    chat = init;
+    return envelope({ runId: 'recovered', sessionId: 'MISSING', state: 'terminal', outcome: 'complete', finalEntryId: null, partialText: '', sequence: 1 });
+  };
+  panel.querySelector('#connected-recover').fire('click'); await tick(); await tick(); await tick();
+  assert.equal(calls.filter(path => path === '/chat').length, 1);
+  assert.equal((chat!.headers as Record<string, string>)['Idempotency-Key'], 'retained-key');
+  assert.equal(JSON.parse(storage.get('didi-connected:O1')!).pending, undefined);
+  assert.equal(JSON.parse(storage.get('didi-connected:O1')!).sessionId, 'MISSING');
+  view.reset();
+});
+
+test('a later list refresh that contains the missing conversation reconciles the unresolved turn', async () => {
+  const pending = { key: 'retained-key', text: 'unresolved turn', sessionId: 'MISSING', selectedMemoryEntryIds: ['note1'] };
+  const view = await setup({ sessionId: 'MISSING', draft: 'unresolved turn', pending });
+  await view.refresh('O1');
+  assert.match(panel.html, /id="connected-recovery"/);
+  routes = async path => path === '/sessions' ? envelope({ items: [{ id: 'MISSING', title: 'Recovered history' }] }) : undefined;
+  await view.refresh('O1');
+  assert.equal(calls.includes('/sessions/MISSING'), true);
+  assert.match(panel.html, /Recovered history/);
+  assert.match(panel.html, /connected-send-form/);
+  assert.doesNotMatch(panel.html, /id="connected-recovery"/);
+  assert.equal(JSON.parse(storage.get('didi-connected:O1')!).pending.sessionId, 'MISSING');
+  view.reset();
+});
+
+test('a definitively refused send clears the pending key and leaves start usable', async () => {
+  const view = await setup({ sessionId: 'S1', draft: 'refused turn' }); await view.refresh('O1');
+  routes = async path => path === '/chat'
+    ? new Response(JSON.stringify({ error: { code: 'CONSENT_REVOKED', message: 'This conversation is no longer consented.' } }), { status: 403 })
+    : undefined;
+  panel.querySelector('#connected-draft').fire('input', { value: 'refused turn' });
+  panel.querySelector('#connected-send-form').fire('submit'); await tick(); await tick(); await tick();
+  assert.equal(calls.includes('/chat'), true);
+  assert.match(panel.html, /This conversation is no longer consented/);
+  assert.equal(JSON.parse(storage.get('didi-connected:O1')!).pending, undefined, 'a definitive refusal must not retain the acceptance key');
+  panel.querySelector('#connected-consent').fire('change', { checked: true });
+  const reads = calls.length;
+  panel.querySelector('#connected-start').fire('click'); await tick(); await tick();
+  assert.equal(calls.slice(reads).includes('/conversations'), true, 'start stays usable after a definitive refusal');
+  view.reset();
+});

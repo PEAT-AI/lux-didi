@@ -19,7 +19,15 @@ export interface GeminiLiveVoiceOptions {
 }
 export interface LiveToolCall { id: string; name: string; args: JsonObject }
 export interface LiveToolResponse { id: string; name: string; response: JsonObject }
-export const liveVoiceTimerDefaults = Object.freeze({ handshakeMs: 15_000, idleMs: 60_000, sessionMs: 900_000, closeMs: 1000 });
+export const liveVoiceTimerDefaults = Object.freeze({ handshakeMs: 15_000, idleMs: 300_000, sessionMs: 3_600_000, closeMs: 1000 });
+// Google Live API automatic activity detection defaults for setup.realtimeInputConfig.automaticActivityDetection.
+// prefixPaddingMs keeps the first syllables, silenceDurationMs tolerates a mid-sentence thinking pause,
+// and the LOW end sensitivity stops a brief pause from ending the turn.
+// https://ai.google.dev/api/live (AutomaticActivityDetection: prefixPaddingMs, silenceDurationMs, startOfSpeechSensitivity, endOfSpeechSensitivity)
+export const liveVoiceActivityDefaults = Object.freeze({
+  prefixPaddingMs: 300, silenceDurationMs: 1200,
+  startOfSpeechSensitivity: 'START_SENSITIVITY_LOW', endOfSpeechSensitivity: 'END_SENSITIVITY_LOW',
+} as const);
 export interface LiveVoiceRequest {
   resumptionHandle?: string;
   opening?: 'user_first' | 'model_first';
@@ -37,12 +45,10 @@ export type LiveVoiceErrorCode =
   | 'backpressure' | 'event_limit' | 'handshake_timeout' | 'idle_timeout' | 'session_timeout' | 'go_away';
 export interface LiveVoiceOutcome {
   recoverable?: boolean;
-  droppedAudioFrames?: number;
   status: 'closed' | 'cancelled' | 'deadline' | 'failed'; code: LiveVoiceErrorCode;
 }
 export interface LiveVoiceDiagnostics {
   audioCalls: number; audioBytes: number;
-  pendingToolDropCalls: number; pendingToolDropBytes: number;
   drainingDropCalls: number; drainingDropBytes: number;
   localWriteEnqueuedCalls: number; localWriteEnqueuedPCMBytes: number;
   localWriteCallbackSuccessCalls: number; localWriteCallbackSuccessPCMBytes: number;
@@ -72,12 +78,12 @@ export interface LiveVoiceSession {
   readonly ready: Promise<void>;
   readonly events: AsyncIterable<LiveVoiceEvent>;
   readonly done: Promise<LiveVoiceOutcome>;
-  readonly droppedAudioFrames: number;
   // Includes informational empty serverContent frames after readiness.
   readonly unknownTopLevelKeys?: number;
   readonly diagnostics?: () => Readonly<LiveVoiceDiagnostics>;
   sendToolResponse(input: { responses: LiveToolResponse[] }): void;
   sendAudio(input: { pcm: Uint8Array; dataClass: DataClass }): void;
+  sendText(input: { text: string }): void;
   endAudioStream(): void;
   close(): void;
 }

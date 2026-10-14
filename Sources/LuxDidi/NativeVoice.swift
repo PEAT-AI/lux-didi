@@ -87,3 +87,27 @@ import Combine
         let utterance = AVSpeechUtterance(string: text); utterance.volume = 0; return utterance
     }
 }
+
+import WebKit
+
+/// Feeds bounded local levels into the embedded web orb while a live session runs: playback
+/// levels while Naya speaks, microphone levels while listening. The renderer owns smoothing and
+/// geometry; this publisher never touches capture or transport authority.
+@MainActor final class NativeOrbLevelPublisher {
+    private let device: NativeLiveAudioDevice
+    private weak var web: WKWebView?
+    private var task: Task<Void, Never>?
+    init(device: NativeLiveAudioDevice, web: WKWebView?) { self.device = device; self.web = web }
+    func start() {
+        guard task == nil, let web = self.web else { return }
+        task = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self = self, let web = self.web, web.window != nil else { break }
+                let sample = self.device.isPlayingOutput ? Double(self.device.outputLevel) : Double(self.device.inputLevel)
+                _ = try? await web.evaluateJavaScript("window.didiOrbLevel&&window.didiOrbLevel({level:\(sample)})")
+                try? await Task.sleep(nanoseconds: 66_000_000)
+            }
+        }
+    }
+    func stop() { task?.cancel(); task = nil }
+}

@@ -93,7 +93,7 @@ test('a granted google endpoint calls the real child with bounded defaults and b
     assert.equal((listEnvelope['received'] as Record<string, unknown>)['maxResults'], 10);
     const listProjection = renderGoogleTool('gmail_list', (listEnvelope['data'] as Record<string, unknown>));
     assert.equal(listProjection.partial, false);
-    assert.match(listProjection.text, /Synthetic subject line, Synthetic Sender, Mon, 1 Jan 2024/);
+    assert.match(listProjection.text, /Synthetic subject line \| Synthetic Sender \| Mon, 1 Jan 2024/);
     assert.match(listProjection.text, /source: https:\/\/mail\.google\.com\/mail\/u\/0\/#inbox\/m1/);
 
     const outOfBudget = await gmail.gmailList({ maxResults: 999 });
@@ -106,7 +106,7 @@ test('a granted google endpoint calls the real child with bounded defaults and b
     const readProjection = renderGoogleTool('gmail_read', (readEnvelope['data'] as Record<string, unknown>));
     assert.equal(readProjection.partial, true);
     assert.match(readProjection.text, /subject: Synthetic subject line/);
-    assert.match(readProjection.text, /body truncated/);
+    assert.match(readProjection.text, /body truncated|\[omitted: \d+ characters of body; final/);
 
     const events = completed(await calendar.gcalList({}));
     payloadPorts.set(events, adapter);
@@ -115,6 +115,18 @@ test('a granted google endpoint calls the real child with bounded defaults and b
     assert.equal(received['calendarId'], 'primary');
     assert.equal(typeof received['timeMin'], 'string');
     assert.equal(typeof received['timeMax'], 'string');
+    const windowed = completed(await calendar.gcalList({ timeMin: '2026-10-12T00:00:00+05:30', timeMax: '2026-10-13T00:00:00+05:30' }));
+    payloadPorts.set(windowed, adapter);
+    const windowReceived = envelopeOf(windowed)['received'] as Record<string, unknown>;
+    assert.equal(windowReceived['timeMin'], '2026-10-12T00:00:00+05:30');
+    assert.equal(windowReceived['timeMax'], '2026-10-13T00:00:00+05:30');
+    const localDefault = completed(await calendar.gcalList({ timeZone: 'Asia/Kolkata', now: () => Date.parse('2026-10-14T12:00:00Z') }));
+    payloadPorts.set(localDefault, adapter);
+    const defaultReceived = envelopeOf(localDefault)['received'] as Record<string, unknown>;
+    assert.equal(defaultReceived['timeMin'], '2026-10-14T00:00:00+05:30');
+    assert.equal(defaultReceived['timeMax'], '2026-10-15T00:00:00+05:30');
+    const refused = await calendar.gcalList({ timeMin: 'not-a-window' });
+    assert.equal(refused.state === 'refused' ? refused.reason : '', 'invalid-time-window');
     const eventProjection = renderGoogleTool('gcal_list', (calendarEnvelope['data'] as Record<string, unknown>));
     assert.match(eventProjection.text, /2024-01-01T09:00:00Z, Synthetic standup, Room 1/);
     assert.match(eventProjection.text, /source: https:\/\/calendar\.google\.com\/event\?eid=e1/);
@@ -239,7 +251,7 @@ test('the owner composes the google tool table and a Live-shaped gmail_list call
     const row = store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE execution_id=?', ['run:1:0']));
     const stored = JSON.parse(String(row?.result_json)) as { response: Record<string, unknown> };
     assert.equal(stored.response['tool'], 'gmail_list');
-    assert.match(String(stored.response['text']), /Synthetic subject line, Synthetic Sender, Mon, 1 Jan 2024/);
+    assert.match(String(stored.response['text']), /Synthetic subject line \| Synthetic Sender \| Mon, 1 Jan 2024/);
     assert.match(String(stored.response['text']), /source: https:\/\/mail\.google\.com\/mail\/u\/0\/#inbox\/m1/);
   } finally {
     await adapter.close();

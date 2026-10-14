@@ -1,17 +1,29 @@
 import Foundation
 import Security
+import LocalAuthentication
 
-/// Legacy defaultKeychainUI ignores LAContext/per-call authentication UI flags.
-/// This public (deprecated) policy lives in this process's Security.framework
-/// Globals object. Establish it before AppKit/WK work and never restore it.
+/// Modern replacement for the deprecated process-global SecKeychain interaction
+/// policy. SecKeychainSetUserInteractionAllowed/GetUserInteractionAllowed were
+/// retired in favor of per-query authentication contexts, so hold one
+/// non-interactive LAContext and consult it through the same set/get seam.
+/// Establish it before AppKit/WK work and never restore it.
 /// MainActor confines OUR metadata, not framework threads or their SDK calls.
 @MainActor enum NativeKeychainPolicy {
     private(set) static var installationStatus: OSStatus?
+    private(set) static var context: LAContext?
 
     static func establish() -> OSStatus {
         if let status = installationStatus { return status }
-        let status = evaluate(set: { SecKeychainSetUserInteractionAllowed(false) },
-                              get: SecKeychainGetUserInteractionAllowed)
+        let status = evaluate(set: {
+            let installed = LAContext()
+            installed.interactionNotAllowed = true
+            context = installed
+            return installed.interactionNotAllowed ? errSecSuccess : errSecInteractionNotAllowed
+        }, get: { allowed in
+            guard let installed = context else { return errSecNotAvailable }
+            allowed.pointee = DarwinBoolean(!installed.interactionNotAllowed)
+            return errSecSuccess
+        })
         installationStatus = status
         return status
     }
@@ -36,6 +48,10 @@ import Security
         guard installationStatus == errSecSuccess else {
             return installationStatus ?? errSecInteractionNotAllowed
         }
-        return readback(get: SecKeychainGetUserInteractionAllowed)
+        return readback(get: { allowed in
+            guard let installed = context else { return errSecNotAvailable }
+            allowed.pointee = DarwinBoolean(!installed.interactionNotAllowed)
+            return errSecSuccess
+        })
     }
 }

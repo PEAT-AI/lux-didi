@@ -38,8 +38,7 @@ struct ServiceDescriptor: Codable {
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: credentialService, kSecAttrAccount as String: credentialAccount,
             kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne,
-            kSecUseAuthenticationContext as String: context,
-            kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail]
+            kSecUseAuthenticationContext as String: context]
         var result: CFTypeRef?
         guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
               let data = result as? Data, let token = String(data: data, encoding: .utf8), !token.isEmpty,

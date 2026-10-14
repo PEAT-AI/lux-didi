@@ -96,7 +96,7 @@ test('malformed stdout, silent handshake and crash all fail explicitly instead o
   }
 });
 
-test('cancellation retires the child and reports an unknown outcome', async () => {
+test('cancellation fails one call and leaves the child and connector usable', async () => {
   const { dir, pidFile } = scratch();
   const registry = new McpRegistry();
   registry.register(config('local-stdio', 'hang-call', pidFile));
@@ -114,7 +114,8 @@ test('cancellation retires the child and reports an unknown outcome', async () =
     clearTimeout(timer);
     assert.equal(result.state, 'unknown');
     const pid = Number(readFileSync(pidFile, 'utf8'));
-    assert.equal(await waitDead(pid, 4000), true, 'child must be gone after cancellation');
+    assert.equal(pidAlive(pid), true, 'a cancelled call must not retire the child');
+    assert.equal(adapter.visibleTools('local-stdio').length, 1, 'a cancelled call must not suspend the connector');
   } finally { await adapter.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -379,4 +380,134 @@ test('a stdio binding missing an inherited SDK env key, or HOME/PATH, is refused
   assert.throws(() => registry.register(make('env-missing-path', { HOME: '/tmp/didi-home', LOGNAME: '', SHELL: '', TERM: '', USER: '' })));
   assert.throws(() => registry.register(make('env-empty-home', { ...full, HOME: '' })));
   assert.throws(() => registry.register(make('env-empty-path', { ...full, PATH: '' })));
+});
+
+// Each dispatched stdio call failure records one closed, privacy-safe stage instead of a generic one.
+test('a dispatched stdio call failure records one fixed stage per cause', { skip: process.platform === 'win32' }, async () => {
+  const cases: { mode: string; timeoutMs?: number; stage: string }[] = [
+    { mode: 'hang-call', timeoutMs: 300, stage: 'timeout' },
+    { mode: 'exit-on-call', stage: 'child_exited' },
+    { mode: 'signal-on-call', stage: 'child_exited' },
+    { mode: 'close-pipe-on-call', timeoutMs: 300, stage: 'pipe_closed' },
+    { mode: 'invalid-result', stage: 'invalid_result' },
+  ];
+  for (const c of cases) {
+    const { dir, pidFile } = scratch();
+    const registry = new McpRegistry();
+    registry.register(config('stage-stdio', c.mode, pidFile));
+    registry.enable('stage-stdio'); registry.allowEgress('stage-stdio');
+    const adapter = createMcpAdapter({ registry, store: new MemoryResultStore(), budgets: { timeoutMs: 4000 }, ...(c.timeoutMs ? { callTimeoutMsByEndpoint: new Map([['stage-stdio', c.timeoutMs]]) } : {}) });
+    try {
+      const discovery = await adapter.discover('stage-stdio');
+      assert.equal(discovery.state, 'discovered', `${c.mode} discovery`);
+      if (discovery.state !== 'discovered') continue;
+      registry.approve({ endpointId: 'stage-stdio', schemaDigest: discovery.schemaDigest, toolNames: ['echo'], effect: 'read', account: ACCOUNT, resource: RESOURCE, generation: 1 });
+      const result = await adapter.call(request('stage-stdio'));
+      assert.equal(result.state, 'unknown', `${c.mode} state ${JSON.stringify(result)}`);
+      if (result.state === 'unknown') assert.equal(result.reason, c.stage, `${c.mode} stage`);
+    } finally { await adapter.close(); rmSync(dir, { recursive: true, force: true }); }
+  }
+});
+
+test('a caller-cancelled stdio call records cancelled, not timeout', { skip: process.platform === 'win32' }, async () => {
+  const { dir, pidFile } = scratch();
+  const registry = new McpRegistry();
+  registry.register(config('stage-stdio', 'hang-call', pidFile));
+  registry.enable('stage-stdio'); registry.allowEgress('stage-stdio');
+  const adapter = adapterFor(registry);
+  try {
+    const discovery = await adapter.discover('stage-stdio');
+    assert.equal(discovery.state, 'discovered');
+    if (discovery.state !== 'discovered') return;
+    registry.approve({ endpointId: 'stage-stdio', schemaDigest: discovery.schemaDigest, toolNames: ['echo'], effect: 'read', account: ACCOUNT, resource: RESOURCE, generation: 1 });
+    const controller = new AbortController();
+    const pending = adapter.call(request('stage-stdio'), controller.signal);
+    await new Promise(resolve => setTimeout(resolve, 150));
+    controller.abort();
+    const result = await pending;
+    assert.equal(result.state, 'unknown');
+    if (result.state === 'unknown') assert.equal(result.reason, 'cancelled');
+  } finally { await adapter.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+// W4-R2: every configured read connector gets the longer call deadline; connect/discovery stay on the default.
+test('every configured connector admits a real slow read on the call deadline', { skip: process.platform === 'win32' }, async () => {
+  const host = await import('../host/mcp.js');
+  const dir = mkdtempSync(join(tmpdir(), 'didi-deadline-'));
+  const configDir = join(dir, 'config'); mkdirSync(configDir, { mode: 0o700 });
+  const { dir: childDir, pidFile } = scratch();
+  const endpoint = { id: 'slow', transport: 'stdio' as const, command: process.execPath, args: [child, 'slow-call', pidFile, 'stdio-pong'],
+    env: { HOME: join(dir, 'home'), PATH: process.env.PATH ?? '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' },
+    connector: 'lux-knowledge', account: ACCOUNT, resource: RESOURCE, credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'ordinary' as const };
+  const mcpFile = join(configDir, 'mcp.json');
+  writeFileSync(mcpFile, JSON.stringify({ schemaVersion: 1, grantMode: 'explicit', endpoints: [endpoint] }), { mode: 0o600 }); chmodSync(mcpFile, 0o600);
+  const store = new Store(join(dir, 'data'), toolsMigrations);
+  const runtime = await host.composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null });
+  try {
+    const discovery = await runtime.port.discover('slow');
+    assert.equal(discovery.state, 'discovered');
+    if (discovery.state !== 'discovered') return;
+    runtime.registry.approve({ endpointId: 'slow', schemaDigest: discovery.schemaDigest, toolNames: ['echo'], effect: 'read', account: ACCOUNT, resource: RESOURCE, generation: 1 });
+    const started = Date.now();
+    const result = await runtime.port.call({ endpointId: 'slow', toolName: 'echo', arguments: {}, generation: 1, account: ACCOUNT, resource: RESOURCE });
+    assert.equal(result.state, 'completed', JSON.stringify(result));
+    assert.ok(Date.now() - started >= 5000, 'a configured connector call must not fall back to the five-second default');
+  } finally { await runtime.close(); store.close(); rmSync(dir, { recursive: true, force: true }); rmSync(childDir, { recursive: true, force: true }); }
+});
+
+// W4-R3/R4: a timeout fails one call and stays usable; a dead child respawns on the next call,
+// twice per connector per session, then the third death suspends the connector.
+test('a soft failure leaves the connector usable; a dead child respawns until the budget is spent', { skip: process.platform === 'win32' }, async () => {
+  {
+    const { dir, pidFile } = scratch();
+    const registry = new McpRegistry();
+    registry.register(config('cls', 'hang-first-call', pidFile)); registry.enable('cls'); registry.allowEgress('cls');
+    const adapter = createMcpAdapter({ registry, store: new MemoryResultStore(), budgets: { timeoutMs: 4000 }, callTimeoutMsByEndpoint: new Map([['cls', 300]]) });
+    try {
+      const d = await adapter.discover('cls'); assert.equal(d.state, 'discovered');
+      if (d.state !== 'discovered') return;
+      registry.approve({ endpointId: 'cls', schemaDigest: d.schemaDigest, toolNames: ['echo'], effect: 'read', account: ACCOUNT, resource: RESOURCE, generation: 1 });
+      const first = await adapter.call(request('cls'));
+      assert.equal(first.state, 'unknown'); if (first.state === 'unknown') assert.equal(first.reason, 'timeout');
+      assert.equal(adapter.visibleTools('cls').length, 1, 'a soft failure must not suspend the connector');
+      const second = await adapter.call(request('cls'));
+      assert.equal(second.state, 'completed', JSON.stringify(second));
+    } finally { await adapter.close(); rmSync(dir, { recursive: true, force: true }); }
+  }
+  {
+    // crash once, then the next call respawns a fresh child that succeeds
+    const { dir, pidFile } = scratch();
+    const registry = new McpRegistry();
+    registry.register(config('cls', 'exit-once', pidFile)); registry.enable('cls'); registry.allowEgress('cls');
+    const adapter = adapterFor(registry);
+    try {
+      const d = await adapter.discover('cls'); assert.equal(d.state, 'discovered');
+      if (d.state !== 'discovered') return;
+      registry.approve({ endpointId: 'cls', schemaDigest: d.schemaDigest, toolNames: ['echo'], effect: 'read', account: ACCOUNT, resource: RESOURCE, generation: 1 });
+      const dead = await adapter.call(request('cls'));
+      assert.equal(dead.state, 'unknown'); if (dead.state === 'unknown') assert.equal(dead.reason, 'child_exited');
+      assert.equal(adapter.visibleTools('cls').length, 1, 'one child death must not suspend the connector');
+      const revived = await adapter.call(request('cls'));
+      assert.equal(revived.state, 'completed', JSON.stringify(revived));
+    } finally { await adapter.close(); rmSync(dir, { recursive: true, force: true }); }
+  }
+  {
+    // third crash suspends the connector after two respawns
+    const { dir, pidFile } = scratch();
+    const registry = new McpRegistry();
+    registry.register(config('cls', 'exit-on-call', pidFile)); registry.enable('cls'); registry.allowEgress('cls');
+    const adapter = adapterFor(registry);
+    try {
+      const d = await adapter.discover('cls'); assert.equal(d.state, 'discovered');
+      if (d.state !== 'discovered') return;
+      registry.approve({ endpointId: 'cls', schemaDigest: d.schemaDigest, toolNames: ['echo'], effect: 'read', account: ACCOUNT, resource: RESOURCE, generation: 1 });
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        const r = await adapter.call(request('cls'));
+        assert.equal(r.state, 'unknown'); if (r.state === 'unknown') assert.equal(r.reason, 'child_exited');
+        if (attempt < 3) assert.equal(adapter.visibleTools('cls').length, 1, `respawn ${attempt} must keep the connector usable`);
+      }
+      await adapter.whenSuspended('cls');
+      assert.equal(adapter.visibleTools('cls').length, 0, 'the third child death suspends the connector');
+    } finally { await adapter.close(); rmSync(dir, { recursive: true, force: true }); }
+  }
 });

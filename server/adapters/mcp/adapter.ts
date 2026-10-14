@@ -1,4 +1,4 @@
-import { Client, ProtocolError, StreamableHTTPClientTransport, isJSONRPCErrorResponse } from '@modelcontextprotocol/client';
+import { Client, ProtocolError, SdkError, SdkErrorCode, StreamableHTTPClientTransport, isJSONRPCErrorResponse } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/ajv';
 import { McpRegistry } from './registry.js';
@@ -14,6 +14,18 @@ export interface McpAdapterOptions {
   assertCredentialCurrent?: (reference: string) => void;
 }
 class PolicyError extends Error { constructor(readonly reason: string) { super(reason); } }
+interface ChildExit { readonly exitCode: number | null; readonly signalCode: string | null; readonly pid?: number; readonly stdout?: { once(event: string, listener: () => void): unknown } | null; kill(signal?: NodeJS.Signals): boolean }
+/** The child may ignore the MCP close; after the bounded close it is SIGKILLed so the host can exit. */
+function killChild(child: ChildExit | undefined): void {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  if (typeof child.pid !== 'number' || child.pid <= 0) return;
+  try { child.kill('SIGKILL'); } catch { /* already gone */ }
+}
+/** The SDK discards the child's exit code; hold the ChildProcess it spawned for classification only. */
+function childProcess(transport: unknown): ChildExit | undefined {
+  const candidate = (transport as unknown as { _process?: unknown })._process;
+  return candidate !== null && typeof candidate === 'object' ? candidate as ChildExit : undefined;
+}
 function decodeSseResponse(bytes: Uint8Array, requestId: unknown): Uint8Array {
   try {
     const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes).replace(/^\uFEFF/, '');
@@ -32,15 +44,42 @@ function decodeSseResponse(bytes: Uint8Array, requestId: unknown): Uint8Array {
         }
       }
     }
-  } catch { throw new PolicyError('mcp_transport_error'); }
-  throw new PolicyError('mcp_transport_error');
+  } catch { throw new PolicyError('sdk_protocol_rejected'); }
+  throw new PolicyError('sdk_protocol_rejected');
 }
 interface Operation { scope: ResultScope; signal: AbortSignal; timeoutMs: number; dispatched: boolean; bytes?: Uint8Array; requestId?: string | number; explicitErrorCode?: number; explicitError?: unknown; receivedResult?: boolean }
-interface Session { client: Client; config: EndpointConfig; operation?: Operation }
+interface Session { client: Client; config: EndpointConfig; operation?: Operation; child?: ChildExit; pipeClosed?: boolean; dead?: boolean }
+/** Two respawns per connector per session; the third child death suspends with a logged stage. */
+const MAX_RESPAWNS = 2;
+/**
+ * One closed, privacy-safe stage for a dispatched call failure; never an SDK or remote message.
+ * External cancellation and the local deadline are distinguished before the SDK's own errors.
+ */
+function failureStage(error: unknown, operation: Operation, session: Session, cancelled: boolean, timedOut: boolean): string {
+  const exited = session.child !== undefined && (session.child.exitCode !== null || session.child.signalCode !== null);
+  if (error instanceof PolicyError) {
+    if (error.reason !== 'timeout-or-cancelled') return error.reason;
+    if (cancelled) return 'cancelled';
+    if (exited) return 'child_exited';
+    if (session.pipeClosed) return 'pipe_closed';
+    return 'timeout';
+  }
+  if (error instanceof SdkError) {
+    if (error.code === SdkErrorCode.ConnectionClosed) return exited ? 'child_exited' : 'pipe_closed';
+    if (error.code === SdkErrorCode.RequestTimeout) return cancelled ? 'cancelled' : 'timeout';
+    if (error.code === SdkErrorCode.InvalidResult || error.code === SdkErrorCode.UnsupportedResultType) return 'invalid_result';
+  }
+  if (error instanceof ProtocolError) return 'sdk_protocol_rejected';
+  if (cancelled) return 'cancelled';
+  if (timedOut) return 'timeout';
+  if (session.pipeClosed) return 'pipe_closed';
+  if (operation.receivedResult) return 'invalid_result';
+  return 'sdk_protocol_rejected';
+}
 const allowedHeaders = new Set(['accept', 'content-type', 'mcp-session-id', 'mcp-protocol-version', 'last-event-id', 'mcp-method', 'mcp-name']);
 
 /** All HTTP egress passes this supported SDK fetch seam; native Host, no global patch. */
-function guardedFetch(session: Session, options: McpAdapterOptions, budgets: McpBudgets): typeof fetch {
+function guardedFetch(session: Session, options: McpAdapterOptions, budgets: McpBudgets, onFatal: () => void): typeof fetch {
   return async (input, init) => {
     const request = new Request(input, init);
     const config = options.registry.endpoint(session.config.id);
@@ -88,7 +127,7 @@ function guardedFetch(session: Session, options: McpAdapterOptions, budgets: Mcp
             const chunk = await reader.read();
             if (chunk.done) { controller.close(); return; }
             received += chunk.value.length;
-            if (received > budgets.maxResponseBytes) throw new PolicyError('notification-stream-budget');
+            if (received > budgets.maxResponseBytes) { onFatal(); throw new PolicyError('notification-stream-budget'); }
             controller.enqueue(chunk.value);
           } catch (error) { void reader.cancel().catch(() => {}); controller.error(error); }
         },
@@ -144,6 +183,7 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
   const callTimeouts = new Map(options.callTimeoutMsByEndpoint);
   for (const timeout of callTimeouts.values()) if (!Number.isSafeInteger(timeout) || timeout <= 0) throw new Error('invalid-adapter-budget');
   const sessions = new Map<string, Session>(); const busy = new Set<string>();
+  const deaths = new Map<string, number>();
   const suspended = new Set<string>(); const waiters = new Map<string, Set<() => void>>();
   const schemaValidator = new AjvJsonSchemaValidator();
   let closed = false;
@@ -153,20 +193,29 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
   }
   async function retire(id: string): Promise<void> {
     const session = sessions.get(id); sessions.delete(id);
-    if (session) await bounded(session.client.close(), AbortSignal.timeout(200)).catch(() => {});
+    if (session) {
+      await bounded(session.client.close(), AbortSignal.timeout(200)).catch(() => {});
+      // The SDK close keeps running past the bound; kill the child so a surviving stdio transport cannot hold the host open.
+      killChild(session.child);
+    }
   }
   async function sessionFor(config: EndpointConfig): Promise<Session> {
-    const existing = sessions.get(config.id); if (existing) return existing;
+    const existing = sessions.get(config.id);
+    if (existing && !existing.dead) return existing;
+    if (existing) await retire(config.id);
     const client = new Client({ name: 'lux-didi-optional-mcp', version: '0.1.0' }, { enforceStrictCapabilities: true });
     const session: Session = { client, config };
-    client.onerror = () => { suspend(config.id); }; // No remote error/header/body is logged.
-    client.onclose = () => { suspend(config.id); };
+    // A dropped transport marks the session dead so the next call respawns. The notification-stream
+    // budget breach is fatal at its source (onFatal), and a soft call error is never fatal here.
+    client.onerror = () => { session.dead = true; }; // No remote error/header/body is ever logged.
+    client.onclose = () => { session.dead = true; };
     client.setNotificationHandler('notifications/tools/list_changed', async () => { suspend(config.id); });
     const transport = isStdioEndpoint(config)
       ? new StdioClientTransport({ command: config.command, args: [...config.args], ...(config.env ? { env: { ...config.env } } : {}), stderr: 'pipe' })
-      : new StreamableHTTPClientTransport(new URL(config.url), { fetch: guardedFetch(session, options, budgets), redirectPolicy: 'follow', reconnectionOptions: { maxRetries: 0, initialReconnectionDelay: 1000, maxReconnectionDelay: 1000, reconnectionDelayGrowFactor: 1 } });
+      : new StreamableHTTPClientTransport(new URL(config.url), { fetch: guardedFetch(session, options, budgets, () => suspend(config.id)), redirectPolicy: 'follow', reconnectionOptions: { maxRetries: 0, initialReconnectionDelay: 1000, maxReconnectionDelay: 1000, reconnectionDelayGrowFactor: 1 } });
     sessions.set(config.id, session);
     await bounded(client.connect(transport, { timeout: budgets.timeoutMs }), AbortSignal.timeout(budgets.timeoutMs));
+    if (isStdioEndpoint(config)) { const child = childProcess(transport); if (child) { session.child = child; child.stdout?.once('end', () => { session.pipeClosed = true; }); } }
     // Observe the SDK transport's parsed messages, then forward unchanged. A local
     // decode/validation ProtocolError is not proof of an explicit remote rejection.
     const onmessage = transport.onmessage;
@@ -231,9 +280,14 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
       if (closed || busy.has(request.endpointId) || signal?.aborted) return { state: 'refused', reason: closed ? 'adapter-closed' : signal?.aborted ? 'cancelled-before-dispatch' : 'endpoint-busy' };
       let scope: ResultScope;
       try { scope = options.registry.authorize(request); } catch { return { state: 'refused', reason: 'local-read-grant-refused' }; }
-      const session = sessions.get(request.endpointId);
-      if (!session) return { state: 'refused', reason: 'discovery-required' };
+      const config = options.registry.endpoint(request.endpointId);
       busy.add(request.endpointId);
+      let session = sessions.get(request.endpointId);
+      if (session?.dead) { await retire(request.endpointId); session = undefined; }
+      if (!session) {
+        try { session = await sessionFor(config); }
+        catch { busy.delete(request.endpointId); return { state: 'refused', reason: 'discovery-required' }; }
+      }
       const timeoutMs = callTimeouts.get(request.endpointId) ?? budgets.timeoutMs;
       const deadline = AbortSignal.timeout(timeoutMs);
       const localSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
@@ -252,12 +306,20 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
       } catch (error) {
         if (operation.dispatched) {
           if (error instanceof ProtocolError && operation.explicitErrorCode !== undefined && operation.bytes && options.registry.authorizesScope(scope)) return completed(scope, operation.bytes, { error: { code: operation.explicitErrorCode } }, 'protocol-error', operation.explicitErrorCode, operation.explicitError);
+          // Classify before retiring the child, so a local shutdown never rewrites the cause.
+          const stage = failureStage(error, operation, session, signal?.aborted === true, deadline.aborted);
           // HTTP SDK cancellation aborts the request, rather than notifying. Use its
           // supported notification API with the SDK-owned id; never wait indefinitely.
           if (localSignal.aborted && operation.requestId !== undefined) await bounded(session.client.notification({ method: 'notifications/cancelled', params: { requestId: operation.requestId, reason: 'local cancellation' } }), AbortSignal.timeout(200)).catch(() => {});
-          // No call retry or reconnect here. A later explicit discovery can reconnect only.
-          suspend(request.endpointId); await retire(request.endpointId);
-          return { state: 'unknown', reason: error instanceof PolicyError ? error.reason : operation.receivedResult ? 'mcp_result_invalid' : 'protocol-or-transport-outcome-unknown' };
+          // A dead transport is retired; the stdio child respawns on the next call, up to two deaths.
+          // A soft failure (timeout, cancellation, invalid_result) leaves the connector usable. Never retry this call.
+          if (stage === 'sdk_protocol_rejected') { suspend(request.endpointId); await retire(request.endpointId); }
+          else if (stage === 'child_exited' || stage === 'pipe_closed') {
+            const count = (deaths.get(request.endpointId) ?? 0) + 1; deaths.set(request.endpointId, count);
+            if (count > MAX_RESPAWNS) suspend(request.endpointId);
+            await retire(request.endpointId);
+          }
+          return { state: 'unknown', reason: stage };
         }
         return { state: 'refused', reason: error instanceof PolicyError ? error.reason : 'pre-dispatch-refused' };
       } finally { delete session.operation; busy.delete(request.endpointId); }

@@ -15,22 +15,32 @@ import CryptoKit
     private static func js(_ web: WKWebView, _ script: String) async throws -> Any? {
         try await web.evaluateJavaScript(script)
     }
+    private static func collapseSavedHistory(_ web: WKWebView) async throws -> Bool {
+        try await js(web, "(() => { const history=document.querySelector('#conversation-history'); const summary=history?.querySelector(':scope > summary'); if(!history||!summary)return false; if(!history.open)return true; summary.click(); return !history.open; })()") as? Bool == true
+    }
     private static func visible(_ record: SyntheticProofRecord, web: WKWebView) async throws -> Bool {
         let literal = String(data: try JSONSerialization.data(withJSONObject: record.text, options: [.fragmentsAllowed]), encoding: .utf8)!
         let check = "document.body.innerText.includes(\(literal))"
-        if try await js(web, check) as? Bool == true { return true }
+        if try await js(web, check) as? Bool == true { return try await collapseSavedHistory(web) }
         let selector = String(data: try JSONSerialization.data(withJSONObject: "[data-session=\"" + record.sessionId + "\"]", options: [.fragmentsAllowed]), encoding: .utf8)!
         _ = try await js(web, "document.querySelector('[data-tab=\"Conversation\"]')?.click(); true")
         let until = Date().addingTimeInterval(0.5)
-        var opened = false
+        var historyOpened = false, opened = false
         while Date() < until {
-            let snapshot = try await js(web, "(() => { const row=document.querySelector(\(selector)); return { connectionReady:document.querySelector('#connection-state')?.textContent.trim()==='Connected', listLoading:!!document.querySelector('#main .loading'), rowReady:!!row&&row.getBoundingClientRect().width>0, selected:!!row&&row.classList.contains('selected') }; })()") as? [String: Any] ?? [:]
+            let snapshot = try await js(web, "(() => { const history=document.querySelector('#conversation-history'); const row=document.querySelector(\(selector)); return { connectionReady:document.querySelector('#connection-state')?.textContent.trim()==='Connected', listLoading:!!document.querySelector('#main .loading'), historyReady:!!history&&history.getBoundingClientRect().width>0, historyOpen:!!history&&history.open, rowReady:!!row&&row.getBoundingClientRect().width>0, selected:!!row&&row.classList.contains('selected') }; })()") as? [String: Any] ?? [:]
             if snapshot["connectionReady"] as? Bool == true, snapshot["listLoading"] as? Bool == false {
+                if !historyOpened {
+                    if snapshot["historyOpen"] as? Bool == true { historyOpened = true }
+                    else if snapshot["historyReady"] as? Bool == true {
+                        historyOpened = try await js(web, "(() => { const history=document.querySelector('#conversation-history'); const summary=history?.querySelector(':scope > summary'); if(!history||!summary||summary.getBoundingClientRect().width<=0)return false; summary.click(); return history.open; })()") as? Bool == true
+                        continue
+                    }
+                }
                 if !opened, snapshot["rowReady"] as? Bool == true {
                     opened = try await js(web, "(() => { const row=document.querySelector(\(selector)); if(!row||row.getBoundingClientRect().width<=0)return false; row.click(); return true; })()") as? Bool == true
                 } else if opened, snapshot["selected"] as? Bool == true,
                           try await js(web, check) as? Bool == true {
-                    return true
+                    return try await collapseSavedHistory(web)
                 }
             }
             try await Task.sleep(nanoseconds: 50_000_000)
@@ -79,6 +89,18 @@ import CryptoKit
         try data.write(to: output, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: output.path)
         return ["method": "actual-WKWebView.takeSnapshot", "path": output.path, "width": bitmap.pixelsWide, "height": bitmap.pixelsHigh, "sha256": SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()]
+    }
+    private static func activateDisclosure(_ window: NSWindow, named name: String) -> Bool {
+        var visited = 0
+        func visit(_ value: Any, depth: Int) -> Bool {
+            guard depth < 16, visited < 512 else { return false }
+            visited += 1
+            guard let element = value as? NSAccessibilityProtocol else { return false }
+            if (element.accessibilityLabel() == name || element.accessibilityTitle() == name),
+               element.accessibilityPerformPress() { return true }
+            return (element.accessibilityChildren() ?? []).contains { visit($0, depth: depth + 1) }
+        }
+        return visit(window, depth: 0)
     }
     static func execute(model: AppModel, window: NSWindow) async -> Bool {
         guard let proof = model.installedProof, let owner = model.supervisor else {
@@ -146,9 +168,25 @@ import CryptoKit
             report["axConsumer"] = ["stage": "before-connected-own-AX", "windowReadiness": readinessTrace]
             try proof.write(report)
             guard readiness.ready else { throw InstalledProofError.accessibility }
+            var collapsedEvidence: [String: Any]
+            do {
+                collapsedEvidence = ["capture": try await OwnedWindowProof.capture(
+                    window, to: proof.report.appendingPathExtension("native-collapsed.png"))]
+            } catch {
+                collapsedEvidence = ["error": ["domain": (error as NSError).domain,
+                    "code": (error as NSError).code,
+                    "cause": (error as? OwnedWindowProof.CaptureFailure)?.rawValue ?? "sdk-or-bound"]]
+            }
+            guard activateDisclosure(window, named: "Type or save a note") else {
+                throw InstalledProofError.accessibility
+            }
+            await Task.yield()
+            window.contentView?.layoutSubtreeIfNeeded()
             let observation = OwnedWindowProof.observe(window)
             var consumerTrace = observation.trace
             consumerTrace["windowReadiness"] = readinessTrace
+            consumerTrace["collapsedNativeChrome"] = collapsedEvidence
+            consumerTrace["noteDisclosureActivated"] = true
             report["axConsumer"] = consumerTrace
             let controls = observation.controls
             visual["accessibility"] = controls

@@ -143,8 +143,9 @@ nonpersistent WKWebsiteDataStore, cookie bootstrap and window lifecycle.
 
 `src/orb-classic.ts` reuses bounded first-party procedural drawing/helpers from
 Vicuna/Naya at `f27bca7bcbc77a77e3401da2683abf2f1aaf023c`, explicitly authorized by
-WEB-R4. `src/orb.ts` owns the framework-independent Canvas lifecycle and Didi
-state adapter. Provenance, exact line ranges and deliberate adaptations are in
+WEB-R4. `src/orb.ts` owns the framework-independent Canvas lifecycle and Naya voice
+state adapter. Durable assistant records still use the generic Didi identity.
+Provenance, exact line ranges and deliberate adaptations are in
 `src/orb-provenance.md`. No Angular, Sentry, persona, screenshot or private app
 configuration was copied. It is a bounded classic renderer adaptation, not a
 pixel-identical extraction of all visual effects or a new WebGL2 implementation.
@@ -210,10 +211,14 @@ no mute control: there is nothing to press, the orb reflects listening, speaking
 and thinking continuously, and typing stays the secondary input. The orb
 caption's own label follows the same live state (they never disagree), and its
 "Not listening" note appears only when the projection is not in an active turn.
-The section also
-renders the input and output
-transcription lines as they arrive, and the
-newest accepted `toolResult` as sanitized Markdown with clickable source links.
+The section folds adjacent transcription fragments from the same role into one
+visible turn until a role change, `turnComplete`, `interrupted` or terminal event.
+Fragment text is concatenated exactly, without adding spaces or removing repeated
+text. The newest accepted `toolResult` is the prominent Latest answer, and the
+latest spoken Naya turn stays readable beneath it. The full transcript and tool
+activity remain reachable from a labelled disclosure on the same Conversation
+page, with sanitized Markdown and clickable source links. The disclosure keeps
+the user's open or closed choice across live polling.
 The label never claims that speech was heard or a task finished beyond what the
 projection says; an error state says only that Naya reported an error.
 
@@ -313,3 +318,5 @@ is unconfigured or disabled the route still answers 200 with `profileEnabled`
 false and the other fields null.
 
 The Live page projection may include optional `pastSession` metadata. Past sessions render as the last Live session, not a current error. `endedAt` is the persisted terminal timestamp; an orphan has null `endedAt` and an unknown outcome, with `lastObservedAt` shown explicitly as last seen. Active session labels are unchanged.
+
+While a Live session is active the Conversation page shows a "Type to Naya" input under the voice card. Its submit posts `POST /api/v1/live/text` with `{text}`; the host forwards the text to the active Live session as a realtime text turn and journals it as a `You` turn in the projection, and Naya answers by voice. With no Live session the same input saves a local note and never sends text to a model.

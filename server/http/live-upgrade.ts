@@ -37,6 +37,7 @@ export interface LiveService {
   journal(liveSessionId: string, cursor: number | undefined, limit: number | undefined): LiveFragmentPage;
   revoke(liveSessionId: string): void;
   attach(liveSessionId: string, context: LiveContext): LiveAttachment;
+  text(text: string): void;
   shutdown(): Promise<void>;
 }
 

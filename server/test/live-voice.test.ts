@@ -591,7 +591,7 @@ test('the audio buffer high-water mark supersedes a pending batch with no evicti
   const chunk = new Uint8Array(64_000);
   for (let i = 0; i < 5; i++) session.sendAudio({ pcm: chunk, dataClass: 'ordinary' });
   assert.equal((await events.next()).value?.type, 'toolCallSuperseded');
-  t.mock.timers.tick(2_500);
+  for (let i = 0; i < 125; i++) t.mock.timers.tick(20);
   assert.equal(socket.frames.filter(frame => 'toolResponse' in (JSON.parse(frame) as object)).length, 1);
   assert.equal(Buffer.concat(audioFrames(socket)).equals(Buffer.concat(Array.from({ length: 5 }, () => Buffer.from(chunk)))), true, 'every buffered byte forwarded in order');
   session.close();
@@ -607,9 +607,9 @@ test('a full high-water buffer drains at 4x real-time in order', async t => {
   for (let i = 0; i < 50; i++) session.sendAudio({ pcm: frame, dataClass: 'ordinary' });
   assert.equal((await events.next()).value?.type, 'toolCallSuperseded');
   const drained = () => Buffer.concat(audioFrames(socket));
-  t.mock.timers.tick(1_250);
-  assert.ok(drained().length > 0 && drained().length < 320_000, `half-drained at 1.25s: ${drained().length} B`);
-  t.mock.timers.tick(1_250);
+  for (let i = 0; i < 62; i++) t.mock.timers.tick(20);
+  assert.ok(drained().length > 0 && drained().length < 320_000, `half-drained at 1.24s: ${drained().length} B`);
+  for (let i = 0; i < 63; i++) t.mock.timers.tick(20);
   assert.equal(drained().length, 320_000, 'a 10 s buffer drains in about 2.5 s of fake time');
   assert.equal(drained().equals(Buffer.concat(Array.from({ length: 50 }, () => Buffer.from(frame)))), true, 'no reorder');
   session.close();

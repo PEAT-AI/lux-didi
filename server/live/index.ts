@@ -5,6 +5,7 @@ import * as labels from '../domain/labels.js';
 import { definitionsInTransaction } from '../tools/index.js';
 import { LiveToolJobs, type JobTimer } from '../tools/jobs.js';
 import { declarationsFor, runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
+import { LiveToolCache } from './tool-cache.js';
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
 import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection } from './types.js';
@@ -35,6 +36,7 @@ interface ActiveSession {
   request: LiveVoiceRequest; deadlineMs: number; deadlineAt: number; idleAt: number; goAwayUntil: number | undefined;
   sessionTimer: ReturnType<JobTimer> | undefined; idleTimer: ReturnType<JobTimer> | undefined;
   pendingCalls: Map<string, string>;
+  toolCache: LiveToolCache;
   registry: readonly ToolDefinition[];
   host: HostContext | undefined;
   toolStep: number;
@@ -598,6 +600,7 @@ export class LiveSessionOwner {
       generation: 0, attempts: 0, rebuilding: false, request: structuredClone(request),
       deadlineMs, deadlineAt, idleAt: this.#now() + this.#profile.limits.idleMs, goAwayUntil: undefined,
       sessionTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
+      toolCache: new LiveToolCache(),
       registry, host, toolStep: 0, seenIds: new Set(), thinking: false, speaking: false, pendingCallIds: new Set(), bargeInCallIds: new Set(),
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
@@ -918,9 +921,19 @@ export class LiveSessionOwner {
       const control = { signal: jobAbort.signal, deadlineMs: handle.deadlineMs };
       if (event.calls.some(call => call.name === 'remember_note')) await this.#waitForOwnerTranscript(handle, event.sequence);
       if (this.#settled(handle) || generation !== handle.generation) return;
-      const batch = await (async () => {
+      const cache = handle.toolCache;
+      const cached = new Map<number, { response: JsonObject; projection: LiveToolProjection }>();
+      const pending: { index: number; call: (typeof event.calls)[number] }[] = [];
+      event.calls.forEach((call, index) => {
+        const hit = cache.cacheable(call.name) ? cache.get<{ response: JsonObject; projection: LiveToolProjection }>(call.name, call.args) : undefined;
+        if (!hit) { pending.push({ index, call }); return; }
+        // Metadata only: this idempotent read was answered from the session cache, with no connector call.
+        console.log(JSON.stringify({ event: 'live_read_cache', tool: call.name, cached: true }));
+        cached.set(index, hit);
+      });
+      const batch = pending.length === 0 ? undefined : await (async () => {
         if (this.#settled(handle) || generation !== handle.generation) throw new LiveError('invalidated');
-        const raw = await runToolCalls(this.#tools!.owner, event.calls, { registry: handle.registry, host,
+        const raw = await runToolCalls(this.#tools!.owner, pending.map(entry => entry.call), { registry: handle.registry, host,
           authority: { isCurrent: async (_host, _tool, signal) => dispatchGate.state === 'allowed' && !signal.aborted && generation === handle.generation && !this.#settled(handle) }, control,
           step, contentIndex: 0, seenIds: handle.seenIds, baseClasses: [handle.inputClass] });
         // Completion never sends to the old transport. With no active authority, retain references for pickup.
@@ -929,14 +942,19 @@ export class LiveSessionOwner {
         return gated;
       })();
       if ((this.#settled(handle) || generation !== handle.generation)) return;
+      const slots = new Map(pending.map((entry, slot) => [entry.index, slot] as const));
       responses = event.calls.map((call, index) => {
-        const accepted = batch.accepted.find(result => result.binding.callId === call.id && result.binding.name === call.name);
-        const record = batch.tools[index];
-        const reason = batch.error?.reason ?? record?.reason ?? 'tool_result_denied';
+        const hit = cached.get(index);
+        if (hit) { projections[index] = hit.projection; return { id: call.id, name: call.name, response: hit.response }; }
+        const accepted = batch!.accepted.find(result => result.binding.callId === call.id && result.binding.name === call.name);
+        const record = batch!.tools[slots.get(index)!];
+        const reason = batch!.error?.reason ?? record?.reason ?? 'tool_result_denied';
         const completed = accepted && record?.status === 'completed';
         const markdown = completed ? noEmptyResult(typeof accepted.response.markdown === 'string' ? accepted.response.markdown : typeof accepted.response.text === 'string' ? accepted.response.text : reason) : reason;
         const sources = completed ? sourceCards({ text: accepted.response.text, markdown: accepted.response.markdown, sources: accepted.response.sources }, Infinity) : [];
-        projections[index] = { name: call.name, status: completed ? 'completed' : 'error', markdown, sources };
+        const projection: LiveToolProjection = { name: call.name, status: completed ? 'completed' : 'error', markdown, sources };
+        projections[index] = projection;
+        if (completed && cache.cacheable(call.name)) cache.set(call.name, call.args, { response: accepted.response, projection });
         return { id: call.id, name: call.name, response: completed ? accepted.response : { error: reason } };
       });
     }

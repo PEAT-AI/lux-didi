@@ -29,9 +29,18 @@ server.setRequestHandler('tools/call', request => {
     return { isError: true, content: [{ type: 'text', text: 'not authenticated: no session found; run mattermost_login' }] };
   }
   let text = '{}';
+  const args = request.params.arguments ?? {};
+  const channels = mode === 'ambiguous'
+    ? [{ name: 'town-square', display_name: 'Town Square' }, { name: 'town-square-two', display_name: 'Town Square' }]
+    : [{ name: 'town-square', display_name: 'Town Square' }];
   if (name === 'mattermost_whoami') text = JSON.stringify({ username: 'robert', display_name: 'Robert Peat' });
-  else if (name === 'mattermost_list_channels') text = JSON.stringify({ channels: [{ name: 'town-square', display_name: 'Town Square' }] });
+  else if (name === 'mattermost_list_channels') text = JSON.stringify({ channels });
   else if (mode === 'empty') text = JSON.stringify({ posts: [] });
+  else if (name === 'mattermost_get_channel_history') {
+    // Echo the channel the caller resolved, so a name resolution is observable in the projection.
+    const chosen = typeof args.channel === 'string' && args.channel ? args.channel : 'town-square';
+    text = JSON.stringify({ posts: posts.map(post => ({ ...post, channel: chosen })) });
+  }
   else text = JSON.stringify({ posts });
   return { content: [{ type: 'text', text }] };
 });

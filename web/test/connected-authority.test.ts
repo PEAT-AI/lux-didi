@@ -255,3 +255,18 @@ test('an unresolved turn whose conversation is missing offers an exact-key recov
   assert.equal(JSON.parse(storage.get('didi-connected:O1')!).sessionId, 'MISSING');
   view.reset();
 });
+
+test('a later list refresh that contains the missing conversation reconciles the unresolved turn', async () => {
+  const pending = { key: 'retained-key', text: 'unresolved turn', sessionId: 'MISSING', selectedMemoryEntryIds: ['note1'] };
+  const view = await setup({ sessionId: 'MISSING', draft: 'unresolved turn', pending });
+  await view.refresh('O1');
+  assert.match(panel.html, /id="connected-recovery"/);
+  routes = async path => path === '/sessions' ? envelope({ items: [{ id: 'MISSING', title: 'Recovered history' }] }) : undefined;
+  await view.refresh('O1');
+  assert.equal(calls.includes('/sessions/MISSING'), true);
+  assert.match(panel.html, /Recovered history/);
+  assert.match(panel.html, /connected-send-form/);
+  assert.doesNotMatch(panel.html, /id="connected-recovery"/);
+  assert.equal(JSON.parse(storage.get('didi-connected:O1')!).pending.sessionId, 'MISSING');
+  view.reset();
+});

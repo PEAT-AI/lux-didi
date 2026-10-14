@@ -140,7 +140,7 @@ test('wire setup/history snapshots, readiness, PCM and three independent output 
   assert.equal(f.attempts, 1); assert.equal(f.frames.length, 4);
   assert.deepEqual(session.diagnostics?.(), {
     audioCalls: 1, audioBytes: pcm.byteLength,
-    pendingToolDropCalls: 0, pendingToolDropBytes: 0, drainingDropCalls: 1, drainingDropBytes: pcm.byteLength,
+    drainingDropCalls: 1, drainingDropBytes: pcm.byteLength,
     localWriteEnqueuedCalls: 1, localWriteEnqueuedPCMBytes: pcm.byteLength,
     localWriteCallbackSuccessCalls: 1, localWriteCallbackSuccessPCMBytes: pcm.byteLength,
     localWriteCallbackErrorCalls: 0, localWriteCallbackErrorPCMBytes: 0,
@@ -461,17 +461,15 @@ test('Live tool batches buffer microphone audio in order behind one response fra
   const first = new Uint8Array([1, 0, 2, 0]); const second = new Uint8Array([3, 0, 4, 0]);
   session.sendAudio({ pcm: first, dataClass: 'ordinary' });
   session.sendAudio({ pcm: second, dataClass: 'ordinary' });
-  assert.equal(session.droppedAudioFrames, 0);
   session.sendToolResponse({ responses: [{ id: 'c1', name: 'search_knowledge', response: { markdown: 'one' } }, { id: 'c2', name: 'search_knowledge', response: { error: 'denied' } }] });
   await f.frame(2);
   assert.deepEqual(f.frames[1], { toolResponse: { functionResponses: [{ id: 'c1', name: 'search_knowledge', response: { markdown: 'one' } }, { id: 'c2', name: 'search_knowledge', response: { error: 'denied' } }] } });
   await f.frame(4);
   assert.deepEqual(f.frames[2], { realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: Buffer.from(first).toString('base64') } } });
   assert.deepEqual(f.frames[3], { realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: Buffer.from(second).toString('base64') } } });
-  session.close(); assert.equal((await session.done).droppedAudioFrames, undefined);
+  session.close(); assert.equal((await session.done).status, 'closed');
   const diagnostics = session.diagnostics?.();
   assert.equal(diagnostics?.audioCalls, 2); assert.equal(diagnostics?.audioBytes, first.byteLength + second.byteLength);
-  assert.equal(diagnostics?.pendingToolDropCalls, 0); assert.equal(diagnostics?.pendingToolDropBytes, 0);
   assert.equal(diagnostics?.localWriteEnqueuedCalls, 2); assert.equal(diagnostics?.localWriteCallbackPendingCalls, 0);
 });
 
@@ -502,6 +500,55 @@ test('sustained speech while a tool batch is pending supersedes it behind a neut
   session.close();
 });
 
+test('a speech-superseded multi-call batch sends exactly one terminal response per id', async t => {
+  const f = await fixture(t);
+  const modelId = 'models/gemini-3.1-flash-live-preview';
+  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory, modelId, route: { enabled: true, provider: 'gemini', modelId, dataClasses: ['ordinary', 'private'] } })).open({ ...request(), tools: [
+    { name: 'search_knowledge', description: 'Search', parameters: { type: 'OBJECT' } },
+  ] }, control());
+  const events = session.events[Symbol.asyncIterator](); t.after(() => session.close());
+  await f.frame(1); f.send({ setupComplete: {} }); await session.ready;
+  assert.equal((await events.next()).value?.type, 'ready');
+  f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x' } }, { id: 'c2', name: 'search_knowledge', args: { query: 'y' } }] } });
+  assert.equal((await events.next()).value?.type, 'modelTurnStarted');
+  assert.equal((await events.next()).value?.type, 'toolCall');
+  const loud = new Uint8Array(16_000); for (let i = 0; i < loud.length; i += 2) { loud[i] = 0xff; loud[i + 1] = 0x7f; }
+  session.sendAudio({ pcm: loud, dataClass: 'ordinary' });
+  assert.equal((await events.next()).value?.type, 'toolCallSuperseded');
+  await f.frame(2);
+  const terminal = f.frames.filter(frame => 'toolResponse' in (frame as object));
+  assert.equal(terminal.length, 1, 'supersession is the only terminal response');
+  const responses = (terminal[0] as { toolResponse: { functionResponses: { id: string; response: { result?: string } }[] } }).toolResponse.functionResponses;
+  assert.deepEqual(responses.map(response => response.id), ['c1', 'c2'], 'one neutral response per outstanding id');
+  assert.throws(() => session.sendToolResponse({ responses: [{ id: 'c1', name: 'search_knowledge', response: { markdown: 'late' } }, { id: 'c2', name: 'search_knowledge', response: { markdown: 'late' } }] }), code('invalid_request'));
+  await f.frame(3);
+  assert.equal(f.frames.filter(frame => 'toolResponse' in (frame as object)).length, 1, 'a late completion cannot add a second response');
+  session.close();
+});
+
+test('a multi-call completion answering before supersession keeps exactly one terminal response per id', async t => {
+  const f = await fixture(t);
+  const modelId = 'models/gemini-3.1-flash-live-preview';
+  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory, modelId, route: { enabled: true, provider: 'gemini', modelId, dataClasses: ['ordinary', 'private'] } })).open({ ...request(), tools: [
+    { name: 'search_knowledge', description: 'Search', parameters: { type: 'OBJECT' } },
+  ] }, control());
+  const events = session.events[Symbol.asyncIterator](); t.after(() => session.close());
+  await f.frame(1); f.send({ setupComplete: {} }); await session.ready;
+  assert.equal((await events.next()).value?.type, 'ready');
+  f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x' } }, { id: 'c2', name: 'search_knowledge', args: { query: 'y' } }] } });
+  assert.equal((await events.next()).value?.type, 'modelTurnStarted');
+  assert.equal((await events.next()).value?.type, 'toolCall');
+  const buffered = new Uint8Array([5, 0, 6, 0]);
+  session.sendAudio({ pcm: buffered, dataClass: 'ordinary' });
+  session.sendToolResponse({ responses: [{ id: 'c1', name: 'search_knowledge', response: { markdown: 'one' } }, { id: 'c2', name: 'search_knowledge', response: { markdown: 'two' } }] });
+  await f.frame(2);
+  assert.deepEqual(f.frames[1], { toolResponse: { functionResponses: [{ id: 'c1', name: 'search_knowledge', response: { markdown: 'one' } }, { id: 'c2', name: 'search_knowledge', response: { markdown: 'two' } }] } });
+  await f.frame(3);
+  assert.deepEqual(f.frames[2], { realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: Buffer.from(buffered).toString('base64') } } }, 'audio buffered before the completion follows it in order');
+  assert.equal(f.frames.filter(frame => 'toolResponse' in (frame as object)).length, 1, 'completion is the only terminal response');
+  session.close();
+});
+
 test('the audio buffer high-water mark supersedes a pending batch with no eviction or reorder', async t => {
   const f = await fixture(t);
   const modelId = 'models/gemini-3.1-flash-live-preview';
@@ -514,20 +561,19 @@ test('the audio buffer high-water mark supersedes a pending batch with no evicti
   f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x' } }] } });
   assert.equal((await events.next()).value?.type, 'modelTurnStarted');
   assert.equal((await events.next()).value?.type, 'toolCall');
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const chunk = new Uint8Array(64_000);
   for (let i = 0; i < 5; i++) session.sendAudio({ pcm: chunk, dataClass: 'ordinary' });
   assert.equal((await events.next()).value?.type, 'toolCallSuperseded');
-  assert.equal(session.droppedAudioFrames, 0);
-  await f.frame(7);
+  t.mock.timers.tick(2_500);
+  for (let i = 0; i < 60; i++) await new Promise(resolve => setImmediate(resolve));
   assert.equal('toolResponse' in (f.frames[1] as object), true);
-  for (let i = 0; i < 5; i++) {
-    const frame = f.frames[2 + i] as { realtimeInput: { audio: { data: string } } };
-    assert.equal(Buffer.from(frame.realtimeInput.audio.data, 'base64').equals(Buffer.from(chunk)), true, `frame ${i} preserved in order`);
-  }
+  const audio = f.frames.slice(2).map(frame => Buffer.from((frame as { realtimeInput: { audio: { data: string } } }).realtimeInput.audio.data, 'base64'));
+  assert.equal(Buffer.concat(audio).equals(Buffer.concat(Array.from({ length: 5 }, () => Buffer.from(chunk)))), true, 'every buffered byte forwarded in order');
   session.close();
 });
 
-test('provider cancellation releases the batch so later audio is not superseded', async t => {
+test('a full high-water buffer drains at 4x real-time in order', async t => {
   const f = await fixture(t);
   const modelId = 'models/gemini-3.1-flash-live-preview';
   const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory, modelId, route: { enabled: true, provider: 'gemini', modelId, dataClasses: ['ordinary', 'private'] } })).open({ ...request(), tools: [
@@ -539,16 +585,21 @@ test('provider cancellation releases the batch so later audio is not superseded'
   f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x' } }] } });
   assert.equal((await events.next()).value?.type, 'modelTurnStarted');
   assert.equal((await events.next()).value?.type, 'toolCall');
-  f.send({ toolCallCancellation: { ids: ['c1'] } });
-  assert.equal((await events.next()).value?.type, 'toolCallCancellation');
-  const loud = new Uint8Array(16_000); for (let i = 0; i < loud.length; i += 2) { loud[i] = 0xff; loud[i + 1] = 0x7f; }
-  session.sendAudio({ pcm: loud, dataClass: 'ordinary' }); await f.frame(2);
-  assert.equal('realtimeInput' in (f.frames[1] as object), true);
-  assert.equal(f.frames.some(frame => 'toolResponse' in (frame as object)), false, 'no response for a cancelled id');
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const frame = new Uint8Array(6_400); for (let i = 0; i < frame.length; i++) frame[i] = i % 251;
+  for (let i = 0; i < 50; i++) session.sendAudio({ pcm: frame, dataClass: 'ordinary' });
+  assert.equal((await events.next()).value?.type, 'toolCallSuperseded');
+  const settle = async () => { for (let i = 0; i < 60; i++) await new Promise(resolve => setImmediate(resolve)); };
+  const drained = () => Buffer.concat(f.frames.slice(2).map(item => Buffer.from((item as { realtimeInput: { audio: { data: string } } }).realtimeInput.audio.data, 'base64')));
+  t.mock.timers.tick(1_250); await settle();
+  assert.ok(drained().length > 0 && drained().length < 320_000, `half-drained at 1.25s: ${drained().length} B`);
+  t.mock.timers.tick(1_250); await settle();
+  assert.equal(drained().length, 320_000, 'a 10 s buffer drains in about 2.5 s of fake time');
+  assert.equal(drained().equals(Buffer.concat(Array.from({ length: 50 }, () => Buffer.from(frame)))), true, 'no reorder');
   session.close();
 });
 
-test('a cancelled batch still flushes audio buffered while it was pending, zero dropped', async t => {
+test('a cancelled batch still flushes audio buffered while it was pending', async t => {
   const f = await fixture(t);
   const modelId = 'models/gemini-3.1-flash-live-preview';
   const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory, modelId, route: { enabled: true, provider: 'gemini', modelId, dataClasses: ['ordinary', 'private'] } })).open({ ...request(), tools: [
@@ -562,7 +613,6 @@ test('a cancelled batch still flushes audio buffered while it was pending, zero 
   assert.equal((await events.next()).value?.type, 'toolCall');
   const pending = new Uint8Array([7, 0, 8, 0]);
   session.sendAudio({ pcm: pending, dataClass: 'ordinary' });
-  assert.equal(session.droppedAudioFrames, 0);
   f.send({ toolCallCancellation: { ids: ['c1'] } });
   assert.equal((await events.next()).value?.type, 'toolCallCancellation');
   await f.frame(2);
@@ -594,7 +644,7 @@ test('3.8 Live omits thinking config and cancellation releases an unanswered bat
   assert.equal((await events.next()).value?.type, 'modelTurnStarted');
   assert.equal((await events.next()).value?.type, 'toolCall');
   assert.throws(() => session.sendToolResponse({ responses: [{ id: 'one', name: 'test', response: {} }] }), code('invalid_request'));
-  session.sendAudio({ pcm, dataClass: 'ordinary' }); assert.equal(session.droppedAudioFrames, 0);
+  session.sendAudio({ pcm, dataClass: 'ordinary' });
   f.send({ serverContent: { modelTurn: { parts: [audio()] } } });
   assert.equal((await events.next()).value?.type, 'audio', 'provider output remains admitted while a tool batch is pending');
   assert.equal((await events.next()).value?.type, 'modelTurnStarted');

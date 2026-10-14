@@ -107,7 +107,7 @@ export class GeminiLiveVoiceAdapter implements LiveVoicePort {
     if (Buffer.byteLength(setup) > settings.limits.maxOutgoingBytes || (initial && Buffer.byteLength(initial) > settings.limits.maxOutgoingBytes)) fail('outgoing_limit');
     if (!object(control) || !(control.signal instanceof AbortSignal) || !Number.isSafeInteger(control.deadlineMs)
       || control.deadlineMs <= 0 || control.deadlineMs - Date.now() > 2_147_483_647) fail('invalid_request');
-    return new Session(settings, declared, setup, initial, control.signal, control.deadlineMs, control.idleResetMs ?? settings.limits.idleMs);
+    return new Session(settings, declared, setup, initial, control.signal, control.deadlineMs, control.idleResetMs ?? settings.limits.idleMs, live38);
   }
 }
 
@@ -147,7 +147,8 @@ class Session implements LiveVoiceSession {
   readonly diagnostics = (): Readonly<LiveVoiceDiagnostics> => Object.freeze({ ...this.diagnostic });
   private creatingSocket = false;
   constructor(private readonly settings: Settings, private readonly declared: readonly DataClass[], setup: string, initial: string | undefined,
-    private readonly signal: AbortSignal, private readonly deadlineMs: number, private readonly idleResetMs: number) {
+    private readonly signal: AbortSignal, private readonly deadlineMs: number, private readonly idleResetMs: number,
+    private readonly acceptsEmptyReadyLifecycle: boolean) {
     // Failure remains observable through ready/done/events, without an unhandled rejection.
     void this.ready.catch(() => {});
     let consumed = false;
@@ -244,7 +245,11 @@ class Session implements LiveVoiceSession {
       const bytes = Array.isArray(data) ? Buffer.concat(data) : Buffer.isBuffer(data) ? data : Buffer.from(data);
       if (bytes.length > this.settings.limits.maxIncomingBytes) { this.finish('incoming_limit'); return; }
       const message: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes));
-      if (!object(message) || !Object.keys(message).length) fail('protocol_error');
+      if (!object(message)) fail('protocol_error');
+      if (!Object.keys(message).length) {
+        if (this.acceptsEmptyReadyLifecycle && this.isReady) return;
+        fail('protocol_error');
+      }
       if ('error' in message) fail('provider_error');
       if ('toolCall' in message) {
         if (!this.isReady || this.pendingCalls.length || !object(message.toolCall) || !Array.isArray(message.toolCall.functionCalls) || !message.toolCall.functionCalls.length || message.toolCall.functionCalls.length > 16) fail('protocol_error');

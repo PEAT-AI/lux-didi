@@ -264,6 +264,44 @@ test('split and combined protocol fields preserve late input, thought and unknow
   assert.deepEqual(captured.events.map(e => e.type), ['ready', 'generationComplete', 'modelText', 'inputTranscription', 'outputTranscription', 'modelTurnStarted', 'interrupted', 'turnComplete', 'goAway', 'outcome']);
 });
 
+test('Gemini 3.8 ignores empty lifecycle envelopes only after setup', async t => {
+  const f = await fixture(t);
+  const modelId = 'models/gemini-3.8-live';
+  const session = new GeminiLiveVoiceAdapter(options({
+    modelId, socketFactory: f.socketFactory,
+    route: { enabled: true, provider: 'gemini', modelId, dataClasses: ['ordinary'] },
+  })).open(request(), control());
+  t.after(() => session.close());
+  const events = session.events[Symbol.asyncIterator]();
+  await f.frame(1); f.send({ setupComplete: {} }); await session.ready;
+  f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-3.8-handle' } });
+  f.sendRaw('{}\n');
+  f.send({ serverContent: {} });
+  f.send({ serverContent: { modelTurn: { parts: [audio()] } } });
+  assert.equal((await events.next()).value?.type, 'ready');
+  assert.equal((await events.next()).value?.type, 'resumptionHandle');
+  assert.equal((await events.next()).value?.type, 'audio');
+  assert.equal((await events.next()).value?.type, 'modelTurnStarted');
+  session.close();
+  assert.deepEqual(await session.done, { status: 'closed', code: 'closed' });
+  assert.equal((await events.next()).value?.type, 'outcome');
+  assert.equal((await events.next()).done, true);
+});
+
+test('Gemini 3.8 still rejects an empty envelope before setup', async t => {
+  const f = await fixture(t);
+  const modelId = 'models/gemini-3.8-live';
+  const session = new GeminiLiveVoiceAdapter(options({
+    modelId, socketFactory: f.socketFactory,
+    route: { enabled: true, provider: 'gemini', modelId, dataClasses: ['ordinary'] },
+  })).open(request(), control());
+  t.after(() => session.close());
+  const captured = collect(session);
+  await f.frame(1); f.sendRaw('{}\n');
+  assert.equal((await session.done).code, 'protocol_error');
+  await captured.done;
+});
+
 for (const [name, payload, expected] of [
   ['empty object', {}, 'protocol_error'], ['invalid JSON', 'raw', 'protocol_error'], ['array', [], 'protocol_error'],
   ['null content', { serverContent: null }, 'protocol_error'], ['null transcription', { serverContent: { inputTranscription: null } }, 'protocol_error'],

@@ -112,7 +112,9 @@
 .live-text input{flex:1;min-width:200px;padding:10px 12px;border:1px solid var(--border);border-radius:10px;font:inherit}
 
 /* Activity line under the orb: the one place a tool phrase shows, calm and small. */
-.activity-line{display:flex;align-items:center;justify-content:center;gap:8px;max-width:420px;margin:2px auto 0;padding:0 22px 4px;font-size:.84rem;color:var(--muted);animation:activity-in .3s ease-out}
+/* W15-R1(b)/#230 item 2: the whole activity line, including the tool phrase, must
+   read at 4.5:1 or better against the light orb stage. */
+.activity-line{display:flex;align-items:center;justify-content:center;gap:8px;max-width:420px;margin:2px auto 0;padding:0 22px 4px;font-size:.84rem;color:#3f4f47;animation:activity-in .3s ease-out}
 .activity-line .activity-text{overflow-wrap:anywhere}
 .activity-indicator{flex:0 0 auto;width:7px;height:7px;border-radius:50%;background:#009688;animation:activity-pulse 1.4s ease-in-out infinite}
 .activity-mark{flex:0 0 auto;color:#009688;font-weight:700;line-height:1}
@@ -126,22 +128,25 @@
 @keyframes activity-fade{0%,72%{opacity:1}100%{opacity:0}}
 @media (prefers-reduced-motion:reduce){.activity-line,.activity-done{animation:none}.activity-indicator{animation:none;opacity:.75}}
 /* W15 mini orb: the floating panel's compact orb-only route. A rounded dark
-   stage sized to the 300x300 panel, one orb and the shared voice-landing
-   caption (state line plus one tool phrase), never a transcript. Scoped with
-   html.mini so the small-viewport rules for the full window never resize it. */
+   300x300 stage with the orb as the hero (160-180px across, rings included)
+   centred above the shared voice-landing caption; the tool phrase reads at
+   >=4.5:1 on one line with an ellipsis. Scoped with html.mini so the
+   small-viewport rules for the full window never resize it. */
 html.mini{background:transparent}
 html.mini body{background:transparent;overflow:hidden}
-html.mini .mini-stage{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:0;width:300px;height:300px;min-height:300px;max-width:none;border:none;border-radius:28px;margin:0;background:radial-gradient(circle at 50% 40%,#242a33 0,#161b21 58%,#0d1014 100%);overflow:hidden;position:relative}
-html.mini .mini-stage canvas{width:222px;height:222px;flex-shrink:0;display:block}
-html.mini .mini-stage .orb-caption{max-width:250px;margin-top:-30px;padding:0 16px 16px}
-html.mini .mini-stage .orb-label{font-size:1.05rem;color:#ece7da}
-html.mini .mini-stage .voice-honesty{font-size:.7rem;color:#9aa2a8}
-html.mini .mini-stage .voice-honesty span{color:#7d858c}
-html.mini .mini-stage .activity-line{color:#cfd4da}
+html.mini .mini-stage{position:relative;display:block;width:300px;height:300px;min-height:300px;max-width:none;border:none;border-radius:28px;margin:0;background:radial-gradient(circle at 50% 40%,#242a33 0,#161b21 58%,#0d1014 100%);overflow:hidden}
+html.mini .mini-stage .presence-glow{top:112px;left:50%;transform:translate(-50%,-50%);width:288px;height:288px}
+html.mini .mini-stage canvas{position:absolute;left:50%;top:112px;width:630px;height:630px;transform:translate(-50%,-50%);display:block}
+html.mini .mini-stage .orb-caption{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);width:272px;max-width:272px;margin:0;padding:0 12px}
+html.mini .mini-stage .orb-label{font-size:1.05rem;color:#f1ede2}
+html.mini .mini-stage .voice-honesty{font-size:.68rem;color:#b8c0c7}
+html.mini .mini-stage .voice-honesty span{color:#9aa2a8}
+html.mini .mini-stage .activity-line{max-width:100%;font-size:.94rem;color:#e8ecf1}
+html.mini .mini-stage .activity-line .activity-text{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;overflow-wrap:normal}
 html.mini .mini-stage .activity-indicator{background:#7fd4c1}
 html.mini .mini-stage .activity-mark{color:#7fd4c1}
-html.mini .mini-stage .activity-thinking{color:#e0b877}
+html.mini .mini-stage .activity-thinking{color:#f0c98a}
 html.mini .mini-stage .activity-thinking .activity-indicator{background:#d9a65a}
-html.mini .mini-stage .activity-failed{color:#e79a86}
+html.mini .mini-stage .activity-failed{color:#f2a892}
 html.mini .mini-stage .activity-failed .activity-indicator{background:#d97f66}
 html.mini .mini-stage canvas[data-state=IDLE],html.mini .mini-stage canvas[data-state=DISCONNECTED],html.mini .mini-stage canvas[data-state=INTERRUPTED]{filter:grayscale(.82) brightness(.9) opacity(.9)}

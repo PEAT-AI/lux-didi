@@ -77,11 +77,11 @@ const luxKnowledgeDescriptor: ConnectorDescriptor = {
     return [
       {
         name: 'search_knowledge',
-        description: 'Search bounded Lux knowledge evidence.',
+        description: 'Search the owner knowledge base. Pass 2 to 5 core terms, not a sentence; returns matching entry ids with short excerpts. Fetch an entry by id with get_insight for the full body.',
         effect: 'read',
         parameters: {
           type: 'object', additionalProperties: false, required: ['query', 'limit'],
-          properties: { query: { type: 'string', minLength: 1, maxLength: bounds.maxQueryChars }, limit: { type: 'integer', minimum: 1, maximum: bounds.maxSearchLimit } },
+          properties: { query: { type: 'string', minLength: 1, maxLength: bounds.maxQueryChars, description: 'Two to five core terms: names, projects and exact technical words, never conversational filler.' }, limit: { type: 'integer', minimum: 1, maximum: bounds.maxSearchLimit, description: 'How many results to return, within the configured search cap.' } },
         },
         validate(args) {
           if (!isRecord(args)) return false;
@@ -93,11 +93,11 @@ const luxKnowledgeDescriptor: ConnectorDescriptor = {
       },
       {
         name: 'get_insight',
-        description: 'Get bounded Lux knowledge evidence; requested IDs are unverified input.',
+        description: 'Read full knowledge-base entries by id. Pass one to three entry ids from a knowledge search; requested ids are unverified input.',
         effect: 'read',
         parameters: {
           type: 'object', additionalProperties: false, required: ['ids'],
-          properties: { ids: { type: 'array', minItems: 1, maxItems: bounds.maxGetIds, uniqueItems: true, items: { type: 'integer', minimum: 1 } } },
+          properties: { ids: { type: 'array', minItems: 1, maxItems: bounds.maxGetIds, uniqueItems: true, items: { type: 'integer', minimum: 1 }, description: 'One to three entry ids from a knowledge search.' } },
         },
         validate(args) {
           if (!isRecord(args) || Object.keys(args).length !== 1 || !Array.isArray(args['ids'])) return false;
@@ -155,10 +155,10 @@ const googleDescriptor: ConnectorDescriptor = {
     const listProps = { maxResults: { type: 'integer', minimum: 1, maximum: 50 }, pageToken: { type: 'string', minLength: 1 } };
     return [
       { name: 'gmail_get_profile', description: 'Read the Gmail profile of the selected binding.', effect: 'read', parameters: { type: 'object', additionalProperties: false, properties: {} }, validate: args => isRecord(args) && Object.keys(args).length === 0 },
-      { name: 'gmail_list', description: 'List bounded Gmail messages (ids, and any headers the helper returns).', effect: 'read', parameters: { type: 'object', additionalProperties: false, properties: { ...listProps, q: { type: 'string', minLength: 1 } } }, validate: args => isRecord(args) && Object.keys(args).every(key => ['maxResults', 'pageToken', 'q'].includes(key)) },
-      { name: 'gmail_read', description: 'Read one Gmail message (subject, from, date, and body for format=full).', effect: 'read', parameters: { type: 'object', additionalProperties: false, required: ['id'], properties: { id: { type: 'string', minLength: 1 }, format: { type: 'string', enum: ['metadata', 'full'] } } }, validate: args => isRecord(args) && typeof args['id'] === 'string' && (args['id'] as string).length > 0 && Object.keys(args).every(key => ['id', 'format'].includes(key)) },
+      { name: 'gmail_list', description: 'List Gmail messages matching a Gmail query, newest first. q uses Gmail operators, for example from:name after:2026/10/07 or subject:(board deck) is:unread. Returns message ids; read the full message with gmail_read.', effect: 'read', parameters: { type: 'object', additionalProperties: false, properties: { ...listProps, q: { type: 'string', minLength: 1, description: 'Gmail search query using Gmail operators.' } } }, validate: args => isRecord(args) && Object.keys(args).every(key => ['maxResults', 'pageToken', 'q'].includes(key)) },
+      { name: 'gmail_read', description: 'Read one full Gmail message by id from gmail_list: subject, from, date and body.', effect: 'read', parameters: { type: 'object', additionalProperties: false, required: ['id'], properties: { id: { type: 'string', minLength: 1 }, format: { type: 'string', enum: ['metadata', 'full'] } } }, validate: args => isRecord(args) && typeof args['id'] === 'string' && (args['id'] as string).length > 0 && Object.keys(args).every(key => ['id', 'format'].includes(key)) },
       { name: 'gcal_calendars', description: 'List the calendars visible to the selected binding.', effect: 'read', parameters: { type: 'object', additionalProperties: false, properties: listProps }, validate: args => isRecord(args) && Object.keys(args).every(key => ['maxResults', 'pageToken'].includes(key)) },
-      { name: 'gcal_list', description: 'List bounded events on one calendar (time, title, location).', effect: 'read', parameters: { type: 'object', additionalProperties: false, properties: { ...listProps, calendarId: { type: 'string', minLength: 1 } } }, validate: args => isRecord(args) && Object.keys(args).every(key => ['maxResults', 'pageToken', 'calendarId'].includes(key)) },
+      { name: 'gcal_list', description: 'List events on one calendar in a time window. timeMin and timeMax are RFC3339 timestamps with the offset from the runtime context; pass exact start and end instead of asking for a date. Omit both for today in the host timezone. Returns time, title and location.', effect: 'read', parameters: { type: 'object', additionalProperties: false, properties: { ...listProps, calendarId: { type: 'string', minLength: 1, description: 'Calendar id; defaults to the primary calendar.' }, timeMin: { type: 'string', minLength: 1, description: 'Window start, RFC3339 with the runtime timezone offset.' }, timeMax: { type: 'string', minLength: 1, description: 'Window end, RFC3339 with the runtime timezone offset.' } } }, validate: args => isRecord(args) && Object.keys(args).every(key => ['maxResults', 'pageToken', 'calendarId', 'timeMin', 'timeMax'].includes(key)) },
     ];
   },
   createReader({ port, registry, policy }) {
@@ -219,10 +219,10 @@ const mattermostDescriptor: ConnectorDescriptor = {
     const limit = Math.min(60, policy.bounds.maxSearchLimit);
     return [
       companyDeclaration('mattermost_whoami', 'Read the authenticated Mattermost identity.', text),
-      companyDeclaration('mattermost_get_channel_history', 'Read bounded history from a Mattermost channel.', text, 'channel', limit),
-      companyDeclaration('mattermost_get_thread', 'Read a bounded Mattermost thread.', text, 'postId', limit),
-      companyDeclaration('mattermost_search', 'Search bounded Mattermost messages.', text, 'query', limit),
-      companyDeclaration('mattermost_list_channels', 'List bounded Mattermost channels.', text, undefined, limit),
+      companyDeclaration('mattermost_get_channel_history', 'Read bounded history from a Mattermost channel. channel is a channel id from mattermost_list_channels.', text, 'channel', limit),
+      companyDeclaration('mattermost_get_thread', 'Read a bounded Mattermost thread. postId is a post id taken from a channel history.', text, 'postId', limit),
+      companyDeclaration('mattermost_search', 'Search bounded Mattermost messages by query. No channel id needed: search first, no channel list needed. Returns messages, not whole threads.', text, 'query', limit),
+      companyDeclaration('mattermost_list_channels', 'List bounded Mattermost channels with their ids. Call it at most once per question; its ids stay valid for the whole session, so reuse them.', text, undefined, limit),
     ];
   },
   createReader({ port, registry, endpoint, schemaDigest, generation, policy }) {

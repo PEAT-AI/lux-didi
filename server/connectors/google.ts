@@ -52,7 +52,22 @@ export type GoogleResult = GoogleEvidence | GoogleRefused | GoogleUnknown;
 export interface GmailListInput { maxResults?: number; q?: string; pageToken?: string }
 export interface GmailReadInput { id: string; format?: 'metadata' | 'full' }
 export interface GcalCalendarsInput { maxResults?: number; pageToken?: string }
-export interface GcalListInput { calendarId?: string; maxResults?: number; pageToken?: string; now?: () => number }
+export interface GcalListInput { calendarId?: string; maxResults?: number; pageToken?: string; timeMin?: string; timeMax?: string; timeZone?: string; now?: () => number }
+
+/** RFC3339 timestamp with a numeric offset, e.g. 2026-10-14T00:00:00+05:30. */
+const RFC3339 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+
+/** The host's local day as an RFC3339 window, carrying the session timezone offset. */
+export function localDayWindow(now: number, timeZone: string): { timeMin: string; timeMax: string } {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date(now));
+  const value = (type: string): string => parts.find(part => part.type === type)?.value ?? '';
+  const name = new Intl.DateTimeFormat('en-US', { timeZone, timeZoneName: 'longOffset' }).formatToParts(new Date(now)).find(part => part.type === 'timeZoneName')?.value ?? 'GMT';
+  const offset = name === 'GMT' || name === 'UTC' ? '+00:00' : name.replace(/^GMT/, '');
+  const day = `${value('year')}-${value('month')}-${value('day')}`;
+  const next = new Date(Date.UTC(Number(value('year')), Number(value('month')) - 1, Number(value('day')) + 1));
+  const nextDay = `${next.getUTCFullYear()}-${String(next.getUTCMonth() + 1).padStart(2, '0')}-${String(next.getUTCDate()).padStart(2, '0')}`;
+  return { timeMin: `${day}T00:00:00${offset}`, timeMax: `${nextDay}T00:00:00${offset}` };
+}
 
 export interface GoogleReader {
   gmailProfile(signal?: AbortSignal): Promise<GoogleResult>;
@@ -213,12 +228,14 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
       const calendarId = input.calendarId ?? 'primary';
       if (typeof calendarId !== 'string' || calendarId.length < 1 || calendarId.length > 4096) return { state: 'refused', reason: 'invalid-calendar-id' };
       bounded.args['calendarId'] = calendarId;
-      const now = (input.now ?? Date.now)();
-      const day = new Date(now);
-      day.setUTCHours(0, 0, 0, 0);
-      const start = day.getTime();
-      bounded.args['timeMin'] = new Date(start).toISOString();
-      bounded.args['timeMax'] = new Date(start + 24 * 60 * 60 * 1000).toISOString();
+      const timeZone = input.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const window = input.timeMin !== undefined || input.timeMax !== undefined
+        ? { timeMin: input.timeMin, timeMax: input.timeMax }
+        : localDayWindow((input.now ?? Date.now)(), timeZone);
+      if (window.timeMin !== undefined && (typeof window.timeMin !== 'string' || !RFC3339.test(window.timeMin) || window.timeMin.length > 64)) return { state: 'refused', reason: 'invalid-time-window' };
+      if (window.timeMax !== undefined && (typeof window.timeMax !== 'string' || !RFC3339.test(window.timeMax) || window.timeMax.length > 64)) return { state: 'refused', reason: 'invalid-time-window' };
+      bounded.args['timeMin'] = window.timeMin;
+      bounded.args['timeMax'] = window.timeMax;
       return dispatch('gcal_list', bounded.args, signal);
     },
   };

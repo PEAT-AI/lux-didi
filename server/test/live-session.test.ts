@@ -22,7 +22,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadLiveConfig } from '../config/live.js';
-import { NAYA_BASE, NAYA_TOOLS, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
+import { NAYA_BASE, NAYA_TOOLS, MEMORY_SECTION_CHAR_LIMIT, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
 import { GeminiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
 import type { LiveVoiceLimits, LiveVoiceRequest } from '../adapters/live-voice/index.js';
 import { chatMigrations } from '../chat/index.js';
@@ -33,6 +33,8 @@ import { Store } from '../runtime/store.js';
 import type { Transaction } from '../contracts/storage.js';
 import { createLiveSessionOwner, LiveConfigError, LiveError, liveMigrations, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, control, deferred, fixture, options, pcm } from './live-voice-fixture.js';
+import { CONNECTOR_DESCRIPTORS } from '../connectors/index.js';
+import { buildRuntimeContext } from '../prompt/index.js';
 
 const MODEL = 'models/live-session-test';
 const NOW = 1_700_000_000_000;
@@ -157,7 +159,7 @@ async function harness(t: TestContext, overrides: {
       return { id: record.entryId, text: record.text, dataClass };
     });
   };
-  owner = createLiveSessionOwner({ store, voice, profile, ...{ memorySource }, ...(tools ? { tools } : {}), now: () => overrides.scheduler?.now ?? clock, ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
+  owner = createLiveSessionOwner({ store, voice, profile, ...{ memorySource }, ...(tools ? { tools } : {}), now: () => overrides.scheduler?.now ?? clock, timeZone: 'Asia/Kolkata', ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
   t.after(async () => { await owner.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
   return { requests, calls, get memorySelections() { return memorySelections; }, f, store, owner, ctx: context(store), dir, advance: ms => { if (overrides.scheduler) overrides.scheduler.now += ms; else clock += ms; } };
 }
@@ -252,16 +254,16 @@ test('Live memory budget keeps whole records, reports overflow, and rejects over
   const h = await harness(t);
   note(h, 'a', 'Fixture whole note');
   const initial = h.owner.create({ idempotencyKey: 'measure-memory', inputClass: 'ordinary' }, h.ctx);
-  const remaining = TRUSTED_SYSTEM_CODE_UNIT_LIMIT - accepted(h, initial.liveSessionId).system.length;
-  h.store.transaction(tx => tx.run('UPDATE entries SET text=? WHERE id=?', ['Fixture whole note' + 'x'.repeat(remaining), 'a']));
+  assert.deepEqual(accepted(h, initial.liveSessionId).memory.selectedIds, ['a']);
+  h.store.transaction(tx => tx.run('UPDATE entries SET text=? WHERE id=?', ['Fixture whole note' + 'x'.repeat(MEMORY_SECTION_CHAR_LIMIT), 'a']));
   note(h, 'b', 'Fixture overflow note');
   const boundary = h.owner.create({ idempotencyKey: 'boundary-memory', inputClass: 'ordinary' }, h.ctx);
   const snapshot = accepted(h, boundary.liveSessionId);
-  assert.equal(snapshot.system.length, TRUSTED_SYSTEM_CODE_UNIT_LIMIT);
-  assert.deepEqual(snapshot.memory.selectedIds, ['a']);
-  assert.deepEqual(snapshot.memory.omitted, [{ id: 'b', reason: 'budget' }]);
-  assert.ok(!snapshot.system.includes('Fixture overflow note'));
-  assert.ok(snapshot.system.includes(JSON.stringify({ id: 'a', text: 'Fixture whole note' + 'x'.repeat(remaining) })), 'the selected record survives byte for byte');
+  assert.ok(snapshot.system.length <= TRUSTED_SYSTEM_CODE_UNIT_LIMIT);
+  assert.deepEqual(snapshot.memory.selectedIds, ['b']);
+  assert.deepEqual(snapshot.memory.omitted, [{ id: 'a', reason: 'budget' }]);
+  assert.ok(!snapshot.system.includes('x'.repeat(128)));
+  assert.ok(snapshot.system.includes('"text":"Fixture overflow note"'), 'the selected record survives byte for byte');
   const failed = await harness(t, { memoryFailure: true });
   assert.throws(() => failed.owner.create({ idempotencyKey: 'failed-memory', inputClass: 'ordinary' }, failed.ctx), (error: unknown) => error instanceof LiveError && String(error.code) === 'memory_unavailable');
   assert.equal(failed.requests.length, 0);
@@ -572,7 +574,8 @@ test('tool-enabled Live CREATE freezes an expanded classified owner system byte 
   const created = h.owner.create({ idempotencyKey: 'expanded-owner-tools', inputClass: 'ordinary' }, h.ctx);
   const frozen = h.store.transaction(tx => JSON.parse(String(tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [created.liveSessionId])!['accepted_prompt_snapshot'])));
   assert.ok(frozen.system.length > 20_000);
-  assert.equal(frozen.system, composeLiveSessionInstruction({ text: expectedSystem, tools: ['search_knowledge', 'get_insight'], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT }).text);
+  assert.equal(frozen.system, composeLiveSessionInstruction({ text: expectedSystem, tools: ['search_knowledge', 'get_insight'], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
+    runtimeContext: buildRuntimeContext({ now: new Date(NOW), timeZone: 'Asia/Kolkata', connected: ['knowledge base', 'memory'], unavailable: [] }) }).text);
   assert.equal(frozen.system.split(style).length - 1, 1);
   assert.equal(frozen.system.split(lore).length - 1, 1);
   assert.deepEqual(frozen.dataClasses, ['ordinary', 'private', 'sensitive']);
@@ -1327,12 +1330,14 @@ test('Live attach setup carries the composed Naya instruction and the bare langu
     modelId: profile.liveModelId, voice: profile.voice, keyReference: profile.keyReference,
     route: { enabled: true, provider: 'gemini', modelId: profile.liveModelId, dataClasses: profile.route.dataClasses },
     credentials: { resolve: async () => CANARY } }));
-  const owner = createLiveSessionOwner({ store: h.store, profile, voice, now: () => NOW }); t.after(() => owner.shutdown());
+  const owner = createLiveSessionOwner({ store: h.store, profile, voice, now: () => NOW, timeZone: 'Asia/Kolkata' }); t.after(() => owner.shutdown());
   const accepted = owner.create({ idempotencyKey: 'wire-naya', inputClass: 'ordinary' }, h.ctx);
   const attachment = owner.attach({ liveSessionId: accepted.liveSessionId }, h.ctx);
   await h.f.frame(1);
   const frame = JSON.parse(JSON.stringify(h.f.frames[0]));
-  assert.equal(frame.setup.systemInstruction.parts[0].text, composed.text);
+  const expectedWithRuntime = composeLiveSessionInstruction({ text: composed.text, tools: [], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
+    runtimeContext: buildRuntimeContext({ now: new Date(NOW), timeZone: 'Asia/Kolkata', connected: [], unavailable: [] }) }).text;
+  assert.equal(frame.setup.systemInstruction.parts[0].text, expectedWithRuntime);
   assert.equal(frame.setup.generationConfig.speechConfig.languageCode, 'de');
   attachment.close();
 });
@@ -1391,14 +1396,16 @@ test('configured owner system survives CREATE and attach open byte for byte befo
     modelId: status.config.profile.liveModelId, voice: status.config.profile.voice, keyReference: status.config.profile.keyReference,
     route: { enabled: true, provider: 'gemini', modelId: status.config.profile.liveModelId, dataClasses: status.config.profile.route.dataClasses },
     credentials: { resolve: async () => CANARY } }));
-  const first = createLiveSessionOwner({ store, profile: status.config.profile, voice: adapter(), now: () => NOW });
+  const first = createLiveSessionOwner({ store, profile: status.config.profile, voice: adapter(), now: () => NOW, timeZone: 'Asia/Kolkata' });
   const created = first.create({ idempotencyKey: 'owner-create', inputClass: 'ordinary' }, context(store));
   const persisted = store.transaction(tx => JSON.parse(String(tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [created.liveSessionId])!['accepted_prompt_snapshot'])));
-  assert.equal(persisted.system, expected); assert.deepEqual(persisted.dataClasses, ['ordinary', 'private']);
+  const expectedWithRuntime = composeLiveSessionInstruction({ text: expected, tools: [], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
+    runtimeContext: buildRuntimeContext({ now: new Date(NOW), timeZone: 'Asia/Kolkata', connected: [], unavailable: [] }) }).text;
+  assert.equal(persisted.system, expectedWithRuntime); assert.deepEqual(persisted.dataClasses, ['ordinary', 'private']);
   const attachment = first.attach({ liveSessionId: created.liveSessionId }, context(store));
   await f.frame(1);
   const frame = JSON.parse(JSON.stringify(f.frames[0]));
-  assert.equal(frame.setup.systemInstruction.parts[0].text, expected);
+  assert.equal(frame.setup.systemInstruction.parts[0].text, expectedWithRuntime);
   attachment.close(); await attachment.done; await first.shutdown();
 });
 
@@ -1692,4 +1699,14 @@ test('established WebSocket protocol error resumes through the saved handle', as
   assert.equal(h.owner.current().state, 'listening');
   assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(row => row.kind === 'terminal').length, 0);
   attachment.close(); await attachment.done;
+});
+
+test('Mattermost declarations carry the channel-resolution micro-contract', () => {
+  const policy = { bounds: { maxQueryChars: 200, maxSearchLimit: 60 } } as never;
+  const descriptions = new Map(CONNECTOR_DESCRIPTORS['mattermost']!.declarations(policy).map(declaration => [declaration.name, declaration.description]));
+  assert.match(descriptions.get('mattermost_list_channels')!, /Call it at most once per question/);
+  assert.match(descriptions.get('mattermost_list_channels')!, /ids stay valid for the whole session, so reuse them/);
+  assert.match(descriptions.get('mattermost_search')!, /search first, no channel list needed/);
+  assert.match(descriptions.get('mattermost_get_channel_history')!, /channel is a channel id from mattermost_list_channels/);
+  assert.match(descriptions.get('mattermost_get_thread')!, /postId is a post id taken from a channel history/);
 });

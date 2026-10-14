@@ -64,7 +64,7 @@ export interface McpRuntimeComposition {
   port: McpPort;
   owner: ToolsOwner;
   connectionIds(): string[];
-  status(): { endpoints: McpEndpointReport[] };
+  status(): { endpoints: (McpEndpointReport & { connector: string })[] };
   refresh(): Promise<void>;
   close(): Promise<void>;
 }
@@ -86,6 +86,7 @@ export async function composeMcpRuntime(options: {
     ? selection.catalog.endpoints.map(entry => [entry.id, 30000] as const) : []);
   const port = createMcpAdapter({ registry, store: new MemoryResultStore(), callTimeoutMsByEndpoint, resolveCredential: async reference => readMcpCredential(configDir, reference) });
   const reports = new Map<string, McpEndpointReport>();
+  const connectors = new Map<string, string>();
   const reportToolStatus = (connectionId: string, status: { state: 'configured'; reason: string } | null): void => {
     const previous = reports.get(connectionId);
     if (!previous) return;
@@ -115,6 +116,7 @@ export async function composeMcpRuntime(options: {
       if (entry.allowEgress) registry.allowEgress(entry.id);
     }
     reports.set(entry.id, { id: entry.id, state: 'configured', tools: 0, lastHandshakeAt: null });
+    connectors.set(entry.id, entry.connector);
   }
   const connect = async (entry: McpEndpointEntry): Promise<void> => {
     const previous = reports.get(entry.id);
@@ -209,7 +211,7 @@ export async function composeMcpRuntime(options: {
     // Live calls this inside its acceptance transaction: do not open a nested store transaction.
     // Only the canonical owner projects grants after validating connection semantics/class.
     connectionIds: () => active.filter(entry => usable.has(entry.id) && reports.get(entry.id)?.state === 'connected' && !!registry.currentGrant(entry.id)).map(entry => entry.id),
-    status: () => ({ endpoints: [...reports.values()].map(report => ({ ...report })) }),
+    status: () => ({ endpoints: [...reports.values()].map(report => ({ ...report, connector: connectors.get(report.id) ?? report.id })) }),
     refresh: async () => { await Promise.all(active.map(connect)); },
     close: () => port.close(),
   };

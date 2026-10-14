@@ -5,6 +5,7 @@ import { PUBLIC_PERSONA, PROMPT_VERSION, TRUSTED_RULES } from './template.js';
 import { ownerProfileSections, TRUSTED_SYSTEM_CODE_UNIT_LIMIT } from './live-persona.js';
 export * from './types.js';
 export * from './live-persona.js';
+export * from './runtime-context.js';
 export { PUBLIC_PERSONA, PROMPT_VERSION } from './template.js';
 
 const classes: DataClass[] = ['ordinary', 'private', 'sensitive'];

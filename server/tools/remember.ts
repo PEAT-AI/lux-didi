@@ -3,7 +3,7 @@ import type { JsonObject } from '../adapters/model/types.js';
 
 /** This identity belongs to the gateway, never to a remote MCP declaration. */
 export const REMEMBER_IDENTITY = { name: 'remember_note', accountId: 'gateway:live-voice', resourceId: 'owner-memory' } as const;
-export const REMEMBER_PARAMETERS = { type: 'object', properties: { text: { type: 'string', minLength: 1, maxLength: 500 }, kind: { type: 'string', enum: ['fact', 'preference', 'task'] } }, required: ['text', 'kind'], additionalProperties: false };
+export const REMEMBER_PARAMETERS = { type: 'object', properties: { text: { type: 'string', minLength: 1, maxLength: 500, description: 'The note in the owner’s own words.' }, kind: { type: 'string', enum: ['fact', 'preference', 'task'], description: 'fact, preference or task.' } }, required: ['text', 'kind'], additionalProperties: false };
 export function validateRemember(args: unknown): args is { text: string; kind: 'fact' | 'preference' | 'task' } {
   if (!args || typeof args !== 'object' || Array.isArray(args)) return false;
   const value = args as Record<string, unknown>;

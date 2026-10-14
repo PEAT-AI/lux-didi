@@ -7,7 +7,7 @@ import { declarationsFor, runToolCalls, authorizeToolBatch } from '../tools/decl
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
 import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection } from './types.js';
-import { publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, composeLiveSessionInstruction } from '../prompt/index.js';
+import { publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, composeLiveSessionInstruction, connectorGroupNames, toolGroupNames } from '../prompt/index.js';
 import { validateAcceptedPrompt } from './config.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type { DataClass, LiveVoiceDiagnostics, LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort, LiveVoiceSession, LiveVoiceRequest } from '../adapters/live-voice/index.js';
@@ -216,6 +216,7 @@ export class LiveSessionOwner {
   readonly #voice: LiveVoicePort;
   readonly #profile: LiveProfile;
   readonly #now: () => number;
+  readonly #timeZone: string;
   readonly #schedule: NonNullable<LiveOwnerConfig['schedule']>;
   #expiryTimer: ReturnType<NonNullable<LiveOwnerConfig['schedule']>> | undefined;
   readonly #profileIdentity: string;
@@ -232,6 +233,7 @@ export class LiveSessionOwner {
     this.#store = config.store;
     this.#voice = config.voice;
     this.#profile = validateLiveProfile(config.profile);
+    this.#timeZone = config.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
     const now = config.now ?? Date.now;
     this.#now = () => {
       const value = now();
@@ -249,6 +251,16 @@ export class LiveSessionOwner {
   }
 
   get revision(): number { return this.#revision; }
+
+  /** Host-generated runtime context: host clock and timezone, plus the groups this session can reach. */
+  #liveRuntimeContext(toolNames: readonly string[]): string {
+    const connected = toolGroupNames(toolNames);
+    const endpoints = this.#tools?.status?.().endpoints ?? [];
+    const unavailable = endpoints.filter(endpoint => endpoint.state !== 'connected')
+      .flatMap(endpoint => connectorGroupNames(endpoint.connector))
+      .filter((group, index, all) => all.indexOf(group) === index && !connected.includes(group));
+    return buildRuntimeContext({ now: new Date(this.#now()), timeZone: this.#timeZone, connected, unavailable });
+  }
 
   /** Safe operator-visible identity. Never carries key bytes or prompt text. */
   get profileIdentity(): string { return this.#profileIdentity; }
@@ -315,6 +327,7 @@ export class LiveSessionOwner {
       catch { throw new LiveError('memory_unavailable'); }
       let composed: ReturnType<typeof composeLiveSessionInstruction>;
       try { composed = composeLiveSessionInstruction({ text: configuredPrompt.system, tools: toolNames,
+        runtimeContext: this.#liveRuntimeContext(toolNames),
         records: records.filter(record => record.dataClass === 'ordinary'), trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
         ...(this.#profile.overlay ? { overlay: this.#profile.overlay } : {}),
         ...(pickup ? { pickupNote: pickupInstruction } : {}) }); }
@@ -359,7 +372,7 @@ export class LiveSessionOwner {
     return this.#jobs.list().filter(job => job.deferred && (!pendingOnly || !job.delivered)).map(job => ({
       id: job.id, originSessionId: job.originSessionId, state: job.state, createdAt: job.createdAt, delivered: job.delivered,
       markdown: job.result?.accepted.map(result => typeof result.response.text === 'string' ? result.response.text : JSON.stringify(result.response)).join('\n\n')
-        || (job.state === 'in_progress' ? "I'm on it, I'll call you when it's done." : job.state === 'completed' ? 'Completed, delivery pending.' : `Background job ${job.state}.`),
+        || (job.state === 'in_progress' ? 'This lookup continues; its result will be offered at the next turn.' : job.state === 'completed' ? 'Completed, delivery pending.' : `Background job ${job.state}.`),
     }));
   }
 
@@ -892,9 +905,9 @@ export class LiveSessionOwner {
         if (!(this.#settled(handle) || generation !== handle.generation)) {
           const status = execution.job.state === 'in_progress' ? 'in progress' : execution.job.state;
           for (const call of event.calls) publish('toolResult', { name: call.name, status: 'error',
-            markdown: status === 'in progress' ? "I'm on it, I'll call you when it's done." : `Background job ${status}.`, sources: [] });
+            markdown: status === 'in progress' ? 'This lookup continues; its result will be offered at the next turn.' : `Background job ${status}.`, sources: [] });
           const responses = event.calls.filter(call => handle.pendingCallIds.has(call.id)).map(call => ({ id: call.id, name: call.name,
-            response: { jobId: execution.job.id, status, message: status === 'in progress' ? "I'm on it, I'll call you when it's done." : `Background job ${status}.` } }));
+            response: { jobId: execution.job.id, status, message: status === 'in progress' ? 'This lookup continues; its result will be offered at the next turn.' : `Background job ${status}.` } }));
           try { if (responses.length) handle.session.sendToolResponse({ responses }); } catch { /* cancelled provider batch */ }
           for (const call of event.calls) handle.pendingCallIds.delete(call.id);
           handle.thinking = false;

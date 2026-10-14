@@ -28,6 +28,7 @@ export type AuthoritySource = (runId: string, signal: AbortSignal) => Promise<Li
 export interface LiveToolsComposition {
   owner: ToolsOwner;
   connectionIds(): string[];
+  status?(): { endpoints: readonly { id: string; connector: string; state: string }[] };
   registerAuthoritySource(source: AuthoritySource): void;
   lookupAuthority(runId: string, signal: AbortSignal): Promise<LiveAuthority | null>;
 }
@@ -189,6 +190,7 @@ export async function startHost(config: HostConfig) {
     const liveTools: LiveToolsComposition = {
       owner: mcp.owner,
       connectionIds: () => mcp.connectionIds(),
+      status: () => mcp.status(),
       registerAuthoritySource: source => { authoritySources.push(source); },
       lookupAuthority,
     };

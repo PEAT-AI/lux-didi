@@ -64,6 +64,8 @@ export interface LiveProfile {
 
 export type LiveToolsComposition = {
   owner: ReturnType<typeof createToolsOwner>; connectionIds(): string[];
+  /** Configured connector endpoints and their state, for the host-generated runtime context. */
+  status?(): { endpoints: readonly { id: string; connector: string; state: string }[] };
   registerAuthoritySource?(source: (runId: string, signal: AbortSignal) => Promise<import('../tools/types.js').LiveAuthority | null>): void;
 };
 export interface LiveToolProjection { code?: 'tool_call_lost_on_resume'; callId?: string; name: string; status: 'completed' | 'error'; markdown: string; sources: { title: string; url?: string }[] }
@@ -91,6 +93,8 @@ export interface LiveOwnerConfig {
   readonly profile: LiveProfile;
   /** Trusted clock in safe integer Unix epoch milliseconds, shared with schedule in tests. */
   readonly now?: () => number;
+  /** IANA timezone of the host clock, for the runtime context; defaults to the process timezone. */
+  readonly timeZone?: string;
   /** Trusted in-process timer seam; not a transport or an error callback. */
   readonly schedule?: (callback: () => void, delayMs: number) => { unref(): void; cancel(): void };
 }

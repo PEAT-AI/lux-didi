@@ -503,6 +503,7 @@ struct RootView: View {
         stop: { [weak self] in self?.model.stopLive() })
     private var miniShell: CompanionWeb?
     private var miniPanel: MiniOrbPanel?
+    private var miniCookie: HTTPCookie?
     private lazy var miniOrb = MiniOrbToggle(
         startLive: { [weak self] in self?.model.startLive() },
         stopLive: { [weak self] in self?.model.stopLive() },
@@ -761,7 +762,8 @@ struct RootView: View {
         miniPanel = panel
         panel.orderFrontRegardless()
         model.pointOrbLevelFeed(at: shell.webView)
-        if shell.state != .ready, let cookie = model.pageCookie {
+        if let cookie = model.pageCookie, shell.state != .ready || miniCookie != cookie {
+            miniCookie = cookie
             Task { await shell.load(cookie: cookie) }
         }
     }

@@ -89,12 +89,14 @@ export class GeminiLiveVoiceAdapter implements LiveVoicePort {
     if (request.tools !== undefined && (!Array.isArray(request.tools) || request.tools.length > 128 || request.tools.some(t => !object(t) || typeof t.name !== 'string' || !t.name || !object(t.parameters)))) fail('invalid_request');
     const system = request.system.text;
     if (Buffer.byteLength(JSON.stringify({ system, history, tools: request.tools })) > settings.limits.maxRequestBytes) fail('invalid_request');
+    const live38 = /gemini-3\.8[^/]*live/.test(settings.modelId);
+    const declarations = live38 ? request.tools?.map(declaration => ({ ...declaration, behavior: 'BLOCKING' })) : request.tools;
     const setup = JSON.stringify({ setup: {
       model: settings.modelId,
       sessionResumption: request.resumptionHandle ? { handle: request.resumptionHandle } : {},
       generationConfig: { responseModalities: ['AUDIO'], speechConfig: { ...(request.languageCode ? { languageCode: request.languageCode === 'ar' ? 'ar-XA' : request.languageCode } : {}), voiceConfig: { prebuiltVoiceConfig: { voiceName: settings.voice } } },
-        ...(!/gemini-3\.8[^/]*live/.test(settings.modelId) ? { thinkingConfig: { thinkingLevel: 'minimal' } } : {}) },
-      ...(request.tools?.length ? { tools: [{ functionDeclarations: request.tools }] } : {}),
+        ...(!live38 ? { thinkingConfig: { thinkingLevel: 'minimal' } } : {}) },
+      ...(declarations?.length ? { tools: [{ functionDeclarations: declarations }] } : {}),
       contextWindowCompression: { slidingWindow: { targetTokens: 32000 } },
       realtimeInputConfig: { automaticActivityDetection: { startOfSpeechSensitivity: 'START_SENSITIVITY_LOW' } },
       systemInstruction: { parts: [{ text: system }] }, inputAudioTranscription: {}, outputAudioTranscription: {},

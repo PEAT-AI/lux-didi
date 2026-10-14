@@ -42,6 +42,13 @@ export async function startFixture({configured = false} = {}) {
     if (path === '/api/v1/chat/status') return ok(configured ? {status:'configured',provider:'synthetic',model:'synthetic-model',consent:null} : {status:'unconfigured'});
     if (path === '/api/v1/live/connections') return ok([{id:'calendar',state:'missing',tools:0,lastHandshakeAt:null,reasonCode:'credential_missing'}]);
     if (path === '/api/v1/live/current') return ok(live);
+    if (path === '/api/v1/live/text' && req.method === 'POST') {
+      const text = typeof body.text === 'string' ? body.text : '';
+      if (!text || text.length > 4000) return error('BAD_REQUEST', 'Invalid text');
+      const seq = Number(live.cursor ?? 0) + 1;
+      live = { ...live, cursor: seq, entries: [...(live.entries ?? []), { seq, kind: 'inputTranscription', text }] };
+      return ok({ sent: true });
+    }
     if (path === '/api/v1/sessions' && req.method==='GET') return ok({items:all('session'),nextCursor:null});
     if (path === '/api/v1/sessions' && req.method==='POST') return ok(put('session',{id:randomUUID(),...body,startedAt:new Date().toISOString(),endedAt:null,revision:1}));
     const sessionPath=path.match(/^\/api\/v1\/sessions\/([^/]+)(\/entries)?$/);

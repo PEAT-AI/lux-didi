@@ -472,6 +472,14 @@ class Session implements LiveVoiceSession {
     const data = Buffer.from(input.pcm).toString('base64');
     if (!this.write(JSON.stringify({ realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data } } }), input.pcm.byteLength)) fail(this.terminal!.code);
   }
+  sendText(input: { text: string }): void {
+    if (this.draining) return;
+    if (!this.checkpoint()) fail(this.terminal!.code);
+    if (!this.isReady) fail('not_ready');
+    if (!object(input) || typeof input.text !== 'string' || !input.text.length || input.text.length > 4000) fail('invalid_request');
+    // Same frame as the model-first greeting text: a text turn the model answers by voice.
+    if (!this.write(JSON.stringify({ realtimeInput: { text: input.text } }))) fail(this.terminal!.code);
+  }
   endAudioStream(): void {
     if (this.draining) return;
     if (!this.checkpoint()) fail(this.terminal!.code);

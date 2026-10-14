@@ -122,6 +122,7 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
         if (route.action === 'snapshot') { send(res, 200, success(live.snapshot(route.id!))); return; }
         if (route.action === 'journal') { send(res, 200, success(live.journal(route.id!, route.input['cursor'] as number | undefined, route.input['limit'] as number | undefined))); return; }
         if (route.action === 'revoke') { live.revoke(route.id!); send(res, 200, success({ liveSessionId: route.id!, revoked: true })); return; }
+        if (route.action === 'text') { live.text(String(route.input['text'])); send(res, 200, success({ sent: true })); return; }
         throw new ServiceError('METHOD_NOT_ALLOWED', 'Audio requires a WebSocket upgrade', 405);
       }
       const actor = principal(req);

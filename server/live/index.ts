@@ -679,6 +679,19 @@ export class LiveSessionOwner {
     }
   }
 
+  /** Send operator-typed text into the newest active session as a user turn (W5-R4 item 2). */
+  text(text: string): void {
+    if (typeof text !== 'string' || !text.length || text.length > 4000) throw new LiveError('invalid_request');
+    const handle = [...this.#active.values()].filter(candidate => !candidate.terminal).at(-1);
+    if (!handle) throw new LiveError('not_found', 'No active Live session');
+    this.#guardHandle(handle);
+    const event = { type: 'inputTranscription' as const, sequence: 0, text, finished: true };
+    handle.session.sendText({ text });
+    this.#armIdle(handle, this.#profile.limits.idleMs);
+    const journalSequence = this.#persist(handle, event, 'inputTranscription');
+    if (journalSequence === 'overflow') return;
+    this.#pushChunk(handle, { kind: 'marker', marker: markerOf(event, 'inputTranscription', journalSequence) });
+  }
   #sendAudio(handle: ActiveSession, pcm: Uint8Array): void {
     handle.ownerAudioCalls++; handle.ownerAudioBytes += pcm.byteLength;
     if (handle.rebuilding) { handle.ownerRebuildingDropCalls++; handle.ownerRebuildingDropBytes += pcm.byteLength; return; }

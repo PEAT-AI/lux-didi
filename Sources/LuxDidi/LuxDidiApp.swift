@@ -31,6 +31,7 @@ import Security
     @Published private(set) var serviceRestarting = false
     let voice = NativeVoice()
     @Published private(set) var live: NativeLiveConversation?
+    private var orbLevels: NativeOrbLevelPublisher?
     private lazy var liveAuthorityOwner: NativeLiveAuthorityOwner<NativeLiveConversation> = NativeLiveAuthorityOwner(
         release: { conversation in
             conversation.stopCapture()
@@ -281,9 +282,12 @@ import Security
             }, pickupJobID: pickupJobID, logsDirectory: liveLogsDirectory)
         }
         conversation.start()
+        orbLevels = NativeOrbLevelPublisher(device: conversation.device, web: shell?.webView)
+        orbLevels?.start()
     }
     func stopLive() {
         let conversation = live
+        orbLevels?.stop(); orbLevels = nil
         conversation?.stopCapture()
         Task { await conversation?.stop() }
     }
@@ -299,6 +303,7 @@ import Security
     }
     func logout() async {
         stopRecording("Logout")
+        orbLevels?.stop(); orbLevels = nil
         await live?.stop(); liveAuthorityOwner.clear()
         await client?.revokePageSession(); shell?.clear()
     }

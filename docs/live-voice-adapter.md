@@ -119,11 +119,10 @@ event carries `timeLeftMs`; it stops outbound admission without finishing the
 connection. The owner may replace the draining connection immediately.
 
 Outcomes classify network failures and transport closes 1006/1011 as recoverable,
-as well as completion of a provider drain. A post-ready provider-side failure (a
-rejected frame, an abnormal or unexpected provider close) is also recoverable, so
-the owner can resume it. Pre-ready failures, policy/setup rejection (including
-1008), authentication, quota and local session, idle or deadline expiry stay
-final. Limits supplied by the owner override connection timers,
+as well as completion of a provider drain. A rejected frame after ready is also
+recoverable, so the owner can resume it. Pre-ready failures, policy/setup
+rejection (including 1008), authentication, quota and local session, idle or
+deadline expiry stay final. Limits supplied by the owner override connection timers,
 including the remaining session/idle budget on resumed connections. Recovery
 attempts and durable continuity belong only to the live owner.
 

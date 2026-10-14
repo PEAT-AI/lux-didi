@@ -485,7 +485,7 @@ class Session implements LiveVoiceSession {
     const status = code === 'closed' ? 'closed' : code === 'cancelled' ? 'cancelled' : code === 'deadline' ? 'deadline' : 'failed';
     // A post-ready provider-side failure is recoverable through the owner resumption path; pre-ready,
     // auth, route and config failures stay terminal.
-    const providerSideFailure = this.isReady && (code === 'protocol_error' || code === 'remote_closed');
+    const providerSideFailure = this.isReady && code === 'protocol_error';
     this.terminal = Object.freeze({ status, code, ...(this.recoverable || code === 'go_away' || code === 'transport_error' || providerSideFailure ? { recoverable: true } : {}), ...(this.droppedAudioFrames ? { droppedAudioFrames: this.droppedAudioFrames } : {}) });
     for (const timer of this.timers) clearTimeout(timer);
     this.timers.clear(); this.signal.removeEventListener('abort', this.onAbort);

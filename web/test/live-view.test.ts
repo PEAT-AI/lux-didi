@@ -1,3 +1,4 @@
+import { createSourceFile, ScriptTarget, SyntaxKind } from 'typescript';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
@@ -318,23 +319,26 @@ for (const kind of ['authority', 'offline-success', 'offline-failure', 'logout']
     const source=readFileSync(new URL('../src/main.ts',import.meta.url),'utf8');
     const poll=source.slice(source.indexOf('async function pollLive(){'),source.indexOf('async function pollConnections(){'));
     const prefix=kind==='authority'?'onAuthorityChanged(':kind==='logout'?"  button('logout',":"window.addEventListener('offline',";
-    const resetSource=source.split('\n').find(line=>line.startsWith(prefix));
+    const parsed=createSourceFile('main.ts',source,ScriptTarget.Latest,true);
+    const authority=parsed.statements.find(node=>node.kind===SyntaxKind.ExpressionStatement&&node.getText(parsed).startsWith('onAuthorityChanged('))!.getText(parsed);
+    const resetSource=kind==='authority'?authority:source.split('\n').find(line=>line.startsWith(prefix));
     assert(resetSource);
     const original={live:{state:'ended' as const,since:'synthetic-session',cursor:1,entries:[{seq:1,kind:'terminal' as const}]},stale:false};
     let release!:()=>void;const gate=new Promise<void>(resolve=>{release=resolve;});
-    let callback!:()=>void,scheduled=0,liveTimerArmed=false;
+    let callback!:()=>void,ownerReset!:(reason:string)=>void,version={},scheduled=0,liveTimerArmed=false;
     const paints:unknown[]=[];
     const context:any={document:{hidden:false},pairingRequired:false,liveBusy:false,liveTimer:1,pollTimer:1,connectionsTimer:1,
-      livePoll:original,live:original.live,pollLiveView,AbortSignal,clearTimeout:()=>{},
+      livePoll:original,live:original.live,pollLiveView,AbortSignal,clearTimeout:()=>{},authorityVersion:()=>version,
+      readGeneration:0,controller:undefined,busy:false,readBusy:false,pairingBusy:false,connectionsBusy:false,schedulePoll:()=>{},
       fetchLive:async()=>{await gate;if(kind==='authority'||kind==='offline-failure')throw new Error('synthetic unavailable');return {...original.live,entries:[]};},
       scheduleLive:()=>{scheduled++;liveTimerArmed=!context.pairingRequired;},
       paintLive:()=>{paints.push(context.live);},render:()=>{paints.push(context.live);},
-      onAuthorityChanged:(fn:()=>void)=>{callback=fn;},window:{addEventListener:(_name:string,fn:()=>void)=>{callback=fn;}},
-      button:(_name:string,fn:()=>void)=>{callback=fn;},logout:async()=>{},
+      onAuthorityChanged:(fn:(reason:string)=>void)=>{ownerReset=fn;callback=()=>{version={};fn('changed');};},window:{addEventListener:(_name:string,fn:()=>void)=>{callback=fn;}},
+      button:(_name:string,fn:()=>void)=>{callback=fn;},logout:async()=>{version={};ownerReset('logout');},
       mutate:(action:()=>Promise<void>)=>{context.mutation=action().then(()=>context.render());},
       connectedView:{reset:()=>{},detach:()=>{}},connections:[],connectionsStale:false,statusUnavailable:false,status:{},
       sessions:[],entries:[],session:undefined,plan:undefined,recall:undefined,recent:[],connection:'Connected'};
-    createContext(context);runInContext(poll+resetSource,context);
+    createContext(context);runInContext(poll+(kind==='logout'?authority:'')+resetSource,context);
     const pending=context.pollLive();assert.equal(context.liveBusy,true);
     callback();if(kind==='logout')await context.mutation;
     const reset=context.livePoll;assert.notEqual(reset,original);
@@ -343,7 +347,7 @@ for (const kind of ['authority', 'offline-success', 'offline-failure', 'logout']
     else assert.equal(context.livePoll.stale,true);
     release();await pending;
     assert.equal(context.livePoll,reset);assert.equal(paints.length,paintCount);
-    assert.equal(context.liveBusy,false);assert.equal(scheduled,1);
+    assert.equal(context.liveBusy,false);assert.equal(scheduled,kind==='authority'||kind==='logout'?0:1);
     if(kind==='logout')assert.equal(liveTimerArmed,false);
   });
 }
@@ -355,9 +359,10 @@ test('manual Live refresh cancels the scheduled handle before held logout', asyn
   const schedule=source.slice(source.indexOf('function scheduleLive(){'),source.indexOf('function paintLive(){'));
   let id=0,release!:()=>void;const timers=new Map<number,{fn:()=>void,delay:number}>();
   const gate=new Promise<void>(resolve=>{release=resolve;});
+  const version={};
   const projection:LiveCurrent={state:'listening',since:'synthetic-timer-session',cursor:0,entries:[]};
   const context:any={document:{hidden:false},pairingRequired:false,liveBusy:false,liveTimer:undefined,
-    livePoll:{live:projection},live:projection,liveDelay,pollLiveView,AbortSignal,
+    livePoll:{live:projection},live:projection,liveDelay,pollLiveView,AbortSignal,authorityVersion:()=>version,
     setTimeout:(fn:()=>void,delay:number)=>{const handle=++id;timers.set(handle,{fn,delay});return handle;},
     clearTimeout:(handle:number)=>{timers.delete(handle);},fetchLive:async()=>{await gate;return projection;},paintLive:()=>{}};
   createContext(context);runInContext(poll+schedule,context);

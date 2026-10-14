@@ -6,15 +6,21 @@ cd "$(dirname "$0")/.."
 bash scripts/run-local.sh --build-only
 log=$(mktemp)
 trap 'rm -f "$log"' EXIT
-for file in server/dist/test/host.test.js server/dist/test/http.test.js; do
+for file in server/dist/test/host.test.js server/dist/test/http.test.js server/dist/test/host-log.test.js; do
   test -s "$file" || { echo "Missing selected test: $file" >&2; exit 1; }
 done
 http_status=0
-node --test --test-reporter=tap --test-timeout=15000 server/dist/test/host.test.js server/dist/test/http.test.js | tee "$log" || http_status=$?
+node --test --test-reporter=tap --test-timeout=15000 server/dist/test/host.test.js server/dist/test/http.test.js server/dist/test/host-log.test.js | tee "$log" || http_status=$?
 grep -Eq '^# tests [1-9][0-9]*$' "$log" || { echo 'Zero selected tests' >&2; exit 1; }
+# W10 read-only timeline producer, driven by synthetic logs only.
+timeline_status=0
+node --test --test-reporter=tap --test-timeout=15000 server/test/call-timeline.test.mjs | tee "$log.timeline" || timeline_status=$?
+grep -Eq '^# tests [1-9][0-9]*$' "$log.timeline" || { echo 'Zero timeline tests' >&2; exit 1; }
+rm -f "$log.timeline"
 # Preserve every HTTP failure while still collecting discriminating real-browser proof.
 # Deliberately not the web fixture producer: this drives the shipped UI on the real host.
 browser_status=0
 lux-browser-slot run --priority worker --want 1 --wait 1800 -- node server/test/host-browser.mjs || browser_status=$?
 if [ "$http_status" -ne 0 ]; then exit "$http_status"; fi
+if [ "$timeline_status" -ne 0 ]; then exit "$timeline_status"; fi
 exit "$browser_status"

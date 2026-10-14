@@ -913,6 +913,8 @@ export class LiveSessionOwner {
 
   async #toolBatch(handle: ActiveSession, event: Extract<LiveVoiceEvent, { type: 'toolCall' }>, generation: number): Promise<void> {
     handle.thinking = true;
+    const startedAt = Date.now();
+    for (const call of event.calls) emitHostEvent('tool.call_start', { attemptId: handle.attemptId, liveSessionId: handle.liveSessionId, generation, toolCallId: call.id, name: call.name });
     const publish = (kind: 'toolCall' | 'toolResult', tool: LiveToolProjection) => {
       if ((this.#settled(handle) || generation !== handle.generation)) return;
       const sequence = this.#persist(handle, { type: kind, sequence: event.sequence, tool }, kind);
@@ -958,6 +960,7 @@ export class LiveSessionOwner {
     if ((this.#settled(handle) || generation !== handle.generation)) return;
     for (const [index, projection] of projections.entries()) {
       const id = event.calls[index]!.id;
+      emitHostEvent('tool.call_end', { attemptId: handle.attemptId, liveSessionId: handle.liveSessionId, generation, toolCallId: id, name: event.calls[index]!.name, latencyMs: Date.now() - startedAt, outcome: projection.status === 'completed' ? 'success' : 'error' });
       if (handle.pendingCallIds.has(id)) publish('toolResult', handle.bargeInCallIds.has(id) ? { ...projection, code: 'after_barge_in' } : projection);
     }
     responses = responses.filter(response => handle.pendingCallIds.has(response.id));

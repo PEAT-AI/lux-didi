@@ -11,7 +11,7 @@ export type FieldType = 'id' | 'num' | 'bool' | 'ts';
 export type FieldSpec = FieldType | readonly string[];
 export type KindSchema = Record<string, FieldSpec>;
 
-const idPattern = /^[A-Za-z0-9._:@+-]{1,128}$/;
+const idPattern = /^[A-Za-z0-9._:+-]{1,128}$/;
 const eventPattern = /^[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+$/;
 const tsPattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 

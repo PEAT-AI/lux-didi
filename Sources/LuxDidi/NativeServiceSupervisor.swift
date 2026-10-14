@@ -158,6 +158,7 @@ struct OwnedServiceConnection {
     private(set) var lastStop: [String: Any]?
     // Last startup stage reached by start(), for a privacy-safe exit record.
     private var lastStage = "state"
+    private var hostRefusedCode: String?
     private(set) var startupFailureCode: String?
     private(set) var startupFailureDiagnostic: StartupFailureDiagnostic?
     var currentConnection: OwnedServiceConnection? {
@@ -343,6 +344,7 @@ struct OwnedServiceConnection {
         var launched: OwnedServiceChild?
         lastStage = "state"
         var diagnosticStage: StartupFailureDiagnostic.Stage = .state
+        hostRefusedCode = nil
         startupFailureCode = nil
         credentialValidated = false
         startupFailureDiagnostic = nil
@@ -380,6 +382,14 @@ struct OwnedServiceConnection {
             lastStage = "ready-frame"
             diagnosticStage = .readyFrame
             let readyData = try await owned.firstFrame(timeout: 6_000_000_000)
+            if let refusal = try? JSONSerialization.jsonObject(with: readyData) as? [String: Any],
+               Set(refusal.keys) == ["type", "schemaVersion", "code"],
+               refusal["type"] as? String == "error", refusal["schemaVersion"] as? Int == 1,
+               let code = refusal["code"] as? String, (1...64).contains(code.count),
+               code.allSatisfy({ $0.isUppercase || $0.isNumber || $0 == "_" }) {
+                hostRefusedCode = code
+                throw NativeServiceError.exited
+            }
             guard let ready = try JSONSerialization.jsonObject(with: readyData) as? [String: Any],
                   Set(ready.keys) == ["type", "schemaVersion", "nonce", "pid", "origin", "authorityEpoch", "assistantId"],
                   ready["type"] as? String == "ready", ready["schemaVersion"] as? Int == 1, ready["nonce"] as? String == nonce,
@@ -403,7 +413,7 @@ struct OwnedServiceConnection {
             observeWake()
             return result
         } catch {
-            startupFailureCode = lastStage + "/" + ((error as? NativeServiceError).map { String(describing: $0) } ?? "platformFailure")
+            startupFailureCode = lastStage + "/" + (hostRefusedCode ?? (error as? NativeServiceError).map { String(describing: $0) } ?? "platformFailure")
             let category: StartupFailureDiagnostic.Category
             var status: Int32?
             switch error as? NativeServiceError {

@@ -54,7 +54,7 @@ export function liveLabel(live: LiveCurrent | undefined): string {
 /** After this long a pending call adds its elapsed seconds to the activity line. */
 export const SLOW_TOOL_MS = 4000;
 
-export type LiveActivityKind = 'thinking' | 'tools' | 'done' | 'failed' | 'aside';
+export type LiveActivityKind = 'thinking' | 'tools' | 'done' | 'failed';
 export interface LiveActivity { kind: LiveActivityKind; text: string }
 
 /** The tool result's own sentence, or a calm connector sentence when the
@@ -74,8 +74,10 @@ export function liveActivity(live: LiveCurrent | undefined): LiveActivity | unde
   if (pending.length) return { kind: 'tools', text: toolPhrases(pending) };
   const last = live.entries.at(-1);
   if (last?.kind === 'toolResult' && last.tool) {
+    // W3 records a batch the user barged in on as disposition 'after_barge_in'. The
+    // result still reached Naya, so it is a quiet done, never a failure.
     const tool = last.tool as LiveTool & { disposition?: string };
-    if (tool.disposition === 'superseded') return { kind: 'aside', text: 'Set that aside, ask again if you want it' };
+    if (tool.disposition === 'after_barge_in') return { kind: 'done', text: 'Found it, ask if you want it' };
     if (tool.status === 'error') return { kind: 'failed', text: failureSentence(tool) };
     return { kind: 'done', text: 'Done' };
   }

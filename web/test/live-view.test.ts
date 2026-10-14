@@ -251,15 +251,17 @@ test('thinking without tools is a subtle Thinking activity', () => {
   assert.doesNotMatch(activityMarkup(liveActivity(live)), /activity-tools|activity-done/);
 });
 
-test('outcomes are one calm sentence: done, failed, and set aside', () => {
+test('outcomes are one calm sentence: done, failed, and a quiet barged-in done', () => {
   const result = (tool: object): LiveCurrent => ({ state: 'thinking', cursor: 1, entries: [{ seq: 1, kind: 'toolResult', tool } as never] });
   const done = liveActivity(result({ name: 'gmail_list', status: 'completed', markdown: 'mail' }))!;
   assert.deepEqual(done, { kind: 'done', text: 'Done' });
   assert.match(activityMarkup(done), /activity-done/);
   const failed = liveActivity(result({ name: 'mattermost_search', status: 'error' }))!;
   assert.deepEqual(failed, { kind: 'failed', text: 'Mattermost did not answer' });
-  const aside = liveActivity(result({ name: 'mattermost_search', status: 'error', disposition: 'superseded' }))!;
-  assert.deepEqual(aside, { kind: 'aside', text: 'Set that aside, ask again if you want it' });
+  const bargedIn = liveActivity(result({ name: 'mattermost_search', status: 'completed', disposition: 'after_barge_in' }))!;
+  assert.deepEqual(bargedIn, { kind: 'done', text: 'Found it, ask if you want it' });
+  assert.match(activityMarkup(bargedIn), /activity-done/);
+  assert.doesNotMatch(activityMarkup(bargedIn), /activity-failed/);
 });
 
 test('a slow pending call adds elapsed seconds only after the threshold', () => {

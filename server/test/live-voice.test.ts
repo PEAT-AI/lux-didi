@@ -548,6 +548,29 @@ test('provider cancellation releases the batch so later audio is not superseded'
   session.close();
 });
 
+test('a cancelled batch still flushes audio buffered while it was pending, zero dropped', async t => {
+  const f = await fixture(t);
+  const modelId = 'models/gemini-3.1-flash-live-preview';
+  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory, modelId, route: { enabled: true, provider: 'gemini', modelId, dataClasses: ['ordinary', 'private'] } })).open({ ...request(), tools: [
+    { name: 'search_knowledge', description: 'Search', parameters: { type: 'OBJECT' } },
+  ] }, control());
+  const events = session.events[Symbol.asyncIterator](); t.after(() => session.close());
+  await f.frame(1); f.send({ setupComplete: {} }); await session.ready;
+  assert.equal((await events.next()).value?.type, 'ready');
+  f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x' } }] } });
+  assert.equal((await events.next()).value?.type, 'modelTurnStarted');
+  assert.equal((await events.next()).value?.type, 'toolCall');
+  const pending = new Uint8Array([7, 0, 8, 0]);
+  session.sendAudio({ pcm: pending, dataClass: 'ordinary' });
+  assert.equal(session.droppedAudioFrames, 0);
+  f.send({ toolCallCancellation: { ids: ['c1'] } });
+  assert.equal((await events.next()).value?.type, 'toolCallCancellation');
+  await f.frame(2);
+  assert.deepEqual(f.frames[1], { realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: Buffer.from(pending).toString('base64') } } });
+  assert.equal(f.frames.some(frame => 'toolResponse' in (frame as object)), false, 'no response for a cancelled id');
+  session.close();
+});
+
 test('3.8 Live omits thinking config and cancellation releases an unanswered batch', async t => {
   const f = await fixture(t);
   const tools = [

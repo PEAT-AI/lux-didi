@@ -453,3 +453,39 @@ test('every configured connector admits a real slow read on the call deadline', 
     assert.ok(Date.now() - started >= 5000, 'a configured connector call must not fall back to the five-second default');
   } finally { await runtime.close(); store.close(); rmSync(dir, { recursive: true, force: true }); rmSync(childDir, { recursive: true, force: true }); }
 });
+
+// W4-R3: only a dead transport suspends the connector; a timeout fails one call and stays usable.
+test('only a dead transport suspends the connector; a timeout leaves it usable', { skip: process.platform === 'win32' }, async () => {
+  {
+    const { dir, pidFile } = scratch();
+    const registry = new McpRegistry();
+    registry.register(config('cls', 'exit-on-call', pidFile)); registry.enable('cls'); registry.allowEgress('cls');
+    const adapter = adapterFor(registry);
+    try {
+      const d = await adapter.discover('cls'); assert.equal(d.state, 'discovered');
+      if (d.state !== 'discovered') return;
+      registry.approve({ endpointId: 'cls', schemaDigest: d.schemaDigest, toolNames: ['echo'], effect: 'read', account: ACCOUNT, resource: RESOURCE, generation: 1 });
+      assert.equal(adapter.visibleTools('cls').length, 1);
+      const r = await adapter.call(request('cls'));
+      assert.equal(r.state, 'unknown'); if (r.state === 'unknown') assert.equal(r.reason, 'child_exited');
+      await adapter.whenSuspended('cls');
+      assert.equal(adapter.visibleTools('cls').length, 0, 'a dead transport suspends the connector');
+    } finally { await adapter.close(); rmSync(dir, { recursive: true, force: true }); }
+  }
+  {
+    const { dir, pidFile } = scratch();
+    const registry = new McpRegistry();
+    registry.register(config('cls', 'hang-first-call', pidFile)); registry.enable('cls'); registry.allowEgress('cls');
+    const adapter = createMcpAdapter({ registry, store: new MemoryResultStore(), budgets: { timeoutMs: 4000 }, callTimeoutMsByEndpoint: new Map([['cls', 300]]) });
+    try {
+      const d = await adapter.discover('cls'); assert.equal(d.state, 'discovered');
+      if (d.state !== 'discovered') return;
+      registry.approve({ endpointId: 'cls', schemaDigest: d.schemaDigest, toolNames: ['echo'], effect: 'read', account: ACCOUNT, resource: RESOURCE, generation: 1 });
+      const first = await adapter.call(request('cls'));
+      assert.equal(first.state, 'unknown'); if (first.state === 'unknown') assert.equal(first.reason, 'timeout');
+      assert.equal(adapter.visibleTools('cls').length, 1, 'a soft failure must not suspend the connector');
+      const second = await adapter.call(request('cls'));
+      assert.equal(second.state, 'completed', JSON.stringify(second));
+    } finally { await adapter.close(); rmSync(dir, { recursive: true, force: true }); }
+  }
+});

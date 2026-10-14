@@ -227,7 +227,7 @@ test('timeout and cancellation are unknown after observed side effect, terminate
       const started = Date.now(); const pending = adapter.call(request, controller.signal);
       await dispatched; if (cancel) controller.abort();
       const result = await pending;
-      assert.equal(result.state, 'unknown'); if (result.state === 'unknown') assert.equal(result.reason, cancel ? 'cancelled' : 'timeout'); assert.equal(f.counter, 1); assert(Date.now() - started < 1500);
+      assert.equal(result.state, 'unknown'); if (result.state === 'unknown') assert.equal(result.reason, cancel ? 'cancelled' : 'timeout'); assert.equal(adapter.visibleTools('source').length, 1, 'a soft failure must not suspend the connector'); assert.equal(f.counter, 1); assert(Date.now() - started < 1500);
       release();
       await adapter.discover('source'); assert.equal(f.counter, 1);
       assert.equal(adapter.visibleTools('source').length, 0);
@@ -353,7 +353,7 @@ test('malformed remote results and finite discovery page/tool budgets fail expli
     const result = await a.adapter.call(request);
     const wire = JSON.parse(malformed.responseEntities[0]!.toString()) as Record<string, unknown>;
     assert('result' in wire && !('error' in wire), 'actual malformed result, not official server validation error');
-    assert.equal(result.state, 'unknown'); if (result.state === 'unknown') assert.equal(result.reason, 'invalid_result'); assert.equal(malformed.counter, 1);
+    assert.equal(result.state, 'unknown'); if (result.state === 'unknown') assert.equal(result.reason, 'invalid_result'); assert.equal(a.adapter.visibleTools('source').length, 1, 'an invalid result must not suspend the connector'); assert.equal(malformed.counter, 1);
     assert.equal((await b.discover('source')).state, 'unavailable'); assert.deepEqual(b.visibleTools('source'), []);
   } finally { await a.adapter.close(); await b.close(); await malformed.close(); await normal.close(); }
 });
@@ -478,6 +478,8 @@ test('SSE without a JSON-RPC response returns a bounded transport code', async (
     await approve(adapter, registry);
     const result = await adapter.call(request);
     assert.deepEqual(result, { state: 'unknown', reason: 'sdk_protocol_rejected' });
+    await adapter.whenSuspended('source');
+    assert.equal(adapter.visibleTools('source').length, 0, 'a transport protocol rejection suspends the connector');
   } finally { await adapter.close(); await f.close(); }
 });
 

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { createContext, runInContext } from 'node:vm';
-import { liveStateLabel, liveVoiceState, liveToolName, liveLabel, liveDelay, mergeLive, liveTranscript, liveResult, liveMarkup } from '../src/live-view.ts';
+import { liveStateLabel, liveVoiceState, pendingToolNames, liveLabel, liveDelay, mergeLive, liveTranscript, liveResult, liveMarkup, liveActivity, activityMarkup, SLOW_TOOL_MS } from '../src/live-view.ts';
 import './connector-status.test.ts';
 import { pollLiveView } from '../src/live-view.ts';
 import type { LiveCurrent } from '../src/protocol.ts';
@@ -49,18 +49,20 @@ test('voice landing keeps the latest turn readable and secondary activity in a s
   assert.match(liveMarkup(live, {}, true), /<details id="live-details" class="live-details" open>/);
 });
 
-test('the thinking label names the tool in flight', () => {
-  const thinking: LiveCurrent = { state: 'thinking', cursor: 1, entries: [{ seq: 1, kind: 'toolCall', tool: { name: 'search', status: 'called' } }] };
-  assert.equal(liveToolName(thinking), 'search');
-  assert.match(liveMarkup(thinking), /Thinking \(search\)/);
-  assert.match(liveMarkup({ state: 'thinking', cursor: 0, entries: [] }), /Thinking<\/p>/);
+test('the thinking label never names a tool; the activity line carries the phrase', () => {
+  const thinking: LiveCurrent = { state: 'thinking', cursor: 1, entries: [{ seq: 1, kind: 'toolCall', tool: { name: 'search_knowledge', status: 'called' } }] };
+  assert.deepEqual(pendingToolNames(thinking), ['search_knowledge']);
+  assert.equal(liveLabel(thinking), 'Thinking');
+  assert.doesNotMatch(liveLabel(thinking), /search_knowledge/);
+  assert.match(liveMarkup(thinking), /Thinking<\/p>/);
+  assert.doesNotMatch(liveMarkup(thinking), /Thinking \(/);
 });
 
 test('liveLabel is the one label main.ts and the panel share', () => {
   assert.equal(liveLabel(undefined), 'Ready when you are');
   assert.equal(liveLabel({ state: 'listening', cursor: 0, entries: [] }), 'Listening');
   assert.equal(liveLabel({ state: 'speaking', cursor: 0, entries: [] }), 'Speaking');
-  assert.equal(liveLabel({ state: 'thinking', cursor: 1, entries: [{ seq: 1, kind: 'toolCall', tool: { name: 'search', status: 'called' } }] }), 'Thinking (search)');
+  assert.equal(liveLabel({ state: 'thinking', cursor: 1, entries: [{ seq: 1, kind: 'toolCall', tool: { name: 'search', status: 'called' } }] }), 'Thinking');
 });
 
 test('a muted indicator appears only when the projection reports it', () => {
@@ -221,8 +223,61 @@ test('every tool result is inspectable and errors never show markdown', () => {
   ] };
   const html = liveMarkup(live);
   assert.equal((html.match(/<details class="live-tool-result"/g) ?? []).length, 3);
-  assert.match(html, /Answer/); assert.match(html, /second source/); assert.match(html, /failed.*error/s);
+  assert.match(html, /Answer/); assert.match(html, /second source/); assert.match(html, /Using Failed \(error\)/);
   assert.doesNotMatch(html, /DO NOT DISPLAY/);
+});
+
+test('the transcript tool disclosure uses the human phrase', () => {
+  const live: LiveCurrent = { ...speaking, entries: [
+    { seq: 1, kind: 'toolResult', tool: { name: 'gmail_list', status: 'completed', markdown: 'mail' } },
+  ] };
+  const html = liveMarkup(live);
+  assert.match(html, /Searching your mail/);
+  assert.doesNotMatch(html, /gmail_list/);
+});
+
+test('liveActivity names the phrases of a pending batch and never the raw id', () => {
+  const live: LiveCurrent = { state: 'thinking', cursor: 2, entries: [
+    { seq: 1, kind: 'toolCall', tool: { name: 'gmail_list', status: 'called' } },
+    { seq: 2, kind: 'toolCall', tool: { name: 'mattermost_search', status: 'called' } },
+  ] };
+  assert.deepEqual(liveActivity(live), { kind: 'tools', text: 'Searching your mail and Mattermost' });
+});
+
+test('thinking without tools is a subtle Thinking activity', () => {
+  const live: LiveCurrent = { state: 'thinking', cursor: 0, entries: [] };
+  assert.deepEqual(liveActivity(live), { kind: 'thinking', text: 'Thinking' });
+  assert.match(activityMarkup(liveActivity(live)), /activity-thinking[\s\S]*>Thinking</);
+  assert.doesNotMatch(activityMarkup(liveActivity(live)), /activity-tools|activity-done/);
+});
+
+test('outcomes are one calm sentence: done, failed, and set aside', () => {
+  const result = (tool: object): LiveCurrent => ({ state: 'thinking', cursor: 1, entries: [{ seq: 1, kind: 'toolResult', tool } as never] });
+  const done = liveActivity(result({ name: 'gmail_list', status: 'completed', markdown: 'mail' }))!;
+  assert.deepEqual(done, { kind: 'done', text: 'Done' });
+  assert.match(activityMarkup(done), /activity-done/);
+  const failed = liveActivity(result({ name: 'mattermost_search', status: 'error' }))!;
+  assert.deepEqual(failed, { kind: 'failed', text: 'Mattermost did not answer' });
+  const aside = liveActivity(result({ name: 'mattermost_search', status: 'error', disposition: 'superseded' }))!;
+  assert.deepEqual(aside, { kind: 'aside', text: 'Set that aside, ask again if you want it' });
+});
+
+test('a slow pending call adds elapsed seconds only after the threshold', () => {
+  const live: LiveCurrent = { state: 'thinking', cursor: 1, entries: [{ seq: 1, kind: 'toolCall', tool: { name: 'gmail_list', status: 'called' } }] };
+  const activity = liveActivity(live)!;
+  assert.doesNotMatch(activityMarkup(activity, SLOW_TOOL_MS - 1), /\d+s/);
+  assert.match(activityMarkup(activity, SLOW_TOOL_MS), /Searching your mail \(4s\)/);
+  assert.match(activityMarkup(activity, 9000), /Searching your mail \(9s\)/);
+});
+
+test('a batch of two calls renders one combined activity line', () => {
+  const live: LiveCurrent = { state: 'thinking', cursor: 2, entries: [
+    { seq: 1, kind: 'toolCall', tool: { name: 'gmail_list', status: 'called' } },
+    { seq: 2, kind: 'toolCall', tool: { name: 'mattermost_search', status: 'called' } },
+  ] };
+  const html = activityMarkup(liveActivity(live));
+  assert.equal((html.match(/activity-line/g) ?? []).length, 1);
+  assert.match(html, /Searching your mail and Mattermost/);
 });
 
 test('rejected live poll preserves transcript, shows last success, recovery clears and 404 empties', async () => {

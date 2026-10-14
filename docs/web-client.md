@@ -318,3 +318,5 @@ is unconfigured or disabled the route still answers 200 with `profileEnabled`
 false and the other fields null.
 
 The Live page projection may include optional `pastSession` metadata. Past sessions render as the last Live session, not a current error. `endedAt` is the persisted terminal timestamp; an orphan has null `endedAt` and an unknown outcome, with `lastObservedAt` shown explicitly as last seen. Active session labels are unchanged.
+
+While a Live session is active the Conversation page shows a "Type to Naya" input under the voice card. Its submit posts `POST /api/v1/live/text` with `{text}`; the host forwards the text to the active Live session as a realtime text turn and journals it as a `You` turn in the projection, and Naya answers by voice. With no Live session the same input saves a local note and never sends text to a model.

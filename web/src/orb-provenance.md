@@ -38,3 +38,15 @@ budget (not a claim to copy device-tier service); silent production audio frame;
 current five-channel/playback/activity asymmetric smoothing constants, current >0.01
 speaking distinction, current state palette and neutral filter. Source feasibility
 and real browser rendering are separate from exact pixel parity or WKWebView proof.
+
+## W5-R4 orb parity additions
+
+- `presence-glow` halo ported from Vicuna `voice-blob.component.html:26` and its CSS
+  (`.presence-glow`, `.presence-glow.visible`, `@keyframes glow-pulse`).
+- Dark stage colours copied from `orb-lab.component.ts:54`
+  (`bg-gradient-to-b from-gray-900 to-gray-800`, Tailwind #111827 -> #1f2937).
+- Canvas 600 px desktop / 344 px narrow to match Vicuna's displayed proportion; the
+  neutral state uses Vicuna's `opacity(.9)` rather than the earlier `opacity(.45)`.
+- The five-band frame is no longer silent: the native player output tap and the capture
+  tap post bounded levels to the renderer's `window.didiOrbLevel`; the renderer only
+  smooths and draws, and never touches capture or transport authority.

@@ -41,6 +41,25 @@ const context = (store: Store): LiveContext => ({ clientId: 'tester', auditId: '
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
 const audio = () => ({ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from(pcm).toString('base64') } });
 
+/** Wrap a store so one exact SQL write fails, proving the failure path without breaking reads. */
+function writeFailingStore(store: Store, marker: string): Store {
+  const original = store.transaction.bind(store);
+  const wrapped = (callback: Parameters<Store['transaction']>[0]) => original(tx => callback(new Proxy(tx, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      if (typeof value !== 'function') return value;
+      if (property === 'run') return (sql: string, ...args: unknown[]) => {
+        if (typeof sql === 'string' && sql.includes(marker)) throw new Error('synthetic_write_failure');
+        return (value as (...a: unknown[]) => unknown).call(target, sql, ...args);
+      };
+      // Bind every other tx method to the real target so SQLite private fields still resolve.
+      return (value as (...a: unknown[]) => unknown).bind(target);
+    },
+  })));
+  store.transaction = wrapped as unknown as typeof store.transaction;
+  return store;
+}
+
 function profileInput(limits?: Record<string, number>, model = MODEL) {
   return {
     provider: 'gemini', liveModelId: model, voice: 'ExplicitVoice', keyReference: 'test-reference',
@@ -77,11 +96,13 @@ async function harness(t: TestContext, overrides: {
   routeClasses?: readonly ('ordinary' | 'private' | 'sensitive')[];
   overlay?: { schemaVersion: 1; text: string; accent?: string };
   memoryFailure?: boolean;
+  failingWrite?: string;
 } = {}): Promise<Harness> {
   const f = await fixture(t);
   const dir = mkdtempSync(join(tmpdir(), 'didi-live-session-'));
   const domain = createDomainPort({ outbox: Outbox });
   const store = new Store(dir, [...domain.migrations, ...chatMigrations, ...liveMigrations, ...(overrides.tools ? toolsMigrations : [])]);
+  if (overrides.failingWrite) writeFailingStore(store, overrides.failingWrite);
   let clock = NOW;
   let memorySelections = 0;
   const initialProfile = profileInput({ handshakeMs: 1000, idleMs: 2000, sessionMs: 4000, closeMs: 50, ...Object.fromEntries(Object.entries(overrides.adapterLimits ?? {}).filter(([key]) => ['handshakeMs', 'idleMs', 'sessionMs', 'closeMs'].includes(key))), ...overrides.limits }, overrides.model);
@@ -417,6 +438,60 @@ test('audio is rejected before ready and PCM never reaches the store', async t =
   assert.deepEqual(h.f.frames[3], { realtimeInput: { audioStreamEnd: true } });
   attachment.close();
   await attachment.done;
+});
+
+test('a late mic frame after settle is dropped and counted, never thrown', async t => {
+  const lines: string[] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => {
+    if (typeof args[0] === 'string' && args[0].includes('live_late_frame_dropped')) lines.push(args[0]);
+  });
+  const h = await harness(t);
+  const { attachment } = await attached(h, 'late-frame');
+  // Settle the session from the provider, then deliver a frame the app could not have sent before the end.
+  h.f.remoteClose('', 1000);
+  const terminal = await attachment.done;
+  assert.equal(terminal.lifecycle, 'terminal');
+  assert.ok(terminal.terminal, 'a settled session carries a terminal fact');
+  const providerFrames = h.f.frames.length;
+  assert.doesNotThrow(() => attachment.sendAudio({ pcm }), 'a frame after settle must be dropped, not thrown');
+  // The drop is counted and reported, and the frame never reaches the adapter.
+  assert.equal(h.f.frames.length, providerFrames, 'no late frame reaches the provider');
+  assert.equal(lines.length, 1, 'the late drop is counted once');
+  const dropped = JSON.parse(lines[0]!);
+  assert.equal(dropped.event, 'live_late_frame_dropped');
+  assert.equal(dropped.dropCalls, 1);
+  assert.equal(dropped.dropBytes, pcm.byteLength);
+});
+
+test('a durable terminal write failure still logs the failure and reports the real terminal code', async t => {
+  const lines: string[] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => {
+    if (typeof args[0] === 'string' && args[0].includes('live_terminal_write_failed')) lines.push(args[0]);
+  });
+  const h = await harness(t, { failingWrite: "SET lifecycle='terminal'" });
+  const { attachment } = await attached(h, 'settle-write-fail');
+  h.owner.revoke(attachment.liveSessionId);
+  const snapshot = await attachment.done;
+  assert.ok(snapshot.terminal, 'the typed terminal is reported even when the durable write failed');
+  assert.equal(snapshot.terminal.state, 'revoked');
+  assert.equal(lines.length, 1, 'the durable write failure is logged, not swallowed');
+  assert.equal(JSON.parse(lines[0]!).event, 'live_terminal_write_failed');
+});
+
+test('a failed detach write is logged and a later read no longer reports the session attached', async t => {
+  const lines: string[] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => {
+    if (typeof args[0] === 'string' && args[0].includes('live_detach_write_failed')) lines.push(args[0]);
+  });
+  const h = await harness(t, { failingWrite: "consumer_state='ended'" });
+  const { attachment } = await attached(h, 'detach-write-fail');
+  assert.equal(h.owner.get(attachment.liveSessionId).consumerState, 'attached');
+  attachment.detach();
+  assert.equal(lines.length, 1, 'the failed detach write is logged, not swallowed');
+  assert.equal(JSON.parse(lines[0]!).event, 'live_detach_write_failed');
+  // Reconcile on read: the row still says attached, but the in-memory handle says ended.
+  assert.equal(h.owner.get(attachment.liveSessionId).consumerState, 'ended');
+  assert.notEqual(h.owner.current().state, 'listening', 'a detached session is never projected as listening');
 });
 
 test('single attach, idempotent create replay, conflict, and a terminal session that never reopens', async t => {

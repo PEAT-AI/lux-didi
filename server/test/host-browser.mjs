@@ -102,6 +102,8 @@ try {
     await page.locator('#live-text').fill('Host browser kestrel launch: review the release checklist before noon.');
     await page.getByRole('button', { name: 'Save note', exact: true }).click();
     await visible('Message saved.');
+    // W5 keeps the thread inside the collapsed history disclosure; open it as a user would before reading the entry.
+    await page.locator('#conversation-history > summary').click();
     await visible('Host browser kestrel launch: review the release checklist before noon.');
     const sessions = await api('/sessions'); assert.equal(sessions.items.length, 1); sessionId = sessions.items[0].id;
     const conversation = await api(`/sessions/${sessionId}`);

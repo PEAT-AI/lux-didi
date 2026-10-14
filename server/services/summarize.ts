@@ -156,6 +156,8 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
       contents: [{ role: 'user', parts: [{ text: input }] }],
       dataClasses: ['ordinary'],
       context: { items: [], selectedIds: [], maxChars: 0 },
+      temperature: SUMMARY_TEMPERATURE,
+      responseMimeType: 'application/json',
     };
     return options.model!.generate(request, { signal, deadlineMs: options.deadlineMs ?? 30_000 });
   }

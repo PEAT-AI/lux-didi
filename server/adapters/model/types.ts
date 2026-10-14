@@ -22,6 +22,9 @@ export interface ModelRequest {
   dataClasses: DataClass[];
   context: ContextSelection;
   declarations?: FunctionDeclaration[];
+  /** Optional generation controls for a plain text call (W13 distillation). */
+  temperature?: number;
+  responseMimeType?: string;
 }
 export interface PromptMetadata { version: string; hash: string; omittedContextIds: string[] }
 export interface Timings { kind: 'measured' | 'synthetic'; totalMs: number; firstTextMs: number | null }

@@ -542,3 +542,17 @@ test('safe refusal/failure records and missing receipts cannot bypass the gate',
     if (mode === 'unknown') assert.equal([...f.snapshots.values()][0]!.response.status, 'unknown');
   }
 });
+
+test('an explicit temperature and responseMimeType reach generationConfig, and are absent otherwise', async () => {
+  let seen: Record<string, unknown> | undefined;
+  const transport: Transport = async (_url, init) => { seen = JSON.parse(String(init.body)) as Record<string, unknown>; return sse([stop('{"skip":false,"summary":"x"}')]); };
+  await adapter(transport).generate({ ...request(), temperature: 0.2, responseMimeType: 'application/json' }, control());
+  const config = seen?.['generationConfig'] as Record<string, unknown>;
+  assert.equal(config['candidateCount'], 1);
+  assert.equal(config['temperature'], 0.2);
+  assert.equal(config['responseMimeType'], 'application/json');
+  await adapter(transport).generate(request(), control());
+  const plain = seen?.['generationConfig'] as Record<string, unknown>;
+  assert.equal('temperature' in plain, false);
+  assert.equal('responseMimeType' in plain, false);
+});

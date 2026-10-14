@@ -3,7 +3,7 @@ import { memoryDeleteControl, deleteMemoryAndReload, attachMemoryDeleteControls,
 import { deleteMemoryEntry } from './api';
 import { ConnectedView } from './connected';
 import { Orb, type VoiceState } from './orb';
-import { ApiError, request, pair, demoMode, onAuthorityChanged, clearAuthority, restoreSession, logout, fetchLive } from './api';
+import { ApiError, request, pair, demoMode, onAuthorityChanged, authorityVersion, assertAuthority, restoreSession, logout, fetchLive } from './api';
 import { liveMarkup, liveLabel, liveVoiceState, liveDelay, pollLiveView, type LivePollState } from './live-view';
 import { connectionsMarkup } from './connector-status';
 import { settingsMarkup } from './settings-view';
@@ -22,6 +22,7 @@ let connection: 'Connecting' | 'Connected' | 'Disconnected' | 'Offline' | 'Pair 
 let sessions: Session[] = [], entries: Entry[] = [], session: Session | undefined;
 let plan: Plan | undefined, recall: Recall | undefined;
 let recent: Commitment[] = [], editing: Commitment | undefined, detail: CommitmentDetail | undefined;
+let draftOwner: string | undefined;
 let messageDraft = '', titleDraft = '', queryDraft = '', editTitle = '', editNotes = '', editDue = '', memoryFilter = '';
 let notice = '', error = '', busy = false, readBusy = false, pairingBusy = false;
 let pairingRequired = false, sessionMore = false, entriesMore = false;
@@ -46,7 +47,6 @@ function writable() { return connection === 'Connected' && !busy; }
 const disabled = (condition: boolean) => condition ? 'disabled' : '';
 function notify(message: string, failure = false) { notice = failure ? '' : message; error = failure ? message : ''; render(); }
 function failure(err: unknown, mutation = false) {
-  if (err instanceof ApiError && err.status === 401) { pairingRequired = true; connection = 'Pair this browser'; clearAuthority(); }
   if (err instanceof DOMException && err.name === 'AbortError') return 'Stopped waiting. A sent change may still have been saved. Refresh before trying again.';
   if (err instanceof ApiError) return err.message;
   connection = navigator.onLine ? 'Disconnected' : 'Offline';
@@ -79,7 +79,7 @@ function conversation() {
   ${orbMarkup()}${liveMarkup(live,livePoll)}${connectionsMarkup(connections,connectionsStale)}<div class="conversation-grid"><aside class="panel conversations" aria-label="Conversations"><h2>Your conversations</h2>${sessions.length ? sessions.map(s => `<button data-session="${e(s.id)}" class="session ${session?.id === s.id ? 'selected' : ''}"><strong>${e(s.title)}</strong><small>${e(datetime(s.startedAt))}</small></button>`).join('') : '<p class="muted">No conversations yet.</p>'}${sessionMore ? '<p class="muted">More conversations are available in the service. This view shows the first page.</p>' : ''}</aside>
   <section class="panel thread" aria-label="Conversation">${sessions.length ? `<div class="mobile-conversations"><label for="conversation-select">Choose a conversation</label><select id="conversation-select"><option value="">Start a new conversation</option>${sessions.map(s=>`<option value="${e(s.id)}" ${session?.id===s.id?'selected':''}>${e(s.title)}</option>`).join('')}</select></div>` : ''}<div class="thread-heading"><span class="dot"></span><h2>${e(session?.title ?? 'Start where you are')}</h2></div>
   <div class="entries">${entries.length ? entries.map(entryMarkup).join('') : `<div class="empty"><span class="empty-icon" aria-hidden="true">✳</span><h3>What’s on your mind?</h3><p>Save a thought, make a plan, or pick up a conversation.</p></div>`}${entriesMore ? '<p class="muted">There are more messages in this conversation. This view shows the first page.</p>' : ''}</div>
-  <form id="message-form" class="composer"><label for="message">Local note · not sent to a model</label><textarea id="message" rows="3" maxlength="12000" placeholder="A thought, a next step, a thing to remember…">${e(messageDraft)}</textarea><div class="composer-foot"><small>${status?.model.configured ? 'Save a message, or ask Didi for help.' : 'No model connected. You can still save messages and commitments.'}</small><div class="button-row"><button type="submit" ${disabled(!writable())}>${busy ? 'Working…' : 'Save message'}</button><button type="button" id="ask-didi" class="secondary" disabled title="Start an explicitly disclosed connected conversation below">Ask Didi</button></div></div></form>
+  <form id="message-form" class="composer"><label for="message">Local note · not sent to a model</label><textarea id="message" rows="3" maxlength="12000" placeholder="A thought, a next step, a thing to remember…">${e(status ? messageDraft : '')}</textarea><div class="composer-foot"><small>${status?.model.configured ? 'Save a message, or ask Didi for help.' : 'No model connected. You can still save messages and commitments.'}</small><div class="button-row"><button type="submit" ${disabled(!writable())}>${busy ? 'Working…' : 'Save message'}</button><button type="button" id="ask-didi" class="secondary" disabled title="Start an explicitly disclosed connected conversation below">Ask Didi</button></div></div></form>
   </section></div><div id="connected-panel"></div>`;
 }
 function commitmentMarkup(c: Commitment, overdue = false) {
@@ -90,12 +90,12 @@ function today() {
   const completed = recent.filter(c => c.status !== 'active');
   return `<section class="page-heading"><div><p class="eyebrow">ONE NEXT STEP</p><h1>Today, with room to breathe.</h1><p>${e(new Intl.DateTimeFormat(undefined,{dateStyle:'full'}).format(new Date()))} · ${e(zone)}</p></div><button id="refresh-plan" class="secondary" ${disabled(readBusy)}>Refresh</button></section>
   <div class="today-grid"><section class="panel"><div class="section-heading"><h2>Your commitments</h2><span class="count">${active.length}</span></div>${active.length ? `<div class="commitment-list">${plan?.items.map(i=>commitmentMarkup(i.commitment,i.isOverdue)).join('') ?? ''}${plan?.unscheduled.length ? '<h3 class="subheading">Without a due date</h3>' : ''}${plan?.unscheduled.map(c=>commitmentMarkup(c)).join('') ?? ''}</div>` : '<div class="empty"><h3>A clear slate.</h3><p>No commitments due today or waiting for a date.</p></div>'}${plan?.nextCursor ? '<p class="callout">More commitments are available. This view is incomplete; refresh does not load the next page.</p>' : ''}${completed.length ? `<h3 class="subheading">Recently updated in this visit</h3>${completed.map(c=>commitmentMarkup(c)).join('')}` : ''}</section>
-  <aside class="panel capture"><p class="eyebrow">KEEP IT SIMPLE</p><h2>Make a commitment</h2><p class="muted">Something you want to follow through on.</p><form id="commitment-form"><label for="commitment-title">Commitment title</label><input id="commitment-title" maxlength="500" required value="${e(titleDraft)}" placeholder="What’s the next step?"><button type="submit" ${disabled(!writable() || !status?.capabilities.commitments)}>Add commitment</button></form><div class="aside-note">Dates can be added or corrected after saving. Nothing is scheduled by this browser while offline.</div></aside></div>
+  <aside class="panel capture"><p class="eyebrow">KEEP IT SIMPLE</p><h2>Make a commitment</h2><p class="muted">Something you want to follow through on.</p><form id="commitment-form"><label for="commitment-title">Commitment title</label><input id="commitment-title" maxlength="500" required value="${e(status ? titleDraft : '')}" placeholder="What’s the next step?"><button type="submit" ${disabled(!writable() || !status?.capabilities.commitments)}>Add commitment</button></form><div class="aside-note">Dates can be added or corrected after saving. Nothing is scheduled by this browser while offline.</div></aside></div>
   ${editing ? `<section class="panel editor" aria-labelledby="edit-heading"><h2 id="edit-heading">Adjust your commitment</h2><form id="edit-form"><label for="edit-title">Title</label><input id="edit-title" required maxlength="500" value="${e(editTitle)}"><label for="edit-notes">Notes</label><textarea id="edit-notes" rows="2">${e(editNotes)}</textarea><label for="edit-due">Due date and time</label><input id="edit-due" type="datetime-local" value="${e(editDue)}"><small>Shown in ${e(zone)}. Leave empty to remove the due date.</small><div class="button-row"><button type="submit" ${disabled(!writable())}>Save changes</button><button type="button" id="close-edit" class="secondary">Keep current date</button></div></form></section>` : ''}
   ${detail ? `<section class="panel editor"><h2>Commitment history</h2><p>${e(detail.commitment.title)}</p>${detail.history.length ? detail.history.map(h=>`<p>Revision ${h.revision} · ${e(h.operation)} · ${e(datetime(h.recordedAt))}<br>${e(h.title)} · ${e(datetime(h.dueAt))}</p>`).join('') : '<p class="muted">No history returned by the service.</p>'}<button id="close-history" class="quiet">Close history</button></section>` : ''}`;
 }
 function memory() {
-  return `<section class="page-heading"><div><p class="eyebrow">REMEMBER, WITH CONTEXT</p><h1>Pick up the thread.</h1><p>Your words, connected to where they came from.</p></div></section>${memoryListMarkup(entries, { filter: memoryFilter, disabled: !writable() || busy || connectedView.active })}<section class="panel recall"><form id="recall-form"><label for="recall-query">Search your memory</label><div class="search-row"><input id="recall-query" type="search" value="${e(queryDraft)}" maxlength="500" placeholder="A phrase, a project, a thought…"><button ${disabled(connection !== 'Connected' || readBusy || !status?.capabilities.memory)}>Search</button></div></form>${recall ? `<p class="muted">${recall.totalMatches} ${recall.totalMatches === 1 ? 'match' : 'matches'}${recall.truncated || recall.nextCursor ? ' · Partial results; more are available in the service.' : ''}</p>${recall.hits.length ? recall.hits.map(hit=>`<article class="recall-hit"><p>${e(hit.snippet)}</p><small>${e(datetime(hit.sourceTimestamp))}</small>${sourceMarkup(hit.sourceRefs)}${hit.entryId ? memoryDeleteControl(hit.entryId, !writable() || busy || connectedView.active) : ''}<button class="quiet" data-source="${e(hit.sessionId)}">Open conversation source</button></article>`).join('') : '<div class="empty"><h3>No matches yet.</h3><p>Try a different phrase. Didi won’t invent a memory to fill the gap.</p></div>'}` : '<div class="empty"><span class="empty-icon" aria-hidden="true">↗</span><h3>Find the words you kept.</h3><p>Search saved conversations. Unavailable sources stay clearly marked.</p></div>'}</section>`;
+  return `<section class="page-heading"><div><p class="eyebrow">REMEMBER, WITH CONTEXT</p><h1>Pick up the thread.</h1><p>Your words, connected to where they came from.</p></div></section>${memoryListMarkup(entries, { filter: status ? memoryFilter : '', disabled: !writable() || busy || connectedView.active })}<section class="panel recall"><form id="recall-form"><label for="recall-query">Search your memory</label><div class="search-row"><input id="recall-query" type="search" value="${e(status ? queryDraft : '')}" maxlength="500" placeholder="A phrase, a project, a thought…"><button ${disabled(connection !== 'Connected' || readBusy || !status?.capabilities.memory)}>Search</button></div></form>${recall ? `<p class="muted">${recall.totalMatches} ${recall.totalMatches === 1 ? 'match' : 'matches'}${recall.truncated || recall.nextCursor ? ' · Partial results; more are available in the service.' : ''}</p>${recall.hits.length ? recall.hits.map(hit=>`<article class="recall-hit"><p>${e(hit.snippet)}</p><small>${e(datetime(hit.sourceTimestamp))}</small>${sourceMarkup(hit.sourceRefs)}${hit.entryId ? memoryDeleteControl(hit.entryId, !writable() || busy || connectedView.active) : ''}<button class="quiet" data-source="${e(hit.sessionId)}">Open conversation source</button></article>`).join('') : '<div class="empty"><h3>No matches yet.</h3><p>Try a different phrase. Didi won’t invent a memory to fill the gap.</p></div>'}` : '<div class="empty"><span class="empty-icon" aria-hidden="true">↗</span><h3>Find the words you kept.</h3><p>Search saved conversations. Unavailable sources stay clearly marked.</p></div>'}</section>`;
 }
 function settingsInput() { return { status, statusUnavailable, connections, connectionsUnavailable: connectionsStale }; }
 function settings() {
@@ -113,6 +113,7 @@ function render() {
   root.innerHTML = `<a id="skip-to-content" class="skip" href="#main">Skip to content</a><div class="app-shell"><aside class="sidebar"><a class="brand" href="/" aria-label="Didi home"><img src="/icon.svg" alt="" width="38" height="38"><span>didi<span class="brand-dot">.</span></span></a><p class="brand-note">A little clarity.<br>A little follow-through.</p><nav aria-label="Main navigation">${tabs.map((t,i)=>`<button data-tab="${t}" aria-current="${tab===t?'page':'false'}"><span aria-hidden="true">${['◌','✓','↗','⚙'][i]}</span>${t}</button>`).join('')}</nav><div class="sidebar-foot">Here for the next step.<br><small>No rush. No pretending.</small></div></aside><div class="workspace"><header class="topbar"><span>YOUR SPACE</span><div class="connection"><span class="connection-dot ${connection==='Connected'?'online':''}"></span><span id="connection-state" role="status" aria-live="polite" aria-atomic="true">${e(connection)}</span><button id="reconnect-top" class="quiet" aria-label="Refresh connection">↻</button></div></header>${demoMode || status?.serviceMode==='synthetic-test' ? '<div class="demo-banner"><strong>Demo test mode</strong><span>Isolated synthetic data · not your personal service</span></div>' : ''}<main id="main" tabindex="-1">${error ? `<div class="alert" role="alert" aria-live="assertive">${e(error)}</div>` : ''}${notice ? `<div class="notice" role="status" aria-live="polite" aria-atomic="true">${e(notice)}</div>` : ''}${readBusy ? '<p class="loading" role="status" aria-live="polite" aria-atomic="true">Loading your records…</p>' : ''}${busy ? '<button id="cancel-request" class="quiet">Stop waiting</button>' : ''}${pairingRequired ? pairing() : ({Conversation:conversation,Today:today,Memory:memory,Settings:settings}[tab])()}</main><footer>Small steps count. <span>Your service is the source of truth.</span></footer></div></div>`;
   bind();
   connectedView.attach();
+  for(const id of ['message','commitment-title','recall-query','memory-filter']){const field=document.getElementById(id) as HTMLInputElement | HTMLTextAreaElement | null;if(field)field.disabled=!status;}
   attachMemoryDeleteControls(root, !writable() || busy || connectedView.active, id => void deleteMemory(id));
   const canvas=document.getElementById('didi-orb') as HTMLCanvasElement | null;
   if(canvas)orb=new Orb(canvas,appliedOrbState=orbState());
@@ -130,116 +131,149 @@ function bind() {
   root.querySelectorAll<HTMLElement>('[data-edit]').forEach(el=>el.onclick=()=>{editing=findCommitment(el.dataset.edit!);if(editing){editTitle=editing.title;editNotes=editing.notes;editDue=localInput(editing.dueAt);}render();document.getElementById('edit-title')?.focus();});
   root.querySelectorAll<HTMLElement>('[data-history]').forEach(el=>el.onclick=()=>void loadHistory(el.dataset.history!));
   for(const action of ['complete','reopen','cancel'] as const) root.querySelectorAll<HTMLElement>(`[data-${action}]`).forEach(el=>el.onclick=()=>{const c=findCommitment(el.dataset[action]!);if(c) void changeCommitment(c,action);});
-  root.querySelectorAll<HTMLElement>('[data-capture]').forEach(el=>el.onclick=()=>{const entry=entries.find(v=>v.id===el.dataset.capture);if(entry)void mutate(async signal=>{await request<Commitment>('/commitments',{method:'POST',body:{title:entry.text,notes:'',dueAt:null,timeZone:zone,sourceSessionId:entry.sessionId,sourceEntryId:entry.id},signal});notice='Commitment saved. Find it in Today.';});});
+  root.querySelectorAll<HTMLElement>('[data-capture]').forEach(el=>el.onclick=()=>{const entry=entries.find(v=>v.id===el.dataset.capture);if(entry)void mutate(async (signal,version)=>{await request<Commitment>('/commitments',{method:'POST',body:{title:entry.text,notes:'',dueAt:null,timeZone:zone,sourceSessionId:entry.sessionId,sourceEntryId:entry.id},signal});assertAuthority(version);notice='Commitment saved. Find it in Today.';});});
   document.getElementById('conversation-select')?.addEventListener('change',ev=>{const id=(ev.target as HTMLSelectElement).value;if(id)void openSession(id);else{session=undefined;entries=[];render();}});
   input('message',v=>messageDraft=v); input('commitment-title',v=>titleDraft=v);input('recall-query',v=>queryDraft=v);input('edit-title',v=>editTitle=v);input('edit-notes',v=>editNotes=v);input('edit-due',v=>editDue=v);input('memory-filter',v=>{memoryFilter=v;render();});
   form('message-form',()=>void saveLocalNote());button('ask-didi',()=>document.getElementById('connected-panel')?.scrollIntoView());
-  form('commitment-form',()=>{if(!titleDraft.trim())return;void mutate(async signal=>{await request<Commitment>('/commitments',{method:'POST',body:{title:titleDraft.trim(),dueAt:null,timeZone:zone},signal});titleDraft='';await loadPlan();notice='Commitment saved.';});});
+  form('commitment-form',()=>{if(!titleDraft.trim())return;void mutate(async (signal,version)=>{await request<Commitment>('/commitments',{method:'POST',body:{title:titleDraft.trim(),dueAt:null,timeZone:zone},signal});assertAuthority(version);titleDraft='';await loadPlan();assertAuthority(version);notice='Commitment saved.';});});
   form('edit-form',()=>{if(!editing || !editTitle.trim())return;void changeCommitment(editing,'edit');});
   form('recall-form',()=>void searchRecall());
   form('pair-form',()=>{const code=(document.getElementById('pair-code') as HTMLInputElement).value;void pairBrowser(code);});
   button('new-conversation',()=>{session=undefined;entries=[];entriesMore=false;notice='';render();document.getElementById('message')?.focus();});
   button('close-edit',()=>{editing=undefined;render();});button('close-history',()=>{detail=undefined;render();});
   button('refresh-plan',()=>void loadTab()); button('reconnect',()=>void connect());button('reconnect-top',()=>void connect());
-  button('logout',()=>void mutate(async()=>{await logout();live=undefined;livePoll={};connections=[];connectionsStale=false;if(connectionsTimer)clearTimeout(connectionsTimer);status=undefined;sessions=[];entries=[];session=undefined;plan=undefined;recall=undefined;recent=[];pairingRequired=true;connection='Pair this browser';notice='This browser is unpaired.';}));
+  button('logout',()=>void mutate(async()=>{await logout();}));
   button('cancel-request',()=>controller?.abort());
 }
-async function mutate(action: (signal: AbortSignal) => Promise<void>) {
+async function mutate(action: (signal: AbortSignal, version: AbortSignal) => Promise<void>) {
   if(!writable())return;
-  busy=true;error='';notice='';controller=new AbortController();render();
-  const timeout=setTimeout(()=>controller?.abort(),20000);
-  try {await action(controller.signal);} catch(err){error=failure(err,true);} finally{clearTimeout(timeout);busy=false;controller=undefined;render();}
+  const version=authorityVersion(), owned=new AbortController();
+  busy=true;error='';notice='';controller=owned;render();
+  const timeout=setTimeout(()=>owned.abort(),20000);
+  try {await action(owned.signal,version);} catch(err){if(version===authorityVersion()&&controller===owned)error=failure(err,true);}
+  finally{clearTimeout(timeout);if(version===authorityVersion()&&controller===owned){busy=false;controller=undefined;render();}}
 }
-async function ensureSession(signal: AbortSignal) {
-  if(!session){session=await request<Session>('/sessions',{method:'POST',body:{title:'A new conversation',timeZone:zone},signal});sessions.unshift(session);entries=[];}
+async function ensureSession(signal: AbortSignal, version: AbortSignal) {
+  if(!session){const created=await request<Session>('/sessions',{method:'POST',body:{title:'A new conversation',timeZone:zone},signal});assertAuthority(version);session=created;sessions.unshift(created);entries=[];}
   return session;
 }
 async function saveLocalNote() {
   if(!messageDraft.trim())return;
   const text=messageDraft.trim();
-  await mutate(async signal=>{
-    const current=await ensureSession(signal);
-    const entry=await request<Entry>(`/sessions/${encodeURIComponent(current.id)}/entries`,{method:'POST',body:{text,role:'user',timeZone:zone,sourceRef:{id:crypto.randomUUID(),label:'Saved on the page',provider:'page',sourceTimestamp:null,availability:'present'}},signal});if(!entries.some(e=>e.id===entry.id))entries.push(entry);messageDraft='';notice='Message saved.';
+  await mutate(async (signal,version)=>{
+    const current=await ensureSession(signal,version);
+    const entry=await request<Entry>(`/sessions/${encodeURIComponent(current.id)}/entries`,{method:'POST',body:{text,role:'user',timeZone:zone,sourceRef:{id:crypto.randomUUID(),label:'Saved on the page',provider:'page',sourceTimestamp:null,availability:'present'}},signal});assertAuthority(version);if(!entries.some(e=>e.id===entry.id))entries.push(entry);messageDraft='';notice='Message saved.';
   });
 }
 async function changeCommitment(c: Commitment, action: 'edit'|'complete'|'reopen'|'cancel') {
-  await mutate(async signal=>{
+  await mutate(async (signal,version)=>{
     try {
       const body=action==='edit'?{expectedRevision:c.revision,title:editTitle.trim(),notes:editNotes,dueAt:editDue?new Date(editDue).toISOString():null,timeZone:zone}:{expectedRevision:c.revision};
       const updated=await request<Commitment>(`/commitments/${encodeURIComponent(c.id)}${action==='edit'?'':`/${action}`}`,{method:action==='edit'?'PATCH':'POST',body,signal});
-      recent=[updated,...recent.filter(r=>r.id!==updated.id)];editing=undefined;
-      await loadPlan();notice=action==='edit'?'Due date updated.':action==='complete'?'Commitment completed.':action==='reopen'?'Commitment reopened.':'Commitment cancelled.';
+      assertAuthority(version);recent=[updated,...recent.filter(r=>r.id!==updated.id)];editing=undefined;
+      await loadPlan();assertAuthority(version);notice=action==='edit'?'Due date updated.':action==='complete'?'Commitment completed.':action==='reopen'?'Commitment reopened.':'Commitment cancelled.';
     } catch(err) {
-      if(err instanceof ApiError && err.status===409){
+      if(version===authorityVersion() && err instanceof ApiError && err.status===409 && err.code==='CONFLICT'){
         const latest=await request<CommitmentDetail>(`/commitments/${encodeURIComponent(c.id)}`);
-        recent=[latest.commitment,...recent.filter(r=>r.id!==c.id)];await loadPlan();
+        assertAuthority(version);recent=[latest.commitment,...recent.filter(r=>r.id!==c.id)];await loadPlan();
         // Preserve correction draft, but require explicit review with the new revision.
-        if(action==='edit')editing=latest.commitment;
+        assertAuthority(version);if(action==='edit')editing=latest.commitment;
         throw new ApiError('REVISION_CONFLICT','This changed on another device. The latest version is loaded. Review it before trying again.',409);
       }
       throw err;
     }
   });
 }
-async function loadPlan() { plan=await request<Plan>(`/plan?date=${localDate()}&timeZone=${encodeURIComponent(zone)}`); }
+async function loadPlan() {
+  const version=authorityVersion(), generation=readGeneration;
+  const current=await request<Plan>(`/plan?date=${localDate()}&timeZone=${encodeURIComponent(zone)}`);
+  if(version===authorityVersion()&&generation===readGeneration)plan=current;
+}
 async function loadTab() {
   if(connection!=='Connected')return;
-  const generation=++readGeneration;readBusy=true;render();
+  const version=authorityVersion(),generation=++readGeneration;readBusy=true;render();
   try {
     if(tab==='Today')await loadPlan();
-    if(tab==='Conversation'){const list=await request<{items:Session[];nextCursor:string|null}>('/sessions');if(generation===readGeneration){sessions=list.items;sessionMore=!!list.nextCursor;}}
-  } catch(err){if(generation===readGeneration)error=failure(err);} finally{if(generation===readGeneration){readBusy=false;render();}}
+    if(tab==='Conversation'){const list=await request<{items:Session[];nextCursor:string|null}>('/sessions');if(version===authorityVersion()&&generation===readGeneration){sessions=list.items;sessionMore=!!list.nextCursor;}}
+  } catch(err){if(version===authorityVersion()&&generation===readGeneration)error=failure(err);}
+  finally{if(version===authorityVersion()&&generation===readGeneration){readBusy=false;render();}}
 }
 async function openSession(id: string) {
-  const generation=++readGeneration;readBusy=true;render();
-  try {const data=await request<{session:Session;entries:Entry[];nextCursor:string|null}>(`/sessions/${encodeURIComponent(id)}`);if(generation===readGeneration){session=data.session;entries=data.entries;entriesMore=!!data.nextCursor;tab='Conversation';notice='';error='';}}
-  catch(err){if(generation===readGeneration)error=failure(err);}finally{if(generation===readGeneration){readBusy=false;render();}}
+  const version=authorityVersion(),generation=++readGeneration;readBusy=true;render();
+  try {const data=await request<{session:Session;entries:Entry[];nextCursor:string|null}>(`/sessions/${encodeURIComponent(id)}`);if(version===authorityVersion()&&generation===readGeneration){session=data.session;entries=data.entries;entriesMore=!!data.nextCursor;tab='Conversation';notice='';error='';}}
+  catch(err){if(version===authorityVersion()&&generation===readGeneration)error=failure(err);}
+  finally{if(version===authorityVersion()&&generation===readGeneration){readBusy=false;render();}}
 }
-async function loadHistory(id: string){readBusy=true;render();try{detail=await request<CommitmentDetail>(`/commitments/${encodeURIComponent(id)}`);}catch(err){error=failure(err);}finally{readBusy=false;render();}}
-async function searchRecall(){if(connection!=='Connected'||readBusy)return;readBusy=true;error='';render();try{recall=await request<Recall>(`/recall?q=${encodeURIComponent(queryDraft.trim())}&limit=20`);}catch(err){error=failure(err);}finally{readBusy=false;render();}}
-async function pairBrowser(code: string){pairingBusy=true;error='';render();try{await pair(code);pairingRequired=false;await connect();}catch(err){error=failure(err);}finally{pairingBusy=false;render();}}
+async function loadHistory(id: string){
+  const version=authorityVersion(),generation=++readGeneration;readBusy=true;render();
+  try{const current=await request<CommitmentDetail>(`/commitments/${encodeURIComponent(id)}`);if(version===authorityVersion()&&generation===readGeneration)detail=current;}
+  catch(err){if(version===authorityVersion()&&generation===readGeneration)error=failure(err);}
+  finally{if(version===authorityVersion()&&generation===readGeneration){readBusy=false;render();}}
+}
+async function searchRecall(){
+  if(connection!=='Connected'||readBusy)return;
+  const version=authorityVersion(),generation=++readGeneration;readBusy=true;error='';render();
+  try{const current=await request<Recall>(`/recall?q=${encodeURIComponent(queryDraft.trim())}&limit=20`);if(version===authorityVersion()&&generation===readGeneration)recall=current;}
+  catch(err){if(version===authorityVersion()&&generation===readGeneration)error=failure(err);}
+  finally{if(version===authorityVersion()&&generation===readGeneration){readBusy=false;render();}}
+}
+async function pairBrowser(code: string){
+  const version=authorityVersion();pairingBusy=true;error='';render();
+  try{await pair(code);assertAuthority(version);pairingRequired=false;await connect();}
+  catch(err){if(version===authorityVersion())error=failure(err);}
+  finally{if(version===authorityVersion()){pairingBusy=false;render();}}
+}
+function adoptOwner(current: Status){
+  if(draftOwner && draftOwner!==current.assistantId){messageDraft='';titleDraft='';queryDraft='';memoryFilter='';}
+  draftOwner=current.assistantId;
+}
 async function connect(background=false) {
+  const version=authorityVersion(),populate=!status;
   if(!navigator.onLine){connection='Offline';render();schedulePoll();return;}
   if(!background){connection='Connecting';error='';render();}
   try {
-    await restoreSession();
-    const current=await request<Status>('/status',{signal:AbortSignal.timeout(8000)});status=current;statusUnavailable=false;connection='Connected';pairingRequired=false;backoff=30000;
-    if(!background){await loadTab();await connectedView.refresh(current.assistantId);}
-  } catch(err){error=failure(err);statusUnavailable=true;if(!pairingRequired)connection='Disconnected';backoff=Math.min(backoff*2,120000);}
+    await restoreSession();assertAuthority(version);
+    const current=await request<Status>('/status',{signal:AbortSignal.timeout(8000)});assertAuthority(version);
+    adoptOwner(current);status=current;statusUnavailable=false;connection='Connected';pairingRequired=false;backoff=30000;
+    if(!background||populate){await loadTab();assertAuthority(version);await connectedView.refresh(current.assistantId);assertAuthority(version);}
+  } catch(err){if(version!==authorityVersion())return;error=failure(err);statusUnavailable=true;if(!pairingRequired)connection='Disconnected';backoff=Math.min(backoff*2,120000);}
+  if(version!==authorityVersion())return;
   render();schedulePoll();void pollLive();void pollConnections();
 }
-function schedulePoll(){if(pollTimer)clearTimeout(pollTimer);if(!document.hidden&&!pairingRequired)pollTimer=setTimeout(()=>void connect(true),backoff);}
+function schedulePoll(){if(pollTimer)clearTimeout(pollTimer);pollTimer=undefined;const version=authorityVersion();if(!document.hidden&&!pairingRequired)pollTimer=setTimeout(()=>{if(version===authorityVersion())void connect(true);},backoff);}
 // Live projection poll: 1 Hz while active, 4 s while idle or terminal, paused while hidden. The route is W-B's;
 // a missing or failed route leaves the last honest state and never fabricates one.
 async function pollLive(){
   if(liveTimer)clearTimeout(liveTimer);
   liveTimer=undefined;
   if(document.hidden||pairingRequired||liveBusy)return;
-  liveBusy=true;
+  const version=authorityVersion();liveBusy=true;
   try{
     const prior=livePoll;
     const next=await pollLiveView(prior,cursor=>fetchLive(cursor,AbortSignal.timeout(8000)));
-    if(livePoll!==prior)return;
+    if(version!==authorityVersion()||livePoll!==prior)return;
     livePoll=next;live=livePoll.live;paintLive();
   }
-  finally{liveBusy=false;scheduleLive();}
+  finally{if(version===authorityVersion()){liveBusy=false;scheduleLive();}}
 }
 async function pollConnections(){
   if(connectionsTimer)clearTimeout(connectionsTimer);connectionsTimer=undefined;
   if(document.hidden||pairingRequired||connectionsBusy)return;
-  connectionsBusy=true;
-  try{connections=await request<unknown>('/live/connections',{signal:AbortSignal.timeout(8000)});connectionsStale=false;}
-  catch{connectionsStale=true;}
+  const version=authorityVersion();connectionsBusy=true;
+  try{const current=await request<unknown>('/live/connections',{signal:AbortSignal.timeout(8000)});if(version!==authorityVersion())return;connections=current;connectionsStale=false;}
+  catch{if(version===authorityVersion())connectionsStale=true;}
   finally{
-    connectionsBusy=false;
-    const panel=document.getElementById('connections-panel');if(panel)panel.outerHTML=connectionsMarkup(connections,connectionsStale);
-    const summary=document.getElementById('settings-summary');if(summary)summary.outerHTML=settingsMarkup(settingsInput());
-    if(!document.hidden&&!pairingRequired)connectionsTimer=setTimeout(()=>void pollConnections(),10000);
+    if(version===authorityVersion()){
+      connectionsBusy=false;
+      const panel=document.getElementById('connections-panel');if(panel)panel.outerHTML=connectionsMarkup(connections,connectionsStale);
+      const summary=document.getElementById('settings-summary');if(summary)summary.outerHTML=settingsMarkup(settingsInput());
+      if(!document.hidden&&!pairingRequired)connectionsTimer=setTimeout(()=>{if(version===authorityVersion())void pollConnections();},10000);
+    }
   }
 }
 function scheduleLive(){
   if(liveTimer)clearTimeout(liveTimer);liveTimer=undefined;
-  if(liveDelay(live?.state,document.hidden)!==undefined&&!pairingRequired)liveTimer=setTimeout(()=>void pollLive(),liveDelay(live?.state,document.hidden));
+  const version=authorityVersion();if(liveDelay(live?.state,document.hidden)!==undefined&&!pairingRequired)liveTimer=setTimeout(()=>{if(version===authorityVersion())void pollLive();},liveDelay(live?.state,document.hidden));
 }
 function paintLive(){
   const panel=document.getElementById('live-panel');
@@ -252,32 +286,45 @@ function paintLive(){
   const caption=document.querySelector('.orb-caption');const markup=orbCaptionMarkup();if(caption && caption.innerHTML!==markup)caption.innerHTML=markup;
   const next=orbState();if(next!==appliedOrbState){appliedOrbState=next;orb?.setState(next);}
 }
-onAuthorityChanged(()=>{connectedView.reset();live=undefined;livePoll={};connections=[];connectionsStale=false;statusUnavailable=false;status=undefined;sessions=[];entries=[];session=undefined;plan=undefined;recall=undefined;recent=[];connection='Disconnected';render();});
+onAuthorityChanged(reason=>{
+  ++readGeneration;controller?.abort();controller=undefined;busy=false;readBusy=false;pairingBusy=false;connectionsBusy=false;liveBusy=false;
+  for(const timer of [pollTimer,liveTimer,connectionsTimer])if(timer)clearTimeout(timer);
+  pollTimer=undefined;liveTimer=undefined;connectionsTimer=undefined;
+  connectedView.reset();live=undefined;livePoll={};paintedLivePoll=undefined;connections=[];connectionsStale=false;
+  statusUnavailable=false;status=undefined;sessions=[];entries=[];session=undefined;plan=undefined;recall=undefined;recent=[];
+  detail=undefined;editing=undefined;editTitle='';editNotes='';editDue='';sessionMore=false;entriesMore=false;error='';notice='';
+  if(reason==='logout'){draftOwner=undefined;messageDraft='';titleDraft='';queryDraft='';memoryFilter='';notice='This browser is unpaired.';}
+  pairingRequired=reason==='unauthenticated'||reason==='logout';connection=pairingRequired?'Pair this browser':'Disconnected';
+  render();if(reason==='changed'){backoff=30000;schedulePoll();}
+});
 window.addEventListener('offline',()=>{connectedView.detach();connection='Offline';livePoll={...livePoll,stale:true};connectionsStale=true;statusUnavailable=true;if(connectionsTimer)clearTimeout(connectionsTimer);if(pollTimer)clearTimeout(pollTimer);if(liveTimer)clearTimeout(liveTimer);render();});
-window.addEventListener('online',()=>void connect());
-document.addEventListener('visibilitychange',()=>{if(document.hidden){if(connectionsTimer)clearTimeout(connectionsTimer);if(pollTimer)clearTimeout(pollTimer);if(liveTimer)clearTimeout(liveTimer);}else{void connect(true);}});
+window.addEventListener('online',()=>{if(!pairingRequired)void connect();});
+document.addEventListener('visibilitychange',()=>{if(document.hidden){if(connectionsTimer)clearTimeout(connectionsTimer);if(pollTimer)clearTimeout(pollTimer);if(liveTimer)clearTimeout(liveTimer);}else if(!pairingRequired){void connect(true);}});
 if('serviceWorker' in navigator && import.meta.env.PROD)void navigator.serviceWorker.register('/sw.js').catch(()=>{ /* Shell availability is optional; never imply offline saving. */ });
 render();void connect();
 
 
 async function deleteMemory(id: string) {
   if (connectedView.active) return;
-  await mutate(async signal => {
+  await mutate(async (signal,version) => {
     const deleted = await deleteMemoryAndReload(id, {
       confirm: () => window.confirm('Delete this memory permanently? Earlier chat and voice transcripts are not rewritten.'),
       remove: entryId => deleteMemoryEntry(entryId, signal),
-      deleted: message => notify(message),
+      deleted: message => {if(version===authorityVersion())notify(message);},
       reload: async () => {
+        assertAuthority(version);
         const current = session ? await request<{session:Session;entries:Entry[];nextCursor:string|null}>(`/sessions/${encodeURIComponent(session.id)}`, { signal }) : undefined;
+        assertAuthority(version);
         const results = recall ? await request<Recall>(`/recall?q=${encodeURIComponent(queryDraft)}&limit=50`, { signal }) : undefined;
         return { current, results };
       },
       apply: ({ current, results }) => {
+        if(version!==authorityVersion())return;
         if (current) { session = current.session; entries = current.entries; entriesMore = !!current.nextCursor; }
         recall = results;
       },
     });
-    if (!deleted) return;
+    if (!deleted || version!==authorityVersion()) return;
     // A successful owner deletion invalidates the frozen view's cached selections.
     // Refresh from the service, rather than filtering entry ids in the browser.
     connectedView.reset();

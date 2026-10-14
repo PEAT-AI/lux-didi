@@ -148,6 +148,24 @@ final class DiagnosticLogHTTPFixture: URLProtocol, @unchecked Sendable {
     print("DURATION \(started.duration(to: .now)) conversation-diagnostics")
 }
 
+@MainActor private func checkCaptureTapExecutor() async throws {
+    let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 1)!
+    let capture = NativeCaptureBuffer(converter: try NativePCMConverter(input: format))
+    let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1024)!
+    buffer.frameLength = 1024
+    for index in 0..<1024 { buffer.floatChannelData![0][index] = 0.25 }
+    for _ in 0..<4 {
+        try audioRequire(DidiInvokeTapOffMain({ buffer, _ in capture.append(buffer) }, buffer), "Objective-C capture tap executes off main")
+    }
+    let frame = capture.next().0
+    try audioRequire(frame?.count == 640 && frame!.contains(where: { $0 != 0 }), "actual off-main tap converts nonzero PCM16/16k")
+    capture.setMuted(true)
+    try audioRequire(DidiInvokeTapOffMain({ buffer, _ in capture.append(buffer) }, buffer) && capture.next().0 == nil, "muted callback emits no PCM")
+    capture.stop()
+    try audioRequire(DidiInvokeTapOffMain({ buffer, _ in capture.append(buffer) }, buffer) && capture.next().0 == nil, "stopped callback emits no PCM")
+    print("PASS production capture callback off-main, nonzero 640-byte PCM, mute and stop fences; no audio engine")
+}
+
 @main struct NativeLiveAudioRunner {
     static func tone(_ format: AVAudioFormat, start: Int, count: Int) throws -> AVAudioPCMBuffer {
         guard format.channelCount == 2, format.commonFormat == .pcmFormatFloat32, !format.isInterleaved else {
@@ -164,6 +182,11 @@ final class DiagnosticLogHTTPFixture: URLProtocol, @unchecked Sendable {
         return buffer
     }
     @MainActor static func main() async {
+        if CommandLine.arguments.dropFirst().contains("--capture-tap-only") {
+            do { try await checkCaptureTapExecutor() }
+            catch { fatalError("Capture tap: \(error)") }
+            return
+        }
         do {
             for state in NativeLiveConversation.State.allCases {
                 let presentation = state.presentation
@@ -222,6 +245,7 @@ final class DiagnosticLogHTTPFixture: URLProtocol, @unchecked Sendable {
                              "missing input immediately releases capture and requests Restart")
             try audioRequire(paused != "invalid pause", "missing input must never offer Resume")
             print("PASS route storm, input consent, Resume, Stop fencing, missing input and failed rebuild")
+            try await checkCaptureTapExecutor()
             try await checkConversationDiagnostics()
             guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 44100, channels: 2, interleaved: false) else {
                 throw NativeLiveAudioError.unsupportedFormat

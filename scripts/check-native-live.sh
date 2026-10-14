@@ -35,11 +35,12 @@ swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-
   Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \
   "${owner_flags[@]}" Sources/LuxDidi/NativeLiveOperatorHTTP.swift \
   Tests/DidiLiveTests/Fixture.swift Tests/DidiLiveTests/Runner.swift -o "$work/native-live"
-swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
+xcrun clang -fobjc-arc -c Tests/DidiLiveTests/AudioCallbackBridge.m -o "$work/audio-callback-bridge.o"
+swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library -import-objc-header Tests/DidiLiveTests/AudioCallbackBridge.h \
   Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \
   "${owner_flags[@]}" \
   Sources/LuxDidi/NativeLiveOperatorHTTP.swift Sources/LuxDidi/NativeLiveAudioDevice.swift \
-  Sources/LuxDidi/NativeLiveConversation.swift Tests/DidiLiveTests/NativeLiveAudioRunner.swift -o "$work/native-audio"
+  Sources/LuxDidi/NativeLiveConversation.swift Tests/DidiLiveTests/NativeLiveAudioRunner.swift "$work/audio-callback-bridge.o" -o "$work/native-audio"
 "$work/native-audio"
 swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
   Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \

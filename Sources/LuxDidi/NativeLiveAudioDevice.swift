@@ -34,6 +34,8 @@ struct NativePCMFrameRing {
 /// One converter per capture lifetime. The input callback supplies each buffer exactly once.
 final class NativePCMConverter {
     let output: AVAudioFormat
+    let inputSampleRate: Double
+    let inputChannels: Int
     private let converter: AVAudioConverter
     init(input: AVAudioFormat) throws {
         guard let output = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16000, channels: 1, interleaved: false) else {
@@ -41,6 +43,7 @@ final class NativePCMConverter {
         }
         guard let converter = AVAudioConverter(from: input, to: output) else { throw NativeLiveAudioError.converterUnavailable }
         self.output = output; self.converter = converter
+        inputSampleRate = input.sampleRate; inputChannels = Int(input.channelCount)
     }
     func append(_ input: AVAudioPCMBuffer) throws -> Data { try convert(input, ending: false) }
     func finish() throws -> Data { try convert(nil, ending: true) }
@@ -67,6 +70,25 @@ final class NativePCMConverter {
     }
 }
 
+struct NativeCaptureStatistics: Sendable {
+    var tapBuffers = 0, convertedBytes = 0, convertFailures = 0, ringDrops = 0
+    var maxRMS: Double = 0, inputSampleRate: Double = 0
+    var inputChannels = 0
+    mutating func add(_ other: NativeCaptureStatistics) {
+        tapBuffers += other.tapBuffers; convertedBytes += other.convertedBytes
+        convertFailures += other.convertFailures; ringDrops += other.ringDrops
+        maxRMS = max(maxRMS, other.maxRMS)
+        inputSampleRate = other.inputSampleRate; inputChannels = other.inputChannels
+    }
+}
+struct NativeAudioCaptureSummary: Sendable {
+    let capture: NativeCaptureStatistics
+    let drainFrames: Int
+    let captureEpoch: UInt64
+    let captureGeneration: UInt64
+    let muted: Bool
+}
+
 /// The tap and drain task meet only through this locked eight-frame queue.
 final class NativeCaptureBuffer: @unchecked Sendable {
     private let lock = NSLock()
@@ -76,18 +98,25 @@ final class NativeCaptureBuffer: @unchecked Sendable {
     private var stopped = false, muted = false
     private var level: Float = 0
     private var failure = false
+    private var statistics = NativeCaptureStatistics()
     let stream: AsyncStream<Void>
     private let signal: AsyncStream<Void>.Continuation
     init(converter: NativePCMConverter) {
         self.converter = converter
+        statistics.inputSampleRate = converter.inputSampleRate; statistics.inputChannels = converter.inputChannels
         (stream, signal) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(1))
+    }
+    func makeTap() -> AVAudioNodeTapBlock {
+        { [self] buffer, _ in append(buffer) }
     }
     func append(_ input: AVAudioPCMBuffer) {
         lock.lock(); defer { lock.unlock() }
         guard !stopped else { return }
+        statistics.tapBuffers += 1
         if !muted {
             do {
                 let data = try converter.append(input)
+                statistics.convertedBytes += data.count
                 var sum: Double = 0
                 data.withUnsafeBytes { bytes in
                     for sample in bytes.bindMemory(to: Int16.self) {
@@ -95,8 +124,9 @@ final class NativeCaptureBuffer: @unchecked Sendable {
                     }
                 }
                 level = data.isEmpty ? 0 : Float(sqrt(sum / Double(data.count / 2)))
+                statistics.maxRMS = max(statistics.maxRMS, Double(level))
                 for frame in assembler.append(data) { ring.push(frame) }
-            } catch { failure = true }
+            } catch { failure = true; statistics.convertFailures += 1 }
         }
         signal.yield(())
     }
@@ -108,9 +138,12 @@ final class NativeCaptureBuffer: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         muted = value; ring.clear(); _ = assembler.discardPartial(); level = 0
     }
-    func stop() {
+    @discardableResult func stop() -> NativeCaptureStatistics {
         lock.lock(); defer { lock.unlock() }
+        statistics.ringDrops = ring.drops
+        let snapshot = statistics
         stopped = true; ring.clear(); _ = assembler.discardPartial(); signal.finish()
+        return snapshot
     }
 }
 
@@ -261,6 +294,14 @@ final class NativeCaptureBuffer: @unchecked Sendable {
     private var queuedOutput = 0
     private var outputGeneration: UInt64 = 0
     private var captureGeneration: UInt64 = 0
+    private var captureStatistics = NativeCaptureStatistics()
+    private var drainFrames = 0
+    private var captureLifetimeActive = false
+    private var terminalCaptureSummary: NativeAudioCaptureSummary?
+    func takeCaptureSummary() -> NativeAudioCaptureSummary? {
+        defer { terminalCaptureSummary = nil }
+        return terminalCaptureSummary
+    }
 
     func start(send: @escaping @Sendable (Data) async throws -> Void) async throws {
         try await startFenced { data, _ in try await send(data) }
@@ -278,6 +319,7 @@ final class NativeCaptureBuffer: @unchecked Sendable {
         }
         try Task.checkCancellation()
         }
+        captureStatistics = NativeCaptureStatistics(); drainFrames = 0
         sendFrame = send
         do { try build(send: send); recovery.begin() }
         catch { sendFrame = nil; throw error }
@@ -337,7 +379,7 @@ final class NativeCaptureBuffer: @unchecked Sendable {
             let capture = try NativeCaptureBuffer(converter: NativePCMConverter(input: hardware))
             capture.setMuted(muted)
             try Self.connectPlayback(engine: engine, player: player, outputNode: engine.outputNode)
-            engine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: hardware) { buffer, _ in capture.append(buffer) }
+            engine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: hardware, block: capture.makeTap())
             self.engine = engine; self.player = player; self.capture = capture
             engine.prepare()
             do { try engine.start() }
@@ -359,7 +401,7 @@ final class NativeCaptureBuffer: @unchecked Sendable {
         }
     }
     private func activateCapture(_ capture: NativeCaptureBuffer, send: @escaping @Sendable (Data, UInt64) async throws -> Void) {
-        isCapturing = true; captureGeneration &+= 1
+        isCapturing = true; captureGeneration &+= 1; captureLifetimeActive = true
         let token = captureGeneration
         // Exactly one drain task. Playback never owns or pauses the capture path.
         drain = Task { [weak self] in
@@ -370,6 +412,7 @@ final class NativeCaptureBuffer: @unchecked Sendable {
                         self.inputLevel = level; self.droppedFrames = drops
                         if failed { await self.interrupt(); return }
                         guard let frame else { break }
+                        self.drainFrames += 1
                         let epoch = self.captureEpoch
                         do { try Task.checkCancellation(); try await send(frame, epoch) }
                         catch {
@@ -420,13 +463,20 @@ final class NativeCaptureBuffer: @unchecked Sendable {
         outputGeneration &+= 1; player?.stop(); queuedOutput = 0; onOutput?(false)
     }
     func stop() {
+        let epoch = captureEpoch, captureToken = captureGeneration, wasMuted = muted
         captureEpoch &+= 1; recovery.stop(); sendFrame = nil; muted = false
+        if captureLifetimeActive {
+            terminalCaptureSummary = NativeAudioCaptureSummary(capture: captureStatistics,
+                drainFrames: drainFrames, captureEpoch: epoch, captureGeneration: captureToken, muted: wasMuted)
+            captureLifetimeActive = false
+        }
     }
     private func releaseAudio() {
         captureGeneration &+= 1
         if let observer = configurationObserver { NotificationCenter.default.removeObserver(observer) }
         configurationObserver = nil
-        capture?.stop(); drain?.cancel(); drain = nil; capture = nil
+        if let capture { captureStatistics.add(capture.stop()) }
+        drain?.cancel(); drain = nil; capture = nil
         flushOutput()
         if let engine { engine.inputNode.removeTap(onBus: 0); engine.stop() }
         engine = nil; player = nil; isCapturing = false; inputLevel = 0

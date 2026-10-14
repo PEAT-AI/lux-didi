@@ -557,6 +557,7 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             await muteSocket.push(.marker(LiveMarker(kind: .ready, sequence: 1, journalSequence: 0, text: nil, finished: nil, value: nil)))
             await muteFence.begin(frozen)
             try await until { await muteFence.state == .active }
+            await muteFence.setCaptureMuted(false, epoch: 0, diagnosticOwner: 17)
             let staleCapture = Task { try await muteFence.sendPCM(Data([9, 0]), captureEpoch: 0) }
             try await until { await admissionGate.arrivals == 1 }
             let muteAcknowledged = Gate()
@@ -578,6 +579,10 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             try await until { await admissionGate.arrivals == 2 }
             await admissionGate.release(); try await freshCapture.value
             try require(await muteSocket.inputs == [Data([7, 0])], "new epoch sends normally after unmute")
+            let muteMetrics = await muteFence.captureSummary(owner: 17)!
+            try require(muteMetrics.counters.lateMutedDrops == 1 && muteMetrics.counters.epochDrops == 1
+                && muteMetrics.counters.localSocketSendCompleted == 1 && muteMetrics.counters.sendErrors == 0,
+                "actual suspended and fresh sends report exact closed branch counts")
             await muteFence.stop(); await muteHTTP.finish()
             print("PASS suspended capture mute epoch fence + delayed acknowledgement + unmute cannot revive stale PCM")
 
@@ -589,6 +594,7 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             await transportMuteSocket.push(.marker(LiveMarker(kind: .ready, sequence: 1, journalSequence: 0, text: nil, finished: nil, value: nil)))
             await transportMute.begin(frozen)
             try await until { await transportMute.state == .active }
+            await transportMute.setCaptureMuted(false, epoch: 0, diagnosticOwner: 18)
             let consentedFrame = Task { try await transportMute.sendPCM(Data([3, 0]), captureEpoch: 0) }
             try await until { await transportGate.arrivals == 1 }
             let mutedUIAcknowledgement = Gate()

@@ -148,6 +148,99 @@ final class DiagnosticLogHTTPFixture: URLProtocol, @unchecked Sendable {
     print("DURATION \(started.duration(to: .now)) conversation-diagnostics")
 }
 
+@MainActor private func checkCaptureTapExecutor() async throws {
+    let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 1)!
+    let capture = NativeCaptureBuffer(converter: try NativePCMConverter(input: format))
+    let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1024)!
+    buffer.frameLength = 1024
+    for index in 0..<1024 { buffer.floatChannelData![0][index] = 0.25 }
+    for _ in 0..<4 {
+        try audioRequire(DidiInvokeTapOffMain(capture.makeTap(), buffer), "Objective-C capture tap executes off main")
+    }
+    let frame = capture.next().0
+    try audioRequire(frame?.count == 640 && frame!.contains(where: { $0 != 0 }), "actual off-main tap converts nonzero PCM16/16k")
+    capture.setMuted(true)
+    try audioRequire(DidiInvokeTapOffMain(capture.makeTap(), buffer) && capture.next().0 == nil, "muted callback emits no PCM")
+    capture.setMuted(false)
+    capture.stop()
+    try audioRequire(DidiInvokeTapOffMain(capture.makeTap(), buffer) && capture.next().0 == nil, "stopped callback emits no PCM")
+    print("PASS production capture callback off-main, nonzero 640-byte PCM, mute and stop fences; no audio engine")
+}
+
+@MainActor private func checkTerminalCaptureSummary() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("didi-capture-summary-" + UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 1)!
+    let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4800)!
+    buffer.frameLength = 4800
+    buffer.floatChannelData![0].initialize(repeating: 0.25, count: 4800)
+    let device = NativeLiveAudioDevice(captureInput: format,
+        defaultInput: { (id: "synthetic", name: "Synthetic input") })
+    device.onCapturePrepared = { capture in capture.append(buffer) }
+    let authority: (origin: URL, request: NativeLiveRequestBuilder) =
+        (URL(string: "http://127.0.0.1:1")!, { _, _ in throw LiveClientError.unavailable })
+    let conversation = NativeLiveConversation(authority: authority, dictationIsCapturing: { false },
+        logsDirectory: directory, audioDevice: device)
+    conversation.start()
+    let deadline = ContinuousClock.now + .seconds(3)
+    while conversation.state != .failed {
+        try audioRequire(ContinuousClock.now < deadline, "actual start reaches refused HTTP failure")
+        await Task.yield()
+    }
+    await conversation.stop()
+    let file = directory.appendingPathComponent("native-live.log")
+    let records = try String(contentsOf: file, encoding: .utf8).split(separator: "\n").map {
+        try JSONSerialization.jsonObject(with: Data($0.utf8)) as! [String: Any]
+    }
+    let summaries = records.filter { $0["event"] as? String == "native_capture_summary" }
+    try audioRequire(summaries.count == 1, "one summary for actual capture lifetime on failure then repeated Stop")
+    let summary = summaries[0]
+    try audioRequire(summary["tapBuffers"] as? Int == 1 && (summary["convertedBytes"] as? Int ?? 0) > 0
+        && summary["convertFailures"] as? Int == 0 && (summary["maxRMS"] as? Double ?? 0) > 0,
+        "summary preserves locked capture counts before teardown")
+    try audioRequire(summary["inputSampleRate"] as? Int == 48000 && summary["inputChannels"] as? Int == 1
+        && summary["localSocketSendCompleted"] as? Int == 0 && summary["sendErrors"] as? Int == 0,
+        "numeric format and zero local sends after refused authority")
+    device.stop(); await conversation.stop()
+    try audioRequire(try String(contentsOf: file, encoding: .utf8).split(separator: "\n").count == records.count,
+        "duplicate Stop emits no duplicate summary")
+    print("PASS actual NativeLiveConversation Start/failure/Stop content-free capture summary; no engine or request dispatch")
+}
+
+@MainActor private func checkCaptureDropCounters() async throws {
+    let origin = URL(string: "http://127.0.0.1:1")!
+    let http = NativeLiveOperatorHTTP(authority: (origin, { _, _ in throw LiveClientError.unavailable }))
+    let sink = NativeLiveAudioDevice(captureInput: AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 1)!,
+        defaultInput: { (id: "synthetic", name: "Synthetic") })
+    let coordinator = LiveSessionCoordinator(http: http, sockets: LiveSocketTransport(requests: http), sink: sink)
+    await coordinator.setCaptureMuted(false, epoch: 0, diagnosticOwner: 7)
+    try audioRequire(await coordinator.captureStateForSubmission(owner: 7) == .idle, "counted outer getter preserves state")
+    await coordinator.setCaptureMuted(true, epoch: 1)
+    try await coordinator.sendPCM(Data(repeating: 1, count: 640), captureEpoch: 0, diagnosticOwner: 7)
+    await coordinator.setCaptureMuted(false, epoch: 2)
+    try await coordinator.sendPCM(Data(repeating: 1, count: 640), captureEpoch: 0, diagnosticOwner: 7)
+    do {
+        try await coordinator.sendPCM(Data(repeating: 1, count: 640), captureEpoch: 2, diagnosticOwner: 7)
+        throw RefusalForCaptureSummary.failed
+    } catch LiveClientError.unavailable { }
+    await coordinator.close()
+    let old = await coordinator.captureSummary(owner: 7)!
+    try audioRequire(old.counters.outerEntered == 1 && old.counters.outerNotActive == 1
+        && old.counters.entered == 3 && old.counters.mutedDrops == 1 && old.counters.epochDrops == 1
+        && old.counters.localSocketSendCompleted == 0 && old.counters.sendErrors == 1,
+        "actual mute/epoch/unavailable counter branches preserve original refusals")
+    await coordinator.setCaptureMuted(false, epoch: 2, diagnosticOwner: 8)
+    _ = await coordinator.captureStateForSubmission(owner: 7)
+    let current = await coordinator.captureSummary(owner: 8)!
+    let retained = await coordinator.captureSummary(owner: 7)!
+    try audioRequire(current.counters.outerEntered == 0 && current.counters.entered == 0
+        && retained.counters.entered == old.counters.entered,
+        "old owner snapshot is retained without attributing it to replacement")
+    try audioRequire(!sink.hasEngine && !sink.isCapturing, "counter proof opens no engine or capture")
+    print("PASS closed capture drop counters and old-owner summary isolation; no engine or request dispatch")
+}
+private enum RefusalForCaptureSummary: Error { case failed }
+
 @main struct NativeLiveAudioRunner {
     static func tone(_ format: AVAudioFormat, start: Int, count: Int) throws -> AVAudioPCMBuffer {
         guard format.channelCount == 2, format.commonFormat == .pcmFormatFloat32, !format.isInterleaved else {
@@ -164,6 +257,16 @@ final class DiagnosticLogHTTPFixture: URLProtocol, @unchecked Sendable {
         return buffer
     }
     @MainActor static func main() async {
+        if CommandLine.arguments.dropFirst().contains("--capture-summary-only") {
+            do { try await checkTerminalCaptureSummary() }
+            catch { fatalError("Capture summary: \(error)") }
+            return
+        }
+        if CommandLine.arguments.dropFirst().contains("--capture-tap-only") {
+            do { try await checkCaptureTapExecutor() }
+            catch { fatalError("Capture tap: \(error)") }
+            return
+        }
         do {
             for state in NativeLiveConversation.State.allCases {
                 let presentation = state.presentation
@@ -222,6 +325,9 @@ final class DiagnosticLogHTTPFixture: URLProtocol, @unchecked Sendable {
                              "missing input immediately releases capture and requests Restart")
             try audioRequire(paused != "invalid pause", "missing input must never offer Resume")
             print("PASS route storm, input consent, Resume, Stop fencing, missing input and failed rebuild")
+            try await checkTerminalCaptureSummary()
+            try await checkCaptureDropCounters()
+            try await checkCaptureTapExecutor()
             try await checkConversationDiagnostics()
             guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 44100, channels: 2, interleaved: false) else {
                 throw NativeLiveAudioError.unsupportedFormat

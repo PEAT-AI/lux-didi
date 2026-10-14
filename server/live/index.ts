@@ -10,7 +10,7 @@ import type { LiveToolsComposition, LivePageProjection, LiveToolProjection } fro
 import { publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, composeLiveSessionInstruction } from '../prompt/index.js';
 import { validateAcceptedPrompt } from './config.js';
 import { createHash, randomUUID } from 'node:crypto';
-import type { DataClass, LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort, LiveVoiceSession, LiveVoiceRequest } from '../adapters/live-voice/index.js';
+import type { DataClass, LiveVoiceDiagnostics, LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort, LiveVoiceSession, LiveVoiceRequest } from '../adapters/live-voice/index.js';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
 import { liveProfileIdentity, validateLiveProfile } from './config.js';
 import { parseTerminal, persistedKinds, readFragmentPage, retainedBytes } from './journal.js';
@@ -54,6 +54,9 @@ interface ActiveSession {
   journalEvents: number;
   journalBytes: number;
   adapterOutcome: LiveVoiceOutcome | undefined;
+  diagnosticSnapshots: Promise<Readonly<LiveVoiceDiagnostics> | undefined>[];
+  ownerAudioCalls: number; ownerAudioBytes: number; ownerRebuildingDropCalls: number; ownerRebuildingDropBytes: number;
+  diagnosticTerminalCode: string; diagnosticsEmitted: boolean;
   loopDone: { promise: Promise<void>; resolve: () => void };
   done: { promise: Promise<LiveSessionSnapshot>; resolve: (value: LiveSessionSnapshot) => void; reject: (error: unknown) => void };
   resolveDone: () => void;
@@ -580,6 +583,8 @@ export class LiveSessionOwner {
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
       consumerState: 'attached', journalEvents: 0, journalBytes: 0, adapterOutcome: undefined,
+      diagnosticSnapshots: [], ownerAudioCalls: 0, ownerAudioBytes: 0, ownerRebuildingDropCalls: 0, ownerRebuildingDropBytes: 0,
+      diagnosticTerminalCode: 'outcome_unknown', diagnosticsEmitted: false,
       loopDone: deferred<void>(), done: deferred<LiveSessionSnapshot>(), resolveDone: () => {}, persistFailure: undefined,
     };
     handle.resolveDone = () => {
@@ -593,6 +598,7 @@ export class LiveSessionOwner {
       if (job) { job.delivered = true; this.#jobs.save(job); }
     }, () => {});
     session.done.catch(() => {});
+    this.#observeDiagnostics(handle, session);
     this.#active.set(liveSessionId, handle);
     void handle.done.promise.catch(() => {});
     handle.sessionTimer = this.#schedule(() => this.#settle(handle, { state: 'failed', code: 'session_timeout' }, false, 'ended', null), this.#profile.limits.sessionMs);
@@ -660,6 +666,7 @@ export class LiveSessionOwner {
         limits: { ...this.#profile.limits, sessionMs: Math.ceil(remaining), idleMs: Math.ceil(idle), handshakeMs: Math.max(1, Math.ceil(Math.min(this.#profile.limits.handshakeMs, window, remaining, idle))) },
       });
       void handle.session.ready.catch(() => {}); void handle.session.done.catch(() => {});
+      this.#observeDiagnostics(handle, handle.session);
       handle.goAwayUntil = undefined;
       return true;
     } catch {
@@ -669,11 +676,39 @@ export class LiveSessionOwner {
   }
 
   #sendAudio(handle: ActiveSession, pcm: Uint8Array): void {
-    if (handle.rebuilding) return;
+    handle.ownerAudioCalls++; handle.ownerAudioBytes += pcm.byteLength;
+    if (handle.rebuilding) { handle.ownerRebuildingDropCalls++; handle.ownerRebuildingDropBytes += pcm.byteLength; return; }
     this.#guardHandle(handle);
     if (!(pcm instanceof Uint8Array) || !pcm.length || pcm.length % 2 !== 0) throw new LiveError('invalid_audio');
     this.#armIdle(handle, this.#profile.limits.idleMs);
     handle.session.sendAudio({ pcm, dataClass: handle.inputClass });
+  }
+
+  #observeDiagnostics(handle: ActiveSession, session: LiveVoiceSession): void {
+    handle.diagnosticSnapshots.push(session.done.then(() => session.diagnostics?.(), () => session.diagnostics?.()));
+  }
+
+  #emitDiagnostics(handle: ActiveSession): void {
+    if (handle.diagnosticsEmitted) return;
+    handle.diagnosticsEmitted = true;
+    void Promise.all(handle.diagnosticSnapshots).then(values => {
+      const snapshots = values.filter((value): value is Readonly<LiveVoiceDiagnostics> => value !== undefined);
+      const sum = (field: keyof LiveVoiceDiagnostics) => snapshots.reduce((total, value) => total + value[field], 0);
+      console.error(JSON.stringify({ event: 'live_session_diagnostics', terminalCode: handle.diagnosticTerminalCode,
+        adapterGenerations: values.length, ownerAudioCalls: handle.ownerAudioCalls, ownerAudioBytes: handle.ownerAudioBytes,
+        ownerRebuildingDropCalls: handle.ownerRebuildingDropCalls, ownerRebuildingDropBytes: handle.ownerRebuildingDropBytes,
+        adapterAudioCalls: sum('audioCalls'), adapterAudioBytes: sum('audioBytes'),
+        pendingToolDropCalls: sum('pendingToolDropCalls'), pendingToolDropBytes: sum('pendingToolDropBytes'),
+        drainingDropCalls: sum('drainingDropCalls'), drainingDropBytes: sum('drainingDropBytes'),
+        localWriteEnqueuedCalls: sum('localWriteEnqueuedCalls'), localWriteEnqueuedPCMBytes: sum('localWriteEnqueuedPCMBytes'),
+        localWriteCallbackSuccessCalls: sum('localWriteCallbackSuccessCalls'), localWriteCallbackSuccessPCMBytes: sum('localWriteCallbackSuccessPCMBytes'),
+        localWriteCallbackErrorCalls: sum('localWriteCallbackErrorCalls'), localWriteCallbackErrorPCMBytes: sum('localWriteCallbackErrorPCMBytes'),
+        localWriteCallbackPendingCalls: sum('localWriteCallbackPendingCalls'), localWriteCallbackPendingPCMBytes: sum('localWriteCallbackPendingPCMBytes'),
+        inputTranscriptionEvents: sum('inputTranscriptionEvents'), inputTranscriptionCharacters: sum('inputTranscriptionCharacters'),
+        generationCompleteEvents: sum('generationCompleteEvents'), turnCompleteEvents: sum('turnCompleteEvents'),
+        outputAudioFrames: sum('outputAudioFrames'), outputAudioPCMBytes: sum('outputAudioPCMBytes'),
+        outputAudioAfterInitialTurnFrames: sum('outputAudioAfterInitialTurnFrames'), outputAudioAfterInitialTurnPCMBytes: sum('outputAudioAfterInitialTurnPCMBytes') }));
+    });
   }
 
   /** Ordered output admission. Overflow is settled as a durable fact, never silently shed. */
@@ -771,6 +806,7 @@ export class LiveSessionOwner {
     }
     break;
     }
+    this.#emitDiagnostics(handle);
     this.#active.delete(handle.liveSessionId);
     handle.loopDone.resolve();
   }
@@ -927,6 +963,7 @@ export class LiveSessionOwner {
   #settle(handle: ActiveSession, outcome: LiveTerminalOutcome, complete: boolean, consumerState: LiveConsumerState, rejected: { kind: JournalKind; sequence: number } | null): void {
     if (handle.terminal) return;
     handle.terminal = true;
+    handle.diagnosticTerminalCode = 'code' in outcome ? outcome.code : outcome.state;
     handle.sessionTimer?.cancel(); handle.idleTimer?.cancel();
     handle.session.close();
     let journalSequence: number;

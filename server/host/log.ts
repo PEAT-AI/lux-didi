@@ -27,6 +27,19 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'live_attach_rejected' && typeof value.code === 'string' && /^[A-Za-z0-9_]{1,107}$/.test(value.code)) {
     return { event: value.event, ...(typeof value.liveSessionId === 'string' && /^[0-9a-f-]{36}$/i.test(value.liveSessionId) ? { liveSessionId: value.liveSessionId } : {}), code: value.code };
   }
+  if (value.event === 'live_session_diagnostics') {
+    const numeric = ['adapterGenerations','ownerAudioCalls','ownerAudioBytes','ownerRebuildingDropCalls','ownerRebuildingDropBytes',
+      'adapterAudioCalls','adapterAudioBytes','pendingToolDropCalls','pendingToolDropBytes','drainingDropCalls','drainingDropBytes',
+      'localWriteEnqueuedCalls','localWriteEnqueuedPCMBytes','localWriteCallbackSuccessCalls','localWriteCallbackSuccessPCMBytes',
+      'localWriteCallbackErrorCalls','localWriteCallbackErrorPCMBytes','localWriteCallbackPendingCalls','localWriteCallbackPendingPCMBytes',
+      'inputTranscriptionEvents','inputTranscriptionCharacters','generationCompleteEvents','turnCompleteEvents','outputAudioFrames','outputAudioPCMBytes',
+      'outputAudioAfterInitialTurnFrames','outputAudioAfterInitialTurnPCMBytes'];
+    const keys = ['event','terminalCode',...numeric].sort();
+    if (Object.keys(value).sort().join(',') !== keys.join(',') || typeof value.terminalCode !== 'string'
+      || !/^[a-z][a-z0-9_]{0,63}$/.test(value.terminalCode)
+      || numeric.some(key => !Number.isSafeInteger(value[key]) || Number(value[key]) < 0)) return;
+    return Object.fromEntries(['event','terminalCode',...numeric].map(key => [key, value[key]]));
+  }
 }
 
 export class HostLog {

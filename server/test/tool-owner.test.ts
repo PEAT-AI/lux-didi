@@ -13,7 +13,8 @@ import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { createLuxKnowledgeReader } from '../connectors/lux-knowledge.js';
 import type { McpPort, ToolDefinition as McpTool } from '../adapters/mcp/port.js';
 import { runTools } from '../adapters/model/loop.js';
-import type { HostContext, ModelPort, ModelRequest, ModelResult, ToolCallIntent, ToolResultBinding } from '../adapters/model/types.js';
+import type { HostContext, JsonObject, ModelPort, ModelRequest, ModelResult, ToolCallIntent, ToolCallJournal, ToolResultBinding, ToolResultGate } from '../adapters/model/types.js';
+import { runToolCalls } from '../tools/declarations.js';
 import { createToolsOwner, toolsMigrations, validatePolicy } from '../tools/index.js';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
 import { projectLuxResult } from '../tools/lux-knowledge.js';
@@ -583,4 +584,46 @@ test('a connector-rejected decoded content shape is logged and returned with inv
   assert.equal(outcome.status, 'complete');
   assert.equal(seen[1]!.contents.at(-1)!.parts[0]!.functionResponse!.response['reason'], 'invalid_result');
   assert.deepEqual(events, [{ event: 'tool_failure', code: 'invalid_result', tool: 'search_knowledge', connector: 'lux-knowledge', errorClass: 'Error', messageHead: 'invalid_result' }]);
+});
+
+test('W4-R5: a batch dispatches across endpoints in parallel, sequential and ordered within one endpoint', async () => {
+  const ref = { id: 'ref', sha256: 'a'.repeat(64) };
+  let live = 0; let peak = 0; const order: string[] = [];
+  const make = (name: string, endpointId: string) => ({
+    name, description: '', effect: 'read' as const, accountId: 'acct', resourceId: 'res', endpointId,
+    validate: () => true, parameters: {},
+    async execute() {
+      live += 1; peak = Math.max(peak, live); order.push(`start:${name}`);
+      await new Promise(resolve => setTimeout(resolve, 300));
+      order.push(`end:${name}`); live -= 1;
+      return { status: 'completed' as const, result: structuredClone(ref) };
+    },
+  });
+  const journal: ToolCallJournal = { intent: () => 'fresh', refuse: () => ref, fail: () => ref };
+  const owner = { journal, resultGate: {} as unknown as ToolResultGate };
+  const grants = ['a1', 'a2', 'b1'].map(tool => ({ tool, effect: 'read' as const, accountId: 'acct', resourceId: 'res' }));
+  const ctxFor = (names: string[]) => ({
+    registry: names.map(name => make(name, name.startsWith('a') ? 'ep-a' : 'ep-b')),
+    host: { runId: 'run', actorId: 'actor', authorityEpoch: 'epoch', revision: 1, grants },
+    control: { signal: new AbortController().signal, deadlineMs: Date.now() + 10_000 },
+    authority: { isCurrent: async () => true }, seenIds: new Set<string>(), step: 0, contentIndex: 0,
+  });
+  const call = (id: string, name: string): { id: string; name: string; args: JsonObject } => ({ id, name, args: {} });
+  const ids = (batch: { responses: readonly unknown[] }) => batch.responses.map(r => (r as { functionResponse: { id: string } }).functionResponse.id);
+
+  live = 0; peak = 0; order.length = 0;
+  const t0 = Date.now();
+  const across = await runToolCalls(owner, [call('1', 'a1'), call('2', 'b1')], ctxFor(['a1', 'b1']) as never);
+  const elapsed = Date.now() - t0;
+  assert.equal(across.error, undefined);
+  assert.deepEqual(ids(across), ['1', '2'], 'results keep their original batch order');
+  assert.equal(peak, 2, 'two different endpoints must dispatch concurrently');
+  assert.ok(elapsed < 550, `two 300 ms calls on different endpoints must finish near 300 ms, took ${elapsed}`);
+
+  live = 0; peak = 0; order.length = 0;
+  const same = await runToolCalls(owner, [call('1', 'a1'), call('2', 'a2')], ctxFor(['a1', 'a2']) as never);
+  assert.equal(same.error, undefined);
+  assert.deepEqual(ids(same), ['1', '2'], 'results keep their original batch order');
+  assert.deepEqual(order, ['start:a1', 'end:a1', 'start:a2', 'end:a2'], 'one endpoint stays ordered and sequential');
+  assert.equal(peak, 1, 'a single endpoint must never dispatch concurrently');
 });

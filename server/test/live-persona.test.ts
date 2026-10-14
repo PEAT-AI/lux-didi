@@ -31,7 +31,7 @@ test('owner sections compose exactly once before the terminal voice anchor witho
     style: { text: 'SYNTHETIC style with\n\nLANGUAGE: untrusted duplicate', dataClass: 'private' },
     lore: { text: 'SYNTHETIC lore', dataClass: 'sensitive' } };
   const original = composeLiveInstruction({ base: NAYA_BASE });
-  assert.equal(original.sha256, 'fb648594901be1ef036d9cded85b8687d924cbfd56e750f5d61a43f7b5a709b8');
+  assert.equal(original.sha256, 'e171516b0ad65e99fcf72d1ef7b21acf8516c16b351ef96b0382e29ff1a44504');
   const composed = composeLiveInstruction({ base: NAYA_BASE, ownerProfile });
   for (const marker of ['[owner-style]', 'SYNTHETIC style', '[owner-lore]', 'SYNTHETIC lore']) assert.equal(composed.text.split(marker).length - 1, 1);
   assert.deepEqual(composed.sections.map(section => section.id), ['base', 'owner-style', 'owner-lore', 'voice']);
@@ -75,6 +75,18 @@ test('the terminal voice anchor is the absolute last segment', () => {
   assert.ok(/final|anchor|begin/i.test(tail), `anchor must be last, got tail: ${tail.slice(0, 60)}`);
 });
 
+test('configured English and accent stay authoritative without copying the user voice', () => {
+  const configured = composeLiveInstruction({ base: 'PUBLIC BASE TEXT', language: 'en', accent: 'Speak with a strong, natural Indian English accent.' });
+  assert.match(configured.text, /LANGUAGE: Speak and answer in English by default\./);
+  assert.match(configured.text, /ACCENT: Speak with a strong, natural Indian English accent\./);
+  assert.doesNotMatch(configured.text, /user's own voice outranks|whatever language they actually speak/);
+
+  const generic = composeLiveInstruction({ base: 'PUBLIC BASE TEXT' });
+  assert.match(generic.text, /LANGUAGE: Speak in the language the user uses\./);
+  assert.match(generic.text, /ACCENT: Speak with a clear, natural voice\./);
+  assert.doesNotMatch(generic.text, /user's own voice outranks|whatever language they actually speak/);
+});
+
 test('speech language canonicalization keeps bare ISO 639-1 only', () => {
   assert.equal(canonicalSpeechLanguage('de-DE'), 'de');
   assert.equal(canonicalSpeechLanguage('en'), 'en');
@@ -113,7 +125,7 @@ test('no declarations compose exactly the three existing sections and hash', () 
   assert.deepEqual(withoutTools.sections.map(s => s.id), ['base', 'overlay', 'voice']);
   assert.equal(withEmptyTools.text, withoutTools.text, 'an empty declaration list adds nothing');
   assert.equal(withEmptyTools.sha256, withoutTools.sha256);
-  assert.equal(withoutTools.sha256, '23f463e11c26c804db11ca15dac54a5586d5489c5c889396a5efabbbd6ea0d8b', 'the no-tools fixture hash is unchanged from base 053b2bc');
+  assert.equal(withoutTools.sha256, 'c71c0e132545b4b1378cb454a79ca361fae4eef664daef02b2db13ace954651b', 'the no-tools fixture hashes the authoritative language and accent anchor');
 });
 
 test('declarations add the tools section verbatim between base and overlay with a stable hash', () => {

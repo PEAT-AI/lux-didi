@@ -506,16 +506,6 @@ test('expired job leases become unknown without replay or accepting late complet
   assert.equal(executions, 1);
 });
 
-test('tool deferral budget defaults to four seconds and accepts only bounded integer milliseconds', () => {
-  assert.equal((validateLiveProfile(profileInput()).limits as unknown as Record<string, number>).toolDeferralMs, 4000);
-  for (const value of [1000, 4000, 30000]) {
-    assert.equal((validateLiveProfile(profileInput({ toolDeferralMs: value })).limits as unknown as Record<string, number>).toolDeferralMs, value);
-  }
-  for (const value of [0, 999, 30001, 1000.5, NaN, Infinity]) {
-    assert.throws(() => validateLiveProfile(profileInput({ toolDeferralMs: value })), LiveConfigError);
-  }
-});
-
 test('live timer defaults are a 5 minute idle and a 60 minute session, and an explicit config wins', () => {
   const defaults = validateLiveProfile(profileInput()).limits;
   assert.equal(defaults.idleMs, 300_000);
@@ -1158,85 +1148,59 @@ test('legacy null and unsupported accepted Live bindings refuse honestly before 
   }
 });
 
-test('completion after hangup remains delivery pending even before the deferral budget expires', async t => {
-  const scheduler = new DeadlineClock();
+test('Live keeps no background tool job and never delivers a result to an ended session', async t => {
   let finish!: () => void;
   const work = new Promise<void>(resolve => { finish = resolve; });
-  const h = await harness(t, { tools: true, scheduler, beforeTool: () => work });
+  const h = await harness(t, { tools: true, beforeTool: () => work });
   const { session } = await attached(h);
   h.f.send({ toolCall: { functionCalls: [{ id: 'detached1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
   while (!h.calls.length) await tick();
   h.owner.revoke(session.liveSessionId);
   finish();
-  const jobs = new LiveToolJobs(h.store, () => NOW);
-  while (jobs.list()[0]!.state === 'in_progress') await tick();
-  await tick();
-  assert.equal(jobs.pending().length, 1, 'a returned batch is not delivered when the original call has ended');
-  assert.equal(jobs.pending()[0]!.state, 'completed');
-  assert.equal(jobs.pending()[0]!.delivered, false);
-  assert.match(h.owner.pendingJobs()[0]!.markdown, /Synthetic insight/);
+  await tick(); await tick();
+  assert.equal(new LiveToolJobs(h.store, () => NOW).pending().length, 0, 'Live never defers a tool call');
+  assert.equal(h.owner.pendingJobs().length, 0);
   assert.equal(h.f.frames.length, 1, 'completion cannot send to the ended Gemini session');
 });
 
-test('Live answers a slow tool batch truthfully, continues the turn, and retains a durable pending result', async t => {
-  const scheduler = new DeadlineClock();
+test('Live awaits a slow tool call inline and never creates a background job', async t => {
   let finish!: () => void;
   const slow = new Promise<void>(resolve => { finish = resolve; });
-  const h = await harness(t, { tools: true, scheduler, limits: { toolDeferralMs: 1000 }, beforeTool: () => slow });
-  const { session } = await attached(h);
+  const h = await harness(t, { tools: true, beforeTool: () => slow });
+  await attached(h);
   assert.equal((h.requests[0] as LiveVoiceRequest & { opening?: string }).opening, 'model_first');
   h.f.send({ toolCall: { functionCalls: [{ id: 'slow1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
   while (!h.calls.length) await tick();
-  h.advance(1000); scheduler.runDue();
-  await tick();
-  assert.equal(new LiveToolJobs(h.store, () => NOW).pending().length, 1, 'dispatch must create a durable job before deferral');
-  await h.f.frame(2);
-  const response = h.f.frames[1] as { toolResponse: { functionResponses: { response: { status: string; jobId: string } }[] } };
-  assert.equal(response.toolResponse.functionResponses[0]!.response.status, 'in progress');
-  assert.ok(response.toolResponse.functionResponses[0]!.response.jobId);
-  assert.equal(h.owner.current().state, 'listening');
-  assert.equal(new LiveToolJobs(h.store, () => NOW).pending()[0]!.state, 'in_progress');
-  h.owner.revoke(session.liveSessionId);
-  await tick();
-  assert.equal(h.owner.lookupAuthority(session.liveSessionId), null);
+  assert.equal(new LiveToolJobs(h.store, () => NOW).pending().length, 0, 'Live never defers a tool call');
   finish();
-  while (new LiveToolJobs(h.store, () => NOW).pending()[0]!.state === 'in_progress') await tick();
-  assert.equal(new LiveToolJobs(h.store, () => NOW).pending()[0]!.state, 'completed');
-  assert.equal(h.f.frames.length, 2, 'completion must not inject a late result into Gemini');
-  assert.match(h.owner.pendingJobs()[0]!.markdown, /Synthetic insight/);
-  h.owner.revoke(session.liveSessionId);
-  await tick();
-  assert.equal(h.owner.lookupAuthority(session.liveSessionId), null);
-  const callback = h.owner.createWithPending({ inputClass: 'ordinary', idempotencyKey: 'callback' }, h.ctx);
-  const frozenJob = new LiveToolJobs(h.store, () => NOW).forSession(callback.liveSessionId)!;
-  assert.equal(accepted(h, callback.liveSessionId).pickup?.jobId, frozenJob.id);
-  frozenJob.state = 'failed'; new LiveToolJobs(h.store, () => NOW).save(frozenJob);
-  assert.throws(() => h.owner.attach({ liveSessionId: callback.liveSessionId }, h.ctx), (error: unknown) => error instanceof LiveError && String(error.code) === 'pickup_changed');
-  assert.equal(h.requests.length, 1, 'changed pickup state is rejected before dispatch');
-  frozenJob.state = 'completed'; new LiveToolJobs(h.store, () => NOW).save(frozenJob);
-  const pickedUp = h.owner.attach({ liveSessionId: callback.liveSessionId }, h.ctx);
-  await h.f.frame(3);
-  h.f.send({ setupComplete: {} });
-  await pickedUp.ready;
-  await h.f.frame(4);
-  const history = h.f.frames[3] as { clientContent: { turns: { parts: { text: string }[] }[] } };
-  assert.match(history.clientContent.turns[0]!.parts[0]!.text, /Synthetic insight/);
-  assert.equal((history.clientContent as typeof history.clientContent & { turnComplete: boolean }).turnComplete, true);
-  assert.equal((h.requests[1] as LiveVoiceRequest & { opening?: string }).opening, 'model_first');
-  assertFrozenInstruction(h, callback.liveSessionId, 1);
-  assert.match(accepted(h, callback.liveSessionId).system, /user has just picked up/i);
-  assert.match(h.requests[1]!.system.text, /user has just picked up/i);
-  assert.match(h.requests[1]!.system.text, /briefly/i);
-  h.f.send({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from(pcm).toString('base64') } }] },
-    outputTranscription: { text: 'Synthetic insight is ready.', finished: true }, turnComplete: true } });
-  await drain(h, callback.liveSessionId, 3);
-  const output = pickedUp.output[Symbol.asyncIterator]();
-  const openingChunks = [(await output.next()).value, (await output.next()).value, (await output.next()).value];
-  assert.ok(openingChunks.some(chunk => chunk?.kind === 'audio'), 'the completed opening produces a first spoken turn in the fixture');
-  assert.ok(h.owner.current().entries.some(entry => entry.kind === 'outputTranscription' && entry.text === 'Synthetic insight is ready.'));
-  assert.equal(h.f.frames.length, 4, 'pickup needs no microphone input or nudge frame');
-  assert.equal(h.owner.pendingJobs().length, 0, 'only explicit pickup consumes the pending result');
+  await h.f.frame(2);
+  const response = h.f.frames[1] as { toolResponse: { functionResponses: { id: string; response: unknown }[] } };
+  assert.equal(response.toolResponse.functionResponses[0]!.id, 'slow1');
+  assert.match(JSON.stringify(response.toolResponse.functionResponses[0]!.response), /Synthetic insight/);
+  assert.equal(h.owner.pendingJobs().length, 0, 'no background result is retained');
 });
+
+test('a tool batch resolving late still completes inline in the same turn', async t => {
+  for (const callId of ['late4500', 'late20000']) {
+    const h = await harness(t, { tools: true });
+    await attached(h);
+    h.f.send({ toolCall: { functionCalls: [{ id: callId, name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
+    await h.f.frame(2);
+    const response = h.f.frames[1] as { toolResponse: { functionResponses: { id: string; response: unknown }[] } };
+    assert.equal(response.toolResponse.functionResponses[0]!.id, callId);
+    assert.match(JSON.stringify(response.toolResponse.functionResponses[0]!.response), /Synthetic insight/);
+  }
+});
+
+test('a tool call past its deadline returns the typed timeout failure stage inline', async t => {
+  const h = await harness(t, { tools: true, beforeTool: () => Promise.reject(new Error('connector deadline')) });
+  await attached(h);
+  h.f.send({ toolCall: { functionCalls: [{ id: 'late30', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
+  await h.f.frame(2);
+  const response = h.f.frames[1] as { toolResponse: { functionResponses: { id: string; response: { error?: string } }[] } };
+  assert.ok(response.toolResponse.functionResponses[0]!.response.error, 'the deadline failure is sent inline');
+});
+
 
 test('Live accepts a frozen real tool snapshot and projects only result-gated Markdown', async t => {
   const h = await harness(t, { tools: true });

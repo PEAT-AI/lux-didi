@@ -2,7 +2,7 @@ import { sourceCards } from '../tools/source-cards.js';
 import * as memory from '../domain/memory.js';
 import * as labels from '../domain/labels.js';
 import { definitionsInTransaction } from '../tools/index.js';
-import { LiveToolJobs, type ToolJob, type JobTimer } from '../tools/jobs.js';
+import { LiveToolJobs, type JobTimer } from '../tools/jobs.js';
 import { declarationsFor, runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
 import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';
@@ -372,7 +372,7 @@ export class LiveSessionOwner {
     return this.#jobs.list().filter(job => job.deferred && (!pendingOnly || !job.delivered)).map(job => ({
       id: job.id, originSessionId: job.originSessionId, state: job.state, createdAt: job.createdAt, delivered: job.delivered,
       markdown: job.result?.accepted.map(result => typeof result.response.text === 'string' ? result.response.text : JSON.stringify(result.response)).join('\n\n')
-        || (job.state === 'in_progress' ? 'This lookup continues; its result will be offered at the next turn.' : job.state === 'completed' ? 'Completed, delivery pending.' : `Background job ${job.state}.`),
+        || `Job ${job.state}.`,
     }));
   }
 
@@ -867,10 +867,6 @@ export class LiveSessionOwner {
 
   async #toolBatch(handle: ActiveSession, event: Extract<LiveVoiceEvent, { type: 'toolCall' }>, generation: number): Promise<void> {
     handle.thinking = true;
-    let inlineJob: ToolJob | undefined;
-    const retainUndelivered = () => {
-      if (inlineJob) { inlineJob.deferred = true; this.#jobs.save(inlineJob); }
-    };
     const publish = (kind: 'toolCall' | 'toolResult', tool: LiveToolProjection) => {
       if ((this.#settled(handle) || generation !== handle.generation)) return;
       const sequence = this.#persist(handle, { type: kind, sequence: event.sequence, tool }, kind);
@@ -891,7 +887,7 @@ export class LiveSessionOwner {
       const control = { signal: jobAbort.signal, deadlineMs: handle.deadlineMs };
       if (event.calls.some(call => call.name === 'remember_note')) await this.#waitForOwnerTranscript(handle, event.sequence);
       if (this.#settled(handle) || generation !== handle.generation) return;
-      const execution = await this.#jobs.run(host, authority, this.#profile.limits.toolDeferralMs, this.#schedule, async () => {
+      const batch = await (async () => {
         if (this.#settled(handle) || generation !== handle.generation) throw new LiveError('invalidated');
         const raw = await runToolCalls(this.#tools!.owner, event.calls, { registry: handle.registry, host,
           authority: { isCurrent: async (_host, _tool, signal) => dispatchGate.state === 'allowed' && !signal.aborted && generation === handle.generation && !this.#settled(handle) }, control,
@@ -900,23 +896,8 @@ export class LiveSessionOwner {
         if (!this.lookupAuthority(host.runId) && !this.lookupJobAuthority(host.runId)) return raw;
         const gated = await authorizeToolBatch(this.#tools!.owner, raw, { host, control, baseClasses: [handle.inputClass] });
         return gated;
-      });
-      if (!execution.result) {
-        if (!(this.#settled(handle) || generation !== handle.generation)) {
-          const status = execution.job.state === 'in_progress' ? 'in progress' : execution.job.state;
-          for (const call of event.calls) publish('toolResult', { name: call.name, status: 'error',
-            markdown: status === 'in progress' ? 'This lookup continues; its result will be offered at the next turn.' : `Background job ${status}.`, sources: [] });
-          const responses = event.calls.filter(call => handle.pendingCallIds.has(call.id)).map(call => ({ id: call.id, name: call.name,
-            response: { jobId: execution.job.id, status, message: status === 'in progress' ? 'This lookup continues; its result will be offered at the next turn.' : `Background job ${status}.` } }));
-          try { if (responses.length) handle.session.sendToolResponse({ responses }); } catch { /* cancelled provider batch */ }
-          for (const call of event.calls) handle.pendingCallIds.delete(call.id);
-          handle.thinking = false;
-        }
-        return;
-      }
-      inlineJob = execution.job;
-      const batch = execution.result;
-      if ((this.#settled(handle) || generation !== handle.generation)) { retainUndelivered(); return; }
+      })();
+      if ((this.#settled(handle) || generation !== handle.generation)) return;
       responses = event.calls.map((call, index) => {
         const accepted = batch.accepted.find(result => result.binding.callId === call.id && result.binding.name === call.name);
         const record = batch.tools[index];
@@ -928,20 +909,15 @@ export class LiveSessionOwner {
         return { id: call.id, name: call.name, response: completed ? accepted.response : { error: reason } };
       });
     }
-    if ((this.#settled(handle) || generation !== handle.generation)) { retainUndelivered(); return; }
+    if ((this.#settled(handle) || generation !== handle.generation)) return;
     for (const [index, projection] of projections.entries()) if (handle.pendingCallIds.has(event.calls[index]!.id)) publish('toolResult', projection);
     responses = responses.filter(response => handle.pendingCallIds.has(response.id));
     if (!(this.#settled(handle) || generation !== handle.generation)) {
       try {
         if (responses.length) {
           handle.session.sendToolResponse({ responses });
-          if (inlineJob) inlineJob.delivered = true;
         }
       } catch { /* A cancelled provider batch or terminal transport cannot receive late answers. */ }
-    }
-    if (inlineJob) {
-      inlineJob.deferred = !inlineJob.delivered;
-      this.#jobs.save(inlineJob);
     }
     for (const call of event.calls) handle.pendingCallIds.delete(call.id);
     handle.thinking = handle.pendingCallIds.size > 0;

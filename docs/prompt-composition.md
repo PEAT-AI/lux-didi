@@ -193,6 +193,11 @@ counts/status only. Attach neither recomposes nor resolves memory: it uses the a
 byte for byte, including tool and pickup conduct. Voice journal events never become durable
 memory entries in this release.
 
+Live never defers a tool call: every call is awaited inline until it completes or the
+connector deadline fails it, and the result or the typed failure is sent back to the
+model in the same turn. There is no background job path and no callback promise in the
+Live system instruction.
+
 ### Voice memory writes and frozen prompts
 
 The built-in Live `remember_note` writes only an explicitly requested, finalized owner utterance as ordinary memory. It does not change the running session's accepted prompt snapshot or prompt identity. A later CREATE selects and recalls the note using the ordinary memory section. Live-voice entries have no deletion control yet; removing a note from the selected-memory picker only removes that local selection, not the durable entry. Private or sensitive voice classification is refused, not downgraded. See [tool-owner.md](tool-owner.md) for the built-in authorization and provenance rule.

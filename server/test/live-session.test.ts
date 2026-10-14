@@ -1521,6 +1521,38 @@ test('third recoverable loss ends the same session without a fourth connection',
   assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(r => r.kind === 'terminal').length, 1);
 });
 
+test('a post-ready rejected frame resumes the same live session for a seventh turn', async t => {
+  const h = await harness(t);
+  const { session, attachment } = await attached(h, 'protocol-resume');
+  void (async () => { for await (const chunk of attachment.output) { void chunk; } })();
+  const handle = 'synthetic-protocol-resume-secret';
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: handle } });
+  for (let i = 0; i < 100; i++) {
+    if (h.store.transaction(tx => tx.get('SELECT resumption_handle FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!['resumption_handle'] === handle) break;
+    await tick();
+  }
+  const base = h.owner.get(session.liveSessionId).journal.events;
+  for (let i = 0; i < 6; i++) {
+    h.f.send({ serverContent: { outputTranscription: { text: `out-${i}`, finished: true }, generationComplete: true, turnComplete: true } });
+    await drain(h, session.liveSessionId, base + (i + 1) * 3);
+  }
+  assert.equal(h.f.attempts, 1);
+  // The rejected frame after ready ends the connection with a recoverable protocol_error.
+  h.f.send({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: 'not-valid-base64!!' } }] } } });
+  await h.f.frame(2);
+  assert.equal(h.f.attempts, 2, 'the owner opens one resumption connection');
+  assert.equal((h.f.frames[1] as { setup: { sessionResumption: { handle: string } } }).setup.sessionResumption.handle, handle);
+  h.f.send({ setupComplete: {} });
+  const before = h.owner.get(session.liveSessionId).journal.events;
+  // A seventh turn arrives on the same live session id.
+  h.f.send({ serverContent: { outputTranscription: { text: 'out-6', finished: true }, turnComplete: true } });
+  await drain(h, session.liveSessionId, before + 2);
+  assert.equal(h.owner.current().state, 'listening');
+  assert.equal(h.store.transaction(tx => tx.all('SELECT live_session_id FROM live_sessions')).length, 1, 'the same live session resumed');
+  assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(r => r.kind === 'terminal').length, 0);
+  attachment.close(); await attachment.done;
+});
+
 test('revoked resumption handle is cleared before a recoverable loss', async t => {
   const h = await harness(t);
   const { session, attachment } = await attached(h, 'resume-cleared');

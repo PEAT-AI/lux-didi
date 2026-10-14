@@ -6,6 +6,7 @@ import WebSocket from 'ws';
 import { GeminiLiveVoiceAdapter, LiveVoiceError } from '../adapters/live-voice/index.js';
 import type { GeminiLiveVoiceOptions, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceRequest } from '../adapters/live-voice/index.js';
 import { CANARY, speechActivityFrames, collect, control, deferred, fixture as providerFixture, options, pcm, ready as providerReady, request } from './live-voice-fixture.js';
+import { safeEvent } from '../host/log.js';
 
 const code = (expected: string) => (error: unknown) => error instanceof LiveVoiceError && error.code === expected && error.message === expected;
 const audio = () => ({ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from(pcm).toString('base64') } });
@@ -557,6 +558,9 @@ test('a rejected provider frame reports one shape-only diagnostic with no value 
   assert.ok(Array.isArray(diagnostic.keys) && diagnostic.keys.includes('serverContent.modelTurn.parts[].inlineData'), 'nested key names are reported');
   assert.equal(lines.some(line => line.includes(CANARY)), false, 'no provider value leaks into the diagnostic');
   assert.equal(JSON.stringify(diagnostic).includes(CANARY), false, 'no provider value leaks into the diagnostic');
+  assert.deepEqual(safeEvent(JSON.parse(JSON.stringify(diagnostic))), diagnostic, 'the diagnostic passes the host log whitelist');
+  assert.equal(safeEvent({ ...diagnostic, leaked: 'text' }), undefined, 'extra keys are refused');
+  assert.equal(safeEvent({ ...diagnostic, keys: ['serverContent', 'bad key name!'] }), undefined, 'a non-key path is refused');
 });
 
 test('provider fixture rejects unsupported setup schema with 1007 before ready', async t => {
@@ -575,7 +579,7 @@ test('provider fixture rejects unsupported setup schema with 1007 before ready',
 test('provider 1007 after ready remains remote_closed, not setup rejection', async t => {
   const { f, session, captured } = await providerReady(t);
   f.remoteClose(CANARY, 1007);
-  assert.deepEqual(await session.done, { status: 'failed', code: 'remote_closed' });
+  assert.deepEqual(await session.done, { status: 'failed', code: 'remote_closed', recoverable: true });
   await captured.done;
   noCanary(captured.events);
 });

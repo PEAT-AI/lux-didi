@@ -53,6 +53,8 @@ Combined serverContent fields are not discarded. Deterministic projection within
 
 Unknown harmless protocol additions are ignored. Empty envelopes, malformed recognized fields, invalid PCM/rates and premature or repeated setup completion fail closed. Tool batches are surfaced as events; the host executes already-granted tools and answers each batch in one response frame. `goAway` projects the documented duration then closes honestly. Resumption updates expose only availability; raw handles are never emitted or persisted and no resumption is attempted. Sliding-window context compression and documented history/VAD controls are included; no resumption or reconnect is attempted.
 
+When a provider frame is rejected, the adapter emits one bounded stderr diagnostic event `live_frame_rejected` carrying the error code, the frame kind (the recognized top-level key, or `unknown`, `non_object` or `invalid_json`), the wire byte length and a bounded list of top-level and nested key-name paths. It never carries a value, text, audio or id. The host persists it to `host.log` through the closed `safeEvent` whitelist.
+
 ## Failure and resource bounds
 
 `LiveVoiceError` exposes a fixed code/message only. Outcomes expose `{status, code}`. Requested shutdown is `closed`; abort is `cancelled`; absolute deadline is `deadline`; other terminal failures are `failed` with a specific code. Provider failures, transport errors and unsolicited remote closes are distinct. Resolver errors, ws stacks, raw URLs, keys, provider error messages and close reasons are not returned or logged. Recognized text containing the resolved synthetic/test key is rejected rather than exposed. The adapter does no logging.
@@ -117,9 +119,11 @@ event carries `timeLeftMs`; it stops outbound admission without finishing the
 connection. The owner may replace the draining connection immediately.
 
 Outcomes classify network failures and transport closes 1006/1011 as recoverable,
-as well as completion of a provider drain. Policy/setup rejection (including
-1008), authentication, quota, protocol errors and local session, idle or deadline
-expiry are final. Limits supplied by the owner override connection timers,
+as well as completion of a provider drain. A post-ready provider-side failure (a
+rejected frame, an abnormal or unexpected provider close) is also recoverable, so
+the owner can resume it. Pre-ready failures, policy/setup rejection (including
+1008), authentication, quota and local session, idle or deadline expiry stay
+final. Limits supplied by the owner override connection timers,
 including the remaining session/idle budget on resumed connections. Recovery
 attempts and durable continuity belong only to the live owner.
 

@@ -15,6 +15,22 @@ const DEFAULTS: Readonly<LiveVoiceLimits> = Object.freeze({
 });
 const classes: readonly DataClass[] = ['ordinary', 'private', 'sensitive'];
 const timerNames = ['handshakeMs', 'idleMs', 'sessionMs', 'closeMs'] as const;
+// Gemini Live provider field names, used only to name the rejected frame kind, never its values.
+const frameKeys = ['error', 'toolCall', 'toolCallCancellation', 'setupComplete', 'serverContent', 'voiceActivity', 'sessionResumptionUpdate', 'goAway', 'usageMetadata'];
+function keyName(key: string): boolean { return /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(key); }
+// Bounded shape walk: key names only, never a value, text, audio or id.
+function shapePaths(value: unknown, out: string[], prefix: string, depth: number): void {
+  if (out.length >= 24 || depth > 4 || !object(value)) return;
+  for (const key of Object.keys(value)) {
+    if (out.length >= 24) return;
+    if (!keyName(key)) continue;
+    const path = prefix ? `${prefix}.${key}` : key;
+    out.push(path);
+    const child = value[key];
+    if (Array.isArray(child)) { if (child.length && object(child[0])) shapePaths(child[0], out, `${path}[]`, depth + 1); }
+    else if (object(child)) shapePaths(child, out, path, depth + 1);
+  }
+}
 type ObjectValue = Record<string, unknown>;
 type EventBody = LiveVoiceEvent extends infer E ? E extends LiveVoiceEvent ? Omit<E, 'sequence'> : never : never;
 function object(value: unknown): value is ObjectValue { return !!value && typeof value === 'object' && !Array.isArray(value); }
@@ -241,10 +257,15 @@ class Session implements LiveVoiceSession {
   };
   private readonly onMessage = (data: RawData) => {
     if (!this.checkpoint()) return;
+    let message: unknown;
+    let byteLength = 0;
+    let parsed = false;
     try {
       const bytes = Array.isArray(data) ? Buffer.concat(data) : Buffer.isBuffer(data) ? data : Buffer.from(data);
-      if (bytes.length > this.settings.limits.maxIncomingBytes) { this.finish('incoming_limit'); return; }
-      const message: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes));
+      byteLength = bytes.length;
+      if (byteLength > this.settings.limits.maxIncomingBytes) { this.finish('incoming_limit'); return; }
+      message = JSON.parse(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes));
+      parsed = true;
       if (!object(message)) fail('protocol_error');
       if (!Object.keys(message).length) {
         if (this.acceptsEmptyReadyLifecycle && this.isReady) return;
@@ -309,8 +330,20 @@ class Session implements LiveVoiceSession {
       for (const event of events) { if (!this.checkpoint() || !this.emit(event)) return; }
       this.touch(events.some(event => event.type !== 'ready' && event.type !== 'resumptionHandle' && event.type !== 'goAway'));
 
-    } catch (error) { this.finish(error instanceof LiveVoiceError ? error.code : 'protocol_error'); }
+    } catch (error) {
+      const code = error instanceof LiveVoiceError ? error.code : 'protocol_error';
+      this.reportRejectedFrame(message, byteLength, parsed, code);
+      this.finish(code);
+    }
   };
+  // One bounded, privacy-safe line at the exact parser rejection point: frame kind, top-level
+  // and nested key names and byte length, never a value, text, audio or id.
+  private reportRejectedFrame(message: unknown, byteLength: number, parsed: boolean, code: LiveVoiceErrorCode): void {
+    const kind = !parsed ? 'invalid_json' : object(message) ? frameKeys.filter(key => Object.hasOwn(message, key)).sort().join('+') || 'unknown' : 'non_object';
+    const keys: string[] = [];
+    if (object(message)) shapePaths(message, keys, '', 0);
+    console.error(JSON.stringify({ event: 'live_frame_rejected', code, kind, bytes: byteLength, keys }));
+  }
   private text(value: unknown): string {
     if (typeof value !== 'string' || (this.secret && (value.includes(this.secret) || value.includes(encodeURIComponent(this.secret))))) fail('protocol_error');
     return value;
@@ -450,7 +483,10 @@ class Session implements LiveVoiceSession {
   private finish(code: LiveVoiceErrorCode) {
     if (this.terminal) return;
     const status = code === 'closed' ? 'closed' : code === 'cancelled' ? 'cancelled' : code === 'deadline' ? 'deadline' : 'failed';
-    this.terminal = Object.freeze({ status, code, ...(this.recoverable || code === 'go_away' || code === 'transport_error' ? { recoverable: true } : {}), ...(this.droppedAudioFrames ? { droppedAudioFrames: this.droppedAudioFrames } : {}) });
+    // A post-ready provider-side failure is recoverable through the owner resumption path; pre-ready,
+    // auth, route and config failures stay terminal.
+    const providerSideFailure = this.isReady && (code === 'protocol_error' || code === 'remote_closed');
+    this.terminal = Object.freeze({ status, code, ...(this.recoverable || code === 'go_away' || code === 'transport_error' || providerSideFailure ? { recoverable: true } : {}), ...(this.droppedAudioFrames ? { droppedAudioFrames: this.droppedAudioFrames } : {}) });
     for (const timer of this.timers) clearTimeout(timer);
     this.timers.clear(); this.signal.removeEventListener('abort', this.onAbort);
     this.initial = undefined; this.secret = '';

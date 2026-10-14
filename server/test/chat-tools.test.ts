@@ -27,11 +27,22 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
   const responseEntities: string[] = [];
   let ask = true;
   let repeat = false;
-  const model: ModelPort = { generate: async request => {
+  let illegalFinal = false;
+  let finalStatus: 'complete' | 'empty' | 'truncated' = 'complete';
+  let beforeFinal: (() => void) | undefined;
+  const model: ModelPort = { generate: async (request, control) => {
     requests.push(structuredClone(request));
     if (ask && request.declarations?.some(d => d.name === 'search_knowledge') && (repeat || !request.contents.some(c => c.parts.some(p => p.functionResponse)))) {
       return { ...result(request, 'complete', ''), providerContent: { role: 'model', parts: [{ functionCall: { name: 'search_knowledge', args: { query: 'which emails arrived', limit: 1 }, id: randomUUID() } }] } };
     }
+    if (illegalFinal) {
+      control.onEvent?.({ type: 'text', text: 'PROVISIONAL', provisional: true });
+      return { ...result(request, 'complete', 'PROVISIONAL'), providerContent: { role: 'model', parts: [
+        { text: 'PROVISIONAL' }, { functionCall: { name: 'search_knowledge', args: { query: 'one more', limit: 1 }, id: randomUUID() } },
+      ] } };
+    }
+    if (finalStatus !== 'complete') return result(request, finalStatus, '');
+    beforeFinal?.();
     return result(request, 'complete', 'Answer from evidence');
   } };
   const f = openFixture(dir, model, { now: Date.now, route: { provider: 'gemini', model: 'fixture', available: true, allows: classes => classes.every(c => routeClasses.includes(c)), endpoint: 'https://generativelanguage.googleapis.com', apiVersion: 'v1beta', keyReference: 'fixture', allowedClasses: routeClasses } }, undefined, toolsMigrations);
@@ -75,6 +86,8 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
     throw Error('no terminal snapshot');
   };
   return { ...f, chat, owner, registry, requests, responseEntities, endpoint, mcp, composition, session, turn, executions: () => executions, repeatCalls: () => { repeat = true; }, noCalls: () => { ask = false; }, rejectResult: () => { reject = true; }, rawRejectedResult: () => { reject = true; errorFlag = false; }, setDispatchHook: (hook: () => void) => { onDispatch = hook; },
+    illegalFinalCall: () => { illegalFinal = true; }, finalOutcome: (status: 'empty' | 'truncated') => { finalStatus = status; },
+    setFinalHook: (hook: () => void) => { beforeFinal = hook; },
     approveY: async () => { exposed.push({ name: 'get_insight', inputSchema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'integer' } }, include_links: { type: 'boolean' } }, required: ['ids', 'include_links'], additionalProperties: false } }); const current = f.store.transaction(tx => tx.get('SELECT policy_json,policy_sha256 FROM tool_connections WHERE connection_id=?', [endpoint.id])!); const prior = JSON.parse(String(current.policy_json)) as ConnectionPolicy; owner.applyConnectionIntent({ expectedPolicySha256: String(current.policy_sha256), policy: { ...prior, generation: prior.generation + 1, toolNames: exposed.map(tool => tool.name), schemaDigest: canonicalToolDigest(exposed) } }); await mcp.refresh(); },
     privateOnly: async () => { const p = f.store.transaction(tx => JSON.parse(String(tx.get('SELECT policy_json FROM tool_connections WHERE connection_id=?', [endpoint.id])!.policy_json)) as ConnectionPolicy); owner.applyConnection({ ...p, generation: p.generation + 1, sourcePolicy: { ...p.sourcePolicy, unknownClass: 'private', allowedClasses: ['private'] }, route: { ...p.route, allowedClasses: ['private'] } }); assert.equal((await mcp.port.discover(endpoint.id)).state, 'discovered'); owner.projectConnection(endpoint.id); },
     sensitiveOnly: async () => { const p = f.store.transaction(tx => JSON.parse(String(tx.get('SELECT policy_json FROM tool_connections WHERE connection_id=?', [endpoint.id])!.policy_json)) as ConnectionPolicy); owner.applyConnection({ ...p, generation: p.generation + 1, sourcePolicy: { ...p.sourcePolicy, unknownClass: 'sensitive', allowedClasses: ['sensitive'] }, route: { ...p.route, allowedClasses: ['sensitive'] } }); assert.equal((await mcp.port.discover(endpoint.id)).state, 'discovered'); owner.projectConnection(endpoint.id); },
@@ -177,8 +190,59 @@ test('four bounded tool rounds receive one tools-disabled final synthesis reques
   assert.ok(run.finalEntryId);
   assert.deepEqual(f.requests[4]!.declarations, []);
   assert.match(JSON.stringify(f.requests[4]), /ACCEPTED/);
+  assert.equal(JSON.stringify(f.requests[4]).match(/ACCEPTED/g)?.length, 4);
+  assert.doesNotMatch(JSON.stringify(f.requests[4]), /REJECTED|unclassified/);
   assert.equal(run.toolEvidence?.length, 4, 'all bounded tool results remain gated in the completed answer');
   assert.doesNotMatch(JSON.stringify(run), /REJECTED/);
+});
+
+test('an early visible answer does not add a synthesis request', async t => {
+  const f = await fixture(t); f.noCalls(); const run = await f.turn(f.session());
+  assert.equal(run.outcome, 'complete'); assert.equal(f.requests.length, 1); assert.equal(f.executions(), 0);
+});
+
+test('the tools-disabled synthesis cannot dispatch a returned mixed text and tool call', async t => {
+  const f = await fixture(t); f.repeatCalls(); f.illegalFinalCall(); const run = await f.turn(f.session());
+  assert.equal(f.requests.length, 5);
+  assert.deepEqual(f.requests[4]!.declarations, []);
+  assert.equal(f.executions(), 4, 'a synthesis function call is never dispatched');
+  assert.equal(run.outcome, 'truncated');
+  assert.equal(run.finalEntryId, null);
+  assert.match(run.partialText, /PROVISIONAL/);
+  assert.equal(run.toolEvidence?.length, 4);
+});
+
+test('empty and noncomplete synthesis outcomes never commit an assistant entry', async t => {
+  for (const status of ['empty', 'truncated'] as const) {
+    const f = await fixture(t); f.repeatCalls(); f.finalOutcome(status); const run = await f.turn(f.session());
+    assert.equal(f.requests.length, 5);
+    assert.deepEqual(f.requests[4]!.declarations, []);
+    assert.equal(f.executions(), 4);
+    assert.equal(run.outcome, status);
+    assert.equal(run.finalEntryId, null);
+  }
+});
+
+test('revocation during final synthesis cannot commit its answer', async t => {
+  const f = await fixture(t); const session = f.session(); f.repeatCalls();
+  f.setFinalHook(() => { f.chat.revoke(session, f.context); });
+  const run = await f.turn(session);
+  assert.equal(f.requests.length, 5);
+  assert.deepEqual(f.requests[4]!.declarations, []);
+  assert.equal(f.executions(), 4);
+  assert.equal(run.outcome, 'cancelled');
+  assert.equal(run.finalEntryId, null);
+});
+
+test('final synthesis retains the monotonic class of gated tool results', async t => {
+  const f = await fixture(t, ['ordinary', 'private', 'sensitive']); await f.sensitiveOnly();
+  const session = f.session();
+  f.store.transaction(tx => tx.run('UPDATE chat_consents SET permitted_classes=? WHERE session_id=?', ['["ordinary","private","sensitive"]', session]));
+  f.repeatCalls(); const run = await f.turn(session);
+  assert.equal(run.outcome, 'complete'); assert.equal(f.executions(), 4); assert.equal(f.requests.length, 5);
+  assert.deepEqual(f.requests[4]!.declarations, []);
+  assert.ok(f.requests[4]!.dataClasses.includes('sensitive'));
+  assert.equal(f.store.transaction(tx => f.domain.getRoutingLabel(tx, { kind: 'entry', id: run.finalEntryId! })).dataClass, 'sensitive');
 });
 
 

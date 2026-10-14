@@ -72,11 +72,12 @@ export async function runTools(options: LoopOptions): Promise<LoopResult> {
     } catch (error) {
       return end(error instanceof Interrupted ? error.status : 'error', 'tool_result_denied');
     }
-    if (steps >= options.maxSteps) return end('limit', 'model_step_limit');
+    const synthesis = steps >= options.maxSteps;
     let result;
     try {
       result = await controlled(options.control, () => options.model.generate({
         ...structuredClone(request), contents: structuredClone(contents), dataClasses: [...classes],
+        ...(synthesis ? { declarations: [] } : {}),
       }, options.control));
     } catch (error) {
       return end(error instanceof Interrupted ? error.status : 'error', 'model_interrupted_or_failed');
@@ -88,6 +89,7 @@ export async function runTools(options: LoopOptions): Promise<LoopResult> {
       contents.push(structuredClone(result.providerContent));
       return { ...end('complete', 'stop', result.text), modelResult: result };
     }
+    if (synthesis) return end('limit', 'model_step_limit');
     if (calls.length > 16) return end('limit', 'tool_calls_per_step_limit');
     contents.push(structuredClone(result.providerContent));
     const responses: Part[] = [];

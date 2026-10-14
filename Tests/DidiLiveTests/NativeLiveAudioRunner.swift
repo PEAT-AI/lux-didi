@@ -322,11 +322,15 @@ private func checkPrimaryChannelConversion() throws {
     let (monoExplicit, _) = try converted(mono, scenario: "primary", explicit: true)
     try audioRequire(monoCurrent == monoExplicit && monoCurrent.contains { $0 != 0 }, "explicit first-channel map preserves mono bytes")
     var rows: [[String: Any]] = []
+    let stereo = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2)!
+    let (stereoCurrent, _) = try converted(stereo, scenario: "unrelated", explicit: false)
+    try audioRequire(stereoCurrent == monoCurrent, "actual stereo conversion selects primary bytes without mixing channel one")
     var currentPrimary: Data?, currentUniform: Data?
     for scenario in ["primary", "uniform", "unrelated"] {
         let (current, currentMap) = try converted(multichannel, scenario: scenario, explicit: false)
         let (candidate, candidateMap) = try converted(multichannel, scenario: scenario, explicit: true)
         try audioRequire(candidate == monoCurrent, "explicit first-channel map preserves primary PCM without mixing unrelated channels")
+        try audioRequire(current == monoCurrent, "actual primary-channel conversion does not mix unrelated input channels")
         rows.append(["scenario": scenario, "currentMap": currentMap, "candidateMap": candidateMap,
                      "currentBytes": current.count, "currentNonzeroSamples": current.withUnsafeBytes { $0.bindMemory(to: Int16.self).filter { $0 != 0 }.count },
                      "candidateNonzeroSamples": candidate.withUnsafeBytes { $0.bindMemory(to: Int16.self).filter { $0 != 0 }.count },
@@ -377,6 +381,8 @@ private func checkPrimaryChannelConversion() throws {
             catch { fatalError("Capture tap: \(error)") }
             return
         }
+        do { try checkPrimaryChannelConversion() }
+        catch { fatalError("Primary-channel conversion: \(error)") }
         do {
             for state in NativeLiveConversation.State.allCases {
                 let presentation = state.presentation

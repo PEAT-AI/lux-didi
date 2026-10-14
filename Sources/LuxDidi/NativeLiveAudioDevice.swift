@@ -42,6 +42,7 @@ final class NativePCMConverter {
             throw NativeLiveAudioError.unsupportedFormat
         }
         guard let converter = AVAudioConverter(from: input, to: output) else { throw NativeLiveAudioError.converterUnavailable }
+        converter.channelMap = [0]
         self.output = output; self.converter = converter
         inputSampleRate = input.sampleRate; inputChannels = Int(input.channelCount)
     }

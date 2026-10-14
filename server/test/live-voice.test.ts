@@ -24,7 +24,10 @@ test('explicit user-first opening preserves incomplete history and model-first o
     t.after(() => session.close());
     const events = session.events[Symbol.asyncIterator]();
     input.opening = 'user_first'; // Opening, like history, is captured before credentials or handshake.
-    await f.frame(1); f.send({ setupComplete: {} }); await session.ready; await f.frame(2);
+    await f.frame(1);
+    assert.equal('historyConfig' in (f.frames[0] as { setup: Record<string, unknown> }).setup, false,
+      'normal client content never declares a non-generating initial-history phase');
+    f.send({ setupComplete: {} }); await session.ready; await f.frame(2);
     assert.deepEqual(f.frames[1], { clientContent: { turns: [{ role: 'user', parts: [{ text: 'Actual pending job result' }] }], turnComplete: opening === 'model_first' } });
     assert.equal((await events.next()).value?.type, 'ready');
     if (opening === 'model_first') {
@@ -68,7 +71,7 @@ test('wire setup/history snapshots, readiness, PCM and three independent output 
   assert.deepEqual(f.frames[0], { setup: {
     sessionResumption: {},
     model: 'models/explicit-live-test', generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'ExplicitVoice' } } }, thinkingConfig: { thinkingLevel: 'minimal' } },
-    historyConfig: { initialHistoryInClientContent: true }, contextWindowCompression: { slidingWindow: { targetTokens: 32000 } },
+    contextWindowCompression: { slidingWindow: { targetTokens: 32000 } },
     realtimeInputConfig: { automaticActivityDetection: { startOfSpeechSensitivity: 'START_SENSITIVITY_LOW' } },
     systemInstruction: { parts: [{ text: 'Synthetic system' }] }, inputAudioTranscription: {}, outputAudioTranscription: {},
   } });
@@ -337,7 +340,7 @@ test('Live tool batches use one response frame and suppress microphone audio unt
   assert.deepEqual(setup.tools, [{ functionDeclarations: [{ name: 'search_knowledge', description: 'Search', parameters: { type: 'OBJECT' } }] }]);
   assert.equal(setup.generationConfig.speechConfig.languageCode, 'ar-XA');
   assert.deepEqual(setup.generationConfig.thinkingConfig, { thinkingLevel: 'minimal' });
-  assert.deepEqual(setup.historyConfig, { initialHistoryInClientContent: true });
+  assert.equal(setup.historyConfig, undefined);
   assert.deepEqual(setup.contextWindowCompression, { slidingWindow: { targetTokens: 32000 } });
   assert.deepEqual(setup.realtimeInputConfig, { automaticActivityDetection: { startOfSpeechSensitivity: 'START_SENSITIVITY_LOW' } });
   f.send({ setupComplete: {} }); await session.ready;

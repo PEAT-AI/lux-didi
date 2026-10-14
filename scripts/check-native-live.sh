@@ -76,7 +76,7 @@ status=0
 node Tests/DidiLiveTests/canonical-frames.mjs "$work/canonical-frames" "$work/canonical-frames-work" || status=1
 node Tests/DidiLiveTests/process.mjs "$work/native-live" "$work" || status=1
 node Tests/DidiLiveTests/gateway.mjs "$work/stage0" "$work" "$work/native-live" "$work/native-live-mutated" || status=1
-for mode in production-native-request native-lifetime-retained native-lifetime-fresh; do
+for mode in production-native-request native-lifetime-retained native-lifetime-fresh native-listening-late; do
   mkdir "$work/$mode"
   node Tests/DidiLiveTests/gateway.mjs "$work/native-lifetime" "$work/$mode" unused unused "--$mode" || status=1
 done

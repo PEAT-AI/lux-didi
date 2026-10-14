@@ -14,6 +14,8 @@ test('resumption setup requests updates and forwards a usable handle without fin
   const captured = collect(session);
   await f.frame(1);
   assert.deepEqual((f.frames[0] as { setup: { sessionResumption?: unknown } }).setup.sessionResumption, {});
+  assert.equal('historyConfig' in (f.frames[0] as { setup: Record<string, unknown> }).setup, false,
+    'a new resumable session does not declare an unclosed initial-history phase');
   f.send({ setupComplete: {} }); await session.ready;
   f.send({ sessionResumptionUpdate: { resumable: true, newHandle: HANDLE }, goAway: { timeLeft: '1s' } });
   // Waiting for an emitted frame rather than a real timer keeps this test deterministic.
@@ -81,6 +83,8 @@ test('resumed setup does not replay original history or the model-first opening 
   await f.frame(1); f.send({ setupComplete: {} }); await session.ready;
   session.close(); await session.done; await captured.done;
   assert.equal(f.frames.length, 1, 'resume sends setup only, never a reconstructed history or opening turn');
+  assert.equal('historyConfig' in (f.frames[0] as { setup: Record<string, unknown> }).setup, false,
+    'resumption does not open a second initial-history phase');
   assert.equal((f.frames[0] as { setup: { sessionResumption: { handle: string } } }).setup.sessionResumption.handle === HANDLE, true);
 });
 

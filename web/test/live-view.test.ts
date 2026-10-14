@@ -119,6 +119,23 @@ test('transcript folds exact same-role fragments until a truthful turn boundary'
   assert.equal((html.match(/<strong>Naya<\/strong>/g) ?? []).length, 4);
 });
 
+test('transcript preserves exact fragment deltas without spaces or deduplication', () => {
+  const live: LiveCurrent = { state: 'speaking', cursor: 7, entries: [
+    { seq: 1, kind: 'outputTranscription', text: 'Hel' },
+    { seq: 2, kind: 'outputTranscription', text: 'lo' },
+    { seq: 3, kind: 'turnComplete' },
+    { seq: 4, kind: 'outputTranscription', text: 'ha' },
+    { seq: 5, kind: 'outputTranscription', text: 'ha' },
+    { seq: 6, kind: 'turnComplete' },
+    { seq: 7, kind: 'inputTranscription', text: 'ok' },
+  ] };
+  assert.deepEqual(liveTranscript(live), [
+    { role: 'naya', text: 'Hello' },
+    { role: 'naya', text: 'haha' },
+    { role: 'user', text: 'ok' },
+  ]);
+});
+
 test('result picks the newest accepted toolResult markdown and sources', () => {
   const result = liveResult(speaking);
   assert.equal(result?.markdown, '**Answer** see [source](https://example.org)');
@@ -164,6 +181,23 @@ test('new session replaces prior entries while same session pages accumulate', (
   const next = { ...speaking, since: '2026-10-12T16:00:00Z', cursor: 4, entries: [{ seq: 4, kind: 'inputTranscription' as const, text: 'new conversation' }] };
   assert.deepEqual(mergeLive(speaking, next).entries, next.entries);
   assert.equal(mergeLive(speaking, { ...next, since: speaking.since }).entries.length, 4);
+});
+
+test('cursor page replay replaces matching seq and a new session resets it', () => {
+  const first: LiveCurrent = { state: 'speaking', since: 'session-a', cursor: 2, entries: [
+    { seq: 1, kind: 'outputTranscription', text: 'Hel' },
+    { seq: 2, kind: 'outputTranscription', text: 'l' },
+  ] };
+  const replay: LiveCurrent = { state: 'speaking', since: 'session-a', cursor: 3, entries: [
+    { seq: 2, kind: 'outputTranscription', text: 'lo' },
+    { seq: 3, kind: 'turnComplete' },
+  ] };
+  const merged = mergeLive(first, replay);
+  assert.deepEqual(liveTranscript(merged), [{ role: 'naya', text: 'Hello' }]);
+  const reset: LiveCurrent = { state: 'listening', since: 'session-b', cursor: 1, entries: [
+    { seq: 1, kind: 'inputTranscription', text: 'new' },
+  ] };
+  assert.deepEqual(mergeLive(merged, reset).entries, reset.entries);
 });
 
 test('every tool result is inspectable and errors never show markdown', () => {

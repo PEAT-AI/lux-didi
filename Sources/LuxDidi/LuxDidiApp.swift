@@ -6,6 +6,8 @@ import Security
 
 @MainActor final class AppModel: ObservableObject {
     @Published var draft = ""
+    @Published var noteExpanded = false
+    @Published var detailsExpanded = false
     @Published private var operationError: String?
     var error: String? {
         get {
@@ -309,25 +311,42 @@ import Security
 struct NativeLiveControls: View {
     @ObservedObject var conversation: NativeLiveConversation
     @ObservedObject var device: NativeLiveAudioDevice
+    @ObservedObject var voice: NativeVoice
+    let hasPendingCall: Bool
+    let startFresh: () -> Void
+    let pickUpCall: () -> Void
     var body: some View {
-        VStack {
-            Text("Live: " + conversation.state.presentation.text).accessibilityLabel("Live voice lifecycle")
-            if !device.route.isEmpty { Text(device.route).font(.caption) }
-            if conversation.state == .pausedForInput {
-                Button("Resume") { conversation.start() }
-            }
-            if conversation.state == .failed {
-                Button("Restart") { conversation.start() }
+        VStack(alignment: .leading, spacing: 6) {
+            Text(conversation.state.presentation.text).font(.caption).foregroundStyle(.secondary)
+                .accessibilityLabel("Live voice lifecycle")
+            Text("Live microphone audio leaves this device for the configured Live provider. Start only with your consent.")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack(spacing: 10) {
+                Button(primaryLabel) {
+                    if conversation.state == .pausedForInput { conversation.start() } else { startFresh() }
+                }
+                    .disabled(primaryUnavailable || voice.state.phase == .recording)
+                Button(conversation.isMuted ? "Unmute" : "Mute") { conversation.toggleMute() }
+                    .disabled(!muteAvailable)
+                Button("Stop Live voice") { Task { await conversation.stop() } }.disabled(!stopAvailable)
+                if hasPendingCall { Button("Pick up Naya’s call", action: pickUpCall) }
             }
             ProgressView(value: conversation.state == .muted ? 0 : Double(device.inputLevel))
                 .accessibilityLabel(conversation.state == .muted ? "Microphone muted" : "Live microphone input level")
-            HStack {
-                Button(conversation.isMuted ? "Unmute" : "Mute") { conversation.toggleMute() }
-                    .disabled(![.listening, .speaking, .muted, .pausedForInput].contains(conversation.state))
-                Button("Stop Live voice") { Task { await conversation.stop() } }
-            }
             if let failure = conversation.failure { Text(failure).font(.caption) }
         }
+    }
+    private var primaryLabel: String {
+        conversation.state == .pausedForInput ? "Resume Live voice" : conversation.state == .failed ? "Restart Live voice" : "Start Live voice"
+    }
+    private var primaryUnavailable: Bool {
+        [.connecting, .listening, .speaking, .muted, .rebuilding].contains(conversation.state)
+    }
+    private var muteAvailable: Bool {
+        [.listening, .speaking, .muted, .pausedForInput].contains(conversation.state)
+    }
+    private var stopAvailable: Bool {
+        [.connecting, .listening, .speaking, .muted, .pausedForInput, .rebuilding].contains(conversation.state)
     }
 }
 
@@ -336,6 +355,30 @@ struct RootView: View {
     @ObservedObject var voice: NativeVoice
     var body: some View {
         VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Naya voice").font(.title2.weight(.semibold))
+                    }
+                    Spacer()
+                    settingsMenu
+                }
+                if let live = model.live {
+                    NativeLiveControls(conversation: live, device: live.device, voice: voice,
+                        hasPendingCall: !model.pendingLiveCalls.isEmpty, startFresh: { model.startLive() },
+                        pickUpCall: { model.pickUpLiveCall() })
+                } else {
+                    Text("Live microphone audio leaves this device for the configured Live provider. Start only with your consent.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    HStack(spacing: 10) {
+                        Button("Start Live voice") { model.startLive() }.disabled(voice.state.phase == .recording)
+                        if !model.pendingLiveCalls.isEmpty { Button("Pick up Naya’s call") { model.pickUpLiveCall() } }
+                    }
+                }
+                if model.serviceRestarting { Text("Local service restarting…").accessibilityLabel("Local service restarting") }
+                if let error = model.error { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
+            }.padding(16).background(Color(nsColor: .windowBackgroundColor))
+            Divider()
             if let shell = model.shell {
                 SharedServicePanel(shell: shell) { Task { await model.reconnect() } }
             } else {
@@ -348,58 +391,52 @@ struct RootView: View {
             }
             Divider()
             VStack(alignment: .leading, spacing: 10) {
-                Text("Native capture · \(model.hotkeyStatus)").font(.caption).foregroundStyle(.secondary)
-                TextField("User-entered or on-device transcribed text", text: $model.draft)
-                HStack {
-                    Button(model.captureStatus == .unknown ? "Retry Save note" : NativeNoteAction.label) { Task { await model.saveDraft() } }
-                        .disabled(!Presentation.canSend(model.draft) || model.captureStatus == .sending || voice.state.phase == .recording)
-                        .accessibilityLabel(model.captureStatus == .unknown ? "Retry Save note" : NativeNoteAction.label)
-                    Button("Dictate") { model.startDictation() }
-                        .disabled(model.live?.isCapturing == true || voice.state.phase == .recording || voice.microphone != .granted || voice.speech != .granted || !voice.onDevice)
-                        .accessibilityLabel("Start recording")
-                    Button(NativeConnectedSend.label) { Task { await model.sendToNaya() } }
-                        .disabled(model.sendingConnected || model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    Button("Stop dictating") { model.stopRecording("Stopped by user") }
-                        .disabled(voice.state.phase != .recording).accessibilityLabel("Stop recording")
-                    Spacer()
-                    settingsMenu
-                }
-                Text(captureDetail).font(.caption)
-                if model.serviceRestarting { Text("Local service restarting…").accessibilityLabel("Local service restarting") }
-                if let error = model.error { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
-                Text("Record locally, review the text, then send it. Closing Didi keeps your draft.").font(.caption2).foregroundStyle(.secondary)
-                Divider()
-                HStack(alignment: .top, spacing: 20) {
+                DisclosureGroup("Type or save a note", isExpanded: $model.noteExpanded) {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Live microphone audio leaves this device for the configured Live provider. Start only with your consent.").font(.caption)
+                        Text("Native capture · \(model.hotkeyStatus)").font(.caption).foregroundStyle(.secondary)
+                        TextField("User-entered or on-device transcribed text", text: $model.draft)
                         HStack {
-                            Button("Start Live voice") { model.startLive() }
-                                .disabled(model.live?.isCapturing == true || voice.state.phase == .recording)
-                            Button("Show conversation") { model.showConversation() }.disabled(model.shell == nil)
-                            if !model.pendingLiveCalls.isEmpty { Button("Pick up Naya’s call") { model.pickUpLiveCall() } }
+                            Button(model.captureStatus == .unknown ? "Retry Save note" : NativeNoteAction.label) { Task { await model.saveDraft() } }
+                                .disabled(!Presentation.canSend(model.draft) || model.captureStatus == .sending || voice.state.phase == .recording)
+                                .accessibilityLabel(model.captureStatus == .unknown ? "Retry Save note" : NativeNoteAction.label)
+                            Button("Dictate") { model.startDictation() }
+                                .disabled(model.live?.isCapturing == true || voice.state.phase == .recording || voice.microphone != .granted || voice.speech != .granted || !voice.onDevice)
+                                .accessibilityLabel("Start recording")
+                            Button(NativeConnectedSend.label) { Task { await model.sendToNaya() } }
+                                .disabled(model.sendingConnected || model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            Button("Stop dictating") { model.stopRecording("Stopped by user") }
+                                .disabled(voice.state.phase != .recording).accessibilityLabel("Stop recording")
                         }
+                        Text(captureDetail).font(.caption)
+                        Text("Record locally, review the text, then send it. Closing Didi keeps your draft.")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }.padding(.top, 6)
+                }.accessibilityLabel("Type or save a note")
+                DisclosureGroup("Connection details", isExpanded: $model.detailsExpanded) {
+                    VStack(alignment: .leading, spacing: 8) {
                         Text(model.liveLimits?.sentence ?? "Live limits unavailable. Reconnect the service to refresh.").font(.caption)
-                        if let live = model.live { NativeLiveControls(conversation: live, device: live.device) }
+                        if let route = model.live?.device.route, !route.isEmpty { Text(route).font(.caption) }
                         Button("Enable callback notifications") { Task { await model.requestNotificationPermission() } }
                         Text("Notifications: \(model.notificationStatus.presentation). If denied, use the menu bar badge and Pick up menu; notifications never start the microphone.").font(.caption)
                         if let offline = model.liveCallsError { Text(offline).font(.caption) }
-                    }.frame(maxWidth: .infinity, alignment: .leading)
-                    GroupBox("Connections") {
-                        VStack(alignment: .leading, spacing: 6) {
-                            if let error = model.connectionsError { Text(error) }
-                            else if model.connections.isEmpty { Text("No connectors reported.") }
-                            ForEach(model.connections) { connection in
-                                Text("\(connection.id): \(connection.state)" + (connection.reason.map { " (" + $0 + ")" } ?? ""))
-                            }
-                        }.font(.caption).frame(maxWidth: .infinity, alignment: .leading)
-                    }.frame(width: 220)
+                        GroupBox("Connections") {
+                            VStack(alignment: .leading, spacing: 6) {
+                                if let error = model.connectionsError { Text(error) }
+                                else if model.connections.isEmpty { Text("No connectors reported.") }
+                                ForEach(model.connections) { connection in
+                                    Text("\(connection.id): \(connection.state)" + (connection.reason.map { " (" + $0 + ")" } ?? ""))
+                                }
+                            }.font(.caption).frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }.padding(.top, 6)
                     .task { await model.refreshConnections() }
                     .onReceive(Timer.publish(every: 10, on: .main, in: .common).autoconnect()) { _ in
-                        Task { await model.refreshConnections() }
+                        if model.detailsExpanded { Task { await model.refreshConnections() } }
                     }
-                }
+                }.accessibilityLabel("Connection details")
             }.padding(12)
-        }.frame(minWidth: 780, minHeight: 620)
+            .background(Color(nsColor: .windowBackgroundColor))
+        }.frame(minWidth: 780, minHeight: 620).preferredColorScheme(.light)
     }
     private var settingsMenu: some View {
         Menu("Settings") {
@@ -468,6 +505,7 @@ struct RootView: View {
         OwnedWindowReadiness.trace("app:setActivationPolicy-accessory",
             ["activationPolicy": NSApp.activationPolicy().rawValue])
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 980, height: 760), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+        window.appearance = NSAppearance(named: .aqua)
         window.title = "Didi"; window.center(); window.delegate = self
         if proofRequest == nil && !CommandLine.arguments.contains("--ui-proof") && !CommandLine.arguments.contains("--self-check") {
             let saved = UserDefaults.standard.string(forKey: "DidiWindowFrame").map(NSRectFromString)

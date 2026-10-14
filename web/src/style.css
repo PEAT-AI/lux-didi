@@ -38,6 +38,7 @@
 .live-tool-result summary { cursor: pointer; }
 
 .live-tool-result { margin-top: 18px; padding: 14px 18px; border: 1px solid var(--border); border-radius: 9px; }
+.live{margin-bottom:20px;background:#fbfcf8}.live-state{font-size:.82rem;font-weight:700;letter-spacing:.03em;color:var(--green)}.live-result{margin-top:14px;padding:20px;border-radius:12px;background:#edf4ee}.live-result h2{margin-bottom:10px}.live-transcript{margin-top:14px;border-top:1px solid var(--border);padding-top:12px}.live-transcript .entries{min-height:0;max-height:360px;padding:0}.live-transcript .entry{margin-bottom:10px;padding:14px}.live-transcript .entry p{margin:6px 0 0}.live-activity:empty{display:none}
 
 .live-remember { margin-top: 18px; padding: 14px 18px; border: 1px solid var(--border); border-left: 3px solid var(--green); border-radius: 9px; }
 .live-remember h2 { margin: 0 0 6px; font-size: 1rem; }

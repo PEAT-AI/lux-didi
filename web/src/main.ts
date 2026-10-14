@@ -72,7 +72,7 @@ function orbCaptionMarkup() {
   return `<p class="orb-label" role="status" aria-live="polite">${e(orbLabel())}</p>${honesty?'<p class="voice-honesty"><strong>Not listening</strong><span>Voice stays on your Mac. Use its native record control.</span></p>':''}`;
 }
 function orbMarkup() {
-  return `<section class="orb-stage" aria-label="Didi voice and activity"><canvas id="didi-orb" width="440" height="440" aria-hidden="true"></canvas><div class="orb-caption">${orbCaptionMarkup()}</div></section>`;
+  return `<section class="orb-stage" aria-label="Naya voice and activity"><canvas id="didi-orb" width="440" height="440" aria-hidden="true"></canvas><div class="orb-caption">${orbCaptionMarkup()}</div></section>`;
 }
 function conversation() {
   return `<section class="page-heading"><div><p class="eyebrow">SPACE TO THINK</p><h1>A little clarity.</h1><p>Put it into words. We’ll keep what matters.</p></div><button id="new-conversation" class="secondary" ${disabled(busy)}>New conversation</button></section>

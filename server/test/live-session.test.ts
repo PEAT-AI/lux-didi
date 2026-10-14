@@ -515,6 +515,15 @@ test('tool deferral budget defaults to four seconds and accepts only bounded int
   }
 });
 
+test('live timer defaults are a 5 minute idle and a 60 minute session, and an explicit config wins', () => {
+  const defaults = validateLiveProfile(profileInput()).limits;
+  assert.equal(defaults.idleMs, 300_000);
+  assert.equal(defaults.sessionMs, 3_600_000);
+  const edited = validateLiveProfile(profileInput({ idleMs: 12_345, sessionMs: 67_890 })).limits;
+  assert.equal(edited.idleMs, 12_345);
+  assert.equal(edited.sessionMs, 67_890);
+});
+
 test('profile validation rejects text-model fallback and bounds, and validation precedes credentials', async t => {
   const cases: unknown[] = [
     { ...profileInput(), provider: 'openai' },
@@ -1546,6 +1555,38 @@ test('third recoverable loss ends the same session without a fourth connection',
   assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(r => r.kind === 'terminal').length, 1);
 });
 
+test('a post-ready rejected frame resumes the same live session for a seventh turn', async t => {
+  const h = await harness(t);
+  const { session, attachment } = await attached(h, 'protocol-resume');
+  void (async () => { for await (const chunk of attachment.output) { void chunk; } })();
+  const handle = 'synthetic-protocol-resume-secret';
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: handle } });
+  for (let i = 0; i < 100; i++) {
+    if (h.store.transaction(tx => tx.get('SELECT resumption_handle FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!['resumption_handle'] === handle) break;
+    await tick();
+  }
+  const base = h.owner.get(session.liveSessionId).journal.events;
+  for (let i = 0; i < 6; i++) {
+    h.f.send({ serverContent: { outputTranscription: { text: `out-${i}`, finished: true }, generationComplete: true, turnComplete: true } });
+    await drain(h, session.liveSessionId, base + (i + 1) * 3);
+  }
+  assert.equal(h.f.attempts, 1);
+  // The rejected frame after ready ends the connection with a recoverable protocol_error.
+  h.f.send({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: 'not-valid-base64!!' } }] } } });
+  await h.f.frame(2);
+  assert.equal(h.f.attempts, 2, 'the owner opens one resumption connection');
+  assert.equal((h.f.frames[1] as { setup: { sessionResumption: { handle: string } } }).setup.sessionResumption.handle, handle);
+  h.f.send({ setupComplete: {} });
+  const before = h.owner.get(session.liveSessionId).journal.events;
+  // A seventh turn arrives on the same live session id.
+  h.f.send({ serverContent: { outputTranscription: { text: 'out-6', finished: true }, turnComplete: true } });
+  await drain(h, session.liveSessionId, before + 2);
+  assert.equal(h.owner.current().state, 'listening');
+  assert.equal(h.store.transaction(tx => tx.all('SELECT live_session_id FROM live_sessions')).length, 1, 'the same live session resumed');
+  assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(r => r.kind === 'terminal').length, 0);
+  attachment.close(); await attachment.done;
+});
+
 test('revoked resumption handle is cleared before a recoverable loss', async t => {
   const h = await harness(t);
   const { session, attachment } = await attached(h, 'resume-cleared');
@@ -1685,7 +1726,7 @@ for (const status of [401, 403, 429]) test(`resumed HTTP upgrade refusal ${statu
   assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(row => row.kind === 'terminal').length, 1);
 });
 
-test('established WebSocket protocol error ends without resumption despite a saved handle', async t => {
+test('established WebSocket protocol error resumes through the saved handle', async t => {
   const h = await harness(t);
   const { session, attachment } = await attached(h, 'resume-protocol-final');
   const output = attachment.output[Symbol.asyncIterator]();
@@ -1693,9 +1734,13 @@ test('established WebSocket protocol error ends without resumption despite a sav
   h.f.send({ serverContent: { inputTranscription: { text: 'protocol sentinel' } } });
   await transcription(output, 'protocol sentinel');
   assert.equal(h.store.transaction(tx => tx.get('SELECT resumption_handle FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!.resumption_handle !== null, true);
-  // If the defect reconnects, refuse setup immediately rather than waiting a real timeout.
-  h.f.refuseUpgrades(403); h.f.invalidOpcode();
-  assert.deepEqual((await attachment.done).terminal, { state: 'failed', code: 'protocol_error' });
-  assert.equal(h.f.attempts, 1);
-  assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(row => row.kind === 'terminal').length, 1);
+  // A post-ready protocol error is recoverable, so the owner opens one resumption connection.
+  h.f.invalidOpcode();
+  await h.f.frame(2);
+  assert.equal(h.f.attempts, 2);
+  h.f.send({ setupComplete: {} });
+  await continuity(output, 'resumed');
+  assert.equal(h.owner.current().state, 'listening');
+  assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(row => row.kind === 'terminal').length, 0);
+  attachment.close(); await attachment.done;
 });

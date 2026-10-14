@@ -167,6 +167,61 @@ final class DiagnosticLogHTTPFixture: URLProtocol, @unchecked Sendable {
     print("PASS production capture callback off-main, nonzero 640-byte PCM, mute and stop fences; no audio engine")
 }
 
+// Synthetic 60 s capture through the real converter and ring with an injected 200 ms sender stall:
+// every converted byte is either sent, dropped by overflow/clear, or the final residual partial frame.
+@MainActor private func checkCaptureLedger() async throws {
+    let started = ContinuousClock.now
+    let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 1)!
+    let capture = try NativeCaptureBuffer(converter: NativePCMConverter(input: format))
+    let tapFrames = 1024, taps = 60 * 48000 / tapFrames
+    let stallTaps = Int(0.2 * 48000 / Double(tapFrames)) // ~192 ms without a drain
+    var sent = 0, phase = 0.0
+    for tap in 0..<taps {
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(tapFrames))!
+        buffer.frameLength = AVAudioFrameCount(tapFrames)
+        let samples = buffer.floatChannelData![0]
+        for index in 0..<tapFrames { samples[index] = Float(sin(phase) * 0.25); phase += 2 * .pi * 440 / 48000 }
+        capture.append(buffer)
+        if !(tap >= 100 && tap < 100 + stallTaps) { while let frame = capture.next().0 { sent += frame.count } }
+    }
+    while let frame = capture.next().0 { sent += frame.count }
+    let stats = capture.stop()
+    try audioRequire(stats.ringDrops == 0 && stats.droppedBytes == 0, "a 200 ms sender stall drops no frame")
+    try audioRequire(stats.sentBytes == sent && stats.convertedBytes == sent + stats.residualBytes, "the drain sends every whole converted frame")
+    try audioRequire(stats.balances, "converted == sent + dropped + residual")
+    try audioRequire(stats.residualBytes == stats.convertedBytes % 640, "residual is the final incomplete frame")
+    print("PASS 60 s synthetic capture, 200 ms stall, zero loss; ledger balances (converted=\(stats.convertedBytes) residual=\(stats.residualBytes))")
+    print("DURATION capture-ledger=\(started.duration(to: .now))s")
+}
+
+// A route change to a new hardware format rebuilds the converter for that format and keeps producing
+// non-zero PCM; the replacement never reuses the stale channel map.
+private func checkFormatChangeRebuild() throws {
+    let first = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 2)!
+    let second = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 1)!
+    func filled(_ format: AVAudioFormat, count: Int) -> AVAudioPCMBuffer {
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(count))!
+        buffer.frameLength = AVAudioFrameCount(count)
+        for channel in 0..<Int(format.channelCount) {
+            for index in 0..<count { buffer.floatChannelData![channel][index] = 0.25 }
+        }
+        return buffer
+    }
+    func channelMap(_ owner: NativePCMConverter) -> [NSNumber] {
+        (Mirror(reflecting: owner).children.first(where: { $0.label == "converter" })!.value as! AVAudioConverter).channelMap
+    }
+    let before = try NativePCMConverter(input: first)
+    var prior = try before.append(filled(first, count: 4096))
+    prior.append(try before.finish())
+    let after = try NativePCMConverter(input: second)
+    var rebuilt = try after.append(filled(second, count: 4096))
+    rebuilt.append(try after.finish())
+    try audioRequire(!prior.isEmpty && prior.contains(where: { $0 != 0 }), "predecessor format keeps non-zero PCM")
+    try audioRequire(!rebuilt.isEmpty && rebuilt.contains(where: { $0 != 0 }), "new-format converter produces non-zero PCM after a format change")
+    try audioRequire(channelMap(before) == [0] && channelMap(after) == [0], "each format gets a fresh channel map, never a stale one")
+    print("PASS format change rebuilds the converter for the new hardware format with a fresh channel map")
+}
+
 @MainActor private func checkTerminalCaptureSummary() async throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent("didi-capture-summary-" + UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: directory) }
@@ -201,6 +256,9 @@ final class DiagnosticLogHTTPFixture: URLProtocol, @unchecked Sendable {
     try audioRequire(summary["inputSampleRate"] as? Int == 48000 && summary["inputChannels"] as? Int == 1
         && summary["localSocketSendCompleted"] as? Int == 0 && summary["sendErrors"] as? Int == 0,
         "numeric format and zero local sends after refused authority")
+    try audioRequire(summary["ledgerBalanced"] as? Bool == true && (summary["playbackUnderruns"] as? Int) == 0
+        && (summary["lateAfterFlushChunks"] as? Int) == 0,
+        "byte ledger balances at call end with no playback underruns")
     device.stop(); await conversation.stop()
     try audioRequire(try String(contentsOf: file, encoding: .utf8).split(separator: "\n").count == records.count,
         "duplicate Stop emits no duplicate summary")
@@ -381,8 +439,20 @@ private func checkPrimaryChannelConversion() throws {
             catch { fatalError("Capture tap: \(error)") }
             return
         }
+        if CommandLine.arguments.dropFirst().contains("--capture-ledger-only") {
+            do { try await checkCaptureLedger() }
+            catch { fatalError("Capture ledger: \(error)") }
+            return
+        }
+        if CommandLine.arguments.dropFirst().contains("--format-change-only") {
+            do { try checkFormatChangeRebuild() }
+            catch { fatalError("Format change: \(error)") }
+            return
+        }
         do { try checkPrimaryChannelConversion() }
         catch { fatalError("Primary-channel conversion: \(error)") }
+        do { try checkFormatChangeRebuild() }
+        catch { fatalError("Format change: \(error)") }
         do {
             for state in NativeLiveConversation.State.allCases {
                 let presentation = state.presentation
@@ -444,6 +514,7 @@ private func checkPrimaryChannelConversion() throws {
             try await checkTerminalCaptureSummary()
             try await checkCaptureDropCounters()
             try await checkCaptureTapExecutor()
+            try await checkCaptureLedger()
             try await checkConversationDiagnostics()
             guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 44100, channels: 2, interleaved: false) else {
                 throw NativeLiveAudioError.unsupportedFormat
@@ -527,8 +598,8 @@ private func checkPrimaryChannelConversion() throws {
             try audioRequire(partial.append(Data(repeating: 9, count: 640)) == [Data(repeating: 9, count: 640)], "new frames exclude discarded carry")
             try audioRequire(partial.discardPartial() == 0 && partial.discardPartial() == 0, "empty consumed carry discard is idempotent")
             var ring = NativePCMFrameRing()
-            for i in 0..<10 { ring.push(Data(repeating: UInt8(i), count: 640)) }
-            try audioRequire(ring.drops == 2 && ring.pop()?.first == 2, "eight-frame ring drops oldest and counts")
+            for i in 0..<27 { ring.push(Data(repeating: UInt8(i), count: 640)) }
+            try audioRequire(ring.drops == 2 && ring.pop()?.first == 2, "500 ms ring drops oldest only past 25 frames and counts")
             let capture = try NativeCaptureBuffer(converter: NativePCMConverter(input: format))
             try capture.append(tone(format, start: 0, count: 4410))
             try audioRequire(capture.next().0?.count == 640, "capture produces complete frames")

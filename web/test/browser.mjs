@@ -34,6 +34,7 @@ try {
   assert.match(renderer?.renderer||'',/Metal/,'Actual GPU renderer must be Metal, not software');
   await step('pairing, empty data, no model, synthetic mode',async()=>{
     await page.getByLabel('One-time pairing code').fill('synthetic-only'); await page.getByRole('button',{name:'Pair this browser',exact:true}).click();
+    await page.locator('#conversation-history > summary').click();
     await page.getByText('No conversations yet.',{exact:true}).waitFor();
     await page.getByText('Demo test mode',{exact:true}).waitFor();
     assert.equal(await page.evaluate(()=>Object.keys(localStorage).length),0);
@@ -73,7 +74,7 @@ try {
     assert.equal((await page.locator('.orb-label').textContent()).trim(),'Speaking');
     assert.equal(await page.getByText('Not listening',{exact:true}).count(),0);
     assert.equal(await page.getByText('what is lux 123',{exact:true}).count(),1);
-    assert.equal(await page.getByText('Here is the answer.',{exact:true}).count(),1);
+    assert.equal(await page.locator('.live-latest-turn').getByText('Here is the answer.',{exact:true}).count(),1);
     const link=page.locator('#live-panel .live-result p a[href="https://example.org"]');
     assert.equal(await link.count(),1);
     assert.equal(await link.getAttribute('rel'),'noopener noreferrer');

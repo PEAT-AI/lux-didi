@@ -1,4 +1,5 @@
 import { clientDiagnostic } from '../http/routes.js';
+import { TOOL_FAILURE_CODES } from '../adapters/model/types.js';
 import { ConfigError } from '../config/files.js';
 import { closeSync, constants, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, renameSync, unlinkSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
@@ -8,7 +9,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (!raw || typeof raw !== 'object') return;
   const value = raw as Record<string, unknown>;
   if (value.event === 'tool_failure') {
-    const codes = ['mcp_transport_error', 'mcp_result_invalid', 'connector_error', 'handler_outcome'];
+    const codes: readonly string[] = TOOL_FAILURE_CODES;
     const token = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,79}$/.test(v);
     if (typeof value.code !== 'string' || !codes.includes(value.code) || !token(value.tool) || !token(value.connector)
       || !['Error', 'SyntaxError', 'UnknownThrow', 'McpResultError'].includes(String(value.errorClass))
@@ -20,6 +21,14 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   }
   if (value.event === 'host_started' && typeof value.releaseCommit === 'string' && /^(?:[0-9a-f]{40}|unknown)$/.test(value.releaseCommit) && (value.configDir === 'effective' || value.configDir === 'seeded') && Number.isSafeInteger(value.endpoints) && Number(value.endpoints) >= 0 && Number(value.endpoints) <= 65535) {
     return { event: value.event, releaseCommit: value.releaseCommit, configDir: value.configDir, endpoints: value.endpoints };
+  }
+  if (value.event === 'host_exit' && ['descriptor', 'log', 'store', 'owner', 'listen', 'ready'].includes(String(value.stage))
+    && (value.reason === 'close' || value.reason === 'exit')
+    && (value.signal === undefined || value.signal === 'SIGINT' || value.signal === 'SIGTERM')
+    && (value.code === undefined || (Number.isSafeInteger(value.code) && Number(value.code) >= 0))) {
+    return { event: 'host_exit', stage: value.stage, reason: value.reason,
+      ...(value.signal !== undefined ? { signal: value.signal } : {}),
+      ...(value.code !== undefined ? { code: value.code } : {}) };
   }
   if (value.event === 'config_seeded' && ['live.json', 'mcp.json', 'providers.json'].includes(String(value.file)) && value.from === 'provider-config') {
     return { event: value.event, file: value.file, from: value.from };
@@ -39,6 +48,17 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
       || !/^[a-z][a-z0-9_]{0,63}$/.test(value.terminalCode)
       || numeric.some(key => !Number.isSafeInteger(value[key]) || Number(value[key]) < 0)) return;
     return Object.fromEntries(['event','terminalCode',...numeric].map(key => [key, value[key]]));
+  }
+  if (value.event === 'live_frame_rejected') {
+    // Closed shape: code, frame kind, byte length and key-name paths only, never a value or id.
+    if (Object.keys(value).sort().join(',') !== ['event','code','kind','bytes','keys'].sort().join(',')) return;
+    const codes = ['protocol_error', 'provider_error', 'unsupported_tool'];
+    const keyPattern = /^[A-Za-z][A-Za-z0-9_]{0,63}(?:\[\])?(?:\.[A-Za-z][A-Za-z0-9_]{0,63}(?:\[\])?)*$/;
+    if (typeof value.code !== 'string' || !codes.includes(value.code)) return;
+    if (typeof value.kind !== 'string' || !/^[A-Za-z][A-Za-z0-9_+]{0,80}$/.test(value.kind)) return;
+    if (!Number.isSafeInteger(value.bytes) || Number(value.bytes) < 0 || Number(value.bytes) > 64 * 1024 * 1024) return;
+    if (!Array.isArray(value.keys) || value.keys.length > 24 || value.keys.some(key => typeof key !== 'string' || !keyPattern.test(key))) return;
+    return { event: 'live_frame_rejected', code: value.code, kind: value.kind, bytes: value.bytes, keys: value.keys };
   }
 }
 

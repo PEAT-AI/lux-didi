@@ -172,6 +172,17 @@ async function attached(h: Harness, key = 'k1') {
   return { session, attachment };
 }
 
+test('fresh owner Start selects model-first with no fabricated history', async t => {
+  const h = await harness(t);
+  const session = h.owner.create({ idempotencyKey: 'fresh-opening', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await h.f.frame(1);
+  assert.equal(h.requests[0]!.opening, 'model_first');
+  assert.deepEqual(h.requests[0]!.history, []);
+  h.owner.revoke(session.liveSessionId);
+  await attachment.done;
+});
+
 function accepted(h: Harness, id: string): { system: string; memory: { status: string; selectedIds: string[]; omitted: { id: string; reason: string }[] }; pickup?: { jobId: string; identity: string } } {
   return h.store.transaction(tx => JSON.parse(String(tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [id])!['accepted_prompt_snapshot'])));
 }

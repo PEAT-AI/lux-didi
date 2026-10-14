@@ -46,6 +46,21 @@ test('explicit user-first opening preserves incomplete history and model-first o
   }
 });
 
+test('empty-history model-first sends one server-owned Companion greeting before public ready', async t => {
+  const f = await fixture(t);
+  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory })).open({
+    ...request(), opening: 'model_first', history: [],
+  }, control());
+  t.after(() => session.close());
+  const events = session.events[Symbol.asyncIterator]();
+  await f.frame(1);
+  f.send({ setupComplete: {} });
+  await session.ready;
+  assert.deepEqual(f.frames[1], { realtimeInput: { text: 'Greet the person briefly to begin the conversation.' } });
+  assert.equal((await events.next()).value?.type, 'ready', 'opening write completes before public ready');
+  assert.equal(f.frames.length, 2, 'exactly one fresh opening directive is sent without PCM');
+});
+
 test('invalid opening modes are refused before credentials or dispatch', t => {
   let credentials = 0;
   const adapter = new GeminiLiveVoiceAdapter(options({ credentials: { resolve: async () => { credentials++; return CANARY; } }, socketFactory: () => { throw new Error('Unexpected invalid-opening dispatch'); } }));

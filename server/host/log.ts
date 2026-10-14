@@ -107,9 +107,6 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'client_diagnostic' && value.source === 'native' && typeof value.receivedAt === 'string' && Number.isFinite(Date.parse(value.receivedAt)) && value.diagnostic && typeof value.diagnostic === 'object' && !Array.isArray(value.diagnostic)) {
     try { return { event: value.event, source: value.source, receivedAt: value.receivedAt, diagnostic: clientDiagnostic(value.diagnostic as Record<string, unknown>) }; } catch { return; }
   }
-  if (value.event === 'host_started' && typeof value.releaseCommit === 'string' && /^(?:[0-9a-f]{40}|unknown)$/.test(value.releaseCommit) && (value.configDir === 'effective' || value.configDir === 'seeded') && Number.isSafeInteger(value.endpoints) && Number(value.endpoints) >= 0 && Number(value.endpoints) <= 65535) {
-    return { event: value.event, releaseCommit: value.releaseCommit, configDir: value.configDir, endpoints: value.endpoints };
-  }
   if (value.event === 'host_exit' && ['descriptor', 'log', 'store', 'owner', 'listen', 'ready'].includes(String(value.stage))
     && (value.reason === 'close' || value.reason === 'exit')
     && (value.signal === undefined || value.signal === 'SIGINT' || value.signal === 'SIGTERM')
@@ -136,17 +133,6 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
       || !/^[a-z][a-z0-9_]{0,63}$/.test(value.terminalCode)
       || numeric.some(key => !Number.isSafeInteger(value[key]) || Number(value[key]) < 0)) return;
     return Object.fromEntries(['event','terminalCode',...numeric].map(key => [key, value[key]]));
-  }
-  if (value.event === 'live_frame_rejected') {
-    // Closed shape: code, frame kind, byte length and key-name paths only, never a value or id.
-    if (Object.keys(value).sort().join(',') !== ['event','code','kind','bytes','keys'].sort().join(',')) return;
-    const codes = ['protocol_error', 'provider_error', 'unsupported_tool'];
-    const keyPattern = /^[A-Za-z][A-Za-z0-9_]{0,63}(?:\[\])?(?:\.[A-Za-z][A-Za-z0-9_]{0,63}(?:\[\])?)*$/;
-    if (typeof value.code !== 'string' || !codes.includes(value.code)) return;
-    if (typeof value.kind !== 'string' || !/^[A-Za-z][A-Za-z0-9_+]{0,80}$/.test(value.kind)) return;
-    if (!Number.isSafeInteger(value.bytes) || Number(value.bytes) < 0 || Number(value.bytes) > 64 * 1024 * 1024) return;
-    if (!Array.isArray(value.keys) || value.keys.length > 24 || value.keys.some(key => typeof key !== 'string' || !keyPattern.test(key))) return;
-    return { event: 'live_frame_rejected', code: value.code, kind: value.kind, bytes: value.bytes, keys: value.keys };
   }
 }
 

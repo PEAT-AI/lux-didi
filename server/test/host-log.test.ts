@@ -67,12 +67,19 @@ test('no realistic owner content is ever written, whatever field it is offered o
   setLogContext({});
   const dir = await withLog(t);
   const fixtures = ['Re: Q3 planning and hiring', 'transcript line one two three', 'chat: hello there friend', 'user@example.com'];
+  // Every event kind, every declared field, offered free text: none may reach a byte.
+  for (const [kind, schema] of Object.entries(eventSchemas)) {
+    const fields: Record<string, unknown> = {};
+    for (const field of Object.keys(schema)) fields[field] = fixtures[0]!;
+    emitHostEvent(kind, fields);
+  }
   emitHostEvent('tool.call_start', { name: fixtures[0]!, toolCallId: 'call-1' });
   emitHostEvent('audio.config', { languageCode: fixtures[3]!, inputRate: 48000 });
   emitHostEvent('live.state_change', { from: fixtures[2]!, to: 'listening' });
   emitHostEvent('host.started', { releaseCommit: fixtures[1]!, configDir: 'seeded', endpoints: 0 });
   const bytes = await readFile(join(dir, 'logs', 'host.log'), 'utf8');
   for (const fixture of fixtures) assert.equal(bytes.includes(fixture), false, `no content for ${fixture.slice(0, 6)}`);
+  assert.equal(bytes.includes('planning and hiring'), false);
 });
 
 test('the event vocabulary is closed and complete', () => {

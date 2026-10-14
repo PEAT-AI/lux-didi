@@ -1,8 +1,9 @@
 // Read-only presentation of the Interface 3 live projection (W-B provides the route).
 // Pure mapping and markup only: no scheduling, no network, no fabricated state.
 import { escapeHtml, renderMarkdown } from './markdown.ts';
+import { toolConnector, toolPhrase, toolPhrases } from './tool-phrases.ts';
 import type { VoiceState } from './orb.ts';
-import type { LiveCurrent, LiveEntry, LiveSource, LiveState } from './protocol.ts';
+import type { LiveCurrent, LiveEntry, LiveSource, LiveState, LiveTool } from './protocol.ts';
 
 const LABELS: Record<LiveState, string> = {
   idle: 'Ready when you are',
@@ -21,17 +22,23 @@ const VOICE: Record<LiveState, VoiceState> = {
 };
 export function liveVoiceState(state: LiveState): VoiceState { return VOICE[state] ?? 'CONNECTED'; }
 
-/** The tool whose call is in flight, so the thinking label can name it. */
-export function liveToolName(live: LiveCurrent): string | undefined {
+/** Tool names whose call is in flight: the calls after the last tool result.
+ * A batch of several calls is one set, so the activity line reads as one line. */
+export function pendingToolNames(live: LiveCurrent): string[] {
+  let lastResult = -1;
   for (let index = live.entries.length - 1; index >= 0; index--) {
-    const entry = live.entries[index]!;
-    if (entry.kind === 'toolCall' && entry.tool?.name) return entry.tool.name;
+    if (live.entries[index]!.kind === 'toolResult') { lastResult = index; break; }
   }
-  return undefined;
+  const names: string[] = [];
+  for (let index = lastResult + 1; index < live.entries.length; index++) {
+    const entry = live.entries[index]!;
+    if (entry.kind === 'toolCall' && entry.tool?.name) names.push(entry.tool.name);
+  }
+  return names;
 }
 
-/** The one visible state label, including the tool name while thinking.
- * main.ts and liveMarkup share it so the orb caption and the panel never disagree. */
+/** The one visible state label. A tool name is never folded into it; the
+ * activity line owns the phrase. Shared so the orb caption and panel agree. */
 export function liveLabel(live: LiveCurrent | undefined): string {
   const past = live?.pastSession;
   if (past) {
@@ -41,12 +48,51 @@ export function liveLabel(live: LiveCurrent | undefined): string {
     const normal = ['closed', 'cancelled', 'revoked', 'expired'].includes(past.outcome);
     return `Last Live session ended${normal ? '' : ' with an error'} at ${time}`;
   }
-  const state = live?.state;
-  if (state === 'thinking') {
-    const tool = live ? liveToolName(live) : undefined;
-    return tool ? `Thinking (${tool})` : liveStateLabel('thinking');
+  return liveStateLabel(live?.state ?? 'idle');
+}
+
+/** After this long a pending call adds its elapsed seconds to the activity line. */
+export const SLOW_TOOL_MS = 4000;
+
+export type LiveActivityKind = 'thinking' | 'tools' | 'done' | 'failed' | 'aside';
+export interface LiveActivity { kind: LiveActivityKind; text: string }
+
+/** The tool result's own sentence, or a calm connector sentence when the
+ * projection carries only a reason code. Never the raw code. */
+function failureSentence(tool: LiveTool): string {
+  const markdown = (tool.markdown ?? '').trim();
+  const code = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/;
+  if (markdown && /\s/.test(markdown) && !code.test(markdown)) return markdown;
+  return `${toolConnector(tool.name)} did not answer`;
+}
+
+/** What Naya is doing right now, as one human line, or undefined when there is
+ * no activity to show (listening, speaking, idle). */
+export function liveActivity(live: LiveCurrent | undefined): LiveActivity | undefined {
+  if (!live) return undefined;
+  const pending = pendingToolNames(live);
+  if (pending.length) return { kind: 'tools', text: toolPhrases(pending) };
+  const last = live.entries.at(-1);
+  if (last?.kind === 'toolResult' && last.tool) {
+    const tool = last.tool as LiveTool & { disposition?: string };
+    if (tool.disposition === 'superseded') return { kind: 'aside', text: 'Set that aside, ask again if you want it' };
+    if (tool.status === 'error') return { kind: 'failed', text: failureSentence(tool) };
+    return { kind: 'done', text: 'Done' };
   }
-  return liveStateLabel(state ?? 'idle');
+  if (live.state === 'thinking') return { kind: 'thinking', text: 'Thinking' };
+  return undefined;
+}
+
+/** The activity line under the orb. A slow pending call appends its elapsed
+ * seconds only after SLOW_TOOL_MS, so the line stays calm while it waits. */
+export function activityMarkup(activity: LiveActivity | undefined, elapsedMs = 0): string {
+  if (!activity) return '';
+  const slow = activity.kind === 'tools' && elapsedMs >= SLOW_TOOL_MS;
+  const text = slow ? `${activity.text} (${Math.floor(elapsedMs / 1000)}s)` : activity.text;
+  const indicator = activity.kind === 'done'
+    ? '<span class="activity-mark" aria-hidden="true">&#10003;</span>'
+    : '<span class="activity-indicator" aria-hidden="true"></span>';
+  return `<p class="activity-line activity-${activity.kind}" role="status" aria-live="polite">${indicator}<span class="activity-text">${escapeHtml(text)}</span></p>`;
 }
 
 /** 1 Hz while active, 4 s while idle or terminal, paused while the document is hidden. */
@@ -178,7 +224,7 @@ export function liveMarkup(live: LiveCurrent | undefined, poll: LivePollState = 
       <summary>Conversation history and activity</summary>
       ${transcript}
       <div class="live-activity" aria-label="Live activity">
-        ${(live?.entries ?? []).filter(entry => entry.kind === 'toolResult' && entry.tool?.name !== 'remember_note').map(entry => `<details class="live-tool-result" data-result-seq="${entry.seq}"><summary>${escapeHtml(entry.tool?.name ?? 'Tool result')} (${escapeHtml(entry.tool?.status ?? 'unknown')})</summary>${entry.tool?.status !== 'error' && entry.tool?.markdown ? renderMarkdown(entry.tool.markdown) + sourcesMarkup(entry.tool.sources ?? []) : ''}</details>`).join('')}
+        ${(live?.entries ?? []).filter(entry => entry.kind === 'toolResult' && entry.tool?.name !== 'remember_note').map(entry => `<details class="live-tool-result" data-result-seq="${entry.seq}"><summary>${escapeHtml(toolPhrase(entry.tool?.name ?? ''))} (${escapeHtml(entry.tool?.status ?? 'unknown')})</summary>${entry.tool?.status !== 'error' && entry.tool?.markdown ? renderMarkdown(entry.tool.markdown) + sourcesMarkup(entry.tool.sources ?? []) : ''}</details>`).join('')}
         ${(live?.entries ?? []).filter(entry => entry.kind === 'toolResult' && entry.tool?.name === 'remember_note').map(remaining => rememberCardMarkup(remaining)).join('')}
         ${jobs}
       </div>

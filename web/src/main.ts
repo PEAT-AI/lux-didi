@@ -4,7 +4,7 @@ import { deleteMemoryEntry } from './api';
 import { ConnectedView } from './connected';
 import { Orb, type VoiceState } from './orb';
 import { ApiError, request, pair, demoMode, onAuthorityChanged, authorityVersion, assertAuthority, restoreSession, logout, fetchLive } from './api';
-import { liveMarkup, liveLabel, liveVoiceState, liveDelay, pollLiveView, type LivePollState } from './live-view';
+import { liveMarkup, liveLabel, liveVoiceState, liveDelay, pollLiveView, liveActivity, activityMarkup, type LivePollState } from './live-view';
 import { connectionsMarkup } from './connector-status';
 import { settingsMarkup } from './settings-view';
 import type { Session, Entry, Commitment, CommitmentDetail, Plan, Recall, Status, LiveCurrent } from './protocol';
@@ -69,9 +69,17 @@ function orbLabel() {
   return live?liveLabel(live):state==='PROCESSING'?'Working on your request':state==='CONNECTING'?'Connecting':state==='DISCONNECTED'?'Waiting for connection':state==='ERROR'?'Needs your attention':'Ready when you are';
 }
 // The honesty line is true only when the projection is idle, the native app reports muted, or there is no projection.
+// The activity line shares one start clock: a slow call adds its elapsed seconds only after SLOW_TOOL_MS.
+let activityStartedAt = 0, activityKey = '';
+function activityLineMarkup() {
+  const activity = liveActivity(live);
+  const key = activity ? `${activity.kind}:${activity.text}` : '';
+  if (key !== activityKey) { activityKey = key; activityStartedAt = Date.now(); }
+  return activityMarkup(activity, activity ? Date.now() - activityStartedAt : 0);
+}
 function orbCaptionMarkup() {
   const honesty=!live||live.state==='idle'||live.muted===true;
-  return `<p class="orb-label" role="status" aria-live="polite">${e(orbLabel())}</p>${honesty?'<p class="voice-honesty"><strong>Not listening</strong><span>Voice stays on your Mac. Use its native record control.</span></p>':''}`;
+  return `<p class="orb-label" role="status" aria-live="polite">${e(orbLabel())}</p>${activityLineMarkup()}${honesty?'<p class="voice-honesty"><strong>Not listening</strong><span>Voice stays on your Mac. Use its native record control.</span></p>':''}`;
 }
 function orbMarkup() {
   return `<section class="orb-stage" aria-label="Naya voice and activity"><canvas id="didi-orb" width="440" height="440" aria-hidden="true"></canvas><div class="orb-caption">${orbCaptionMarkup()}</div></section>`;

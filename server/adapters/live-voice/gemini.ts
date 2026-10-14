@@ -7,6 +7,7 @@ import { LiveVoiceError, liveVoiceTimerDefaults } from './types.js';
 // Fixed official v1beta endpoint. Neither destination nor credentials are public events.
 const networkErrors = new Set(['ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ECONNREFUSED', 'ECONNABORTED', 'ENETUNREACH', 'EHOSTUNREACH', 'ENOTFOUND', 'EAI_AGAIN']);
 const ENDPOINT = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent';
+const FRESH_OPENING = 'Greet the person briefly to begin the conversation.';
 const DEFAULTS: Readonly<LiveVoiceLimits> = Object.freeze({
   maxIncomingBytes: 1024 * 1024, maxOutgoingBytes: 1024 * 1024, maxBufferedBytes: 2 * 1024 * 1024,
   maxEventBytes: 1024 * 1024, maxEvents: 128, maxRequestBytes: 256 * 1024, maxHistoryTurns: 128,
@@ -98,7 +99,9 @@ export class GeminiLiveVoiceAdapter implements LiveVoicePort {
       realtimeInputConfig: { automaticActivityDetection: { startOfSpeechSensitivity: 'START_SENSITIVITY_LOW' } },
       systemInstruction: { parts: [{ text: system }] }, inputAudioTranscription: {}, outputAudioTranscription: {},
     } });
-    const initial = !request.resumptionHandle && (history.length || opening === 'model_first') ? JSON.stringify({ clientContent: { turns: history, turnComplete: opening === 'model_first' } }) : undefined;
+    const initial = request.resumptionHandle ? undefined : history.length
+      ? JSON.stringify({ clientContent: { turns: history, turnComplete: opening === 'model_first' } })
+      : opening === 'model_first' ? JSON.stringify({ realtimeInput: { text: FRESH_OPENING } }) : undefined;
     if (Buffer.byteLength(setup) > settings.limits.maxOutgoingBytes || (initial && Buffer.byteLength(initial) > settings.limits.maxOutgoingBytes)) fail('outgoing_limit');
     if (!object(control) || !(control.signal instanceof AbortSignal) || !Number.isSafeInteger(control.deadlineMs)
       || control.deadlineMs <= 0 || control.deadlineMs - Date.now() > 2_147_483_647) fail('invalid_request');

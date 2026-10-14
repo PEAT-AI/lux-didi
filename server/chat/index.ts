@@ -158,7 +158,8 @@ export class ChatService implements ChatPort {
         tx.run('UPDATE chat_runs SET trace=? WHERE run_id=?', [JSON.stringify({ ...trace, toolEvidence }), run.runId]);
       });
       // runTools retains originals for validation; the canonical helper alone derives provider schemas.
-      return generate({ ...next, declarations: declarationsFor(registry).declarations }, nextControl);
+      const declarations = next.declarations?.length === 0 ? [] : declarationsFor(registry).declarations;
+      return generate({ ...next, declarations }, nextControl);
     } }, request, registry, host, control, maxSteps: 4,
       authority: { isCurrent: async () => this.lookupAuthority(run.runId) !== null },
       journal: tools.owner.journal, resultGate: tools.owner.resultGate });

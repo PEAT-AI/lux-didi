@@ -97,6 +97,7 @@ async function harness(t: TestContext, overrides: {
   acceptedPrompt?: (ownerId: string) => NonNullable<ReturnType<typeof validateLiveProfile>['acceptedPrompt']>;
   routeClasses?: readonly ('ordinary' | 'private' | 'sensitive')[];
   overlay?: { schemaVersion: 1; text: string; accent?: string };
+  onSessionTerminal?: (liveSessionId: string) => void;
   memoryFailure?: boolean;
   failingWrite?: string;
 } = {}): Promise<Harness> {
@@ -166,6 +167,7 @@ async function harness(t: TestContext, overrides: {
     assert.equal((await port.discover(endpoint.id)).state, 'discovered');
     toolOwner.projectConnection('lux');
     tools = { owner: toolOwner, connectionIds: () => ['lux'] };
+    if (overrides.onSessionTerminal) tools = Object.assign({ ...tools }, { onSessionTerminal: overrides.onSessionTerminal });
     t.after(async () => { await port.close(); await transport.close(); await sdk.close(); });
   }
   const memorySource = (tx: import('../contracts/storage.js').Transaction) => {
@@ -1809,4 +1811,25 @@ test('Mattermost declarations carry the channel-resolution micro-contract', () =
   assert.match(descriptions.get('mattermost_search')!, /search first, no channel list needed/);
   assert.match(descriptions.get('mattermost_get_channel_history')!, /channel is a channel id from mattermost_list_channels/);
   assert.match(descriptions.get('mattermost_get_thread')!, /postId is a post id taken from a channel history/);
+});
+
+// --- W13: terminal distillation is scheduled, never awaited by close ---------------------------
+
+test('a terminal Live session schedules distillation without awaiting it and records injected summary ids', async t => {
+  const terminal: string[] = [];
+  let release: (() => void) | undefined;
+  const neverSettles = new Promise<void>(resolve => { release = resolve; });
+  const h = await harness(t, { tools: true, onSessionTerminal: liveSessionId => { terminal.push(liveSessionId); return neverSettles as unknown as void; } });
+  const session = h.owner.create({ idempotencyKey: 'summary-terminal', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await h.f.frame(1);
+  h.f.send({ setupComplete: {} });
+  await Promise.all([attachment.ready, h.f.frame(2)]);
+  h.owner.revoke(session.liveSessionId);
+  // revoke returned while the hook's promise is still pending: close never awaited distillation.
+  assert.deepEqual(terminal, [session.liveSessionId]);
+  await attachment.done;
+  release?.();
+  const row = h.store.transaction(tx => tx.get('SELECT memory_provenance FROM live_sessions WHERE live_session_id=?', [session.liveSessionId])!);
+  assert.ok(String(row['memory_provenance']).includes('injectedSummaryIds'));
 });

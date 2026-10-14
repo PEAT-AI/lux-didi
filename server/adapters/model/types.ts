@@ -87,7 +87,7 @@ export interface ToolResultGate {
 }
 export interface ToolDefinition extends FunctionDeclaration {
   validate(args: unknown): boolean;
-  effect: 'read' | 'write'; accountId: string; resourceId: string;
+  effect: 'read' | 'write'; accountId: string; resourceId: string; endpointId?: string;
   execute(args: JsonObject, context: ExecutionContext): Promise<ToolOutcome>;
 }
 export interface Authority { isCurrent(host: HostContext, tool: ToolDefinition, signal: AbortSignal): Promise<boolean> }

@@ -358,7 +358,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
           if (definitions.some(d => d.name === name)) throw new ConnectorCompositionError('ambiguous_model_tool_name', p.connectionId, p.connector);
           const declaration = declarations.find(candidate => candidate.name === name);
           if (!declaration) throw new ConnectorCompositionError('unknown_connector_tool', p.connectionId, p.connector);
-          definitions.push({ name, description: declaration.description, effect: 'read', accountId: p.endpoint.account, resourceId: p.endpoint.resource, validate: declaration.validate,
+          definitions.push({ name, description: declaration.description, effect: 'read', accountId: p.endpoint.account, resourceId: p.endpoint.resource, endpointId: p.endpoint.id, validate: declaration.validate,
             parameters: declaration.parameters,
             async execute(args, context) {
               if (context.signal.aborted) return { status: 'unknown' };

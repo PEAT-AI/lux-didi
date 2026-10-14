@@ -43,6 +43,8 @@ function decodeSseResponse(bytes: Uint8Array, requestId: unknown): Uint8Array {
 }
 interface Operation { scope: ResultScope; signal: AbortSignal; timeoutMs: number; dispatched: boolean; bytes?: Uint8Array; requestId?: string | number; explicitErrorCode?: number; explicitError?: unknown; receivedResult?: boolean }
 interface Session { client: Client; config: EndpointConfig; operation?: Operation; child?: ChildExit; pipeClosed?: boolean }
+/** Transport-dead stages: the connector session is suspended and retired after these. */
+const DEAD_TRANSPORT_STAGES: ReadonlySet<string> = new Set(['child_exited', 'pipe_closed', 'sdk_protocol_rejected']);
 /**
  * One closed, privacy-safe stage for a dispatched call failure; never an SDK or remote message.
  * External cancellation and the local deadline are distinguished before the SDK's own errors.
@@ -289,8 +291,9 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
           // HTTP SDK cancellation aborts the request, rather than notifying. Use its
           // supported notification API with the SDK-owned id; never wait indefinitely.
           if (localSignal.aborted && operation.requestId !== undefined) await bounded(session.client.notification({ method: 'notifications/cancelled', params: { requestId: operation.requestId, reason: 'local cancellation' } }), AbortSignal.timeout(200)).catch(() => {});
-          // No call retry or reconnect here. A later explicit discovery can reconnect only.
-          suspend(request.endpointId); await retire(request.endpointId);
+          // A dead transport is suspended and retired for the session; timeout, cancellation and
+          // invalid_result fail this call only and leave the connector usable. Never retry a dispatched call.
+          if (DEAD_TRANSPORT_STAGES.has(stage)) { suspend(request.endpointId); await retire(request.endpointId); }
           return { state: 'unknown', reason: stage };
         }
         return { state: 'refused', reason: error instanceof PolicyError ? error.reason : 'pre-dispatch-refused' };

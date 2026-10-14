@@ -60,6 +60,7 @@ interface ActiveSession {
   adapterOutcome: LiveVoiceOutcome | undefined;
   diagnosticSnapshots: Promise<Readonly<LiveVoiceDiagnostics> | undefined>[];
   ownerAudioCalls: number; ownerAudioBytes: number; ownerRebuildingDropCalls: number; ownerRebuildingDropBytes: number;
+  hostBytesFromNative: number; hostBytesFromProvider: number; audioFlowTimer: ReturnType<JobTimer> | undefined;
   terminalOutcome: LiveTerminalOutcome | null;
   diagnosticTerminalCode: string; diagnosticsEmitted: boolean;
   loopDone: { promise: Promise<void>; resolve: () => void };
@@ -608,7 +609,7 @@ export class LiveSessionOwner {
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
       consumerState: 'attached', journalEvents: 0, journalBytes: 0, adapterOutcome: undefined,
-      diagnosticSnapshots: [], ownerAudioCalls: 0, ownerAudioBytes: 0, ownerRebuildingDropCalls: 0, ownerRebuildingDropBytes: 0, terminalOutcome: null,
+      diagnosticSnapshots: [], ownerAudioCalls: 0, ownerAudioBytes: 0, ownerRebuildingDropCalls: 0, ownerRebuildingDropBytes: 0, hostBytesFromNative: 0, hostBytesFromProvider: 0, audioFlowTimer: undefined, terminalOutcome: null,
       diagnosticTerminalCode: 'outcome_unknown', diagnosticsEmitted: false,
       loopDone: deferred<void>(), done: deferred<LiveSessionSnapshot>(), resolveDone: () => {}, persistFailure: undefined,
     };
@@ -620,6 +621,7 @@ export class LiveSessionOwner {
       if (handle.generation !== 0 || this.#settled(handle)) return;
       handle.ready = true;
       emitHostEvent('live.session_open', { attemptId: handle.attemptId, liveSessionId, generation: handle.generation });
+      emitHostEvent('audio.config', { attemptId: handle.attemptId, liveSessionId, generation: handle.generation, ...(this.#profile.language !== undefined ? { languageCode: this.#profile.language } : {}) });
       emitHostEvent('live.state_change', { attemptId: handle.attemptId, liveSessionId, from: 'idle', to: 'listening' });
       const job = this.#jobs.forSession(liveSessionId);
       if (job) { job.delivered = true; this.#jobs.save(job); }
@@ -629,6 +631,12 @@ export class LiveSessionOwner {
     this.#active.set(liveSessionId, handle);
     void handle.done.promise.catch(() => {});
     handle.sessionTimer = this.#schedule(() => this.#settle(handle, { state: 'failed', code: 'session_timeout' }, false, 'ended', null), this.#profile.limits.sessionMs);
+    // W10: a periodic host audio.flow every 5 s, rescheduled until the session settles.
+    const armAudioFlow = (): void => {
+      handle.audioFlowTimer = this.#schedule(() => { this.#emitAudioFlow(handle, false); if (!this.#settled(handle)) armAudioFlow(); }, 5000);
+      handle.audioFlowTimer.unref();
+    };
+    armAudioFlow();
     this.#armIdle(handle, this.#profile.limits.idleMs);
     void this.#consume(handle);
     const ready = session.ready.then(() => this.#readSnapshot(liveSessionId));
@@ -730,7 +738,15 @@ export class LiveSessionOwner {
     this.#guardHandle(handle);
     if (!(pcm instanceof Uint8Array) || !pcm.length || pcm.length % 2 !== 0) throw new LiveError('invalid_audio');
     this.#armIdle(handle, this.#profile.limits.idleMs);
+    handle.hostBytesFromNative += pcm.byteLength;
     handle.session.sendAudio({ pcm, dataClass: handle.inputClass });
+  }
+
+  // W10 periodic host audio.flow: cumulative bytes on the host forwarding path.
+  #emitAudioFlow(handle: ActiveSession, final: boolean): void {
+    emitHostEvent('audio.flow', { side: 'host', final, attemptId: handle.attemptId, liveSessionId: handle.liveSessionId, generation: handle.generation,
+      bytesFromNative: handle.hostBytesFromNative, bytesToProvider: handle.hostBytesFromNative,
+      bytesFromProvider: handle.hostBytesFromProvider, bytesToNative: handle.hostBytesFromProvider });
   }
 
   #observeDiagnostics(handle: ActiveSession, session: LiveVoiceSession): void {
@@ -757,9 +773,7 @@ export class LiveSessionOwner {
         outputAudioFrames: sum('outputAudioFrames'), outputAudioPCMBytes: sum('outputAudioPCMBytes'),
         outputAudioAfterInitialTurnFrames: sum('outputAudioAfterInitialTurnFrames'), outputAudioAfterInitialTurnPCMBytes: sum('outputAudioAfterInitialTurnPCMBytes') }));
       // W10 terminal audio.flow: one FINAL host row for the whole call's audio byte flow.
-      emitHostEvent('audio.flow', { side: 'host', attemptId: handle.attemptId, liveSessionId: handle.liveSessionId, generation: handle.generation,
-        bytesFromNative: sum('localWriteEnqueuedPCMBytes'), bytesToProvider: sum('localWriteCallbackSuccessPCMBytes'),
-        bytesFromProvider: sum('outputAudioPCMBytes'), bytesToNative: sum('localWriteCallbackSuccessPCMBytes') });
+      this.#emitAudioFlow(handle, true);
     });
   }
 
@@ -831,7 +845,7 @@ export class LiveSessionOwner {
         if (event.type === 'interrupted') { for (const id of handle.pendingCallIds) handle.bargeInCallIds.add(id); handle.speaking = false; }
         if (event.type === 'turnComplete' || event.type === 'generationComplete') handle.speaking = false;
         if (event.type === 'waitingForInput') { handle.thinking = !event.value; if (event.value) handle.speaking = false; }
-        if (event.type === 'audio') { turnFrames += 1; turnBytes += event.pcm.byteLength; handle.thinking = false; handle.speaking = true; this.#pushChunk(handle, { kind: 'audio', pcm: event.pcm }); continue; }
+        if (event.type === 'audio') { turnFrames += 1; turnBytes += event.pcm.byteLength; handle.hostBytesFromProvider += event.pcm.byteLength; handle.thinking = false; handle.speaking = true; this.#pushChunk(handle, { kind: 'audio', pcm: event.pcm }); continue; }
         if (event.type === 'outcome') { outcome = event.outcome; continue; }
         if (event.type === 'inputTranscription') {
           handle.inputFinalTimer?.cancel();
@@ -1011,7 +1025,7 @@ export class LiveSessionOwner {
     handle.terminalOutcome = outcome;
     handle.diagnosticTerminalCode = 'code' in outcome ? outcome.code : outcome.state;
     emitHostEvent('live.session_terminal', { attemptId: handle.attemptId, liveSessionId: handle.liveSessionId, generation: handle.generation, code: handle.diagnosticTerminalCode });
-    handle.sessionTimer?.cancel(); handle.idleTimer?.cancel();
+    handle.sessionTimer?.cancel(); handle.idleTimer?.cancel(); handle.audioFlowTimer?.cancel();
     handle.session.close();
     let journalSequence: number;
     try {

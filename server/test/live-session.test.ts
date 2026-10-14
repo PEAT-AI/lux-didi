@@ -1888,3 +1888,31 @@ test('W10: a failure before session acceptance correlates by attemptId', async t
   assert.ok(lines.findIndex(entry => entry.event === 'live.attempt_start') < lines.findIndex(entry => entry.event === 'live.session_terminal'));
   await attachment.done;
 });
+
+test('W10: the host emits a periodic audio.flow every five seconds and one FINAL row', async t => {
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, limits: { sessionMs: 20000, idleMs: 60000 } });
+  const dir = mkdtempSync(join(tmpdir(), 'didi-flow-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const stop = captureHostDiagnostics(new HostLog(dir));
+  t.after(stop);
+  const logPath = join(dir, 'logs', 'host.log');
+  const rows = (): { event: string; final?: boolean }[] => {
+    try { return readFileSync(logPath, 'utf8').trim().split('\n').map(line => JSON.parse(line) as { event: string; final?: boolean }); }
+    catch { return []; }
+  };
+  const flows = () => rows().filter(entry => entry.event === 'audio.flow');
+  const { attachment } = await attached(h, 'flow');
+  assert.equal(flows().length, 0, 'no row before the first interval');
+  h.advance(5000); scheduler.runDue();
+  assert.equal(flows().length, 1, 'one periodic row after five seconds');
+  h.advance(5000); scheduler.runDue();
+  assert.equal(flows().length, 2, 'the periodic row repeats');
+  h.advance(20000); scheduler.runDue();
+  await untilLogged(logPath, 'live.session_terminal', 1);
+  await tick(); await tick();
+  const final = flows().filter(entry => entry.final === true);
+  assert.equal(final.length, 1, 'exactly one FINAL row');
+  assert.ok(flows().length >= 3, 'the FINAL row joins the periodic rows');
+  await attachment.done;
+});

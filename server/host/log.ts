@@ -21,7 +21,7 @@ const correlation: KindSchema = {
 };
 
 const audioFlowFields: KindSchema = {
-  side: ['native', 'host'],
+  side: ['native', 'host'], final: 'bool',
   tapFrames: 'num', converterBytesOut: 'num', ringEnqueued: 'num', ringDropped: 'num', ringResidual: 'num',
   wsBytesSent: 'num', playbackScheduled: 'num', playbackRendered: 'num', underruns: 'num', flushedFrames: 'num',
   lateFramesAfterFlush: 'num', bytesFromNative: 'num', bytesToProvider: 'num', bytesFromProvider: 'num', bytesToNative: 'num',

@@ -8,10 +8,13 @@ Press **Mute** to pause the microphone, then press it again to resume. Press
 
 Global shortcuts:
 
-- Control Option Space: show or hide Didi.
+- Control Option Space: show or hide the mini orb. Showing it starts Live when Live is not already running; hiding it stops Live.
+- Control Option Shift Space: show or hide the full Didi window (Live keeps running when the window hides).
 - Control Option Shift L: show Didi and start Live.
 - Control Option Shift M: mute or unmute Live.
-- Escape while Didi is focused: stop recording and Live.
+- Escape while the mini orb is focused: hide the orb and stop Live. Escape while the window is focused: hide the window; Live keeps running.
+
+Click the orb in the mini view to expand to the full window; Live keeps running.
 
 Use the menu if a shortcut is unavailable.
 

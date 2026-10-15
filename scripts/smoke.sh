@@ -12,6 +12,15 @@
 set -uo pipefail
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 cd "$(dirname "$0")/.."
+# Prove server/dist matches the checked-out source before any probe runs: a stale dist makes every probe
+# judge old code (#258). Build when the entry is missing or older than the newest source file under server/.
+dist_entry="server/dist/host/index.js"
+if [[ ! -f "$dist_entry" ]] || [[ -n "$(find server \( -path server/dist -o -name node_modules \) -prune -o -type f -newer "$dist_entry" -print -quit)" ]]; then
+  if ! npm --prefix server run build; then
+    echo 'FAIL probe0-build server/dist is missing or stale and npm --prefix server run build failed'
+    exit 1
+  fi
+fi
 node_bin="${NODE:-$(command -v node)}"
 if [[ -z "$node_bin" || ! -x "$node_bin" ]]; then echo 'FAIL probe0-runtime node executable not found' >&2; exit 1; fi
 if command -v timeout >/dev/null 2>&1; then

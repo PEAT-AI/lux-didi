@@ -57,8 +57,9 @@ async function auditLayout(page) {
   });
 }
 
-function assertAudit(a, label) {
-  const inb = (v, lo, hi, what) => assert.ok(v >= lo && v <= hi, `${label} ${what}: ${v} not in [${lo},${hi}]`);
+function assertAudit(a, label, failures) {
+  const bad = m => failures.push(m);
+  const inb = (v, lo, hi, what) => { if (!(v >= lo && v <= hi)) bad(`${label} ${what}: ${v} not in [${lo},${hi}]`); };
   if (a.voice.turnInset) { inb(a.voice.turnInset.left, 24, 40, 'voice turn left inset'); inb(a.voice.turnInset.right, 24, 520, 'voice turn right clearance'); }
   if (a.voice.chipInset) inb(a.voice.chipInset.left, 24, 40, 'chip left inset');
   if (a.voice.emptyInset) inb(a.voice.emptyInset.left, 24, 40, 'empty left inset');
@@ -76,10 +77,10 @@ function assertAudit(a, label) {
   inb(a.chat.sendInside, 8, 16, 'send right inset in field');
   inb(a.chat.sendCentre, 0, 2, 'send vertical centring');
   inb(a.chat.clip.w, 28, 28, 'paperclip width');
-  assert.equal(a.chipPad.font, '12px', `${label} chip font`);
-  assert.equal(a.chipPad.padding, '4px 10px', `${label} chip padding`);
-  assert.equal(a.labelFont, '12px', `${label} turn label font`);
-  assert.equal(a.nayaMax, '640px', `${label} naya max width`);
+  if (a.chipPad.font !== '12px') bad(`${label} chip font: ${a.chipPad.font}`);
+  if (a.chipPad.padding !== '4px 10px') bad(`${label} chip padding: ${a.chipPad.padding}`);
+  if (a.labelFont !== '12px') bad(`${label} turn label font: ${a.labelFont}`);
+  if (a.nayaMax !== '640px') bad(`${label} naya max width: ${a.nayaMax}`);
   if (a.turnGap !== null) inb(a.turnGap, 16, 16, 'turn gap');
   if (a.labelGap !== null) inb(a.labelGap, 3, 5, 'label to text gap');
   return a;
@@ -197,7 +198,7 @@ try {
 
 
   await step('V2-R4 layout audit A-G', async () => {
-    const results = {};
+    const results = {}; const failures = [];
     const run = async (viewport, theme, segment) => {
       await page.setViewportSize(viewport);
       await page.evaluate(m => localStorage.setItem('didi-theme', m), theme);
@@ -206,7 +207,7 @@ try {
       if (segment) await page.locator(`button[data-segment="${segment}"]`).click();
       await page.locator('#connected-draft').waitFor();
       const a = await auditLayout(page);
-      assertAudit(a, `${viewport.width}x${viewport.height} ${theme}${segment ? ' ' + segment : ''}`);
+      assertAudit(a, `${viewport.width}x${viewport.height} ${theme}${segment ? ' ' + segment : ''}`, failures);
       results[`${viewport.width}x${viewport.height}-${theme}${segment ? '-' + segment : ''}`] = a;
     };
     fixture.setLive({ state: 'speaking', since: '2026-10-11T16:00:00Z', cursor: 4, entries: [
@@ -223,6 +224,8 @@ try {
     await run({ width: 800, height: 900 }, 'light', 'voice');
     await writeFile(join(artifacts, 'v2r4-audit.json'), JSON.stringify(results, null, 2));
     console.log('V2R4_AUDIT', JSON.stringify(results));
+    console.log('V2R4_FAILURES', JSON.stringify(failures));
+    assert.equal(failures.length, 0, failures.join(' | '));
   });
 
   await step('settings unpair revokes the cookie and returns to pairing',async()=>{

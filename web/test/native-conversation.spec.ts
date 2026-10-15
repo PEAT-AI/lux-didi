@@ -49,12 +49,12 @@ async function api(path) {
     const body = await response.json(); if (!response.ok) throw Error(body.error.message); return body.data;
   }, path);
 }
-const openTab = async name => { await page.locator(`button[data-tab="${name}"]`).click(); };
+const openTab = async name => { if (await page.locator('#sheet').count()) await page.locator('#sheet-close').click(); await page.locator(`button[data-tab="${name}"]`).click(); };
 // The connected history select is owned by the Settings tab; the conversation pane lives on Conversation.
 // The view writes its saved-selection key once it has restored and published a conversation; selecting before
 // that is a no-op because the view has no owner yet.
 const openSettings = async () => { await page.waitForFunction(() => Object.keys(localStorage).some(key => key.startsWith('didi-connected:'))); await openTab('Settings'); await page.locator('#connected-history').waitFor(); };
-const openConversation = async () => { await openTab('Conversation'); await page.locator('#connected-panel').waitFor(); };
+const openConversation = async () => { if (await page.locator('#sheet').count()) await page.locator('#sheet-close').click(); await page.locator('#connected-panel').waitFor(); };
 const selectValue = async () => { await openSettings(); const value = await page.locator('#connected-history').inputValue(); await openConversation(); return value; };
 const entryText = () => page.locator('#connected-entries').innerText();
 /** Screenshot the connected panel itself so the transcript, title and answer are the subject of the image.
@@ -109,7 +109,8 @@ try {
 
   const pairing = await operator('/auth/pairing');
   await page.locator('#pair-code').fill(pairing.data.pairingCode); await page.locator('#pair-form').evaluate(form => form.requestSubmit());
-  await page.waitForFunction(() => document.querySelector('#connected-panel')?.textContent.includes('gemini-connected-test'));
+  // The three-lane UI shows the consent line in the Chat lane: it names the provider that receives chat turns.
+  await page.waitForFunction(() => document.querySelector('.connected-disclosure')?.textContent.includes('gemini'));
   const enrolledA = await operator('/conversations', { title: 'Native A', timeZone: 'UTC', consent: true });
   const enrolledB = await operator('/conversations', { title: 'Native B', timeZone: 'UTC', consent: true });
   assert.equal(enrolledA.status, 200, JSON.stringify(enrolledA.data ?? enrolledA.error ?? null));

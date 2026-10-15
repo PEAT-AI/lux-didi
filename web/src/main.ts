@@ -217,7 +217,6 @@ function bindScrollAnchors() {
   }
 }
 function render() {
-  (window as unknown as { __renders?: number }).__renders = ((window as unknown as { __renders?: number }).__renders ?? 0) + 1;
   // Keep cursor and unsent text stable across connection checks and action completion.
   const focus = document.activeElement as HTMLInputElement | HTMLTextAreaElement | null;
   const focusId = focus?.id; const selection = focus && (focus.tagName === 'TEXTAREA' || ['text','search','password'].includes(focus.type)) ? [focus.selectionStart,focus.selectionEnd] : null;

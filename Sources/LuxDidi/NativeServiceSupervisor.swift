@@ -173,6 +173,9 @@ struct OwnedServiceConnection {
     }
     @Published private(set) var state: NativeServiceState = .stopped
     var onUnavailable: (() -> Void)?
+    /// One native-live.log end record per teardown: a closed reason and numeric-only detail.
+    /// The app wires it to the live journal; the supervisor itself never touches a file.
+    var onEnd: ((NativeLiveEndReason, [String: Any]) -> Void)?
     var onCredentialUnavailable: ((NativeServiceError) -> Void)?
     var onRecovered: (() -> Void)?
     var onRestartStatus: ((Bool) -> Void)?
@@ -365,8 +368,18 @@ struct OwnedServiceConnection {
             guard SecRandomCopyBytes(kSecRandomDefault, random.count, &random) == errSecSuccess else { throw NativeServiceError.invalidReady }
             let nonce = Data(random).base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
             let owned = OwnedServiceChild(); child = owned; launched = owned
-            owned.onUnexpectedExit = { [weak self, weak owned] in if let owned { self?.unavailable(owned) } }
-            owned.onInvalidOutput = { [weak self, weak owned] in if let owned { self?.unavailable(owned) } }
+            owned.onUnexpectedExit = { [weak self, weak owned] in
+                guard let self, let owned else { return }
+                let signalled = owned.process.terminationReason != .exit
+                self.onEnd?(.childExit, NativeLiveEndDetail.childExit(status: owned.process.terminationStatus,
+                    signal: signalled ? owned.process.terminationStatus : nil))
+                self.unavailable(owned)
+            }
+            owned.onInvalidOutput = { [weak self, weak owned] in
+                guard let self, let owned else { return }
+                self.onEnd?(.invalidOutput, NativeLiveEndDetail.invalidOutput(bytes: owned.firstFrameBytes ?? 0))
+                self.unavailable(owned)
+            }
             lastStage = "spawn"
             diagnosticStage = .spawn
             // Native forwards only the two existing host path flags; the host entry
@@ -439,11 +452,12 @@ struct OwnedServiceConnection {
             throw error
         }
     }
-    func stop() async {
+    func stop(reason: NativeLiveEndReason = .shutdown) async {
         recovery.stop(); restartTask?.cancel(); restartTask = nil
         if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
         wakeObserver = nil
         operation = nil; state = .stopped; connection = nil
+        onEnd?(reason, [:])
         if let child { await child.stop(); observeStop(child); self.child = nil }
     }
 }

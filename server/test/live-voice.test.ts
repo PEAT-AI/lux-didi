@@ -109,7 +109,7 @@ test('wire setup/history snapshots, readiness, PCM and three independent output 
     sessionResumption: {},
     model: 'models/explicit-live-test', generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'ExplicitVoice' } } }, thinkingConfig: { thinkingLevel: 'minimal' } },
     contextWindowCompression: { slidingWindow: { targetTokens: 32000 } },
-    realtimeInputConfig: { automaticActivityDetection: { prefixPaddingMs: 300, silenceDurationMs: 800, startOfSpeechSensitivity: 'START_SENSITIVITY_LOW', endOfSpeechSensitivity: 'END_SENSITIVITY_LOW' } },
+    realtimeInputConfig: { automaticActivityDetection: { prefixPaddingMs: 700, silenceDurationMs: 800, startOfSpeechSensitivity: 'START_SENSITIVITY_LOW', endOfSpeechSensitivity: 'END_SENSITIVITY_LOW' } },
     systemInstruction: { parts: [{ text: 'Synthetic system' }] }, inputAudioTranscription: {}, outputAudioTranscription: {},
   } });
   const endpoint = new URL(f.destination);

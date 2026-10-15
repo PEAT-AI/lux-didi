@@ -60,7 +60,7 @@ async function step(name, action) {
   console.log(`HOST browser PASS: ${name}`);
 }
 async function visible(text) { await page.getByText(text, { exact: true }).first().waitFor(); }
-async function tab(name) { await page.locator(`[data-tab="${name}"]`).click(); }
+async function tab(name) { if (await page.locator('#sheet').count()) await page.locator('#sheet-close').click(); await page.locator(`[data-tab="${name}"]`).click(); }
 async function submit(id) { await page.locator(`${id} button[type="submit"], ${id} button:not([type])`).first().click(); }
 let sessionId, entryId, commitmentId, originalEpoch, originalAssistant;
 try {
@@ -104,8 +104,9 @@ try {
     const entry = await api(`/sessions/${sessionId}/entries`, 'POST', { text: 'Host browser kestrel launch: review the release checklist before noon.', role: 'user', timeZone: 'UTC', sourceRef: { id: randomUUID(), label: 'Saved on the page', provider: 'page', sourceTimestamp: null, availability: 'present' } });
     entryId = entry.id;
     await page.reload(); await page.waitForFunction(() => document.getElementById('connection-state')?.textContent === 'Connected');
-    await page.locator('#conversation-history > summary').click();
-    await page.locator(`[data-session="${sessionId}"]`).click();
+    // The three-lane UI keeps no saved-conversation disclosure; a saved turn is reachable
+    // through Memory, which the owner searches to find it again.
+    await tab('Memory'); await page.locator('#recall-query').fill('kestrel'); await submit('#recall-form');
     await visible('Host browser kestrel launch: review the release checklist before noon.');
     const conversation = await api(`/sessions/${sessionId}`);
     assert.equal(conversation.entries.length, 1); assert.equal(conversation.entries[0].id, entryId);
@@ -155,18 +156,16 @@ try {
     const port = Number(new URL(origin).port); await stop(); await start(port);
     assert.equal(descriptor.authorityEpoch, originalEpoch); assert.equal(descriptor.assistantId, originalAssistant);
     await page.reload(); await page.waitForFunction(() => document.getElementById('connection-state')?.textContent === 'Connected');
-    // W5 voice-first UI keeps the conversation list in the collapsed history disclosure; open it as a user would.
-    await page.locator('#conversation-history > summary').click();
-    await page.locator(`[data-session="${sessionId}"]`).click();
+    // After a restart the saved turn is still reachable through Memory.
+    await tab('Memory'); await page.locator('#recall-query').fill('kestrel'); await submit('#recall-form');
     await visible('Host browser kestrel launch: review the release checklist before noon.');
     const entries = (await api(`/sessions/${sessionId}`)).entries;
     assert.equal(entries.length, 1); assert.equal(entries[0].id, entryId);
     await tab('Today'); await page.getByRole('heading', { name: 'Kestrel checklist — final review', exact: true }).waitFor();
   });
   await step('offline view stays honest and reconnecting issues no queued mutation', async () => {
-    await tab('Conversation'); const before = requests.filter(req => req.method === 'POST').length;
+    await tab('Today'); const before = requests.filter(req => req.method === 'POST').length;
     await context.setOffline(true); await visible('Offline');
-    await page.locator('#conversation-history > summary').click();
     assert.equal(requests.filter(req => req.method === 'POST').length, before, 'offline view queues no POST');
     await context.setOffline(false);
     await page.waitForFunction(() => document.getElementById('connection-state')?.textContent === 'Connected');

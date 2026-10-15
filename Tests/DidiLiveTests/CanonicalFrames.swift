@@ -43,8 +43,10 @@ private struct ConsumerSockets: LiveSocketConnecting {
 }
 private actor ConsumerSink: LiveAudioSink {
     private(set) var writes = 0
+    private(set) var interruptions = 0
     func write(_ pcm: Data) async throws { writes += 1 }
     func flush() async throws { }
+    func interruption(turnCompleteSeen: Bool) async { interruptions += 1 }
 }
 
 @main struct CanonicalFrames {
@@ -97,11 +99,41 @@ private actor ConsumerSink: LiveAudioSink {
             }
             await premature.cancel()
         }
-        let pass = rejected.isEmpty && malformedAccepted.isEmpty && partialStayedUnknown && consumerClosed && toolCausedNoAction && toolBeforeReadyRefused
+        // H3 stays refuted: a local activity or completion marker never reaches the interruption
+        // path; only the provider `interrupted` marker does. The capture level never travels this path.
+        let beginIntent = LiveBeginIntent(origin: URL(string: "http://127.0.0.1:8080")!, assistantID: "synthetic",
+            authorityEpoch: "synthetic-epoch", provider: "gemini", model: "synthetic", voice: "synthetic",
+            profileIdentity: "synthetic", inputClass: "ordinary")
+        func interruptionCount(_ labels: [String]) async -> Int {
+            let wires = labels.compactMap { label in input.canonical.first(where: { $0.label == label })?.wire }
+            let socket = ConsumerSocket(wires)
+            let sink = ConsumerSink()
+            let coordinator = LiveSessionCoordinator(http: ConsumerHTTP(), sockets: ConsumerSockets(socket: socket), sink: sink)
+            await coordinator.begin(beginIntent)
+            let deadline = ContinuousClock.now + .seconds(3)
+            while ContinuousClock.now < deadline {
+                if await sink.interruptions > 0 { break }
+                switch await coordinator.state {
+                case .terminal, .outcomeUnknown, .failed: break
+                default:
+                    try? await Task.sleep(for: .milliseconds(2))
+                    continue
+                }
+                break
+            }
+            let count = await sink.interruptions
+            await socket.cancel()
+            return count
+        }
+        let activityOnly = await interruptionCount(["ready", "waitingForInput-true", "waitingForInput-false", "generationComplete", "turnComplete"])
+        let providerInterruption = await interruptionCount(["ready", "interrupted"])
+        let flushOnlyOnProviderInterrupted = activityOnly == 0 && providerInterruption == 1
+        let pass = rejected.isEmpty && malformedAccepted.isEmpty && partialStayedUnknown && consumerClosed && toolCausedNoAction && toolBeforeReadyRefused && flushOnlyOnProviderInterrupted
         let receipt: [String: Any] = ["canonicalCount": input.canonical.count, "canonicalRejected": rejected,
             "malformedCount": input.malformed.count, "malformedAccepted": malformedAccepted,
             "partialStayedUnknown": partialStayedUnknown, "actualConsumerClosed": consumerClosed,
-            "toolCausedNoAudioOrControl": toolCausedNoAction, "toolBeforeReadyRefused": toolBeforeReadyRefused, "success": pass]
+            "toolCausedNoAudioOrControl": toolCausedNoAction, "toolBeforeReadyRefused": toolBeforeReadyRefused,
+            "flushOnlyOnProviderInterrupted": flushOnlyOnProviderInterrupted, "success": pass]
         try FileHandle.standardOutput.write(contentsOf: JSONSerialization.data(withJSONObject: receipt, options: [.sortedKeys]))
         try FileHandle.standardOutput.write(contentsOf: Data([10]))
         exit(pass ? 0 : 1)

@@ -24,8 +24,10 @@ export const liveVoiceTimerDefaults = Object.freeze({ handshakeMs: 15_000, idleM
 // prefixPaddingMs keeps the first syllables, silenceDurationMs tolerates a mid-sentence thinking pause,
 // and the LOW end sensitivity stops a brief pause from ending the turn.
 // https://ai.google.dev/api/live (AutomaticActivityDetection: prefixPaddingMs, silenceDurationMs, startOfSpeechSensitivity, endOfSpeechSensitivity)
+// prefixPaddingMs 700 (was 300): release 3a echo-analysis (Argon round 2, lux 89995) measured a brief
+// >= 300 ms non-lexical event (residual echo on loud prosody) cutting Naya off, so absorb a longer pre-roll.
 export const liveVoiceActivityDefaults = Object.freeze({
-  prefixPaddingMs: 300, silenceDurationMs: 800,
+  prefixPaddingMs: 700, silenceDurationMs: 800,
   startOfSpeechSensitivity: 'START_SENSITIVITY_LOW', endOfSpeechSensitivity: 'END_SENSITIVITY_LOW',
 } as const);
 export interface LiveVoiceRequest {

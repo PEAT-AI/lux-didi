@@ -1,0 +1,142 @@
+import Foundation
+
+/// Fake-seam proofs for the closed native-live end reasons, their timestamps, and the
+/// diagnostics snapshot fields. No audio device, no supervisor and no network are started.
+@main struct NativeLiveJournalTests {
+    static func main() {
+        var failures = 0
+        func expect(_ condition: Bool, _ message: String) {
+            if !condition { FileHandle.standardError.write(Data(("FAIL: " + message + "\n").utf8)); failures += 1 }
+        }
+        func jsonObject(_ line: String) -> [String: Any]? {
+            guard let data = line.data(using: .utf8),
+                  let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+            return raw
+        }
+        let iso = ISO8601DateFormatter()
+
+        // 1. Every closed reason writes one live_end line with an ISO timestamp and a closed reason token.
+        do {
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("native-live-journal-" + UUID().uuidString)
+            let file = directory.appendingPathComponent("native-live.log")
+            let journal = NativeLiveJournal(fileURL: file)
+            let at = Date(timeIntervalSince1970: 1_761_076_800)
+            for reason in NativeLiveEndReason.allCases { journal.append(reason, detail: [:], at: at) }
+            guard let text = try? String(contentsOf: file, encoding: .utf8) else { fatalError("journal file missing") }
+            let lines = text.split(separator: "\n").map(String.init)
+            expect(lines.count == NativeLiveEndReason.allCases.count, "one line per reason, got \(lines.count)")
+            for (index, reason) in NativeLiveEndReason.allCases.enumerated() {
+                guard let object = jsonObject(lines[index]) else { expect(false, "line \(index) is not JSON"); continue }
+                expect(object["event"] as? String == "live_end", "event is live_end for \(reason.rawValue)")
+                expect(object["reason"] as? String == reason.rawValue, "reason token is \(reason.rawValue)")
+                guard let stamp = object["timestamp"] as? String, let date = iso.date(from: stamp) else {
+                    expect(false, "timestamp missing or not ISO8601 for \(reason.rawValue)"); continue
+                }
+                expect(abs(date.timeIntervalSince(at)) < 1, "timestamp round-trips for \(reason.rawValue)")
+                expect(Set(object.keys) == ["event", "reason", "timestamp"], "no extra keys for \(reason.rawValue): \(object.keys.sorted())")
+            }
+            try? FileManager.default.removeItem(at: directory)
+        }
+
+        // 2. Closed numeric detail only: byte count for invalid_output, status/signal for child_exit, close code for provider_closed.
+        do {
+            expect(NSDictionary(dictionary: NativeLiveEndDetail.invalidOutput(bytes: 42)) == ["bytes": 42], "invalid_output carries bytes")
+            let noSignal = NativeLiveEndDetail.childExit(status: 9, signal: nil)
+            expect(NSDictionary(dictionary: noSignal) == ["status": 9], "child_exit carries exit status only")
+            let signalled = NativeLiveEndDetail.childExit(status: 0, signal: 15)
+            expect(NSDictionary(dictionary: signalled) == ["status": 0, "signal": 15], "child_exit carries status and signal")
+            expect(NSDictionary(dictionary: NativeLiveEndDetail.providerClosed(closeCode: 1013)) == ["closeCode": 1013], "provider_closed carries the numeric close code")
+        }
+
+        // 3. Snapshot: live state, audio route with voice processing, connector stage and the age of the last failure.
+        do {
+            let input = DiagnosticsSnapshotInput(
+                appVersion: "1.2.3", releaseCommit: "abc", macOSVersion: "macOS", serviceState: "connected",
+                serviceOrigin: "http://127.0.0.1:41231", liveState: "ended", sessionLimit: "30 min", idleLimit: "2 min",
+                connections: ["mongoose: error (discovery_failed)"],
+                audioRoute: "Input: built-in; Output: built-in", voiceProcessing: false,
+                preCreateFailureClass: "audio", preCreateFailureCode: "deviceUnavailable", preCreateFailureAge: "49m",
+                capturedAt: "2026-10-15T08:49:00Z")
+            let text = NativeDiagnosticsSnapshot.render(input)
+            for expected in ["Live: ended", "Voice processing: off", "Input: built-in", "Output: built-in",
+                             "mongoose: error (discovery_failed)", "audio/deviceUnavailable", "49m"] {
+                expect(text.contains(expected), "snapshot renders \(expected)")
+            }
+            let empty = NativeDiagnosticsSnapshot.render(DiagnosticsSnapshotInput())
+            expect(empty.contains("Live: unknown"), "missing live state reads unknown")
+            expect(empty.contains("Voice processing: unknown"), "missing voice processing reads unknown")
+        }
+
+        // 4. Age text is deterministic and bounded.
+        do {
+            let now = Date(timeIntervalSince1970: 1_761_076_800)
+            expect(NativeDiagnosticsSnapshot.ageText(since: now.addingTimeInterval(-45), now: now) == "45s", "under a minute reads seconds")
+            expect(NativeDiagnosticsSnapshot.ageText(since: now.addingTimeInterval(-2940), now: now) == "49m", "2940 seconds reads 49m")
+            expect(NativeDiagnosticsSnapshot.ageText(since: now.addingTimeInterval(-7200), now: now) == "2h", "7200 seconds reads 2h")
+            expect(NativeDiagnosticsSnapshot.ageText(since: now, now: now) == "0s", "zero age reads 0s")
+        }
+
+        // 5. preCreateFailure also returns the record timestamp so the snapshot can age it.
+        do {
+            let line = #"{"event":"live_precreate_failed","failureClass":"audio","code":"deviceUnavailable","timestamp":"2026-10-15T08:00:00Z"}"#
+            guard let parsed = NativeDiagnosticsSnapshot.preCreateFailure(inLog: line) else { fatalError("preCreateFailure missed the line") }
+            expect(parsed.failureClass == "audio", "failureClass parsed")
+            expect(parsed.code == "deviceUnavailable", "code parsed")
+            expect(parsed.at == "2026-10-15T08:00:00Z", "timestamp parsed")
+        }
+
+        // 6. A connector with no operator credential reads `not configured`, never `error` (X4-R2).
+        do {
+            expect(NativeDiagnosticsSnapshot.connectorLine(id: "mongoose", state: "error", reasonCode: "credential_missing") == "mongoose: not configured", "absent credential reads not configured")
+            expect(NativeDiagnosticsSnapshot.connectorLine(id: "mongoose", state: "error", reasonCode: "discovery_failed") == "mongoose: error (discovery_failed)", "other failures keep the stage")
+            expect(NativeDiagnosticsSnapshot.connectorLine(id: "calendar", state: "connected", reasonCode: nil) == "calendar: connected", "a healthy connector carries no stage")
+        }
+
+        // 7. E1: a provider interruption writes a metadata-only pre line and a post line, numbers only.
+        do {
+            func numeric(_ value: Any?) -> Bool {
+                guard let number = value as? NSNumber else { return false }
+                return CFGetTypeID(number) != CFBooleanGetTypeID()
+            }
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("native-live-interruption-" + UUID().uuidString)
+            let file = directory.appendingPathComponent("native-live.log")
+            let journal = NativeLiveJournal(fileURL: file)
+            let at = Date(timeIntervalSince1970: 1_761_076_800)
+            journal.appendInterruption(phase: .pre, sessionID: "session-abc", bufferedPlaybackMs: 2760,
+                msSinceLastModelAudio: 5400, turnCompleteSeen: false,
+                rms: NativeLiveRms(mean: 0.021, max: 0.34, speechBuffers: 6), at: at)
+            journal.appendInterruption(phase: .post, sessionID: "session-abc", bufferedPlaybackMs: 2760,
+                msSinceLastModelAudio: 5400, turnCompleteSeen: false,
+                rms: NativeLiveRms(mean: 0.004, max: 0.09, speechBuffers: 1), at: at.addingTimeInterval(5))
+            let text = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
+            let lines = text.split(separator: "\n").map(String.init)
+            expect(lines.count == 2, "one pre line and one post line, got \(lines.count)")
+            if lines.count == 2, let pre = jsonObject(lines[0]), let post = jsonObject(lines[1]) {
+                expect(pre["event"] as? String == "live_interrupted", "pre line event token")
+                expect(pre["liveSessionId"] as? String == "session-abc", "session id present")
+                expect(pre["phase"] as? String == "pre", "pre phase token")
+                expect(iso.date(from: pre["timestamp"] as? String ?? "") != nil, "pre timestamp is ISO8601")
+                expect(numeric(pre["bufferedPlaybackMs"]), "bufferedPlaybackMs is a number")
+                expect(numeric(pre["msSinceLastModelAudio"]), "msSinceLastModelAudio is a number")
+                expect(pre["turnCompleteSeen"] as? Bool == false, "turnCompleteSeen is a boolean")
+                if let rms = pre["preRms"] as? [String: Any] {
+                    expect(numeric(rms["mean"]), "preRms.mean is a number")
+                    expect(numeric(rms["max"]), "preRms.max is a number")
+                    expect(numeric(rms["speechBuffers"]), "preRms.speechBuffers is a number")
+                } else { expect(false, "preRms object present") }
+                expect(!lines[0].contains("mid sentence") && !lines[0].contains("pcm") && !lines[0].contains("base64"),
+                    "no audio or text is carried in the pre line")
+                expect(post["event"] as? String == "live_interrupted", "post line event token")
+                expect(post["phase"] as? String == "post", "post phase token")
+                if let rms = post["postRms"] as? [String: Any] {
+                    expect(numeric(rms["mean"]), "postRms.mean is a number")
+                    expect(numeric(rms["max"]), "postRms.max is a number")
+                    expect(numeric(rms["speechBuffers"]), "postRms.speechBuffers is a number")
+                } else { expect(false, "postRms object present") }
+            } else { expect(false, "interruption lines are valid JSON") }
+        }
+
+        if failures == 0 { print("NATIVE-LIVE-JOURNAL PASS") } else { print("NATIVE-LIVE-JOURNAL FAIL \(failures)") }
+        exit(failures == 0 ? 0 : 1)
+    }
+}

@@ -10,7 +10,7 @@ import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import type { EndpointConfig, McpPort } from '../adapters/mcp/port.js';
-import { createMattermostReader, MATTERMOST_AUTH_NEEDED, MATTERMOST_TOOLS } from '../connectors/index.js';
+import { createMattermostReader, MATTERMOST_AUTH_NEEDED, MATTERMOST_TOOLS, parseChannelList, resolveChannelReference } from '../connectors/index.js';
 import { mattermostToolStatus, projectMattermostResult } from '../tools/mattermost.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -140,4 +140,25 @@ test('mattermost_whoami projects an SSE MCP entity from separately decodedResult
   if (!projected.ok) throw Error('projection failed');
   assert(projected.projection.text.includes('Synthetic SSE'));
   assert(!projected.projection.text.includes('synthetic-unclassified'));
+});
+
+test('an unknown channel name fails loud with the closest known names', async t => {
+  const f = setup('ok');
+  t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
+  const digest = await approve(f.adapter, f.registry);
+  const result = await reader(f.adapter, f.registry, digest).getChannelHistory({ channel: 'town-squar', limit: 20 });
+  assert.equal(result.state, 'refused');
+  assert.match(result.state === 'refused' ? result.reason : '', /channel-not-found: town-squar; closest names: Town Square/);
+});
+
+test('channel resolution maps id, name and display name, and names the closest matches', () => {
+  const channels = [{ id: 'abcdefghijklmnopqrstuvwxzy', name: 'town-square', displayName: 'Town Square' }];
+  assert.deepEqual(resolveChannelReference('Town Square', channels), { channel: 'abcdefghijklmnopqrstuvwxzy' });
+  assert.deepEqual(resolveChannelReference('town-square', channels), { channel: 'abcdefghijklmnopqrstuvwxzy' });
+  assert.deepEqual(resolveChannelReference('abcdefghijklmnopqrstuvwxzy', channels), { channel: 'abcdefghijklmnopqrstuvwxzy' });
+  const miss = resolveChannelReference('off-topic', channels);
+  assert.equal('error' in miss && miss.error.startsWith('channel-not-found: off-topic'), true);
+  const ambiguous = resolveChannelReference('Town Square', [{ name: 'a', displayName: 'Town Square' }, { name: 'b', displayName: 'Town Square' }]);
+  assert.equal('error' in ambiguous && ambiguous.error.startsWith('channel-ambiguous: Town Square matches '), true);
+  assert.deepEqual(parseChannelList({ result: { content: [{ type: 'text', text: JSON.stringify({ channels }) }] } }), channels);
 });

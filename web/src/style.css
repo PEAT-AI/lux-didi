@@ -199,3 +199,4 @@
 .chat-fill #connected-send-form{flex-shrink:0;padding-bottom:16px}
 /* The old single-page main added page padding and a max width; the lane shell owns its own box. */
 main.lanes{max-width:none;margin:0;padding:0;display:flex;flex:1;min-width:0;outline:none}
+.chat-fill #connected-panel{flex:1;min-height:0;display:flex;flex-direction:column}

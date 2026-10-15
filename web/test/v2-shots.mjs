@@ -149,7 +149,16 @@ try {
   await setTheme('light');
   await shot('800x900-light-idle');
 
-  await writeFile(join(out, 'shots.json'), JSON.stringify({ shots, measure }, null, 2));
+  await page.setViewportSize({ width: 375, height: 900 });
+  await page.evaluate(() => window.dispatchEvent(new Event('resize')));
+  await setTheme('dark');
+  const probe = await page.evaluate(() => {
+    const info = selector => { const el = document.querySelector(selector); if (!el) return 'missing'; const r = el.getBoundingClientRect(); const cs = getComputedStyle(el); return { w: Math.round(r.width), h: Math.round(r.height), display: cs.display, visibility: cs.visibility, state: el.dataset ? el.dataset.state : null }; };
+    return { innerWidth: window.innerWidth, scrollWidth: document.documentElement.scrollWidth, row: info('.lane-row'), lanes: info('.lanes'), voiceLane: info('#lane-voice'), voiceInner: info('#lane-voice .lane-inner'), orbStage: info('.orb-stage'), orb: info('#didi-orb') };
+  });
+  console.log('PROBE375', JSON.stringify(probe));
+
+  await writeFile(join(out, 'shots.json'), JSON.stringify({ shots, measure, probe }, null, 2));
   console.log('SHOTS', shots.join(', '));
   console.log('MEASURE', JSON.stringify(measure));
 } finally {

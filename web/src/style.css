@@ -307,3 +307,14 @@ h3{font-size:14px}
 .live-tool-result>summary{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border:1px solid var(--border);border-radius:999px;font-size:12px;color:var(--muted);cursor:pointer;list-style:none}
 .live-tool-result>summary::before{content:"";width:12px;height:12px;border-radius:3px;background:var(--accent)}
 .connected-disclosure .allow-link,#connected-consent{height:28px;min-height:0;line-height:28px;padding:0 6px;margin:0;border:0;background:none;color:var(--accent);font-size:12px;cursor:pointer;box-sizing:border-box}
+
+/* V2-R4 enforcement pass 2 */
+.lane{display:flex;flex-direction:column}
+.lane .lane-inner{flex:1 1 auto;min-height:0}
+.lane-chat .lane-inner,#connected-panel,#connected-panel .connected-conversation{flex:1 1 auto;min-height:0;display:flex;flex-direction:column}
+#connected-send-form{margin-top:auto}
+.send-button{box-sizing:border-box;width:32px;height:32px;min-width:32px;min-height:32px;padding:0;line-height:0;flex:0 0 auto}
+.live-turns{gap:16px}
+.live-turns>*{margin:0}
+.live-turns .entry.naya{align-self:flex-start}
+.live-turns .entry.user{align-self:flex-end;max-width:640px}

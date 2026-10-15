@@ -26,8 +26,12 @@ async function auditLayout(page) {
     const naya = q('.live-turns .entry.naya');
     const allow = q('.allow-link');
     const cs = el => el ? getComputedStyle(el) : null;
+    const vis = sel => { const el = q(sel); return !!el && el.getClientRects().length > 0; };
     return {
       voice: {
+        visible: vis('#lane-voice'),
+        nayaInset: inset('.live-turns .entry.naya', voice),
+        userInset: inset('.live-turns .entry.user', voice),
         turnInset: inset('.live-turns .entry', voice),
         chipInset: inset('.live-tool-result', voice),
         emptyInset: inset('.voice-empty', voice),
@@ -37,6 +41,7 @@ async function auditLayout(page) {
         newHideGap: gap('#new-conversation', '#lane-voice .lane-toggle'),
       },
       chat: {
+        visible: vis('#lane-chat'),
         emptyInset: inset('.connected-empty', chat),
         composerInset: inset('#connected-send-form', chat),
         composerBottom: rn(chat.bottom - r(q('#connected-send-form')).bottom),
@@ -60,14 +65,17 @@ async function auditLayout(page) {
 function assertAudit(a, label, failures) {
   const bad = m => failures.push(m);
   const inb = (v, lo, hi, what) => { if (!(v >= lo && v <= hi)) bad(`${label} ${what}: ${v} not in [${lo},${hi}]`); };
-  if (a.voice.turnInset) { inb(a.voice.turnInset.left, 24, 40, 'voice turn left inset'); inb(a.voice.turnInset.right, 24, 520, 'voice turn right clearance'); }
-  if (a.voice.chipInset) inb(a.voice.chipInset.left, 24, 40, 'chip left inset');
-  if (a.voice.emptyInset) inb(a.voice.emptyInset.left, 24, 40, 'empty left inset');
-  inb(a.voice.hideRight, 22, 26, 'Hide right inset');
-  if (a.voice.headerOrb) inb(a.voice.headerOrb.w, 40, 56, 'header orb width');
-  if (a.voice.headerOrb) inb(a.voice.headerOrb.h, 40, 56, 'header orb height');
-  if (a.voice.startNewGap !== null) inb(a.voice.startNewGap, 8, 12, 'Start to New gap');
-  if (a.voice.newHideGap !== null) inb(a.voice.newHideGap, 8, 12, 'New to Hide gap');
+  if (a.voice.visible) {
+    if (a.voice.nayaInset) inb(a.voice.nayaInset.left, 24, 40, 'naya turn left inset');
+    if (a.voice.userInset) inb(a.voice.userInset.right, 24, 40, 'user turn right inset');
+    if (a.voice.chipInset) inb(a.voice.chipInset.left, 24, 40, 'chip left inset');
+    if (a.voice.emptyInset) inb(a.voice.emptyInset.left, 24, 40, 'empty left inset');
+    inb(a.voice.hideRight, 22, 26, 'Hide right inset');
+  }
+  if (a.voice.visible && a.voice.headerOrb) { inb(a.voice.headerOrb.w, 40, 56, 'header orb width'); inb(a.voice.headerOrb.h, 40, 56, 'header orb height'); }
+  if (a.voice.visible && a.voice.startNewGap !== null) inb(a.voice.startNewGap, 8, 12, 'Start to New gap');
+  if (a.voice.visible && a.voice.newHideGap !== null) inb(a.voice.newHideGap, 8, 12, 'New to Hide gap');
+  if (!a.chat.visible) return a;
   if (a.chat.emptyInset) { inb(a.chat.emptyInset.left, 24, 400, 'chat empty left inset'); inb(a.chat.emptyInset.right, 24, 400, 'chat empty right inset'); }
   if (a.chat.composerInset) { inb(a.chat.composerInset.left, 24, 40, 'composer left inset'); inb(a.chat.composerInset.right, 24, 40, 'composer right inset'); }
   if (a.chat.composerBottom !== null) inb(a.chat.composerBottom, 14, 18, 'composer bottom gap');

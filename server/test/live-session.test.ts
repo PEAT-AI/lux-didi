@@ -90,6 +90,7 @@ async function harness(t: TestContext, overrides: {
   model?: string;
   tools?: boolean;
   mattermost?: boolean;
+  calendar?: boolean;
   beforeTool?: () => Promise<void>;
   beforeGate?: () => Promise<void>;
   toolError?: boolean;
@@ -169,10 +170,27 @@ async function harness(t: TestContext, overrides: {
       });
       await mattermostSdk.connect(mattermostTransport);
     }
+    let calendarEndpoint: { id: string; url: string; account: string; resource: string } | undefined;
+    let calendarSdk: Server | undefined;
+    let calendarTransport: WebStandardStreamableHTTPServerTransport | undefined;
+    const calendarSchemas = [{ name: 'gcal_calendars', inputSchema: { type: 'object' } }];
+    if (overrides.calendar) {
+      calendarEndpoint = { id: 'calendar', url: 'https://fixture.invalid/calendar', account: 'account', resource: 'resource' };
+      registry.register(calendarEndpoint); registry.enable(calendarEndpoint.id); registry.allowEgress(calendarEndpoint.id);
+      calendarSdk = new Server({ name: 'live-calendar-fixture', version: '1' }, { capabilities: { tools: { listChanged: false } } });
+      calendarTransport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
+      calendarSdk.setRequestHandler('tools/list', () => ({ tools: structuredClone(calendarSchemas) }) as never);
+      calendarSdk.setRequestHandler('tools/call', req => {
+        calls.push({ name: req.params.name, args: req.params.arguments });
+        return { content: [{ type: 'text', text: JSON.stringify({ calendars: [{ id: 'primary', summary: 'Primary' }] }) }] };
+      });
+      await calendarSdk.connect(calendarTransport);
+    }
     t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
       const request = new Request(input, init);
       if (request.method === 'GET') return new Response(null, { status: 405 });
       if (mattermostTransport && mattermostEndpoint && request.url === mattermostEndpoint.url) return mattermostTransport.handleRequest(request);
+      if (calendarTransport && calendarEndpoint && request.url === calendarEndpoint.url) return calendarTransport.handleRequest(request);
       return transport.handleRequest(request);
     });
     const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic-token', budgets: { maxResponseBytes: 12000, projectionChars: 10, timeoutMs: 1000 } });
@@ -196,9 +214,18 @@ async function harness(t: TestContext, overrides: {
       assert.equal((await port.discover(mattermostEndpoint.id)).state, 'discovered');
       toolOwner.projectConnection('mattermost');
     }
+    if (overrides.calendar && calendarEndpoint) {
+      toolOwner.applyConnection({ schemaVersion: 1, ownerId: store.assistantId, connectionId: 'calendar', generation: 1, enabled: true, connector: 'google',
+        endpoint: { ...calendarEndpoint, credentialRef: null }, toolNames: ['gcal_calendars'], schemaDigest: canonicalToolDigest(calendarSchemas),
+        sourcePolicy: { id: 'live-fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
+        route: { identity: liveProfileIdentity(profile), allowedClasses: ['ordinary'] },
+        bounds: { maxQueryChars: 200, maxSearchLimit: 60, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 } });
+      assert.equal((await port.discover(calendarEndpoint.id)).state, 'discovered');
+      toolOwner.projectConnection('calendar');
+    }
     toolOwner.projectConnection('lux');
-    tools = { owner: toolOwner, connectionIds: () => overrides.mattermost ? ['lux', 'mattermost'] : ['lux'] };
-    t.after(async () => { await port.close(); await transport.close(); await sdk.close(); if (mattermostSdk) await mattermostSdk.close(); });
+    tools = { owner: toolOwner, connectionIds: () => ['lux', ...(overrides.mattermost ? ['mattermost'] : []), ...(overrides.calendar ? ['calendar'] : [])] };
+    t.after(async () => { await port.close(); await transport.close(); await sdk.close(); if (mattermostSdk) await mattermostSdk.close(); if (calendarSdk) await calendarSdk.close(); });
   }
   const memorySource = (tx: import('../contracts/storage.js').Transaction) => {
     memorySelections += 1;
@@ -1858,39 +1885,39 @@ async function settleLiveTool(h: Harness, id: string, name: string, args: unknow
 }
 
 test('a replayed Live question reaches the connector once per allowlisted read', async t => {
-  const h = await harness(t, { tools: true, mattermost: true });
+  const h = await harness(t, { tools: true, calendar: true, mattermost: true });
   await attached(h, 'cache-replay');
   const channelId = 'abcdefghijklmnopqrstuvwxzy';
-  await settleLiveTool(h, 'l1', 'mattermost_list_channels', { limit: 12 });
-  await settleLiveTool(h, 'l2', 'mattermost_list_channels', { limit: 12 });
-  await settleLiveTool(h, 'l3', 'mattermost_list_channels', { limit: 12 });
+  await settleLiveTool(h, 'c1', 'gcal_calendars', {});
+  await settleLiveTool(h, 'c2', 'gcal_calendars', {});
+  await settleLiveTool(h, 'c3', 'gcal_calendars', {});
   await settleLiveTool(h, 's1', 'mattermost_search', { query: 'standup', limit: 12 });
   await settleLiveTool(h, 's2', 'mattermost_search', { query: 'standup', limit: 12 });
   await settleLiveTool(h, 'h1', 'mattermost_get_channel_history', { channel: channelId, limit: 12 });
   await settleLiveTool(h, 'h2', 'mattermost_get_channel_history', { channel: channelId, limit: 12 });
   const count = (name: string) => h.calls.filter(call => call.name === name).length;
-  assert.equal(count('mattermost_list_channels'), 1, 'three identical list calls reach the connector once');
+  assert.equal(count('gcal_calendars'), 1, 'three identical list calls reach the connector once');
   assert.equal(count('mattermost_search'), 2, 'a search is never cached');
   assert.equal(count('mattermost_get_channel_history'), 2, 'a history read is never cached');
 });
 
 test('a new Live session starts with an empty read cache', async t => {
-  const first = await harness(t, { tools: true, mattermost: true });
+  const first = await harness(t, { tools: true, calendar: true, mattermost: true });
   await attached(first, 'cache-session-one');
-  await settleLiveTool(first, 'o1', 'mattermost_list_channels', { limit: 12 });
-  assert.equal(first.calls.filter(call => call.name === 'mattermost_list_channels').length, 1);
-  const second = await harness(t, { tools: true, mattermost: true });
+  await settleLiveTool(first, 'o1', 'gcal_calendars', {});
+  assert.equal(first.calls.filter(call => call.name === 'gcal_calendars').length, 1);
+  const second = await harness(t, { tools: true, calendar: true, mattermost: true });
   await attached(second, 'cache-session-two');
-  await settleLiveTool(second, 'o2', 'mattermost_list_channels', { limit: 12 });
-  assert.equal(second.calls.filter(call => call.name === 'mattermost_list_channels').length, 1, 'the second session reads the connector afresh');
+  await settleLiveTool(second, 'o2', 'gcal_calendars', {});
+  assert.equal(second.calls.filter(call => call.name === 'gcal_calendars').length, 1, 'the second session reads the connector afresh');
 });
 
 test('a cached read expires after ten minutes even inside one session', async t => {
-  const h = await harness(t, { tools: true, mattermost: true });
+  const h = await harness(t, { tools: true, calendar: true, mattermost: true });
   await attached(h, 'cache-ttl');
-  await settleLiveTool(h, 't1', 'mattermost_list_channels', { limit: 12 });
-  assert.equal(h.calls.filter(call => call.name === 'mattermost_list_channels').length, 1);
+  await settleLiveTool(h, 't1', 'gcal_calendars', {});
+  assert.equal(h.calls.filter(call => call.name === 'gcal_calendars').length, 1);
   h.advance(10 * 60 * 1000);
-  await settleLiveTool(h, 't2', 'mattermost_list_channels', { limit: 12 });
-  assert.equal(h.calls.filter(call => call.name === 'mattermost_list_channels').length, 2, 'an expired entry is read again');
+  await settleLiveTool(h, 't2', 'gcal_calendars', {});
+  assert.equal(h.calls.filter(call => call.name === 'gcal_calendars').length, 2, 'an expired entry is read again');
 });

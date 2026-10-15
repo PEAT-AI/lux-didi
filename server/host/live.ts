@@ -50,7 +50,7 @@ class HostLiveService implements LiveService {
   readonly maxIncomingBytes = maxIncomingBytes;
   readonly maxBufferedBytes: number;
   readonly profileIdentity: string;
-  constructor(private readonly profile: LiveProfile, private readonly owner: LiveSessionOwner) {
+  constructor(private readonly profile: LiveProfile, private readonly owner: LiveSessionOwner, private readonly store: Store) {
     this.maxBufferedBytes = profile.limits.wsBufferedBytes;
     this.profileIdentity = liveProfileIdentity(profile);
   }
@@ -58,11 +58,26 @@ class HostLiveService implements LiveService {
   lookupAuthority(runId: string) { return this.owner.lookupAuthority(runId); }
   status(): LiveStatusPayload { return { ...statusFromProfile(this.profile), ...{ memory: this.owner.profileProjection().memory } }; }
   create(inputClass: DataClass, idempotencyKey: string, context: LiveContext): LiveSessionSnapshot {
-    return this.owner.create({ inputClass, idempotencyKey }, context);
+    const created = this.owner.create({ inputClass, idempotencyKey }, context);
+    this.supersedeOtherSessions(created.liveSessionId);
+    return created;
   }
   pendingJobs() { return this.owner.pendingJobs(); }
   createWithPending(inputClass: DataClass, idempotencyKey: string, context: LiveContext, pickupJobId?: string): LiveSessionSnapshot {
-    return this.owner.createWithPending({ inputClass, idempotencyKey, ...(pickupJobId ? { pickupJobId } : {}) }, context);
+    const created = this.owner.createWithPending({ inputClass, idempotencyKey, ...(pickupJobId ? { pickupJobId } : {}) }, context);
+    this.supersedeOtherSessions(created.liveSessionId);
+    return created;
+  }
+  /** At most one Live session per owner: end every other non-terminal row through the normal path. */
+  private supersedeOtherSessions(keep: string): void {
+    const rows = this.store.transaction(tx => tx.all(
+      "SELECT live_session_id FROM live_sessions WHERE owner_assistant_id=? AND live_session_id<>? AND lifecycle IN ('accepted','opening','active')",
+      [this.store.assistantId, keep]));
+    for (const row of rows) {
+      const liveSessionId = String(row['live_session_id']);
+      this.owner.revoke(liveSessionId);
+      console.log(JSON.stringify({ event: 'live_session_superseded', liveSessionId }));
+    }
   }
   snapshot(liveSessionId: string): LiveSessionSnapshot { return this.owner.get(liveSessionId); }
   journal(liveSessionId: string, cursor: number | undefined, limit: number | undefined): LiveFragmentPage {
@@ -115,7 +130,7 @@ export function composeLive(store: Store, configDir: string, testing?: LiveTesti
   });
   const owner = createLiveSessionOwner({ store, voice, profile, memorySource: resolveLiveMemory, ...(tools ? { tools } : {}), ...(now ? { now } : {}) });
   tools?.registerAuthoritySource?.(async (runId, signal) => signal.aborted ? null : owner.lookupAuthority(runId) ?? owner.lookupJobAuthority(runId));
-  return { service: new HostLiveService(profile, owner), status };
+  return { service: new HostLiveService(profile, owner, store), status };
 }
 
 /** Same durable entries and routing labels as text chat. Unknown or non-ordinary labels never leave this port. */

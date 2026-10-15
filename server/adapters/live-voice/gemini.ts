@@ -332,17 +332,20 @@ class Session implements LiveVoiceSession {
 
     } catch (error) {
       const code = error instanceof LiveVoiceError ? error.code : 'protocol_error';
-      this.reportRejectedFrame(message, byteLength, parsed, code);
+      this.reportRejectedFrame(message, byteLength, parsed, code, error);
       this.finish(code);
     }
   };
   // One bounded, privacy-safe line at the exact parser rejection point: frame kind, top-level
   // and nested key names and byte length, never a value, text, audio or id.
-  private reportRejectedFrame(message: unknown, byteLength: number, parsed: boolean, code: LiveVoiceErrorCode): void {
+  private reportRejectedFrame(message: unknown, byteLength: number, parsed: boolean, code: LiveVoiceErrorCode, error: unknown): void {
     const kind = !parsed ? 'invalid_json' : object(message) ? frameKeys.filter(key => Object.hasOwn(message, key)).sort().join('+') || 'unknown' : 'non_object';
     const keys: string[] = [];
     if (object(message)) shapePaths(message, keys, '', 0);
-    console.error(JSON.stringify({ event: 'live_frame_rejected', code, kind, bytes: byteLength, keys }));
+    // Bounded classifier: the error constructor name only, never the message, payload or stack.
+    const named = error instanceof Error ? error.name : 'nonerror';
+    const classifier = /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(named) ? named : 'unknown';
+    console.error(JSON.stringify({ event: 'live_frame_rejected', code, error: classifier, kind, bytes: byteLength, keys }));
   }
   private text(value: unknown): string {
     if (typeof value !== 'string' || (this.secret && (value.includes(this.secret) || value.includes(encodeURIComponent(this.secret))))) fail('protocol_error');
@@ -373,10 +376,15 @@ class Session implements LiveVoiceSession {
     for (const type of ['inputTranscription', 'outputTranscription'] as const) {
       if (type in value) {
         const transcription = value[type];
-        if (!object(transcription) || ('finished' in transcription && typeof transcription.finished !== 'boolean')) fail('protocol_error');
-        const text = this.text(transcription.text);
-        if (type === 'inputTranscription') { this.diagnostic.inputTranscriptionEvents++; this.diagnostic.inputTranscriptionCharacters += text.length; }
-        events.push({ type, text, ...('finished' in transcription ? { finished: transcription.finished as boolean } : {}) });
+        if (!object(transcription) || ('finished' in transcription && typeof transcription.finished !== 'boolean')
+          || ('text' in transcription && typeof transcription.text !== 'string')) fail('protocol_error');
+        // Gemini's Transcription.text is optional: a carrier frame may hold the audio modelTurn and a
+        // text-less outputTranscription together. Skipping the empty transcription keeps the audio.
+        if ('text' in transcription) {
+          const text = this.text(transcription.text);
+          if (type === 'inputTranscription') { this.diagnostic.inputTranscriptionEvents++; this.diagnostic.inputTranscriptionCharacters += text.length; }
+          events.push({ type, text, ...('finished' in transcription ? { finished: transcription.finished as boolean } : {}) });
+        }
       }
     }
     if (events.some(event => event.type === 'audio' || event.type === 'modelText' || event.type === 'outputTranscription')) events.push({ type: 'modelTurnStarted' });

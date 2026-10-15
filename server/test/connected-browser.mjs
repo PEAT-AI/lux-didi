@@ -182,7 +182,8 @@ try {
   assert.deepEqual(errors, []);
   await step('default owner projection remains explicit public Lux Didi', async () => {
     assert.deepEqual((await api('/status')).ownerProfile, { status: 'default', displayName: 'Lux Didi' });
-    await page.getByRole('heading', { name: 'Talk with Lux Didi', exact: true }).waitFor();
+    await page.locator('#lane-chat .lane-title').waitFor();
+    assert.equal((await page.locator('#lane-chat .lane-title').innerText()).trim(), 'Chat');
   });
   const productTitle = await page.title();
   for (const mode of ['owner-unconfigured', 'owner-configured']) {

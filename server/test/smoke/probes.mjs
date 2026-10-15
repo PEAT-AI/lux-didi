@@ -314,8 +314,11 @@ async function researchTurn({ base, token, epoch, dataDir, clipPath }) {
       calls = fragments.filter(fragment => fragment.kind === 'toolCall' && fragment.tool && fragment.tool.name === 'research').length;
       const results = fragments.filter(fragment => fragment.kind === 'toolResult' && fragment.tool && fragment.tool.name === 'research');
       if (results.length) result = results[results.length - 1].tool;
-      outputChars = fragments.filter(fragment => fragment.kind === 'outputTranscription').reduce((sum, fragment) => sum + (typeof fragment.text === 'string' ? fragment.text.length : 0), 0);
+      const nextOutput = fragments.filter(fragment => fragment.kind === 'outputTranscription').reduce((sum, fragment) => sum + (typeof fragment.text === 'string' ? fragment.text.length : 0), 0);
+      // The response and the model's answer can land in the same one-second poll; anchor the "after" mark
+      // on the output seen before this poll, not on the output the poll already carries.
       if (result && outputAtResult === null) outputAtResult = outputChars;
+      outputChars = nextOutput;
       if (result && outputAtResult !== null && outputChars > outputAtResult) break;
       await new Promise(resolve => setTimeout(resolve, 1000));
     }

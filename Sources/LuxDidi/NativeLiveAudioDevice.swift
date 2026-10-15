@@ -165,17 +165,91 @@ struct NativePlaybackQueue {
 
     static func ms(_ frames: Int) -> Int { frames * 1000 / frameRate }
 }
-/// Contract C1: deterministic wait-cue scheduler skeleton (red stage, implementation follows).
+/// Contract C1: deterministic wait-cue scheduler. A tool marker and the playback queue's drain
+/// (plus model audio and barge-ins) go in as timestamped events; the absolute times at which the
+/// soft cue may play come out. It touches no clock and no audio API, so a recorded event sequence
+/// can be replayed in a test.
 struct NativeWaitCueScheduler {
+    /// Argon rounds 3 and 4: 4.0 s of real silence measured from the drain, so a cue never competes
+    /// with the acknowledgement audio that may still be playing, then at most three cues 6 s apart.
+    static let silenceBeforeFirstCueMs = 4000
+    static let cueSpacingMs = 6000
     static let maximumCues = 3
-    enum Event: Equatable { case toolMarker(atMs: Int), drained(atMs: Int), modelAudio(atMs: Int), interrupted(atMs: Int) }
-    mutating func apply(_ event: Event) -> [Int] { [] }
+
+    enum Event: Equatable {
+        case toolMarker(atMs: Int)
+        case drained(atMs: Int)
+        case modelAudio(atMs: Int)
+        case interrupted(atMs: Int)
+    }
+
+    private var armed = false
+
+    /// The cue times this event makes due, in absolute milliseconds. A tool marker arms the wait; a
+    /// drain schedules up to three cues; model audio or a barge-in disarms and cancels the rest.
+    mutating func apply(_ event: Event) -> [Int] {
+        switch event {
+        case .toolMarker:
+            armed = true
+            return []
+        case .drained(let atMs):
+            guard armed else { return [] }
+            armed = false
+            return (0..<Self.maximumCues).map {
+                atMs + Self.silenceBeforeFirstCueMs + $0 * Self.cueSpacingMs
+            }
+        case .modelAudio, .interrupted:
+            armed = false
+            return []
+        }
+    }
 }
+/// Contract C1: the non-verbal "still working" cue, generated in code so no asset ships and no
+/// second synthetic voice is heard next to Naya's. Two short sine notes, 24 kHz mono, 20 ms
+/// raised-cosine fades, about -26 dBFS.
 enum NativeWaitCue {
+    static let sampleRate = 24000.0
+    static let noteFrames = 3360
+    static let gapFrames = 1680
+    static let totalFrames = noteFrames * 2 + gapFrames
+    static let fadeFrames = 480
     static let amplitude: Float = 0.05
-    static let totalFrames = 1
-    static let noteFrames = 1
-    static func samples() -> [Float] { [] }
+    static let firstTone = 660.0
+    static let secondTone = 880.0
+
+    /// The two notes as one mono sample array, so the shape is testable without an audio device.
+    static func samples() -> [Float] {
+        var out = [Float](repeating: 0, count: totalFrames)
+        for i in 0..<noteFrames {
+            let phase = Double(i) / sampleRate
+            let envelope = fade(i)
+            out[i] = Float(sin(2 * Double.pi * firstTone * phase)) * amplitude * envelope
+            out[gapFrames + noteFrames + i] =
+                Float(sin(2 * Double.pi * secondTone * phase)) * amplitude * envelope
+        }
+        return out
+    }
+
+    /// The cue as a 24 kHz mono buffer for the existing player node.
+    static func buffer() -> AVAudioPCMBuffer? {
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1),
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(totalFrames)),
+              let channels = buffer.floatChannelData else { return nil }
+        buffer.frameLength = buffer.frameCapacity
+        let samples = samples()
+        for index in 0..<samples.count { channels[0][index] = samples[index] }
+        return buffer
+    }
+
+    /// 20 ms raised-cosine fade in and out, so the cue never clicks.
+    private static func fade(_ index: Int) -> Float {
+        if index < fadeFrames { return Float(0.5 - 0.5 * cos(Double.pi * Double(index) / Double(fadeFrames))) }
+        if index >= noteFrames - fadeFrames {
+            let tail = noteFrames - 1 - index
+            return Float(0.5 - 0.5 * cos(Double.pi * Double(tail) / Double(fadeFrames)))
+        }
+        return 1
+    }
 }
 struct NativeAudioCaptureSummary: Sendable {
     let capture: NativeCaptureStatistics
@@ -340,6 +414,9 @@ struct NativeLiveInterruptionSample: Sendable {
     /// P2-R1: the playback memory guard dropped the queued turn. The conversation records one
     /// `playback_overflow_flush` native-live.log line, because it holds the session id.
     var onPlaybackOverflow: (@MainActor (Int, Int) async -> Void)?
+    /// Contract C1: one recorded cue play, index 1...3 and milliseconds since the queue drained. The
+    /// conversation records one `wait_cue` native-live.log line, because it holds the session id.
+    var onWaitCue: (@MainActor (Int, Int) async -> Void)?
     /// E1 test seam: the delay before the postRms line. Production is five seconds.
     var interruptionPostRmsDelayNanos: UInt64 = 5_000_000_000
     /// The orb renders this RMS and above as speech (web/src/orb.ts `audible`); telemetry counts buffers above it.
@@ -592,6 +669,10 @@ struct NativeLiveInterruptionSample: Sendable {
     /// Bumped only by a barge-in flush, so a chunk whose turn was flushed in flight is dropped.
     private var turnGeneration: UInt64 = 0
     private var playback = NativePlaybackStatistics()
+    /// Contract C1: the wait-cue scheduler, its timer task and a token that cancels a stale task.
+    private var waitCue = NativeWaitCueScheduler()
+    private var cueTask: Task<Void, Never>?
+    private var cueGeneration: UInt64 = 0
     private var captureGeneration: UInt64 = 0
     private var captureStatistics = NativeCaptureStatistics()
     private var drainFrames = 0
@@ -759,7 +840,7 @@ struct NativeLiveInterruptionSample: Sendable {
             }
         onCapturePrepared?(capture)
     }
-    func setMuted(_ muted: Bool) { if self.muted != muted { captureEpoch &+= 1 }; self.muted = muted; capture?.setMuted(muted); inputLevel = 0 }
+    func setMuted(_ muted: Bool) { if self.muted != muted { captureEpoch &+= 1 }; self.muted = muted; capture?.setMuted(muted); inputLevel = 0; if muted { cancelWaitCue(.interrupted(atMs: nowMs()), stopPlayer: true) } }
     /// E1: append one already-computed meter level to a small bounded ring. Stores the number only.
     private func recordLevel(_ value: Float) {
         levelRing.append((at: now(), level: value))
@@ -775,6 +856,8 @@ struct NativeLiveInterruptionSample: Sendable {
     }
     /// E1: gather the barge-in facts the capture and playback paths already hold, then postRms after the delay.
     func interruption(turnCompleteSeen: Bool) async {
+        // Contract C1: a barge-in cancels the waiting cue before the flush does.
+        cancelWaitCue(.interrupted(atMs: nowMs()), stopPlayer: true)
         let at = now()
         let bufferedPlaybackMs = playbackQueue.scheduledFrames <= 0 ? 0 : playbackQueue.scheduledFrames * 1000 / 24000
         let sinceAudio = lastModelAudioAt.map { max(0, Int(at.timeIntervalSince($0) * 1000)) } ?? -1
@@ -797,8 +880,60 @@ struct NativeLiveInterruptionSample: Sendable {
         stop()
         await onInterruption?()
     }
+    // MARK: Wait cue (contract C1)
+
+    /// A tool marker for the current turn arms the wait. If the queue is already dry (the
+    /// acknowledgement played before the marker arrived) the wait starts now.
+    func toolMarker() async {
+        _ = waitCue.apply(.toolMarker(atMs: nowMs()))
+        if !playbackQueue.playing, playbackQueue.scheduledFrames <= 0 { startWaitCue() }
+    }
+
+    /// The queue ran dry after a tool marker: schedule at most three cues, 4 s then every 6 s.
+    private func startWaitCue() {
+        guard cueTask == nil else { return }
+        let drainMs = nowMs()
+        let times = waitCue.apply(.drained(atMs: drainMs))
+        guard !times.isEmpty else { return }
+        cueGeneration &+= 1
+        let token = cueGeneration
+        cueTask = Task { @MainActor in
+            var index = 0
+            for atMs in times {
+                index += 1
+                let delay = atMs - self.nowMs()
+                if delay > 0 { try? await Task.sleep(nanoseconds: UInt64(delay) * 1_000_000) }
+                guard !Task.isCancelled, self.cueGeneration == token else { return }
+                await self.playWaitCue(index: index, sinceDrainMs: self.nowMs() - drainMs)
+            }
+            if self.cueGeneration == token { self.cueTask = nil }
+        }
+    }
+
+    /// Play one soft cue on the existing player. A cue never plays while model audio is queued or
+    /// playing, and it touches none of the model-audio telemetry.
+    private func playWaitCue(index: Int, sinceDrainMs: Int) async {
+        guard !muted, !rebuilding, !playbackQueue.playing, playbackQueue.scheduledFrames <= 0,
+              let player, let engine, engine.isRunning, let buffer = NativeWaitCue.buffer() else { return }
+        await player.scheduleBuffer(buffer, at: nil, options: [])
+        player.play()
+        await onWaitCue?(index, max(0, sinceDrainMs))
+    }
+
+    /// Cancel the wait on model audio, a barge-in, a mute, a rebuild or a session end. `stopPlayer`
+    /// stops the cue buffer only, never the answer: write() schedules the answer immediately after.
+    private func cancelWaitCue(_ event: NativeWaitCueScheduler.Event, stopPlayer: Bool) {
+        _ = waitCue.apply(event)
+        guard cueTask != nil else { return }
+        cueGeneration &+= 1
+        cueTask?.cancel(); cueTask = nil
+        if stopPlayer { player?.stop() }
+    }
     private func nowMs() -> Int { Int(now().timeIntervalSince1970 * 1000) }
     func write(_ pcm: Data) async throws {
+        // Contract C1: model audio has arrived, so stop any waiting or playing cue. It stops the cue
+        // only; the answer is scheduled normally below, delayed by nothing.
+        cancelWaitCue(.modelAudio(atMs: nowMs()), stopPlayer: true)
         // Paused/rebuilding output is discarded, never buffered or replayed on Resume.
         if recovery.awaitingResume || recovery.pending != nil { return }
         guard let player, let engine, engine.isRunning, pcm.count.isMultiple(of: 2) else { throw LiveClientError.unavailable }
@@ -843,6 +978,7 @@ struct NativeLiveInterruptionSample: Sendable {
                     // node so the next burst re-fills the prebuffer before playback restarts.
                     self.player?.stop()
                     self.onOutput?(false); self.isPlayingOutput = false; self.outputLevel = 0
+                    self.startWaitCue()
                 }
             }
         }
@@ -851,9 +987,12 @@ struct NativeLiveInterruptionSample: Sendable {
     /// Barge-in: invalidate the queued turn so an in-flight chunk cannot be scheduled after the flush.
     func flush() async throws { flushOutput(); turnGeneration &+= 1 }
     private func flushOutput() {
+        // Contract C1: a barge-in, a rebuild or a session end tears down the wait cue with the turn.
+        cancelWaitCue(.interrupted(atMs: nowMs()), stopPlayer: true)
         outputGeneration &+= 1; player?.stop(); playbackQueue.flush(); onOutput?(false); isPlayingOutput = false; outputLevel = 0
     }
     func stop() {
+        cancelWaitCue(.interrupted(atMs: nowMs()), stopPlayer: true)
         let epoch = captureEpoch, captureToken = captureGeneration, wasMuted = muted
         captureEpoch &+= 1; recovery.stop(); sendFrame = nil; muted = false
         if captureLifetimeActive {
@@ -864,6 +1003,7 @@ struct NativeLiveInterruptionSample: Sendable {
         }
     }
     private func releaseAudio() {
+        cancelWaitCue(.interrupted(atMs: nowMs()), stopPlayer: true)
         rebuilding = true; defer { rebuilding = false }
         captureGeneration &+= 1
         // Release order: observer first, then player/tap, then stop, reset and drop the engine.

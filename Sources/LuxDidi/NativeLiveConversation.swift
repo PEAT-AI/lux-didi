@@ -122,6 +122,12 @@ enum State: String, CaseIterable {
             self.journal.appendPlaybackOverflow(sessionID: await self.coordinator.sessionID ?? "unknown",
                                                 queuedMs: queuedMs, buffers: buffers)
         }
+        // Contract C1: one native-live.log line per soft wait cue played.
+        device.onWaitCue = { [weak self] index, msSinceDrain in
+            guard let self else { return }
+            self.journal.appendWaitCue(sessionID: await self.coordinator.sessionID ?? "unknown",
+                                       msSinceDrain: msSinceDrain, index: index)
+        }
     }
     // Presentation only: an offer never opens a session, an audio engine or the microphone.
     func offerPendingCall(_ job: NativePendingLiveJob?) { pendingCall = job }

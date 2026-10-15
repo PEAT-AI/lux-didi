@@ -441,13 +441,25 @@ export function shapeMattermost(tool: string, data: unknown): ShapedResult {
 
 // --- lux-knowledge -------------------------------------------------------------------------
 
+/** The remote search returns its digest as Markdown whose first line is an H1 header and whose
+ * next block is an italic retrieval-metadata line. Neither belongs in front of the Live model or in
+ * the answer card (#254); the hits and their ids stay untouched. */
+const KNOWLEDGE_HEADER = /^#\s*Knowledge Search\b.*$/u;
+const KNOWLEDGE_METADATA = /^_.*(?:confidence:|top score:|relevant candidate:).*$/u;
+function stripKnowledgePreamble(raw: string): string {
+  return raw.split('\n').filter(line => {
+    const trimmed = line.trim();
+    return !KNOWLEDGE_HEADER.test(trimmed) && !KNOWLEDGE_METADATA.test(trimmed);
+  }).join('\n').replace(/^\n+/u, '');
+}
+
 function knowledgeHeading(hit: Record<string, unknown>): string {
   const title = field(hit, 'insight_title', 'title', 'name') || `insight ${scalar(hit['id']) || '(untitled)'}`;
   const kind = field(hit, 'insight_type', 'type');
   const date = field(hit, 'updated_at', 'created_at', 'date', 'meeting_date_local');
   const meta = [kind, date].filter(Boolean).join(' | ');
   const id = scalar(hit['id']);
-  return `## ${title}${meta ? ` (${meta})` : ''}${id ? ` [id ${id}]` : ''}`;
+  return `### ${title}${meta ? ` (${meta})` : ''}${id ? ` [id ${id}]` : ''}`;
 }
 /** A search hit's excerpt. The cut names get_insight, which returns the full body (not this bound). */
 function knowledgeExcerpt(hit: Record<string, unknown>): { text: string; omitted: number; original: number } {
@@ -487,9 +499,10 @@ export function shapeLuxKnowledge(tool: string, raw: string): ShapedResult {
       }
     }
   }
-  const cut = cutAtSentence(raw, GMAIL_BODY_CHARS);
+  const clean = stripKnowledgePreamble(raw);
+  const cut = cutAtSentence(clean, GMAIL_BODY_CHARS);
   const note = cut.omitted > 0 ? `\n\n[omitted: ${cut.omitted} characters; final, this read has no paging argument]` : '';
-  return { text: cut.text + note, partial: cut.omitted > 0, originalCharacters: raw.length, omittedCharacters: cut.omitted };
+  return { text: cut.text + note, partial: cut.omitted > 0, originalCharacters: clean.length, omittedCharacters: cut.omitted };
 }
 
 function knowledgeList(hits: Record<string, unknown>[]): ShapedResult {

@@ -12,9 +12,30 @@ const BULLET = /^\s*[-*]\s+/;
 const ORDERED = /^\s*\d+[.)]\s+/;
 const QUOTE = /^\s*>\s?/;
 
+/** Options that keep a bubble's own title above its body text and turn raw links into chips. */
+export interface MarkdownOptions {
+  /** The bubble's top heading level: a markdown H1/H2 maps here so a bubble never grows an H1/H2. */
+  headingBase?: number;
+  /** Render a bare http(s) URL as a named chip instead of leaving it as plain text. */
+  linkify?: boolean;
+}
+/** The Live answer card and the Chat answer bubble render model text through this one renderer. */
+export const TRANSCRIPT_MARKDOWN: MarkdownOptions = { headingBase: 3, linkify: true };
+
+const BARE_URL = /https?:\/\/[^\s<>"']+/g;
+/** The U1 source-chip label for a bare url: its host with www stripped, then its first path part. */
+function urlLabel(url: string): string {
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.replace(/^www\./i, '');
+    const segment = parsed.pathname.split('/').find(Boolean);
+    return segment ? `${host}/${segment}` : host;
+  } catch { return url; }
+}
+
 /** Inline spans over already HTML-escaped text. Held spans are restored last so
  * emphasis never re-parses code or link markup. */
-function inline(raw: string): string {
+function inline(raw: string, options: MarkdownOptions = {}): string {
   const held: string[] = [];
   const hold = (html: string) => { held.push(html); return `\u0000${held.length - 1}\u0000`; };
   let text = escapeHtml(raw);
@@ -23,12 +44,13 @@ function inline(raw: string): string {
     if (!/^https?:\/\//i.test(href)) return match;
     return hold(`<a href="${href}" target="_blank" rel="noopener noreferrer">${label}</a>`);
   });
+  if (options.linkify) text = text.replace(BARE_URL, url => hold(`<a class="answer-source" href="${url}" target="_blank" rel="noopener noreferrer">${urlLabel(url)}</a>`));
   text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
   text = text.replace(/(^|[^*])\*([^*]+)\*/g, '$1<em>$2</em>');
   return text.replace(/\u0000(\d+)\u0000/g, (_match, index: string) => held[Number(index)]!);
 }
 
-export function renderMarkdown(source: string): string {
+export function renderMarkdown(source: string, options: MarkdownOptions = {}): string {
   const lines = String(source ?? '').replace(/\r\n?/g, '\n').split('\n');
   const blocks: string[] = [];
   let index = 0;
@@ -44,27 +66,27 @@ export function renderMarkdown(source: string): string {
       continue;
     }
     const heading = line.match(HEADING);
-    if (heading) { const level = heading[1]!.length; blocks.push(`<h${level}>${inline(heading[2]!)}</h${level}>`); index++; continue; }
+    if (heading) { const level = Math.min(3, Math.max(options.headingBase ?? 1, heading[1]!.length)); blocks.push(`<h${level}>${inline(heading[2]!, options)}</h${level}>`); index++; continue; }
     if (BULLET.test(line)) {
       const items: string[] = [];
-      while (index < lines.length && BULLET.test(lines[index]!)) { items.push(`<li>${inline(lines[index]!.replace(BULLET, ''))}</li>`); index++; }
+      while (index < lines.length && BULLET.test(lines[index]!)) { items.push(`<li>${inline(lines[index]!.replace(BULLET, ''), options)}</li>`); index++; }
       blocks.push(`<ul>${items.join('')}</ul>`);
       continue;
     }
     if (ORDERED.test(line)) {
       const items: string[] = [];
-      while (index < lines.length && ORDERED.test(lines[index]!)) { items.push(`<li>${inline(lines[index]!.replace(ORDERED, ''))}</li>`); index++; }
+      while (index < lines.length && ORDERED.test(lines[index]!)) { items.push(`<li>${inline(lines[index]!.replace(ORDERED, ''), options)}</li>`); index++; }
       blocks.push(`<ol>${items.join('')}</ol>`);
       continue;
     }
     if (QUOTE.test(line)) {
       const quoted: string[] = [];
-      while (index < lines.length && QUOTE.test(lines[index]!)) { quoted.push(inline(lines[index]!.replace(QUOTE, ''))); index++; }
+      while (index < lines.length && QUOTE.test(lines[index]!)) { quoted.push(inline(lines[index]!.replace(QUOTE, ''), options)); index++; }
       blocks.push(`<blockquote>${quoted.join('<br>')}</blockquote>`);
       continue;
     }
     const paragraph: string[] = [];
-    while (index < lines.length && lines[index]!.trim() !== '' && !FENCE.test(lines[index]!) && !HEADING.test(lines[index]!) && !BULLET.test(lines[index]!) && !ORDERED.test(lines[index]!) && !QUOTE.test(lines[index]!)) { paragraph.push(inline(lines[index]!)); index++; }
+    while (index < lines.length && lines[index]!.trim() !== '' && !FENCE.test(lines[index]!) && !HEADING.test(lines[index]!) && !BULLET.test(lines[index]!) && !ORDERED.test(lines[index]!) && !QUOTE.test(lines[index]!)) { paragraph.push(inline(lines[index]!, options)); index++; }
     blocks.push(`<p>${paragraph.join('<br>')}</p>`);
   }
   return blocks.join('\n');
@@ -73,7 +95,7 @@ export function renderMarkdown(source: string): string {
 /** Chat consumes only bounded accepted projections, never connector HTML or provider parts. */
 /** A saved or latest answer body: markdown inside a div, because a p cannot hold block elements. */
 export function answerMarkup(text: string): string {
-  return `<div class="markdown">${renderMarkdown(text)}</div>`;
+  return `<div class="markdown">${renderMarkdown(text, TRANSCRIPT_MARKDOWN)}</div>`;
 }
 
 /** A friendly, owner-facing connector name; an unknown tool returns '' so its card shows no name. */

@@ -75,14 +75,13 @@ try {
     assert.equal(await page.getByText('Not listening',{exact:true}).count(),0);
     assert.equal(await page.getByText('what is lux 123',{exact:true}).count(),1);
     assert.equal(await page.locator('.live-latest-turn').getByText('Here is the answer.',{exact:true}).count(),1);
-    const link=page.locator('#live-panel .live-result p a[href="https://example.org"]');
-    assert.equal(await link.count(),1);
-    assert.equal(await link.getAttribute('rel'),'noopener noreferrer');
-    assert.equal(await link.getAttribute('target'),'_blank');
+    const card=page.locator('#live-panel .live-result');
+    assert.equal(await card.getByText('Here is the answer.',{exact:true}).count(),1);
+    assert.equal(await card.locator('strong').count(),0);
+    assert.equal(await card.locator('a').count(),1,'the card body never carries the tool result link');
     const sourceLink=page.locator('#live-panel .live-result .sources a[href="https://example.org"]');
     assert.equal(await sourceLink.count(),1);
     assert.equal(await sourceLink.getAttribute('rel'),'noopener noreferrer');
-    assert.match(await page.locator('#live-panel .live-result strong').first().textContent(),/Answer/);
     fixture.setLive({state:'listening',since:'2026-10-11T16:00:01Z',cursor:4,entries:[]});
     await page.waitForFunction(()=>document.querySelector('#didi-orb').dataset.state==='LISTENING',{timeout:8000});
     assert.equal(await page.locator('#didi-orb').getAttribute('data-posture'),'listening');

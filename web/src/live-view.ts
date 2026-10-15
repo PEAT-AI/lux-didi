@@ -1,6 +1,6 @@
 // Read-only presentation of the Interface 3 live projection (W-B provides the route).
 // Pure mapping and markup only: no scheduling, no network, no fabricated state.
-import { escapeHtml, renderMarkdown, sourcesFooter } from './markdown.ts';
+import { escapeHtml, renderMarkdown, sourcesFooter, TRANSCRIPT_MARKDOWN } from './markdown.ts';
 import { toolConnector, toolPhrase, toolPhrases } from './tool-phrases.ts';
 import type { VoiceState } from './orb.ts';
 import type { LiveCurrent, LiveEntry, LiveSource, LiveState, LiveTool } from './protocol.ts';
@@ -152,10 +152,13 @@ export async function pollLiveView(previous: LivePollState, fetch: (cursor?: str
 }
 
 export interface LiveAnswer { markdown: string; sources: LiveSource[] }
+/** The Latest answer card shows the model's own output transcript, never a tool result's body. The
+ * named source chips still come from the newest accepted tool result that carried any. */
 export function liveResult(live: LiveCurrent): LiveAnswer | undefined {
-  const accepted = live.entries.filter(entry => entry.kind === 'toolResult' && entry.tool?.status !== 'error' && typeof entry.tool?.markdown === 'string' && entry.tool.markdown.length > 0);
-  const latest = accepted[accepted.length - 1];
-  return latest?.tool?.markdown ? { markdown: latest.tool.markdown, sources: latest.tool.sources ?? [] } : undefined;
+  const answer = [...liveTranscript(live)].reverse().find(line => line.role === 'naya');
+  if (!answer?.text) return undefined;
+  const latest = [...live.entries].reverse().find(entry => entry.kind === 'toolResult' && entry.tool?.status !== 'error' && (entry.tool?.sources?.length ?? 0) > 0);
+  return { markdown: answer.text, sources: latest?.tool?.sources ?? [] };
 }
 
 function sourcesMarkup(sources: LiveSource[]): string {
@@ -216,7 +219,7 @@ export function liveMarkup(live: LiveCurrent | undefined, poll: LivePollState = 
     ${muted}
     ${poll.stale ? `<p class="live-stale" role="status">Live view stale${poll.lastSuccess ? ' since ' + escapeHtml(poll.lastSuccess.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })) : ', no successful poll yet'}, service unreachable</p>` : ''}
     ${error}${restored}
-    ${result ? `<div class="live-result"><h2>Latest answer</h2>${renderMarkdown(result.markdown)}${sourcesMarkup(result.sources)}</div>` : ''}
+    ${result ? `<div class="live-result"><h2>Latest answer</h2>${renderMarkdown(result.markdown, TRANSCRIPT_MARKDOWN)}${sourcesMarkup(result.sources)}</div>` : ''}
     ${latestTurn ? `<article class="live-latest-turn"><span>${latestTurn.role === 'naya' ? 'Latest spoken answer' : 'Latest turn'}</span><p>${escapeHtml(latestTurn.text)}</p></article>` : ''}
     <details id="live-details" class="live-details"${detailsOpen ? ' open' : ''}>
       <summary>Conversation history and activity</summary>

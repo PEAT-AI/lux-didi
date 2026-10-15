@@ -72,12 +72,11 @@ try {
       {seq:3,kind:'toolResult',tool:{name:'search',status:'completed',markdown:'**Answer** see [source](https://example.org)',sources:[{title:'lux 123',url:'https://example.org'}]}}
     ]});
     await page.waitForFunction(()=>document.querySelector('#didi-orb').dataset.state==='SPEAKING',{timeout:12000});
-    await page.waitForFunction(()=>document.querySelectorAll('#live-panel').length===1,{timeout:12000});
+    await page.waitForFunction(()=>document.querySelectorAll('#live-panel').length===1&&document.querySelectorAll('.live-latest-turn').length===1,{timeout:12000});
     assert.equal(await page.locator('#didi-orb').getAttribute('data-posture'),'speaking');
     assert.equal((await page.locator('#live-panel .live-state').textContent()).trim(),'Speaking');
     assert.equal(await page.getByText('Not listening',{exact:true}).count(),0);
     assert.equal(await page.getByText('what is lux 123',{exact:true}).count(),1);
-    console.log('DIAG', await page.locator('#live-panel').count(), await page.locator('.live-latest-turn').count(), await page.getByText('what is lux 123',{exact:true}).count(), await page.getByText('Here is the answer.',{exact:true}).count(), JSON.stringify(await page.evaluate(()=>Array.from(document.querySelectorAll('.live-latest-turn')).map(e=>({p:e.parentElement?.id||e.parentElement?.className, connected:e.isConnected, txt:e.textContent.slice(0,40)})))));
     assert.equal(await page.locator('.live-latest-turn').count(),1);
     assert.match(await page.locator('.live-latest-turn').innerText(),/Here is the answer\./);
     const link=page.locator('#live-panel .live-result p a[href="https://example.org"]');

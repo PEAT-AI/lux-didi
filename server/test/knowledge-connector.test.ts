@@ -14,9 +14,10 @@ import type { McpPort, ToolDefinition } from '../adapters/mcp/port.js';
 import { Store } from '../runtime/store.js';
 import { composeMcpRuntime } from '../host/mcp.js';
 import { toolsMigrations } from '../tools/index.js';
-import { createLuxKnowledgeReader, LUX_KNOWLEDGE_TOOLS, normalizeGetInsightArgs } from '../connectors/index.js';
+import { createLuxKnowledgeReader, LUX_KNOWLEDGE_TOOLS, normalizeGetInsightArgs, CONNECTOR_DESCRIPTORS } from '../connectors/index.js';
 import { shapeLuxKnowledge } from '../tools/live-shape.js';
 import type { LuxKnowledgeConfig, LuxKnowledgeEvidence, LuxKnowledgeResult } from '../connectors/index.js';
+import type { ConnectionPolicy } from '../tools/types.js';
 
 // Explicitly synthetic public protocol fixture: no real accounts, corpus or credentials.
 const searchTool: ToolDefinition = {
@@ -254,6 +255,15 @@ test('K2: a multi-id string drops unreadable tokens, dedupes and caps like a lis
   const capped = norm(many)!;
   assert.deepEqual(capped.args.ids, [90000, 90001, 90002, 90003, 90004, 90005, 90006, 90007, 90008, 90009], 'the split list caps at maxGetIds');
   assert.match(capped.notice!, /first 10/, 'the cap is named');
+});
+
+// K2 (#250): the declared `ids` description and the boundary validator must still agree.
+test('K2: the get_insight declaration names the multi-id string form its validator splits', () => {
+  const policy = { bounds: { maxQueryChars: 200, maxSearchLimit: 12, maxGetIds: 10, maxEntityBytes: 4096, maxResultBytes: 8192 } } as ConnectionPolicy;
+  const declaration = CONNECTOR_DESCRIPTORS['lux-knowledge']!.declarations(policy).find(tool => tool.name === 'get_insight')!;
+  const ids = (declaration.parameters['properties'] as Record<string, Record<string, unknown>>)['ids']!;
+  assert.match(ids['description'] as string, /separated by comma, semicolon or whitespace/, 'the ids description names the multi-id string form');
+  assert.equal(declaration.validate({ ids: '89820, 89933' }), true, 'the declared multi-id string form is accepted by the validator');
 });
 
 test('X2: get_insight forwards a requested include_links to the MCP call', async () => {

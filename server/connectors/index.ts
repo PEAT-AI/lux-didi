@@ -85,6 +85,21 @@ function toInsightId(value: unknown): number | undefined {
   return undefined;
 }
 
+/** Split a string that holds several ids: JSON array text, or comma/semicolon/whitespace separated tokens. */
+function splitInsightIdText(text: string): unknown[] | undefined {
+  const trimmed = text.trim();
+  let tokens: unknown[] | undefined;
+  if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+    try {
+      const parsed: unknown = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) tokens = parsed;
+    } catch { /* not JSON array text; fall back to a delimiter split */ }
+  }
+  if (tokens === undefined) tokens = trimmed.split(/[,;\s]+/);
+  // Only a string carrying several ids is split; a single value (or single-element array text) stays whole.
+  return tokens.length >= 2 ? tokens : undefined;
+}
+
 /** A bounded, value-free label for one dropped argument, so the model can correct itself. */
 function droppedLabel(value: unknown): string {
   const text = typeof value === 'string' ? value : (() => { try { return JSON.stringify(value) ?? String(value); } catch { return 'unreadable'; } })();
@@ -111,7 +126,11 @@ export function normalizeGetInsightArgs(args: unknown, maxGetIds: number): { arg
     else if ('id' in args) candidate = args['id'];
     else return undefined;
   } else return undefined;
-  const list = Array.isArray(candidate) ? candidate : [candidate];
+  const list = Array.isArray(candidate)
+    ? candidate
+    : typeof candidate === 'string' && toInsightId(candidate) === undefined
+      ? splitInsightIdText(candidate) ?? [candidate]
+      : [candidate];
   const ids: number[] = [];
   const droppedIds: unknown[] = [];
   for (const item of list) {
@@ -164,7 +183,7 @@ const luxKnowledgeDescriptor: ConnectorDescriptor = {
           // keys and names `include_links`; the validator accepts exactly these and drops the rest.
           type: 'object', additionalProperties: true, required: ['ids'],
           properties: {
-            ids: { type: 'array', minItems: 1, maxItems: bounds.maxGetIds, uniqueItems: true, items: { type: 'integer', minimum: 1 }, description: 'One or more entry ids from a knowledge search. A single id, an integer-valued numeric string, or the "#123"/"lux 123" form is accepted; unreadable ids are dropped and named.' },
+            ids: { type: 'array', minItems: 1, maxItems: bounds.maxGetIds, uniqueItems: true, items: { type: 'integer', minimum: 1 }, description: 'One or more entry ids from a knowledge search. A single id, an integer-valued numeric string, the "#123"/"lux 123" form, or one such string holding several ids separated by comma, semicolon or whitespace (or JSON array text) is accepted; unreadable ids are dropped and named.' },
             include_links: { type: 'boolean', description: 'Ask the knowledge server to include linked entries in the result.' },
           },
         },

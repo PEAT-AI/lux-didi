@@ -92,18 +92,17 @@ try {
     assert.deepEqual(status.capabilities, { memory: true, commitments: true, notifications: false, model: false });
     assert.equal(status.model.configured, false);
     assert.equal(status.ownerProfile.displayName, 'Lux Didi');
-    await page.locator('#connected-route').waitFor();
+    await page.locator('#connected-send').waitFor();
     assert.equal(await page.locator('#connected-error').count(), 0);
     assert.doesNotMatch(await page.locator('body').innerText(), /Cannot read properties|displayName/);
     assert.equal(await page.locator('#live-panel ol').count(), 0);
-    assert.ok(await page.locator('#ask-didi').isDisabled());
+    assert.ok(await page.locator('#connected-send').isDisabled());
   });
   await step('shipped conversation captures meaningful durable text', async () => {
-    await page.locator('#live-text').fill('Host browser kestrel launch: review the release checklist before noon.');
-    await page.getByRole('button', { name: 'Save note', exact: true }).click();
-    await visible('Message saved.');
-    // W5 keeps the thread inside the collapsed history disclosure; open it as a user would before reading the entry.
     await page.locator('#conversation-history > summary').click();
+    await page.locator('#message').fill('Host browser kestrel launch: review the release checklist before noon.');
+    await page.getByRole('button', { name: 'Save message', exact: true }).click();
+    await visible('Message saved.');
     await visible('Host browser kestrel launch: review the release checklist before noon.');
     const sessions = await api('/sessions'); assert.equal(sessions.items.length, 1); sessionId = sessions.items[0].id;
     const conversation = await api(`/sessions/${sessionId}`);
@@ -166,16 +165,14 @@ try {
   await step('offline refusal and online recovery without mutation replay', async () => {
     await tab('Conversation'); const before = requests.filter(req => req.method === 'POST').length;
     await context.setOffline(true); await visible('Offline');
-    // The voice-first typed path stays enabled offline; its submit must be refused with no queued or replayed POST.
-    await page.locator('#live-text').fill('Offline note must not queue or replay.');
-    await page.getByRole('button', { name: 'Save note', exact: true }).click();
-    assert.ok(await page.locator('#ask-didi').isDisabled());
+    // The local composer refuses offline with no queued or replayed POST.
+    assert.ok(await page.getByRole('button', { name: 'Save message', exact: true }).isDisabled(), 'offline local save is refused');
     assert.equal(requests.filter(req => req.method === 'POST').length, before, 'offline submit is not sent');
     await context.setOffline(false);
     await page.waitForFunction(() => document.getElementById('connection-state')?.textContent === 'Connected');
     assert.equal((await api(`/sessions/${sessionId}`)).entries.length, 1, 'offline refusal must not queue/replay');
-    await page.locator('#live-text').fill('Recovered online: save the next deliberate note.');
-    await page.getByRole('button', { name: 'Save note', exact: true }).click(); await visible('Message saved.');
+    await page.locator('#message').fill('Recovered online: save the next deliberate note.');
+    await page.getByRole('button', { name: 'Save message', exact: true }).click(); await visible('Message saved.');
     const recovered = (await api(`/sessions/${sessionId}`)).entries;
     assert.equal(recovered.length, 2); assert.equal(recovered[1].text, 'Recovered online: save the next deliberate note.');
   });

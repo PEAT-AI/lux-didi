@@ -60,8 +60,8 @@ try {
     assert.ok(renderer); assert.doesNotMatch(renderer.renderer, /swiftshader|llvmpipe|software/i);
     await writeFile(join(artifacts, `renderer-${sha}.json`), JSON.stringify({ sha, renderer }, null, 2));
     const pairing = await operator('/auth/pairing'); await page.locator('#pair-code').fill(pairing.pairingCode); await page.locator('#pair-form').evaluate(form => form.requestSubmit());
-    await page.locator('#connected-route').waitFor(); await page.locator('#didi-orb').waitFor();
-    await page.waitForFunction(() => document.querySelector('#connected-route')?.textContent.includes('gemini-connected-test'));
+    await page.locator('#connected-send').waitFor(); await page.locator('#didi-orb').waitFor();
+    await page.waitForFunction(() => document.querySelector('#connected-send')?.textContent.includes('gemini-connected-test'));
     // W5 voice-first UI: the accepted dark stage renders a 600 CSS px square canvas at desktop 1440, centred in the stage.
     const orb = page.locator('#didi-orb');
     assert.ok(await orb.isVisible(), 'W5 desktop orb canvas is visible on the stage');
@@ -71,16 +71,14 @@ try {
     assert.equal(Math.round(desktopOrb.height), 600, 'W5 desktop orb canvas is square');
     assert.ok(Math.abs((desktopOrb.x + desktopOrb.width / 2) - (stage.x + stage.width / 2)) <= 1, 'W5 orb canvas is horizontally centred in its stage');
   });
-  await step('local Save stays local; explicit Start names actual model and creates trusted session', async () => {
-    await page.locator('#live-text').fill('EXCLUDED_BROWSER_LOCAL_CANARY: archive this without any model send.');
-    await page.getByRole('button', { name: 'Save note', exact: true }).click();
+  await step('local Save stays local; the open chat exposes consent before any model send', async () => {
+    await page.locator('#conversation-history > summary').click();
+    await page.locator('#message').fill('EXCLUDED_BROWSER_LOCAL_CANARY: archive this without any model send.');
+    await page.getByRole('button', { name: 'Save message', exact: true }).click();
     await page.waitForFunction(() => document.querySelector('.conversation-grid .thread .entries')?.textContent.includes('EXCLUDED_BROWSER_LOCAL_CANARY'));
     assert.equal(requests.filter(r => r.path === '/api/v1/chat' && r.method === 'POST').length, 0);
-    assert.ok(await page.locator('#ask-didi').isDisabled());
-    // W5 collapses the route consent behind a disclosure; open it as a user must before agreeing.
-    await page.locator('details.connected-chat > summary').click();
     assert.match(await page.locator('.connected-disclosure').innerText(), /current and earlier selected turns/);
-    await page.locator('#connected-consent').check(); await page.locator('#connected-start').click(); await page.locator('#connected-draft').waitFor();
+    await page.locator('#connected-consent').check(); await page.locator('#connected-draft:not([disabled])').waitFor();
     assert.match(await page.locator('#connected-send').innerText(), /gemini \/ gemini-connected-test/);
   });
   await step('real adapter captured request, split provisional stream, meaningful atomic saved answer', async () => {
@@ -152,8 +150,7 @@ try {
     assert.equal((await readFile(join(state, 'wire.jsonl'), 'utf8')).trim().split('\n').length, 2);
   });
   await step('explicit cancel and provider failure render no saved answer, never a fake success', async () => {
-    await page.locator('details.connected-chat > summary').click();
-    await page.locator('#connected-consent').check(); await page.locator('#connected-start').click(); await page.locator('#connected-draft:not([disabled])').waitFor();
+    await page.locator('#connected-consent').check(); await page.locator('#connected-draft:not([disabled])').waitFor();
     child.send('hold-next'); const sent = waitPhase('transport');
     await page.locator('#connected-draft').fill('Cancel this explicitly sent synthetic turn.'); await page.locator('#connected-send').click(); await sent;
     await page.locator('#connected-cancel').click(); await page.waitForFunction(() => document.querySelector('#connected-run')?.textContent.includes('No saved answer: cancelled'));
@@ -195,7 +192,7 @@ try {
         await page.locator('#pair-code').fill(pairing.pairingCode); await page.locator('#pair-form').evaluate(form => form.requestSubmit());
         const lifecycle = await Promise.all([pairResponse, clearResponse]);
         for (const response of lifecycle) assert.equal(response.status(), 200, 'expected real pairing/selection-clear route success');
-        await page.locator('#connected-route').waitFor(); paired = true;
+        await page.locator('#connected-send').waitFor(); paired = true;
         const status = await api('/status'), route = await api('/chat/status');
         const label = 'Example <Owner> & Friend', configured = mode === 'owner-configured';
         assert.deepEqual(status.ownerProfile, { status: 'configured', displayName: label });
@@ -207,12 +204,11 @@ try {
         assert.equal(await page.title(), productTitle, 'owner label must not rename the public product');
         assert.equal(await page.locator('#connected-consent').isDisabled(), false, 'R66 keeps explicit agreement operable without a route');
         if (!configured) {
-          assert.equal(await page.locator('#connected-start').isDisabled(), true);
-          await page.locator('details.connected-chat > summary').click();
+          assert.equal(await page.locator('#connected-send').isDisabled(), true);
           await page.locator('#connected-consent').check();
           assert.equal(await page.locator('#connected-consent').isChecked(), true);
-          assert.equal(await page.locator('#connected-start').isDisabled(), true, 'a tick cannot configure a provider or authorize Start');
-          await page.locator('#connected-start').evaluate(button => button.click());
+          assert.equal(await page.locator('#connected-send').isDisabled(), true, 'a tick cannot configure a provider or authorize a send');
+          await page.locator('#connected-send').evaluate(button => button.click());
           assert.equal((await api('/chat/status')).consent, null, 'a local tick is not a server grant');
           assert.equal((await api('/sessions')).items.length, 0, 'no conversation is enrolled without a route');
         }

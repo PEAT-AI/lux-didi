@@ -214,10 +214,11 @@ caption's own label follows the same live state (they never disagree), and its
 The section folds adjacent transcription fragments from the same role into one
 visible turn until a role change, `turnComplete`, `interrupted` or terminal event.
 Fragment text is concatenated exactly, without adding spaces or removing repeated
-text. The latest spoken Naya answer is the prominent Latest answer, rendered through
-the shared transcript renderer with named source chips from the newest accepted
-`toolResult`; a tool result's own text never appears in the card. The
-latest spoken Naya turn stays readable beneath it. The full transcript and tool
+text. The latest spoken Naya answer is the one prominent Latest answer, rendered
+through the shared transcript renderer with named source chips from the newest
+accepted `toolResult`; a tool result's own text never appears in the card and the
+answer is never repeated as a second spoken-answer line. The full transcript and
+tool
 activity remain reachable from a labelled disclosure on the same Conversation
 page, with sanitized Markdown and clickable source links. The disclosure keeps
 the user's open or closed choice across live polling.

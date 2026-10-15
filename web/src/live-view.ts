@@ -200,7 +200,6 @@ export function liveMarkup(live: LiveCurrent | undefined, poll: LivePollState = 
   const label = liveLabel(live);
   const lines = live ? liveTranscript(live) : [];
   const result = live ? liveResult(live) : undefined;
-  const latestTurn = [...lines].reverse().find(line => line.role === 'naya') ?? lines.at(-1);
   const jobs = (live?.jobs ?? []).map(job => `<article class="live-job" data-job-id="${escapeHtml(job.id)}">
     <h2>${job.state === 'in_progress' ? 'Background task in progress' : 'Background task ' + escapeHtml(job.state)}</h2>
     ${renderMarkdown(job.markdown, TRANSCRIPT_MARKDOWN)}
@@ -212,7 +211,7 @@ export function liveMarkup(live: LiveCurrent | undefined, poll: LivePollState = 
   const error = state === 'error' ? '<p class="muted" role="status">Naya reported an error. The live session has stopped.</p>' : '';
   const muted = live?.muted ? '<p class="muted live-muted" role="status">Microphone muted</p>' : '';
   const transcript = lines.length
-    ? `<div class="entries live-transcript">${lines.map(line => `<article class="entry"><strong>${line.role === 'user' ? 'You' : 'Naya'}</strong><p>${escapeHtml(line.text)}</p></article>`).join('')}</div>`
+    ? `<div class="entries live-transcript">${lines.map(line => `<article class="entry"><strong>${line.role === 'user' ? 'You' : 'Naya'}</strong><div class="markdown">${renderMarkdown(line.text, TRANSCRIPT_MARKDOWN)}</div></article>`).join('')}</div>`
     : '<div class="entries live-transcript empty"><p class="muted">No live transcription yet.</p></div>';
   return `<section class="panel live" id="live-panel" aria-label="Naya live conversation">
     <p class="live-state" role="status" aria-live="polite">${escapeHtml(label)}</p>
@@ -220,7 +219,6 @@ export function liveMarkup(live: LiveCurrent | undefined, poll: LivePollState = 
     ${poll.stale ? `<p class="live-stale" role="status">Live view stale${poll.lastSuccess ? ' since ' + escapeHtml(poll.lastSuccess.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })) : ', no successful poll yet'}, service unreachable</p>` : ''}
     ${error}${restored}
     ${result ? `<div class="live-result"><h2>Latest answer</h2>${renderMarkdown(result.markdown, TRANSCRIPT_MARKDOWN)}${sourcesMarkup(result.sources)}</div>` : ''}
-    ${latestTurn ? `<article class="live-latest-turn"><span>${latestTurn.role === 'naya' ? 'Latest spoken answer' : 'Latest turn'}</span><p>${escapeHtml(latestTurn.text)}</p></article>` : ''}
     <details id="live-details" class="live-details"${detailsOpen ? ' open' : ''}>
       <summary>Conversation history and activity</summary>
       ${transcript}

@@ -151,7 +151,7 @@ try {
   await page.waitForFunction(() => document.querySelector('#lane-voice').dataset.state === 'open');
 
   // V2-R1 item 10: a voice transcript with 3 turns and one tool chip, and a chat with 2 turns.
-  await page.route('**/api/v1/live/current', route => route.fulfill({ contentType: 'application/json', body: JSON.stringify({
+  await page.route('**/api/v1/live/current*', route => route.fulfill({ contentType: 'application/json', body: JSON.stringify({
     state: 'idle', since: new Date().toISOString(), cursor: 4, entries: [
       { seq: 1, kind: 'inputTranscription', text: 'What did Rob ask me to do next?' },
       { seq: 2, kind: 'outputTranscription', text: 'Ship the three-lane UI and the live pill.' },
@@ -168,7 +168,7 @@ try {
   }
   await page.waitForFunction(() => document.querySelectorAll('#connected-entries .assistant').length >= 2, { timeout: 20000 });
   await shot('1440x900-dark-chat-turns');
-  await page.unroute('**/api/v1/live/current');
+  await page.unroute('**/api/v1/live/current*');
   await page.reload(); await ready();
 
   await page.setViewportSize({ width: 800, height: 900 });

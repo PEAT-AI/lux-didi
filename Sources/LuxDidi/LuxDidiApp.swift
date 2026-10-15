@@ -439,8 +439,7 @@ struct RootView: View {
             if #available(macOS 13.0, *) { loginAvailability = LoginAvailability(registration: SystemLoginRegistration()) }
         }
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: RootView(model: model))
-        installDragBand()
+        window.contentView = makeRootContent()
         model.trafficLightsMaxX = { [weak self] in Double(self?.window?.standardWindowButton(.zoomButton)?.frame.maxX ?? 0) }
         model.bridge.hydrateProvider = { [weak model] in model?.bridgeHydrate() ?? .empty }
         model.bridge.onCommand = { [weak model] in model?.handleBridgeCommand($0) }
@@ -637,18 +636,21 @@ struct RootView: View {
     }
     func windowDidMove(_ notification: Notification) { rememberFrame() }
     func windowDidResize(_ notification: Notification) { rememberFrame() }
-    /// A transparent top-band strip that restores window drag over the full-bleed web content.
-    private func installDragBand() {
-        guard let content = window.contentView else { return }
-        let band = WindowDragBandView()
-        band.translatesAutoresizingMaskIntoConstraints = false
-        content.addSubview(band)
+    /// The dark web UI fills a plain container; the top-band drag strip is its sibling, because
+    /// NSHostingView does not route mouse events to an AppKit subview added to it.
+    private func makeRootContent() -> NSView {
+        let container = NSView()
+        let hosting = NSHostingView(rootView: RootView(model: model))
+        hosting.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(hosting)
         NSLayoutConstraint.activate([
-            band.topAnchor.constraint(equalTo: content.topAnchor),
-            band.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            band.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            band.heightAnchor.constraint(equalToConstant: WindowDragBandView.bandHeight),
+            hosting.topAnchor.constraint(equalTo: container.topAnchor),
+            hosting.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            hosting.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            hosting.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
+        WindowDragBand.attach(to: container)
+        return container
     }
     private func applyBridgeTheme(_ theme: BridgeTheme) {
         window?.appearance = NSAppearance(named: theme.appearanceName)

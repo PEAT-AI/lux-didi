@@ -322,3 +322,22 @@ struct LevelBatcher {
         return bounds.contains(local) ? self : nil
     }
 }
+
+/// Mounts the band above a plain container. `NSHostingView` overrides `hitTest` and does not route
+/// mouse events to an AppKit sibling added to it, so the hosting view must sit inside this container
+/// and the band must be a sibling of the hosting view, not its subview.
+@MainActor enum WindowDragBand {
+    @discardableResult
+    static func attach(to container: NSView) -> WindowDragBandView {
+        let band = WindowDragBandView()
+        band.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(band)
+        NSLayoutConstraint.activate([
+            band.topAnchor.constraint(equalTo: container.topAnchor),
+            band.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            band.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            band.heightAnchor.constraint(equalToConstant: WindowDragBandView.bandHeight),
+        ])
+        return band
+    }
+}

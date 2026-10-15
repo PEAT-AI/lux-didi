@@ -84,6 +84,14 @@ enum NativeDiagnosticsSnapshot {
         return "\(seconds / 3600)h"
     }
 
+    /// A connector with no operator credential is `not configured`, never `error`; every other
+    /// state carries its closed reason token, and a healthy connector carries none (X4-R2).
+    static func connectorLine(id: String, state: String, reasonCode: String?) -> String {
+        if reasonCode == "credential_missing" { return scrub(id) + ": not configured" }
+        if let reasonCode { return scrub(id) + ": " + scrub(state) + " (" + scrub(reasonCode) + ")" }
+        return scrub(id) + ": " + scrub(state)
+    }
+
     static func render(_ input: DiagnosticsSnapshotInput) -> String {
         var lines: [String] = ["Didi diagnostics"]
         lines.append("Captured: " + scrub(input.capturedAt))

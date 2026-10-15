@@ -85,6 +85,13 @@ import Foundation
             expect(parsed.at == "2026-10-15T08:00:00Z", "timestamp parsed")
         }
 
+        // 6. A connector with no operator credential reads `not configured`, never `error` (X4-R2).
+        do {
+            expect(NativeDiagnosticsSnapshot.connectorLine(id: "mongoose", state: "error", reasonCode: "credential_missing") == "mongoose: not configured", "absent credential reads not configured")
+            expect(NativeDiagnosticsSnapshot.connectorLine(id: "mongoose", state: "error", reasonCode: "discovery_failed") == "mongoose: error (discovery_failed)", "other failures keep the stage")
+            expect(NativeDiagnosticsSnapshot.connectorLine(id: "calendar", state: "connected", reasonCode: nil) == "calendar: connected", "a healthy connector carries no stage")
+        }
+
         if failures == 0 { print("NATIVE-LIVE-JOURNAL PASS") } else { print("NATIVE-LIVE-JOURNAL FAIL \(failures)") }
         exit(failures == 0 ? 0 : 1)
     }

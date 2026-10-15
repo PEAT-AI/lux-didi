@@ -636,7 +636,7 @@ struct RootView: View {
                 sessionLimit: self.model.liveLimits.map { NativeLiveLimits.duration($0.sessionMs) },
                 idleLimit: self.model.liveLimits.map { NativeLiveLimits.duration($0.idleMs) },
                 connections: self.model.connections.map { connection in
-                    connection.reasonCode.map { "\(connection.id): \(connection.state) (\($0))" } ?? "\(connection.id): \(connection.state)"
+                    NativeDiagnosticsSnapshot.connectorLine(id: connection.id, state: connection.state, reasonCode: connection.reasonCode)
                 },
                 audioRoute: self.model.live?.device.diagnosticsRoute ?? NativeLiveAudioDevice.routeDiagnostics(),
                 voiceProcessing: self.model.live?.device.isVoiceProcessingEnabled

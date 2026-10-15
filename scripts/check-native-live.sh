@@ -58,6 +58,11 @@ swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-
 swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
   Sources/LuxDidi/AudioOwner.swift Tests/DidiLiveTests/AudioOwnerTests.swift -o "$work/native-audio-owner"
 "$work/native-audio-owner"
+# The closed native-live end reasons, their timestamps and the diagnostics snapshot fields, no audio or supervisor.
+swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
+  Sources/LuxDidi/NativeLiveJournal.swift Sources/LuxDidi/NativeDiagnosticsSnapshot.swift \
+  Tests/DidiLiveTests/NativeLiveJournalTests.swift -o "$work/native-live-journal"
+"$work/native-live-journal"
 # Compile the actual app source surface without launching audio or installing an app.
 swiftc -parse-as-library Sources/LuxDidi/*.swift -o "$work/native-app"
 # Isolated mutation sensitivity: compile a scratch copy, never alter the committed source or weaken a gate.

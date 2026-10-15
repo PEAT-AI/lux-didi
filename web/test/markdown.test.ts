@@ -67,8 +67,9 @@ test('renders script and img onerror inert, never as markup', () => {
 });
 
 test('never emits a style attribute or an inline event handler', () => {
-  const html = renderMarkdown('<p style="color:red">x</p>');
-  assert.equal(/style=/i.test(html), false);
+  const html = renderMarkdown('<p style="color:red">x</p> [y](https://example.org)');
+  assert.equal(/<[a-z][^>]*\sstyle\s*=/i.test(html), false);
+  assert.match(html, /&lt;p style=/);
 });
 
 test('refuses javascript:, data:, file: and vbscript: links in any case', () => {

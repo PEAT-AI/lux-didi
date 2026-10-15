@@ -55,7 +55,11 @@ test('channel history projects Markdown with bounded fields and permalink source
   assert.match(projected.projection.text, /town-square \| Rob \| 2026-10-11T10:00:00Z/);
   assert.match(projected.projection.text, /Standup at ten/);
   assert.equal(/https?:\/\//.test(projected.projection.text), false, 'mattermost model text holds no raw url');
-  assert.deepEqual(projected.projection.sources, [{ title: 'Mattermost: #town-square', url: 'https://chat.peat-cloud.com/team/pl/abcdef1234567890abcdefghij', sourceType: 'mattermost' }]);
+  assert.deepEqual(projected.projection.sources, [
+    { title: 'Mattermost: #town-square', url: 'https://chat.peat-cloud.com/team/pl/abcdef1234567890abcdefghij', sourceType: 'mattermost' },
+    { title: 'Mattermost: #town-square', url: 'https://chat.peat-cloud.com/team/pl/0987654321fedcba0987654321', sourceType: 'mattermost' },
+    { title: 'Mattermost: #town-square', url: 'https://chat.peat-cloud.com/team/pl/longbody0000000000000000000000', sourceType: 'mattermost' },
+  ]);
 });
 
 test('a long message body is kept in full (no per-field clip)', async t => {

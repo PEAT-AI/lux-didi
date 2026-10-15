@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { fork } from 'node:child_process';
 import { once } from 'node:events';
 import { openFixture, result } from './chat-process.js';
-import { ChatService, ChatError, chatMigrations, type ChatConfig, type RunSnapshot } from '../chat/index.js';
+import { ChatService, ChatError, chatMigrations, admitCapabilities, type ChatConfig, type RunSnapshot } from '../chat/index.js';
 import { Store } from '../runtime/store.js';
 import { PROMPT_VERSION, compilePrompt } from '../prompt/index.js';
 import type { ModelPort, ModelRequest, ModelControl, ModelResult } from '../adapters/model/types.js';
@@ -555,4 +555,29 @@ test('ordinary actual requests retain the private model-reply floor', async () =
     assert.deepEqual(f.model.calls[0]!.dataClasses, ['ordinary']);
     assert.equal(f.store.transaction(tx => f.domain.getRoutingLabel(tx, { kind: 'entry', id: done.finalEntryId! })).dataClass, 'private');
   } finally { f.close(); }
+});
+
+test('frozen capability admission keeps a reworded description and drops a changed identity, logged once per session', () => {
+  const frozen = [{ name: 'gmail_read', effect: 'read', accountId: 'acct', resourceId: 'mail' }];
+  const lines: string[] = [];
+  // A rewritten description (or schema wording) is not identity: the tool stays declared.
+  const reworded = [{ name: 'gmail_read', description: 'rewritten wording', effect: 'read', accountId: 'acct', resourceId: 'mail' }];
+  assert.deepEqual(admitCapabilities(reworded, frozen, 'session-a', new Set<string>(), line => lines.push(line)).map(t => t.name), ['gmail_read']);
+  assert.equal(lines.length, 0);
+  // A changed effect or account still excludes the tool and reports the changed field.
+  const effectChanged = [{ name: 'gmail_read', effect: 'write', accountId: 'acct', resourceId: 'mail' }];
+  assert.deepEqual(admitCapabilities(effectChanged, frozen, 'session-a', new Set<string>(), line => lines.push(line)), []);
+  assert.equal(lines.length, 1); assert.match(lines[0]!, /chat_capability_dropped/); assert.match(lines[0]!, /gmail_read/); assert.match(lines[0]!, /"field":"effect"/);
+  const accountChanged = [{ name: 'gmail_read', effect: 'read', accountId: 'other', resourceId: 'mail' }];
+  assert.deepEqual(admitCapabilities(accountChanged, frozen, 'session-a', new Set<string>(), line => lines.push(line)), []);
+  assert.match(lines[1]!, /"field":"accountId"/);
+  // A tool the frozen session never accepted is still dropped, never silently.
+  const ungranted = [{ name: 'gmail_list', effect: 'read', accountId: 'acct', resourceId: 'mail' }];
+  assert.deepEqual(admitCapabilities(ungranted, frozen, 'session-a', new Set<string>(), line => lines.push(line)), []);
+  assert.match(lines[2]!, /gmail_list/); assert.match(lines[2]!, /"field":"grant"/);
+  // The same drop is logged once per session, not once per run.
+  const seen = new Set<string>(); const rerun: string[] = [];
+  admitCapabilities(effectChanged, frozen, 'session-b', seen, line => rerun.push(line));
+  admitCapabilities(effectChanged, frozen, 'session-b', seen, line => rerun.push(line));
+  assert.equal(rerun.length, 1);
 });

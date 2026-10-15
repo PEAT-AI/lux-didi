@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   cleanMailBody, cutAtSentence, noEmptyResult, shapeGcalList, shapeGmailList, shapeGmailRead, shapeLuxKnowledge, shapeMattermost,
-  KNOWLEDGE_HITS, MATTERMOST_CHANNELS, MATTERMOST_MESSAGE_CHARS,
+  CALENDAR_EVENT_CHARS, GMAIL_BODY_CHARS, GMAIL_LIST_EXCERPT_CHARS, KNOWLEDGE_EXCERPT_CHARS, KNOWLEDGE_HITS, LIVE_RESULT_CHARS, MATTERMOST_CHANNELS, MATTERMOST_MESSAGE_CHARS, MATTERMOST_MESSAGES,
 } from '../tools/live-shape.js';
 // Synthetic Mattermost upstream shapes (mattermost-mcp src/search/serialize.ts and REST v4
 // /posts). Invented names and text only. These are W12's committed fixtures: every one of them
@@ -89,7 +89,7 @@ test('gmail list keeps sender, date, snippet, unread flag and thread size for ev
   assert.equal(shaped.partial, false);
 });
 
-test('calendar list keeps time, title, location, attendees, description and conference presence', () => {
+test('calendar list keeps time, title, location, attendees and conference presence within the event bound', () => {
   const shaped = shapeGcalList({ events: [{
     summary: 'Standup', location: 'Room 1', start: { dateTime: '2024-01-01T09:00:00Z' }, htmlLink: 'https://calendar.google.com/event?eid=e1',
     attendees: [{ displayName: 'Dana' }, { email: 'kim@example.invalid' }], description: 'Daily sync', hangoutLink: 'https://meet.example/abc',
@@ -98,7 +98,54 @@ test('calendar list keeps time, title, location, attendees, description and conf
   assert.match(shaped.text, /attendees: Dana, kim@example\.invalid/);
   assert.match(shaped.text, /conference: yes/);
   assert.match(shaped.text, /Daily sync/);
-  assert.match(shaped.text, /source: https:\/\/calendar\.google\.com\/event\?eid=e1/);
+  assert.equal(shaped.text.length <= CALENDAR_EVENT_CHARS, true, 'one event stays within the per-event bound');
+});
+
+test('calendar events drop dial-in boilerplate', () => {
+  const shaped = shapeGcalList({ events: [{
+    summary: 'Standup', start: { dateTime: '2024-01-01T09:00:00Z' },
+    description: 'Agenda: plan the week.\nJoin by phone: +1 555 0100 PIN: 1234\nMore phone numbers: https://dial.example/invite',
+  }] });
+  assert.match(shaped.text, /Agenda: plan the week\./);
+  assert.equal(/dial[- ]?in|join by phone|more phone numbers|PIN:/i.test(shaped.text), false, 'dial-in boilerplate must not reach the model');
+});
+
+test('a long gmail list excerpt trims to 300 characters and a single read to 1500', () => {
+  const long = 'Sentence. '.repeat(200);
+  const list = shapeGmailList({ messages: [{ headers: { Subject: 'S' }, snippet: long }] });
+  const snippet = list.text.split(' | ')[3]!.split('\n')[0]!;
+  assert.equal(snippet.length <= GMAIL_LIST_EXCERPT_CHARS, true, 'a list excerpt stays within the excerpt bound');
+  assert.equal(list.text.includes(long), false, 'an unbounded snippet never reaches the model');
+  const read = shapeGmailRead({ headers: HEADERS, body: long });
+  const bodyText = read.text.split('\n\n')[1]!.split('\n\n[omitted:')[0]!;
+  assert.equal(bodyText.length <= GMAIL_BODY_CHARS, true, 'a single-message read stays within the body bound');
+  assert.equal(read.text.includes(long), false, 'the full unbounded body never reaches the model');
+});
+
+test('a knowledge search returns at most 3 hits with their bodies in one call', () => {
+  const hits = Array.from({ length: 6 }, (_, index) => ({
+    id: index + 1, insight_title: `Insight ${index + 1}`, insight_type: 'PATTERN', updated_at: '2026-10-14',
+    content: `Body of insight ${index + 1}. ${'Detail. '.repeat(100)}`,
+  }));
+  const shaped = shapeLuxKnowledge('search_knowledge', JSON.stringify({ results: hits }));
+  const headings = shaped.text.match(/^## /gm) ?? [];
+  assert.equal(headings.length, KNOWLEDGE_HITS, 'only the top hits reach the model');
+  assert.match(shaped.text, /Body of insight 1\./);
+  assert.equal(shaped.text.includes('Insight 4'), false);
+  const first = shaped.text.split('## ')[1]!;
+  const body = first.split('\n').slice(1).join('\n').split('\n[omitted:')[0]!;
+  assert.equal(body.length <= KNOWLEDGE_EXCERPT_CHARS, true, 'a search body stays within the excerpt bound');
+});
+
+test('a 60-post Mattermost payload shapes to at most 8 posts and at most 2000 characters', () => {
+  const posts = Array.from({ length: 60 }, (_, index) => ({
+    channel: 'harbour', author: 'river', time: `2026-10-11T10:${String(index % 60).padStart(2, '0')}:00Z`,
+    text: `Message ${index}. ${'detail '.repeat(60)}`, permalink: `https://chat.example.invalid/pl/${index}`,
+  }));
+  const shaped = shapeMattermost('mattermost_get_channel_history', { posts });
+  const shown = shaped.text.split('\n').filter(line => line.startsWith('**')).length;
+  assert.equal(shown <= MATTERMOST_MESSAGES, true, 'only the bounded posts reach the model');
+  assert.equal(shaped.text.length <= LIVE_RESULT_CHARS, true, 'a single Live tool result stays within the hard cap');
 });
 
 test('mattermost keeps text, author, channel, timestamp, reactions and thread position; drops system posts', () => {

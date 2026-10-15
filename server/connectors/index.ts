@@ -219,10 +219,9 @@ const mattermostDescriptor: ConnectorDescriptor = {
     const limit = Math.min(60, policy.bounds.maxSearchLimit);
     return [
       companyDeclaration('mattermost_whoami', 'Read the authenticated Mattermost identity.', text),
-      companyDeclaration('mattermost_get_channel_history', 'Read bounded history from a Mattermost channel. channel is a channel name or display name; no channel list needed. An id still works.', text, 'channel', limit),
+      companyDeclaration('mattermost_get_channel_history', 'Read bounded history from a Mattermost channel, newest first. channel is a channel name or display name; no channel list needed. An id still works.', text, 'channel', limit),
       companyDeclaration('mattermost_get_thread', 'Read a bounded Mattermost thread. postId is a post id taken from a channel history.', text, 'postId', limit),
-      companyDeclaration('mattermost_search', 'Search bounded Mattermost messages by query. No channel id needed: search first, no channel list needed. Returns messages, not whole threads.', text, 'query', limit),
-      companyDeclaration('mattermost_list_channels', 'List bounded Mattermost channels with their ids. Call it at most once per question; its ids stay valid for the whole session, so reuse them.', text, undefined, limit),
+      companyDeclaration('mattermost_search', 'Search bounded Mattermost messages by query. No channel id needed: search first, no channel list needed. Put filters inside the query: From:<user>, After:<date>, In:<channel>, so "what did X say about Y" or "what happened in channel Z this week" is one call. Results are shaped newest first. Returns messages, not whole threads.', text, 'query', limit),
     ];
   },
   createReader({ port, registry, endpoint, schemaDigest, generation, policy }) {

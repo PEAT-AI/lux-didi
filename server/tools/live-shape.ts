@@ -19,6 +19,9 @@ export const GMAIL_LIST_MESSAGES = 50;
 export const CALENDAR_EVENTS = 50;
 export const MATTERMOST_MESSAGE_CHARS = 4000;
 export const MATTERMOST_MESSAGES = 60;
+/** How many ranked channels ever reach the model. A company archive can hold thousands; the
+ * model needs the active few, never a raw dump. */
+export const MATTERMOST_CHANNELS = 40;
 export const KNOWLEDGE_EXCERPT_CHARS = 1200;
 export const KNOWLEDGE_HITS = 20;
 /** A get_insight fetch returns the whole body up to this generous final bound (W7-R4: >= 20000). */
@@ -270,6 +273,42 @@ function renderPost(post: Record<string, unknown>): { lines: string[]; omitted: 
   return { lines: [`**${header2 || 'message'}${meta}**`, cut.text, ...(cut.omitted > 0 ? [`[omitted: ${cut.omitted} characters; final, a single post has no partial re-read]`] : []), ...(permalink ? [`source: ${permalink}`] : [])], omitted: cut.omitted };
 }
 
+function channelPosts(channel: Record<string, unknown>): number | undefined {
+  const value = channel['posts'] ?? channel['postCount'];
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+function channelLastActivity(channel: Record<string, unknown>): string {
+  return field(channel, 'lastSyncAt', 'lastActivityAt', 'last_post_at');
+}
+/** Most posts first, then most recent activity, then name: the active few lead a bounded list. */
+function channelRank(a: unknown, b: unknown): number {
+  const left: Record<string, unknown> = isRecord(a) ? a : {};
+  const right: Record<string, unknown> = isRecord(b) ? b : {};
+  const posts = (channelPosts(right) ?? -1) - (channelPosts(left) ?? -1);
+  if (posts !== 0) return posts;
+  const leftAt = channelLastActivity(left);
+  const rightAt = channelLastActivity(right);
+  if (leftAt !== rightAt) return leftAt < rightAt ? 1 : -1;
+  const leftName = field(left, 'displayName', 'display_name', 'name');
+  const rightName = field(right, 'displayName', 'display_name', 'name');
+  return leftName < rightName ? -1 : leftName > rightName ? 1 : 0;
+}
+/** Name plus post count plus last activity, so the few channels shown are the useful ones. */
+function channelLine(entry: unknown): string {
+  if (!isRecord(entry)) return String(entry);
+  const name = field(entry, 'displayName', 'display_name', 'name') || str(entry['id']);
+  const posts = channelPosts(entry);
+  const last = channelLastActivity(entry);
+  const facts = [posts === undefined ? '' : `${posts} posts`, last ? `last activity ${last}` : ''].filter(Boolean);
+  return facts.length > 0 ? `${name} | ${facts.join(' | ')}` : name;
+}
+/** Epoch milliseconds for a post, whether it carries an ISO stamp or a raw create_at. */
+function postTime(post: Record<string, unknown>): number {
+  const stamp = field(post, 'timestamp', 'time') || scalar(post['create_at']);
+  const parsed = Date.parse(stamp);
+  return Number.isNaN(parsed) ? Number(stamp) || 0 : parsed;
+}
+
 /** The Mattermost output shapes the shaper recognises; `unrecognised` fails loud, never ''. */
 export type MattermostShape =
   | 'whoami' | 'channels' | 'posts_array' | 'posts_map' | 'items' | 'results' | 'thread' | 'empty' | 'text' | 'unrecognised';
@@ -337,14 +376,17 @@ export function shapeMattermost(tool: string, data: unknown): ShapedResult {
     const list = Array.isArray(data) ? data : isRecord(data) && Array.isArray(data['channels']) ? data['channels'] : undefined;
     if (!list) return raw.trim() === '' ? mattermostNote(tool) : unrecognisedMattermost(raw);
     if (list.length === 0) return mattermostNote(tool);
-    const text = list.map(entry => isRecord(entry) ? `- ${field(entry, 'display_name', 'displayName', 'name') || str(entry['id'])}` : `- ${String(entry)}`).join('\n');
-    return mattermostProjection(text, 'channels', list.length);
+    const lines = [...list].sort(channelRank).map(entry => `- ${channelLine(entry)}`);
+    const body = listed(lines, MATTERMOST_CHANNELS, 'channels');
+    return mattermostProjection(body.text, 'channels', list.length);
   }
   const extracted = postsOf(data);
   if (!extracted) return raw.trim() === '' ? mattermostNote(tool) : unrecognisedMattermost(raw);
   const visible = extracted.posts.filter(post => !isSystemPost(post));
   if (visible.length === 0) return mattermostNote(tool);
-  const rendered = visible.map(renderPost);
+  const newestFirst = tool === 'mattermost_search' || tool === 'mattermost_get_channel_history';
+  const ordered = newestFirst ? [...visible].sort((a, b) => postTime(b) - postTime(a)) : visible;
+  const rendered = ordered.map(renderPost);
   const body = listed(rendered.map(entry => entry.lines.join('\n')), MATTERMOST_MESSAGES, 'messages');
   const omitted = body.omitted + rendered.reduce((sum, entry) => sum + entry.omitted, 0);
   return { text: body.text, partial: omitted > 0, originalCharacters: rendered.map(l => l.lines.join('\n')).join('\n').length, omittedCharacters: omitted, shape: extracted.shape, itemCount: visible.length };

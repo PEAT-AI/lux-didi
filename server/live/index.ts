@@ -344,7 +344,7 @@ export class LiveSessionOwner {
         ...(this.#profile.overlay ? { overlay: this.#profile.overlay } : {}),
         ...(pickup ? { pickupNote: pickupInstruction } : {}) }); }
       catch (error) { if (error instanceof Error && 'code' in error && error.code === 'instruction_too_large') throw new LiveError('instruction_too_large'); throw error; }
-      console.log(JSON.stringify({ event: 'live_instruction_sizes', total: composed.text.length, sections: Object.fromEntries(composed.sections.map(section => [section.id, section.chars])) }));
+      console.error(JSON.stringify({ event: 'live_instruction_sizes', total: composed.text.length, sections: Object.fromEntries(composed.sections.map(section => [section.id, section.chars])) }));
       const memory = { status: composed.omitted.length ? composed.selectedIds.length ? 'partial' : 'omitted' : composed.selectedIds.length ? 'selected' : 'empty',
         selectedIds: composed.selectedIds, omitted: composed.omitted };
       const acceptedPrompt = validateAcceptedPrompt({ ...configuredPrompt, system: composed.text, memory, ...(pickup ? { pickup } : {}) }, assistantId);

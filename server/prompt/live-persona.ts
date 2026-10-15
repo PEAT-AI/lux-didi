@@ -278,7 +278,6 @@ export function composeLiveSessionInstruction(input: {
       ...style.map(text => ({ id: 'owner-style' as const, text })),
       ...(overlay !== undefined ? [{ id: 'overlay' as const, text: overlay }] : []),
       ...(tools !== undefined ? [{ id: 'tools' as const, text: tools }] : []),
-      ...(runtime !== undefined ? [{ id: 'runtime' as const, text: runtime }] : []),
       ...lore.map(text => ({ id: 'owner-lore' as const, text })), ...memory, ...pickup,
     ];
     return [

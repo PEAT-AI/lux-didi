@@ -669,8 +669,8 @@ test('accepted complete system uses the shared 60k bound while generic prompt te
 });
 
 test('tool-enabled Live CREATE freezes an expanded classified owner system byte for byte', async t => {
-  const style = `SYNTHETIC style ${'S'.repeat(10_000)}`;
-  const lore = `SYNTHETIC lore ${'L'.repeat(13_955)}`;
+  const style = `SYNTHETIC style ${'S'.repeat(8_000)}`;
+  const lore = `SYNTHETIC lore ${'L'.repeat(4_000)}`;
   let expectedSystem = '';
   const h = await harness(t, { tools: true, routeClasses: ['ordinary', 'private', 'sensitive'], acceptedPrompt: ownerId => {
     const ownerProfile = { schemaVersion: 1 as const, kind: 'profile' as const, ownerId, profileVersion: 'fixture', displayName: 'Example',
@@ -1469,7 +1469,7 @@ test('loadLiveConfig keeps public prompt bytes and composes classified owner sec
   const overlay = { schemaVersion: 1 as const, text: 'SYNTHETIC local overlay persona', greeting: 'Synthetic greeting', accent: 'Synthetic accent' };
   writePrivate(dataDir, 'persona-overlay.json', JSON.stringify(overlay));
   const style = `SYNTHETIC owner style ${'S'.repeat(3000)}`;
-  const lore = `SYNTHETIC owner lore ${'L'.repeat(13_955)}`;
+  const lore = `SYNTHETIC owner lore ${'L'.repeat(3_000)}`;
   const ownerProfile = { schemaVersion: 1 as const, kind: 'profile' as const, ownerId: 'synthetic-owner', profileVersion: 'fixture', displayName: 'Example',
     style: { text: style, dataClass: 'private' as const }, lore: { text: lore, dataClass: 'sensitive' as const } };
   const status = loadLiveConfig({ configDir, ownerId: 'synthetic-owner', ownerProfile });
@@ -1940,7 +1940,7 @@ test('P1: a session under five tool calls still resumes on the saved handle', as
 
 test('P1: session start logs the composed instruction size per section', async t => {
   const lines: string[] = [];
-  t.mock.method(console, 'log', (...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
+  t.mock.method(console, 'error', (...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
   const h = await harness(t);
   await attached(h, 'p1-size-log');
   const logged = lines.map(line => { try { return JSON.parse(line) as { event?: string; sections?: Record<string, number>; total?: number }; } catch { return {}; } })

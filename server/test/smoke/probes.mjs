@@ -30,7 +30,7 @@ const CONNECTOR_READS = {
 };
 
 const QUESTION = 'Search lux knowledge for Lux Didi and open the most relevant entry.';
-const RESEARCH_QUESTION = 'What do I need to know today? Please check everything.';
+const RESEARCH_QUESTION = 'What is on my calendar today? Please check.';
 
 function log(line) { process.stdout.write(line + '\n'); }
 function now() { return Date.now(); }

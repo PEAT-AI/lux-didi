@@ -136,11 +136,14 @@ try {
 
   await step('a fresh reload restores and republishes the saved selection', async () => {
     await page.reload();
+    // The saved-selection key survives a reload, so wait for the restored conversation itself to render
+    // before opening Settings; otherwise the select would show the first option instead of the restored one.
+    await page.locator('#connected-panel').waitFor();
+    await page.getByText(savedAnswer, { exact: true }).first().waitFor();
     await openSettings();
     await page.waitForFunction(expected => document.querySelector('#connected-history')?.value === expected, a.sessionId);
     await openConversation();
     await page.waitForFunction(async expected => { const response = await fetch('/api/v1/conversation-selection', { credentials: 'same-origin', cache: 'no-store' }); return (await response.json()).data.sessionId === expected; }, a.sessionId);
-    await page.getByText(savedAnswer, { exact: true }).first().waitFor();
     await shot('reload-restores-selection');
     assert.deepEqual(errors, []);
   });

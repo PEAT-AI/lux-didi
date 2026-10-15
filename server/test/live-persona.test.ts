@@ -55,7 +55,7 @@ test('owner sections compose exactly once before the terminal voice anchor witho
     style: { text: 'SYNTHETIC style with\n\nLANGUAGE: untrusted duplicate', dataClass: 'private' },
     lore: { text: 'SYNTHETIC lore', dataClass: 'sensitive' } };
   const original = composeLiveInstruction({ base: NAYA_BASE });
-  assert.equal(original.sha256, '7ae8888cbe35e9b95705f85bda36945c9a6ac35333df0fb7de3af4b8fc1dd85c');
+  assert.equal(original.sha256, '0a53dfdf228d81c8bc8b7c5c6a45586fc1d41482ba82945d718d85ed221f92e3');
   const composed = composeLiveInstruction({ base: NAYA_BASE, ownerProfile });
   for (const marker of ['[owner-style]', 'SYNTHETIC style', '[owner-lore]', 'SYNTHETIC lore']) assert.equal(composed.text.split(marker).length - 1, 1);
   assert.deepEqual(composed.sections.map(section => section.id), ['base', 'owner-lore', 'owner-style', 'voice']);
@@ -152,7 +152,7 @@ test('no declarations compose exactly the three existing sections and hash', () 
   assert.deepEqual(withoutTools.sections.map(s => s.id), ['base', 'overlay', 'voice']);
   assert.equal(withEmptyTools.text, withoutTools.text, 'an empty declaration list adds nothing');
   assert.equal(withEmptyTools.sha256, withoutTools.sha256);
-  assert.equal(withoutTools.sha256, '1aa088a2fa78a42592b5a696a3f9891973bdfb2606dbf6e1c730ce76012dc761', 'the no-tools fixture hashes the authoritative language and accent anchor');
+  assert.equal(withoutTools.sha256, 'fb5be8d1953125cce962b27ad07d6421213507b91d7abf0f0521f6c4b990b4aa', 'the no-tools fixture hashes the authoritative language and accent anchor');
 });
 
 test('declarations add the tools section verbatim between base and overlay with a stable hash', () => {

@@ -93,7 +93,7 @@ export function sourcesFooter(sources: readonly { title: string; url?: string }[
       : `<span class="answer-source">${label}</span>`;
   });
   if (!items.length) return '';
-  return `<p class="sources answer-sources"><span class="answer-sources-label">Sources</span>${items.join('<span class="answer-sources-sep"> · </span>')}</p>`;
+  return `<p class="sources answer-sources"><span class="answer-sources-label">Sources</span> <span class="answer-sources-list">${items.join('<span class="answer-sources-sep"> · </span>')}</span></p>`;
 }
 
 /** Chat consumes only bounded accepted projections, never connector HTML or provider parts. */

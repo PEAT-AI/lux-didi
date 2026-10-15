@@ -647,6 +647,7 @@ struct RootView: View {
     private func applyBridgeTheme(_ theme: BridgeTheme) {
         window?.appearance = NSAppearance(named: theme.appearanceName)
         window?.backgroundColor = theme.backgroundColor
+        model.shell?.applyTheme(theme)
     }
     private func rememberFrame() {
         guard proofRequest == nil, !CommandLine.arguments.contains("--ui-proof"), !CommandLine.arguments.contains("--self-check"), let window else { return }

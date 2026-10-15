@@ -20,6 +20,8 @@ enum PageState: Equatable { case loading, ready, unavailable }
         else { return }
         NSWorkspace.shared.open(url)
     }
+    /// Keeps the web view's under-page colour with the window when the web changes theme.
+    func applyTheme(_ theme: BridgeTheme) { webView.underPageBackgroundColor = theme.backgroundColor }
     let webView: WKWebView
     @Published private(set) var state: PageState = .unavailable
     @Published private(set) var detail = "Connect to the approved service."

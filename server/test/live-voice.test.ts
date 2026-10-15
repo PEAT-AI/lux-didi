@@ -1,6 +1,7 @@
 import './live-remember.test.js';
 import './live-declarations.test.js';
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { describe, test, type TestContext } from 'node:test';
 import WebSocket from 'ws';
 import { GeminiLiveVoiceAdapter, LiveVoiceError, liveVoiceActivityDefaults } from '../adapters/live-voice/index.js';
@@ -387,6 +388,69 @@ test('socket bufferedAmount backpressure is checked before any audio write', asy
   Object.defineProperty(client, 'bufferedAmount', { get: () => 1025 });
   assert.throws(() => session.sendAudio({ pcm, dataClass: 'ordinary' }), code('backpressure'));
   assert.equal((await session.done).code, 'backpressure'); assert.equal(f.frames.length, 1);
+});
+
+/** A deterministic fake upstream socket: an explicit open, injectable write failures and a settable buffer. */
+class FakeUpstream extends EventEmitter {
+  readyState = 0;
+  bufferedAmount = 0;
+  readonly sends: string[] = [];
+  failWrites = false;
+  open() { this.readyState = 1; this.emit('open'); }
+  setup() { this.emit('message', Buffer.from(JSON.stringify({ setupComplete: {} }))); }
+  send(frame: string, callback?: (error?: Error) => void) {
+    this.sends.push(frame);
+    queueMicrotask(() => callback?.(this.failWrites ? Object.assign(new Error('synthetic write failure'), { code: 'ECONNRESET' }) : undefined));
+  }
+  close(code = 1000) { if (this.readyState === 3) return; this.readyState = 3; queueMicrotask(() => this.emit('close', code)); }
+  terminate() { this.close(1006); }
+}
+
+async function fakeReady(limits?: Partial<LiveVoiceLimits>) {
+  let socket!: FakeUpstream;
+  const socketFactory = (() => (socket = new FakeUpstream())) as unknown as NonNullable<GeminiLiveVoiceOptions['socketFactory']>;
+  const session = new GeminiLiveVoiceAdapter(options({ socketFactory, ...(limits ? { limits } : {}) })).open(request(), control());
+  await new Promise<void>(resolve => setImmediate(resolve));
+  socket.open(); socket.setup(); await session.ready;
+  return { socket, session };
+}
+
+test('the first failed audio write hands a recoverable upstream drop to the owner', async () => {
+  const { socket, session } = await fakeReady();
+  const before = socket.sends.length;
+  socket.failWrites = true;
+  session.sendAudio({ pcm, dataClass: 'ordinary' });
+  const outcome = await session.done;
+  assert.equal(outcome.code, 'transport_error');
+  assert.equal(outcome.recoverable, true, 'the owner resumption path must be offered');
+  assert.equal(outcome.upstream?.errorKind, 'ECONNRESET');
+  assert.equal(outcome.upstream?.writesFailed, 1);
+  assert.ok((outcome.upstream?.sessionMs ?? -1) >= 0);
+  assert.equal(socket.readyState, 3, 'the dead socket is closed at once');
+  // No audio is buffered without bound: every later frame is refused, none reaches the wire.
+  assert.throws(() => session.sendAudio({ pcm, dataClass: 'ordinary' }), code('transport_error'));
+  assert.equal(socket.sends.length, before + 1);
+});
+
+test('a stalled bufferedAmount hands a recoverable upstream drop to the owner', async () => {
+  const { socket, session } = await fakeReady({ maxBufferedBytes: 4096, upstreamStallMs: 1 });
+  Object.defineProperty(socket, 'bufferedAmount', { get: () => 3000, configurable: true });
+  session.sendAudio({ pcm, dataClass: 'ordinary' });
+  await new Promise<void>(resolve => setTimeout(resolve, 5));
+  session.sendAudio({ pcm, dataClass: 'ordinary' });
+  const outcome = await session.done;
+  assert.equal(outcome.code, 'transport_error');
+  assert.equal(outcome.recoverable, true);
+  assert.equal(outcome.upstream?.errorKind, 'stalled');
+  assert.equal(outcome.upstream?.bufferedAmount, 3000);
+});
+
+test('live_upstream_drop is a closed metadata-only host log shape', () => {
+  const accepted = safeEvent({ event: 'live_upstream_drop', errorKind: 'ECONNRESET', closeCode: 1006, bufferedAmount: 3000, writesFailed: 4, sessionMs: 12_000, rebuilt: true });
+  assert.deepEqual(accepted, { event: 'live_upstream_drop', errorKind: 'ECONNRESET', closeCode: 1006, bufferedAmount: 3000, writesFailed: 4, sessionMs: 12_000, rebuilt: true });
+  assert.equal(safeEvent({ event: 'live_upstream_drop', errorKind: 'bad kind', closeCode: 1006, bufferedAmount: 3000, writesFailed: 4, sessionMs: 12_000, rebuilt: true }), undefined);
+  assert.equal(safeEvent({ event: 'live_upstream_drop', errorKind: 'stalled', closeCode: 1006, bufferedAmount: 3000, writesFailed: 4, sessionMs: 12_000, rebuilt: 'yes' }), undefined);
+  assert.equal(safeEvent({ event: 'live_upstream_drop', errorKind: 'stalled', closeCode: 1006, bufferedAmount: 3000, writesFailed: 4, sessionMs: 12_000, rebuilt: true, text: 'leak' }), undefined);
 });
 
 test('handshake, idle, session and deadline timers bound cleanup', async t => {

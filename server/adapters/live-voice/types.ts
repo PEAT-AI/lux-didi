@@ -8,7 +8,7 @@ export interface LiveVoiceRoute {
   enabled: boolean; provider: 'gemini'; modelId: string; dataClasses: readonly DataClass[];
 }
 export interface LiveVoiceLimits {
-  maxIncomingBytes: number; maxOutgoingBytes: number; maxBufferedBytes: number;
+  maxIncomingBytes: number; maxOutgoingBytes: number; maxBufferedBytes: number; upstreamStallMs: number;
   maxEventBytes: number; maxEvents: number; maxRequestBytes: number; maxHistoryTurns: number;
   handshakeMs: number; idleMs: number; sessionMs: number; closeMs: number;
 }
@@ -45,8 +45,14 @@ export type LiveVoiceErrorCode =
   | 'credential_unavailable' | 'not_ready' | 'invalid_audio' | 'transport_error' | 'provider_error'
   | 'remote_closed' | 'provider_setup_rejected' | 'protocol_error' | 'unsupported_tool' | 'incoming_limit' | 'outgoing_limit'
   | 'backpressure' | 'event_limit' | 'handshake_timeout' | 'idle_timeout' | 'session_timeout' | 'go_away';
+// Metadata of one upstream (host to provider) write drop, never audio, text or credentials.
+// closeCode is filled from the socket close event after the drop is detected, so it may be null until then.
+export interface LiveVoiceUpstreamDrop {
+  errorKind: string; closeCode: number | null; bufferedAmount: number; writesFailed: number; sessionMs: number;
+}
 export interface LiveVoiceOutcome {
   recoverable?: boolean;
+  upstream?: LiveVoiceUpstreamDrop;
   status: 'closed' | 'cancelled' | 'deadline' | 'failed'; code: LiveVoiceErrorCode;
 }
 export interface LiveVoiceDiagnostics {

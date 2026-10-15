@@ -867,7 +867,11 @@ export class LiveSessionOwner {
       if (handle.persistFailure) { handle.abort.abort(); handle.done.reject(handle.persistFailure); }
       else {
         outcome ??= await session.done.catch(() => undefined);
-        if (outcome?.recoverable && this.#rebuild(handle, outcome.code)) continue;
+        if (outcome?.recoverable) {
+          const rebuilt = this.#rebuild(handle, outcome.code);
+          if (outcome.upstream) hostLogEvent({ event: 'live_upstream_drop', errorKind: outcome.upstream.errorKind, closeCode: outcome.upstream.closeCode, bufferedAmount: outcome.upstream.bufferedAmount, writesFailed: outcome.upstream.writesFailed, sessionMs: outcome.upstream.sessionMs, rebuilt });
+          if (rebuilt) continue;
+        }
         if (handle.terminal) break;
         if (outcome) this.#settle(handle, { state: outcome.status, code: handle.rebuilding && outcome.code !== 'session_timeout' && outcome.code !== 'idle_timeout' && outcome.code !== 'deadline' || outcome.recoverable ? 'resume_failed' : outcome.code === 'deadline' ? 'session_timeout' : outcome.code }, outcome.status === 'closed', 'ended', null);
         else this.#settle(handle, { state: 'outcome_unknown' }, false, 'ended', null);

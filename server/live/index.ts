@@ -5,6 +5,7 @@ import * as labels from '../domain/labels.js';
 import { definitionsInTransaction } from '../tools/index.js';
 import { LiveToolJobs, type JobTimer } from '../tools/jobs.js';
 import { declarationsFor, runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
+import { isIntentTool, planIntent, intentResponse, type IntentToolName } from '../tools/intent.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
 import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';
@@ -33,6 +34,10 @@ const RESUMPTION_TOOL_CALL_LIMIT = 5;
 interface ActiveSession {
   inputFinal?: boolean;
   inputAt?: number;
+  /** When the owner's turn finished, to measure dead air until the first model audio. */
+  inputFinalAt: number | undefined;
+  /** First model audio of the current turn; reset at each model turn start. */
+  firstAudioAt: number | undefined;
   inputJournalId?: number;
   inputFinalTimer?: ReturnType<JobTimer>;
   inputFinalWaiters?: Set<() => void>;
@@ -49,6 +54,10 @@ interface ActiveSession {
   thinking: boolean;
   pendingCallIds: Set<string>;
   bargeInCallIds: Set<string>;
+  /** In-flight abort handle per model call id, so a provider cancellation aborts exactly that call. */
+  callAborts: Map<string, AbortController>;
+  /** Wall-clock start per model call id, for tool_cancelled ms-in-flight and per-turn latency. */
+  callStartedAt: Map<string, number>;
   speaking: boolean;
   liveSessionId: string;
   session: LiveVoiceSession;
@@ -585,7 +594,10 @@ export class LiveSessionOwner {
         grants: registry.filter(tool => tool.effect === 'read' || this.#tools!.owner.liveRememberApproved() && tool.name === 'remember_note' && tool.accountId === 'gateway:live-voice' && tool.resourceId === 'owner-memory').map(tool => ({ tool: tool.name, effect: tool.effect, accountId: tool.accountId, resourceId: tool.resourceId })) };
     }
     const history = this.#jobHistory(liveSessionId, inputClass);
-    const declarations = registry.length ? declarationsFor(registry).declarations : [];
+    // Only the coarse intent tools (and remember) are declared to the model; the connector reads stay
+    // dispatchable through the registry so the intent fan-out and the session cache keep working.
+    const modelFacing = registry.filter(tool => isIntentTool(tool.name) || tool.name === 'remember_note');
+    const declarations = modelFacing.length ? declarationsFor(modelFacing).declarations : [];
     const system = acceptedPrompt.system;
     const request: LiveVoiceRequest = { opening: 'model_first',
       system: { text: system, dataClass: dataClasses[dataClasses.length - 1]! }, history: history ?? [], dataClasses,
@@ -607,7 +619,7 @@ export class LiveSessionOwner {
       deadlineMs, deadlineAt, idleAt: this.#now() + this.#profile.limits.idleMs, goAwayUntil: undefined,
       sessionTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()),
-      registry, host, toolStep: 0, toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, pendingCallIds: new Set(), bargeInCallIds: new Set(),
+      registry, host, toolStep: 0, toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, pendingCallIds: new Set(), bargeInCallIds: new Set(), callAborts: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined,
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
       consumerState: 'attached', journalEvents: 0, journalBytes: 0, adapterOutcome: undefined,
@@ -797,6 +809,7 @@ export class LiveSessionOwner {
       for await (const event of session.events) {
         if (this.#settled(handle) || generation !== handle.generation) break;
         if (event.type === 'modelTurnStarted') {
+          handle.firstAudioAt = undefined;
           this.#beginModelTurn(handle);
           continue;
         }
@@ -826,16 +839,39 @@ export class LiveSessionOwner {
             handle.thinking = handle.pendingCallIds.size > 0;
           }); continue;
         }
-        if (event.type === 'toolCallCancellation') { for (const id of event.ids) handle.pendingCallIds.delete(id); handle.thinking = handle.pendingCallIds.size > 0; continue; }
         if (event.type === 'interrupted') { for (const id of handle.pendingCallIds) handle.bargeInCallIds.add(id); handle.speaking = false; }
+        if (event.type === 'toolCallCancellation') {
+          // A provider cancellation (after a barge-in) drops exactly the cancelled ids: their in-flight
+          // reads are aborted and no response is sent for them. A plain interrupted is different: those
+          // ids stay in pendingCallIds, so their response is still answered once, marked after_barge_in.
+          for (const id of event.ids) {
+            const started = handle.callStartedAt.get(id);
+            hostLogEvent({ event: 'tool_cancelled', tool: handle.pendingCalls.get(id) ?? 'unknown', id, msInFlight: started === undefined ? null : Math.max(0, this.#now() - started) });
+            handle.callAborts.get(id)?.abort();
+            handle.pendingCallIds.delete(id);
+          }
+          handle.thinking = handle.pendingCallIds.size > 0;
+          continue;
+        }
         if (event.type === 'turnComplete' || event.type === 'generationComplete') handle.speaking = false;
         if (event.type === 'waitingForInput') { handle.thinking = !event.value; if (event.value) handle.speaking = false; }
-        if (event.type === 'audio') { handle.thinking = false; handle.speaking = true; this.#pushChunk(handle, { kind: 'audio', pcm: event.pcm }); continue; }
+        if (event.type === 'audio') {
+          handle.thinking = false; handle.speaking = true;
+          if (handle.firstAudioAt === undefined) {
+            handle.firstAudioAt = this.#now();
+            if (handle.inputFinalAt !== undefined) {
+              hostLogEvent({ event: 'live_dead_air', deadAirMs: Math.max(0, handle.firstAudioAt - handle.inputFinalAt) });
+              handle.inputFinalAt = undefined;
+            }
+          }
+          this.#pushChunk(handle, { kind: 'audio', pcm: event.pcm }); continue;
+        }
         if (event.type === 'outcome') { outcome = event.outcome; continue; }
         if (event.type === 'inputTranscription') {
           handle.inputFinalTimer?.cancel();
           handle.inputAt = this.#now();
           handle.inputFinal = event.finished === true;
+          if (handle.inputFinal) handle.inputFinalAt = handle.inputAt;
         }
         const kind = journalKind(event.type);
         if (kind === null) continue;
@@ -883,6 +919,7 @@ export class LiveSessionOwner {
         return;
       }
       handle.inputFinal = true;
+      handle.inputFinalAt = this.#now();
       for (const resolve of handle.inputFinalWaiters ?? []) resolve();
     }, Math.max(0, 300 - (this.#now() - handle.inputAt)));
     handle.inputFinalTimer.unref();
@@ -931,19 +968,39 @@ export class LiveSessionOwner {
       const control = { signal: jobAbort.signal, deadlineMs: handle.deadlineMs };
       if (event.calls.some(call => call.name === 'remember_note')) await this.#waitForOwnerTranscript(handle, event.sequence);
       if (this.#settled(handle) || generation !== handle.generation) return;
+      // One model call fans out to one or more internal reads; a plain call maps to itself. An intent
+      // is deliberately never cached: its sub-reads change per query or per minute.
+      interface Unit { index: number; call: (typeof event.calls)[number]; intent: IntentToolName | undefined; subs: { key: string; name: string; args: JsonObject }[]; plan: ReturnType<typeof planIntent> | undefined }
+      type Batch = Awaited<ReturnType<typeof runToolCalls>>;
+      const units: Unit[] = event.calls.map((call, index) => {
+        if (!isIntentTool(call.name)) return { index, call, intent: undefined, subs: [{ key: call.id, name: call.name, args: call.args as JsonObject }], plan: undefined };
+        const plan = planIntent(call.name, call.args);
+        return { index, call, intent: call.name, subs: plan.calls.map((sub, n) => ({ key: `${call.id}~${n}`, name: sub.name, args: sub.args })), plan };
+      });
       const cache = handle.toolCache;
       const cached = new Map<number, { response: JsonObject; projection: LiveToolProjection }>();
-      const pending: { index: number; call: (typeof event.calls)[number] }[] = [];
-      event.calls.forEach((call, index) => {
-        const hit = cache.cacheable(call.name) ? cache.get<{ response: JsonObject; projection: LiveToolProjection }>(call.name, call.args) : undefined;
-        if (!hit) { pending.push({ index, call }); return; }
-        // Metadata only: this idempotent read was answered from the session cache, with no connector call.
-        hostLogEvent({ event: 'live_read_cache', tool: call.name, cached: true });
-        cached.set(index, hit);
-      });
-      const batch = pending.length === 0 ? undefined : await (async () => {
+      const pending: Unit[] = [];
+      for (const unit of units) {
+        const hit = unit.intent === undefined && cache.cacheable(unit.call.name) ? cache.get<{ response: JsonObject; projection: LiveToolProjection }>(unit.call.name, unit.call.args) : undefined;
+        if (!hit) { pending.push(unit); continue; }
+        hostLogEvent({ event: 'live_read_cache', tool: unit.call.name, cached: true });
+        cached.set(unit.index, hit);
+      }
+      // One AbortController per model call; the batch stays a single dispatch so same-endpoint reads
+      // keep their order, and a cancellation aborts exactly its own call's signal.
+      const signals = new Map<string, AbortSignal>();
+      for (const unit of pending) {
+        const aborter = new AbortController();
+        handle.callAborts.set(unit.call.id, aborter);
+        handle.callStartedAt.set(unit.call.id, this.#now());
+        for (const sub of unit.subs) signals.set(sub.key, aborter.signal);
+      }
+      const subCalls = pending.flatMap(unit => unit.subs.map(sub => ({ id: sub.key, name: sub.name, args: sub.args })));
+      const offsets = new Map<number, number>();
+      { let at = 0; for (const unit of pending) { offsets.set(unit.index, at); at += unit.subs.length; } }
+      const batch: Batch | undefined = subCalls.length === 0 ? undefined : await (async () => {
         if (this.#settled(handle) || generation !== handle.generation) throw new LiveError('invalidated');
-        const raw = await runToolCalls(this.#tools!.owner, pending.map(entry => entry.call), { registry: handle.registry, host,
+        const raw = await runToolCalls(this.#tools!.owner, subCalls, { registry: handle.registry, host, signals,
           authority: { isCurrent: async (_host, _tool, signal) => dispatchGate.state === 'allowed' && !signal.aborted && generation === handle.generation && !this.#settled(handle) }, control,
           step, contentIndex: 0, seenIds: handle.seenIds, baseClasses: [handle.inputClass] });
         // Completion never sends to the old transport. With no active authority, retain references for pickup.
@@ -952,14 +1009,29 @@ export class LiveSessionOwner {
         return gated;
       })();
       if ((this.#settled(handle) || generation !== handle.generation)) return;
-      const slots = new Map(pending.map((entry, slot) => [entry.index, slot] as const));
+      for (const unit of pending) handle.callAborts.delete(unit.call.id);
       responses = event.calls.map((call, index) => {
         const hit = cached.get(index);
         if (hit) { projections[index] = hit.projection; return { id: call.id, name: call.name, response: hit.response }; }
-        const accepted = batch!.accepted.find(result => result.binding.callId === call.id && result.binding.name === call.name);
-        const record = batch!.tools[slots.get(index)!];
-        const reason = batch!.error?.reason ?? record?.reason ?? 'tool_result_denied';
-        const completed = accepted && record?.status === 'completed';
+        const unit = units[index]!;
+        const base = offsets.get(index) ?? 0;
+        const record = batch?.tools[base];
+        const reason = batch?.error?.reason ?? record?.reason ?? 'tool_result_denied';
+        if (unit.intent !== undefined && unit.plan !== undefined && batch) {
+          const subResults = unit.subs.map((sub, n) => {
+            const accepted = batch.accepted.find(result => result.binding.callId === sub.key);
+            const response = accepted?.response ?? {};
+            const text = typeof response.text === 'string' ? response.text : '';
+            const ok = batch.tools[base + n]?.status === 'completed' && accepted !== undefined;
+            return { key: sub.key, name: sub.name, ok, text, originalCharacters: typeof response.originalCharacters === 'number' ? response.originalCharacters : text.length, omittedCharacters: typeof response.omittedCharacters === 'number' ? response.omittedCharacters : 0 };
+          });
+          const digest = unit.plan.combine(subResults);
+          const ok = subResults.some(result => result.ok);
+          projections[index] = { name: call.name, status: ok ? 'completed' : 'error', markdown: noEmptyResult(digest.text), sources: [] };
+          return { id: call.id, name: call.name, response: ok ? intentResponse(digest, unit.intent) : { error: reason } };
+        }
+        const accepted = batch?.accepted.find(result => result.binding.callId === call.id && result.binding.name === call.name);
+        const completed = accepted !== undefined && record?.status === 'completed';
         const markdown = completed ? noEmptyResult(typeof accepted.response.markdown === 'string' ? accepted.response.markdown : typeof accepted.response.text === 'string' ? accepted.response.text : reason) : reason;
         const sources = completed ? sourceCards({ text: accepted.response.text, markdown: accepted.response.markdown, sources: accepted.response.sources }, Infinity) : [];
         const projection: LiveToolProjection = { name: call.name, status: completed ? 'completed' : 'error', markdown, sources };
@@ -967,6 +1039,14 @@ export class LiveSessionOwner {
         if (completed && cache.cacheable(call.name)) cache.set(call.name, call.args, { response: accepted.response, projection });
         return { id: call.id, name: call.name, response: completed ? accepted.response : { error: reason } };
       });
+      // Per-turn metadata only: the traces the council requires before any playback fence.
+      const latency: { tool: string; ms: number }[] = [];
+      for (const unit of pending) {
+        const started = handle.callStartedAt.get(unit.call.id);
+        if (started !== undefined) latency.push({ tool: unit.call.name, ms: Math.max(0, this.#now() - started) });
+        handle.callStartedAt.delete(unit.call.id);
+      }
+      hostLogEvent({ event: 'live_tool_turn', sequence: event.sequence, toolCallsThisTurn: units.reduce((sum, unit) => sum + unit.subs.length, 0), toolLatencyMs: latency, toolResponseWhileGenerating: handle.speaking });
     }
     if ((this.#settled(handle) || generation !== handle.generation)) return;
     for (const [index, projection] of projections.entries()) {
@@ -984,7 +1064,6 @@ export class LiveSessionOwner {
     for (const call of event.calls) { handle.pendingCallIds.delete(call.id); handle.bargeInCallIds.delete(call.id); }
     handle.thinking = handle.pendingCallIds.size > 0;
   }
-
   #persist(handle: ActiveSession, event: { type: 'continuity' | 'remember_deferred'; sequence: number; text: string } | LiveVoiceEvent | { type: 'toolCall' | 'toolResult'; sequence: number; tool: LiveToolProjection }, kind: JournalKind, transaction?: Transaction): number | 'overflow' {
     const text = 'text' in event ? event.text : null;
     const finished = 'finished' in event && event.finished !== undefined ? (event.finished ? 1 : 0) : null;

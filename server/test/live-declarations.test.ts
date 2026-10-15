@@ -6,6 +6,7 @@ import { chatCapabilities } from '../chat/context.js';
 import { compilePrompt, validatePreferences, PROMPT_VERSION } from '../prompt/index.js';
 import { createHash } from 'node:crypto';
 import { REMEMBER_PARAMETERS } from '../tools/remember.js';
+import { intentDeclarations } from '../tools/intent.js';
 import type { ConnectionPolicy } from '../tools/types.js';
 import type { ToolDefinition } from '../adapters/model/types.js';
 
@@ -23,7 +24,9 @@ function violations(schema: unknown, path: string): string[] {
 test('every composed Live connector and built-in declaration conforms to provider schema dialect', () => {
   const policy = { bounds: { maxQueryChars: 200, maxSearchLimit: 12, maxGetIds: 10, maxEntityBytes: 4096, maxResultBytes: 8192 } } as ConnectionPolicy;
   const originals = Object.values(CONNECTOR_DESCRIPTORS).flatMap(descriptor => descriptor.declarations(policy));
-  const registry = [...originals, { name: 'remember_note', description: 'Remember a note', parameters: REMEMBER_PARAMETERS }].map(tool => ({ ...tool, effect: 'read' as const, accountId: 'fixture', resourceId: 'fixture', validate: () => true, execute: async () => ({ status: 'failed' as const }) })) as ToolDefinition[];
+  // The five coarse intent tools are declared to the Live model alongside remember_note (#241).
+  const intents = intentDeclarations().map(({ name, description, parameters, guidance }) => ({ name, description, parameters, guidance }));
+  const registry = [...originals, ...intents, { name: 'remember_note', description: 'Remember a note', parameters: REMEMBER_PARAMETERS }].map(tool => ({ ...tool, effect: 'read' as const, accountId: 'fixture', resourceId: 'fixture', validate: () => true, execute: async () => ({ status: 'failed' as const }) })) as ToolDefinition[];
   const before = structuredClone(registry.map(tool => tool.parameters));
   const derived = declarationsFor(registry);
   assert.deepEqual(registry.map(tool => tool.parameters), before, 'original validation authority is unchanged');

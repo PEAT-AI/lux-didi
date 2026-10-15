@@ -27,6 +27,8 @@ export function declarationsFor(registry: readonly ToolDefinition[]): { declarat
 export interface ToolCallsContext {
   registry: readonly ToolDefinition[]; host: HostContext; authority: Authority; control: ModelControl;
   step: number; contentIndex: number; seenIds: Set<string>; baseClasses: readonly DataClass[];
+  /** Per-call abort signals, keyed by call id, so a provider cancellation aborts exactly its call. */
+  signals?: ReadonlyMap<string, AbortSignal>;
   /** Text's gate runs on the complete continuation in the next loop iteration. */
   authorize?: boolean;
 }
@@ -81,6 +83,7 @@ export async function runToolCalls(owner: { journal: ToolCallJournal; resultGate
       let interrupted: Interrupted | undefined;
       try {
         outcome = await controlled(ctx.control, async signal => {
+          const callSignal = ctx.signals?.get(call.id ?? '') ?? signal;
           if (!tool) return;
           if (call.id !== undefined && seenIds.has(call.id)) { record.reason = 'duplicate_call_id'; return; }
           if (call.id !== undefined) seenIds.add(call.id);
@@ -103,11 +106,11 @@ export async function runToolCalls(owner: { journal: ToolCallJournal; resultGate
             if (journalState !== 'fresh' && journalState !== 'existing') throw Error('invalid_journal_intent');
           } catch { journalState = 'failed'; return; }
           if (journalState === 'existing') return;
-          if (signal.aborted || ctx.control.signal.aborted) throw new Interrupted('cancelled');
+          if (callSignal.aborted || ctx.control.signal.aborted) throw new Interrupted('cancelled');
           if (Date.now() >= ctx.control.deadlineMs) throw new Interrupted('deadline');
           dispatched = true;
           return tool.execute(call.args, { runId: host.runId, actorId: host.actorId, authorityEpoch: host.authorityEpoch,
-            revision: host.revision, executionId, accountId: tool.accountId, resourceId: tool.resourceId, signal });
+            revision: host.revision, executionId, accountId: tool.accountId, resourceId: tool.resourceId, signal: callSignal });
         });
         if (dispatched) {
           if (!outcome || !['completed', 'failed', 'unknown'].includes(outcome.status)) throw Error('invalid_tool_outcome');

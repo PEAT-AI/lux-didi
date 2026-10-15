@@ -123,7 +123,7 @@ export const INTERNAL = {
 
 function callsFor(name: IntentToolName, args: Record<string, unknown>): IntentSubCall[] {
   const call = (key: string, tool: string, toolArgs: JsonObject): IntentSubCall => ({ key, name: tool, args: toolArgs });
-  if (name === 'search') return [call('0', INTERNAL.knowledgeSearch, { query: stringOrEmpty(args['query']), limit: 5 })];
+  if (name === 'search') return [call('0', INTERNAL.knowledgeSearch, { query: stringOrEmpty(args['query']), limit: 3 })];
   if (name === 'mail') {
     if (nonEmptyString(args['id'])) return [call('0', INTERNAL.mailRead, { id: stringOrEmpty(args['id']) })];
     const list: JsonObject = { q: stringOrEmpty(args['query']) };

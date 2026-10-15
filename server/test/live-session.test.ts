@@ -3,6 +3,7 @@ import * as memory from '../domain/memory.js';
 import * as labels from '../domain/labels.js';
 import { composeLive, resolveLiveMemory } from '../host/live.js';
 import { captureHostDiagnostics, HostLog, safeEvent } from '../host/log.js';
+import { attachHostLogSink } from '../tools/host-events.js';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
@@ -1386,9 +1387,9 @@ test('Live accepts a frozen real tool snapshot and projects only result-gated Ma
   const { session, attachment } = await attached(h);
   assert.equal(h.owner.lookupAuthority(session.liveSessionId)?.actorId, h.ctx.clientId);
   const setup = (h.f.frames[0] as { setup: { tools: { functionDeclarations: { name: string; parameters: any }[] }[] } }).setup;
-  assert.deepEqual(setup.tools[0]!.functionDeclarations.map(tool => tool.name).sort(), ['get_insight', 'remember_note', 'search_knowledge']);
-  const derived = setup.tools[0]!.functionDeclarations.find(d => d.name === 'get_insight')!;
-  assert.equal(derived.parameters.properties.ids.type, 'STRING');
+  assert.deepEqual(setup.tools[0]!.functionDeclarations.map(tool => tool.name).sort(), ['brief', 'calendar', 'chat', 'mail', 'remember_note', 'search']);
+  const derived = setup.tools[0]!.functionDeclarations.find(d => d.name === 'search')!;
+  assert.equal(derived.parameters.properties.query.type, 'STRING');
   const outputs = attachment.output[Symbol.asyncIterator]();
   assert.equal((await outputs.next()).value?.marker.kind, 'ready');
   h.f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }, { id: 'c2', name: 'get_insight', args: { ids: [123] } }] } });
@@ -2000,4 +2001,78 @@ test('U1: calendar and Gmail model text carries no raw url and names each source
   assert.equal(/https?:\/\//.test(mail.text), false, 'gmail model text carries no raw url');
   assert.deepEqual(mail.sources, [{ title: 'Gmail: Budget', url: 'https://mail.google.com/mail/u/0/#inbox/m1', sourceType: 'gmail' }]);
   assert.deepEqual(shapeGcalCalendars({ calendars: [{ summary: 'Work' }] }).sources, undefined);
+});
+test('an intent call answers with one model tool call from one host-side fan-out', async t => {
+  const h = await harness(t, { tools: true });
+  await attached(h, 'intent-search');
+  h.f.send({ toolCall: { functionCalls: [{ id: 'i1', name: 'search', args: { query: 'lux didi' } }] } });
+  while (toolResponseCount(h) === 0) await tick();
+  assert.equal(toolResponseCount(h), 1, 'exactly one response for the one intent call');
+  const response = h.f.frames[1] as { toolResponse: { functionResponses: { id: string; name: string; response: { text: string } }[] } };
+  assert.equal(response.toolResponse.functionResponses.length, 1);
+  assert.equal(response.toolResponse.functionResponses[0]!.id, 'i1');
+  assert.equal(response.toolResponse.functionResponses[0]!.name, 'search');
+  assert.match(response.toolResponse.functionResponses[0]!.response.text, /Synthetic insight/);
+  assert.deepEqual(h.calls.map(call => call.name), ['search_knowledge'], 'the intent expands to the internal read');
+});
+
+test('a provider cancellation drops exactly the cancelled id and logs tool_cancelled', async t => {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const h = await harness(t, { tools: true, beforeTool: () => gate });
+  await attached(h, 'cancel-one');
+  const events: { event?: string; id?: string; tool?: string }[] = [];
+  const detach = attachHostLogSink({ event: raw => { events.push(raw as { event?: string; id?: string; tool?: string }); } });
+  try {
+    h.f.send({ toolCall: { functionCalls: [
+      { id: 'keep', name: 'search_knowledge', args: { query: 'x', limit: 1 } },
+      { id: 'drop', name: 'search_knowledge', args: { query: 'y', limit: 1 } },
+    ] } });
+    while (!h.calls.length) await tick();
+    h.f.send({ toolCallCancellation: { ids: ['drop'] } });
+    for (let i = 0; i < 40 && !events.some(entry => entry.event === 'tool_cancelled'); i++) await tick();
+    release();
+    for (let i = 0; i < 2000 && toolResponseCount(h) === 0; i++) await tick();
+  } finally { detach(); }
+  assert.equal(toolResponseCount(h), 1, 'only the kept id is answered');
+  const response = h.f.frames.find(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame) as { toolResponse: { functionResponses: { id: string }[] } };
+  assert.deepEqual(response.toolResponse.functionResponses.map(r => r.id), ['keep'], 'the cancelled id gets no response');
+  const cancelled = events.find(entry => entry.event === 'tool_cancelled');
+  assert.ok(cancelled, 'tool_cancelled is logged');
+  assert.equal(cancelled!.id, 'drop');
+  assert.equal(cancelled!.tool, 'search_knowledge');
+});
+
+test('a model turn logs tool metrics, metadata only', async t => {
+  const h = await harness(t, { tools: true });
+  await attached(h, 'tool-metrics');
+  const events: { event?: string; toolCallsThisTurn?: number; toolLatencyMs?: unknown[]; toolResponseWhileGenerating?: boolean }[] = [];
+  const detach = attachHostLogSink({ event: raw => { events.push(raw as typeof events[number]); } });
+  try {
+    h.f.send({ toolCall: { functionCalls: [{ id: 'm1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
+    for (let i = 0; i < 2000 && !events.some(entry => entry.event === 'live_tool_turn'); i++) await tick();
+  } finally { detach(); }
+  const metrics = events.find(entry => entry.event === 'live_tool_turn');
+  assert.ok(metrics, 'the per-turn metrics line is logged');
+  assert.equal(metrics!.toolCallsThisTurn, 1);
+  assert.ok(Array.isArray(metrics!.toolLatencyMs) && metrics!.toolLatencyMs!.length === 1, 'one latency per call');
+  assert.equal(typeof metrics!.toolResponseWhileGenerating, 'boolean');
+});
+test('a turn logs dead air from the owner turn end to the first model audio', async t => {
+  const h = await harness(t, { tools: true });
+  await attached(h, 'dead-air');
+  const events: { event?: string; deadAirMs?: number }[] = [];
+  const detach = attachHostLogSink({ event: raw => { events.push(raw as { event?: string; deadAirMs?: number }); } });
+  try {
+    h.f.send({ serverContent: { inputTranscription: { text: 'Fixture voice input', finished: true } } });
+    for (let i = 0; i < 40 && !events.some(entry => entry.event === 'live_dead_air'); i++) {
+      h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [audio()] } } });
+      await tick();
+    }
+    if (!events.some(entry => entry.event === 'live_dead_air')) { await tick(); }
+  } finally { detach(); }
+  const dead = events.find(entry => entry.event === 'live_dead_air');
+  assert.ok(dead, 'dead air is logged');
+  assert.equal(typeof dead!.deadAirMs, 'number');
+  assert.ok(dead!.deadAirMs! >= 0);
 });

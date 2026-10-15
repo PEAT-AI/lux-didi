@@ -96,6 +96,75 @@ struct NativeCaptureStatistics: Sendable {
 struct NativePlaybackStatistics: Sendable {
     var underruns = 0, lateAfterFlush = 0
 }
+/// The scheduling decision for one arriving model chunk.
+struct NativePlaybackArrival: Sendable, Equatable {
+    /// The prebuffer just filled: the device calls the player's play().
+    let start: Bool
+    /// The queue was dry while playback was underway: an utterance starved.
+    let underrun: Bool
+    /// Audio that had been queued for the burst that ran dry, in ms.
+    let queuedMs: Int
+    /// Milliseconds since the previous chunk arrived, 0 for the first of a session.
+    let sinceLastChunkMs: Int
+}
+/// Deterministic playback queue for model audio: an arrival schedule (timestamps and frame counts)
+/// in, the two scheduling decisions out (whether to start the player, whether the arrival starved an
+/// utterance). It touches no audio API, so a recorded schedule can be replayed in a test.
+struct NativePlaybackQueue {
+    /// ~80 ms of 24 kHz mono audio queued before a turn starts, so a bursty provider never begins
+    /// playback on an empty queue and underruns mid-syllable.
+    static let prebufferFrames = 1920
+    static let frameRate = 24000
+    /// A queue that stays dry at least this long was a pause or the end of a turn, not a dropout.
+    /// Below it the utterance was continuous and the scheduler fell behind: a real underrun.
+    static let pauseThresholdMs = 500
+    /// P2-R1: the playback memory guard. 120 s of queued audio is far beyond any real answer, so a
+    /// flush here only protects memory; the old 24-buffer count cap dropped audio mid-answer
+    /// because host frames arrive far faster than realtime.
+    static let overflowFrames = frameRate * 120
+
+    private(set) var queuedBuffers = 0
+    private(set) var scheduledFrames = 0
+    /// P2-R1: the queue holds so much audio that the device flushes instead of growing.
+    var overflowsMemoryGuard: Bool { scheduledFrames >= Self.overflowFrames }
+    private(set) var playing = false
+    private var drainedFrames = 0
+    private var drainedAtMs: Int?
+    private var lastArrivalMs: Int?
+
+    mutating func arrival(frames: Int, atMs: Int) -> NativePlaybackArrival {
+        let sinceLastChunkMs = lastArrivalMs.map { atMs - $0 } ?? 0
+        lastArrivalMs = atMs
+        let starved = (drainedAtMs.map { atMs - $0 } ?? Int.max) < Self.pauseThresholdMs
+        queuedBuffers += 1
+        scheduledFrames += frames
+        drainedAtMs = nil
+        var start = false
+        if !playing, scheduledFrames >= Self.prebufferFrames { playing = true; start = true }
+        return NativePlaybackArrival(start: start, underrun: starved,
+                                     queuedMs: starved ? Self.ms(drainedFrames) : 0,
+                                     sinceLastChunkMs: sinceLastChunkMs)
+    }
+
+    /// A scheduled buffer finished playing back. Returns true when the queue is now dry: the player
+    /// is stopped and the next arrival re-arms the prebuffer, so a pause is not a glitch.
+    @discardableResult mutating func playedBack(atMs: Int) -> Bool {
+        queuedBuffers -= 1
+        guard queuedBuffers == 0 else { return false }
+        playing = false
+        drainedFrames = scheduledFrames
+        scheduledFrames = 0
+        drainedAtMs = atMs
+        return true
+    }
+
+    mutating func flush() {
+        queuedBuffers = 0; scheduledFrames = 0; playing = false
+        drainedFrames = 0; drainedAtMs = nil; lastArrivalMs = nil
+    }
+
+    static func ms(_ frames: Int) -> Int { frames * 1000 / frameRate }
+}
 struct NativeAudioCaptureSummary: Sendable {
     let capture: NativeCaptureStatistics
     let drainFrames: Int
@@ -249,11 +318,16 @@ struct NativeLiveInterruptionSample: Sendable {
     var ownerIsHeld: Bool { owner.isOwned }
     var captureDrain: Task<Void, Never>? { drain }
     var onOutput: ((Bool) -> Void)?
+    /// One recorded underrun per starved arrival, for the native-live.log line.
+    var onUnderrun: ((NativePlaybackArrival) -> Void)?
     var onInterruption: (() async -> Void)?
     var onInputChange: ((String) -> Void)?
     var onResume: (() -> Void)?
     /// E1: called once per provider barge-in with the pre facts, then again after `interruptionPostRmsDelayNanos` with postRms.
     var onLiveInterrupted: (@MainActor (NativeLiveInterruptionSample) async -> Void)?
+    /// P2-R1: the playback memory guard dropped the queued turn. The conversation records one
+    /// `playback_overflow_flush` native-live.log line, because it holds the session id.
+    var onPlaybackOverflow: (@MainActor (Int, Int) async -> Void)?
     /// E1 test seam: the delay before the postRms line. Production is five seconds.
     var interruptionPostRmsDelayNanos: UInt64 = 5_000_000_000
     /// The orb renders this RMS and above as speech (web/src/orb.ts `audible`); telemetry counts buffers above it.
@@ -501,15 +575,11 @@ struct NativeLiveInterruptionSample: Sendable {
     private var capture: NativeCaptureBuffer?
     private var drain: Task<Void, Never>?
     private var configurationObserver: NSObjectProtocol?
-    private var queuedOutput = 0
+    private var playbackQueue = NativePlaybackQueue()
     private var outputGeneration: UInt64 = 0
     /// Bumped only by a barge-in flush, so a chunk whose turn was flushed in flight is dropped.
     private var turnGeneration: UInt64 = 0
-    private var scheduledPlaybackFrames = 0
     private var playback = NativePlaybackStatistics()
-    /// ~80 ms of 24 kHz mono audio (1920 frames) queued before a turn starts, so a bursty
-    /// provider never begins playback on an empty queue and underruns mid-syllable.
-    static let playbackPrebufferFrames = 1920
     private var captureGeneration: UInt64 = 0
     private var captureStatistics = NativeCaptureStatistics()
     private var drainFrames = 0
@@ -694,7 +764,7 @@ struct NativeLiveInterruptionSample: Sendable {
     /// E1: gather the barge-in facts the capture and playback paths already hold, then postRms after the delay.
     func interruption(turnCompleteSeen: Bool) async {
         let at = now()
-        let bufferedPlaybackMs = scheduledPlaybackFrames <= 0 ? 0 : scheduledPlaybackFrames * 1000 / 24000
+        let bufferedPlaybackMs = playbackQueue.scheduledFrames <= 0 ? 0 : playbackQueue.scheduledFrames * 1000 / 24000
         let sinceAudio = lastModelAudioAt.map { max(0, Int(at.timeIntervalSince($0) * 1000)) } ?? -1
         let pre = rmsWindow(from: at.addingTimeInterval(-1), to: at)
         await onLiveInterrupted?(NativeLiveInterruptionSample(isPostRms: false, bufferedPlaybackMs: bufferedPlaybackMs,
@@ -715,12 +785,17 @@ struct NativeLiveInterruptionSample: Sendable {
         stop()
         await onInterruption?()
     }
+    private func nowMs() -> Int { Int(now().timeIntervalSince1970 * 1000) }
     func write(_ pcm: Data) async throws {
         // Paused/rebuilding output is discarded, never buffered or replayed on Resume.
         if recovery.awaitingResume || recovery.pending != nil { return }
         guard let player, let engine, engine.isRunning, pcm.count.isMultiple(of: 2) else { throw LiveClientError.unavailable }
         let entryTurn = turnGeneration
-        if queuedOutput >= 24 { flushOutput() }
+        if playbackQueue.overflowsMemoryGuard {
+            // P2-R1: log the dropped turn before the flush resets the queue.
+            await onPlaybackOverflow?(NativePlaybackQueue.ms(playbackQueue.scheduledFrames), playbackQueue.queuedBuffers)
+            flushOutput()
+        }
         // Barge-in flushed this chunk's turn while it was in flight: never schedule stale audio.
         guard turnGeneration == entryTurn else { playback.lateAfterFlush += 1; return }
         guard let format = AVAudioFormat(standardFormatWithSampleRate: 24000, channels: 1) else {
@@ -737,8 +812,9 @@ struct NativeLiveInterruptionSample: Sendable {
             }
         }
         let token = outputGeneration
-        if player.isPlaying && queuedOutput == 0 { playback.underruns += 1 }
-        queuedOutput += 1; scheduledPlaybackFrames += Int(buffer.frameLength); onOutput?(true); isPlayingOutput = true
+        let arrival = playbackQueue.arrival(frames: Int(buffer.frameLength), atMs: nowMs())
+        if arrival.underrun { playback.underruns += 1; onUnderrun?(arrival) }
+        onOutput?(true); isPlayingOutput = true
         var sum: Double = 0
         pcm.withUnsafeBytes { bytes in
             for sample in bytes.bindMemory(to: Int16.self) {
@@ -750,16 +826,20 @@ struct NativeLiveInterruptionSample: Sendable {
         player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
             Task { @MainActor in
                 guard let self, self.outputGeneration == token else { return }
-                self.queuedOutput -= 1
-                if self.queuedOutput == 0 { self.onOutput?(false); self.isPlayingOutput = false; self.outputLevel = 0 }
+                if self.playbackQueue.playedBack(atMs: self.nowMs()) {
+                    // The queue ran dry: this is a pause or the end of a turn, never a glitch. Stop the
+                    // node so the next burst re-fills the prebuffer before playback restarts.
+                    self.player?.stop()
+                    self.onOutput?(false); self.isPlayingOutput = false; self.outputLevel = 0
+                }
             }
         }
-        if !player.isPlaying && scheduledPlaybackFrames >= Self.playbackPrebufferFrames { player.play() }
+        if arrival.start { player.play() }
     }
     /// Barge-in: invalidate the queued turn so an in-flight chunk cannot be scheduled after the flush.
     func flush() async throws { flushOutput(); turnGeneration &+= 1 }
     private func flushOutput() {
-        outputGeneration &+= 1; player?.stop(); queuedOutput = 0; scheduledPlaybackFrames = 0; onOutput?(false); isPlayingOutput = false; outputLevel = 0
+        outputGeneration &+= 1; player?.stop(); playbackQueue.flush(); onOutput?(false); isPlayingOutput = false; outputLevel = 0
     }
     func stop() {
         let epoch = captureEpoch, captureToken = captureGeneration, wasMuted = muted

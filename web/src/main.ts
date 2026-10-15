@@ -7,6 +7,7 @@ import { ApiError, request, pair, demoMode, onAuthorityChanged, authorityVersion
 import { liveMarkup, liveLabel, liveVoiceState, liveDelay, pollLiveView, liveActivity, activityMarkup, type LivePollState } from './live-view';
 import { connectionsMarkup } from './connector-status';
 import { settingsMarkup } from './settings-view';
+import { applyTheme, loadTheme, saveTheme, type Theme } from './theme';
 import type { Session, Entry, Commitment, CommitmentDetail, Plan, Recall, Status, LiveCurrent } from './protocol';
 
 type Tab = 'Conversation' | 'Today' | 'Memory' | 'Settings';
@@ -14,6 +15,7 @@ const root = document.querySelector<HTMLDivElement>('#app')!;
 const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 const tabs: Tab[] = ['Conversation', 'Today', 'Memory', 'Settings'];
 let tab: Tab = 'Conversation';
+let theme: Theme = 'dark';
 let orb: Orb | undefined;
 let appliedOrbState: VoiceState | undefined;
 let status: Status | undefined;
@@ -47,6 +49,7 @@ function localDate() { const d = new Date(); return `${d.getFullYear()}-${String
 function localInput(value: string | null) { if (!value) return ''; const d = new Date(value); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}T${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; }
 function writable() { return connection === 'Connected' && !busy; }
 const disabled = (condition: boolean) => condition ? 'disabled' : '';
+function themeStorage(): Storage | undefined { try { return window.localStorage; } catch { return undefined; } }
 function notify(message: string, failure = false) { notice = failure ? '' : message; error = failure ? message : ''; render(); }
 function failure(err: unknown, mutation = false) {
   if (err instanceof DOMException && err.name === 'AbortError') return 'Stopped waiting. A sent change may still have been saved. Refresh before trying again.';
@@ -110,7 +113,7 @@ function today() {
 function memory() {
   return `<section class="page-heading"><div><p class="eyebrow">REMEMBER, WITH CONTEXT</p><h1>Pick up the thread.</h1><p>Your words, connected to where they came from.</p></div></section>${memoryListMarkup(entries, { filter: status ? memoryFilter : '', disabled: !writable() || busy || connectedView.active })}<section class="panel recall"><form id="recall-form"><label for="recall-query">Search your memory</label><div class="search-row"><input id="recall-query" type="search" value="${e(status ? queryDraft : '')}" maxlength="500" placeholder="A phrase, a project, a thought…"><button ${disabled(connection !== 'Connected' || readBusy || !status?.capabilities.memory)}>Search</button></div></form>${recall ? `<p class="muted">${recall.totalMatches} ${recall.totalMatches === 1 ? 'match' : 'matches'}${recall.truncated || recall.nextCursor ? ' · Partial results; more are available in the service.' : ''}</p>${recall.hits.length ? recall.hits.map(hit=>`<article class="recall-hit"><p>${e(hit.snippet)}</p><small>${e(datetime(hit.sourceTimestamp))}</small>${sourceMarkup(hit.sourceRefs)}${hit.entryId ? memoryDeleteControl(hit.entryId, !writable() || busy || connectedView.active) : ''}<button class="quiet" data-source="${e(hit.sessionId)}">Open conversation source</button></article>`).join('') : '<div class="empty"><h3>No matches yet.</h3><p>Try a different phrase. Didi won’t invent a memory to fill the gap.</p></div>'}` : '<div class="empty"><span class="empty-icon" aria-hidden="true">↗</span><h3>Find the words you kept.</h3><p>Search saved conversations. Unavailable sources stay clearly marked.</p></div>'}</section>`;
 }
-function settingsInput() { return { status, statusUnavailable, connections, connectionsUnavailable: connectionsStale }; }
+function settingsInput() { return { status, statusUnavailable, connections, connectionsUnavailable: connectionsStale, theme }; }
 function settings() {
   const permissions = typeof Notification === 'undefined' ? 'Not supported in this browser' : Notification.permission === 'granted' ? 'Allowed by this browser; no delivery is configured' : Notification.permission === 'denied' ? 'Blocked in browser settings' : 'Not requested';
   return `<section class="page-heading"><div><p class="eyebrow">YOUR SETUP, PLAINLY</p><h1>Make yourself at home.</h1><p>Know what’s connected. Choose what’s allowed.</p></div></section><div class="settings-grid">${settingsMarkup(settingsInput())}<section class="panel"><h2>Connection</h2><dl><dt>Service</dt><dd>${e(connection)}</dd><dt>Address</dt><dd>${e(location.origin)} /api/v1</dd><dt>Time zone</dt><dd>${e(zone)}</dd><dt>Privacy</dt><dd>Messages stay in your service. This browser keeps only the app shell for offline opening.</dd></dl><div class="button-row"><button id="reconnect" class="secondary" ${disabled(readBusy)}>Reconnect</button><button id="logout" class="quiet" ${disabled(!writable())}>Unpair this browser</button></div><p class="muted">Browser pairing uses a secure cookie, not a saved token. ${demoMode ? 'This is an isolated synthetic test service.' : 'Ask your local service for a one-time pairing code.'}</p></section>
@@ -147,6 +150,8 @@ function bind() {
   for(const action of ['complete','reopen','cancel'] as const) root.querySelectorAll<HTMLElement>(`[data-${action}]`).forEach(el=>el.onclick=()=>{const c=findCommitment(el.dataset[action]!);if(c) void changeCommitment(c,action);});
   root.querySelectorAll<HTMLElement>('[data-capture]').forEach(el=>el.onclick=()=>{const entry=entries.find(v=>v.id===el.dataset.capture);if(entry)void mutate(async (signal,version)=>{await request<Commitment>('/commitments',{method:'POST',body:{title:entry.text,notes:'',dueAt:null,timeZone:zone,sourceSessionId:entry.sessionId,sourceEntryId:entry.id},signal});assertAuthority(version);notice='Commitment saved. Find it in Today.';});});
   document.getElementById('conversation-select')?.addEventListener('change',ev=>{const id=(ev.target as HTMLSelectElement).value;if(id)void openSession(id);else{session=undefined;entries=[];render();}});
+  const appearance = root.querySelector<HTMLSelectElement>('#appearance-theme');
+  if(appearance) appearance.onchange=()=>{theme=appearance.value==='light'?'light':'dark';saveTheme(themeStorage(),theme);applyTheme(document.documentElement,theme);render();};
   document.querySelector<HTMLDetailsElement>('#conversation-history')?.addEventListener('toggle',event=>{historyOpen=(event.target as HTMLDetailsElement).open;});
   bindLiveDisclosure();
   input('message',v=>messageDraft=v); input('live-text',v=>liveTextDraft=v); input('commitment-title',v=>titleDraft=v);input('recall-query',v=>queryDraft=v);input('edit-title',v=>editTitle=v);input('edit-notes',v=>editNotes=v);input('edit-due',v=>editDue=v);input('memory-filter',v=>{memoryFilter=v;render();});
@@ -334,6 +339,7 @@ window.addEventListener('offline',()=>{connectedView.detach();connection='Offlin
 window.addEventListener('online',()=>{if(!pairingRequired)void connect();});
 document.addEventListener('visibilitychange',()=>{if(document.hidden){if(connectionsTimer)clearTimeout(connectionsTimer);if(pollTimer)clearTimeout(pollTimer);if(liveTimer)clearTimeout(liveTimer);}else if(!pairingRequired){void connect(true);}});
 if('serviceWorker' in navigator && import.meta.env.PROD)void navigator.serviceWorker.register('/sw.js').catch(()=>{ /* Shell availability is optional; never imply offline saving. */ });
+theme=loadTheme(themeStorage());applyTheme(document.documentElement,theme);
 render();void connect();
 
 

@@ -57,12 +57,12 @@ class HostLiveService implements LiveService {
   current(cursor = 0): LivePageProjection { return this.owner.current(cursor); }
   lookupAuthority(runId: string) { return this.owner.lookupAuthority(runId); }
   status(): LiveStatusPayload { return { ...statusFromProfile(this.profile), ...{ memory: this.owner.profileProjection().memory } }; }
-  create(inputClass: DataClass, idempotencyKey: string, context: LiveContext, attemptId?: string): LiveSessionSnapshot {
-    return this.owner.create({ inputClass, idempotencyKey, ...(attemptId !== undefined ? { attemptId } : {}) }, context);
+  create(inputClass: DataClass, idempotencyKey: string, context: LiveContext): LiveSessionSnapshot {
+    return this.owner.create({ inputClass, idempotencyKey }, context);
   }
   pendingJobs() { return this.owner.pendingJobs(); }
-  createWithPending(inputClass: DataClass, idempotencyKey: string, context: LiveContext, pickupJobId?: string, attemptId?: string): LiveSessionSnapshot {
-    return this.owner.createWithPending({ inputClass, idempotencyKey, ...(pickupJobId ? { pickupJobId } : {}), ...(attemptId !== undefined ? { attemptId } : {}) }, context);
+  createWithPending(inputClass: DataClass, idempotencyKey: string, context: LiveContext, pickupJobId?: string): LiveSessionSnapshot {
+    return this.owner.createWithPending({ inputClass, idempotencyKey, ...(pickupJobId ? { pickupJobId } : {}) }, context);
   }
   snapshot(liveSessionId: string): LiveSessionSnapshot { return this.owner.get(liveSessionId); }
   journal(liveSessionId: string, cursor: number | undefined, limit: number | undefined): LiveFragmentPage {

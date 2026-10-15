@@ -363,7 +363,10 @@ export class LiveSessionOwner {
     });
     this.#armExpiry();
     // W10 B2: native may have allocated the attemptId before precreate; record and log it at create.
-    const providedAttempt = typeof input.attemptId === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(input.attemptId) ? input.attemptId : undefined;
+    // The native arms the attemptId as the create key, so a UUID idempotencyKey is that attemptId.
+    const providedAttempt = typeof input.attemptId === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(input.attemptId)
+      ? input.attemptId
+      : (/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(input.idempotencyKey) ? input.idempotencyKey : undefined);
     if (providedAttempt !== undefined && snapshot.lifecycle === 'accepted' && !this.#attempts.has(snapshot.liveSessionId)) {
       this.#attempts.set(snapshot.liveSessionId, providedAttempt);
       emitHostEvent('live.attempt_start', { attemptId: providedAttempt, liveSessionId: snapshot.liveSessionId });

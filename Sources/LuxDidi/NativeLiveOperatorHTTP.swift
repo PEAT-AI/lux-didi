@@ -108,12 +108,12 @@ struct NativePendingLiveJob: Decodable, Equatable, Sendable {
         return LiveOperatorStatus(origin: origin, assistantID: host.assistantId, authorityEpoch: host.authorityEpoch,
                                   provider: provider, model: model, voice: voice, profileIdentity: identity, dataClasses: classes)
     }
-    func beginIntent(inputClass: String = "ordinary", attemptId: String = "unknown") async throws -> LiveBeginIntent {
+    func beginIntent(inputClass: String = "ordinary") async throws -> LiveBeginIntent {
         let status = try await projection(epoch: nil)
         guard status.dataClasses.contains(inputClass) else { throw LiveClientError.grantMismatch }
         return LiveBeginIntent(origin: origin, assistantID: status.assistantID, authorityEpoch: status.authorityEpoch,
                                provider: status.provider, model: status.model, voice: status.voice,
-                               profileIdentity: status.profileIdentity, inputClass: inputClass, attemptId: attemptId)
+                               profileIdentity: status.profileIdentity, inputClass: inputClass)
     }
     func status(for intent: LiveBeginIntent) async throws -> LiveOperatorStatus {
         guard intent.origin == origin else { throw LiveClientError.invalidIntent }
@@ -130,7 +130,7 @@ struct NativePendingLiveJob: Decodable, Equatable, Sendable {
     }
     // Serialized create input is a testable boundary; authentication and transport stay in fetch.
     func createBody(for intent: LiveBeginIntent, key: String) throws -> Data {
-        var input = ["inputClass": intent.inputClass, "attemptId": intent.attemptId]
+        var input = ["inputClass": intent.inputClass]
         if let pickupJobID {
             if pickupCreateKey == nil { pickupCreateKey = key }
             if pickupCreateKey == key { input["pickupJobId"] = pickupJobID }

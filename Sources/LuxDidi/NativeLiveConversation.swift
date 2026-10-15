@@ -160,6 +160,8 @@ enum State: String, CaseIterable {
                 // Reset capture authority before a new explicit start.
                 guard let epoch = self?.device.captureEpoch else { return }
                 await coordinator.setCaptureMuted(false, epoch: epoch, diagnosticOwner: token)
+                // W10 B2: the attemptId is armed before capture so it rides the create request.
+                await coordinator.armAttempt(attempt)
                 try Task.checkCancellation()
                 if self?.generation == token { self?.captureDiagnosticOwner = token }
                 // Prepare the single duplex engine before the socket can deliver model PCM.
@@ -172,7 +174,7 @@ enum State: String, CaseIterable {
                 guard let self, self.generation == token else { return }
                 self.emitAudioConfig()
                 self.startAudioFlow()
-                let intent = try await http.beginIntent(attemptId: attempt)
+                let intent = try await http.beginIntent()
                 self.limits = http.limits
                 try Task.checkCancellation()
                 guard self.generation == token else { return }

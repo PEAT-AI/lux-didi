@@ -9,12 +9,11 @@ public struct LiveBeginIntent: Sendable, Equatable {
     public let voice: String
     public let profileIdentity: String
     public let inputClass: String
-    public let attemptId: String
     public init(origin: URL, assistantID: String, authorityEpoch: String, provider: String,
-                model: String, voice: String, profileIdentity: String, inputClass: String, attemptId: String = "unknown") {
+                model: String, voice: String, profileIdentity: String, inputClass: String) {
         self.origin = origin; self.assistantID = assistantID; self.authorityEpoch = authorityEpoch
         self.provider = provider; self.model = model; self.voice = voice
-        self.profileIdentity = profileIdentity; self.inputClass = inputClass; self.attemptId = attemptId
+        self.profileIdentity = profileIdentity; self.inputClass = inputClass
     }
 }
 
@@ -139,6 +138,11 @@ public actor LiveSessionCoordinator {
     }
     public private(set) var generation: UInt64 = 0
     public private(set) var sessionID: String?
+    /// W10 B2: the per-attempt id, allocated by native before precreate; the host receives it as the create key.
+    public private(set) var attemptId: String?
+    private var armedAttemptId: String?
+    /// W10 B2: arm the attemptId before capture opens so a failure before acceptance still correlates.
+    public func armAttempt(_ id: String) { armedAttemptId = id }
     private let http: any LiveOperatorHTTP
     private let sockets: any LiveSocketConnecting
     private let sink: any LiveAudioSink
@@ -210,7 +214,11 @@ public actor LiveSessionCoordinator {
         let token = generation, op = operation
         operationTask?.cancel(); receiveTask?.cancel()
         let oldSocket = socket; socket = nil
-        intent = frozen; createKey = UUID().uuidString; sessionID = nil; grant = nil
+        intent = frozen
+        let armed = armedAttemptId; armedAttemptId = nil
+        createKey = armed ?? UUID().uuidString
+        attemptId = createKey
+        sessionID = nil; grant = nil
         pendingBytes = 0; pendingFrames = 0; inputEnded = false; reading = false; state = .checking
         await oldSocket?.cancel()
         guard current(token, op) else { return }

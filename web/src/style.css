@@ -306,4 +306,4 @@ h3{font-size:14px}
 .live-tool-result{margin:0;padding:0;border:0;align-self:flex-start}
 .live-tool-result>summary{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border:1px solid var(--border);border-radius:999px;font-size:12px;color:var(--muted);cursor:pointer;list-style:none}
 .live-tool-result>summary::before{content:"";width:12px;height:12px;border-radius:3px;background:var(--accent)}
-.allow-link{height:28px;line-height:28px;padding:0 8px;border:0;background:none;color:var(--accent);font-size:12px;cursor:pointer}
+.connected-disclosure .allow-link,#connected-consent{height:28px;min-height:0;line-height:28px;padding:0 6px;margin:0;border:0;background:none;color:var(--accent);font-size:12px;cursor:pointer;box-sizing:border-box}

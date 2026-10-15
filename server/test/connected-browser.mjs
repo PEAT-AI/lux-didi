@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { fork, execFileSync } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createArtifactDir } from '../../web/test/artifacts.mjs';
@@ -71,6 +71,12 @@ try {
     assert.equal(Math.round(desktopOrb.height), 600, 'W5 desktop orb canvas is square');
     assert.ok(Math.abs((desktopOrb.x + desktopOrb.width / 2) - (stage.x + stage.width / 2)) <= 1, 'W5 orb canvas is horizontally centred in its stage');
   });
+  await step('U3 declutter shots: the open chat without a grant', async () => {
+    const u3 = '/Users/rob/.lux/reports/lux-didi-release-1014/u3-shots';
+    await mkdir(u3, { recursive: true });
+    await page.locator('#connected-consent').waitFor();
+    await page.screenshot({ path: join(u3, 'desktop-1440-chat-no-grant.png'), fullPage: true });
+  });
   await step('local Save stays local; the open chat exposes consent before any model send', async () => {
     await page.locator('#conversation-history > summary').click();
     await page.locator('#message').fill('EXCLUDED_BROWSER_LOCAL_CANARY: archive this without any model send.');
@@ -97,6 +103,15 @@ try {
     await page.waitForFunction(() => document.querySelectorAll('#connected-entries .assistant').length === 2);
     const wires = (await readFile(join(state, 'wire.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
     assert.equal(wires.length, 2); assert.match(JSON.stringify(wires[1]), /synthetic release checklist/); assert.match(JSON.stringify(wires[1]), /keep the rest for later/); assert.doesNotMatch(JSON.stringify(wires[1]), /EXCLUDED_BROWSER_LOCAL_CANARY/);
+  });
+  await step('U3 declutter shots: the granted chat and the Settings switch', async () => {
+    const u3 = '/Users/rob/.lux/reports/lux-didi-release-1014/u3-shots';
+    await mkdir(u3, { recursive: true });
+    await page.locator('.connected-consent-indicator').waitFor();
+    await page.screenshot({ path: join(u3, 'desktop-1440-chat-with-grant.png'), fullPage: true });
+    await page.locator('[data-tab="Settings"]').click();
+    await page.locator('#connected-history').waitFor();
+    await page.screenshot({ path: join(u3, 'desktop-1440-settings.png'), fullPage: true });
   });
   await step('same-profile real restart preserves consent/history and never resends', async () => {
     const port = new URL(descriptor.origin).port; await stop(); await start(Number(port)); await page.reload();

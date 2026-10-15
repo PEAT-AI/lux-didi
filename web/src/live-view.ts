@@ -1,6 +1,6 @@
 // Read-only presentation of the Interface 3 live projection (W-B provides the route).
 // Pure mapping and markup only: no scheduling, no network, no fabricated state.
-import { escapeHtml, renderMarkdown, sourcesFooter } from './markdown.ts';
+import { escapeHtml, renderMarkdown, sourcesFooter, TRANSCRIPT_MARKDOWN } from './markdown.ts';
 import { toolConnector, toolPhrase, toolPhrases } from './tool-phrases.ts';
 import type { VoiceState } from './orb.ts';
 import type { LiveCurrent, LiveEntry, LiveSource, LiveState, LiveTool } from './protocol.ts';
@@ -152,10 +152,13 @@ export async function pollLiveView(previous: LivePollState, fetch: (cursor?: str
 }
 
 export interface LiveAnswer { markdown: string; sources: LiveSource[] }
+/** The Latest answer card shows the model's own output transcript, never a tool result's body. The
+ * named source chips still come from the newest accepted tool result that carried any. */
 export function liveResult(live: LiveCurrent): LiveAnswer | undefined {
-  const accepted = live.entries.filter(entry => entry.kind === 'toolResult' && entry.tool?.status !== 'error' && typeof entry.tool?.markdown === 'string' && entry.tool.markdown.length > 0);
-  const latest = accepted[accepted.length - 1];
-  return latest?.tool?.markdown ? { markdown: latest.tool.markdown, sources: latest.tool.sources ?? [] } : undefined;
+  const answer = [...liveTranscript(live)].reverse().find(line => line.role === 'naya');
+  if (!answer?.text) return undefined;
+  const latest = [...live.entries].reverse().find(entry => entry.kind === 'toolResult' && entry.tool?.status !== 'error' && (entry.tool?.sources?.length ?? 0) > 0);
+  return { markdown: answer.text, sources: latest?.tool?.sources ?? [] };
 }
 
 function sourcesMarkup(sources: LiveSource[]): string {
@@ -197,10 +200,9 @@ export function liveMarkup(live: LiveCurrent | undefined, poll: LivePollState = 
   const label = liveLabel(live);
   const lines = live ? liveTranscript(live) : [];
   const result = live ? liveResult(live) : undefined;
-  const latestTurn = [...lines].reverse().find(line => line.role === 'naya') ?? lines.at(-1);
   const jobs = (live?.jobs ?? []).map(job => `<article class="live-job" data-job-id="${escapeHtml(job.id)}">
     <h2>${job.state === 'in_progress' ? 'Background task in progress' : 'Background task ' + escapeHtml(job.state)}</h2>
-    ${renderMarkdown(job.markdown)}
+    ${renderMarkdown(job.markdown, TRANSCRIPT_MARKDOWN)}
     ${!job.delivered && job.state !== 'in_progress' ? '<p class="muted">Call Naya back: choose Start Live voice in the native app to pick up this result.</p>' : ''}
   </article>`).join('');
   const latest = live?.entries.at(-1);
@@ -209,20 +211,19 @@ export function liveMarkup(live: LiveCurrent | undefined, poll: LivePollState = 
   const error = state === 'error' ? '<p class="muted" role="status">Naya reported an error. The live session has stopped.</p>' : '';
   const muted = live?.muted ? '<p class="muted live-muted" role="status">Microphone muted</p>' : '';
   const transcript = lines.length
-    ? `<div class="entries live-transcript">${lines.map(line => `<article class="entry"><strong>${line.role === 'user' ? 'You' : 'Naya'}</strong><p>${escapeHtml(line.text)}</p></article>`).join('')}</div>`
+    ? `<div class="entries live-transcript">${lines.map(line => `<article class="entry"><strong>${line.role === 'user' ? 'You' : 'Naya'}</strong><div class="markdown">${renderMarkdown(line.text, TRANSCRIPT_MARKDOWN)}</div></article>`).join('')}</div>`
     : '<div class="entries live-transcript empty"><p class="muted">No live transcription yet.</p></div>';
   return `<section class="panel live" id="live-panel" aria-label="Naya live conversation">
     <p class="live-state" role="status" aria-live="polite">${escapeHtml(label)}</p>
     ${muted}
     ${poll.stale ? `<p class="live-stale" role="status">Live view stale${poll.lastSuccess ? ' since ' + escapeHtml(poll.lastSuccess.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })) : ', no successful poll yet'}, service unreachable</p>` : ''}
     ${error}${restored}
-    ${result ? `<div class="live-result"><h2>Latest answer</h2>${renderMarkdown(result.markdown)}${sourcesMarkup(result.sources)}</div>` : ''}
-    ${latestTurn ? `<article class="live-latest-turn"><span>${latestTurn.role === 'naya' ? 'Latest spoken answer' : 'Latest turn'}</span><p>${escapeHtml(latestTurn.text)}</p></article>` : ''}
+    ${result ? `<div class="live-result"><h2>Latest answer</h2>${renderMarkdown(result.markdown, TRANSCRIPT_MARKDOWN)}${sourcesMarkup(result.sources)}</div>` : ''}
     <details id="live-details" class="live-details"${detailsOpen ? ' open' : ''}>
       <summary>Conversation history and activity</summary>
       ${transcript}
       <div class="live-activity" aria-label="Live activity">
-        ${(live?.entries ?? []).filter(entry => entry.kind === 'toolResult' && entry.tool?.name !== 'remember_note').map(entry => `<details class="live-tool-result" data-result-seq="${entry.seq}"><summary>${escapeHtml(toolPhrase(entry.tool?.name ?? ''))} (${escapeHtml(entry.tool?.status ?? 'unknown')})</summary>${entry.tool?.status !== 'error' && entry.tool?.markdown ? renderMarkdown(entry.tool.markdown) + sourcesMarkup(entry.tool.sources ?? []) : ''}</details>`).join('')}
+        ${(live?.entries ?? []).filter(entry => entry.kind === 'toolResult' && entry.tool?.name !== 'remember_note').map(entry => `<details class="live-tool-result" data-result-seq="${entry.seq}"><summary>${escapeHtml(toolPhrase(entry.tool?.name ?? ''))} (${escapeHtml(entry.tool?.status ?? 'unknown')})</summary>${entry.tool?.status !== 'error' && entry.tool?.markdown ? renderMarkdown(entry.tool.markdown, TRANSCRIPT_MARKDOWN) + sourcesMarkup(entry.tool.sources ?? []) : ''}</details>`).join('')}
         ${(live?.entries ?? []).filter(entry => entry.kind === 'toolResult' && entry.tool?.name === 'remember_note').map(remaining => rememberCardMarkup(remaining)).join('')}
         ${jobs}
       </div>

@@ -2,14 +2,16 @@ import * as memory from '../domain/memory.js';
 import * as labels from '../domain/labels.js';
 import type { LiveMemorySource } from '../live/types.js';
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
-import { credentialsFor } from '../config/index.js';
+import { credentialsFor, loadProviderConfig } from '../config/index.js';
 import { loadLiveConfig, type LiveConfiguredProfile, type LiveConfigStatus } from '../config/live.js';
 import { GeminiLiveVoiceAdapter, type DataClass, type LiveSocketFactory } from '../adapters/live-voice/index.js';
+import { GeminiAdapter } from '../adapters/model/index.js';
 import type { Credentials } from '../adapters/model/types.js';
 import { createLiveSessionOwner, defaultLiveLimits, liveProfileIdentity, type LiveAttachment, type LiveContext, type LiveToolsComposition, type LivePageProjection, type LiveFragmentPage, type LiveProfile, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import type { Store } from '../runtime/store.js';
 import type { LiveService, LiveStatusPayload } from '../http/live-upgrade.js';
 import { hostLogEvent } from './log.js';
+import { createGeminiSelector, type ResearchSelector } from '../tools/research.js';
 
 const maxIncomingBytes = 64 * 1024;
 
@@ -17,7 +19,7 @@ const maxIncomingBytes = 64 * 1024;
  * Trusted in-process seam only: never accepted by CLI/HTTP/env. `profile` lets auth/wire tests drive a
  * validated LiveProfile while LIVE-GATEWAY-R1 blocks the config file from producing one itself.
  */
-export interface LiveTesting { credentials?: Credentials; socketFactory?: LiveSocketFactory; profile?: LiveProfile; now?: () => number }
+export interface LiveTesting { credentials?: Credentials; socketFactory?: LiveSocketFactory; profile?: LiveProfile; now?: () => number; researchSelector?: ResearchSelector }
 
 function statusFromProfile(profile: LiveProfile): LiveStatusPayload {
   return {
@@ -119,6 +121,10 @@ export function composeLive(store: Store, configDir: string, testing?: LiveTesti
   const status = statusPayload(loaded, profile);
   if (!profile) return { service: new UnconfiguredLive(status), status };
   const credentials = testing?.credentials ?? credentialsFor(configDir);
+  const provider = testing?.researchSelector === undefined ? loadProviderConfig({ configDir, ownerId: store.assistantId }) : undefined;
+  const researchSelector = testing?.researchSelector ?? (provider?.status === 'ready'
+    ? createGeminiSelector(new GeminiAdapter({ modelId: provider.profile.modelId, keyReference: provider.profile.keyReference, credentials }))
+    : undefined);
   const voice = new GeminiLiveVoiceAdapter({
     modelId: profile.liveModelId, voice: profile.voice, keyReference: profile.keyReference, credentials,
     route: { enabled: true, provider: 'gemini', modelId: profile.liveModelId, dataClasses: [...profile.route.dataClasses] },
@@ -129,7 +135,7 @@ export function composeLive(store: Store, configDir: string, testing?: LiveTesti
     },
     ...(testing?.socketFactory ? { socketFactory: testing.socketFactory } : {}),
   });
-  const owner = createLiveSessionOwner({ store, voice, profile, memorySource: resolveLiveMemory, ...(tools ? { tools } : {}), ...(now ? { now } : {}) });
+  const owner = createLiveSessionOwner({ store, voice, profile, memorySource: resolveLiveMemory, ...(tools ? { tools } : {}), ...(researchSelector ? { research: researchSelector } : {}), ...(now ? { now } : {}) });
   tools?.registerAuthoritySource?.(async (runId, signal) => signal.aborted ? null : owner.lookupAuthority(runId) ?? owner.lookupJobAuthority(runId));
   return { service: new HostLiveService(profile, owner, store), status };
 }

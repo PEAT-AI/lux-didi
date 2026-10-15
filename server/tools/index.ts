@@ -9,7 +9,7 @@ import { ConnectorCompositionError, connectorDescriptor, CONNECTOR_ENVELOPES } f
 import { canonicalJSON, detached, sha256 } from './canonical.js';
 import type { BoundConnection, ConnectionApplyResult, ConnectionPolicy, HttpConnectionEndpoint, ModelSnapshot, RunAcceptance, RunSnapshot, StdioConnectionEndpoint, ToolsOwner, ToolsOwnerOptions } from './types.js';
 import { REMEMBER_IDENTITY, REMEMBER_PARAMETERS, validateRemember } from './remember.js';
-import { intentDeclarations } from './intent.js';
+import { researchDeclaration } from './research.js';
 export { toolsMigrations } from './schema.js';
 export type * from './types.js';
 
@@ -323,11 +323,11 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
     },
     liveRememberApproved() { return options.grantMode === 'owner-trusted-reads'; },
     liveDefinitions(runId, rememberNote) {
-      // The Live model is declared only the five coarse intent tools plus remember; the connector reads
-      // stay in the registry so the intent fan-out and the session cache keep working, but the Live
-      // session never declares them to the provider. An intent tool is answered by a host-side fan-out
+      // The Live model is declared only the one research tool plus remember; the connector reads
+      // stay in the registry so the research fan-out and the session cache keep working, but the Live
+      // session never declares them to the provider. A research tool is answered by a host-side loop
       // in the Live session, so its own execute is never reached.
-      const definitions: ToolDefinition[] = intentDeclarations().map(declaration => ({
+      const definitions: ToolDefinition[] = [researchDeclaration()].map(declaration => ({
         name: declaration.name, description: declaration.description, guidance: declaration.guidance, parameters: declaration.parameters,
         effect: 'read', accountId: 'gateway:live-voice', resourceId: 'intent', validate: declaration.validate,
         async execute() { return { status: 'failed' as const, code: 'handler_outcome' as const }; },

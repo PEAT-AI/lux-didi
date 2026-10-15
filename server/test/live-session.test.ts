@@ -7,6 +7,8 @@ import { attachHostLogSink } from '../tools/host-events.js';
 // Side-effect import: register the intent-tool suite in this process so a declared check runs it
 // (live-session is in the contract scope; the check scripts are not).
 import './intent-tools.test.js';
+// Side-effect import: register the research-loop suite in this process so a declared check runs it.
+import './research.test.js';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';

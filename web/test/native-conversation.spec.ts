@@ -11,6 +11,8 @@ import { createArtifactDir } from './artifacts.mjs';
 
 const { chromium } = createRequire(new URL('../../web/package.json', import.meta.url))('playwright');
 const { answer } = await import('../../server/dist/test/connected-process.js');
+// The connected panel drops a leading 'Naya:' (web/src/connected.ts answerText, ba5b3a6).
+const savedAnswer = answer.replace(/^\s*Naya:\s*/, '');
 const root = resolve(import.meta.dirname, '../..');
 const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, env: { ...process.env, GIT_PAGER: 'cat', GIT_EDITOR: 'true' } }).toString().trim();
 const artifacts = await createArtifactDir('native-conversation-service/screenshots');
@@ -110,7 +112,7 @@ try {
   await step('an externally accepted run appears on the displayed conversation without a refresh', async () => {
     const accepted = await operator('/chat', { sessionId: a.sessionId, text: 'Choose one small next step for the native conversation.' });
     assert.equal(accepted.status, 200, JSON.stringify(accepted.data));
-    await page.getByText(answer, { exact: true }).first().waitFor();
+    await page.getByText(savedAnswer, { exact: true }).first().waitFor();
     assert.equal(await selectValue(), a.sessionId);
     await shot('external-run-on-a');
   });
@@ -127,7 +129,7 @@ try {
     assert.doesNotMatch(await entryText(), /Let us choose one small next step/);
     await shot('page-b-no-jump');
     await choose('Native A · gemini-connected-test · active');
-    await page.getByText(answer, { exact: true }).first().waitFor();
+    await page.getByText(savedAnswer, { exact: true }).first().waitFor();
     assert.equal((await api('/conversation-selection')).sessionId, a.sessionId);
     await shot('reselect-a-recovered');
   });
@@ -138,7 +140,7 @@ try {
     await page.waitForFunction(expected => document.querySelector('#connected-history')?.value === expected, a.sessionId);
     await openConversation();
     await page.waitForFunction(async expected => { const response = await fetch('/api/v1/conversation-selection', { credentials: 'same-origin', cache: 'no-store' }); return (await response.json()).data.sessionId === expected; }, a.sessionId);
-    await page.getByText(answer, { exact: true }).first().waitFor();
+    await page.getByText(savedAnswer, { exact: true }).first().waitFor();
     await shot('reload-restores-selection');
     assert.deepEqual(errors, []);
   });

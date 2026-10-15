@@ -99,6 +99,11 @@ enum State: String, CaseIterable {
             self.failure = "Live audio could not recover. Capture released. Restart explicitly to try again."
             self.state = .failed
         }
+        // E1: one native-live.log line per provider barge-in. Metadata only, read from the capture device.
+        device.onLiveInterrupted = { [weak self] event in
+            guard let self else { return }
+            self.journal.appendInterruption(event, sessionID: await self.coordinator.sessionID ?? "unknown")
+        }
     }
     // Presentation only: an offer never opens a session, an audio engine or the microphone.
     func offerPendingCall(_ job: NativePendingLiveJob?) { pendingCall = job }

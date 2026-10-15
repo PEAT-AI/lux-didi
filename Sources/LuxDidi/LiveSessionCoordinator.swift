@@ -98,6 +98,12 @@ public protocol LiveOperatorHTTP: Sendable {
 public protocol LiveAudioSink: Sendable {
     func write(_ pcm: Data) async throws
     func flush() async throws
+    /// E1: called once per provider barge-in, before the flush, so a sink can read the queue it is about to drop.
+    func interruption(turnCompleteSeen: Bool) async
+}
+
+public extension LiveAudioSink {
+    func interruption(turnCompleteSeen: Bool) async {}
 }
 
 public enum LiveClientState: Sendable, Equatable {
@@ -150,6 +156,8 @@ public actor LiveSessionCoordinator {
     private var operation: UInt64 = 0
     private var pendingBytes = 0
     private var pendingFrames = 0
+    /// E1: whether the provider's turnComplete for the live turn arrived before a barge-in marker.
+    private var turnCompleteSeen = false
     public private(set) var captureEpoch: UInt64 = 0
     private var captureMuted = false
     private var captureDiagnosticOwner: UInt64?
@@ -291,6 +299,7 @@ public actor LiveSessionCoordinator {
                 case .pcm(let pcm):
                     if state == .rebuilding { continue }
                     guard state == .active else { throw LiveClientError.invalidFrame }
+                    turnCompleteSeen = false
                     try await sink.write(pcm)
                     guard generation == token, !Task.isCancelled else { return }
                 case .marker(let marker):
@@ -302,7 +311,9 @@ public actor LiveSessionCoordinator {
                         state = .active
                     } else {
                         guard state == .active else { throw LiveClientError.invalidFrame }
+                        if marker.kind == .turnComplete { turnCompleteSeen = true }
                         if marker.kind == .interrupted {
+                            await sink.interruption(turnCompleteSeen: turnCompleteSeen)
                             try await sink.flush()
                             guard generation == token, !Task.isCancelled else { return }
                         }

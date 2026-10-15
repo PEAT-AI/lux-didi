@@ -8,6 +8,9 @@ import { LiveVoiceError, liveVoiceActivityDefaults, liveVoiceTimerDefaults } fro
 const networkErrors = new Set(['ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ECONNREFUSED', 'ECONNABORTED', 'ENETUNREACH', 'EHOSTUNREACH', 'ENOTFOUND', 'EAI_AGAIN']);
 const ENDPOINT = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent';
 const FRESH_OPENING = 'Greet the person briefly to begin the conversation.';
+// 3.8-only tool-response tail: keep the model speaking in the composed voice after tool data.
+const TOOL_VOICE_ANCHOR = 'Answer aloud in your own words, briefly, in the voice and accent defined for Naya; do not read raw text, ids or URLs.';
+const live38Pattern = /gemini-3\.8[^/]*live/;
 const DEFAULTS: Readonly<LiveVoiceLimits> = Object.freeze({
   maxIncomingBytes: 1024 * 1024, maxOutgoingBytes: 1024 * 1024, maxBufferedBytes: 2 * 1024 * 1024,
   maxEventBytes: 1024 * 1024, maxEvents: 128, maxRequestBytes: 256 * 1024, maxHistoryTurns: 128,
@@ -106,7 +109,7 @@ export class GeminiLiveVoiceAdapter implements LiveVoicePort {
     if (request.tools !== undefined && (!Array.isArray(request.tools) || request.tools.length > 128 || request.tools.some(t => !object(t) || typeof t.name !== 'string' || !t.name || !object(t.parameters)))) fail('invalid_request');
     const system = request.system.text;
     if (Buffer.byteLength(JSON.stringify({ system, history, tools: request.tools })) > settings.limits.maxRequestBytes) fail('invalid_request');
-    const live38 = /gemini-3\.8[^/]*live/.test(settings.modelId);
+    const live38 = live38Pattern.test(settings.modelId);
     const declarations = live38 ? request.tools?.map(declaration => ({ ...declaration, behavior: 'BLOCKING' })) : request.tools;
     const setup = JSON.stringify({ setup: {
       model: settings.modelId,
@@ -332,17 +335,24 @@ class Session implements LiveVoiceSession {
 
     } catch (error) {
       const code = error instanceof LiveVoiceError ? error.code : 'protocol_error';
-      this.reportRejectedFrame(message, byteLength, parsed, code);
+      this.reportRejectedFrame(message, byteLength, parsed, code, error);
+      // A frame that genuinely cannot be decoded (invalid JSON, invalid UTF-8, or any unexpected
+      // decode error) is dropped once the turn is live, so the next valid frame still plays; a
+      // recognized but invalid payload stays fail-closed.
+      if (this.isReady && !(error instanceof LiveVoiceError)) return;
       this.finish(code);
     }
   };
   // One bounded, privacy-safe line at the exact parser rejection point: frame kind, top-level
   // and nested key names and byte length, never a value, text, audio or id.
-  private reportRejectedFrame(message: unknown, byteLength: number, parsed: boolean, code: LiveVoiceErrorCode): void {
+  private reportRejectedFrame(message: unknown, byteLength: number, parsed: boolean, code: LiveVoiceErrorCode, error: unknown): void {
     const kind = !parsed ? 'invalid_json' : object(message) ? frameKeys.filter(key => Object.hasOwn(message, key)).sort().join('+') || 'unknown' : 'non_object';
     const keys: string[] = [];
     if (object(message)) shapePaths(message, keys, '', 0);
-    console.error(JSON.stringify({ event: 'live_frame_rejected', code, kind, bytes: byteLength, keys }));
+    // Bounded classifier: the error constructor name only, never the message, payload or stack.
+    const named = error instanceof Error ? error.name : 'nonerror';
+    const classifier = /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(named) ? named : 'unknown';
+    console.error(JSON.stringify({ event: 'live_frame_rejected', code, error: classifier, kind, bytes: byteLength, keys }));
   }
   private text(value: unknown): string {
     if (typeof value !== 'string' || (this.secret && (value.includes(this.secret) || value.includes(encodeURIComponent(this.secret))))) fail('protocol_error');
@@ -373,10 +383,15 @@ class Session implements LiveVoiceSession {
     for (const type of ['inputTranscription', 'outputTranscription'] as const) {
       if (type in value) {
         const transcription = value[type];
-        if (!object(transcription) || ('finished' in transcription && typeof transcription.finished !== 'boolean')) fail('protocol_error');
-        const text = this.text(transcription.text);
-        if (type === 'inputTranscription') { this.diagnostic.inputTranscriptionEvents++; this.diagnostic.inputTranscriptionCharacters += text.length; }
-        events.push({ type, text, ...('finished' in transcription ? { finished: transcription.finished as boolean } : {}) });
+        if (!object(transcription) || ('finished' in transcription && typeof transcription.finished !== 'boolean')
+          || ('text' in transcription && typeof transcription.text !== 'string')) fail('protocol_error');
+        // Gemini's Transcription.text is optional: a carrier frame may hold the audio modelTurn and a
+        // text-less outputTranscription together. Skipping the empty transcription keeps the audio.
+        if ('text' in transcription) {
+          const text = this.text(transcription.text);
+          if (type === 'inputTranscription') { this.diagnostic.inputTranscriptionEvents++; this.diagnostic.inputTranscriptionCharacters += text.length; }
+          events.push({ type, text, ...('finished' in transcription ? { finished: transcription.finished as boolean } : {}) });
+        }
       }
     }
     if (events.some(event => event.type === 'audio' || event.type === 'modelText' || event.type === 'outputTranscription')) events.push({ type: 'modelTurnStarted' });
@@ -451,7 +466,12 @@ class Session implements LiveVoiceSession {
     if (!this.isReady) fail('not_ready');
     if (!object(input) || !Array.isArray(input.responses) || !this.pendingCalls.length || input.responses.length !== this.pendingCalls.length ||
       new Set(input.responses.map(r => r.id)).size !== input.responses.length || input.responses.some(r => !object(r) || !object(r.response) || !this.pendingCalls.some(c => c.id === r.id && c.name === r.name))) fail('invalid_request');
-    const frame = JSON.stringify({ toolResponse: { functionResponses: input.responses } });
+    // 3.8 Live only: a last, non-schema key on each response keeps the reply in Naya's voice
+    // right after the tool data; other models keep the exact response object.
+    const responses = live38Pattern.test(this.settings.modelId)
+      ? input.responses.map(r => ({ ...r, response: { ...r.response, _voice_anchor: TOOL_VOICE_ANCHOR } }))
+      : input.responses;
+    const frame = JSON.stringify({ toolResponse: { functionResponses: responses } });
     if (this.write(frame)) this.pendingCalls = [];
   }
   sendAudio(input: { pcm: Uint8Array; dataClass: DataClass }): void {

@@ -59,15 +59,16 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return Object.fromEntries(['event','terminalCode',...numeric].map(key => [key, value[key]]));
   }
   if (value.event === 'live_frame_rejected') {
-    // Closed shape: code, frame kind, byte length and key-name paths only, never a value or id.
-    if (Object.keys(value).sort().join(',') !== ['event','code','kind','bytes','keys'].sort().join(',')) return;
+    // Closed shape: code, error constructor name, frame kind, byte length and key-name paths only, never a value or id.
+    if (Object.keys(value).sort().join(',') !== ['event','code','error','kind','bytes','keys'].sort().join(',')) return;
     const codes = ['protocol_error', 'provider_error', 'unsupported_tool'];
     const keyPattern = /^[A-Za-z][A-Za-z0-9_]{0,63}(?:\[\])?(?:\.[A-Za-z][A-Za-z0-9_]{0,63}(?:\[\])?)*$/;
     if (typeof value.code !== 'string' || !codes.includes(value.code)) return;
+    if (typeof value.error !== 'string' || !/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(value.error)) return;
     if (typeof value.kind !== 'string' || !/^[A-Za-z][A-Za-z0-9_+]{0,80}$/.test(value.kind)) return;
     if (!Number.isSafeInteger(value.bytes) || Number(value.bytes) < 0 || Number(value.bytes) > 64 * 1024 * 1024) return;
     if (!Array.isArray(value.keys) || value.keys.length > 24 || value.keys.some(key => typeof key !== 'string' || !keyPattern.test(key))) return;
-    return { event: 'live_frame_rejected', code: value.code, kind: value.kind, bytes: value.bytes, keys: value.keys };
+    return { event: 'live_frame_rejected', code: value.code, error: value.error, kind: value.kind, bytes: value.bytes, keys: value.keys };
   }
   if (value.event === 'tool_arguments_rejected') {
     // Closed shape: tool name and argument key:type paths only, never a value.

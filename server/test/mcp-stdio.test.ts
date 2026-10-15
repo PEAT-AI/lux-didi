@@ -96,6 +96,24 @@ test('malformed stdout, silent handshake and crash all fail explicitly instead o
   }
 });
 
+// X2 (#230 item 1): the stdio child is captured at spawn, so a child that never answers
+// initialize is still killed when the adapter closes.
+test('X2: a stdio child that never answers initialize is killed on adapter close', async () => {
+  const { dir, pidFile } = scratch();
+  const registry = new McpRegistry();
+  registry.register(config('local-stdio', 'silent', pidFile));
+  registry.enable('local-stdio'); registry.allowEgress('local-stdio');
+  const adapter = adapterFor(registry, 1500);
+  try {
+    const discovery = await adapter.discover('local-stdio');
+    assert.equal(discovery.state, 'unavailable', 'a silent handshake must fail explicitly');
+    const pid = Number(readFileSync(pidFile, 'utf8').trim());
+    assert.ok(Number.isSafeInteger(pid) && pid > 0, 'the silent child recorded its pid');
+    await adapter.close();
+    assert.equal(await waitDead(pid, 4000), true, 'a child that never answered initialize must be dead after close');
+  } finally { await adapter.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('cancellation fails one call and leaves the child and connector usable', async () => {
   const { dir, pidFile } = scratch();
   const registry = new McpRegistry();

@@ -100,10 +100,13 @@ public protocol LiveAudioSink: Sendable {
     func flush() async throws
     /// E1: called once per provider barge-in, before the flush, so a sink can read the queue it is about to drop.
     func interruption(turnCompleteSeen: Bool) async
+    /// Contract C1: a tool marker for the current turn, so a sink can cue a still-working signal once the queue drains.
+    func toolMarker() async
 }
 
 public extension LiveAudioSink {
     func interruption(turnCompleteSeen: Bool) async {}
+    func toolMarker() async {}
 }
 
 public enum LiveClientState: Sendable, Equatable {
@@ -322,6 +325,7 @@ public actor LiveSessionCoordinator {
                     if state == .rebuilding { continue }
                     guard state == .active else { throw LiveClientError.invalidFrame }
                     // Tool results may reuse the call sequence; they do not advance provider order.
+                    await sink.toolMarker()
                 case .terminal(let terminal, _):
                     state = .terminal(terminal)
                     socket = nil

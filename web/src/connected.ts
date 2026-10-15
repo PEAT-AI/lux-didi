@@ -166,7 +166,7 @@ export class ConnectedView {
     const c = this.#conversation, r = this.#run, available = this.#status.status === 'configured';
     const grant = this.#status.consent, ready = available && (!!grant || this.#consent);
     const provider = this.#status.provider, model = this.#status.model;
-    panel.innerHTML = `<section class="panel connected-conversation" aria-label="Connected Naya conversation">
+    panel.innerHTML = `<section class="connected-conversation" aria-label="Connected Naya conversation">
       ${grant || this.#consent ? '' : `<p class="connected-disclosure">Chat messages go to <strong>${escape(provider ?? 'the connected provider')}</strong> when you send them. <button type="button" id="connected-consent" class="allow-link">Allow</button></p>`}
       <div id="connected-entries" class="connected-entries">${this.#entries.length ? this.#entries.map(entry => `${entry.id === r?.finalEntryId ? renderToolEvidence(r.toolEvidence ?? []) : ''}<article class="entry ${entry.role}"><header><strong>${entry.role === 'assistant' ? 'Naya' : 'You'}</strong></header>${entry.role === 'assistant' ? answerMarkup(answerText(entry)) : `<p>${escape(answerText(entry))}</p>`}</article>`).join('') + (r && !r.finalEntryId ? renderToolEvidence(r.toolEvidence ?? []) : '') : '<p class="connected-empty muted">Ask anything. Naya can read your mail, calendar, Mattermost and lux.</p>'}</div>
       ${r ? this.#runSection(r) : ''}

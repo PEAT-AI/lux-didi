@@ -62,11 +62,9 @@ try {
     const pairing = await operator('/auth/pairing'); await page.locator('#pair-code').fill(pairing.pairingCode); await page.locator('#pair-form').evaluate(form => form.requestSubmit());
     await page.locator('#connected-send').waitFor(); await page.locator('#didi-orb').waitFor();
     // W5 voice-first UI: the accepted dark stage renders a 600 CSS px square canvas at desktop 1440, centred in the stage.
-    await page.waitForFunction(() => { const el = document.querySelector('#didi-orb'); const r = el?.getBoundingClientRect(); return !!r && Math.round(r.width) === 600 && Math.round(r.height) === 600; });
-    const orb = page.locator('#didi-orb');
-    assert.ok(await orb.isVisible(), 'W5 desktop orb canvas is visible on the stage');
-    const stage = await page.locator('.orb-stage').boundingBox();
-    const desktopOrb = await orb.boundingBox();
+    const measured = await page.waitForFunction(() => { const o = document.querySelector('#didi-orb'), s = document.querySelector('.orb-stage'); if (!o || !s) return false; const or = o.getBoundingClientRect(), sr = s.getBoundingClientRect(); if (Math.round(or.width) !== 600 || Math.round(or.height) !== 600 || sr.width === 0) return false; return { orb: { x: or.x, y: or.y, width: or.width, height: or.height }, stage: { x: sr.x, y: sr.y, width: sr.width, height: sr.height } }; });
+    const { orb: desktopOrb, stage } = await measured.jsonValue();
+    assert.ok(await page.locator('#didi-orb').isVisible(), 'W5 desktop orb canvas is visible on the stage');
     assert.equal(Math.round(desktopOrb.width), 600, 'W5 desktop orb canvas is 600 CSS px wide at 1440');
     assert.equal(Math.round(desktopOrb.height), 600, 'W5 desktop orb canvas is square');
     assert.ok(Math.abs((desktopOrb.x + desktopOrb.width / 2) - (stage.x + stage.width / 2)) <= 1, 'W5 orb canvas is horizontally centred in its stage');

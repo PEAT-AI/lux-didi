@@ -95,6 +95,17 @@ test('theme resolution defaults to dark and survives unavailable storage', () =>
   assert.equal(root.dataset.theme, 'light');
 });
 
+// S1-R3: every form control paints from the theme tokens, in both themes.
+test('form controls use the theme tokens in both themes', () => {
+  assert.match(css, /input,textarea,select\{[^}]*background:var\(--surface-2\)/);
+  assert.match(css, /input,textarea,select\{[^}]*color:var\(--text\)/);
+  assert.match(css, /input,textarea,select\{[^}]*border:1px solid var\(--border\)/);
+  assert.match(css, /button\{[^}]*background:var\(--green\)/);
+  assert.match(css, /input:focus-visible[^{]*\{[^}]*outline:3px solid var\(--focus\)/);
+  assert.match(css, /:root\{[^}]*color-scheme:dark/);
+  assert.match(css, /\[data-theme="light"\]\{[^}]*color-scheme:light/);
+});
+
 // S1-R1: the voice stage is compact and the page is dark around it.
 test('the orb stage is compact with no tall fixed height', () => {
   assert.doesNotMatch(css, /min-height:500px/, 'no 500px stage band');

@@ -171,7 +171,7 @@ test('transcript preserves exact fragment deltas without spaces or deduplication
 
 test('result picks the newest accepted toolResult markdown and sources', () => {
   const result = liveResult(speaking);
-  assert.equal(result?.markdown, '**Answer** see [source](https://example.org)');
+  assert.equal(result?.markdown, 'Hi there','the answer is the model output transcript, never a tool body');
   assert.equal(result?.sources[0].title, 'lux 123');
 });
 

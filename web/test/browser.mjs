@@ -34,8 +34,8 @@ try {
   assert.match(renderer?.renderer||'',/Metal/,'Actual GPU renderer must be Metal, not software');
   await step('pairing, empty data, no model, synthetic mode',async()=>{
     await page.getByLabel('One-time pairing code').fill('synthetic-only'); await page.getByRole('button',{name:'Pair this browser',exact:true}).click();
-    await page.locator('#conversation-history > summary').click();
-    await page.getByText('No conversations yet.',{exact:true}).waitFor();
+    await page.locator('.voice-empty').waitFor();
+    await page.getByText('Press Start or \u2318\u21e7Space to talk',{exact:true}).waitFor();
     await page.getByText('Demo test mode',{exact:true}).waitFor();
     assert.equal(await page.evaluate(()=>Object.keys(localStorage).length),0);
     assert.equal(await page.evaluate(()=>document.cookie),'');

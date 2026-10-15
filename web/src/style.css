@@ -200,3 +200,43 @@
 /* The old single-page main added page padding and a max width; the lane shell owns its own box. */
 main.lanes{max-width:none;margin:0;padding:0;display:flex;flex:1;min-width:0;outline:none}
 .chat-fill #connected-panel{flex:1;min-height:0;display:flex;flex-direction:column}
+/* --- V2-R1 look fixes (items 1-6, 9): one type system, one header per lane, real orb, line-icon rail. --- */
+h1,h2,h3,.empty h3,.orb-label,.live-result .markdown,.live-latest-turn p{font-family:inherit}
+h1,h2{font-weight:600}
+h1{font-size:20px;line-height:1.25;letter-spacing:0}
+h2{font-size:16px;margin-bottom:8px}
+h3{font-size:14px}
+.eyebrow,.voice-time,.voice-empty-line,.muted,.voice-state,small{font-size:12px}
+.voice-state{font-size:16px}
+.lane-head{display:flex;align-items:center;gap:12px;height:96px;padding:0 12px 0 24px;border-bottom:1px solid var(--border);position:sticky;top:0;z-index:4;background:var(--bg)}
+.lane-head .lane-title{margin:0;font-size:14px;font-weight:600;color:var(--text)}
+.lane-toggle{position:static;width:28px;height:28px;flex-shrink:0;margin-left:auto;border:0;background:transparent;color:var(--text-secondary);border-radius:8px;cursor:pointer;font:inherit;line-height:1}
+.lane-toggle:hover{background:var(--surface-2);color:var(--text)}
+.lane-toggle[aria-disabled="true"]{opacity:.45;cursor:not-allowed}
+.voice-orb,.voice-orb canvas{width:40px;height:40px}
+.voice-orb canvas{display:block}
+.voice-status{min-width:0}
+.voice-empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:24px}
+.voice-orb-large,.voice-orb-large canvas{width:180px;height:180px}
+.voice-orb-large{display:flex;align-items:center;justify-content:center;border-radius:50%;box-shadow:0 0 44px var(--glow)}
+.voice-orb-large canvas{display:block}
+.voice-empty-line{margin:0;color:var(--text-secondary)}
+.lane-voice .voice-error{margin:0 0 0 auto;order:5}
+.lane-voice .live-state{display:none}
+.rail-icon{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;flex-shrink:0}
+.rail-item{padding:10px 8px}
+.rail{gap:4px}
+.lane-head .voice-actions{gap:8px}
+.lane-head .voice-error{position:absolute;top:96px;left:0;right:0;margin:0;border-radius:0}
+/* V2-R1 true narrow switcher: one lane at a time, chosen by data-segment. */
+[data-narrow="true"] .app-shell{height:100vh;min-height:0;overflow:hidden}
+[data-narrow="true"] .lane-row{display:flex;min-height:0}
+[data-narrow="true"] .lanes{flex-direction:row;overflow:hidden}
+[data-narrow="true"] .lane{flex:1 1 0;border-right:0}
+[data-narrow="true"] .lane-voice{display:none}
+[data-narrow="true"] .lane-chat{display:none}
+[data-narrow="true"][data-segment="voice"] .lane-voice{display:flex}
+[data-narrow="true"][data-segment="chat"] .lane-chat{display:flex}
+[data-narrow="true"] .app-header{flex-wrap:wrap;height:auto;min-height:56px;padding:6px 10px}
+[data-narrow="true"] .brand-mini{display:none}
+[data-narrow="true"] .lane-switch{margin-left:0}

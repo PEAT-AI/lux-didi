@@ -61,13 +61,16 @@ try {
     await writeFile(join(artifacts, `renderer-${sha}.json`), JSON.stringify({ sha, renderer }, null, 2));
     const pairing = await operator('/auth/pairing'); await page.locator('#pair-code').fill(pairing.pairingCode); await page.locator('#pair-form').evaluate(form => form.requestSubmit());
     await page.locator('#connected-send').waitFor(); await page.locator('#didi-orb').waitFor();
-    // S1-R1 compact voice stage: the orb canvas is 300 CSS px square at desktop 1440, centred in the stage.
-    const measured = await page.waitForFunction(() => { const o = document.querySelector('#didi-orb'), s = document.querySelector('.orb-stage'); if (!o || !s) return false; const or = o.getBoundingClientRect(), sr = s.getBoundingClientRect(); if (Math.round(or.width) !== 300 || Math.round(or.height) !== 300 || sr.width === 0) return false; return { orb: { x: or.x, y: or.y, width: or.width, height: or.height }, stage: { x: sr.x, y: sr.y, width: sr.width, height: sr.height } }; });
+    // V2-R1: no turns yet, so the Voice lane shows one calm empty state with the real orb (~180 px), centred.
+    await page.locator('.voice-empty').waitFor();
+    const measured = await page.waitForFunction(() => { const o = document.querySelector('#didi-orb'), s = document.querySelector('.voice-empty'); if (!o || !s) return false; const or = o.getBoundingClientRect(), sr = s.getBoundingClientRect(); if (Math.round(or.width) !== 180 || Math.round(or.height) !== 180 || sr.width === 0) return false; return { orb: { x: or.x, y: or.y, width: or.width, height: or.height }, stage: { x: sr.x, y: sr.y, width: sr.width, height: sr.height } }; });
     const { orb: desktopOrb, stage } = await measured.jsonValue();
-    assert.ok(await page.locator('#didi-orb').isVisible(), 'S1 desktop orb canvas is visible on the stage');
-    assert.equal(Math.round(desktopOrb.width), 300, 'S1 desktop orb canvas is 300 CSS px wide at 1440');
-    assert.equal(Math.round(desktopOrb.height), 300, 'S1 desktop orb canvas is square');
-    assert.ok(Math.abs((desktopOrb.x + desktopOrb.width / 2) - (stage.x + stage.width / 2)) <= 1, 'S1 orb canvas is horizontally centred in its stage');
+    assert.ok(await page.locator('#didi-orb').isVisible(), 'V2 desktop empty-state orb canvas is visible');
+    assert.equal(Math.round(desktopOrb.width), 180, 'V2 empty-state orb canvas is 180 CSS px wide at 1440');
+    assert.equal(Math.round(desktopOrb.height), 180, 'V2 empty-state orb canvas is square');
+    assert.ok(Math.abs((desktopOrb.x + desktopOrb.width / 2) - (stage.x + stage.width / 2)) <= 1, 'V2 orb canvas is horizontally centred in the empty state');
+    assert.equal(await page.locator('.voice-state').first().innerText(), 'Live is off', 'the header state is the one source of truth');
+    assert.equal(await page.locator('.live-state').count(), 0, 'no second Live state surface');
   });
   await step('U3 declutter shots: the open chat without a grant', async () => {
     const u3 = '/Users/rob/.lux/reports/lux-didi-release-1014/u3-shots';
@@ -118,12 +121,17 @@ try {
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     const counts = await page.evaluate(() => Object.fromEntries(['#app', '#connected-panel', '#connected-entries', '#connected-draft', '#connected-send', 'canvas'].map(selector => [selector, document.querySelectorAll(selector).length])));
     for (const [selector, count] of Object.entries(counts)) assert.equal(count, 1, `Unique rendered DOM ${selector}`);
-    // S1-R1 narrow stage scales the canvas to 300 CSS px; it stays square and centred in the stage.
+    // V2-R1 narrow: a Voice/Chat switcher shows one lane at a time; the empty-state orb stays in the Voice segment.
+    assert.ok(await page.locator('.lane-switch').isVisible(), 'the narrow switcher is visible');
+    assert.equal(await page.locator('#lane-voice').isVisible(), true, 'the Voice segment is visible');
+    assert.equal(await page.locator('#lane-chat').isVisible(), false, 'the Chat lane hides behind the switcher');
     const mobileOrb = await page.locator('#didi-orb').boundingBox();
-    const mobileStage = await page.locator('.orb-stage').boundingBox();
-    assert.equal(Math.round(mobileOrb.width), 300, 'S1 narrow orb canvas is 300 CSS px wide at 375');
-    assert.equal(Math.round(mobileOrb.height), 300, 'S1 narrow orb canvas is square');
-    assert.ok(Math.abs((mobileOrb.x + mobileOrb.width / 2) - (mobileStage.x + mobileStage.width / 2)) <= 1, 'S1 narrow orb canvas is centred in its stage');
+    assert.equal(Math.round(mobileOrb.width), 180, 'V2 narrow empty-state orb canvas is 180 CSS px wide at 375');
+    assert.equal(Math.round(mobileOrb.height), 180, 'V2 narrow empty-state orb canvas is square');
+    await page.locator('[data-segment="chat"]').click();
+    await page.locator('#lane-chat').waitFor();
+    assert.equal(await page.locator('#lane-chat').isVisible(), true, 'the Chat segment becomes visible');
+    assert.equal(await page.locator('#lane-voice').isVisible(), false, 'the Voice lane hides behind the switcher');
     assert.equal(await page.locator('#connected-entries .assistant').count(), 2);
     const savedTurns = await page.locator('#connected-entries article').count(); assert.equal(savedTurns, 4);
     const positions = [];

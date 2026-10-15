@@ -4,7 +4,7 @@ import { deleteMemoryEntry } from './api';
 import { ConnectedView } from './connected';
 import { Orb, type VoiceState } from './orb';
 import { ApiError, request, pair, demoMode, onAuthorityChanged, authorityVersion, assertAuthority, restoreSession, logout, fetchLive } from './api';
-import { liveMarkup, liveLabel, liveVoiceState, liveDelay, pollLiveView, liveActivity, activityMarkup, LiveMachine, LIVE_CONSENT, pillVisible, liveErrorText, startAvailable, stopAvailable, type LivePollState } from './live-view';
+import { liveMarkup, liveLabel, liveVoiceState, liveDelay, pollLiveView, liveActivity, activityMarkup, liveTranscript, LiveMachine, LIVE_CONSENT, pillVisible, liveErrorText, startAvailable, stopAvailable, type LivePollState } from './live-view';
 import { defaultLayout, isNarrow, toggleRail, toggleLane, selectSegment, openSheet, closeSheet, withViewport, collapseControl, focusTargetAfterCollapse, type LaneId, type RouteId } from './layout';
 import { installNativeBridge, type Bridge, type NativeLiveState } from './native-bridge';
 import { connectionsMarkup } from './connector-status';
@@ -96,18 +96,15 @@ function orbMarkup() {
   const glow = ['CONNECTED','LISTENING','SPEAKING','PROCESSING'].includes(orbState());
   return `<section class="orb-stage" data-state="${orbState()}" aria-label="Naya voice and activity"><div class="presence-glow${glow ? ' visible' : ''}" aria-hidden="true"></div><canvas id="didi-orb" width="440" height="440" aria-hidden="true"></canvas><div class="orb-caption">${orbCaptionMarkup()}</div></section>`;
 }
-function voiceLane() {
-  return `<section class="voice-heading"><div><p class="eyebrow">NAYA VOICE</p><h1>Here with you.</h1></div><button id="new-conversation" class="secondary" ${disabled(busy)}>New conversation</button></section>
-  ${orbMarkup()}${liveMarkup(live,livePoll,liveDetailsOpen)}`;
+function liveTurns(): number { return live ? liveTranscript(live).length : 0; }
+function voiceEmptyMarkup() {
+  return `<div class="voice-empty"><div class="voice-orb-large"><canvas id="didi-orb" width="440" height="440" aria-hidden="true"></canvas></div><p class="voice-empty-line">Press Start or \u2318\u21e7Space to talk</p></div>`;
+}
+function voiceBodyMarkup() {
+  return liveTurns() ? liveMarkup(live, livePoll, true) : voiceEmptyMarkup();
 }
 function chatLane() {
-  return `<section class="lane-fill chat-fill" aria-label="Chat transcript">
-  <details id="conversation-history" class="conversation-history"${historyOpen ? ' open' : ''}><summary><span>Saved conversation history</span><small>Local notes and earlier conversations</small></summary><div class="conversation-grid"><aside class="panel conversations" aria-label="Conversations"><h2>Your conversations</h2>${sessions.length ? sessions.map(s => `<button data-session="${e(s.id)}" class="session ${session?.id === s.id ? 'selected' : ''}"><strong>${e(s.title)}</strong><small>${e(datetime(s.startedAt))}</small></button>`).join('') : '<p class="muted">No conversations yet.</p>'}${sessionMore ? '<p class="muted">More conversations are available in the service. This view shows the first page.</p>' : ''}</aside>
-  <section class="panel thread" aria-label="Conversation">${sessions.length ? `<div class="mobile-conversations"><label for="conversation-select">Choose a conversation</label><select id="conversation-select"><option value="">Start a new conversation</option>${sessions.map(s=>`<option value="${e(s.id)}" ${session?.id===s.id?'selected':''}>${e(s.title)}</option>`).join('')}</select></div>` : ''}<div class="thread-heading"><span class="dot"></span><h2>${e(session?.title ?? 'Start where you are')}</h2></div>
-  <div class="entries">${entries.length ? entries.map(entryMarkup).join('') : `<div class="empty"><span class="empty-icon" aria-hidden="true">✳</span><h3>What’s on your mind?</h3><p>Save a thought, make a plan, or pick up a conversation.</p></div>`}${entriesMore ? '<p class="muted">There are more messages in this conversation. This view shows the first page.</p>' : ''}</div>
-  </section></div></details>
-  <div id="connected-panel"></div>
-</section>`;
+  return `<div id="connected-panel"></div>`;
 }
 function diagnosticsMarkup() {
   const view = liveMachine.view;
@@ -152,12 +149,19 @@ function settings() {
 }
 function pairingReady() { return pairingRequired && connection==='Pair this browser' && !pairingBusy && navigator.onLine; }
 function pairing() { return `<section class="panel pairing"><p class="eyebrow">A PRIVATE CONNECTION</p><h1>Hello. Let’s connect.</h1><p>Enter the one-time code shown by your local service. It stays out of the address bar and isn’t saved here.</p><form id="pair-form"><label for="pair-code">One-time pairing code</label><input id="pair-code" type="password" autocomplete="off" spellcheck="false" required ${disabled(!pairingReady())}><button ${disabled(!pairingReady())}>Pair this browser</button></form><p class="muted" role="status">${connection==='Connecting' ? 'Checking the local service. Wait for the check before entering a code.' : !navigator.onLine || connection==='Offline' ? 'You are offline. Check the connection after reconnecting before entering a code.' : connection==='Disconnected' ? 'Check the local service connection before entering a code.' : 'Enter the current one-time code to pair this browser.'}</p><p class="muted">Open your local service or Mac companion to get a code. Codes expire after five minutes and can only be used once.</p><button id="reconnect" class="quiet">Check connection again</button></section>`; }
-const LIVE_COPY: Record<NativeLiveState, string> = { idle: 'Ready when you are', starting: 'Starting', live: 'Listening', muted: 'Muted', stopping: 'Stopping', error: 'Needs your attention' };
-function liveStateCopy(state: NativeLiveState): string { return LIVE_COPY[state] ?? 'Ready when you are'; }
+const LIVE_COPY: Record<NativeLiveState, string> = { idle: 'Live is off', starting: 'Starting', live: 'Listening', muted: 'Muted', stopping: 'Stopping', error: 'Needs your attention' };
+function liveStateCopy(state: NativeLiveState): string { return LIVE_COPY[state] ?? 'Live is off'; }
+const RAIL_ICONS: Record<RouteId, string> = {
+  // 20 px line icons, currentColor, no fill.
+  today: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 9.5h17M8 3.5v3M16 3.5v3"/></svg>',
+  memory: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M6 4.5h11.5v15L12 16l-5.5 3.5z"/></svg>',
+  settings: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.8v2.6M12 18.6v2.6M4.5 4.5l1.8 1.8M17.7 17.7l1.8 1.8M2.8 12h2.6M18.6 12h2.6M4.5 19.5l1.8-1.8M17.7 6.3l1.8-1.8"/></svg>',
+  diagnostics: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 12h4l2.5-6 4 12L16 12h5"/></svg>',
+};
 function railMarkup() {
-  const items: [RouteId, string, string][] = [['today', '\u25cc', 'Today'], ['memory', '\u2713', 'Memory'], ['settings', '\u2699', 'Settings'], ['diagnostics', '\u25b2', 'Diagnostics']];
+  const items: [RouteId, string][] = [['today', 'Today'], ['memory', 'Memory'], ['settings', 'Settings'], ['diagnostics', 'Diagnostics']];
   const tabName: Partial<Record<RouteId, string>> = { today: 'Today', memory: 'Memory', settings: 'Settings' };
-  return `<nav class="rail" id="rail" aria-label="Program menu" data-rail="${layout.rail}">${items.map(([id, glyph, label]) => `<button class="rail-item" data-route="${id}"${tabName[id] ? ` data-tab="${tabName[id]}"` : ''} aria-expanded="${layout.sheet === id}" aria-controls="sheet" title="${label}"><span class="rail-glyph" aria-hidden="true">${glyph}</span><span class="rail-label">${label}</span></button>`).join('')}</nav>`;
+  return `<nav class="rail" id="rail" aria-label="Program menu" data-rail="${layout.rail}">${items.map(([id, label]) => `<button class="rail-item" data-route="${id}"${tabName[id] ? ` data-tab="${tabName[id]}"` : ''} aria-expanded="${layout.sheet === id}" aria-controls="sheet" aria-label="${label}" title="${label}"><span class="rail-icon" aria-hidden="true">${RAIL_ICONS[id]}</span><span class="rail-label">${label}</span></button>`).join('')}</nav>`;
 }
 function sheetMarkup() {
   if (!layout.sheet) return '';
@@ -179,17 +183,23 @@ function consentPopoverMarkup() {
   if (!view.consentOpen) return '';
   return `<div class="consent-scrim"></div><section class="consent-popover" role="dialog" aria-modal="true" aria-label="${e(LIVE_CONSENT.title)}"><h2>${e(LIVE_CONSENT.title)}</h2><p>${e(LIVE_CONSENT.body)}</p><div class="consent-actions"><button id="consent-dismiss" class="quiet">${e(LIVE_CONSENT.dismiss)}</button><button id="consent-allow" class="primary">${e(LIVE_CONSENT.allow)}</button></div></section>`;
 }
+// The compact voice header is the only header, and every live surface reads the LiveMachine (one source of truth).
 function voiceHeadMarkup() {
   const view = liveMachine.view;
   const error = liveErrorText(view.error, view.reason);
   const last = view.lastSessionEndedAt ? `Last session ${e(datetime(view.lastSessionEndedAt))}` : 'No session yet';
   const active = view.state === 'live' || view.state === 'muted' || view.state === 'starting';
-  return `<header class="voice-head"><div class="voice-orb-mini" data-state="${active ? 'LIVE' : 'IDLE'}" aria-hidden="true"></div><div class="voice-status"><p class="voice-state" role="status" aria-live="polite">${e(liveStateCopy(view.state))}</p><p class="voice-time">${last}</p></div><div class="voice-actions">${active ? `<button id="voice-stop" class="stop-pill">Stop</button><button id="voice-mute" class="quiet">${view.state === 'muted' ? 'Unmute' : 'Mute'}</button>` : `<button id="voice-start" class="start-pill" ${startAvailable(view) ? '' : 'aria-disabled="true"'}>Start</button>`}</div></header>${error ? `<p class="voice-error" role="alert">${e(error)}</p>` : ''}`;
+  const orb = liveTurns() ? '<div class="voice-orb"><canvas id="didi-orb" width="440" height="440" aria-hidden="true"></canvas></div>' : '';
+  return `${orb}<div class="voice-status"><p class="voice-state" role="status" aria-live="polite">${e(liveStateCopy(view.state))}</p><p class="voice-time">${last}</p></div><div class="voice-actions">${active ? `<button id="voice-stop" class="stop-pill">Stop</button><button id="voice-mute" class="quiet">${view.state === 'muted' ? 'Unmute' : 'Mute'}</button>` : `<button id="voice-start" class="start-pill" ${startAvailable(view) ? '' : 'aria-disabled="true"'}>Start</button>`}<button id="new-conversation" class="icon-button" aria-label="New conversation" title="New conversation">\u2795</button></div>${error ? `<p class="voice-error" role="alert">${e(error)}</p>` : ''}`;
 }
-function laneShell(id: LaneId, label: string, body: string) {
+function chatHeadMarkup() {
+  return `<p class="lane-title">Chat</p>`;
+}
+function laneShell(id: LaneId, label: string, headerHtml: string, bodyHtml: string) {
   const state = layout[id];
   const control = collapseControl(layout, id);
-  return `<section class="lane lane-${id}" id="lane-${id}" data-state="${state}" role="region" aria-label="${label}"><button class="lane-toggle" data-lane="${id}" aria-expanded="${control['aria-expanded']}" aria-controls="${control['aria-controls']}"${control['aria-disabled'] ? ' aria-disabled="true"' : ''} title="${e(control.title)}" aria-label="${state === 'open' ? `Collapse ${label}` : `Expand ${label}`}"><span aria-hidden="true">${state === 'open' ? '\u203a' : '\u2039'}</span></button><div class="lane-inner" id="lane-${id}-primary" tabindex="-1">${body}</div></section>`;
+  const verb = state === 'open' ? 'Hide' : 'Show';
+  return `<section class="lane lane-${id}" id="lane-${id}" data-state="${state}" role="region" aria-label="${label}"><header class="lane-head">${headerHtml}<button class="lane-toggle" data-lane="${id}" aria-expanded="${control['aria-expanded']}" aria-controls="${control['aria-controls']}"${control['aria-disabled'] ? ' aria-disabled="true"' : ''} title="${verb} ${label.toLowerCase()}" aria-label="${verb} ${label.toLowerCase()}"><span aria-hidden="true">${state === 'open' ? '\u00d7' : '\u203a'}</span></button></header><div class="lane-inner" id="lane-${id}-primary" tabindex="-1">${bodyHtml}</div></section>`;
 }
 const scrollAnchor = new WeakMap<HTMLElement, boolean>();
 const scrollObserver = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(entries => { for (const entry of entries) { const el = entry.target as HTMLElement; if (scrollAnchor.get(el)) el.scrollTop = el.scrollHeight; } }) : undefined;
@@ -211,7 +221,7 @@ function render() {
   const focus = document.activeElement as HTMLInputElement | HTMLTextAreaElement | null;
   const focusId = focus?.id; const selection = focus && (focus.tagName === 'TEXTAREA' || ['text','search','password'].includes(focus.type)) ? [focus.selectionStart,focus.selectionEnd] : null;
   orb?.destroy();orb=undefined;
-  root.innerHTML = `<a id="skip-to-content" class="skip" href="#main">Skip to content</a><div class="app-shell" data-rail="${layout.rail}" data-narrow="${layout.narrow}" data-sheet="${layout.sheet ?? ''}"><header class="app-header">${pairingRequired ? '' : `<button id="rail-toggle" class="icon-button" aria-expanded="${layout.rail==='expanded'}" aria-controls="rail" aria-label="Program menu">☰</button>`}<a class="brand-mini" href="/" aria-label="Didi home"><img src="/icon.svg" alt="" width="22" height="22"><span>didi<span class="brand-dot">.</span></span></a>${pairingRequired ? '' : laneSwitcherMarkup()}${livePillMarkup()}<div class="connection"><span class="connection-dot ${connection==='Connected'?'online':''}"></span><span id="connection-state" role="status" aria-live="polite" aria-atomic="true">${e(connection)}</span><button id="reconnect-top" class="quiet" aria-label="Refresh connection">↻</button></div></header>${demoMode || status?.serviceMode==='synthetic-test' ? '<div class="demo-banner"><strong>Demo test mode</strong><span>Isolated synthetic data · not your personal service</span></div>' : ''}<div class="lane-row">${pairingRequired ? '' : railMarkup()}<main id="main" tabindex="-1" class="lanes">${error ? `<div class="alert" role="alert" aria-live="assertive">${e(error)}</div>` : ''}${notice ? `<div class="notice" role="status" aria-live="polite" aria-atomic="true">${e(notice)}</div>` : ''}${readBusy ? '<p class="loading" role="status" aria-live="polite" aria-atomic="true">Loading your records…</p>' : ''}${busy ? '<button id="cancel-request" class="quiet">Stop waiting</button>' : ''}${pairingRequired ? pairing() : `${laneShell('voice','Voice',voiceHeadMarkup()+voiceLane())}${laneShell('chat','Chat',chatLane())}`}</main></div>${sheetMarkup()}${consentPopoverMarkup()}</div>`;
+  root.innerHTML = `<a id="skip-to-content" class="skip" href="#main">Skip to content</a><div class="app-shell" data-rail="${layout.rail}" data-narrow="${layout.narrow}" data-segment="${layout.segment}" data-sheet="${layout.sheet ?? ''}"><header class="app-header">${pairingRequired ? '' : `<button id="rail-toggle" class="icon-button" aria-expanded="${layout.rail==='expanded'}" aria-controls="rail" aria-label="Program menu">☰</button>`}<a class="brand-mini" href="/" aria-label="Didi home"><img src="/icon.svg" alt="" width="22" height="22"><span>didi<span class="brand-dot">.</span></span></a>${pairingRequired ? '' : laneSwitcherMarkup()}${livePillMarkup()}<div class="connection"><span class="connection-dot ${connection==='Connected'?'online':''}"></span><span id="connection-state" role="status" aria-live="polite" aria-atomic="true">${e(connection)}</span><button id="reconnect-top" class="quiet" aria-label="Refresh connection">↻</button></div></header>${demoMode || status?.serviceMode==='synthetic-test' ? '<div class="demo-banner"><strong>Demo test mode</strong><span>Isolated synthetic data · not your personal service</span></div>' : ''}<div class="lane-row">${pairingRequired ? '' : railMarkup()}<main id="main" tabindex="-1" class="lanes">${error ? `<div class="alert" role="alert" aria-live="assertive">${e(error)}</div>` : ''}${notice ? `<div class="notice" role="status" aria-live="polite" aria-atomic="true">${e(notice)}</div>` : ''}${readBusy ? '<p class="loading" role="status" aria-live="polite" aria-atomic="true">Loading your records…</p>' : ''}${busy ? '<button id="cancel-request" class="quiet">Stop waiting</button>' : ''}${pairingRequired ? pairing() : `${laneShell('voice','Voice',voiceHeadMarkup(),voiceBodyMarkup())}${laneShell('chat','Chat',chatHeadMarkup(),chatLane())}`}</main></div>${sheetMarkup()}${consentPopoverMarkup()}</div>`;
   bind();
   bindScrollAnchors();
   connectedView.attach();
@@ -426,7 +436,8 @@ nativeBridge.send({ type: 'theme', mode: theme });
 nativeBridge.send({ type: 'ready' });
 // A viewport flip only changes the narrow breakpoint; update the attribute in place so the orb canvas is never
 // torn down under a measurement (the frozen connected-browser smoke measures right after setViewportSize).
-window.addEventListener('resize', () => { const next = withViewport(layout, window.innerWidth); if (next !== layout) { layout = next; root.querySelector('.app-shell')?.setAttribute('data-narrow', String(layout.narrow)); } });
+window.addEventListener('resize', () => { const next = withViewport(layout, window.innerWidth); if (next !== layout) { layout = next; root.querySelector('.app-shell')?.setAttribute('data-narrow', String(layout.narrow));
+    root.querySelector('.app-shell')?.setAttribute('data-segment', layout.segment); } });
 document.addEventListener('keydown', event => { if (event.key === 'Escape' && layout.sheet) { layout = closeSheet(layout); render(); } });
 render();void connect();
 

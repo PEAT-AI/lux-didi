@@ -38,7 +38,11 @@ try {
     await page.getByText('Demo test mode',{exact:true}).waitFor();
     assert.equal(await page.evaluate(()=>Object.keys(localStorage).length),0);
     assert.equal(await page.evaluate(()=>document.cookie),'');
-    assert.match(await page.locator('body').innerText(),/No model connected/);
+    await page.locator('button[data-route="settings"]').click();
+    await page.locator('#sheet').waitFor();
+    assert.match(await page.locator('#sheet').innerText(),/No model connected/);
+    await page.locator('#sheet-close').click();
+    await page.locator('#sheet').waitFor({ state: 'detached' });
     assert.equal(await page.locator('#connection-state').getAttribute('aria-live'),'polite');
   });
   await step('classic Canvas orb is idle not listening and honors reduced motion',async()=>{

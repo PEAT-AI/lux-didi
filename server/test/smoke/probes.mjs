@@ -267,11 +267,18 @@ async function researchTurn({ base, token, epoch, dataDir }) {
     return (await response.json()).data;
   };
   try {
-    // Let the model's opening turn settle, then send ONE typed input through the host's Live text route.
-    const greetingDeadline = now() + 15000;
-    while (now() < greetingDeadline && !markers.some(marker => marker.kind === 'turnComplete')) await new Promise(resolve => setTimeout(resolve, 500));
+    // Wait for the provider socket to open (lifecycle active) and its opening turn to settle, then send
+    // ONE typed input through the host's Live text route.
+    const greetingDeadline = now() + 30000;
+    let lifecycle = null;
+    while (now() < greetingDeadline) {
+      const snapshot = await fetch(base + '/api/v1/live-sessions/' + id, { headers: headers() }).then(response => response.json()).catch(() => null);
+      lifecycle = snapshot && snapshot.data ? snapshot.data.lifecycle : null;
+      if (lifecycle === 'active' && markers.some(marker => marker.kind === 'turnComplete')) break;
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
     const sent = await fetch(base + '/api/v1/live/text', { method: 'POST', headers: headers(), body: JSON.stringify({ text: RESEARCH_QUESTION }) });
-    if (sent.status !== 200) return { ok: false, stage: 'text' };
+    if (sent.status !== 200) return { ok: false, stage: 'text', status: sent.status, lifecycle };
     const deadline = now() + 90000;
     let calls = 0; let result = null; let outputChars = 0;
     while (now() < deadline) {
@@ -350,7 +357,7 @@ async function main() {
       const research = await researchTurn({ base, token, epoch, dataDir });
       results.push({ id: 'probe5-research', ok: research.ok, note: research.ok
         ? `calls=1 rounds=${research.rounds} sources=${research.sources} selector=${research.selector} selectorMs=${research.selectorMs} elapsedMs=${research.elapsedMs} deadAirMs=${research.deadAirMs} reply=${research.replyBytes}B output=${research.outputChars}B progress=${research.progress}`
-        : `stage=${research.stage} calls=${research.calls ?? 0} status=${research.status ?? 'n/a'} rounds=${research.rounds ?? 0} read=${research.read ?? 0} reply=${research.replyBytes ?? 0}B load=${loadAverageText()}` });
+        : `stage=${research.stage} status=${research.status ?? 'n/a'} lifecycle=${research.lifecycle ?? 'n/a'} calls=${research.calls ?? 0} rounds=${research.rounds ?? 0} read=${research.read ?? 0} reply=${research.replyBytes ?? 0}B load=${loadAverageText()}` });
     } catch (error) { results.push({ id: 'probe5-research', ok: false, note: String(error && error.message).slice(0, 120) }); }
   } else {
     results.push(...noHostResults());

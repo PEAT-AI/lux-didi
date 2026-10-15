@@ -217,8 +217,6 @@ enum NativeLiveAudioError: LocalizedError {
     case deviceMissing, formatUnavailable, captureNotConfigured
     case voiceProcessingFailed(code: Int?)
     case engineFormatMismatch(code: Int), engineFailed(code: Int)
-    /// The single audio owner refused a second engine: already live here, or held by another process.
-    case audioAlreadyOwned, audioAlreadyInUse
 
     var rawValue: String {
         switch self {
@@ -233,8 +231,6 @@ enum NativeLiveAudioError: LocalizedError {
         case .voiceProcessingFailed: return "voice_processing_failed"
         case .engineFormatMismatch: return "engine_format_mismatch"
         case .engineFailed: return "engine_failed"
-        case .audioAlreadyOwned: return "audio_already_owned"
-        case .audioAlreadyInUse: return "audio_already_in_use"
         }
     }
     /// The service route has a fixed legacy vocabulary and admits no audio detail.
@@ -244,7 +240,6 @@ enum NativeLiveAudioError: LocalizedError {
         case .formatUnavailable, .engineFormatMismatch: return "unsupportedFormat"
         case .voiceProcessingFailed: return "voiceProcessingUnavailable"
         case .deviceMissing, .captureNotConfigured, .engineFailed: return "deviceUnavailable"
-        case .audioAlreadyOwned, .audioAlreadyInUse: return "deviceUnavailable"
         default: return rawValue
         }
     }
@@ -276,8 +271,6 @@ enum NativeLiveAudioError: LocalizedError {
         case .voiceProcessingFailed: return "Voice processing could not be enabled; check the microphone and output device."
         case .engineFormatMismatch: return "Live audio could not start because the microphone and output formats do not match; select a working output device."
         case .engineFailed: return "Live audio engine could not start; check the microphone and output device."
-        case .audioAlreadyOwned: return "Live audio is already running. Stop it before starting again."
-        case .audioAlreadyInUse: return "Didi's audio is already in use."
         }
     }
 }

@@ -522,8 +522,7 @@ final class NativeCaptureBuffer: @unchecked Sendable {
         do { try owner.acquire(holder: ObjectIdentifier(self)) }
         catch let refusal as AudioOwnerError {
             log("audio_refused", ["reason": refusal.rawValue])
-            throw refusal == .alreadyOwned ? NativeLiveAudioError.audioAlreadyOwned
-                                           : NativeLiveAudioError.audioAlreadyInUse
+            throw refusal
         }
         var ready = false
         defer { if !ready { releaseAudio() } }

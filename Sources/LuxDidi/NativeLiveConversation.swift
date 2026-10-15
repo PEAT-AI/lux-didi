@@ -164,7 +164,8 @@ enum State: String, CaseIterable {
                 guard let self, self.generation == token else { return }
                 self.stopAudioAndSummarize(); await coordinator.close()
                 guard self.generation == token else { return }
-                self.failure = NativeLivePresentation.failure(error)
+                self.failure = (error as? AudioOwnerError)?.errorDescription
+                    ?? NativeLivePresentation.failure(error)
                 self.logFailure(error, beforeCreate: true)
                 self.state = .failed
             }
@@ -179,6 +180,7 @@ enum State: String, CaseIterable {
         if error is URLError { code = "service_unreachable" }
         else if error is DecodingError { code = "unexpected_response" }
         else if let reason = error as? LiveClientError { code = reason.rawValue }
+        else if let owner = error as? AudioOwnerError { code = owner.rawValue }
         else if let audio = error as? NativeLiveAudioError { code = audio.rawValue }
         else { code = "connection_refused" }
         var fields: [String: Any] = ["event": "live_precreate_failed", "failureClass": error is NativeLiveAudioError ? "audio" : "service", "code": code,

@@ -631,3 +631,13 @@ test('no visible Live text carries a raw url or a markdown heading marker', () =
     assert.equal(node.startsWith('#'), false, `raw heading visible in: ${node}`);
   }
 });
+
+test('output transcript chunks join with a space at a sentence boundary (V2-R2 item 1)', () => {
+  const live: LiveCurrent = { state: 'speaking', cursor: 2, entries: [
+    { seq: 1, kind: 'outputTranscription', text: 'Ship the three-lane UI and the live pill.' },
+    { seq: 2, kind: 'outputTranscription', text: 'I checked the calendar.' }
+  ] };
+  const lines = liveTranscript(live);
+  assert.equal(lines.length, 1);
+  assert.equal(lines[0].text, 'Ship the three-lane UI and the live pill. I checked the calendar.');
+});

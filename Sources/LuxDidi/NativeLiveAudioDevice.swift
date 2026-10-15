@@ -241,6 +241,14 @@ enum NativeWaitCue {
         return buffer
     }
 
+    /// Schedule the cue, then start the player, in that order. The schedule is synchronous and its
+    /// empty handler touches nothing: it never awaits playback completion, which on the node P2
+    /// stops at drain would never return and would deadlock the cue.
+    static func emit(_ buffer: AVAudioPCMBuffer, on output: NativeWaitCueOutput) {
+        output.scheduleCue(buffer)
+        output.startCue()
+    }
+
     /// 20 ms raised-cosine fade in and out, so the cue never clicks.
     private static func fade(_ index: Int) -> Float {
         if index < fadeFrames { return Float(0.5 - 0.5 * cos(Double.pi * Double(index) / Double(fadeFrames))) }
@@ -250,6 +258,16 @@ enum NativeWaitCue {
         }
         return 1
     }
+}
+/// The two player calls the wait cue makes, in order. A test stands in for the node, so the
+/// schedule-then-play order is pinned with no audio device.
+protocol NativeWaitCueOutput: AnyObject {
+    func scheduleCue(_ buffer: AVAudioPCMBuffer)
+    func startCue()
+}
+extension AVAudioPlayerNode: NativeWaitCueOutput {
+    func scheduleCue(_ buffer: AVAudioPCMBuffer) { scheduleBuffer(buffer, at: nil, options: []) { } }
+    func startCue() { play() }
 }
 struct NativeAudioCaptureSummary: Sendable {
     let capture: NativeCaptureStatistics
@@ -915,8 +933,7 @@ struct NativeLiveInterruptionSample: Sendable {
     private func playWaitCue(index: Int, sinceDrainMs: Int) async {
         guard !muted, !rebuilding, !playbackQueue.playing, playbackQueue.scheduledFrames <= 0,
               let player, let engine, engine.isRunning, let buffer = NativeWaitCue.buffer() else { return }
-        await player.scheduleBuffer(buffer, at: nil, options: [])
-        player.play()
+        NativeWaitCue.emit(buffer, on: player)
         await onWaitCue?(index, max(0, sinceDrainMs))
     }
 

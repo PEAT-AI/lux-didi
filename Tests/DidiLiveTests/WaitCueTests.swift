@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 
 /// Contract C1: replay a wait-cue event sequence through the pure scheduler. Only timestamps are
@@ -64,6 +65,24 @@ import Foundation
         try require(abs(samples[0]) < 0.001 && abs(samples[samples.count - 1]) < 0.001,
             "the cue starts and ends in a fade at silence")
         try require(abs(samples[NativeWaitCue.noteFrames / 2]) > 0.01, "the first note carries the cue")
+
+        // C1-R1: the cue is scheduled and then the player started, synchronously. It must never
+        // await playback completion: the player is stopped at drain, so an awaited schedule would
+        // hang forever and the cue would never be heard.
+        guard let cueBuffer = NativeWaitCue.buffer() else {
+            throw NSError(domain: "the cue buffer must be constructible", code: 1)
+        }
+        let output = RecordingCueOutput()
+        NativeWaitCue.emit(cueBuffer, on: output)
+        try require(output.calls == ["schedule", "play"],
+            "the cue must be scheduled then the player started, never awaiting playback, got \(output.calls)")
+    }
+
+    /// Records the two player calls the cue makes, so the order is asserted with no audio device.
+    final class RecordingCueOutput: NativeWaitCueOutput {
+        var calls: [String] = []
+        func scheduleCue(_ buffer: AVAudioPCMBuffer) { calls.append("schedule") }
+        func startCue() { calls.append("play") }
     }
 
     static func require(_ value: Bool, _ message: String) throws {

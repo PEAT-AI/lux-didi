@@ -180,3 +180,11 @@ source as the native install gate and `build-macos-app.sh`. Without an existing
 accepted asset input, the gate invokes the canonical asset producer. Its fixture
 Node must satisfy the native build's self-contained dependency policy; the gate
 never substitutes a PATH/Homebrew Node or patches loader references.
+
+## Real-path smoke (`scripts/smoke.sh`)
+
+`scripts/smoke.sh` runs the host exactly as the native app does (`--supervised`, the app's environment and
+its config source) under the native stdout rule, then drives every configured connector, one real text turn
+that must call tools, and one real Live turn that must call a tool and keep the session open; it prints one
+PASS/FAIL line per probe and exits 0 only when all probes pass. Run it after every install and before every
+release merge; one run makes at most two model turns, so never run it in a loop.

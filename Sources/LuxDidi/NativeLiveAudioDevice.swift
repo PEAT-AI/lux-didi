@@ -244,7 +244,7 @@ final class NativeCaptureBuffer: @unchecked Sendable {
     /// E1: called once per provider barge-in with the pre facts, then again after `interruptionPostRmsDelay` with postRms.
     var onLiveInterrupted: (@MainActor (NativeLiveInterruptionEvent) async -> Void)?
     /// E1 test seam: the delay before the postRms line. Production is five seconds.
-    var interruptionPostRmsDelay: Duration = .seconds(5)
+    var interruptionPostRmsDelayNanos: UInt64 = 5_000_000_000
     /// The orb renders this RMS and above as speech (web/src/orb.ts `audible`); telemetry counts buffers above it.
     static let meterSpeechThreshold: Float = 0.01
     @Published private(set) var route = ""
@@ -689,9 +689,9 @@ final class NativeCaptureBuffer: @unchecked Sendable {
             msSinceLastModelAudio: sinceAudio, turnCompleteSeen: turnCompleteSeen,
             rms: rmsWindow(from: at.addingTimeInterval(-1), to: at), at: at)
         await onLiveInterrupted?(pre)
-        let delay = interruptionPostRmsDelay
+        let delay = interruptionPostRmsDelayNanos
         Task { @MainActor [weak self] in
-            try? await Task.sleep(for: delay)
+            try? await Task.sleep(nanoseconds: delay)
             guard let self else { return }
             let after = self.now()
             let post = NativeLiveInterruptionEvent(phase: .post, bufferedPlaybackMs: bufferedPlaybackMs,

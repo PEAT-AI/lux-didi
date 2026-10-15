@@ -2023,11 +2023,12 @@ test('E1: provider barge-in writes one metadata-only live_interrupted host recor
   t.after(detach);
   const h = await harness(t);
   const { session } = await attached(h, 'live-interrupted');
+  const before = h.owner.get(session.liveSessionId).journal.events;
   h.f.send({ serverContent: { modelTurn: { parts: [audio()] }, outputTranscription: { text: 'mid sentence', finished: false } } });
-  await drain(h, session.liveSessionId, 1);
+  await drain(h, session.liveSessionId, before + 1);
   h.advance(4200);
   h.f.send({ serverContent: { interrupted: true } });
-  await drain(h, session.liveSessionId, 2);
+  await drain(h, session.liveSessionId, before + 2);
   assert.equal(records.length, 1, 'exactly one live_interrupted record per provider interruption');
   const record = records[0]!;
   assert.equal(record.liveSessionId, session.liveSessionId);

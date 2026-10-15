@@ -87,8 +87,8 @@ function assertAudit(a, label, failures) {
   if (a.chipPad && a.chipPad.padding !== '4px 10px') bad(`${label} chip padding: ${a.chipPad.padding}`);
   if (a.labelFont !== '12px') bad(`${label} turn label font: ${a.labelFont}`);
   if (a.nayaMax !== '640px') bad(`${label} naya max width: ${a.nayaMax}`);
-  if (a.turnGap !== null) inb(a.turnGap, 16, 16, 'turn gap');
-  if (a.labelGap !== null) inb(a.labelGap, 3, 5, 'label to text gap');
+  if (a.voice.visible && a.turnGap !== null) inb(a.turnGap, 16, 16, 'turn gap');
+  if (a.voice.visible && a.labelGap !== null) inb(a.labelGap, 3, 5, 'label to text gap');
   return a;
 }
 

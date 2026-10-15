@@ -318,3 +318,9 @@ h3{font-size:14px}
 .live-turns>*{margin:0}
 .live-turns .entry.naya{align-self:flex-start}
 .live-turns .entry.user{align-self:flex-end;max-width:640px}
+
+/* V2-R4 composer field: the rounded box holds the draft, paperclip and send; send is a flex item centred. */
+.composer-field{display:flex;align-items:center;gap:6px;border:1px solid var(--border);border-radius:14px;padding:4px 8px;width:100%;box-sizing:border-box}
+#connected-draft{flex:1 1 auto;border:0;background:none;padding:6px 4px;min-height:40px;padding-right:4px}
+.send-button{position:static;right:auto;top:auto;transform:none;order:3}
+.connected-notes{position:static;right:auto;top:auto;transform:none;bottom:auto;order:2}

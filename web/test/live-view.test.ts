@@ -620,3 +620,14 @@ test('hydrate settles consent, mic, theme and last-session time and closes the p
   assert.equal(machine.view.consentOpen, false);
   assert.equal(machine.view.lastSessionEndedAt, '2026-10-15T08:31:00Z');
 });
+test('no visible Live text carries a raw url or a markdown heading marker', () => {
+  const live: LiveCurrent = { state: 'speaking', cursor: 2, entries: [
+    { seq: 1, kind: 'outputTranscription', text: "# Knowledge Search: 'q'\n\nsee https://www.google.com/calendar/event?eid=abc" },
+    { seq: 2, kind: 'toolResult', tool: { name: 'search_knowledge', status: 'completed', markdown: '# raw tool heading\n\ngo https://example.org/x', sources: [{ title: 'Calendar: Standup', url: 'https://www.google.com/calendar/event?eid=abc' }] } },
+  ] };
+  const visible = liveMarkup(live).replace(/<[^>]+>/g, '\n');
+  for (const node of visible.split('\n').map(text => text.trim()).filter(Boolean)) {
+    assert.equal(/https?:\/\//.test(node), false, `raw url visible in: ${node}`);
+    assert.equal(node.startsWith('#'), false, `raw heading visible in: ${node}`);
+  }
+});

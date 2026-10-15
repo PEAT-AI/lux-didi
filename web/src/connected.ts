@@ -14,7 +14,7 @@ export class ConnectedView {
   get active() { return this.#busy || !!this.#run && this.#run.state !== 'terminal'; }
   get remember() { return this.#remember; }
   get busy() { return this.#busy; }
-  get history() { return this.#conversations.map(item => ({ title: item.title, sessionId: item.conversation.sessionId, model: item.conversation.model, state: item.conversation.state })); }
+  get history() { return this.#conversations.map(item => ({ title: item.title, sessionId: item.conversation.sessionId, model: item.conversation.model, state: item.conversation.state, active: item.conversation.sessionId === this.#conversation?.sessionId })); }
   setRemember(value: boolean) { this.#remember = value; }
   get standingRevoke() { return this.#status.consent?.scope === 'standing' && this.#status.consent.state === 'active'; }
   get conversationState() { return this.#conversation?.state; }

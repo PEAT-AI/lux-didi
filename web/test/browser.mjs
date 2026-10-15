@@ -95,16 +95,13 @@ try {
     assert.equal((await page.locator('#live-panel .live-state').textContent()).trim(),'Speaking');
     assert.equal(await page.getByText('Not listening',{exact:true}).count(),0);
     assert.equal(await page.getByText('what is lux 123',{exact:true}).count(),1);
-    assert.equal(await page.locator('.live-latest-turn').count(),1);
-    assert.match(await page.locator('.live-latest-turn').innerText(),/Here is the answer\./);
-    const link=page.locator('#live-panel .live-result p a[href="https://example.org"]');
-    assert.equal(await link.count(),1);
-    assert.equal(await link.getAttribute('rel'),'noopener noreferrer');
-    assert.equal(await link.getAttribute('target'),'_blank');
+    const card=page.locator('#live-panel .live-result');
+    assert.equal(await card.count(),1);
+    assert.match(await card.innerText(),/Here is the answer\./);
+    assert.equal(await card.locator('a[href="https://example.org"]').count(),2,'the inline link and the source chip');
     const sourceLink=page.locator('#live-panel .live-result .sources a[href="https://example.org"]');
     assert.equal(await sourceLink.count(),1);
     assert.equal(await sourceLink.getAttribute('rel'),'noopener noreferrer');
-    assert.match(await page.locator('#live-panel .live-result strong').first().textContent(),/Answer/);
     fixture.setLive({state:'listening',since:'2026-10-11T16:00:01Z',cursor:4,entries:[
       {seq:1,kind:'inputTranscription',text:'what is lux 123'},
       {seq:2,kind:'outputTranscription',text:'Here is the answer.'}

@@ -19,6 +19,7 @@ import type { EndpointConfig, McpPort } from '../adapters/mcp/port.js';
 import { composeMcpRuntime } from '../host/mcp.js';
 import { GOOGLE_FAMILIES, GOOGLE_TOOLS, createGoogleReader, type GoogleConfig, type GoogleEvidence, type GoogleResult } from '../connectors/index.js';
 import { credentialFailure, decodeGoogleEnvelope, googleToolStatus, readGooglePayload, renderGoogleTool } from '../tools/google.js';
+import { GMAIL_LIST_MESSAGES } from '../tools/live-shape.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const child = join(here, 'fixtures', 'google-mcp-child.mjs');
@@ -90,7 +91,7 @@ test('a granted google endpoint calls the real child with bounded defaults and b
     const list = completed(await gmail.gmailList({}));
     payloadPorts.set(list, adapter);
     const listEnvelope = envelopeOf(list);
-    assert.equal((listEnvelope['received'] as Record<string, unknown>)['maxResults'], 10);
+    assert.equal((listEnvelope['received'] as Record<string, unknown>)['maxResults'], GMAIL_LIST_MESSAGES);
     const listProjection = renderGoogleTool('gmail_list', (listEnvelope['data'] as Record<string, unknown>));
     assert.equal(listProjection.partial, false);
     assert.match(listProjection.text, /Synthetic subject line \| Synthetic Sender \| Mon, 1 Jan 2024/);
@@ -132,6 +133,29 @@ test('a granted google endpoint calls the real child with bounded defaults and b
     assert.match(eventProjection.text, /2024-01-01T09:00:00Z, Synthetic standup, Room 1/);
     assert.equal(/https?:\/\//.test(eventProjection.text), false, 'calendar model text holds no raw url');
     assert.deepEqual(eventProjection.sources, [{ title: 'Calendar: Synthetic standup', url: 'https://calendar.google.com/event?eid=e1', sourceType: 'calendar' }]);
+  } finally {
+    await adapter.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a default gmail_list asks the child for exactly the digest cap, so the upstream per-message metadata fetch count is the digest cap not ten', async () => {
+  const { dir, pidFile } = scratch();
+  const registry = new McpRegistry();
+  registry.register(config('local-stdio', 'ramp', pidFile));
+  const adapter = adapterFor(registry);
+  try {
+    const digest = await discoverAndApprove(registry, adapter, 'local-stdio', GOOGLE_TOOLS);
+    const gmail = readerFor(adapter, registry, digest);
+    const list = completed(await gmail.gmailList({}));
+    payloadPorts.set(list, adapter);
+    const envelope = envelopeOf(list);
+    // The child returns one listed message per upstream metadata GET, so this count is the call count.
+    assert.equal((envelope['received'] as Record<string, unknown>)['maxResults'], GMAIL_LIST_MESSAGES);
+    const data = envelope['data'] as Record<string, unknown>;
+    assert.equal((data['messages'] as unknown[]).length, GMAIL_LIST_MESSAGES, 'one upstream metadata GET per listed message');
+    const projection = renderGoogleTool('gmail_list', data);
+    assert.equal(projection.text.split('\n').filter(line => line.startsWith('- ')).length, GMAIL_LIST_MESSAGES);
   } finally {
     await adapter.close();
     rmSync(dir, { recursive: true, force: true });

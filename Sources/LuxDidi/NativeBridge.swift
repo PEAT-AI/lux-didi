@@ -77,13 +77,13 @@ struct BridgeRoute: Equatable {
     var jsonObject: [String: Any] { ["input": input, "output": output, "voiceProcessing": voiceProcessing] }
 
     /// The audio owner exposes its human route sentence (`"Microphone: X · Output: Y"`); the bridge
-    /// only splits it, it never touches the device.
-    static func parse(_ sentence: String) -> BridgeRoute? {
+    /// only splits it, it never touches the device. `voiceProcessing` is passed through from the owner.
+    static func parse(_ sentence: String, voiceProcessing: Bool = false) -> BridgeRoute? {
         let separator = " · Output: "
         let parts = sentence.components(separatedBy: separator)
         guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else { return nil }
         let input = parts[0].hasPrefix("Microphone: ") ? String(parts[0].dropFirst("Microphone: ".count)) : parts[0]
-        return BridgeRoute(input: input, output: parts[1], voiceProcessing: false)
+        return BridgeRoute(input: input, output: parts[1], voiceProcessing: voiceProcessing)
     }
 }
 

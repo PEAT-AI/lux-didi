@@ -115,6 +115,8 @@ import Foundation
         // 9. Route sentence parses into input/output.
         let route = BridgeRoute.parse("Microphone: Studio Mic · Output: Built-in Speakers")
         check(route?.input == "Studio Mic" && route?.output == "Built-in Speakers", "route sentence parses")
+        check(BridgeRoute.parse("Microphone: Studio Mic · Output: Built-in Speakers", voiceProcessing: true)?.voiceProcessing == true,
+              "route carries the voice-processing flag")
         check(BridgeRoute.parse("") == nil, "empty route is nil")
 
         // 10. Drag band: it claims only the top strip and falls through below it.

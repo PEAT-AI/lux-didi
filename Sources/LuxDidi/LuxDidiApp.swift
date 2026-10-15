@@ -312,7 +312,7 @@ import Security
 
     func bridgeRoute() -> BridgeRoute? {
         guard let sentence = live?.device.route else { return nil }
-        return BridgeRoute.parse(sentence)
+        return BridgeRoute.parse(sentence, voiceProcessing: live?.device.isVoiceProcessingEnabledForTesting ?? false)
     }
 
     func publishBridgeLive() {

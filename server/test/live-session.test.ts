@@ -1836,10 +1836,13 @@ test('established WebSocket protocol error resumes through the saved handle', as
 test('Mattermost declarations carry the channel-resolution micro-contract', () => {
   const policy = { bounds: { maxQueryChars: 200, maxSearchLimit: 60 } } as never;
   const descriptions = new Map(CONNECTOR_DESCRIPTORS['mattermost']!.declarations(policy).map(declaration => [declaration.name, declaration.description]));
-  assert.match(descriptions.get('mattermost_list_channels')!, /Call it at most once per question/);
-  assert.match(descriptions.get('mattermost_list_channels')!, /ids stay valid for the whole session, so reuse them/);
+  assert.equal(descriptions.has('mattermost_list_channels'), false, 'the model never gets a channel dump');
+  assert.match(descriptions.get('mattermost_search')!, /From:<user>/);
+  assert.match(descriptions.get('mattermost_search')!, /After:<date>/);
+  assert.match(descriptions.get('mattermost_search')!, /In:<channel>/);
   assert.match(descriptions.get('mattermost_search')!, /search first, no channel list needed/);
   assert.match(descriptions.get('mattermost_get_channel_history')!, /channel is a channel name or display name; no channel list needed/);
+  assert.match(descriptions.get('mattermost_get_channel_history')!, /newest first/);
   assert.match(descriptions.get('mattermost_get_thread')!, /postId is a post id taken from a channel history/);
 });
 

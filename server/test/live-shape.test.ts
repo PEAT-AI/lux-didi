@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   cleanMailBody, cutAtSentence, noEmptyResult, shapeGcalList, shapeGmailList, shapeGmailRead, shapeLuxKnowledge, shapeMattermost,
-  KNOWLEDGE_HITS, MATTERMOST_MESSAGE_CHARS,
+  KNOWLEDGE_HITS, MATTERMOST_CHANNELS, MATTERMOST_MESSAGE_CHARS,
 } from '../tools/live-shape.js';
 // Synthetic Mattermost upstream shapes (mattermost-mcp src/search/serialize.ts and REST v4
 // /posts). Invented names and text only. These are W12's committed fixtures: every one of them
@@ -187,11 +187,60 @@ test('mattermost channel list (channels array) shapes display names', () => {
   assert.match(shaped.text, /- Dry Dock/);
 });
 
-test('mattermost REST id-map posts are ordered by order and system posts dropped', () => {
+test('mattermost channel list is ranked by activity and carries posts and last activity', () => {
+  const shaped = shapeMattermost('mattermost_list_channels', CHANNELS);
+  const lines = shaped.text.split('\n').filter(line => line.startsWith('- '));
+  assert.equal(lines.length, 2);
+  assert.match(lines[0]!, /Harbour/);
+  assert.match(lines[0]!, /128 posts/);
+  assert.match(lines[0]!, /last activity 2026-10-11T10:10:00\.000Z/);
+  assert.match(lines[1]!, /Dry Dock/);
+  assert.equal(shaped.text.includes('display_name'), false);
+});
+
+test('a 1753-channel payload shapes to at most the cap and notes the omission', () => {
+  const channels = Array.from({ length: 1753 }, (_, index) => ({
+    id: `c${index}`, name: `channel-${index}`, displayName: `Channel ${index}`, team: 'ops', type: 'O',
+    posts: index, lastSyncAt: '2026-10-11T00:00:00.000Z', archived: false, archivedAt: null,
+  }));
+  const shaped = shapeMattermost('mattermost_list_channels', { count: channels.length, channels });
+  const lines = shaped.text.split('\n').filter(line => line.startsWith('- '));
+  assert.equal(lines.length, MATTERMOST_CHANNELS, 'a 1753-channel dump never reaches the model in full');
+  assert.match(shaped.text, /\[omitted: 1713 more channels;/);
+  assert.match(lines[0]!, /Channel 1752/);
+  assert.match(lines[0]!, /1752 posts/);
+});
+
+test('mattermost channel history shapes newest first, keeping the permalink', () => {
+  const shaped = shapeMattermost('mattermost_get_channel_history', { posts: [
+    { channel: 'harbour', author: 'river', timestamp: '2026-10-11T10:00:00.000Z', message: 'Older note', url: 'https://chat.example.invalid/t/harbour/pl/p1' },
+    { channel: 'harbour', author: 'ash', timestamp: '2026-10-11T10:05:00.000Z', message: 'Newer note', url: 'https://chat.example.invalid/t/harbour/pl/p2' },
+  ] });
+  assert.equal(shaped.text.indexOf('Newer note') < shaped.text.indexOf('Older note'), true, 'the most recent post leads');
+  assert.match(shaped.text, /source: https:\/\/chat\.example\.invalid\/t\/harbour\/pl\/p2/);
+});
+
+test('mattermost search results shape newest first', () => {
+  const shaped = shapeMattermost('mattermost_search', SEARCH_RESULTS);
+  assert.equal(shaped.text.indexOf('Reviewed the mooring drift log') < shaped.text.indexOf('Mooring drift log is ready'), true, 'recency questions lead with the newest hit');
+});
+
+test('mattermost REST id-map posts are shaped newest first and system posts dropped', () => {
   const shaped = shapeMattermost('mattermost_get_channel_history', REST_POSTS);
   assert.equal(shaped.text.length > 0, true);
   assert.equal(shaped.text.indexOf('Crane booked for Tuesday') < shaped.text.indexOf('Tide table pinned'), true);
   assert.equal(shaped.text.includes('joined the channel'), false);
+});
+
+test('mattermost REST id-map posts ignore an oldest-first order and shape newest first', () => {
+  const shaped = shapeMattermost('mattermost_get_channel_history', {
+    order: ['r1', 'r2'],
+    posts: {
+      r1: { id: 'r1', create_at: 1760176800000, message: 'Tide table pinned', type: '' },
+      r2: { id: 'r2', create_at: 1760176860000, message: 'Crane booked for Tuesday', type: '' },
+    },
+  });
+  assert.equal(shaped.text.indexOf('Crane booked for Tuesday') < shaped.text.indexOf('Tide table pinned'), true);
 });
 
 test('mattermost items wrapper shapes', () => {

@@ -58,7 +58,7 @@ test('the renderer accepts a posted level frame and exposes the Vicuna presence 
 });
 
 test('the orb canvas matches the Vicuna narrow size proportion', () => {
-  assert.match(style, /\.orb-stage canvas\{width:min\(300px,72vw\);height:min\(300px,72vw\)\}/);
+  assert.match(style, /\.orb-stage canvas\{width:min\(300px,72vw\);height:min\(300px,72vw\);margin:-48px 0\}/);
 });
 
 test('the orb stage uses the Vicuna dark gradient and a visible presence glow', () => {

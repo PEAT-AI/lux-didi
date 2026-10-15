@@ -178,3 +178,16 @@
 .diagnostics dl{display:grid;grid-template-columns:auto 1fr;gap:6px 16px;align-items:baseline}
 .diagnostics dt{color:var(--text-secondary);font-size:.82rem}
 .diagnostics dd{margin:0}
+/* Narrow window: the rail moves out of the column and the two lanes stack, one above the other,
+   so both the orb and the composer stay reachable without horizontal scroll. */
+[data-narrow="true"] .app-shell{height:auto;min-height:100vh;overflow:visible}
+[data-narrow="true"] .rail{display:none}
+[data-narrow="true"] .lane-row{display:block}
+[data-narrow="true"] .lanes{flex-direction:column;overflow:visible}
+[data-narrow="true"] .lane{flex:0 0 auto;border-right:0;border-bottom:1px solid var(--border)}
+[data-narrow="true"] .lane-inner{overflow:visible}
+[data-narrow="true"] .voice-head{flex-wrap:wrap;height:auto;min-height:96px}
+[data-narrow="true"] .sheet{top:56px;width:100%}
+[data-narrow="true"] .app-header{flex-wrap:wrap;height:auto;min-height:56px;padding:6px 10px}
+[data-narrow="true"] .brand-mini{display:none}
+[data-narrow="true"] .lane-switch{margin-left:0}

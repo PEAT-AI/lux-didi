@@ -189,8 +189,7 @@ function voiceHeadMarkup() {
 function laneShell(id: LaneId, label: string, body: string) {
   const state = layout[id];
   const control = collapseControl(layout, id);
-  const narrowHidden = layout.narrow && layout.segment !== id;
-  return `<section class="lane lane-${id}" id="lane-${id}" data-state="${state}" role="region" aria-label="${label}"${narrowHidden ? ' hidden' : ''}><button class="lane-toggle" data-lane="${id}" aria-expanded="${control['aria-expanded']}" aria-controls="${control['aria-controls']}"${control['aria-disabled'] ? ' aria-disabled="true"' : ''} title="${e(control.title)}" aria-label="${state === 'open' ? `Collapse ${label}` : `Expand ${label}`}"><span aria-hidden="true">${state === 'open' ? '\u203a' : '\u2039'}</span></button><div class="lane-inner" id="lane-${id}-primary" tabindex="-1">${body}</div></section>`;
+  return `<section class="lane lane-${id}" id="lane-${id}" data-state="${state}" role="region" aria-label="${label}"><button class="lane-toggle" data-lane="${id}" aria-expanded="${control['aria-expanded']}" aria-controls="${control['aria-controls']}"${control['aria-disabled'] ? ' aria-disabled="true"' : ''} title="${e(control.title)}" aria-label="${state === 'open' ? `Collapse ${label}` : `Expand ${label}`}"><span aria-hidden="true">${state === 'open' ? '\u203a' : '\u2039'}</span></button><div class="lane-inner" id="lane-${id}-primary" tabindex="-1">${body}</div></section>`;
 }
 function render() {
   // Keep cursor and unsent text stable across connection checks and action completion.
@@ -217,7 +216,7 @@ function bind() {
   document.getElementById('sheet-close')?.addEventListener('click', () => { layout = closeSheet(layout); render(); });
   root.querySelector('.sheet-scrim')?.addEventListener('click', () => { layout = closeSheet(layout); render(); });
   root.querySelectorAll<HTMLElement>('[data-lane]').forEach(el => el.onclick = () => { const id = el.dataset.lane as LaneId; layout = toggleLane(layout, id); render(); if (layout[id] === 'collapsed') document.getElementById(focusTargetAfterCollapse(id))?.focus(); });
-  root.querySelectorAll<HTMLElement>('[data-segment]').forEach(el => el.onclick = () => { layout = selectSegment(layout, el.dataset.segment as LaneId); render(); });
+  root.querySelectorAll<HTMLElement>('[data-segment]').forEach(el => el.onclick = () => { const segment = el.dataset.segment as LaneId; layout = selectSegment(layout, segment); render(); document.getElementById(`lane-${segment}`)?.scrollIntoView({ block: 'start' }); });
   document.getElementById('voice-start')?.addEventListener('click', () => liveMachine.requestStart());
   document.getElementById('voice-stop')?.addEventListener('click', () => liveMachine.requestStop());
   document.getElementById('voice-mute')?.addEventListener('click', () => liveMachine.toggleMute());

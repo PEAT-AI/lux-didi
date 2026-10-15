@@ -8,7 +8,7 @@ Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { on
 class Control {
   listeners = new Map<string, (event: any) => void>();
   addEventListener(kind: string, action: (event: any) => void) { this.listeners.set(kind, action); }
-  fire(kind: string, target: any = {}) { this.listeners.get(kind)?.({ target, preventDefault() {} }); }
+  fire(kind: string, target: any = {}, extra: any = {}) { this.listeners.get(kind)?.({ target, preventDefault() {}, ...extra }); }
 }
 class Panel {
   html = ''; controls = new Map<string, Control>();
@@ -140,9 +140,9 @@ test('intentional action-select handoff stays busy and current select failures r
   const view = await setup(); await view.refresh('O1');
   const held = deferred<Response>(), entered = deferred<void>();
   routes = async path => { if (path === '/conversations/S1') { entered.resolve(); return held.promise; } };
-  panel.querySelector('#connected-recover').fire('click'); await entered.promise;
+  void view.recoverHistory(); await entered.promise;
   assert.equal(view.active, true); const reads = calls.length;
-  panel.querySelector('#connected-recover').fire('click'); await tick(); assert.equal(calls.length, reads);
+  void view.recoverHistory(); await tick(); assert.equal(calls.length, reads);
   held.resolve(new Response(JSON.stringify({ error: { code: 'CONFLICT', message: 'current select failure' } }), { status: 409 })); await tick(); await tick();
   assert.match(panel.html, /current select failure/); assert.equal(view.active, false); view.reset();
 });
@@ -228,7 +228,7 @@ test('missing or mismatched saved pending context preserves exact storage and re
     assert.equal(calls.includes('/chat'), false);
     assert.match(panel.html, /recover.*history|history.*recover/i);
     panel.querySelector('#connected-consent').fire('change', { checked: true });
-    panel.querySelector('#connected-start').fire('click'); await tick(); await tick();
+    panel.querySelector('#connected-send-form').fire('submit'); await tick(); await tick();
     assert.equal(calls.includes('/conversations'), false);
     assert.equal(storage.get('didi-connected:O1'), before); view.reset();
   }
@@ -241,14 +241,14 @@ test('an unresolved turn whose conversation is missing offers an exact-key recov
   await view.refresh('O1');
   assert.equal(storage.get('didi-connected:O1'), before);
   assert.equal(calls.includes('/conversation-selection'), false);
-  assert.match(panel.html, /id="connected-recover"/);
+  assert.match(panel.html, /id="connected-retry"/);
   let chat: RequestInit | undefined;
   routes = async (path, init) => {
     if (path !== '/chat') return undefined;
     chat = init;
     return envelope({ runId: 'recovered', sessionId: 'MISSING', state: 'terminal', outcome: 'complete', finalEntryId: null, partialText: '', sequence: 1 });
   };
-  panel.querySelector('#connected-recover').fire('click'); await tick(); await tick(); await tick();
+  panel.querySelector('#connected-retry').fire('click'); await tick(); await tick(); await tick();
   assert.equal(calls.filter(path => path === '/chat').length, 1);
   assert.equal((chat!.headers as Record<string, string>)['Idempotency-Key'], 'retained-key');
   assert.equal(JSON.parse(storage.get('didi-connected:O1')!).pending, undefined);
@@ -271,7 +271,7 @@ test('a later list refresh that contains the missing conversation reconciles the
   view.reset();
 });
 
-test('a definitively refused send clears the pending key and leaves start usable', async () => {
+test('a definitively refused send clears the pending key and leaves the composer usable', async () => {
   const view = await setup({ sessionId: 'S1', draft: 'refused turn' }); await view.refresh('O1');
   routes = async path => path === '/chat'
     ? new Response(JSON.stringify({ error: { code: 'CONSENT_REVOKED', message: 'This conversation is no longer consented.' } }), { status: 403 })
@@ -283,7 +283,21 @@ test('a definitively refused send clears the pending key and leaves start usable
   assert.equal(JSON.parse(storage.get('didi-connected:O1')!).pending, undefined, 'a definitive refusal must not retain the acceptance key');
   panel.querySelector('#connected-consent').fire('change', { checked: true });
   const reads = calls.length;
-  panel.querySelector('#connected-start').fire('click'); await tick(); await tick();
-  assert.equal(calls.slice(reads).includes('/conversations'), true, 'start stays usable after a definitive refusal');
+  panel.querySelector('#connected-send-form').fire('submit'); await tick(); await tick();
+  assert.equal(calls.slice(reads).includes('/chat'), true, 'the composer stays usable after a definitive refusal');
+  view.reset();
+});
+
+test('Enter sends and Shift+Enter keeps a newline in the connected composer', async () => {
+  const view = await setup({ sessionId: 'S1', draft: 'typed turn' }); await view.refresh('O1');
+  panel.querySelector('#connected-draft').fire('keydown', { value: 'typed turn' }, { key: 'Enter', shiftKey: true, isComposing: false });
+  await tick(); await tick();
+  assert.equal(calls.includes('/chat'), false, 'Shift+Enter must not send');
+  panel.querySelector('#connected-draft').fire('keydown', { value: 'typed turn' }, { key: 'Enter', shiftKey: false, isComposing: false });
+  await tick(); await tick();
+  assert.equal(calls.includes('/chat'), true, 'Enter sends the frozen turn');
+  panel.querySelector('#connected-draft').fire('keydown', { value: 'typed turn' }, { key: 'Enter', shiftKey: false, isComposing: true });
+  await tick(); await tick();
+  assert.equal(calls.filter(path => path === '/chat').length, 1, 'an IME composition Enter must not send');
   view.reset();
 });

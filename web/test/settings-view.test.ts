@@ -104,3 +104,18 @@ test('settings view puts each section heading in its own section for vertical rh
   assert.match(html, /<section class="settings-section"><h3>Connectors<\/h3>/);
   assert.match(html, /<section class="settings-section">\s*<h3>Where these settings live<\/h3>/);
 });
+
+test('connected settings render the stay-connected switch and connected history from input', () => {
+  const html = settingsMarkup({ connected: { remember: true, conversations: [{ title: 'Naya connected conversation', sessionId: 'S1', model: 'gemini-2.5', state: 'active' }], standingRevoke: true, conversationState: 'active' } });
+  assert.match(html, /id="connected-remember"[^>]*checked/);
+  assert.match(html, /Keep Naya’s text conversations across sessions/);
+  assert.match(html, /id="connected-history"/);
+  assert.match(html, /Naya connected conversation/);
+  assert.match(html, /id="connected-recover"/);
+  assert.match(html, /id="connected-standing-revoke"/);
+  assert.match(html, /id="connected-revoke"/);
+});
+
+test('connected history is absent when no connected state is supplied', () => {
+  assert.doesNotMatch(settingsMarkup({ status }), /connected-history/);
+});

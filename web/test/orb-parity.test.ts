@@ -58,12 +58,12 @@ test('the renderer accepts a posted level frame and exposes the Vicuna presence 
 });
 
 test('the orb canvas matches the Vicuna narrow size proportion', () => {
-  assert.match(style, /\.orb-stage canvas\{width:600px;height:600px\}/);
+  assert.match(style, /\.orb-stage canvas\{width:min\(300px,72vw\);height:min\(300px,72vw\);margin:-48px 0\}/);
 });
 
 test('the orb stage uses the Vicuna dark gradient and a visible presence glow', () => {
-  assert.match(style, /\.orb-stage\{[^}]*linear-gradient\(180deg,#111827 0%,#1f2937 100%\)/);
-  assert.match(style, /\.orb-stage \.presence-glow\{width:720px;height:720px\}/);
+  assert.match(style, /\.orb-stage\{[^}]*linear-gradient\(180deg,var\(--stage-a\) 0%,var\(--stage-b\) 100%\)/);
+  assert.match(style, /\.orb-stage \.presence-glow\{width:420px;height:420px\}/);
 });
 
 test('the connected consent wall is a closed disclosure', () => {

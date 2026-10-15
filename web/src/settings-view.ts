@@ -3,6 +3,7 @@
 // ever interpolated wholesale, so a secret-looking field cannot reach the page.
 import { nextStep, reasonCodes } from './next-steps.ts';
 import { escapeHtml } from './markdown.ts';
+import type { Theme } from './theme.ts';
 import type { LiveSummary } from './api.ts';
 
 /** Where each setting lives on disk, by file name under the operator config dir. Never file contents. */
@@ -31,6 +32,8 @@ export interface SettingsInput {
     standingRevoke?: boolean;
     conversationState?: string;
   };
+  /** The appearance the owner has chosen, so the control shows the active option. */
+  theme?: Theme;
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -125,6 +128,10 @@ export function settingsMarkup(input: SettingsInput): string {
 <dt>Service mode</dt><dd>${input.statusUnavailable === true ? unavailable() : escapeHtml(text(record(input.status)?.serviceMode, 40) ?? 'loopback')}</dd></dl>
 <section class="settings-section">${connectorsSection(input.connections, input.connectionsUnavailable === true)}</section>
 ${connectedSection(input.connected)}
+<section class="settings-section"><h3>Appearance</h3>
+<label for="appearance-theme">Appearance</label>
+<select id="appearance-theme" name="appearance-theme"><option value="dark"${input.theme === 'light' ? '' : ' selected'}>Dark</option><option value="light"${input.theme === 'light' ? ' selected' : ''}>Light</option></select>
+<p class="muted">Dark is the default. Your choice is saved on this device.</p></section>
 <section class="settings-section"><h3>Where these settings live</h3>
 <dl class="settings-files">${FILE_ROWS.map(([what, file]) => `<dt>${escapeHtml(what)}</dt><dd><code>${escapeHtml(file)}</code></dd>`).join('')}</dl>
 <p class="settings-restart">Changes to these files need a restart of Lux Didi. This page is read-only.</p></section>

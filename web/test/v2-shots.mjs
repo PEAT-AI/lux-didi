@@ -65,8 +65,9 @@ try {
 
   const ready = async () => { await page.locator('#connected-send').waitFor(); await page.locator('#didi-orb').waitFor(); };
   // Probe: does the consent checkbox stick after a click?
-  await page.locator('#connected-consent').check({ timeout: 8000 }).catch(e => console.log('CONSENT_CHECK_FAIL', String(e).split('\n')[0]));
-  console.log('CONSENT_STATE', await page.evaluate(() => { const c = document.querySelector('#connected-consent'); return c ? c.checked : 'missing'; }));
+  const allow = page.locator('#connected-consent');
+  if (await allow.count()) await allow.click();
+  await page.locator('#connected-draft:not([disabled])').waitFor();
   const setTheme = async mode => { await page.evaluate(m => localStorage.setItem('didi-theme', m), mode); await page.reload(); await ready(); };
   const startLive = async () => {
     await page.locator('#voice-start').click();

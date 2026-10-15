@@ -96,7 +96,7 @@ function orbMarkup() {
   const glow = ['CONNECTED','LISTENING','SPEAKING','PROCESSING'].includes(orbState());
   return `<section class="orb-stage" data-state="${orbState()}" aria-label="Naya voice and activity"><div class="presence-glow${glow ? ' visible' : ''}" aria-hidden="true"></div><canvas id="didi-orb" width="440" height="440" aria-hidden="true"></canvas><div class="orb-caption">${orbCaptionMarkup()}</div></section>`;
 }
-function liveTurns(): number { return live ? liveTranscript(live).length : 0; }
+function liveTurns(): number { return live && Array.isArray(live.entries) ? liveTranscript(live).length : 0; }
 function voiceEmptyMarkup() {
   return `<div class="voice-empty"><div class="voice-orb-large"><canvas id="didi-orb" width="440" height="440" aria-hidden="true"></canvas></div><p class="voice-empty-line">Press Start or \u2318\u21e7Space to talk</p></div>`;
 }

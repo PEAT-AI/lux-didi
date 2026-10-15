@@ -624,3 +624,42 @@ test('speech activity siblings and informational keys preserve the next audio fr
   assert.deepEqual(observed.filter(e => e.type === 'waitingForInput').map(e => e.value), [true, false]);
   session.close();
 });
+
+// The real 08:29 rejection: a large serverContent frame whose audio modelTurn shares the frame with a
+// text-less outputTranscription (Gemini Transcription.text is optional). The whole frame, audio
+// included, was dropped. The audio must play and the turn must not end.
+test('a large serverContent audio frame with a text-less outputTranscription plays its audio', async t => {
+  const { f, session, captured } = await providerReady(t);
+  const bytes = new Uint8Array(9688);
+  for (let i = 0; i < bytes.length; i++) bytes[i] = (i * 7) & 0xff;
+  const frame = JSON.stringify({ serverContent: {
+    modelTurn: { role: 'model', parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from(bytes).toString('base64') } }] },
+    outputTranscription: {},
+  } });
+  assert.equal(Buffer.byteLength(frame), 13064, 'fixture frame of the observed 13 062-byte shape and size');
+  f.send(JSON.parse(frame));
+  for (let i = 0; i < 50 && !captured.events.some(event => event.type === 'audio'); i++) await new Promise<void>(resolve => setImmediate(resolve));
+  const audioEvents = captured.events.filter((event): event is Extract<LiveVoiceEvent, { type: 'audio' }> => event.type === 'audio');
+  assert.equal(audioEvents.length, 1, 'the frame is decoded once, not rejected');
+  assert.equal(audioEvents[0]!.pcm.byteLength, bytes.byteLength, 'the whole audio part plays, none dropped');
+  assert.equal(captured.events.some(event => event.type === 'outcome'), false, 'a text-less transcription must not end the turn');
+  assert.equal(session.diagnostics?.().outputAudioFrames, 1);
+});
+
+// Issue 209 recurrence: a non-LiveVoiceError in the decode path (invalid UTF-8 makes the fatal
+// TextDecoder throw a TypeError) must name its constructor instead of being flattened to
+// protocol_error, and must never carry a value.
+test('a non-LiveVoiceError decode failure logs its constructor classifier and frame kind', async t => {
+  const lines: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => { lines.push(args.map(String).join(' ')); };
+  t.after(() => { console.error = originalError; });
+  const { f, session } = await providerReady(t);
+  f.sendRaw(Buffer.from([0xff, 0xfe, 0xfd]));
+  assert.equal((await session.done).code, 'protocol_error');
+  const rejected = lines.filter(line => line.includes('"live_frame_rejected"')).map(line => JSON.parse(line) as { event: string; error?: string; kind: string });
+  assert.equal(rejected.length, 1, 'exactly one rejection diagnostic');
+  assert.equal(rejected[0]!.error, 'TypeError', 'the real error constructor is named');
+  assert.equal(rejected[0]!.kind, 'invalid_json');
+  assert.equal(JSON.stringify(rejected[0]).includes(CANARY), false, 'no value leaks into the classifier');
+});

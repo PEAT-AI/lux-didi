@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import * as memory from '../domain/memory.js';
 import * as labels from '../domain/labels.js';
-import { resolveLiveMemory } from '../host/live.js';
+import { composeLive, resolveLiveMemory } from '../host/live.js';
 import { safeEvent } from '../host/log.js';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
@@ -1890,4 +1890,25 @@ test('a cached read expires after ten minutes even inside one session', async t 
   h.advance(10 * 60 * 1000);
   await settleLiveTool(h, 't2', 'mattermost_list_channels', { limit: 12 });
   assert.equal(h.calls.filter(call => call.name === 'mattermost_list_channels').length, 2, 'an expired entry is read again');
+});
+
+test('creating a second Live session supersedes the first for the owner', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-live-supersede-'));
+  const domain = createDomainPort({ outbox: Outbox });
+  const store = new Store(dir, [...domain.migrations, ...chatMigrations, ...liveMigrations]);
+  t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
+  const events: string[] = [];
+  const original = console.log;
+  console.log = (...args: unknown[]) => { events.push(args.map(String).join(' ')); };
+  t.after(() => { console.log = original; });
+  const profile = validateLiveProfile(profileInput());
+  const { service } = composeLive(store, dir, { profile, credentials: { resolve: async () => CANARY } });
+  t.after(() => service.shutdown());
+  const first = service.create('ordinary', 'one', context(store));
+  const second = service.create('ordinary', 'two', context(store));
+  assert.equal(service.snapshot(first.liveSessionId).lifecycle, 'terminal', 'the first session is terminal once the second is created');
+  assert.equal(service.snapshot(second.liveSessionId).lifecycle, 'accepted');
+  const superseded = events.filter(line => line.includes('"live_session_superseded"')).map(line => JSON.parse(line) as { event: string; liveSessionId: string });
+  assert.equal(superseded.length, 1, 'exactly one supersede event');
+  assert.equal(superseded[0]!.liveSessionId, first.liveSessionId);
 });

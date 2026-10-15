@@ -118,9 +118,15 @@ struct NativePlaybackQueue {
     /// A queue that stays dry at least this long was a pause or the end of a turn, not a dropout.
     /// Below it the utterance was continuous and the scheduler fell behind: a real underrun.
     static let pauseThresholdMs = 500
+    /// P2-R1: the playback memory guard. 120 s of queued audio is far beyond any real answer, so a
+    /// flush here only protects memory; the old 24-buffer count cap dropped audio mid-answer
+    /// because host frames arrive far faster than realtime.
+    static let overflowFrames = frameRate * 120
 
     private(set) var queuedBuffers = 0
     private(set) var scheduledFrames = 0
+    /// P2-R1: the queue holds so much audio that the device flushes instead of growing.
+    var overflowsMemoryGuard: Bool { scheduledFrames >= Self.overflowFrames }
     private(set) var playing = false
     private var drainedFrames = 0
     private var drainedAtMs: Int?
@@ -319,6 +325,9 @@ struct NativeLiveInterruptionSample: Sendable {
     var onResume: (() -> Void)?
     /// E1: called once per provider barge-in with the pre facts, then again after `interruptionPostRmsDelayNanos` with postRms.
     var onLiveInterrupted: (@MainActor (NativeLiveInterruptionSample) async -> Void)?
+    /// P2-R1: the playback memory guard dropped the queued turn. The conversation records one
+    /// `playback_overflow_flush` native-live.log line, because it holds the session id.
+    var onPlaybackOverflow: (@MainActor (Int, Int) async -> Void)?
     /// E1 test seam: the delay before the postRms line. Production is five seconds.
     var interruptionPostRmsDelayNanos: UInt64 = 5_000_000_000
     /// The orb renders this RMS and above as speech (web/src/orb.ts `audible`); telemetry counts buffers above it.
@@ -782,7 +791,11 @@ struct NativeLiveInterruptionSample: Sendable {
         if recovery.awaitingResume || recovery.pending != nil { return }
         guard let player, let engine, engine.isRunning, pcm.count.isMultiple(of: 2) else { throw LiveClientError.unavailable }
         let entryTurn = turnGeneration
-        if playbackQueue.queuedBuffers >= 24 { flushOutput() }
+        if playbackQueue.overflowsMemoryGuard {
+            // P2-R1: log the dropped turn before the flush resets the queue.
+            await onPlaybackOverflow?(NativePlaybackQueue.ms(playbackQueue.scheduledFrames), playbackQueue.queuedBuffers)
+            flushOutput()
+        }
         // Barge-in flushed this chunk's turn while it was in flight: never schedule stale audio.
         guard turnGeneration == entryTurn else { playback.lateAfterFlush += 1; return }
         guard let format = AVAudioFormat(standardFormatWithSampleRate: 24000, channels: 1) else {

@@ -116,6 +116,12 @@ enum State: String, CaseIterable {
                 rms: NativeLiveRms(mean: sample.rmsMean, max: sample.rmsMax, speechBuffers: sample.rmsSpeechBuffers),
                 at: sample.at)
         }
+        // P2-R1: one native-live.log line when the playback memory guard drops the queued turn.
+        device.onPlaybackOverflow = { [weak self] queuedMs, buffers in
+            guard let self else { return }
+            self.journal.appendPlaybackOverflow(sessionID: await self.coordinator.sessionID ?? "unknown",
+                                                queuedMs: queuedMs, buffers: buffers)
+        }
     }
     // Presentation only: an offer never opens a session, an audio engine or the microphone.
     func offerPendingCall(_ job: NativePendingLiveJob?) { pendingCall = job }

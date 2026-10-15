@@ -235,6 +235,7 @@ final class NativeCaptureBuffer: @unchecked Sendable {
     @Published private(set) var droppedFrames = 0
     @Published private(set) var isCapturing = false
     var hasEngine: Bool { engine != nil }
+    var ownerIsHeld: Bool { owner.isOwned }
     var captureDrain: Task<Void, Never>? { drain }
     var onOutput: ((Bool) -> Void)?
     var onInterruption: (() async -> Void)?
@@ -244,17 +245,85 @@ final class NativeCaptureBuffer: @unchecked Sendable {
     private var muted = false
     private let captureInput: AVAudioFormat?
     private let inputDevice: () -> (id: String, name: String)
+    private let owner: AudioOwner
+    private let journal: NativeAudioJournal?
+    private let deviceState: (Bool) -> Bool
+    private let now: () -> Date
+    private var rebuilding = false
+    private var lastRebuildAt: Date?
+    private var resumeTask: Task<Void, Never>?
+    private var startInputID = ""
+    private var startOutputID = ""
+    private var startInputRate: Double = 0
+    private var startOutputRate: Double = 0
+    private var voiceProcessingFailed = false
+    private var sessionFailed = false
+    private(set) var audioReleaseCount = 0
+    private(set) var engineResetCount = 0
+    var hasConfigurationObserver: Bool { configurationObserver != nil }
     // Receives the actual locked converter/buffer, never a substitute PCM implementation.
     var onCapturePrepared: ((NativeCaptureBuffer) -> Void)?
-    init(captureInput: AVAudioFormat? = nil, defaultInput: (() -> (id: String, name: String))? = nil) {
+    init(captureInput: AVAudioFormat? = nil, defaultInput: (() -> (id: String, name: String))? = nil,
+         owner: AudioOwner = .shared, journal: NativeAudioJournal? = nil,
+         deviceState: ((Bool) -> Bool)? = nil, now: (() -> Date)? = nil) {
         self.captureInput = captureInput
         self.inputDevice = defaultInput ?? { Self.defaultDevice(input: true) }
+        self.owner = owner
+        self.journal = journal
+        self.deviceState = deviceState ?? Self.defaultDeviceRunningSomewhere(input:)
+        self.now = now ?? { Date() }
+    }
+    func log(_ name: String, _ fields: [String: String] = [:]) {
+        journal?.record(NativeAudioEvent(name: name, fields: fields))
     }
     func routeChanged() {
-        route = "Microphone: " + inputDevice().name + " · Output: " + Self.defaultDevice(input: false).name
+        let input = inputDevice()
+        let output = Self.defaultDevice(input: false)
+        route = "Microphone: " + input.name + " · Output: " + output.name
+        guard !rebuilding else {
+            log("audio_route_change_ignored", ["reason": "busy"]); return
+        }
+        // Rebuild only for a real change of default input/output device or nominal sample rate.
+        let inputRate = Self.nominalSampleRate(input: true)
+        let outputRate = Self.nominalSampleRate(input: false)
+        guard input.id != startInputID || output.id != startOutputID
+            || inputRate != startInputRate || outputRate != startOutputRate else {
+            log("audio_route_change_ignored", ["reason": "unchanged"]); return
+        }
+        if let last = lastRebuildAt, now().timeIntervalSince(last) < 0.5 {
+            log("audio_route_change_ignored", ["reason": "debounced"]); return
+        }
+        lastRebuildAt = now()
         recovery.changed()
+        scheduleResume()
     }
-    func finishRouteRecovery() async { await recovery.pending?.value }
+    /// R8: a paused route-change auto-resumes on the same input device, time-bound so a paused
+    /// Didi never holds the device. The engine and flock are already released by recovery.changed().
+    private func scheduleResume() {
+        resumeTask?.cancel()
+        resumeTask = Task { [weak self] in
+            guard let self else { return }
+            await self.recovery.pending?.value
+            if self.recovery.awaitingResume { self.resumeInput() }
+            // Time-bound poll for a route that is still settling; never holds the device.
+            let deadline = Date().addingTimeInterval(20)
+            while !Task.isCancelled, Date() < deadline, self.recovery.awaitingResume {
+                try? await Task.sleep(nanoseconds: 250_000_000)
+                if self.recovery.awaitingResume { self.resumeInput() }
+            }
+        }
+    }
+    private func installConfigurationObserver(object: AVAudioEngine?) {
+        let token = captureGeneration
+        configurationObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: object, queue: nil) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.captureGeneration == token else { return }
+                self.routeChanged()
+            }
+        }
+    }
+    func finishRouteRecovery() async { await recovery.pending?.value; await resumeTask?.value }
     private var sendFrame: (@Sendable (Data, UInt64) async throws -> Void)?
     private(set) var captureEpoch: UInt64 = 0
     private lazy var recovery = NativeAudioRouteRecovery(
@@ -313,6 +382,65 @@ final class NativeCaptureBuffer: @unchecked Sendable {
         return (String(device), status == noErr ? (name?.takeRetainedValue() as String? ?? "Unknown device") : "Unknown device")
     }
     func resumeInput() { recovery.resume(); if isCapturing { onResume?() } }
+
+    /// A1-R2: true when the default input or output device is already running somewhere else,
+    /// read read-only and before Didi starts any engine so it reflects other apps only.
+    static func defaultDeviceRunningSomewhere(input: Bool) -> Bool {
+        let device = defaultDeviceID(input: input)
+        guard device != kAudioObjectUnknown else { return false }
+        var property = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceIsRunningSomewhere,
+            mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var running: UInt32 = 0, size = UInt32(MemoryLayout<UInt32>.size)
+        guard AudioObjectGetPropertyData(device, &property, 0, nil, &size, &running) == noErr else { return false }
+        return running != 0
+    }
+    static func defaultDeviceID(input: Bool) -> AudioDeviceID {
+        var property = AudioObjectPropertyAddress(
+            mSelector: input ? kAudioHardwarePropertyDefaultInputDevice : kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var device = AudioDeviceID(0), size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &property, 0, nil, &size, &device) == noErr,
+              device != kAudioObjectUnknown else { return kAudioObjectUnknown }
+        return device
+    }
+    static func nominalSampleRate(input: Bool) -> Double {
+        let device = defaultDeviceID(input: input)
+        guard device != kAudioObjectUnknown else { return 0 }
+        var property = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyNominalSampleRate,
+            mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var rate: Double = 0, size = UInt32(MemoryLayout<Double>.size)
+        guard AudioObjectGetPropertyData(device, &property, 0, nil, &size, &rate) == noErr else { return 0 }
+        return rate
+    }
+    static func isBuiltInSpeakers(outputID: String) -> Bool {
+        guard let device = AudioDeviceID(outputID), device != kAudioObjectUnknown else { return false }
+        var property = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyTransportType,
+            mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var transport: UInt32 = 0, size = UInt32(MemoryLayout<UInt32>.size)
+        guard AudioObjectGetPropertyData(device, &property, 0, nil, &size, &transport) == noErr else { return false }
+        return transport == kAudioDeviceTransportTypeBuiltIn
+    }
+    static func shouldUseVoiceProcessing(outputIsBuiltInSpeakers: Bool, deviceBusy: Bool,
+                                         voiceProcessingFailed: Bool) -> Bool {
+        outputIsBuiltInSpeakers && !deviceBusy && !voiceProcessingFailed
+    }
+    static func vpioSkipReason(builtIn: Bool, deviceBusy: Bool, voiceProcessingFailed: Bool) -> String {
+        if voiceProcessingFailed { return "vpio_failed" }
+        if !builtIn { return "output_not_builtin" }
+        return deviceBusy ? "device_busy" : "unknown"
+    }
+    private static func enableVoiceProcessing(engine: AVAudioEngine) throws {
+        do {
+            try engine.inputNode.setVoiceProcessingEnabled(true)
+            try engine.outputNode.setVoiceProcessingEnabled(true)
+        } catch { throw NativeLiveAudioError.voiceProcessingFailed(code: (error as NSError).code) }
+        guard engine.inputNode.isVoiceProcessingEnabled, engine.outputNode.isVoiceProcessingEnabled else {
+            throw NativeLiveAudioError.voiceProcessingFailed(code: nil)
+        }
+    }
     private var engine: AVAudioEngine?
     private var player: AVAudioPlayerNode?
     private var capture: NativeCaptureBuffer?
@@ -355,6 +483,8 @@ final class NativeCaptureBuffer: @unchecked Sendable {
         }
         captureStatistics = NativeCaptureStatistics(); drainFrames = 0
         sendFrame = send
+        // A new session may try once: clear the per-session VPIO and circuit-breaker state.
+        voiceProcessingFailed = false; sessionFailed = false; lastRebuildAt = nil
         do { try build(send: send); recovery.begin() }
         catch { sendFrame = nil; throw error }
     }
@@ -373,66 +503,90 @@ final class NativeCaptureBuffer: @unchecked Sendable {
         // VP output requires its input-bus format, not the player's 24 kHz mono client format.
         engine.connect(engine.mainMixerNode, to: outputNode, format: hardwareOutput)
     }
-    /// Starts and immediately stops the production voice-processing graph without capture or playback.
-    static func startSilentEngineProbe() throws {
-        let engine = AVAudioEngine(), player = AVAudioPlayerNode()
-        defer { engine.stop() }
-        do {
-            try engine.inputNode.setVoiceProcessingEnabled(true)
-            try engine.outputNode.setVoiceProcessingEnabled(true)
-        } catch { throw NativeLiveAudioError.voiceProcessingFailed(code: (error as NSError).code) }
-        guard engine.inputNode.isVoiceProcessingEnabled, engine.outputNode.isVoiceProcessingEnabled else {
-            throw NativeLiveAudioError.voiceProcessingFailed(code: nil)
-        }
-        let input = engine.inputNode.outputFormat(forBus: 0)
-        guard input.sampleRate > 0, input.channelCount > 0 else { throw NativeLiveAudioError.formatUnavailable }
-        try connectPlayback(engine: engine, player: player, outputNode: engine.outputNode)
-        engine.prepare()
-        do { try engine.start() }
-        catch { throw NativeLiveAudioError.engineFailure(error as NSError) }
-    }
     private func build(send: @escaping @Sendable (Data, UInt64) async throws -> Void) throws {
-        guard !inputDevice().id.isEmpty else { throw NativeLiveAudioError.deviceMissing }
+        let input = inputDevice()
+        guard !input.id.isEmpty else { throw NativeLiveAudioError.deviceMissing }
+        startInputID = input.id
+        startOutputID = Self.defaultDevice(input: false).id
+        startInputRate = Self.nominalSampleRate(input: true)
+        startOutputRate = Self.nominalSampleRate(input: false)
         if let captureInput {
             let capture = try NativeCaptureBuffer(converter: NativePCMConverter(input: captureInput))
             capture.setMuted(muted); self.capture = capture
             activateCapture(capture, send: send)
+            installConfigurationObserver(object: nil)
             return
         }
-        let engine = AVAudioEngine(), player = AVAudioPlayerNode()
-        do {
-            do {
-                try engine.inputNode.setVoiceProcessingEnabled(true)
-                try engine.outputNode.setVoiceProcessingEnabled(true)
-            } catch { throw NativeLiveAudioError.voiceProcessingFailed(code: (error as NSError).code) }
-            guard engine.inputNode.isVoiceProcessingEnabled, engine.outputNode.isVoiceProcessingEnabled else {
-                throw NativeLiveAudioError.voiceProcessingFailed(code: nil)
-            }
-            let hardware = engine.inputNode.outputFormat(forBus: 0)
-            guard hardware.sampleRate > 0, hardware.channelCount > 0 else { throw NativeLiveAudioError.formatUnavailable }
-            let capture = try NativeCaptureBuffer(converter: NativePCMConverter(input: hardware))
-            capture.setMuted(muted)
-            try Self.connectPlayback(engine: engine, player: player, outputNode: engine.outputNode)
-            engine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: hardware, block: capture.makeTap())
-            self.engine = engine; self.player = player; self.capture = capture
-            engine.prepare()
-            do { try engine.start() }
-            catch { throw NativeLiveAudioError.engineFailure(error as NSError) }
-            // Playback starts in write(_:) only after the prebuffer fills, never on an empty queue.
-            route = "Microphone: " + Self.defaultDevice(input: true).name + " · Output: " + Self.defaultDevice(input: false).name
-            activateCapture(capture, send: send)
-            let token = captureGeneration
-            configurationObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil) { [weak self] _ in
-                Task { @MainActor in
-                    guard let self, self.captureGeneration == token else { return }
-                    self.routeChanged()
-                }
-            }
-        } catch {
-            if self.engine != nil { releaseAudio() }
-            else { engine.stop() }
-            throw (error as? NativeLiveAudioError) ?? NativeLiveAudioError.engineFailed(code: (error as NSError).code)
+        // Zero-retry circuit breaker: a failed start never rebuilds within the session.
+        guard !sessionFailed else { throw NativeLiveAudioError.engineFailed(code: 0) }
+        do { try owner.acquire(holder: ObjectIdentifier(self)) }
+        catch let refusal as AudioOwnerError {
+            log("audio_refused", ["reason": refusal.rawValue])
+            throw refusal == .alreadyOwned ? NativeLiveAudioError.audioAlreadyOwned
+                                           : NativeLiveAudioError.audioAlreadyInUse
         }
+        var ready = false
+        defer { if !ready { releaseAudio() } }
+
+        // A1-R2: voice processing only on built-in speakers and only when no device is busy.
+        let builtInOutput = Self.isBuiltInSpeakers(outputID: startOutputID)
+        let deviceBusy = deviceState(true) || deviceState(false)
+        let useVoiceProcessing = Self.shouldUseVoiceProcessing(
+            outputIsBuiltInSpeakers: builtInOutput, deviceBusy: deviceBusy,
+            voiceProcessingFailed: voiceProcessingFailed)
+        if !useVoiceProcessing {
+            log("audio_vpio_skipped", ["reason": Self.vpioSkipReason(builtIn: builtInOutput,
+                                                                     deviceBusy: deviceBusy,
+                                                                     voiceProcessingFailed: voiceProcessingFailed)])
+        }
+        var engine = AVAudioEngine(), player = AVAudioPlayerNode()
+        var hardware = engine.inputNode.outputFormat(forBus: 0)
+        if useVoiceProcessing {
+            do {
+                try Self.enableVoiceProcessing(engine: engine)
+                hardware = engine.inputNode.outputFormat(forBus: 0)
+                guard hardware.sampleRate > 0, hardware.channelCount > 0 else {
+                    throw NativeLiveAudioError.formatUnavailable
+                }
+                try Self.connectPlayback(engine: engine, player: player, outputNode: engine.outputNode)
+            } catch {
+                // One VPIO attempt per session, then plain capture: never a second VPIO attempt.
+                voiceProcessingFailed = true
+                log("audio_vpio_skipped", ["reason": "build_failed"])
+                engine.stop(); engine.reset()
+                engine = AVAudioEngine(); player = AVAudioPlayerNode()
+                hardware = engine.inputNode.outputFormat(forBus: 0)
+                guard hardware.sampleRate > 0, hardware.channelCount > 0 else {
+                    throw NativeLiveAudioError.formatUnavailable
+                }
+                try Self.connectPlayback(engine: engine, player: player, outputNode: engine.outputNode)
+            }
+        } else {
+            guard hardware.sampleRate > 0, hardware.channelCount > 0 else {
+                throw NativeLiveAudioError.formatUnavailable
+            }
+            try Self.connectPlayback(engine: engine, player: player, outputNode: engine.outputNode)
+        }
+        self.engine = engine; self.player = player
+        let capture = try NativeCaptureBuffer(converter: NativePCMConverter(input: hardware))
+        capture.setMuted(muted); self.capture = capture
+        // Tap format is the input node's current output format at install time, never one
+        // captured before voice processing was enabled.
+        engine.inputNode.installTap(onBus: 0, bufferSize: 1024,
+                                    format: engine.inputNode.outputFormat(forBus: 0), block: capture.makeTap())
+        engine.prepare()
+        do { try engine.start() } catch {
+            sessionFailed = true
+            log("audio_start_failed", ["code": String((error as NSError).code)])
+            throw (error as? NativeLiveAudioError) ?? NativeLiveAudioError.engineFailure(error as NSError)
+        }
+        owner.didStartEngine(holder: ObjectIdentifier(self))
+        log("audio_started", ["voiceProcessing": useVoiceProcessing ? "true" : "false"])
+        // Playback starts in write(_:) only after the prebuffer fills, never on an empty queue.
+        route = "Microphone: " + input.name + " · Output: " + Self.defaultDevice(input: false).name
+        activateCapture(capture, send: send)
+        installConfigurationObserver(object: engine)
+        ready = true
     }
     private func activateCapture(_ capture: NativeCaptureBuffer, send: @escaping @Sendable (Data, UInt64) async throws -> Void) {
         isCapturing = true; captureGeneration &+= 1; captureLifetimeActive = true
@@ -519,13 +673,26 @@ final class NativeCaptureBuffer: @unchecked Sendable {
         }
     }
     private func releaseAudio() {
+        rebuilding = true; defer { rebuilding = false }
         captureGeneration &+= 1
+        // Release order: observer first, then player/tap, then stop, reset and drop the engine.
         if let observer = configurationObserver { NotificationCenter.default.removeObserver(observer) }
         configurationObserver = nil
         if let capture { captureStatistics.add(capture.stop()) }
         drain?.cancel(); drain = nil; capture = nil
         flushOutput()
-        if let engine { engine.inputNode.removeTap(onBus: 0); engine.stop() }
-        engine = nil; player = nil; isCapturing = false; inputLevel = 0; outputLevel = 0; isPlayingOutput = false
+        weak let weakEngine = engine
+        if let engine {
+            engine.inputNode.removeTap(onBus: 0)
+            engine.stop()
+            engine.reset()
+            engineResetCount += 1
+        }
+        engine = nil; player = nil
+        if weakEngine != nil { log("audio_release_leak", ["reason": "engine_retained"]) }
+        owner.release(holder: ObjectIdentifier(self))
+        isCapturing = false; inputLevel = 0; outputLevel = 0; isPlayingOutput = false
+        audioReleaseCount += 1
+        log("audio_released", ["reason": "release"])
     }
 }

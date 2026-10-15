@@ -745,6 +745,8 @@ struct RootView: View {
     func applicationWillTerminate(_ notification: Notification) {
         liveCallTimer?.invalidate(); liveCallBadge?.cancel(); liveCallHealth?.cancel()
         model.stopRecording("Didi quit"); hotkey.unregister(); liveShortcuts.unregister()
+        // The kernel would drop the flock anyway; release it and any engine deterministically first.
+        AudioOwner.shared.releaseAll()
         if let keyboardMonitor { NSEvent.removeMonitor(keyboardMonitor) }
         if let terminationMonitor { NSWorkspace.shared.notificationCenter.removeObserver(terminationMonitor) }
     }

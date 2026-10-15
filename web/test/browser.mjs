@@ -72,11 +72,12 @@ try {
       {seq:3,kind:'toolResult',tool:{name:'search',status:'completed',markdown:'**Answer** see [source](https://example.org)',sources:[{title:'lux 123',url:'https://example.org'}]}}
     ]});
     await page.waitForFunction(()=>document.querySelector('#didi-orb').dataset.state==='SPEAKING',{timeout:12000});
+    await page.waitForFunction(()=>document.querySelectorAll('#live-panel').length===1,{timeout:12000});
     assert.equal(await page.locator('#didi-orb').getAttribute('data-posture'),'speaking');
     assert.equal((await page.locator('#live-panel .live-state').textContent()).trim(),'Speaking');
     assert.equal(await page.getByText('Not listening',{exact:true}).count(),0);
     assert.equal(await page.getByText('what is lux 123',{exact:true}).count(),1);
-    assert.equal(await page.locator('.live-latest-turn').getByText('Here is the answer.',{exact:true}).count(),1);
+    assert.equal(await page.locator('.live-latest-turn').first().getByText('Here is the answer.',{exact:true}).count(),1);
     const link=page.locator('#live-panel .live-result p a[href="https://example.org"]');
     assert.equal(await link.count(),1);
     assert.equal(await link.getAttribute('rel'),'noopener noreferrer');

@@ -229,3 +229,189 @@ export function liveMarkup(live: LiveCurrent | undefined, poll: LivePollState = 
     </details>
   </section>`;
 }
+
+// --- Web Live state machine (issue #255 item 2). The web owns the consent gate: every Start path
+// (the Voice-lane pill, the keyboard shortcut, or a native menu requestStart) goes through requestStart,
+// so capture can never begin before the one-time consent popover is answered.
+import type {
+  MicStatus,
+  NativeLiveError,
+  NativeLiveState,
+  NativeToWeb,
+  Route,
+  ThemeMode,
+  WebToNative,
+} from './native-bridge.ts';
+
+export interface LiveConsentCopy {
+  title: string;
+  body: string;
+  allow: string;
+  dismiss: string;
+}
+
+/** The one-time first-run consent popover (dark, no permanent banner). */
+export const LIVE_CONSENT: LiveConsentCopy = {
+  title: 'Turn on Live?',
+  body: 'Audio goes to the Live provider while Live is on.',
+  allow: 'Allow',
+  dismiss: 'Not now',
+};
+
+export interface LiveView {
+  state: NativeLiveState;
+  error?: NativeLiveError;
+  reason?: string;
+  consent: boolean;
+  mic: MicStatus;
+  route: Route | null;
+  theme: ThemeMode;
+  lastSessionEndedAt: string | null;
+  /** The one-time consent popover is open. */
+  consentOpen: boolean;
+  /** A Start was asked before consent; it runs as soon as Allow is pressed. */
+  pendingStart: boolean;
+}
+
+export function initialLiveView(seed: Partial<LiveView> = {}): LiveView {
+  return {
+    state: 'idle',
+    consent: false,
+    mic: 'undetermined',
+    route: null,
+    theme: 'dark',
+    lastSessionEndedAt: null,
+    consentOpen: false,
+    pendingStart: false,
+    ...seed,
+  };
+}
+
+/** A clear error line for every explicit native error state; undefined when there is nothing to say. */
+export function liveErrorText(error: NativeLiveError | undefined, reason?: string): string | undefined {
+  switch (error) {
+    case 'micDenied':
+      return 'Microphone access is blocked. Allow it in System Settings, then press Start again.';
+    case 'deviceUnavailable':
+      return 'No microphone is available. Connect one, then press Start again.';
+    case 'providerError':
+      return reason ? `The Live provider reported a problem: ${reason}` : 'The Live provider reported a problem.';
+    case 'ended':
+      return reason ? `The Live session ended: ${reason}` : 'The Live session ended.';
+    default:
+      return undefined;
+  }
+}
+
+/** The global live pill is shown while live or muted, and never hidden by a collapse, sheet or switcher. */
+export function pillVisible(view: LiveView): boolean {
+  return view.state === 'live' || view.state === 'muted';
+}
+
+export function stopAvailable(view: LiveView): boolean {
+  return view.state === 'live' || view.state === 'muted' || view.state === 'starting';
+}
+
+/** Start is offered whenever the machine is not already busy; after an error the button is live again. */
+export function startAvailable(view: LiveView): boolean {
+  return view.state === 'idle' || view.state === 'error';
+}
+
+export const START_PATHS = ['button', 'shortcut', 'native'] as const;
+export type StartPath = (typeof START_PATHS)[number];
+
+export class LiveMachine {
+  #view: LiveView;
+  #post: (message: WebToNative) => void;
+  #listeners = new Set<(view: LiveView) => void>();
+
+  constructor(post: (message: WebToNative) => void, seed: Partial<LiveView> = {}) {
+    this.#post = post;
+    this.#view = initialLiveView(seed);
+  }
+
+  get view(): LiveView {
+    return this.#view;
+  }
+
+  on(listener: (view: LiveView) => void): () => void {
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
+  }
+
+  #set(next: Partial<LiveView>): void {
+    this.#view = { ...this.#view, ...next };
+    for (const listener of this.#listeners) listener(this.#view);
+  }
+
+  receive(message: NativeToWeb): void {
+    switch (message.type) {
+      case 'hydrate':
+        this.#set({
+          consent: message.consent,
+          mic: message.mic,
+          state: message.live.state,
+          error: message.live.error,
+          reason: message.live.reason,
+          route: message.route,
+          theme: message.theme,
+          lastSessionEndedAt: message.lastSessionEndedAt,
+          consentOpen: false,
+          pendingStart: false,
+        });
+        break;
+      case 'liveState':
+        this.#set({ state: message.state, error: message.error, reason: message.reason });
+        break;
+      case 'route':
+        this.#set({ route: { input: message.input, output: message.output, voiceProcessing: message.voiceProcessing } });
+        break;
+      case 'requestStart':
+        this.requestStart();
+        break;
+      case 'requestStop':
+        this.requestStop();
+        break;
+      case 'levels':
+        break;
+    }
+  }
+
+  /** The only Start path. Without consent it opens the popover and sends nothing to native. */
+  requestStart(): void {
+    if (!startAvailable(this.#view)) return;
+    if (!this.#view.consent) {
+      this.#set({ consentOpen: true, pendingStart: true });
+      return;
+    }
+    this.#post({ type: 'start' });
+    this.#set({ state: 'starting', error: undefined, reason: undefined });
+  }
+
+  /** Stop is immediate and available the moment a session is starting, live or muted. */
+  requestStop(): void {
+    if (!stopAvailable(this.#view)) return;
+    this.#post({ type: 'stop' });
+    this.#set({ state: 'stopping' });
+  }
+
+  /** Allow: persist consent natively, then run a Start that was waiting on the popover. */
+  grantConsent(): void {
+    const start = this.#view.pendingStart;
+    if (!this.#view.consent) this.#post({ type: 'consentGranted' });
+    this.#set({ consent: true, consentOpen: false, pendingStart: false });
+    if (start) {
+      this.#post({ type: 'start' });
+      this.#set({ state: 'starting' });
+    }
+  }
+
+  dismissConsent(): void {
+    if (this.#view.consentOpen) this.#set({ consentOpen: false, pendingStart: false });
+  }
+
+  toggleMute(): void {
+    if (this.#view.state === 'live') this.#post({ type: 'mute' });
+    else if (this.#view.state === 'muted') this.#post({ type: 'unmute' });
+  }
+}

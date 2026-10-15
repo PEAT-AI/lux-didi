@@ -524,3 +524,99 @@ test('manual Live refresh cancels the scheduled handle before held logout', asyn
   assert.equal(timers.size,0,'logout must leave no lost Live timer');
   assert.equal(context.liveTimer,undefined);assert.equal(context.liveBusy,false);
 });
+
+// --- Web Live state machine (issue #255 items 2, 10, 11). ---
+import { LIVE_CONSENT, LiveMachine, liveErrorText, pillVisible, startAvailable, stopAvailable } from '../src/live-view.ts';
+import { createBridge, createFakeNative } from '../src/native-bridge.ts';
+
+const harness = (seed = {}) => {
+  const posted: { type: string }[] = [];
+  const machine = new LiveMachine((message) => posted.push(message as { type: string }), seed);
+  return { posted, machine };
+};
+
+test('the first Start opens the consent popover and sends nothing to native', () => {
+  const { posted, machine } = harness();
+  machine.requestStart();
+  assert.equal(machine.view.consentOpen, true);
+  assert.equal(machine.view.pendingStart, true);
+  assert.deepEqual(posted, [], 'no start reaches native before Allow');
+  assert.match(LIVE_CONSENT.body, /Audio goes to the Live provider while Live is on/);
+});
+
+test('a native requestStart also shows the consent popover, so a shortcut cannot bypass it', () => {
+  const { machine } = harness();
+  const bridge = createBridge();
+  const fake = createFakeNative((message) => bridge.receive(message));
+  bridge.useTransport((message) => fake.handle(message));
+  bridge.onNative((message) => machine.receive(message));
+  fake.requestStart();
+  assert.equal(machine.view.consentOpen, true);
+  assert.equal(machine.view.pendingStart, true);
+});
+
+test('after Allow the pending Start runs once with consentGranted first', () => {
+  const { posted, machine } = harness();
+  machine.requestStart();
+  machine.grantConsent();
+  assert.deepEqual(posted, [{ type: 'consentGranted' }, { type: 'start' }]);
+  assert.equal(machine.view.consent, true);
+  assert.equal(machine.view.state, 'starting');
+});
+
+test('once consent is granted, Start is one click', () => {
+  const { posted, machine } = harness({ consent: true });
+  machine.requestStart();
+  assert.deepEqual(posted, [{ type: 'start' }]);
+});
+
+test('native requestStart and requestStop drive the same state machine', () => {
+  const { posted, machine } = harness({ consent: true });
+  machine.receive({ type: 'requestStart' });
+  assert.equal(machine.view.state, 'starting');
+  machine.receive({ type: 'liveState', state: 'live' });
+  machine.receive({ type: 'requestStop' });
+  assert.equal(machine.view.state, 'stopping');
+  assert.deepEqual(posted.map((message) => message.type), ['start', 'stop']);
+});
+
+test('mic denied shows a clear error line and leaves Start available, never a dead button', () => {
+  const { posted, machine } = harness({ consent: true });
+  machine.requestStart();
+  machine.receive({ type: 'liveState', state: 'error', error: 'micDenied' });
+  assert.equal(startAvailable(machine.view), true);
+  assert.match(liveErrorText(machine.view.error, machine.view.reason)!, /Microphone access is blocked/);
+  machine.requestStart();
+  assert.equal(posted.filter((message) => message.type === 'start').length, 2, 'Start retries after an error');
+});
+
+test('the pill is visible while live or muted only', () => {
+  const { machine } = harness({ consent: true });
+  assert.equal(pillVisible(machine.view), false);
+  machine.receive({ type: 'liveState', state: 'live' });
+  assert.equal(pillVisible(machine.view), true);
+  machine.receive({ type: 'liveState', state: 'muted' });
+  assert.equal(pillVisible(machine.view), true);
+  machine.receive({ type: 'liveState', state: 'idle' });
+  assert.equal(pillVisible(machine.view), false);
+});
+
+test('Stop responds immediately during a live session, ignoring levels churn', () => {
+  const { posted, machine } = harness({ consent: true });
+  machine.receive({ type: 'liveState', state: 'live' });
+  for (let i = 0; i < 50; i += 1) machine.receive({ type: 'levels', input: [0.1], output: [0.2] });
+  assert.equal(stopAvailable(machine.view), true);
+  machine.requestStop();
+  assert.equal(machine.view.state, 'stopping');
+  assert.deepEqual(posted.map((message) => message.type), ['stop']);
+});
+
+test('hydrate settles consent, mic, theme and last-session time and closes the popover', () => {
+  const { machine } = harness();
+  machine.receive({ type: 'hydrate', consent: true, mic: 'granted', live: { state: 'idle' }, route: null, theme: 'light', lastSessionEndedAt: '2026-10-15T08:31:00Z' });
+  assert.equal(machine.view.consent, true);
+  assert.equal(machine.view.mic, 'granted');
+  assert.equal(machine.view.theme, 'light');
+  assert.equal(machine.view.consentOpen, false);
+  assert.equal(machine.view.lastSessionEndedAt, '2026-10-15T08:31:00Z');
+});

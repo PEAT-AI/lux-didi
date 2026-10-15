@@ -50,3 +50,38 @@ test('code spans are not re-parsed as emphasis', () => {
 test('empty input renders nothing', () => {
   assert.equal(renderMarkdown(''), '');
 });
+
+test('renders an ordered list', () => {
+  assert.match(renderMarkdown('1. one\n2. two'), /<ol><li>one<\/li><li>two<\/li><\/ol>/);
+});
+
+test('renders a blockquote', () => {
+  assert.match(renderMarkdown('> quoted'), /<blockquote>quoted<\/blockquote>/);
+});
+
+test('renders script and img onerror inert, never as markup', () => {
+  const html = renderMarkdown('<script>alert(1)</script> <img src=x onerror=1>');
+  assert.equal(html.includes('<script'), false);
+  assert.equal(html.includes('<img'), false);
+  assert.match(html, /&lt;script&gt;/);
+});
+
+test('never emits a style attribute or an inline event handler', () => {
+  const html = renderMarkdown('<p style="color:red">x</p>');
+  assert.equal(/style=/i.test(html), false);
+});
+
+test('refuses javascript:, data:, file: and vbscript: links in any case', () => {
+  for (const href of ['javascript:alert(1)', 'JaVaScRiPt:alert(1)', 'data:text/html,x', 'file:///etc/passwd', 'vbscript:msgbox(1)']) {
+    assert.equal(renderMarkdown(`[x](${href})`).includes('<a'), false, href);
+  }
+});
+
+test('an attribute breakout inside a link destination is escaped', () => {
+  const html = renderMarkdown('[x](https://example.org/"onmouseover="alert(1))');
+  assert.equal(html.includes('onmouseover="'), false);
+});
+
+test('a bare url is left as text, never autolinked', () => {
+  assert.equal(renderMarkdown('see https://example.org/a').includes('<a'), false);
+});

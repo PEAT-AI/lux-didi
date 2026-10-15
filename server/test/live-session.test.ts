@@ -9,6 +9,7 @@ import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { createToolsOwner, toolsMigrations } from '../tools/index.js';
 import { declarationsFor, runToolCalls } from '../tools/declarations.js';
+import { shapeGcalCalendars, shapeGcalList, shapeGmailList } from '../tools/live-shape.js';
 import { LiveToolJobs, type ToolJobResult, type JobTimer } from '../tools/jobs.js';
 import type { LiveAuthority } from '../tools/types.js';
 import { liveProfileIdentity } from '../live/config.js';
@@ -1890,4 +1891,23 @@ test('a cached read expires after ten minutes even inside one session', async t 
   h.advance(10 * 60 * 1000);
   await settleLiveTool(h, 't2', 'mattermost_list_channels', { limit: 12 });
   assert.equal(h.calls.filter(call => call.name === 'mattermost_list_channels').length, 2, 'an expired entry is read again');
+});
+
+test('U1: calendar and Gmail model text carries no raw url and names each source', () => {
+  const calendar = shapeGcalList({ events: [
+    { summary: 'Standup', start: { dateTime: '2024-01-01T09:00:00Z' }, htmlLink: 'https://calendar.google.com/event?eid=e1' },
+    { start: { dateTime: '2024-01-02T09:00:00Z' }, htmlLink: 'https://calendar.google.com/event?eid=e2' },
+  ] });
+  assert.equal(/https?:\/\//.test(calendar.text), false, 'calendar model text carries no raw url');
+  assert.equal(calendar.text.includes('source:'), false);
+  assert.deepEqual(calendar.sources, [
+    { title: 'Calendar: Standup', url: 'https://calendar.google.com/event?eid=e1', sourceType: 'calendar' },
+    { title: 'Open in Google Calendar', url: 'https://calendar.google.com/event?eid=e2', sourceType: 'calendar' },
+  ]);
+  const mail = shapeGmailList({ messages: [
+    { id: 'm1', snippet: 'hello', labelIds: [], headers: { Subject: 'Budget' } },
+  ] });
+  assert.equal(/https?:\/\//.test(mail.text), false, 'gmail model text carries no raw url');
+  assert.deepEqual(mail.sources, [{ title: 'Gmail: Budget', url: 'https://mail.google.com/mail/u/0/#inbox/m1', sourceType: 'gmail' }]);
+  assert.deepEqual(shapeGcalCalendars({ calendars: [{ summary: 'Work' }] }).sources, undefined);
 });

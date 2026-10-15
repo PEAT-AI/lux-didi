@@ -4,10 +4,16 @@ import { sourceCards } from '../tools/source-cards.js';
 
 test('approved display sources retain Unicode, order, dedup and separate references', () => {
   assert.deepEqual(sourceCards({ text: '[Überblick 🌱](https://example.com/a#42) insight 42 #42 [repeat](https://example.com/a#42)\nsource: https://example.com/b' }), [
-    { title: 'Überblick 🌱', url: 'https://example.com/a#42' }, { title: '42' }, { title: 'https://example.com/b', url: 'https://example.com/b' },
+    { title: 'Überblick 🌱', url: 'https://example.com/a#42' }, { title: '42' }, { title: 'example.com/b', url: 'https://example.com/b' },
   ]);
-  assert.deepEqual(sourceCards({ text: 'https://example.com/a#99' }), [{ title: 'https://example.com/a#99', url: 'https://example.com/a#99' }]);
+  assert.deepEqual(sourceCards({ text: 'https://example.com/a#99' }), [{ title: 'example.com/a', url: 'https://example.com/a#99' }]);
   assert.deepEqual(sourceCards({ text: 'insight 42' }), [{ title: '42' }], 'references are local to each tool card');
+});
+
+test('a bare url card is labelled by host and first path segment, never the url itself', () => {
+  assert.deepEqual(sourceCards({ text: 'https://www.example.com/docs/page?x=1' }), [{ title: 'example.com/docs', url: 'https://www.example.com/docs/page?x=1' }]);
+  assert.deepEqual(sourceCards({ text: 'see https://example.com.' }), [{ title: 'example.com', url: 'https://example.com' }]);
+  for (const card of sourceCards({ text: 'https://example.com' })) assert.notEqual(card.title, card.url);
 });
 
 test('structured and extracted sources enforce the same HTTPS destination rules', () => {

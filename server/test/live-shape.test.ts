@@ -98,7 +98,8 @@ test('calendar list keeps time, title, location, attendees, description and conf
   assert.match(shaped.text, /attendees: Dana, kim@example\.invalid/);
   assert.match(shaped.text, /conference: yes/);
   assert.match(shaped.text, /Daily sync/);
-  assert.match(shaped.text, /source: https:\/\/calendar\.google\.com\/event\?eid=e1/);
+  assert.equal(/https?:\/\//.test(shaped.text), false, 'calendar model text has no raw link url');
+  assert.deepEqual(shaped.sources, [{ title: 'Calendar: Standup', url: 'https://calendar.google.com/event?eid=e1', sourceType: 'calendar' }]);
 });
 
 test('mattermost keeps text, author, channel, timestamp, reactions and thread position; drops system posts', () => {
@@ -108,7 +109,8 @@ test('mattermost keeps text, author, channel, timestamp, reactions and thread po
   ] });
   assert.match(shaped.text, /town-square \| Rob \| 2026-10-11T10:00:00Z \(2 reactions\) \(2 replies\)/);
   assert.match(shaped.text, /Standup at ten/);
-  assert.match(shaped.text, /source: https:\/\/chat\.example\/pl\/abc/);
+  assert.equal(/https?:\/\//.test(shaped.text), false, 'mattermost model text has no raw permalink');
+  assert.deepEqual(shaped.sources, [{ title: 'Mattermost: #town-square', url: 'https://chat.example/pl/abc', sourceType: 'mattermost' }]);
   assert.equal(shaped.text.includes('joined the channel'), false, 'system join/leave posts must be dropped');
 });
 
@@ -171,7 +173,11 @@ test('mattermost search results (results array) shape with author, channel and p
   const shaped = shapeMattermost('mattermost_search', SEARCH_RESULTS);
   assert.match(shaped.text, /harbour \| river \| 2026-10-11T10:00:00\.000Z/);
   assert.match(shaped.text, /Mooring drift log is ready/);
-  assert.match(shaped.text, /source: https:\/\/chat\.example\.invalid\/t\/harbour\/pl\/p1/);
+  assert.equal(/https?:\/\//.test(shaped.text), false, 'mattermost search text has no raw permalink');
+  assert.deepEqual(shaped.sources, [
+    { title: 'Mattermost: #harbour', url: 'https://chat.example.invalid/t/harbour/pl/p1', sourceType: 'mattermost' },
+    { title: 'Mattermost: #harbour', url: 'https://chat.example.invalid/t/harbour/pl/p2', sourceType: 'mattermost' },
+  ]);
   assert.equal(shaped.text.length > 0, true);
 });
 

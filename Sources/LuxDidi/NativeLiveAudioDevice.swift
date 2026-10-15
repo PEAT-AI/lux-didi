@@ -755,7 +755,7 @@ struct NativeLiveInterruptionSample: Sendable {
     /// E1: gather the barge-in facts the capture and playback paths already hold, then postRms after the delay.
     func interruption(turnCompleteSeen: Bool) async {
         let at = now()
-        let bufferedPlaybackMs = scheduledPlaybackFrames <= 0 ? 0 : scheduledPlaybackFrames * 1000 / 24000
+        let bufferedPlaybackMs = playbackQueue.scheduledFrames <= 0 ? 0 : playbackQueue.scheduledFrames * 1000 / 24000
         let sinceAudio = lastModelAudioAt.map { max(0, Int(at.timeIntervalSince($0) * 1000)) } ?? -1
         let pre = rmsWindow(from: at.addingTimeInterval(-1), to: at)
         await onLiveInterrupted?(NativeLiveInterruptionSample(isPostRms: false, bufferedPlaybackMs: bufferedPlaybackMs,

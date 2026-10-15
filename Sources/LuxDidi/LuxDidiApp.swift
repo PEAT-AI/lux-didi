@@ -325,15 +325,9 @@ import Security
         case .stop: stopLive()
         case .mute: if live?.isMuted == false { live?.toggleMute() }
         case .unmute: if live?.isMuted == true { live?.toggleMute() }
-        case .openExternal(let url): openExternalBridge(url)
+        case .openExternal(let url): shell?.openExternal(url)
         case .ready, .consentGranted, .theme, .unknown: break
         }
-    }
-
-    private func openExternalBridge(_ urlString: String) {
-        guard let url = URL(string: urlString), let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https" else { return }
-        NSWorkspace.shared.open(url)
     }
 
     private static func bridgeMic(_ state: PermissionState) -> String {

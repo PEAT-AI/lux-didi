@@ -12,6 +12,14 @@ enum PageState: Equatable { case loading, ready, unavailable }
         window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(webView)
     }
+    /// A web-requested external open. It reuses the same U2 policy as a clicked link, so a foreign
+    /// http(s) URL opens in the system browser and a same-origin or unsafe URL is ignored.
+    func openExternal(_ urlString: String) {
+        guard let url = URL(string: urlString),
+              ExternalLinkPolicy.decide(url: url, navigationType: .linkActivated, isMainFrame: true, ownOrigin: descriptor.origin) == .openExternal
+        else { return }
+        NSWorkspace.shared.open(url)
+    }
     let webView: WKWebView
     @Published private(set) var state: PageState = .unavailable
     @Published private(set) var detail = "Connect to the approved service."

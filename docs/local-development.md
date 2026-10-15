@@ -188,3 +188,7 @@ its config source) under the native stdout rule, then drives every configured co
 that must call tools, and one real Live turn that must call a tool and keep the session open; it prints one
 PASS/FAIL line per probe and exits 0 only when all probes pass. Run it after every install and before every
 release merge; one run makes at most two model turns, so never run it in a loop.
+
+Before any probe it builds `server/dist` when the entry is missing or older than the newest source file under
+`server/`, so a run never judges stale code. `SMOKE_LAUNCH_TIMEOUT_S` sets the host launch budget in seconds
+(default 6); a launch that never readies prints `FAIL probe1-strict-supervisor launch=timeout after=<s> load=<1/5/15>` and the remaining probes `SKIP (no host)`.

@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import SwiftUI
 
 /// Fake-seam proofs for the native bridge contract: encode/decode, queue-until-ready, consent
 /// persistence, the requestStart menu route, theme mapping, and the 20 Hz level cap. No window,
@@ -119,15 +120,24 @@ import Foundation
               "route carries the voice-processing flag")
         check(BridgeRoute.parse("") == nil, "empty route is nil")
 
-        // 10. Drag band: it claims only the top strip and falls through below it.
+        // 10. Drag band: mounted above a hosting view, it claims only the top strip.
         check(WindowDragBandView.bandHeight > 0, "drag band has a positive height")
-        let band = WindowDragBandView(frame: NSRect(x: 0, y: 572, width: 800, height: WindowDragBandView.bandHeight))
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        let hosting = NSHostingView(rootView: Color.black)
+        hosting.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(hosting)
+        NSLayoutConstraint.activate([
+            hosting.topAnchor.constraint(equalTo: container.topAnchor),
+            hosting.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            hosting.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            hosting.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        ])
+        let band = WindowDragBand.attach(to: container)
+        container.layoutSubtreeIfNeeded()
         check(band.mouseDownCanMoveWindow == false, "drag band is not a movable background")
         check(band.acceptsFirstMouse(for: nil), "drag band accepts the first click on an inactive window")
-        let host = NSView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
-        host.addSubview(band)
-        check(band.hitTest(NSPoint(x: 200, y: 580)) === band, "a point in the top strip hits the drag band")
-        check(band.hitTest(NSPoint(x: 200, y: 300)) == nil, "a point below the strip falls through to the web content")
+        check(container.hitTest(NSPoint(x: 400, y: 590)) === band, "the real content hierarchy routes the top strip to the drag band")
+        check(container.hitTest(NSPoint(x: 400, y: 300)) !== band, "a point below the strip does not hit the drag band")
 
         // 11. Unknown-type diagnostic goes to the native-live.log file.
         let logURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("bridge-log-\(UUID().uuidString).log")

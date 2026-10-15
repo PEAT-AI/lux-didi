@@ -21,6 +21,9 @@ export interface IntentSubCall { key: string; name: string; args: JsonObject }
 export interface IntentSubResult { key: string; name: string; ok: boolean; text: string; originalCharacters: number; omittedCharacters: number; code?: string }
 export interface IntentPlan {
   calls: readonly IntentSubCall[];
+  /** Optional second phase: reads derived from the first phase's accepted text (calendar: list
+then one event read per calendar id). */
+  follow?(results: readonly IntentSubResult[]): { name: string; args: JsonObject }[];
   /** Combine the sub-results into the one model-visible digest. */
   combine(results: readonly IntentSubResult[]): ShapedResult;
 }
@@ -132,7 +135,7 @@ function callsFor(name: IntentToolName, args: Record<string, unknown>): IntentSu
     return [call('0', INTERNAL.mailList, list)];
   }
   if (name === 'chat') return [call('0', INTERNAL.chatSearch, { query: stringOrEmpty(args['query']), limit: 5 })];
-  if (name === 'calendar') return [call('0', INTERNAL.calendars, { maxResults: 20 }), call('1', INTERNAL.calendarList, {})];
+  if (name === 'calendar') return [call('0', INTERNAL.calendars, { maxResults: 20 })];
   // brief fans out in parallel over every source at once.
   return [
     call('0', INTERNAL.calendars, { maxResults: 20 }),
@@ -142,9 +145,24 @@ function callsFor(name: IntentToolName, args: Record<string, unknown>): IntentSu
   ];
 }
 
+/** Calendar ids the shaped calendar list carries in square brackets, deduplicated and bounded. */
+export function calendarIds(text: string): string[] {
+  const ids: string[] = [];
+  for (const match of text.matchAll(/\[([^\]\n]{1,256})\]/g)) ids.push(match[1]!);
+  return [...new Set(ids)].slice(0, 8);
+}
+
+/** One event read per calendar the first phase listed, so the calendar intent covers all calendars. */
+function calendarFollow(results: readonly IntentSubResult[]): { name: string; args: JsonObject }[] {
+  const listed = results.find(result => result.ok && result.name === INTERNAL.calendars);
+  if (!listed) return [];
+  return calendarIds(listed.text).map(id => ({ name: INTERNAL.calendarList, args: { calendarId: id } }));
+}
+
 function sourceLabel(name: string): string {
   switch (name) {
     case INTERNAL.calendars: return 'calendar';
+    case INTERNAL.calendarList: return 'calendar';
     case INTERNAL.mailList: return 'mail';
     case INTERNAL.chatSearch: return 'chat';
     case INTERNAL.knowledgeSearch: return 'knowledge';
@@ -185,6 +203,7 @@ export function planIntent(name: IntentToolName, args: unknown): IntentPlan {
   const calls = callsFor(name, accepted);
   return {
     calls,
+    ...(name === 'calendar' || name === 'brief' ? { follow: calendarFollow } : {}),
     combine: results => digestFrom(results, name === 'brief'),
   };
 }

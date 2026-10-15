@@ -5,7 +5,7 @@ import * as labels from '../domain/labels.js';
 import { definitionsInTransaction } from '../tools/index.js';
 import { LiveToolJobs, type JobTimer } from '../tools/jobs.js';
 import { declarationsFor, runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
-import { isIntentTool, planIntent, intentResponse, type IntentToolName } from '../tools/intent.js';
+import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
 import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';
@@ -989,29 +989,57 @@ export class LiveSessionOwner {
         cached.set(unit.index, hit);
       }
       // One AbortController per model call; the batch stays a single dispatch so same-endpoint reads
-      // keep their order, and a cancellation aborts exactly its own call's signal.
+      // keep their order, and a cancellation aborts exactly its own call. Each intent sub-read also
+      // carries its own deadline, so one slow source never holds the whole turn.
       const signals = new Map<string, AbortSignal>();
-      for (const unit of pending) {
-        const aborter = new AbortController();
-        handle.callAborts.set(unit.call.id, aborter);
-        handle.callStartedAt.set(unit.call.id, this.#now());
-        // Each intent sub-read has its own deadline, so one slow source never holds the whole turn.
+      const registerSignals = (unit: Unit, subs: { key: string }[]): void => {
+        const aborter = handle.callAborts.get(unit.call.id)!;
         const bounded = unit.intent === undefined ? aborter.signal : AbortSignal.any([aborter.signal, AbortSignal.timeout(INTENT_SUB_DEADLINE_MS)]);
-        for (const sub of unit.subs) signals.set(sub.key, bounded);
+        for (const sub of subs) signals.set(sub.key, bounded);
+      };
+      for (const unit of pending) {
+        handle.callAborts.set(unit.call.id, new AbortController());
+        handle.callStartedAt.set(unit.call.id, this.#now());
+        registerSignals(unit, unit.subs);
       }
       const subCalls = pending.flatMap(unit => unit.subs.map(sub => ({ id: sub.key, name: sub.name, args: sub.args })));
       const offsets = new Map<number, number>();
       { let at = 0; for (const unit of pending) { offsets.set(unit.index, at); at += unit.subs.length; } }
-      const batch: Batch | undefined = subCalls.length === 0 ? undefined : await (async () => {
+      const runBatch = async (calls: { id: string; name: string; args: JsonObject }[], useStep: number): Promise<Batch | undefined> => {
+        if (calls.length === 0) return undefined;
         if (this.#settled(handle) || generation !== handle.generation) throw new LiveError('invalidated');
-        const raw = await runToolCalls(this.#tools!.owner, subCalls, { registry: handle.registry, host, signals,
+        const raw = await runToolCalls(this.#tools!.owner, calls, { registry: handle.registry, host, signals,
           authority: { isCurrent: async (_host, _tool, signal) => dispatchGate.state === 'allowed' && !signal.aborted && generation === handle.generation && !this.#settled(handle) }, control,
-          step, contentIndex: 0, seenIds: handle.seenIds, baseClasses: [handle.inputClass] });
+          step: useStep, contentIndex: 0, seenIds: handle.seenIds, baseClasses: [handle.inputClass] });
         // Completion never sends to the old transport. With no active authority, retain references for pickup.
         if (!this.lookupAuthority(host.runId) && !this.lookupJobAuthority(host.runId)) return raw;
-        const gated = await authorizeToolBatch(this.#tools!.owner, raw, { host, control, baseClasses: [handle.inputClass] });
-        return gated;
-      })();
+        return await authorizeToolBatch(this.#tools!.owner, raw, { host, control, baseClasses: [handle.inputClass] });
+      };
+      const readSub = (source: Batch | undefined, key: string, name: string): IntentSubResult => {
+        const slot = source?.bindings.findIndex(binding => binding.callId === key) ?? -1;
+        const record = slot >= 0 ? source!.tools[slot] : undefined;
+        const accepted = source?.accepted.find(result => result.binding.callId === key);
+        const response = accepted?.response ?? {};
+        const text = typeof response.text === 'string' ? response.text : '';
+        const ok = record?.status === 'completed' && accepted !== undefined;
+        return { key, name, ok, text, originalCharacters: typeof response.originalCharacters === 'number' ? response.originalCharacters : text.length, omittedCharacters: typeof response.omittedCharacters === 'number' ? response.omittedCharacters : 0 };
+      };
+      const batch = await runBatch(subCalls, step);
+      if ((this.#settled(handle) || generation !== handle.generation)) return;
+      // Phase 2: calendar and brief enumerate their calendars first, then read a bounded event slice
+      // per calendar id the shaped list carried, so the calendar intent covers every calendar.
+      const followUps = new Map<number, IntentSubCall[]>();
+      const phase2: { id: string; name: string; args: JsonObject }[] = [];
+      for (const unit of pending) {
+        if (unit.plan?.follow === undefined) continue;
+        const phase1 = unit.subs.map(sub => readSub(batch, sub.key, sub.name));
+        const extra = unit.plan.follow(phase1).map((call, n) => ({ key: `${unit.call.id}~f${n}`, name: call.name, args: call.args }));
+        if (extra.length === 0) continue;
+        followUps.set(unit.index, extra);
+        registerSignals(unit, extra);
+        phase2.push(...extra.map(sub => ({ id: sub.key, name: sub.name, args: sub.args })));
+      }
+      const followBatch = await runBatch(phase2, ++handle.toolStep);
       if ((this.#settled(handle) || generation !== handle.generation)) return;
       for (const unit of pending) handle.callAborts.delete(unit.call.id);
       responses = event.calls.map((call, index) => {
@@ -1022,13 +1050,9 @@ export class LiveSessionOwner {
         const record = batch?.tools[base];
         const reason = batch?.error?.reason ?? record?.reason ?? 'tool_result_denied';
         if (unit.intent !== undefined && unit.plan !== undefined && batch) {
-          const subResults = unit.subs.map((sub, n) => {
-            const accepted = batch.accepted.find(result => result.binding.callId === sub.key);
-            const response = accepted?.response ?? {};
-            const text = typeof response.text === 'string' ? response.text : '';
-            const ok = batch.tools[base + n]?.status === 'completed' && accepted !== undefined;
-            return { key: sub.key, name: sub.name, ok, text, originalCharacters: typeof response.originalCharacters === 'number' ? response.originalCharacters : text.length, omittedCharacters: typeof response.omittedCharacters === 'number' ? response.omittedCharacters : 0 };
-          });
+          const first = unit.subs.map(sub => readSub(batch, sub.key, sub.name));
+          const second = (followUps.get(index) ?? []).map(sub => readSub(followBatch, sub.key, sub.name));
+          const subResults = [...first, ...second];
           const digest = unit.plan.combine(subResults);
           const ok = subResults.some(result => result.ok);
           projections[index] = { name: call.name, status: ok ? 'completed' : 'error', markdown: noEmptyResult(digest.text), sources: [] };
@@ -1050,7 +1074,7 @@ export class LiveSessionOwner {
         if (started !== undefined) latency.push({ tool: unit.call.name, ms: Math.max(0, this.#now() - started) });
         handle.callStartedAt.delete(unit.call.id);
       }
-      hostLogEvent({ event: 'live_tool_turn', sequence: event.sequence, toolCallsThisTurn: units.reduce((sum, unit) => sum + unit.subs.length, 0), toolLatencyMs: latency, toolResponseWhileGenerating: handle.speaking });
+      hostLogEvent({ event: 'live_tool_turn', sequence: event.sequence, toolCallsThisTurn: units.reduce((sum, unit) => sum + unit.subs.length + (followUps.get(unit.index)?.length ?? 0), 0), toolLatencyMs: latency, toolResponseWhileGenerating: handle.speaking });
     }
     if ((this.#settled(handle) || generation !== handle.generation)) return;
     for (const [index, projection] of projections.entries()) {

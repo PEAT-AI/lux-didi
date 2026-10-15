@@ -175,7 +175,7 @@ async function harness(t: TestContext, overrides: {
     let calendarEndpoint: { id: string; url: string; account: string; resource: string } | undefined;
     let calendarSdk: Server | undefined;
     let calendarTransport: WebStandardStreamableHTTPServerTransport | undefined;
-    const calendarSchemas = [{ name: 'gcal_calendars', inputSchema: { type: 'object' } }];
+    const calendarSchemas = [{ name: 'gcal_calendars', inputSchema: { type: 'object' } }, { name: 'gcal_list', inputSchema: { type: 'object' } }];
     if (overrides.calendar) {
       calendarEndpoint = { id: 'calendar', url: 'https://fixture.invalid/calendar', account: 'account', resource: 'resource' };
       registry.register(calendarEndpoint); registry.enable(calendarEndpoint.id); registry.allowEgress(calendarEndpoint.id);
@@ -184,7 +184,9 @@ async function harness(t: TestContext, overrides: {
       calendarSdk.setRequestHandler('tools/list', () => ({ tools: structuredClone(calendarSchemas) }) as never);
       calendarSdk.setRequestHandler('tools/call', req => {
         calls.push({ name: req.params.name, args: req.params.arguments });
-        return { content: [{ type: 'text', text: JSON.stringify({ calendars: [{ id: 'primary', summary: 'Primary' }] }) }] };
+        return { content: [{ type: 'text', text: JSON.stringify({ data: req.params.name === 'gcal_list'
+          ? { events: [{ summary: `Event on ${String(req.params.arguments?.['calendarId'] ?? 'primary')}` }] }
+          : { calendars: [{ id: 'primary', summary: 'Primary' }, { id: 'work', summary: 'Work' }] } }) }] };
       });
       await calendarSdk.connect(calendarTransport);
     }
@@ -218,7 +220,7 @@ async function harness(t: TestContext, overrides: {
     }
     if (overrides.calendar && calendarEndpoint) {
       toolOwner.applyConnection({ schemaVersion: 1, ownerId: store.assistantId, connectionId: 'calendar', generation: 1, enabled: true, connector: 'google',
-        endpoint: { ...calendarEndpoint, credentialRef: null }, toolNames: ['gcal_calendars'], schemaDigest: canonicalToolDigest(calendarSchemas),
+        endpoint: { ...calendarEndpoint, credentialRef: null }, toolNames: ['gcal_calendars', 'gcal_list'], schemaDigest: canonicalToolDigest(calendarSchemas),
         sourcePolicy: { id: 'live-fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
         route: { identity: liveProfileIdentity(profile), allowedClasses: ['ordinary'] },
         bounds: { maxQueryChars: 200, maxSearchLimit: 60, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 } });
@@ -2075,4 +2077,16 @@ test('a turn logs dead air from the owner turn end to the first model audio', as
   assert.ok(dead, 'dead air is logged');
   assert.equal(typeof dead!.deadAirMs, 'number');
   assert.ok(dead!.deadAirMs! >= 0);
+});
+test('the calendar intent reads events from every calendar the owner keeps', async t => {
+  const h = await harness(t, { tools: true, calendar: true });
+  await attached(h, 'calendar-all');
+  h.f.send({ toolCall: { functionCalls: [{ id: 'cal', name: 'calendar', args: {} }] } });
+  for (let i = 0; i < 2000 && toolResponseCount(h) === 0; i++) await tick();
+  assert.equal(toolResponseCount(h), 1, 'one response for the calendar intent');
+  assert.ok(h.calls.some(call => call.name === 'gcal_calendars'), 'the calendars are enumerated first');
+  const response = h.f.frames.find(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame) as { toolResponse: { functionResponses: { response: { text: string } }[] } };
+  const lists = h.calls.filter(call => call.name === 'gcal_list').map(call => (call.args as { calendarId?: string }).calendarId).sort();
+  assert.deepEqual(lists, ['primary', 'work'], 'one event read per calendar, all calendars server-side');
+  assert.match(response.toolResponse.functionResponses[0]!.response.text, /Event on work/);
 });

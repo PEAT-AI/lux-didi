@@ -250,7 +250,12 @@ export function shapeGmailList(data: Record<string, unknown>): ShapedResult {
 
 export function shapeGcalCalendars(data: Record<string, unknown>): ShapedResult {
   const calendars = Array.isArray(data['calendars']) ? data['calendars'] : [];
-  const lines = calendars.filter(isRecord).map(entry => `- ${field(entry, 'summary', 'name') || str(entry['id']) || 'calendar'}`);
+  // The id stays in the shaped line so the host can read events from every calendar the owner keeps.
+  const lines = calendars.filter(isRecord).map(entry => {
+    const name = field(entry, 'summary', 'name') || 'calendar';
+    const id = str(entry['id']);
+    return id ? `- ${name} [${id}]` : `- ${name}`;
+  });
   return capped(shaped(lines.join('\n')));
 }
 

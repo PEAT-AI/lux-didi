@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { INTENT_TOOL_NAMES, INTERNAL, intentDeclarations, isIntentTool, planIntent, validateIntent, type IntentSubResult } from '../tools/intent.js';
+import { INTENT_TOOL_NAMES, INTERNAL, calendarIds, intentDeclarations, isIntentTool, planIntent, validateIntent, type IntentSubResult } from '../tools/intent.js';
 import { LIVE_RESULT_CHARS } from '../tools/live-shape.js';
 
 const result = (name: string, ok: boolean, text: string): IntentSubResult => ({ key: '0', name, ok, text, originalCharacters: text.length, omittedCharacters: 0 });
@@ -38,8 +38,21 @@ test('mail lists by query, or reads one message by id', () => {
   assert.deepEqual(planIntent('mail', { id: '18c' }).calls.map(call => call.name), [INTERNAL.mailRead]);
 });
 
-test('calendar merges events and the calendar list server-side', () => {
-  assert.deepEqual(planIntent('calendar', {}).calls.map(call => call.name), [INTERNAL.calendars, INTERNAL.calendarList]);
+test('calendar enumerates the calendars and reads events from every one in phase two', () => {
+  const plan = planIntent('calendar', {});
+  assert.deepEqual(plan.calls.map(call => call.name), [INTERNAL.calendars]);
+  const follow = plan.follow!([
+    result(INTERNAL.calendars, true, '- Work [work@example.com]\n- Home [home]'),
+  ]);
+  assert.deepEqual(follow.map(call => call.name), [INTERNAL.calendarList, INTERNAL.calendarList]);
+  assert.deepEqual(follow.map(call => call.args), [{ calendarId: 'work@example.com' }, { calendarId: 'home' }]);
+});
+
+test('calendar ids are deduplicated and bounded to eight', () => {
+  const text = Array.from({ length: 12 }, (_v, n) => `- C${n} [cal${n}]`).join('\n') + '\n- Dup [cal0]';
+  const ids = calendarIds(text);
+  assert.equal(ids.length, 8);
+  assert.deepEqual(ids.slice(0, 2), ['cal0', 'cal1']);
 });
 
 test('chat searches the team chat in one call', () => {

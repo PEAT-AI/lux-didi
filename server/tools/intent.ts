@@ -131,7 +131,7 @@ function callsFor(name: IntentToolName, args: Record<string, unknown>): IntentSu
     if (max !== undefined) list['maxResults'] = max;
     return [call('0', INTERNAL.mailList, list)];
   }
-  if (name === 'chat') return [call('0', INTERNAL.chatSearch, { query: stringOrEmpty(args['query']) })];
+  if (name === 'chat') return [call('0', INTERNAL.chatSearch, { query: stringOrEmpty(args['query']), limit: 5 })];
   if (name === 'calendar') return [call('0', INTERNAL.calendars, { maxResults: 20 }), call('1', INTERNAL.calendarList, {})];
   // brief fans out in parallel over every source at once.
   return [

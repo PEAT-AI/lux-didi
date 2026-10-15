@@ -30,6 +30,8 @@ const pickupInstruction = 'The user has just picked up. Deliver the pending job 
 // Issue 1014: a session past this many tool calls starts a fresh setup instead of resuming into
 // drifted audio; a session under it still reuses the saved resumption handle.
 const RESUMPTION_TOOL_CALL_LIMIT = 5;
+/** One intent sub-read deadline: a slow source never holds the whole turn past this. */
+const INTENT_SUB_DEADLINE_MS = 8_000;
 
 interface ActiveSession {
   inputFinal?: boolean;
@@ -993,7 +995,9 @@ export class LiveSessionOwner {
         const aborter = new AbortController();
         handle.callAborts.set(unit.call.id, aborter);
         handle.callStartedAt.set(unit.call.id, this.#now());
-        for (const sub of unit.subs) signals.set(sub.key, aborter.signal);
+        // Each intent sub-read has its own deadline, so one slow source never holds the whole turn.
+        const bounded = unit.intent === undefined ? aborter.signal : AbortSignal.any([aborter.signal, AbortSignal.timeout(INTENT_SUB_DEADLINE_MS)]);
+        for (const sub of unit.subs) signals.set(sub.key, bounded);
       }
       const subCalls = pending.flatMap(unit => unit.subs.map(sub => ({ id: sub.key, name: sub.name, args: sub.args })));
       const offsets = new Map<number, number>();

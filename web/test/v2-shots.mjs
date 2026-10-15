@@ -100,6 +100,7 @@ try {
       windowBottom: window.innerHeight,
       transcriptHeadingCount: headings.length,
       visibleHttpsCount: (body.match(/https?:\/\//g) ?? []).length,
+      headerOrb: rect('#lane-voice .voice-orb'), nestedCards: document.querySelectorAll('#lane-voice .panel, #lane-chat .panel').length,
       idleOrbContrastToCard: orbCore && bg ? ratio(orbCore, bg) : null,
       readyWhenYouAreCount: (body.match(/Ready when you are/g) ?? []).length,
       serifCount: [...document.querySelectorAll('*')].filter(el => /serif/i.test(getComputedStyle(el).fontFamily) && !/sans-serif/i.test(getComputedStyle(el).fontFamily)).length,
@@ -125,6 +126,8 @@ try {
     `| idle orb to card contrast ratio | ${measure.idleOrbContrastToCard}:1 |`,
     `| visible \"Ready when you are\" | ${measure.readyWhenYouAreCount} |`,
     `| serif font-family elements | ${measure.serifCount} |`,
+    `| header orb size | ${measure.headerOrb ? measure.headerOrb.w + 'x' + measure.headerOrb.h + ' px' : 'absent in the empty state'} |`,
+    `| nested cards inside lanes | ${measure.nestedCards} |`,
     '',
   ].join('\n');
   await writeFile(join(out, 'measurements.md'), table);
@@ -167,7 +170,7 @@ try {
   await setTheme('dark');
   { const a = page.locator('#connected-consent'); if (await a.count()) await a.click(); }
   await page.locator('#connected-draft:not([disabled])').waitFor({ timeout: 15000 });
-  await page.waitForFunction(() => document.querySelectorAll('#live-panel .live-latest-turn').length === 1, { timeout: 12000 });
+  await page.waitForFunction(() => document.querySelectorAll('#live-panel .live-tool-result').length === 1, { timeout: 12000 });
   for (const text of ['First synthetic chat turn.', 'Second synthetic chat turn.']) {
     await page.locator('#connected-draft').fill(text);
     await page.locator('#connected-send').click();
@@ -175,6 +178,13 @@ try {
   }
   await page.waitForFunction(() => document.querySelectorAll('#connected-entries .assistant').length >= 2, { timeout: 20000 });
   await shot('1440x900-dark-chat-turns');
+  const filled = await page.evaluate(() => {
+    const r = document.querySelector('#connected-send-form').getBoundingClientRect();
+    const o = document.querySelector('#lane-voice .voice-orb');
+    const ob = o ? o.getBoundingClientRect() : null;
+    return { composerGapFilled: Math.round(window.innerHeight - r.bottom), headerOrb: ob ? `${Math.round(ob.width)}x${Math.round(ob.height)}` : 'absent', nestedCards: document.querySelectorAll('#lane-voice .panel, #lane-chat .panel').length };
+  });
+  await writeFile(join(out, 'measurements-filled.md'), ['# DOM measurements with a filled chat and a live transcript (1440x900, dark)', '', '| metric | value |', '| --- | --- |', `| header orb size | ${filled.headerOrb} px |`, `| composer bottom gap to window (filled) | ${filled.composerGapFilled} px |`, `| nested cards inside lanes | ${filled.nestedCards} |`, ''].join('\n'));
   await page.unroute('**/api/v1/live/current*');
   await page.reload(); await ready();
 

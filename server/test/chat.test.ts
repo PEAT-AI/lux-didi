@@ -563,7 +563,7 @@ test('frozen capability admission keeps a reworded description and drops a chang
   // A rewritten description (or schema wording) is not identity: the tool stays declared.
   const reworded = [{ name: 'gmail_read', description: 'rewritten wording', effect: 'read', accountId: 'acct', resourceId: 'mail' }];
   assert.deepEqual(admitCapabilities(reworded, frozen, 'session-a', new Set<string>(), line => lines.push(line)).map(t => t.name), ['gmail_read']);
-  assert.deepEqual(lines, []);
+  assert.equal(lines.length, 0);
   // A changed effect or account still excludes the tool and reports the changed field.
   const effectChanged = [{ name: 'gmail_read', effect: 'write', accountId: 'acct', resourceId: 'mail' }];
   assert.deepEqual(admitCapabilities(effectChanged, frozen, 'session-a', new Set<string>(), line => lines.push(line)), []);

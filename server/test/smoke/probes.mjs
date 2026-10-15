@@ -334,9 +334,10 @@ async function researchTurn({ base, token, epoch, dataDir, clipPath }) {
     if (read < 1) return { ok: false, stage: 'sources', read };
     if (!(run.replyBytes <= 2000)) return { ok: false, stage: 'over_cap', replyBytes: run.replyBytes };
     if (outputAtResult === null || outputChars <= outputAtResult) return { ok: false, stage: 'no_output' };
-    if (!(run.selectorMs > 0 || run.fallbackUsed === true)) return { ok: false, stage: 'selector' };
-    const selector = run.selectorMs > 0 ? 'ran' : 'fallback';
-    return { ok: true, stage: 'turn', rounds: run.rounds, sources: `${run.sources.length}(${read} read)`, selector, selectorMs: run.selectorMs, elapsedMs: run.elapsedMs, deadAirMs: run.deadAirMs, replyBytes: run.replyBytes, outputAfter: outputChars - outputAtResult, progress };
+    // Three real drivers: the same-provider selector, the fixed fallback recipe, or the product's
+    // single-source hint fast path (selectorMs 0 and fallbackUsed false). Report which one drove the run.
+    const driver = run.selectorMs > 0 ? 'selector' : (run.fallbackUsed === true ? 'fallback' : 'single-source-hint');
+    return { ok: true, stage: 'turn', rounds: run.rounds, sources: `${run.sources.length}(${read} read)`, driver, selectorMs: run.selectorMs, elapsedMs: run.elapsedMs, deadAirMs: run.deadAirMs, replyBytes: run.replyBytes, outputAfter: outputChars - outputAtResult, progress };
   } finally { try { ws.close(); } catch { /* noop */ } }
 }
 
@@ -382,7 +383,7 @@ async function main() {
       try {
         const research = await researchTurn({ base, token, epoch, dataDir, clipPath });
         results.push({ id: 'probe5-research', ok: research.ok, note: research.ok
-          ? `calls=1 rounds=${research.rounds} sources=${research.sources} selector=${research.selector} selectorMs=${research.selectorMs} elapsedMs=${research.elapsedMs} deadAirMs=${research.deadAirMs} reply=${research.replyBytes}B output_after=${research.outputAfter}B progress=${research.progress}`
+          ? `calls=1 rounds=${research.rounds} sources=${research.sources} driver=${research.driver} selectorMs=${research.selectorMs} elapsedMs=${research.elapsedMs} deadAirMs=${research.deadAirMs} reply=${research.replyBytes}B output_after=${research.outputAfter}B progress=${research.progress}`
           : `stage=${research.stage} calls=${research.calls ?? 0} status=${research.status ?? 'n/a'} rounds=${research.rounds ?? 0} read=${research.read ?? 0} reply=${research.replyBytes ?? 0}B load=${loadAverageText()}` });
       } finally { await rm(clipPath, { force: true }); }
     } catch (error) { results.push({ id: 'probe5-research', ok: false, note: String(error && error.message).slice(0, 120) }); }

@@ -141,7 +141,7 @@ html.mini .mini-stage .orb-caption{position:absolute;left:50%;bottom:14px;transf
 html.mini .mini-stage .orb-label{font-size:1.05rem;color:#f1ede2}
 html.mini .mini-stage .voice-honesty{font-size:.68rem;color:#b8c0c7}
 html.mini .mini-stage .voice-honesty span{color:#9aa2a8}
-html.mini .mini-stage .activity-line{max-width:100%;font-size:.94rem;color:#e8ecf1}
+html.mini .mini-stage .activity-line{max-width:100%;font-size:.94rem;color:#f7fafc;font-weight:600}
 html.mini .mini-stage .activity-line .activity-text{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;overflow-wrap:normal}
 html.mini .mini-stage .activity-indicator{background:#7fd4c1}
 html.mini .mini-stage .activity-mark{color:#7fd4c1}

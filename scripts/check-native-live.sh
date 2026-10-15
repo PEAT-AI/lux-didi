@@ -47,6 +47,7 @@ swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-
   Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \
   "${owner_flags[@]}" \
   Sources/LuxDidi/NativeLiveOperatorHTTP.swift Sources/LuxDidi/AudioOwner.swift Sources/LuxDidi/NativeLiveAudioDevice.swift \
+  Sources/LuxDidi/NativeLiveJournal.swift \
   Sources/LuxDidi/NativeLiveConversation.swift Tests/DidiLiveTests/Fixture.swift \
   Tests/DidiLiveTests/NativeLifetime.swift -o "$work/native-lifetime"
 # Physical-device proof uses the production graph with no tap, output or permission request.

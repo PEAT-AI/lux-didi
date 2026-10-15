@@ -39,22 +39,25 @@ xcrun clang -fobjc-arc -c Tests/DidiLiveTests/AudioCallbackBridge.m -o "$work/au
 swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library -import-objc-header Tests/DidiLiveTests/AudioCallbackBridge.h \
   Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \
   "${owner_flags[@]}" \
-  Sources/LuxDidi/NativeLiveOperatorHTTP.swift Sources/LuxDidi/NativeLiveAudioDevice.swift \
+  Sources/LuxDidi/NativeLiveOperatorHTTP.swift Sources/LuxDidi/AudioOwner.swift Sources/LuxDidi/NativeLiveAudioDevice.swift \
   Sources/LuxDidi/NativeLiveConversation.swift Tests/DidiLiveTests/NativeLiveAudioRunner.swift "$work/audio-callback-bridge.o" -o "$work/native-audio"
 "$work/native-audio"
 swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
   Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \
   "${owner_flags[@]}" \
-  Sources/LuxDidi/NativeLiveOperatorHTTP.swift Sources/LuxDidi/NativeLiveAudioDevice.swift \
+  Sources/LuxDidi/NativeLiveOperatorHTTP.swift Sources/LuxDidi/AudioOwner.swift Sources/LuxDidi/NativeLiveAudioDevice.swift \
   Sources/LuxDidi/NativeLiveConversation.swift Tests/DidiLiveTests/Fixture.swift \
   Tests/DidiLiveTests/NativeLifetime.swift -o "$work/native-lifetime"
 # Physical-device proof uses the production graph with no tap, output or permission request.
 swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
   Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \
   "${owner_flags[@]}" \
-  Sources/LuxDidi/NativeLiveOperatorHTTP.swift Sources/LuxDidi/NativeLiveAudioDevice.swift \
+  Sources/LuxDidi/NativeLiveOperatorHTTP.swift Sources/LuxDidi/AudioOwner.swift Sources/LuxDidi/NativeLiveAudioDevice.swift \
   Tests/DidiLiveTests/NativeLiveEngineProbe.swift -o "$work/native-engine-probe"
 "$work/native-engine-probe"
+swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
+  Sources/LuxDidi/AudioOwner.swift Tests/DidiLiveTests/AudioOwnerTests.swift -o "$work/native-audio-owner"
+"$work/native-audio-owner"
 # Compile the actual app source surface without launching audio or installing an app.
 swiftc -parse-as-library Sources/LuxDidi/*.swift -o "$work/native-app"
 # Isolated mutation sensitivity: compile a scratch copy, never alter the committed source or weaken a gate.

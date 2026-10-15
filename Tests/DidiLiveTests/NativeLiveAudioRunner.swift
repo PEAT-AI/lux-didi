@@ -222,6 +222,102 @@ private func checkFormatChangeRebuild() throws {
     print("PASS format change rebuilds the converter for the new hardware format with a fresh channel map")
 }
 
+// S2-A: production construction wires a real audio journal into the device and the owner.
+@MainActor private func checkProductionAudioJournal() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("a1-journal-" + UUID().uuidString)
+    let origin = URL(string: "http://127.0.0.1:1")!
+    let conversation = NativeLiveConversation(
+        authority: (origin, { url, _ in URLRequest(url: url) }),
+        dictationIsCapturing: { false }, logsDirectory: directory)
+    try audioRequire(conversation.device.hasJournal, "production construction wires an audio journal into the device")
+    try audioRequire(AudioOwner.shared.hasJournal, "production construction adopts the journal on the owner")
+    conversation.device.log("audio_test_event", ["probe": "1"])
+    let file = directory.appendingPathComponent("audio.log")
+    let text = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
+    try audioRequire(text.contains("audio_test_event") && text.contains("timestamp"),
+                     "the audio journal writes a timestamped metadata line to audio.log")
+    print("PASS production construction records timestamped audio.log metadata")
+}
+
+// S2-B: ducking is minimum with advanced ducking off while VPIO is on.
+@MainActor private func checkMinimumDucking() throws {
+    let configuration = NativeLiveAudioDevice.minimumDuckingConfiguration()
+    try audioRequire(!configuration.enableAdvancedDucking.boolValue && configuration.duckingLevel == .min,
+                     "minimum ducking with advanced ducking off")
+    if #available(macOS 14.0, *) {
+        NativeLiveAudioDevice.applyMinimumDucking(to: AVAudioEngine().inputNode)
+    }
+    print("PASS other-audio ducking set to the minimum while voice processing is on")
+}
+
+// OUTCOME 3: the weak reference proves deallocation, else audio_release_leak is logged.
+@MainActor private func checkReleaseLeakAndDeallocation() throws {
+    let journal = NativeAudioJournal(fileURL: nil)
+    let retained = NativeLiveAudioDevice(owner: AudioOwner(lockFileURL: URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("a1-leak-" + UUID().uuidString)),
+                                         journal: journal, deviceState: { _ in false })
+    var held: AVAudioEngine? = AVAudioEngine()
+    retained.adoptEngineForTesting(held!, player: AVAudioPlayerNode())
+    retained.releaseForTesting()
+    try audioRequire(journal.events.contains { $0.name == "audio_release_leak" },
+                     "a retained engine logs audio_release_leak on release")
+    held = nil
+    let cleanJournal = NativeAudioJournal(fileURL: nil)
+    let clean = NativeLiveAudioDevice(journal: cleanJournal, deviceState: { _ in false })
+    clean.adoptEngineForTesting(AVAudioEngine(), player: AVAudioPlayerNode())
+    clean.releaseForTesting()
+    try audioRequire(!cleanJournal.events.contains { $0.name == "audio_release_leak" },
+                     "a deallocated engine does not log audio_release_leak")
+    print("PASS weak-ref dealloc and audio_release_leak")
+}
+
+// OUTCOME 7: a start failure tears down, releases the flock, and never retries in session.
+@MainActor private func checkStartFailureCircuitBreaker() async throws {
+    guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 44100, channels: 2, interleaved: false) else {
+        throw NativeLiveAudioError.unsupportedFormat
+    }
+    let journal = NativeAudioJournal(fileURL: nil)
+    let owner = AudioOwner(lockFileURL: URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("a1-breaker-" + UUID().uuidString))
+    let device = NativeLiveAudioDevice(captureInput: format, defaultInput: { (id: "synthetic-1", name: "Synthetic") },
+                                       owner: owner, journal: journal, deviceState: { _ in false },
+                                       isBuiltInOutput: { false })
+    device.engineFactoryForTesting = { (AVAudioEngine(), AVAudioPlayerNode(), format) }
+    device.startForTesting = { _ in throw NSError(domain: "com.apple.coreaudio.avfaudio", code: 1937010544) }
+    var threw = false
+    do { try await device.start { _ in } } catch { threw = true }
+    try audioRequire(threw && device.sessionFailedForTesting,
+                     "a start failure surfaces once and marks the session failed")
+    try audioRequire(!owner.isOwned && !owner.crossProcessHeld,
+                     "a start failure releases the owner and the cross-process flock")
+    try audioRequire(device.audioReleaseCount == 1 && !device.isCapturing,
+                     "a start failure tears down through releaseAudio")
+    try audioRequire(journal.events.filter { $0.name == "audio_start_failed" }.count == 1,
+                     "one audio_start_failed status line")
+    var retried = false
+    do { try device.rebuildForTesting() } catch { retried = true }
+    try audioRequire(retried && !owner.isOwned, "no in-session retry after a start failure")
+    print("PASS start-failure circuit breaker tears down, releases the flock, never retries in session")
+}
+
+// A1-R2: a busy fake device-state provider skips VPIO through the device and logs device_busy.
+@MainActor private func checkBusyDeviceSkipsVoiceProcessing() async throws {
+    guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 44100, channels: 2, interleaved: false) else {
+        throw NativeLiveAudioError.unsupportedFormat
+    }
+    let journal = NativeAudioJournal(fileURL: nil)
+    let owner = AudioOwner(lockFileURL: URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("a1-busy-" + UUID().uuidString))
+    let device = NativeLiveAudioDevice(captureInput: format, defaultInput: { (id: "synthetic-1", name: "Synthetic") },
+                                       owner: owner, journal: journal, deviceState: { _ in true },
+                                       isBuiltInOutput: { true })
+    device.engineFactoryForTesting = { (AVAudioEngine(), AVAudioPlayerNode(), format) }
+    device.startForTesting = { _ in }
+    try await device.start { _ in }
+    let skips = journal.events.filter { $0.name == "audio_vpio_skipped" && $0.fields["reason"] == "device_busy" }
+    try audioRequire(skips.count == 1 && !device.isVoiceProcessingEnabledForTesting,
+                     "a busy device skips VPIO with reason=device_busy and no voice processing")
+    device.stop()
+    print("PASS busy device-state provider skips voice processing through the device")
+}
+
 @MainActor private func checkTerminalCaptureSummary() async throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent("didi-capture-summary-" + UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: directory) }
@@ -516,25 +612,42 @@ private func checkPrimaryChannelConversion() throws {
             try await checkCaptureTapExecutor()
             try await checkCaptureLedger()
             try await checkConversationDiagnostics()
+            try checkProductionAudioJournal()
+            try checkMinimumDucking()
+            try checkReleaseLeakAndDeallocation()
+            try await checkStartFailureCircuitBreaker()
+            try await checkBusyDeviceSkipsVoiceProcessing()
             guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 44100, channels: 2, interleaved: false) else {
                 throw NativeLiveAudioError.unsupportedFormat
             }
             var deviceInput = (id: "builtin", name: "Built-in microphone")
+            var testNow = Date()
             var captures: [NativeCaptureBuffer] = []
-            let injectedDevice = NativeLiveAudioDevice(captureInput: format, defaultInput: { deviceInput })
+            let injectedDevice = NativeLiveAudioDevice(captureInput: format, defaultInput: { deviceInput },
+                                                       now: { testNow })
             injectedDevice.onCapturePrepared = { captures.append($0) }
             let sends = NativeAudioSendProbe()
             try await injectedDevice.start { await sends.send($0) }
+            try audioRequire(injectedDevice.hasConfigurationObserver,
+                             "start installs the configuration observer that release removes")
             let originalCapture = captures[0]
             originalCapture.append(try tone(format, start: 0, count: 2000))
+            // An unchanged default device never rebuilds, however many notifications arrive.
             injectedDevice.routeChanged(); injectedDevice.routeChanged(); injectedDevice.routeChanged()
             await injectedDevice.finishRouteRecovery()
+            try audioRequire(captures.count == 1, "unchanged route storms are ignored, never rebuilt")
+            // A real input change releases capture, then auto-resumes on the new device.
+            testNow = testNow.addingTimeInterval(1)
+            deviceInput = (id: "usb", name: "USB microphone")
+            injectedDevice.routeChanged(); await injectedDevice.finishRouteRecovery()
             let oldSendCount = await sends.count
             try audioRequire(captures.count == 2 && oldSendCount == 0 && originalCapture.next().0 == nil,
                              "actual device drain must discard queued old-generation frames")
             originalCapture.append(try tone(format, start: 0, count: 2000))
             try audioRequire(originalCapture.next().0 == nil, "old tap must stay stopped after rebuild")
             injectedDevice.setMuted(true)
+            testNow = testNow.addingTimeInterval(1)
+            deviceInput = (id: "usb2", name: "USB microphone 2")
             injectedDevice.routeChanged(); await injectedDevice.finishRouteRecovery()
             captures.last!.append(try tone(format, start: 0, count: 2000))
             try audioRequire(captures.count == 3 && injectedDevice.isCapturing && captures.last!.next().0 == nil,
@@ -546,17 +659,15 @@ private func checkPrimaryChannelConversion() throws {
             try audioRequire(delivered?.count == 640, "rebuilt device sends real converted frames after unmute")
             var changedName = ""
             injectedDevice.onInputChange = { changedName = $0 }
-            deviceInput = (id: "usb", name: "USB microphone")
-            injectedDevice.routeChanged(); await injectedDevice.finishRouteRecovery()
-            try audioRequire(!injectedDevice.isCapturing && changedName == "USB microphone" && captures.count == 3,
-                             "input change releases real capture until Resume")
+            testNow = testNow.addingTimeInterval(1)
             deviceInput = (id: "airpods", name: "AirPods")
-            injectedDevice.resumeInput()
-            try audioRequire(changedName == "AirPods" && captures.count == 3, "Resume rechecks device consent identity")
-            injectedDevice.resumeInput()
-            try audioRequire(captures.count == 4 && injectedDevice.isCapturing, "explicit Resume rebuilds device")
+            injectedDevice.routeChanged(); await injectedDevice.finishRouteRecovery()
+            try audioRequire(changedName == "AirPods" && captures.count == 4 && injectedDevice.isCapturing,
+                             "a paused route change auto-resumes on the new device without holding it")
             injectedDevice.routeChanged(); injectedDevice.stop(); await injectedDevice.finishRouteRecovery()
-            try audioRequire(captures.count == 4 && !injectedDevice.isCapturing, "Stop wins against device recovery")
+            try audioRequire(captures.count == 4 && !injectedDevice.isCapturing
+                             && !injectedDevice.hasConfigurationObserver,
+                             "stop releases capture and removes the configuration observer")
             print("PASS injected real device converter/drain: mute survives, queued/stale frames discarded, input consent rechecked")
             let gate = NativeAudioSendGate()
             var blockedCapture: NativeCaptureBuffer?
@@ -567,6 +678,7 @@ private func checkPrimaryChannelConversion() throws {
             var enteredSend = gate.entered.makeAsyncIterator()
             blockedCapture?.append(try tone(format, start: 0, count: 1024))
             _ = await enteredSend.next()
+            deviceInput = (id: "blocked", name: "Blocked microphone")
             blockedDevice.routeChanged(); await blockedDevice.finishRouteRecovery()
             await gate.fail(); await oldDrain?.value
             try audioRequire(blockedDevice.isCapturing, "stale send failure must not interrupt rebuilt capture")
@@ -638,6 +750,21 @@ private func checkPrimaryChannelConversion() throws {
             try audioRequire(!device.hasEngine && !device.isCapturing, "construction does not create audio engine")
             device.stop(); device.stop()
             try audioRequire(!device.hasEngine, "teardown idempotent")
+            try audioRequire(NativeLiveAudioDevice.shouldUseVoiceProcessing(
+                outputIsBuiltInSpeakers: true, deviceBusy: false, voiceProcessingFailed: false),
+                             "VPIO on built-in speakers when no device is busy")
+            try audioRequire(!NativeLiveAudioDevice.shouldUseVoiceProcessing(
+                outputIsBuiltInSpeakers: true, deviceBusy: true, voiceProcessingFailed: false),
+                             "VPIO skipped while another app is running a device")
+            try audioRequire(!NativeLiveAudioDevice.shouldUseVoiceProcessing(
+                outputIsBuiltInSpeakers: false, deviceBusy: false, voiceProcessingFailed: false),
+                             "VPIO skipped on a non-built-in output")
+            try audioRequire(!NativeLiveAudioDevice.shouldUseVoiceProcessing(
+                outputIsBuiltInSpeakers: true, deviceBusy: false, voiceProcessingFailed: true),
+                             "VPIO never retried after one failure")
+            try audioRequire(NativeLiveAudioDevice.vpioSkipReason(
+                builtIn: true, deviceBusy: true, voiceProcessingFailed: false) == "device_busy",
+                             "busy device logs audio_vpio_skipped reason=device_busy")
             print("PASS silent real AVAudioConverter irregular stereo tone, frame continuity, partial discard, ring overflow, lazy device")
             print("UNVERIFIED hardware: voice processing on both IO nodes and physical device loss; Start verifies both enabled flags")
         } catch { print("FAIL native audio: \(error)"); exit(1) }

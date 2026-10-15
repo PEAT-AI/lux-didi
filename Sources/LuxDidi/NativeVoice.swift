@@ -13,6 +13,7 @@ import Combine
     private var observer: NSObjectProtocol?
     private var generation = 0
     private var tapInstalled = false
+    private let owner = AudioOwner.shared
     private let recognizer = SFSpeechRecognizer(locale: Locale.current)
 
     init() { refresh() }
@@ -48,6 +49,12 @@ import Combine
         guard let recognizer, recognizer.isAvailable else { state.fail("Speech recognizer is currently unavailable"); return }
         generation += 1
         let token = generation
+        // The single audio owner refuses a second engine before one is ever created.
+        do { try owner.acquire(holder: ObjectIdentifier(self)) }
+        catch {
+            state.fail((error as? AudioOwnerError)?.errorDescription ?? "Didi's audio is already in use.")
+            return
+        }
         let engine = AVAudioEngine()
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.requiresOnDeviceRecognition = true
@@ -69,7 +76,7 @@ import Combine
                 else if result?.isFinal == true { self.stop(reason: "Recognition finished") }
             }
         }
-        do { engine.prepare(); try engine.start() }
+        do { engine.prepare(); try engine.start(); owner.didStartEngine(holder: ObjectIdentifier(self)) }
         catch { interrupt(error.localizedDescription) }
     }
     func stop(reason: String) {
@@ -79,6 +86,7 @@ import Combine
         request?.endAudio(); task?.cancel()
         if let observer { NotificationCenter.default.removeObserver(observer) }
         observer = nil; task = nil; request = nil; engine = nil
+        owner.release(holder: ObjectIdentifier(self))
         state.stop(reason: reason)
     }
     func interrupt(_ detail: String) { stop(reason: detail); state.fail(detail) }

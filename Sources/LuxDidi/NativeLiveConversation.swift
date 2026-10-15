@@ -63,7 +63,11 @@ enum State: String, CaseIterable {
         self.logsDirectory = logsDirectory
         self.http = NativeLiveOperatorHTTP(authority: authority, pickupJobID: pickupJobID)
         self.dictationIsCapturing = dictationIsCapturing
-        let device = audioDevice ?? NativeLiveAudioDevice(); self.device = device
+        // Production wiring: a real audio journal in the app's logs dir, shared by the owner
+        // and the device so every lifecycle record lands in audio.log with a timestamp.
+        let journal = logsDirectory.map { NativeAudioJournal(fileURL: $0.appendingPathComponent("audio.log")) }
+        if let journal { AudioOwner.shared.adopt(journal: journal) }
+        let device = audioDevice ?? NativeLiveAudioDevice(journal: journal); self.device = device
         coordinator = LiveSessionCoordinator(http: http, sockets: LiveSocketTransport(requests: http), sink: device)
         device.onOutput = { [weak self] speaking in
             guard let self else { return }
@@ -164,7 +168,8 @@ enum State: String, CaseIterable {
                 guard let self, self.generation == token else { return }
                 self.stopAudioAndSummarize(); await coordinator.close()
                 guard self.generation == token else { return }
-                self.failure = NativeLivePresentation.failure(error)
+                self.failure = (error as? AudioOwnerError)?.errorDescription
+                    ?? NativeLivePresentation.failure(error)
                 self.logFailure(error, beforeCreate: true)
                 self.state = .failed
             }
@@ -179,6 +184,7 @@ enum State: String, CaseIterable {
         if error is URLError { code = "service_unreachable" }
         else if error is DecodingError { code = "unexpected_response" }
         else if let reason = error as? LiveClientError { code = reason.rawValue }
+        else if let owner = error as? AudioOwnerError { code = owner.rawValue }
         else if let audio = error as? NativeLiveAudioError { code = audio.rawValue }
         else { code = "connection_refused" }
         var fields: [String: Any] = ["event": "live_precreate_failed", "failureClass": error is NativeLiveAudioError ? "audio" : "service", "code": code,

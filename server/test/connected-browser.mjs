@@ -122,6 +122,7 @@ try {
     const counts = await page.evaluate(() => Object.fromEntries(['#app', '#connected-panel', '#connected-entries', '#connected-draft', '#connected-send', 'canvas'].map(selector => [selector, document.querySelectorAll(selector).length])));
     for (const [selector, count] of Object.entries(counts)) assert.equal(count, 1, `Unique rendered DOM ${selector}`);
     // V2-R1 narrow: a Voice/Chat switcher shows one lane at a time; the empty-state orb stays in the Voice segment.
+    await page.waitForFunction(() => document.querySelector('.app-shell')?.dataset.narrow === 'true', { timeout: 8000 });
     assert.ok(await page.locator('.lane-switch').isVisible(), 'the narrow switcher is visible');
     assert.equal(await page.locator('#lane-voice').isVisible(), true, 'the Voice segment is visible');
     assert.equal(await page.locator('#lane-chat').isVisible(), false, 'the Chat lane hides behind the switcher');

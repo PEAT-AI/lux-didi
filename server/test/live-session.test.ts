@@ -681,7 +681,7 @@ test('tool-enabled Live CREATE freezes an expanded classified owner system byte 
   } });
   const created = h.owner.create({ idempotencyKey: 'expanded-owner-tools', inputClass: 'ordinary' }, h.ctx);
   const frozen = h.store.transaction(tx => JSON.parse(String(tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [created.liveSessionId])!['accepted_prompt_snapshot'])));
-  assert.ok(frozen.system.length > 20_000);
+  assert.ok(frozen.system.length > 4_096 && frozen.system.length <= 16_000, 'the frozen system is dense but inside the hard limit');
   assert.equal(frozen.system, composeLiveSessionInstruction({ text: expectedSystem, tools: ['search_knowledge', 'get_insight'], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
     runtimeContext: buildRuntimeContext({ now: new Date(NOW), timeZone: 'Asia/Kolkata', connected: ['knowledge base', 'memory'], unavailable: [] }) }).text);
   assert.equal(frozen.system.split(style).length - 1, 1);

@@ -399,6 +399,9 @@ function scheduleLive(){
 }
 function paintLive(){
   const panel=document.getElementById('live-panel');
+  // The voice lane swaps between the empty state and the transcript; a poll that arrives while the
+  // other body is painted must re-render, because there is no #live-panel to replace in place.
+  if(liveTurns()>0 ? !panel : !!panel){render();return;}
   const replacePanel=paintedLivePoll?.live!==live || !!paintedLivePoll?.stale!==!!livePoll.stale || !!livePoll.stale && paintedLivePoll?.lastSuccess!==livePoll.lastSuccess;
   if(panel && replacePanel){
     liveDetailsOpen=panel.querySelector<HTMLDetailsElement>('#live-details')?.open ?? liveDetailsOpen;

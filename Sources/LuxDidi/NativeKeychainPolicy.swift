@@ -1,12 +1,12 @@
 import Foundation
 import Security
 import LocalAuthentication
+import Darwin
 
-/// Modern replacement for the deprecated process-global SecKeychain interaction
-/// policy. SecKeychainSetUserInteractionAllowed/GetUserInteractionAllowed were
-/// retired in favor of per-query authentication contexts, so hold one
-/// non-interactive LAContext and consult it through the same set/get seam.
-/// Establish it before AppKit/WK work and never restore it.
+/// Holds this process's non-interactive keychain policy. A per-call LAContext and
+/// the authentication-UI flags do not stop the legacy file keychain from showing
+/// its authorization UI, so also set the deprecated process-global policy and
+/// verify it. Establish before AppKit/WK work and never restore it.
 /// MainActor confines OUR metadata, not framework threads or their SDK calls.
 @MainActor enum NativeKeychainPolicy {
     private(set) static var installationStatus: OSStatus?
@@ -18,12 +18,14 @@ import LocalAuthentication
             let installed = LAContext()
             installed.interactionNotAllowed = true
             context = installed
+            // The legacy keychain ignores the per-call UI flags, so withdraw it globally.
+            let keychain = SecKeychainSetUserInteractionAllowed(false)
+            guard keychain == errSecSuccess else { return keychain }
             return installed.interactionNotAllowed ? errSecSuccess : errSecInteractionNotAllowed
-        }, get: { allowed in
-            guard let installed = context else { return errSecNotAvailable }
-            allowed.pointee = DarwinBoolean(!installed.interactionNotAllowed)
-            return errSecSuccess
-        })
+        }, get: readbackInteractionAllowed)
+        if status != errSecSuccess {
+            fputs("KEYCHAIN-POLICY: noninteractive legacy policy not established (\(status))\n", stderr)
+        }
         installationStatus = status
         return status
     }
@@ -48,10 +50,18 @@ import LocalAuthentication
         guard installationStatus == errSecSuccess else {
             return installationStatus ?? errSecInteractionNotAllowed
         }
-        return readback(get: { allowed in
-            guard let installed = context else { return errSecNotAvailable }
-            allowed.pointee = DarwinBoolean(!installed.interactionNotAllowed)
-            return errSecSuccess
-        })
+        return readback(get: readbackInteractionAllowed)
+    }
+
+    // Real readback of the process-global legacy flag together with the held
+    // LAContext: the legacy keychain ignores per-call flags, so its own global must
+    // read false. Interaction is reported allowed if EITHER seam still allows it.
+    private static func readbackInteractionAllowed(_ allowed: UnsafeMutablePointer<DarwinBoolean>) -> OSStatus {
+        var legacyAllowed = DarwinBoolean(true)
+        let status = SecKeychainGetUserInteractionAllowed(&legacyAllowed)
+        guard status == errSecSuccess else { return status }
+        guard let installed = context else { return errSecNotAvailable }
+        allowed.pointee = DarwinBoolean(legacyAllowed.boolValue || !installed.interactionNotAllowed)
+        return errSecSuccess
     }
 }

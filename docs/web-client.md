@@ -214,8 +214,11 @@ caption's own label follows the same live state (they never disagree), and its
 The section folds adjacent transcription fragments from the same role into one
 visible turn until a role change, `turnComplete`, `interrupted` or terminal event.
 Fragment text is concatenated exactly, without adding spaces or removing repeated
-text. The newest accepted `toolResult` is the prominent Latest answer, and the
-latest spoken Naya turn stays readable beneath it. The full transcript and tool
+text. The latest spoken Naya answer is the one prominent Latest answer, rendered
+through the shared transcript renderer with named source chips from the newest
+accepted `toolResult`; a tool result's own text never appears in the card and the
+answer is never repeated as a second spoken-answer line. The full transcript and
+tool
 activity remain reachable from a labelled disclosure on the same Conversation
 page, with sanitized Markdown and clickable source links. The disclosure keeps
 the user's open or closed choice across live polling.
@@ -225,7 +228,10 @@ projection says; an error state says only that Naya reported an error.
 `src/markdown.ts` is a dependency-free renderer for headings, paragraphs, bold,
 italics, lists, code spans/blocks and links. Every model string is HTML-escaped,
 only `http:` and `https:` links become anchors (`target="_blank"`,
-`rel="noopener noreferrer"`), and no raw HTML passes through. `src/api.ts` and
+`rel="noopener noreferrer"`), and no raw HTML passes through. The transcript
+option it shares with the Live answer card and the Chat answer bubble clamps a
+markdown H1/H2 down to the bubble's top level and renders a bare `http(s)` URL as
+a named chip. `src/api.ts` and
 `src/protocol.ts` add the typed client for `GET /api/v1/live/current[?cursor=n]`
 (same-origin cookie, no bearer). `src/main.ts` polls at 1 Hz while the projection
 is active and every 4 s while idle, and pauses while the document is hidden; the

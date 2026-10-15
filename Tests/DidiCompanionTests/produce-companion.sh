@@ -19,18 +19,58 @@ if [ "${1:-}" = "--leased-run" ]; then
   trap cleanup EXIT
   cd "$root"
   export LUX_MAC_SCREENSHOT="$proof/native-setup-ui.png"
-  # Real SDK discriminator precedes native fixtures; same declared producer.
-  python3 Tests/DidiCompanionTests/keychain-sdk.py "$app/Contents/MacOS/LuxDidi" "$proof"
-  # Runtime waits for fixture readiness with its own bounded deadline, not a shell polling loop.
+  # Every leased-run phase runs to completion; a later phase is never skipped
+  # because an earlier one failed. Each result is recorded to the phase file and
+  # echoed as "PHASE <name> <result> [reason]"; the phase exits non-zero if any
+  # phase failed, so check-companion.sh reports every phase and never excuses one.
+  phase_file="${LUX_COMPANION_PHASE_FILE:-$proof/phases.txt}"
+  : > "$phase_file"
+  phase_failed=0
+  record() { printf 'PHASE %s %s %s\n' "$1" "$2" "${3:-}" | tee -a "$phase_file"; }
+  # Phase 1: real SDK keychain discriminator; bounded fast-fail on a blocked legacy path.
+  if python3 Tests/DidiCompanionTests/keychain-sdk.py "$app/Contents/MacOS/LuxDidi" "$proof"; then
+    record keychain pass
+  else
+    record keychain fail "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("reason") or "failed")' "$proof/keychain-sdk/summary.json" 2>/dev/null || echo failed)"
+    phase_failed=1
+  fi
+  # Phase 2: fixture launch; readiness is the fixture's own atomic port file.
   python3 Tests/DidiCompanionTests/fixture.py "$work/port" &
   fixture_pid=$!
-  # Reuse the single external kernel/LaunchServices observer under renderer admission.
+  if python3 - "$work/port" <<'PY'
+import os, sys, time
+path = sys.argv[1]
+deadline = time.monotonic() + 15
+while time.monotonic() < deadline:
+    if os.path.exists(path):
+        sys.exit(0)
+    time.sleep(0.05)
+sys.exit(1)
+PY
+  then
+    record fixture-launch pass
+  else
+    record fixture-launch fail fixture_port_timeout
+    phase_failed=1
+  fi
+  # Phase 3: single external kernel/LaunchServices observer under renderer admission.
   export LUX_VERIFICATION_DRIVER="$work/verification-observer"
   mkdir -p "$proof/fixture-launch"
-  "$LUX_VERIFICATION_DRIVER" --verification "$app" "$proof/fixture-launch" "$(uuidgen)" run "$work/port" "$proof" "$node"
+  if "$LUX_VERIFICATION_DRIVER" --verification "$app" "$proof/fixture-launch" "$(uuidgen)" run "$work/port" "$proof" "$node"; then
+    record verification-observer pass
+  else
+    record verification-observer fail
+    phase_failed=1
+  fi
+  # Phase 4: full nested real-app check.
   export LUX_REAL_HOST_PROOF_DIR="$proof" LUX_REAL_HOST_NODE="$node"
-  bash Tests/DidiMacTests/check-mac.sh
-  exit
+  if bash Tests/DidiMacTests/check-mac.sh; then
+    record mac pass
+  else
+    record mac fail
+    phase_failed=1
+  fi
+  exit "$phase_failed"
 fi
 
 # Prepare phase: compilation and bundling only, with no browser lease and no

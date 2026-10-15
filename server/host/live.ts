@@ -9,6 +9,7 @@ import type { Credentials } from '../adapters/model/types.js';
 import { createLiveSessionOwner, defaultLiveLimits, liveProfileIdentity, type LiveAttachment, type LiveContext, type LiveToolsComposition, type LivePageProjection, type LiveFragmentPage, type LiveProfile, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import type { Store } from '../runtime/store.js';
 import type { LiveService, LiveStatusPayload } from '../http/live-upgrade.js';
+import { hostLogEvent } from './log.js';
 
 const maxIncomingBytes = 64 * 1024;
 
@@ -76,7 +77,7 @@ class HostLiveService implements LiveService {
     for (const row of rows) {
       const liveSessionId = String(row['live_session_id']);
       this.owner.revoke(liveSessionId);
-      console.log(JSON.stringify({ event: 'live_session_superseded', liveSessionId }));
+      hostLogEvent({ event: 'live_session_superseded', liveSessionId });
     }
   }
   snapshot(liveSessionId: string): LiveSessionSnapshot { return this.owner.get(liveSessionId); }

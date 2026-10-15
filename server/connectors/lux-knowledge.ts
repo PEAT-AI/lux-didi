@@ -22,7 +22,7 @@ export interface LuxKnowledgeConfig {
 }
 
 export interface LuxKnowledgeSearchInput { query: string; limit: number }
-export interface LuxKnowledgeGetInput { ids: number[] }
+export interface LuxKnowledgeGetInput { ids: number[]; include_links?: boolean }
 
 export interface HttpLuxKnowledgeSource {
   toolName: string;
@@ -158,10 +158,15 @@ function validateSearch(input: unknown, budgets: Budgets): { ok: true; query: st
   if (!Number.isSafeInteger(limit) || (limit as number) <= 0 || (limit as number) > budgets.maxSearchLimit) return { ok: false, reason: 'search-limit-out-of-budget' };
   return { ok: true, query, limit: limit as number };
 }
-function validateGet(input: unknown, budgets: Budgets): { ok: true; ids: number[] } | { ok: false; reason: string } {
-  const record = readExactRecord(input, ['ids']);
+function validateGet(input: unknown, budgets: Budgets): { ok: true; ids: number[]; includeLinks: boolean } | { ok: false; reason: string } {
+  const hasLinks = typeof input === 'object' && input !== null && !Array.isArray(input) && 'include_links' in (input as Record<string, unknown>);
+  const record = readExactRecord(input, hasLinks ? ['ids', 'include_links'] : ['ids']);
   if (record === undefined) return { ok: false, reason: 'invalid-get-input' };
-  return readIds(record['ids']!.value, budgets.maxGetIds);
+  const links = record['include_links'];
+  if (links !== undefined && typeof links.value !== 'boolean') return { ok: false, reason: 'invalid-get-input' };
+  const ids = readIds(record['ids']!.value, budgets.maxGetIds);
+  if (!ids.ok) return ids;
+  return { ok: true, ids: ids.ids, includeLinks: links?.value === true };
 }
 
 /** Pre-dispatch gate over the accepted registry. No discovery, no approval, no egress change. */
@@ -244,7 +249,7 @@ export function createLuxKnowledgeReader(options: LuxKnowledgeOptions): LuxKnowl
       const denied = preflight(registry, settings, 'get_insight');
       if (denied) return { state: 'refused', reason: denied };
       const ids = validated.ids;
-      const args: Record<string, unknown> = { ids: [...ids], include_links: false };
+      const args: Record<string, unknown> = { ids: [...ids], include_links: validated.includeLinks };
       return dispatch('get_insight', args, signal, ids);
     },
   };

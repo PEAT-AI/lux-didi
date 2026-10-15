@@ -1,5 +1,5 @@
 import { ApiError, authorityVersion, assertAuthority, request, stream } from './api';
-import { renderToolEvidence } from './markdown.ts';
+import { answerMarkup, renderToolEvidence } from './markdown.ts';
 import type { Entry, Session, Recall, MemorySelectionSnapshot, ConnectedRouteStatus, Status, ToolEvidence } from './protocol';
 interface RouteStatus extends ConnectedRouteStatus {}
 interface Conversation { scope: 'conversation' | 'standing'; sessionId: string; provider: string; model: string; state: 'active' | 'revoked' | 'route_changed'; revision: number; permittedClasses: string[]; latestRunId: string | null }
@@ -170,7 +170,7 @@ export class ConnectedView {
       <h2>Talk with ${escape(this.#displayName)}</h2>
       ${grant ? '' : `<p class="connected-disclosure">Starting a connected conversation sends its current and earlier selected turns to <strong>${escape(provider ?? 'the connected provider')}</strong>. Nothing leaves this Mac until you agree.</p>
       <label class="connected-consent" for="connected-consent"><input id="connected-consent" type="checkbox" ${this.#consent ? 'checked' : ''}> I agree to send this conversation through ${escape(provider ?? 'the configured provider')}${model ? ` / ${escape(model)}` : ''}.</label>`}
-      <div id="connected-entries" class="connected-entries">${this.#entries.map(entry => `${entry.id === r?.finalEntryId ? renderToolEvidence(r.toolEvidence ?? []) : ''}<article class="entry ${entry.role}"><header><strong>${entry.role === 'assistant' ? 'Naya · saved answer' : 'You · saved locally'}</strong></header><p>${escape(answerText(entry))}</p></article>`).join('')}${r && !r.finalEntryId ? renderToolEvidence(r.toolEvidence ?? []) : ''}</div>
+      <div id="connected-entries" class="connected-entries">${this.#entries.map(entry => `${entry.id === r?.finalEntryId ? renderToolEvidence(r.toolEvidence ?? []) : ''}<article class="entry ${entry.role}"><header><strong>${entry.role === 'assistant' ? 'Naya · saved answer' : 'You · saved locally'}</strong></header>${entry.role === 'assistant' ? answerMarkup(answerText(entry)) : `<p>${escape(answerText(entry))}</p>`}</article>`).join('')}${r && !r.finalEntryId ? renderToolEvidence(r.toolEvidence ?? []) : ''}</div>
       ${r ? this.#runSection(r) : ''}
       <form id="connected-send-form"><label for="connected-draft">Message for this connected conversation</label><textarea id="connected-draft" rows="3" placeholder="One small next step…" ${!ready || this.#busy ? 'disabled' : ''}>${escape(this.#draft)}</textarea><div class="composer-toolbar">${c && c.state === 'active' ? this.#notesSection() : ''}<button id="connected-send" ${!ready || this.#busy || (r && r.state !== 'terminal') ? 'disabled' : ''}>Send</button></div><small>Enter sends; Shift+Enter makes a new line. A failed acceptance keeps your draft; nothing is automatically retried.</small></form>
       ${this.#error ? `<p id="connected-error" role="alert">${escape(this.#error)}</p>` : ''}

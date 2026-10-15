@@ -2,7 +2,7 @@ import type { ConnectorEvidence, ConnectorResult } from '../connectors/index.js'
 import type { CompletedResult, McpPort, StoredPayload } from '../adapters/mcp/port.js';
 import type { GoogleEvidence, GoogleResult, GoogleTool } from '../connectors/google.js';
 import { sha256 } from './canonical.js';
-import { shapeGcalCalendars, shapeGcalList, shapeGmailList, shapeGmailRead, type ShapedResult } from './live-shape.js';
+import { shapeGcalCalendars, shapeGcalList, shapeGmailList, shapeGmailRead, type ShapedResult, type ShapedSource } from './live-shape.js';
 
 export interface GoogleProjection {
   text: string;
@@ -10,6 +10,8 @@ export interface GoogleProjection {
   partial: boolean;
   originalCharacters: number;
   omittedCharacters: number;
+  /** Named link sources, carried out of band so model text never holds a raw url. */
+  sources?: ShapedSource[];
 }
 
 export interface GoogleStatus { state: 'configured' | 'error'; reason: string }

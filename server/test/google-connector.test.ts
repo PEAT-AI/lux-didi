@@ -94,7 +94,8 @@ test('a granted google endpoint calls the real child with bounded defaults and b
     const listProjection = renderGoogleTool('gmail_list', (listEnvelope['data'] as Record<string, unknown>));
     assert.equal(listProjection.partial, false);
     assert.match(listProjection.text, /Synthetic subject line \| Synthetic Sender \| Mon, 1 Jan 2024/);
-    assert.match(listProjection.text, /source: https:\/\/mail\.google\.com\/mail\/u\/0\/#inbox\/m1/);
+    assert.equal(/https?:\/\//.test(listProjection.text), false, 'gmail model text holds no raw url');
+    assert.deepEqual(listProjection.sources, [{ title: 'Gmail: Synthetic subject line', url: 'https://mail.google.com/mail/u/0/#inbox/m1', sourceType: 'gmail' }, { title: 'Gmail: Synthetic subject line', url: 'https://mail.google.com/mail/u/0/#inbox/m2', sourceType: 'gmail' }]);
 
     const outOfBudget = await gmail.gmailList({ maxResults: 999 });
     assert.equal(outOfBudget.state, 'refused');
@@ -129,7 +130,8 @@ test('a granted google endpoint calls the real child with bounded defaults and b
     assert.equal(refused.state === 'refused' ? refused.reason : '', 'invalid-time-window');
     const eventProjection = renderGoogleTool('gcal_list', (calendarEnvelope['data'] as Record<string, unknown>));
     assert.match(eventProjection.text, /2024-01-01T09:00:00Z, Synthetic standup, Room 1/);
-    assert.match(eventProjection.text, /source: https:\/\/calendar\.google\.com\/event\?eid=e1/);
+    assert.equal(/https?:\/\//.test(eventProjection.text), false, 'calendar model text holds no raw url');
+    assert.deepEqual(eventProjection.sources, [{ title: 'Calendar: Synthetic standup', url: 'https://calendar.google.com/event?eid=e1', sourceType: 'calendar' }]);
   } finally {
     await adapter.close();
     rmSync(dir, { recursive: true, force: true });
@@ -252,7 +254,8 @@ test('the owner composes the google tool table and a Live-shaped gmail_list call
     const stored = JSON.parse(String(row?.result_json)) as { response: Record<string, unknown> };
     assert.equal(stored.response['tool'], 'gmail_list');
     assert.match(String(stored.response['text']), /Synthetic subject line \| Synthetic Sender \| Mon, 1 Jan 2024/);
-    assert.match(String(stored.response['text']), /source: https:\/\/mail\.google\.com\/mail\/u\/0\/#inbox\/m1/);
+    assert.equal(/https?:\/\//.test(String(stored.response['text'])), false, 'gmail model text holds no raw url');
+    assert.deepEqual(stored.response['sources'], [{ title: 'Gmail: Synthetic subject line', url: 'https://mail.google.com/mail/u/0/#inbox/m1', sourceType: 'gmail' }, { title: 'Gmail: Synthetic subject line', url: 'https://mail.google.com/mail/u/0/#inbox/m2', sourceType: 'gmail' }]);
   } finally {
     await adapter.close();
     store.close();

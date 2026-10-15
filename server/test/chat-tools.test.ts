@@ -17,7 +17,7 @@ import type { ModelPort, ModelRequest, DataClass } from '../adapters/model/types
 const schema = { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, include_sensitive: { type: 'boolean' } }, required: ['query', 'limit', 'include_sensitive'], additionalProperties: false };
 const tools: { name: string; inputSchema: Record<string, unknown> }[] = [{ name: 'search_knowledge', inputSchema: schema }];
 const ACCEPTED = 'ACCEPTED [Überblick 🌱](https://example.com/evidence) insight 42';
-const SOURCES = [{ title: 'Überblick 🌱', url: 'https://example.com/evidence' }, { title: '42' }];
+const SOURCES = [{ title: 'Überblick 🌱', url: 'https://example.com/evidence' }, { title: 'KB: 42' }];
 const REJECTED = 'REJECTED [diagnostic](https://example.com/rejected) insight 99';
 const UNCLASSIFIED = '[unclassified](https://example.com/unclassified) insight 100';
 

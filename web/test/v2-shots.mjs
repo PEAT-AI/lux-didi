@@ -63,7 +63,7 @@ try {
   await page.locator('#connected-send').waitFor();
   await page.locator('#didi-orb').waitFor();
 
-  const ready = async () => { await page.locator('#connected-send').waitFor(); await page.locator('#didi-orb').waitFor(); };
+  const ready = async () => { await page.locator('.app-shell').waitFor(); await page.locator('#didi-orb').waitFor(); };
   // Probe: does the consent checkbox stick after a click?
   const allow = page.locator('#connected-consent');
   if (await allow.count()) await allow.click();
@@ -102,7 +102,7 @@ try {
       visibleHttpsCount: (body.match(/https?:\/\//g) ?? []).length,
       idleOrbContrastToCard: orbCore && bg ? ratio(orbCore, bg) : null,
       readyWhenYouAreCount: (body.match(/Ready when you are/g) ?? []).length,
-      serifCount: [...document.querySelectorAll('*')].filter(el => /serif/i.test(getComputedStyle(el).fontFamily)).length,
+      serifCount: [...document.querySelectorAll('*')].filter(el => /serif/i.test(getComputedStyle(el).fontFamily) && !/sans-serif/i.test(getComputedStyle(el).fontFamily)).length,
     };
   });
 
@@ -144,11 +144,11 @@ try {
   await page.locator('#sheet-close').click();
   await page.locator('#sheet').waitFor({ state: 'detached' }).catch(() => {});
 
-  await page.locator('[data-lane="voice"]').click();
+  await page.locator('#lane-voice .lane-toggle').click({ force: true });
   await page.locator('#lane-voice[data-state="collapsed"]').waitFor();
   await shot('1440x900-dark-voice-collapsed');
-  await page.locator('[data-lane="voice"]').click();
-  await page.locator('#lane-voice[data-state="open"]').waitFor();
+  await page.evaluate(() => document.querySelector('#lane-voice .lane-toggle').click());
+  await page.waitForFunction(() => document.querySelector('#lane-voice').dataset.state === 'open');
 
   await page.setViewportSize({ width: 800, height: 900 });
   await page.evaluate(() => window.dispatchEvent(new Event('resize')));

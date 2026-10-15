@@ -23,7 +23,7 @@ let sessions: Session[] = [], entries: Entry[] = [], session: Session | undefine
 let plan: Plan | undefined, recall: Recall | undefined;
 let recent: Commitment[] = [], editing: Commitment | undefined, detail: CommitmentDetail | undefined;
 let draftOwner: string | undefined;
-let messageDraft = '', titleDraft = '', queryDraft = '', editTitle = '', editNotes = '', editDue = '', memoryFilter = '', liveTextDraft = '';
+let messageDraft = '', titleDraft = '', queryDraft = '', editTitle = '', editNotes = '', editDue = '', memoryFilter = '';
 let notice = '', error = '', busy = false, readBusy = false, pairingBusy = false;
 let pairingRequired = false, sessionMore = false, entriesMore = false;
 let controller: AbortController | undefined;
@@ -88,11 +88,11 @@ function orbMarkup() {
 function conversation() {
   return `<section class="voice-heading"><div><p class="eyebrow">NAYA VOICE</p><h1>Here with you.</h1></div><button id="new-conversation" class="secondary" ${disabled(busy)}>New conversation</button></section>
   ${orbMarkup()}${liveMarkup(live,livePoll,liveDetailsOpen)}
-  <section class="voice-text" aria-labelledby="voice-text-heading"><div class="voice-text-heading"><p class="eyebrow">OPTIONAL TEXT</p><h2 id="voice-text-heading">Type when it is easier.</h2><p>Text is here when you want it.</p></div><form id="live-text-form" class="live-text"><label for="live-text">Type to Naya</label><input id="live-text" type="text" maxlength="4000" autocomplete="off" placeholder="Type to Naya, or save a local note." value="${e(liveTextDraft)}"><button type="submit">${liveActive() ? 'Send to Naya' : 'Save note'}</button></form><div id="connected-panel"></div></section>
+  <div id="connected-panel"></div>
   <details id="conversation-history" class="conversation-history"${historyOpen ? ' open' : ''}><summary><span>Saved conversation history</span><small>Local notes and earlier conversations</small></summary><div class="conversation-grid"><aside class="panel conversations" aria-label="Conversations"><h2>Your conversations</h2>${sessions.length ? sessions.map(s => `<button data-session="${e(s.id)}" class="session ${session?.id === s.id ? 'selected' : ''}"><strong>${e(s.title)}</strong><small>${e(datetime(s.startedAt))}</small></button>`).join('') : '<p class="muted">No conversations yet.</p>'}${sessionMore ? '<p class="muted">More conversations are available in the service. This view shows the first page.</p>' : ''}</aside>
   <section class="panel thread" aria-label="Conversation">${sessions.length ? `<div class="mobile-conversations"><label for="conversation-select">Choose a conversation</label><select id="conversation-select"><option value="">Start a new conversation</option>${sessions.map(s=>`<option value="${e(s.id)}" ${session?.id===s.id?'selected':''}>${e(s.title)}</option>`).join('')}</select></div>` : ''}<div class="thread-heading"><span class="dot"></span><h2>${e(session?.title ?? 'Start where you are')}</h2></div>
   <div class="entries">${entries.length ? entries.map(entryMarkup).join('') : `<div class="empty"><span class="empty-icon" aria-hidden="true">✳</span><h3>What’s on your mind?</h3><p>Save a thought, make a plan, or pick up a conversation.</p></div>`}${entriesMore ? '<p class="muted">There are more messages in this conversation. This view shows the first page.</p>' : ''}</div>
-  <form id="message-form" class="composer"><label for="message">Local note · not sent to a model</label><textarea id="message" rows="3" maxlength="12000" placeholder="A thought, a next step, a thing to remember…">${e(status ? messageDraft : '')}</textarea><div class="composer-foot"><small>${status?.model.configured ? 'Save a message, or ask Didi for help.' : 'No model connected. You can still save messages and commitments.'}</small><div class="button-row"><button type="submit" ${disabled(!writable())}>${busy ? 'Working…' : 'Save message'}</button><button type="button" id="ask-didi" class="secondary" disabled title="Start an explicitly disclosed connected conversation below">Ask Didi</button></div></div></form>
+  <form id="message-form" class="composer"><label for="message">Local note · not sent to a model</label><textarea id="message" rows="3" maxlength="12000" placeholder="A thought, a next step, a thing to remember…">${e(status ? messageDraft : '')}</textarea><div class="composer-foot"><small>${status?.model.configured ? 'Save a thought, or talk with Naya in the connected chat above.' : 'No model connected. You can still save messages and commitments.'}</small><div class="button-row"><button type="submit" ${disabled(!writable())}>${busy ? 'Working…' : 'Save message'}</button></div></div></form>
   </section></div></details>`;
 }
 function commitmentMarkup(c: Commitment, overdue = false) {
@@ -110,7 +110,7 @@ function today() {
 function memory() {
   return `<section class="page-heading"><div><p class="eyebrow">REMEMBER, WITH CONTEXT</p><h1>Pick up the thread.</h1><p>Your words, connected to where they came from.</p></div></section>${memoryListMarkup(entries, { filter: status ? memoryFilter : '', disabled: !writable() || busy || connectedView.active })}<section class="panel recall"><form id="recall-form"><label for="recall-query">Search your memory</label><div class="search-row"><input id="recall-query" type="search" value="${e(status ? queryDraft : '')}" maxlength="500" placeholder="A phrase, a project, a thought…"><button ${disabled(connection !== 'Connected' || readBusy || !status?.capabilities.memory)}>Search</button></div></form>${recall ? `<p class="muted">${recall.totalMatches} ${recall.totalMatches === 1 ? 'match' : 'matches'}${recall.truncated || recall.nextCursor ? ' · Partial results; more are available in the service.' : ''}</p>${recall.hits.length ? recall.hits.map(hit=>`<article class="recall-hit"><p>${e(hit.snippet)}</p><small>${e(datetime(hit.sourceTimestamp))}</small>${sourceMarkup(hit.sourceRefs)}${hit.entryId ? memoryDeleteControl(hit.entryId, !writable() || busy || connectedView.active) : ''}<button class="quiet" data-source="${e(hit.sessionId)}">Open conversation source</button></article>`).join('') : '<div class="empty"><h3>No matches yet.</h3><p>Try a different phrase. Didi won’t invent a memory to fill the gap.</p></div>'}` : '<div class="empty"><span class="empty-icon" aria-hidden="true">↗</span><h3>Find the words you kept.</h3><p>Search saved conversations. Unavailable sources stay clearly marked.</p></div>'}</section>`;
 }
-function settingsInput() { return { status, statusUnavailable, connections, connectionsUnavailable: connectionsStale }; }
+function settingsInput() { return { status, statusUnavailable, connections, connectionsUnavailable: connectionsStale, connected: { conversations: connectedView.history, remember: connectedView.remember, busy: connectedView.busy } }; }
 function settings() {
   const permissions = typeof Notification === 'undefined' ? 'Not supported in this browser' : Notification.permission === 'granted' ? 'Allowed by this browser; no delivery is configured' : Notification.permission === 'denied' ? 'Blocked in browser settings' : 'Not requested';
   return `<section class="page-heading"><div><p class="eyebrow">YOUR SETUP, PLAINLY</p><h1>Make yourself at home.</h1><p>Know what’s connected. Choose what’s allowed.</p></div></section><div class="settings-grid">${settingsMarkup(settingsInput())}<section class="panel"><h2>Connection</h2><dl><dt>Service</dt><dd>${e(connection)}</dd><dt>Address</dt><dd>${e(location.origin)} /api/v1</dd><dt>Time zone</dt><dd>${e(zone)}</dd><dt>Privacy</dt><dd>Messages stay in your service. This browser keeps only the app shell for offline opening.</dd></dl><div class="button-row"><button id="reconnect" class="secondary" ${disabled(readBusy)}>Reconnect</button><button id="logout" class="quiet" ${disabled(!writable())}>Unpair this browser</button></div><p class="muted">Browser pairing uses a secure cookie, not a saved token. ${demoMode ? 'This is an isolated synthetic test service.' : 'Ask your local service for a one-time pairing code.'}</p></section>
@@ -149,8 +149,8 @@ function bind() {
   document.getElementById('conversation-select')?.addEventListener('change',ev=>{const id=(ev.target as HTMLSelectElement).value;if(id)void openSession(id);else{session=undefined;entries=[];render();}});
   document.querySelector<HTMLDetailsElement>('#conversation-history')?.addEventListener('toggle',event=>{historyOpen=(event.target as HTMLDetailsElement).open;});
   bindLiveDisclosure();
-  input('message',v=>messageDraft=v); input('live-text',v=>liveTextDraft=v); input('commitment-title',v=>titleDraft=v);input('recall-query',v=>queryDraft=v);input('edit-title',v=>editTitle=v);input('edit-notes',v=>editNotes=v);input('edit-due',v=>editDue=v);input('memory-filter',v=>{memoryFilter=v;render();});
-  form('message-form',()=>void saveLocalNote());form('live-text-form',()=>void sendLiveText());button('ask-didi',()=>document.getElementById('connected-panel')?.scrollIntoView());
+  input('message',v=>messageDraft=v); input('commitment-title',v=>titleDraft=v);input('recall-query',v=>queryDraft=v);input('edit-title',v=>editTitle=v);input('edit-notes',v=>editNotes=v);input('edit-due',v=>editDue=v);input('memory-filter',v=>{memoryFilter=v;render();});
+  form('message-form',()=>void saveLocalNote());
   form('commitment-form',()=>{if(!titleDraft.trim())return;void mutate(async (signal,version)=>{await request<Commitment>('/commitments',{method:'POST',body:{title:titleDraft.trim(),dueAt:null,timeZone:zone},signal});assertAuthority(version);titleDraft='';await loadPlan();assertAuthority(version);notice='Commitment saved.';});});
   form('edit-form',()=>{if(!editing || !editTitle.trim())return;void changeCommitment(editing,'edit');});
   form('recall-form',()=>void searchRecall());
@@ -160,6 +160,8 @@ function bind() {
   button('refresh-plan',()=>void loadTab()); button('reconnect',()=>void connect());button('reconnect-top',()=>void connect());
   button('logout',()=>void mutate(async()=>{await logout();}));
   button('cancel-request',()=>controller?.abort());
+  document.getElementById('connected-remember')?.addEventListener('change',ev=>connectedView.setRemember((ev.target as HTMLInputElement).checked));
+  document.getElementById('connected-history')?.addEventListener('change',ev=>{const next=(ev.target as HTMLSelectElement).value;if(next)void connectedView.select(next).catch(err=>{error=failure(err);render();});});
 }
 async function mutate(action: (signal: AbortSignal, version: AbortSignal) => Promise<void>) {
   if(!writable())return;
@@ -180,20 +182,6 @@ async function saveLocalNote() {
     const current=await ensureSession(signal,version);
     const entry=await request<Entry>(`/sessions/${encodeURIComponent(current.id)}/entries`,{method:'POST',body:{text,role:'user',timeZone:zone,sourceRef:{id:crypto.randomUUID(),label:'Saved on the page',provider:'page',sourceTimestamp:null,availability:'present'}},signal});assertAuthority(version);if(!entries.some(e=>e.id===entry.id))entries.push(entry);messageDraft='';notice='Message saved.';
   });
-}
-function liveActive() { return !!live && live.state !== 'idle' && live.state !== 'ended'; }
-// Item 2: typed text goes into the active Live session; with no Live session it is a local note.
-async function sendLiveText() {
-  const text = liveTextDraft.trim();
-  if (!text) return;
-  if (liveActive()) {
-    try { await request<{ sent: boolean }>('/live/text', { method: 'POST', body: { text } }); liveTextDraft = ''; notify('Sent to Naya.'); }
-    catch (err) { failure(err); }
-    return;
-  }
-  messageDraft = text;
-  await saveLocalNote();
-  liveTextDraft = '';
 }
 async function changeCommitment(c: Commitment, action: 'edit'|'complete'|'reopen'|'cancel') {
   await mutate(async (signal,version)=>{

@@ -408,7 +408,9 @@ liveMachine.on(() => render());
 nativeBridge.onNative(message => liveMachine.receive(message));
 nativeBridge.send({ type: 'theme', mode: theme });
 nativeBridge.send({ type: 'ready' });
-window.addEventListener('resize', () => { const next = withViewport(layout, window.innerWidth); if (next !== layout) { layout = next; render(); } });
+// A viewport flip only changes the narrow breakpoint; update the attribute in place so the orb canvas is never
+// torn down under a measurement (the frozen connected-browser smoke measures right after setViewportSize).
+window.addEventListener('resize', () => { const next = withViewport(layout, window.innerWidth); if (next !== layout) { layout = next; root.querySelector('.app-shell')?.setAttribute('data-narrow', String(layout.narrow)); } });
 document.addEventListener('keydown', event => { if (event.key === 'Escape' && layout.sheet) { layout = closeSheet(layout); render(); } });
 render();void connect();
 

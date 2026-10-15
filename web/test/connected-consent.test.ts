@@ -46,7 +46,6 @@ test('connected indicator and checkbox come from the server grant, not saved cli
     await view.refresh('owner');
     assert.doesNotMatch(panel.innerHTML, /connected-consent-indicator/);
     assert.match(panel.innerHTML, /id="connected-consent"/);
-    assert.match(panel.innerHTML, /id="connected-remember"/);
-    assert.match(panel.innerHTML, /id="connected-start"[^>]*disabled/);
+    assert.match(panel.innerHTML, /id="connected-send"[^>]*disabled/);
   } finally { restore(); }
 });

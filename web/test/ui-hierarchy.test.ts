@@ -13,6 +13,7 @@ test('Conversation is a voice-centered landing with optional text and secondary 
   assert.match(conversation, /<details id="conversation-history"[^>]*>/);
   assert.doesNotMatch(conversation, /connectionsMarkup\(/);
   assert.doesNotMatch(conversation, /stay in this same conversation/);
+  assert.doesNotMatch(conversation, /Type when it is easier|voice-text|live-text-form/);
 });
 
 test('Conversation disclosure state survives full renders and session navigation opens history', () => {

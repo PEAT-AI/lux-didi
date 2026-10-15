@@ -64,6 +64,15 @@ try {
   await page.locator('#didi-orb').waitFor();
 
   const ready = async () => { await page.locator('#connected-send').waitFor(); await page.locator('#didi-orb').waitFor(); };
+  // Probe: does the consent checkbox stick after a click?
+  await page.locator('#connected-consent').check({ timeout: 8000 }).catch(e => console.log('CONSENT_CHECK_FAIL', String(e).split('\n')[0]));
+  console.log('CONSENT_STATE', await page.evaluate(() => { const c = document.querySelector('#connected-consent'); return c ? c.checked : 'missing'; }));
+  await page.locator('#connected-consent').click({ timeout: 5000 }).catch(e => console.log('CONSENT_CLICK_FAIL', String(e).split('\n')[0]));
+  await page.waitForTimeout(200);
+  console.log('CONSENT_CLICK', await page.evaluate(() => { const c = document.querySelector('#connected-consent'); return c ? c.checked : 'missing'; }));
+  await page.evaluate(() => { const c = document.querySelector('#connected-consent'); c.checked = true; c.dispatchEvent(new Event('change', { bubbles: true })); });
+  await page.waitForTimeout(200);
+  console.log('CONSENT_MANUAL', await page.evaluate(() => { const c = document.querySelector('#connected-consent'); return c ? c.checked : 'missing'; }));
   const setTheme = async mode => { await page.evaluate(m => localStorage.setItem('didi-theme', m), mode); await page.reload(); await ready(); };
   const startLive = async () => {
     await page.locator('#voice-start').click();

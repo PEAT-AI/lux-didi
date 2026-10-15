@@ -283,6 +283,10 @@ async function researchTurn({ base, token, epoch, dataDir, clipPath }) {
       if (data && Array.isArray(data.fragments) && data.fragments.some(fragment => fragment.kind === 'turnComplete')) break;
       await new Promise(resolve => setTimeout(resolve, 500));
     }
+    // Only this session's runs count: probe4's Live turn writes its own research_run line earlier in the
+    // same host log, so read only what is appended from here on.
+    let logBase = 0;
+    try { logBase = Buffer.byteLength(await readFile(join(dataDir, 'logs/host.log'), 'utf8'), 'utf8'); } catch { logBase = 0; }
     const wav = await readFile(clipPath);
     let offset = 12, pcm = null;
     while (offset + 8 <= wav.length) {
@@ -315,11 +319,12 @@ async function researchTurn({ base, token, epoch, dataDir, clipPath }) {
       if (result && outputAtResult !== null && outputChars > outputAtResult) break;
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
-    // The per-run metadata reaches the host log only through the closed allowlist; read its run lines.
+    // The per-run metadata reaches the host log only through the closed allowlist; read what this session appended.
     const runs = []; let progress = 0;
     try {
       const hostLog = await readFile(join(dataDir, 'logs/host.log'), 'utf8');
-      for (const line of hostLog.split('\n')) {
+      const appended = Buffer.from(hostLog, 'utf8').subarray(logBase).toString('utf8');
+      for (const line of appended.split('\n')) {
         if (!line.includes('"research_run"') && !line.includes('"research_progress"')) continue;
         let record; try { record = JSON.parse(line); } catch { continue; }
         if (record.event === 'research_run') runs.push(record);

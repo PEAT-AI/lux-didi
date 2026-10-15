@@ -98,21 +98,21 @@ import Combine
 
 import WebKit
 
-/// Feeds bounded local levels into the embedded web orb while a live session runs: playback
-/// levels while Naya speaks, microphone levels while listening. The renderer owns smoothing and
+/// Feeds bounded local levels into the embedded web orb while a live session runs: input and output
+/// levels are batched by the bridge at the contract's 20 Hz cap. The renderer owns smoothing and
 /// geometry; this publisher never touches capture or transport authority.
 @MainActor final class NativeOrbLevelPublisher {
     private let device: NativeLiveAudioDevice
-    private weak var web: WKWebView?
+    private let bridge: NativeBridge
     private var task: Task<Void, Never>?
-    init(device: NativeLiveAudioDevice, web: WKWebView?) { self.device = device; self.web = web }
+    init(device: NativeLiveAudioDevice, bridge: NativeBridge) { self.device = device; self.bridge = bridge }
     func start() {
-        guard task == nil, let web = self.web else { return }
+        guard task == nil else { return }
         task = Task { [weak self] in
             while !Task.isCancelled {
-                guard let self = self, let web = self.web, web.window != nil else { break }
-                let sample = self.device.isPlayingOutput ? Double(self.device.outputLevel) : Double(self.device.inputLevel)
-                _ = try? await web.evaluateJavaScript("window.didiOrbLevel&&window.didiOrbLevel({level:\(sample)})")
+                guard let self = self else { break }
+                self.bridge.pushLevels(input: Double(self.device.inputLevel), output: Double(self.device.outputLevel),
+                                       now: Date().timeIntervalSince1970)
                 try? await Task.sleep(nanoseconds: 66_000_000)
             }
         }

@@ -168,6 +168,7 @@ export class ConnectedView {
     </section>`;
     panel.querySelector<HTMLInputElement>('#connected-consent')?.addEventListener('change', event => { this.#consent = (event.target as HTMLInputElement).checked; this.attach(); });
     panel.querySelector<HTMLInputElement>('#connected-remember')?.addEventListener('change', event => { this.#remember = (event.target as HTMLInputElement).checked; });
+    panel.querySelector<HTMLTextAreaElement>('#connected-draft')?.addEventListener('input', event => { this.#draft = (event.target as HTMLTextAreaElement).value; this.#save(); });
     panel.querySelector<HTMLTextAreaElement>('#connected-draft')?.addEventListener('keydown', event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); void this.#send(); } });
     panel.querySelector('#connected-standing-revoke')?.addEventListener('click', () => { const grant = this.#status.consent; if (grant) void this.#action(async lifetime => {
       await request(`/conversations/${grant.sessionId}/revoke`, { method: 'POST', body: {}, signal: lifetime.local }); this.#check(lifetime);

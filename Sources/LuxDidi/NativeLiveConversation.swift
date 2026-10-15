@@ -63,7 +63,11 @@ enum State: String, CaseIterable {
         self.logsDirectory = logsDirectory
         self.http = NativeLiveOperatorHTTP(authority: authority, pickupJobID: pickupJobID)
         self.dictationIsCapturing = dictationIsCapturing
-        let device = audioDevice ?? NativeLiveAudioDevice(); self.device = device
+        // Production wiring: a real audio journal in the app's logs dir, shared by the owner
+        // and the device so every lifecycle record lands in audio.log with a timestamp.
+        let journal = logsDirectory.map { NativeAudioJournal(fileURL: $0.appendingPathComponent("audio.log")) }
+        if let journal { AudioOwner.shared.adopt(journal: journal) }
+        let device = audioDevice ?? NativeLiveAudioDevice(journal: journal); self.device = device
         coordinator = LiveSessionCoordinator(http: http, sockets: LiveSocketTransport(requests: http), sink: device)
         device.onOutput = { [weak self] speaking in
             guard let self else { return }

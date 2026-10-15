@@ -249,6 +249,13 @@ final class NativeCaptureBuffer: @unchecked Sendable {
     private let journal: NativeAudioJournal?
     private let deviceState: (Bool) -> Bool
     private let now: () -> Date
+    private let isBuiltInOutput: () -> Bool
+    /// Test seams: an engine/player/format factory and a start hook stand in for real hardware.
+    var engineFactoryForTesting: (() -> (AVAudioEngine, AVAudioPlayerNode, AVAudioFormat))?
+    var startForTesting: ((AVAudioEngine) throws -> Void)?
+    var sessionFailedForTesting: Bool { sessionFailed }
+    var isVoiceProcessingEnabledForTesting: Bool { engine?.inputNode.isVoiceProcessingEnabled ?? false }
+    private var tapInstalled = false
     private var rebuilding = false
     private var lastRebuildAt: Date?
     private var resumeTask: Task<Void, Never>?
@@ -265,14 +272,23 @@ final class NativeCaptureBuffer: @unchecked Sendable {
     var onCapturePrepared: ((NativeCaptureBuffer) -> Void)?
     init(captureInput: AVAudioFormat? = nil, defaultInput: (() -> (id: String, name: String))? = nil,
          owner: AudioOwner = .shared, journal: NativeAudioJournal? = nil,
-         deviceState: ((Bool) -> Bool)? = nil, now: (() -> Date)? = nil) {
+         deviceState: ((Bool) -> Bool)? = nil, now: (() -> Date)? = nil,
+         isBuiltInOutput: (() -> Bool)? = nil) {
         self.captureInput = captureInput
         self.inputDevice = defaultInput ?? { Self.defaultDevice(input: true) }
         self.owner = owner
         self.journal = journal
         self.deviceState = deviceState ?? Self.defaultDeviceRunningSomewhere(input:)
         self.now = now ?? { Date() }
+        self.isBuiltInOutput = isBuiltInOutput ?? { Self.isBuiltInSpeakers(outputID: Self.defaultDevice(input: false).id) }
     }
+    var hasJournal: Bool { journal != nil }
+    /// Test seam: adopt an engine/player without starting hardware, then release it.
+    func adoptEngineForTesting(_ engine: AVAudioEngine, player: AVAudioPlayerNode) {
+        self.engine = engine; self.player = player
+    }
+    func releaseForTesting() { releaseAudio() }
+    func rebuildForTesting() throws { try build { _, _ in } }
     func log(_ name: String, _ fields: [String: String] = [:]) {
         journal?.record(NativeAudioEvent(name: name, fields: fields))
     }
@@ -440,6 +456,19 @@ final class NativeCaptureBuffer: @unchecked Sendable {
         guard engine.inputNode.isVoiceProcessingEnabled, engine.outputNode.isVoiceProcessingEnabled else {
             throw NativeLiveAudioError.voiceProcessingFailed(code: nil)
         }
+        // Other-audio ducking to the minimum while VPIO is on: never degrade the Mac's audio.
+        applyMinimumDucking(to: engine.inputNode)
+    }
+    /// Minimum other-audio ducking, guarded by OS availability.
+    static func applyMinimumDucking(to node: AVAudioInputNode) {
+        guard #available(macOS 14.0, *) else { return }
+        node.voiceProcessingOtherAudioDuckingConfiguration = minimumDuckingConfiguration()
+    }
+    static func minimumDuckingConfiguration() -> AVAudioVoiceProcessingOtherAudioDuckingConfiguration {
+        var configuration = AVAudioVoiceProcessingOtherAudioDuckingConfiguration()
+        configuration.enableAdvancedDucking = false
+        configuration.duckingLevel = .min
+        return configuration
     }
     private var engine: AVAudioEngine?
     private var player: AVAudioPlayerNode?
@@ -510,7 +539,7 @@ final class NativeCaptureBuffer: @unchecked Sendable {
         startOutputID = Self.defaultDevice(input: false).id
         startInputRate = Self.nominalSampleRate(input: true)
         startOutputRate = Self.nominalSampleRate(input: false)
-        if let captureInput {
+        if let captureInput, engineFactoryForTesting == nil {
             let capture = try NativeCaptureBuffer(converter: NativePCMConverter(input: captureInput))
             capture.setMuted(muted); self.capture = capture
             activateCapture(capture, send: send)
@@ -528,7 +557,7 @@ final class NativeCaptureBuffer: @unchecked Sendable {
         defer { if !ready { releaseAudio() } }
 
         // A1-R2: voice processing only on built-in speakers and only when no device is busy.
-        let builtInOutput = Self.isBuiltInSpeakers(outputID: startOutputID)
+        let builtInOutput = isBuiltInOutput()
         let deviceBusy = deviceState(true) || deviceState(false)
         let useVoiceProcessing = Self.shouldUseVoiceProcessing(
             outputIsBuiltInSpeakers: builtInOutput, deviceBusy: deviceBusy,
@@ -540,7 +569,13 @@ final class NativeCaptureBuffer: @unchecked Sendable {
         }
         var engine = AVAudioEngine(), player = AVAudioPlayerNode()
         var hardware = engine.inputNode.outputFormat(forBus: 0)
-        if useVoiceProcessing {
+        if let factory = engineFactoryForTesting {
+            (engine, player, hardware) = factory()
+            guard hardware.sampleRate > 0, hardware.channelCount > 0 else {
+                throw NativeLiveAudioError.formatUnavailable
+            }
+            if useVoiceProcessing { try Self.enableVoiceProcessing(engine: engine) }
+        } else if useVoiceProcessing {
             do {
                 try Self.enableVoiceProcessing(engine: engine)
                 hardware = engine.inputNode.outputFormat(forBus: 0)
@@ -571,10 +606,14 @@ final class NativeCaptureBuffer: @unchecked Sendable {
         capture.setMuted(muted); self.capture = capture
         // Tap format is the input node's current output format at install time, never one
         // captured before voice processing was enabled.
-        engine.inputNode.installTap(onBus: 0, bufferSize: 1024,
-                                    format: engine.inputNode.outputFormat(forBus: 0), block: capture.makeTap())
-        engine.prepare()
-        do { try engine.start() } catch {
+        if engineFactoryForTesting == nil {
+            engine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: hardware, block: capture.makeTap())
+            tapInstalled = true
+            engine.prepare()
+        }
+        do {
+            if let startForTesting { try startForTesting(engine) } else { try engine.start() }
+        } catch {
             sessionFailed = true
             log("audio_start_failed", ["code": String((error as NSError).code)])
             throw (error as? NativeLiveAudioError) ?? NativeLiveAudioError.engineFailure(error as NSError)
@@ -682,7 +721,7 @@ final class NativeCaptureBuffer: @unchecked Sendable {
         flushOutput()
         weak let weakEngine = engine
         if let engine {
-            engine.inputNode.removeTap(onBus: 0)
+            if tapInstalled { engine.inputNode.removeTap(onBus: 0); tapInstalled = false }
             engine.stop()
             engine.reset()
             engineResetCount += 1

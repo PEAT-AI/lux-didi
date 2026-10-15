@@ -100,6 +100,19 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!Number.isSafeInteger(value.toolCalls) || Number(value.toolCalls) < 0) return;
     return { event: 'live_resumption_fresh', toolCalls: value.toolCalls };
   }
+  if (value.event === 'live_upstream_drop') {
+    // Closed shape: one metadata-only record per dead upstream (host to provider) audio write drop.
+    if (Object.keys(value).sort().join(',') !== ['event', 'errorKind', 'closeCode', 'bufferedAmount', 'writesFailed', 'sessionMs', 'rebuilt'].sort().join(',')) return;
+    if (typeof value.errorKind !== 'string' || !/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(value.errorKind)) return;
+    if (!(value.closeCode === null || (Number.isSafeInteger(value.closeCode) && Number(value.closeCode) >= 0 && Number(value.closeCode) <= 65535))) return;
+    const numeric: readonly [string, number][] = [['bufferedAmount', 64 * 1024 * 1024], ['writesFailed', Number.MAX_SAFE_INTEGER], ['sessionMs', 24 * 60 * 60 * 1000]];
+    for (const [name, max] of numeric) {
+      const field = value[name];
+      if (!Number.isSafeInteger(field) || Number(field) < 0 || Number(field) > max) return;
+    }
+    if (value.rebuilt !== true && value.rebuilt !== false) return;
+    return { event: 'live_upstream_drop', errorKind: value.errorKind, closeCode: value.closeCode, bufferedAmount: value.bufferedAmount, writesFailed: value.writesFailed, sessionMs: value.sessionMs, rebuilt: value.rebuilt };
+  }
   if (value.event === 'live_read_cache') {
     // Closed shape: the cached tool name and cache-hit flag only, never a request or result body.
     if (Object.keys(value).sort().join(',') !== ['event', 'tool', 'cached'].sort().join(',')) return;

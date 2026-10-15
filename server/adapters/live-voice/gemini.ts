@@ -1,7 +1,7 @@
 import type { ClientRequest, IncomingMessage } from 'node:http';
 import WebSocket from 'ws';
 import type { RawData } from 'ws';
-import type { DataClass, GeminiLiveVoiceOptions, LiveVoiceControl, LiveVoiceDiagnostics, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession, LiveSocketFactory, LiveVoiceErrorCode, LiveToolResponse, LiveToolCall } from './types.js';
+import type { DataClass, GeminiLiveVoiceOptions, LiveVoiceControl, LiveVoiceDiagnostics, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession, LiveSocketFactory, LiveVoiceErrorCode, LiveVoiceUpstreamDrop, LiveToolResponse, LiveToolCall } from './types.js';
 import { LiveVoiceError, liveVoiceActivityDefaults, liveVoiceTimerDefaults } from './types.js';
 
 // Fixed official v1beta endpoint. Neither destination nor credentials are public events.
@@ -15,7 +15,7 @@ const TOOL_VOICE_ANCHOR = 'Answer aloud in your own words, briefly, in the voice
 const MEMORY_TOOL = 'remember_note';
 const live38Pattern = /gemini-3\.8[^/]*live/;
 const DEFAULTS: Readonly<LiveVoiceLimits> = Object.freeze({
-  maxIncomingBytes: 1024 * 1024, maxOutgoingBytes: 1024 * 1024, maxBufferedBytes: 2 * 1024 * 1024,
+  maxIncomingBytes: 1024 * 1024, maxOutgoingBytes: 1024 * 1024, maxBufferedBytes: 2 * 1024 * 1024, upstreamStallMs: 400,
   maxEventBytes: 1024 * 1024, maxEvents: 128, maxRequestBytes: 256 * 1024, maxHistoryTurns: 128,
   ...liveVoiceTimerDefaults,
 });
@@ -24,6 +24,11 @@ const timerNames = ['handshakeMs', 'idleMs', 'sessionMs', 'closeMs'] as const;
 // Gemini Live provider field names, used only to name the rejected frame kind, never its values.
 const frameKeys = ['error', 'toolCall', 'toolCallCancellation', 'setupComplete', 'serverContent', 'voiceActivity', 'sessionResumptionUpdate', 'goAway', 'usageMetadata'];
 function keyName(key: string): boolean { return /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(key); }
+// A write failure's kind is its error code when it is a safe token, else a constant. Never a message.
+function upstreamErrorKind(error: unknown): string {
+  const code = object(error) ? error.code : undefined;
+  return typeof code === 'string' && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(code) ? code : 'write_error';
+}
 // Bounded shape walk: key names only, never a value, text, audio or id.
 function shapePaths(value: unknown, out: string[], prefix: string, depth: number): void {
   if (out.length >= 24 || depth > 4 || !object(value)) return;
@@ -145,6 +150,9 @@ class Session implements LiveVoiceSession {
   private isReady = false;
   private draining = false;
   private recoverable = false;
+  private readonly startedAt = Date.now();
+  private upstreamDrop: LiveVoiceUpstreamDrop | undefined;
+  private stalledSince: number | undefined;
   private sequence = 0;
   private secret = '';
   private queue: { event: LiveVoiceEvent; bytes: number }[] = [];
@@ -248,6 +256,22 @@ class Session implements LiveVoiceSession {
       : typeof code === 'string' && networkErrors.has(code) ? 'transport_error'
       : this.isReady ? 'provider_error' : 'provider_setup_rejected');
   }
+  // A dead upstream: the first failed audio write, or a socket whose bufferedAmount stays past half the
+  // send-buffer budget for longer than upstreamStallMs. Stop sending at once and hand a recoverable
+  // outcome to the owner resumption path; shutdownSocket closes the dead socket.
+  private dropUpstream(errorKind: string, socket: WebSocket): void {
+    if (this.terminal) return;
+    this.upstreamDrop = { errorKind, closeCode: null, bufferedAmount: socket.bufferedAmount, writesFailed: this.diagnostic.localWriteCallbackErrorCalls, sessionMs: Math.max(0, Date.now() - this.startedAt) };
+    this.finish('transport_error', this.upstreamDrop);
+  }
+  private watchUpstreamStall(socket: WebSocket): void {
+    if (this.terminal || socket !== this.socket) return;
+    if (socket.bufferedAmount <= Math.max(1, Math.floor(this.settings.limits.maxBufferedBytes / 2))) { this.stalledSince = undefined; return; }
+    const now = Date.now();
+    if (this.stalledSince === undefined) { this.stalledSince = now; return; }
+    // Deferred so a detected stall never throws out of the audio send that observed it.
+    if (now - this.stalledSince >= this.settings.limits.upstreamStallMs) queueMicrotask(() => { if (socket === this.socket) this.dropUpstream('stalled', socket); });
+  }
   private readonly onError = (error: Error) => { this.socketFailure(error); };
   private readonly onUnexpectedResponse = (_request: ClientRequest, response: IncomingMessage) => {
     // Classify the HTTP refusal before ws can replace it with an untyped error/1006.
@@ -255,6 +279,7 @@ class Session implements LiveVoiceSession {
     response.resume(); // Discard the body; never turn provider text into diagnostics.
   };
   private readonly onClose = (code: number) => {
+    if (this.upstreamDrop && this.upstreamDrop.closeCode === null) this.upstreamDrop.closeCode = code;
     if (!this.terminal) {
       this.recoverable = code === 1006 || code === 1011 || this.draining && code === 1000;
       this.finish(this.draining && this.recoverable ? 'go_away' : code === 1008 || code === 1007 && !this.isReady ? 'provider_setup_rejected' : 'remote_closed');
@@ -454,13 +479,21 @@ class Session implements LiveVoiceSession {
           if (error) { this.diagnostic.localWriteCallbackErrorCalls++; this.diagnostic.localWriteCallbackErrorPCMBytes += pcmBytes; }
           else { this.diagnostic.localWriteCallbackSuccessCalls++; this.diagnostic.localWriteCallbackSuccessPCMBytes += pcmBytes; }
         }
-        if (error && this.checkpoint()) this.socketFailure(error);
+        if (error && this.checkpoint()) {
+          // Only a ready owner-audio write is an upstream drop worth rebuilding for; setup, opening and
+          // tool frames keep the terminal socketFailure classification.
+          if (pcmBytes && this.isReady) this.dropUpstream(upstreamErrorKind(error), socket); else this.socketFailure(error);
+        }
       });
-      if (pcmBytes) { this.diagnostic.localWriteEnqueuedCalls++; this.diagnostic.localWriteEnqueuedPCMBytes += pcmBytes; }
+      if (pcmBytes) {
+        this.diagnostic.localWriteEnqueuedCalls++; this.diagnostic.localWriteEnqueuedPCMBytes += pcmBytes;
+        this.watchUpstreamStall(socket);
+      }
       this.touch(); return !this.terminal;
     } catch (error) {
       if (pcmBytes) { this.diagnostic.localWriteCallbackPendingCalls--; this.diagnostic.localWriteCallbackPendingPCMBytes -= pcmBytes; }
-      this.socketFailure(error); return false;
+      if (pcmBytes && this.isReady) this.dropUpstream(upstreamErrorKind(error), socket); else this.socketFailure(error);
+      return false;
     }
   }
   sendToolResponse(input: { responses: LiveToolResponse[] }): void {
@@ -510,13 +543,13 @@ class Session implements LiveVoiceSession {
     if (!this.write(JSON.stringify({ realtimeInput: { audioStreamEnd: true } }))) fail(this.terminal!.code);
   }
   close(): void { if (this.checkpoint()) this.finish('closed'); }
-  private finish(code: LiveVoiceErrorCode) {
+  private finish(code: LiveVoiceErrorCode, upstream?: LiveVoiceUpstreamDrop) {
     if (this.terminal) return;
     const status = code === 'closed' ? 'closed' : code === 'cancelled' ? 'cancelled' : code === 'deadline' ? 'deadline' : 'failed';
     // A post-ready provider-side failure is recoverable through the owner resumption path; pre-ready,
     // auth, route and config failures stay terminal.
     const providerSideFailure = this.isReady && code === 'protocol_error';
-    this.terminal = Object.freeze({ status, code, ...(this.recoverable || code === 'go_away' || code === 'transport_error' || providerSideFailure ? { recoverable: true } : {}) });
+    this.terminal = Object.freeze({ status, code, ...(this.recoverable || code === 'go_away' || code === 'transport_error' || providerSideFailure ? { recoverable: true } : {}), ...(upstream ? { upstream } : {}) });
     for (const timer of this.timers) clearTimeout(timer);
     this.timers.clear(); this.signal.removeEventListener('abort', this.onAbort);
     this.initial = undefined; this.secret = '';

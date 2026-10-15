@@ -32,7 +32,7 @@ import { join } from 'node:path';
 import { loadLiveConfig } from '../config/live.js';
 import { NAYA_BASE, NAYA_TOOLS, MEMORY_SECTION_CHAR_LIMIT, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
 import { GeminiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
-import type { LiveVoiceLimits, LiveVoiceRequest } from '../adapters/live-voice/index.js';
+import type { GeminiLiveVoiceOptions, LiveVoiceLimits, LiveVoiceRequest } from '../adapters/live-voice/index.js';
 import { chatMigrations } from '../chat/index.js';
 import { domainMigrations } from '../domain/schema.js';
 import { createDomainPort } from '../domain/facade.js';
@@ -93,6 +93,7 @@ interface Harness {
 async function harness(t: TestContext, overrides: {
   limits?: Record<string, number>;
   adapterLimits?: Partial<LiveVoiceLimits>;
+  socketFactory?: NonNullable<GeminiLiveVoiceOptions['socketFactory']>;
   credentials?: { resolve(reference: string): Promise<string | undefined> };
   model?: string;
   tools?: boolean;
@@ -122,7 +123,7 @@ async function harness(t: TestContext, overrides: {
     ...(overrides.overlay ? { overlay: overrides.overlay } : {}), ...(overrides.system !== undefined ? { prompt: { text: overrides.system, dataClass: 'ordinary' } } : {}),
     ...(overrides.acceptedPrompt ? { acceptedPrompt: overrides.acceptedPrompt(store.assistantId) } : {}) });
   const voice = new GeminiLiveVoiceAdapter(options({
-    socketFactory: f.socketFactory, modelId: profile.liveModelId, voice: profile.voice, keyReference: profile.keyReference,
+    socketFactory: overrides.socketFactory ?? f.socketFactory, modelId: profile.liveModelId, voice: profile.voice, keyReference: profile.keyReference,
     route: { enabled: true, provider: 'gemini', modelId: profile.liveModelId, dataClasses: profile.route.dataClasses },
     credentials: overrides.credentials ?? { resolve: async () => CANARY },
     limits: { handshakeMs: 1000, idleMs: 2000, sessionMs: 4000, closeMs: 50, ...overrides.adapterLimits },
@@ -1820,6 +1821,95 @@ test('an exhausted original budget never opens a replacement connection', async 
   h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-exhausted-resumption-secret' }, goAway: { timeLeft: '10s' } });
   assert.deepEqual((await attachment.done).terminal, { state: 'failed', code: 'resume_failed' });
   assert.equal(h.f.connections, 1);
+});
+
+/** Replace a live client's send with one that reports a transport failure on the next write, asynchronously. */
+function failUpstream(client: unknown): void {
+  (client as { send: (data: string, a?: unknown, b?: unknown) => void }).send = (_data: string, a?: unknown, b?: unknown) => {
+    const callback = (typeof a === 'function' ? a : b) as ((error?: Error) => void) | undefined;
+    queueMicrotask(() => callback?.(Object.assign(new Error('synthetic upstream write failure'), { code: 'ECONNRESET' })));
+  };
+}
+
+test('a failed upstream audio write rebuilds the session once and logs one live_upstream_drop', async t => {
+  const records: Record<string, unknown>[] = [];
+  const detach = attachHostLogSink({ event: raw => { const record = raw as Record<string, unknown>; if (record.event === 'live_upstream_drop') records.push(record); } });
+  t.after(detach);
+  const sockets: unknown[] = [];
+  let h!: Harness;
+  h = await harness(t, { socketFactory: (url, config) => { const client = h.f.socketFactory(url, config); sockets.push(client); return client; } });
+  const { session, attachment } = await attached(h, 'upstream-drop');
+  const handle = 'synthetic-upstream-drop-handle';
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: handle } });
+  for (let i = 0; i < 100; i++) { if (h.store.transaction(tx => tx.get('SELECT resumption_handle FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!['resumption_handle'] === handle) break; await tick(); }
+  const output = attachment.output[Symbol.asyncIterator]();
+  attachment.sendAudio({ pcm }); await h.f.frame(2);
+  failUpstream(sockets[0]);
+  attachment.sendAudio({ pcm });
+  await continuity(output, 'rebuilding');
+  // Owner audio during the cut is accepted and dropped, never buffered without bound.
+  assert.doesNotThrow(() => attachment.sendAudio({ pcm }));
+  for (let i = 0; i < 50 && h.f.connections < 2; i++) await tick();
+  assert.equal(h.f.connections, 2, 'exactly one rebuild opened exactly one replacement connection');
+  h.f.send({ setupComplete: {} });
+  await continuity(output, 'resumed');
+  assert.equal(records.length, 1, 'one metadata record per occurrence');
+  assert.deepEqual(Object.keys(records[0]!).sort(), ['bufferedAmount', 'closeCode', 'errorKind', 'event', 'rebuilt', 'sessionMs', 'writesFailed'].sort());
+  assert.equal(records[0]!.errorKind, 'ECONNRESET');
+  assert.equal(records[0]!.rebuilt, true);
+  assert.ok((records[0]!.writesFailed as number) >= 1);
+  assert.ok((records[0]!.sessionMs as number) >= 0);
+  attachment.close(); await attachment.done;
+});
+
+test('two upstream rebuilds are the bound, then the call ends with resume_failed', async t => {
+  const sockets: unknown[] = [];
+  let h!: Harness;
+  h = await harness(t, { socketFactory: (url, config) => { const client = h.f.socketFactory(url, config); sockets.push(client); return client; } });
+  const { session, attachment } = await attached(h, 'upstream-bound');
+  const handle = 'synthetic-upstream-bound-handle';
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: handle } });
+  for (let i = 0; i < 100; i++) { if (h.store.transaction(tx => tx.get('SELECT resumption_handle FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!['resumption_handle'] === handle) break; await tick(); }
+  const output = attachment.output[Symbol.asyncIterator]();
+  for (let attempt = 0; attempt < 2; attempt++) {
+    attachment.sendAudio({ pcm }); await tick();
+    failUpstream(sockets[attempt]);
+    attachment.sendAudio({ pcm });
+    await continuity(output, 'rebuilding');
+    for (let i = 0; i < 50 && h.f.connections < attempt + 2; i++) await tick();
+    h.f.send({ setupComplete: {} });
+    await continuity(output, 'resumed');
+  }
+  attachment.sendAudio({ pcm }); await tick();
+  failUpstream(sockets[2]);
+  attachment.sendAudio({ pcm });
+  assert.deepEqual((await attachment.done).terminal, { state: 'failed', code: 'resume_failed' });
+  assert.equal(h.f.connections, 3, 'initial session plus exactly two rebuilds');
+});
+
+test('a pending tool call is never answered on the rebuilt socket', async t => {
+  let finish!: () => void;
+  const slow = new Promise<void>(resolve => { finish = resolve; });
+  const sockets: unknown[] = [];
+  let h!: Harness;
+  h = await harness(t, { tools: true, beforeTool: () => slow, socketFactory: (url, config) => { const client = h.f.socketFactory(url, config); sockets.push(client); return client; } });
+  const { session, attachment } = await attached(h, 'upstream-tool');
+  const handle = 'synthetic-upstream-tool-handle';
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: handle } });
+  for (let i = 0; i < 100; i++) { if (h.store.transaction(tx => tx.get('SELECT resumption_handle FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!['resumption_handle'] === handle) break; await tick(); }
+  const output = attachment.output[Symbol.asyncIterator]();
+  h.f.send({ toolCall: { functionCalls: [{ id: 'keep1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
+  while (!h.calls.length) await tick();
+  failUpstream(sockets[0]);
+  attachment.sendAudio({ pcm });
+  await continuity(output, 'rebuilding');
+  for (let i = 0; i < 50 && h.f.connections < 2; i++) await tick();
+  h.f.send({ setupComplete: {} });
+  await continuity(output, 'resumed');
+  finish();
+  for (let i = 0; i < 20; i++) await tick();
+  assert.equal(h.f.frames.some(frame => 'toolResponse' in (frame as object)), false, 'the orphaned tool response is never sent on the new socket');
+  attachment.close(); await attachment.done;
 });
 
 for (const outcome of ['failed', 'closed', 'unknown'] as const) {

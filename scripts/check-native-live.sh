@@ -58,6 +58,10 @@ swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-
 swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
   Sources/LuxDidi/AudioOwner.swift Tests/DidiLiveTests/AudioOwnerTests.swift -o "$work/native-audio-owner"
 "$work/native-audio-owner"
+# Bridge contract proofs run without a window or audio device.
+swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
+  Sources/LuxDidi/NativeBridge.swift Tests/DidiLiveTests/NativeBridgeTests.swift -o "$work/native-bridge-tests"
+"$work/native-bridge-tests"
 # Compile the actual app source surface without launching audio or installing an app.
 swiftc -parse-as-library Sources/LuxDidi/*.swift -o "$work/native-app"
 # Isolated mutation sensitivity: compile a scratch copy, never alter the committed source or weaken a gate.

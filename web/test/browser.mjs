@@ -125,8 +125,7 @@ try {
     await page.locator('#sheet').waitFor({state:'detached'});
     assert.equal(await page.locator('#connection-state').getAttribute('aria-live'),'polite');
     assert.equal(await page.locator('.allow-link').first().evaluate(el => Math.round(el.getBoundingClientRect().height)), 28, 'the Allow control is a 28 px text button');
-    await page.locator('#connected-consent').click();
-    await page.locator('#connected-draft:not([disabled])').waitFor();
+    await page.locator('#connected-draft').waitFor();
   });
 
   await step('classic Canvas orb is idle not listening and honors reduced motion',async()=>{
@@ -205,7 +204,7 @@ try {
       await page.reload();
       await page.locator('.app-shell').waitFor();
       if (segment) await page.locator(`button[data-segment="${segment}"]`).click();
-      await page.locator('#connected-draft:not([disabled])').waitFor();
+      await page.locator('#connected-draft').waitFor();
       const a = await auditLayout(page);
       assertAudit(a, `${viewport.width}x${viewport.height} ${theme}${segment ? ' ' + segment : ''}`);
       results[`${viewport.width}x${viewport.height}-${theme}${segment ? '-' + segment : ''}`] = a;

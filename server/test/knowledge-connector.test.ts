@@ -14,9 +14,10 @@ import type { McpPort, ToolDefinition } from '../adapters/mcp/port.js';
 import { Store } from '../runtime/store.js';
 import { composeMcpRuntime } from '../host/mcp.js';
 import { toolsMigrations } from '../tools/index.js';
-import { createLuxKnowledgeReader, LUX_KNOWLEDGE_TOOLS, normalizeGetInsightArgs } from '../connectors/index.js';
+import { createLuxKnowledgeReader, LUX_KNOWLEDGE_TOOLS, normalizeGetInsightArgs, CONNECTOR_DESCRIPTORS } from '../connectors/index.js';
 import { shapeLuxKnowledge } from '../tools/live-shape.js';
 import type { LuxKnowledgeConfig, LuxKnowledgeEvidence, LuxKnowledgeResult } from '../connectors/index.js';
+import type { ConnectionPolicy } from '../tools/types.js';
 
 // Explicitly synthetic public protocol fixture: no real accounts, corpus or credentials.
 const searchTool: ToolDefinition = {
@@ -229,6 +230,40 @@ test('X2: get_insight normalization accepts every servable id shape and names wh
   assert.doesNotMatch(extra.notice!, /^p$/, 'the dropped key value is never echoed');
   assert.equal(norm({ ids: [] }), undefined, 'an empty id list still refuses');
   assert.equal(norm({ ids: ['not-an-id'] }), undefined, 'an all-unreadable list still refuses');
+});
+
+// K2 (#250): the model sometimes sends several ids inside one string; split it by the
+// separators a list of ids can carry, each token keeping the X2 single-id forms.
+test('K2: get_insight splits a string that holds several ids', () => {
+  const norm = (args: unknown) => normalizeGetInsightArgs(args, 10);
+  assert.deepEqual(norm('89820, 89933'), { args: { ids: [89820, 89933] } }, 'a comma-separated string is split');
+  assert.deepEqual(norm('89820; 89933'), { args: { ids: [89820, 89933] } }, 'a semicolon-separated string is split');
+  assert.deepEqual(norm('89820 89933'), { args: { ids: [89820, 89933] } }, 'a whitespace-separated string is split');
+  assert.deepEqual(norm('[89820, 89933]'), { args: { ids: [89820, 89933] } }, 'JSON array text is parsed');
+  assert.deepEqual(norm('#89820, #89933'), { args: { ids: [89820, 89933] } }, 'prefixed tokens in one string are split');
+  assert.deepEqual(norm({ ids: '89820, 89933' }), { args: { ids: [89820, 89933] } }, 'a multi-id string under `ids` is split');
+  assert.deepEqual(norm({ id: '#89820 89933' }), { args: { ids: [89820, 89933] } }, 'prefixed and separated tokens are all served');
+});
+
+test('K2: a multi-id string drops unreadable tokens, dedupes and caps like a list', () => {
+  const norm = (args: unknown) => normalizeGetInsightArgs(args, 10);
+  const mixed = norm('89820, not-an-id, 89933')!;
+  assert.deepEqual(mixed.args, { ids: [89820, 89933] }, 'the readable tokens are served');
+  assert.match(mixed.notice!, /not-an-id/, 'the dropped token is named');
+  assert.deepEqual(norm('89820, 89820'), { args: { ids: [89820] } }, 'repeated ids dedupe');
+  const many = Array.from({ length: 12 }, (_, i) => 90000 + i).join(', ');
+  const capped = norm(many)!;
+  assert.deepEqual(capped.args.ids, [90000, 90001, 90002, 90003, 90004, 90005, 90006, 90007, 90008, 90009], 'the split list caps at maxGetIds');
+  assert.match(capped.notice!, /first 10/, 'the cap is named');
+});
+
+// K2 (#250): the declared `ids` description and the boundary validator must still agree.
+test('K2: the get_insight declaration names the multi-id string form its validator splits', () => {
+  const policy = { bounds: { maxQueryChars: 200, maxSearchLimit: 12, maxGetIds: 10, maxEntityBytes: 4096, maxResultBytes: 8192 } } as ConnectionPolicy;
+  const declaration = CONNECTOR_DESCRIPTORS['lux-knowledge']!.declarations(policy).find(tool => tool.name === 'get_insight')!;
+  const ids = (declaration.parameters['properties'] as Record<string, Record<string, unknown>>)['ids']!;
+  assert.match(ids['description'] as string, /separated by comma, semicolon or whitespace/, 'the ids description names the multi-id string form');
+  assert.equal(declaration.validate({ ids: '89820, 89933' }), true, 'the declared multi-id string form is accepted by the validator');
 });
 
 test('X2: get_insight forwards a requested include_links to the MCP call', async () => {

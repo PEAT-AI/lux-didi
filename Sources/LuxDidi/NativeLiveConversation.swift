@@ -55,6 +55,8 @@ enum State: String, CaseIterable {
     private let journal: NativeLiveJournal
     private var limits: NativeLiveLimits?
     private var muted = false, speaking = false
+    /// One native-live end record per stop cycle; a repeated Stop is a no-op, like the capture summary.
+    private var endRecorded = false
     private var muteTask: Task<Void, Never>?
     private var captureSummaryTask: Task<Void, Never>?
     private var captureDiagnosticOwner: UInt64?
@@ -107,7 +109,7 @@ enum State: String, CaseIterable {
             failure = "Stop dictation before starting Live voice."; state = .failed; return
         }
         generation &+= 1; let token = generation
-        failure = nil; state = .connecting; muted = false; speaking = false
+        failure = nil; state = .connecting; muted = false; speaking = false; endRecorded = false
         observer?.cancel()
         observer = Task { [weak self, coordinator] in
             await self?.startTask?.value
@@ -127,8 +129,8 @@ enum State: String, CaseIterable {
                     }
                 case .terminal(let outcome):
                     switch outcome.code {
-                    case "session_timeout": self.journal.append(.sessionLimit)
-                    case "idle_timeout": self.journal.append(.idleLimit)
+                    case "session_timeout": if !self.endRecorded { self.endRecorded = true; self.journal.append(.sessionLimit) }
+                    case "idle_timeout": if !self.endRecorded { self.endRecorded = true; self.journal.append(.idleLimit) }
                     default: break
                     }
                     if let sentence = NativeLivePresentation.ended(outcome.code, limits: self.limits) {
@@ -147,7 +149,7 @@ enum State: String, CaseIterable {
                     self.failure = "Live start outcome is unknown. Check the conversation before starting again."
                 case .outcomeUnknown(let reason):
                     self.stopAudioAndSummarize(); self.state = .outcomeUnknown
-                    if case .socketClosed(let code, _) = reason { self.journal.append(.providerClosed, detail: NativeLiveEndDetail.providerClosed(closeCode: code)) }
+                    if case .socketClosed(let code, _) = reason, !self.endRecorded { self.endRecorded = true; self.journal.append(.providerClosed, detail: NativeLiveEndDetail.providerClosed(closeCode: code)) }
                     self.failure = reason.errorDescription ?? "Live outcome is unknown. No automatic reconnect."
                 default: break
                 }
@@ -259,7 +261,7 @@ enum State: String, CaseIterable {
     }
     func stop(reason: NativeLiveEndReason = .userStop) async {
         stopCapture()
-        journal.append(reason)
+        if !endRecorded { endRecorded = true; journal.append(reason) }
         let token = generation
         await coordinator.close()
         await captureSummaryTask?.value

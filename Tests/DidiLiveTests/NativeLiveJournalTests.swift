@@ -92,6 +92,50 @@ import Foundation
             expect(NativeDiagnosticsSnapshot.connectorLine(id: "calendar", state: "connected", reasonCode: nil) == "calendar: connected", "a healthy connector carries no stage")
         }
 
+        // 7. E1: a provider interruption writes a metadata-only pre line and a post line, numbers only.
+        do {
+            func numeric(_ value: Any?) -> Bool {
+                guard let number = value as? NSNumber else { return false }
+                return CFGetTypeID(number) != CFBooleanGetTypeID()
+            }
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("native-live-interruption-" + UUID().uuidString)
+            let file = directory.appendingPathComponent("native-live.log")
+            let journal = NativeLiveJournal(fileURL: file)
+            let at = Date(timeIntervalSince1970: 1_761_076_800)
+            journal.appendInterruption(phase: .pre, sessionID: "session-abc", bufferedPlaybackMs: 2760,
+                msSinceLastModelAudio: 5400, turnCompleteSeen: false,
+                rms: NativeLiveRms(mean: 0.021, max: 0.34, speechBuffers: 6), at: at)
+            journal.appendInterruption(phase: .post, sessionID: "session-abc", bufferedPlaybackMs: 2760,
+                msSinceLastModelAudio: 5400, turnCompleteSeen: false,
+                rms: NativeLiveRms(mean: 0.004, max: 0.09, speechBuffers: 1), at: at.addingTimeInterval(5))
+            let text = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
+            let lines = text.split(separator: "\n").map(String.init)
+            expect(lines.count == 2, "one pre line and one post line, got \(lines.count)")
+            if lines.count == 2, let pre = jsonObject(lines[0]), let post = jsonObject(lines[1]) {
+                expect(pre["event"] as? String == "live_interrupted", "pre line event token")
+                expect(pre["liveSessionId"] as? String == "session-abc", "session id present")
+                expect(pre["phase"] as? String == "pre", "pre phase token")
+                expect(iso.date(from: pre["timestamp"] as? String ?? "") != nil, "pre timestamp is ISO8601")
+                expect(numeric(pre["bufferedPlaybackMs"]), "bufferedPlaybackMs is a number")
+                expect(numeric(pre["msSinceLastModelAudio"]), "msSinceLastModelAudio is a number")
+                expect(pre["turnCompleteSeen"] as? Bool == false, "turnCompleteSeen is a boolean")
+                if let rms = pre["preRms"] as? [String: Any] {
+                    expect(numeric(rms["mean"]), "preRms.mean is a number")
+                    expect(numeric(rms["max"]), "preRms.max is a number")
+                    expect(numeric(rms["speechBuffers"]), "preRms.speechBuffers is a number")
+                } else { expect(false, "preRms object present") }
+                expect(!lines[0].contains("mid sentence") && !lines[0].contains("pcm") && !lines[0].contains("base64"),
+                    "no audio or text is carried in the pre line")
+                expect(post["event"] as? String == "live_interrupted", "post line event token")
+                expect(post["phase"] as? String == "post", "post phase token")
+                if let rms = post["postRms"] as? [String: Any] {
+                    expect(numeric(rms["mean"]), "postRms.mean is a number")
+                    expect(numeric(rms["max"]), "postRms.max is a number")
+                    expect(numeric(rms["speechBuffers"]), "postRms.speechBuffers is a number")
+                } else { expect(false, "postRms object present") }
+            } else { expect(false, "interruption lines are valid JSON") }
+        }
+
         if failures == 0 { print("NATIVE-LIVE-JOURNAL PASS") } else { print("NATIVE-LIVE-JOURNAL FAIL \(failures)") }
         exit(failures == 0 ? 0 : 1)
     }

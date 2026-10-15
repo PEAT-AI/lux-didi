@@ -3,6 +3,7 @@ import * as memory from '../domain/memory.js';
 import * as labels from '../domain/labels.js';
 import { composeLive, resolveLiveMemory } from '../host/live.js';
 import { captureHostDiagnostics, HostLog, safeEvent } from '../host/log.js';
+import { attachHostLogSink } from '../tools/host-events.js';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
@@ -2000,4 +2001,39 @@ test('U1: calendar and Gmail model text carries no raw url and names each source
   assert.equal(/https?:\/\//.test(mail.text), false, 'gmail model text carries no raw url');
   assert.deepEqual(mail.sources, [{ title: 'Gmail: Budget', url: 'https://mail.google.com/mail/u/0/#inbox/m1', sourceType: 'gmail' }]);
   assert.deepEqual(shapeGcalCalendars({ calendars: [{ summary: 'Work' }] }).sources, undefined);
+});
+
+test('E1: Live setup carries the 700 ms prefix padding that absorbs residual echo spikes', async t => {
+  const h = await harness(t);
+  await attached(h, 'padding');
+  const frame = JSON.parse(JSON.stringify(h.f.frames[0]));
+  const vad = frame.setup.realtimeInputConfig.automaticActivityDetection;
+  assert.equal(vad.prefixPaddingMs, 700, 'prefix padding is 700 ms (release 3a echo-analysis, lux 89995)');
+  assert.equal(vad.silenceDurationMs, 800, 'silence duration is unchanged at 800 ms');
+  assert.equal(vad.startOfSpeechSensitivity, 'START_SENSITIVITY_LOW', 'start sensitivity stays LOW');
+  assert.equal(vad.endOfSpeechSensitivity, 'END_SENSITIVITY_LOW', 'end sensitivity stays LOW');
+});
+
+test('E1: provider barge-in writes one metadata-only live_interrupted host record', async t => {
+  const records: Record<string, unknown>[] = [];
+  const detach = attachHostLogSink({ event: raw => {
+    const record = raw as Record<string, unknown>;
+    if (record.event === 'live_interrupted') records.push(record);
+  } });
+  t.after(detach);
+  const h = await harness(t);
+  const { session } = await attached(h, 'live-interrupted');
+  h.f.send({ serverContent: { modelTurn: { parts: [audio()] }, outputTranscription: { text: 'mid sentence', finished: false } } });
+  await drain(h, session.liveSessionId, 1);
+  h.advance(4200);
+  h.f.send({ serverContent: { interrupted: true } });
+  await drain(h, session.liveSessionId, 2);
+  assert.equal(records.length, 1, 'exactly one live_interrupted record per provider interruption');
+  const record = records[0]!;
+  assert.equal(record.liveSessionId, session.liveSessionId);
+  assert.equal(record.turnCompleteSeen, false, 'turnComplete had not arrived before interrupted');
+  assert.equal(typeof record.msSinceLastModelAudio, 'number');
+  assert.ok((record.msSinceLastModelAudio as number) >= 4200, 'ms since the last output chunk reflects the elapsed turn');
+  assert.deepEqual(Object.keys(record).sort(), ['event', 'liveSessionId', 'msSinceLastModelAudio', 'turnCompleteSeen'],
+    'metadata only: no audio bytes, text, device label or provider payload');
 });

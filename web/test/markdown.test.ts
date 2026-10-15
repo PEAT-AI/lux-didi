@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { renderMarkdown } from '../src/markdown.ts';
+import { renderMarkdown, TRANSCRIPT_MARKDOWN } from '../src/markdown.ts';
 
 test('renders bold text', () => {
   assert.match(renderMarkdown('**Answer** here'), /<strong>Answer<\/strong>/);
@@ -90,5 +90,22 @@ test('an attribute breakout inside a link destination is escaped', () => {
 });
 
 test('a bare url is left as text, never autolinked', () => {
+  assert.equal(renderMarkdown('see https://example.org/a').includes('<a'), false);
+});
+
+test('a transcript answer clamps an H1 and H2 to the bubble top level', () => {
+  const html = renderMarkdown('# Knowledge Search\n\n## Hits\n\n### detail', TRANSCRIPT_MARKDOWN);
+  assert.equal(/<h1>|<h2>/.test(html), false, 'no h1/h2 inside a transcript bubble');
+  assert.match(html, /<h3>Knowledge Search<\/h3>/);
+  assert.match(html, /<h3>Hits<\/h3>/);
+  assert.match(html, /<h3>detail<\/h3>/);
+});
+
+test('a transcript answer renders a bare url as a named chip', () => {
+  const html = renderMarkdown('see https://www.google.com/calendar/event?eid=abc', TRANSCRIPT_MARKDOWN);
+  assert.match(html, /<a class="answer-source" href="https:\/\/www\.google\.com\/calendar\/event\?eid=abc" target="_blank" rel="noopener noreferrer">google\.com\/calendar<\/a>/);
+});
+
+test('the default renderer still leaves a bare url as plain text', () => {
   assert.equal(renderMarkdown('see https://example.org/a').includes('<a'), false);
 });

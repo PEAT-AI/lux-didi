@@ -14,9 +14,10 @@ import type { McpPort, ToolDefinition } from '../adapters/mcp/port.js';
 import { Store } from '../runtime/store.js';
 import { composeMcpRuntime } from '../host/mcp.js';
 import { toolsMigrations } from '../tools/index.js';
-import { createLuxKnowledgeReader, LUX_KNOWLEDGE_TOOLS } from '../connectors/index.js';
+import { createLuxKnowledgeReader, LUX_KNOWLEDGE_TOOLS, normalizeGetInsightArgs, CONNECTOR_DESCRIPTORS } from '../connectors/index.js';
 import { shapeLuxKnowledge } from '../tools/live-shape.js';
 import type { LuxKnowledgeConfig, LuxKnowledgeEvidence, LuxKnowledgeResult } from '../connectors/index.js';
+import type { ConnectionPolicy } from '../tools/types.js';
 
 // Explicitly synthetic public protocol fixture: no real accounts, corpus or credentials.
 const searchTool: ToolDefinition = {
@@ -191,7 +192,7 @@ test('a completed search shapes to the top 3 hits with their compact bodies in o
     const { reader } = await readerFor(adapter, registry);
     const result = complete(await reader.search({ query: 'q', limit: 12 }));
     const shaped = shapeLuxKnowledge('search_knowledge', (result.decodedResult as { content?: { text?: string }[] }).content?.[0]?.text ?? '');
-    assert.equal((shaped.text.match(/^## /gm) ?? []).length, 3, 'a search result carries at most 3 bodies in one call');
+    assert.equal((shaped.text.match(/^### /gm) ?? []).length, 3, 'a search result carries at most 3 bodies in one call');
     assert.match(shaped.text, /Body of insight 1\./);
     assert.equal(shaped.text.includes('Insight 4'), false, 'the fourth hit never reaches the model');
   } finally { await adapter.close(); await f.close(); }
@@ -207,6 +208,71 @@ test('get round trip: requested IDs are cited as requested, include_links pinned
     assert.equal(result.classification, 'unknown');
     assert.deepEqual(result.requestedIds, [7, 9]);
     assert.deepEqual(f.calls, [{ name: 'get_insight', arguments: { ids: [7, 9], include_links: false } }]);
+  } finally { await adapter.close(); await f.close(); }
+});
+
+// X2 (#250): every get_insight id shape the tool can serve is accepted; unreadable
+// entries and unknown read keys are dropped and named, never a boundary refusal.
+test('X2: get_insight normalization accepts every servable id shape and names what it drops', () => {
+  const norm = (args: unknown) => normalizeGetInsightArgs(args, 10);
+  assert.deepEqual(norm([89820, 89933]), { args: { ids: [89820, 89933] } }, 'a bare id array is served');
+  assert.deepEqual(norm(89820), { args: { ids: [89820] } }, 'a bare numeric id is served');
+  assert.deepEqual(norm('#89820'), { args: { ids: [89820] } }, 'a hash-prefixed numeric string is served');
+  assert.deepEqual(norm('lux 89820'), { args: { ids: [89820] } }, 'a lux-prefixed numeric string is served');
+  assert.deepEqual(norm({ ids: ['#89820', 'lux 89933', '89821'] }), { args: { ids: [89820, 89933, 89821] } }, 'prefixed ids in a list are served');
+  const mixed = norm({ ids: [89820, 'not-an-id', 89933] })!;
+  assert.deepEqual(mixed.args, { ids: [89820, 89933] }, 'the readable ids in a mixed list are served');
+  assert.match(mixed.notice!, /not-an-id/, 'the dropped id is named in the notice');
+  assert.deepEqual(norm({ ids: [89820], include_links: true }), { args: { ids: [89820], include_links: true } }, 'include_links is passed through');
+  const extra = norm({ ids: [89820], project: 'p' })!;
+  assert.deepEqual(extra.args, { ids: [89820] }, 'an unknown read key is dropped, not refused');
+  assert.match(extra.notice!, /project/, 'the dropped key is named in the notice');
+  assert.doesNotMatch(extra.notice!, /^p$/, 'the dropped key value is never echoed');
+  assert.equal(norm({ ids: [] }), undefined, 'an empty id list still refuses');
+  assert.equal(norm({ ids: ['not-an-id'] }), undefined, 'an all-unreadable list still refuses');
+});
+
+// K2 (#250): the model sometimes sends several ids inside one string; split it by the
+// separators a list of ids can carry, each token keeping the X2 single-id forms.
+test('K2: get_insight splits a string that holds several ids', () => {
+  const norm = (args: unknown) => normalizeGetInsightArgs(args, 10);
+  assert.deepEqual(norm('89820, 89933'), { args: { ids: [89820, 89933] } }, 'a comma-separated string is split');
+  assert.deepEqual(norm('89820; 89933'), { args: { ids: [89820, 89933] } }, 'a semicolon-separated string is split');
+  assert.deepEqual(norm('89820 89933'), { args: { ids: [89820, 89933] } }, 'a whitespace-separated string is split');
+  assert.deepEqual(norm('[89820, 89933]'), { args: { ids: [89820, 89933] } }, 'JSON array text is parsed');
+  assert.deepEqual(norm('#89820, #89933'), { args: { ids: [89820, 89933] } }, 'prefixed tokens in one string are split');
+  assert.deepEqual(norm({ ids: '89820, 89933' }), { args: { ids: [89820, 89933] } }, 'a multi-id string under `ids` is split');
+  assert.deepEqual(norm({ id: '#89820 89933' }), { args: { ids: [89820, 89933] } }, 'prefixed and separated tokens are all served');
+});
+
+test('K2: a multi-id string drops unreadable tokens, dedupes and caps like a list', () => {
+  const norm = (args: unknown) => normalizeGetInsightArgs(args, 10);
+  const mixed = norm('89820, not-an-id, 89933')!;
+  assert.deepEqual(mixed.args, { ids: [89820, 89933] }, 'the readable tokens are served');
+  assert.match(mixed.notice!, /not-an-id/, 'the dropped token is named');
+  assert.deepEqual(norm('89820, 89820'), { args: { ids: [89820] } }, 'repeated ids dedupe');
+  const many = Array.from({ length: 12 }, (_, i) => 90000 + i).join(', ');
+  const capped = norm(many)!;
+  assert.deepEqual(capped.args.ids, [90000, 90001, 90002, 90003, 90004, 90005, 90006, 90007, 90008, 90009], 'the split list caps at maxGetIds');
+  assert.match(capped.notice!, /first 10/, 'the cap is named');
+});
+
+// K2 (#250): the declared `ids` description and the boundary validator must still agree.
+test('K2: the get_insight declaration names the multi-id string form its validator splits', () => {
+  const policy = { bounds: { maxQueryChars: 200, maxSearchLimit: 12, maxGetIds: 10, maxEntityBytes: 4096, maxResultBytes: 8192 } } as ConnectionPolicy;
+  const declaration = CONNECTOR_DESCRIPTORS['lux-knowledge']!.declarations(policy).find(tool => tool.name === 'get_insight')!;
+  const ids = (declaration.parameters['properties'] as Record<string, Record<string, unknown>>)['ids']!;
+  assert.match(ids['description'] as string, /separated by comma, semicolon or whitespace/, 'the ids description names the multi-id string form');
+  assert.equal(declaration.validate({ ids: '89820, 89933' }), true, 'the declared multi-id string form is accepted by the validator');
+});
+
+test('X2: get_insight forwards a requested include_links to the MCP call', async () => {
+  const f = await fixture({ call: () => ({ content: [{ type: 'text', text: 'synthetic by-id payload' }] }) });
+  const { adapter, registry } = setup(f.url);
+  try {
+    const { reader } = await readerFor(adapter, registry);
+    complete(await reader.get({ ids: [7, 9], include_links: true } as never));
+    assert.deepEqual(f.calls, [{ name: 'get_insight', arguments: { ids: [7, 9], include_links: true } }]);
   } finally { await adapter.close(); await f.close(); }
 });
 
@@ -235,7 +301,7 @@ test('strict exact-key validation rejects malformed and extra fields before any 
       reader.get({ ids: [1, 1] }),
       reader.get({ ids: [1.2] }),
       reader.get({ ids: [1, 2, 3, 4, 5, 6, 7, 8, 9] }),
-      reader.get({ ids: [1], include_links: true } as never),
+      reader.get({ ids: [1], project: 'p' } as never),
     ]);
     for (const result of rejected) assert.equal(result.state, 'refused');
     assert.equal(f.calls.length, 0);

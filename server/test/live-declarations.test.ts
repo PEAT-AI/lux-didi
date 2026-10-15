@@ -35,6 +35,23 @@ test('every composed Live connector and built-in declaration conforms to provide
   assert.deepEqual(registry.map(tool => tool.parameters), before, 'chat compilation leaves validation schemas intact');
 });
 
+// X2 (#250): the declared get_insight shape and its boundary validator must agree. The old
+// schema named only `ids` and set additionalProperties:false, while the validator accepted
+// more and refused include_links, which the upstream MCP get_insight itself accepts.
+test('X2: the get_insight declaration names every key its validator accepts', () => {
+  const policy = { bounds: { maxQueryChars: 200, maxSearchLimit: 12, maxGetIds: 10, maxEntityBytes: 4096, maxResultBytes: 8192 } } as ConnectionPolicy;
+  const declaration = CONNECTOR_DESCRIPTORS['lux-knowledge']!.declarations(policy).find(tool => tool.name === 'get_insight')!;
+  const properties = declaration.parameters['properties'] as Record<string, unknown>;
+  assert.deepEqual(Object.keys(properties).sort(), ['ids', 'include_links'], 'the declared keys are exactly the accepted keys');
+  assert.equal(declaration.parameters['additionalProperties'], true, 'the read schema admits extra keys the validator drops');
+  assert.equal(declaration.validate({ ids: [1], include_links: true }), true, 'the declared include_links key is accepted by the validator');
+  assert.equal(declaration.validate({ ids: [1], nonsense: 1 }), true, 'an unknown read key is dropped, not refused');
+  const live = declarationsFor([{ name: 'get_insight', description: declaration.description, parameters: declaration.parameters } as ToolDefinition]).declarations[0]!;
+  const liveProperties = live.parameters['properties'] as Record<string, unknown>;
+  assert.ok(Object.keys(liveProperties).includes('include_links'), 'the flattened Live schema still names include_links');
+  assert.deepEqual(violations(live.parameters, 'get_insight.parameters'), []);
+});
+
 test('nested unsupported constraints never leak and semantic constraints remain described', () => {
   const parameters = { type: 'object', additionalProperties: false, $schema: 'fixture', properties: { nested: { type: 'object', title: 'nested', properties: { text: { type: 'string', minLength: 1, maxLength: 10, pattern: '^a', format: 'email', default: 'a', examples: ['a'], const: 'a' }, choice: { type: 'string', enum: ['a', 'b'] } } } } };
   const registry: ToolDefinition[] = [{ name: 'nested', description: 'nested', parameters, effect: 'read', accountId: 'fixture', resourceId: 'fixture', validate: () => true, execute: async () => ({ status: 'failed' }) }];

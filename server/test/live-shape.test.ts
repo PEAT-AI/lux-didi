@@ -130,11 +130,11 @@ test('a knowledge search returns at most 3 hits with their bodies in one call', 
     content: `Body of insight ${index + 1}. ${'Detail. '.repeat(100)}`,
   }));
   const shaped = shapeLuxKnowledge('search_knowledge', JSON.stringify({ results: hits }));
-  const headings = shaped.text.match(/^## /gm) ?? [];
+  const headings = shaped.text.match(/^### /gm) ?? [];
   assert.equal(headings.length, KNOWLEDGE_HITS, 'only the top hits reach the model');
   assert.match(shaped.text, /Body of insight 1\./);
   assert.equal(shaped.text.includes('Insight 4'), false);
-  const first = shaped.text.split('## ')[1]!;
+  const first = shaped.text.split('### ')[1]!;
   const body = first.split('\n').slice(1).join('\n').split('\n[omitted:')[0]!;
   assert.equal(body.length <= KNOWLEDGE_EXCERPT_CHARS, true, 'a search body stays within the excerpt bound');
 });
@@ -177,7 +177,7 @@ test('lux search keeps title, type, date, id and a substantial excerpt, and name
     content: `Body of insight ${index + 1}. `.repeat(20),
   }));
   const shaped = shapeLuxKnowledge('search_knowledge', JSON.stringify({ results: hits }));
-  assert.match(shaped.text, /## Insight 1 \(TECHNICAL_DECISION \| 2026-10-14\) \[id 1\]/);
+  assert.match(shaped.text, /### Insight 1 \(TECHNICAL_DECISION \| 2026-10-14\) \[id 1\]/);
   assert.match(shaped.text, new RegExp(`\\[omitted: 5 more hits; call search_knowledge again with limit=${hits.length}`));
   assert.equal(shaped.partial, true);
   assert.equal(shaped.text.includes('Insight 21'), false);
@@ -328,4 +328,37 @@ test('noEmptyResult turns an empty completed projection into an explicit note', 
 test('mattermost whoami (username/email record) reports the operator name', () => {
   const shaped = shapeMattermost('mattermost_whoami', WHOAMI);
   assert.match(shaped.text, /river/);
+});
+
+// The remote lux-knowledge search returns its digest as Markdown: a leading H1 header and an
+// italic retrieval-metadata line above the hits. Neither may reach the Live model or the answer
+// card (#254); the hits and their ids stay.
+const SEARCH_MARKDOWN = [
+  "# Knowledge Search: 'naya live answer card'",
+  '',
+  '_confidence: low · mode: fast_path_ · top score: 1.01 · relevant candidate: yes',
+  '',
+  '_739 sensitive row(s) withheld; pass include_sensitive=true to see them_',
+  '',
+  '**#89817** [TECHNICAL_DECISION] Didi Live tool orchestration roadmap',
+  '  excerpt line',
+  '  Score: 1.007',
+  '',
+  '_low confidence: results may not contain an answer, treat as leads_',
+].join('\n');
+
+test('a markdown knowledge search never carries its header or retrieval metadata', () => {
+  const shaped = shapeLuxKnowledge('search_knowledge', SEARCH_MARKDOWN);
+  assert.equal(/Knowledge Search/.test(shaped.text), false, 'the search header is stripped');
+  assert.equal(/confidence|top score|relevant candidate|mode:/.test(shaped.text), false, 'the retrieval metadata line is stripped');
+  assert.equal(shaped.text.startsWith('#'), false, 'a tool result never starts with a markdown heading');
+  assert.match(shaped.text, /#89817/, 'the hits and ids stay');
+  assert.match(shaped.text, /Didi Live tool orchestration roadmap/);
+});
+
+test('a knowledge tool result never starts with an H1 or H2', () => {
+  const hits = [{ id: 1, insight_title: 'Insight 1', insight_type: 'PATTERN', updated_at: '2026-10-14', content: 'Body.' }];
+  const shaped = shapeLuxKnowledge('search_knowledge', JSON.stringify({ results: hits }));
+  assert.equal(/^#{1,2} /m.test(shaped.text), false, 'no H1/H2 heading survives shaping');
+  assert.match(shaped.text, /### Insight 1 \(PATTERN \| 2026-10-14\) \[id 1\]/);
 });

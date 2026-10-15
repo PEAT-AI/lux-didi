@@ -32,6 +32,7 @@ try {
   await openMini({ state: 'idle', since, entries: [], cursor: 0 });
   await page.locator('.mini-stage[data-mini-state="idle"]').waitFor({ timeout: 15000 });
   assert.equal(await page.locator('.sidebar, [data-tab], .voice-text').count(), 0, 'mini route has no full-window chrome');
+  await page.waitForTimeout(500);
   await page.screenshot({ path: `${shots}/idle.png` });
 
   await openMini({ state: 'thinking', since, cursor: 1, entries: [
@@ -39,6 +40,13 @@ try {
   ] });
   await page.locator('.mini-stage[data-mini-state="tool"]').waitFor({ timeout: 15000 });
   assert.match(await page.locator('.activity-text').innerText(), /mail/i, 'the tool line shows the connector phrase');
+  await page.waitForTimeout(500);
+  console.log('MINI-ACTIVITY ' + JSON.stringify(await page.evaluate(() => {
+    const el = document.querySelector('.mini-stage .activity-text');
+    const stage = document.querySelector('.mini-stage');
+    const cs = getComputedStyle(el);
+    return { color: cs.color, opacity: cs.opacity, whiteSpace: cs.whiteSpace, textOverflow: cs.textOverflow, fontSize: cs.fontSize, lines: el.getClientRects().length, stageBg: getComputedStyle(stage).backgroundColor };
+  })));
   await page.screenshot({ path: `${shots}/thinking-tool.png` });
 
   await openMini({ state: 'speaking', since, cursor: 1, entries: [
@@ -46,6 +54,7 @@ try {
   ] });
   await page.locator('.mini-stage[data-mini-state="speaking"]').waitFor({ timeout: 15000 });
   assert.equal(await page.locator('.mini-stage canvas').count(), 1, 'one orb canvas');
+  await page.waitForTimeout(500);
   await page.screenshot({ path: `${shots}/speaking.png` });
 
   assert.deepEqual(errors, []);

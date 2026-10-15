@@ -1,6 +1,6 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
@@ -13,7 +13,7 @@ import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { createLuxKnowledgeReader } from '../connectors/lux-knowledge.js';
 import type { McpPort, ToolDefinition as McpTool } from '../adapters/mcp/port.js';
 import { runTools } from '../adapters/model/loop.js';
-import { captureHostDiagnostics, HostLog } from '../host/log.js';
+import { attachHostLogSink } from '../tools/host-events.js';
 import type { HostContext, JsonObject, ModelPort, ModelRequest, ModelResult, ToolCallIntent, ToolCallJournal, ToolDefinition, ToolResultBinding, ToolResultGate } from '../adapters/model/types.js';
 import { CONNECTOR_DESCRIPTORS, normalizeGetInsightArgs } from '../connectors/index.js';
 import { runToolCalls } from '../tools/declarations.js';
@@ -697,14 +697,12 @@ test('K1: a declared tool without tailored guidance states its expected shape', 
 
 test('K1: an invalid tool call logs a metadata-only argument diagnostic', async () => {
   const owner = { journal: refuses([]), resultGate: {} as unknown as ToolResultGate };
-  const captureDir = mkdtempSync(join(tmpdir(), 'didi-tool-owner-log-'));
-  const stopDiagnostics = captureHostDiagnostics(new HostLog(captureDir));
+  const events: { event?: string }[] = [];
+  const detach = attachHostLogSink({ event: raw => { events.push(raw as { event?: string }); } });
   try {
     await runToolCalls(owner, [{ id: '1', name: 'get_insight', args: { ids: ['hunter2'], limit: 3 } }], errorContext(errorTool()) as never);
-  } finally { stopDiagnostics(); }
-  const lines = readFileSync(join(captureDir, 'logs', 'host.log'), 'utf8').trim().split('\n');
-  rmSync(captureDir, { recursive: true, force: true });
-  const event = JSON.parse(lines.find(line => line.includes('tool_arguments_rejected'))!) as { tool: string; fields: string[] };
+  } finally { detach(); }
+  const event = events.find(line => line.event === 'tool_arguments_rejected') as { tool: string; fields: string[] };
   assert.equal(event.tool, 'get_insight');
   assert.deepEqual(event.fields, ['ids:array', 'limit:number']);
   assert.doesNotMatch(JSON.stringify(event), /hunter2/);

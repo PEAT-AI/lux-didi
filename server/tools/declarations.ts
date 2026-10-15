@@ -2,7 +2,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { createHash } from 'node:crypto';
 import { controlled, Interrupted } from '../adapters/model/control.js';
 import { isToolFailureCode } from '../adapters/model/types.js';
-import { hostLogEvent } from '../host/log.js';
+import { hostLogEvent } from './host-events.js';
 import type { Authority, DataClass, FunctionDeclaration, HostContext, JsonObject, ModelControl, Part, ToolCallIntent, ToolCallJournal, ToolCallRefusal, ToolDefinition, ToolOutcome, ToolRecord, ToolResultBinding, ToolResultGate, ToolResultRef, LoopResult } from '../adapters/model/types.js';
 
 /** Provider schemas are presentation only. Validation and approval retain the originals. */

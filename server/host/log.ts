@@ -1,5 +1,6 @@
 import { clientDiagnostic } from '../http/routes.js';
 import { TOOL_FAILURE_CODES } from '../adapters/model/types.js';
+import { attachHostLogSink } from '../tools/host-events.js';
 import { ConfigError } from '../config/files.js';
 import { closeSync, constants, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, renameSync, unlinkSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
@@ -145,20 +146,16 @@ export class HostLog {
   }
 }
 
-const sinks = new Set<HostLog>();
 let installed = false;
+const sinks = new Set<HostLog>();
 
-/**
- * Route one structured host diagnostic to every attached host log, never to stdout.
- * stdout is the supervised protocol pipe: call sites use this instead of console.log so the
- * intent is explicit and no raw line can reach the native supervisor's stdout.
- */
-export function hostLogEvent(raw: unknown): void {
-  for (const sink of sinks) sink.event(raw);
-}
+// The host log event API lives in the tool layer so the tool call sites can emit diagnostics
+// without importing the host; this module registers the durable sinks behind it.
+export { hostLogEvent } from '../tools/host-events.js';
 
 export function captureHostDiagnostics(log: HostLog): () => void {
   sinks.add(log);
+  const detachHub = attachHostLogSink(log);
   if (!installed) {
     installed = true;
     // Captured only before the wrappers are installed, so unstructured console output can be sent
@@ -180,5 +177,5 @@ export function captureHostDiagnostics(log: HostLog): () => void {
       };
     }
   }
-  return () => { sinks.delete(log); };
+  return () => { sinks.delete(log); detachHub(); };
 }

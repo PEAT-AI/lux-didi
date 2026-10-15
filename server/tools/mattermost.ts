@@ -3,7 +3,7 @@ import type { McpPort, StoredPayload } from '../adapters/mcp/port.js';
 import type { MattermostEvidence, MattermostResult, MattermostTool } from '../connectors/mattermost.js';
 import { MATTERMOST_AUTH_NEEDED } from '../connectors/mattermost.js';
 import { sha256 } from './canonical.js';
-import { hostLogEvent } from '../host/log.js';
+import { hostLogEvent } from './host-events.js';
 import { shapeMattermost, type ShapedSource } from './live-shape.js';
 
 export interface MattermostProjection {

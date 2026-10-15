@@ -281,3 +281,29 @@ h3{font-size:14px}
 .connected-notes[open]>summary{background:var(--surface)}
 .connected-notes .notes-count{font-size:10px;margin-left:2px}
 .connected-notes[open]>p,.connected-notes[open]>form,.connected-notes[open]>div{position:static}
+
+/* V2-R4 layout audit (A-G). Appended last so it wins over the accumulated rules above. */
+.lane .lane-head{gap:8px;padding-right:24px}
+.lane .lane-inner{padding:0 24px 16px;box-sizing:border-box}
+.lane-toggle{position:static;top:auto;right:auto;width:28px;height:28px;margin:0;flex:0 0 auto}
+.voice-actions{margin-left:auto;gap:8px}
+.voice-status{min-width:0;margin-right:auto}
+.voice-orb,.voice-orb canvas{width:52px;height:52px}
+.lane-chat .lane-inner{display:flex;flex-direction:column;min-height:0}
+#connected-send-form{margin-top:auto;padding-top:10px;background:var(--bg)}
+.composer-field{align-items:flex-end}
+#connected-draft{min-height:48px;width:100%;padding-right:88px;resize:none}
+.send-button{position:absolute;right:8px;top:50%;transform:translateY(-50%);width:32px;height:32px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;border:0;background:var(--accent);color:var(--accent-contrast);cursor:pointer}
+.send-button[disabled]{background:var(--surface-2);color:var(--muted);cursor:default}
+.send-button svg{display:block}
+.connected-notes{position:absolute;right:48px;top:50%;transform:translateY(-50%);bottom:auto;margin:0}
+.connected-notes>summary{width:28px;height:28px;border:0;background:none;color:var(--muted)}
+.live-turns{display:flex;flex-direction:column;gap:16px;padding:0}
+.live-turns .entry{background:none;border:0;padding:0}
+.live-turns .entry.naya{max-width:640px;align-self:flex-start}
+.live-turns .entry.user{align-self:flex-end;max-width:640px}
+.live-turns .entry strong{display:block;font-size:12px;color:var(--muted);margin-bottom:4px}
+.live-tool-result{margin:0;padding:0;border:0;align-self:flex-start}
+.live-tool-result>summary{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border:1px solid var(--border);border-radius:999px;font-size:12px;color:var(--muted);cursor:pointer;list-style:none}
+.live-tool-result>summary::before{content:"";width:12px;height:12px;border-radius:3px;background:var(--accent)}
+.allow-link{height:28px;line-height:28px;padding:0 8px;border:0;background:none;color:var(--accent);font-size:12px;cursor:pointer}

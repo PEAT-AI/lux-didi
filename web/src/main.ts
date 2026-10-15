@@ -25,6 +25,7 @@ const tabs: Tab[] = ['Conversation', 'Today', 'Memory', 'Settings'];
 let tab: Tab = 'Conversation';
 let theme: Theme = 'dark';
 let orb: Orb | undefined;
+let orbHeader: Orb | undefined;
 let appliedOrbState: VoiceState | undefined;
 let status: Status | undefined;
 const connectedView = new ConnectedView(() => orb?.setState(orbState()));
@@ -190,7 +191,7 @@ function voiceHeadMarkup() {
   const error = liveErrorText(view.error, view.reason);
   const last = view.lastSessionEndedAt ? `Last session ${e(datetime(view.lastSessionEndedAt))}` : 'No session yet';
   const active = view.state === 'live' || view.state === 'muted' || view.state === 'starting';
-  const orb = liveTurns() ? '<div class="voice-orb"><canvas id="didi-orb" width="440" height="440" aria-hidden="true"></canvas></div>' : '';
+  const orb = '<div class="voice-orb"><canvas id="didi-orb-header" width="120" height="120" aria-hidden="true"></canvas></div>';
   return `${orb}<div class="voice-status"><p class="voice-state" role="status" aria-live="polite">${e(liveStateCopy(view.state))}</p><p class="voice-time">${last}</p></div><div class="voice-actions">${active ? `<button id="voice-stop" class="stop-pill">Stop</button><button id="voice-mute" class="quiet">${view.state === 'muted' ? 'Unmute' : 'Mute'}</button>` : `<button id="voice-start" class="start-pill" ${startAvailable(view) ? '' : 'aria-disabled="true"'}>Start</button>`}<button id="new-conversation" class="icon-button" aria-label="New conversation" title="New conversation"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button></div>${error ? `<p class="voice-error" role="alert">${e(error)}</p>` : ''}`;
 }
 function chatHeadMarkup() {
@@ -221,7 +222,7 @@ function render() {
   // Keep cursor and unsent text stable across connection checks and action completion.
   const focus = document.activeElement as HTMLInputElement | HTMLTextAreaElement | null;
   const focusId = focus?.id; const selection = focus && (focus.tagName === 'TEXTAREA' || ['text','search','password'].includes(focus.type)) ? [focus.selectionStart,focus.selectionEnd] : null;
-  orb?.destroy();orb=undefined;
+  orb?.destroy();orb=undefined;orbHeader?.destroy();orbHeader=undefined;
   root.innerHTML = `<a id="skip-to-content" class="skip" href="#main">Skip to content</a><div class="app-shell" data-rail="${layout.rail}" data-narrow="${layout.narrow}" data-segment="${layout.segment}" data-sheet="${layout.sheet ?? ''}"><header class="app-header">${pairingRequired ? '' : `<button id="rail-toggle" class="icon-button" aria-expanded="${layout.rail==='expanded'}" aria-controls="rail" aria-label="Program menu">☰</button>`}<a class="brand-mini" href="/" aria-label="Didi home"><img src="/icon.svg" alt="" width="22" height="22"><span>didi<span class="brand-dot">.</span></span></a>${pairingRequired ? '' : laneSwitcherMarkup()}${livePillMarkup()}<div class="connection"><span class="connection-dot ${connection==='Connected'?'online':''}"></span><span id="connection-state" role="status" aria-live="polite" aria-atomic="true">${e(connection)}</span><button id="reconnect-top" class="quiet" aria-label="Refresh connection">↻</button></div></header>${demoMode || status?.serviceMode==='synthetic-test' ? '<div class="demo-banner"><strong>Demo test mode</strong><span>Isolated synthetic data · not your personal service</span></div>' : ''}<div class="lane-row">${pairingRequired ? '' : railMarkup()}<main id="main" tabindex="-1" class="lanes">${error ? `<div class="alert" role="alert" aria-live="assertive">${e(error)}</div>` : ''}${notice ? `<div class="notice" role="status" aria-live="polite" aria-atomic="true">${e(notice)}</div>` : ''}${readBusy ? '<p class="loading" role="status" aria-live="polite" aria-atomic="true">Loading your records…</p>' : ''}${busy ? '<button id="cancel-request" class="quiet">Stop waiting</button>' : ''}${pairingRequired ? pairing() : `${laneShell('voice','Voice',voiceHeadMarkup(),voiceBodyMarkup())}${laneShell('chat','Chat',chatHeadMarkup(),chatLane())}`}</main></div>${sheetMarkup()}${consentPopoverMarkup()}</div>`;
   bind();
   bindScrollAnchors();
@@ -230,6 +231,8 @@ function render() {
   attachMemoryDeleteControls(root, !writable() || busy || connectedView.active, id => void deleteMemory(id));
   const canvas=document.getElementById('didi-orb') as HTMLCanvasElement | null;
   if(canvas)orb=new Orb(canvas,appliedOrbState=orbState());
+  const headCanvas=document.getElementById('didi-orb-header') as HTMLCanvasElement | null;
+  if(headCanvas)orbHeader=new Orb(headCanvas,appliedOrbState??'CONNECTED');
   if (focusId) { const next=document.getElementById(focusId) as HTMLInputElement | HTMLTextAreaElement | null; next?.focus({preventScroll:true}); if(selection && next && selection[0]!==null) next.setSelectionRange(selection[0],selection[1]); }
   paintedLivePoll=document.getElementById('live-panel') ? livePoll : undefined;
 }
@@ -415,7 +418,7 @@ function paintLive(){
   }
   paintedLivePoll=panel ? livePoll : undefined;
   const caption=document.querySelector('.orb-caption');const markup=orbCaptionMarkup();if(caption && caption.innerHTML!==markup)caption.innerHTML=markup;
-  const next=orbState();if(next!==appliedOrbState){appliedOrbState=next;orb?.setState(next);}
+  const next=orbState();if(next!==appliedOrbState){appliedOrbState=next;orb?.setState(next);orbHeader?.setState(next);}
 }
 onAuthorityChanged(reason=>{
   ++readGeneration;controller?.abort();controller=undefined;busy=false;readBusy=false;pairingBusy=false;connectionsBusy=false;liveBusy=false;

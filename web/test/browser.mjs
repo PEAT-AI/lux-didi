@@ -8,6 +8,83 @@ await mkdir(artifacts,{recursive:true});
 console.log(`Browser artifacts: ${artifacts}`);
 const fixture=await startFixture(); let browser;
 const timings=[];
+
+async function auditLayout(page) {
+  return await page.evaluate(() => {
+    const r = el => el.getBoundingClientRect();
+    const q = sel => document.querySelector(sel);
+    const rn = v => Math.round(v);
+    const inset = (sel, lane) => { const el = q(sel); if (!el) return null; const b = r(el); return { left: rn(b.left - lane.left), right: rn(lane.right - b.right) }; };
+    const size = sel => { const el = q(sel); if (!el) return null; const b = r(el); return { w: rn(b.width), h: rn(b.height), right: rn(b.right) }; };
+    const gap = (a, b) => { const x = q(a), y = q(b); return x && y ? rn(r(y).left - r(x).right) : null; };
+    const voice = r(q('#lane-voice')), chat = r(q('#lane-chat'));
+    const field = q('.composer-field'), send = q('#connected-send'), draft = q('#connected-draft');
+    const entries = [...document.querySelectorAll('.live-turns > *')];
+    const entry = q('.live-turns .entry');
+    const summary = q('.live-tool-result > summary');
+    const label = q('.live-turns .entry strong');
+    const naya = q('.live-turns .entry.naya');
+    const allow = q('.allow-link');
+    const cs = el => el ? getComputedStyle(el) : null;
+    return {
+      voice: {
+        turnInset: inset('.live-turns .entry', voice),
+        chipInset: inset('.live-tool-result', voice),
+        emptyInset: inset('.voice-empty', voice),
+        hideRight: rn(voice.right - r(q('#lane-voice .lane-toggle')).right),
+        headerOrb: size('#lane-voice .voice-orb canvas'),
+        startNewGap: gap('#voice-start', '#new-conversation'),
+        newHideGap: gap('#new-conversation', '#lane-voice .lane-toggle'),
+      },
+      chat: {
+        emptyInset: inset('.connected-empty', chat),
+        composerInset: inset('#connected-send-form', chat),
+        composerBottom: rn(chat.bottom - r(q('#connected-send-form')).bottom),
+        send: size('#connected-send'),
+        sendInside: field && send ? rn(r(field).right - r(send).right) : null,
+        sendCentre: field && send ? Math.abs(Math.round((r(send).top + r(send).height / 2) - (r(field).top + r(field).height / 2))) : null,
+        clip: size('#connected-notes-summary'),
+        clipFont: cs(q('#connected-notes-summary'))?.width,
+      },
+      chipPad: summary ? { padding: `${cs(summary).paddingTop} ${cs(summary).paddingRight}`, font: cs(summary).fontSize, display: cs(summary).display } : null,
+      labelFont: label ? cs(label).fontSize : null,
+      nayaMax: naya ? cs(naya).maxWidth : null,
+      turnGap: entries.length > 1 ? rn(r(entries[1]).top - r(entries[0]).bottom) : null,
+      labelGap: entry && label ? rn(r(entry.querySelector('.markdown, p')).top - r(label).bottom) : null,
+      allowHeight: allow ? rn(r(allow).height) : null,
+      draftMax: draft ? cs(draft).maxWidth : null,
+    };
+  });
+}
+
+function assertAudit(a, label) {
+  const inb = (v, lo, hi, what) => assert.ok(v >= lo && v <= hi, `${label} ${what}: ${v} not in [${lo},${hi}]`);
+  if (a.voice.turnInset) { inb(a.voice.turnInset.left, 24, 40, 'voice turn left inset'); inb(a.voice.turnInset.right, 24, 520, 'voice turn right clearance'); }
+  if (a.voice.chipInset) inb(a.voice.chipInset.left, 24, 40, 'chip left inset');
+  if (a.voice.emptyInset) inb(a.voice.emptyInset.left, 24, 40, 'empty left inset');
+  inb(a.voice.hideRight, 22, 26, 'Hide right inset');
+  inb(a.voice.headerOrb.w, 40, 56, 'header orb width');
+  inb(a.voice.headerOrb.h, 40, 56, 'header orb height');
+  inb(a.voice.startNewGap, 8, 12, 'Start to New gap');
+  inb(a.voice.newHideGap, 8, 12, 'New to Hide gap');
+  if (a.chat.emptyInset) { inb(a.chat.emptyInset.left, 24, 400, 'chat empty left inset'); inb(a.chat.emptyInset.right, 24, 400, 'chat empty right inset'); }
+  inb(a.chat.composerInset.left, 24, 40, 'composer left inset');
+  inb(a.chat.composerInset.right, 24, 40, 'composer right inset');
+  inb(a.chat.composerBottom, 14, 18, 'composer bottom gap');
+  inb(a.chat.send.w, 32, 32, 'send width');
+  inb(a.chat.send.h, 32, 32, 'send height');
+  inb(a.chat.sendInside, 8, 16, 'send right inset in field');
+  inb(a.chat.sendCentre, 0, 2, 'send vertical centring');
+  inb(a.chat.clip.w, 28, 28, 'paperclip width');
+  assert.equal(a.chipPad.font, '12px', `${label} chip font`);
+  assert.equal(a.chipPad.padding, '4px 10px', `${label} chip padding`);
+  assert.equal(a.labelFont, '12px', `${label} turn label font`);
+  assert.equal(a.nayaMax, '640px', `${label} naya max width`);
+  if (a.turnGap !== null) inb(a.turnGap, 16, 16, 'turn gap');
+  if (a.labelGap !== null) inb(a.labelGap, 3, 5, 'label to text gap');
+  return a;
+}
+
 async function step(name,fn){const start=performance.now(); await fn(); timings.push({name,seconds:Math.round((performance.now()-start)/10)/100}); console.log(`PASS ${name}`);}
 try {
   browser=await chromium.launch({channel:'chromium',headless:true,args:['--use-angle=metal','--enable-gpu','--ignore-gpu-blocklist']});
@@ -47,6 +124,9 @@ try {
     await page.locator('#sheet-close').click();
     await page.locator('#sheet').waitFor({state:'detached'});
     assert.equal(await page.locator('#connection-state').getAttribute('aria-live'),'polite');
+    assert.equal(await page.locator('.allow-link').first().evaluate(el => Math.round(el.getBoundingClientRect().height)), 28, 'the Allow control is a 28 px text button');
+    await page.locator('#connected-consent').click();
+    await page.locator('#connected-draft:not([disabled])').waitFor();
   });
 
   await step('classic Canvas orb is idle not listening and honors reduced motion',async()=>{
@@ -114,6 +194,36 @@ try {
     assert.equal(await page.getByRole('button',{name:/record|microphone|mute/i}).count(),0);
     await page.screenshot({path:`${artifacts}/desktop-live-naya.png`,fullPage:true});
     fixture.setLive({state:'idle',since:'2026-10-11T16:00:00Z',entries:[],cursor:0});
+  });
+
+
+  await step('V2-R4 layout audit A-G', async () => {
+    const results = {};
+    const run = async (viewport, theme, segment) => {
+      await page.setViewportSize(viewport);
+      await page.evaluate(m => localStorage.setItem('didi-theme', m), theme);
+      await page.reload();
+      await page.locator('.app-shell').waitFor();
+      if (segment) await page.locator(`button[data-segment="${segment}"]`).click();
+      await page.locator('#connected-draft:not([disabled])').waitFor();
+      const a = await auditLayout(page);
+      assertAudit(a, `${viewport.width}x${viewport.height} ${theme}${segment ? ' ' + segment : ''}`);
+      results[`${viewport.width}x${viewport.height}-${theme}${segment ? '-' + segment : ''}`] = a;
+    };
+    fixture.setLive({ state: 'speaking', since: '2026-10-11T16:00:00Z', cursor: 4, entries: [
+      { seq: 1, kind: 'inputTranscription', text: 'What should I do next?' },
+      { seq: 2, kind: 'turnComplete' },
+      { seq: 3, kind: 'outputTranscription', text: 'Ship the three-lane UI.' },
+      { seq: 4, kind: 'turnComplete' },
+      { seq: 5, kind: 'outputTranscription', text: 'Then run the layout audit.' },
+      { seq: 6, kind: 'toolResult', tool: { name: 'lux-knowledge', status: 'completed', markdown: '**Found** three notes', sources: [{ title: 'note', url: 'https://example.org' }] } }
+    ] });
+    await run({ width: 1440, height: 900 }, 'dark', null);
+    await run({ width: 1440, height: 900 }, 'light', null);
+    await run({ width: 800, height: 900 }, 'dark', 'chat');
+    await run({ width: 800, height: 900 }, 'light', 'voice');
+    await writeFile(join(artifacts, 'v2r4-audit.json'), JSON.stringify(results, null, 2));
+    console.log('V2R4_AUDIT', JSON.stringify(results));
   });
 
   await step('settings unpair revokes the cookie and returns to pairing',async()=>{

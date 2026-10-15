@@ -65,7 +65,22 @@ import Darwin
         }
         app.run()
     }
+    @MainActor private static func externalLinkPolicyTests() {
+        let own = "http://127.0.0.1:4444"
+        func decide(_ raw: String, _ type: WKNavigationType, _ main: Bool?) -> ExternalLinkDecision {
+            ExternalLinkPolicy.decide(url: URL(string: raw), navigationType: type, isMainFrame: main, ownOrigin: own)
+        }
+        expect(decide("https://example.com/a", .linkActivated, nil) == .openExternal, "target=_blank external https link opens externally")
+        expect(decide("http://example.com/a", .linkActivated, true) == .openExternal, "main-frame external http link opens externally")
+        expect(decide(own + "/", .linkActivated, true) == .allow, "own-origin main-frame link navigation still allowed")
+        expect(decide("javascript:alert(1)", .linkActivated, true) == .cancel, "javascript link denied")
+        expect(decide("JaVaScRiPt:alert(1)", .linkActivated, true) == .cancel, "mixed-case javascript link denied")
+        expect(decide("file:///etc/passwd", .linkActivated, true) == .cancel, "file link denied")
+        expect(decide("https://example.com/a", .linkActivated, false) == .cancel, "subframe external link denied")
+        expect(decide("https://example.com/a", .other, true) == .cancel, "programmatic external https navigation denied")
+    }
     @MainActor private static func runFixtures() async -> Bool {
+        externalLinkPolicyTests()
         let started = Date()
         let ready = URL(fileURLWithPath: CommandLine.arguments[1])
         await waitFor("fixture ready") { FileManager.default.fileExists(atPath: ready.path) }

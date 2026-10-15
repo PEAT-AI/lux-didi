@@ -1,5 +1,6 @@
 import { clientDiagnostic } from '../http/routes.js';
 import { TOOL_FAILURE_CODES } from '../adapters/model/types.js';
+import { attachHostLogSink } from '../tools/host-events.js';
 import { ConfigError } from '../config/files.js';
 import { closeSync, constants, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, renameSync, unlinkSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
@@ -87,6 +88,25 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!Array.isArray(value.fields) || value.fields.length > 24 || value.fields.some(field => typeof field !== 'string' || !fieldPattern.test(field))) return;
     return { event: 'tool_arguments_rejected', tool: value.tool, fields: value.fields };
   }
+  if (value.event === 'live_session_superseded') {
+    // Closed shape: the superseded session id only, never any owner or transcript detail.
+    if (Object.keys(value).sort().join(',') !== ['event', 'liveSessionId'].sort().join(',')) return;
+    if (typeof value.liveSessionId !== 'string' || !/^[0-9a-f-]{36}$/i.test(value.liveSessionId)) return;
+    return { event: 'live_session_superseded', liveSessionId: value.liveSessionId };
+  }
+  if (value.event === 'live_resumption_fresh') {
+    // Closed shape: the tool-call count at which a fresh session was forced, never any handle or content.
+    if (Object.keys(value).sort().join(',') !== ['event', 'toolCalls'].sort().join(',')) return;
+    if (!Number.isSafeInteger(value.toolCalls) || Number(value.toolCalls) < 0) return;
+    return { event: 'live_resumption_fresh', toolCalls: value.toolCalls };
+  }
+  if (value.event === 'live_read_cache') {
+    // Closed shape: the cached tool name and cache-hit flag only, never a request or result body.
+    if (Object.keys(value).sort().join(',') !== ['event', 'tool', 'cached'].sort().join(',')) return;
+    const token = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,79}$/.test(v);
+    if (!token(value.tool) || value.cached !== true) return;
+    return { event: 'live_read_cache', tool: value.tool, cached: true };
+  }
 }
 
 export class HostLog {
@@ -134,14 +154,22 @@ export class HostLog {
   }
 }
 
-const sinks = new Set<HostLog>();
 let installed = false;
+const sinks = new Set<HostLog>();
+
+// The host log event API lives in the tool layer so the tool call sites can emit diagnostics
+// without importing the host; this module registers the durable sinks behind it.
+export { hostLogEvent } from '../tools/host-events.js';
+
 export function captureHostDiagnostics(log: HostLog): () => void {
   sinks.add(log);
+  const detachHub = attachHostLogSink(log);
   if (!installed) {
     installed = true;
+    // Captured only before the wrappers are installed, so unstructured console output can be sent
+    // to stderr without recursing through the wrappers or reaching the protocol pipe.
+    const toStderr = console.error.bind(console);
     for (const method of ['log', 'error', 'warn'] as const) {
-      const original = console[method].bind(console);
       console[method] = (...args: unknown[]) => {
         for (const sink of sinks) {
           try {
@@ -151,11 +179,11 @@ export function captureHostDiagnostics(log: HostLog): () => void {
             }
             if (event) sink.event(event);
             else if (method !== 'log') sink.error(undefined);
-          } catch { original('diagnostics_unavailable'); }
+          } catch { toStderr('diagnostics_unavailable'); }
         }
-        original(...args);
+        toStderr(...args);
       };
     }
   }
-  return () => { sinks.delete(log); };
+  return () => { sinks.delete(log); detachHub(); };
 }

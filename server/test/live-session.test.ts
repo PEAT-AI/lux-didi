@@ -922,6 +922,43 @@ test('live migrations preserve a populated accepted Store byte-for-byte', async 
     [chatMigrations, domainMigrations, liveMigrations].map(migrations => [migrations[0]!.owner, Math.max(...migrations.map(migration => migration.version))]));
 });
 
+test('U1-R2: the v7 live migration preserves every v6 journal row, its index and its foreign key, and admits a researchProgress row', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-live-v7-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const domain = createDomainPort({ outbox: Outbox });
+  const columns = 'journal_id,live_session_id,provider_sequence,kind,text,finished,value,terminal_outcome,rejected_kind,rejected_sequence,payload_bytes,arrived_at';
+  const kinds = ['inputTranscription', 'outputTranscription', 'ready', 'interrupted', 'generationComplete', 'turnComplete', 'waitingForInput', 'terminal', 'toolCall', 'toolResult', 'continuity', 'remember_deferred'];
+  const v6 = new Store(dir, [...domain.migrations, ...chatMigrations, ...liveMigrations.filter(migration => migration.version < 7)]);
+  v6.transaction(tx => {
+    tx.run(`INSERT INTO live_sessions(live_session_id,owner_assistant_id,authority_epoch,idempotency_key,fingerprint,client_id,audit_id,profile_identity,prompt_identity,lifecycle,dispatch_intent,ready,journal_events,journal_bytes,journal_complete,consumer_state,terminal_outcome,terminal_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,'terminal',1,1,12,10,1,'ended',?,1,1,1)`,
+      ['v6-live', v6.assistantId, v6.authorityEpoch, 'v6-key', 'fingerprint', 'client', 'audit', 'profile', 'prompt', JSON.stringify({ state: 'closed' })]);
+    kinds.forEach((kind, index) => {
+      const text = kind === 'inputTranscription' || kind === 'outputTranscription' ? `row ${index}` : kind === 'continuity' ? JSON.stringify({ event: 'resumed' }) : kind === 'remember_deferred' ? '5' : null;
+      const outcome = kind === 'terminal' ? JSON.stringify({ state: 'closed' }) : null;
+      tx.run(`INSERT INTO live_journal(${columns}) VALUES (?,?,'${index}',?,?,NULL,NULL,?,NULL,NULL,${index},${index})`, [100 + index, 'v6-live', kind, text, outcome]);
+    });
+  });
+  const v6Rows = v6.transaction(tx => tx.all(`SELECT ${columns} FROM live_journal ORDER BY journal_id`));
+  assert.equal(v6Rows.length, kinds.length);
+  v6.close();
+
+  const migrated = new Store(dir, [...domain.migrations, ...chatMigrations, ...liveMigrations]);
+  const rows = migrated.transaction(tx => tx.all(`SELECT ${columns} FROM live_journal ORDER BY journal_id`));
+  assert.deepEqual(rows, v6Rows, 'every v6 journal row survives the v7 rebuild unchanged');
+  const index = migrated.transaction(tx => tx.get("SELECT name FROM sqlite_master WHERE type='index' AND name='live_journal_session'"));
+  assert.ok(index, 'the live_journal_session index survives the v7 rebuild');
+  const tableSql = migrated.transaction(tx => String(tx.get("SELECT sql FROM sqlite_master WHERE type='table' AND name='live_journal'")!['sql']));
+  assert.match(tableSql, /REFERENCES live_sessions/, 'the journal foreign key survives the v7 rebuild');
+  migrated.transaction(tx => tx.run(`INSERT INTO live_journal(${columns}) VALUES (200,'v6-live',NULL,'researchProgress','{}',NULL,NULL,NULL,NULL,NULL,0,99)`));
+  assert.equal(migrated.transaction(tx => Number(tx.get("SELECT COUNT(*) AS n FROM live_journal WHERE kind='researchProgress'")!['n'])), 1, 'the v7 CHECK admits a researchProgress row');
+  const migratedRows = migrated.transaction(tx => tx.all(`SELECT ${columns} FROM live_journal ORDER BY journal_id`));
+  migrated.close();
+
+  const reopened = new Store(dir, [...domain.migrations, ...chatMigrations, ...liveMigrations]);
+  assert.deepEqual(reopened.transaction(tx => tx.all(`SELECT ${columns} FROM live_journal ORDER BY journal_id`)), migratedRows, 'a second open is idempotent');
+  reopened.close();
+});
+
 test('a failed store write aborts visibly and never fabricates a durable outcome', async t => {
   const h = await harness(t);
   const { session, attachment } = await attached(h);

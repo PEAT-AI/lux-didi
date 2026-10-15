@@ -641,7 +641,9 @@ test('K1: get_insight argument normalization accepts loose id shapes at the boun
   assert.deepEqual(get.normalize!({ ids: [89820, 89820] }), { args: { ids: [89820] } }, 'duplicates are deduped');
   assert.equal(get.validate({ ids: ['abc'] }), false, 'a non-numeric id is refused');
   assert.equal(get.validate({ ids: [] }), false, 'an empty id list is refused');
-  assert.equal(get.validate({ ids: [7, 9], include_links: false }), false, 'an undeclared key is refused');
+  assert.equal(get.validate({ ids: [7, 9], include_links: false }), true, 'a declared include_links key is accepted');
+  assert.equal(get.validate({ ids: [7, 9], project: 'p' }), true, 'an unknown read key is dropped, not refused');
+  assert.deepEqual(get.normalize!({ ids: [7, 9], include_links: true }), { args: { ids: [7, 9], include_links: true } }, 'include_links is passed through');
   const capped = normalizeGetInsightArgs({ ids: [1, 2, 3, 4, 5] }, 3)!;
   assert.deepEqual(capped.args, { ids: [1, 2, 3] }, 'over-budget ids are truncated, not refused');
   assert.match(capped.notice!, /first 3 of 5/);

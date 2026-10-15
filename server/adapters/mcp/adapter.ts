@@ -210,12 +210,26 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
     client.onerror = () => { session.dead = true; }; // No remote error/header/body is ever logged.
     client.onclose = () => { session.dead = true; };
     client.setNotificationHandler('notifications/tools/list_changed', async () => { suspend(config.id); });
-    const transport = isStdioEndpoint(config)
-      ? new StdioClientTransport({ command: config.command, args: [...config.args], ...(config.env ? { env: { ...config.env } } : {}), stderr: 'pipe' })
-      : new StreamableHTTPClientTransport(new URL(config.url), { fetch: guardedFetch(session, options, budgets, () => suspend(config.id)), redirectPolicy: 'follow', reconnectionOptions: { maxRetries: 0, initialReconnectionDelay: 1000, maxReconnectionDelay: 1000, reconnectionDelayGrowFactor: 1 } });
+    // Capture the stdio child the instant the transport spawns it, before connect() runs the
+    // initialize handshake, so the shutdown bound can SIGKILL a child that never answers.
+    const captureChild = (source: unknown): void => {
+      const child = childProcess(source);
+      if (!child || session.child !== undefined) return;
+      session.child = child;
+      child.stdout?.once('end', () => { session.pipeClosed = true; });
+    };
+    let transport: StdioClientTransport | StreamableHTTPClientTransport;
+    if (isStdioEndpoint(config)) {
+      const stdio = new StdioClientTransport({ command: config.command, args: [...config.args], ...(config.env ? { env: { ...config.env } } : {}), stderr: 'pipe' });
+      const start = stdio.start.bind(stdio);
+      stdio.start = async () => { const pending = start(); captureChild(stdio); return pending; };
+      transport = stdio;
+    } else {
+      transport = new StreamableHTTPClientTransport(new URL(config.url), { fetch: guardedFetch(session, options, budgets, () => suspend(config.id)), redirectPolicy: 'follow', reconnectionOptions: { maxRetries: 0, initialReconnectionDelay: 1000, maxReconnectionDelay: 1000, reconnectionDelayGrowFactor: 1 } });
+    }
     sessions.set(config.id, session);
     await bounded(client.connect(transport, { timeout: budgets.timeoutMs }), AbortSignal.timeout(budgets.timeoutMs));
-    if (isStdioEndpoint(config)) { const child = childProcess(transport); if (child) { session.child = child; child.stdout?.once('end', () => { session.pipeClosed = true; }); } }
+    if (isStdioEndpoint(config)) captureChild(transport);
     // Observe the SDK transport's parsed messages, then forward unchanged. A local
     // decode/validation ProtocolError is not proof of an explicit remote rejection.
     const onmessage = transport.onmessage;

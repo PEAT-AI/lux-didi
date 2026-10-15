@@ -93,8 +93,19 @@ enum PageState: Equatable { case loading, ready, unavailable }
         state = .unavailable; detail = message
     }
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-        let allowed = action.targetFrame?.isMainFrame == true && action.sourceFrame.isMainFrame &&
-            action.request.httpMethod == "GET" && descriptor.page(action.request.url) && !action.shouldPerformDownload
+        let decision = ExternalLinkPolicy.decide(url: action.request.url, navigationType: action.navigationType,
+                                                 isMainFrame: action.targetFrame?.isMainFrame, ownOrigin: descriptor.origin)
+        var allowed = false
+        switch decision {
+        case .allow:
+            allowed = action.sourceFrame.isMainFrame && action.request.httpMethod == "GET" &&
+                descriptor.page(action.request.url) && !action.shouldPerformDownload
+        case .openExternal:
+            // Only a user-activated link, never a programmatic navigation, reaches here.
+            if action.sourceFrame.isMainFrame, let url = action.request.url { NSWorkspace.shared.open(url) }
+        case .cancel:
+            allowed = false
+        }
         if !allowed { deniedNavigations += 1 }
         trace("action-\(allowed ? "allow" : "deny")")
         decisionHandler(allowed ? .allow : .cancel)

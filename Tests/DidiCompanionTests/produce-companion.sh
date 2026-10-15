@@ -82,6 +82,9 @@ codesign --force --sign - --entitlements Resources/LuxDidi.entitlements "$app"
 codesign --verify --strict "$app"
 proof_parent="${LUX_DIDI_PROOF_DIR:-${TMPDIR:-/tmp}}"
 mkdir -p "$proof_parent"
+# A trailing slash in TMPDIR otherwise survives into PROOF-DIR and every child
+# log path; canonicalize so the observer's recorded paths match pathlib's.
+proof_parent="$(cd "$proof_parent" && pwd -P)"
 proof="$(mktemp -d "$proof_parent/didi-companion-proof-${LUX_WORKER_RUN_ID:-$$}.XXXXXX")"
 printf 'PROOF-DIR=%s\n' "$proof"
 mkdir -p "$proof"
@@ -95,14 +98,14 @@ mkdir -m 700 "$forced_proof"
 forced_status=0
 LUX_OBSERVER_FORCE_FAILURE=1 "$work/verification-observer" --verification "$app" "$forced_proof" diagnostic-nonce run >"$forced_proof/stdout.log" 2>"$forced_proof/stderr.log" || forced_status=$?
 python3 - "$forced_proof" "$forced_status" <<'PY'
-import json, pathlib, sys
+import json, os, pathlib, sys
 proof = pathlib.Path(sys.argv[1])
 assert sys.argv[2] == '1', sys.argv[2]
 assert 'forced observer failure' in (proof / 'stderr.log').read_text()
 record = json.loads((proof / 'observer.json').read_text())
 assert record['pass'] is False and record['reason'] == 'forced observer failure'
 assert all((proof / name).is_file() for name in ('stdout.log', 'stderr.log'))
-assert set(record['childLogs']) == {str(proof / name) for name in ('stdout.log', 'stderr.log')}
+assert {os.path.realpath(path) for path in record['childLogs']} == {os.path.realpath(str(proof / name)) for name in ('stdout.log', 'stderr.log')}
 print('PASS forced observer failure: reason, exit status and retained evidence')
 PY
 # The nested real-app compilation also runs outside the lease, into prepared artifacts.

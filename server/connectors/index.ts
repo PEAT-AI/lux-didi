@@ -76,34 +76,60 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function toInsightId(value: unknown): number | undefined {
   if (typeof value === 'number') return Number.isSafeInteger(value) && value > 0 ? value : undefined;
   if (typeof value === 'string') {
-    const text = value.trim();
-    if (!/^\d+(?:\.0+)?$/.test(text)) return undefined;
-    const id = Number(text);
+    // Accept an integer-valued numeric string, and the `#123`/`lux 123` forms the search result text uses.
+    const match = /^(?:#\s*|lux\s+)?(\d+)(?:\.0+)?$/i.exec(value.trim());
+    if (!match) return undefined;
+    const id = Number(match[1]);
     return Number.isSafeInteger(id) && id > 0 ? id : undefined;
   }
   return undefined;
 }
 
+/** A bounded, value-free label for one dropped argument, so the model can correct itself. */
+function droppedLabel(value: unknown): string {
+  const text = typeof value === 'string' ? value : (() => { try { return JSON.stringify(value) ?? String(value); } catch { return 'unreadable'; } })();
+  return text.length > 48 ? `${text.slice(0, 48)}...` : text;
+}
+
 /** Normalize get_insight arguments before validation: accept an id array, a single id, or the `id` alias. */
-export function normalizeGetInsightArgs(args: unknown, maxGetIds: number): { args: { ids: number[] }; notice?: string } | undefined {
+/** Normalize get_insight arguments before validation: accept an id array, a single id, the `id` alias
+ * or a bare id in any servable form, pass `include_links` through, and drop unknown read keys or
+ * unreadable ids with a visible notice instead of refusing. */
+export function normalizeGetInsightArgs(args: unknown, maxGetIds: number): { args: { ids: number[]; include_links?: boolean }; notice?: string } | undefined {
   let candidate: unknown;
+  let includeLinks: boolean | undefined;
+  const droppedKeys: string[] = [];
   if (Array.isArray(args) || typeof args === 'number' || typeof args === 'string') candidate = args;
   else if (isRecord(args)) {
-    const keys = Object.keys(args);
-    if (keys.length === 1 && keys[0] === 'ids') candidate = args['ids'];
-    else if (keys.length === 1 && keys[0] === 'id') candidate = args['id'];
+    for (const key of Object.keys(args)) if (key !== 'ids' && key !== 'id' && key !== 'include_links') droppedKeys.push(key);
+    if ('include_links' in args) {
+      if (typeof args['include_links'] === 'boolean') includeLinks = args['include_links'];
+      else droppedKeys.push('include_links');
+    }
+    if ('ids' in args && 'id' in args) return undefined;
+    if ('ids' in args) candidate = args['ids'];
+    else if ('id' in args) candidate = args['id'];
     else return undefined;
   } else return undefined;
   const list = Array.isArray(candidate) ? candidate : [candidate];
   const ids: number[] = [];
+  const droppedIds: unknown[] = [];
   for (const item of list) {
     const id = toInsightId(item);
-    if (id === undefined) return undefined;
+    if (id === undefined) { droppedIds.push(item); continue; }
     if (!ids.includes(id)) ids.push(id);
   }
   if (ids.length === 0) return undefined;
-  if (ids.length > maxGetIds) return { args: { ids: ids.slice(0, maxGetIds) }, notice: `Only the first ${maxGetIds} of ${ids.length} requested ids were fetched.` };
-  return { args: { ids } };
+  const notices: string[] = [];
+  if (droppedIds.length > 0) notices.push(`Ignored ${droppedIds.length} unreadable id${droppedIds.length === 1 ? '' : 's'}: ${droppedIds.map(droppedLabel).join(', ')}.`);
+  if (droppedKeys.length > 0) notices.push(`Ignored unknown argument${droppedKeys.length === 1 ? '' : 's'}: ${droppedKeys.join(', ')}.`);
+  let capped = ids;
+  if (ids.length > maxGetIds) {
+    capped = ids.slice(0, maxGetIds);
+    notices.push(`Only the first ${maxGetIds} of ${ids.length} requested ids were fetched.`);
+  }
+  const prepared: { ids: number[]; include_links?: boolean } = includeLinks === undefined ? { ids: capped } : { ids: capped, include_links: includeLinks };
+  return notices.length === 0 ? { args: prepared } : { args: prepared, notice: notices.join(' ') };
 }
 
 const luxKnowledgeDescriptor: ConnectorDescriptor = {
@@ -134,8 +160,13 @@ const luxKnowledgeDescriptor: ConnectorDescriptor = {
         effect: 'read',
         guidance: 'Needs ids as a list of entry ids from the knowledge search results, like {"ids": [89820, 89933]}.',
         parameters: {
-          type: 'object', additionalProperties: false, required: ['ids'],
-          properties: { ids: { type: 'array', minItems: 1, maxItems: bounds.maxGetIds, uniqueItems: true, items: { type: 'integer', minimum: 1 }, description: 'One to three entry ids from a knowledge search.' } },
+          // A read tool drops an unknown key instead of refusing it, so the schema admits extra
+          // keys and names `include_links`; the validator accepts exactly these and drops the rest.
+          type: 'object', additionalProperties: true, required: ['ids'],
+          properties: {
+            ids: { type: 'array', minItems: 1, maxItems: bounds.maxGetIds, uniqueItems: true, items: { type: 'integer', minimum: 1 }, description: 'One or more entry ids from a knowledge search. A single id, an integer-valued numeric string, or the "#123"/"lux 123" form is accepted; unreadable ids are dropped and named.' },
+            include_links: { type: 'boolean', description: 'Ask the knowledge server to include linked entries in the result.' },
+          },
         },
         normalize(args) { return normalizeGetInsightArgs(args, bounds.maxGetIds); },
         validate(args) { return normalizeGetInsightArgs(args, bounds.maxGetIds) !== undefined; },
@@ -151,7 +182,7 @@ const luxKnowledgeDescriptor: ConnectorDescriptor = {
       async call(tool, args, signal) {
         return (tool === 'search_knowledge'
           ? await reader.search(args as { query: string; limit: number }, signal)
-          : await reader.get(args as { ids: number[] }, signal));
+          : await reader.get(args as { ids: number[]; include_links?: boolean }, signal));
       },
     };
   },

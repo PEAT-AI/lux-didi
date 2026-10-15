@@ -65,7 +65,7 @@ try {
   await step('live projection drives orb state, transcript and markdown sources',async()=>{
     fixture.setLive({state:'speaking',since:'2026-10-11T16:00:00Z',cursor:3,entries:[
       {seq:1,kind:'inputTranscription',text:'what is lux 123'},
-      {seq:2,kind:'outputTranscription',text:'Here is the answer.'},
+      {seq:2,kind:'outputTranscription',text:'Here is the answer.\n\n# Standup notes\n\nThe event is at https://example.org/e'},
       {seq:3,kind:'toolResult',tool:{name:'search',status:'completed',markdown:'**Answer** see [source](https://example.org)',sources:[{title:'lux 123',url:'https://example.org'}]}}
     ]});
     await page.waitForFunction(()=>document.querySelector('#didi-orb').dataset.state==='SPEAKING',{timeout:12000});
@@ -74,15 +74,30 @@ try {
     assert.equal((await page.locator('.orb-label').textContent()).trim(),'Speaking');
     assert.equal(await page.getByText('Not listening',{exact:true}).count(),0);
     assert.equal(await page.getByText('what is lux 123',{exact:true}).count(),1);
-    assert.equal(await page.locator('.live-latest-turn').getByText('Here is the answer.',{exact:true}).count(),1);
-    const link=page.locator('#live-panel .live-result p a[href="https://example.org"]');
-    assert.equal(await link.count(),1);
-    assert.equal(await link.getAttribute('rel'),'noopener noreferrer');
-    assert.equal(await link.getAttribute('target'),'_blank');
+    const card=page.locator('#live-panel .live-result');
+    assert.equal(await card.getByText('Here is the answer.',{exact:true}).count(),1);
+    assert.equal(await card.locator('h1, h2').count(),0,'no h1/h2 inside the answer card');
+    assert.equal(await card.locator('a[href="https://example.org/e"]').count(),1,'the bare url is a named chip');
+    assert.equal(await card.locator('a').count(),2,'one url chip and one source chip');
     const sourceLink=page.locator('#live-panel .live-result .sources a[href="https://example.org"]');
     assert.equal(await sourceLink.count(),1);
     assert.equal(await sourceLink.getAttribute('rel'),'noopener noreferrer');
-    assert.match(await page.locator('#live-panel .live-result strong').first().textContent(),/Answer/);
+    await page.locator('#live-details').evaluate(el=>{el.open=true;});
+    const rawTextNodes=await page.evaluate(()=>{
+      const root=document.querySelector('#live-panel');
+      const walker=document.createTreeWalker(root,NodeFilter.SHOW_TEXT);
+      const bad=[]; let node;
+      while((node=walker.nextNode())){
+        const el=node.parentElement; if(!el) continue;
+        const style=getComputedStyle(el);
+        if(style.display==='none'||style.visibility==='hidden'||el.closest('details:not([open])')) continue;
+        const text=node.nodeValue.trim();
+        if(!text) continue;
+        if(text.includes('https://')||text.includes('http://')||text.startsWith('#')) bad.push(text);
+      }
+      return bad;
+    });
+    assert.deepEqual(rawTextNodes,[],'no visible Live text node carries a raw url or heading marker');
     fixture.setLive({state:'listening',since:'2026-10-11T16:00:01Z',cursor:4,entries:[]});
     await page.waitForFunction(()=>document.querySelector('#didi-orb').dataset.state==='LISTENING',{timeout:8000});
     assert.equal(await page.locator('#didi-orb').getAttribute('data-posture'),'listening');

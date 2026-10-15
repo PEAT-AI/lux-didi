@@ -14,7 +14,7 @@ import type { McpPort, ToolDefinition } from '../adapters/mcp/port.js';
 import { Store } from '../runtime/store.js';
 import { composeMcpRuntime } from '../host/mcp.js';
 import { toolsMigrations } from '../tools/index.js';
-import { createLuxKnowledgeReader, LUX_KNOWLEDGE_TOOLS } from '../connectors/index.js';
+import { createLuxKnowledgeReader, LUX_KNOWLEDGE_TOOLS, normalizeGetInsightArgs } from '../connectors/index.js';
 import { shapeLuxKnowledge } from '../tools/live-shape.js';
 import type { LuxKnowledgeConfig, LuxKnowledgeEvidence, LuxKnowledgeResult } from '../connectors/index.js';
 
@@ -210,6 +210,37 @@ test('get round trip: requested IDs are cited as requested, include_links pinned
   } finally { await adapter.close(); await f.close(); }
 });
 
+// X2 (#250): every get_insight id shape the tool can serve is accepted; unreadable
+// entries and unknown read keys are dropped and named, never a boundary refusal.
+test('X2: get_insight normalization accepts every servable id shape and names what it drops', () => {
+  const norm = (args: unknown) => normalizeGetInsightArgs(args, 10);
+  assert.deepEqual(norm([89820, 89933]), { args: { ids: [89820, 89933] } }, 'a bare id array is served');
+  assert.deepEqual(norm(89820), { args: { ids: [89820] } }, 'a bare numeric id is served');
+  assert.deepEqual(norm('#89820'), { args: { ids: [89820] } }, 'a hash-prefixed numeric string is served');
+  assert.deepEqual(norm('lux 89820'), { args: { ids: [89820] } }, 'a lux-prefixed numeric string is served');
+  assert.deepEqual(norm({ ids: ['#89820', 'lux 89933', '89821'] }), { args: { ids: [89820, 89933, 89821] } }, 'prefixed ids in a list are served');
+  const mixed = norm({ ids: [89820, 'not-an-id', 89933] })!;
+  assert.deepEqual(mixed.args, { ids: [89820, 89933] }, 'the readable ids in a mixed list are served');
+  assert.match(mixed.notice!, /not-an-id/, 'the dropped id is named in the notice');
+  assert.deepEqual(norm({ ids: [89820], include_links: true }), { args: { ids: [89820], include_links: true } }, 'include_links is passed through');
+  const extra = norm({ ids: [89820], project: 'p' })!;
+  assert.deepEqual(extra.args, { ids: [89820] }, 'an unknown read key is dropped, not refused');
+  assert.match(extra.notice!, /project/, 'the dropped key is named in the notice');
+  assert.doesNotMatch(extra.notice!, /^p$/, 'the dropped key value is never echoed');
+  assert.equal(norm({ ids: [] }), undefined, 'an empty id list still refuses');
+  assert.equal(norm({ ids: ['not-an-id'] }), undefined, 'an all-unreadable list still refuses');
+});
+
+test('X2: get_insight forwards a requested include_links to the MCP call', async () => {
+  const f = await fixture({ call: () => ({ content: [{ type: 'text', text: 'synthetic by-id payload' }] }) });
+  const { adapter, registry } = setup(f.url);
+  try {
+    const { reader } = await readerFor(adapter, registry);
+    complete(await reader.get({ ids: [7, 9], include_links: true } as never));
+    assert.deepEqual(f.calls, [{ name: 'get_insight', arguments: { ids: [7, 9], include_links: true } }]);
+  } finally { await adapter.close(); await f.close(); }
+});
+
 test('strict exact-key validation rejects malformed and extra fields before any dispatch', async () => {
   const f = await fixture();
   const { adapter, registry } = setup(f.url);
@@ -235,7 +266,7 @@ test('strict exact-key validation rejects malformed and extra fields before any 
       reader.get({ ids: [1, 1] }),
       reader.get({ ids: [1.2] }),
       reader.get({ ids: [1, 2, 3, 4, 5, 6, 7, 8, 9] }),
-      reader.get({ ids: [1], include_links: true } as never),
+      reader.get({ ids: [1], project: 'p' } as never),
     ]);
     for (const result of rejected) assert.equal(result.state, 'refused');
     assert.equal(f.calls.length, 0);

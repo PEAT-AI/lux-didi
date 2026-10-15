@@ -18,14 +18,14 @@ try {
   await page.getByLabel('One-time pairing code').fill('synthetic-only');
   await page.getByRole('button',{name:'Pair this browser',exact:true}).click();
   await page.locator('#connected-route').waitFor();
-  await page.locator('.live-latest-turn').getByText('Hel',{exact:true}).waitFor();
+  await page.locator('.live-result').getByText('Hel',{exact:true}).waitFor();
   await page.locator('#live-details > summary').click();
   assert.ok(await page.locator('#live-details').evaluate(details => details.open));
   assert.equal(await page.locator('.live-transcript .entry').count(),1);
   fixture.setLive({state:'speaking',since:'synthetic-ui-proof',cursor:2,entries:[
     {seq:2,kind:'outputTranscription',text:'lo'},
   ]});
-  await page.locator('.live-latest-turn').getByText('Hello',{exact:true}).waitFor();
+  await page.locator('.live-result').getByText('Hello',{exact:true}).waitFor();
   assert.ok(await page.locator('#live-details').evaluate(details => details.open),'live details stay open across polling');
   assert.equal(await page.locator('.live-transcript .entry').count(),1);
   fixture.setLive({state:'speaking',since:'synthetic-ui-proof',cursor:8,entries:[
@@ -36,7 +36,7 @@ try {
     {seq:7,kind:'inputTranscription',text:'Tell me more'},
     {seq:8,kind:'toolResult',tool:{name:'search',status:'completed',markdown:'A concise answer',sources:[]}},
   ]});
-  await page.locator('.live-latest-turn').getByText('haha',{exact:true}).waitFor();
+  await page.locator('.live-result').getByText('haha',{exact:true}).waitFor();
   assert.doesNotMatch(await page.locator('body').innerText(), /Cannot read properties|displayName/);
   assert.equal(await page.locator('#connected-error').count(), 0);
   for (const width of [1440,390]) {

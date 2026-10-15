@@ -13,6 +13,7 @@ import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { createLuxKnowledgeReader } from '../connectors/lux-knowledge.js';
 import type { McpPort, ToolDefinition as McpTool } from '../adapters/mcp/port.js';
 import { runTools } from '../adapters/model/loop.js';
+import { attachHostLogSink } from '../tools/host-events.js';
 import type { HostContext, JsonObject, ModelPort, ModelRequest, ModelResult, ToolCallIntent, ToolCallJournal, ToolDefinition, ToolResultBinding, ToolResultGate } from '../adapters/model/types.js';
 import { CONNECTOR_DESCRIPTORS, normalizeGetInsightArgs } from '../connectors/index.js';
 import { runToolCalls } from '../tools/declarations.js';
@@ -641,7 +642,9 @@ test('K1: get_insight argument normalization accepts loose id shapes at the boun
   assert.deepEqual(get.normalize!({ ids: [89820, 89820] }), { args: { ids: [89820] } }, 'duplicates are deduped');
   assert.equal(get.validate({ ids: ['abc'] }), false, 'a non-numeric id is refused');
   assert.equal(get.validate({ ids: [] }), false, 'an empty id list is refused');
-  assert.equal(get.validate({ ids: [7, 9], include_links: false }), false, 'an undeclared key is refused');
+  assert.equal(get.validate({ ids: [7, 9], include_links: false }), true, 'a declared include_links key is accepted');
+  assert.equal(get.validate({ ids: [7, 9], project: 'p' }), true, 'an unknown read key is dropped, not refused');
+  assert.deepEqual(get.normalize!({ ids: [7, 9], include_links: true }), { args: { ids: [7, 9], include_links: true } }, 'include_links is passed through');
   const capped = normalizeGetInsightArgs({ ids: [1, 2, 3, 4, 5] }, 3)!;
   assert.deepEqual(capped.args, { ids: [1, 2, 3] }, 'over-budget ids are truncated, not refused');
   assert.match(capped.notice!, /first 3 of 5/);
@@ -696,12 +699,12 @@ test('K1: a declared tool without tailored guidance states its expected shape', 
 
 test('K1: an invalid tool call logs a metadata-only argument diagnostic', async () => {
   const owner = { journal: refuses([]), resultGate: {} as unknown as ToolResultGate };
-  const lines: string[] = []; const original = console.log;
-  console.log = (...args: unknown[]) => { lines.push(args.map(String).join(' ')); };
+  const events: { event?: string }[] = [];
+  const detach = attachHostLogSink({ event: raw => { events.push(raw as { event?: string }); } });
   try {
     await runToolCalls(owner, [{ id: '1', name: 'get_insight', args: { ids: ['hunter2'], limit: 3 } }], errorContext(errorTool()) as never);
-  } finally { console.log = original; }
-  const event = JSON.parse(lines.find(line => line.includes('tool_arguments_rejected'))!) as { tool: string; fields: string[] };
+  } finally { detach(); }
+  const event = events.find(line => line.event === 'tool_arguments_rejected') as { tool: string; fields: string[] };
   assert.equal(event.tool, 'get_insight');
   assert.deepEqual(event.fields, ['ids:array', 'limit:number']);
   assert.doesNotMatch(JSON.stringify(event), /hunter2/);

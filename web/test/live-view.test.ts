@@ -170,10 +170,23 @@ test('transcript preserves exact fragment deltas without spaces or deduplication
   ]);
 });
 
-test('result picks the newest accepted toolResult markdown and sources', () => {
+test('the Latest answer body is the model output transcript, never a tool result body', () => {
   const result = liveResult(speaking);
-  assert.equal(result?.markdown, '**Answer** see [source](https://example.org)');
+  assert.equal(result?.markdown, 'Hi there');
+  assert.equal(result?.markdown?.includes('**Answer**'), false, 'never functionResponse text');
   assert.equal(result?.sources[0].title, 'lux 123');
+});
+
+test('the Latest answer card clamps headings, chips urls and never shows tool text', () => {
+  const live: LiveCurrent = { state: 'speaking', cursor: 2, entries: [
+    { seq: 1, kind: 'outputTranscription', text: "# Knowledge Search: 'q'\n\n_confidence: medium · mode: fast_path_ · top score: 1.00 · relevant candidate: yes_\n\nsee https://www.google.com/calendar/event?eid=abc" },
+    { seq: 2, kind: 'toolResult', tool: { name: 'search_knowledge', status: 'completed', markdown: '# Knowledge Search: raw tool text', sources: [{ title: 'Calendar: Standup', url: 'https://www.google.com/calendar/event?eid=abc' }] } },
+  ] };
+  const html = liveMarkup(live);
+  const card = html.slice(html.indexOf('live-result'), html.indexOf('live-latest-turn'));
+  assert.equal(/<h1>|<h2>/.test(card), false, 'no h1/h2 inside the answer card');
+  assert.equal(card.includes('raw tool text'), false, 'the card never shows tool result text');
+  assert.match(card, /<a class="answer-source"[^>]*>google\.com\/calendar<\/a>/);
 });
 
 test('result ignores a tool result that errored', () => {

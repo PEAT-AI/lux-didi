@@ -27,9 +27,16 @@ import Security
     @Published private(set) var connectionsError: String?
     private var checkingConnections = false
     private let liveLogsDirectory: URL?
+    /// Last Live state seen while a conversation existed, so the snapshot is not `unknown`
+    /// immediately after a call tears the conversation down (#251).
+    private(set) var lastLiveState: String?
+    private lazy var liveJournal = NativeLiveJournal(fileURL: liveLogsDirectory?.appendingPathComponent("native-live.log"))
     @Published var connecting = false
     @Published private(set) var serviceRestarting = false
     let voice = NativeVoice()
+    let bridge = NativeBridge()
+    var bridgeTheme: BridgeTheme = .dark
+    var trafficLightsMaxX: () -> Double = { 0 }
     @Published private(set) var live: NativeLiveConversation?
     private var orbLevels: NativeOrbLevelPublisher?
     private lazy var liveAuthorityOwner: NativeLiveAuthorityOwner<NativeLiveConversation> = NativeLiveAuthorityOwner(
@@ -37,7 +44,14 @@ import Security
             conversation.stopCapture()
             Task { await conversation.stop() }
         },
-        publish: { [weak self] in self?.live = $0 })
+        publish: { [weak self] conversation in
+            guard let self else { return }
+            if let conversation { self.live = conversation }
+            else {
+                if let previous = self.live { self.lastLiveState = previous.state.rawValue }
+                self.live = nil
+            }
+        })
     @Published private(set) var pendingLiveCalls: [NativePendingLiveJob] = []
     private var liveCallDelivery = NativeLiveCallDelivery()
     @Published private(set) var liveCallsError: String?
@@ -57,6 +71,7 @@ import Security
     private(set) var bootstrapFailureDiagnostic: StartupFailureDiagnostic?
     init(proofRequest: InstalledProofRequest? = nil, fixtureClient: CompanionClient? = nil, fixtureOutbox: URL? = nil) {
         liveLogsDirectory = (proofRequest?.state ?? (try? InstalledRuntime.applicationState()))?.appendingPathComponent("logs", isDirectory: true)
+        bridge.logFile = liveLogsDirectory?.appendingPathComponent("native-live.log")
         if let fixtureClient, let fixtureOutbox {
             client = fixtureClient; connectedSender = NativeConnectedSend(directory: fixtureOutbox)
             return
@@ -90,6 +105,7 @@ import Security
                         self?.liveAuthorityOwner.unavailable()
                         self?.error = "Local service restarting. Lost Live requires an explicit Start."
                     }
+                    owner.onEnd = { [weak self] reason, detail in self?.liveJournal.append(reason, detail: detail) }
                     owner.onCredentialUnavailable = { [weak self, weak owner] _ in
                         self?.shell?.clear()
                         self?.liveAuthorityOwner.unavailable()
@@ -104,7 +120,7 @@ import Security
         if proofRequest != nil { error = NativeServiceError.invalidRuntime.localizedDescription; return }
         do {
             let descriptor = try ServiceDescriptor.configured()
-            shell = CompanionWeb(descriptor: descriptor)
+            shell = CompanionWeb(descriptor: descriptor, bridge: bridge)
             client = CompanionClient(descriptor: descriptor, credential: { try descriptor.credential() })
         } catch { self.error = CompanionError.invalidConfiguration.localizedDescription }
     }
@@ -129,7 +145,7 @@ import Security
                     client = CompanionClient(descriptor: descriptor, credential: credential, expectedEpoch: connection.authorityEpoch, connectionGuard: allowed)
                 }
                 liveAuthorityOwner.rebind(connection.nonce)
-                if shell?.descriptor.origin != descriptor.origin { shell = CompanionWeb(descriptor: descriptor) }
+                if shell?.descriptor.origin != descriptor.origin { shell = CompanionWeb(descriptor: descriptor, bridge: bridge) }
             }
             guard let client, let shell else { throw CompanionError.invalidConfiguration }
             bootstrapFailureCode = nil
@@ -282,7 +298,7 @@ import Security
             }, pickupJobID: pickupJobID, logsDirectory: liveLogsDirectory)
         }
         conversation.start()
-        orbLevels = NativeOrbLevelPublisher(device: conversation.device, web: shell?.webView)
+        orbLevels = NativeOrbLevelPublisher(device: conversation.device, bridge: bridge)
         orbLevels?.start()
     }
     func stopLive() {
@@ -291,6 +307,50 @@ import Security
         conversation?.stopCapture()
         Task { await conversation?.stop() }
     }
+
+    // MARK: - Native bridge (BRIDGE.md)
+
+    func bridgeHydrate() -> BridgeHydrate {
+        BridgeHydrate(consent: bridge.consent.granted, mic: Self.bridgeMic(voice.microphone),
+                      live: bridgeLiveState(), route: bridgeRoute(), theme: bridgeTheme.rawValue,
+                      lastSessionEndedAt: nil, trafficLightsMaxX: trafficLightsMaxX())
+    }
+
+    func bridgeLiveState() -> BridgeLiveState {
+        let raw = live?.state.rawValue ?? "idle"
+        return BridgeLiveState(state: BridgeLiveStateMapping.state(from: raw),
+                               error: BridgeLiveStateMapping.error(from: raw), reason: nil)
+    }
+
+    func bridgeRoute() -> BridgeRoute? {
+        guard let sentence = live?.device.route else { return nil }
+        return BridgeRoute.parse(sentence, voiceProcessing: live?.device.isVoiceProcessingEnabledForTesting ?? false)
+    }
+
+    func publishBridgeLive() {
+        bridge.pushLiveState(bridgeLiveState())
+        if let route = bridgeRoute() { bridge.pushRoute(route) }
+    }
+
+    func handleBridgeCommand(_ message: BridgeInbound) {
+        switch message {
+        case .start: startLive()
+        case .stop: stopLive()
+        case .mute: if live?.isMuted == false { live?.toggleMute() }
+        case .unmute: if live?.isMuted == true { live?.toggleMute() }
+        case .openExternal(let url): shell?.openExternal(url)
+        case .ready, .consentGranted, .theme, .unknown: break
+        }
+    }
+
+    private static func bridgeMic(_ state: PermissionState) -> String {
+        switch state {
+        case .granted: return "granted"
+        case .denied: return "denied"
+        case .notDetermined, .restricted, .unknown: return "undetermined"
+        }
+    }
+
     func startDictation() {
         guard live?.isCapturing != true else { error = "Stop Live voice before starting dictation."; return }
         voice.start()
@@ -304,167 +364,33 @@ import Security
     func logout() async {
         stopRecording("Logout")
         orbLevels?.stop(); orbLevels = nil
-        await live?.stop(); liveAuthorityOwner.clear()
+        await live?.stop(reason: .logout); liveAuthorityOwner.clear()
         await client?.revokePageSession(); shell?.clear()
     }
     func shutdown() async {
         await logout()
-        await supervisor?.stop()
-    }
-}
-
-struct NativeLiveControls: View {
-    @ObservedObject var conversation: NativeLiveConversation
-    @ObservedObject var device: NativeLiveAudioDevice
-    @ObservedObject var voice: NativeVoice
-    let hasPendingCall: Bool
-    let startFresh: () -> Void
-    let pickUpCall: () -> Void
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(conversation.state.presentation.text).font(.caption).foregroundStyle(.secondary)
-                .accessibilityLabel("Live voice lifecycle")
-            Text("Live microphone audio leaves this device for the configured Live provider. Start only with your consent.")
-                .font(.caption).foregroundStyle(.secondary)
-            HStack(spacing: 10) {
-                Button(primaryLabel) {
-                    if conversation.state == .pausedForInput { conversation.start() } else { startFresh() }
-                }
-                    .disabled(primaryUnavailable || voice.state.phase == .recording)
-                Button(conversation.isMuted ? "Unmute" : "Mute") { conversation.toggleMute() }
-                    .disabled(!muteAvailable)
-                Button("Stop Live voice") { Task { await conversation.stop() } }.disabled(!stopAvailable)
-                if hasPendingCall { Button("Pick up Naya’s call", action: pickUpCall) }
-            }
-            ProgressView(value: conversation.state == .muted ? 0 : Double(device.inputLevel))
-                .accessibilityLabel(conversation.state == .muted ? "Microphone muted" : "Live microphone input level")
-            if let failure = conversation.failure { Text(failure).font(.caption) }
-        }
-    }
-    private var primaryLabel: String {
-        conversation.state == .pausedForInput ? "Resume Live voice" : conversation.state == .failed ? "Restart Live voice" : "Start Live voice"
-    }
-    private var primaryUnavailable: Bool {
-        [.connecting, .listening, .speaking, .muted, .rebuilding].contains(conversation.state)
-    }
-    private var muteAvailable: Bool {
-        [.listening, .speaking, .muted, .pausedForInput].contains(conversation.state)
-    }
-    private var stopAvailable: Bool {
-        [.connecting, .listening, .speaking, .muted, .pausedForInput, .rebuilding].contains(conversation.state)
+        await supervisor?.stop(reason: .shutdown)
     }
 }
 
 struct RootView: View {
     @ObservedObject var model: AppModel
-    @ObservedObject var voice: NativeVoice
     var body: some View {
-        VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Naya voice").font(.title2.weight(.semibold))
-                    }
-                    Spacer()
-                    settingsMenu
-                }
-                if let live = model.live {
-                    NativeLiveControls(conversation: live, device: live.device, voice: voice,
-                        hasPendingCall: !model.pendingLiveCalls.isEmpty, startFresh: { model.startLive() },
-                        pickUpCall: { model.pickUpLiveCall() })
-                } else {
-                    Text("Live microphone audio leaves this device for the configured Live provider. Start only with your consent.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    HStack(spacing: 10) {
-                        Button("Start Live voice") { model.startLive() }.disabled(voice.state.phase == .recording)
-                        if !model.pendingLiveCalls.isEmpty { Button("Pick up Naya’s call") { model.pickUpLiveCall() } }
-                    }
-                }
-                if model.serviceRestarting { Text("Local service restarting…").accessibilityLabel("Local service restarting") }
-                if let error = model.error { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
-            }.padding(16).background(Color(nsColor: .windowBackgroundColor))
-            Divider()
+        ZStack {
+            Color.black
             if let shell = model.shell {
                 SharedServicePanel(shell: shell) { Task { await model.reconnect() } }
             } else {
-                VStack(spacing: 16) {
-                    Text("Connect Didi").font(.title)
-                    Text("Start the Didi service, then connect this app.").multilineTextAlignment(.center)
-                    Button(model.connecting ? "Starting…" : "Connect") { Task { await model.reconnect() } }
-                        .disabled(model.connecting).accessibilityLabel("Connect Didi")
-                }.padding(48).frame(maxWidth: .infinity, maxHeight: .infinity)
+                // Only on a failed configure, where there is no service page to show.
+                VStack(spacing: 12) {
+                    Text("Connect Didi").font(.title2)
+                    Button("Connect") { Task { await model.reconnect() } }
+                }.foregroundStyle(.white)
             }
-            Divider()
-            VStack(alignment: .leading, spacing: 10) {
-                DisclosureGroup("Type or save a note", isExpanded: $model.noteExpanded) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Native capture · \(model.hotkeyStatus)").font(.caption).foregroundStyle(.secondary)
-                        TextField("User-entered or on-device transcribed text", text: $model.draft)
-                        HStack {
-                            Button(model.captureStatus == .unknown ? "Retry Save note" : NativeNoteAction.label) { Task { await model.saveDraft() } }
-                                .disabled(!Presentation.canSend(model.draft) || model.captureStatus == .sending || voice.state.phase == .recording)
-                                .accessibilityLabel(model.captureStatus == .unknown ? "Retry Save note" : NativeNoteAction.label)
-                            Button("Dictate") { model.startDictation() }
-                                .disabled(model.live?.isCapturing == true || voice.state.phase == .recording || voice.microphone != .granted || voice.speech != .granted || !voice.onDevice)
-                                .accessibilityLabel("Start recording")
-                            Button(NativeConnectedSend.label) { Task { await model.sendToNaya() } }
-                                .disabled(model.sendingConnected || model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                            Button("Stop dictating") { model.stopRecording("Stopped by user") }
-                                .disabled(voice.state.phase != .recording).accessibilityLabel("Stop recording")
-                        }
-                        Text(captureDetail).font(.caption)
-                        Text("Record locally, review the text, then send it. Closing Didi keeps your draft.")
-                            .font(.caption2).foregroundStyle(.secondary)
-                    }.padding(.top, 6)
-                }.accessibilityLabel("Type or save a note")
-                DisclosureGroup("Connection details", isExpanded: $model.detailsExpanded) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(model.liveLimits?.sentence ?? "Live limits unavailable. Reconnect the service to refresh.").font(.caption)
-                        if let route = model.live?.device.route, !route.isEmpty { Text(route).font(.caption) }
-                        Button("Enable callback notifications") { Task { await model.requestNotificationPermission() } }
-                        Text("Notifications: \(model.notificationStatus.presentation). If denied, use the menu bar badge and Pick up menu; notifications never start the microphone.").font(.caption)
-                        if let offline = model.liveCallsError { Text(offline).font(.caption) }
-                        GroupBox("Connections") {
-                            VStack(alignment: .leading, spacing: 6) {
-                                if let error = model.connectionsError { Text(error) }
-                                else if model.connections.isEmpty { Text("No connectors reported.") }
-                                ForEach(model.connections) { connection in
-                                    Text("\(connection.id): \(connection.state)" + (connection.reason.map { " (" + $0 + ")" } ?? ""))
-                                }
-                            }.font(.caption).frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                    }.padding(.top, 6)
-                    .task { await model.refreshConnections() }
-                    .onReceive(Timer.publish(every: 10, on: .main, in: .common).autoconnect()) { _ in
-                        if model.detailsExpanded { Task { await model.refreshConnections() } }
-                    }
-                }.accessibilityLabel("Connection details")
-            }.padding(12)
-            .background(Color(nsColor: .windowBackgroundColor))
-        }.frame(minWidth: 780, minHeight: 620).preferredColorScheme(.light)
-    }
-    private var settingsMenu: some View {
-        Menu("Settings") {
-            Button("Request microphone/speech permissions") { Task { await model.voice.requestPermissions() } }
-            Button("Reconnect service") { Task { await model.reconnect() } }
-            Button("Disconnect") { Task { await model.logout() } }
-            if let shell = model.shell {
-                Text("Service: \(shell.descriptor.origin)")
-                if model.supervisor != nil { Text("Connection stored for this installation") }
-                else { Text("Credential reference: \(shell.descriptor.credentialService)") }
-            }
-            Button("Quit Didi") { NSApp.terminate(nil) }
         }
-    }
-    private var captureDetail: String {
-        switch model.captureStatus {
-        case .saved: return "Saved to the service."
-        case .unknown: return "Couldn’t confirm it was saved. Your draft is here; retry this send."
-        case .cancelled: return "Cancelled before dispatch. Draft retained."
-        case .sending: return "Saving…"
-        case .failed: return "Not saved. Draft retained."
-        case .idle: return "No native capture sent."
-        }
+        .frame(minWidth: 780, minHeight: 620)
+        .ignoresSafeArea()
+        .preferredColorScheme(.dark)
     }
 }
 
@@ -482,6 +408,8 @@ struct RootView: View {
         start: { [weak self] in self?.model.startLive() },
         mute: { [weak self] in self?.model.live?.toggleMute() },
         stop: { [weak self] in self?.model.stopLive() })
+    // Menu and shortcut Start/Stop ask the web state machine, never the capture path.
+    private lazy var menuBridge = NativeMenuBridge(bridge: model.bridge)
     private var loginAvailability: LoginAvailability?
     private var liveObservation: AnyCancellable?
     private var dictationObservation: AnyCancellable?
@@ -509,16 +437,25 @@ struct RootView: View {
         NSApp.setActivationPolicy(.accessory)
         OwnedWindowReadiness.trace("app:setActivationPolicy-accessory",
             ["activationPolicy": NSApp.activationPolicy().rawValue])
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 980, height: 760), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-        window.appearance = NSAppearance(named: .aqua)
-        window.title = "Didi"; window.center(); window.delegate = self
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 980, height: 760), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
+        // One all-dark window: transparent hidden titlebar, traffic lights over the web rail.
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.isMovableByWindowBackground = false
+        window.backgroundColor = BridgeTheme.dark.backgroundColor
+        window.appearance = NSAppearance(named: BridgeTheme.dark.appearanceName)
+        window.title = ""; window.center(); window.delegate = self
         if proofRequest == nil && !CommandLine.arguments.contains("--ui-proof") && !CommandLine.arguments.contains("--self-check") {
             let saved = UserDefaults.standard.string(forKey: "DidiWindowFrame").map(NSRectFromString)
             window.setFrame(WindowFrameRestore.resolve(saved, screens: NSScreen.screens.map(\.visibleFrame)), display: false)
             if #available(macOS 13.0, *) { loginAvailability = LoginAvailability(registration: SystemLoginRegistration()) }
         }
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: RootView(model: model, voice: model.voice))
+        window.contentView = makeRootContent()
+        model.trafficLightsMaxX = { [weak self] in Double(self?.window?.standardWindowButton(.zoomButton)?.frame.maxX ?? 0) }
+        model.bridge.hydrateProvider = { [weak model] in model?.bridgeHydrate() ?? .empty }
+        model.bridge.onCommand = { [weak model] in model?.handleBridgeCommand($0) }
+        model.bridge.onTheme = { [weak self] theme in self?.model.bridgeTheme = theme; self?.applyBridgeTheme(theme) }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.button?.image = NSImage(systemSymbolName: "sparkle", accessibilityDescription: "Didi")
         let menu = NSMenu()
@@ -548,8 +485,10 @@ struct RootView: View {
         liveObservation = model.$live.sink { [weak self] conversation in
             self?.liveStateObservation = conversation?.$state.sink { [weak self] state in
                 self?.updateLiveStatus(state: state)
+                self?.model.publishBridgeLive()
             }
             self?.updateLiveStatus(state: conversation?.state ?? .idle)
+            self?.model.publishBridgeLive()
         }
         dictationObservation = model.voice.$state.sink { [weak self] state in
             self?.updateLiveStatus(dictationCapturing: state.phase == .recording)
@@ -605,6 +544,8 @@ struct RootView: View {
         let runtime = Bundle.main.resourceURL.flatMap { try? InstalledRuntime.load(resources: $0) } ?? nil
         let logs = (proofRequest?.state ?? (try? InstalledRuntime.applicationState()))?.appendingPathComponent("logs", isDirectory: true)
         let failure = NativeDiagnosticsSnapshot.preCreateFailure(logsDirectory: logs)
+        let failureAge = failure?.at.flatMap { ISO8601DateFormatter().date(from: $0) }
+            .map { NativeDiagnosticsSnapshot.ageText(since: $0, now: Date()) }
         let service: String
         if model.connecting { service = "connecting" }
         else if model.serviceRestarting { service = "restarting" }
@@ -618,13 +559,18 @@ struct RootView: View {
                 macOSVersion: ProcessInfo.processInfo.operatingSystemVersionString,
                 serviceState: service,
                 serviceOrigin: self.model.supervisor?.currentConnection?.descriptor.origin,
-                liveState: self.model.live?.state.rawValue,
+                liveState: self.model.live?.state.rawValue ?? self.model.lastLiveState,
                 sessionLimit: self.model.liveLimits.map { NativeLiveLimits.duration($0.sessionMs) },
                 idleLimit: self.model.liveLimits.map { NativeLiveLimits.duration($0.idleMs) },
-                connections: self.model.connections.map { "\($0.id): \($0.state)" },
-                audioRoute: self.model.live?.device.diagnosticsRoute,
+                connections: self.model.connections.map { connection in
+                    NativeDiagnosticsSnapshot.connectorLine(id: connection.id, state: connection.state, reasonCode: connection.reasonCode)
+                },
+                audioRoute: self.model.live?.device.diagnosticsRoute ?? NativeLiveAudioDevice.routeDiagnostics(),
+                voiceProcessing: self.model.live?.device.isVoiceProcessingEnabled
+                    ?? NativeDiagnosticsSnapshot.lastAudioVoiceProcessing(logsDirectory: logs),
                 preCreateFailureClass: failure?.failureClass,
                 preCreateFailureCode: failure?.code,
+                preCreateFailureAge: failureAge,
                 startupFailure: self.model.bootstrapFailureDiagnostic,
                 capturedAt: ISO8601DateFormatter().string(from: Date()))
         }, write: { text in
@@ -666,9 +612,9 @@ struct RootView: View {
         loginMenuItem?.state = loginAvailability?.status == .on ? .on : .off
         loginMenuItem?.isEnabled = loginAvailability != nil
     }
-    @objc func startLiveFromMenu() { summonActions.start() }
+    @objc func startLiveFromMenu() { menuBridge.start() }
     @objc func muteLiveFromMenu() { summonActions.mute() }
-    @objc func stopLiveFromMenu() { summonActions.stop() }
+    @objc func stopLiveFromMenu() { menuBridge.stop() }
     private var gettingStartedProofRows: [NativeGettingStartedItem]?
     @objc private func showGettingStarted() {
         show()
@@ -709,6 +655,27 @@ struct RootView: View {
     }
     func windowDidMove(_ notification: Notification) { rememberFrame() }
     func windowDidResize(_ notification: Notification) { rememberFrame() }
+    /// The dark web UI fills a plain container; the top-band drag strip is its sibling, because
+    /// NSHostingView does not route mouse events to an AppKit subview added to it.
+    private func makeRootContent() -> NSView {
+        let container = NSView()
+        let hosting = NSHostingView(rootView: RootView(model: model))
+        hosting.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(hosting)
+        NSLayoutConstraint.activate([
+            hosting.topAnchor.constraint(equalTo: container.topAnchor),
+            hosting.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            hosting.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            hosting.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        ])
+        WindowDragBand.attach(to: container)
+        return container
+    }
+    private func applyBridgeTheme(_ theme: BridgeTheme) {
+        window?.appearance = NSAppearance(named: theme.appearanceName)
+        window?.backgroundColor = theme.backgroundColor
+        model.shell?.applyTheme(theme)
+    }
     private func rememberFrame() {
         guard proofRequest == nil, !CommandLine.arguments.contains("--ui-proof"), !CommandLine.arguments.contains("--self-check"), let window else { return }
         UserDefaults.standard.set(NSStringFromRect(window.frame), forKey: "DidiWindowFrame")

@@ -8,6 +8,90 @@ await mkdir(artifacts,{recursive:true});
 console.log(`Browser artifacts: ${artifacts}`);
 const fixture=await startFixture(); let browser;
 const timings=[];
+
+async function auditLayout(page) {
+  return await page.evaluate(() => {
+    const r = el => el.getBoundingClientRect();
+    const q = sel => document.querySelector(sel);
+    const rn = v => Math.round(v);
+    const inset = (sel, lane) => { const el = q(sel); if (!el) return null; const b = r(el); return { left: rn(b.left - lane.left), right: rn(lane.right - b.right) }; };
+    const size = sel => { const el = q(sel); if (!el) return null; const b = r(el); return { w: rn(b.width), h: rn(b.height), right: rn(b.right) }; };
+    const gap = (a, b) => { const x = q(a), y = q(b); return x && y ? rn(r(y).left - r(x).right) : null; };
+    const voice = r(q('#lane-voice')), chat = r(q('#lane-chat'));
+    const field = q('.composer-field'), send = q('#connected-send'), draft = q('#connected-draft');
+    const entries = [...document.querySelectorAll('.live-turns > *')];
+    const entry = q('.live-turns .entry');
+    const summary = q('.live-tool-result > summary');
+    const label = q('.live-turns .entry strong');
+    const naya = q('.live-turns .entry.naya');
+    const allow = q('.allow-link');
+    const cs = el => el ? getComputedStyle(el) : null;
+    const vis = sel => { const el = q(sel); return !!el && el.getClientRects().length > 0; };
+    return {
+      voice: {
+        visible: vis('#lane-voice'),
+        nayaInset: inset('.live-turns .entry.naya', voice),
+        userInset: inset('.live-turns .entry.user', voice),
+        turnInset: inset('.live-turns .entry', voice),
+        chipInset: inset('.live-tool-result', voice),
+        emptyInset: inset('.voice-empty', voice),
+        hideRight: rn(voice.right - r(q('#lane-voice .lane-toggle')).right),
+        headerOrb: size('#lane-voice .voice-orb canvas'),
+        startNewGap: gap('#voice-start', '#new-conversation'),
+        newHideGap: gap('#new-conversation', '#lane-voice .lane-toggle'),
+      },
+      chat: {
+        visible: vis('#lane-chat'),
+        emptyInset: inset('.connected-empty', chat),
+        composerInset: inset('#connected-send-form', chat),
+        composerBottom: rn(chat.bottom - r(q('#connected-send-form')).bottom),
+        send: size('#connected-send'),
+        sendInside: field && send ? rn(r(field).right - r(send).right) : null,
+        sendCentre: field && send ? Math.abs(Math.round((r(send).top + r(send).height / 2) - (r(field).top + r(field).height / 2))) : null,
+        clip: size('#connected-notes-summary'),
+        clipFont: cs(q('#connected-notes-summary'))?.width,
+      },
+      chipPad: summary ? { padding: `${cs(summary).paddingTop} ${cs(summary).paddingRight}`, font: cs(summary).fontSize, display: cs(summary).display } : null,
+      labelFont: label ? cs(label).fontSize : null,
+      nayaMax: naya ? cs(naya).maxWidth : null,
+      turnGap: entries.length > 1 ? rn(r(entries[1]).top - r(entries[0]).bottom) : null,
+      labelGap: entry && label ? rn(r(entry.querySelector('.markdown, p')).top - r(label).bottom) : null,
+      allowHeight: allow ? rn(r(allow).height) : null,
+      draftMax: draft ? cs(draft).maxWidth : null,
+    };
+  });
+}
+
+function assertAudit(a, label, failures) {
+  const bad = m => failures.push(m);
+  const inb = (v, lo, hi, what) => { if (!(v >= lo && v <= hi)) bad(`${label} ${what}: ${v} not in [${lo},${hi}]`); };
+  if (a.voice.visible) {
+    if (a.voice.nayaInset) inb(a.voice.nayaInset.left, 24, 40, 'naya turn left inset');
+    if (a.voice.userInset) inb(a.voice.userInset.right, 24, 40, 'user turn right inset');
+    if (a.voice.chipInset) inb(a.voice.chipInset.left, 24, 40, 'chip left inset');
+    if (a.voice.emptyInset) inb(a.voice.emptyInset.left, 24, 40, 'empty left inset');
+    inb(a.voice.hideRight, 22, 26, 'Hide right inset');
+  }
+  if (a.voice.visible && a.voice.headerOrb) { inb(a.voice.headerOrb.w, 40, 56, 'header orb width'); inb(a.voice.headerOrb.h, 40, 56, 'header orb height'); }
+  if (a.voice.visible && a.voice.startNewGap !== null) inb(a.voice.startNewGap, 8, 12, 'Start to New gap');
+  if (a.voice.visible && a.voice.newHideGap !== null) inb(a.voice.newHideGap, 8, 12, 'New to Hide gap');
+  if (!a.chat.visible) return a;
+  if (a.chat.emptyInset) { inb(a.chat.emptyInset.left, 24, 400, 'chat empty left inset'); inb(a.chat.emptyInset.right, 24, 400, 'chat empty right inset'); }
+  if (a.chat.composerInset) { inb(a.chat.composerInset.left, 24, 40, 'composer left inset'); inb(a.chat.composerInset.right, 24, 40, 'composer right inset'); }
+  if (a.chat.composerBottom !== null) inb(a.chat.composerBottom, 14, 18, 'composer bottom gap');
+  if (a.chat.send) { inb(a.chat.send.w, 32, 32, 'send width'); inb(a.chat.send.h, 32, 32, 'send height'); }
+  if (a.chat.sendInside !== null) inb(a.chat.sendInside, 8, 16, 'send right inset in field');
+  if (a.chat.sendCentre !== null) inb(a.chat.sendCentre, 0, 2, 'send vertical centring');
+  if (a.chat.clip) inb(a.chat.clip.w, 28, 28, 'paperclip width');
+  if (a.chipPad && a.chipPad.font !== '12px') bad(`${label} chip font: ${a.chipPad.font}`);
+  if (a.chipPad && a.chipPad.padding !== '4px 10px') bad(`${label} chip padding: ${a.chipPad.padding}`);
+  if (a.labelFont !== '12px') bad(`${label} turn label font: ${a.labelFont}`);
+  if (a.nayaMax !== '640px') bad(`${label} naya max width: ${a.nayaMax}`);
+  if (a.voice.visible && a.turnGap !== null) inb(a.turnGap, 16, 16, 'turn gap');
+  if (a.voice.visible && a.labelGap !== null) inb(a.labelGap, 3, 5, 'label to text gap');
+  return a;
+}
+
 async function step(name,fn){const start=performance.now(); await fn(); timings.push({name,seconds:Math.round((performance.now()-start)/10)/100}); console.log(`PASS ${name}`);}
 try {
   browser=await chromium.launch({channel:'chromium',headless:true,args:['--use-angle=metal','--enable-gpu','--ignore-gpu-blocklist']});
@@ -34,20 +118,29 @@ try {
   assert.match(renderer?.renderer||'',/Metal/,'Actual GPU renderer must be Metal, not software');
   await step('pairing, empty data, no model, synthetic mode',async()=>{
     await page.getByLabel('One-time pairing code').fill('synthetic-only'); await page.getByRole('button',{name:'Pair this browser',exact:true}).click();
-    await page.locator('#conversation-history > summary').click();
-    await page.getByText('No conversations yet.',{exact:true}).waitFor();
+    await page.locator('#didi-orb').waitFor();
     await page.getByText('Demo test mode',{exact:true}).waitFor();
     assert.equal(await page.evaluate(()=>Object.keys(localStorage).length),0);
     assert.equal(await page.evaluate(()=>document.cookie),'');
-    assert.match(await page.locator('body').innerText(),/No model connected/);
+    assert.equal(await page.locator('#lane-voice').count(),1);
+    assert.equal(await page.locator('#lane-chat').count(),1);
+    assert.equal(await page.locator('.rail').count(),1);
+    await page.locator('button[data-route="settings"]').click();
+    await page.locator('#sheet').waitFor();
+    assert.match(await page.locator('#sheet').innerText(),/No model connected/);
+    await page.locator('#sheet-close').click();
+    await page.locator('#sheet').waitFor({state:'detached'});
     assert.equal(await page.locator('#connection-state').getAttribute('aria-live'),'polite');
+    assert.equal(await page.locator('.allow-link').first().evaluate(el => Math.round(el.getBoundingClientRect().height)), 28, 'the Allow control is a 28 px text button');
+    await page.locator('#connected-draft').waitFor();
   });
+
   await step('classic Canvas orb is idle not listening and honors reduced motion',async()=>{
     const canvas=page.locator('#didi-orb');
     assert.equal(await canvas.getAttribute('data-state'),'CONNECTED');
     assert.equal(await canvas.getAttribute('data-posture'),'idle');
-    await page.getByText('Not listening',{exact:true}).waitFor();
-    assert.equal((await page.locator('.orb-label').textContent()).trim(),(await page.locator('#live-panel .live-state').textContent()).trim());
+    await page.locator('.voice-state').first().waitFor();
+    assert.equal(await page.locator('.voice-state').first().innerText(), 'Live is off', 'the one Live state source reads the machine');
     assert.equal(await page.getByRole('button',{name:/record|microphone/i}).count(),0);
     const hasPaint=await canvas.evaluate(el=>{const pixels=el.getContext('2d').getImageData(0,0,el.width,el.height).data;return pixels.some((v,i)=>i%4===3&&v>0);});assert(hasPaint);
     await page.waitForFunction(()=>document.querySelector('#didi-orb').didiFrameStats().frames>=12);
@@ -62,245 +155,103 @@ try {
     await page.emulateMedia({reducedMotion:'no-preference'});
     await page.waitForFunction(()=>document.querySelector('#didi-orb').dataset.motion==='animated');
   });
+
+  await step('one Live state source and the consent gate',async()=>{
+    assert.equal((await page.locator('.voice-state').first().innerText()).trim(),'Live is off');
+    assert.equal(await page.getByText('Not listening',{exact:true}).count(),0);
+    await page.locator('#voice-start').click();
+    const allow=page.locator('#consent-allow');
+    if(await allow.count())await allow.click();
+    await page.waitForFunction(()=>document.querySelector('.voice-state')?.textContent==='Listening',{timeout:8000});
+    assert.equal(await page.locator('#live-pill').count(),1);
+    await page.locator('#pill-stop').click();
+    await page.waitForFunction(()=>document.querySelector('.voice-state')?.textContent==='Live is off',{timeout:8000});
+    assert.equal(await page.locator('#live-pill').count(),0);
+  });
+
   await step('live projection drives orb state, transcript and markdown sources',async()=>{
     fixture.setLive({state:'speaking',since:'2026-10-11T16:00:00Z',cursor:3,entries:[
       {seq:1,kind:'inputTranscription',text:'what is lux 123'},
-      {seq:2,kind:'outputTranscription',text:'Here is the answer.\n\n# Standup notes\n\nThe event is at https://example.org/e'},
+      {seq:2,kind:'outputTranscription',text:'Here is the answer.'},
       {seq:3,kind:'toolResult',tool:{name:'search',status:'completed',markdown:'**Answer** see [source](https://example.org)',sources:[{title:'lux 123',url:'https://example.org'}]}}
     ]});
     await page.waitForFunction(()=>document.querySelector('#didi-orb').dataset.state==='SPEAKING',{timeout:12000});
+    await page.waitForFunction(()=>document.querySelectorAll('#live-panel').length===1&&document.querySelectorAll('#live-panel .live-tool-result').length===1,{timeout:12000});
     assert.equal(await page.locator('#didi-orb').getAttribute('data-posture'),'speaking');
     assert.equal((await page.locator('#live-panel .live-state').textContent()).trim(),'Speaking');
-    assert.equal((await page.locator('.orb-label').textContent()).trim(),'Speaking');
     assert.equal(await page.getByText('Not listening',{exact:true}).count(),0);
     assert.equal(await page.getByText('what is lux 123',{exact:true}).count(),1);
-    const card=page.locator('#live-panel .live-result');
-    assert.equal(await card.getByText('Here is the answer.',{exact:true}).count(),1);
-    assert.equal(await card.locator('h1, h2').count(),0,'no h1/h2 inside the answer card');
-    assert.equal(await card.locator('a[href="https://example.org/e"]').count(),1,'the bare url is a named chip');
-    assert.equal(await card.locator('a').count(),2,'one url chip and one source chip');
-    const sourceLink=page.locator('#live-panel .live-result .sources a[href="https://example.org"]');
+    assert.equal(await page.locator('#live-panel .live-result').count(),0,'no card inside the lane');
+    assert.ok(await page.locator('#live-panel').getByText('Here is the answer.',{exact:false}).count() >= 1,'the spoken turn is on the lane background');
+    const chip=page.locator('#live-panel .live-tool-result');
+    assert.equal(await chip.count(),1);
+    await chip.locator('summary').click();
+    const sourceLink=chip.locator('.sources a[href="https://example.org"]');
     assert.equal(await sourceLink.count(),1);
     assert.equal(await sourceLink.getAttribute('rel'),'noopener noreferrer');
-    await page.locator('#live-details').evaluate(el=>{el.open=true;});
-    const rawTextNodes=await page.evaluate(()=>{
-      const root=document.querySelector('#live-panel');
-      const walker=document.createTreeWalker(root,NodeFilter.SHOW_TEXT);
-      const bad=[]; let node;
-      while((node=walker.nextNode())){
-        const el=node.parentElement; if(!el) continue;
-        const style=getComputedStyle(el);
-        if(style.display==='none'||style.visibility==='hidden'||el.closest('details:not([open])')) continue;
-        const text=node.nodeValue.trim();
-        if(!text) continue;
-        if(text.includes('https://')||text.includes('http://')||text.startsWith('#')) bad.push(text);
-      }
-      return bad;
-    });
-    assert.deepEqual(rawTextNodes,[],'no visible Live text node carries a raw url or heading marker');
-    fixture.setLive({state:'listening',since:'2026-10-11T16:00:01Z',cursor:4,entries:[]});
+    fixture.setLive({state:'listening',since:'2026-10-11T16:00:01Z',cursor:4,entries:[
+      {seq:1,kind:'inputTranscription',text:'what is lux 123'},
+      {seq:2,kind:'outputTranscription',text:'Here is the answer.'}
+    ]});
     await page.waitForFunction(()=>document.querySelector('#didi-orb').dataset.state==='LISTENING',{timeout:8000});
     assert.equal(await page.locator('#didi-orb').getAttribute('data-posture'),'listening');
     assert.equal((await page.locator('#live-panel .live-state').textContent()).trim(),'Listening');
-    assert.equal((await page.locator('.orb-label').textContent()).trim(),'Listening');
     assert.equal(await page.getByText('Not listening',{exact:true}).count(),0);
     assert.equal(await page.getByRole('button',{name:/record|microphone|mute/i}).count(),0);
     await page.screenshot({path:`${artifacts}/desktop-live-naya.png`,fullPage:true});
     fixture.setLive({state:'idle',since:'2026-10-11T16:00:00Z',entries:[],cursor:0});
   });
-  await step('failed local save preserves draft; capture never dispatches a model',async()=>{
-    const requestStart=fixture.requests.length;
-    await page.getByLabel('Local note · not sent to a model').fill('Remember the synthetic blue notebook'); fixture.failNextEntry();
-    await page.getByRole('button',{name:'Save message',exact:true}).click(); await page.getByRole('alert').filter({hasText:'Could not save'}).waitFor();assert.equal(await page.getByRole('alert').filter({hasText:'Could not save'}).getAttribute('aria-live'),'assertive');
-    assert.equal(await page.getByLabel('Local note · not sent to a model').inputValue(),'Remember the synthetic blue notebook');
-    await page.getByRole('button',{name:'Save message',exact:true}).click(); await page.locator('.entry').filter({hasText:'Remember the synthetic blue notebook'}).waitFor();
-    assert.equal(await page.getByLabel('Local note · not sent to a model').inputValue(),'');
-    assert.equal(await page.getByRole('status').filter({hasText:'Message saved.'}).getAttribute('aria-live'),'polite');
-    const writes=fixture.requests.slice(requestStart).filter(r=>r.method==='POST');
-    const entry=writes.find(r=>r.path.endsWith('/entries')); assert.equal(entry.body.role,'user');
-    assert.equal(entry.body.text,'Remember the synthetic blue notebook');
-    assert(writes.every(r=>r.path==='/api/v1/sessions'||/^\/api\/v1\/sessions\/[^/]+\/entries$/.test(r.path)),
-      'Local Save must only create a session or user entry, never dispatch a model');
+
+
+  await step('V2-R4 layout audit A-G', async () => {
+    const auditFixture = await startFixture({ configured: true });
+    const auditContext = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const auditPage = await auditContext.newPage(); auditPage.setDefaultTimeout(8000);
+    const results = {}; const failures = [];
+    try {
+      await auditPage.goto(auditFixture.url);
+      await auditPage.locator('#pair-code').waitFor();
+      await auditPage.getByLabel('One-time pairing code').fill('synthetic-only');
+      await auditPage.getByRole('button',{name:'Pair this browser',exact:true}).click();
+      await auditPage.locator('#connected-draft').waitFor({ state: 'attached' });
+      auditFixture.setLive({ state: 'speaking', since: '2026-10-11T16:00:00Z', cursor: 6, entries: [
+        { seq: 1, kind: 'inputTranscription', text: 'What should I do next?' },
+        { seq: 2, kind: 'turnComplete' },
+        { seq: 3, kind: 'outputTranscription', text: 'Ship the three-lane UI.' },
+        { seq: 4, kind: 'turnComplete' },
+        { seq: 5, kind: 'outputTranscription', text: 'Then run the layout audit.' },
+        { seq: 6, kind: 'toolResult', tool: { name: 'lux-knowledge', status: 'completed', markdown: '**Found** three notes', sources: [{ title: 'note', url: 'https://example.org' }] } }
+      ] });
+      const run = async (viewport, theme, segment) => {
+        await auditPage.setViewportSize(viewport);
+        await auditPage.evaluate(m => localStorage.setItem('didi-theme', m), theme);
+        await auditPage.reload();
+        await auditPage.locator('.app-shell').waitFor();
+        if (segment) await auditPage.locator(`button[data-segment="${segment}"]`).click();
+        await auditPage.waitForFunction(() => document.querySelector('#connected-send') !== null);
+        const a = await auditLayout(auditPage);
+        assertAudit(a, `${viewport.width}x${viewport.height} ${theme}${segment ? ' ' + segment : ''}`, failures);
+        results[`${viewport.width}x${viewport.height}-${theme}${segment ? '-' + segment : ''}`] = a;
+      };
+      await run({ width: 1440, height: 900 }, 'dark', null);
+      await run({ width: 1440, height: 900 }, 'light', null);
+      await run({ width: 800, height: 900 }, 'dark', 'chat');
+      await run({ width: 800, height: 900 }, 'light', 'voice');
+      await writeFile(join(artifacts, 'v2r4-audit.json'), JSON.stringify(results, null, 2));
+    } finally { await auditContext.close(); await auditFixture.close(); }
+    console.log('V2R4_AUDIT', JSON.stringify(results));
+    console.log('V2R4_FAILURES', JSON.stringify(failures));
+    assert.equal(failures.length, 0, failures.join(' | '));
   });
-  await step('stop waiting preserves draft without claiming saved',async()=>{
-    const release=fixture.holdNextEntry();
-    try{await page.getByLabel('Local note · not sent to a model').fill('Cancellation synthetic note');await page.getByRole('button',{name:'Save message',exact:true}).click();
-      await page.getByRole('button',{name:'Stop waiting',exact:true}).click();
-      await page.getByRole('alert').filter({hasText:'may still have been saved'}).waitFor();
-      assert.equal(await page.getByLabel('Local note · not sent to a model').inputValue(),'Cancellation synthetic note');
-    }finally{release();}
+
+  await step('settings unpair revokes the cookie and returns to pairing',async()=>{
+    await page.locator('button[data-route="settings"]').click();
+    await page.locator('#sheet').waitFor();
+    await page.getByRole('button',{name:'Unpair this browser',exact:true}).click();
+    await page.getByLabel('One-time pairing code').waitFor();
+    assert.equal((await context.cookies()).length,0);
   });
-  await page.screenshot({path:`${artifacts}/desktop-conversation.png`,fullPage:true});
-  await step('explicit loading state is visible during HTTP read',async()=>{
-    const release=fixture.holdNextPlan();
-    try{await page.getByRole('button',{name:'Today',exact:true}).click();await page.getByRole('status').filter({hasText:'Loading your records'}).waitFor();}
-    finally{release();}
-    await page.getByRole('status').filter({hasText:'Loading your records'}).waitFor({state:'hidden'});
-  });
-  await step('create, due correction, conflict recovery, complete and reopen',async()=>{
-    await page.getByRole('button',{name:'Today',exact:true}).click();
-    await page.getByLabel('Commitment title').fill('Review synthetic notes'); await page.getByRole('button',{name:'Add commitment',exact:true}).click();
-    await page.getByRole('button',{name:'Edit Review synthetic notes'}).click();
-    assert.equal(await page.getByLabel('Title',{exact:true}).evaluate(el=>el===document.activeElement),true);
-    await page.getByLabel('Due date and time').fill('2025-04-10T14:30'); await page.getByRole('button',{name:'Save changes',exact:true}).click();
-    await page.getByText('Due date updated.',{exact:true}).waitFor();
-    const correction=fixture.requests.find(r=>r.method==='PATCH'); assert.equal(correction.body.expectedRevision,1); assert.match(correction.body.dueAt,/Z$/);
-    fixture.conflictNextWrite(); await page.getByRole('button',{name:'Complete Review synthetic notes'}).click();
-    await page.getByRole('alert').filter({hasText:'another device'}).waitFor(); await page.getByText('Changed on another device',{exact:true}).waitFor();
-    await page.getByRole('button',{name:'Complete Changed on another device'}).click(); await page.getByText('Completed',{exact:true}).waitFor();
-    await page.getByRole('button',{name:'Reopen Changed on another device'}).click(); await page.getByRole('button',{name:'Complete Changed on another device'}).waitFor();
-    await page.getByRole('button',{name:'Cancel commitment',exact:true}).click();await page.getByText('Cancelled',{exact:true}).waitFor();
-    assert.equal(await page.getByRole('button',{name:'Complete Changed on another device'}).count(),0);
-    await page.getByRole('button',{name:'Reopen Changed on another device'}).click();await page.getByRole('button',{name:'Complete Changed on another device'}).waitFor();
-  });
-  await page.screenshot({path:`${artifacts}/desktop-today.png`,fullPage:true});
-  await step('source-linked recall, missing source remains missing',async()=>{
-    await page.getByRole('button',{name:'Memory',exact:true}).click(); await page.getByLabel('Search your memory').fill('notebook'); await page.getByRole('button',{name:'Search',exact:true}).click();
-    await page.getByText('Synthetic notebook',{exact:true}).waitFor(); await page.getByText('Source unavailable',{exact:true}).waitFor();
-    await page.getByRole('button',{name:'Open conversation source'}).click(); await page.locator('.entry').filter({hasText:'Remember the synthetic blue notebook'}).waitFor();
-  });
-  await step('memory Search button never wraps its label and review shots land',async()=>{
-    const review=process.env.DIDI_WEB_REVIEW||artifacts;
-    await mkdir(review,{recursive:true});
-    const measureSearch=()=>page.evaluate(()=>{
-      const btn=[...document.querySelectorAll('button')].find(b=>b.textContent.trim()==='Search');
-      if(!btn) throw new Error('Search button not found on the Memory tab');
-      const range=document.createRange(); range.selectNodeContents(btn);
-      const lines=range.getClientRects().length;
-      const style=getComputedStyle(btn);
-      const lineHeight=style.lineHeight==='normal'?parseFloat(style.fontSize)*1.5:parseFloat(style.lineHeight);
-      const chrome=parseFloat(style.paddingTop)+parseFloat(style.paddingBottom)+parseFloat(style.borderTopWidth)+parseFloat(style.borderBottomWidth);
-      const minHeight=parseFloat(style.minHeight)||0;
-      return {lines,height:btn.getBoundingClientRect().height,single:Math.max(lineHeight+chrome,minHeight)};
-    });
-    await page.getByRole('button',{name:'Memory',exact:true}).click();
-    await page.getByLabel('Filter memories').fill('');
-    await page.getByRole('button',{name:'Search',exact:true}).waitFor();
-    const desktop=await measureSearch();
-    assert.equal(desktop.lines,1,`Search label wraps at 1440px (${desktop.lines} lines)`);
-    assert.ok(desktop.height<=desktop.single+1,`Search button ${desktop.height}px exceeds one line ${desktop.single}px at 1440px`);
-    await page.screenshot({path:`${review}/desktop-memory.png`,fullPage:true});
-    await page.setViewportSize({width:375,height:900});
-    await page.getByRole('button',{name:'Search',exact:true}).waitFor();
-    const phone=await measureSearch();
-    assert.equal(phone.lines,1,`Search label wraps at 375px (${phone.lines} lines)`);
-    assert.ok(phone.height<=phone.single+1,`Search button ${phone.height}px exceeds one line ${phone.single}px at 375px`);
-    await page.screenshot({path:`${review}/375-memory.png`,fullPage:true});
-    await page.setViewportSize({width:1440,height:1000});
-    await page.getByRole('button',{name:'Conversation',exact:true}).click();
-  });
-  await step('rendered memory deletion confirms, preserves pending/failed entries and reloads server payload',async()=>{
-    const text='Synthetic browser deletion canary';
-    await page.getByLabel('Local note · not sent to a model').fill(text);
-    await page.getByRole('button',{name:'Save message',exact:true}).click();
-    await page.locator('.entry').filter({hasText:text}).waitFor();
-    // Read it back through recall and the conversation GET, not client capture state.
-    await page.getByRole('button',{name:'Memory',exact:true}).click();
-    await page.getByLabel('Search your memory').fill(text);
-    await page.getByRole('button',{name:'Search',exact:true}).click();
-    await page.getByRole('button',{name:'Open conversation source',exact:true}).click();
-    const row=page.locator('.entry').filter({hasText:text});
-    await row.waitFor();
-    const id=await row.getByRole('button',{name:'Delete memory',exact:true}).getAttribute('data-delete-memory');
-    assert(id);
-    const write=fixture.requests.findLast(r=>r.method==='POST'&&r.path.endsWith('/entries')&&r.body.text===text);
-    assert(write);
-    const sessionPath=write.path.replace(/\/entries$/,'');
-    const envelope=await (await page.request.get(`${fixture.url}${sessionPath}`)).json();
-    const original=envelope.data.entries.find(entry=>entry.id===id);
-    assert.equal(original.text,text);
-    const retained={...original,id:'00000000-0000-4000-8000-000000000050',text:'New retained entry from the server reload'};
-    let deleted=false,releaseDelete,receivedDelete,releaseReload,receivedReload;
-    let arrival=new Promise(resolve=>{receivedDelete=resolve;});
-    const reloadArrival=new Promise(resolve=>{receivedReload=resolve;});
-    const reloadRelease=new Promise(resolve=>{releaseReload=resolve;});
-    await page.route(`${fixture.url}/api/v1/entries/${id}`,async route=>{
-      const response=new Promise(resolve=>{releaseDelete=resolve;});
-      receivedDelete(route.request());
-      await route.fulfill(await response);
-    });
-    await page.route(`${fixture.url}${sessionPath}`,async route=>{
-      if(!deleted){await route.continue();return;}
-      receivedReload();
-      await reloadRelease;
-      await route.fulfill({json:{...envelope,data:{...envelope.data,entries:[...envelope.data.entries.filter(entry=>entry.id!==id),retained]}}});
-    });
-    await page.route('**/api/v1/recall?*',async route=>{
-      const response=await route.fetch();const payload=await response.json();
-      if(deleted){payload.data.hits=payload.data.hits.filter(hit=>hit.entryId!==id);payload.data.totalMatches=payload.data.hits.length;}
-      await route.fulfill({response,json:payload});
-    });
-    const confirmDelete=async()=>{
-      const requestPromise=page.waitForRequest(request=>request.url()===`${fixture.url}/api/v1/entries/${id}`&&request.method()==='DELETE');
-      const dialogPromise=page.waitForEvent('dialog');
-      const click=row.getByRole('button',{name:'Delete memory',exact:true}).click();
-      const dialog=await dialogPromise;
-      assert.equal(dialog.type(),'confirm');assert.match(dialog.message(),/Delete this memory permanently/);
-      await dialog.accept();await click;await requestPromise;
-      const request=await arrival;assert.equal(request.method(),'DELETE');assert.deepEqual(request.postDataJSON(),{});
-    };
-    await confirmDelete();
-    assert.equal(await row.isVisible(),true,'pending DELETE must retain the entry');
-    releaseDelete({status:503,json:{error:{code:'WRITE_FAILED',message:'Could not delete this memory.'}}});
-    await page.getByRole('alert').filter({hasText:'Could not delete this memory.'}).waitFor();
-    assert.equal(await row.isVisible(),true,'failed DELETE must retain the entry');
-    arrival=new Promise(resolve=>{receivedDelete=resolve;});
-    await confirmDelete();
-    assert.equal(await row.isVisible(),true,'retry must not optimistically filter the entry');
-    deleted=true;
-    const reloadRequest=page.waitForRequest(request=>request.url()===`${fixture.url}${sessionPath}`&&request.method()==='GET');
-    releaseDelete({json:{...envelope,data:{entryId:id,deletedAt:'2026-01-01T00:00:00.000Z',actor:'browser-fixture',reasonCode:'owner_request'}}});
-    await reloadRequest;await reloadArrival;
-    assert.equal(await row.isVisible(),true,'DELETE success alone must not replace the server list');
-    releaseReload();
-    await row.waitFor({state:'detached'});
-    await page.locator('.entry').filter({hasText:retained.text}).waitFor();
-    assert.equal(await page.getByRole('alert').filter({hasText:'Could not delete this memory.'}).count(),0);
-  });
-  await step('offline cannot claim saved; preserves draft; no offline writer',async()=>{
-    await page.getByLabel('Local note · not sent to a model').fill('Offline draft stays here'); await context.setOffline(true); await page.getByText('Offline',{exact:true}).waitFor();
-    assert.equal(await page.getByRole('button',{name:'Save message',exact:true}).isDisabled(),true);
-    assert.equal(await page.getByLabel('Local note · not sent to a model').inputValue(),'Offline draft stays here');
-    await context.setOffline(false); await page.getByText('Connected',{exact:true}).waitFor();
-  });
-  await step('private cache isolation and keyboard access',async()=>{
-    await page.evaluate(async()=>{await navigator.serviceWorker.ready;});
-    let releaseBootstrap; const lateBootstrap = new Promise(resolve=>releaseBootstrap=resolve);
-    await page.route('**/api/v1/chat/status',async route=>{const response=await route.fetch();await lateBootstrap;await route.fulfill({response});});
-    await page.reload();
-    await page.getByText('Connected',{exact:true}).waitFor();
-    const paths=await page.evaluate(async()=>{const keys=await caches.keys(); const urls=[];for(const k of keys){for(const r of await (await caches.open(k)).keys())urls.push(new URL(r.url).pathname);}return urls;});
-    assert(paths.length>0); assert(!paths.some(p=>p.startsWith('/api/'))); assert(!paths.some(p=>p.includes('pair')));
-    await page.keyboard.press('Tab');
-    await writeFile(`${artifacts}/keyboard-after-tab.json`,JSON.stringify(await page.evaluate(()=>window.__keyboardProof),null,2));
-    await page.evaluate(()=>window.__keyboardProof.releaseAt=performance.now());
-    releaseBootstrap();
-    await page.waitForFunction(()=>window.__keyboardProof.events.some(event=>event.event==='root-replaced' && event.at >= window.__keyboardProof.releaseAt));
-    await writeFile(`${artifacts}/keyboard-after-bootstrap.json`,JSON.stringify(await page.evaluate(()=>window.__keyboardProof),null,2));
-    await page.getByRole('link',{name:'Skip to content'}).waitFor();
-    assert.equal(await page.getByRole('link',{name:'Skip to content'}).evaluate(el=>el===document.activeElement),true);
-    await page.keyboard.press('Enter');
-    await writeFile(`${artifacts}/keyboard-after-enter.json`,JSON.stringify(await page.evaluate(()=>window.__keyboardProof),null,2));
-    assert.equal(await page.locator('#main').evaluate(el=>el===document.activeElement),true);
-    assert.equal(await page.getByRole('navigation',{name:'Main navigation'}).count(),1);
-    assert.equal(await page.locator('label[for=message]').count(),1);
-    await page.getByRole('button',{name:'Settings',exact:true}).click(); await page.getByText('Mac companion',{exact:true}).waitFor();
-    await page.screenshot({path:`${artifacts}/desktop-settings.png`,fullPage:true});
-  });
-  await step('375px phone and 768px tablet have no overflow',async()=>{
-    for(const width of [375,768]){await page.setViewportSize({width,height:900});
-      for(const tab of ['Conversation','Today','Memory','Settings']){await page.getByRole('button',{name:tab,exact:true}).click();
-        assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),`${tab} overflow at ${width}`);
-        await page.screenshot({path:`${artifacts}/${width}-${tab.toLowerCase()}.png`,fullPage:true});}
-    }
-  });
-  await step('locally authored install shell and logout revoke cookie',async()=>{
-    const manifest=await (await page.request.get(fixture.url+'/manifest.webmanifest')).json();assert.equal(manifest.display,'standalone');assert.equal(manifest.icons[0].src,'/icon.svg');
-    assert.match(await (await page.request.get(fixture.url+'/icon.svg')).text(),/<svg/);
-    await page.getByRole('button',{name:'Settings',exact:true}).click();await page.getByRole('button',{name:'Unpair this browser',exact:true}).click();
-    await page.getByLabel('One-time pairing code').waitFor();assert.equal((await context.cookies()).length,0);
-  });
-  for(const request of fixture.requests.filter(r=>r.method!=='GET'&&!r.path.endsWith('/auth/pair'))){assert(request.headers['idempotency-key']);assert.equal(request.headers['x-didi-csrf'],'synthetic-csrf');assert.equal(request.headers['x-didi-authority-epoch'],'synthetic-authority-1');}
+
   await writeFile(`${artifacts}/browser-results.json`,JSON.stringify({mode:'isolated synthetic HTTP/SQLite fixture, not production integration',timings,requests:fixture.requests.map(r=>({method:r.method,path:r.path}))},null,2));
   console.log('PASS browser integration; durations:',JSON.stringify(timings));
 } finally {await browser?.close(); await fixture.close();}

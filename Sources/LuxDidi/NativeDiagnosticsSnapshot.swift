@@ -31,8 +31,10 @@ struct DiagnosticsSnapshotInput {
     var idleLimit: String?
     var connections: [String]?
     var audioRoute: String?
+    var voiceProcessing: Bool?
     var preCreateFailureClass: String?
     var preCreateFailureCode: String?
+    var preCreateFailureAge: String?
     var startupFailure: StartupFailureDiagnostic?
     var capturedAt: String?
 }
@@ -60,6 +62,36 @@ enum NativeDiagnosticsSnapshot {
         return String(port)
     }
 
+    static func voiceProcessing(_ value: Bool?) -> String {
+        switch value {
+        case .some(true): return "on"
+        case .some(false): return "off"
+        case nil: return unknown
+        }
+    }
+
+    /// The age of the last pre-CREATE failure, only when a real failure and an age are both present.
+    static func ageSuffix(_ input: DiagnosticsSnapshotInput) -> String {
+        guard let age = input.preCreateFailureAge, input.preCreateFailureClass != nil, input.preCreateFailureCode != nil else { return "" }
+        return " (age " + scrub(age) + ")"
+    }
+
+    /// A bounded, deterministic age label: seconds under a minute, else minutes, else hours.
+    static func ageText(since date: Date, now: Date) -> String {
+        let seconds = max(0, Int(now.timeIntervalSince(date)))
+        if seconds < 60 { return "\(seconds)s" }
+        if seconds < 3600 { return "\(seconds / 60)m" }
+        return "\(seconds / 3600)h"
+    }
+
+    /// A connector with no operator credential is `not configured`, never `error`; every other
+    /// state carries its closed reason token, and a healthy connector carries none (X4-R2).
+    static func connectorLine(id: String, state: String, reasonCode: String?) -> String {
+        if reasonCode == "credential_missing" { return scrub(id) + ": not configured" }
+        if let reasonCode { return scrub(id) + ": " + scrub(state) + " (" + scrub(reasonCode) + ")" }
+        return scrub(id) + ": " + scrub(state)
+    }
+
     static func render(_ input: DiagnosticsSnapshotInput) -> String {
         var lines: [String] = ["Didi diagnostics"]
         lines.append("Captured: " + scrub(input.capturedAt))
@@ -75,7 +107,8 @@ enum NativeDiagnosticsSnapshot {
         let classifications = ["built-in", "external wired", "Bluetooth", "USB", "unknown"]
         let routes = classifications.flatMap { input in classifications.map { "Input: " + input + "; Output: " + $0 } }
         lines.append("Audio route: " + (routes.contains(input.audioRoute ?? "") ? input.audioRoute! : "Input: unknown; Output: unknown"))
-        lines.append("Last pre-CREATE failure: " + scrub(input.preCreateFailureClass) + "/" + scrub(input.preCreateFailureCode))
+        lines.append("Voice processing: " + voiceProcessing(input.voiceProcessing))
+        lines.append("Last pre-CREATE failure: " + scrub(input.preCreateFailureClass) + "/" + scrub(input.preCreateFailureCode) + ageSuffix(input))
         lines.append("Last startup failure: " + startupFailure(input.startupFailure))
         return lines.joined(separator: "\n") + "\n"
     }
@@ -104,8 +137,8 @@ enum NativeDiagnosticsSnapshot {
 
     /// The last typed pre-CREATE failure recorded by `logFailure`. Only the
     /// whitelisted `failureClass` and `code` leave the log, never a message.
-    static func preCreateFailure(inLog text: String) -> (failureClass: String, code: String)? {
-        var result: (failureClass: String, code: String)?
+    static func preCreateFailure(inLog text: String) -> (failureClass: String, code: String, at: String?)? {
+        var result: (failureClass: String, code: String, at: String?)?
         for line in text.split(separator: "\n") {
             guard let data = String(line).data(using: .utf8),
                   let raw = try? JSONSerialization.jsonObject(with: data),
@@ -113,15 +146,36 @@ enum NativeDiagnosticsSnapshot {
                   object["event"] as? String == "live_precreate_failed",
                   let failureClass = object["failureClass"] as? String,
                   let code = object["code"] as? String else { continue }
-            result = (failureClass, code)
+            result = (failureClass, code, object["timestamp"] as? String)
         }
         return result
     }
 
-    static func preCreateFailure(logsDirectory: URL?) -> (failureClass: String, code: String)? {
+    static func preCreateFailure(logsDirectory: URL?) -> (failureClass: String, code: String, at: String?)? {
         guard let url = logsDirectory?.appendingPathComponent("native-live.log"),
               let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
         return preCreateFailure(inLog: text)
+    }
+
+    /// The voice-processing choice of the last `audio_started` record in audio.log: the release 2b
+    /// audio owner's recorded choice, read-only, so the snapshot survives a torn-down conversation.
+    static func lastAudioVoiceProcessing(inLog text: String) -> Bool? {
+        var result: Bool?
+        for line in text.split(separator: "\n") {
+            guard let data = String(line).data(using: .utf8),
+                  let raw = try? JSONSerialization.jsonObject(with: data),
+                  let object = raw as? [String: Any],
+                  object["event"] as? String == "audio_started",
+                  let value = object["voiceProcessing"] as? String else { continue }
+            result = value == "true"
+        }
+        return result
+    }
+
+    static func lastAudioVoiceProcessing(logsDirectory: URL?) -> Bool? {
+        guard let url = logsDirectory?.appendingPathComponent("audio.log"),
+              let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        return lastAudioVoiceProcessing(inLog: text)
     }
 }
 

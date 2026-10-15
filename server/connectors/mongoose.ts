@@ -21,6 +21,26 @@ export type MongooseTool = (typeof MONGOOSE_TOOLS)[number];
 /** Bounded argument defaults; a caller may only narrow these, never widen them. */
 export const MONGOOSE_DEFAULTS = { searchLimit: 5, maxSearchLimit: 50, listLimit: 10, maxListLimit: 100, queryChars: 500 } as const;
 
+/**
+ * Closed connect-time stage for a mongoose call that never reached a dispatched tool call.
+ * The mongoose server is external, so the stage is reported, never repaired here, and never
+ * carries a message, a URL or a credential value.
+ */
+export const MONGOOSE_FAILURE_STAGES = ['credential', 'spawn', 'handshake', 'first_call'] as const;
+export type MongooseFailureStage = (typeof MONGOOSE_FAILURE_STAGES)[number];
+
+/**
+ * Classify a closed adapter reason (or a discovery exception code) into the connect stage where
+ * the call stopped. Local refusals and a dispatched-call failure fall to `first_call`.
+ */
+export function mongooseFailureStage(reason: string, exceptionCode?: string): MongooseFailureStage {
+  const token = exceptionCode ?? reason;
+  if (token.includes('credential')) return 'credential';
+  if (token === 'child_exited' || token === 'pipe_closed' || token === 'transport' || token === 'invalid-endpoint-config') return 'spawn';
+  if (token === 'discovery-required' || token === 'discovery-unavailable' || token.includes('handshake')) return 'handshake';
+  return 'first_call';
+}
+
 export interface MongooseConfig {
   endpointId: string;
   account: string;

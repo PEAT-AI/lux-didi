@@ -67,9 +67,16 @@ try {
   // Probe: does the consent checkbox stick after a click?
   await page.locator('#connected-consent').check({ timeout: 8000 }).catch(e => console.log('CONSENT_CHECK_FAIL', String(e).split('\n')[0]));
   console.log('CONSENT_STATE', await page.evaluate(() => { const c = document.querySelector('#connected-consent'); return c ? c.checked : 'missing'; }));
-  await page.locator('#connected-consent').click({ timeout: 5000 }).catch(e => console.log('CONSENT_CLICK_FAIL', String(e).split('\n')[0]));
+  console.log('CONSENT_GEO', await page.evaluate(() => {
+    const c = document.querySelector('#connected-consent');
+    const r = c.getBoundingClientRect();
+    const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+    return { count: document.querySelectorAll('#connected-consent').length, rect: { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) }, hit: hit ? hit.outerHTML.slice(0, 60) : null };
+  }));
+  await page.evaluate(() => { window.__changes = 0; document.querySelector('#connected-consent').addEventListener('change', () => { window.__changes += 1; }); });
+  await page.locator('#connected-consent').click({ force: true, timeout: 5000 }).catch(e => console.log('CONSENT_CLICK_FAIL', String(e).split('\n')[0]));
   await page.waitForTimeout(200);
-  console.log('CONSENT_CLICK', await page.evaluate(() => { const c = document.querySelector('#connected-consent'); return c ? c.checked : 'missing'; }));
+  console.log('CONSENT_CLICK', await page.evaluate(() => { const c = document.querySelector('#connected-consent'); return c ? { checked: c.checked, changes: window.__changes, renders: window.__renders } : 'missing'; }));
   await page.evaluate(() => { const c = document.querySelector('#connected-consent'); c.checked = true; c.dispatchEvent(new Event('change', { bubbles: true })); });
   await page.waitForTimeout(200);
   console.log('CONSENT_MANUAL', await page.evaluate(() => { const c = document.querySelector('#connected-consent'); return c ? c.checked : 'missing'; }));

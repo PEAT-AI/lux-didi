@@ -30,6 +30,16 @@ enum NativeLiveEndDetail {
     static func providerClosed(closeCode: Int) -> [String: Any] { ["closeCode": closeCode] }
 }
 
+/// One meter RMS window: numbers only, computed from the per-buffer levels the capture path already holds.
+struct NativeLiveRms: Sendable {
+    let mean: Float
+    let max: Float
+    let speechBuffers: Int
+}
+
+/// E1 interruption phase: `pre` is the second before the barge-in, `post` the five seconds after it.
+enum NativeLiveInterruptionPhase: String, Sendable { case pre, post }
+
 /// Append-only JSON-lines writer for native-live.log. Every record carries an ISO8601 timestamp,
 /// the closed reason and its numeric detail. A test or a proof build can pass no URL and read
 /// `events` instead. Writing never throws into a call path and never changes capture or session
@@ -64,6 +74,24 @@ final class NativeLiveJournal {
         if fields["timestamp"] == nil { fields["timestamp"] = ISO8601DateFormatter().string(from: now()) }
         events.append(fields)
         write(fields)
+    }
+
+    /// E1: one metadata-only `live_interrupted` line. Numbers, a boolean and the session id only,
+    /// never audio, text, a device label or a provider payload.
+    func appendInterruption(phase: NativeLiveInterruptionPhase, sessionID: String, bufferedPlaybackMs: Int,
+                            msSinceLastModelAudio: Int, turnCompleteSeen: Bool, rms: NativeLiveRms, at date: Date) {
+        var record: [String: Any] = [
+            "event": "live_interrupted",
+            "timestamp": ISO8601DateFormatter().string(from: date),
+            "liveSessionId": sessionID,
+            "phase": phase.rawValue,
+            "bufferedPlaybackMs": bufferedPlaybackMs,
+            "msSinceLastModelAudio": msSinceLastModelAudio,
+            "turnCompleteSeen": turnCompleteSeen,
+        ]
+        record[phase == .pre ? "preRms" : "postRms"] =
+            ["mean": Double(rms.mean), "max": Double(rms.max), "speechBuffers": rms.speechBuffers]
+        append(record)
     }
 
     private func write(_ record: [String: Any]) {

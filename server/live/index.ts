@@ -50,6 +50,9 @@ interface ActiveSession {
   pendingCallIds: Set<string>;
   bargeInCallIds: Set<string>;
   speaking: boolean;
+  // E1 interruption telemetry: provider-side facts for the last turn only, never audio or text.
+  lastModelAudioAt?: number;
+  turnCompleteSeen: boolean;
   liveSessionId: string;
   session: LiveVoiceSession;
   abort: AbortController;
@@ -607,7 +610,7 @@ export class LiveSessionOwner {
       deadlineMs, deadlineAt, idleAt: this.#now() + this.#profile.limits.idleMs, goAwayUntil: undefined,
       sessionTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()),
-      registry, host, toolStep: 0, toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, pendingCallIds: new Set(), bargeInCallIds: new Set(),
+      registry, host, toolStep: 0, toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false,
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
       consumerState: 'attached', journalEvents: 0, journalBytes: 0, adapterOutcome: undefined,
@@ -798,6 +801,7 @@ export class LiveSessionOwner {
         if (this.#settled(handle) || generation !== handle.generation) break;
         if (event.type === 'modelTurnStarted') {
           this.#beginModelTurn(handle);
+          handle.turnCompleteSeen = false;
           continue;
         }
         if (event.type === 'resumptionHandle') {
@@ -827,10 +831,18 @@ export class LiveSessionOwner {
           }); continue;
         }
         if (event.type === 'toolCallCancellation') { for (const id of event.ids) handle.pendingCallIds.delete(id); handle.thinking = handle.pendingCallIds.size > 0; continue; }
-        if (event.type === 'interrupted') { for (const id of handle.pendingCallIds) handle.bargeInCallIds.add(id); handle.speaking = false; }
+        if (event.type === 'interrupted') {
+          for (const id of handle.pendingCallIds) handle.bargeInCallIds.add(id);
+          handle.speaking = false;
+          // E1: one metadata-only host record per provider barge-in. Never audio, text or a provider payload.
+          hostLogEvent({ event: 'live_interrupted', liveSessionId: handle.liveSessionId,
+            turnCompleteSeen: handle.turnCompleteSeen,
+            msSinceLastModelAudio: handle.lastModelAudioAt === undefined ? null : this.#now() - handle.lastModelAudioAt });
+        }
         if (event.type === 'turnComplete' || event.type === 'generationComplete') handle.speaking = false;
+        if (event.type === 'turnComplete') handle.turnCompleteSeen = true;
         if (event.type === 'waitingForInput') { handle.thinking = !event.value; if (event.value) handle.speaking = false; }
-        if (event.type === 'audio') { handle.thinking = false; handle.speaking = true; this.#pushChunk(handle, { kind: 'audio', pcm: event.pcm }); continue; }
+        if (event.type === 'audio') { handle.thinking = false; handle.speaking = true; handle.lastModelAudioAt = this.#now(); this.#pushChunk(handle, { kind: 'audio', pcm: event.pcm }); continue; }
         if (event.type === 'outcome') { outcome = event.outcome; continue; }
         if (event.type === 'inputTranscription') {
           handle.inputFinalTimer?.cancel();

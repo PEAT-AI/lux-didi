@@ -1,5 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+// Side-effect import: the intent-tool suite registers its own tests in this process, so the declared
+// check-tool-owner run exercises it without touching the check script (out of contract scope).
+import './intent-tools.test.js';
 import {
   cleanMailBody, cutAtSentence, noEmptyResult, shapeGcalList, shapeGmailList, shapeGmailRead, shapeLuxKnowledge, shapeMattermost,
   CALENDAR_EVENT_CHARS, GMAIL_BODY_CHARS, GMAIL_LIST_EXCERPT_CHARS, KNOWLEDGE_EXCERPT_CHARS, KNOWLEDGE_HITS, LIVE_RESULT_CHARS, MATTERMOST_CHANNELS, MATTERMOST_MESSAGE_CHARS, MATTERMOST_MESSAGES,

@@ -175,6 +175,7 @@ function googleProject(evidence: ConnectorEvidence, port: McpPort, policy: Conne
       partial: projection.projection.partial,
       originalCharacters: projection.projection.originalCharacters,
       omittedCharacters: projection.projection.omittedCharacters,
+      ...(projection.projection.sources ? { sources: projection.projection.sources } : {}),
     },
     dataClasses: [unknownClass] as DataClass[],
   };
@@ -243,7 +244,7 @@ function companyProjection(evidence: ConnectorEvidence, policy: ConnectionPolicy
   const unknownClass = policy.sourcePolicy.unknownClass;
   if (!unknownClass) throw Error('unknown_source_denied');
   return {
-    response: { tool: evidence.tool, text: projection.projection.text, coverage: evidence.coverage, projection: evidence.projection, partial: projection.projection.partial, originalCharacters: projection.projection.originalCharacters, omittedCharacters: projection.projection.omittedCharacters },
+    response: { tool: evidence.tool, text: projection.projection.text, coverage: evidence.coverage, projection: evidence.projection, partial: projection.projection.partial, originalCharacters: projection.projection.originalCharacters, omittedCharacters: projection.projection.omittedCharacters, ...(projection.projection.sources ? { sources: projection.projection.sources } : {}) },
     dataClasses: [unknownClass],
   };
 }

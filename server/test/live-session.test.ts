@@ -9,6 +9,7 @@ import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { createToolsOwner, toolsMigrations } from '../tools/index.js';
 import { declarationsFor, runToolCalls } from '../tools/declarations.js';
+import { shapeGcalCalendars, shapeGcalList, shapeGmailList } from '../tools/live-shape.js';
 import { LiveToolJobs, type ToolJobResult, type JobTimer } from '../tools/jobs.js';
 import type { LiveAuthority } from '../tools/types.js';
 import { liveProfileIdentity } from '../live/config.js';
@@ -1400,7 +1401,7 @@ test('Live accepts a frozen real tool snapshot and projects only result-gated Ma
   assert.equal(page.entries.filter(e => e.kind === 'toolCall').length, 2);
   const result = page.entries.find(e => e.kind === 'toolResult')!.tool!;
   assert.equal(result.status, 'completed'); assert.match(result.markdown!, /Synthetic insight/);
-  assert.deepEqual(result.sources, [{ title: '123' }, { title: 'Evidence', url: 'https://example.test/evidence' }], 'cards follow first occurrence in approved evidence');
+  assert.deepEqual(result.sources, [{ title: 'KB: Synthetic insight' }, { title: 'Evidence', url: 'https://example.test/evidence' }], 'cards follow first occurrence in approved evidence');
   assert.equal(JSON.stringify(page).includes('liveSessionId'), false);
   assert.equal(JSON.stringify(page).includes('args'), false);
   assert.equal(JSON.stringify(page).includes(CANARY), false);
@@ -1980,4 +1981,23 @@ test('P1: session start logs the composed instruction size per section', async t
   assert.ok(logged, 'a per-section size line is logged at session start');
   assert.ok(typeof logged.total === 'number' && logged.total > 0);
   assert.ok(logged.sections && Object.values(logged.sections).every(value => typeof value === 'number'), 'only counts are logged');
+});
+
+test('U1: calendar and Gmail model text carries no raw url and names each source', () => {
+  const calendar = shapeGcalList({ events: [
+    { summary: 'Standup', start: { dateTime: '2024-01-01T09:00:00Z' }, htmlLink: 'https://calendar.google.com/event?eid=e1' },
+    { start: { dateTime: '2024-01-02T09:00:00Z' }, htmlLink: 'https://calendar.google.com/event?eid=e2' },
+  ] });
+  assert.equal(/https?:\/\//.test(calendar.text), false, 'calendar model text carries no raw url');
+  assert.equal(calendar.text.includes('source:'), false);
+  assert.deepEqual(calendar.sources, [
+    { title: 'Calendar: Standup', url: 'https://calendar.google.com/event?eid=e1', sourceType: 'calendar' },
+    { title: 'Open in Google Calendar', url: 'https://calendar.google.com/event?eid=e2', sourceType: 'calendar' },
+  ]);
+  const mail = shapeGmailList({ messages: [
+    { id: 'm1', snippet: 'hello', labelIds: [], headers: { Subject: 'Budget' } },
+  ] });
+  assert.equal(/https?:\/\//.test(mail.text), false, 'gmail model text carries no raw url');
+  assert.deepEqual(mail.sources, [{ title: 'Gmail: Budget', url: 'https://mail.google.com/mail/u/0/#inbox/m1', sourceType: 'gmail' }]);
+  assert.deepEqual(shapeGcalCalendars({ calendars: [{ summary: 'Work' }] }).sources, undefined);
 });

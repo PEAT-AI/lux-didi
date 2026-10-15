@@ -7,6 +7,8 @@ import { ApiError, request, pair, demoMode, onAuthorityChanged, authorityVersion
 import { liveMarkup, liveLabel, liveVoiceState, liveDelay, pollLiveView, liveActivity, activityMarkup, type LivePollState } from './live-view';
 import { connectionsMarkup } from './connector-status';
 import { settingsMarkup } from './settings-view';
+import { answerMarkup } from './markdown';
+import { applyTheme, loadTheme, saveTheme, type Theme } from './theme';
 import type { Session, Entry, Commitment, CommitmentDetail, Plan, Recall, Status, LiveCurrent } from './protocol';
 
 type Tab = 'Conversation' | 'Today' | 'Memory' | 'Settings';
@@ -14,6 +16,7 @@ const root = document.querySelector<HTMLDivElement>('#app')!;
 const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 const tabs: Tab[] = ['Conversation', 'Today', 'Memory', 'Settings'];
 let tab: Tab = 'Conversation';
+let theme: Theme = 'dark';
 let orb: Orb | undefined;
 let appliedOrbState: VoiceState | undefined;
 let status: Status | undefined;
@@ -23,7 +26,7 @@ let sessions: Session[] = [], entries: Entry[] = [], session: Session | undefine
 let plan: Plan | undefined, recall: Recall | undefined;
 let recent: Commitment[] = [], editing: Commitment | undefined, detail: CommitmentDetail | undefined;
 let draftOwner: string | undefined;
-let messageDraft = '', titleDraft = '', queryDraft = '', editTitle = '', editNotes = '', editDue = '', memoryFilter = '', liveTextDraft = '';
+let messageDraft = '', titleDraft = '', queryDraft = '', editTitle = '', editNotes = '', editDue = '', memoryFilter = '';
 let notice = '', error = '', busy = false, readBusy = false, pairingBusy = false;
 let pairingRequired = false, sessionMore = false, entriesMore = false;
 let controller: AbortController | undefined;
@@ -47,6 +50,7 @@ function localDate() { const d = new Date(); return `${d.getFullYear()}-${String
 function localInput(value: string | null) { if (!value) return ''; const d = new Date(value); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}T${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; }
 function writable() { return connection === 'Connected' && !busy; }
 const disabled = (condition: boolean) => condition ? 'disabled' : '';
+function themeStorage(): Storage | undefined { try { return window.localStorage; } catch { return undefined; } }
 function notify(message: string, failure = false) { notice = failure ? '' : message; error = failure ? message : ''; render(); }
 function failure(err: unknown, mutation = false) {
   if (err instanceof DOMException && err.name === 'AbortError') return 'Stopped waiting. A sent change may still have been saved. Refresh before trying again.';
@@ -55,7 +59,7 @@ function failure(err: unknown, mutation = false) {
   return mutation ? 'Could not confirm whether this was saved. Your draft is here. Reconnect and check before trying again.' : 'Didi can’t reach your service. Reconnect when you’re ready.';
 }
 function sourceMarkup(refs: Entry['sourceRefs']) { return refs.map(s => `<div class="source"><span>${e(s.label)}</span><small>${s.availability === 'missing' ? 'Source unavailable' : 'Source available'}${s.sourceTimestamp ? ` · ${e(datetime(s.sourceTimestamp))}` : ''}</small>${s.note ? `<p>${e(s.note)}</p>` : ''}</div>`).join(''); }
-function entryMarkup(entry: Entry) { return `<article class="entry ${entry.role}"><header><strong>${entry.role === 'user' ? 'You' : entry.role === 'assistant' ? 'Didi' : 'Update'}</strong><time datetime="${e(entry.capturedAt)}">${e(datetime(entry.capturedAt))}</time></header><p>${e(entry.text)}</p>${sourceMarkup(entry.sourceRefs)}${memoryDeleteControl(entry.id, !writable() || busy || connectedView.active)}${entry.role === 'user' ? `<button class="quiet" data-capture="${e(entry.id)}" ${disabled(!writable() || !status?.capabilities.commitments)}>Make a commitment</button>` : ''}</article>`; }
+function entryMarkup(entry: Entry) { return `<article class="entry ${entry.role}"><header><strong>${entry.role === 'user' ? 'You' : entry.role === 'assistant' ? 'Didi' : 'Update'}</strong><time datetime="${e(entry.capturedAt)}">${e(datetime(entry.capturedAt))}</time></header>${entry.role === 'assistant' ? answerMarkup(entry.text) : `<p>${e(entry.text)}</p>`}${sourceMarkup(entry.sourceRefs)}${memoryDeleteControl(entry.id, !writable() || busy || connectedView.active)}${entry.role === 'user' ? `<button class="quiet" data-capture="${e(entry.id)}" ${disabled(!writable() || !status?.capabilities.commitments)}>Make a commitment</button>` : ''}</article>`; }
 function orbState(): VoiceState {
   if(connection==='Offline'||connection==='Disconnected'||pairingRequired)return 'DISCONNECTED';
   if(connection==='Connecting')return 'CONNECTING';
@@ -88,11 +92,10 @@ function orbMarkup() {
 function conversation() {
   return `<section class="voice-heading"><div><p class="eyebrow">NAYA VOICE</p><h1>Here with you.</h1></div><button id="new-conversation" class="secondary" ${disabled(busy)}>New conversation</button></section>
   ${orbMarkup()}${liveMarkup(live,livePoll,liveDetailsOpen)}
-  <section class="voice-text" aria-labelledby="voice-text-heading"><div class="voice-text-heading"><p class="eyebrow">OPTIONAL TEXT</p><h2 id="voice-text-heading">Type when it is easier.</h2><p>Text is here when you want it.</p></div><form id="live-text-form" class="live-text"><label for="live-text">Type to Naya</label><input id="live-text" type="text" maxlength="4000" autocomplete="off" placeholder="Type to Naya, or save a local note." value="${e(liveTextDraft)}"><button type="submit">${liveActive() ? 'Send to Naya' : 'Save note'}</button></form><div id="connected-panel"></div></section>
+  <div id="connected-panel"></div>
   <details id="conversation-history" class="conversation-history"${historyOpen ? ' open' : ''}><summary><span>Saved conversation history</span><small>Local notes and earlier conversations</small></summary><div class="conversation-grid"><aside class="panel conversations" aria-label="Conversations"><h2>Your conversations</h2>${sessions.length ? sessions.map(s => `<button data-session="${e(s.id)}" class="session ${session?.id === s.id ? 'selected' : ''}"><strong>${e(s.title)}</strong><small>${e(datetime(s.startedAt))}</small></button>`).join('') : '<p class="muted">No conversations yet.</p>'}${sessionMore ? '<p class="muted">More conversations are available in the service. This view shows the first page.</p>' : ''}</aside>
   <section class="panel thread" aria-label="Conversation">${sessions.length ? `<div class="mobile-conversations"><label for="conversation-select">Choose a conversation</label><select id="conversation-select"><option value="">Start a new conversation</option>${sessions.map(s=>`<option value="${e(s.id)}" ${session?.id===s.id?'selected':''}>${e(s.title)}</option>`).join('')}</select></div>` : ''}<div class="thread-heading"><span class="dot"></span><h2>${e(session?.title ?? 'Start where you are')}</h2></div>
   <div class="entries">${entries.length ? entries.map(entryMarkup).join('') : `<div class="empty"><span class="empty-icon" aria-hidden="true">✳</span><h3>What’s on your mind?</h3><p>Save a thought, make a plan, or pick up a conversation.</p></div>`}${entriesMore ? '<p class="muted">There are more messages in this conversation. This view shows the first page.</p>' : ''}</div>
-  <form id="message-form" class="composer"><label for="message">Local note · not sent to a model</label><textarea id="message" rows="3" maxlength="12000" placeholder="A thought, a next step, a thing to remember…">${e(status ? messageDraft : '')}</textarea><div class="composer-foot"><small>${status?.model.configured ? 'Save a message, or ask Didi for help.' : 'No model connected. You can still save messages and commitments.'}</small><div class="button-row"><button type="submit" ${disabled(!writable())}>${busy ? 'Working…' : 'Save message'}</button><button type="button" id="ask-didi" class="secondary" disabled title="Start an explicitly disclosed connected conversation below">Ask Didi</button></div></div></form>
   </section></div></details>`;
 }
 function commitmentMarkup(c: Commitment, overdue = false) {
@@ -110,7 +113,7 @@ function today() {
 function memory() {
   return `<section class="page-heading"><div><p class="eyebrow">REMEMBER, WITH CONTEXT</p><h1>Pick up the thread.</h1><p>Your words, connected to where they came from.</p></div></section>${memoryListMarkup(entries, { filter: status ? memoryFilter : '', disabled: !writable() || busy || connectedView.active })}<section class="panel recall"><form id="recall-form"><label for="recall-query">Search your memory</label><div class="search-row"><input id="recall-query" type="search" value="${e(status ? queryDraft : '')}" maxlength="500" placeholder="A phrase, a project, a thought…"><button ${disabled(connection !== 'Connected' || readBusy || !status?.capabilities.memory)}>Search</button></div></form>${recall ? `<p class="muted">${recall.totalMatches} ${recall.totalMatches === 1 ? 'match' : 'matches'}${recall.truncated || recall.nextCursor ? ' · Partial results; more are available in the service.' : ''}</p>${recall.hits.length ? recall.hits.map(hit=>`<article class="recall-hit"><p>${e(hit.snippet)}</p><small>${e(datetime(hit.sourceTimestamp))}</small>${sourceMarkup(hit.sourceRefs)}${hit.entryId ? memoryDeleteControl(hit.entryId, !writable() || busy || connectedView.active) : ''}<button class="quiet" data-source="${e(hit.sessionId)}">Open conversation source</button></article>`).join('') : '<div class="empty"><h3>No matches yet.</h3><p>Try a different phrase. Didi won’t invent a memory to fill the gap.</p></div>'}` : '<div class="empty"><span class="empty-icon" aria-hidden="true">↗</span><h3>Find the words you kept.</h3><p>Search saved conversations. Unavailable sources stay clearly marked.</p></div>'}</section>`;
 }
-function settingsInput() { return { status, statusUnavailable, connections, connectionsUnavailable: connectionsStale }; }
+function settingsInput() { return { status, statusUnavailable, connections, connectionsUnavailable: connectionsStale, theme, connected: { conversations: connectedView.history, remember: connectedView.remember, busy: connectedView.busy, standingRevoke: connectedView.standingRevoke, conversationState: connectedView.conversationState } }; }
 function settings() {
   const permissions = typeof Notification === 'undefined' ? 'Not supported in this browser' : Notification.permission === 'granted' ? 'Allowed by this browser; no delivery is configured' : Notification.permission === 'denied' ? 'Blocked in browser settings' : 'Not requested';
   return `<section class="page-heading"><div><p class="eyebrow">YOUR SETUP, PLAINLY</p><h1>Make yourself at home.</h1><p>Know what’s connected. Choose what’s allowed.</p></div></section><div class="settings-grid">${settingsMarkup(settingsInput())}<section class="panel"><h2>Connection</h2><dl><dt>Service</dt><dd>${e(connection)}</dd><dt>Address</dt><dd>${e(location.origin)} /api/v1</dd><dt>Time zone</dt><dd>${e(zone)}</dd><dt>Privacy</dt><dd>Messages stay in your service. This browser keeps only the app shell for offline opening.</dd></dl><div class="button-row"><button id="reconnect" class="secondary" ${disabled(readBusy)}>Reconnect</button><button id="logout" class="quiet" ${disabled(!writable())}>Unpair this browser</button></div><p class="muted">Browser pairing uses a secure cookie, not a saved token. ${demoMode ? 'This is an isolated synthetic test service.' : 'Ask your local service for a one-time pairing code.'}</p></section>
@@ -127,7 +130,7 @@ function render() {
   root.innerHTML = `<a id="skip-to-content" class="skip" href="#main">Skip to content</a><div class="app-shell"><aside class="sidebar"><a class="brand" href="/" aria-label="Didi home"><img src="/icon.svg" alt="" width="38" height="38"><span>didi<span class="brand-dot">.</span></span></a><p class="brand-note">A little clarity.<br>A little follow-through.</p><nav aria-label="Main navigation">${tabs.map((t,i)=>`<button data-tab="${t}" aria-current="${tab===t?'page':'false'}"><span aria-hidden="true">${['◌','✓','↗','⚙'][i]}</span>${t}</button>`).join('')}</nav><div class="sidebar-foot">Here for the next step.<br><small>No rush. No pretending.</small></div></aside><div class="workspace"><header class="topbar"><span>YOUR SPACE</span><div class="connection"><span class="connection-dot ${connection==='Connected'?'online':''}"></span><span id="connection-state" role="status" aria-live="polite" aria-atomic="true">${e(connection)}</span><button id="reconnect-top" class="quiet" aria-label="Refresh connection">↻</button></div></header>${demoMode || status?.serviceMode==='synthetic-test' ? '<div class="demo-banner"><strong>Demo test mode</strong><span>Isolated synthetic data · not your personal service</span></div>' : ''}<main id="main" tabindex="-1">${error ? `<div class="alert" role="alert" aria-live="assertive">${e(error)}</div>` : ''}${notice ? `<div class="notice" role="status" aria-live="polite" aria-atomic="true">${e(notice)}</div>` : ''}${readBusy ? '<p class="loading" role="status" aria-live="polite" aria-atomic="true">Loading your records…</p>' : ''}${busy ? '<button id="cancel-request" class="quiet">Stop waiting</button>' : ''}${pairingRequired ? pairing() : ({Conversation:conversation,Today:today,Memory:memory,Settings:settings}[tab])()}</main><footer>Small steps count. <span>Your service is the source of truth.</span></footer></div></div>`;
   bind();
   connectedView.attach();
-  for(const id of ['message','commitment-title','recall-query','memory-filter']){const field=document.getElementById(id) as HTMLInputElement | HTMLTextAreaElement | null;if(field)field.disabled=!status;}
+  for(const id of ['commitment-title','recall-query','memory-filter']){const field=document.getElementById(id) as HTMLInputElement | HTMLTextAreaElement | null;if(field)field.disabled=!status;}
   attachMemoryDeleteControls(root, !writable() || busy || connectedView.active, id => void deleteMemory(id));
   const canvas=document.getElementById('didi-orb') as HTMLCanvasElement | null;
   if(canvas)orb=new Orb(canvas,appliedOrbState=orbState());
@@ -147,19 +150,25 @@ function bind() {
   for(const action of ['complete','reopen','cancel'] as const) root.querySelectorAll<HTMLElement>(`[data-${action}]`).forEach(el=>el.onclick=()=>{const c=findCommitment(el.dataset[action]!);if(c) void changeCommitment(c,action);});
   root.querySelectorAll<HTMLElement>('[data-capture]').forEach(el=>el.onclick=()=>{const entry=entries.find(v=>v.id===el.dataset.capture);if(entry)void mutate(async (signal,version)=>{await request<Commitment>('/commitments',{method:'POST',body:{title:entry.text,notes:'',dueAt:null,timeZone:zone,sourceSessionId:entry.sessionId,sourceEntryId:entry.id},signal});assertAuthority(version);notice='Commitment saved. Find it in Today.';});});
   document.getElementById('conversation-select')?.addEventListener('change',ev=>{const id=(ev.target as HTMLSelectElement).value;if(id)void openSession(id);else{session=undefined;entries=[];render();}});
+  const appearance = root.querySelector<HTMLSelectElement>('#appearance-theme');
+  if(appearance) appearance.onchange=()=>{theme=appearance.value==='light'?'light':'dark';saveTheme(themeStorage(),theme);applyTheme(document.documentElement,theme);render();};
   document.querySelector<HTMLDetailsElement>('#conversation-history')?.addEventListener('toggle',event=>{historyOpen=(event.target as HTMLDetailsElement).open;});
   bindLiveDisclosure();
-  input('message',v=>messageDraft=v); input('live-text',v=>liveTextDraft=v); input('commitment-title',v=>titleDraft=v);input('recall-query',v=>queryDraft=v);input('edit-title',v=>editTitle=v);input('edit-notes',v=>editNotes=v);input('edit-due',v=>editDue=v);input('memory-filter',v=>{memoryFilter=v;render();});
-  form('message-form',()=>void saveLocalNote());form('live-text-form',()=>void sendLiveText());button('ask-didi',()=>document.getElementById('connected-panel')?.scrollIntoView());
+  input('commitment-title',v=>titleDraft=v);input('recall-query',v=>queryDraft=v);input('edit-title',v=>editTitle=v);input('edit-notes',v=>editNotes=v);input('edit-due',v=>editDue=v);input('memory-filter',v=>{memoryFilter=v;render();});
   form('commitment-form',()=>{if(!titleDraft.trim())return;void mutate(async (signal,version)=>{await request<Commitment>('/commitments',{method:'POST',body:{title:titleDraft.trim(),dueAt:null,timeZone:zone},signal});assertAuthority(version);titleDraft='';await loadPlan();assertAuthority(version);notice='Commitment saved.';});});
   form('edit-form',()=>{if(!editing || !editTitle.trim())return;void changeCommitment(editing,'edit');});
   form('recall-form',()=>void searchRecall());
   form('pair-form',()=>{const code=(document.getElementById('pair-code') as HTMLInputElement).value;void pairBrowser(code);});
-  button('new-conversation',()=>{session=undefined;entries=[];entriesMore=false;historyOpen=true;notice='';render();document.getElementById('message')?.focus();});
+  button('new-conversation',()=>{session=undefined;entries=[];entriesMore=false;historyOpen=true;notice='';render();});
   button('close-edit',()=>{editing=undefined;render();});button('close-history',()=>{detail=undefined;render();});
   button('refresh-plan',()=>void loadTab()); button('reconnect',()=>void connect());button('reconnect-top',()=>void connect());
   button('logout',()=>void mutate(async()=>{await logout();}));
   button('cancel-request',()=>controller?.abort());
+  document.getElementById('connected-remember')?.addEventListener('change',ev=>connectedView.setRemember((ev.target as HTMLInputElement).checked));
+  document.getElementById('connected-history')?.addEventListener('change',ev=>{const next=(ev.target as HTMLSelectElement).value;if(next)void connectedView.select(next).catch(err=>{error=failure(err);render();});});
+  document.getElementById('connected-standing-revoke')?.addEventListener('click',()=>void connectedView.revokeStanding());
+  document.getElementById('connected-revoke')?.addEventListener('click',()=>void connectedView.revokeConversation());
+  document.getElementById('connected-recover')?.addEventListener('click',()=>void connectedView.recoverHistory());
 }
 async function mutate(action: (signal: AbortSignal, version: AbortSignal) => Promise<void>) {
   if(!writable())return;
@@ -168,32 +177,6 @@ async function mutate(action: (signal: AbortSignal, version: AbortSignal) => Pro
   const timeout=setTimeout(()=>owned.abort(),20000);
   try {await action(owned.signal,version);} catch(err){if(version===authorityVersion()&&controller===owned)error=failure(err,true);}
   finally{clearTimeout(timeout);if(version===authorityVersion()&&controller===owned){busy=false;controller=undefined;render();}}
-}
-async function ensureSession(signal: AbortSignal, version: AbortSignal) {
-  if(!session){const created=await request<Session>('/sessions',{method:'POST',body:{title:'A new conversation',timeZone:zone},signal});assertAuthority(version);session=created;sessions.unshift(created);entries=[];}
-  return session;
-}
-async function saveLocalNote() {
-  if(!messageDraft.trim())return;
-  const text=messageDraft.trim();
-  await mutate(async (signal,version)=>{
-    const current=await ensureSession(signal,version);
-    const entry=await request<Entry>(`/sessions/${encodeURIComponent(current.id)}/entries`,{method:'POST',body:{text,role:'user',timeZone:zone,sourceRef:{id:crypto.randomUUID(),label:'Saved on the page',provider:'page',sourceTimestamp:null,availability:'present'}},signal});assertAuthority(version);if(!entries.some(e=>e.id===entry.id))entries.push(entry);messageDraft='';notice='Message saved.';
-  });
-}
-function liveActive() { return !!live && live.state !== 'idle' && live.state !== 'ended'; }
-// Item 2: typed text goes into the active Live session; with no Live session it is a local note.
-async function sendLiveText() {
-  const text = liveTextDraft.trim();
-  if (!text) return;
-  if (liveActive()) {
-    try { await request<{ sent: boolean }>('/live/text', { method: 'POST', body: { text } }); liveTextDraft = ''; notify('Sent to Naya.'); }
-    catch (err) { failure(err); }
-    return;
-  }
-  messageDraft = text;
-  await saveLocalNote();
-  liveTextDraft = '';
 }
 async function changeCommitment(c: Commitment, action: 'edit'|'complete'|'reopen'|'cancel') {
   await mutate(async (signal,version)=>{
@@ -334,6 +317,7 @@ window.addEventListener('offline',()=>{connectedView.detach();connection='Offlin
 window.addEventListener('online',()=>{if(!pairingRequired)void connect();});
 document.addEventListener('visibilitychange',()=>{if(document.hidden){if(connectionsTimer)clearTimeout(connectionsTimer);if(pollTimer)clearTimeout(pollTimer);if(liveTimer)clearTimeout(liveTimer);}else if(!pairingRequired){void connect(true);}});
 if('serviceWorker' in navigator && import.meta.env.PROD)void navigator.serviceWorker.register('/sw.js').catch(()=>{ /* Shell availability is optional; never imply offline saving. */ });
+theme=loadTheme(themeStorage());applyTheme(document.documentElement,theme);
 render();void connect();
 
 

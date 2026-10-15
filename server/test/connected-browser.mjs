@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { fork, execFileSync } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createArtifactDir } from '../../web/test/artifacts.mjs';
@@ -60,63 +60,70 @@ try {
     assert.ok(renderer); assert.doesNotMatch(renderer.renderer, /swiftshader|llvmpipe|software/i);
     await writeFile(join(artifacts, `renderer-${sha}.json`), JSON.stringify({ sha, renderer }, null, 2));
     const pairing = await operator('/auth/pairing'); await page.locator('#pair-code').fill(pairing.pairingCode); await page.locator('#pair-form').evaluate(form => form.requestSubmit());
-    await page.locator('#connected-route').waitFor(); await page.locator('#didi-orb').waitFor();
-    await page.waitForFunction(() => document.querySelector('#connected-route')?.textContent.includes('gemini-connected-test'));
-    // W5 voice-first UI: the accepted dark stage renders a 600 CSS px square canvas at desktop 1440, centred in the stage.
-    const orb = page.locator('#didi-orb');
-    assert.ok(await orb.isVisible(), 'W5 desktop orb canvas is visible on the stage');
-    const stage = await page.locator('.orb-stage').boundingBox();
-    const desktopOrb = await orb.boundingBox();
-    assert.equal(Math.round(desktopOrb.width), 600, 'W5 desktop orb canvas is 600 CSS px wide at 1440');
-    assert.equal(Math.round(desktopOrb.height), 600, 'W5 desktop orb canvas is square');
-    assert.ok(Math.abs((desktopOrb.x + desktopOrb.width / 2) - (stage.x + stage.width / 2)) <= 1, 'W5 orb canvas is horizontally centred in its stage');
+    await page.locator('#connected-send').waitFor(); await page.locator('#didi-orb').waitFor();
+    // S1-R1 compact voice stage: the orb canvas is 300 CSS px square at desktop 1440, centred in the stage.
+    const measured = await page.waitForFunction(() => { const o = document.querySelector('#didi-orb'), s = document.querySelector('.orb-stage'); if (!o || !s) return false; const or = o.getBoundingClientRect(), sr = s.getBoundingClientRect(); if (Math.round(or.width) !== 300 || Math.round(or.height) !== 300 || sr.width === 0) return false; return { orb: { x: or.x, y: or.y, width: or.width, height: or.height }, stage: { x: sr.x, y: sr.y, width: sr.width, height: sr.height } }; });
+    const { orb: desktopOrb, stage } = await measured.jsonValue();
+    assert.ok(await page.locator('#didi-orb').isVisible(), 'S1 desktop orb canvas is visible on the stage');
+    assert.equal(Math.round(desktopOrb.width), 300, 'S1 desktop orb canvas is 300 CSS px wide at 1440');
+    assert.equal(Math.round(desktopOrb.height), 300, 'S1 desktop orb canvas is square');
+    assert.ok(Math.abs((desktopOrb.x + desktopOrb.width / 2) - (stage.x + stage.width / 2)) <= 1, 'S1 orb canvas is horizontally centred in its stage');
   });
-  await step('local Save stays local; explicit Start names actual model and creates trusted session', async () => {
-    await page.locator('#live-text').fill('EXCLUDED_BROWSER_LOCAL_CANARY: archive this without any model send.');
-    await page.getByRole('button', { name: 'Save note', exact: true }).click();
-    await page.waitForFunction(() => document.querySelector('.conversation-grid .thread .entries')?.textContent.includes('EXCLUDED_BROWSER_LOCAL_CANARY'));
-    assert.equal(requests.filter(r => r.path === '/api/v1/chat' && r.method === 'POST').length, 0);
-    assert.ok(await page.locator('#ask-didi').isDisabled());
-    // W5 collapses the route consent behind a disclosure; open it as a user must before agreeing.
-    await page.locator('details.connected-chat > summary').click();
+  await step('U3 declutter shots: the open chat without a grant', async () => {
+    const u3 = '/Users/rob/.lux/reports/lux-didi-release-1014/u3-shots';
+    await mkdir(u3, { recursive: true });
+    await page.locator('#connected-consent').waitFor();
+    await page.screenshot({ path: join(u3, 'desktop-1440-chat-no-grant.png'), fullPage: true });
+  });
+  await step('the open chat exposes consent before any model send', async () => {
     assert.match(await page.locator('.connected-disclosure').innerText(), /current and earlier selected turns/);
-    await page.locator('#connected-consent').check(); await page.locator('#connected-start').click(); await page.locator('#connected-draft').waitFor();
-    assert.match(await page.locator('#connected-send').innerText(), /gemini \/ gemini-connected-test/);
+    assert.equal(await page.locator('#connected-consent').count(), 1);
+    await page.locator('#connected-consent').check(); await page.locator('#connected-draft:not([disabled])').waitFor();
+    assert.equal(await page.locator('#connected-send').innerText(), 'Send');
   });
   await step('real adapter captured request, split provisional stream, meaningful atomic saved answer', async () => {
     await page.locator('#connected-draft').fill('Help me choose one small next step for this synthetic release checklist.');
     child.send('stream-next');
     const partial = page.locator('.provisional').waitFor(); await page.locator('#connected-send').click(); await partial; child.send('finish-stream');
-    await page.waitForFunction(() => document.querySelector('#connected-run')?.textContent.includes('Answer saved durably.'));
-    await page.getByText('Naya: Let us choose one small next step and keep the rest for later.', { exact: true }).waitFor();
+    await page.waitForFunction(() => document.querySelectorAll('#connected-entries .assistant').length === 1);
+    await page.getByText('Let us choose one small next step and keep the rest for later.', { exact: true }).waitFor();
     const sessions = await api('/sessions');
     const enrolled = sessions.items.find(item => item.title === 'Naya connected conversation'); const entries = (await api(`/sessions/${enrolled.id}`)).entries;
     assert.deepEqual(entries.map(e => e.role), ['user', 'assistant']);
     assert.equal(await page.locator('#connected-draft').inputValue(), '');
     const wire = JSON.parse((await readFile(join(state, 'wire.jsonl'), 'utf8')).trim());
-    assert.ok(wire.body.systemInstruction.parts[0].text.length > 100); assert.doesNotMatch(JSON.stringify(wire), /EXCLUDED_BROWSER_LOCAL_CANARY/); assert.equal(wire.body.tools, undefined);
+    assert.ok(wire.body.systemInstruction.parts[0].text.length > 100); assert.equal(wire.body.tools, undefined);
     await page.locator('#connected-draft').fill('Make that earlier next step concrete, without adding the local archive.'); await page.locator('#connected-send').click();
     await page.waitForFunction(() => document.querySelectorAll('#connected-entries .assistant').length === 2);
     const wires = (await readFile(join(state, 'wire.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
-    assert.equal(wires.length, 2); assert.match(JSON.stringify(wires[1]), /synthetic release checklist/); assert.match(JSON.stringify(wires[1]), /keep the rest for later/); assert.doesNotMatch(JSON.stringify(wires[1]), /EXCLUDED_BROWSER_LOCAL_CANARY/);
+    assert.equal(wires.length, 2); assert.match(JSON.stringify(wires[1]), /synthetic release checklist/); assert.match(JSON.stringify(wires[1]), /keep the rest for later/);
+  });
+  await step('U3 declutter shots: the granted chat and the Settings switch', async () => {
+    const u3 = '/Users/rob/.lux/reports/lux-didi-release-1014/u3-shots';
+    await mkdir(u3, { recursive: true });
+    await page.locator('#connected-entries .assistant').first().waitFor();
+    await page.screenshot({ path: join(u3, 'desktop-1440-chat-with-grant.png'), fullPage: true });
+    await page.locator('[data-tab="Settings"]').click();
+    await page.locator('#connected-history').waitFor();
+    await page.screenshot({ path: join(u3, 'desktop-1440-settings.png'), fullPage: true });
   });
   await step('same-profile real restart preserves consent/history and never resends', async () => {
     const port = new URL(descriptor.origin).port; await stop(); await start(Number(port)); await page.reload();
     await page.waitForFunction(() => document.querySelectorAll('#connected-entries .assistant').length === 2);
-    assert.match(await page.locator('.connected-state').innerText(), /active/);
+    assert.equal(await page.locator('#connected-draft').isEnabled(), true);
     assert.equal((await readFile(join(state, 'wire.jsonl'), 'utf8')).trim().split('\n').length, 2);
-    await page.bringToFront(); await page.locator('#connected-recover').click(); await page.waitForFunction(() => document.querySelectorAll('#connected-entries .assistant').length === 2);
+    await page.bringToFront(); await page.waitForFunction(() => document.querySelectorAll('#connected-entries .assistant').length === 2);
     await page.screenshot({ path: join(artifacts, `desktop-${sha}.png`), fullPage: true });
     await page.setViewportSize({ width: 375, height: 900 });
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
-    const counts = await page.evaluate(() => Object.fromEntries(['#app', '#message-form', '#connected-panel', '#connected-entries', '#connected-draft', '#connected-send', 'canvas'].map(selector => [selector, document.querySelectorAll(selector).length])));
+    const counts = await page.evaluate(() => Object.fromEntries(['#app', '#connected-panel', '#connected-entries', '#connected-draft', '#connected-send', 'canvas'].map(selector => [selector, document.querySelectorAll(selector).length])));
     for (const [selector, count] of Object.entries(counts)) assert.equal(count, 1, `Unique rendered DOM ${selector}`);
-    // W5 narrow stage scales the canvas to 560 CSS px; it stays square and centred in the stage.
+    // S1-R1 narrow stage scales the canvas to 300 CSS px; it stays square and centred in the stage.
     const mobileOrb = await page.locator('#didi-orb').boundingBox();
     const mobileStage = await page.locator('.orb-stage').boundingBox();
-    assert.equal(Math.round(mobileOrb.width), 560, 'W5 narrow orb canvas is 560 CSS px wide at 375');
-    assert.equal(Math.round(mobileOrb.height), 560, 'W5 narrow orb canvas is square');
-    assert.ok(Math.abs((mobileOrb.x + mobileOrb.width / 2) - (mobileStage.x + mobileStage.width / 2)) <= 1, 'W5 narrow orb canvas is centred in its stage');
+    assert.equal(Math.round(mobileOrb.width), 300, 'S1 narrow orb canvas is 300 CSS px wide at 375');
+    assert.equal(Math.round(mobileOrb.height), 300, 'S1 narrow orb canvas is square');
+    assert.ok(Math.abs((mobileOrb.x + mobileOrb.width / 2) - (mobileStage.x + mobileStage.width / 2)) <= 1, 'S1 narrow orb canvas is centred in its stage');
     assert.equal(await page.locator('#connected-entries .assistant').count(), 2);
     const savedTurns = await page.locator('#connected-entries article').count(); assert.equal(savedTurns, 4);
     const positions = [];
@@ -147,13 +154,12 @@ try {
     await page.locator('#connected-send').click(); await page.locator('#connected-error').waitFor();
     assert.equal(await page.locator('#connected-draft').inputValue(), 'Keep this unsent draft after consent rejection.');
     assert.equal((await api(`/sessions/${enrolled.id}`)).entries.length, 4);
-    await page.reload(); await page.waitForFunction(() => document.querySelector('.connected-state')?.textContent.includes('revoked'));
+    await page.reload(); await page.waitForFunction(() => document.querySelector('#connected-draft')?.value === 'Keep this unsent draft after consent rejection.');
     assert.equal(await page.locator('#connected-draft').inputValue(), 'Keep this unsent draft after consent rejection.');
     assert.equal((await readFile(join(state, 'wire.jsonl'), 'utf8')).trim().split('\n').length, 2);
   });
   await step('explicit cancel and provider failure render no saved answer, never a fake success', async () => {
-    await page.locator('details.connected-chat > summary').click();
-    await page.locator('#connected-consent').check(); await page.locator('#connected-start').click(); await page.locator('#connected-draft:not([disabled])').waitFor();
+    await page.locator('#connected-consent').check(); await page.locator('#connected-draft:not([disabled])').waitFor();
     child.send('hold-next'); const sent = waitPhase('transport');
     await page.locator('#connected-draft').fill('Cancel this explicitly sent synthetic turn.'); await page.locator('#connected-send').click(); await sent;
     await page.locator('#connected-cancel').click(); await page.waitForFunction(() => document.querySelector('#connected-run')?.textContent.includes('No saved answer: cancelled'));
@@ -195,7 +201,7 @@ try {
         await page.locator('#pair-code').fill(pairing.pairingCode); await page.locator('#pair-form').evaluate(form => form.requestSubmit());
         const lifecycle = await Promise.all([pairResponse, clearResponse]);
         for (const response of lifecycle) assert.equal(response.status(), 200, 'expected real pairing/selection-clear route success');
-        await page.locator('#connected-route').waitFor(); paired = true;
+        await page.locator('#connected-send').waitFor(); paired = true;
         const status = await api('/status'), route = await api('/chat/status');
         const label = 'Example <Owner> & Friend', configured = mode === 'owner-configured';
         assert.deepEqual(status.ownerProfile, { status: 'configured', displayName: label });
@@ -207,12 +213,11 @@ try {
         assert.equal(await page.title(), productTitle, 'owner label must not rename the public product');
         assert.equal(await page.locator('#connected-consent').isDisabled(), false, 'R66 keeps explicit agreement operable without a route');
         if (!configured) {
-          assert.equal(await page.locator('#connected-start').isDisabled(), true);
-          await page.locator('details.connected-chat > summary').click();
+          assert.equal(await page.locator('#connected-send').isDisabled(), true);
           await page.locator('#connected-consent').check();
           assert.equal(await page.locator('#connected-consent').isChecked(), true);
-          assert.equal(await page.locator('#connected-start').isDisabled(), true, 'a tick cannot configure a provider or authorize Start');
-          await page.locator('#connected-start').evaluate(button => button.click());
+          assert.equal(await page.locator('#connected-send').isDisabled(), true, 'a tick cannot configure a provider or authorize a send');
+          await page.locator('#connected-send').evaluate(button => button.click());
           assert.equal((await api('/chat/status')).consent, null, 'a local tick is not a server grant');
           assert.equal((await api('/sessions')).items.length, 0, 'no conversation is enrolled without a route');
         }

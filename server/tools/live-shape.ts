@@ -37,11 +37,14 @@ export const KNOWLEDGE_BODY_CHARS = 20000;
 export const LIVE_RESULT_CHARS = 2000;
 export const LIVE_COMBINED_CHARS = 3000;
 
+export interface ShapedSource { title: string; url?: string; sourceType?: string }
 export interface ShapedResult {
   text: string;
   partial: boolean;
   originalCharacters: number;
   omittedCharacters: number;
+  /** Named link sources emitted out of band, never as raw urls inside `text`. */
+  sources?: ShapedSource[];
   /** Mattermost only: which upstream shape was recognised, for metadata logging. */
   shape?: MattermostShape;
   /** Mattermost only: how many posts or channels the shape carried. */
@@ -227,17 +230,20 @@ export function shapeGmailRead(data: Record<string, unknown>): ShapedResult {
 
 export function shapeGmailList(data: Record<string, unknown>): ShapedResult {
   const messages = Array.isArray(data['messages']) ? data['messages'] : [];
+  const sources: ShapedSource[] = [];
   const lines = messages.filter(isRecord).map(entry => {
     const unread = labels(entry).includes('UNREAD') ? ' [unread]' : '';
     const snippet = str(entry['snippet']);
     const excerpt = snippet ? cutAtSentence(snippet, GMAIL_LIST_EXCERPT_CHARS).text : '';
     const threadValue = entry['threadSize'] ?? entry['messageCount'];
     const size = typeof threadValue === 'number' && threadValue > 0 ? ` (thread ${threadValue})` : '';
+    const named = header(entry, 'Subject');
     const url = inboxUrl(entry['id']);
-    return `- ${header(entry, 'Subject') || '(no subject)'} | ${senderName(entry) || 'unknown sender'} | ${header(entry, 'Date') || 'unknown date'}${unread}${size}${excerpt ? ` | ${excerpt}` : ''}${url ? `\n  source: ${url}` : ''}`;
+    if (url) sources.push({ title: named ? `Gmail: ${named}` : 'Open in Gmail', url, sourceType: 'gmail' });
+    return `- ${named || '(no subject)'} | ${senderName(entry) || 'unknown sender'} | ${header(entry, 'Date') || 'unknown date'}${unread}${size}${excerpt ? ` | ${excerpt}` : ''}`;
   });
   const body = listed(lines, GMAIL_LIST_MESSAGES, 'messages');
-  return capped({ text: body.text, partial: body.omitted > 0, originalCharacters: lines.join('\n').length, omittedCharacters: body.omitted });
+  return capped({ text: body.text, partial: body.omitted > 0, originalCharacters: lines.join('\n').length, omittedCharacters: body.omitted, sources });
 }
 
 // --- Calendar ------------------------------------------------------------------------------
@@ -250,9 +256,11 @@ export function shapeGcalCalendars(data: Record<string, unknown>): ShapedResult 
 
 export function shapeGcalList(data: Record<string, unknown>): ShapedResult {
   const events = Array.isArray(data['events']) ? data['events'] : [];
+  const sources: ShapedSource[] = [];
   const blocks = events.filter(isRecord).map(entry => {
     const start = isRecord(entry['start']) ? field(entry['start'], 'dateTime', 'date') : str(entry['start']);
-    const title = field(entry, 'summary', 'title') || '(no title)';
+    const named = field(entry, 'summary', 'title');
+    const title = named || '(no title)';
     const location = field(entry, 'location');
     const lines = [`- ${start}, ${title}${location ? `, ${location}` : ''}`];
     const attendees = Array.isArray(entry['attendees']) ? entry['attendees'] : [];
@@ -263,7 +271,7 @@ export function shapeGcalList(data: Record<string, unknown>): ShapedResult {
     const description = stripDialIn(cleanMailBody(field(entry, 'description'))).replace(/\n+/g, ' ');
     if (description) lines.push(`  ${description}`);
     const link = field(entry, 'htmlLink');
-    if (link) lines.push(`  source: ${link}`);
+    if (link) sources.push({ title: named ? `Calendar: ${named}` : 'Open in Google Calendar', url: link, sourceType: 'calendar' });
     const cut = cutAtSentence(lines.join('\n'), CALENDAR_EVENT_CHARS);
     if (cut.omitted === 0) return lines.join('\n');
     const note = (omitted: number): string => ` [+${omitted} chars]`;
@@ -271,7 +279,7 @@ export function shapeGcalList(data: Record<string, unknown>): ShapedResult {
     return `${recut.text}${note(recut.omitted)}`;
   });
   const body = listed(blocks, CALENDAR_EVENTS, 'events');
-  return capped({ text: body.text, partial: body.omitted > 0, originalCharacters: blocks.join('\n').length, omittedCharacters: body.omitted });
+  return capped({ text: body.text, partial: body.omitted > 0, originalCharacters: blocks.join('\n').length, omittedCharacters: body.omitted, sources });
 }
 
 // --- Mattermost ----------------------------------------------------------------------------
@@ -293,16 +301,22 @@ function isSystemPost(post: Record<string, unknown>): boolean {
   if (field(post, 'type').startsWith('system_')) return true;
   return SYSTEM_TEXT.test(field(post, 'text', 'message'));
 }
-function renderPost(post: Record<string, unknown>): { lines: string[]; omitted: number } {
+function renderPost(post: Record<string, unknown>): { lines: string[]; omitted: number; source?: ShapedSource } {
+  const channel = field(post, 'channel', 'channel_name', 'channel_id');
   const author = field(post, 'author', 'author_name', 'user_name', 'username');
   const time = field(post, 'time', 'timestamp') || scalar(post['create_at']);
-  const header2 = [field(post, 'channel', 'channel_name', 'channel_id'), author, time].filter(Boolean).join(' | ');
+  const header2 = [channel, author, time].filter(Boolean).join(' | ');
   const raw = str(post['text'] ?? post['message']);
   const cut = cutAtSentence(raw, MATTERMOST_MESSAGE_CHARS);
   const reactions = reactionCount(post);
   const meta = `${reactions > 0 ? ` (${reactions} reactions)` : ''}${threadPosition(post)}`;
   const permalink = field(post, 'permalink', 'url');
-  return { lines: [`**${header2 || 'message'}${meta}**`, cut.text, ...(cut.omitted > 0 ? [`[omitted: ${cut.omitted} characters; final, a single post has no partial re-read]`] : []), ...(permalink ? [`source: ${permalink}`] : [])], omitted: cut.omitted };
+  const label = channel ? `Mattermost: #${channel}` : author ? `Mattermost: @${author}` : 'Open in Mattermost';
+  return {
+    lines: [`**${header2 || 'message'}${meta}**`, cut.text, ...(cut.omitted > 0 ? [`[omitted: ${cut.omitted} characters; final, a single post has no partial re-read]`] : [])],
+    omitted: cut.omitted,
+    ...(permalink ? { source: { title: label, url: permalink, sourceType: 'mattermost' } } : {}),
+  };
 }
 
 function channelPosts(channel: Record<string, unknown>): number | undefined {
@@ -421,7 +435,8 @@ export function shapeMattermost(tool: string, data: unknown): ShapedResult {
   const rendered = ordered.map(renderPost);
   const body = listed(rendered.map(entry => entry.lines.join('\n')), MATTERMOST_MESSAGES, 'messages');
   const omitted = body.omitted + rendered.reduce((sum, entry) => sum + entry.omitted, 0);
-  return capped({ text: body.text, partial: omitted > 0, originalCharacters: rendered.map(l => l.lines.join('\n')).join('\n').length, omittedCharacters: omitted, shape: extracted.shape, itemCount: visible.length });
+  const sources = rendered.map(entry => entry.source).filter((source): source is ShapedSource => source !== undefined);
+  return capped({ text: body.text, partial: omitted > 0, originalCharacters: rendered.map(l => l.lines.join('\n')).join('\n').length, omittedCharacters: omitted, shape: extracted.shape, itemCount: visible.length, sources });
 }
 
 // --- lux-knowledge -------------------------------------------------------------------------

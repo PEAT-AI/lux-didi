@@ -79,7 +79,7 @@ try {
     await page.screenshot({ path: join(u3, 'desktop-1440-chat-no-grant.png'), fullPage: true });
   });
   await step('the open chat exposes consent before any model send', async () => {
-    assert.match(await page.locator('.connected-disclosure').innerText(), /Sent turns go to/);
+    assert.match(await page.locator('.connected-disclosure').innerText(), /Chat messages go to[\s\S]*when you send them/);
     assert.equal(await page.locator('#connected-consent').count(), 1);
     await page.locator('#connected-consent').click(); await page.locator('#connected-draft:not([disabled])').waitFor();
     assert.equal(await page.locator('#connected-send').getAttribute('aria-label'), 'Send');

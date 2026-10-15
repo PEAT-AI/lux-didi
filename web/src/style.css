@@ -250,3 +250,34 @@ h3{font-size:14px}
 .send-button{position:absolute;right:6px;bottom:6px;display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:8px;border:1px solid var(--border);background:var(--surface-2);color:var(--text);cursor:pointer}
 .send-button[disabled]{opacity:.45;cursor:default}
 .connected-empty{margin:auto;text-align:center;max-width:36ch}
+
+/* V2-R2 item 4: the Voice lane is the transcript, not a card. */
+#lane-voice .lane-convo{background:none;border:0;border-radius:0;padding:0;margin:0;max-width:none;box-shadow:none}
+.live-turns{display:flex;flex-direction:column;gap:16px;padding:8px 0}
+.live-turns .entry{background:none;border:0;padding:0;max-width:78%}
+.live-turns .entry.naya{align-self:flex-start;text-align:left}
+.live-turns .entry.user{align-self:flex-end;text-align:right}
+.live-turns .entry strong{display:block;font-size:12px;color:var(--muted);margin-bottom:2px}
+.live-tool-result{border:0;background:none;margin:0;padding:0;font-size:12px;color:var(--muted)}
+.live-tool-result>summary{cursor:pointer;list-style:none}
+.live-tool-result>summary::-webkit-details-marker{display:none}
+
+/* V2-R2 item 5: the Chat lane is the conversation, not a card. */
+#lane-chat .lane-inner{display:flex;flex-direction:column;min-height:0}
+#connected-panel .panel,#connected-panel .connected-conversation{background:none;border:0;border-radius:0;padding:0;margin:0;max-width:none;box-shadow:none}
+#connected-entries{display:flex;flex-direction:column;gap:16px;padding:8px 0}
+#connected-entries .entry{background:none;border:0;padding:0;max-width:78%;display:flex;flex-direction:column}
+#connected-entries .entry.assistant{align-self:flex-start;text-align:left}
+#connected-entries .entry.user{align-self:flex-end;text-align:right;background:var(--surface-2);border-radius:12px;padding:8px 12px}
+#connected-entries .entry header strong{font-size:12px;color:var(--muted);font-weight:600}
+
+/* V2-R2 item 6: the composer is docked at the bottom, Send and Attach live inside the field. */
+#connected-send-form{margin-top:auto;position:sticky;bottom:0;padding-top:10px;background:var(--bg)}
+.composer-field{align-items:flex-end}
+.send-button{right:6px;bottom:6px;border-radius:50%}
+.connected-notes{position:absolute;right:44px;bottom:6px;margin:0}
+.connected-notes>summary{list-style:none;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:8px;border:1px solid var(--border);background:var(--surface-2);color:var(--text)}
+.connected-notes>summary::-webkit-details-marker{display:none}
+.connected-notes[open]>summary{background:var(--surface)}
+.connected-notes .notes-count{font-size:10px;margin-left:2px}
+.connected-notes[open]>p,.connected-notes[open]>form,.connected-notes[open]>div{position:static}

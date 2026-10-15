@@ -168,6 +168,7 @@ try {
     assert.equal((await readFile(join(state, 'wire.jsonl'), 'utf8')).trim().split('\n').length, 2);
   });
   await step('explicit cancel and provider failure render no saved answer, never a fake success', async () => {
+    await page.setViewportSize({ width: 1440, height: 1000 }); await page.waitForFunction(() => document.querySelector('.app-shell')?.dataset.narrow === 'false');
     await page.locator('#connected-consent').click(); await page.locator('#connected-draft:not([disabled])').waitFor();
     child.send('hold-next'); const sent = waitPhase('transport');
     await page.locator('#connected-draft').fill('Cancel this explicitly sent synthetic turn.'); await page.locator('#connected-send').click(); await sent;

@@ -93,8 +93,8 @@ test('consent is persisted by the native side and survives a reload hydrate', ()
 });
 
 test('native requestStart and requestStop reach the web state machine', () => {
-  const fake = createFakeNative(() => {});
   const bridge = createBridge(noLog);
+  const fake = createFakeNative((message) => bridge.receive(message));
   const received: NativeToWeb[] = [];
   bridge.useTransport((message) => fake.handle(message));
   bridge.onNative((message) => received.push(message));
@@ -104,8 +104,8 @@ test('native requestStart and requestStop reach the web state machine', () => {
 });
 
 test('levels arrive batched as arrays and route/tool payloads stay off the bridge', () => {
-  const fake = createFakeNative(() => {});
   const bridge = createBridge(noLog);
+  const fake = createFakeNative((message) => bridge.receive(message));
   const received: NativeToWeb[] = [];
   bridge.useTransport((message) => fake.handle(message));
   bridge.onNative((message) => received.push(message));

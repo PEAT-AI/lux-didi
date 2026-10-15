@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 
 const source = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
-const voice = source.slice(source.indexOf('function voiceBodyMarkup()'), source.indexOf('function chatLane()'));
+const voice = source.slice(source.indexOf('function voiceEmptyMarkup()'), source.indexOf('function chatLane()'));
 const head = source.slice(source.indexOf('function voiceHeadMarkup()'), source.indexOf('function chatHeadMarkup()'));
 const installedProof = readFileSync(new URL('../../Sources/LuxDidi/InstalledProofRun.swift', import.meta.url), 'utf8');
 

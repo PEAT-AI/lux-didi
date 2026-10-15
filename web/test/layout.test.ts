@@ -104,6 +104,7 @@ test('sheets open one at a time and close, and never move a lane', () => {
   assert.equal(state.voice, 'open');
   state = openSheet(state, 'today');
   assert.equal(state.sheet, 'today');
-  assert.equal(closeSheet(state).sheet, null);
-  assert.equal(closeSheet(closeSheet(state)), closeSheet(state), 'closing twice is stable');
+  const closed = closeSheet(state);
+  assert.equal(closed.sheet, null);
+  assert.equal(closeSheet(closed), closed, 'closing twice is stable');
 });

@@ -284,9 +284,12 @@ async function researchTurn({ base, token, epoch, dataDir, clipPath }) {
       await new Promise(resolve => setTimeout(resolve, 500));
     }
     // Only this session's runs count: probe4's Live turn writes its own research_run line earlier in the
-    // same host log, so read only what is appended from here on.
+    // same host log, so read only what is appended from here on. The journal sequence marks the same point
+    // for the question's own tool calls, so an opening-turn research call never counts.
     let logBase = 0;
     try { logBase = Buffer.byteLength(await readFile(join(dataDir, 'logs/host.log'), 'utf8'), 'utf8'); } catch { logBase = 0; }
+    let journalBase = 0;
+    { const data = await journal().catch(() => null); const fragments = data && Array.isArray(data.fragments) ? data.fragments : []; journalBase = fragments.reduce((max, fragment) => Math.max(max, Number(fragment.journalSequence) || 0), 0); }
     const wav = await readFile(clipPath);
     let offset = 12, pcm = null;
     while (offset + 8 <= wav.length) {
@@ -310,7 +313,8 @@ async function researchTurn({ base, token, epoch, dataDir, clipPath }) {
     let calls = 0; let result = null; let outputChars = 0; let outputAtResult = null;
     while (now() < deadline) {
       const data = await journal().catch(() => null);
-      const fragments = data && Array.isArray(data.fragments) ? data.fragments : [];
+      const all = data && Array.isArray(data.fragments) ? data.fragments : [];
+      const fragments = all.filter(fragment => (Number(fragment.journalSequence) || 0) > journalBase);
       calls = fragments.filter(fragment => fragment.kind === 'toolCall' && fragment.tool && fragment.tool.name === 'research').length;
       const results = fragments.filter(fragment => fragment.kind === 'toolResult' && fragment.tool && fragment.tool.name === 'research');
       if (results.length) result = results[results.length - 1].tool;

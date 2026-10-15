@@ -27,6 +27,10 @@ import Security
     @Published private(set) var connectionsError: String?
     private var checkingConnections = false
     private let liveLogsDirectory: URL?
+    /// Last Live state seen while a conversation existed, so the snapshot is not `unknown`
+    /// immediately after a call tears the conversation down (#251).
+    private(set) var lastLiveState: String?
+    private lazy var liveJournal = NativeLiveJournal(fileURL: liveLogsDirectory?.appendingPathComponent("native-live.log"))
     @Published var connecting = false
     @Published private(set) var serviceRestarting = false
     let voice = NativeVoice()
@@ -37,7 +41,14 @@ import Security
             conversation.stopCapture()
             Task { await conversation.stop() }
         },
-        publish: { [weak self] in self?.live = $0 })
+        publish: { [weak self] conversation in
+            guard let self else { return }
+            if let conversation { self.live = conversation }
+            else {
+                if let previous = self.live { self.lastLiveState = previous.state.rawValue }
+                self.live = nil
+            }
+        })
     @Published private(set) var pendingLiveCalls: [NativePendingLiveJob] = []
     private var liveCallDelivery = NativeLiveCallDelivery()
     @Published private(set) var liveCallsError: String?
@@ -90,6 +101,7 @@ import Security
                         self?.liveAuthorityOwner.unavailable()
                         self?.error = "Local service restarting. Lost Live requires an explicit Start."
                     }
+                    owner.onEnd = { [weak self] reason, detail in self?.liveJournal.append(reason, detail: detail) }
                     owner.onCredentialUnavailable = { [weak self, weak owner] _ in
                         self?.shell?.clear()
                         self?.liveAuthorityOwner.unavailable()
@@ -304,12 +316,12 @@ import Security
     func logout() async {
         stopRecording("Logout")
         orbLevels?.stop(); orbLevels = nil
-        await live?.stop(); liveAuthorityOwner.clear()
+        await live?.stop(reason: .logout); liveAuthorityOwner.clear()
         await client?.revokePageSession(); shell?.clear()
     }
     func shutdown() async {
         await logout()
-        await supervisor?.stop()
+        await supervisor?.stop(reason: .shutdown)
     }
 }
 
@@ -605,6 +617,8 @@ struct RootView: View {
         let runtime = Bundle.main.resourceURL.flatMap { try? InstalledRuntime.load(resources: $0) } ?? nil
         let logs = (proofRequest?.state ?? (try? InstalledRuntime.applicationState()))?.appendingPathComponent("logs", isDirectory: true)
         let failure = NativeDiagnosticsSnapshot.preCreateFailure(logsDirectory: logs)
+        let failureAge = failure?.at.flatMap { ISO8601DateFormatter().date(from: $0) }
+            .map { NativeDiagnosticsSnapshot.ageText(since: $0, now: Date()) }
         let service: String
         if model.connecting { service = "connecting" }
         else if model.serviceRestarting { service = "restarting" }
@@ -618,13 +632,18 @@ struct RootView: View {
                 macOSVersion: ProcessInfo.processInfo.operatingSystemVersionString,
                 serviceState: service,
                 serviceOrigin: self.model.supervisor?.currentConnection?.descriptor.origin,
-                liveState: self.model.live?.state.rawValue,
+                liveState: self.model.live?.state.rawValue ?? self.model.lastLiveState,
                 sessionLimit: self.model.liveLimits.map { NativeLiveLimits.duration($0.sessionMs) },
                 idleLimit: self.model.liveLimits.map { NativeLiveLimits.duration($0.idleMs) },
-                connections: self.model.connections.map { "\($0.id): \($0.state)" },
-                audioRoute: self.model.live?.device.diagnosticsRoute,
+                connections: self.model.connections.map { connection in
+                    connection.reasonCode.map { "\(connection.id): \(connection.state) (\($0))" } ?? "\(connection.id): \(connection.state)"
+                },
+                audioRoute: self.model.live?.device.diagnosticsRoute ?? NativeLiveAudioDevice.routeDiagnostics(),
+                voiceProcessing: self.model.live?.device.isVoiceProcessingEnabled
+                    ?? NativeDiagnosticsSnapshot.lastAudioVoiceProcessing(logsDirectory: logs),
                 preCreateFailureClass: failure?.failureClass,
                 preCreateFailureCode: failure?.code,
+                preCreateFailureAge: failureAge,
                 startupFailure: self.model.bootstrapFailureDiagnostic,
                 capturedAt: ISO8601DateFormatter().string(from: Date()))
         }, write: { text in

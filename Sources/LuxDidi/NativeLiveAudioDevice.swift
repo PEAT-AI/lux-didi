@@ -360,9 +360,13 @@ final class NativeCaptureBuffer: @unchecked Sendable {
             }
         })
     /// Support exports use CoreAudio transport classes, never the local device name.
-    var diagnosticsRoute: String {
-        "Input: " + Self.routeClassification(input: true) + "; Output: " + Self.routeClassification(input: false)
+    var diagnosticsRoute: String { Self.routeDiagnostics() }
+    /// A read-only snapshot of the system's current default route, usable with no live engine.
+    static func routeDiagnostics() -> String {
+        "Input: " + routeClassification(input: true) + "; Output: " + routeClassification(input: false)
     }
+    /// Whether the current engine has VoiceProcessingIO enabled, read-only.
+    var isVoiceProcessingEnabled: Bool { engine?.inputNode.isVoiceProcessingEnabled ?? false }
     private static func routeClassification(input: Bool) -> String {
         var property = AudioObjectPropertyAddress(
             mSelector: input ? kAudioHardwarePropertyDefaultInputDevice : kAudioHardwarePropertyDefaultOutputDevice,

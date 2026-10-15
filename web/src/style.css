@@ -240,3 +240,5 @@ h3{font-size:14px}
 [data-narrow="true"] .app-header{flex-wrap:wrap;height:auto;min-height:56px;padding:6px 10px}
 [data-narrow="true"] .brand-mini{display:none}
 [data-narrow="true"] .lane-switch{margin-left:0}
+/* A lane stacks its header above its body. */
+.lane{flex-direction:column}

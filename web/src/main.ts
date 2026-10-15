@@ -156,7 +156,8 @@ const LIVE_COPY: Record<NativeLiveState, string> = { idle: 'Ready when you are',
 function liveStateCopy(state: NativeLiveState): string { return LIVE_COPY[state] ?? 'Ready when you are'; }
 function railMarkup() {
   const items: [RouteId, string, string][] = [['today', '\u25cc', 'Today'], ['memory', '\u2713', 'Memory'], ['settings', '\u2699', 'Settings'], ['diagnostics', '\u25b2', 'Diagnostics']];
-  return `<nav class="rail" id="rail" aria-label="Program menu" data-rail="${layout.rail}">${items.map(([id, glyph, label]) => `<button class="rail-item" data-route="${id}" aria-expanded="${layout.sheet === id}" aria-controls="sheet" title="${label}"><span class="rail-glyph" aria-hidden="true">${glyph}</span><span class="rail-label">${label}</span></button>`).join('')}</nav>`;
+  const tabName: Partial<Record<RouteId, string>> = { today: 'Today', memory: 'Memory', settings: 'Settings' };
+  return `<nav class="rail" id="rail" aria-label="Program menu" data-rail="${layout.rail}">${items.map(([id, glyph, label]) => `<button class="rail-item" data-route="${id}"${tabName[id] ? ` data-tab="${tabName[id]}"` : ''} aria-expanded="${layout.sheet === id}" aria-controls="sheet" title="${label}"><span class="rail-glyph" aria-hidden="true">${glyph}</span><span class="rail-label">${label}</span></button>`).join('')}</nav>`;
 }
 function sheetMarkup() {
   if (!layout.sheet) return '';
@@ -225,7 +226,6 @@ function bind() {
   document.getElementById('pill-unmute')?.addEventListener('click', () => liveMachine.toggleMute());
   document.getElementById('consent-allow')?.addEventListener('click', () => liveMachine.grantConsent());
   document.getElementById('consent-dismiss')?.addEventListener('click', () => liveMachine.dismissConsent());
-  root.querySelectorAll<HTMLElement>('[data-tab]').forEach(el=>el.onclick=()=>{ tab=el.dataset.tab as Tab; notice='';error='';render(); document.getElementById('main')?.focus(); void loadTab(); });
   root.querySelectorAll<HTMLElement>('[data-session]').forEach(el=>el.onclick=()=>void openSession(el.dataset.session!));
   root.querySelectorAll<HTMLElement>('[data-source]').forEach(el=>el.onclick=()=>{tab='Conversation';void openSession(el.dataset.source!);});
   root.querySelectorAll<HTMLElement>('[data-edit]').forEach(el=>el.onclick=()=>{editing=findCommitment(el.dataset.edit!);if(editing){editTitle=editing.title;editNotes=editing.notes;editDue=localInput(editing.dueAt);}render();document.getElementById('edit-title')?.focus();});

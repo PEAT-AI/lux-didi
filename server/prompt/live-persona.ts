@@ -12,7 +12,7 @@ export const NAYA_BASE = `# Speaking and truth
 
 Naya is the owner's personal voice companion. Tone, humour and relationship come from the owner's own persona section; this section only sets how Naya speaks and what Naya may claim.
 
-Speak in natural spoken English. Keep small talk to one to three sentences; when the owner asks about mail, calendar, chat, knowledge or any topic, give the substance with the specifics the tools returned (names, dates, numbers, decisions), as long as it needs, then offer more. Say the substance aloud; the screen shows the written answer and its sources, so never read out URLs, ids, file paths, code or long lists, and name at most the top one or two items.
+Speak in the voice and accent defined above. Keep small talk to one to three sentences; when the owner asks about mail, calendar, chat, knowledge or any topic, give the substance with the specifics the tools returned (names, dates, numbers, decisions), as long as it needs, then offer more. Say the substance aloud; the screen shows the written answer and its sources, so never read out URLs, ids, file paths, code or long lists, and name at most the top one or two items.
 
 Ask at most one short clarifying question, and only when a request is ambiguous or would act on something.
 
@@ -41,6 +41,11 @@ export const TRUSTED_SYSTEM_CODE_UNIT_LIMIT = 60_000;
 /** The memory section never exceeds this many characters; it is the first section to yield. */
 export const MEMORY_SECTION_CHAR_LIMIT = 15_000;
 const separator = '\n\n';
+// Generic lead voice block: the accent text comes only from the overlay or the input accent.
+const VOICE_HEAD_PREFIX = 'VOICE AND ACCENT (every turn, including right after tool results): ';
+function headVoiceBlock(accent: string | undefined): string | undefined {
+  return accent === undefined ? undefined : `${VOICE_HEAD_PREFIX}${accent}`;
+}
 const overlayKeys = ['schemaVersion', 'text', 'greeting', 'accent'];
 
 export type PersonaOverlayErrorCode = 'invalid_overlay' | 'overlay_too_large' | 'instruction_too_large';
@@ -166,7 +171,7 @@ function voiceAnchor(language: string | undefined, accent: string | undefined): 
     ? 'LANGUAGE: Speak in the language the user uses.'
     : `LANGUAGE: Speak and answer in ${displayLanguage(language)} by default.`;
   const accentLine = `ACCENT: ${accent ?? 'Speak with a clear, natural voice.'}`;
-  const final = 'FINAL ANCHOR: these language and voice instructions hold for the whole session; begin speaking now in the voice and accent defined for Naya.';
+  const final = 'FINAL VOICE ANCHOR: hold the voice and accent defined at the top for every turn, including immediately after reading or summarizing tool results; never drift to a neutral or other accent. Begin speaking now as Naya.';
   return [languageLine, accentLine, final].join(separator);
 }
 
@@ -185,6 +190,8 @@ function assemble(parts: readonly string[]): string { return parts.join(separato
 export function composeLiveInstruction(input: ComposeLiveInstructionInput): ComposedLiveInstruction {
   if (!input || typeof input.base !== 'string' || !input.base.length) throw new PersonaOverlayError('invalid_overlay');
   const base = input.base;
+  const head = headVoiceBlock(input.overlay?.accent ?? input.accent);
+  const baseEntry = head !== undefined ? `${head}${separator}${base}` : base;
   const voice = voiceAnchor(input.language, input.overlay?.accent ?? input.accent);
   const owner = input.ownerProfile === undefined ? [] : ownerProfileSections(input.ownerProfile)
     .map(section => ({ id: section.id, text: `[${section.id}]\n${section.text}` }));
@@ -197,7 +204,7 @@ export function composeLiveInstruction(input: ComposeLiveInstructionInput): Comp
   type Entry = { id: ComposedSection['id']; text: string };
   // Assembly order: base, runtime context, owner lore, memory, tools, owner style, overlay, anchor.
   const select = (overlay: string | undefined, tools: string | undefined, memory: string | undefined): Entry[] => {
-    const entries: Entry[] = [{ id: 'base', text: base }];
+    const entries: Entry[] = [{ id: 'base', text: baseEntry }];
     if (runtimeText !== undefined) entries.push({ id: 'runtime', text: runtimeText });
     entries.push(...ownerLore);
     if (memory !== undefined) entries.push({ id: 'memory', text: memory });
@@ -216,7 +223,7 @@ export function composeLiveInstruction(input: ComposeLiveInstructionInput): Comp
   if (!fits(select(overlay, tools, memory))) {
     if (overlay !== undefined) {
       const others = [
-        base,
+        baseEntry,
         ...(runtimeText !== undefined ? [runtimeText] : []),
         ...ownerLore.map(section => section.text),
         ...(tools !== undefined ? [tools] : []),
@@ -255,9 +262,11 @@ export function composeLiveSessionInstruction(input: {
   readonly overlay?: PersonaOverlay; readonly pickupNote?: string; readonly trustedChars: number;
   readonly runtimeContext?: string; readonly ownerProfile?: OwnerProfileSnapshot;
 }): { readonly text: string; readonly selectedIds: readonly string[]; readonly omitted: readonly { id: string; reason: 'budget' }[] } {
-  const base = `${NAYA_BASE}${separator}`;
-  const native = input.text.startsWith(base);
-  const body = native ? input.text.slice(base.length) : '';
+  const baseMarker = `${NAYA_BASE}${separator}`;
+  const baseAt = input.text.indexOf(baseMarker);
+  const native = baseAt !== -1 && (baseAt === 0 || input.text.slice(0, baseAt).startsWith(VOICE_HEAD_PREFIX));
+  const prefix = native ? input.text.slice(0, baseAt) : '';
+  const body = native ? input.text.slice(baseAt + baseMarker.length) : '';
   const owner = input.ownerProfile === undefined ? [] : ownerProfileSections(input.ownerProfile);
   const runtime = input.runtimeContext?.length ? input.runtimeContext : undefined;
   const overlay = input.overlay ? overlaySection(input.overlay) : undefined;
@@ -281,7 +290,7 @@ export function composeLiveSessionInstruction(input: {
   const wrap = (records: readonly string[]): string => {
     const section = middle(records);
     if (!section.length) return input.text;
-    return native ? `${base}${section}${separator}${body}` : `${input.text}${separator}${section}`;
+    return native ? `${prefix}${baseMarker}${section}${separator}${body}` : `${input.text}${separator}${section}`;
   };
   if (wrap([]).length > input.trustedChars) throw new PersonaOverlayError('instruction_too_large');
   const records: string[] = [], selectedIds: string[] = [], omitted: { id: string; reason: 'budget' }[] = [];

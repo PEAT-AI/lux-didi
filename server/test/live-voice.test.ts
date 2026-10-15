@@ -663,3 +663,41 @@ test('a non-LiveVoiceError decode failure logs its constructor classifier and fr
   assert.equal(rejected[0]!.kind, 'invalid_json');
   assert.equal(JSON.stringify(rejected[0]).includes(CANARY), false, 'no value leaks into the classifier');
 });
+
+// Ruling L1-R2: after a tool result, the 3.8 model must still hear the voice requirement last.
+test('3.8 Live appends the tool voice anchor as the last key of each function response', async t => {
+  const f = await providerFixture(t);
+  const modelId = 'models/gemini-3.8-live-test';
+  const tools = [{ name: 'search_knowledge', description: 'Search', parameters: { type: 'OBJECT' } }];
+  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory, modelId,
+    route: { enabled: true, provider: 'gemini', modelId, dataClasses: ['ordinary'] } })).open({ ...request(), tools }, control());
+  t.after(() => session.close());
+  const events = session.events[Symbol.asyncIterator]();
+  await f.frame(1); assert.equal((f.frames[0] as { setup: { generationConfig: { thinkingConfig?: unknown } } }).setup.generationConfig.thinkingConfig, undefined);
+  f.send({ setupComplete: {} }); await session.ready;
+  assert.equal((await events.next()).value?.type, 'ready');
+  f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x' } }] } });
+  assert.equal((await events.next()).value?.type, 'modelTurnStarted');
+  assert.equal((await events.next()).value?.type, 'toolCall');
+  session.sendToolResponse({ responses: [{ id: 'c1', name: 'search_knowledge', response: { markdown: 'one' } }] });
+  await f.frame(2);
+  const response = (f.frames[1] as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } }).toolResponse.functionResponses[0]!.response;
+  assert.deepEqual(Object.keys(response), ['markdown', '_voice_anchor'], 'the anchor follows the tool data');
+  assert.equal(response['_voice_anchor'], 'Answer aloud in your own words, briefly, in the voice and accent defined for Naya; do not read raw text, ids or URLs.');
+});
+
+test('other models keep the exact tool response object with no voice anchor', async t => {
+  const f = await providerFixture(t);
+  const tools = [{ name: 'search_knowledge', description: 'Search', parameters: { type: 'OBJECT' } }];
+  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory })).open({ ...request(), tools }, control());
+  t.after(() => session.close());
+  const events = session.events[Symbol.asyncIterator]();
+  await f.frame(1); f.send({ setupComplete: {} }); await session.ready;
+  assert.equal((await events.next()).value?.type, 'ready');
+  f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x' } }] } });
+  assert.equal((await events.next()).value?.type, 'modelTurnStarted');
+  assert.equal((await events.next()).value?.type, 'toolCall');
+  session.sendToolResponse({ responses: [{ id: 'c1', name: 'search_knowledge', response: { markdown: 'one' } }] });
+  await f.frame(2);
+  assert.deepEqual(f.frames[1], { toolResponse: { functionResponses: [{ id: 'c1', name: 'search_knowledge', response: { markdown: 'one' } }] } });
+});

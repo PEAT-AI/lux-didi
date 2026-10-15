@@ -8,6 +8,9 @@ import { LiveVoiceError, liveVoiceActivityDefaults, liveVoiceTimerDefaults } fro
 const networkErrors = new Set(['ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ECONNREFUSED', 'ECONNABORTED', 'ENETUNREACH', 'EHOSTUNREACH', 'ENOTFOUND', 'EAI_AGAIN']);
 const ENDPOINT = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent';
 const FRESH_OPENING = 'Greet the person briefly to begin the conversation.';
+// 3.8-only tool-response tail: keep the model speaking in the composed voice after tool data.
+const TOOL_VOICE_ANCHOR = 'Answer aloud in your own words, briefly, in the voice and accent defined for Naya; do not read raw text, ids or URLs.';
+const live38Pattern = /gemini-3\.8[^/]*live/;
 const DEFAULTS: Readonly<LiveVoiceLimits> = Object.freeze({
   maxIncomingBytes: 1024 * 1024, maxOutgoingBytes: 1024 * 1024, maxBufferedBytes: 2 * 1024 * 1024,
   maxEventBytes: 1024 * 1024, maxEvents: 128, maxRequestBytes: 256 * 1024, maxHistoryTurns: 128,
@@ -106,7 +109,7 @@ export class GeminiLiveVoiceAdapter implements LiveVoicePort {
     if (request.tools !== undefined && (!Array.isArray(request.tools) || request.tools.length > 128 || request.tools.some(t => !object(t) || typeof t.name !== 'string' || !t.name || !object(t.parameters)))) fail('invalid_request');
     const system = request.system.text;
     if (Buffer.byteLength(JSON.stringify({ system, history, tools: request.tools })) > settings.limits.maxRequestBytes) fail('invalid_request');
-    const live38 = /gemini-3\.8[^/]*live/.test(settings.modelId);
+    const live38 = live38Pattern.test(settings.modelId);
     const declarations = live38 ? request.tools?.map(declaration => ({ ...declaration, behavior: 'BLOCKING' })) : request.tools;
     const setup = JSON.stringify({ setup: {
       model: settings.modelId,
@@ -459,7 +462,12 @@ class Session implements LiveVoiceSession {
     if (!this.isReady) fail('not_ready');
     if (!object(input) || !Array.isArray(input.responses) || !this.pendingCalls.length || input.responses.length !== this.pendingCalls.length ||
       new Set(input.responses.map(r => r.id)).size !== input.responses.length || input.responses.some(r => !object(r) || !object(r.response) || !this.pendingCalls.some(c => c.id === r.id && c.name === r.name))) fail('invalid_request');
-    const frame = JSON.stringify({ toolResponse: { functionResponses: input.responses } });
+    // 3.8 Live only: a last, non-schema key on each response keeps the reply in Naya's voice
+    // right after the tool data; other models keep the exact response object.
+    const responses = live38Pattern.test(this.settings.modelId)
+      ? input.responses.map(r => ({ ...r, response: { ...r.response, _voice_anchor: TOOL_VOICE_ANCHOR } }))
+      : input.responses;
+    const frame = JSON.stringify({ toolResponse: { functionResponses: responses } });
     if (this.write(frame)) this.pendingCalls = [];
   }
   sendAudio(input: { pcm: Uint8Array; dataClass: DataClass }): void {

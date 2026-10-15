@@ -57,11 +57,28 @@ const openSettings = async () => { await page.waitForFunction(() => Object.keys(
 const openConversation = async () => { await openTab('Conversation'); await page.locator('#connected-panel').waitFor(); };
 const selectValue = async () => { await openSettings(); const value = await page.locator('#connected-history').inputValue(); await openConversation(); return value; };
 const entryText = () => page.locator('#connected-entries').innerText();
-/** Screenshot the connected panel itself so the transcript, title and answer are the subject of the image. */
+/** Screenshot the connected panel itself so the transcript, title and answer are the subject of the image.
+ * The panel is replaced on every page render (tab switches, stream events, the connection poll), so first
+ * wait for the same panel markup across two reads, then retry the action if a render detaches it anyway. */
 async function shot(name) {
   const panel = page.locator('#connected-panel');
-  await panel.scrollIntoViewIfNeeded();
-  await panel.screenshot({ path: join(artifacts, `${name}-${sha}.png`) });
+  let previous = undefined;
+  for (let i = 0; i < 30; i++) {
+    const current = await panel.evaluate(element => element.outerHTML).catch(() => undefined);
+    if (current !== undefined && current === previous) break;
+    previous = current;
+    await page.waitForTimeout(100);
+  }
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await panel.scrollIntoViewIfNeeded();
+      await panel.screenshot({ path: join(artifacts, `${name}-${sha}.png`) });
+      return;
+    } catch (error) {
+      if (attempt >= 9) throw error;
+      await page.waitForTimeout(200);
+    }
+  }
 }
 async function choose(label) {
   await openSettings();

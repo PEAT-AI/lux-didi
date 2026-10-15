@@ -2221,3 +2221,17 @@ test('the calendar intent reads events from every calendar the owner keeps', asy
   assert.deepEqual(lists, ['primary', 'work'], 'one event read per calendar, all calendars server-side');
   assert.match(response.toolResponse.functionResponses[0]!.response.text, /Event on work/);
 });
+
+test('U1: research progress reaches the live channel with metadata only', async t => {
+  const h = await harness(t, { tools: true, calendar: true });
+  await attached(h, 'lookup-progress');
+  await settleLiveTool(h, 'r1', 'research', { action: 'start', question: 'what is on my calendar' });
+  const entries = h.owner.current().entries.filter(entry => entry.kind === 'researchProgress');
+  assert.ok(entries.length > 0, 'a research progress entry reaches the live channel');
+  const progress = entries.at(-1)!.progress as Record<string, unknown>;
+  assert.deepEqual(Object.keys(progress).sort(), ['elapsedMs', 'phase', 'researchId', 'sourcesDone', 'sourcesPending']);
+  assert.ok(['started', 'round', 'done', 'stopped'].includes(String(progress.phase)));
+  assert.ok(Array.isArray(progress.sourcesDone) && Array.isArray(progress.sourcesPending));
+  assert.equal(typeof progress.elapsedMs, 'number');
+  assert.doesNotMatch(JSON.stringify(progress), /what is on my calendar/, 'the question text never reaches the channel');
+});

@@ -209,7 +209,7 @@ try {
       chipDisplay: summary ? getComputedStyle(summary).display : null,
       labelGap: label && labelDiv ? rn(labelDiv.getBoundingClientRect().top - label.getBoundingClientRect().bottom) : null,
       labelFont: label ? getComputedStyle(label).fontSize : null,
-      nayaMax: naya ? getComputedStyle(naya).maxWidth : null,
+      nayaMax: q('.live-turns .entry.naya') ? getComputedStyle(q('.live-turns .entry.naya')).maxWidth : null,
       allowHeight: allow ? rn(allow.getBoundingClientRect().height) : null,
       nestedCards: document.querySelectorAll('#lane-voice .panel, #lane-chat .panel').length,
     };

@@ -119,7 +119,7 @@ try {
     await page.screenshot({ path: join(artifacts, `desktop-${sha}.png`), fullPage: true });
     await page.setViewportSize({ width: 375, height: 900 });
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
-    const counts = await page.evaluate(() => Object.fromEntries(['#app', '#connected-panel', '#connected-entries', '#connected-draft', '#connected-send', 'canvas'].map(selector => [selector, document.querySelectorAll(selector).length])));
+    const counts = await page.evaluate(() => Object.fromEntries(['#app', '#connected-panel', '#connected-entries', '#connected-draft', '#connected-send', '#didi-orb', '#didi-orb-large'].map(selector => [selector, document.querySelectorAll(selector).length])));
     for (const [selector, count] of Object.entries(counts)) assert.equal(count, 1, `Unique rendered DOM ${selector}`);
     // V2-R1 narrow: a Voice/Chat switcher shows one lane at a time; the empty-state orb stays in the Voice segment.
     await page.waitForFunction(() => document.querySelector('.app-shell')?.dataset.narrow === 'true', { timeout: 8000 });

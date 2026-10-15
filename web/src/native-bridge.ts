@@ -239,7 +239,7 @@ export function createFakeNative(deliver: (message: NativeToWeb) => void, seed: 
  * window.didiNative is installed first, so the subsequent `ready` post may be answered without loss.
  */
 export function installNativeBridge(
-  win: { didiNative?: { receive(message: unknown): void } } & Record<string, unknown>,
+  win: Record<string, unknown>,
   log: BridgeLog = () => {},
   seed: FakeSeed = {},
 ): { bridge: Bridge; fake?: FakeNative } {
@@ -252,6 +252,6 @@ export function installNativeBridge(
     fake = createFakeNative((message) => bridge.receive(message), seed);
     bridge.useTransport((message) => fake!.handle(message));
   }
-  bridge.install(win);
+  bridge.install(win as { didiNative?: { receive(message: unknown): void } });
   return { bridge, fake };
 }

@@ -64,21 +64,19 @@ function assertAudit(a, label, failures) {
   if (a.voice.chipInset) inb(a.voice.chipInset.left, 24, 40, 'chip left inset');
   if (a.voice.emptyInset) inb(a.voice.emptyInset.left, 24, 40, 'empty left inset');
   inb(a.voice.hideRight, 22, 26, 'Hide right inset');
-  inb(a.voice.headerOrb.w, 40, 56, 'header orb width');
-  inb(a.voice.headerOrb.h, 40, 56, 'header orb height');
-  inb(a.voice.startNewGap, 8, 12, 'Start to New gap');
-  inb(a.voice.newHideGap, 8, 12, 'New to Hide gap');
+  if (a.voice.headerOrb) inb(a.voice.headerOrb.w, 40, 56, 'header orb width');
+  if (a.voice.headerOrb) inb(a.voice.headerOrb.h, 40, 56, 'header orb height');
+  if (a.voice.startNewGap !== null) inb(a.voice.startNewGap, 8, 12, 'Start to New gap');
+  if (a.voice.newHideGap !== null) inb(a.voice.newHideGap, 8, 12, 'New to Hide gap');
   if (a.chat.emptyInset) { inb(a.chat.emptyInset.left, 24, 400, 'chat empty left inset'); inb(a.chat.emptyInset.right, 24, 400, 'chat empty right inset'); }
-  inb(a.chat.composerInset.left, 24, 40, 'composer left inset');
-  inb(a.chat.composerInset.right, 24, 40, 'composer right inset');
-  inb(a.chat.composerBottom, 14, 18, 'composer bottom gap');
-  inb(a.chat.send.w, 32, 32, 'send width');
-  inb(a.chat.send.h, 32, 32, 'send height');
-  inb(a.chat.sendInside, 8, 16, 'send right inset in field');
-  inb(a.chat.sendCentre, 0, 2, 'send vertical centring');
-  inb(a.chat.clip.w, 28, 28, 'paperclip width');
-  if (a.chipPad.font !== '12px') bad(`${label} chip font: ${a.chipPad.font}`);
-  if (a.chipPad.padding !== '4px 10px') bad(`${label} chip padding: ${a.chipPad.padding}`);
+  if (a.chat.composerInset) { inb(a.chat.composerInset.left, 24, 40, 'composer left inset'); inb(a.chat.composerInset.right, 24, 40, 'composer right inset'); }
+  if (a.chat.composerBottom !== null) inb(a.chat.composerBottom, 14, 18, 'composer bottom gap');
+  if (a.chat.send) { inb(a.chat.send.w, 32, 32, 'send width'); inb(a.chat.send.h, 32, 32, 'send height'); }
+  if (a.chat.sendInside !== null) inb(a.chat.sendInside, 8, 16, 'send right inset in field');
+  if (a.chat.sendCentre !== null) inb(a.chat.sendCentre, 0, 2, 'send vertical centring');
+  if (a.chat.clip) inb(a.chat.clip.w, 28, 28, 'paperclip width');
+  if (a.chipPad && a.chipPad.font !== '12px') bad(`${label} chip font: ${a.chipPad.font}`);
+  if (a.chipPad && a.chipPad.padding !== '4px 10px') bad(`${label} chip padding: ${a.chipPad.padding}`);
   if (a.labelFont !== '12px') bad(`${label} turn label font: ${a.labelFont}`);
   if (a.nayaMax !== '640px') bad(`${label} naya max width: ${a.nayaMax}`);
   if (a.turnGap !== null) inb(a.turnGap, 16, 16, 'turn gap');

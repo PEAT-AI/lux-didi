@@ -67,6 +67,9 @@ try {
   // Probe: does the consent checkbox stick after a click?
   await page.locator('#connected-consent').check({ timeout: 8000 }).catch(e => console.log('CONSENT_CHECK_FAIL', String(e).split('\n')[0]));
   console.log('CONSENT_STATE', await page.evaluate(() => { const c = document.querySelector('#connected-consent'); return c ? c.checked : 'missing'; }));
+  console.log('RENDERS', await page.evaluate(() => window.__renders));
+  await page.waitForTimeout(2000);
+  console.log('RENDERS2', await page.evaluate(() => window.__renders));
   console.log('CONSENT_GEO', await page.evaluate(() => {
     const c = document.querySelector('#connected-consent');
     const r = c.getBoundingClientRect();

@@ -87,7 +87,10 @@ try {
     assert.equal(await sourceLink.count(),1);
     assert.equal(await sourceLink.getAttribute('rel'),'noopener noreferrer');
     assert.match(await page.locator('#live-panel .live-result strong').first().textContent(),/Answer/);
-    fixture.setLive({state:'listening',since:'2026-10-11T16:00:01Z',cursor:4,entries:[]});
+    fixture.setLive({state:'listening',since:'2026-10-11T16:00:01Z',cursor:4,entries:[
+      {seq:1,kind:'inputTranscription',text:'what is lux 123'},
+      {seq:2,kind:'outputTranscription',text:'Here is the answer.'}
+    ]});
     await page.waitForFunction(()=>document.querySelector('#didi-orb').dataset.state==='LISTENING',{timeout:8000});
     assert.equal(await page.locator('#didi-orb').getAttribute('data-posture'),'listening');
     assert.equal((await page.locator('#live-panel .live-state').textContent()).trim(),'Listening');

@@ -71,6 +71,11 @@ export function renderMarkdown(source: string): string {
 }
 
 /** Chat consumes only bounded accepted projections, never connector HTML or provider parts. */
+/** A saved or latest answer body: markdown inside a div, because a p cannot hold block elements. */
+export function answerMarkup(text: string): string {
+  return `<div class="markdown">${renderMarkdown(text)}</div>`;
+}
+
 /** A friendly, owner-facing connector name; an unknown tool returns '' so its card shows no name. */
 const TOOL_LABELS: readonly [RegExp, string][] = [
   [/^gmail_/, 'Gmail'],

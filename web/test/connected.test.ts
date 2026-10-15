@@ -5,6 +5,15 @@ import type { ToolEvidence } from '../src/protocol.ts';
 
 // Missing evidence rendering is the base behavior, represented as an empty projection.
 const render = (markdown as typeof markdown & { renderToolEvidence?: (evidence: readonly ToolEvidence[]) => string }).renderToolEvidence ?? (() => '');
+const answer = (markdown as typeof markdown & { answerMarkup?: (text: string) => string }).answerMarkup ?? (() => '');
+
+test('a saved answer with a bullet list and a numbered list renders ul and ol inside a div, not a p', () => {
+  const html = answer('- milk\n- eggs\n\n1. pay rent\n2. call bank');
+  assert.match(html, /^<div class="markdown">/);
+  assert.match(html, /<ul><li>milk<\/li><li>eggs<\/li><\/ul>/);
+  assert.match(html, /<ol><li>pay rent<\/li><li>call bank<\/li><\/ol>/);
+  assert.equal(/<p>/.test(html), false, 'a saved answer body is a div, never a p');
+});
 
 test('chat evidence cards render names, bounded safe markdown and permitted sources', () => {
   const html = render([{ name: 'gmail_list', markdown: '**ACCEPTED** [unsafe](javascript:alert) <script>REJECTED-HTML</script>', sources: [{ title: 'Inbox evidence', url: 'https://example.org/mail' }, { title: 'Local citation' }, { title: 'Unsafe source', url: 'javascript:alert(1)' }] }]);

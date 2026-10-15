@@ -30,11 +30,12 @@ const CONNECTOR_READS = {
 };
 
 const QUESTION = 'Search lux knowledge for Lux Didi and open the most relevant entry.';
+const RESEARCH_QUESTION = 'What is on my calendar today? Please check.';
 
 function log(line) { process.stdout.write(line + '\n'); }
 function now() { return Date.now(); }
 
-const HOSTLESS_PROBES = ['probe2-connectors', 'probe3-text-turn', 'probe4-voice-turn'];
+const HOSTLESS_PROBES = ['probe2-connectors', 'probe3-text-turn', 'probe4-voice-turn', 'probe5-research'];
 
 /** The host launch budget in ms: SMOKE_LAUNCH_TIMEOUT_S seconds, defaulting to the native 6 s ready budget. */
 export function launchTimeoutMs(env = process.env) {
@@ -245,6 +246,69 @@ async function liveTurn({ base, token, epoch, clipPath }) {
   return { ok, stage: 'turn', toolResultAt: toolResultAt !== null, audioAfterResult: afterResult, openFor, lifecycle };
 }
 
+async function researchTurn({ base, token, epoch, dataDir }) {
+  const headers = () => liveHeaders(token, epoch);
+  const created = await fetch(base + '/api/v1/live-sessions', { method: 'POST', headers: headers(), body: JSON.stringify({ inputClass: 'ordinary' }) });
+  if (created.status !== 200) return { ok: false, stage: 'create' };
+  const id = (await created.json()).data.liveSessionId;
+  // The same audio socket probe4 uses: it reaches attached/listening and receives the public markers.
+  const ws = new WebSocket(base.replace('http://', 'ws://') + '/api/v1/live-sessions/' + id + '/audio',
+    { headers: { Authorization: `Bearer ${token}`, 'X-Didi-Authority-Epoch': epoch } });
+  const markers = [];
+  const opened = await new Promise(resolve => {
+    ws.on('open', () => resolve(true));
+    ws.on('error', () => resolve(false));
+    setTimeout(() => resolve(ws.readyState === 1), 8000);
+  });
+  if (!opened) { try { ws.close(); } catch { /* noop */ } return { ok: false, stage: 'attach' }; }
+  ws.on('message', (data, isBinary) => { if (!isBinary) { try { markers.push(JSON.parse(data.toString())); } catch { /* marker only */ } } });
+  const journal = async () => {
+    const response = await fetch(base + '/api/v1/live-sessions/' + id + '/journal?limit=200', { headers: headers() });
+    return (await response.json()).data;
+  };
+  try {
+    // Let the model's opening turn settle, then send ONE typed input through the host's Live text route.
+    const greetingDeadline = now() + 15000;
+    while (now() < greetingDeadline && !markers.some(marker => marker.kind === 'turnComplete')) await new Promise(resolve => setTimeout(resolve, 500));
+    const sent = await fetch(base + '/api/v1/live/text', { method: 'POST', headers: headers(), body: JSON.stringify({ text: RESEARCH_QUESTION }) });
+    if (sent.status !== 200) return { ok: false, stage: 'text' };
+    const deadline = now() + 90000;
+    let calls = 0; let result = null; let outputChars = 0;
+    while (now() < deadline) {
+      const data = await journal().catch(() => null);
+      const fragments = data && Array.isArray(data.fragments) ? data.fragments : [];
+      calls = fragments.filter(fragment => fragment.kind === 'toolCall' && fragment.tool && fragment.tool.name === 'research').length;
+      const results = fragments.filter(fragment => fragment.kind === 'toolResult' && fragment.tool && fragment.tool.name === 'research');
+      if (results.length) result = results[results.length - 1].tool;
+      outputChars = fragments.filter(fragment => fragment.kind === 'outputTranscription').reduce((sum, fragment) => sum + (typeof fragment.text === 'string' ? fragment.text.length : 0), 0);
+      if (result && outputChars > 0) break;
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    // The per-run metadata reaches the host log only through the closed allowlist; read the last run line.
+    let run = null; let progress = 0;
+    try {
+      const hostLog = await readFile(join(dataDir, 'logs/host.log'), 'utf8');
+      for (const line of hostLog.split('\n')) {
+        if (!line.includes('"research_run"') && !line.includes('"research_progress"')) continue;
+        let record; try { record = JSON.parse(line); } catch { continue; }
+        if (record.event === 'research_run') run = record;
+        else if (record.event === 'research_progress') progress += 1;
+      }
+    } catch { /* no host log means no recorded run */ }
+    if (calls !== 1) return { ok: false, stage: 'call', calls };
+    if (!run) return { ok: false, stage: 'no_run' };
+    if (run.status !== 'answered' && run.status !== 'partial') return { ok: false, stage: 'status', status: String(run.status) };
+    if (!(run.rounds >= 1)) return { ok: false, stage: 'rounds', rounds: run.rounds };
+    const read = Array.isArray(run.sources) ? run.sources.filter(source => source.disposition === 'completed').length : 0;
+    if (read < 1) return { ok: false, stage: 'sources', read };
+    if (!(run.replyBytes <= 2000)) return { ok: false, stage: 'over_cap', replyBytes: run.replyBytes };
+    if (outputChars <= 0) return { ok: false, stage: 'no_output' };
+    if (!(run.selectorMs > 0 || run.fallbackUsed === true)) return { ok: false, stage: 'selector' };
+    const selector = run.selectorMs > 0 ? 'ran' : 'fallback';
+    return { ok: true, stage: 'turn', rounds: run.rounds, sources: `${run.sources.length}(${read} read)`, selector, selectorMs: run.selectorMs, elapsedMs: run.elapsedMs, deadAirMs: run.deadAirMs, replyBytes: run.replyBytes, outputChars, progress };
+  } finally { try { ws.close(); } catch { /* noop */ } }
+}
+
 async function main() {
   const dev = process.argv.includes('--dev');
   const results = [];
@@ -282,6 +346,12 @@ async function main() {
         results.push({ id: 'probe4-voice-turn', ok: voice.ok, note: voice.ok ? `tool_result=yes audio_after=${voice.audioAfterResult}B open_after=${voice.openFor}ms lifecycle=${voice.lifecycle}` : `stage=${voice.stage}` });
       } finally { await rm(clipPath, { force: true }); }
     } catch (error) { results.push({ id: 'probe4-voice-turn', ok: false, note: String(error && error.message).slice(0, 120) }); }
+    try {
+      const research = await researchTurn({ base, token, epoch, dataDir });
+      results.push({ id: 'probe5-research', ok: research.ok, note: research.ok
+        ? `calls=1 rounds=${research.rounds} sources=${research.sources} selector=${research.selector} selectorMs=${research.selectorMs} elapsedMs=${research.elapsedMs} deadAirMs=${research.deadAirMs} reply=${research.replyBytes}B output=${research.outputChars}B progress=${research.progress}`
+        : `stage=${research.stage} calls=${research.calls ?? 0} status=${research.status ?? 'n/a'} rounds=${research.rounds ?? 0} read=${research.read ?? 0} reply=${research.replyBytes ?? 0}B load=${loadAverageText()}` });
+    } catch (error) { results.push({ id: 'probe5-research', ok: false, note: String(error && error.message).slice(0, 120) }); }
   } else {
     results.push(...noHostResults());
   }

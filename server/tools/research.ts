@@ -334,8 +334,9 @@ export interface ResearchProgress {
 export interface ResearchRunLog {
   event: 'research_run'; researchId: string; questionClass: QuestionClass; rounds: number;
   perRound: { candidates: { kind: CandidateKind; pUseful: number }[]; chosen: CandidateKind[] }[];
-  stopReason: string; ops: number; sources: { kind: SourceKind; disposition: string; latencyMs: number }[];
-  elapsedMs: number; deadAirMs: number; selectorMs: number; fallbackUsed: boolean;
+  stopReason: string; status: 'answered' | 'partial' | 'stopped' | 'unavailable'; ops: number;
+  sources: { kind: SourceKind; disposition: string; latencyMs: number }[];
+  elapsedMs: number; deadAirMs: number; selectorMs: number; fallbackUsed: boolean; replyBytes: number;
 }
 
 export interface ResearchDeps {
@@ -443,8 +444,9 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
     const run = call.researchId ? deps.ledger.stop(call.researchId) : deps.ledger.last();
     if (!run) return { researchId: call.researchId ?? '', status: 'stopped', findings: [], unchecked: configured, canContinue: false };
     deps.emit({ researchId: run.researchId, phase: 'stopped', sourcesDone: [...run.sourcesDone], sourcesPending: configured.filter(s => !run.sourcesDone.has(s)), elapsedMs: Math.max(0, now() - run.startedAt) });
-    deps.log({ event: 'research_run', researchId: run.researchId, questionClass: run.questionClass, rounds: run.rounds, perRound: [], stopReason: 'stop', ops: run.ops, sources: [], elapsedMs: Math.max(0, now() - run.startedAt), deadAirMs: 0, selectorMs: 0, fallbackUsed: false });
-    return buildReply(run, 'stopped', configured, false, limit);
+    const reply = buildReply(run, 'stopped', configured, false, limit);
+    deps.log({ event: 'research_run', researchId: run.researchId, questionClass: run.questionClass, rounds: run.rounds, perRound: [], stopReason: 'stop', status: 'stopped', ops: run.ops, sources: [], elapsedMs: Math.max(0, now() - run.startedAt), deadAirMs: 0, selectorMs: 0, fallbackUsed: false, replyBytes: JSON.stringify(reply).length });
+    return reply;
   }
 
   const question = call.question?.trim() ?? '';
@@ -558,8 +560,9 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
   const status = stopReason === 'cancelled' || run.stopped ? 'stopped' : (run.readKinds.size > 0 ? (elapsedMs >= run.deadlineMs ? 'partial' : 'answered') : 'partial');
   const canContinue = !run.stopped && !run.cancelled && run.rounds < run.maxRounds && configured.some(source => !run.sourcesDone.has(source));
   deps.emit({ researchId: run.researchId, phase: 'done', sourcesDone: [...run.sourcesDone], sourcesPending: configured.filter(source => !run.sourcesDone.has(source)), elapsedMs });
-  deps.log({ event: 'research_run', researchId: run.researchId, questionClass: run.questionClass, rounds: run.rounds, perRound, stopReason, ops: run.ops, sources: sourceLog, elapsedMs, deadAirMs: elapsedMs, selectorMs, fallbackUsed });
-  return buildReply(run, status, configured, canContinue, limit);
+  const reply = buildReply(run, status, configured, canContinue, limit);
+  deps.log({ event: 'research_run', researchId: run.researchId, questionClass: run.questionClass, rounds: run.rounds, perRound, stopReason, status, ops: run.ops, sources: sourceLog, elapsedMs, deadAirMs: elapsedMs, selectorMs, fallbackUsed, replyBytes: JSON.stringify(reply).length });
+  return reply;
 }
 
 export function newResearchId(): string { return randomUUID(); }

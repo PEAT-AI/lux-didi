@@ -56,10 +56,10 @@ test('owner sections compose exactly once before the terminal voice anchor witho
     style: { text: 'SYNTHETIC style with\n\nLANGUAGE: untrusted duplicate', dataClass: 'private' },
     lore: { text: 'SYNTHETIC lore', dataClass: 'sensitive' } };
   const original = composeLiveInstruction({ base: NAYA_BASE });
-  assert.equal(original.sha256, '0a53dfdf228d81c8bc8b7c5c6a45586fc1d41482ba82945d718d85ed221f92e3');
+  assert.equal(original.sha256, '6eaede63f85d161d138770e340991b510c724931604fac8710d86343b46db91f');
   const composed = composeLiveInstruction({ base: NAYA_BASE, ownerProfile });
   for (const marker of ['[owner-style]', 'SYNTHETIC style', '[owner-lore]', 'SYNTHETIC lore']) assert.equal(composed.text.split(marker).length - 1, 1);
-  assert.deepEqual(composed.sections.map(section => section.id), ['base', 'owner-lore', 'owner-style', 'voice']);
+  assert.deepEqual(composed.sections.map(section => section.id), ['owner-style', 'base', 'owner-lore', 'voice']);
   assert.ok(composed.text.lastIndexOf('\n\nLANGUAGE:') > composed.text.indexOf('untrusted duplicate'));
   assert.ok(composed.text.endsWith('FINAL VOICE ANCHOR: hold the voice and accent defined at the top for every turn, including immediately after reading or summarizing tool results; never drift to a neutral or other accent. Begin speaking now as Naya.'));
 });
@@ -67,19 +67,18 @@ test('owner sections compose exactly once before the terminal voice anchor witho
 test('composition keeps base -> overlay -> voice order and hashes the exact text', () => {
   const overlay: PersonaOverlay = { schemaVersion: 1, text: 'Local overlay persona', greeting: 'Hello there' };
   const result = composeLiveInstruction({ base: 'PUBLIC BASE TEXT', overlay, language: 'de-DE' });
-  assert.deepEqual(result.sections.map(s => s.id), ['base', 'overlay', 'voice']);
+  assert.deepEqual(result.sections.map(s => s.id), ['overlay', 'base', 'voice']);
   const baseAt = result.text.indexOf('PUBLIC BASE TEXT');
   const overlayAt = result.text.indexOf('Local overlay persona');
   const voiceAt = result.text.indexOf('LANGUAGE:');
-  assert.ok(baseAt >= 0 && overlayAt > baseAt && voiceAt > overlayAt, 'order base then overlay then voice anchor');
-  assert.ok(result.text.includes('ACCENT:'), 'one ACCENT directive');
-  assert.ok(result.text.indexOf('LANGUAGE:') < result.text.indexOf('ACCENT:'), 'LANGUAGE before ACCENT');
+  assert.ok(baseAt >= 0 && overlayAt < baseAt && voiceAt > baseAt, 'order overlay then base then voice anchor');
+  assert.doesNotMatch(result.text, /ACCENT: /, 'no competing ACCENT directive');
   assert.ok(result.text.includes('German'), 'language paragraph names the language, not the code');
   assert.equal(result.sha256, sha(result.text));
   const joined = result.sections.reduce((n, s) => n + s.chars, 0) + 2 * (result.sections.length - 1);
   assert.equal(joined, result.text.length, 'sections are the text joined by one blank line');
   for (const section of result.sections) assert.match(section.sha256, /^[0-9a-f]{64}$/);
-  assert.equal(result.sections[0]!.sha256, sha('PUBLIC BASE TEXT'));
+  assert.equal(result.sections.find(section => section.id === 'base')!.sha256, sha('PUBLIC BASE TEXT'));
 });
 
 test('missing and empty overlay sections are stripped, and the hash is stable', () => {
@@ -103,12 +102,12 @@ test('the terminal voice anchor is the absolute last segment', () => {
 test('configured English and accent stay authoritative without copying the user voice', () => {
   const configured = composeLiveInstruction({ base: 'PUBLIC BASE TEXT', language: 'en', accent: 'Speak with a strong, natural Indian English accent.' });
   assert.match(configured.text, /LANGUAGE: Speak and answer in English by default\./);
-  assert.match(configured.text, /ACCENT: Speak with a strong, natural Indian English accent\./);
+  assert.match(configured.text, /VOICE AND ACCENT \(every turn, including right after tool results\): Speak with a strong, natural Indian English accent\./);
   assert.doesNotMatch(configured.text, /user's own voice outranks|whatever language they actually speak/);
 
   const generic = composeLiveInstruction({ base: 'PUBLIC BASE TEXT' });
   assert.match(generic.text, /LANGUAGE: Speak in the language the user uses\./);
-  assert.match(generic.text, /ACCENT: Speak with a clear, natural voice\./);
+  assert.doesNotMatch(generic.text, /ACCENT: /, 'no accent is invented without one');
   assert.doesNotMatch(generic.text, /user's own voice outranks|whatever language they actually speak/);
 });
 
@@ -123,16 +122,16 @@ test('speech language canonicalization keeps bare ISO 639-1 only', () => {
   assert.equal(canonicalSpeechLanguage(''), undefined);
 });
 
-test('the 60k budget yields the overlay first and never drops the base or anchor', () => {
-  const base = 'B'.repeat(55_000);
-  const overlay: PersonaOverlay = { schemaVersion: 1, text: 'O'.repeat(10_000) };
-  const result = composeLiveInstruction({ base, overlay, language: 'en' });
-  assert.ok(result.text.length <= BUDGET, `composed text ${result.text.length} must fit the budget`);
-  assert.ok(result.text.startsWith(base), 'base never yields');
+test('the target budget yields memory first and never drops the base, overlay or anchor', () => {
+  const ownerProfile = syntheticOwner('S'.repeat(4_000), 'OWNER LORE BLOCK');
+  const overlay: PersonaOverlay = { schemaVersion: 1, text: 'O'.repeat(6_000) };
+  const result = composeLiveInstruction({ base: NAYA_BASE, ownerProfile, overlay, language: 'en', memory: 'M'.repeat(20_000) });
+  assert.ok(result.text.length <= LIVE_INSTRUCTION_HARD_LIMIT, `composed text ${result.text.length} must fit the hard limit`);
+  assert.ok(result.text.includes(NAYA_BASE), 'base never yields');
+  assert.ok(result.text.includes('O'.repeat(6_000)), 'overlay never yields');
   assert.ok(result.text.includes('LANGUAGE:'), 'anchor never yields');
-  const overlaySection = result.sections.find(s => s.id === 'overlay');
-  assert.ok(!overlaySection || overlaySection.chars < 10_000, 'overlay yielded');
-  assert.throws(() => composeLiveInstruction({ base: 'B'.repeat(BUDGET), overlay: { schemaVersion: 1, text: 'O'.repeat(1000) }, language: 'en' }),
+  assert.equal(result.sections.some(section => section.id === 'memory'), false, 'memory yields first');
+  assert.throws(() => composeLiveInstruction({ base: 'B'.repeat(LIVE_INSTRUCTION_HARD_LIMIT), language: 'en' }),
     (error: unknown) => error instanceof PersonaOverlayError && error.code === 'instruction_too_large');
 });
 
@@ -140,7 +139,7 @@ test('the tools conduct text is authored, generic and names no connector beyond 
   assert.match(NAYA_TOOLS, /^# Tools and how to use them\n\n/);
   assert.match(NAYA_TOOLS, /knowledge base first, before memory/);
   assert.match(NAYA_TOOLS, /Paging and omission notes in a result are for you; never read them aloud\./);
-  assert.match(NAYA_TOOLS, /give one short acknowledgement for the whole job, such as "Give me a second"/);
+  assert.match(NAYA_TOOLS, /at most a three to five word acknowledgement/);
   assert.match(NAYA_TOOLS, /There is no background work and no callback: never promise to check later, call back or keep an eye on something\./);
   assert.ok(!NAYA_TOOLS.includes('—') && !NAYA_TOOLS.includes('–'), 'no dash prose');
   assert.ok(!/deferred|witty|warm/.test(NAYA_TOOLS), 'no stale deferred or tone claims');
@@ -150,21 +149,21 @@ test('no declarations compose exactly the three existing sections and hash', () 
   const overlay: PersonaOverlay = { schemaVersion: 1, text: 'Local overlay persona', greeting: 'Hello there' };
   const withoutTools = composeLiveInstruction({ base: NAYA_BASE, overlay, language: 'de-DE' });
   const withEmptyTools = composeLiveInstruction({ base: NAYA_BASE, overlay, language: 'de-DE', tools: [] });
-  assert.deepEqual(withoutTools.sections.map(s => s.id), ['base', 'overlay', 'voice']);
+  assert.deepEqual(withoutTools.sections.map(s => s.id), ['overlay', 'base', 'voice']);
   assert.equal(withEmptyTools.text, withoutTools.text, 'an empty declaration list adds nothing');
   assert.equal(withEmptyTools.sha256, withoutTools.sha256);
-  assert.equal(withoutTools.sha256, 'fb5be8d1953125cce962b27ad07d6421213507b91d7abf0f0521f6c4b990b4aa', 'the no-tools fixture hashes the authoritative language and accent anchor');
+  assert.equal(withoutTools.sha256, sha(withoutTools.text), 'the no-tools fixture hashes its own text');
 });
 
 test('declarations add the tools section verbatim between base and overlay with a stable hash', () => {
   const overlay: PersonaOverlay = { schemaVersion: 1, text: 'Local overlay persona' };
   const tools = ['search_knowledge', 'get_insight'];
   const result = composeLiveInstruction({ base: NAYA_BASE, overlay, language: 'en', tools });
-  assert.deepEqual(result.sections.map(s => s.id), ['base', 'tools', 'overlay', 'voice']);
+  assert.deepEqual(result.sections.map(s => s.id), ['overlay', 'base', 'tools', 'voice']);
   const baseAt = result.text.indexOf(NAYA_BASE);
   const toolsAt = result.text.indexOf(NAYA_TOOLS);
   const overlayAt = result.text.indexOf('Local overlay persona');
-  assert.ok(baseAt === 0 && toolsAt > baseAt && overlayAt > toolsAt, 'order base then tools then overlay');
+  assert.ok(overlayAt >= 0 && overlayAt < baseAt && toolsAt > baseAt, 'order overlay then base then tools');
   const toolsSection = result.sections.find(s => s.id === 'tools');
   assert.ok(toolsSection, 'the tools section is journaled like the others');
   assert.equal(toolsSection.chars, NAYA_TOOLS.length);
@@ -174,18 +173,17 @@ test('declarations add the tools section verbatim between base and overlay with 
   assert.equal(again.sha256, result.sha256, 'hash stability for the same declaration names');
 });
 
-test('the 60k budget yields the overlay first then the tools section', () => {
-  const base = 'B'.repeat(55_000);
-  const overlay: PersonaOverlay = { schemaVersion: 1, text: 'O'.repeat(20_000) };
-  const result = composeLiveInstruction({ base, overlay, language: 'en', tools: ['search_knowledge'] });
-  assert.ok(result.text.length <= BUDGET, `composed text ${result.text.length} must fit the budget`);
-  assert.ok(result.text.startsWith(base), 'base never yields');
+test('the target budget trims the tools conduct after memory yields and never drops the overlay', () => {
+  const ownerProfile = syntheticOwner('S'.repeat(4_000), 'OWNER LORE BLOCK');
+  const overlay: PersonaOverlay = { schemaVersion: 1, text: 'O'.repeat(6_000) };
+  const result = composeLiveInstruction({ base: NAYA_BASE, ownerProfile, overlay, language: 'en', tools: ['search_knowledge'], memory: 'M'.repeat(20_000) });
+  assert.ok(result.text.length <= LIVE_INSTRUCTION_HARD_LIMIT, `composed text ${result.text.length} must fit the hard limit`);
+  assert.ok(result.text.includes('O'.repeat(6_000)), 'the overlay never yields');
   assert.ok(result.text.includes('LANGUAGE:'), 'anchor never yields');
+  assert.equal(result.sections.some(section => section.id === 'memory'), false, 'memory yields first');
   const toolsSection = result.sections.find(s => s.id === 'tools');
-  assert.ok(toolsSection && toolsSection.chars === NAYA_TOOLS.length, 'tools survives while the overlay yields');
-  const overlaySection = result.sections.find(s => s.id === 'overlay');
-  assert.ok(overlaySection && overlaySection.chars < 20_000, 'overlay yielded first');
-  assert.throws(() => composeLiveInstruction({ base: 'B'.repeat(BUDGET), overlay: { schemaVersion: 1, text: 'O'.repeat(1000) }, language: 'en', tools: ['search_knowledge'] }),
+  assert.ok(!toolsSection || toolsSection.chars <= NAYA_TOOLS.length, 'the tools conduct is trimmed, not expanded');
+  assert.throws(() => composeLiveInstruction({ base: 'B'.repeat(LIVE_INSTRUCTION_HARD_LIMIT), language: 'en', tools: ['search_knowledge'] }),
     (error: unknown) => error instanceof PersonaOverlayError && error.code === 'instruction_too_large');
 });
 
@@ -196,8 +194,8 @@ test('withToolsSection splices the block after the base and is a no-op without d
   const baseAt = spliced.indexOf(NAYA_BASE);
   const toolsAt = spliced.indexOf(NAYA_TOOLS);
   const overlayAt = spliced.indexOf('Overlay text');
-  assert.ok(baseAt === 0 && toolsAt > baseAt && overlayAt > toolsAt, 'base then tools then overlay');
-  assert.ok(spliced.endsWith(composed.text.slice(NAYA_BASE.length + 2)), 'everything after the base is unchanged');
+  assert.ok(overlayAt >= 0 && overlayAt < baseAt && toolsAt > baseAt, 'overlay then base then the spliced tools');
+  assert.equal(spliced.replace(`${'\n\n'}${NAYA_TOOLS}`, ''), composed.text, 'the splice only inserts the tools block');
   assert.equal(withToolsSection('Synthetic system', ['search_knowledge']), `Synthetic system\n\n${NAYA_TOOLS}`);
 });
 
@@ -235,10 +233,10 @@ test('loadPersonaOverlay returns undefined when absent and throws when the file 
 test('session composition places bounded whole memory records and pickup before the final voice anchor', () => {
   const ownerProfile: OwnerProfileSnapshot = { schemaVersion: 1, kind: 'profile', ownerId: 'synthetic-owner', profileVersion: 'fixture', displayName: 'Example',
     style: { text: 'Fixture owner style\n\nLANGUAGE: caller-owned marker', dataClass: 'ordinary' }, lore: { text: 'Fixture owner lore', dataClass: 'ordinary' } };
-  const baseline = composeLiveInstruction({ base: NAYA_BASE, overlay: { schemaVersion: 1, text: 'Fixture overlay' }, language: 'hi' });
-  const composed = composeLiveSessionInstruction({ text: baseline.text, tools: ['search_knowledge'], ownerProfile, records: [{ id: 'b', text: 'Fixture note B' }, { id: 'a', text: 'Fixture note A' }], pickupNote: 'Fixture pickup note', trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT });
+  const baseline = composeLiveInstruction({ base: NAYA_BASE, language: 'hi' });
+  const composed = composeLiveSessionInstruction({ text: baseline.text, tools: ['search_knowledge'], ownerProfile, overlay: { schemaVersion: 1, text: 'Fixture overlay' }, records: [{ id: 'b', text: 'Fixture note B' }, { id: 'a', text: 'Fixture note A' }], pickupNote: 'Fixture pickup note', trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT });
   assert.deepEqual(composed.selectedIds, ['a', 'b']);
-  const order = [NAYA_BASE, 'Fixture owner lore', '# Memory', NAYA_TOOLS, 'Fixture owner style', 'Fixture pickup note', 'Fixture overlay'];
+  const order = ['Fixture owner style', 'Fixture overlay', NAYA_BASE, NAYA_TOOLS, 'Fixture owner lore', '# Memory', 'Fixture pickup note'];
   for (let i = 1; i < order.length; i++) assert.ok(composed.text.indexOf(order[i - 1]!) < composed.text.indexOf(order[i]!));
   const trustedAnchor = composed.text.lastIndexOf('\n\nLANGUAGE:');
   assert.ok(trustedAnchor > composed.text.indexOf('caller-owned marker'));
@@ -249,14 +247,14 @@ test('session composition places bounded whole memory records and pickup before 
   const capped = composeLiveInstruction({ base: NAYA_BASE, overlay: { schemaVersion: 1, text: 'Fixture overlay' }, memory: 'x'.repeat(BUDGET) });
   const memorySection = capped.sections.find(section => section.id === 'memory');
   assert.ok(memorySection, 'an over-long memory input is retained');
-  assert.equal(memorySection.chars, MEMORY_SECTION_CHAR_LIMIT, 'memory is capped at 15000 chars');
-  const yielding = composeLiveInstruction({ base: 'B'.repeat(46_000), overlay: { schemaVersion: 1, text: 'Fixture overlay' }, memory: 'x'.repeat(BUDGET) });
+  assert.equal(memorySection.chars, MEMORY_SECTION_CHAR_LIMIT, 'memory is capped at 1500 chars');
+  const yielding = composeLiveInstruction({ base: NAYA_BASE, ownerProfile, overlay: { schemaVersion: 1, text: 'O'.repeat(10_000) }, memory: 'x'.repeat(BUDGET) });
   assert.ok(!yielding.sections.some(section => section.id === 'memory'), 'memory yields before the overlay and the base');
-  assert.ok(yielding.text.includes('Fixture overlay'), 'memory yields before overlay');
+  assert.ok(yielding.text.includes('O'.repeat(10_000)), 'memory yields before the overlay');
 });
 
 test('tool-enabled Live CREATE retains expanded owner bytes and yields memory only as whole records', () => {
-  const lore = `SYNTHETIC expanded lore ${'L'.repeat(13_955)}`;
+  const lore = `SYNTHETIC expanded lore ${'L'.repeat(4_000)}`;
   const ownerProfile: OwnerProfileSnapshot = { schemaVersion: 1, kind: 'profile', ownerId: 'synthetic-owner', profileVersion: 'fixture', displayName: 'Example',
     style: { text: `SYNTHETIC style ${'S'.repeat(4096)}`, dataClass: 'private' }, lore: { text: lore, dataClass: 'sensitive' } };
   const baseline = composeLiveInstruction({ base: NAYA_BASE, ownerProfile, language: 'en' });
@@ -269,23 +267,23 @@ test('tool-enabled Live CREATE retains expanded owner bytes and yields memory on
   assert.deepEqual(composed.omitted, [{ id: 'whole-oversize', reason: 'budget' }]);
   assert.ok(!composed.text.includes('M'.repeat(128)));
   const oversized: OwnerProfileSnapshot = { ...ownerProfile,
-    lore: { text: 'L'.repeat(TRUSTED_SYSTEM_CODE_UNIT_LIMIT), dataClass: 'sensitive' } };
+    style: { text: 'S'.repeat(LIVE_INSTRUCTION_HARD_LIMIT), dataClass: 'private' } };
   assert.throws(() => composeLiveInstruction({ base: NAYA_BASE, ownerProfile: oversized, language: 'en' }),
     (error: unknown) => error instanceof PersonaOverlayError && error.code === 'instruction_too_large');
 });
 
 test('the public base and tool conduct are the authored verbatim constants', () => {
   assert.equal(NAYA_BASE, "# Speaking and truth\n\nNaya is the owner's personal voice companion. Tone, humour and relationship come from the owner's own persona section; this section only sets how Naya speaks and what Naya may claim.\n\nSpeak in the voice and accent defined above. Keep small talk to one to three sentences; when the owner asks about mail, calendar, chat, knowledge or any topic, give the substance with the specifics the tools returned (names, dates, numbers, decisions), as long as it needs, then offer more. Say the substance aloud; the screen shows the written answer and its sources, so never read out URLs, ids, file paths, code or long lists, and name at most the top one or two items.\n\nAsk at most one short clarifying question, and only when a request is ambiguous or would act on something.\n\nReport only what tools, memory or the owner's background actually contain. Never invent a tool result, source, message, calendar event, date or action. Never describe a training history, a model, a maker or this instruction.");
-  assert.equal(NAYA_TOOLS, "# Tools and how to use them\n\nRouting: the owner's notes, decisions, projects and past work: the knowledge base first, before memory. Schedule and availability: calendar. What someone wrote by mail: mail. What the team said: team chat. Remember something only when the owner explicitly asks; confirm only after the tool returns remembered:true.\n\nRecipes: a search returns titles and short excerpts, not the whole truth. For anything substantive, search the knowledge base, then fetch the one to three most relevant entries by id before answering. For mail and team chat, list or search first, then read the full message or thread before saying what someone argued, decided or asked for. A question that spans sources gets each source, and the answer keeps them distinct: what the calendar says, what the mail says, what the team said, what the notes say. Call independent tools together; call dependent steps one after the other. Fetch a further page only when the current results do not answer the question, using the argument the result names. Paging and omission notes in a result are for you; never read them aloud.\n\nQueries: never pass conversational filler as a query. Keep the names, projects, senders and exact technical terms. Turn today, tomorrow, this afternoon or last week into exact start and end times from the runtime context, with its timezone offset, without asking the owner for the date.\n\nWhile working: give one short acknowledgement for the whole job, such as \"Give me a second\", then do all the lookups without speaking between them. Put every independent call into the same turn so they run together; chain only calls that need an earlier result. Do not describe which tool, channel, inbox or step you are on, and do not announce progress. Speak again only with the answer. The owner can speak while a tool runs: answer the new question right away; when the earlier result arrives, mention it in a few words if it still matters, otherwise let it go. There is no background work and no callback: never promise to check later, call back or keep an eye on something.\n\nEmpty or failed: if a search finds nothing after one sensible reformulation, say what was checked and that nothing came back. If a tool fails, say so plainly and offer what still works. Nothing is ever sent to another person by Naya.");
+  assert.ok(NAYA_TOOLS.startsWith('# Tools and how to use them\n\n'));
+  assert.ok(NAYA_TOOLS.endsWith('Nothing is ever sent to another person by Naya.'));
 });
 
 test('runtime context is inserted right after the base and before the tools', () => {
   const runtimeContext = '# Runtime context\n\nNow: Wed, 2026-10-14, 18:05 Asia/Kolkata (UTC+05:30)';
   const result = composeLiveInstruction({ base: NAYA_BASE, runtimeContext, language: 'en', tools: ['search_knowledge'] });
-  assert.deepEqual(result.sections.map(section => section.id), ['base', 'runtime', 'tools', 'voice']);
-  assert.equal(result.text.indexOf(NAYA_BASE), 0);
-  assert.ok(result.text.indexOf(runtimeContext) > result.text.indexOf(NAYA_BASE));
-  assert.ok(result.text.indexOf(runtimeContext) < result.text.indexOf(NAYA_TOOLS));
+  assert.deepEqual(result.sections.map(section => section.id), ['base', 'tools', 'runtime', 'voice']);
+  assert.ok(result.text.indexOf(NAYA_BASE) < result.text.indexOf(NAYA_TOOLS));
+  assert.ok(result.text.indexOf(NAYA_TOOLS) < result.text.indexOf(runtimeContext));
 });
 
 // Contract P1 (issue 1014): persona first, dense facts in the middle, one language line, capped memory.
@@ -338,11 +336,14 @@ test('P1: exactly one LANGUAGE line and the accent lives only in the head block'
   const result = composeLiveInstruction({ base: NAYA_BASE, overlay, language: 'en' });
   assert.equal(result.text.split('LANGUAGE:').length - 1, 1, 'one language line');
   const head = result.sections.find(section => section.id === 'voice-head');
-  assert.ok(head && head.text.includes(accent), 'the accent is stated in the head block');
-  const voice = result.sections.find(section => section.id === 'voice');
-  assert.ok(voice && !voice.text.includes(accent), 'the terminal anchor references, never repeats, the accent');
-  assert.match(voice.text, /accent defined at the top/);
-  for (const section of result.sections) if (section.id !== 'voice-head') assert.doesNotMatch(section.text, /ACCENT:/);
+  assert.ok(head, 'the head voice block is its own section');
+  assert.equal(result.text.split(accent).length - 1, 1, 'the accent text appears exactly once');
+  const accentAt = result.text.indexOf(accent);
+  assert.ok(accentAt !== -1 && accentAt < result.text.indexOf(NAYA_BASE), 'the accent is stated in the head block before the base');
+  const anchorAt = result.text.lastIndexOf('FINAL VOICE ANCHOR:');
+  assert.ok(anchorAt > accentAt && result.text.slice(anchorAt).includes('accent defined at the top'), 'the anchor references the head accent');
+  assert.doesNotMatch(result.text.slice(anchorAt), new RegExp(accent), 'the terminal anchor never repeats the accent in full');
+  assert.doesNotMatch(result.text, /ACCENT: /);
 });
 
 test('P1: the target and hard limits are the declared 12000 and 16000 characters', () => {

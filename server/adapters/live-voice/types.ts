@@ -25,7 +25,7 @@ export const liveVoiceTimerDefaults = Object.freeze({ handshakeMs: 15_000, idleM
 // and the LOW end sensitivity stops a brief pause from ending the turn.
 // https://ai.google.dev/api/live (AutomaticActivityDetection: prefixPaddingMs, silenceDurationMs, startOfSpeechSensitivity, endOfSpeechSensitivity)
 export const liveVoiceActivityDefaults = Object.freeze({
-  prefixPaddingMs: 300, silenceDurationMs: 1200,
+  prefixPaddingMs: 300, silenceDurationMs: 800,
   startOfSpeechSensitivity: 'START_SENSITIVITY_LOW', endOfSpeechSensitivity: 'END_SENSITIVITY_LOW',
 } as const);
 export interface LiveVoiceRequest {

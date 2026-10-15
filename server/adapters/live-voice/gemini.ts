@@ -10,6 +10,9 @@ const ENDPOINT = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativ
 const FRESH_OPENING = 'Greet the person briefly to begin the conversation.';
 // 3.8-only tool-response tail: keep the model speaking in the composed voice after tool data.
 const TOOL_VOICE_ANCHOR = 'Answer aloud in your own words, briefly, in the voice and accent defined for Naya; do not read raw text, ids or URLs.';
+// Issue 1014: the one Live write tool. It is declared NON_BLOCKING and its reply is scheduled SILENT,
+// so a memory save never interrupts the turn; every read tool stays BLOCKING.
+const MEMORY_TOOL = 'remember_note';
 const live38Pattern = /gemini-3\.8[^/]*live/;
 const DEFAULTS: Readonly<LiveVoiceLimits> = Object.freeze({
   maxIncomingBytes: 1024 * 1024, maxOutgoingBytes: 1024 * 1024, maxBufferedBytes: 2 * 1024 * 1024,
@@ -110,7 +113,7 @@ export class GeminiLiveVoiceAdapter implements LiveVoicePort {
     const system = request.system.text;
     if (Buffer.byteLength(JSON.stringify({ system, history, tools: request.tools })) > settings.limits.maxRequestBytes) fail('invalid_request');
     const live38 = live38Pattern.test(settings.modelId);
-    const declarations = live38 ? request.tools?.map(declaration => ({ ...declaration, behavior: 'BLOCKING' })) : request.tools;
+    const declarations = live38 ? request.tools?.map(declaration => ({ ...declaration, behavior: declaration.name === MEMORY_TOOL ? 'NON_BLOCKING' : 'BLOCKING' })) : request.tools;
     const setup = JSON.stringify({ setup: {
       model: settings.modelId,
       sessionResumption: request.resumptionHandle ? { handle: request.resumptionHandle } : {},
@@ -469,7 +472,7 @@ class Session implements LiveVoiceSession {
     // 3.8 Live only: a last, non-schema key on each response keeps the reply in Naya's voice
     // right after the tool data; other models keep the exact response object.
     const responses = live38Pattern.test(this.settings.modelId)
-      ? input.responses.map(r => ({ ...r, response: { ...r.response, _voice_anchor: TOOL_VOICE_ANCHOR } }))
+      ? input.responses.map(r => ({ ...r, ...(r.name === MEMORY_TOOL ? { scheduling: 'SILENT' } : {}), response: { ...r.response, _voice_anchor: TOOL_VOICE_ANCHOR } }))
       : input.responses;
     const frame = JSON.stringify({ toolResponse: { functionResponses: responses } });
     if (this.write(frame)) this.pendingCalls = [];

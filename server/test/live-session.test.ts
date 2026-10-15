@@ -1437,7 +1437,7 @@ test('Live attach setup carries the composed Naya instruction and the bare langu
   const h = await harness(t);
   const overlay = { schemaVersion: 1 as const, text: 'SYNTHETIC local overlay persona', greeting: 'Synthetic greeting' };
   const composed = composeLiveInstruction({ base: NAYA_BASE, overlay, language: 'de' });
-  assert.ok(composed.text.startsWith(NAYA_BASE), 'composed instruction starts with the public base');
+  assert.ok(composed.text.includes(NAYA_BASE), 'composed instruction carries the public base');
   const acceptedPrompt = { schemaVersion: 1, ownerProfile: { schemaVersion: 1, kind: 'default', ownerId: h.store.assistantId, displayName: 'Lux Didi' },
     compilerVersion: PROMPT_VERSION, system: composed.text, dataClasses: ['ordinary'] };
   const profile = validateLiveProfile({ ...profileInput(), language: 'de', acceptedPrompt });

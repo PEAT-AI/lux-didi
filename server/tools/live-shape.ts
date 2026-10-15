@@ -265,7 +265,10 @@ export function shapeGcalList(data: Record<string, unknown>): ShapedResult {
     const link = field(entry, 'htmlLink');
     if (link) lines.push(`  source: ${link}`);
     const cut = cutAtSentence(lines.join('\n'), CALENDAR_EVENT_CHARS);
-    return cut.omitted > 0 ? `${cut.text} [+${cut.omitted} chars]` : cut.text;
+    if (cut.omitted === 0) return lines.join('\n');
+    const note = (omitted: number): string => ` [+${omitted} chars]`;
+    const recut = cutAtSentence(lines.join('\n'), Math.max(0, CALENDAR_EVENT_CHARS - note(cut.omitted).length));
+    return `${recut.text}${note(recut.omitted)}`;
   });
   const body = listed(blocks, CALENDAR_EVENTS, 'events');
   return capped({ text: body.text, partial: body.omitted > 0, originalCharacters: blocks.join('\n').length, omittedCharacters: body.omitted });

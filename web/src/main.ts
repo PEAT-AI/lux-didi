@@ -123,7 +123,7 @@ function voiceEmptyMarkup() {
   return `<div class="voice-empty"><div class="voice-orb-large"><canvas id="didi-orb-large" width="440" height="440" aria-hidden="true"></canvas></div><p class="voice-empty-line">Press Start or \u2318\u21e7Space to talk</p></div>`;
 }
 function voiceBodyMarkup() {
-  return liveTurns() ? liveMarkup(live, livePoll) : voiceEmptyMarkup();
+  return `<div class="lookup-slot" id="lookup-slot">${lookupLineMarkup(live)}</div>${liveTurns() ? liveMarkup(live, livePoll) : voiceEmptyMarkup()}`;
 }
 function chatLane() {
   return `<div id="connected-panel"></div>`;
@@ -435,10 +435,11 @@ function paintLive(){
   if(liveTurns()>0 ? !panel : !!panel){render();return;}
   const replacePanel=paintedLivePoll?.live!==live || !!paintedLivePoll?.stale!==!!livePoll.stale || !!livePoll.stale && paintedLivePoll?.lastSuccess!==livePoll.lastSuccess;
   if(panel && replacePanel){
-    body.innerHTML=liveMarkup(live,livePoll)
+    body.innerHTML=`<div class="lookup-slot" id="lookup-slot">${lookupLineMarkup(live)}</div>`+liveMarkup(live,livePoll)
   }
   paintedLivePoll=panel ? livePoll : undefined;
   const caption=document.querySelector('.orb-caption');const markup=orbCaptionMarkup();if(caption && caption.innerHTML!==markup)caption.innerHTML=markup;
+  const slot=document.getElementById('lookup-slot');if(slot){const lookup=lookupLineMarkup(live);if(slot.innerHTML!==lookup)slot.innerHTML=lookup;}
   const next=orbState();if(next!==appliedOrbState){appliedOrbState=next;orb?.setState(next);orbHeader?.setState(next);}
 }
 onAuthorityChanged(reason=>{

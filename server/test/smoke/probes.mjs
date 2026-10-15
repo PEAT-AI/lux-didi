@@ -315,21 +315,25 @@ async function researchTurn({ base, token, epoch, dataDir, clipPath }) {
       if (result && outputAtResult !== null && outputChars > outputAtResult) break;
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
-    // The per-run metadata reaches the host log only through the closed allowlist; read the last run line.
-    let run = null; let progress = 0;
+    // The per-run metadata reaches the host log only through the closed allowlist; read its run lines.
+    const runs = []; let progress = 0;
     try {
       const hostLog = await readFile(join(dataDir, 'logs/host.log'), 'utf8');
       for (const line of hostLog.split('\n')) {
         if (!line.includes('"research_run"') && !line.includes('"research_progress"')) continue;
         let record; try { record = JSON.parse(line); } catch { continue; }
-        if (record.event === 'research_run') run = record;
+        if (record.event === 'research_run') runs.push(record);
         else if (record.event === 'research_progress') progress += 1;
       }
     } catch { /* no host log means no recorded run */ }
-    if (calls !== 1) return { ok: false, stage: 'call', calls };
-    if (!run) return { ok: false, stage: 'no_run' };
-    if (run.status !== 'answered' && run.status !== 'partial') return { ok: false, stage: 'status', status: String(run.status) };
-    if (!(run.rounds >= 1)) return { ok: false, stage: 'rounds', rounds: run.rounds };
+    if (calls < 1) return { ok: false, stage: 'call', calls };
+    // The question is one research run. A model may call the tool more than once (start then continue or
+    // stop), but every run line for the question carries the one researchId the host minted.
+    const ids = [...new Set(runs.map(line => line.researchId))];
+    if (ids.length !== 1) return { ok: false, stage: 'runs', calls, runs: ids.length };
+    const answered = runs.filter(line => (line.status === 'answered' || line.status === 'partial') && line.rounds >= 1);
+    if (!answered.length) return { ok: false, stage: 'status', calls, runs: runs.length };
+    const run = answered[answered.length - 1];
     const read = Array.isArray(run.sources) ? run.sources.filter(source => source.disposition === 'completed').length : 0;
     if (read < 1) return { ok: false, stage: 'sources', read };
     if (!(run.replyBytes <= 2000)) return { ok: false, stage: 'over_cap', replyBytes: run.replyBytes };
@@ -337,7 +341,7 @@ async function researchTurn({ base, token, epoch, dataDir, clipPath }) {
     // Three real drivers: the same-provider selector, the fixed fallback recipe, or the product's
     // single-source hint fast path (selectorMs 0 and fallbackUsed false). Report which one drove the run.
     const driver = run.selectorMs > 0 ? 'selector' : (run.fallbackUsed === true ? 'fallback' : 'single-source-hint');
-    return { ok: true, stage: 'turn', rounds: run.rounds, sources: `${run.sources.length}(${read} read)`, driver, selectorMs: run.selectorMs, elapsedMs: run.elapsedMs, deadAirMs: run.deadAirMs, replyBytes: run.replyBytes, outputAfter: outputChars - outputAtResult, progress };
+    return { ok: true, stage: 'turn', calls, rounds: run.rounds, sources: `${run.sources.length}(${read} read)`, driver, selectorMs: run.selectorMs, elapsedMs: run.elapsedMs, deadAirMs: run.deadAirMs, replyBytes: run.replyBytes, outputAfter: outputChars - outputAtResult, progress };
   } finally { try { ws.close(); } catch { /* noop */ } }
 }
 
@@ -383,7 +387,7 @@ async function main() {
       try {
         const research = await researchTurn({ base, token, epoch, dataDir, clipPath });
         results.push({ id: 'probe5-research', ok: research.ok, note: research.ok
-          ? `calls=1 rounds=${research.rounds} sources=${research.sources} driver=${research.driver} selectorMs=${research.selectorMs} elapsedMs=${research.elapsedMs} deadAirMs=${research.deadAirMs} reply=${research.replyBytes}B output_after=${research.outputAfter}B progress=${research.progress}`
+          ? `calls=${research.calls} rounds=${research.rounds} sources=${research.sources} driver=${research.driver} selectorMs=${research.selectorMs} elapsedMs=${research.elapsedMs} deadAirMs=${research.deadAirMs} reply=${research.replyBytes}B output_after=${research.outputAfter}B progress=${research.progress}`
           : `stage=${research.stage} calls=${research.calls ?? 0} status=${research.status ?? 'n/a'} rounds=${research.rounds ?? 0} read=${research.read ?? 0} reply=${research.replyBytes ?? 0}B load=${loadAverageText()}` });
       } finally { await rm(clipPath, { force: true }); }
     } catch (error) { results.push({ id: 'probe5-research', ok: false, note: String(error && error.message).slice(0, 120) }); }

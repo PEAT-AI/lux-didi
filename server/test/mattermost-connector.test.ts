@@ -57,7 +57,7 @@ test('channel history projects Markdown with bounded fields and permalink source
   assert.match(projected.projection.text, /source: https:\/\/chat\.peat-cloud\.com\/team\/pl\/abcdef1234567890abcdefghij/);
 });
 
-test('a long message body is kept in full (no per-field clip)', async t => {
+test('a message body is clipped to the per-post bound with an omission note', async t => {
   const f = setup('ok');
   t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
   const digest = await approve(f.adapter, f.registry);
@@ -66,9 +66,9 @@ test('a long message body is kept in full (no per-field clip)', async t => {
   const projected = projectMattermostResult(f.adapter, result);
   assert.equal(projected.ok, true);
   if (!projected.ok) return;
-  const long = 'L'.repeat(700);
-  assert.ok(projected.projection.text.includes(long), 'the full message body must reach the model');
-  assert.equal(projected.projection.text.includes('[omitted:'), false, 'a body under the message bound is not cut');
+  assert.ok(projected.projection.text.includes('L'.repeat(250)), 'the bounded body reaches the model');
+  assert.equal(projected.projection.text.includes('L'.repeat(251)), false, 'a body over the 250-character bound is clipped');
+  assert.match(projected.projection.text, /\[omitted: \d+ characters; final/);
 });
 
 test('only the read envelope is eligible; a granted writer refuses the whole call', async t => {

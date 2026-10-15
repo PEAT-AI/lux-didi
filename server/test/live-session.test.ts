@@ -4,6 +4,9 @@ import * as labels from '../domain/labels.js';
 import { composeLive, resolveLiveMemory } from '../host/live.js';
 import { captureHostDiagnostics, HostLog, safeEvent } from '../host/log.js';
 import { attachHostLogSink } from '../tools/host-events.js';
+// Side-effect import: register the intent-tool suite in this process so a declared check runs it
+// (live-session is in the contract scope; the check scripts are not).
+import './intent-tools.test.js';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';

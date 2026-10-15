@@ -13,6 +13,7 @@ import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { createLuxKnowledgeReader } from '../connectors/lux-knowledge.js';
 import type { McpPort, ToolDefinition as McpTool } from '../adapters/mcp/port.js';
 import { runTools } from '../adapters/model/loop.js';
+import { attachHostLogSink } from '../tools/host-events.js';
 import type { HostContext, JsonObject, ModelPort, ModelRequest, ModelResult, ToolCallIntent, ToolCallJournal, ToolDefinition, ToolResultBinding, ToolResultGate } from '../adapters/model/types.js';
 import { CONNECTOR_DESCRIPTORS, normalizeGetInsightArgs } from '../connectors/index.js';
 import { runToolCalls } from '../tools/declarations.js';
@@ -698,12 +699,12 @@ test('K1: a declared tool without tailored guidance states its expected shape', 
 
 test('K1: an invalid tool call logs a metadata-only argument diagnostic', async () => {
   const owner = { journal: refuses([]), resultGate: {} as unknown as ToolResultGate };
-  const lines: string[] = []; const original = console.log;
-  console.log = (...args: unknown[]) => { lines.push(args.map(String).join(' ')); };
+  const events: { event?: string }[] = [];
+  const detach = attachHostLogSink({ event: raw => { events.push(raw as { event?: string }); } });
   try {
     await runToolCalls(owner, [{ id: '1', name: 'get_insight', args: { ids: ['hunter2'], limit: 3 } }], errorContext(errorTool()) as never);
-  } finally { console.log = original; }
-  const event = JSON.parse(lines.find(line => line.includes('tool_arguments_rejected'))!) as { tool: string; fields: string[] };
+  } finally { detach(); }
+  const event = events.find(line => line.event === 'tool_arguments_rejected') as { tool: string; fields: string[] };
   assert.equal(event.tool, 'get_insight');
   assert.deepEqual(event.fields, ['ids:array', 'limit:number']);
   assert.doesNotMatch(JSON.stringify(event), /hunter2/);

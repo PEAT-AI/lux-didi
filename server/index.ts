@@ -13,7 +13,7 @@ export async function main(): Promise<void> {
   const store = new Store(resolve(directory));
   try {
     const service = await listenService({ store, port: Number(rawPort) });
-    console.log(`Didi runtime ${service.origin}; domain unavailable; credential in private state directory`);
+    process.stdout.write(`Didi runtime ${service.origin}; domain unavailable; credential in private state directory\n`);
     let closing = false;
     const stop = () => { if (closing) return; closing = true; void service.close().then(() => { store.close(); }).catch(() => { process.exitCode = 1; }); };
     process.once('SIGINT', stop); process.once('SIGTERM', stop);

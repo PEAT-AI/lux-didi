@@ -10,6 +10,7 @@ import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
 import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection } from './types.js';
 import { publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, composeLiveSessionInstruction, connectorGroupNames, toolGroupNames } from '../prompt/index.js';
+import { hostLogEvent } from '../host/log.js';
 import { validateAcceptedPrompt } from './config.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type { DataClass, LiveVoiceDiagnostics, LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort, LiveVoiceSession, LiveVoiceRequest } from '../adapters/live-voice/index.js';
@@ -674,7 +675,7 @@ export class LiveSessionOwner {
       this.#settle(handle, { state: 'failed', code: 'resume_failed' }, false, 'ended', null);
       return false;
     }
-    if (!reuse) console.log(JSON.stringify({ event: 'live_resumption_fresh', toolCalls: handle.toolCalls }));
+    if (!reuse) hostLogEvent({ event: 'live_resumption_fresh', toolCalls: handle.toolCalls });
     handle.attempts += 1; handle.generation += 1; handle.rebuilding = true; handle.ready = false;
     handle.thinking = false; handle.speaking = false;
     this.#store.transaction(tx => tx.run('UPDATE live_sessions SET connection_generation=? WHERE live_session_id=?', [handle.generation, handle.liveSessionId]));
@@ -937,7 +938,7 @@ export class LiveSessionOwner {
         const hit = cache.cacheable(call.name) ? cache.get<{ response: JsonObject; projection: LiveToolProjection }>(call.name, call.args) : undefined;
         if (!hit) { pending.push({ index, call }); return; }
         // Metadata only: this idempotent read was answered from the session cache, with no connector call.
-        console.log(JSON.stringify({ event: 'live_read_cache', tool: call.name, cached: true }));
+        hostLogEvent({ event: 'live_read_cache', tool: call.name, cached: true });
         cached.set(index, hit);
       });
       const batch = pending.length === 0 ? undefined : await (async () => {

@@ -52,7 +52,7 @@ test('no hard-coded colour remains outside the token blocks', () => {
   const stripped = css
     .replace(new RegExp(':root\\{[^}]*\\}'), '')
     .replace(new RegExp('\\[data-theme="light"\\]\\{[^}]*\\}'), '');
-  assert.doesNotMatch(stripped, /#[0-9a-fA-F]{3,8}|rgba?\(/, 'colour literals live only in tokens');
+  assert.doesNotMatch(stripped, /#[0-9a-fA-F]{3,8}|rgba?\(|\b(?:white|black)\b(?!-)/, 'colour literals live only in tokens');
 });
 
 // OUTCOME 2: a light theme is defined by the same tokens.

@@ -119,3 +119,12 @@ test('connected settings render the stay-connected switch and connected history 
 test('connected history is absent when no connected state is supplied', () => {
   assert.doesNotMatch(settingsMarkup({ status }), /connected-history/);
 });
+
+test('connected history marks the active conversation selected and only that one', () => {
+  const html = settingsMarkup({ connected: { remember: true, conversations: [
+    { title: 'Native B', sessionId: 'S2', model: 'gemini-connected-test', state: 'active' },
+    { title: 'Native A', sessionId: 'S1', model: 'gemini-connected-test', state: 'active', active: true },
+  ] } });
+  assert.match(html, /<option value="S2" >/);
+  assert.match(html, /<option value="S1" selected>/);
+});

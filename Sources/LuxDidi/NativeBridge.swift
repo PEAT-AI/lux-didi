@@ -288,3 +288,21 @@ struct LevelBatcher {
     func start() { bridge.requestStart() }
     func stop() { bridge.requestStop() }
 }
+
+// MARK: - Window drag band
+
+/// WKWebView does not support `-webkit-app-region`, so with a hidden-inset titlebar the content view
+/// covers the titlebar band and the band stops dragging the window. This transparent strip is pinned to
+/// the top of the content (the rail/header top band, which the web keeps non-interactive) and starts a
+/// window drag from it; every point outside its own frame falls through (`hitTest` returns nil), so web
+/// controls below the band keep receiving clicks.
+@MainActor final class WindowDragBandView: NSView {
+    static let bandHeight: CGFloat = 28
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func mouseDown(with event: NSEvent) { window?.performDrag(with: event) }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let local = convert(point, from: superview)
+        return bounds.contains(local) ? self : nil
+    }
+}

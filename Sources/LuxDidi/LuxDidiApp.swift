@@ -439,6 +439,7 @@ struct RootView: View {
         }
         window.isReleasedWhenClosed = false
         window.contentView = NSHostingView(rootView: RootView(model: model))
+        installDragBand()
         model.trafficLightsMaxX = { [weak self] in Double(self?.window?.standardWindowButton(.zoomButton)?.frame.maxX ?? 0) }
         model.bridge.hydrateProvider = { [weak model] in model?.bridgeHydrate() ?? .empty }
         model.bridge.onCommand = { [weak model] in model?.handleBridgeCommand($0) }
@@ -635,6 +636,19 @@ struct RootView: View {
     }
     func windowDidMove(_ notification: Notification) { rememberFrame() }
     func windowDidResize(_ notification: Notification) { rememberFrame() }
+    /// A transparent top-band strip that restores window drag over the full-bleed web content.
+    private func installDragBand() {
+        guard let content = window.contentView else { return }
+        let band = WindowDragBandView()
+        band.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(band)
+        NSLayoutConstraint.activate([
+            band.topAnchor.constraint(equalTo: content.topAnchor),
+            band.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            band.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            band.heightAnchor.constraint(equalToConstant: WindowDragBandView.bandHeight),
+        ])
+    }
     private func applyBridgeTheme(_ theme: BridgeTheme) {
         window?.appearance = NSAppearance(named: theme.appearanceName)
         window?.backgroundColor = theme.backgroundColor

@@ -117,6 +117,16 @@ import Foundation
         check(route?.input == "Studio Mic" && route?.output == "Built-in Speakers", "route sentence parses")
         check(BridgeRoute.parse("") == nil, "empty route is nil")
 
+        // 10. Drag band: it claims only the top strip and falls through below it.
+        check(WindowDragBandView.bandHeight > 0, "drag band has a positive height")
+        let band = WindowDragBandView(frame: NSRect(x: 0, y: 572, width: 800, height: WindowDragBandView.bandHeight))
+        check(band.mouseDownCanMoveWindow == false, "drag band is not a movable background")
+        check(band.acceptsFirstMouse(for: nil), "drag band accepts the first click on an inactive window")
+        let host = NSView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        host.addSubview(band)
+        check(band.hitTest(NSPoint(x: 200, y: 580)) === band, "a point in the top strip hits the drag band")
+        check(band.hitTest(NSPoint(x: 200, y: 300)) == nil, "a point below the strip falls through to the web content")
+
         print(failures == 0 ? "NATIVE-BRIDGE TESTS PASS" : "NATIVE-BRIDGE TESTS FAILED \(failures)")
         exit(failures == 0 ? 0 : 1)
     }

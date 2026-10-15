@@ -28,6 +28,8 @@ export interface SettingsInput {
     conversations: { title: string; sessionId: string; model?: string; state?: string; active?: boolean }[];
     remember: boolean;
     busy?: boolean;
+    standingRevoke?: boolean;
+    conversationState?: string;
   };
 }
 
@@ -111,7 +113,8 @@ function connectedSection(connected: SettingsInput['connected']): string {
   const options = connected.conversations.map(item => `<option value="${escapeHtml(item.sessionId)}" ${item.active ? 'selected' : ''}>${escapeHtml(item.title)}${item.model ? ` · ${escapeHtml(item.model)}` : ''}${item.state ? ` · ${escapeHtml(item.state)}` : ''}</option>`).join('');
   return `<section class="settings-section"><h3>Naya’s text conversations</h3>
 <label class="connected-consent" for="connected-remember"><input type="checkbox" id="connected-remember" ${connected.remember ? 'checked' : ''} ${connected.busy ? 'disabled' : ''}> Keep Naya’s text conversations across sessions</label>
-${connected.conversations.length ? `<label for="connected-history">Connected history</label><select id="connected-history" ${connected.busy ? 'disabled' : ''}>${options}</select>` : '<p class="muted">No past connected conversations yet.</p>'}</section>`;
+${connected.conversations.length ? `<label for="connected-history">Connected history</label><select id="connected-history" ${connected.busy ? 'disabled' : ''}>${options}</select>` : '<p class="muted">No past connected conversations yet.</p>'}
+<div class="button-row"><button type="button" id="connected-recover" class="secondary">Recover saved history</button>${connected.standingRevoke ? '<button type="button" id="connected-standing-revoke" class="secondary">Revoke standing consent</button>' : ''}${connected.conversationState ? `<button type="button" id="connected-revoke" class="secondary" ${connected.conversationState === 'revoked' || connected.busy ? 'disabled' : ''}>Revoke conversation consent</button>` : ''}</div></section>`;
 }
 
 export function settingsMarkup(input: SettingsInput): string {

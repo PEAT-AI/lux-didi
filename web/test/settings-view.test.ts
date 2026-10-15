@@ -106,11 +106,14 @@ test('settings view puts each section heading in its own section for vertical rh
 });
 
 test('connected settings render the stay-connected switch and connected history from input', () => {
-  const html = settingsMarkup({ connected: { remember: true, conversations: [{ title: 'Naya connected conversation', sessionId: 'S1', model: 'gemini-2.5', state: 'active' }] } });
+  const html = settingsMarkup({ connected: { remember: true, conversations: [{ title: 'Naya connected conversation', sessionId: 'S1', model: 'gemini-2.5', state: 'active' }], standingRevoke: true, conversationState: 'active' } });
   assert.match(html, /id="connected-remember"[^>]*checked/);
   assert.match(html, /Keep Naya’s text conversations across sessions/);
   assert.match(html, /id="connected-history"/);
   assert.match(html, /Naya connected conversation/);
+  assert.match(html, /id="connected-recover"/);
+  assert.match(html, /id="connected-standing-revoke"/);
+  assert.match(html, /id="connected-revoke"/);
 });
 
 test('connected history is absent when no connected state is supplied', () => {

@@ -32,19 +32,19 @@ function restore() {
   delete (globalThis as any).__connectedConsentApi;
 }
 
-test('connected indicator and checkbox come from the server grant, not saved client flags', async () => {
+test('connected consent gate comes from the server grant, not saved client flags', async () => {
   install();
   try {
     const { ConnectedView } = await import(`data:text/javascript;base64,${Buffer.from(moduleSource).toString('base64')}`);
     const view = new ConnectedView(() => {});
     consent = { sessionId: 'server-grant', provider: 'provider <X>', model: 'server-model', scope: 'standing', state: 'active' };
     await view.refresh('owner');
-    assert.match(panel.innerHTML, /Connected as provider &lt;X&gt;, standing consent/);
-    assert.match(panel.innerHTML, /id="connected-standing-revoke"/);
     assert.doesNotMatch(panel.innerHTML, /id="connected-consent"/);
+    assert.doesNotMatch(panel.innerHTML, /connected-disclosure/);
+    assert.doesNotMatch(panel.innerHTML, /id="connected-send"[^>]*disabled/);
     consent = null;
     await view.refresh('owner');
-    assert.doesNotMatch(panel.innerHTML, /connected-consent-indicator/);
+    assert.match(panel.innerHTML, /connected-disclosure/);
     assert.match(panel.innerHTML, /id="connected-consent"/);
     assert.match(panel.innerHTML, /id="connected-send"[^>]*disabled/);
   } finally { restore(); }

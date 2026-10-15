@@ -77,37 +77,33 @@ try {
     await page.locator('#connected-consent').waitFor();
     await page.screenshot({ path: join(u3, 'desktop-1440-chat-no-grant.png'), fullPage: true });
   });
-  await step('local Save stays local; the open chat exposes consent before any model send', async () => {
-    await page.locator('#conversation-history > summary').click();
-    await page.locator('#message').fill('EXCLUDED_BROWSER_LOCAL_CANARY: archive this without any model send.');
-    await page.getByRole('button', { name: 'Save message', exact: true }).click();
-    await page.waitForFunction(() => document.querySelector('.conversation-grid .thread .entries')?.textContent.includes('EXCLUDED_BROWSER_LOCAL_CANARY'));
-    assert.equal(requests.filter(r => r.path === '/api/v1/chat' && r.method === 'POST').length, 0);
+  await step('the open chat exposes consent before any model send', async () => {
     assert.match(await page.locator('.connected-disclosure').innerText(), /current and earlier selected turns/);
+    assert.equal(await page.locator('#connected-consent').count(), 1);
     await page.locator('#connected-consent').check(); await page.locator('#connected-draft:not([disabled])').waitFor();
-    assert.match(await page.locator('#connected-send').innerText(), /gemini \/ gemini-connected-test/);
+    assert.equal(await page.locator('#connected-send').innerText(), 'Send');
   });
   await step('real adapter captured request, split provisional stream, meaningful atomic saved answer', async () => {
     await page.locator('#connected-draft').fill('Help me choose one small next step for this synthetic release checklist.');
     child.send('stream-next');
     const partial = page.locator('.provisional').waitFor(); await page.locator('#connected-send').click(); await partial; child.send('finish-stream');
-    await page.waitForFunction(() => document.querySelector('#connected-run')?.textContent.includes('Answer saved durably.'));
-    await page.getByText('Naya: Let us choose one small next step and keep the rest for later.', { exact: true }).waitFor();
+    await page.waitForFunction(() => document.querySelectorAll('#connected-entries .assistant').length === 1);
+    await page.getByText('Let us choose one small next step and keep the rest for later.', { exact: true }).waitFor();
     const sessions = await api('/sessions');
     const enrolled = sessions.items.find(item => item.title === 'Naya connected conversation'); const entries = (await api(`/sessions/${enrolled.id}`)).entries;
     assert.deepEqual(entries.map(e => e.role), ['user', 'assistant']);
     assert.equal(await page.locator('#connected-draft').inputValue(), '');
     const wire = JSON.parse((await readFile(join(state, 'wire.jsonl'), 'utf8')).trim());
-    assert.ok(wire.body.systemInstruction.parts[0].text.length > 100); assert.doesNotMatch(JSON.stringify(wire), /EXCLUDED_BROWSER_LOCAL_CANARY/); assert.equal(wire.body.tools, undefined);
+    assert.ok(wire.body.systemInstruction.parts[0].text.length > 100); assert.equal(wire.body.tools, undefined);
     await page.locator('#connected-draft').fill('Make that earlier next step concrete, without adding the local archive.'); await page.locator('#connected-send').click();
     await page.waitForFunction(() => document.querySelectorAll('#connected-entries .assistant').length === 2);
     const wires = (await readFile(join(state, 'wire.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
-    assert.equal(wires.length, 2); assert.match(JSON.stringify(wires[1]), /synthetic release checklist/); assert.match(JSON.stringify(wires[1]), /keep the rest for later/); assert.doesNotMatch(JSON.stringify(wires[1]), /EXCLUDED_BROWSER_LOCAL_CANARY/);
+    assert.equal(wires.length, 2); assert.match(JSON.stringify(wires[1]), /synthetic release checklist/); assert.match(JSON.stringify(wires[1]), /keep the rest for later/);
   });
   await step('U3 declutter shots: the granted chat and the Settings switch', async () => {
     const u3 = '/Users/rob/.lux/reports/lux-didi-release-1014/u3-shots';
     await mkdir(u3, { recursive: true });
-    await page.locator('.connected-consent-indicator').waitFor();
+    await page.locator('#connected-entries .assistant').first().waitFor();
     await page.screenshot({ path: join(u3, 'desktop-1440-chat-with-grant.png'), fullPage: true });
     await page.locator('[data-tab="Settings"]').click();
     await page.locator('#connected-history').waitFor();
@@ -116,13 +112,13 @@ try {
   await step('same-profile real restart preserves consent/history and never resends', async () => {
     const port = new URL(descriptor.origin).port; await stop(); await start(Number(port)); await page.reload();
     await page.waitForFunction(() => document.querySelectorAll('#connected-entries .assistant').length === 2);
-    assert.match(await page.locator('.connected-state').innerText(), /active/);
+    assert.equal(await page.locator('#connected-draft').isEnabled(), true);
     assert.equal((await readFile(join(state, 'wire.jsonl'), 'utf8')).trim().split('\n').length, 2);
-    await page.bringToFront(); await page.locator('#connected-recover').click(); await page.waitForFunction(() => document.querySelectorAll('#connected-entries .assistant').length === 2);
+    await page.bringToFront(); await page.waitForFunction(() => document.querySelectorAll('#connected-entries .assistant').length === 2);
     await page.screenshot({ path: join(artifacts, `desktop-${sha}.png`), fullPage: true });
     await page.setViewportSize({ width: 375, height: 900 });
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
-    const counts = await page.evaluate(() => Object.fromEntries(['#app', '#message-form', '#connected-panel', '#connected-entries', '#connected-draft', '#connected-send', 'canvas'].map(selector => [selector, document.querySelectorAll(selector).length])));
+    const counts = await page.evaluate(() => Object.fromEntries(['#app', '#connected-panel', '#connected-entries', '#connected-draft', '#connected-send', 'canvas'].map(selector => [selector, document.querySelectorAll(selector).length])));
     for (const [selector, count] of Object.entries(counts)) assert.equal(count, 1, `Unique rendered DOM ${selector}`);
     // W5 narrow stage scales the canvas to 560 CSS px; it stays square and centred in the stage.
     const mobileOrb = await page.locator('#didi-orb').boundingBox();
@@ -160,12 +156,12 @@ try {
     await page.locator('#connected-send').click(); await page.locator('#connected-error').waitFor();
     assert.equal(await page.locator('#connected-draft').inputValue(), 'Keep this unsent draft after consent rejection.');
     assert.equal((await api(`/sessions/${enrolled.id}`)).entries.length, 4);
-    await page.reload(); await page.waitForFunction(() => document.querySelector('.connected-state')?.textContent.includes('revoked'));
+    await page.reload(); await page.waitForFunction(() => document.querySelector('#connected-draft')?.value === 'Keep this unsent draft after consent rejection.');
     assert.equal(await page.locator('#connected-draft').inputValue(), 'Keep this unsent draft after consent rejection.');
     assert.equal((await readFile(join(state, 'wire.jsonl'), 'utf8')).trim().split('\n').length, 2);
   });
   await step('explicit cancel and provider failure render no saved answer, never a fake success', async () => {
-    await page.locator('#connected-consent').check(); await page.locator('#connected-draft:not([disabled])').waitFor();
+    await page.locator('#connected-draft:not([disabled])').waitFor();
     child.send('hold-next'); const sent = waitPhase('transport');
     await page.locator('#connected-draft').fill('Cancel this explicitly sent synthetic turn.'); await page.locator('#connected-send').click(); await sent;
     await page.locator('#connected-cancel').click(); await page.waitForFunction(() => document.querySelector('#connected-run')?.textContent.includes('No saved answer: cancelled'));

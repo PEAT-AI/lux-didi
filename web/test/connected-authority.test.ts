@@ -140,9 +140,9 @@ test('intentional action-select handoff stays busy and current select failures r
   const view = await setup(); await view.refresh('O1');
   const held = deferred<Response>(), entered = deferred<void>();
   routes = async path => { if (path === '/conversations/S1') { entered.resolve(); return held.promise; } };
-  panel.querySelector('#connected-recover').fire('click'); await entered.promise;
+  void view.recoverHistory(); await entered.promise;
   assert.equal(view.active, true); const reads = calls.length;
-  panel.querySelector('#connected-recover').fire('click'); await tick(); assert.equal(calls.length, reads);
+  void view.recoverHistory(); await tick(); assert.equal(calls.length, reads);
   held.resolve(new Response(JSON.stringify({ error: { code: 'CONFLICT', message: 'current select failure' } }), { status: 409 })); await tick(); await tick();
   assert.match(panel.html, /current select failure/); assert.equal(view.active, false); view.reset();
 });
@@ -241,14 +241,14 @@ test('an unresolved turn whose conversation is missing offers an exact-key recov
   await view.refresh('O1');
   assert.equal(storage.get('didi-connected:O1'), before);
   assert.equal(calls.includes('/conversation-selection'), false);
-  assert.match(panel.html, /id="connected-recover"/);
+  assert.match(panel.html, /id="connected-retry"/);
   let chat: RequestInit | undefined;
   routes = async (path, init) => {
     if (path !== '/chat') return undefined;
     chat = init;
     return envelope({ runId: 'recovered', sessionId: 'MISSING', state: 'terminal', outcome: 'complete', finalEntryId: null, partialText: '', sequence: 1 });
   };
-  panel.querySelector('#connected-recover').fire('click'); await tick(); await tick(); await tick();
+  panel.querySelector('#connected-retry').fire('click'); await tick(); await tick(); await tick();
   assert.equal(calls.filter(path => path === '/chat').length, 1);
   assert.equal((chat!.headers as Record<string, string>)['Idempotency-Key'], 'retained-key');
   assert.equal(JSON.parse(storage.get('didi-connected:O1')!).pending, undefined);

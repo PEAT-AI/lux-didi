@@ -16,6 +16,18 @@ export class ConnectedView {
   get busy() { return this.#busy; }
   get history() { return this.#conversations.map(item => ({ title: item.title, sessionId: item.conversation.sessionId, model: item.conversation.model, state: item.conversation.state })); }
   setRemember(value: boolean) { this.#remember = value; }
+  get standingRevoke() { return this.#status.consent?.scope === 'standing' && this.#status.consent.state === 'active'; }
+  get conversationState() { return this.#conversation?.state; }
+  async revokeStanding() { const grant = this.#status.consent; if (!grant) return; await this.#action(async lifetime => {
+    await request(`/conversations/${grant.sessionId}/revoke`, { method: 'POST', body: {}, signal: lifetime.local }); this.#check(lifetime);
+    const status = await request<RouteStatus>('/chat/status', { signal: lifetime.local }); this.#check(lifetime); this.#status = status; this.#consent = false;
+  }); }
+  async revokeConversation() { const c = this.#conversation; if (!c) return; await this.#action(async lifetime => {
+    await request(`/conversations/${c.sessionId}/revoke`, { method: 'POST', body: {}, signal: lifetime.local }); this.#check(lifetime);
+    const status = await request<RouteStatus>('/chat/status', { signal: lifetime.local }); this.#check(lifetime); this.#status = status;
+    return this.select(c.sessionId, lifetime);
+  }); }
+  async recoverHistory() { if (this.#pending) return this.#action(lifetime => this.#recoverPending(lifetime)); const c = this.#conversation; if (c) return this.#action(lifetime => this.select(c.sessionId, lifetime)); }
   #owner = ''; #status: RouteStatus = { status: 'unconfigured' }; #conversation: Conversation | undefined;
   #conversations: { title: string; conversation: Conversation }[] = []; #entries: Entry[] = [];
   #run: Run | undefined; #draft = ''; #pending: { key: string; text: string; sessionId: string; selectedMemoryEntryIds: string[] } | undefined;
@@ -156,25 +168,19 @@ export class ConnectedView {
     const provider = this.#status.provider, model = this.#status.model;
     panel.innerHTML = `<section class="panel connected-conversation" aria-label="Connected Naya conversation">
       <h2>Talk with ${escape(this.#displayName)}</h2>
-      ${grant ? connectedConsentIndicator(grant) : `<label class="connected-consent" for="connected-consent"><input id="connected-consent" type="checkbox" ${this.#consent ? 'checked' : ''}> I agree to send this conversation through ${escape(provider ?? 'the configured provider')}${model ? ` / ${escape(model)}` : ''}.</label>`}
-      <p class="connected-disclosure">Starting a connected conversation sends its current and earlier selected turns to <strong>${escape(provider ?? 'the connected provider')}</strong>. Nothing leaves this Mac until you agree.</p>
-      ${c ? `<div class="connected-state"><span class="tag">${escape(c.provider)} / ${escape(c.model)} · ${escape(c.state)}</span>${c.state !== 'active' ? '<p>This conversation is paused. History remains in Settings.</p>' : ''}<button id="connected-recover" class="quiet">Recover saved history</button><button id="connected-revoke" class="quiet" ${c.state === 'revoked' || this.#busy ? 'disabled' : ''}>Revoke conversation consent</button></div>` : ''}
-      <div id="connected-entries" class="connected-entries">${this.#entries.map(entry => `${entry.id === r?.finalEntryId ? renderToolEvidence(r.toolEvidence ?? []) : ''}<article class="entry ${entry.role}"><header><strong>${entry.role === 'assistant' ? 'Naya · saved answer' : 'You · saved locally'}</strong></header><p>${escape(entry.text)}</p></article>`).join('')}${r && !r.finalEntryId ? renderToolEvidence(r.toolEvidence ?? []) : ''}</div>
-      ${r ? `<div id="connected-run" class="callout" role="status" data-run-id="${escape(r.runId)}">${r.state === 'terminal' ? r.outcome === 'complete' ? 'Answer saved durably.' : `No saved answer: ${escape(r.outcome)}.${r.mayHaveBeenSent ? ' Content may have been sent.' : ''}` : 'User turn accepted durably; waiting for a saved answer.'}${r.partialText && r.outcome !== 'complete' ? `<p class="provisional"><strong>Provisional · not a saved answer</strong><br>${escape(r.partialText)}</p>` : ''}${r.state !== 'terminal' ? '<button id="connected-cancel" class="quiet">Cancel model run</button>' : ''}${this.#usage(r)}</div>` : ''}
-      ${c && c.state === 'active' ? this.#notesSection() : ''}
-      <form id="connected-send-form"><label for="connected-draft">Message for this connected conversation</label><textarea id="connected-draft" rows="3" placeholder="One small next step…" ${!ready || this.#busy ? 'disabled' : ''}>${escape(this.#draft)}</textarea><button id="connected-send" ${!ready || this.#busy || (r && r.state !== 'terminal') ? 'disabled' : ''}>Send to ${escape(provider ?? 'Naya')}${model ? ` / ${escape(model)}` : ''}</button><small>Enter sends; Shift+Enter makes a new line. A failed acceptance keeps your draft; nothing is automatically retried.</small></form>
+      ${grant ? '' : `<p class="connected-disclosure">Starting a connected conversation sends its current and earlier selected turns to <strong>${escape(provider ?? 'the connected provider')}</strong>. Nothing leaves this Mac until you agree.</p>
+      <label class="connected-consent" for="connected-consent"><input id="connected-consent" type="checkbox" ${this.#consent ? 'checked' : ''}> I agree to send this conversation through ${escape(provider ?? 'the configured provider')}${model ? ` / ${escape(model)}` : ''}.</label>`}
+      <div id="connected-entries" class="connected-entries">${this.#entries.map(entry => `${entry.id === r?.finalEntryId ? renderToolEvidence(r.toolEvidence ?? []) : ''}<article class="entry ${entry.role}"><header><strong>${entry.role === 'assistant' ? 'Naya · saved answer' : 'You · saved locally'}</strong></header><p>${escape(answerText(entry))}</p></article>`).join('')}${r && !r.finalEntryId ? renderToolEvidence(r.toolEvidence ?? []) : ''}</div>
+      ${r ? this.#runSection(r) : ''}
+      <form id="connected-send-form"><label for="connected-draft">Message for this connected conversation</label><textarea id="connected-draft" rows="3" placeholder="One small next step…" ${!ready || this.#busy ? 'disabled' : ''}>${escape(this.#draft)}</textarea><div class="composer-toolbar">${c && c.state === 'active' ? this.#notesSection() : ''}<button id="connected-send" ${!ready || this.#busy || (r && r.state !== 'terminal') ? 'disabled' : ''}>Send</button></div><small>Enter sends; Shift+Enter makes a new line. A failed acceptance keeps your draft; nothing is automatically retried.</small></form>
       ${this.#error ? `<p id="connected-error" role="alert">${escape(this.#error)}</p>` : ''}
-      ${this.#pending && !c ? `<div id="connected-recovery" role="alert" data-recovery="pending-conversation-missing"><p>Unresolved turn: its conversation is not in the current list. The pending acceptance key and text are retained; nothing was resent.</p><button id="connected-recover" class="quiet">Retry the saved turn</button><button id="connected-reload" class="quiet">Reload history</button></div>` : ''}
+      ${this.#pending && !c ? `<div id="connected-recovery" role="alert" data-recovery="pending-conversation-missing"><p>Unresolved turn: its conversation is not in the current list. The pending acceptance key and text are retained; nothing was resent.</p><button id="connected-retry" class="quiet">Retry the saved turn</button><button id="connected-reload" class="quiet">Reload history</button></div>` : ''}
     </section>`;
     panel.querySelector<HTMLInputElement>('#connected-consent')?.addEventListener('change', event => { this.#consent = (event.target as HTMLInputElement).checked; this.attach(); });
     panel.querySelector<HTMLInputElement>('#connected-remember')?.addEventListener('change', event => { this.#remember = (event.target as HTMLInputElement).checked; });
     panel.querySelector<HTMLTextAreaElement>('#connected-draft')?.addEventListener('input', event => { this.#draft = (event.target as HTMLTextAreaElement).value; this.#save(); });
     panel.querySelector<HTMLTextAreaElement>('#connected-draft')?.addEventListener('keydown', event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); void this.#send(); } });
-    panel.querySelector('#connected-standing-revoke')?.addEventListener('click', () => { const grant = this.#status.consent; if (grant) void this.#action(async lifetime => {
-      await request(`/conversations/${grant.sessionId}/revoke`, { method: 'POST', body: {}, signal: lifetime.local }); this.#check(lifetime);
-      const status = await request<RouteStatus>('/chat/status', { signal: lifetime.local }); this.#check(lifetime); this.#status = status; this.#consent = false;
-    }); });
-    panel.querySelector('#connected-recover')?.addEventListener('click', () => { if (this.#pending) void this.#action(lifetime => this.#recoverPending(lifetime)); else if (c) void this.#action(lifetime => this.select(c.sessionId, lifetime)); });
+    panel.querySelector('#connected-retry')?.addEventListener('click', () => { void this.recoverHistory(); });
     panel.querySelector('#connected-reload')?.addEventListener('click', () => { void this.refresh(this.#owner); });
     panel.querySelector('#connected-send-form')?.addEventListener('submit', event => { event.preventDefault(); void this.#send(); });
     panel.querySelector<HTMLInputElement>('#connected-notes-query')?.addEventListener('input', event => { this.#memoryQuery = (event.target as HTMLInputElement).value; });
@@ -184,6 +190,14 @@ export class ConnectedView {
     panel.querySelector('#connected-notes-clear')?.addEventListener('click', () => { this.#memorySelected = []; this.attach(); });
     panel.querySelector<HTMLDetailsElement>('#connected-notes')?.addEventListener('toggle', event => { this.#memoryOpen = (event.target as HTMLDetailsElement).open; });
     panel.querySelector('#connected-cancel')?.addEventListener('click', () => { if (r && c) void this.#action(async lifetime => { await request(`/chat/${r.runId}/cancel`, { method: 'POST', body: {}, signal: lifetime.local }); this.#check(lifetime); return this.select(c.sessionId, lifetime); }); });
+  }
+  #runSection(r: Run): string {
+    const failed = r.state === 'terminal' && r.outcome !== 'complete';
+    const message = failed ? `No saved answer: ${escape(r.outcome)}.${r.mayHaveBeenSent ? ' Content may have been sent.' : ''}` : '';
+    const provisional = r.partialText && r.outcome !== 'complete' ? `<p class="provisional"><strong>Provisional · not a saved answer</strong><br>${escape(r.partialText)}</p>` : '';
+    const cancel = r.state !== 'terminal' ? '<button id="connected-cancel" class="quiet">Cancel model run</button>' : '';
+    const hidden = !message && !provisional && !cancel;
+    return `<div id="connected-run" class="callout" role="status" data-run-id="${escape(r.runId)}"${hidden ? ' hidden' : ''}>${message}${provisional}${cancel}${hidden ? '' : this.#usage(r)}</div>`;
   }
 
   async #action(action: (lifetime: ViewLifetime) => Promise<ViewLifetime | void>) {
@@ -211,7 +225,7 @@ export class ConnectedView {
   #notesSection(): string {
     const chosen = new Set(this.#memorySelected.map(hit => hit.entryId).filter((id): id is string => !!id));
     return `<details class="connected-notes" id="connected-notes"${this.#memorySelected.length || this.#memoryOpen ? ' open' : ''}>
-      <summary id="connected-notes-summary">${this.#memorySelected.length ? `Selected notes (${this.#memorySelected.length})` : 'Select local notes for this message'}</summary>
+      <summary id="connected-notes-summary">${this.#memorySelected.length ? `Selected notes (${this.#memorySelected.length})` : 'Attach notes'}</summary>
       <p class="muted">Choose exact stored notes for this one message. This is separate from the conversation history already included, and nothing is sent until you press Send.</p>
       <form id="connected-notes-search"><label for="connected-notes-query">Find a stored note</label><div class="search-row"><input id="connected-notes-query" type="search" maxlength="500" value="${escape(this.#memoryQuery)}" placeholder="A phrase you stored…"><button ${this.#memoryBusy ? 'disabled' : ''}>Find notes</button></div></form>
       ${this.#memoryError ? `<p id="connected-notes-error" role="alert">${escape(this.#memoryError)}</p>` : ''}
@@ -315,6 +329,9 @@ export class ConnectedView {
     finally { if (current()) { this.#controller = undefined; this.attach(); } }
   }
 }
+
+/** The entry already names the speaker, so a leading 'Naya:' from the model is dropped. */
+function answerText(entry: Entry): string { return entry.role === 'assistant' ? entry.text.replace(/^\s*Naya:\s*/, '') : entry.text; }
 
 /** Only a server-resolved grant is passed to this display boundary. */
 export function connectedConsentIndicator(grant: ConnectedConsent): string {

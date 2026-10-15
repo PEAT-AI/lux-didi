@@ -186,7 +186,7 @@ export async function startHost(config: HostConfig) {
       for (const source of authoritySources) { const value = await source(runId, signal); if (value) return value; }
       return null;
     };
-    const mcp = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir: providerConfigDir, lookupAuthority, log: event => log.event(event) });
+    const mcp = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir: providerConfigDir, lookupAuthority, log: event => log.event(event), connectorLog: (connector, stage) => log.event({ event: 'connector_failure', connector, stage }) });
     const liveTools: LiveToolsComposition = {
       owner: mcp.owner,
       connectionIds: () => mcp.connectionIds(),

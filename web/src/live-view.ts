@@ -117,6 +117,12 @@ export function mergeLive(previous: LiveCurrent | undefined, next: LiveCurrent):
 }
 
 export interface LiveLine { role: 'user' | 'naya'; text: string }
+// Provider chunks can split mid-word, so only a sentence boundary earns a separator; otherwise the
+// fragments are concatenated verbatim. See V2-R2 item 1.
+export function joinChunk(previous: string, next: string): string {
+  return /[.!?]["')\]]?\s*$/.test(previous) && /^[A-Za-z0-9]/.test(next) ? previous + ' ' + next : previous + next;
+}
+
 export function liveTranscript(live: LiveCurrent): LiveLine[] {
   const lines: LiveLine[] = [];
   // One provider turn can interleave a typed user turn with its streamed Naya fragments, so a
@@ -128,7 +134,7 @@ export function liveTranscript(live: LiveCurrent): LiveLine[] {
     const role = entry.kind === 'inputTranscription' ? 'user' : entry.kind === 'outputTranscription' ? 'naya' : undefined;
     if (role && entry.text) {
       const existing = segment.get(role);
-      if (existing) existing.text += entry.text;
+      if (existing) existing.text = joinChunk(existing.text, entry.text);
       else segment.set(role, { role, text: entry.text });
     }
     if (entry.kind === 'turnComplete' || entry.kind === 'interrupted' || entry.kind === 'terminal') flush();
@@ -195,38 +201,234 @@ function rememberCardMarkup(entry: LiveEntry): string {
 }
 
 /** Full section markup, id="live-panel" so the poller can replace it in place. */
-export function liveMarkup(live: LiveCurrent | undefined, poll: LivePollState = {}, detailsOpen = false): string {
+// A one-line chip that still lets the reader inspect the result: collapsed it is a single muted line
+// between turns, expanded it shows the accepted markdown and source chips.
+function toolChipMarkup(entry: LiveEntry): string {
+  const phrase = escapeHtml(toolPhrase(entry.tool?.name ?? '') + (entry.tool?.status ? ` (${entry.tool.status})` : ''));
+  const body = entry.tool?.status === 'error' ? '' : `${renderMarkdown(entry.tool?.markdown ?? '', TRANSCRIPT_MARKDOWN)}${sourcesMarkup(entry.tool?.sources ?? [])}`;
+  return `<details class="live-tool-result" data-result-seq="${entry.seq}"><summary>${phrase}</summary>${body}</details>`;
+}
+
+export function liveMarkup(live: LiveCurrent | undefined, poll: LivePollState = {}): string {
   const state = live?.state;
   const label = liveLabel(live);
-  const lines = live ? liveTranscript(live) : [];
-  const result = live ? liveResult(live) : undefined;
-  const jobs = (live?.jobs ?? []).map(job => `<article class="live-job" data-job-id="${escapeHtml(job.id)}">
-    <h2>${job.state === 'in_progress' ? 'Background task in progress' : 'Background task ' + escapeHtml(job.state)}</h2>
-    ${renderMarkdown(job.markdown, TRANSCRIPT_MARKDOWN)}
-    ${!job.delivered && job.state !== 'in_progress' ? '<p class="muted">Call Naya back: choose Start Live voice in the native app to pick up this result.</p>' : ''}
-  </article>`).join('');
+  const jobs = (live?.jobs ?? []).map(job => `<article class="live-job" data-job-id="${escapeHtml(job.id)}"><p class="live-tool-chip">${job.state === 'in_progress' ? 'Background task in progress' : 'Background task ' + escapeHtml(job.state)}</p>${renderMarkdown(job.markdown, TRANSCRIPT_MARKDOWN)}${!job.delivered && job.state !== 'in_progress' ? '<p class="muted">Call Naya back: choose Start Live voice in the native app to pick up this result.</p>' : ''}</article>`).join('');
   const latest = live?.entries.at(-1);
   const restored = state !== 'rebuilding' && latest?.kind === 'continuity' && latest.event === 'resumed'
     ? `<p role="status" data-continuity-seq="${latest.seq}">Connection restored</p>` : '';
   const error = state === 'error' ? '<p class="muted" role="status">Naya reported an error. The live session has stopped.</p>' : '';
   const muted = live?.muted ? '<p class="muted live-muted" role="status">Microphone muted</p>' : '';
-  const transcript = lines.length
-    ? `<div class="entries live-transcript">${lines.map(line => `<article class="entry"><strong>${line.role === 'user' ? 'You' : 'Naya'}</strong><div class="markdown">${renderMarkdown(line.text, TRANSCRIPT_MARKDOWN)}</div></article>`).join('')}</div>`
-    : '<div class="entries live-transcript empty"><p class="muted">No live transcription yet.</p></div>';
-  return `<section class="panel live" id="live-panel" aria-label="Naya live conversation">
+  const stale = poll.stale ? `<p class="live-stale" role="status">Live view stale${poll.lastSuccess ? ' since ' + escapeHtml(poll.lastSuccess.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })) : ', no successful poll yet'}, service unreachable</p>` : '';
+  // The transcript IS the lane: turns flow on the lane background, with a one-line tool chip where a
+  // tool result landed. No card, no duplicate latest-answer block, no history disclosure (V2-R2 item 4).
+  const flow: string[] = [];
+  let pending: LiveLine[] = [];
+  const lineMarkup = (line: LiveLine) => `<article class="entry ${line.role}"><strong>${line.role === 'user' ? 'You' : 'Naya'}</strong><div class="markdown">${renderMarkdown(line.text, TRANSCRIPT_MARKDOWN)}</div></article>`;
+  const flush = () => { for (const line of pending) flow.push(lineMarkup(line)); pending = []; };
+  for (const entry of live?.entries ?? []) {
+    const role = entry.kind === 'inputTranscription' ? 'user' : entry.kind === 'outputTranscription' ? 'naya' : undefined;
+    if (role && entry.text) {
+      const existing = pending.find(line => line.role === role);
+      if (existing) existing.text = joinChunk(existing.text, entry.text);
+      else pending.push({ role, text: entry.text });
+    }
+    if (entry.kind === 'turnComplete' || entry.kind === 'interrupted' || entry.kind === 'terminal') flush();
+    if (entry.kind === 'toolResult' && entry.tool?.name === 'remember_note') { flush(); flow.push(rememberCardMarkup(entry)); }
+    else if (entry.kind === 'toolResult') { flush(); flow.push(toolChipMarkup(entry)); }
+  }
+  flush();
+  return `<section class="lane-convo live" id="live-panel" aria-label="Naya live conversation">
     <p class="live-state" role="status" aria-live="polite">${escapeHtml(label)}</p>
-    ${muted}
-    ${poll.stale ? `<p class="live-stale" role="status">Live view stale${poll.lastSuccess ? ' since ' + escapeHtml(poll.lastSuccess.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })) : ', no successful poll yet'}, service unreachable</p>` : ''}
-    ${error}${restored}
-    ${result ? `<div class="live-result"><h2>Latest answer</h2>${renderMarkdown(result.markdown, TRANSCRIPT_MARKDOWN)}${sourcesMarkup(result.sources)}</div>` : ''}
-    <details id="live-details" class="live-details"${detailsOpen ? ' open' : ''}>
-      <summary>Conversation history and activity</summary>
-      ${transcript}
-      <div class="live-activity" aria-label="Live activity">
-        ${(live?.entries ?? []).filter(entry => entry.kind === 'toolResult' && entry.tool?.name !== 'remember_note').map(entry => `<details class="live-tool-result" data-result-seq="${entry.seq}"><summary>${escapeHtml(toolPhrase(entry.tool?.name ?? ''))} (${escapeHtml(entry.tool?.status ?? 'unknown')})</summary>${entry.tool?.status !== 'error' && entry.tool?.markdown ? renderMarkdown(entry.tool.markdown, TRANSCRIPT_MARKDOWN) + sourcesMarkup(entry.tool.sources ?? []) : ''}</details>`).join('')}
-        ${(live?.entries ?? []).filter(entry => entry.kind === 'toolResult' && entry.tool?.name === 'remember_note').map(remaining => rememberCardMarkup(remaining)).join('')}
-        ${jobs}
-      </div>
-    </details>
+    ${muted}${stale}${error}${restored}
+    <div class="live-turns">${flow.join('') || '<p class="muted">No live transcription yet.</p>'}</div>
+    ${jobs}
   </section>`;
+}
+
+// --- Web Live state machine (issue #255 item 2). The web owns the consent gate: every Start path
+// (the Voice-lane pill, the keyboard shortcut, or a native menu requestStart) goes through requestStart,
+// so capture can never begin before the one-time consent popover is answered.
+import type {
+  MicStatus,
+  NativeLiveError,
+  NativeLiveState,
+  NativeToWeb,
+  Route,
+  ThemeMode,
+  WebToNative,
+} from './native-bridge.ts';
+
+export interface LiveConsentCopy {
+  title: string;
+  body: string;
+  allow: string;
+  dismiss: string;
+}
+
+/** The one-time first-run consent popover (dark, no permanent banner). */
+export const LIVE_CONSENT: LiveConsentCopy = {
+  title: 'Turn on Live?',
+  body: 'Audio goes to the Live provider while Live is on.',
+  allow: 'Allow',
+  dismiss: 'Not now',
+};
+
+export interface LiveView {
+  state: NativeLiveState;
+  error?: NativeLiveError;
+  reason?: string;
+  consent: boolean;
+  mic: MicStatus;
+  route: Route | null;
+  theme: ThemeMode;
+  lastSessionEndedAt: string | null;
+  /** The one-time consent popover is open. */
+  consentOpen: boolean;
+  /** A Start was asked before consent; it runs as soon as Allow is pressed. */
+  pendingStart: boolean;
+}
+
+export function initialLiveView(seed: Partial<LiveView> = {}): LiveView {
+  return {
+    state: 'idle',
+    consent: false,
+    mic: 'undetermined',
+    route: null,
+    theme: 'dark',
+    lastSessionEndedAt: null,
+    consentOpen: false,
+    pendingStart: false,
+    ...seed,
+  };
+}
+
+/** A clear error line for every explicit native error state; undefined when there is nothing to say. */
+export function liveErrorText(error: NativeLiveError | undefined, reason?: string): string | undefined {
+  switch (error) {
+    case 'micDenied':
+      return 'Microphone access is blocked. Allow it in System Settings, then press Start again.';
+    case 'deviceUnavailable':
+      return 'No microphone is available. Connect one, then press Start again.';
+    case 'providerError':
+      return reason ? `The Live provider reported a problem: ${reason}` : 'The Live provider reported a problem.';
+    case 'ended':
+      return reason ? `The Live session ended: ${reason}` : 'The Live session ended.';
+    default:
+      return undefined;
+  }
+}
+
+/** The global live pill is shown while live or muted, and never hidden by a collapse, sheet or switcher. */
+export function pillVisible(view: LiveView): boolean {
+  return view.state === 'live' || view.state === 'muted';
+}
+
+export function stopAvailable(view: LiveView): boolean {
+  return view.state === 'live' || view.state === 'muted' || view.state === 'starting';
+}
+
+/** Start is offered whenever the machine is not already busy; after an error the button is live again. */
+export function startAvailable(view: LiveView): boolean {
+  return view.state === 'idle' || view.state === 'error';
+}
+
+export const START_PATHS = ['button', 'shortcut', 'native'] as const;
+export type StartPath = (typeof START_PATHS)[number];
+
+export class LiveMachine {
+  #view: LiveView;
+  #post: (message: WebToNative) => void;
+  #listeners = new Set<(view: LiveView) => void>();
+
+  constructor(post: (message: WebToNative) => void, seed: Partial<LiveView> = {}) {
+    this.#post = post;
+    this.#view = initialLiveView(seed);
+  }
+
+  get view(): LiveView {
+    return this.#view;
+  }
+
+  on(listener: (view: LiveView) => void): () => void {
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
+  }
+
+  #set(next: Partial<LiveView>): void {
+    this.#view = { ...this.#view, ...next };
+    for (const listener of this.#listeners) listener(this.#view);
+  }
+
+  receive(message: NativeToWeb): void {
+    switch (message.type) {
+      case 'hydrate':
+        this.#set({
+          consent: message.consent,
+          mic: message.mic,
+          state: message.live.state,
+          error: message.live.error,
+          reason: message.live.reason,
+          route: message.route,
+          theme: message.theme,
+          lastSessionEndedAt: message.lastSessionEndedAt,
+          consentOpen: false,
+          pendingStart: false,
+        });
+        break;
+      case 'liveState':
+        this.#set({ state: message.state, error: message.error, reason: message.reason });
+        break;
+      case 'route':
+        this.#set({ route: { input: message.input, output: message.output, voiceProcessing: message.voiceProcessing } });
+        break;
+      case 'requestStart':
+        this.requestStart();
+        break;
+      case 'requestStop':
+        this.requestStop();
+        break;
+      case 'levels':
+        break;
+    }
+  }
+
+  /** The only Start path. Without consent it opens the popover and sends nothing to native. */
+  requestStart(): void {
+    if (!startAvailable(this.#view)) return;
+    if (!this.#view.consent) {
+      this.#set({ consentOpen: true, pendingStart: true });
+      return;
+    }
+    // Optimistic state first: a synchronous native reply then wins, never gets clobbered.
+    this.#set({ state: 'starting', error: undefined, reason: undefined });
+    this.#post({ type: 'start' });
+  }
+
+  /** Stop is immediate and available the moment a session is starting, live or muted. */
+  requestStop(): void {
+    if (!stopAvailable(this.#view)) return;
+    this.#set({ state: 'stopping' });
+    this.#post({ type: 'stop' });
+  }
+
+  /** Allow: persist consent natively, then run a Start that was waiting on the popover. */
+  grantConsent(): void {
+    const start = this.#view.pendingStart;
+    const wasConsent = this.#view.consent;
+    this.#set({ consent: true, consentOpen: false, pendingStart: false });
+    if (!wasConsent) this.#post({ type: 'consentGranted' });
+    if (start) {
+      this.#set({ state: 'starting' });
+      this.#post({ type: 'start' });
+    }
+  }
+
+  dismissConsent(): void {
+    if (this.#view.consentOpen) this.#set({ consentOpen: false, pendingStart: false });
+  }
+
+  toggleMute(): void {
+    if (this.#view.state === 'live') this.#post({ type: 'mute' });
+    else if (this.#view.state === 'muted') this.#post({ type: 'unmute' });
+  }
 }

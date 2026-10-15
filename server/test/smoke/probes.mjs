@@ -10,12 +10,13 @@ import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { homedir, loadavg, tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import WS from 'ws';
-import { spawnSupervised, waitForReady, stopSupervised } from './strict-supervisor.mjs';
+import { spawnSupervised, waitForReady, stopSupervised, READY_TIMEOUT_MS } from './strict-supervisor.mjs';
 
 const root = new URL('../../..', import.meta.url).pathname.replace(/\/$/, '');
 const WebSocket = WS;
@@ -32,6 +33,30 @@ const QUESTION = 'Search lux knowledge for Lux Didi and open the most relevant e
 
 function log(line) { process.stdout.write(line + '\n'); }
 function now() { return Date.now(); }
+
+const HOSTLESS_PROBES = ['probe2-connectors', 'probe3-text-turn', 'probe4-voice-turn'];
+
+/** The host launch budget in ms: SMOKE_LAUNCH_TIMEOUT_S seconds, defaulting to the native 6 s ready budget. */
+export function launchTimeoutMs(env = process.env) {
+  const seconds = Number(env.SMOKE_LAUNCH_TIMEOUT_S);
+  return Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds * 1000) : READY_TIMEOUT_MS;
+}
+
+export function loadAverageText() { return loadavg().map(value => value.toFixed(2)).join('/'); }
+
+/** The probe1 note. A launch timeout names the elapsed budget and the host load, so a slow host says so. */
+export function supervisorNote(launch, host) {
+  if (launch.status !== 'ready') {
+    if (launch.status === 'timeout') return `launch=timeout after=${((launch.ms ?? 0) / 1000).toFixed(1)} load=${loadAverageText()}`;
+    return `launch=${launch.status}${launch.error ? ' ' + launch.error.stage + ':' + launch.error.code : ''}`;
+  }
+  return host.invalid ? `post_ready=${host.invalid.bytes}B at=${host.invalid.ms}ms` : `ready=${host.readyBytes}B post_ready=0B`;
+}
+
+/** Without a ready host the remaining probes cannot run, so they skip instead of failing on their own. */
+export function noHostResults() {
+  return HOSTLESS_PROBES.map(id => ({ id, ok: false, skip: true, note: '(no host)' }));
+}
 
 async function readJson(path) { return JSON.parse(await readFile(path, 'utf8')); }
 
@@ -233,7 +258,7 @@ async function main() {
     process.exit(1);
   }
   const host = spawnSupervised({ serverEntry, dataDir, webRoot, configDir: config.configDir, ownerProfilePath: config.ownerProfilePath });
-  const launch = await waitForReady(host);
+  const launch = await waitForReady(host, launchTimeoutMs());
   let token = null;
   if (launch.status === 'ready') token = await bearerFor(dataDir);
   const base = launch.status === 'ready' ? launch.frame.origin : null;
@@ -256,24 +281,20 @@ async function main() {
       } finally { await rm(clipPath, { force: true }); }
     } catch (error) { results.push({ id: 'probe4-voice-turn', ok: false, note: String(error && error.message).slice(0, 120) }); }
   } else {
-    for (const id of ['probe2-connectors', 'probe3-text-turn', 'probe4-voice-turn']) results.push({ id, ok: false, note: 'host did not reach the ready frame' });
+    results.push(...noHostResults());
   }
 
   const supervisorOk = launch.status === 'ready' && host.invalid === null && host.error === null;
-  const supervisorNote = launch.status !== 'ready'
-    ? `launch=${launch.status}${launch.error ? ' ' + launch.error.stage + ':' + launch.error.code : ''}`
-    : host.invalid
-      ? `post_ready=${host.invalid.bytes}B at=${host.invalid.ms}ms`
-      : `ready=${host.readyBytes}B post_ready=0B`;
-  results.unshift({ id: 'probe1-strict-supervisor', ok: supervisorOk, note: supervisorNote });
+  results.unshift({ id: 'probe1-strict-supervisor', ok: supervisorOk, note: supervisorNote(launch, host) });
 
   await stopSupervised(host);
   if (!dev) await rm(dataDir, { recursive: true, force: true });
 
-  for (const result of results) log(`${result.ok ? 'PASS' : 'FAIL'} ${result.id} ${result.note}`);
+  for (const result of results) log(`${result.skip ? 'SKIP' : result.ok ? 'PASS' : 'FAIL'} ${result.id} ${result.note}`);
   const passed = results.filter(result => result.ok).length;
-  log(`SUMMARY ${results.length} probes: ${passed} pass ${results.length - passed} fail`);
+  const skipped = results.filter(result => result.skip).length;
+  log(`SUMMARY ${results.length} probes: ${passed} pass ${results.length - passed - skipped} fail${skipped ? ` ${skipped} skip` : ''}`);
   process.exit(passed === results.length ? 0 : 1);
 }
 
-await main();
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main();

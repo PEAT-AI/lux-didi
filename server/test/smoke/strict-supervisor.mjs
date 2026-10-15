@@ -95,13 +95,14 @@ export function spawnSupervised({ node = process.execPath, serverEntry, dataDir,
 /** Resolve the launch once: ready frame, invalid output, startup refusal or a bounded timeout. */
 export function waitForReady(state, timeoutMs = READY_TIMEOUT_MS) {
   return new Promise(resolve => {
-    const deadline = Date.now() + timeoutMs;
+    const startedAt = Date.now();
+    const deadline = startedAt + timeoutMs;
     const tick = () => {
       if (state.invalid) return resolve({ status: 'invalid', invalid: state.invalid });
       if (state.error) return resolve({ status: 'refused', error: state.error });
       if (state.ready) return resolve({ status: 'ready', frame: state.ready, bytes: state.readyBytes, ms: state.readyMs });
       if (state.exited !== null) return resolve({ status: 'exited', error: { stage: 'exit', code: String(state.exited) } });
-      if (Date.now() >= deadline) return resolve({ status: 'timeout' });
+      if (Date.now() >= deadline) return resolve({ status: 'timeout', ms: Date.now() - startedAt });
       setTimeout(tick, 25);
     };
     tick();

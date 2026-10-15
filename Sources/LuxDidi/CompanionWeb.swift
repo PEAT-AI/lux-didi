@@ -4,13 +4,24 @@ import SwiftUI
 
 enum PageState: Equatable { case loading, ready, unavailable }
 
-@MainActor final class CompanionWeb: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
+@MainActor final class CompanionWeb: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
     let descriptor: ServiceDescriptor
+    let bridge: NativeBridge?
     func focusConversation() {
         guard let window = webView.window else { return }
         window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(webView)
     }
+    /// A web-requested external open. It reuses the same U2 policy as a clicked link, so a foreign
+    /// http(s) URL opens in the system browser and a same-origin or unsafe URL is ignored.
+    func openExternal(_ urlString: String) {
+        guard let url = URL(string: urlString),
+              ExternalLinkPolicy.decide(url: url, navigationType: .linkActivated, isMainFrame: true, ownOrigin: descriptor.origin) == .openExternal
+        else { return }
+        NSWorkspace.shared.open(url)
+    }
+    /// Keeps the web view's under-page colour with the window when the web changes theme.
+    func applyTheme(_ theme: BridgeTheme) { webView.underPageBackgroundColor = theme.backgroundColor }
     let webView: WKWebView
     @Published private(set) var state: PageState = .unavailable
     @Published private(set) var detail = "Connect to the approved service."
@@ -36,17 +47,31 @@ enum PageState: Equatable { case loading, ready, unavailable }
         print("COMPANION-WK \(line)")
         #endif
     }
-    init(descriptor: ServiceDescriptor) {
+    init(descriptor: ServiceDescriptor, bridge: NativeBridge? = nil) {
         self.descriptor = descriptor
+        self.bridge = bridge
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
-        configuration.userContentController = WKUserContentController() // Deliberately zero handlers/scripts.
+        configuration.userContentController = WKUserContentController() // The `didi` handler is added below.
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
         configuration.mediaTypesRequiringUserActionForPlayback = .all
         webView = WKWebView(frame: .zero, configuration: configuration)
         super.init()
         webView.navigationDelegate = self; webView.uiDelegate = self
         webView.allowsBackForwardNavigationGestures = false
+        // Dark before first paint: no white flash while the page loads.
+        webView.setValue(false, forKey: "drawsBackground")
+        webView.underPageBackgroundColor = BridgeTheme.dark.backgroundColor
+        if let bridge {
+            webView.configuration.userContentController.add(self, name: "didi")
+            bridge.sendJS = { [weak self] script in self?.webView.evaluateJavaScript(script, completionHandler: nil) }
+        }
+    }
+
+    // Native side of BRIDGE.md: decode the web's didi messages, never act on them here.
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == "didi" else { return }
+        bridge?.handle(message.body)
     }
     private func startDeadline() {
         deadline?.cancel()
@@ -127,6 +152,8 @@ enum PageState: Equatable { case loading, ready, unavailable }
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         proofNavigationStarts += 1
         if state == .ready {
+            // A reload is a fresh page: hold outbound messages until it posts ready again.
+            bridge?.markReload()
             attempt += 1; approvedResponse = false; activeNavigation = navigation
             state = .loading
             startDeadline()

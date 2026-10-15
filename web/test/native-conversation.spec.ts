@@ -11,6 +11,8 @@ import { createArtifactDir } from './artifacts.mjs';
 
 const { chromium } = createRequire(new URL('../../web/package.json', import.meta.url))('playwright');
 const { answer } = await import('../../server/dist/test/connected-process.js');
+// The connected panel drops a leading 'Naya:' (web/src/connected.ts answerText, ba5b3a6).
+const savedAnswer = answer.replace(/^\s*Naya:\s*/, '');
 const root = resolve(import.meta.dirname, '../..');
 const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, env: { ...process.env, GIT_PAGER: 'cat', GIT_EDITOR: 'true' } }).toString().trim();
 const artifacts = await createArtifactDir('native-conversation-service/screenshots');
@@ -47,20 +49,45 @@ async function api(path) {
     const body = await response.json(); if (!response.ok) throw Error(body.error.message); return body.data;
   }, path);
 }
-const selectValue = () => page.locator('#connected-history').inputValue();
+const openTab = async name => { await page.locator(`button[data-tab="${name}"]`).click(); };
+// The connected history select is owned by the Settings tab; the conversation pane lives on Conversation.
+// The view writes its saved-selection key once it has restored and published a conversation; selecting before
+// that is a no-op because the view has no owner yet.
+const openSettings = async () => { await page.waitForFunction(() => Object.keys(localStorage).some(key => key.startsWith('didi-connected:'))); await openTab('Settings'); await page.locator('#connected-history').waitFor(); };
+const openConversation = async () => { await openTab('Conversation'); await page.locator('#connected-panel').waitFor(); };
+const selectValue = async () => { await openSettings(); const value = await page.locator('#connected-history').inputValue(); await openConversation(); return value; };
 const entryText = () => page.locator('#connected-entries').innerText();
-/** Screenshot the connected panel itself so the transcript, title and answer are the subject of the image. */
+/** Screenshot the connected panel itself so the transcript, title and answer are the subject of the image.
+ * The panel is replaced on every page render (tab switches, stream events, the connection poll), so first
+ * wait for the same panel markup across two reads, then retry the action if a render detaches it anyway. */
 async function shot(name) {
   const panel = page.locator('#connected-panel');
-  await panel.scrollIntoViewIfNeeded();
-  await panel.screenshot({ path: join(artifacts, `${name}-${sha}.png`) });
+  let previous = undefined;
+  for (let i = 0; i < 30; i++) {
+    const current = await panel.evaluate(element => element.outerHTML).catch(() => undefined);
+    if (current !== undefined && current === previous) break;
+    previous = current;
+    await page.waitForTimeout(100);
+  }
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await panel.scrollIntoViewIfNeeded();
+      await panel.screenshot({ path: join(artifacts, `${name}-${sha}.png`) });
+      return;
+    } catch (error) {
+      if (attempt >= 9) throw error;
+      await page.waitForTimeout(200);
+    }
+  }
 }
 async function choose(label) {
+  await openSettings();
   const value = await page.locator('#connected-history').evaluate((element, wanted) => [...element.options].find(option => option.label === wanted)?.value, label);
   await page.selectOption('#connected-history', { label });
   // Deterministic: the service records the choice, the pane shows it and the page saved it.
   await page.waitForFunction(async expected => { const response = await fetch('/api/v1/conversation-selection', { credentials: 'same-origin', cache: 'no-store' }); return (await response.json()).data.sessionId === expected; }, value);
   await page.waitForFunction(expected => { const key = Object.keys(localStorage).find(item => item.startsWith('didi-connected:')) ?? ''; return document.querySelector('#connected-history')?.value === expected && (key ? JSON.parse(localStorage.getItem(key) ?? '{}').sessionId === expected : false); }, value);
+  await openConversation();
   return value;
 }
 async function step(name, action) { await action(); steps.push(name); console.log(`PASS ${name}`); }
@@ -82,7 +109,7 @@ try {
 
   const pairing = await operator('/auth/pairing');
   await page.locator('#pair-code').fill(pairing.data.pairingCode); await page.locator('#pair-form').evaluate(form => form.requestSubmit());
-  await page.waitForFunction(() => document.querySelector('#connected-route')?.textContent.includes('gemini-connected-test'));
+  await page.waitForFunction(() => document.querySelector('#connected-panel')?.textContent.includes('gemini-connected-test'));
   const enrolledA = await operator('/conversations', { title: 'Native A', timeZone: 'UTC', consent: true });
   const enrolledB = await operator('/conversations', { title: 'Native B', timeZone: 'UTC', consent: true });
   assert.equal(enrolledA.status, 200, JSON.stringify(enrolledA.data ?? enrolledA.error ?? null));
@@ -90,11 +117,10 @@ try {
   const a = enrolledA.data, b = enrolledB.data;
   assert.ok(a.sessionId && b.sessionId);
   await page.reload();
-  await page.locator('#connected-history').waitFor();
+  await openConversation();
 
   await step('shared page selection publishes the chosen conversation for the paired principal', async () => {
     await choose('Native A · gemini-connected-test · active');
-    await page.waitForFunction(() => document.querySelector('#connected-history')?.value !== '');
     assert.equal((await api('/conversation-selection')).sessionId, a.sessionId);
     assert.equal(await selectValue(), a.sessionId);
     await shot('selected-a');
@@ -103,7 +129,7 @@ try {
   await step('an externally accepted run appears on the displayed conversation without a refresh', async () => {
     const accepted = await operator('/chat', { sessionId: a.sessionId, text: 'Choose one small next step for the native conversation.' });
     assert.equal(accepted.status, 200, JSON.stringify(accepted.data));
-    await page.getByText(answer, { exact: true }).first().waitFor();
+    await page.getByText(savedAnswer, { exact: true }).first().waitFor();
     assert.equal(await selectValue(), a.sessionId);
     await shot('external-run-on-a');
   });
@@ -120,17 +146,21 @@ try {
     assert.doesNotMatch(await entryText(), /Let us choose one small next step/);
     await shot('page-b-no-jump');
     await choose('Native A · gemini-connected-test · active');
-    await page.getByText(answer, { exact: true }).first().waitFor();
+    await page.getByText(savedAnswer, { exact: true }).first().waitFor();
     assert.equal((await api('/conversation-selection')).sessionId, a.sessionId);
     await shot('reselect-a-recovered');
   });
 
   await step('a fresh reload restores and republishes the saved selection', async () => {
     await page.reload();
-    await page.locator('#connected-history').waitFor();
+    // The saved-selection key survives a reload, so wait for the restored conversation itself to render
+    // before opening Settings; otherwise the select would show the first option instead of the restored one.
+    await page.locator('#connected-panel').waitFor();
+    await page.getByText(savedAnswer, { exact: true }).first().waitFor();
+    await openSettings();
     await page.waitForFunction(expected => document.querySelector('#connected-history')?.value === expected, a.sessionId);
+    await openConversation();
     await page.waitForFunction(async expected => { const response = await fetch('/api/v1/conversation-selection', { credentials: 'same-origin', cache: 'no-store' }); return (await response.json()).data.sessionId === expected; }, a.sessionId);
-    await page.getByText(answer, { exact: true }).first().waitFor();
     await shot('reload-restores-selection');
     assert.deepEqual(errors, []);
   });
@@ -159,6 +189,7 @@ try {
       await route.continue();
     });
     try {
+      await openSettings();
       await page.selectOption('#connected-history', { label: 'Native B · gemini-connected-test · active' });
       await seen;                                  // the older publication is in flight and held
       await page.selectOption('#connected-history', { label: 'Native A · gemini-connected-test · active' });
@@ -167,6 +198,7 @@ try {
       release();
       await page.waitForFunction(async expected => { const response = await fetch('/api/v1/conversation-selection', { credentials: 'same-origin', cache: 'no-store' }); return (await response.json()).data.sessionId === expected; }, a.sessionId);
       await page.waitForFunction(expected => { const key = Object.keys(localStorage).find(item => item.startsWith('didi-connected:')) ?? ''; return document.querySelector('#connected-history')?.value === expected && (key ? JSON.parse(localStorage.getItem(key) ?? '{}').sessionId === expected : false); }, a.sessionId);
+      await openConversation();
       assert.equal((await api('/conversation-selection')).sessionId, a.sessionId);
       await shot('held-publication-newer-wins');
     } finally { release(); await page.unroute('**/api/v1/conversation-selection'); }

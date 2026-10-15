@@ -42,8 +42,8 @@ import Foundation
         check(emitted.isEmpty, "pre-ready messages are queued, not sent")
         queueBridge.handle(["type": "ready"])
         check(emitted.count == 3, "ready flushes the two queued messages then hydrate")
-        check(contains(emitted, "\"type\":\"liveState\"") && contains(emitted, "\"type\":\"requestStart\"") && contains(emitted, "\"type\":\"hydrate\""),
-              "flush order and hydrate")
+        check(emitted[0].contains("\"type\":\"liveState\"") && emitted[1].contains("\"type\":\"requestStart\"")
+              && emitted[2].contains("\"type\":\"hydrate\""), "ready flushes in order then hydrates")
         let afterReady = emitted.count
         queueBridge.pushLiveState(BridgeLiveState(state: "live", error: nil, reason: nil))
         check(emitted.count == afterReady + 1, "post-ready messages go straight out")

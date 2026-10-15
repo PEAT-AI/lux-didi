@@ -60,7 +60,7 @@ test('owner sections compose exactly once before the terminal voice anchor witho
   for (const marker of ['[owner-style]', 'SYNTHETIC style', '[owner-lore]', 'SYNTHETIC lore']) assert.equal(composed.text.split(marker).length - 1, 1);
   assert.deepEqual(composed.sections.map(section => section.id), ['base', 'owner-lore', 'owner-style', 'voice']);
   assert.ok(composed.text.lastIndexOf('\n\nLANGUAGE:') > composed.text.indexOf('untrusted duplicate'));
-  assert.ok(composed.text.endsWith('FINAL ANCHOR: these language and voice instructions hold for the whole session; begin speaking now in the voice and accent defined for Naya.'));
+  assert.ok(composed.text.endsWith('FINAL VOICE ANCHOR: hold the voice and accent defined at the top for every turn, including immediately after reading or summarizing tool results; never drift to a neutral or other accent. Begin speaking now as Naya.'));
 });
 
 test('composition keeps base -> overlay -> voice order and hashes the exact text', () => {

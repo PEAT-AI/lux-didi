@@ -50,6 +50,7 @@ swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-
   Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \
   "${owner_flags[@]}" \
   Sources/LuxDidi/NativeLiveOperatorHTTP.swift Sources/LuxDidi/AudioOwner.swift Sources/LuxDidi/NativeLiveAudioDevice.swift \
+  Sources/LuxDidi/NativeLiveJournal.swift \
   Sources/LuxDidi/NativeLiveConversation.swift Tests/DidiLiveTests/NativeLiveAudioRunner.swift "$work/audio-callback-bridge.o" -o "$work/native-audio"
 "$work/native-audio"
 swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
@@ -57,6 +58,7 @@ swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-
   Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \
   "${owner_flags[@]}" \
   Sources/LuxDidi/NativeLiveOperatorHTTP.swift Sources/LuxDidi/AudioOwner.swift Sources/LuxDidi/NativeLiveAudioDevice.swift \
+  Sources/LuxDidi/NativeLiveJournal.swift \
   Sources/LuxDidi/NativeLiveConversation.swift Tests/DidiLiveTests/Fixture.swift \
   Tests/DidiLiveTests/NativeLifetime.swift -o "$work/native-lifetime"
 # Physical-device proof uses the production graph with no tap, output or permission request.
@@ -71,6 +73,11 @@ swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-
   -target "$target" \
   Sources/LuxDidi/AudioOwner.swift Tests/DidiLiveTests/AudioOwnerTests.swift -o "$work/native-audio-owner"
 "$work/native-audio-owner"
+# The closed native-live end reasons, their timestamps and the diagnostics snapshot fields, no audio or supervisor.
+swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
+  Sources/LuxDidi/NativeLiveJournal.swift Sources/LuxDidi/NativeDiagnosticsSnapshot.swift \
+  Tests/DidiLiveTests/NativeLiveJournalTests.swift -o "$work/native-live-journal"
+"$work/native-live-journal"
 # Compile the actual app source surface without launching audio or installing an app.
 swiftc -parse-as-library Sources/LuxDidi/*.swift -target "$target" -o "$work/native-app"
 # Isolated mutation sensitivity: compile a scratch copy, never alter the committed source or weaken a gate.

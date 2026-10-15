@@ -52,8 +52,11 @@ enum State: String, CaseIterable {
     private var startTask: Task<Void, Never>?
     private var generation: UInt64 = 0
     private let logsDirectory: URL?
+    private let journal: NativeLiveJournal
     private var limits: NativeLiveLimits?
     private var muted = false, speaking = false
+    /// One native-live end record per stop cycle; a repeated Stop is a no-op, like the capture summary.
+    private var endRecorded = false
     private var muteTask: Task<Void, Never>?
     private var captureSummaryTask: Task<Void, Never>?
     private var captureDiagnosticOwner: UInt64?
@@ -61,6 +64,7 @@ enum State: String, CaseIterable {
     var isCapturing: Bool { state == .connecting || state == .pausedForInput || device.isCapturing }
     init(authority: (origin: URL, request: NativeLiveRequestBuilder), dictationIsCapturing: @escaping () -> Bool, pickupJobID: String? = nil, logsDirectory: URL? = nil, audioDevice: NativeLiveAudioDevice? = nil) {
         self.logsDirectory = logsDirectory
+        self.journal = NativeLiveJournal(fileURL: logsDirectory?.appendingPathComponent("native-live.log"))
         self.http = NativeLiveOperatorHTTP(authority: authority, pickupJobID: pickupJobID)
         self.dictationIsCapturing = dictationIsCapturing
         // Production wiring: a real audio journal in the app's logs dir, shared by the owner
@@ -78,6 +82,7 @@ enum State: String, CaseIterable {
         }
         device.onInputChange = { [weak self] name in
             guard let self else { return }
+            self.journal.append(.routeChange)
             self.state = .pausedForInput
             self.failure = "Microphone changed to " + name + ". Resume?"
         }
@@ -89,7 +94,7 @@ enum State: String, CaseIterable {
         device.onInterruption = { [weak self] in
             guard let self else { return }
             let token = self.generation &+ 1
-            await self.stop()
+            await self.stop(reason: .audioInterruption)
             guard self.generation == token else { return }
             self.failure = "Live audio could not recover. Capture released. Restart explicitly to try again."
             self.state = .failed
@@ -104,7 +109,7 @@ enum State: String, CaseIterable {
             failure = "Stop dictation before starting Live voice."; state = .failed; return
         }
         generation &+= 1; let token = generation
-        failure = nil; state = .connecting; muted = false; speaking = false
+        failure = nil; state = .connecting; muted = false; speaking = false; endRecorded = false
         observer?.cancel()
         observer = Task { [weak self, coordinator] in
             await self?.startTask?.value
@@ -123,6 +128,11 @@ enum State: String, CaseIterable {
                         self.state = Self.continuityPresentation(event, muted: self.muted)!
                     }
                 case .terminal(let outcome):
+                    switch outcome.code {
+                    case "session_timeout": if !self.endRecorded { self.endRecorded = true; self.journal.append(.sessionLimit) }
+                    case "idle_timeout": if !self.endRecorded { self.endRecorded = true; self.journal.append(.idleLimit) }
+                    default: break
+                    }
                     if let sentence = NativeLivePresentation.ended(outcome.code, limits: self.limits) {
                         self.failure = sentence
                     } else if outcome.state == .failed {
@@ -139,6 +149,7 @@ enum State: String, CaseIterable {
                     self.failure = "Live start outcome is unknown. Check the conversation before starting again."
                 case .outcomeUnknown(let reason):
                     self.stopAudioAndSummarize(); self.state = .outcomeUnknown
+                    if case .socketClosed(let code, _) = reason, !self.endRecorded { self.endRecorded = true; self.journal.append(.providerClosed, detail: NativeLiveEndDetail.providerClosed(closeCode: code)) }
                     self.failure = reason.errorDescription ?? "Live outcome is unknown. No automatic reconnect."
                 default: break
                 }
@@ -194,19 +205,7 @@ enum State: String, CaseIterable {
         return diagnostic
     }
     private func appendLocalDiagnostic(_ fields: [String: Any]) {
-        guard let logsDirectory else { return }
-        do {
-            try FileManager.default.createDirectory(at: logsDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-            let file = logsDirectory.appendingPathComponent("native-live.log")
-            if !FileManager.default.fileExists(atPath: file.path) {
-                guard FileManager.default.createFile(atPath: file.path, contents: nil, attributes: [.posixPermissions: 0o600]) else { return }
-            }
-            let handle = try FileHandle(forWritingTo: file)
-            defer { try? handle.close() }
-            try handle.seekToEnd()
-            var record = try JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys])
-            record.append(10); try handle.write(contentsOf: record)
-        } catch { /* Logging must not change capture or session state. */ }
+        journal.append(fields)
     }
     private func stopAudioAndSummarize() {
         device.stop()
@@ -260,8 +259,9 @@ enum State: String, CaseIterable {
         stopAudioAndSummarize()
         state = .ended
     }
-    func stop() async {
+    func stop(reason: NativeLiveEndReason = .userStop) async {
         stopCapture()
+        if !endRecorded { endRecorded = true; journal.append(reason) }
         let token = generation
         await coordinator.close()
         await captureSummaryTask?.value

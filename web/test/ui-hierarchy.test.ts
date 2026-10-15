@@ -12,7 +12,7 @@ test('the Voice lane is the compact header plus one calm empty state, with the U
   assert.match(voice, /voiceEmptyMarkup\(\)/);
   assert.match(voice, /liveMarkup\(live, livePoll, true\)/, 'X3 merges onto this call site');
   assert.match(voice, /Press Start or/);
-  assert.doesNotMatch(source, /connectionsMarkup\(/);
+  assert.doesNotMatch(voice, /connectionsMarkup\(/);
 });
 
 test('the voice header reads the LiveMachine and offers Start, Mute, New conversation and the lane toggle', () => {

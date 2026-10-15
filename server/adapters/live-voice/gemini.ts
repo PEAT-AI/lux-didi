@@ -336,6 +336,10 @@ class Session implements LiveVoiceSession {
     } catch (error) {
       const code = error instanceof LiveVoiceError ? error.code : 'protocol_error';
       this.reportRejectedFrame(message, byteLength, parsed, code, error);
+      // A frame that genuinely cannot be decoded (invalid JSON, invalid UTF-8, or any unexpected
+      // decode error) is dropped once the turn is live, so the next valid frame still plays; a
+      // recognized but invalid payload stays fail-closed.
+      if (this.isReady && !(error instanceof LiveVoiceError)) return;
       this.finish(code);
     }
   };

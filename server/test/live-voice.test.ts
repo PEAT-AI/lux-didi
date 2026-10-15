@@ -304,7 +304,7 @@ test('Gemini 3.8 still rejects an empty envelope before setup', async t => {
 });
 
 for (const [name, payload, expected] of [
-  ['empty object', {}, 'protocol_error'], ['invalid JSON', 'raw', 'protocol_error'], ['array', [], 'protocol_error'],
+  ['empty object', {}, 'protocol_error'], ['array', [], 'protocol_error'],
   ['null content', { serverContent: null }, 'protocol_error'], ['null transcription', { serverContent: { inputTranscription: null } }, 'protocol_error'],
   ['bad completion flag', { serverContent: { turnComplete: 'true' } }, 'protocol_error'], ['bad text', { serverContent: { outputTranscription: { text: 3 } } }, 'protocol_error'],
   ['bad rate', { serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=16000', data: 'AAA=' } }] } } }, 'protocol_error'],
@@ -319,7 +319,7 @@ for (const [name, payload, expected] of [
 ] as const) {
   test(`recognized payload fails closed: ${name}`, async t => {
     const { f, session, captured } = await ready(t);
-    if (payload === 'raw') f.sendRaw(CANARY); else f.send(payload);
+    f.send(payload);
     assert.equal((await session.done).code, expected); await captured.done; noCanary(captured.events);
   });
 }
@@ -646,22 +646,28 @@ test('a large serverContent audio frame with a text-less outputTranscription pla
   assert.equal(session.diagnostics?.().outputAudioFrames, 1);
 });
 
-// Issue 209 recurrence: a non-LiveVoiceError in the decode path (invalid UTF-8 makes the fatal
-// TextDecoder throw a TypeError) must name its constructor instead of being flattened to
-// protocol_error, and must never carry a value.
-test('a non-LiveVoiceError decode failure logs its constructor classifier and frame kind', async t => {
+// Issue 209 recurrence + OUTCOME 2: a non-LiveVoiceError in the decode path (invalid UTF-8 makes the
+// fatal TextDecoder throw a TypeError) names its constructor, is skipped without ending the turn,
+// and never carries a value; the next valid frame plays.
+test('a non-LiveVoiceError decode failure is classified, skipped, and the next frame plays', async t => {
   const lines: string[] = [];
   const originalError = console.error;
   console.error = (...args: unknown[]) => { lines.push(args.map(String).join(' ')); };
   t.after(() => { console.error = originalError; });
-  const { f, session } = await providerReady(t);
+  const { f, captured } = await providerReady(t);
   f.sendRaw(Buffer.from([0xff, 0xfe, 0xfd]));
-  assert.equal((await session.done).code, 'protocol_error');
+  for (let i = 0; i < 50 && !lines.some(line => line.includes('"live_frame_rejected"')); i++) await new Promise<void>(resolve => setImmediate(resolve));
   const rejected = lines.filter(line => line.includes('"live_frame_rejected"')).map(line => JSON.parse(line) as { event: string; error?: string; kind: string });
   assert.equal(rejected.length, 1, 'exactly one rejection diagnostic');
   assert.equal(rejected[0]!.error, 'TypeError', 'the real error constructor is named');
   assert.equal(rejected[0]!.kind, 'invalid_json');
   assert.equal(JSON.stringify(rejected[0]).includes(CANARY), false, 'no value leaks into the classifier');
+  assert.equal(captured.events.some(event => event.type === 'outcome'), false, 'the undecodable frame did not end the turn');
+  // The next valid frame still plays on the same session.
+  f.send({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from(pcm).toString('base64') } }] }, turnComplete: true } });
+  for (let i = 0; i < 50 && !captured.events.some(event => event.type === 'audio'); i++) await new Promise<void>(resolve => setImmediate(resolve));
+  assert.ok(captured.events.some(event => event.type === 'audio'), 'the next valid frame plays');
+  assert.equal(captured.events.some(event => event.type === 'outcome'), false);
 });
 
 // Ruling L1-R2: after a tool result, the 3.8 model must still hear the voice requirement last.

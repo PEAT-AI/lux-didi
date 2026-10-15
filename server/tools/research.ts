@@ -477,12 +477,14 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
     const completedKinds = [...run.readKinds];
     const offerable = offerableCandidates(configured, completedKinds);
     let selection: SelectorOutput;
+    let usedFallbackThisRound = false;
     if (run.readKinds.size === 0 && hint.length === 1) {
       const source = hint[0]!;
-      const kinds = offerable.filter(kind => CANDIDATES.find(c => c.kind === kind)?.source === source || CANDIDATES.find(c => c.kind === kind)?.source === null);
+      const kinds = offerable.filter(kind => CANDIDATES.find(c => c.kind === kind)?.source === source);
       selection = { questionClass: 'quick_fact', actions: kinds.map(kind => ({ kind })), pUseful: Object.fromEntries(kinds.map(kind => [kind, 0.6])) };
     } else if (deps.selector === undefined) {
       fallbackUsed = true;
+      usedFallbackThisRound = true;
       selection = fallbackSelection(question || run.direction || '', configured);
     } else {
       const selStart = now();
@@ -491,7 +493,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
         output = await deps.selector.select({ question, questionClass: run.questionClass, direction: run.direction, configured, completed: [...run.ledger.values()].map(entry => ({ kind: entry.kind, summary: entry.summary })), candidates: offerable }, AbortSignal.any([signal, AbortSignal.timeout(RESEARCH.selectorDeadlineMs)]));
       } catch { output = null; }
       selectorMs += now() - selStart;
-      if (output === null) { fallbackUsed = true; selection = fallbackSelection(question || run.direction || '', configured); }
+      if (output === null) { fallbackUsed = true; usedFallbackThisRound = true; selection = fallbackSelection(question || run.direction || '', configured); }
       else if (output.actions.length === 0) { selection = output; stopReason = output.questionClass === 'quick_fact' ? 'answered' : 'selector_stop'; }
       else selection = output;
     }
@@ -539,6 +541,8 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
     run.rounds = round;
     deps.emit({ researchId: run.researchId, phase: 'round', sourcesDone: [...run.sourcesDone], sourcesPending: configured.filter(s => !run.sourcesDone.has(s)), elapsedMs: now() - started });
     if (stopReason === 'deadline' || stopReason === 'ops_exhausted') break;
+    // A selector timeout or an invalid answer falls back to O1's fixed recipe for one round only.
+    if (usedFallbackThisRound) { stopReason = 'fallback'; break; }
 
     // Value-of-information: run one more round only when it is worth the wait.
     if (round >= run.maxRounds) { stopReason = 'rounds_exhausted'; break; }

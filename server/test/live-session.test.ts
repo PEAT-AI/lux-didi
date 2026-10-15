@@ -1394,7 +1394,7 @@ test('Live accepts a frozen real tool snapshot and projects only result-gated Ma
   const { session, attachment } = await attached(h);
   assert.equal(h.owner.lookupAuthority(session.liveSessionId)?.actorId, h.ctx.clientId);
   const setup = (h.f.frames[0] as { setup: { tools: { functionDeclarations: { name: string; parameters: any }[] }[] } }).setup;
-  assert.deepEqual(setup.tools[0]!.functionDeclarations.map(tool => tool.name).sort(), ['brief', 'calendar', 'chat', 'mail', 'remember_note', 'search']);
+  assert.deepEqual(setup.tools[0]!.functionDeclarations.map(tool => tool.name).sort(), ['remember_note', 'research']);
   const derived = setup.tools[0]!.functionDeclarations.find(d => d.name === 'search')!;
   assert.equal(derived.parameters.properties.query.type, 'STRING');
   const outputs = attachment.output[Symbol.asyncIterator]();

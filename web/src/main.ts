@@ -398,15 +398,17 @@ function scheduleLive(){
   const version=authorityVersion();if(liveDelay(live?.state,document.hidden)!==undefined&&!pairingRequired)liveTimer=setTimeout(()=>{if(version===authorityVersion())void pollLive();},liveDelay(live?.state,document.hidden));
 }
 function paintLive(){
-  const panel=document.getElementById('live-panel');
-  // The voice lane swaps between the empty state and the transcript; a poll that arrives while the
-  // other body is painted must re-render, because there is no #live-panel to replace in place.
+  // The voice lane body is either the empty state or the transcript panel. Swap between them with a
+  // full render, and otherwise replace the body in place, so there is never more than one #live-panel.
+  const body=document.querySelector<HTMLElement>('#lane-voice .lane-inner');
+  if(!body) return;
+  const panel=body.querySelector('#live-panel');
   if(liveTurns()>0 ? !panel : !!panel){render();return;}
   const replacePanel=paintedLivePoll?.live!==live || !!paintedLivePoll?.stale!==!!livePoll.stale || !!livePoll.stale && paintedLivePoll?.lastSuccess!==livePoll.lastSuccess;
   if(panel && replacePanel){
     liveDetailsOpen=panel.querySelector<HTMLDetailsElement>('#live-details')?.open ?? liveDetailsOpen;
     const expanded=Array.from(panel.querySelectorAll<HTMLDetailsElement>('details[data-result-seq][open]')).map(card=>card.dataset.resultSeq);
-    panel.outerHTML=liveMarkup(live,livePoll,liveDetailsOpen);for(const card of document.querySelectorAll<HTMLDetailsElement>('#live-panel details[data-result-seq]'))if(expanded.includes(card.dataset.resultSeq))card.open=true;bindLiveDisclosure();
+    body.innerHTML=liveMarkup(live,livePoll,liveDetailsOpen);for(const card of document.querySelectorAll<HTMLDetailsElement>('#live-panel details[data-result-seq]'))if(expanded.includes(card.dataset.resultSeq))card.open=true;bindLiveDisclosure()
   }
   paintedLivePoll=panel ? livePoll : undefined;
   const caption=document.querySelector('.orb-caption');const markup=orbCaptionMarkup();if(caption && caption.innerHTML!==markup)caption.innerHTML=markup;

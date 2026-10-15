@@ -553,6 +553,23 @@ test('Live session diagnostics persist only the closed content-free counter sche
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test('connector failure stages persist as one closed safe event', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'didi-log-'));
+  try {
+    const log = new HostLog(root);
+    log.event({ event: 'connector_failure', connector: 'mongoose', stage: 'handshake' });
+    log.event({ event: 'connector_failure', connector: 'mongoose', stage: 'SECRET-stage' });
+    log.event({ event: 'connector_failure', connector: 'mongoose', stage: 'handshake', message: 'SECRET-message' });
+    const text = await readFile(join(root, 'logs', 'host.log'), 'utf8');
+    const records = text.trim().split('\n').map(line => JSON.parse(line));
+    assert.equal(records.length, 1);
+    assert.equal(records[0].event, 'connector_failure');
+    assert.equal(records[0].connector, 'mongoose');
+    assert.equal(records[0].stage, 'handshake');
+    assert.equal(text.includes('SECRET'), false);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 // A stdio MCP child that answers initialize/tools/list, then ignores the MCP close and stdin EOF.
 const IGNORE_CLOSE_CHILD = [
   "import readline from 'node:readline';",

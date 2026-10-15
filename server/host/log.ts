@@ -16,6 +16,14 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
       || value.messageHead !== value.code || String(value.messageHead).length > 120) return;
     return { event: 'tool_failure', code: value.code, tool: value.tool, connector: value.connector, errorClass: value.errorClass, messageHead: value.messageHead };
   }
+  if (value.event === 'connector_failure') {
+    // Closed connect-time stage only, never a message, a URL or a credential value.
+    const stages = ['credential', 'spawn', 'handshake', 'first_call'];
+    const token = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(v);
+    if (Object.keys(value).sort().join(',') !== ['connector', 'event', 'stage'].sort().join(',')) return;
+    if (!token(value.connector) || typeof value.stage !== 'string' || !stages.includes(value.stage)) return;
+    return { event: 'connector_failure', connector: value.connector, stage: value.stage };
+  }
   if (value.event === 'mattermost_shape') {
     // Closed shape: tool, recognised shape kind and sizes only, never any message content.
     const token = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(v);

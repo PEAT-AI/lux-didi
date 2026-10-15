@@ -7,6 +7,7 @@ import { loadMcpConfiguration, loadMcpEndpoints, type McpEndpointEntry } from '.
 import { fields, parseJson, readPrivate } from '../config/files.js';
 import { join } from 'node:path';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
+import { mongooseFailureStage } from '../connectors/mongoose.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import type { McpPort } from '../adapters/mcp/port.js';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
@@ -73,6 +74,8 @@ const connectorEnvelopes: Readonly<Record<string, readonly string[]>> = CONNECTO
 /** Compose the MCP runtime once at startup: one registry, adapter and owner. Never blocks on a remote. */
 export async function composeMcpRuntime(options: {
   log?: ToolsOwnerOptions['log'];
+  /** Closed connect-time failure stage for one connector, never a message or a credential value. */
+  connectorLog?: (connector: string, stage: string) => void;
   store: Store; ownerId: string; configDir: string;
   lookupAuthority(runId: string, signal: AbortSignal): Promise<LiveAuthority | null>;
   now?: () => number;
@@ -128,11 +131,11 @@ export async function composeMcpRuntime(options: {
     // A missing or malformed credential is a visible, typed status; discovery never runs with a blank bearer.
     if (entry.credentialRef) {
       try { readMcpCredential(configDir, entry.credentialRef); }
-      catch { reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: `credential ${entry.credentialRef} missing or invalid` }); return; }
+      catch { options.connectorLog?.(entry.connector, 'credential'); reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: `credential ${entry.credentialRef} missing or invalid` }); return; }
     }
     try {
       const discovery = await port.discover(entry.id);
-      if (discovery.state !== 'discovered') { reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: discovery.reason, ...(discovery.exception ? { exception: discovery.exception } : {}) }); return; }
+      if (discovery.state !== 'discovered') { options.connectorLog?.(entry.connector, mongooseFailureStage(discovery.reason, discovery.exception?.code)); reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: discovery.reason, ...(discovery.exception ? { exception: discovery.exception } : {}) }); return; }
       const envelope = connectorEnvelopes[entry.connector] ?? [];
       const names = grantMode === 'owner-trusted-reads'
         ? discovery.tools.map(tool => tool.name).filter(name => envelope.includes(name)).sort()

@@ -13,7 +13,7 @@ import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import type { McpPort, ToolDefinition } from '../adapters/mcp/port.js';
-import { createMongooseReader, MONGOOSE_TOOLS } from '../connectors/index.js';
+import { createMongooseReader, MONGOOSE_TOOLS, MONGOOSE_FAILURE_STAGES, mongooseFailureStage } from '../connectors/index.js';
 import { projectMongooseResult } from '../tools/mongoose.js';
 import { Store } from '../runtime/store.js';
 import { composeMcpRuntime } from '../host/mcp.js';
@@ -280,4 +280,16 @@ test('search_mongoose projects an SSE MCP entity from separately decodedResult',
   if (!projected.ok) throw Error('projection failed');
   assert(projected.projection.text.includes('Synthetic SSE'));
   assert(!projected.projection.text.includes('synthetic-unclassified'));
+});
+
+test("mongoose connect failures map to a closed stage", () => {
+  assert.deepEqual(MONGOOSE_FAILURE_STAGES, ["credential", "spawn", "handshake", "first_call"]);
+  assert.equal(mongooseFailureStage("credential-unavailable"), "credential");
+  assert.equal(mongooseFailureStage("unknown", "credential-unavailable"), "credential");
+  assert.equal(mongooseFailureStage("child_exited"), "spawn");
+  assert.equal(mongooseFailureStage("pipe_closed"), "spawn");
+  assert.equal(mongooseFailureStage("discovery-required"), "handshake");
+  assert.equal(mongooseFailureStage("unknown", "discovery-unavailable"), "handshake");
+  assert.equal(mongooseFailureStage("timeout"), "first_call");
+  assert.equal(mongooseFailureStage("cancelled-before-dispatch"), "first_call");
 });

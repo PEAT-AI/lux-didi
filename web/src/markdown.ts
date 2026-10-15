@@ -128,6 +128,6 @@ export function renderToolEvidence(evidence: readonly import('./protocol.ts').To
   return evidence.slice(0, 16).map(tool => {
     const label = toolLabel(tool.name);
     const header = label ? `<header><strong>${escapeHtml(label)}</strong></header>` : '';
-    return `<article class="tool-evidence">${header}<div class="markdown">${renderMarkdown(tool.markdown.slice(0, 4096))}</div>${sourcesFooter(tool.sources)}</article>`;
+    return `<article class="tool-evidence">${header}<div class="markdown">${renderMarkdown(tool.markdown.slice(0, 4096), TRANSCRIPT_MARKDOWN)}</div>${sourcesFooter(tool.sources)}</article>`;
   }).join('');
 }

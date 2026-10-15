@@ -203,7 +203,7 @@ export function liveMarkup(live: LiveCurrent | undefined, poll: LivePollState = 
   const latestTurn = [...lines].reverse().find(line => line.role === 'naya') ?? lines.at(-1);
   const jobs = (live?.jobs ?? []).map(job => `<article class="live-job" data-job-id="${escapeHtml(job.id)}">
     <h2>${job.state === 'in_progress' ? 'Background task in progress' : 'Background task ' + escapeHtml(job.state)}</h2>
-    ${renderMarkdown(job.markdown)}
+    ${renderMarkdown(job.markdown, TRANSCRIPT_MARKDOWN)}
     ${!job.delivered && job.state !== 'in_progress' ? '<p class="muted">Call Naya back: choose Start Live voice in the native app to pick up this result.</p>' : ''}
   </article>`).join('');
   const latest = live?.entries.at(-1);
@@ -225,7 +225,7 @@ export function liveMarkup(live: LiveCurrent | undefined, poll: LivePollState = 
       <summary>Conversation history and activity</summary>
       ${transcript}
       <div class="live-activity" aria-label="Live activity">
-        ${(live?.entries ?? []).filter(entry => entry.kind === 'toolResult' && entry.tool?.name !== 'remember_note').map(entry => `<details class="live-tool-result" data-result-seq="${entry.seq}"><summary>${escapeHtml(toolPhrase(entry.tool?.name ?? ''))} (${escapeHtml(entry.tool?.status ?? 'unknown')})</summary>${entry.tool?.status !== 'error' && entry.tool?.markdown ? renderMarkdown(entry.tool.markdown) + sourcesMarkup(entry.tool.sources ?? []) : ''}</details>`).join('')}
+        ${(live?.entries ?? []).filter(entry => entry.kind === 'toolResult' && entry.tool?.name !== 'remember_note').map(entry => `<details class="live-tool-result" data-result-seq="${entry.seq}"><summary>${escapeHtml(toolPhrase(entry.tool?.name ?? ''))} (${escapeHtml(entry.tool?.status ?? 'unknown')})</summary>${entry.tool?.status !== 'error' && entry.tool?.markdown ? renderMarkdown(entry.tool.markdown, TRANSCRIPT_MARKDOWN) + sourcesMarkup(entry.tool.sources ?? []) : ''}</details>`).join('')}
         ${(live?.entries ?? []).filter(entry => entry.kind === 'toolResult' && entry.tool?.name === 'remember_note').map(remaining => rememberCardMarkup(remaining)).join('')}
         ${jobs}
       </div>

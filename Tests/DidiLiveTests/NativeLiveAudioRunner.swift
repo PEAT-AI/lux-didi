@@ -520,21 +520,33 @@ private func checkPrimaryChannelConversion() throws {
                 throw NativeLiveAudioError.unsupportedFormat
             }
             var deviceInput = (id: "builtin", name: "Built-in microphone")
+            var testNow = Date()
             var captures: [NativeCaptureBuffer] = []
-            let injectedDevice = NativeLiveAudioDevice(captureInput: format, defaultInput: { deviceInput })
+            let injectedDevice = NativeLiveAudioDevice(captureInput: format, defaultInput: { deviceInput },
+                                                       now: { testNow })
             injectedDevice.onCapturePrepared = { captures.append($0) }
             let sends = NativeAudioSendProbe()
             try await injectedDevice.start { await sends.send($0) }
+            try audioRequire(injectedDevice.hasConfigurationObserver,
+                             "start installs the configuration observer that release removes")
             let originalCapture = captures[0]
             originalCapture.append(try tone(format, start: 0, count: 2000))
+            // An unchanged default device never rebuilds, however many notifications arrive.
             injectedDevice.routeChanged(); injectedDevice.routeChanged(); injectedDevice.routeChanged()
             await injectedDevice.finishRouteRecovery()
+            try audioRequire(captures.count == 1, "unchanged route storms are ignored, never rebuilt")
+            // A real input change releases capture, then auto-resumes on the new device.
+            testNow = testNow.addingTimeInterval(1)
+            deviceInput = (id: "usb", name: "USB microphone")
+            injectedDevice.routeChanged(); await injectedDevice.finishRouteRecovery()
             let oldSendCount = await sends.count
             try audioRequire(captures.count == 2 && oldSendCount == 0 && originalCapture.next().0 == nil,
                              "actual device drain must discard queued old-generation frames")
             originalCapture.append(try tone(format, start: 0, count: 2000))
             try audioRequire(originalCapture.next().0 == nil, "old tap must stay stopped after rebuild")
             injectedDevice.setMuted(true)
+            testNow = testNow.addingTimeInterval(1)
+            deviceInput = (id: "usb2", name: "USB microphone 2")
             injectedDevice.routeChanged(); await injectedDevice.finishRouteRecovery()
             captures.last!.append(try tone(format, start: 0, count: 2000))
             try audioRequire(captures.count == 3 && injectedDevice.isCapturing && captures.last!.next().0 == nil,
@@ -546,17 +558,15 @@ private func checkPrimaryChannelConversion() throws {
             try audioRequire(delivered?.count == 640, "rebuilt device sends real converted frames after unmute")
             var changedName = ""
             injectedDevice.onInputChange = { changedName = $0 }
-            deviceInput = (id: "usb", name: "USB microphone")
-            injectedDevice.routeChanged(); await injectedDevice.finishRouteRecovery()
-            try audioRequire(!injectedDevice.isCapturing && changedName == "USB microphone" && captures.count == 3,
-                             "input change releases real capture until Resume")
+            testNow = testNow.addingTimeInterval(1)
             deviceInput = (id: "airpods", name: "AirPods")
-            injectedDevice.resumeInput()
-            try audioRequire(changedName == "AirPods" && captures.count == 3, "Resume rechecks device consent identity")
-            injectedDevice.resumeInput()
-            try audioRequire(captures.count == 4 && injectedDevice.isCapturing, "explicit Resume rebuilds device")
+            injectedDevice.routeChanged(); await injectedDevice.finishRouteRecovery()
+            try audioRequire(changedName == "AirPods" && captures.count == 4 && injectedDevice.isCapturing,
+                             "a paused route change auto-resumes on the new device without holding it")
             injectedDevice.routeChanged(); injectedDevice.stop(); await injectedDevice.finishRouteRecovery()
-            try audioRequire(captures.count == 4 && !injectedDevice.isCapturing, "Stop wins against device recovery")
+            try audioRequire(captures.count == 4 && !injectedDevice.isCapturing
+                             && !injectedDevice.hasConfigurationObserver,
+                             "stop releases capture and removes the configuration observer")
             print("PASS injected real device converter/drain: mute survives, queued/stale frames discarded, input consent rechecked")
             let gate = NativeAudioSendGate()
             var blockedCapture: NativeCaptureBuffer?
@@ -567,6 +577,7 @@ private func checkPrimaryChannelConversion() throws {
             var enteredSend = gate.entered.makeAsyncIterator()
             blockedCapture?.append(try tone(format, start: 0, count: 1024))
             _ = await enteredSend.next()
+            deviceInput = (id: "blocked", name: "Blocked microphone")
             blockedDevice.routeChanged(); await blockedDevice.finishRouteRecovery()
             await gate.fail(); await oldDrain?.value
             try audioRequire(blockedDevice.isCapturing, "stale send failure must not interrupt rebuilt capture")
@@ -638,6 +649,21 @@ private func checkPrimaryChannelConversion() throws {
             try audioRequire(!device.hasEngine && !device.isCapturing, "construction does not create audio engine")
             device.stop(); device.stop()
             try audioRequire(!device.hasEngine, "teardown idempotent")
+            try audioRequire(NativeLiveAudioDevice.shouldUseVoiceProcessing(
+                outputIsBuiltInSpeakers: true, deviceBusy: false, voiceProcessingFailed: false),
+                             "VPIO on built-in speakers when no device is busy")
+            try audioRequire(!NativeLiveAudioDevice.shouldUseVoiceProcessing(
+                outputIsBuiltInSpeakers: true, deviceBusy: true, voiceProcessingFailed: false),
+                             "VPIO skipped while another app is running a device")
+            try audioRequire(!NativeLiveAudioDevice.shouldUseVoiceProcessing(
+                outputIsBuiltInSpeakers: false, deviceBusy: false, voiceProcessingFailed: false),
+                             "VPIO skipped on a non-built-in output")
+            try audioRequire(!NativeLiveAudioDevice.shouldUseVoiceProcessing(
+                outputIsBuiltInSpeakers: true, deviceBusy: false, voiceProcessingFailed: true),
+                             "VPIO never retried after one failure")
+            try audioRequire(NativeLiveAudioDevice.vpioSkipReason(
+                builtIn: true, deviceBusy: true, voiceProcessingFailed: false) == "device_busy",
+                             "busy device logs audio_vpio_skipped reason=device_busy")
             print("PASS silent real AVAudioConverter irregular stereo tone, frame continuity, partial discard, ring overflow, lazy device")
             print("UNVERIFIED hardware: voice processing on both IO nodes and physical device loss; Start verifies both enabled flags")
         } catch { print("FAIL native audio: \(error)"); exit(1) }

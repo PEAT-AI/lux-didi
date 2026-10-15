@@ -100,9 +100,14 @@ enum State: String, CaseIterable {
             self.state = .failed
         }
         // E1: one native-live.log line per provider barge-in. Metadata only, read from the capture device.
-        device.onLiveInterrupted = { [weak self] event in
+        device.onLiveInterrupted = { [weak self] sample in
             guard let self else { return }
-            self.journal.appendInterruption(event, sessionID: await self.coordinator.sessionID ?? "unknown")
+            self.journal.appendInterruption(phase: sample.isPostRms ? .post : .pre,
+                sessionID: await self.coordinator.sessionID ?? "unknown",
+                bufferedPlaybackMs: sample.bufferedPlaybackMs, msSinceLastModelAudio: sample.msSinceLastModelAudio,
+                turnCompleteSeen: sample.turnCompleteSeen,
+                rms: NativeLiveRms(mean: sample.rmsMean, max: sample.rmsMax, speechBuffers: sample.rmsSpeechBuffers),
+                at: sample.at)
         }
     }
     // Presentation only: an offer never opens a session, an audio engine or the microphone.

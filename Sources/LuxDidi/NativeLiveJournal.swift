@@ -40,16 +40,6 @@ struct NativeLiveRms: Sendable {
 /// E1 interruption phase: `pre` is the second before the barge-in, `post` the five seconds after it.
 enum NativeLiveInterruptionPhase: String, Sendable { case pre, post }
 
-/// One interruption fact set handed from the capture device to the live journal.
-struct NativeLiveInterruptionEvent: Sendable {
-    let phase: NativeLiveInterruptionPhase
-    let bufferedPlaybackMs: Int
-    let msSinceLastModelAudio: Int
-    let turnCompleteSeen: Bool
-    let rms: NativeLiveRms
-    let at: Date
-}
-
 /// Append-only JSON-lines writer for native-live.log. Every record carries an ISO8601 timestamp,
 /// the closed reason and its numeric detail. A test or a proof build can pass no URL and read
 /// `events` instead. Writing never throws into a call path and never changes capture or session
@@ -88,12 +78,6 @@ final class NativeLiveJournal {
 
     /// E1: one metadata-only `live_interrupted` line. Numbers, a boolean and the session id only,
     /// never audio, text, a device label or a provider payload.
-    func appendInterruption(_ event: NativeLiveInterruptionEvent, sessionID: String) {
-        appendInterruption(phase: event.phase, sessionID: sessionID,
-            bufferedPlaybackMs: event.bufferedPlaybackMs, msSinceLastModelAudio: event.msSinceLastModelAudio,
-            turnCompleteSeen: event.turnCompleteSeen, rms: event.rms, at: event.at)
-    }
-
     func appendInterruption(phase: NativeLiveInterruptionPhase, sessionID: String, bufferedPlaybackMs: Int,
                             msSinceLastModelAudio: Int, turnCompleteSeen: Bool, rms: NativeLiveRms, at date: Date) {
         var record: [String: Any] = [

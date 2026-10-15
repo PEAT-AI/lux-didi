@@ -228,6 +228,17 @@ final class NativeCaptureBuffer: @unchecked Sendable {
     }
 }
 
+struct NativeLiveInterruptionSample: Sendable {
+    let isPostRms: Bool
+    let bufferedPlaybackMs: Int
+    let msSinceLastModelAudio: Int
+    let turnCompleteSeen: Bool
+    let rmsMean: Float
+    let rmsMax: Float
+    let rmsSpeechBuffers: Int
+    let at: Date
+}
+
 @MainActor final class NativeLiveAudioDevice: ObservableObject, LiveAudioSink {
     @Published private(set) var inputLevel: Float = 0
     @Published private(set) var outputLevel: Float = 0
@@ -241,8 +252,8 @@ final class NativeCaptureBuffer: @unchecked Sendable {
     var onInterruption: (() async -> Void)?
     var onInputChange: ((String) -> Void)?
     var onResume: (() -> Void)?
-    /// E1: called once per provider barge-in with the pre facts, then again after `interruptionPostRmsDelay` with postRms.
-    var onLiveInterrupted: (@MainActor (NativeLiveInterruptionEvent) async -> Void)?
+    /// E1: called once per provider barge-in with the pre facts, then again after `interruptionPostRmsDelayNanos` with postRms.
+    var onLiveInterrupted: (@MainActor (NativeLiveInterruptionSample) async -> Void)?
     /// E1 test seam: the delay before the postRms line. Production is five seconds.
     var interruptionPostRmsDelayNanos: UInt64 = 5_000_000_000
     /// The orb renders this RMS and above as speech (web/src/orb.ts `audible`); telemetry counts buffers above it.
@@ -673,31 +684,31 @@ final class NativeCaptureBuffer: @unchecked Sendable {
         if levelRing.count > Self.levelRingCapacity { levelRing.removeFirst(levelRing.count - Self.levelRingCapacity) }
     }
     /// E1: mean, max and speech-buffer count of the stored levels inside [from, to]. Numbers only.
-    private func rmsWindow(from: Date, to: Date) -> NativeLiveRms {
+    private func rmsWindow(from: Date, to: Date) -> (mean: Float, max: Float, speechBuffers: Int) {
         let window = levelRing.filter { $0.at >= from && $0.at <= to }
-        guard !window.isEmpty else { return NativeLiveRms(mean: 0, max: 0, speechBuffers: 0) }
+        guard !window.isEmpty else { return (0, 0, 0) }
         let sum = window.reduce(Float(0)) { $0 + $1.level }
-        return NativeLiveRms(mean: sum / Float(window.count), max: window.map(\.level).max() ?? 0,
-                             speechBuffers: window.filter { $0.level > Self.meterSpeechThreshold }.count)
+        return (sum / Float(window.count), window.map(\.level).max() ?? 0,
+                window.filter { $0.level > Self.meterSpeechThreshold }.count)
     }
     /// E1: gather the barge-in facts the capture and playback paths already hold, then postRms after the delay.
     func interruption(turnCompleteSeen: Bool) async {
         let at = now()
         let bufferedPlaybackMs = scheduledPlaybackFrames <= 0 ? 0 : scheduledPlaybackFrames * 1000 / 24000
         let sinceAudio = lastModelAudioAt.map { max(0, Int(at.timeIntervalSince($0) * 1000)) } ?? -1
-        let pre = NativeLiveInterruptionEvent(phase: .pre, bufferedPlaybackMs: bufferedPlaybackMs,
+        let pre = rmsWindow(from: at.addingTimeInterval(-1), to: at)
+        await onLiveInterrupted?(NativeLiveInterruptionSample(isPostRms: false, bufferedPlaybackMs: bufferedPlaybackMs,
             msSinceLastModelAudio: sinceAudio, turnCompleteSeen: turnCompleteSeen,
-            rms: rmsWindow(from: at.addingTimeInterval(-1), to: at), at: at)
-        await onLiveInterrupted?(pre)
+            rmsMean: pre.mean, rmsMax: pre.max, rmsSpeechBuffers: pre.speechBuffers, at: at))
         let delay = interruptionPostRmsDelayNanos
         Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: delay)
             guard let self else { return }
             let after = self.now()
-            let post = NativeLiveInterruptionEvent(phase: .post, bufferedPlaybackMs: bufferedPlaybackMs,
+            let post = self.rmsWindow(from: at, to: after)
+            await self.onLiveInterrupted?(NativeLiveInterruptionSample(isPostRms: true, bufferedPlaybackMs: bufferedPlaybackMs,
                 msSinceLastModelAudio: sinceAudio, turnCompleteSeen: turnCompleteSeen,
-                rms: self.rmsWindow(from: at, to: after), at: after)
-            await self.onLiveInterrupted?(post)
+                rmsMean: post.mean, rmsMax: post.max, rmsSpeechBuffers: post.speechBuffers, at: after))
         }
     }
     private func interrupt() async {

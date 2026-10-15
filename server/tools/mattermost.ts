@@ -3,6 +3,7 @@ import type { McpPort, StoredPayload } from '../adapters/mcp/port.js';
 import type { MattermostEvidence, MattermostResult, MattermostTool } from '../connectors/mattermost.js';
 import { MATTERMOST_AUTH_NEEDED } from '../connectors/mattermost.js';
 import { sha256 } from './canonical.js';
+import { hostLogEvent } from '../host/log.js';
 import { shapeMattermost, type ShapedSource } from './live-shape.js';
 
 export interface MattermostProjection {
@@ -70,7 +71,7 @@ export function projectMattermostResult(port: McpPort, evidence: ConnectorResult
   try { data = JSON.parse(payload.text); } catch { data = payload.text; }
   const projection = renderMattermostTool(evidence.tool, data);
   // Metadata only: which shape the read took, and its sizes. Never any message content.
-  console.log(JSON.stringify({ event: 'mattermost_shape', tool: evidence.tool, rawCharacters: payload.text.length, shapedCharacters: projection.text.length, itemCount: projection.itemCount ?? 0, shape: projection.shape ?? 'unknown' }));
+  hostLogEvent({ event: 'mattermost_shape', tool: evidence.tool, rawCharacters: payload.text.length, shapedCharacters: projection.text.length, itemCount: projection.itemCount ?? 0, shape: projection.shape ?? 'unknown' });
   return { ok: true, projection };
 }
 

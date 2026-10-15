@@ -4,9 +4,18 @@ import { defaultDataDir, pairLocal, startHost, type HostConfig } from './runtime
 import { supervise } from './supervision.js';
 import { ServiceError } from '../contracts/errors.js';
 
+/**
+ * The one stdout writer for the supervised protocol. The native supervisor treats every byte after
+ * the ready frame as invalid output, so nothing but this named writer may reach process.stdout while
+ * supervised. Callers must pass a single bounded protocol frame.
+ */
+function writeProtocolFrame(frame: Record<string, unknown>): void {
+  process.stdout.write(`${JSON.stringify(frame)}\n`);
+}
+
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (argv.length === 1 && argv[0] === '--help') {
-    console.log('Usage: node server/dist/host/index.js [pair] [--supervised] [--data-dir PATH] [--web-root BUILD] [--port 0..65535] [--descriptor PATH.json] [--config-dir PATH] [--owner-profile PATH]\nForeground, loopback-only; no bearer argument. Defaults: platform application data, repository web/dist, port 8765.\npair verifies current local service identity and prints a single-use browser pairing code, never a bearer.\n--supervised requires one bounded nonce JSON line on stdin, emits ready JSON, and closes on stdin EOF.');
+    process.stdout.write('Usage: node server/dist/host/index.js [pair] [--supervised] [--data-dir PATH] [--web-root BUILD] [--port 0..65535] [--descriptor PATH.json] [--config-dir PATH] [--owner-profile PATH]\nForeground, loopback-only; no bearer argument. Defaults: platform application data, repository web/dist, port 8765.\npair verifies current local service identity and prints a single-use browser pairing code, never a bearer.\n--supervised requires one bounded nonce JSON line on stdin, emits ready JSON, and closes on stdin EOF.\n');
     return;
   }
   const pairing = argv[0] === 'pair';
@@ -31,7 +40,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (values.has('--config-dir')) config.configDir = resolve(values.get('--config-dir')!);
   const descriptor = values.get('--descriptor') ?? process.env.DIDI_DESCRIPTOR;
   if (descriptor) config.descriptor = resolve(descriptor);
-  if (pairing) { console.log(await pairLocal(config.dataDir, config.descriptor)); return; }
+  if (pairing) { process.stdout.write(`${await pairLocal(config.dataDir, config.descriptor)}\n`); return; }
   const supervision = supervised ? supervise() : undefined;
   try {
     const nonce = supervision ? await supervision.nonce : undefined;
@@ -49,11 +58,11 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       const output = `${JSON.stringify(frame)}\n`;
       if (Buffer.byteLength(output) > 1024) { stop(new Error('Readiness frame exceeds limit')); return; }
       process.stdout.on('error', stop);
-      process.stdout.write(output);
-    } else console.log(`Didi host ${host.descriptor.origin}; local memory/commitments available; model/notifications unavailable`);
+      writeProtocolFrame(frame);
+    } else process.stdout.write(`Didi host ${host.descriptor.origin}; local memory/commitments available; model/notifications unavailable\n`);
   } catch (error) {
     if (supervision && error instanceof ServiceError) {
-      try { process.stdout.write(`${JSON.stringify({ type: 'error', schemaVersion: 1, code: error.code })}\n`); } catch { /* the exit status is the remaining signal */ }
+      try { writeProtocolFrame({ type: 'error', schemaVersion: 1, code: error.code }); } catch { /* the exit status is the remaining signal */ }
     }
     supervision?.dispose();
     throw error;

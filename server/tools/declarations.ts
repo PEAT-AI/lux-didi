@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { createHash } from 'node:crypto';
 import { controlled, Interrupted } from '../adapters/model/control.js';
 import { isToolFailureCode } from '../adapters/model/types.js';
+import { hostLogEvent } from '../host/log.js';
 import type { Authority, DataClass, FunctionDeclaration, HostContext, JsonObject, ModelControl, Part, ToolCallIntent, ToolCallJournal, ToolCallRefusal, ToolDefinition, ToolOutcome, ToolRecord, ToolResultBinding, ToolResultGate, ToolResultRef, LoopResult } from '../adapters/model/types.js';
 
 /** Provider schemas are presentation only. Validation and approval retain the originals. */
@@ -47,7 +48,7 @@ function jsonTypeOf(value: unknown): string {
 function logArgumentsRejected(name: string, args: unknown): void {
   const record = args !== null && typeof args === 'object' && !Array.isArray(args) ? args as Record<string, unknown> : {};
   const fields = Object.keys(record).slice(0, 24).map(key => `${key}:${jsonTypeOf(record[key])}`);
-  console.log(JSON.stringify({ event: 'tool_arguments_rejected', tool: name, fields }));
+  hostLogEvent({ event: 'tool_arguments_rejected', tool: name, fields });
 }
 /** For every declared tool: the tool name and its expected argument shape, never the bad values. */
 function invalidArgumentsGuidance(name: string, guidance: string | undefined, parameters: Record<string, unknown>): string {

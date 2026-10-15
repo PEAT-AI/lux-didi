@@ -90,6 +90,7 @@ try {
     return {
       voiceHeader: rect('.voice-head'), orbStage: rect('.orb-stage'), orbCanvas: rect('#didi-orb'),
       composer: rect('#connected-draft'), composerForm: rect('#connected-send-form'),
+      chatInner: rect('#lane-chat .lane-inner'), chatFill: rect('.chat-fill'), connPanel: rect('#connected-panel'), connConv: rect('.connected-conversation'), connEntries: rect('#connected-entries'),
       rail: rect('#rail'), laneVoice: lanes[0] ? Math.round(lanes[0].getBoundingClientRect().width) : null,
       laneChat: lanes[1] ? Math.round(lanes[1].getBoundingClientRect().width) : null,
       windowBottom: window.innerHeight,

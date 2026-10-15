@@ -178,13 +178,56 @@ try {
   }
   await page.waitForFunction(() => document.querySelectorAll('#connected-entries .assistant').length >= 2, { timeout: 20000 });
   await shot('1440x900-dark-chat-turns');
-  const filled = await page.evaluate(() => {
-    const r = document.querySelector('#connected-send-form').getBoundingClientRect();
-    const o = document.querySelector('#lane-voice .voice-orb');
-    const ob = o ? o.getBoundingClientRect() : null;
-    return { composerGapFilled: Math.round(window.innerHeight - r.bottom), headerOrb: ob ? `${Math.round(ob.width)}x${Math.round(ob.height)}` : 'absent', nestedCards: document.querySelectorAll('#lane-voice .panel, #lane-chat .panel').length };
+  const r4 = await page.evaluate(() => {
+    const rn = v => Math.round(v);
+    const q = s => document.querySelector(s);
+    const box = s => { const el = q(s); if (!el) return null; const b = el.getBoundingClientRect(); return { left: b.left, right: b.right, top: b.top, bottom: b.bottom, width: b.width, height: b.height }; };
+    const voice = box('#lane-voice'), chat = box('#lane-chat');
+    const chip = box('.live-tool-result'), naya = box('.live-turns .entry.naya'), user = box('.live-turns .entry.user');
+    const composer = box('#connected-send-form'), field = box('.composer-field'), send = box('#connected-send'), hide = box('#lane-voice .lane-toggle');
+    const entries = [...document.querySelectorAll('.live-turns > *')];
+    const sA = box('#voice-start'), sB = box('#new-conversation');
+    const summary = q('.live-tool-result > summary');
+    const label = q('.live-turns .entry strong'); const labelDiv = q('.live-turns .entry .markdown, .live-turns .entry p');
+    const allow = q('.allow-link');
+    return {
+      nayaLeftInset: naya ? rn(naya.left - voice.left) : null,
+      userRightInset: user ? rn(voice.right - user.right) : null,
+      chipLeftInset: chip ? rn(chip.left - voice.left) : null,
+      composerLeftInset: composer ? rn(composer.left - chat.left) : null,
+      composerRightInset: composer ? rn(chat.right - composer.right) : null,
+      composerBottomGap: composer ? rn(chat.bottom - composer.bottom) : null,
+      send: send ? `${rn(send.width)}x${rn(send.height)}` : null,
+      sendRightInset: field && send ? rn(field.right - send.right) : null,
+      sendCentre: field && send ? Math.abs(rn((send.top + send.height / 2) - (field.top + field.height / 2))) : null,
+      headerOrb: box('#lane-voice .voice-orb canvas'),
+      hideRightInset: hide ? rn(voice.right - hide.right) : null,
+      gapStartNew: sA && sB ? rn(sB.left - sA.right) : null,
+      gapNewHide: sB && hide ? rn(hide.left - sB.right) : null,
+      turnGap: entries.length > 1 ? rn(entries[1].getBoundingClientRect().top - entries[0].getBoundingClientRect().bottom) : null,
+      chipPad: summary ? `${getComputedStyle(summary).paddingTop} ${getComputedStyle(summary).paddingRight}` : null,
+      chipDisplay: summary ? getComputedStyle(summary).display : null,
+      labelGap: label && labelDiv ? rn(labelDiv.getBoundingClientRect().top - label.getBoundingClientRect().bottom) : null,
+      labelFont: label ? getComputedStyle(label).fontSize : null,
+      nayaMax: naya ? getComputedStyle(naya).maxWidth : null,
+      allowHeight: allow ? rn(allow.getBoundingClientRect().height) : null,
+      nestedCards: document.querySelectorAll('#lane-voice .panel, #lane-chat .panel').length,
+    };
   });
-  await writeFile(join(out, 'measurements-filled.md'), ['# DOM measurements with a filled chat and a live transcript (1440x900, dark)', '', '| metric | value |', '| --- | --- |', `| header orb size | ${filled.headerOrb} px |`, `| composer bottom gap to window (filled) | ${filled.composerGapFilled} px |`, `| nested cards inside lanes | ${filled.nestedCards} |`, ''].join('\n'));
+  await writeFile(join(out, 'measurements-v2r4.md'), ['# V2-R4 A-G measurements (1440x900, dark, live transcript and empty chat)', '', '| item | metric | value |', '| --- | --- | --- |',
+    `| A | naya turn left inset | ${r4.nayaLeftInset} px |`,
+    `| A | user turn right inset | ${r4.userRightInset} px |`,
+    `| A | tool chip left inset | ${r4.chipLeftInset} px |`,
+    `| A | composer left / right inset | ${r4.composerLeftInset} / ${r4.composerRightInset} px |`,
+    `| B | composer bottom gap | ${r4.composerBottomGap} px |`,
+    `| C | send button | ${r4.send} px; right inset ${r4.sendRightInset}; centre offset ${r4.sendCentre} |`,
+    `| D | header orb | ${r4.headerOrb ? Math.round(r4.headerOrb.width) + 'x' + Math.round(r4.headerOrb.height) : 'absent'} px |`,
+    `| D | Hide right inset / Start-New gap / New-Hide gap | ${r4.hideRightInset} / ${r4.gapStartNew} / ${r4.gapNewHide} px |`,
+    `| E | tool chip | ${r4.chipDisplay}, padding ${r4.chipPad} |`,
+    `| F | turn gap / label gap / label font / naya max width | ${r4.turnGap} / ${r4.labelGap} / ${r4.labelFont} / ${r4.nayaMax} |`,
+    `| G | Allow height | ${r4.allowHeight} px |`,
+    `| A | nested cards inside lanes | ${r4.nestedCards} |`,
+    ''].join('\n'));
   await page.unroute('**/api/v1/live/current*');
   await page.reload(); await ready();
 

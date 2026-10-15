@@ -89,8 +89,8 @@ function activityLineMarkup() {
   if (key !== activityKey) { activityKey = key; activityStartedAt = Date.now(); }
   return activityMarkup(activity, activity ? Date.now() - activityStartedAt : 0);
 }
-// The lookup line under the orb: one quiet line while Naya looks, source by source (U1).
-const LOOKUP_SOURCE_WORDS: Record<string, string> = { knowledge: 'notes', calendar: 'calendar', mail: 'mail', chat: 'chat' };
+// The lookup subtitle that stands in for the voice-lane status while Naya looks (U1).
+const LOOKUP_SOURCE_WORDS: Record<string, string> = { knowledge: 'lux', calendar: 'calendar', mail: 'mail', chat: 'Mattermost' };
 const SLOW_LOOKUP_MS = 6000;
 function lookupLineMarkup(current: LiveCurrent | undefined): string {
   const entries = current?.entries ?? [];
@@ -100,15 +100,12 @@ function lookupLineMarkup(current: LiveCurrent | undefined): string {
     if (candidate.kind === 'researchProgress' && candidate.progress) { progress = candidate.progress; break; }
   }
   if (!progress || progress.phase === 'done' || progress.phase === 'stopped') return '';
+  if (progress.elapsedMs >= SLOW_LOOKUP_MS) return 'Still looking';
   const done = new Set(progress.sourcesDone);
-  const sources = [...progress.sourcesDone, ...progress.sourcesPending].map(kind => {
-    const word = LOOKUP_SOURCE_WORDS[kind] ?? kind;
-    return done.has(kind)
-      ? `<span class="lookup-source lookup-source-done"><span class="lookup-check" aria-hidden="true">&#10003;</span>${word}</span>`
-      : `<span class="lookup-source">${word}</span>`;
-  });
-  const verb = progress.elapsedMs >= SLOW_LOOKUP_MS ? 'Still looking in' : 'Looking in';
-  return `<p class="lookup-line" role="status" aria-live="polite">${verb} ${sources.join(', ')}</p>`;
+  const sources = [...progress.sourcesDone, ...progress.sourcesPending]
+    .map(kind => done.has(kind) ? `${LOOKUP_SOURCE_WORDS[kind] ?? kind} <span class="lookup-check" aria-hidden="true">&#10003;</span>` : LOOKUP_SOURCE_WORDS[kind] ?? kind)
+    .join(', ');
+  return `Looking in ${sources}`;
 }
 function orbCaptionMarkup() {
   const honesty=!live||live.state==='idle'||live.muted===true;
@@ -123,7 +120,7 @@ function voiceEmptyMarkup() {
   return `<div class="voice-empty"><div class="voice-orb-large"><canvas id="didi-orb-large" width="440" height="440" aria-hidden="true"></canvas></div><p class="voice-empty-line">Press Start or \u2318\u21e7Space to talk</p></div>`;
 }
 function voiceBodyMarkup() {
-  return `<div class="lookup-slot" id="lookup-slot">${lookupLineMarkup(live)}</div>${liveTurns() ? liveMarkup(live, livePoll) : voiceEmptyMarkup()}`;
+  return liveTurns() ? liveMarkup(live, livePoll) : voiceEmptyMarkup();
 }
 function chatLane() {
   return `<div id="connected-panel"></div>`;
@@ -213,7 +210,7 @@ function voiceHeadMarkup() {
   const last = view.lastSessionEndedAt ? `Last session ${e(datetime(view.lastSessionEndedAt))}` : 'No session yet';
   const active = view.state === 'live' || view.state === 'muted' || view.state === 'starting';
   const orb = '<div class="voice-orb"><canvas id="didi-orb" width="120" height="120" aria-hidden="true"></canvas></div>';
-  return `${orb}<div class="voice-status"><p class="voice-state" role="status" aria-live="polite">${e(liveStateCopy(view.state))}</p><p class="voice-time">${last}</p></div><div class="voice-actions">${active ? `<button id="voice-stop" class="stop-pill">Stop</button><button id="voice-mute" class="quiet">${view.state === 'muted' ? 'Unmute' : 'Mute'}</button>` : `<button id="voice-start" class="start-pill" ${startAvailable(view) ? '' : 'aria-disabled="true"'}>Start</button>`}<button id="new-conversation" class="icon-button" aria-label="New conversation" title="New conversation"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button></div>${error ? `<p class="voice-error" role="alert">${e(error)}</p>` : ''}`;
+  return `${orb}<div class="voice-status"><p class="voice-state" role="status" aria-live="polite">${e(liveStateCopy(view.state))}</p><p class="voice-time" id="voice-subtitle" data-normal="${e(last)}">${last}</p></div><div class="voice-actions">${active ? `<button id="voice-stop" class="stop-pill">Stop</button><button id="voice-mute" class="quiet">${view.state === 'muted' ? 'Unmute' : 'Mute'}</button>` : `<button id="voice-start" class="start-pill" ${startAvailable(view) ? '' : 'aria-disabled="true"'}>Start</button>`}<button id="new-conversation" class="icon-button" aria-label="New conversation" title="New conversation"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button></div>${error ? `<p class="voice-error" role="alert">${e(error)}</p>` : ''}`;
 }
 function chatHeadMarkup() {
   return `<p class="lane-title">Chat</p>`;
@@ -435,11 +432,13 @@ function paintLive(){
   if(liveTurns()>0 ? !panel : !!panel){render();return;}
   const replacePanel=paintedLivePoll?.live!==live || !!paintedLivePoll?.stale!==!!livePoll.stale || !!livePoll.stale && paintedLivePoll?.lastSuccess!==livePoll.lastSuccess;
   if(panel && replacePanel){
-    body.innerHTML=`<div class="lookup-slot" id="lookup-slot">${lookupLineMarkup(live)}</div>`+liveMarkup(live,livePoll)
+    body.innerHTML=liveMarkup(live,livePoll)
   }
   paintedLivePoll=panel ? livePoll : undefined;
   const caption=document.querySelector('.orb-caption');const markup=orbCaptionMarkup();if(caption && caption.innerHTML!==markup)caption.innerHTML=markup;
-  const slot=document.getElementById('lookup-slot');if(slot){const lookup=lookupLineMarkup(live);if(slot.innerHTML!==lookup)slot.innerHTML=lookup;}
+  // U1: the lookup progress stands in for the status subtitle while Naya looks, then the subtitle returns.
+  const subtitle=document.getElementById('voice-subtitle');
+  if(subtitle){const lookup=lookupLineMarkup(live);const next=lookup||subtitle.dataset.normal||'';if(subtitle.innerHTML!==next)subtitle.innerHTML=next;}
   const next=orbState();if(next!==appliedOrbState){appliedOrbState=next;orb?.setState(next);orbHeader?.setState(next);}
 }
 onAuthorityChanged(reason=>{

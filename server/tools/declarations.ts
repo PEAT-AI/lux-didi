@@ -31,6 +31,35 @@ export interface ToolCallsContext {
 }
 const validRef = (ref: ToolResultRef | undefined): ref is ToolResultRef =>
   !!ref && typeof ref.id === 'string' && !!ref.id && typeof ref.sha256 === 'string' && /^[a-f0-9]{64}$/.test(ref.sha256);
+
+const invalidAttempts = new WeakMap<Set<string>, Map<string, number>>();
+function recordInvalidAttempt(seenIds: Set<string>, key: string): number {
+  let counts = invalidAttempts.get(seenIds);
+  if (counts === undefined) { counts = new Map(); invalidAttempts.set(seenIds, counts); }
+  const count = (counts.get(key) ?? 0) + 1; counts.set(key, count); return count;
+}
+function jsonTypeOf(value: unknown): string {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'array';
+  return typeof value;
+}
+/** Metadata only: top-level keys and each value's JSON type, never a value. */
+function logArgumentsRejected(name: string, args: unknown): void {
+  const record = args !== null && typeof args === 'object' && !Array.isArray(args) ? args as Record<string, unknown> : {};
+  const fields = Object.keys(record).slice(0, 24).map(key => `${key}:${jsonTypeOf(record[key])}`);
+  console.log(JSON.stringify({ event: 'tool_arguments_rejected', tool: name, fields }));
+}
+/** For every declared tool: the tool name and its expected argument shape, never the bad values. */
+function invalidArgumentsGuidance(name: string, guidance: string | undefined, parameters: Record<string, unknown>): string {
+  if (guidance !== undefined && guidance.length > 0) return `Invalid arguments for ${name}. ${guidance}`;
+  const properties = (parameters['properties'] ?? {}) as Record<string, { type?: unknown; items?: unknown }>;
+  const shape = Object.entries(properties).map(([key, schema]) => {
+    const items = schema?.items as { type?: unknown } | undefined;
+    const type = schema?.type === 'array' ? `array of ${String(items?.type ?? 'value')}` : String(schema?.type ?? 'value');
+    return `${key} (${type})`;
+  }).join(', ');
+  return `Invalid arguments for ${name}. Expected an object with ${shape}.`;
+}
 export interface ToolBatch { tools: ToolRecord[]; bindings: ToolResultBinding[]; responses: Part[]; error: { status: LoopResult['status']; reason: string } | undefined; accepted: readonly { binding: ToolResultBinding; response: JsonObject; dataClasses?: readonly DataClass[] }[] }
 interface CallOutcome { record: ToolRecord; binding?: ToolResultBinding; response?: Part; fatal?: { status: LoopResult['status']; reason: string } }
 export async function runToolCalls(owner: { journal: ToolCallJournal; resultGate: ToolResultGate }, calls: readonly { id?: string; name: string; args: JsonObject }[], ctx: ToolCallsContext): Promise<ToolBatch> {
@@ -54,7 +83,13 @@ export async function runToolCalls(owner: { journal: ToolCallJournal; resultGate
           if (!tool) return;
           if (call.id !== undefined && seenIds.has(call.id)) { record.reason = 'duplicate_call_id'; return; }
           if (call.id !== undefined) seenIds.add(call.id);
-          if (typeof call.args !== 'object' || call.args === null || Array.isArray(call.args) || !tool.validate(call.args)) { record.reason = 'invalid_arguments'; return; }
+          if (typeof call.args !== 'object' || call.args === null || Array.isArray(call.args) || !tool.validate(call.args)) {
+            const attempts = recordInvalidAttempt(seenIds, `${call.name}:${createHash('sha256').update(JSON.stringify(call.args)).digest('hex').slice(0, 16)}`);
+            const guidance = invalidArgumentsGuidance(call.name, tool.guidance, tool.parameters);
+            record.reason = attempts >= 3 ? `${guidance} Stop retrying this tool in this turn.` : guidance;
+            logArgumentsRejected(call.name, call.args);
+            return;
+          }
           if (!host.grants.some(g => g.tool === tool.name && g.effect === tool.effect && g.accountId === tool.accountId && g.resourceId === tool.resourceId)) {
             record.reason = 'grant_not_permitted'; return;
           }

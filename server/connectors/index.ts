@@ -50,6 +50,10 @@ export interface ConnectorToolDeclaration {
   description: string;
   parameters: Record<string, unknown>;
   effect: 'read';
+  /** One-try guidance shown when the model sends an unusable argument shape. */
+  guidance?: string;
+  /** Boundary normalization applied before validation and dispatch; undefined refuses the shape. */
+  normalize?(args: unknown): { args: Record<string, unknown>; notice?: string } | undefined;
   validate(args: unknown): boolean;
 }
 export interface ConnectorDescriptor {
@@ -67,6 +71,39 @@ export interface ConnectorDescriptor {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function toInsightId(value: unknown): number | undefined {
+  if (typeof value === 'number') return Number.isSafeInteger(value) && value > 0 ? value : undefined;
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (!/^\d+(?:\.0+)?$/.test(text)) return undefined;
+    const id = Number(text);
+    return Number.isSafeInteger(id) && id > 0 ? id : undefined;
+  }
+  return undefined;
+}
+
+/** Normalize get_insight arguments before validation: accept an id array, a single id, or the `id` alias. */
+export function normalizeGetInsightArgs(args: unknown, maxGetIds: number): { args: { ids: number[] }; notice?: string } | undefined {
+  let candidate: unknown;
+  if (Array.isArray(args) || typeof args === 'number' || typeof args === 'string') candidate = args;
+  else if (isRecord(args)) {
+    const keys = Object.keys(args);
+    if (keys.length === 1 && keys[0] === 'ids') candidate = args['ids'];
+    else if (keys.length === 1 && keys[0] === 'id') candidate = args['id'];
+    else return undefined;
+  } else return undefined;
+  const list = Array.isArray(candidate) ? candidate : [candidate];
+  const ids: number[] = [];
+  for (const item of list) {
+    const id = toInsightId(item);
+    if (id === undefined) return undefined;
+    if (!ids.includes(id)) ids.push(id);
+  }
+  if (ids.length === 0) return undefined;
+  if (ids.length > maxGetIds) return { args: { ids: ids.slice(0, maxGetIds) }, notice: `Only the first ${maxGetIds} of ${ids.length} requested ids were fetched.` };
+  return { args: { ids } };
 }
 
 const luxKnowledgeDescriptor: ConnectorDescriptor = {
@@ -95,15 +132,13 @@ const luxKnowledgeDescriptor: ConnectorDescriptor = {
         name: 'get_insight',
         description: 'Read full knowledge-base entries by id. Pass one to three entry ids from a knowledge search; requested ids are unverified input.',
         effect: 'read',
+        guidance: 'Needs ids as a list of entry ids from the knowledge search results, like {"ids": [89820, 89933]}.',
         parameters: {
           type: 'object', additionalProperties: false, required: ['ids'],
           properties: { ids: { type: 'array', minItems: 1, maxItems: bounds.maxGetIds, uniqueItems: true, items: { type: 'integer', minimum: 1 }, description: 'One to three entry ids from a knowledge search.' } },
         },
-        validate(args) {
-          if (!isRecord(args) || Object.keys(args).length !== 1 || !Array.isArray(args['ids'])) return false;
-          const ids = args['ids'] as unknown[];
-          return ids.length > 0 && ids.length <= bounds.maxGetIds && new Set(ids).size === ids.length && ids.every(id => Number.isSafeInteger(id) && Number(id) > 0);
-        },
+        normalize(args) { return normalizeGetInsightArgs(args, bounds.maxGetIds); },
+        validate(args) { return normalizeGetInsightArgs(args, bounds.maxGetIds) !== undefined; },
       },
     ];
   },

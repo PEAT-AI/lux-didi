@@ -10,22 +10,32 @@
  *    mistaken for the whole thing.
  */
 
-/** Generous per-tool bounds, named so a reviewer can see the size policy.
- * The list bounds equal the largest slice the connector can fetch, so a list is never cut and
- * never promises paging it cannot honour (W7-R2). Only the lux-knowledge excerpt bound carries a
- * real follow-up (get_insight by id), and the search-hit bound names search_knowledge's limit. */
-export const GMAIL_BODY_CHARS = 12000;
-export const GMAIL_LIST_MESSAGES = 50;
-export const CALENDAR_EVENTS = 50;
-export const MATTERMOST_MESSAGE_CHARS = 4000;
-export const MATTERMOST_MESSAGES = 60;
-/** How many ranked channels ever reach the model. A company archive can hold thousands; the
- * model needs the active few, never a raw dump. */
+/** Per-tool budgets for the text a tool result puts in front of the Live model. Each bound is
+ * named so a reviewer can see the size policy: 3 knowledge hits with 400-character bodies, 8
+ * Mattermost posts with 250-character bodies, 5 mail messages with 300-character excerpts (1500
+ * for one requested message), and 8 calendar events of 150 characters. LIVE_RESULT_CHARS is the
+ * hard ceiling on any single model-visible result, and LIVE_COMBINED_CHARS the larger ceiling for
+ * a result that combines several sources. */
+export const GMAIL_BODY_CHARS = 1500;
+export const GMAIL_LIST_MESSAGES = 5;
+export const GMAIL_LIST_EXCERPT_CHARS = 300;
+export const CALENDAR_EVENTS = 8;
+export const CALENDAR_EVENT_CHARS = 150;
+export const MATTERMOST_MESSAGE_CHARS = 250;
+export const MATTERMOST_MESSAGES = 8;
+/** How many ranked channels ever reach the connector-internal projection. A company archive can
+ * hold thousands; the active few lead a bounded list. M1 de-advertised mattermost_list_channels,
+ * so this projection is never a model-visible Live tool result and keeps its own count bound. */
 export const MATTERMOST_CHANNELS = 40;
-export const KNOWLEDGE_EXCERPT_CHARS = 1200;
-export const KNOWLEDGE_HITS = 20;
-/** A get_insight fetch returns the whole body up to this generous final bound (W7-R4: >= 20000). */
+export const KNOWLEDGE_EXCERPT_CHARS = 400;
+export const KNOWLEDGE_HITS = 3;
+/** A get_insight fetch is the explicit "read the whole entry" path, so it keeps the generous final
+ * bound (W7-R4: >= 20000) instead of the 2000-character single-result ceiling. */
 export const KNOWLEDGE_BODY_CHARS = 20000;
+/** Hard ceiling on the shaped text of any single model-visible Live tool result, and the larger
+ * ceiling for a result that combines several sources (for example a brief). */
+export const LIVE_RESULT_CHARS = 2000;
+export const LIVE_COMBINED_CHARS = 3000;
 
 export interface ShapedResult {
   text: string;
@@ -82,6 +92,23 @@ function listed(items: string[], limit: number, label: string, followUp?: string
   const omitted = items.length - shown.length;
   const suffix = omitted > 0 ? `\n\n[omitted: ${omitted} more ${label}; ${followUp ?? 'final, this tool has no paging argument'}]` : '';
   return { text: shown.join('\n') + suffix, omitted };
+}
+/** The hard per-result ceiling on model-visible text. A result already under `budget` is untouched;
+ * otherwise it is cut at a sentence boundary and an omission note names the dropped characters and
+ * how to ask for the rest, so the whole text (note included) stays within `budget`. */
+export function capped(result: ShapedResult, budget: number = LIVE_RESULT_CHARS): ShapedResult {
+  if (result.text.length <= budget) return result;
+  const note = (omitted: number): string => `\n\n[omitted: ${omitted} characters to keep this result under ${budget}; ask a narrower question or for fewer items for the rest]`;
+  const first = cutAtSentence(result.text, budget);
+  const recut = cutAtSentence(result.text, Math.max(0, budget - note(first.omitted).length));
+  const text = `${recut.text}${note(recut.omitted)}`.slice(0, budget);
+  return { ...result, text, partial: true, omittedCharacters: result.omittedCharacters + recut.omitted };
+}
+/** Drop dial-in boilerplate that a calendar invite appends to its description: phone numbers, PIN
+ * codes and "more phone numbers" links are noise no spoken answer needs. */
+const DIAL_IN = /[^.\n]*(?:dial[- ]?in|join by phone|more phone numbers|pin:\s*\d+)[^.\n]*\.?/gi;
+export function stripDialIn(text: string): string {
+  return text.replace(DIAL_IN, '').replace(/\s{2,}/g, ' ').trim();
 }
 
 // --- noise removal -------------------------------------------------------------------------
@@ -195,7 +222,7 @@ export function shapeGmailRead(data: Record<string, unknown>): ShapedResult {
   const body = cleanMailBody(str(data['body']));
   const cut = cutAtSentence(body, GMAIL_BODY_CHARS);
   const note = cut.omitted > 0 ? `\n\n[omitted: ${cut.omitted} characters of body; final, a single message has no partial re-read]` : '';
-  return { text: `${head.join('\n')}\n\n${cut.text}${note}`, partial: cut.omitted > 0, originalCharacters: body.length + head.join('\n').length, omittedCharacters: cut.omitted };
+  return capped({ text: `${head.join('\n')}\n\n${cut.text}${note}`, partial: cut.omitted > 0, originalCharacters: body.length + head.join('\n').length, omittedCharacters: cut.omitted });
 }
 
 export function shapeGmailList(data: Record<string, unknown>): ShapedResult {
@@ -203,13 +230,14 @@ export function shapeGmailList(data: Record<string, unknown>): ShapedResult {
   const lines = messages.filter(isRecord).map(entry => {
     const unread = labels(entry).includes('UNREAD') ? ' [unread]' : '';
     const snippet = str(entry['snippet']);
+    const excerpt = snippet ? cutAtSentence(snippet, GMAIL_LIST_EXCERPT_CHARS).text : '';
     const threadValue = entry['threadSize'] ?? entry['messageCount'];
     const size = typeof threadValue === 'number' && threadValue > 0 ? ` (thread ${threadValue})` : '';
     const url = inboxUrl(entry['id']);
-    return `- ${header(entry, 'Subject') || '(no subject)'} | ${senderName(entry) || 'unknown sender'} | ${header(entry, 'Date') || 'unknown date'}${unread}${size}${snippet ? ` | ${snippet}` : ''}${url ? `\n  source: ${url}` : ''}`;
+    return `- ${header(entry, 'Subject') || '(no subject)'} | ${senderName(entry) || 'unknown sender'} | ${header(entry, 'Date') || 'unknown date'}${unread}${size}${excerpt ? ` | ${excerpt}` : ''}${url ? `\n  source: ${url}` : ''}`;
   });
   const body = listed(lines, GMAIL_LIST_MESSAGES, 'messages');
-  return { text: body.text, partial: body.omitted > 0, originalCharacters: lines.join('\n').length, omittedCharacters: body.omitted };
+  return capped({ text: body.text, partial: body.omitted > 0, originalCharacters: lines.join('\n').length, omittedCharacters: body.omitted });
 }
 
 // --- Calendar ------------------------------------------------------------------------------
@@ -217,7 +245,7 @@ export function shapeGmailList(data: Record<string, unknown>): ShapedResult {
 export function shapeGcalCalendars(data: Record<string, unknown>): ShapedResult {
   const calendars = Array.isArray(data['calendars']) ? data['calendars'] : [];
   const lines = calendars.filter(isRecord).map(entry => `- ${field(entry, 'summary', 'name') || str(entry['id']) || 'calendar'}`);
-  return shaped(lines.join('\n'));
+  return capped(shaped(lines.join('\n')));
 }
 
 export function shapeGcalList(data: Record<string, unknown>): ShapedResult {
@@ -232,14 +260,15 @@ export function shapeGcalList(data: Record<string, unknown>): ShapedResult {
     if (names.length) lines.push(`  attendees: ${names.join(', ')}`);
     const conference = field(entry, 'hangoutLink') || (isRecord(entry['conferenceData']) ? 'yes' : '');
     if (conference) lines.push('  conference: yes');
-    const description = cleanMailBody(field(entry, 'description')).replace(/\n+/g, ' ');
+    const description = stripDialIn(cleanMailBody(field(entry, 'description'))).replace(/\n+/g, ' ');
     if (description) lines.push(`  ${description}`);
     const link = field(entry, 'htmlLink');
     if (link) lines.push(`  source: ${link}`);
-    return lines.join('\n');
+    const cut = cutAtSentence(lines.join('\n'), CALENDAR_EVENT_CHARS);
+    return cut.omitted > 0 ? `${cut.text} [+${cut.omitted} chars]` : cut.text;
   });
   const body = listed(blocks, CALENDAR_EVENTS, 'events');
-  return { text: body.text, partial: body.omitted > 0, originalCharacters: blocks.join('\n').length, omittedCharacters: body.omitted };
+  return capped({ text: body.text, partial: body.omitted > 0, originalCharacters: blocks.join('\n').length, omittedCharacters: body.omitted });
 }
 
 // --- Mattermost ----------------------------------------------------------------------------
@@ -370,7 +399,7 @@ export function shapeMattermost(tool: string, data: unknown): ShapedResult {
     if (!isRecord(data)) return raw.trim() === '' ? mattermostNote(tool) : unrecognisedMattermost(raw);
     const name = field(data, 'username', 'user_name');
     const display = field(data, 'display_name', 'displayName');
-    return mattermostProjection([name, display].filter(Boolean).join(' | ') || 'authenticated', 'whoami', 1);
+    return capped(mattermostProjection([name, display].filter(Boolean).join(' | ') || 'authenticated', 'whoami', 1));
   }
   if (tool === 'mattermost_list_channels') {
     const list = Array.isArray(data) ? data : isRecord(data) && Array.isArray(data['channels']) ? data['channels'] : undefined;
@@ -389,7 +418,7 @@ export function shapeMattermost(tool: string, data: unknown): ShapedResult {
   const rendered = ordered.map(renderPost);
   const body = listed(rendered.map(entry => entry.lines.join('\n')), MATTERMOST_MESSAGES, 'messages');
   const omitted = body.omitted + rendered.reduce((sum, entry) => sum + entry.omitted, 0);
-  return { text: body.text, partial: omitted > 0, originalCharacters: rendered.map(l => l.lines.join('\n')).join('\n').length, omittedCharacters: omitted, shape: extracted.shape, itemCount: visible.length };
+  return capped({ text: body.text, partial: omitted > 0, originalCharacters: rendered.map(l => l.lines.join('\n')).join('\n').length, omittedCharacters: omitted, shape: extracted.shape, itemCount: visible.length });
 }
 
 // --- lux-knowledge -------------------------------------------------------------------------
@@ -449,5 +478,5 @@ function knowledgeList(hits: Record<string, unknown>[]): ShapedResult {
   const shapedHits = hits.map(knowledgeExcerpt);
   const body = listed(shapedHits.map(hit => hit.text), KNOWLEDGE_HITS, 'hits', `call search_knowledge again with limit=${hits.length} for the rest`);
   const omitted = body.omitted + shapedHits.reduce((sum, hit) => sum + hit.omitted, 0);
-  return { text: body.text, partial: omitted > 0, originalCharacters: shapedHits.map(hit => hit.text).join('\n\n').length, omittedCharacters: omitted };
+  return capped({ text: body.text, partial: omitted > 0, originalCharacters: shapedHits.map(hit => hit.text).join('\n\n').length, omittedCharacters: omitted });
 }

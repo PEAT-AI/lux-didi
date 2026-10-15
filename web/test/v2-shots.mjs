@@ -165,6 +165,7 @@ try {
     await route.fulfill({ response, json: body });
   });
   await setTheme('dark');
+  await page.locator('#connected-draft:not([disabled])').waitFor({ timeout: 15000 });
   await page.waitForFunction(() => document.querySelectorAll('#live-panel .live-latest-turn').length === 1, { timeout: 12000 });
   for (const text of ['First synthetic chat turn.', 'Second synthetic chat turn.']) {
     await page.locator('#connected-draft').fill(text);

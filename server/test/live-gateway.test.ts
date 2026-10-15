@@ -665,12 +665,16 @@ test('HTTP snapshot and same-key replay expire accepted unused sessions without 
   const second = await createBody(h, 'http-unused-replay');
   assert.equal(first.status, 200);
   assert.equal(second.status, 200);
+  // One Live session per owner: creating the second supersedes the first.
+  const superseded = await json(h.origin, `/api/v1/live-sessions/${first.body.data.liveSessionId}`, { headers: bearer(h) });
+  assert.equal(superseded.status, 200);
+  assert.equal(superseded.body.data.lifecycle, 'terminal');
   now += 20;
-  const boundary = await json(h.origin, `/api/v1/live-sessions/${first.body.data.liveSessionId}`, { headers: bearer(h) });
+  const boundary = await json(h.origin, `/api/v1/live-sessions/${second.body.data.liveSessionId}`, { headers: bearer(h) });
   assert.equal(boundary.status, 200);
   assert.equal(boundary.body.data.lifecycle, 'accepted');
   now++;
-  const expired = await json(h.origin, `/api/v1/live-sessions/${first.body.data.liveSessionId}`, { headers: bearer(h) });
+  const expired = await json(h.origin, `/api/v1/live-sessions/${second.body.data.liveSessionId}`, { headers: bearer(h) });
   assert.equal(expired.status, 200);
   assert.deepEqual(expired.body.data.terminal, { state: 'expired' });
   const replay = await createBody(h, 'http-unused-replay');

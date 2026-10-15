@@ -182,9 +182,10 @@ test('the Latest answer card clamps headings, chips urls and never shows tool te
     { seq: 1, kind: 'outputTranscription', text: "# Knowledge Search: 'q'\n\n_confidence: medium · mode: fast_path_ · top score: 1.00 · relevant candidate: yes_\n\nsee https://www.google.com/calendar/event?eid=abc" },
     { seq: 2, kind: 'toolResult', tool: { name: 'search_knowledge', status: 'completed', markdown: '# Knowledge Search: raw tool text', sources: [{ title: 'Calendar: Standup', url: 'https://www.google.com/calendar/event?eid=abc' }] } },
   ] };
+  const open = '<h2>Latest answer</h2>';
   const html = liveMarkup(live);
-  const card = html.slice(html.indexOf('live-result'), html.indexOf('live-latest-turn'));
-  assert.equal(/<h1>|<h2>/.test(card), false, 'no h1/h2 inside the answer card');
+  const card = html.slice(html.indexOf(open) + open.length, html.indexOf('live-latest-turn'));
+  assert.equal(/<h1>|<h2>/.test(card), false, 'no h1/h2 inside the answer body');
   assert.equal(card.includes('raw tool text'), false, 'the card never shows tool result text');
   assert.match(card, /<a class="answer-source"[^>]*>google\.com\/calendar<\/a>/);
 });

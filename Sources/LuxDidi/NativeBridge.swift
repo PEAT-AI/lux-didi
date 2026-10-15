@@ -223,6 +223,8 @@ struct LevelBatcher {
     var onCommand: ((BridgeInbound) -> Void)?
     var onTheme: ((BridgeTheme) -> Void)?
     var hydrateProvider: (() -> BridgeHydrate)?
+    /// Where the unknown-type diagnostic goes (the same `native-live.log` the live lane writes).
+    var logFile: URL?
 
     init(consent: ConsentStore = ConsentStore()) { self.consent = consent }
 
@@ -276,7 +278,21 @@ struct LevelBatcher {
 
     private func logUnknown(_ name: String) {
         guard !name.isEmpty else { return }
-        print("[native-bridge] unknown message type \(name)")
+        guard let logFile else { print("[native-bridge] unknown message type \(name)"); return }
+        let fields: [String: Any] = ["event": "native_bridge_unknown_message", "type": name]
+        do {
+            try FileManager.default.createDirectory(at: logFile.deletingLastPathComponent(),
+                                                    withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            if !FileManager.default.fileExists(atPath: logFile.path) {
+                guard FileManager.default.createFile(atPath: logFile.path, contents: nil, attributes: [.posixPermissions: 0o600]) else { return }
+            }
+            let handle = try FileHandle(forWritingTo: logFile)
+            defer { try? handle.close() }
+            try handle.seekToEnd()
+            var record = try JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys])
+            record.append(10)
+            try handle.write(contentsOf: record)
+        } catch { print("[native-bridge] unknown message type \(name)") }
     }
 }
 

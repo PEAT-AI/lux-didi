@@ -60,6 +60,7 @@ import Security
     private(set) var bootstrapFailureDiagnostic: StartupFailureDiagnostic?
     init(proofRequest: InstalledProofRequest? = nil, fixtureClient: CompanionClient? = nil, fixtureOutbox: URL? = nil) {
         liveLogsDirectory = (proofRequest?.state ?? (try? InstalledRuntime.applicationState()))?.appendingPathComponent("logs", isDirectory: true)
+        bridge.logFile = liveLogsDirectory?.appendingPathComponent("native-live.log")
         if let fixtureClient, let fixtureOutbox {
             client = fixtureClient; connectedSender = NativeConnectedSend(directory: fixtureOutbox)
             return

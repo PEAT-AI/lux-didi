@@ -127,6 +127,16 @@ import Foundation
         check(band.hitTest(NSPoint(x: 200, y: 580)) === band, "a point in the top strip hits the drag band")
         check(band.hitTest(NSPoint(x: 200, y: 300)) == nil, "a point below the strip falls through to the web content")
 
+        // 11. Unknown-type diagnostic goes to the native-live.log file.
+        let logURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("bridge-log-\(UUID().uuidString).log")
+        let logBridge = NativeBridge(consent: ConsentStore(defaults: scratchDefaults("log")))
+        logBridge.logFile = logURL
+        logBridge.handle(["type": "totallyUnknown"])
+        let logged = (try? String(contentsOf: logURL, encoding: .utf8)) ?? ""
+        check(logged.contains("native_bridge_unknown_message") && logged.contains("totallyUnknown"),
+              "unknown type is logged to native-live.log")
+        try? FileManager.default.removeItem(at: logURL)
+
         print(failures == 0 ? "NATIVE-BRIDGE TESTS PASS" : "NATIVE-BRIDGE TESTS FAILED \(failures)")
         exit(failures == 0 ? 0 : 1)
     }

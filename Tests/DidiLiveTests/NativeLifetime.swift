@@ -206,9 +206,9 @@ private func observeUntil(_ condition: @escaping @Sendable () async -> Bool) asy
             try require(owner.ownerStart(make: make) === retry && retry.isCapturing, "active capture preserves ownership")
             inputID = "synthetic-2"
             retry.device.routeChanged(); await retry.device.finishRouteRecovery()
-            try require(retry.state == .pausedForInput && retry.isCapturing && !retry.device.isCapturing,
-                        "input pause remains owned after capture release")
-            try require(start() === retry && retry.device.isCapturing, "Resume reuses the paused conversation")
+            try require(retry.state == .listening && retry.isCapturing && retry.device.isCapturing,
+                        "a route change auto-resumes on the new input without holding the device")
+            try require(start() === retry && retry.device.isCapturing, "Resume reuses the auto-resumed conversation")
             let oldCapture = captures.last!
             retry.stopCapture()
             let stale = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 2560)!

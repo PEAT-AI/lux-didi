@@ -331,7 +331,7 @@ async function researchTurn({ base, token, epoch, dataDir, clipPath }) {
         else if (record.event === 'research_progress') progress += 1;
       }
     } catch { /* no host log means no recorded run */ }
-    if (calls < 1) return { ok: false, stage: 'call', calls };
+    if (calls !== 1) return { ok: false, stage: 'call', calls };
     // The question is one research run. A model may call the tool more than once (start then continue or
     // stop), but every run line for the question carries the one researchId the host minted.
     const ids = [...new Set(runs.map(line => line.researchId))];
@@ -343,9 +343,9 @@ async function researchTurn({ base, token, epoch, dataDir, clipPath }) {
     if (read < 1) return { ok: false, stage: 'sources', read };
     if (!(run.replyBytes <= 2000)) return { ok: false, stage: 'over_cap', replyBytes: run.replyBytes };
     if (outputAtResult === null || outputChars <= outputAtResult) return { ok: false, stage: 'no_output' };
-    // Three real drivers: the same-provider selector, the fixed fallback recipe, or the product's
-    // single-source hint fast path (selectorMs 0 and fallbackUsed false). Report which one drove the run.
+    // Three legitimate drivers; the run must name one of them and never none.
     const driver = run.selectorMs > 0 ? 'selector' : (run.fallbackUsed === true ? 'fallback' : 'single-source-hint');
+    if (driver !== 'selector' && driver !== 'fallback' && driver !== 'single-source-hint') return { ok: false, stage: 'driver', driver };
     return { ok: true, stage: 'turn', calls, rounds: run.rounds, sources: `${run.sources.length}(${read} read)`, driver, selectorMs: run.selectorMs, elapsedMs: run.elapsedMs, deadAirMs: run.deadAirMs, replyBytes: run.replyBytes, outputAfter: outputChars - outputAtResult, progress };
   } finally { try { ws.close(); } catch { /* noop */ } }
 }

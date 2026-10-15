@@ -330,7 +330,7 @@ async function researchTurn({ base, token, epoch, dataDir, clipPath }) {
     // The question is one research run. A model may call the tool more than once (start then continue or
     // stop), but every run line for the question carries the one researchId the host minted.
     const ids = [...new Set(runs.map(line => line.researchId))];
-    if (ids.length !== 1) return { ok: false, stage: 'runs', calls, runs: ids.length };
+    if (ids.length !== 1) return { ok: false, stage: 'runs', calls, runs: ids.length, detail: runs.map(line => `${line.status}:${line.stopReason}:${line.rounds}`).slice(0, 8).join(' ') };
     const answered = runs.filter(line => (line.status === 'answered' || line.status === 'partial') && line.rounds >= 1);
     if (!answered.length) return { ok: false, stage: 'status', calls, runs: runs.length };
     const run = answered[answered.length - 1];
@@ -388,7 +388,7 @@ async function main() {
         const research = await researchTurn({ base, token, epoch, dataDir, clipPath });
         results.push({ id: 'probe5-research', ok: research.ok, note: research.ok
           ? `calls=${research.calls} rounds=${research.rounds} sources=${research.sources} driver=${research.driver} selectorMs=${research.selectorMs} elapsedMs=${research.elapsedMs} deadAirMs=${research.deadAirMs} reply=${research.replyBytes}B output_after=${research.outputAfter}B progress=${research.progress}`
-          : `stage=${research.stage} calls=${research.calls ?? 0} status=${research.status ?? 'n/a'} rounds=${research.rounds ?? 0} read=${research.read ?? 0} reply=${research.replyBytes ?? 0}B load=${loadAverageText()}` });
+          : `stage=${research.stage} calls=${research.calls ?? 0} runs=${research.runs ?? 0} detail=${research.detail ?? 'n/a'} status=${research.status ?? 'n/a'} rounds=${research.rounds ?? 0} read=${research.read ?? 0} reply=${research.replyBytes ?? 0}B load=${loadAverageText()}` });
       } finally { await rm(clipPath, { force: true }); }
     } catch (error) { results.push({ id: 'probe5-research', ok: false, note: String(error && error.message).slice(0, 120) }); }
   } else {

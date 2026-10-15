@@ -101,7 +101,7 @@ function voiceEmptyMarkup() {
   return `<div class="voice-empty"><div class="voice-orb-large"><canvas id="didi-orb" width="440" height="440" aria-hidden="true"></canvas></div><p class="voice-empty-line">Press Start or \u2318\u21e7Space to talk</p></div>`;
 }
 function voiceBodyMarkup() {
-  return liveTurns() ? liveMarkup(live, livePoll, true) : voiceEmptyMarkup();
+  return liveTurns() ? liveMarkup(live, livePoll) : voiceEmptyMarkup();
 }
 function chatLane() {
   return `<div id="connected-panel"></div>`;
@@ -411,9 +411,7 @@ function paintLive(){
   if(liveTurns()>0 ? !panel : !!panel){render();return;}
   const replacePanel=paintedLivePoll?.live!==live || !!paintedLivePoll?.stale!==!!livePoll.stale || !!livePoll.stale && paintedLivePoll?.lastSuccess!==livePoll.lastSuccess;
   if(panel && replacePanel){
-    liveDetailsOpen=panel.querySelector<HTMLDetailsElement>('#live-details')?.open ?? liveDetailsOpen;
-    const expanded=Array.from(panel.querySelectorAll<HTMLDetailsElement>('details[data-result-seq][open]')).map(card=>card.dataset.resultSeq);
-    body.innerHTML=liveMarkup(live,livePoll,liveDetailsOpen);for(const card of document.querySelectorAll<HTMLDetailsElement>('#live-panel details[data-result-seq]'))if(expanded.includes(card.dataset.resultSeq))card.open=true;bindLiveDisclosure()
+    body.innerHTML=liveMarkup(live,livePoll)
   }
   paintedLivePoll=panel ? livePoll : undefined;
   const caption=document.querySelector('.orb-caption');const markup=orbCaptionMarkup();if(caption && caption.innerHTML!==markup)caption.innerHTML=markup;

@@ -117,6 +117,12 @@ export function mergeLive(previous: LiveCurrent | undefined, next: LiveCurrent):
 }
 
 export interface LiveLine { role: 'user' | 'naya'; text: string }
+// Provider chunks can split mid-word, so only a sentence boundary earns a separator; otherwise the
+// fragments are concatenated verbatim. See V2-R2 item 1.
+export function joinChunk(previous: string, next: string): string {
+  return /[.!?]["')\]]?\s*$/.test(previous) && /^[A-Za-z0-9]/.test(next) ? previous + ' ' + next : previous + next;
+}
+
 export function liveTranscript(live: LiveCurrent): LiveLine[] {
   const lines: LiveLine[] = [];
   // One provider turn can interleave a typed user turn with its streamed Naya fragments, so a
@@ -128,7 +134,7 @@ export function liveTranscript(live: LiveCurrent): LiveLine[] {
     const role = entry.kind === 'inputTranscription' ? 'user' : entry.kind === 'outputTranscription' ? 'naya' : undefined;
     if (role && entry.text) {
       const existing = segment.get(role);
-      if (existing) existing.text += entry.text;
+      if (existing) existing.text += joinChunk(existing.text, entry.text);
       else segment.set(role, { role, text: entry.text });
     }
     if (entry.kind === 'turnComplete' || entry.kind === 'interrupted' || entry.kind === 'terminal') flush();
@@ -195,39 +201,47 @@ function rememberCardMarkup(entry: LiveEntry): string {
 }
 
 /** Full section markup, id="live-panel" so the poller can replace it in place. */
-export function liveMarkup(live: LiveCurrent | undefined, poll: LivePollState = {}, detailsOpen = false): string {
+// A one-line chip that still lets the reader inspect the result: collapsed it is a single muted line
+// between turns, expanded it shows the accepted markdown and source chips.
+function toolChipMarkup(entry: LiveEntry): string {
+  const phrase = escapeHtml(toolPhrase(entry.tool?.name ?? '') + (entry.tool?.status ? ` (${entry.tool.status})` : ''));
+  const body = entry.tool?.status === 'error' ? '' : `${renderMarkdown(entry.tool?.markdown ?? '', TRANSCRIPT_MARKDOWN)}${sourcesMarkup(entry.tool?.sources ?? [])}`;
+  return `<details class="live-tool-result" data-result-seq="${entry.seq}"><summary>${phrase}</summary>${body}</details>`;
+}
+
+export function liveMarkup(live: LiveCurrent | undefined, poll: LivePollState = {}): string {
   const state = live?.state;
   const label = liveLabel(live);
-  const lines = live ? liveTranscript(live) : [];
-  const result = live ? liveResult(live) : undefined;
-  const jobs = (live?.jobs ?? []).map(job => `<article class="live-job" data-job-id="${escapeHtml(job.id)}">
-    <h2>${job.state === 'in_progress' ? 'Background task in progress' : 'Background task ' + escapeHtml(job.state)}</h2>
-    ${renderMarkdown(job.markdown, TRANSCRIPT_MARKDOWN)}
-    ${!job.delivered && job.state !== 'in_progress' ? '<p class="muted">Call Naya back: choose Start Live voice in the native app to pick up this result.</p>' : ''}
-  </article>`).join('');
+  const jobs = (live?.jobs ?? []).map(job => `<article class="live-job" data-job-id="${escapeHtml(job.id)}"><p class="live-tool-chip">${job.state === 'in_progress' ? 'Background task in progress' : 'Background task ' + escapeHtml(job.state)}</p>${renderMarkdown(job.markdown, TRANSCRIPT_MARKDOWN)}${!job.delivered && job.state !== 'in_progress' ? '<p class="muted">Call Naya back: choose Start Live voice in the native app to pick up this result.</p>' : ''}</article>`).join('');
   const latest = live?.entries.at(-1);
   const restored = state !== 'rebuilding' && latest?.kind === 'continuity' && latest.event === 'resumed'
     ? `<p role="status" data-continuity-seq="${latest.seq}">Connection restored</p>` : '';
   const error = state === 'error' ? '<p class="muted" role="status">Naya reported an error. The live session has stopped.</p>' : '';
   const muted = live?.muted ? '<p class="muted live-muted" role="status">Microphone muted</p>' : '';
-  const transcript = lines.length
-    ? `<div class="entries live-transcript">${lines.map(line => `<article class="entry"><strong>${line.role === 'user' ? 'You' : 'Naya'}</strong><div class="markdown">${renderMarkdown(line.text, TRANSCRIPT_MARKDOWN)}</div></article>`).join('')}</div>`
-    : '<div class="entries live-transcript empty"><p class="muted">No live transcription yet.</p></div>';
-  return `<section class="panel live" id="live-panel" aria-label="Naya live conversation">
+  const stale = poll.stale ? `<p class="live-stale" role="status">Live view stale${poll.lastSuccess ? ' since ' + escapeHtml(poll.lastSuccess.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })) : ', no successful poll yet'}, service unreachable</p>` : '';
+  // The transcript IS the lane: turns flow on the lane background, with a one-line tool chip where a
+  // tool result landed. No card, no duplicate latest-answer block, no history disclosure (V2-R2 item 4).
+  const flow: string[] = [];
+  let pending: LiveLine[] = [];
+  const lineMarkup = (line: LiveLine) => `<article class="entry ${line.role}"><strong>${line.role === 'user' ? 'You' : 'Naya'}</strong><div class="markdown">${renderMarkdown(line.text, TRANSCRIPT_MARKDOWN)}</div></article>`;
+  const flush = () => { for (const line of pending) flow.push(lineMarkup(line)); pending = []; };
+  for (const entry of live?.entries ?? []) {
+    const role = entry.kind === 'inputTranscription' ? 'user' : entry.kind === 'outputTranscription' ? 'naya' : undefined;
+    if (role && entry.text) {
+      const existing = pending.find(line => line.role === role);
+      if (existing) existing.text += joinChunk(existing.text, entry.text);
+      else pending.push({ role, text: entry.text });
+    }
+    if (entry.kind === 'turnComplete' || entry.kind === 'interrupted' || entry.kind === 'terminal') flush();
+    if (entry.kind === 'toolResult' && entry.tool?.name === 'remember_note') { flush(); flow.push(rememberCardMarkup(entry)); }
+    else if (entry.kind === 'toolResult') { flush(); flow.push(toolChipMarkup(entry)); }
+  }
+  flush();
+  return `<section class="lane-convo live" id="live-panel" aria-label="Naya live conversation">
     <p class="live-state" role="status" aria-live="polite">${escapeHtml(label)}</p>
-    ${muted}
-    ${poll.stale ? `<p class="live-stale" role="status">Live view stale${poll.lastSuccess ? ' since ' + escapeHtml(poll.lastSuccess.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })) : ', no successful poll yet'}, service unreachable</p>` : ''}
-    ${error}${restored}
-    ${result ? `<div class="live-result"><h2>Latest answer</h2>${renderMarkdown(result.markdown, TRANSCRIPT_MARKDOWN)}${sourcesMarkup(result.sources)}</div>` : ''}
-    <details id="live-details" class="live-details"${detailsOpen ? ' open' : ''}>
-      <summary>Conversation history and activity</summary>
-      ${transcript}
-      <div class="live-activity" aria-label="Live activity">
-        ${(live?.entries ?? []).filter(entry => entry.kind === 'toolResult' && entry.tool?.name !== 'remember_note').map(entry => `<details class="live-tool-result" data-result-seq="${entry.seq}"><summary>${escapeHtml(toolPhrase(entry.tool?.name ?? ''))} (${escapeHtml(entry.tool?.status ?? 'unknown')})</summary>${entry.tool?.status !== 'error' && entry.tool?.markdown ? renderMarkdown(entry.tool.markdown, TRANSCRIPT_MARKDOWN) + sourcesMarkup(entry.tool.sources ?? []) : ''}</details>`).join('')}
-        ${(live?.entries ?? []).filter(entry => entry.kind === 'toolResult' && entry.tool?.name === 'remember_note').map(remaining => rememberCardMarkup(remaining)).join('')}
-        ${jobs}
-      </div>
-    </details>
+    ${muted}${stale}${error}${restored}
+    <div class="live-turns">${flow.join('') || '<p class="muted">No live transcription yet.</p>'}</div>
+    ${jobs}
   </section>`;
 }
 

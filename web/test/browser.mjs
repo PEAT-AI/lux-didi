@@ -90,16 +90,17 @@ try {
       {seq:3,kind:'toolResult',tool:{name:'search',status:'completed',markdown:'**Answer** see [source](https://example.org)',sources:[{title:'lux 123',url:'https://example.org'}]}}
     ]});
     await page.waitForFunction(()=>document.querySelector('#didi-orb').dataset.state==='SPEAKING',{timeout:12000});
-    await page.waitForFunction(()=>document.querySelectorAll('#live-panel').length===1&&document.querySelectorAll('.live-latest-turn').length===1,{timeout:12000});
+    await page.waitForFunction(()=>document.querySelectorAll('#live-panel').length===1&&document.querySelectorAll('#live-panel .live-tool-result').length===1,{timeout:12000});
     assert.equal(await page.locator('#didi-orb').getAttribute('data-posture'),'speaking');
     assert.equal((await page.locator('#live-panel .live-state').textContent()).trim(),'Speaking');
     assert.equal(await page.getByText('Not listening',{exact:true}).count(),0);
     assert.equal(await page.getByText('what is lux 123',{exact:true}).count(),1);
-    const card=page.locator('#live-panel .live-result');
-    assert.equal(await card.count(),1);
-    assert.match(await card.innerText(),/Here is the answer\./);
-    assert.equal(await card.locator('a[href="https://example.org"]').count(),2,'the inline link and the source chip');
-    const sourceLink=page.locator('#live-panel .live-result .sources a[href="https://example.org"]');
+    assert.equal(await page.locator('#live-panel .live-result').count(),0,'no card inside the lane');
+    assert.ok(await page.locator('#live-panel').getByText('Here is the answer.',{exact:false}).count() >= 1,'the spoken turn is on the lane background');
+    const chip=page.locator('#live-panel .live-tool-result');
+    assert.equal(await chip.count(),1);
+    await chip.locator('summary').click();
+    const sourceLink=chip.locator('.sources a[href="https://example.org"]');
     assert.equal(await sourceLink.count(),1);
     assert.equal(await sourceLink.getAttribute('rel'),'noopener noreferrer');
     fixture.setLive({state:'listening',since:'2026-10-11T16:00:01Z',cursor:4,entries:[

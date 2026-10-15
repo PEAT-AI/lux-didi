@@ -43,10 +43,9 @@ test('voice landing keeps the latest turn readable and secondary activity in a s
     { seq: 4, kind: 'toolResult', tool: { name: 'search', status: 'completed', markdown: 'Source detail' } },
   ] };
   const closed = liveMarkup(live);
-  assert.match(closed, /class="live-latest-turn"[\s\S]*Take one small step\./);
-  assert.match(closed, /<details id="live-details" class="live-details">/);
-  assert.ok(closed.indexOf('live-latest-turn') < closed.indexOf('live-details'));
-  assert.match(liveMarkup(live, {}, true), /<details id="live-details" class="live-details" open>/);
+  assert.match(closed, /Take one small step\./);
+  assert.doesNotMatch(closed, /live-latest-turn|live-result/,'no duplicate answer surface in the lane');
+  assert.doesNotMatch(closed, /<details id="live-details"/,'no history disclosure in the lane');
 });
 
 test('the thinking label never names a tool; the activity line carries the phrase', () => {
@@ -150,7 +149,7 @@ test('a typed turn interleaved with streamed Naya fragments joins one Naya card 
     { role: 'user', text: 'Tell me more' },
   ]);
   const html = liveMarkup(live);
-  assert.match(html, /Latest spoken answer<\/span><p>Hello there<\/p>/);
+  assert.match(html, /<strong>Naya<\/strong>[\s\S]*Hello there/);
 });
 
 test('transcript preserves exact fragment deltas without spaces or deduplication', () => {

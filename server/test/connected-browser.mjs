@@ -62,14 +62,14 @@ try {
     const pairing = await operator('/auth/pairing'); await page.locator('#pair-code').fill(pairing.pairingCode); await page.locator('#pair-form').evaluate(form => form.requestSubmit());
     await page.locator('#connected-route').waitFor(); await page.locator('#didi-orb').waitFor();
     await page.waitForFunction(() => document.querySelector('#connected-route')?.textContent.includes('gemini-connected-test'));
-    // W5 voice-first UI: the accepted dark stage renders a 600 CSS px square canvas at desktop 1440, centred in the stage.
+    // S1-R1 compact voice stage: the orb canvas is 300 CSS px square at desktop 1440, centred in the stage.
     const orb = page.locator('#didi-orb');
-    assert.ok(await orb.isVisible(), 'W5 desktop orb canvas is visible on the stage');
+    assert.ok(await orb.isVisible(), 'S1 desktop orb canvas is visible on the stage');
     const stage = await page.locator('.orb-stage').boundingBox();
     const desktopOrb = await orb.boundingBox();
-    assert.equal(Math.round(desktopOrb.width), 600, 'W5 desktop orb canvas is 600 CSS px wide at 1440');
-    assert.equal(Math.round(desktopOrb.height), 600, 'W5 desktop orb canvas is square');
-    assert.ok(Math.abs((desktopOrb.x + desktopOrb.width / 2) - (stage.x + stage.width / 2)) <= 1, 'W5 orb canvas is horizontally centred in its stage');
+    assert.equal(Math.round(desktopOrb.width), 300, 'S1 desktop orb canvas is 300 CSS px wide at 1440');
+    assert.equal(Math.round(desktopOrb.height), 300, 'S1 desktop orb canvas is square');
+    assert.ok(Math.abs((desktopOrb.x + desktopOrb.width / 2) - (stage.x + stage.width / 2)) <= 1, 'S1 orb canvas is horizontally centred in its stage');
   });
   await step('local Save stays local; explicit Start names actual model and creates trusted session', async () => {
     await page.locator('#live-text').fill('EXCLUDED_BROWSER_LOCAL_CANARY: archive this without any model send.');
@@ -111,12 +111,12 @@ try {
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     const counts = await page.evaluate(() => Object.fromEntries(['#app', '#message-form', '#connected-panel', '#connected-entries', '#connected-draft', '#connected-send', 'canvas'].map(selector => [selector, document.querySelectorAll(selector).length])));
     for (const [selector, count] of Object.entries(counts)) assert.equal(count, 1, `Unique rendered DOM ${selector}`);
-    // W5 narrow stage scales the canvas to 560 CSS px; it stays square and centred in the stage.
+    // S1-R1 narrow stage scales the canvas to 300 CSS px; it stays square and centred in the stage.
     const mobileOrb = await page.locator('#didi-orb').boundingBox();
     const mobileStage = await page.locator('.orb-stage').boundingBox();
-    assert.equal(Math.round(mobileOrb.width), 560, 'W5 narrow orb canvas is 560 CSS px wide at 375');
-    assert.equal(Math.round(mobileOrb.height), 560, 'W5 narrow orb canvas is square');
-    assert.ok(Math.abs((mobileOrb.x + mobileOrb.width / 2) - (mobileStage.x + mobileStage.width / 2)) <= 1, 'W5 narrow orb canvas is centred in its stage');
+    assert.equal(Math.round(mobileOrb.width), 300, 'S1 narrow orb canvas is 300 CSS px wide at 375');
+    assert.equal(Math.round(mobileOrb.height), 300, 'S1 narrow orb canvas is square');
+    assert.ok(Math.abs((mobileOrb.x + mobileOrb.width / 2) - (mobileStage.x + mobileStage.width / 2)) <= 1, 'S1 narrow orb canvas is centred in its stage');
     assert.equal(await page.locator('#connected-entries .assistant').count(), 2);
     const savedTurns = await page.locator('#connected-entries article').count(); assert.equal(savedTurns, 4);
     const positions = [];

@@ -69,6 +69,15 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!Array.isArray(value.keys) || value.keys.length > 24 || value.keys.some(key => typeof key !== 'string' || !keyPattern.test(key))) return;
     return { event: 'live_frame_rejected', code: value.code, kind: value.kind, bytes: value.bytes, keys: value.keys };
   }
+  if (value.event === 'tool_arguments_rejected') {
+    // Closed shape: tool name and argument key:type paths only, never a value.
+    if (Object.keys(value).sort().join(',') !== ['event', 'tool', 'fields'].sort().join(',')) return;
+    const token = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,79}$/.test(v);
+    const fieldPattern = /^[A-Za-z_][A-Za-z0-9_]{0,63}:(string|number|boolean|array|object|null|undefined)$/;
+    if (!token(value.tool)) return;
+    if (!Array.isArray(value.fields) || value.fields.length > 24 || value.fields.some(field => typeof field !== 'string' || !fieldPattern.test(field))) return;
+    return { event: 'tool_arguments_rejected', tool: value.tool, fields: value.fields };
+  }
 }
 
 export class HostLog {

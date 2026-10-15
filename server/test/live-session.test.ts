@@ -1388,7 +1388,9 @@ test('Live refuses undeclared tools and original-schema-invalid arguments withou
   h.f.send({ toolCall: { functionCalls: [{ id: 'bad1', name: 'get_insight', args: { ids: '[123]', include_links: 'false' } }, { id: 'bad2', name: 'not_granted', args: {} }] } });
   await h.f.frame(2); assert.equal(h.calls.length, 0);
   const response = h.f.frames[1] as { toolResponse: { functionResponses: { response: { error: string } }[] } };
-  assert.deepEqual(response.toolResponse.functionResponses.map(r => r.response.error), ['invalid_arguments', 'unknown_tool']);
+  const errors = response.toolResponse.functionResponses.map(r => r.response.error);
+  assert.match(errors[0]!, /Invalid arguments for get_insight/, 'an invalid get_insight refusal carries one-try guidance');
+  assert.equal(errors[1], 'unknown_tool');
   assert.equal(h.owner.current().entries.filter(e => e.kind === 'toolResult' && e.tool?.status === 'error').length, 2);
   attachment.close(); await attachment.done;
 });

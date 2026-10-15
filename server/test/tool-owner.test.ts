@@ -13,7 +13,8 @@ import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { createLuxKnowledgeReader } from '../connectors/lux-knowledge.js';
 import type { McpPort, ToolDefinition as McpTool } from '../adapters/mcp/port.js';
 import { runTools } from '../adapters/model/loop.js';
-import type { HostContext, JsonObject, ModelPort, ModelRequest, ModelResult, ToolCallIntent, ToolCallJournal, ToolResultBinding, ToolResultGate } from '../adapters/model/types.js';
+import type { HostContext, JsonObject, ModelPort, ModelRequest, ModelResult, ToolCallIntent, ToolCallJournal, ToolDefinition, ToolResultBinding, ToolResultGate } from '../adapters/model/types.js';
+import { CONNECTOR_DESCRIPTORS, normalizeGetInsightArgs } from '../connectors/index.js';
 import { runToolCalls } from '../tools/declarations.js';
 import { createToolsOwner, toolsMigrations, validatePolicy } from '../tools/index.js';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
@@ -626,4 +627,82 @@ test('W4-R5: a batch dispatches across endpoints in parallel, sequential and ord
   assert.deepEqual(ids(same), ['1', '2'], 'results keep their original batch order');
   assert.deepEqual(order, ['start:a1', 'end:a1', 'start:a2', 'end:a2'], 'one endpoint stays ordered and sequential');
   assert.equal(peak, 1, 'a single endpoint must never dispatch concurrently');
+});
+
+// K1: get_insight must open entries for a reasonable id shape instead of refusing at the boundary.
+test('K1: get_insight argument normalization accepts loose id shapes at the boundary', () => {
+  const policy = { bounds: { maxQueryChars: 200, maxSearchLimit: 12, maxGetIds: 3 } } as unknown as ConnectionPolicy;
+  const get = Object.values(CONNECTOR_DESCRIPTORS).flatMap(descriptor => descriptor.declarations(policy)).find(declaration => declaration.name === 'get_insight')!;
+  assert.equal(get.validate({ ids: ['89820', 89933] }), true, 'integer-valued numeric strings are accepted');
+  assert.equal(get.validate({ ids: 89820 }), true, 'a single number under ids is accepted');
+  assert.equal(get.validate({ id: '89820' }), true, 'the id key is accepted');
+  assert.equal(get.validate(89820), true, 'a bare id is accepted');
+  assert.deepEqual(get.normalize!({ ids: ['89820', 89933] }), { args: { ids: [89820, 89933] } });
+  assert.deepEqual(get.normalize!({ ids: [89820, 89820] }), { args: { ids: [89820] } }, 'duplicates are deduped');
+  assert.equal(get.validate({ ids: ['abc'] }), false, 'a non-numeric id is refused');
+  assert.equal(get.validate({ ids: [] }), false, 'an empty id list is refused');
+  assert.equal(get.validate({ ids: [7, 9], include_links: false }), false, 'an undeclared key is refused');
+  const capped = normalizeGetInsightArgs({ ids: [1, 2, 3, 4, 5] }, 3)!;
+  assert.deepEqual(capped.args, { ids: [1, 2, 3] }, 'over-budget ids are truncated, not refused');
+  assert.match(capped.notice!, /first 3 of 5/);
+});
+
+function errorTool(overrides: Partial<ToolDefinition> = {}): ToolDefinition {
+  return {
+    name: 'get_insight', description: 'Read', effect: 'read', accountId: 'acct', resourceId: 'res',
+    guidance: 'Needs ids as a list of entry ids from the knowledge search results, like {"ids": [89820, 89933]}.',
+    parameters: { type: 'object', properties: { ids: { type: 'array' } }, required: ['ids'] },
+    validate: () => false, execute: async () => ({ status: 'failed' as const }),
+    ...overrides,
+  };
+}
+function errorContext(tool: ToolDefinition, seenIds = new Set<string>()) {
+  return {
+    registry: [tool],
+    host: { runId: 'run', actorId: 'actor', authorityEpoch: 'epoch', revision: 1, grants: [{ tool: tool.name, effect: 'read' as const, accountId: 'acct', resourceId: 'res' }] },
+    control: { signal: new AbortController().signal, deadlineMs: Date.now() + 10_000 },
+    authority: { isCurrent: async () => true }, seenIds, step: 0, contentIndex: 0,
+  };
+}
+const refuses = (reasons: string[]): ToolCallJournal => ({ intent: () => 'fresh', refuse: (_call, reason) => { reasons.push(reason); return { id: 'ref', sha256: 'a'.repeat(64) }; }, fail: () => ({ id: 'ref', sha256: 'a'.repeat(64) }) });
+
+test('K1: an invalid tool call returns actionable guidance and stops retrying on the third', async () => {
+  const reasons: string[] = [];
+  const owner = { journal: refuses(reasons), resultGate: {} as unknown as ToolResultGate };
+  const tool = errorTool(); const seenIds = new Set<string>();
+  const call = (id: string, args: JsonObject) => ({ id, name: 'get_insight', args });
+  const ctx = () => errorContext(tool, seenIds);
+  const first = await runToolCalls(owner, [call('1', { ids: ['top-secret'] })], ctx() as never);
+  assert.equal(first.tools[0]!.status, 'refused');
+  assert.match(first.tools[0]!.reason, /Invalid arguments for get_insight/);
+  assert.match(first.tools[0]!.reason, /ids/);
+  assert.doesNotMatch(first.tools[0]!.reason, /top-secret/, 'never echoes the bad value');
+  assert.doesNotMatch(first.tools[0]!.reason, /Stop retrying/);
+  await runToolCalls(owner, [call('2', { ids: ['top-secret'] })], ctx() as never);
+  const third = await runToolCalls(owner, [call('3', { ids: ['top-secret'] })], ctx() as never);
+  assert.match(third.tools[0]!.reason, /Stop retrying this tool in this turn\./);
+  assert.equal(reasons.length, 3, 'each refusal is journaled, never silently dropped');
+});
+
+test('K1: a declared tool without tailored guidance states its expected shape', async () => {
+  const reasons: string[] = [];
+  const owner = { journal: refuses(reasons), resultGate: {} as unknown as ToolResultGate };
+  const tool: ToolDefinition = { name: 'search_knowledge', description: 'Search', effect: 'read', accountId: 'acct', resourceId: 'res',
+    parameters: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' } }, required: ['query', 'limit'] },
+    validate: () => false, execute: async () => ({ status: 'failed' as const }) };
+  const batch = await runToolCalls(owner, [{ id: '1', name: 'search_knowledge', args: { query: '' } }], errorContext(tool) as never);
+  assert.match(batch.tools[0]!.reason, /Invalid arguments for search_knowledge\. Expected an object with query \(string\), limit \(integer\)\./);
+});
+
+test('K1: an invalid tool call logs a metadata-only argument diagnostic', async () => {
+  const owner = { journal: refuses([]), resultGate: {} as unknown as ToolResultGate };
+  const lines: string[] = []; const original = console.log;
+  console.log = (...args: unknown[]) => { lines.push(args.map(String).join(' ')); };
+  try {
+    await runToolCalls(owner, [{ id: '1', name: 'get_insight', args: { ids: ['hunter2'], limit: 3 } }], errorContext(errorTool()) as never);
+  } finally { console.log = original; }
+  const event = JSON.parse(lines.find(line => line.includes('tool_arguments_rejected'))!) as { tool: string; fields: string[] };
+  assert.equal(event.tool, 'get_insight');
+  assert.deepEqual(event.fields, ['ids:array', 'limit:number']);
+  assert.doesNotMatch(JSON.stringify(event), /hunter2/);
 });

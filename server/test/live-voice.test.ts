@@ -707,3 +707,64 @@ test('other models keep the exact tool response object with no voice anchor', as
   await f.frame(2);
   assert.deepEqual(f.frames[1], { toolResponse: { functionResponses: [{ id: 'c1', name: 'search_knowledge', response: { markdown: 'one' } }] } });
 });
+
+// Contract P1 (issue 1014): 800 ms silence window and only the memory save is non-blocking and silent.
+test('P1: 3.8 Live uses an 800 ms silence window and marks only the memory save NON_BLOCKING', async t => {
+  const f = await providerFixture(t);
+  const modelId = 'models/gemini-3.8-live-test';
+  const tools = [
+    { name: 'search_knowledge', description: 'Search', parameters: { type: 'OBJECT' } },
+    { name: 'remember_note', description: 'Remember', parameters: { type: 'OBJECT' } },
+  ];
+  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory, modelId,
+    route: { enabled: true, provider: 'gemini', modelId, dataClasses: ['ordinary'] } })).open({ ...request(), tools }, control());
+  t.after(() => session.close());
+  await f.frame(1);
+  const setup = (f.frames[0] as { setup: {
+    realtimeInputConfig: { automaticActivityDetection: { silenceDurationMs: number } };
+    tools: { functionDeclarations: { name: string; behavior?: string }[] }[];
+  } }).setup;
+  assert.equal(setup.realtimeInputConfig.automaticActivityDetection.silenceDurationMs, 800);
+  const declared = setup.tools[0]!.functionDeclarations;
+  assert.equal(declared.find(entry => entry.name === 'search_knowledge')?.behavior, 'BLOCKING', 'reads stay BLOCKING');
+  assert.equal(declared.find(entry => entry.name === 'remember_note')?.behavior, 'NON_BLOCKING', 'the memory save is NON_BLOCKING');
+});
+
+test('P1: the memory save response is scheduled SILENT', async t => {
+  const f = await providerFixture(t);
+  const modelId = 'models/gemini-3.8-live-test';
+  const tools = [{ name: 'remember_note', description: 'Remember', parameters: { type: 'OBJECT' } }];
+  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory, modelId,
+    route: { enabled: true, provider: 'gemini', modelId, dataClasses: ['ordinary'] } })).open({ ...request(), tools }, control());
+  t.after(() => session.close());
+  const events = session.events[Symbol.asyncIterator]();
+  await f.frame(1); f.send({ setupComplete: {} }); await session.ready;
+  assert.equal((await events.next()).value?.type, 'ready');
+  f.send({ toolCall: { functionCalls: [{ id: 'r1', name: 'remember_note', args: { text: 'x', kind: 'fact' } }] } });
+  assert.equal((await events.next()).value?.type, 'modelTurnStarted');
+  assert.equal((await events.next()).value?.type, 'toolCall');
+  session.sendToolResponse({ responses: [{ id: 'r1', name: 'remember_note', response: { remembered: true } }] });
+  await f.frame(2);
+  const frame = (f.frames[1] as { toolResponse: { functionResponses: { scheduling?: string; response: Record<string, unknown> }[] } }).toolResponse.functionResponses[0]!;
+  assert.equal(frame.scheduling, 'SILENT', 'the memory save reply is scheduled SILENT');
+});
+
+test('P1: a read tool response carries no scheduling and keeps only the voice anchor', async t => {
+  const f = await providerFixture(t);
+  const modelId = 'models/gemini-3.8-live-test';
+  const tools = [{ name: 'search_knowledge', description: 'Search', parameters: { type: 'OBJECT' } }];
+  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory, modelId,
+    route: { enabled: true, provider: 'gemini', modelId, dataClasses: ['ordinary'] } })).open({ ...request(), tools }, control());
+  t.after(() => session.close());
+  const events = session.events[Symbol.asyncIterator]();
+  await f.frame(1); f.send({ setupComplete: {} }); await session.ready;
+  assert.equal((await events.next()).value?.type, 'ready');
+  f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x' } }] } });
+  assert.equal((await events.next()).value?.type, 'modelTurnStarted');
+  assert.equal((await events.next()).value?.type, 'toolCall');
+  session.sendToolResponse({ responses: [{ id: 'c1', name: 'search_knowledge', response: { markdown: 'one' } }] });
+  await f.frame(2);
+  const frame = (f.frames[1] as { toolResponse: { functionResponses: { scheduling?: string; response: Record<string, unknown> }[] } }).toolResponse.functionResponses[0]!;
+  assert.equal(frame.scheduling, undefined, 'a read response is not scheduled SILENT');
+  assert.deepEqual(Object.keys(frame.response), ['markdown', '_voice_anchor']);
+});

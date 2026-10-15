@@ -5,7 +5,8 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  NAYA_BASE, NAYA_TOOLS, MEMORY_SECTION_CHAR_LIMIT, PersonaOverlayError, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, canonicalSpeechLanguage, composeLiveInstruction, composeLiveSessionInstruction, loadPersonaOverlay,
+  NAYA_BASE, NAYA_TOOLS, MEMORY_SECTION_CHAR_LIMIT, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_INSTRUCTION_TARGET_CHARS, OWNER_LORE_CHAR_LIMIT,
+  PersonaOverlayError, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, canonicalSpeechLanguage, composeLiveInstruction, composeLiveSessionInstruction, loadPersonaOverlay,
   validatePersonaOverlay, withToolsSection, type PersonaOverlay,
 } from '../prompt/live-persona.js';
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
@@ -285,4 +286,76 @@ test('runtime context is inserted right after the base and before the tools', ()
   assert.equal(result.text.indexOf(NAYA_BASE), 0);
   assert.ok(result.text.indexOf(runtimeContext) > result.text.indexOf(NAYA_BASE));
   assert.ok(result.text.indexOf(runtimeContext) < result.text.indexOf(NAYA_TOOLS));
+});
+
+// Contract P1 (issue 1014): persona first, dense facts in the middle, one language line, capped memory.
+function syntheticOwner(styleText: string, loreText: string): OwnerProfileSnapshot {
+  return { schemaVersion: 1, kind: 'profile', ownerId: 'p1-synthetic', profileVersion: 'p1', displayName: 'Synthetic Owner',
+    style: { text: styleText, dataClass: 'private' }, lore: { text: loreText, dataClass: 'sensitive' } };
+}
+
+test('P1: persona leads, facts sit in the middle and the anchor closes the instruction', () => {
+  const overlay: PersonaOverlay = { schemaVersion: 1, text: 'OVERLAY PERSONA BLOCK', accent: 'strong Indian accent' };
+  const result = composeLiveInstruction({ base: NAYA_BASE, ownerProfile: syntheticOwner('OWNER STYLE BLOCK', 'OWNER LORE BLOCK'),
+    overlay, language: 'en', tools: ['search_knowledge'], runtimeContext: 'RUNTIME CONTEXT BLOCK', memory: 'MEMORY BLOCK' });
+  assert.deepEqual(result.sections.map(section => section.id),
+    ['voice-head', 'owner-style', 'overlay', 'base', 'tools', 'runtime', 'owner-lore', 'memory', 'voice']);
+  const order = ['VOICE AND ACCENT', 'OWNER STYLE BLOCK', 'OVERLAY PERSONA BLOCK', NAYA_BASE, NAYA_TOOLS,
+    'RUNTIME CONTEXT BLOCK', 'OWNER LORE BLOCK', 'MEMORY BLOCK', 'FINAL VOICE ANCHOR'];
+  for (let i = 1; i < order.length; i++) {
+    assert.ok(result.text.indexOf(order[i - 1]!) < result.text.indexOf(order[i]!), `${order[i - 1]} must precede ${order[i]}`);
+  }
+});
+
+test('P1: the memory section is capped at 1500 characters', () => {
+  assert.equal(MEMORY_SECTION_CHAR_LIMIT, 1_500);
+  const result = composeLiveInstruction({ base: NAYA_BASE, memory: 'm'.repeat(50_000) });
+  const memory = result.sections.find(section => section.id === 'memory');
+  assert.ok(memory, 'an over-long memory input is retained, clipped');
+  assert.equal(memory.chars, MEMORY_SECTION_CHAR_LIMIT);
+});
+
+test('P1: owner lore survives while memory yields under the budget', () => {
+  const lore = `OWNER LORE ${'L'.repeat(4_000)}`;
+  const result = composeLiveInstruction({ base: NAYA_BASE, ownerProfile: syntheticOwner('S'.repeat(4_000), lore),
+    overlay: { schemaVersion: 1, text: 'O'.repeat(3_000) }, language: 'en', memory: `MEMORY ${'m'.repeat(20_000)}` });
+  assert.equal(result.sections.some(section => section.id === 'memory'), false, 'memory yields first');
+  const loreSection = result.sections.find(section => section.id === 'owner-lore');
+  assert.ok(loreSection && loreSection.chars > 0, 'owner lore is never dropped before memory');
+  assert.equal(result.text.split(lore).length - 1, 1, 'the dense lore is present exactly once');
+  assert.ok(result.text.length <= LIVE_INSTRUCTION_HARD_LIMIT);
+});
+
+test('P1: the tool conduct forbids narrating during a tool run', () => {
+  assert.doesNotMatch(NAYA_TOOLS, /while a tool runs/i);
+  assert.doesNotMatch(NAYA_TOOLS, /narrat/i);
+  assert.match(NAYA_TOOLS, /three to five word/i);
+});
+
+test('P1: exactly one LANGUAGE line and the accent lives only in the head block', () => {
+  const accent = 'strong Indian accent with a warm lilt';
+  const overlay: PersonaOverlay = { schemaVersion: 1, text: 'Overlay persona block', accent };
+  const result = composeLiveInstruction({ base: NAYA_BASE, overlay, language: 'en' });
+  assert.equal(result.text.split('LANGUAGE:').length - 1, 1, 'one language line');
+  const head = result.sections.find(section => section.id === 'voice-head');
+  assert.ok(head && head.text.includes(accent), 'the accent is stated in the head block');
+  const voice = result.sections.find(section => section.id === 'voice');
+  assert.ok(voice && !voice.text.includes(accent), 'the terminal anchor references, never repeats, the accent');
+  assert.match(voice.text, /accent defined at the top/);
+  for (const section of result.sections) if (section.id !== 'voice-head') assert.doesNotMatch(section.text, /ACCENT:/);
+});
+
+test('P1: the target and hard limits are the declared 12000 and 16000 characters', () => {
+  assert.equal(LIVE_INSTRUCTION_TARGET_CHARS, 12_000);
+  assert.equal(LIVE_INSTRUCTION_HARD_LIMIT, 16_000);
+  assert.equal(OWNER_LORE_CHAR_LIMIT, 5_000);
+});
+
+test('P1: session composition reports the composed size per section', () => {
+  const baseline = composeLiveInstruction({ base: NAYA_BASE, language: 'en' });
+  const composed = composeLiveSessionInstruction({ text: baseline.text, tools: ['search_knowledge'],
+    records: [{ id: 'a', text: 'Synthetic retained note' }], trustedChars: LIVE_INSTRUCTION_HARD_LIMIT });
+  assert.ok(Array.isArray(composed.sections), 'section sizes are reported');
+  assert.ok(composed.sections.every(section => typeof section.id === 'string' && typeof section.chars === 'number' && section.chars >= 0));
+  assert.ok(composed.sections.some(section => section.id === 'memory' && section.chars > 0), 'the memory section is measured');
 });

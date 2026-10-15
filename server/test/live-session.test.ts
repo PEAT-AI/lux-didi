@@ -1912,3 +1912,40 @@ test('creating a second Live session supersedes the first for the owner', async 
   assert.equal(superseded.length, 1, 'exactly one supersede event');
   assert.equal(superseded[0]!.liveSessionId, first.liveSessionId);
 });
+
+// Contract P1 (issue 1014): the resumption handle is gated at five tool calls, and session start logs section sizes.
+test('P1: a session past five tool calls rebuilds with a fresh setup', async t => {
+  const h = await harness(t, { tools: true });
+  await attached(h, 'p1-gating');
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-gating-secret' } });
+  for (let i = 0; i < 5; i++) {
+    h.f.send({ toolCall: { functionCalls: [{ id: `g${i}`, name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
+    await h.f.frame(h.f.frames.length + 1);
+  }
+  h.f.send({ goAway: { timeLeft: '10s' } });
+  await h.f.frame(h.f.frames.length + 1);
+  assert.equal(h.requests.at(-1)!.resumptionHandle, undefined, 'a session past five tool calls must start fresh');
+});
+
+test('P1: a session under five tool calls still resumes on the saved handle', async t => {
+  const h = await harness(t, { tools: true });
+  await attached(h, 'p1-gating-resume');
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-gating-resume-secret' } });
+  h.f.send({ toolCall: { functionCalls: [{ id: 'g0', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
+  await h.f.frame(h.f.frames.length + 1);
+  h.f.send({ goAway: { timeLeft: '10s' } });
+  await h.f.frame(h.f.frames.length + 1);
+  assert.equal(h.requests.at(-1)!.resumptionHandle, 'synthetic-gating-resume-secret', 'under five calls the handle is reused');
+});
+
+test('P1: session start logs the composed instruction size per section', async t => {
+  const lines: string[] = [];
+  t.mock.method(console, 'log', (...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
+  const h = await harness(t);
+  await attached(h, 'p1-size-log');
+  const logged = lines.map(line => { try { return JSON.parse(line) as { event?: string; sections?: Record<string, number>; total?: number }; } catch { return {}; } })
+    .find(entry => entry.event === 'live_instruction_sizes');
+  assert.ok(logged, 'a per-section size line is logged at session start');
+  assert.ok(typeof logged.total === 'number' && logged.total > 0);
+  assert.ok(logged.sections && Object.values(logged.sections).every(value => typeof value === 'number'), 'only counts are logged');
+});

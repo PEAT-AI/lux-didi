@@ -3,7 +3,7 @@ import type { McpPort, StoredPayload } from '../adapters/mcp/port.js';
 import type { MattermostEvidence, MattermostResult, MattermostTool } from '../connectors/mattermost.js';
 import { MATTERMOST_AUTH_NEEDED } from '../connectors/mattermost.js';
 import { sha256 } from './canonical.js';
-import { shapeMattermost } from './live-shape.js';
+import { shapeMattermost, type ShapedSource } from './live-shape.js';
 
 export interface MattermostProjection {
   text: string;
@@ -12,6 +12,7 @@ export interface MattermostProjection {
   omittedCharacters: number;
   shape?: string;
   itemCount?: number;
+  sources?: ShapedSource[];
 }
 
 export interface ConnectorStatus { state: 'configured' | 'error'; reason: string }

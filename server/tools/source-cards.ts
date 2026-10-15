@@ -12,15 +12,23 @@ function safeURL(value: unknown): string | undefined {
   } catch { return undefined; }
 }
 
+function urlLabel(url: string): string {
+  const parsed = new URL(url);
+  const host = parsed.hostname.replace(/^www\./iu, '');
+  const segment = parsed.pathname.split('/').find(Boolean);
+  return segment ? `${host}/${segment}` : host;
+}
+
 /** Receives only gate-approved display fields, never raw connector evidence. */
 export function sourceCards(projection: ApprovedSourceProjection, maxSources = 8): SourceCard[] {
   const cards: SourceCard[] = [];
   const seen = new Set<string>();
   const add = (title: string, url?: string) => {
+    const label = url && title === url ? urlLabel(url) : title;
     const key = url === undefined ? `reference:${title}` : `url:${url}`;
-    if (!title || seen.has(key) || cards.length >= maxSources) return;
+    if (!label || seen.has(key) || cards.length >= maxSources) return;
     seen.add(key);
-    cards.push({ title: Array.from(title).slice(0, TITLE_CHARS).join(''), ...(url === undefined ? {} : { url }) });
+    cards.push({ title: Array.from(label).slice(0, TITLE_CHARS).join(''), ...(url === undefined ? {} : { url }) });
   };
   if (Array.isArray(projection.sources)) for (const source of projection.sources) {
     if (!source || typeof source !== 'object' || typeof source.title !== 'string') continue;
@@ -49,7 +57,7 @@ export function sourceCards(projection: ApprovedSourceProjection, maxSources = 8
     if (text.startsWith('https://', i)) {
       let end = i + 8;
       while (end < text.length && !/[\s)<>\]]/u.test(text[end]!)) end++;
-      const url = safeURL(text.slice(i, end));
+      const url = safeURL(text.slice(i, end).replace(/[.,;:!?]+$/u, ''));
       if (url) add(url, url);
       i = end - 1; continue;
     }
@@ -62,7 +70,7 @@ export function sourceCards(projection: ApprovedSourceProjection, maxSources = 8
     if (start >= 0) {
       let end = start;
       while (end < text.length && /[0-9]/u.test(text[end]!)) end++;
-      if (end > start) add(text.slice(start, end));
+      if (end > start) add(`KB: ${text.slice(start, end)}`);
       i = Math.max(i, end - 1);
     }
   }

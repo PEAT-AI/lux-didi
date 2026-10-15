@@ -7,6 +7,7 @@ import { ApiError, request, pair, demoMode, onAuthorityChanged, authorityVersion
 import { liveMarkup, liveLabel, liveVoiceState, liveDelay, pollLiveView, liveActivity, activityMarkup, type LivePollState } from './live-view';
 import { connectionsMarkup } from './connector-status';
 import { settingsMarkup } from './settings-view';
+import { renderMarkdown } from './markdown';
 import type { Session, Entry, Commitment, CommitmentDetail, Plan, Recall, Status, LiveCurrent } from './protocol';
 
 type Tab = 'Conversation' | 'Today' | 'Memory' | 'Settings';
@@ -55,7 +56,7 @@ function failure(err: unknown, mutation = false) {
   return mutation ? 'Could not confirm whether this was saved. Your draft is here. Reconnect and check before trying again.' : 'Didi can’t reach your service. Reconnect when you’re ready.';
 }
 function sourceMarkup(refs: Entry['sourceRefs']) { return refs.map(s => `<div class="source"><span>${e(s.label)}</span><small>${s.availability === 'missing' ? 'Source unavailable' : 'Source available'}${s.sourceTimestamp ? ` · ${e(datetime(s.sourceTimestamp))}` : ''}</small>${s.note ? `<p>${e(s.note)}</p>` : ''}</div>`).join(''); }
-function entryMarkup(entry: Entry) { return `<article class="entry ${entry.role}"><header><strong>${entry.role === 'user' ? 'You' : entry.role === 'assistant' ? 'Didi' : 'Update'}</strong><time datetime="${e(entry.capturedAt)}">${e(datetime(entry.capturedAt))}</time></header><p>${e(entry.text)}</p>${sourceMarkup(entry.sourceRefs)}${memoryDeleteControl(entry.id, !writable() || busy || connectedView.active)}${entry.role === 'user' ? `<button class="quiet" data-capture="${e(entry.id)}" ${disabled(!writable() || !status?.capabilities.commitments)}>Make a commitment</button>` : ''}</article>`; }
+function entryMarkup(entry: Entry) { return `<article class="entry ${entry.role}"><header><strong>${entry.role === 'user' ? 'You' : entry.role === 'assistant' ? 'Didi' : 'Update'}</strong><time datetime="${e(entry.capturedAt)}">${e(datetime(entry.capturedAt))}</time></header>${entry.role === 'assistant' ? `<div class="markdown">${renderMarkdown(entry.text)}</div>` : `<p>${e(entry.text)}</p>`}${sourceMarkup(entry.sourceRefs)}${memoryDeleteControl(entry.id, !writable() || busy || connectedView.active)}${entry.role === 'user' ? `<button class="quiet" data-capture="${e(entry.id)}" ${disabled(!writable() || !status?.capabilities.commitments)}>Make a commitment</button>` : ''}</article>`; }
 function orbState(): VoiceState {
   if(connection==='Offline'||connection==='Disconnected'||pairingRequired)return 'DISCONNECTED';
   if(connection==='Connecting')return 'CONNECTING';

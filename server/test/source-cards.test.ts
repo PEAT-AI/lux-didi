@@ -4,10 +4,10 @@ import { sourceCards } from '../tools/source-cards.js';
 
 test('approved display sources retain Unicode, order, dedup and separate references', () => {
   assert.deepEqual(sourceCards({ text: '[Überblick 🌱](https://example.com/a#42) insight 42 #42 [repeat](https://example.com/a#42)\nsource: https://example.com/b' }), [
-    { title: 'Überblick 🌱', url: 'https://example.com/a#42' }, { title: '42' }, { title: 'example.com/b', url: 'https://example.com/b' },
+    { title: 'Überblick 🌱', url: 'https://example.com/a#42' }, { title: 'KB: 42' }, { title: 'example.com/b', url: 'https://example.com/b' },
   ]);
   assert.deepEqual(sourceCards({ text: 'https://example.com/a#99' }), [{ title: 'example.com/a', url: 'https://example.com/a#99' }]);
-  assert.deepEqual(sourceCards({ text: 'insight 42' }), [{ title: '42' }], 'references are local to each tool card');
+  assert.deepEqual(sourceCards({ text: 'insight 42' }), [{ title: 'KB: 42' }], 'references are local to each tool card');
 });
 
 test('a bare url card is labelled by host and first path segment, never the url itself', () => {
@@ -41,5 +41,5 @@ test('chat keeps eight cards while Live preserves its existing uncapped card cou
 
 test('repeated unmatched brackets are scanned once without losing the final link', () => {
   const text = '['.repeat(200_000) + '[last](https://example.com/last) insight 42';
-  assert.deepEqual(sourceCards({ text }), [{ title: 'last', url: 'https://example.com/last' }, { title: '42' }]);
+  assert.deepEqual(sourceCards({ text }), [{ title: 'last', url: 'https://example.com/last' }, { title: 'KB: 42' }]);
 });

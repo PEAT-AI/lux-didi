@@ -9,6 +9,8 @@ const LINK = /\[([^\]]*)\]\(([^)\s]+)\)/g;
 const FENCE = /^```/;
 const HEADING = /^(#{1,3})\s+(.*)$/;
 const BULLET = /^\s*[-*]\s+/;
+const ORDERED = /^\s*\d+[.)]\s+/;
+const QUOTE = /^\s*>\s?/;
 
 /** Inline spans over already HTML-escaped text. Held spans are restored last so
  * emphasis never re-parses code or link markup. */
@@ -49,8 +51,20 @@ export function renderMarkdown(source: string): string {
       blocks.push(`<ul>${items.join('')}</ul>`);
       continue;
     }
+    if (ORDERED.test(line)) {
+      const items: string[] = [];
+      while (index < lines.length && ORDERED.test(lines[index]!)) { items.push(`<li>${inline(lines[index]!.replace(ORDERED, ''))}</li>`); index++; }
+      blocks.push(`<ol>${items.join('')}</ol>`);
+      continue;
+    }
+    if (QUOTE.test(line)) {
+      const quoted: string[] = [];
+      while (index < lines.length && QUOTE.test(lines[index]!)) { quoted.push(inline(lines[index]!.replace(QUOTE, ''))); index++; }
+      blocks.push(`<blockquote>${quoted.join('<br>')}</blockquote>`);
+      continue;
+    }
     const paragraph: string[] = [];
-    while (index < lines.length && lines[index]!.trim() !== '' && !FENCE.test(lines[index]!) && !HEADING.test(lines[index]!) && !BULLET.test(lines[index]!)) { paragraph.push(inline(lines[index]!)); index++; }
+    while (index < lines.length && lines[index]!.trim() !== '' && !FENCE.test(lines[index]!) && !HEADING.test(lines[index]!) && !BULLET.test(lines[index]!) && !ORDERED.test(lines[index]!) && !QUOTE.test(lines[index]!)) { paragraph.push(inline(lines[index]!)); index++; }
     blocks.push(`<p>${paragraph.join('<br>')}</p>`);
   }
   return blocks.join('\n');

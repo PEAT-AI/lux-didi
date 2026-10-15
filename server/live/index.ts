@@ -6,6 +6,7 @@ import { definitionsInTransaction } from '../tools/index.js';
 import { LiveToolJobs, type JobTimer } from '../tools/jobs.js';
 import { declarationsFor, runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
+import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, validateResearch, type ResearchCall, type ResearchSelector, type SourceKind as ResearchSourceKind } from '../tools/research.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
 import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';
@@ -48,6 +49,8 @@ interface ActiveSession {
   sessionTimer: ReturnType<JobTimer> | undefined; idleTimer: ReturnType<JobTimer> | undefined;
   pendingCalls: Map<string, string>;
   toolCache: LiveToolCache;
+  researchLedger: ResearchLedger;
+  researchScheduler?: ResearchScheduler;
   registry: readonly ToolDefinition[];
   host: HostContext | undefined;
   toolStep: number;
@@ -245,6 +248,7 @@ export class LiveSessionOwner {
   readonly #now: () => number;
   readonly #timeZone: string;
   readonly #schedule: NonNullable<LiveOwnerConfig['schedule']>;
+  readonly #research: ResearchSelector | undefined;
   #expiryTimer: ReturnType<NonNullable<LiveOwnerConfig['schedule']>> | undefined;
   readonly #profileIdentity: string;
   readonly #active = new Map<string, ActiveSession>();
@@ -259,6 +263,7 @@ export class LiveSessionOwner {
     this.#memorySource = config.memorySource;
     this.#store = config.store;
     this.#voice = config.voice;
+    this.#research = config.research;
     this.#profile = validateLiveProfile(config.profile);
     this.#timeZone = config.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
     const now = config.now ?? Date.now;
@@ -601,7 +606,7 @@ export class LiveSessionOwner {
     const history = this.#jobHistory(liveSessionId, inputClass);
     // Only the coarse intent tools (and remember) are declared to the model; the connector reads stay
     // dispatchable through the registry so the intent fan-out and the session cache keep working.
-    const modelFacing = registry.filter(tool => isIntentTool(tool.name) || tool.name === 'remember_note');
+    const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || tool.name === 'remember_note');
     const declarations = modelFacing.length ? declarationsFor(modelFacing).declarations : [];
     const system = acceptedPrompt.system;
     const request: LiveVoiceRequest = { opening: 'model_first',
@@ -624,6 +629,7 @@ export class LiveSessionOwner {
       deadlineMs, deadlineAt, idleAt: this.#now() + this.#profile.limits.idleMs, goAwayUntil: undefined,
       sessionTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()),
+      researchLedger: new ResearchLedger(),
       registry, host, toolStep: 0, toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined,
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
@@ -960,6 +966,56 @@ export class LiveSessionOwner {
     }
   }
 
+  #researchSources(handle: ActiveSession): ResearchSourceKind[] {
+    const names = new Set(handle.registry.map(tool => tool.name));
+    const sources: ResearchSourceKind[] = [];
+    if (names.has('search_knowledge')) sources.push('knowledge');
+    if (names.has('gcal_calendars')) sources.push('calendar');
+    if (names.has('gmail_list')) sources.push('mail');
+    if (names.has('mattermost_search')) sources.push('chat');
+    return sources;
+  }
+
+  /** One BLOCKING research call runs its whole bounded loop; `interrupted` never aborts it. */
+  async #researchBatch(handle: ActiveSession, event: Extract<LiveVoiceEvent, { type: 'toolCall' }>, generation: number, host: HostContext, allowed: boolean): Promise<{ responses: { id: string; name: string; response: JsonObject }[]; projections: LiveToolProjection[] }> {
+    const configured = this.#researchSources(handle);
+    const gateAuthority = { isCurrent: async (_host: HostContext, _tool: ToolDefinition, signal: AbortSignal) => allowed && !signal.aborted && generation === handle.generation && !this.#settled(handle) };
+    const execute = async (subs: readonly IntentSubCall[], signal: AbortSignal): Promise<IntentSubResult[]> => {
+      const calls = subs.map((sub, n) => ({ id: `r${handle.toolStep}~${n}~${sub.key}`, name: sub.name, args: sub.args }));
+      const signalMap = new Map<string, AbortSignal>(calls.map(call => [call.id, signal]));
+      const control = { signal, deadlineMs: handle.deadlineMs };
+      const raw = await runToolCalls(this.#tools!.owner, calls, { registry: handle.registry, host, signals: signalMap, authority: gateAuthority, control, step: handle.toolStep, contentIndex: 0, seenIds: handle.seenIds, baseClasses: [handle.inputClass] });
+      const authorized = (this.lookupAuthority(host.runId) || this.lookupJobAuthority(host.runId)) ? await authorizeToolBatch(this.#tools!.owner, raw, { host, control, baseClasses: [handle.inputClass] }) : raw;
+      return calls.map(call => {
+        const slot = authorized.bindings.findIndex(binding => binding.callId === call.id);
+        const record = slot >= 0 ? authorized.tools[slot] : undefined;
+        const accepted = authorized.accepted.find(result => result.binding.callId === call.id);
+        const response = accepted?.response ?? {};
+        const text = typeof response.text === 'string' ? response.text : '';
+        const ok = record?.status === 'completed' && accepted !== undefined;
+        return { key: call.id, name: call.name, ok, text, originalCharacters: typeof response.originalCharacters === 'number' ? response.originalCharacters : text.length, omittedCharacters: typeof response.omittedCharacters === 'number' ? response.omittedCharacters : 0 };
+      });
+    };
+    const scheduler = handle.researchScheduler ??= new ResearchScheduler({
+      now: () => this.#now(), configured, selector: this.#research, execute,
+      emit: progress => hostLogEvent({ event: 'research_progress', ...progress }),
+      log: entry => hostLogEvent(entry), ledger: handle.researchLedger,
+    });
+    const responses: { id: string; name: string; response: JsonObject }[] = [];
+    const projections: LiveToolProjection[] = [];
+    for (const call of event.calls) {
+      let response: JsonObject;
+      try {
+        if (!validateResearch(call.args)) throw Error('invalid_research_arguments');
+        response = await scheduler.call(call.args as unknown as ResearchCall, handle.abort.signal);
+      } catch (error) { response = { error: error instanceof Error ? error.message : 'research_failed' }; }
+      responses.push({ id: call.id, name: call.name, response });
+      const status = typeof response['status'] === 'string' ? response['status'] : 'error';
+      projections.push({ name: call.name, status: status === 'error' ? 'error' : 'completed', markdown: `research: ${status}`, sources: [] });
+    }
+    return { responses, projections };
+  }
+
   async #toolBatch(handle: ActiveSession, event: Extract<LiveVoiceEvent, { type: 'toolCall' }>, generation: number): Promise<void> {
     handle.thinking = true;
     const publish = (kind: 'toolCall' | 'toolResult', tool: LiveToolProjection) => {
@@ -982,6 +1038,13 @@ export class LiveSessionOwner {
       const control = { signal: jobAbort.signal, deadlineMs: handle.deadlineMs };
       if (event.calls.some(call => call.name === 'remember_note')) await this.#waitForOwnerTranscript(handle, event.sequence);
       if (this.#settled(handle) || generation !== handle.generation) return;
+      if (event.calls.every(call => call.name === RESEARCH_TOOL_NAME)) {
+        const outcome = await this.#researchBatch(handle, event, generation, host, dispatchGate.state === 'allowed');
+        if (this.#settled(handle) || generation !== handle.generation) return;
+        responses = outcome.responses;
+        projections = outcome.projections;
+        hostLogEvent({ event: 'live_tool_turn', sequence: event.sequence, toolCallsThisTurn: event.calls.length, toolLatencyMs: [], toolResponseWhileGenerating: handle.speaking });
+      } else {
       // One model call fans out to one or more internal reads; a plain call maps to itself. An intent
       // is deliberately never cached: its sub-reads change per query or per minute.
       interface Unit { index: number; call: (typeof event.calls)[number]; intent: IntentToolName | undefined; subs: { key: string; name: string; args: JsonObject }[]; plan: ReturnType<typeof planIntent> | undefined }
@@ -1087,6 +1150,7 @@ export class LiveSessionOwner {
         handle.callStartedAt.delete(unit.call.id);
       }
       hostLogEvent({ event: 'live_tool_turn', sequence: event.sequence, toolCallsThisTurn: units.reduce((sum, unit) => sum + unit.subs.length + (followUps.get(unit.index)?.length ?? 0), 0), toolLatencyMs: latency, toolResponseWhileGenerating: handle.speaking });
+      }
     }
     if ((this.#settled(handle) || generation !== handle.generation)) return;
     for (const [index, projection] of projections.entries()) {

@@ -7,6 +7,8 @@ import { attachHostLogSink } from '../tools/host-events.js';
 // Side-effect import: register the intent-tool suite in this process so a declared check runs it
 // (live-session is in the contract scope; the check scripts are not).
 import './intent-tools.test.js';
+// Side-effect import: register the research-loop suite in this process so a declared check runs it.
+import './research.test.js';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
@@ -1392,9 +1394,9 @@ test('Live accepts a frozen real tool snapshot and projects only result-gated Ma
   const { session, attachment } = await attached(h);
   assert.equal(h.owner.lookupAuthority(session.liveSessionId)?.actorId, h.ctx.clientId);
   const setup = (h.f.frames[0] as { setup: { tools: { functionDeclarations: { name: string; parameters: any }[] }[] } }).setup;
-  assert.deepEqual(setup.tools[0]!.functionDeclarations.map(tool => tool.name).sort(), ['brief', 'calendar', 'chat', 'mail', 'remember_note', 'search']);
-  const derived = setup.tools[0]!.functionDeclarations.find(d => d.name === 'search')!;
-  assert.equal(derived.parameters.properties.query.type, 'STRING');
+  assert.deepEqual(setup.tools[0]!.functionDeclarations.map(tool => tool.name).sort(), ['remember_note', 'research']);
+  const derived = setup.tools[0]!.functionDeclarations.find(d => d.name === 'research')!;
+  assert.equal(derived.parameters.properties.question.type, 'STRING');
   const outputs = attachment.output[Symbol.asyncIterator]();
   assert.equal((await outputs.next()).value?.marker.kind, 'ready');
   h.f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }, { id: 'c2', name: 'get_insight', args: { ids: [123] } }] } });

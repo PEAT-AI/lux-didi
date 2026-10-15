@@ -82,7 +82,7 @@ try {
     assert.match(await page.locator('.connected-disclosure').innerText(), /Sent turns go to/);
     assert.equal(await page.locator('#connected-consent').count(), 1);
     await page.locator('#connected-consent').click(); await page.locator('#connected-draft:not([disabled])').waitFor();
-    assert.equal(await page.locator('#connected-send').innerText(), 'Send');
+    assert.equal(await page.locator('#connected-send').getAttribute('aria-label'), 'Send');
   });
   await step('real adapter captured request, split provisional stream, meaningful atomic saved answer', async () => {
     await page.locator('#connected-draft').fill('Help me choose one small next step for this synthetic release checklist.');

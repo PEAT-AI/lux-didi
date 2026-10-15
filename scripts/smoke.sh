@@ -4,7 +4,7 @@
 # It runs the host exactly as the native app does (--supervised, the app's environment and its config source),
 # holds its stdout to the native rule (the ready frame, then any further byte is a failure), and then drives
 # the path the operator uses: every configured connector, one text turn that must call tools, one Live
-# turn that must call a tool and keep the session open, and one Live text turn that must run the research
+# turn that must call a tool and keep the session open, and one Live voice turn that must run the research
 # loop (one research call, a run line with a source read, output after the response). Run it after every
 # install and before every release
 # merge. Use --dev to run against the platform default data directory instead of the installed config source.

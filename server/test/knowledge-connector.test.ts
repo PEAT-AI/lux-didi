@@ -191,7 +191,7 @@ test('a completed search shapes to the top 3 hits with their compact bodies in o
     const { reader } = await readerFor(adapter, registry);
     const result = complete(await reader.search({ query: 'q', limit: 12 }));
     const shaped = shapeLuxKnowledge('search_knowledge', (result.decodedResult as { content?: { text?: string }[] }).content?.[0]?.text ?? '');
-    assert.equal((shaped.text.match(/^## /gm) ?? []).length, 3, 'a search result carries at most 3 bodies in one call');
+    assert.equal((shaped.text.match(/^### /gm) ?? []).length, 3, 'a search result carries at most 3 bodies in one call');
     assert.match(shaped.text, /Body of insight 1\./);
     assert.equal(shaped.text.includes('Insight 4'), false, 'the fourth hit never reaches the model');
   } finally { await adapter.close(); await f.close(); }

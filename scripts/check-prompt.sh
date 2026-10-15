@@ -18,7 +18,7 @@ cd "$root"
 # follows SERVICE's actual NodeNext conventions without a competing manifest.
 mkdir -p "$out/source/adapters/model" "$out/source/test" "$out/source/prompt" "$out/source/tools"
 cp server/adapters/model/*.ts "$out/source/adapters/model/"
-cp server/tools/declarations.ts "$out/source/tools/"
+cp server/tools/declarations.ts server/tools/host-events.ts "$out/source/tools/"
 cp server/prompt/*.ts "$out/source/prompt/"
 cp server/test/prompt.test.ts server/test/model.test.ts server/test/live-persona.test.ts server/test/runtime-context.test.ts "$out/source/test/"
 printf '{"type":"module"}\n' > "$out/package.json"

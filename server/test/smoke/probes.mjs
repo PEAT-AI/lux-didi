@@ -171,7 +171,9 @@ async function chatTurn({ base, token, epoch, dataDir, host, readyPid }) {
     }
   } catch { /* no diagnostics file means no recorded rejection */ }
   const pidStable = host.exited === null && host.pid === readyPid;
-  const ok = names.includes('search_knowledge') && names.includes('get_insight') && answerBytes > 0 && rejections.length === 0 && pidStable;
+  // #241: the intent surface answers "search then open" in one call, so the text turn must make
+exactly one tool call (the intent, or the one internal read it fans out to) and no get_insight turn.
+  const ok = names.length === 1 && (names[0] === 'search' || names[0] === 'search_knowledge') && answerBytes > 0 && rejections.length === 0 && pidStable;
   return { ok, stage: 'turn', names, answerBytes, rejections, outcome: snap.outcome, pidStable };
 }
 

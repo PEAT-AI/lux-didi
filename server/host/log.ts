@@ -5,6 +5,21 @@ import { ConfigError } from '../config/files.js';
 import { closeSync, constants, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, renameSync, unlinkSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 
+// The closed sets a metadata-only host diagnostic may name. Anything outside these is dropped.
+const SAFE_TOKEN = /^[A-Za-z][A-Za-z0-9_-]{0,79}$/;
+const SAFE_ID = /^[A-Za-z0-9-]{1,64}$/;
+const SAFE_CALL_ID = /^[A-Za-z0-9_.:~-]{1,128}$/;
+const RESEARCH_SOURCES = ['knowledge', 'calendar', 'mail', 'chat', 'mongoose'];
+const RESEARCH_CANDIDATES = ['knowledge_search', 'calendar_window', 'mail_search', 'mail_open', 'chat_search', 'chat_thread', 'brief', 'stop_answer', 'stop_insufficient'];
+const RESEARCH_STOPS = ['answered', 'selector_stop', 'insufficient', 'rounds_exhausted', 'no_candidates', 'voi_stop', 'ops_exhausted', 'deadline', 'cancelled', 'fallback', 'stop'];
+const RESEARCH_PHASES = ['started', 'round', 'done', 'stopped'];
+const RESEARCH_DISPOSITIONS = ['completed', 'skipped'];
+const isSafeToken = (value: unknown): value is string => typeof value === 'string' && SAFE_TOKEN.test(value);
+const isSafeId = (value: unknown): value is string => typeof value === 'string' && SAFE_ID.test(value);
+const isSafeCount = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;
+const isSafeMember = (value: unknown, allowed: readonly string[]): value is string => typeof value === 'string' && allowed.includes(value);
+const isSafeMembers = (value: unknown, allowed: readonly string[]): value is string[] => Array.isArray(value) && value.length <= 16 && value.every(item => isSafeMember(item, allowed));
+
 // Only the existing diagnostic schemas cross this boundary, never arbitrary console text.
 export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (!raw || typeof raw !== 'object') return;
@@ -119,6 +134,89 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     const token = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,79}$/.test(v);
     if (!token(value.tool) || value.cached !== true) return;
     return { event: 'live_read_cache', tool: value.tool, cached: true };
+  }
+  if (value.event === 'live_interrupted') {
+    // E1: one metadata-only record per provider barge-in, never audio, text or a provider payload.
+    if (Object.keys(value).sort().join(',') !== ['event', 'liveSessionId', 'turnCompleteSeen', 'msSinceLastModelAudio'].sort().join(',')) return;
+    if (typeof value.liveSessionId !== 'string' || !/^[0-9a-f-]{36}$/i.test(value.liveSessionId)) return;
+    if (typeof value.turnCompleteSeen !== 'boolean') return;
+    if (!(value.msSinceLastModelAudio === null || isSafeCount(value.msSinceLastModelAudio))) return;
+    return { event: 'live_interrupted', liveSessionId: value.liveSessionId, turnCompleteSeen: value.turnCompleteSeen, msSinceLastModelAudio: value.msSinceLastModelAudio };
+  }
+  if (value.event === 'live_dead_air') {
+    // E1: the wait between input final and first audio only, never any turn content.
+    if (Object.keys(value).sort().join(',') !== ['event', 'deadAirMs'].sort().join(',')) return;
+    if (!isSafeCount(value.deadAirMs)) return;
+    return { event: 'live_dead_air', deadAirMs: value.deadAirMs };
+  }
+  if (value.event === 'live_tool_turn') {
+    // O1: per-turn tool metrics, tool names and millisecond latency only, never arguments or results.
+    if (Object.keys(value).sort().join(',') !== ['event', 'sequence', 'toolCallsThisTurn', 'toolLatencyMs', 'toolResponseWhileGenerating'].sort().join(',')) return;
+    if (!(value.sequence === null || isSafeCount(value.sequence))) return;
+    if (!isSafeCount(value.toolCallsThisTurn) || typeof value.toolResponseWhileGenerating !== 'boolean') return;
+    if (!Array.isArray(value.toolLatencyMs) || value.toolLatencyMs.length > 16) return;
+    const latencies: { tool: string; ms: number }[] = [];
+    for (const entry of value.toolLatencyMs) {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return;
+      const row = entry as Record<string, unknown>;
+      if (Object.keys(row).sort().join(',') !== ['tool', 'ms'].sort().join(',')) return;
+      if (!isSafeToken(row.tool) || !isSafeCount(row.ms)) return;
+      latencies.push({ tool: row.tool, ms: row.ms });
+    }
+    return { event: 'live_tool_turn', sequence: value.sequence, toolCallsThisTurn: value.toolCallsThisTurn, toolLatencyMs: latencies, toolResponseWhileGenerating: value.toolResponseWhileGenerating };
+  }
+  if (value.event === 'tool_cancelled') {
+    // O1: the cancelled tool, its call id and time in flight only, never arguments or results.
+    if (Object.keys(value).sort().join(',') !== ['event', 'tool', 'id', 'msInFlight'].sort().join(',')) return;
+    if (!isSafeToken(value.tool) || typeof value.id !== 'string' || !SAFE_CALL_ID.test(value.id)) return;
+    if (!(value.msInFlight === null || isSafeCount(value.msInFlight))) return;
+    return { event: 'tool_cancelled', tool: value.tool, id: value.id, msInFlight: value.msInFlight };
+  }
+  if (value.event === 'research_progress') {
+    // 241: run phase and source kinds only, never question text, evidence or item ids.
+    if (Object.keys(value).sort().join(',') !== ['event', 'researchId', 'phase', 'sourcesDone', 'sourcesPending', 'elapsedMs'].sort().join(',')) return;
+    if (!isSafeId(value.researchId) || !isSafeMember(value.phase, RESEARCH_PHASES) || !isSafeCount(value.elapsedMs)) return;
+    if (!isSafeMembers(value.sourcesDone, RESEARCH_SOURCES) || !isSafeMembers(value.sourcesPending, RESEARCH_SOURCES)) return;
+    return { event: 'research_progress', researchId: value.researchId, phase: value.phase, sourcesDone: value.sourcesDone, sourcesPending: value.sourcesPending, elapsedMs: value.elapsedMs };
+  }
+  if (value.event === 'research_run') {
+    // 241: run metadata only (rounds, candidate kinds, pUseful, dispositions, latencies, selector timing),
+    // never question text, evidence or item ids.
+    const keys = ['event', 'researchId', 'questionClass', 'rounds', 'perRound', 'stopReason', 'status', 'ops', 'sources', 'elapsedMs', 'deadAirMs', 'selectorMs', 'fallbackUsed', 'replyBytes'];
+    if (Object.keys(value).sort().join(',') !== keys.sort().join(',')) return;
+    if (!isSafeId(value.researchId) || !isSafeMember(value.questionClass, ['quick_fact', 'cross_source', 'explicit_continue'])) return;
+    if (!isSafeMember(value.stopReason, RESEARCH_STOPS) || !isSafeMember(value.status, ['answered', 'partial', 'stopped', 'unavailable'])) return;
+    if (typeof value.fallbackUsed !== 'boolean') return;
+    if (!isSafeCount(value.rounds) || !isSafeCount(value.ops) || !isSafeCount(value.elapsedMs) || !isSafeCount(value.deadAirMs) || !isSafeCount(value.selectorMs) || !isSafeCount(value.replyBytes)) return;
+    const pUseful = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1;
+    if (!Array.isArray(value.perRound) || value.perRound.length > 8) return;
+    const perRound: { candidates: { kind: string; pUseful: number }[]; chosen: string[] }[] = [];
+    for (const round of value.perRound) {
+      if (!round || typeof round !== 'object' || Array.isArray(round)) return;
+      const row = round as Record<string, unknown>;
+      if (Object.keys(row).sort().join(',') !== ['candidates', 'chosen'].sort().join(',')) return;
+      if (!Array.isArray(row.chosen) || !row.chosen.every(kind => isSafeMember(kind, RESEARCH_CANDIDATES))) return;
+      if (!Array.isArray(row.candidates) || row.candidates.length > 16) return;
+      const candidates: { kind: string; pUseful: number }[] = [];
+      for (const candidate of row.candidates) {
+        if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return;
+        const cell = candidate as Record<string, unknown>;
+        if (Object.keys(cell).sort().join(',') !== ['kind', 'pUseful'].sort().join(',')) return;
+        if (!isSafeMember(cell.kind, RESEARCH_CANDIDATES) || !pUseful(cell.pUseful)) return;
+        candidates.push({ kind: cell.kind, pUseful: cell.pUseful });
+      }
+      perRound.push({ candidates, chosen: row.chosen });
+    }
+    if (!Array.isArray(value.sources) || value.sources.length > 16) return;
+    const sources: { kind: string; disposition: string; latencyMs: number }[] = [];
+    for (const source of value.sources) {
+      if (!source || typeof source !== 'object' || Array.isArray(source)) return;
+      const row = source as Record<string, unknown>;
+      if (Object.keys(row).sort().join(',') !== ['kind', 'disposition', 'latencyMs'].sort().join(',')) return;
+      if (!isSafeMember(row.kind, RESEARCH_SOURCES) || !isSafeMember(row.disposition, RESEARCH_DISPOSITIONS) || !isSafeCount(row.latencyMs)) return;
+      sources.push({ kind: row.kind, disposition: row.disposition, latencyMs: row.latencyMs });
+    }
+    return { event: 'research_run', researchId: value.researchId, questionClass: value.questionClass, rounds: value.rounds, perRound, stopReason: value.stopReason, status: value.status, ops: value.ops, sources, elapsedMs: value.elapsedMs, deadAirMs: value.deadAirMs, selectorMs: value.selectorMs, fallbackUsed: value.fallbackUsed, replyBytes: value.replyBytes };
   }
 }
 

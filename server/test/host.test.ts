@@ -10,7 +10,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { pairLocal, startHost, type RuntimeDescriptor } from '../host/runtime.js';
-import { HostLog } from '../host/log.js';
+import { HostLog, safeEvent } from '../host/log.js';
 import { Store } from '../runtime/store.js';
 import { listenService } from '../http/server.js';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
@@ -516,6 +516,24 @@ test('durable diagnostics rotate privately and persist only safe structured even
     const newest = await readFile(join(root, 'logs', 'host.log'), 'utf8');
     assert.match(newest, /live_attach_rejected/);
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('host diagnostics admit the release 3c metadata-only events and strip free text', () => {
+  const researchId = '3f2a9c1e-0b7d-4a2f-9c3e-1d2b3a4c5d6e';
+  const run = { event: 'research_run', researchId, questionClass: 'quick_fact', rounds: 2, perRound: [{ candidates: [{ kind: 'calendar_window', pUseful: 0.6 }], chosen: ['calendar_window'] }], stopReason: 'answered', status: 'answered', ops: 3, sources: [{ kind: 'calendar', disposition: 'completed', latencyMs: 12 }], elapsedMs: 120, deadAirMs: 5, selectorMs: 20, fallbackUsed: false, replyBytes: 340 };
+  assert.deepEqual(safeEvent(run), run);
+  assert.deepEqual(safeEvent({ event: 'research_progress', researchId, phase: 'round', sourcesDone: ['calendar'], sourcesPending: ['mail'], elapsedMs: 9 }), { event: 'research_progress', researchId, phase: 'round', sourcesDone: ['calendar'], sourcesPending: ['mail'], elapsedMs: 9 });
+  assert.deepEqual(safeEvent({ event: 'live_interrupted', liveSessionId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', turnCompleteSeen: true, msSinceLastModelAudio: 42 }), { event: 'live_interrupted', liveSessionId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', turnCompleteSeen: true, msSinceLastModelAudio: 42 });
+  assert.deepEqual(safeEvent({ event: 'live_dead_air', deadAirMs: 1500 }), { event: 'live_dead_air', deadAirMs: 1500 });
+  assert.deepEqual(safeEvent({ event: 'live_tool_turn', sequence: 3, toolCallsThisTurn: 2, toolLatencyMs: [{ tool: 'research', ms: 30 }], toolResponseWhileGenerating: false }), { event: 'live_tool_turn', sequence: 3, toolCallsThisTurn: 2, toolLatencyMs: [{ tool: 'research', ms: 30 }], toolResponseWhileGenerating: false });
+  assert.deepEqual(safeEvent({ event: 'tool_cancelled', tool: 'research', id: 'r1~0~calendar_window', msInFlight: null }), { event: 'tool_cancelled', tool: 'research', id: 'r1~0~calendar_window', msInFlight: null });
+  // Each closed case refuses a free-text field instead of forwarding it.
+  assert.equal(safeEvent({ ...run, question: 'owner secret' }), undefined);
+  assert.equal(safeEvent({ ...run, stopReason: 'owner secret' }), undefined);
+  assert.equal(safeEvent({ event: 'research_progress', researchId, phase: 'round', sourcesDone: ['calendar'], sourcesPending: [], elapsedMs: 9, summary: 'owner secret' }), undefined);
+  assert.equal(safeEvent({ event: 'live_dead_air', deadAirMs: 1500, text: 'owner secret' }), undefined);
+  assert.equal(safeEvent({ event: 'live_tool_turn', sequence: 3, toolCallsThisTurn: 2, toolLatencyMs: [{ tool: 'research', ms: 30, args: 'owner secret' }], toolResponseWhileGenerating: false }), undefined);
+  assert.equal(safeEvent({ event: 'live_interrupted', liveSessionId: 'owner secret', turnCompleteSeen: true, msSinceLastModelAudio: 42 }), undefined);
 });
 
 test('provider terminal diagnostics retain only bounded class and code', async () => {

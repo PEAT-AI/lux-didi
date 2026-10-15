@@ -71,13 +71,36 @@ export function renderMarkdown(source: string): string {
 }
 
 /** Chat consumes only bounded accepted projections, never connector HTML or provider parts. */
+/** A friendly, owner-facing connector name; an unknown tool returns '' so its card shows no name. */
+const TOOL_LABELS: readonly [RegExp, string][] = [
+  [/^gmail_/, 'Gmail'],
+  [/^gcal_/, 'Calendar'],
+  [/^mattermost_/, 'Mattermost'],
+  [/^(search_knowledge|get_insight|knowledge_)/, 'Knowledge'],
+];
+export function toolLabel(name: string): string {
+  for (const [pattern, label] of TOOL_LABELS) if (pattern.test(name)) return label;
+  return '';
+}
+
+/** One compact 'Sources' line of named links separated by a middle dot, never bullets or boxes. */
+export function sourcesFooter(sources: readonly { title: string; url?: string }[]): string {
+  const items = sources.slice(0, 8).map(source => {
+    const label = escapeHtml(source.title.slice(0, 256));
+    const url = source.url?.slice(0, 2048);
+    return url && /^https?:\/\//i.test(url)
+      ? `<a class="answer-source" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${label}</a>`
+      : `<span class="answer-source">${label}</span>`;
+  });
+  if (!items.length) return '';
+  return `<p class="sources answer-sources"><span class="answer-sources-label">Sources</span>${items.join('<span class="answer-sources-sep"> · </span>')}</p>`;
+}
+
+/** Chat consumes only bounded accepted projections, never connector HTML or provider parts. */
 export function renderToolEvidence(evidence: readonly import('./protocol.ts').ToolEvidence[]): string {
   return evidence.slice(0, 16).map(tool => {
-    const sources = tool.sources.slice(0, 8).map(source => {
-      const title = escapeHtml(source.title.slice(0, 256));
-      const url = source.url?.slice(0, 2048);
-      return `<li>${url && /^https?:\/\//i.test(url) ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${title}</a>` : title}</li>`;
-    }).join('');
-    return `<article class="tool-evidence"><header><strong>${escapeHtml(tool.name)}</strong><span>Gated tool result</span></header><div class="markdown">${renderMarkdown(tool.markdown.slice(0, 4096))}</div>${sources ? `<ul class="tool-evidence-sources">${sources}</ul>` : ''}</article>`;
+    const label = toolLabel(tool.name);
+    const header = label ? `<header><strong>${escapeHtml(label)}</strong></header>` : '';
+    return `<article class="tool-evidence">${header}<div class="markdown">${renderMarkdown(tool.markdown.slice(0, 4096))}</div>${sourcesFooter(tool.sources)}</article>`;
   }).join('');
 }

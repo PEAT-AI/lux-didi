@@ -16,6 +16,11 @@ test('a bare url card is labelled by host and first path segment, never the url 
   for (const card of sourceCards({ text: 'https://example.com' })) assert.notEqual(card.title, card.url);
 });
 
+test('a knowledge reference chip names the entry title, never only the id', () => {
+  assert.deepEqual(sourceCards({ text: '#123: Synthetic insight' }), [{ title: 'KB: Synthetic insight' }]);
+  assert.deepEqual(sourceCards({ text: '#42' }), [{ title: 'KB: 42' }]);
+});
+
 test('structured and extracted sources enforce the same HTTPS destination rules', () => {
   const bad = ['http://example.com', 'javascript:alert(1)', 'https://user:password@example.com', 'https://example.com/\\evil', 'https://example.com/\u0001', `https://example.com/${'x'.repeat(2048)}`];
   for (const url of bad) {

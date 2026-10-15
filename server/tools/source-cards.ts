@@ -70,8 +70,21 @@ export function sourceCards(projection: ApprovedSourceProjection, maxSources = 8
     if (start >= 0) {
       let end = start;
       while (end < text.length && /[0-9]/u.test(text[end]!)) end++;
-      if (end > start) add(`KB: ${text.slice(start, end)}`);
-      i = Math.max(i, end - 1);
+      if (end > start) {
+        const id = text.slice(start, end);
+        let label = `KB: ${id}`;
+        let scanTo = end - 1;
+        // `#12: Title` carries the entry title; the chip names it, never the bare id.
+        if (text[end] === ':') {
+          let titleEnd = end + 1;
+          while (titleEnd < text.length && text[titleEnd] !== '\n') titleEnd++;
+          const title = text.slice(end + 1, titleEnd).trim();
+          if (title) label = `KB: ${title}`;
+          scanTo = titleEnd - 1;
+        }
+        add(label);
+        i = Math.max(i, scanTo);
+      } else i = Math.max(i, end - 1);
     }
   }
   return cards;

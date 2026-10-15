@@ -9,7 +9,8 @@ const render = (markdown as typeof markdown & { renderToolEvidence?: (evidence: 
 test('chat evidence cards render names, bounded safe markdown and permitted sources', () => {
   const html = render([{ name: 'gmail_list', markdown: '**ACCEPTED** [unsafe](javascript:alert) <script>REJECTED-HTML</script>', sources: [{ title: 'Inbox evidence', url: 'https://example.org/mail' }, { title: 'Local citation' }, { title: 'Unsafe source', url: 'javascript:alert(1)' }] }]);
   assert.match(html, /tool-evidence/);
-  assert.match(html, /gmail_list/);
+  assert.match(html, /Gmail/);
+  assert.doesNotMatch(html, /gmail_list|Gated tool result/);
   assert.match(html, /<strong>ACCEPTED<\/strong>/);
   assert.match(html, /unsafe/);
   assert.doesNotMatch(html, /href="javascript:/i);

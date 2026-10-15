@@ -1374,7 +1374,7 @@ test('Live accepts a frozen real tool snapshot and projects only result-gated Ma
   assert.equal(page.entries.filter(e => e.kind === 'toolCall').length, 2);
   const result = page.entries.find(e => e.kind === 'toolResult')!.tool!;
   assert.equal(result.status, 'completed'); assert.match(result.markdown!, /Synthetic insight/);
-  assert.deepEqual(result.sources, [{ title: 'KB: 123' }, { title: 'Evidence', url: 'https://example.test/evidence' }], 'cards follow first occurrence in approved evidence');
+  assert.deepEqual(result.sources, [{ title: 'KB: Synthetic insight' }, { title: 'Evidence', url: 'https://example.test/evidence' }], 'cards follow first occurrence in approved evidence');
   assert.equal(JSON.stringify(page).includes('liveSessionId'), false);
   assert.equal(JSON.stringify(page).includes('args'), false);
   assert.equal(JSON.stringify(page).includes(CANARY), false);

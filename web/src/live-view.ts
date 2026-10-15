@@ -1,6 +1,6 @@
 // Read-only presentation of the Interface 3 live projection (W-B provides the route).
 // Pure mapping and markup only: no scheduling, no network, no fabricated state.
-import { escapeHtml, renderMarkdown } from './markdown.ts';
+import { escapeHtml, renderMarkdown, sourcesFooter } from './markdown.ts';
 import { toolConnector, toolPhrase, toolPhrases } from './tool-phrases.ts';
 import type { VoiceState } from './orb.ts';
 import type { LiveCurrent, LiveEntry, LiveSource, LiveState, LiveTool } from './protocol.ts';
@@ -158,16 +158,8 @@ export function liveResult(live: LiveCurrent): LiveAnswer | undefined {
   return latest?.tool?.markdown ? { markdown: latest.tool.markdown, sources: latest.tool.sources ?? [] } : undefined;
 }
 
-function safeUrl(url: string | undefined): string | undefined {
-  return url && /^https?:\/\//i.test(url) ? url : undefined;
-}
 function sourcesMarkup(sources: LiveSource[]): string {
-  if (!sources.length) return '';
-  return `<ul class="sources">${sources.map(source => {
-    const label = escapeHtml(source.title);
-    const url = safeUrl(source.url);
-    return `<li class="source">${url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${label}</a>` : label}</li>`;
-  }).join('')}</ul>`;
+  return sourcesFooter(sources);
 }
 
 /** A typed remember_note result code is a snake_case token; the saved note is the owner's spoken words. */

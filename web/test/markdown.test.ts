@@ -47,6 +47,12 @@ test('code spans are not re-parsed as emphasis', () => {
   assert.match(renderMarkdown('`a * b`'), /<code>a \* b<\/code>/);
 });
 
+test('a paragraph after a list is a sibling, not nested in the list', () => {
+  const html = renderMarkdown('1. one\n2. two\n\nAfter the list');
+  assert.match(html, /<\/ol>\n<p>After the list<\/p>/);
+  assert.equal(/<li>[^<]*After the list/.test(html), false);
+});
+
 test('empty input renders nothing', () => {
   assert.equal(renderMarkdown(''), '');
 });

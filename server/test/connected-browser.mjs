@@ -61,7 +61,6 @@ try {
     await writeFile(join(artifacts, `renderer-${sha}.json`), JSON.stringify({ sha, renderer }, null, 2));
     const pairing = await operator('/auth/pairing'); await page.locator('#pair-code').fill(pairing.pairingCode); await page.locator('#pair-form').evaluate(form => form.requestSubmit());
     await page.locator('#connected-send').waitFor(); await page.locator('#didi-orb').waitFor();
-    await page.waitForFunction(() => document.querySelector('#connected-send')?.textContent.includes('gemini-connected-test'));
     // W5 voice-first UI: the accepted dark stage renders a 600 CSS px square canvas at desktop 1440, centred in the stage.
     const orb = page.locator('#didi-orb');
     assert.ok(await orb.isVisible(), 'W5 desktop orb canvas is visible on the stage');

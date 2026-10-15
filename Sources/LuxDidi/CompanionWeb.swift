@@ -52,7 +52,7 @@ enum PageState: Equatable { case loading, ready, unavailable }
         self.bridge = bridge
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
-        configuration.userContentController = WKUserContentController() // Deliberately zero handlers/scripts.
+        configuration.userContentController = WKUserContentController() // The `didi` handler is added below.
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
         configuration.mediaTypesRequiringUserActionForPlayback = .all
         webView = WKWebView(frame: .zero, configuration: configuration)

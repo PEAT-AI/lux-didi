@@ -49,7 +49,9 @@ async function api(path) {
 }
 const openTab = async name => { await page.locator(`button[data-tab="${name}"]`).click(); };
 // The connected history select is owned by the Settings tab; the conversation pane lives on Conversation.
-const openSettings = async () => { await openTab('Settings'); await page.locator('#connected-history').waitFor(); };
+// The view writes its saved-selection key once it has restored and published a conversation; selecting before
+// that is a no-op because the view has no owner yet.
+const openSettings = async () => { await page.waitForFunction(() => Object.keys(localStorage).some(key => key.startsWith('didi-connected:'))); await openTab('Settings'); await page.locator('#connected-history').waitFor(); };
 const openConversation = async () => { await openTab('Conversation'); await page.locator('#connected-panel').waitFor(); };
 const selectValue = async () => { await openSettings(); const value = await page.locator('#connected-history').inputValue(); await openConversation(); return value; };
 const entryText = () => page.locator('#connected-entries').innerText();

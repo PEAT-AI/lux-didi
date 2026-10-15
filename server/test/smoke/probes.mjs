@@ -131,16 +131,22 @@ async function chatTurn({ base, token, epoch, dataDir, host, readyPid }) {
   if (!snap) return { ok: false, stage: 'turn-timeout' };
   const names = (snap.toolEvidence ?? []).map(entry => entry.name);
   const answerBytes = Buffer.byteLength(String(snap.finalText ?? ''));
-  // A single schema-invalid tool call is nondeterministic model behaviour that the turn recovers from, so
-  // it is reported, never gated: the deterministic requirement is that both tools returned evidence and the
-  // answer is non-empty. A rejection that is NOT recovered shows up as a missing evidence name.
-  let rejections = 0;
+  // A schema-invalid tool call is a real defect signal (#250), so any rejection fails the turn. For each one
+  // report the tool name and the logged field projections (key:type only), never a value.
+  const rejections = [];
   try {
     const hostLog = await readFile(join(dataDir, 'logs/host.log'), 'utf8');
-    rejections = hostLog.split('tool_arguments_rejected').length - 1;
+    for (const line of hostLog.split('\n')) {
+      if (!line.includes('tool_arguments_rejected')) continue;
+      try {
+        const event = JSON.parse(line);
+        if (event.event !== 'tool_arguments_rejected') continue;
+        rejections.push({ tool: String(event.tool ?? 'unknown'), fields: Array.isArray(event.fields) ? event.fields.map(String) : [] });
+      } catch { rejections.push({ tool: 'unknown', fields: [] }); }
+    }
   } catch { /* no diagnostics file means no recorded rejection */ }
   const pidStable = host.exited === null && host.pid === readyPid;
-  const ok = names.includes('search_knowledge') && names.includes('get_insight') && answerBytes > 0 && pidStable;
+  const ok = names.includes('search_knowledge') && names.includes('get_insight') && answerBytes > 0 && rejections.length === 0 && pidStable;
   return { ok, stage: 'turn', names, answerBytes, rejections, outcome: snap.outcome, pidStable };
 }
 
@@ -240,7 +246,7 @@ async function main() {
     } catch (error) { results.push({ id: 'probe2-connectors', ok: false, note: String(error && error.message).slice(0, 120) }); }
     try {
       const text = await chatTurn({ base, token, epoch, dataDir, host, readyPid: launch.frame.pid });
-        results.push({ id: 'probe3-text-turn', ok: text.ok, note: text.ok ? `tools=${text.names.join(',')} answer=${text.answerBytes}B rejections=${text.rejections} outcome=${text.outcome}` : `stage=${text.stage} tools=[${(text.names||[]).join(',')}] answer=${text.answerBytes||0}B rejections=${text.rejections||0} pidStable=${text.pidStable}` });
+        results.push({ id: 'probe3-text-turn', ok: text.ok, note: text.ok ? `tools=${text.names.join(',')} answer=${text.answerBytes}B outcome=${text.outcome}` : `stage=${text.stage} tools=[${(text.names||[]).join(',')}] answer=${text.answerBytes||0}B pidStable=${text.pidStable}${(text.rejections||[]).length ? ' rejected=' + (text.rejections).map(r => r.tool + ':' + r.fields.join('+')).join(',') : ''}` });
     } catch (error) { results.push({ id: 'probe3-text-turn', ok: false, note: String(error && error.message).slice(0, 120) }); }
     try {
       const clipPath = synthClip();

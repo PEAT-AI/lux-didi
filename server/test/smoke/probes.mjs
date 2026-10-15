@@ -94,9 +94,9 @@ async function mcpCall(endpoint, configDir) {
 
 async function probeConnectors({ configDir }) {
   const file = join(configDir, 'mcp.json');
-  if (!existsSync(file)) return { ok: false, parts: ['mcp.json missing'], endpoints: 0 };
+  if (!existsSync(file)) return { ok: false, parts: ['mcp.json missing'], endpoints: 0, skipped: 0, checked: 0 };
   let doc;
-  try { doc = await readJson(file); } catch { return { ok: false, parts: ['mcp.json unreadable'], endpoints: 0 }; }
+  try { doc = await readJson(file); } catch { return { ok: false, parts: ['mcp.json unreadable'], endpoints: 0, skipped: 0, checked: 0 }; }
   const endpoints = (doc.endpoints ?? []).filter(endpoint => endpoint.enabled !== false);
   const parts = [];
   let failed = 0;

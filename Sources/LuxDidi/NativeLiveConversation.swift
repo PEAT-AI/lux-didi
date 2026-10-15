@@ -76,6 +76,13 @@ enum State: String, CaseIterable {
                 self.state = self.muted ? .muted : (speaking ? .speaking : .listening)
             }
         }
+        device.onUnderrun = { [weak self] arrival in
+            guard let self else { return }
+            self.appendLocalDiagnostic(["event": "playback_underrun",
+                "timestamp": ISO8601DateFormatter().string(from: Date()),
+                "session": String(self.captureDiagnosticOwner ?? 0),
+                "queuedMs": arrival.queuedMs, "sinceLastChunkMs": arrival.sinceLastChunkMs])
+        }
         device.onInputChange = { [weak self] name in
             guard let self else { return }
             self.state = .pausedForInput

@@ -115,27 +115,47 @@ struct NativePlaybackQueue {
     /// playback on an empty queue and underruns mid-syllable.
     static let prebufferFrames = 1920
     static let frameRate = 24000
+    /// A queue that stays dry at least this long was a pause or the end of a turn, not a dropout.
+    /// Below it the utterance was continuous and the scheduler fell behind: a real underrun.
+    static let pauseThresholdMs = 500
 
     private(set) var queuedBuffers = 0
     private(set) var scheduledFrames = 0
     private(set) var playing = false
+    private var drainedFrames = 0
+    private var drainedAtMs: Int?
+    private var lastArrivalMs: Int?
 
     mutating func arrival(frames: Int, atMs: Int) -> NativePlaybackArrival {
-        let underrun = playing && queuedBuffers == 0
+        let sinceLastChunkMs = lastArrivalMs.map { atMs - $0 } ?? 0
+        lastArrivalMs = atMs
+        let starved = (drainedAtMs.map { atMs - $0 } ?? Int.max) < Self.pauseThresholdMs
         queuedBuffers += 1
         scheduledFrames += frames
+        drainedAtMs = nil
         var start = false
         if !playing, scheduledFrames >= Self.prebufferFrames { playing = true; start = true }
-        return NativePlaybackArrival(start: start, underrun: underrun, queuedMs: 0, sinceLastChunkMs: 0)
+        return NativePlaybackArrival(start: start, underrun: starved,
+                                     queuedMs: starved ? Self.ms(drainedFrames) : 0,
+                                     sinceLastChunkMs: sinceLastChunkMs)
     }
 
-    /// A scheduled buffer finished playing back. Returns true when the queue is now dry.
+    /// A scheduled buffer finished playing back. Returns true when the queue is now dry: the player
+    /// is stopped and the next arrival re-arms the prebuffer, so a pause is not a glitch.
     @discardableResult mutating func playedBack(atMs: Int) -> Bool {
         queuedBuffers -= 1
-        return queuedBuffers == 0
+        guard queuedBuffers == 0 else { return false }
+        playing = false
+        drainedFrames = scheduledFrames
+        scheduledFrames = 0
+        drainedAtMs = atMs
+        return true
     }
 
-    mutating func flush() { queuedBuffers = 0; scheduledFrames = 0; playing = false }
+    mutating func flush() {
+        queuedBuffers = 0; scheduledFrames = 0; playing = false
+        drainedFrames = 0; drainedAtMs = nil; lastArrivalMs = nil
+    }
 
     static func ms(_ frames: Int) -> Int { frames * 1000 / frameRate }
 }
@@ -733,6 +753,9 @@ final class NativeCaptureBuffer: @unchecked Sendable {
             Task { @MainActor in
                 guard let self, self.outputGeneration == token else { return }
                 if self.playbackQueue.playedBack(atMs: self.nowMs()) {
+                    // The queue ran dry: this is a pause or the end of a turn, never a glitch. Stop the
+                    // node so the next burst re-fills the prebuffer before playback restarts.
+                    self.player?.stop()
                     self.onOutput?(false); self.isPlayingOutput = false; self.outputLevel = 0
                 }
             }

@@ -26,6 +26,10 @@ func replay(_ schedule: [PlaybackChunk]) -> (underruns: Int, starts: Int, pauses
         let previous = ends.last ?? chunk.atMs
         ends.append(max(chunk.atMs, previous) + chunk.frames * 1000 / frameRate)
     }
+    while let first = ends.first {
+        ends.removeFirst()
+        if queue.playedBack(atMs: first) { pauses += 1 }
+    }
     return (underruns, starts, pauses)
 }
 

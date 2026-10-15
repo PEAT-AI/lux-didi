@@ -577,6 +577,7 @@ export function knownReply(ledger: ResearchLedger, researchId: string, configure
 }
 
 interface Deferred { promise: Promise<JsonObject>; resolve: (reply: JsonObject) => void }
+type ActiveRun = { superseded: boolean; awaiter: Deferred };
 function deferred(): Deferred {
   let resolve!: (reply: JsonObject) => void;
   const promise = new Promise<JsonObject>(r => { resolve = r; });
@@ -584,35 +585,49 @@ function deferred(): Deferred {
 }
 
 /**
- * The per-session research call scheduler (R1-R1, wire facts W1). One run exists per researchId.
+ * The per-session research call scheduler (R1-R1, R1-R3, wire facts W1). One run exists per researchId.
  * A new call while a run is pending answers the old call at once with a superseded stub, keeps the
  * run going, and answers the new call with the merged result: `continue` runs on with a fresh budget
- * reusing the ledger, `stop` returns what is known now. Stop is never inferred from transcript text.
+ * reusing the ledger, `stop` returns what is known now. A continue or stop with a missing or unknown
+ * id applies to the single pending run. Stop is never inferred from transcript text.
  */
 export class ResearchScheduler {
   readonly #deps: ResearchDeps;
-  #active = new Map<string, { superseded: boolean; awaiter: Deferred }>();
+  #active = new Map<string, ActiveRun>();
   constructor(deps: ResearchDeps) { this.#deps = deps; }
 
   call(call: ResearchCall, signal: AbortSignal): Promise<JsonObject> {
-    const requestedId = call.action === 'start' ? undefined : call.researchId;
-    const active = requestedId !== undefined ? this.#active.get(requestedId) : undefined;
-    if (active !== undefined && requestedId !== undefined) {
+    if (call.action === 'start') {
+      const id = call.researchId ?? newResearchId();
+      return this.#drive({ ...call, researchId: id }, signal, id);
+    }
+    // R1-R3: a continue or stop with a missing or unknown id applies to the single pending run.
+    const target = this.#resolveTarget(call.researchId);
+    if (target !== undefined) {
       // Answer the pending call at once, then take the run over.
-      active.superseded = true;
-      active.awaiter.resolve(supersededStub(requestedId, this.#deps.configured));
+      target.entry.superseded = true;
+      target.entry.awaiter.resolve(supersededStub(target.id, this.#deps.configured));
       if (call.action === 'stop') {
-        this.#deps.ledger.stop(requestedId);
-        this.#active.delete(requestedId);
-        this.#deps.emit({ researchId: requestedId, phase: 'stopped', sourcesDone: [], sourcesPending: [...this.#deps.configured], elapsedMs: 0 });
-        return Promise.resolve(knownReply(this.#deps.ledger, requestedId, this.#deps.configured));
+        this.#deps.ledger.stop(target.id);
+        this.#active.delete(target.id);
+        this.#deps.emit({ researchId: target.id, phase: 'stopped', sourcesDone: [], sourcesPending: [...this.#deps.configured], elapsedMs: 0 });
+        return Promise.resolve(knownReply(this.#deps.ledger, target.id, this.#deps.configured));
       }
       // continue: stop the old loop, run on with a fresh budget reusing the ledger.
       this.#deps.ledger.cancelActive();
-      return this.#drive({ ...call, action: 'continue' }, signal, requestedId);
+      return this.#drive({ ...call, action: 'continue', researchId: target.id }, signal, target.id);
     }
-    const id = call.action === 'start' ? (call.researchId ?? newResearchId()) : call.researchId!;
+    // Zero or several pending runs: current behaviour.
+    if (call.action === 'stop') return Promise.resolve(knownReply(this.#deps.ledger, call.researchId ?? '', this.#deps.configured));
+    const id = call.researchId ?? newResearchId();
     return this.#drive({ ...call, researchId: id }, signal, id);
+  }
+
+  /** The run a continue or stop applies to: the named run, or the only pending run (R1-R3). */
+  #resolveTarget(researchId: string | undefined): { id: string; entry: ActiveRun } | undefined {
+    if (researchId !== undefined) { const entry = this.#active.get(researchId); if (entry !== undefined) return { id: researchId, entry }; }
+    if (this.#active.size === 1) { const [id, entry] = [...this.#active.entries()][0]!; return { id, entry }; }
+    return undefined;
   }
 
   #drive(call: ResearchCall, signal: AbortSignal, id: string): Promise<JsonObject> {

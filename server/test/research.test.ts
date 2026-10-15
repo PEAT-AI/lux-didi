@@ -165,6 +165,43 @@ test('a stop call while one is pending returns what is known now', async () => {
   gate.resolve();
 });
 
+test('a continue with no researchId applies to the single pending run (R1-R3)', async () => {
+  const gate = deferred<void>();
+  const h = harness({ selector: knowledge, execute: async subs => { await gate.promise; return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
+  const scheduler = new ResearchScheduler(h.deps);
+  const first = scheduler.call({ action: 'start', question: 'q', researchId: 'r3' }, new AbortController().signal);
+  const second = scheduler.call({ action: 'continue' }, new AbortController().signal);
+  assert.equal((await first)['superseded'], true);
+  gate.resolve();
+  assert.equal((await second)['researchId'], 'r3');
+});
+
+test('a stop with an unknown researchId applies to the single pending run (R1-R3)', async () => {
+  const gate = deferred<void>();
+  const h = harness({ selector: knowledge, execute: async subs => { await gate.promise; return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
+  const scheduler = new ResearchScheduler(h.deps);
+  const first = scheduler.call({ action: 'start', question: 'q', researchId: 'r4' }, new AbortController().signal);
+  const stopped = await scheduler.call({ action: 'stop', researchId: 'unknown-id' }, new AbortController().signal);
+  assert.equal(stopped['status'], 'stopped');
+  assert.equal(String(stopped['researchId']), 'r4');
+  assert.equal((await first)['superseded'], true);
+  gate.resolve();
+});
+
+test('with several runs pending an unknown-id stop keeps current behaviour (R1-R3)', async () => {
+  const gate = deferred<void>();
+  const h = harness({ selector: knowledge, execute: async subs => { await gate.promise; return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
+  const scheduler = new ResearchScheduler(h.deps);
+  const first = scheduler.call({ action: 'start', question: 'a', researchId: 'p1' }, new AbortController().signal);
+  const second = scheduler.call({ action: 'start', question: 'b', researchId: 'p2' }, new AbortController().signal);
+  const stopped = await scheduler.call({ action: 'stop', researchId: 'nope' }, new AbortController().signal);
+  assert.equal(stopped['status'], 'stopped');
+  assert.equal(String(stopped['researchId']), 'nope');
+  assert.equal(await Promise.race([first.then(() => 'first'), second.then(() => 'second'), Promise.resolve('none')]), 'none');
+  gate.resolve();
+  await first; await second;
+});
+
 test('the word stop in a question never stops a run: stop is only a tool action', async () => {
   const h = harness({ selector: knowledge });
   const reply = await runResearch(h.deps, { action: 'start', question: 'stop the presses and tell me the release status' }, new AbortController().signal);

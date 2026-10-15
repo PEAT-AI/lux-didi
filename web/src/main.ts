@@ -191,6 +191,21 @@ function laneShell(id: LaneId, label: string, body: string) {
   const control = collapseControl(layout, id);
   return `<section class="lane lane-${id}" id="lane-${id}" data-state="${state}" role="region" aria-label="${label}"><button class="lane-toggle" data-lane="${id}" aria-expanded="${control['aria-expanded']}" aria-controls="${control['aria-controls']}"${control['aria-disabled'] ? ' aria-disabled="true"' : ''} title="${e(control.title)}" aria-label="${state === 'open' ? `Collapse ${label}` : `Expand ${label}`}"><span aria-hidden="true">${state === 'open' ? '\u203a' : '\u2039'}</span></button><div class="lane-inner" id="lane-${id}-primary" tabindex="-1">${body}</div></section>`;
 }
+const scrollAnchor = new WeakMap<HTMLElement, boolean>();
+const scrollObserver = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(entries => { for (const entry of entries) { const el = entry.target as HTMLElement; if (scrollAnchor.get(el)) el.scrollTop = el.scrollHeight; } }) : undefined;
+// Stick a transcript to the bottom only while the reader has not scrolled up. A scroll event (not a pixel
+// threshold) decides, and a ResizeObserver compensates when the composer grows or a chip expands.
+function bindScrollAnchors() {
+  const targets = [document.getElementById('connected-entries'), document.querySelector<HTMLElement>('.live-transcript')].filter((el): el is HTMLElement => !!el);
+  for (const el of targets) {
+    if (!scrollAnchor.has(el)) {
+      scrollAnchor.set(el, true);
+      el.addEventListener('scroll', () => { scrollAnchor.set(el, el.scrollHeight - el.scrollTop - el.clientHeight <= 4); });
+    }
+    if (scrollAnchor.get(el)) el.scrollTop = el.scrollHeight;
+    scrollObserver?.observe(el);
+  }
+}
 function render() {
   // Keep cursor and unsent text stable across connection checks and action completion.
   const focus = document.activeElement as HTMLInputElement | HTMLTextAreaElement | null;
@@ -198,6 +213,7 @@ function render() {
   orb?.destroy();orb=undefined;
   root.innerHTML = `<a id="skip-to-content" class="skip" href="#main">Skip to content</a><div class="app-shell" data-rail="${layout.rail}" data-narrow="${layout.narrow}" data-sheet="${layout.sheet ?? ''}"><header class="app-header">${pairingRequired ? '' : `<button id="rail-toggle" class="icon-button" aria-expanded="${layout.rail==='expanded'}" aria-controls="rail" aria-label="Program menu">☰</button>`}<a class="brand-mini" href="/" aria-label="Didi home"><img src="/icon.svg" alt="" width="22" height="22"><span>didi<span class="brand-dot">.</span></span></a>${pairingRequired ? '' : laneSwitcherMarkup()}${livePillMarkup()}<div class="connection"><span class="connection-dot ${connection==='Connected'?'online':''}"></span><span id="connection-state" role="status" aria-live="polite" aria-atomic="true">${e(connection)}</span><button id="reconnect-top" class="quiet" aria-label="Refresh connection">↻</button></div></header>${demoMode || status?.serviceMode==='synthetic-test' ? '<div class="demo-banner"><strong>Demo test mode</strong><span>Isolated synthetic data · not your personal service</span></div>' : ''}<div class="lane-row">${pairingRequired ? '' : railMarkup()}<main id="main" tabindex="-1" class="lanes">${error ? `<div class="alert" role="alert" aria-live="assertive">${e(error)}</div>` : ''}${notice ? `<div class="notice" role="status" aria-live="polite" aria-atomic="true">${e(notice)}</div>` : ''}${readBusy ? '<p class="loading" role="status" aria-live="polite" aria-atomic="true">Loading your records…</p>' : ''}${busy ? '<button id="cancel-request" class="quiet">Stop waiting</button>' : ''}${pairingRequired ? pairing() : `${laneShell('voice','Voice',voiceHeadMarkup()+voiceLane())}${laneShell('chat','Chat',chatLane())}`}</main></div>${sheetMarkup()}${consentPopoverMarkup()}</div>`;
   bind();
+  bindScrollAnchors();
   connectedView.attach();
   for(const id of ['commitment-title','recall-query','memory-filter']){const field=document.getElementById(id) as HTMLInputElement | HTMLTextAreaElement | null;if(field)field.disabled=!status;}
   attachMemoryDeleteControls(root, !writable() || busy || connectedView.active, id => void deleteMemory(id));

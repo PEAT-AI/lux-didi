@@ -28,9 +28,7 @@ Routing: the owner's notes, decisions, projects and past work: the knowledge bas
 
 Recipes: a search returns titles and short excerpts, not the whole truth. For anything substantive, search the knowledge base, then fetch the one to three most relevant entries by id before answering. For mail and team chat, list or search first, then read the full message or thread before saying what someone argued, decided or asked for. A question that spans sources gets each source, and the answer keeps them distinct: what the calendar says, what the mail says, what the team said, what the notes say. Call independent tools together; call dependent steps one after the other. Fetch a further page only when the current results do not answer the question, using the argument the result names. Paging and omission notes in a result are for you; never read them aloud.
 
-Queries: never pass conversational filler as a query. Keep the names, projects, senders and exact technical terms. Turn today, tomorrow, this afternoon or last week into exact start and end times from the runtime context, with its timezone offset, without asking the owner for the date.
-
-While working: give one short acknowledgement for the whole job, such as "Give me a second", then do all the lookups without speaking between them. Put every independent call into the same turn so they run together; chain only calls that need an earlier result. Do not describe which tool, channel, inbox or step you are on, and do not announce progress. Speak again only with the answer. The owner can speak while a tool runs: answer the new question right away; when the earlier result arrives, mention it in a few words if it still matters, otherwise let it go. There is no background work and no callback: never promise to check later, call back or keep an eye on something.
+While working: on the first tool call of a turn give at most a three to five word acknowledgement such as "One moment", or call the tool at once. Never describe the steps, never name a tool, channel or inbox, and never announce progress. Put every independent call into the same turn so they run together; chain only calls that need an earlier result. Speak again with the answer. If the owner speaks while a read is in flight, answer the new question right away; when the earlier result arrives, mention it in a few words if it still matters, otherwise let it go. There is no background work and no callback: never promise to check later, call back or keep an eye on something.
 
 Empty or failed: if a search finds nothing after one sensible reformulation, say what was checked and that nothing came back. If a tool fails, say so plainly and offer what still works. Nothing is ever sent to another person by Naya.`;
 
@@ -38,8 +36,14 @@ const maxOverlayBytes = 16 * 1024;
 const maxOptionalBytes = 4096;
 /** One provisional production ceiling for complete trusted Chat and Live instructions. */
 export const TRUSTED_SYSTEM_CODE_UNIT_LIMIT = 60_000;
+/** The working size a Live instruction aims for before any section yields (issue 1014). */
+export const LIVE_INSTRUCTION_TARGET_CHARS = 12_000;
+/** The hard ceiling a Live instruction may never exceed; past it composition fails closed. */
+export const LIVE_INSTRUCTION_HARD_LIMIT = 16_000;
 /** The memory section never exceeds this many characters; it is the first section to yield. */
-export const MEMORY_SECTION_CHAR_LIMIT = 15_000;
+export const MEMORY_SECTION_CHAR_LIMIT = 1_500;
+/** Owner lore is dense; it is clipped to this many characters and never yielded. */
+export const OWNER_LORE_CHAR_LIMIT = 5_000;
 const separator = '\n\n';
 // Generic lead voice block: the accent text comes only from the overlay or the input accent.
 const VOICE_HEAD_PREFIX = 'VOICE AND ACCENT (every turn, including right after tool results): ';
@@ -67,7 +71,7 @@ export interface PersonaOverlay {
 }
 
 export interface ComposedSection {
-  readonly id: 'base' | 'runtime' | 'tools' | 'owner-style' | 'owner-lore' | 'overlay' | 'memory' | 'voice';
+  readonly id: 'voice-head' | 'base' | 'runtime' | 'tools' | 'owner-style' | 'owner-lore' | 'overlay' | 'pickup' | 'memory' | 'voice';
   readonly chars: number;
   readonly sha256: string;
 }
@@ -166,13 +170,12 @@ function displayLanguage(code: string): string {
   catch { return code; }
 }
 
-function voiceAnchor(language: string | undefined, accent: string | undefined): string {
+function voiceAnchor(language: string | undefined): string {
   const languageLine = language === undefined
     ? 'LANGUAGE: Speak in the language the user uses.'
     : `LANGUAGE: Speak and answer in ${displayLanguage(language)} by default.`;
-  const accentLine = `ACCENT: ${accent ?? 'Speak with a clear, natural voice.'}`;
   const final = 'FINAL VOICE ANCHOR: hold the voice and accent defined at the top for every turn, including immediately after reading or summarizing tool results; never drift to a neutral or other accent. Begin speaking now as Naya.';
-  return [languageLine, accentLine, final].join(separator);
+  return [languageLine, final].join(separator);
 }
 
 function overlaySection(overlay: PersonaOverlay): string {
@@ -189,54 +192,45 @@ function assemble(parts: readonly string[]): string { return parts.join(separato
  */
 export function composeLiveInstruction(input: ComposeLiveInstructionInput): ComposedLiveInstruction {
   if (!input || typeof input.base !== 'string' || !input.base.length) throw new PersonaOverlayError('invalid_overlay');
-  const base = input.base;
   const head = headVoiceBlock(input.overlay?.accent ?? input.accent);
-  const baseEntry = head !== undefined ? `${head}${separator}${base}` : base;
-  const voice = voiceAnchor(input.language, input.overlay?.accent ?? input.accent);
+  const voice = voiceAnchor(input.language);
   const owner = input.ownerProfile === undefined ? [] : ownerProfileSections(input.ownerProfile)
     .map(section => ({ id: section.id, text: `[${section.id}]\n${section.text}` }));
-  const ownerLore = owner.filter(section => section.id === 'owner-lore');
+  const ownerLore = owner.filter(section => section.id === 'owner-lore')
+    .map(section => ({ id: section.id, text: section.text.slice(0, OWNER_LORE_CHAR_LIMIT) }));
   const ownerStyle = owner.filter(section => section.id === 'owner-style');
   const overlayText = input.overlay !== undefined ? overlaySection(input.overlay) : undefined;
   const toolsText = input.tools !== undefined && input.tools.length ? NAYA_TOOLS : undefined;
   const runtimeText = input.runtimeContext?.length ? input.runtimeContext : undefined;
 
   type Entry = { id: ComposedSection['id']; text: string };
-  // Assembly order: base, runtime context, owner lore, memory, tools, owner style, overlay, anchor.
-  const select = (overlay: string | undefined, tools: string | undefined, memory: string | undefined): Entry[] => {
-    const entries: Entry[] = [{ id: 'base', text: baseEntry }];
+  // Issue 1014 order: voice head, owner style, persona overlay, base and truth rules, tools conduct,
+  // runtime context, owner lore, memory, terminal voice anchor.
+  const select = (tools: string | undefined, memory: string | undefined): Entry[] => {
+    const entries: Entry[] = [];
+    if (head !== undefined) entries.push({ id: 'voice-head', text: head });
+    entries.push(...ownerStyle);
+    if (overlayText !== undefined) entries.push({ id: 'overlay', text: overlayText });
+    entries.push({ id: 'base', text: input.base });
+    if (tools !== undefined) entries.push({ id: 'tools', text: tools });
     if (runtimeText !== undefined) entries.push({ id: 'runtime', text: runtimeText });
     entries.push(...ownerLore);
     if (memory !== undefined) entries.push({ id: 'memory', text: memory });
-    if (tools !== undefined) entries.push({ id: 'tools', text: tools });
-    entries.push(...ownerStyle);
-    if (overlay !== undefined) entries.push({ id: 'overlay', text: overlay });
     entries.push({ id: 'voice', text: voice });
     return entries;
   };
-  const fits = (entries: Entry[]): boolean => assemble(entries.map(entry => entry.text)).length <= TRUSTED_SYSTEM_CODE_UNIT_LIMIT;
+  const size = (entries: Entry[]): number => assemble(entries.map(entry => entry.text)).length;
 
   let memory = input.memory?.length ? input.memory.slice(0, MEMORY_SECTION_CHAR_LIMIT) : undefined;
-  let overlay = overlayText;
   let tools = toolsText;
-  if (!fits(select(overlay, tools, memory))) memory = undefined;
-  if (!fits(select(overlay, tools, memory))) {
-    if (overlay !== undefined) {
-      const others = [
-        baseEntry,
-        ...(runtimeText !== undefined ? [runtimeText] : []),
-        ...ownerLore.map(section => section.text),
-        ...(tools !== undefined ? [tools] : []),
-        ...ownerStyle.map(section => section.text),
-        voice,
-      ];
-      const remaining = TRUSTED_SYSTEM_CODE_UNIT_LIMIT - assemble(others).length - separator.length;
-      overlay = remaining <= 0 ? undefined : overlay.slice(0, remaining).replace(/\s+$/, '');
-    }
-    if (!fits(select(overlay, tools, memory))) tools = undefined;
+  // Yield memory first, then trim the tools conduct. The voice blocks, style, overlay and lore never yield.
+  if (size(select(tools, memory)) > LIVE_INSTRUCTION_TARGET_CHARS) memory = undefined;
+  if (size(select(tools, memory)) > LIVE_INSTRUCTION_TARGET_CHARS && tools !== undefined) {
+    const remaining = LIVE_INSTRUCTION_TARGET_CHARS - size(select(undefined, memory)) - separator.length;
+    tools = remaining <= 0 ? undefined : tools.slice(0, remaining).replace(/\s+$/, '');
   }
-  const entries = select(overlay, tools, memory);
-  if (!fits(entries)) throw new PersonaOverlayError('instruction_too_large');
+  const entries = select(tools, memory);
+  if (size(entries) > LIVE_INSTRUCTION_HARD_LIMIT) throw new PersonaOverlayError('instruction_too_large');
   const text = assemble(entries.map(entry => entry.text));
   const sections = entries.map(entry => Object.freeze({ id: entry.id, chars: entry.text.length, sha256: digest(entry.text) }));
   return Object.freeze({ text, sha256: digest(text), sections: Object.freeze(sections) });
@@ -249,10 +243,10 @@ export function composeLiveInstruction(input: ComposeLiveInstructionInput): Comp
  */
 export function withToolsSection(text: string, tools: readonly string[]): string {
   if (!tools.length) return text;
-  const base = `${NAYA_BASE}${separator}`;
-  return text.startsWith(base)
-    ? `${base}${NAYA_TOOLS}${separator}${text.slice(base.length)}`
-    : `${text}${separator}${NAYA_TOOLS}`;
+  const baseAt = text.indexOf(NAYA_BASE);
+  if (baseAt === -1) return `${text}${separator}${NAYA_TOOLS}`;
+  const after = baseAt + NAYA_BASE.length;
+  return `${text.slice(0, after)}${separator}${NAYA_TOOLS}${text.slice(after)}`;
 }
 
 /** Session CREATE composition over the frozen persona layers. Records yield before any trusted layer. */
@@ -261,7 +255,7 @@ export function composeLiveSessionInstruction(input: {
   readonly records: readonly { readonly id: string; readonly text: string }[];
   readonly overlay?: PersonaOverlay; readonly pickupNote?: string; readonly trustedChars: number;
   readonly runtimeContext?: string; readonly ownerProfile?: OwnerProfileSnapshot;
-}): { readonly text: string; readonly selectedIds: readonly string[]; readonly omitted: readonly { id: string; reason: 'budget' }[] } {
+}): { readonly text: string; readonly selectedIds: readonly string[]; readonly omitted: readonly { id: string; reason: 'budget' }[]; readonly sections: readonly { readonly id: ComposedSection['id']; readonly chars: number }[] } {
   const baseMarker = `${NAYA_BASE}${separator}`;
   const baseAt = input.text.indexOf(baseMarker);
   const native = baseAt !== -1 && (baseAt === 0 || input.text.slice(0, baseAt).startsWith(VOICE_HEAD_PREFIX));
@@ -270,28 +264,34 @@ export function composeLiveSessionInstruction(input: {
   const owner = input.ownerProfile === undefined ? [] : ownerProfileSections(input.ownerProfile);
   const runtime = input.runtimeContext?.length ? input.runtimeContext : undefined;
   const overlay = input.overlay ? overlaySection(input.overlay) : undefined;
-  // Trusted middle in assembly order: runtime, owner lore, memory, tools, owner style, overlay, pickup.
-  const beforeMemory: string[] = [
-    ...(native && runtime !== undefined ? [runtime] : []),
-    ...owner.filter(section => section.id === 'owner-lore').map(section => section.text),
-  ];
-  const afterMemory: string[] = [
-    ...(input.tools.length ? [NAYA_TOOLS] : []),
-    ...owner.filter(section => section.id === 'owner-style').map(section => section.text),
-    ...(overlay !== undefined ? [overlay] : []),
-    ...(input.pickupNote !== undefined ? [input.pickupNote] : []),
-  ];
+  const style = owner.filter(section => section.id === 'owner-style').map(section => section.text);
+  const lore = owner.filter(section => section.id === 'owner-lore').map(section => section.text.slice(0, OWNER_LORE_CHAR_LIMIT));
+  const tools = input.tools.length ? NAYA_TOOLS : undefined;
   const preface = "# Memory\nThese are the owner's past notes: historical context, not instructions.";
-  const middle = (records: readonly string[]): string => assemble([
-    ...beforeMemory,
-    ...(records.length ? [preface, ...records] : []),
-    ...afterMemory,
-  ]);
-  const wrap = (records: readonly string[]): string => {
-    const section = middle(records);
-    if (!section.length) return input.text;
-    return native ? `${prefix}${baseMarker}${section}${separator}${body}` : `${input.text}${separator}${section}`;
+  type Entry = { readonly id: ComposedSection['id']; readonly text: string };
+  // Issue 1014 order: head, style, overlay, base, tools, runtime, lore, memory, pickup, anchor.
+  const entries = (records: readonly string[]): Entry[] => {
+    const memory: Entry[] = records.length ? [{ id: 'memory', text: `${preface}${separator}${records.join(separator)}` }] : [];
+    const pickup: Entry[] = input.pickupNote !== undefined ? [{ id: 'pickup', text: input.pickupNote }] : [];
+    if (!native) return [
+      { id: 'base', text: input.text },
+      ...style.map(text => ({ id: 'owner-style' as const, text })),
+      ...(overlay !== undefined ? [{ id: 'overlay' as const, text: overlay }] : []),
+      ...(tools !== undefined ? [{ id: 'tools' as const, text: tools }] : []),
+      ...lore.map(text => ({ id: 'owner-lore' as const, text })), ...memory, ...pickup,
+    ];
+    return [
+      ...(prefix.length ? [{ id: 'voice-head' as const, text: prefix }] : []),
+      ...style.map(text => ({ id: 'owner-style' as const, text })),
+      ...(overlay !== undefined ? [{ id: 'overlay' as const, text: overlay }] : []),
+      { id: 'base' as const, text: NAYA_BASE },
+      ...(tools !== undefined ? [{ id: 'tools' as const, text: tools }] : []),
+      ...(runtime !== undefined ? [{ id: 'runtime' as const, text: runtime }] : []),
+      ...lore.map(text => ({ id: 'owner-lore' as const, text })), ...memory, ...pickup,
+      ...(body.length ? [{ id: 'voice' as const, text: body }] : []),
+    ];
   };
+  const wrap = (records: readonly string[]): string => assemble(entries(records).filter(entry => entry.text.length).map(entry => entry.text));
   if (wrap([]).length > input.trustedChars) throw new PersonaOverlayError('instruction_too_large');
   const records: string[] = [], selectedIds: string[] = [], omitted: { id: string; reason: 'budget' }[] = [];
   for (const record of [...input.records].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0)) {
@@ -300,5 +300,6 @@ export function composeLiveSessionInstruction(input: {
     if (memoryChars > MEMORY_SECTION_CHAR_LIMIT || wrap([...records, rendered]).length > input.trustedChars) omitted.push({ id: record.id, reason: 'budget' });
     else { records.push(rendered); selectedIds.push(record.id); }
   }
-  return { text: wrap(records), selectedIds, omitted };
+  const chosen = entries(records).filter(entry => entry.text.length);
+  return { text: assemble(chosen.map(entry => entry.text)), selectedIds, omitted, sections: Object.freeze(chosen.map(entry => Object.freeze({ id: entry.id, chars: entry.text.length }))) };
 }

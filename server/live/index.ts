@@ -25,6 +25,9 @@ import {
 } from './types.js';
 
 const pickupInstruction = 'The user has just picked up. Deliver the pending job result first, briefly, then resume the conversation. If the outcome failed or is unknown, state that truthfully.';
+// Issue 1014: a session past this many tool calls starts a fresh setup instead of resuming into
+// drifted audio; a session under it still reuses the saved resumption handle.
+const RESUMPTION_TOOL_CALL_LIMIT = 5;
 
 interface ActiveSession {
   inputFinal?: boolean;
@@ -40,6 +43,7 @@ interface ActiveSession {
   registry: readonly ToolDefinition[];
   host: HostContext | undefined;
   toolStep: number;
+  toolCalls: number;
   seenIds: Set<string>;
   thinking: boolean;
   pendingCallIds: Set<string>;
@@ -340,6 +344,7 @@ export class LiveSessionOwner {
         ...(this.#profile.overlay ? { overlay: this.#profile.overlay } : {}),
         ...(pickup ? { pickupNote: pickupInstruction } : {}) }); }
       catch (error) { if (error instanceof Error && 'code' in error && error.code === 'instruction_too_large') throw new LiveError('instruction_too_large'); throw error; }
+      console.error(JSON.stringify({ event: 'live_instruction_sizes', total: composed.text.length, sections: Object.fromEntries(composed.sections.map(section => [section.id, section.chars])) }));
       const memory = { status: composed.omitted.length ? composed.selectedIds.length ? 'partial' : 'omitted' : composed.selectedIds.length ? 'selected' : 'empty',
         selectedIds: composed.selectedIds, omitted: composed.omitted };
       const acceptedPrompt = validateAcceptedPrompt({ ...configuredPrompt, system: composed.text, memory, ...(pickup ? { pickup } : {}) }, assistantId);
@@ -601,7 +606,7 @@ export class LiveSessionOwner {
       deadlineMs, deadlineAt, idleAt: this.#now() + this.#profile.limits.idleMs, goAwayUntil: undefined,
       sessionTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()),
-      registry, host, toolStep: 0, seenIds: new Set(), thinking: false, speaking: false, pendingCallIds: new Set(), bargeInCallIds: new Set(),
+      registry, host, toolStep: 0, toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, pendingCallIds: new Set(), bargeInCallIds: new Set(),
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
       consumerState: 'attached', journalEvents: 0, journalBytes: 0, adapterOutcome: undefined,
@@ -662,11 +667,14 @@ export class LiveSessionOwner {
     const remaining = handle.deadlineAt - this.#now(), idle = handle.idleAt - this.#now();
     const window = Math.min(10_000, handle.goAwayUntil === undefined ? 10_000 : handle.goAwayUntil - this.#now());
     const saved = this.#store.transaction(tx => tx.get('SELECT resumption_handle FROM live_sessions WHERE live_session_id=?', [handle.liveSessionId]));
-    const resumptionHandle = saved?.['resumption_handle'];
-    if (handle.attempts >= 2 || typeof resumptionHandle !== 'string' || !resumptionHandle || remaining <= 0 || idle <= 0 || window <= 0) {
+    const savedHandle = saved?.['resumption_handle'];
+    const hasHandle = typeof savedHandle === 'string' && savedHandle.length > 0;
+    const reuse = hasHandle && handle.toolCalls < RESUMPTION_TOOL_CALL_LIMIT;
+    if (handle.attempts >= 2 || (!reuse && !hasHandle) || remaining <= 0 || idle <= 0 || window <= 0) {
       this.#settle(handle, { state: 'failed', code: 'resume_failed' }, false, 'ended', null);
       return false;
     }
+    if (!reuse) console.log(JSON.stringify({ event: 'live_resumption_fresh', toolCalls: handle.toolCalls }));
     handle.attempts += 1; handle.generation += 1; handle.rebuilding = true; handle.ready = false;
     handle.thinking = false; handle.speaking = false;
     this.#store.transaction(tx => tx.run('UPDATE live_sessions SET connection_generation=? WHERE live_session_id=?', [handle.generation, handle.liveSessionId]));
@@ -683,7 +691,7 @@ export class LiveSessionOwner {
     this.#continuity(handle, 'rebuilding', reason);
     if (this.#settled(handle)) return false;
     try {
-      handle.session = this.#voice.open({ ...structuredClone(handle.request), resumptionHandle }, {
+      handle.session = this.#voice.open({ ...structuredClone(handle.request), ...(reuse ? { resumptionHandle: savedHandle } : {}) }, {
         signal: handle.abort.signal, deadlineMs: handle.deadlineMs, idleResetMs: this.#profile.limits.idleMs,
         limits: { ...this.#profile.limits, sessionMs: Math.ceil(remaining), idleMs: Math.ceil(idle), handshakeMs: Math.max(1, Math.ceil(Math.min(this.#profile.limits.handshakeMs, window, remaining, idle))) },
       });
@@ -807,6 +815,7 @@ export class LiveSessionOwner {
         }
         if (event.type !== 'ready' && event.type !== 'outcome') this.#armIdle(handle, this.#profile.limits.idleMs);
         if (event.type === 'toolCall') {
+          handle.toolCalls += event.calls.length;
           for (const call of event.calls) { handle.pendingCallIds.add(call.id); handle.pendingCalls.set(call.id, call.name); }
           void this.#toolBatch(handle, event, generation).catch(() => {
             if (this.#settled(handle) || generation !== handle.generation) return;

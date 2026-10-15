@@ -696,8 +696,8 @@ test('accepted complete system uses the shared 60k bound while generic prompt te
 });
 
 test('tool-enabled Live CREATE freezes an expanded classified owner system byte for byte', async t => {
-  const style = `SYNTHETIC style ${'S'.repeat(10_000)}`;
-  const lore = `SYNTHETIC lore ${'L'.repeat(13_955)}`;
+  const style = `SYNTHETIC style ${'S'.repeat(8_000)}`;
+  const lore = `SYNTHETIC lore ${'L'.repeat(4_000)}`;
   let expectedSystem = '';
   const h = await harness(t, { tools: true, routeClasses: ['ordinary', 'private', 'sensitive'], acceptedPrompt: ownerId => {
     const ownerProfile = { schemaVersion: 1 as const, kind: 'profile' as const, ownerId, profileVersion: 'fixture', displayName: 'Example',
@@ -708,7 +708,7 @@ test('tool-enabled Live CREATE freezes an expanded classified owner system byte 
   } });
   const created = h.owner.create({ idempotencyKey: 'expanded-owner-tools', inputClass: 'ordinary' }, h.ctx);
   const frozen = h.store.transaction(tx => JSON.parse(String(tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [created.liveSessionId])!['accepted_prompt_snapshot'])));
-  assert.ok(frozen.system.length > 20_000);
+  assert.ok(frozen.system.length > 4_096 && frozen.system.length <= 16_000, 'the frozen system is dense but inside the hard limit');
   assert.equal(frozen.system, composeLiveSessionInstruction({ text: expectedSystem, tools: ['search_knowledge', 'get_insight'], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
     runtimeContext: buildRuntimeContext({ now: new Date(NOW), timeZone: 'Asia/Kolkata', connected: ['knowledge base', 'memory'], unavailable: [] }) }).text);
   assert.equal(frozen.system.split(style).length - 1, 1);
@@ -1466,7 +1466,7 @@ test('Live attach setup carries the composed Naya instruction and the bare langu
   const h = await harness(t);
   const overlay = { schemaVersion: 1 as const, text: 'SYNTHETIC local overlay persona', greeting: 'Synthetic greeting' };
   const composed = composeLiveInstruction({ base: NAYA_BASE, overlay, language: 'de' });
-  assert.ok(composed.text.startsWith(NAYA_BASE), 'composed instruction starts with the public base');
+  assert.ok(composed.text.includes(NAYA_BASE), 'composed instruction carries the public base');
   const acceptedPrompt = { schemaVersion: 1, ownerProfile: { schemaVersion: 1, kind: 'default', ownerId: h.store.assistantId, displayName: 'Lux Didi' },
     compilerVersion: PROMPT_VERSION, system: composed.text, dataClasses: ['ordinary'] };
   const profile = validateLiveProfile({ ...profileInput(), language: 'de', acceptedPrompt });
@@ -1498,7 +1498,7 @@ test('loadLiveConfig keeps public prompt bytes and composes classified owner sec
   const overlay = { schemaVersion: 1 as const, text: 'SYNTHETIC local overlay persona', greeting: 'Synthetic greeting', accent: 'Synthetic accent' };
   writePrivate(dataDir, 'persona-overlay.json', JSON.stringify(overlay));
   const style = `SYNTHETIC owner style ${'S'.repeat(3000)}`;
-  const lore = `SYNTHETIC owner lore ${'L'.repeat(13_955)}`;
+  const lore = `SYNTHETIC owner lore ${'L'.repeat(3_000)}`;
   const ownerProfile = { schemaVersion: 1 as const, kind: 'profile' as const, ownerId: 'synthetic-owner', profileVersion: 'fixture', displayName: 'Example',
     style: { text: style, dataClass: 'private' as const }, lore: { text: lore, dataClass: 'sensitive' as const } };
   const status = loadLiveConfig({ configDir, ownerId: 'synthetic-owner', ownerProfile });
@@ -1943,4 +1943,41 @@ test('creating a second Live session supersedes the first for the owner', async 
   const superseded = events.filter(line => line.includes('"live_session_superseded"')).map(line => JSON.parse(line) as { event: string; liveSessionId: string });
   assert.equal(superseded.length, 1, 'exactly one supersede event');
   assert.equal(superseded[0]!.liveSessionId, first.liveSessionId);
+});
+
+// Contract P1 (issue 1014): the resumption handle is gated at five tool calls, and session start logs section sizes.
+test('P1: a session past five tool calls rebuilds with a fresh setup', async t => {
+  const h = await harness(t, { tools: true });
+  await attached(h, 'p1-gating');
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-gating-secret' } });
+  for (let i = 0; i < 5; i++) {
+    h.f.send({ toolCall: { functionCalls: [{ id: `g${i}`, name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
+    await h.f.frame(h.f.frames.length + 1);
+  }
+  h.f.send({ goAway: { timeLeft: '10s' } });
+  await h.f.frame(h.f.frames.length + 1);
+  assert.equal(h.requests.at(-1)!.resumptionHandle, undefined, 'a session past five tool calls must start fresh');
+});
+
+test('P1: a session under five tool calls still resumes on the saved handle', async t => {
+  const h = await harness(t, { tools: true });
+  await attached(h, 'p1-gating-resume');
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-gating-resume-secret' } });
+  h.f.send({ toolCall: { functionCalls: [{ id: 'g0', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
+  await h.f.frame(h.f.frames.length + 1);
+  h.f.send({ goAway: { timeLeft: '10s' } });
+  await h.f.frame(h.f.frames.length + 1);
+  assert.equal(h.requests.at(-1)!.resumptionHandle, 'synthetic-gating-resume-secret', 'under five calls the handle is reused');
+});
+
+test('P1: session start logs the composed instruction size per section', async t => {
+  const lines: string[] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
+  const h = await harness(t);
+  await attached(h, 'p1-size-log');
+  const logged = lines.map(line => { try { return JSON.parse(line) as { event?: string; sections?: Record<string, number>; total?: number }; } catch { return {}; } })
+    .find(entry => entry.event === 'live_instruction_sizes');
+  assert.ok(logged, 'a per-section size line is logged at session start');
+  assert.ok(typeof logged.total === 'number' && logged.total > 0);
+  assert.ok(logged.sections && Object.values(logged.sections).every(value => typeof value === 'number'), 'only counts are logged');
 });

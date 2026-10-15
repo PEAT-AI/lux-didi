@@ -384,25 +384,27 @@ export class LiveMachine {
       this.#set({ consentOpen: true, pendingStart: true });
       return;
     }
-    this.#post({ type: 'start' });
+    // Optimistic state first: a synchronous native reply then wins, never gets clobbered.
     this.#set({ state: 'starting', error: undefined, reason: undefined });
+    this.#post({ type: 'start' });
   }
 
   /** Stop is immediate and available the moment a session is starting, live or muted. */
   requestStop(): void {
     if (!stopAvailable(this.#view)) return;
-    this.#post({ type: 'stop' });
     this.#set({ state: 'stopping' });
+    this.#post({ type: 'stop' });
   }
 
   /** Allow: persist consent natively, then run a Start that was waiting on the popover. */
   grantConsent(): void {
     const start = this.#view.pendingStart;
-    if (!this.#view.consent) this.#post({ type: 'consentGranted' });
+    const wasConsent = this.#view.consent;
     this.#set({ consent: true, consentOpen: false, pendingStart: false });
+    if (!wasConsent) this.#post({ type: 'consentGranted' });
     if (start) {
-      this.#post({ type: 'start' });
       this.#set({ state: 'starting' });
+      this.#post({ type: 'start' });
     }
   }
 

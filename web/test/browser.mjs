@@ -196,31 +196,41 @@ try {
 
 
   await step('V2-R4 layout audit A-G', async () => {
+    const auditFixture = await startFixture({ configured: true });
+    const auditContext = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const auditPage = await auditContext.newPage(); auditPage.setDefaultTimeout(8000);
     const results = {}; const failures = [];
-    const run = async (viewport, theme, segment) => {
-      await page.setViewportSize(viewport);
-      await page.evaluate(m => localStorage.setItem('didi-theme', m), theme);
-      await page.reload();
-      await page.locator('.app-shell').waitFor();
-      if (segment) await page.locator(`button[data-segment="${segment}"]`).click();
-      await page.locator('#connected-draft').waitFor();
-      const a = await auditLayout(page);
-      assertAudit(a, `${viewport.width}x${viewport.height} ${theme}${segment ? ' ' + segment : ''}`, failures);
-      results[`${viewport.width}x${viewport.height}-${theme}${segment ? '-' + segment : ''}`] = a;
-    };
-    fixture.setLive({ state: 'speaking', since: '2026-10-11T16:00:00Z', cursor: 4, entries: [
-      { seq: 1, kind: 'inputTranscription', text: 'What should I do next?' },
-      { seq: 2, kind: 'turnComplete' },
-      { seq: 3, kind: 'outputTranscription', text: 'Ship the three-lane UI.' },
-      { seq: 4, kind: 'turnComplete' },
-      { seq: 5, kind: 'outputTranscription', text: 'Then run the layout audit.' },
-      { seq: 6, kind: 'toolResult', tool: { name: 'lux-knowledge', status: 'completed', markdown: '**Found** three notes', sources: [{ title: 'note', url: 'https://example.org' }] } }
-    ] });
-    await run({ width: 1440, height: 900 }, 'dark', null);
-    await run({ width: 1440, height: 900 }, 'light', null);
-    await run({ width: 800, height: 900 }, 'dark', 'chat');
-    await run({ width: 800, height: 900 }, 'light', 'voice');
-    await writeFile(join(artifacts, 'v2r4-audit.json'), JSON.stringify(results, null, 2));
+    try {
+      await auditPage.goto(auditFixture.url);
+      await auditPage.locator('#pair-code').waitFor();
+      await auditPage.getByLabel('One-time pairing code').fill('synthetic-only');
+      await auditPage.getByRole('button',{name:'Pair this browser',exact:true}).click();
+      await auditPage.locator('#connected-draft').waitFor({ state: 'attached' });
+      auditFixture.setLive({ state: 'speaking', since: '2026-10-11T16:00:00Z', cursor: 6, entries: [
+        { seq: 1, kind: 'inputTranscription', text: 'What should I do next?' },
+        { seq: 2, kind: 'turnComplete' },
+        { seq: 3, kind: 'outputTranscription', text: 'Ship the three-lane UI.' },
+        { seq: 4, kind: 'turnComplete' },
+        { seq: 5, kind: 'outputTranscription', text: 'Then run the layout audit.' },
+        { seq: 6, kind: 'toolResult', tool: { name: 'lux-knowledge', status: 'completed', markdown: '**Found** three notes', sources: [{ title: 'note', url: 'https://example.org' }] } }
+      ] });
+      const run = async (viewport, theme, segment) => {
+        await auditPage.setViewportSize(viewport);
+        await auditPage.evaluate(m => localStorage.setItem('didi-theme', m), theme);
+        await auditPage.reload();
+        await auditPage.locator('.app-shell').waitFor();
+        if (segment) await auditPage.locator(`button[data-segment="${segment}"]`).click();
+        await auditPage.waitForFunction(() => document.querySelector('#connected-send') !== null);
+        const a = await auditLayout(auditPage);
+        assertAudit(a, `${viewport.width}x${viewport.height} ${theme}${segment ? ' ' + segment : ''}`, failures);
+        results[`${viewport.width}x${viewport.height}-${theme}${segment ? '-' + segment : ''}`] = a;
+      };
+      await run({ width: 1440, height: 900 }, 'dark', null);
+      await run({ width: 1440, height: 900 }, 'light', null);
+      await run({ width: 800, height: 900 }, 'dark', 'chat');
+      await run({ width: 800, height: 900 }, 'light', 'voice');
+      await writeFile(join(artifacts, 'v2r4-audit.json'), JSON.stringify(results, null, 2));
+    } finally { await auditContext.close(); await auditFixture.close(); }
     console.log('V2R4_AUDIT', JSON.stringify(results));
     console.log('V2R4_FAILURES', JSON.stringify(failures));
     assert.equal(failures.length, 0, failures.join(' | '));

@@ -267,18 +267,27 @@ async function researchTurn({ base, token, epoch, dataDir }) {
     return (await response.json()).data;
   };
   try {
-    // Wait for the provider socket to open (lifecycle active) and its opening turn to settle, then send
-    // ONE typed input through the host's Live text route.
-    const greetingDeadline = now() + 30000;
-    let lifecycle = null;
-    while (now() < greetingDeadline) {
-      const snapshot = await fetch(base + '/api/v1/live-sessions/' + id, { headers: headers() }).then(response => response.json()).catch(() => null);
-      lifecycle = snapshot && snapshot.data ? snapshot.data.lifecycle : null;
-      if (lifecycle === 'active' && markers.some(marker => marker.kind === 'turnComplete')) break;
+    // The host commits a 'ready' journal fragment once the provider socket is live; the text route is
+    // refused with not_ready before that. Wait for ready, give the model's opening turn a short grace,
+    // then send ONE typed input through the host's Live text route.
+    const readyDeadline = now() + 30000;
+    let ready = false;
+    while (now() < readyDeadline) {
+      const data = await journal().catch(() => null);
+      ready = Boolean(data && Array.isArray(data.fragments) && data.fragments.some(fragment => fragment.kind === 'ready'));
+      if (ready) break;
       await new Promise(resolve => setTimeout(resolve, 500));
     }
+    if (!ready) { try { ws.close(); } catch { /* noop */ } return { ok: false, stage: 'ready' }; }
+    const graceDeadline = now() + 12000;
+    let openingDone = false;
+    while (!openingDone && now() < graceDeadline) {
+      const data = await journal().catch(() => null);
+      openingDone = Boolean(data && Array.isArray(data.fragments) && data.fragments.some(fragment => fragment.kind === 'turnComplete'));
+      if (!openingDone) await new Promise(resolve => setTimeout(resolve, 500));
+    }
     const sent = await fetch(base + '/api/v1/live/text', { method: 'POST', headers: headers(), body: JSON.stringify({ text: RESEARCH_QUESTION }) });
-    if (sent.status !== 200) return { ok: false, stage: 'text', status: sent.status, lifecycle };
+    if (sent.status !== 200) { const detail = await sent.text().catch(() => ''); return { ok: false, stage: 'text', status: sent.status, detail: String(detail).slice(0, 160) }; }
     const deadline = now() + 90000;
     let calls = 0; let result = null; let outputChars = 0;
     while (now() < deadline) {
@@ -357,7 +366,7 @@ async function main() {
       const research = await researchTurn({ base, token, epoch, dataDir });
       results.push({ id: 'probe5-research', ok: research.ok, note: research.ok
         ? `calls=1 rounds=${research.rounds} sources=${research.sources} selector=${research.selector} selectorMs=${research.selectorMs} elapsedMs=${research.elapsedMs} deadAirMs=${research.deadAirMs} reply=${research.replyBytes}B output=${research.outputChars}B progress=${research.progress}`
-        : `stage=${research.stage} status=${research.status ?? 'n/a'} lifecycle=${research.lifecycle ?? 'n/a'} calls=${research.calls ?? 0} rounds=${research.rounds ?? 0} read=${research.read ?? 0} reply=${research.replyBytes ?? 0}B load=${loadAverageText()}` });
+        : `stage=${research.stage} status=${research.status ?? 'n/a'} detail=${research.detail ?? 'n/a'} calls=${research.calls ?? 0} rounds=${research.rounds ?? 0} read=${research.read ?? 0} reply=${research.replyBytes ?? 0}B load=${loadAverageText()}` });
     } catch (error) { results.push({ id: 'probe5-research', ok: false, note: String(error && error.message).slice(0, 120) }); }
   } else {
     results.push(...noHostResults());

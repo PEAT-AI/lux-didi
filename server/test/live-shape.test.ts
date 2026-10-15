@@ -223,8 +223,8 @@ test('mattermost search results (results array) shape with author, channel and p
   assert.match(shaped.text, /Mooring drift log is ready/);
   assert.equal(/https?:\/\//.test(shaped.text), false, 'mattermost search text has no raw permalink');
   assert.deepEqual(shaped.sources, [
-    { title: 'Mattermost: #harbour', url: 'https://chat.example.invalid/t/harbour/pl/p1', sourceType: 'mattermost' },
     { title: 'Mattermost: #harbour', url: 'https://chat.example.invalid/t/harbour/pl/p2', sourceType: 'mattermost' },
+    { title: 'Mattermost: #harbour', url: 'https://chat.example.invalid/t/harbour/pl/p1', sourceType: 'mattermost' },
   ]);
   assert.equal(shaped.text.length > 0, true);
 });

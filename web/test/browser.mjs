@@ -34,8 +34,7 @@ try {
   assert.match(renderer?.renderer||'',/Metal/,'Actual GPU renderer must be Metal, not software');
   await step('pairing, empty data, no model, synthetic mode',async()=>{
     await page.getByLabel('One-time pairing code').fill('synthetic-only'); await page.getByRole('button',{name:'Pair this browser',exact:true}).click();
-    try { await page.locator('#didi-orb').waitFor({ timeout: 8000 }); }
-    catch { console.log('ORB_TIMEOUT', JSON.stringify(await page.evaluate(() => ({ pairing: !!document.querySelector('#pair-code'), shell: !!document.querySelector('.app-shell'), lane: !!document.querySelector('#lane-voice'), empty: !!document.querySelector('.voice-empty'), orb: !!document.querySelector('#didi-orb'), state: document.querySelector('.voice-state')?.textContent, bodyLen: document.body.innerHTML.length })))); throw new Error('orb missing'); }
+    await page.locator('#didi-orb').waitFor();
     await page.getByText('Demo test mode',{exact:true}).waitFor();
     assert.equal(await page.evaluate(()=>Object.keys(localStorage).length),0);
     assert.equal(await page.evaluate(()=>document.cookie),'');

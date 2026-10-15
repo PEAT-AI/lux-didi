@@ -92,7 +92,7 @@ try {
     const body = document.body.innerText;
     const lanes = document.querySelectorAll('.lane');
     return {
-      voiceHeader: rect('.voice-head'), orbStage: rect('.orb-stage'), orbCanvas: rect('#didi-orb'),
+      voiceHeader: rect('#lane-voice .lane-head'), chatHeader: rect('#lane-chat .lane-head'), emptyState: rect('.voice-empty'), orbCanvas: rect('#didi-orb'),
       composer: rect('#connected-draft'), composerForm: rect('#connected-send-form'),
       chatInner: rect('#lane-chat .lane-inner'), chatFill: rect('.chat-fill'), connPanel: rect('#connected-panel'), connConv: rect('.connected-conversation'), connEntries: rect('#connected-entries'),
       rail: rect('#rail'), laneVoice: lanes[0] ? Math.round(lanes[0].getBoundingClientRect().width) : null,
@@ -101,6 +101,8 @@ try {
       transcriptHeadingCount: headings.length,
       visibleHttpsCount: (body.match(/https?:\/\//g) ?? []).length,
       idleOrbContrastToCard: orbCore && bg ? ratio(orbCore, bg) : null,
+      readyWhenYouAreCount: (body.match(/Ready when you are/g) ?? []).length,
+      serifCount: [...document.querySelectorAll('*')].filter(el => /serif/i.test(getComputedStyle(el).fontFamily)).length,
     };
   });
 
@@ -110,7 +112,8 @@ try {
     '| metric | value |',
     '| --- | --- |',
     `| voice header height | ${measure.voiceHeader?.h} px |`,
-    `| orb stage height | ${measure.orbStage?.h} px |`,
+    `| chat header height | ${measure.chatHeader?.h} px |`,
+    `| empty state height | ${measure.emptyState?.h} px |`,
     `| orb canvas | ${measure.orbCanvas?.w}x${measure.orbCanvas?.h} px |`,
     `| composer (#connected-draft) height | ${measure.composer?.h} px |`,
     `| composer bottom gap to window | ${measure.windowBottom - (measure.composerForm?.bottom ?? 0)} px |`,
@@ -120,6 +123,8 @@ try {
     `| h1/h2 inside transcripts | ${measure.transcriptHeadingCount} |`,
     `| visible https:// strings | ${measure.visibleHttpsCount} |`,
     `| idle orb to card contrast ratio | ${measure.idleOrbContrastToCard}:1 |`,
+    `| visible \"Ready when you are\" | ${measure.readyWhenYouAreCount} |`,
+    `| serif font-family elements | ${measure.serifCount} |`,
     '',
   ].join('\n');
   await writeFile(join(out, 'measurements.md'), table);
@@ -137,6 +142,7 @@ try {
   await page.locator('#sheet').waitFor();
   await shot('1440x900-dark-sheet');
   await page.locator('#sheet-close').click();
+  await page.locator('#sheet').waitFor({ state: 'detached' }).catch(() => {});
 
   await page.locator('[data-lane="voice"]').click();
   await page.locator('#lane-voice[data-state="collapsed"]').waitFor();

@@ -368,6 +368,12 @@ struct RootView: View {
             Color.black
             if let shell = model.shell {
                 SharedServicePanel(shell: shell) { Task { await model.reconnect() } }
+            } else {
+                // Only on a failed configure, where there is no service page to show.
+                VStack(spacing: 12) {
+                    Text("Connect Didi").font(.title2)
+                    Button("Connect") { Task { await model.reconnect() } }
+                }.foregroundStyle(.white)
             }
         }
         .frame(minWidth: 780, minHeight: 620)

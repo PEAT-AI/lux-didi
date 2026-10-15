@@ -167,16 +167,15 @@ export class ConnectedView {
     const grant = this.#status.consent, ready = available && (!!grant || this.#consent);
     const provider = this.#status.provider, model = this.#status.model;
     panel.innerHTML = `<section class="panel connected-conversation" aria-label="Connected Naya conversation">
-      <h2>Talk with ${escape(this.#displayName)}</h2>
-      ${grant ? '' : `<p class="connected-disclosure">Starting a connected conversation sends its current and earlier selected turns to <strong>${escape(provider ?? 'the connected provider')}</strong>. Nothing leaves this Mac until you agree.</p>
-      <div class="connected-consent-row"><input id="connected-consent" type="checkbox" ${this.#consent ? 'checked' : ''}><label class="connected-consent" for="connected-consent">I agree to send this conversation through ${escape(provider ?? 'the configured provider')}${model ? ` / ${escape(model)}` : ''}.</label></div>`}
+      ${grant || this.#consent ? '' : `<p class="connected-disclosure">Sent turns go to <strong>${escape(provider ?? 'the connected provider')}</strong> while you type. <button type="button" id="connected-consent" class="allow-link">Allow</button></p>`
+
       <div id="connected-entries" class="connected-entries">${this.#entries.map(entry => `${entry.id === r?.finalEntryId ? renderToolEvidence(r.toolEvidence ?? []) : ''}<article class="entry ${entry.role}"><header><strong>${entry.role === 'assistant' ? 'Naya · saved answer' : 'You · saved locally'}</strong></header>${entry.role === 'assistant' ? answerMarkup(answerText(entry)) : `<p>${escape(answerText(entry))}</p>`}</article>`).join('')}${r && !r.finalEntryId ? renderToolEvidence(r.toolEvidence ?? []) : ''}</div>
       ${r ? this.#runSection(r) : ''}
       <form id="connected-send-form"><label for="connected-draft">Message for this connected conversation</label><textarea id="connected-draft" rows="3" placeholder="One small next step…" ${!ready || this.#busy ? 'disabled' : ''}>${escape(this.#draft)}</textarea><div class="composer-toolbar">${c && c.state === 'active' ? this.#notesSection() : ''}<button id="connected-send" ${!ready || this.#busy || (r && r.state !== 'terminal') ? 'disabled' : ''}>Send</button></div><small>Enter sends; Shift+Enter makes a new line. A failed acceptance keeps your draft; nothing is automatically retried.</small></form>
       ${this.#error ? `<p id="connected-error" role="alert">${escape(this.#error)}</p>` : ''}
       ${this.#pending && !c ? `<div id="connected-recovery" role="alert" data-recovery="pending-conversation-missing"><p>Unresolved turn: its conversation is not in the current list. The pending acceptance key and text are retained; nothing was resent.</p><button id="connected-retry" class="quiet">Retry the saved turn</button><button id="connected-reload" class="quiet">Reload history</button></div>` : ''}
     </section>`;
-    panel.querySelector<HTMLInputElement>('#connected-consent')?.addEventListener('change', event => { this.#consent = (event.target as HTMLInputElement).checked; this.attach(); });
+    panel.querySelector<HTMLButtonElement>('#connected-consent')?.addEventListener('click', () => { this.#consent = true; this.attach(); });
     panel.querySelector<HTMLInputElement>('#connected-remember')?.addEventListener('change', event => { this.#remember = (event.target as HTMLInputElement).checked; });
     panel.querySelector<HTMLTextAreaElement>('#connected-draft')?.addEventListener('input', event => { this.#draft = (event.target as HTMLTextAreaElement).value; this.#save(); });
     panel.querySelector<HTMLTextAreaElement>('#connected-draft')?.addEventListener('keydown', event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); void this.#send(); } });

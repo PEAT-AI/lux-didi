@@ -79,9 +79,9 @@ try {
     await page.screenshot({ path: join(u3, 'desktop-1440-chat-no-grant.png'), fullPage: true });
   });
   await step('the open chat exposes consent before any model send', async () => {
-    assert.match(await page.locator('.connected-disclosure').innerText(), /current and earlier selected turns/);
+    assert.match(await page.locator('.connected-disclosure').innerText(), /Sent turns go to/);
     assert.equal(await page.locator('#connected-consent').count(), 1);
-    await page.locator('#connected-consent').check(); await page.locator('#connected-draft:not([disabled])').waitFor();
+    await page.locator('#connected-consent').click(); await page.locator('#connected-draft:not([disabled])').waitFor();
     assert.equal(await page.locator('#connected-send').innerText(), 'Send');
   });
   await step('real adapter captured request, split provisional stream, meaningful atomic saved answer', async () => {
@@ -167,7 +167,7 @@ try {
     assert.equal((await readFile(join(state, 'wire.jsonl'), 'utf8')).trim().split('\n').length, 2);
   });
   await step('explicit cancel and provider failure render no saved answer, never a fake success', async () => {
-    await page.locator('#connected-consent').check(); await page.locator('#connected-draft:not([disabled])').waitFor();
+    await page.locator('#connected-consent').click(); await page.locator('#connected-draft:not([disabled])').waitFor();
     child.send('hold-next'); const sent = waitPhase('transport');
     await page.locator('#connected-draft').fill('Cancel this explicitly sent synthetic turn.'); await page.locator('#connected-send').click(); await sent;
     await page.locator('#connected-cancel').click(); await page.waitForFunction(() => document.querySelector('#connected-run')?.textContent.includes('No saved answer: cancelled'));
@@ -216,14 +216,12 @@ try {
         assert.equal(status.model.configured, configured);
         assert.equal(route.status, configured ? 'configured' : 'unconfigured');
         assert.equal('displayName' in status.model, false); assert.equal('displayName' in route, false);
-        const heading = page.getByRole('heading', { name: `Talk with ${label}`, exact: true });
-        await heading.waitFor(); assert.equal(await heading.evaluate(node => node.childElementCount), 0);
         assert.equal(await page.title(), productTitle, 'owner label must not rename the public product');
         assert.equal(await page.locator('#connected-consent').isDisabled(), false, 'R66 keeps explicit agreement operable without a route');
         if (!configured) {
           assert.equal(await page.locator('#connected-send').isDisabled(), true);
-          await page.locator('#connected-consent').check();
-          assert.equal(await page.locator('#connected-consent').isChecked(), true);
+          await page.locator('#connected-consent').click();
+          assert.equal(await page.locator('#connected-consent').count(), 0, 'Allow is consumed once');
           assert.equal(await page.locator('#connected-send').isDisabled(), true, 'a tick cannot configure a provider or authorize a send');
           await page.locator('#connected-send').evaluate(button => button.click());
           assert.equal((await api('/chat/status')).consent, null, 'a local tick is not a server grant');

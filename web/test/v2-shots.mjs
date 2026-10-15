@@ -151,14 +151,19 @@ try {
   await page.waitForFunction(() => document.querySelector('#lane-voice').dataset.state === 'open');
 
   // V2-R1 item 10: a voice transcript with 3 turns and one tool chip, and a chat with 2 turns.
-  await page.route('**/api/v1/live/current*', route => route.fulfill({ contentType: 'application/json', body: JSON.stringify({
-    state: 'idle', since: new Date().toISOString(), cursor: 4, entries: [
-      { seq: 1, kind: 'inputTranscription', text: 'What did Rob ask me to do next?' },
-      { seq: 2, kind: 'outputTranscription', text: 'Ship the three-lane UI and the live pill.' },
-      { seq: 3, kind: 'outputTranscription', text: 'I checked the inbox and the calendar.' },
-      { seq: 4, kind: 'toolResult', tool: { name: 'search', status: 'completed', markdown: '**Answer** see [source](https://example.org)', sources: [{ title: 'lux 123', url: 'https://example.org' }] } }
-    ]
-  }) }));
+  await page.route('**/api/v1/live/current*', async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.data = {
+      state: 'idle', since: new Date().toISOString(), cursor: 4, entries: [
+        { seq: 1, kind: 'inputTranscription', text: 'What did Rob ask me to do next?' },
+        { seq: 2, kind: 'outputTranscription', text: 'Ship the three-lane UI and the live pill.' },
+        { seq: 3, kind: 'outputTranscription', text: 'I checked the inbox and the calendar.' },
+        { seq: 4, kind: 'toolResult', tool: { name: 'search', status: 'completed', markdown: '**Answer** see [source](https://example.org)', sources: [{ title: 'lux 123', url: 'https://example.org' }] } }
+      ]
+    };
+    await route.fulfill({ response, json: body });
+  });
   await setTheme('dark');
   await page.waitForFunction(() => document.querySelectorAll('#live-panel .live-latest-turn').length === 1, { timeout: 12000 });
   for (const text of ['First synthetic chat turn.', 'Second synthetic chat turn.']) {

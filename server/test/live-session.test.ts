@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import * as memory from '../domain/memory.js';
 import * as labels from '../domain/labels.js';
-import { resolveLiveMemory } from '../host/live.js';
+import { composeLive, resolveLiveMemory } from '../host/live.js';
 import { safeEvent } from '../host/log.js';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
@@ -34,7 +34,7 @@ import { Store } from '../runtime/store.js';
 import type { Transaction } from '../contracts/storage.js';
 import { createLiveSessionOwner, LiveConfigError, LiveError, liveMigrations, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, control, deferred, fixture, options, pcm } from './live-voice-fixture.js';
-import { CONNECTOR_DESCRIPTORS } from '../connectors/index.js';
+import { CONNECTOR_DESCRIPTORS, MATTERMOST_TOOLS } from '../connectors/index.js';
 import { buildRuntimeContext } from '../prompt/index.js';
 
 const MODEL = 'models/live-session-test';
@@ -89,6 +89,8 @@ async function harness(t: TestContext, overrides: {
   credentials?: { resolve(reference: string): Promise<string | undefined> };
   model?: string;
   tools?: boolean;
+  mattermost?: boolean;
+  calendar?: boolean;
   beforeTool?: () => Promise<void>;
   beforeGate?: () => Promise<void>;
   toolError?: boolean;
@@ -147,9 +149,48 @@ async function harness(t: TestContext, overrides: {
       return { content: [{ type: 'text', text: '#123: Synthetic insight\n[Evidence](https://example.test/evidence)' }], ...(overrides.toolError ? { isError: true } : {}) };
     });
     await sdk.connect(transport);
+    let mattermostEndpoint: { id: string; url: string; account: string; resource: string } | undefined;
+    let mattermostSdk: Server | undefined;
+    let mattermostTransport: WebStandardStreamableHTTPServerTransport | undefined;
+    const mattermostSchemas = MATTERMOST_TOOLS.map(name => ({ name, inputSchema: { type: 'object' } }));
+    if (overrides.mattermost) {
+      mattermostEndpoint = { id: 'mattermost', url: 'https://fixture.invalid/mattermost', account: 'account', resource: 'resource' };
+      registry.register(mattermostEndpoint); registry.enable(mattermostEndpoint.id); registry.allowEgress(mattermostEndpoint.id);
+      mattermostSdk = new Server({ name: 'live-mattermost-fixture', version: '1' }, { capabilities: { tools: { listChanged: false } } });
+      mattermostTransport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
+      mattermostSdk.setRequestHandler('tools/list', () => ({ tools: structuredClone(mattermostSchemas) }) as never);
+      mattermostSdk.setRequestHandler('tools/call', req => {
+        calls.push({ name: req.params.name, args: req.params.arguments });
+        const text = req.params.name === 'mattermost_list_channels'
+          ? JSON.stringify({ channels: [{ name: 'town-square', display_name: 'Town Square' }] })
+          : req.params.name === 'mattermost_whoami'
+            ? JSON.stringify({ username: 'robert', display_name: 'Robert Peat' })
+            : JSON.stringify({ posts: [{ channel: 'town-square', author: 'Rob', time: '2026-10-11T10:00:00Z', text: 'Standup at ten', permalink: 'https://chat.peat-cloud.com/team/pl/abcdef1234567890abcdefghij' }] });
+        return { content: [{ type: 'text', text }] };
+      });
+      await mattermostSdk.connect(mattermostTransport);
+    }
+    let calendarEndpoint: { id: string; url: string; account: string; resource: string } | undefined;
+    let calendarSdk: Server | undefined;
+    let calendarTransport: WebStandardStreamableHTTPServerTransport | undefined;
+    const calendarSchemas = [{ name: 'gcal_calendars', inputSchema: { type: 'object' } }];
+    if (overrides.calendar) {
+      calendarEndpoint = { id: 'calendar', url: 'https://fixture.invalid/calendar', account: 'account', resource: 'resource' };
+      registry.register(calendarEndpoint); registry.enable(calendarEndpoint.id); registry.allowEgress(calendarEndpoint.id);
+      calendarSdk = new Server({ name: 'live-calendar-fixture', version: '1' }, { capabilities: { tools: { listChanged: false } } });
+      calendarTransport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
+      calendarSdk.setRequestHandler('tools/list', () => ({ tools: structuredClone(calendarSchemas) }) as never);
+      calendarSdk.setRequestHandler('tools/call', req => {
+        calls.push({ name: req.params.name, args: req.params.arguments });
+        return { content: [{ type: 'text', text: JSON.stringify({ calendars: [{ id: 'primary', summary: 'Primary' }] }) }] };
+      });
+      await calendarSdk.connect(calendarTransport);
+    }
     t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
       const request = new Request(input, init);
       if (request.method === 'GET') return new Response(null, { status: 405 });
+      if (mattermostTransport && mattermostEndpoint && request.url === mattermostEndpoint.url) return mattermostTransport.handleRequest(request);
+      if (calendarTransport && calendarEndpoint && request.url === calendarEndpoint.url) return calendarTransport.handleRequest(request);
       return transport.handleRequest(request);
     });
     const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic-token', budgets: { maxResponseBytes: 12000, projectionChars: 10, timeoutMs: 1000 } });
@@ -164,9 +205,27 @@ async function harness(t: TestContext, overrides: {
       route: { identity: liveProfileIdentity(profile), allowedClasses: ['ordinary'] },
       bounds: { maxQueryChars: 80, maxSearchLimit: 3, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 } });
     assert.equal((await port.discover(endpoint.id)).state, 'discovered');
+    if (overrides.mattermost && mattermostEndpoint) {
+      toolOwner.applyConnection({ schemaVersion: 1, ownerId: store.assistantId, connectionId: 'mattermost', generation: 1, enabled: true, connector: 'mattermost',
+        endpoint: { ...mattermostEndpoint, credentialRef: null }, toolNames: [...MATTERMOST_TOOLS], schemaDigest: canonicalToolDigest(mattermostSchemas),
+        sourcePolicy: { id: 'live-fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
+        route: { identity: liveProfileIdentity(profile), allowedClasses: ['ordinary'] },
+        bounds: { maxQueryChars: 200, maxSearchLimit: 60, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 } });
+      assert.equal((await port.discover(mattermostEndpoint.id)).state, 'discovered');
+      toolOwner.projectConnection('mattermost');
+    }
+    if (overrides.calendar && calendarEndpoint) {
+      toolOwner.applyConnection({ schemaVersion: 1, ownerId: store.assistantId, connectionId: 'calendar', generation: 1, enabled: true, connector: 'google',
+        endpoint: { ...calendarEndpoint, credentialRef: null }, toolNames: ['gcal_calendars'], schemaDigest: canonicalToolDigest(calendarSchemas),
+        sourcePolicy: { id: 'live-fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
+        route: { identity: liveProfileIdentity(profile), allowedClasses: ['ordinary'] },
+        bounds: { maxQueryChars: 200, maxSearchLimit: 60, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 } });
+      assert.equal((await port.discover(calendarEndpoint.id)).state, 'discovered');
+      toolOwner.projectConnection('calendar');
+    }
     toolOwner.projectConnection('lux');
-    tools = { owner: toolOwner, connectionIds: () => ['lux'] };
-    t.after(async () => { await port.close(); await transport.close(); await sdk.close(); });
+    tools = { owner: toolOwner, connectionIds: () => ['lux', ...(overrides.mattermost ? ['mattermost'] : []), ...(overrides.calendar ? ['calendar'] : [])] };
+    t.after(async () => { await port.close(); await transport.close(); await sdk.close(); if (mattermostSdk) await mattermostSdk.close(); if (calendarSdk) await calendarSdk.close(); });
   }
   const memorySource = (tx: import('../contracts/storage.js').Transaction) => {
     memorySelections += 1;
@@ -637,8 +696,8 @@ test('accepted complete system uses the shared 60k bound while generic prompt te
 });
 
 test('tool-enabled Live CREATE freezes an expanded classified owner system byte for byte', async t => {
-  const style = `SYNTHETIC style ${'S'.repeat(10_000)}`;
-  const lore = `SYNTHETIC lore ${'L'.repeat(13_955)}`;
+  const style = `SYNTHETIC style ${'S'.repeat(8_000)}`;
+  const lore = `SYNTHETIC lore ${'L'.repeat(4_000)}`;
   let expectedSystem = '';
   const h = await harness(t, { tools: true, routeClasses: ['ordinary', 'private', 'sensitive'], acceptedPrompt: ownerId => {
     const ownerProfile = { schemaVersion: 1 as const, kind: 'profile' as const, ownerId, profileVersion: 'fixture', displayName: 'Example',
@@ -649,7 +708,7 @@ test('tool-enabled Live CREATE freezes an expanded classified owner system byte 
   } });
   const created = h.owner.create({ idempotencyKey: 'expanded-owner-tools', inputClass: 'ordinary' }, h.ctx);
   const frozen = h.store.transaction(tx => JSON.parse(String(tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [created.liveSessionId])!['accepted_prompt_snapshot'])));
-  assert.ok(frozen.system.length > 20_000);
+  assert.ok(frozen.system.length > 4_096 && frozen.system.length <= 16_000, 'the frozen system is dense but inside the hard limit');
   assert.equal(frozen.system, composeLiveSessionInstruction({ text: expectedSystem, tools: ['search_knowledge', 'get_insight'], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
     runtimeContext: buildRuntimeContext({ now: new Date(NOW), timeZone: 'Asia/Kolkata', connected: ['knowledge base', 'memory'], unavailable: [] }) }).text);
   assert.equal(frozen.system.split(style).length - 1, 1);
@@ -1356,7 +1415,9 @@ test('Live refuses undeclared tools and original-schema-invalid arguments withou
   h.f.send({ toolCall: { functionCalls: [{ id: 'bad1', name: 'get_insight', args: { ids: '[123]', include_links: 'false' } }, { id: 'bad2', name: 'not_granted', args: {} }] } });
   await h.f.frame(2); assert.equal(h.calls.length, 0);
   const response = h.f.frames[1] as { toolResponse: { functionResponses: { response: { error: string } }[] } };
-  assert.deepEqual(response.toolResponse.functionResponses.map(r => r.response.error), ['invalid_arguments', 'unknown_tool']);
+  const errors = response.toolResponse.functionResponses.map(r => r.response.error);
+  assert.match(errors[0]!, /Invalid arguments for get_insight/, 'an invalid get_insight refusal carries one-try guidance');
+  assert.equal(errors[1], 'unknown_tool');
   assert.equal(h.owner.current().entries.filter(e => e.kind === 'toolResult' && e.tool?.status === 'error').length, 2);
   attachment.close(); await attachment.done;
 });
@@ -1405,7 +1466,7 @@ test('Live attach setup carries the composed Naya instruction and the bare langu
   const h = await harness(t);
   const overlay = { schemaVersion: 1 as const, text: 'SYNTHETIC local overlay persona', greeting: 'Synthetic greeting' };
   const composed = composeLiveInstruction({ base: NAYA_BASE, overlay, language: 'de' });
-  assert.ok(composed.text.startsWith(NAYA_BASE), 'composed instruction starts with the public base');
+  assert.ok(composed.text.includes(NAYA_BASE), 'composed instruction carries the public base');
   const acceptedPrompt = { schemaVersion: 1, ownerProfile: { schemaVersion: 1, kind: 'default', ownerId: h.store.assistantId, displayName: 'Lux Didi' },
     compilerVersion: PROMPT_VERSION, system: composed.text, dataClasses: ['ordinary'] };
   const profile = validateLiveProfile({ ...profileInput(), language: 'de', acceptedPrompt });
@@ -1437,7 +1498,7 @@ test('loadLiveConfig keeps public prompt bytes and composes classified owner sec
   const overlay = { schemaVersion: 1 as const, text: 'SYNTHETIC local overlay persona', greeting: 'Synthetic greeting', accent: 'Synthetic accent' };
   writePrivate(dataDir, 'persona-overlay.json', JSON.stringify(overlay));
   const style = `SYNTHETIC owner style ${'S'.repeat(3000)}`;
-  const lore = `SYNTHETIC owner lore ${'L'.repeat(13_955)}`;
+  const lore = `SYNTHETIC owner lore ${'L'.repeat(3_000)}`;
   const ownerProfile = { schemaVersion: 1 as const, kind: 'profile' as const, ownerId: 'synthetic-owner', profileVersion: 'fixture', displayName: 'Example',
     style: { text: style, dataClass: 'private' as const }, lore: { text: lore, dataClass: 'sensitive' as const } };
   const status = loadLiveConfig({ configDir, ownerId: 'synthetic-owner', ownerProfile });
@@ -1804,9 +1865,119 @@ test('established WebSocket protocol error resumes through the saved handle', as
 test('Mattermost declarations carry the channel-resolution micro-contract', () => {
   const policy = { bounds: { maxQueryChars: 200, maxSearchLimit: 60 } } as never;
   const descriptions = new Map(CONNECTOR_DESCRIPTORS['mattermost']!.declarations(policy).map(declaration => [declaration.name, declaration.description]));
-  assert.match(descriptions.get('mattermost_list_channels')!, /Call it at most once per question/);
-  assert.match(descriptions.get('mattermost_list_channels')!, /ids stay valid for the whole session, so reuse them/);
+  assert.equal(descriptions.has('mattermost_list_channels'), false, 'the model never gets a channel dump');
+  assert.match(descriptions.get('mattermost_search')!, /From:<user>/);
+  assert.match(descriptions.get('mattermost_search')!, /After:<date>/);
+  assert.match(descriptions.get('mattermost_search')!, /In:<channel>/);
   assert.match(descriptions.get('mattermost_search')!, /search first, no channel list needed/);
-  assert.match(descriptions.get('mattermost_get_channel_history')!, /channel is a channel id from mattermost_list_channels/);
+  assert.match(descriptions.get('mattermost_get_channel_history')!, /channel is a channel name or display name; no channel list needed/);
+  assert.match(descriptions.get('mattermost_get_channel_history')!, /newest first/);
   assert.match(descriptions.get('mattermost_get_thread')!, /postId is a post id taken from a channel history/);
+});
+
+function toolResponseCount(h: Harness): number {
+  return h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).length;
+}
+
+async function settleLiveTool(h: Harness, id: string, name: string, args: unknown): Promise<void> {
+  const before = toolResponseCount(h);
+  h.f.send({ toolCall: { functionCalls: [{ id, name, args }] } });
+  for (let i = 0; i < 2000 && toolResponseCount(h) === before; i++) await tick();
+  assert.equal(toolResponseCount(h), before + 1, `no tool response for ${id}`);
+}
+
+test('a replayed Live question reaches the connector once per allowlisted read', async t => {
+  const h = await harness(t, { tools: true, calendar: true, mattermost: true });
+  await attached(h, 'cache-replay');
+  const channelId = 'abcdefghijklmnopqrstuvwxzy';
+  await settleLiveTool(h, 'c1', 'gcal_calendars', {});
+  await settleLiveTool(h, 'c2', 'gcal_calendars', {});
+  await settleLiveTool(h, 'c3', 'gcal_calendars', {});
+  await settleLiveTool(h, 's1', 'mattermost_search', { query: 'standup', limit: 12 });
+  await settleLiveTool(h, 's2', 'mattermost_search', { query: 'standup', limit: 12 });
+  await settleLiveTool(h, 'h1', 'mattermost_get_channel_history', { channel: channelId, limit: 12 });
+  await settleLiveTool(h, 'h2', 'mattermost_get_channel_history', { channel: channelId, limit: 12 });
+  const count = (name: string) => h.calls.filter(call => call.name === name).length;
+  assert.equal(count('gcal_calendars'), 1, 'three identical list calls reach the connector once');
+  assert.equal(count('mattermost_search'), 2, 'a search is never cached');
+  assert.equal(count('mattermost_get_channel_history'), 2, 'a history read is never cached');
+});
+
+test('a new Live session starts with an empty read cache', async t => {
+  const first = await harness(t, { tools: true, calendar: true, mattermost: true });
+  await attached(first, 'cache-session-one');
+  await settleLiveTool(first, 'o1', 'gcal_calendars', {});
+  assert.equal(first.calls.filter(call => call.name === 'gcal_calendars').length, 1);
+  const second = await harness(t, { tools: true, calendar: true, mattermost: true });
+  await attached(second, 'cache-session-two');
+  await settleLiveTool(second, 'o2', 'gcal_calendars', {});
+  assert.equal(second.calls.filter(call => call.name === 'gcal_calendars').length, 1, 'the second session reads the connector afresh');
+});
+
+test('a cached read expires after ten minutes even inside one session', async t => {
+  const h = await harness(t, { tools: true, calendar: true, mattermost: true });
+  await attached(h, 'cache-ttl');
+  await settleLiveTool(h, 't1', 'gcal_calendars', {});
+  assert.equal(h.calls.filter(call => call.name === 'gcal_calendars').length, 1);
+  h.advance(10 * 60 * 1000);
+  await settleLiveTool(h, 't2', 'gcal_calendars', {});
+  assert.equal(h.calls.filter(call => call.name === 'gcal_calendars').length, 2, 'an expired entry is read again');
+});
+
+test('creating a second Live session supersedes the first for the owner', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-live-supersede-'));
+  const domain = createDomainPort({ outbox: Outbox });
+  const store = new Store(dir, [...domain.migrations, ...chatMigrations, ...liveMigrations]);
+  t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
+  const events: string[] = [];
+  const original = console.log;
+  console.log = (...args: unknown[]) => { events.push(args.map(String).join(' ')); };
+  t.after(() => { console.log = original; });
+  const profile = validateLiveProfile(profileInput());
+  const { service } = composeLive(store, dir, { profile, credentials: { resolve: async () => CANARY } });
+  t.after(() => service.shutdown());
+  const first = service.create('ordinary', 'one', context(store));
+  const second = service.create('ordinary', 'two', context(store));
+  assert.equal(service.snapshot(first.liveSessionId).lifecycle, 'terminal', 'the first session is terminal once the second is created');
+  assert.equal(service.snapshot(second.liveSessionId).lifecycle, 'accepted');
+  const superseded = events.filter(line => line.includes('"live_session_superseded"')).map(line => JSON.parse(line) as { event: string; liveSessionId: string });
+  assert.equal(superseded.length, 1, 'exactly one supersede event');
+  assert.equal(superseded[0]!.liveSessionId, first.liveSessionId);
+});
+
+// Contract P1 (issue 1014): the resumption handle is gated at five tool calls, and session start logs section sizes.
+test('P1: a session past five tool calls rebuilds with a fresh setup', async t => {
+  const h = await harness(t, { tools: true });
+  await attached(h, 'p1-gating');
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-gating-secret' } });
+  for (let i = 0; i < 5; i++) {
+    h.f.send({ toolCall: { functionCalls: [{ id: `g${i}`, name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
+    await h.f.frame(h.f.frames.length + 1);
+  }
+  h.f.send({ goAway: { timeLeft: '10s' } });
+  await h.f.frame(h.f.frames.length + 1);
+  assert.equal(h.requests.at(-1)!.resumptionHandle, undefined, 'a session past five tool calls must start fresh');
+});
+
+test('P1: a session under five tool calls still resumes on the saved handle', async t => {
+  const h = await harness(t, { tools: true });
+  await attached(h, 'p1-gating-resume');
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-gating-resume-secret' } });
+  h.f.send({ toolCall: { functionCalls: [{ id: 'g0', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
+  await h.f.frame(h.f.frames.length + 1);
+  h.f.send({ goAway: { timeLeft: '10s' } });
+  await h.f.frame(h.f.frames.length + 1);
+  assert.equal(h.requests.at(-1)!.resumptionHandle, 'synthetic-gating-resume-secret', 'under five calls the handle is reused');
+});
+
+test('P1: session start logs the composed instruction size per section', async t => {
+  const lines: string[] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
+  const h = await harness(t);
+  await attached(h, 'p1-size-log');
+  const logged = lines.map(line => { try { return JSON.parse(line) as { event?: string; sections?: Record<string, number>; total?: number }; } catch { return {}; } })
+    .find(entry => entry.event === 'live_instruction_sizes');
+  assert.ok(logged, 'a per-section size line is logged at session start');
+  assert.ok(typeof logged.total === 'number' && logged.total > 0);
+  assert.ok(logged.sections && Object.values(logged.sections).every(value => typeof value === 'number'), 'only counts are logged');
 });

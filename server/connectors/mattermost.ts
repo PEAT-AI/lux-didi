@@ -81,6 +81,70 @@ function requirePositiveSafeInteger(value: unknown): number {
   return value as number;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** One channel as the list_channels result describes it; the id is absent in some fixtures. */
+export interface MattermostChannel { id?: string; name?: string; displayName?: string }
+
+/**
+ * The reader's channel index: the list_channel result is stable for minutes, so one internal read
+ * serves every name this reader resolves until the short TTL lapses. The instance dies with the reader.
+ */
+class ChannelIndexCache {
+  #channels: MattermostChannel[] | undefined;
+  #at = 0;
+  constructor(private readonly ttlMs: number = 10 * 60 * 1000, private readonly now: () => number = () => Date.now()) {}
+  get(): MattermostChannel[] | undefined {
+    if (!this.#channels) return undefined;
+    if (this.now() - this.#at >= this.ttlMs) { this.#channels = undefined; return undefined; }
+    return this.#channels;
+  }
+  set(channels: MattermostChannel[]): void { this.#channels = channels; this.#at = this.now(); }
+}
+
+/** Decode the channels array out of a completed mattermost_list_channels content envelope. */
+export function parseChannelList(parsed: unknown): MattermostChannel[] | undefined {
+  const result = isRecord(parsed) && isRecord(parsed['result']) ? parsed['result'] : parsed;
+  const content = isRecord(result) ? result['content'] : undefined;
+  const text = Array.isArray(content) && content.length > 0 && isRecord(content[0]) && typeof content[0]['text'] === 'string'
+    ? content[0]['text'] as string
+    : typeof parsed === 'string' ? parsed : undefined;
+  if (text === undefined) return undefined;
+  let data: unknown;
+  try { data = JSON.parse(text); } catch { return undefined; }
+  const list = Array.isArray(data) ? data : isRecord(data) && Array.isArray(data['channels']) ? data['channels'] : undefined;
+  if (!list) return undefined;
+  return list.filter(isRecord).map(entry => ({
+    ...(typeof entry['id'] === 'string' ? { id: entry['id'] } : {}),
+    ...(typeof entry['name'] === 'string' ? { name: entry['name'] } : {}),
+    ...(typeof entry['display_name'] === 'string' ? { displayName: entry['display_name'] }
+      : typeof entry['displayName'] === 'string' ? { displayName: entry['displayName'] } : {}),
+  }));
+}
+
+/**
+ * Resolve a caller's channel reference (id, name, or display name) against the known channel list.
+ * Ambiguous and unknown references fail loud with the closest known names, never a silent empty read.
+ */
+export function resolveChannelReference(reference: string, channels: readonly MattermostChannel[]): { channel: string } | { error: string } {
+  const wanted = reference.trim().replace(/^#/, '');
+  if (wanted === '') return { error: 'invalid-channel' };
+  const lower = wanted.toLowerCase();
+  const exactId = channels.find(channel => channel.id === wanted);
+  if (exactId?.id) return { channel: exactId.id };
+  const matches = channels.filter(channel =>
+    (channel.name !== undefined && channel.name.toLowerCase() === lower) ||
+    (channel.displayName !== undefined && channel.displayName.toLowerCase() === lower));
+  const label = (channel: MattermostChannel) => channel.displayName ?? channel.name ?? channel.id ?? '';
+  if (matches.length === 1) { const only = matches[0]!; return { channel: only.id ?? only.name ?? wanted }; }
+  if (matches.length > 1) return { error: `channel-ambiguous: ${wanted} matches ${matches.map(label).join(', ')}` };
+  const prefix = channels.filter(channel => label(channel).toLowerCase().startsWith(lower[0] ?? ''));
+  const closest = (prefix.length ? prefix : channels).map(label).filter(Boolean).slice(0, 5);
+  return { error: `channel-not-found: ${wanted}; closest names: ${closest.join(', ') || 'none'}` };
+}
+
 interface Settings {
   endpointId: string; account: string; resource: string; schemaDigest: string; generation: number;
   maxLimit: number; queryChars: number;
@@ -156,6 +220,30 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     return { limit: value as number };
   }
 
+  /** One list_channels read per session serves every channel name this reader resolves. */
+  const channelIndex = new ChannelIndexCache();
+  async function loadChannels(signal?: AbortSignal): Promise<MattermostChannel[] | { error: string }> {
+    const cached = channelIndex.get();
+    if (cached) return cached;
+    const denied = preflight(registry, settings, 'mattermost_list_channels');
+    if (denied) return { error: denied };
+    const evidence = await dispatch('mattermost_list_channels', limited(undefined)!, signal);
+    if (evidence.state === 'refused' || evidence.state === 'unknown') return { error: evidence.reason };
+    if (evidence.state !== 'completed') return { error: `channel-list-${evidence.state}` };
+    const channels = parseChannelList(evidence.decodedResult);
+    if (!channels) return { error: 'channel-list-unreadable' };
+    channelIndex.set(channels);
+    return channels;
+  }
+  async function resolveChannel(reference: string, signal?: AbortSignal): Promise<string | { error: string }> {
+    // A 26 character Mattermost id is already dispatchable; anything else is a name or display name.
+    if (/^[a-z0-9]{26}$/.test(reference)) return reference;
+    const channels = await loadChannels(signal);
+    if (!Array.isArray(channels)) return channels;
+    const resolved = resolveChannelReference(reference, channels);
+    return 'channel' in resolved ? resolved.channel : { error: resolved.error };
+  }
+
   return {
     async whoami(signal?: AbortSignal): Promise<MattermostResult> {
       const denied = preflight(registry, settings, 'mattermost_whoami');
@@ -165,10 +253,12 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     async getChannelHistory(input: ChannelInput, signal?: AbortSignal): Promise<MattermostResult> {
       const denied = preflight(registry, settings, 'mattermost_get_channel_history');
       if (denied) return { state: 'refused', reason: denied };
-      const channel = boundedText(input.channel);
-      if (channel === undefined) return { state: 'refused', reason: 'invalid-channel' };
+      const reference = boundedText(input.channel);
+      if (reference === undefined) return { state: 'refused', reason: 'invalid-channel' };
       const bounded = limited(input.limit);
       if (!bounded) return { state: 'refused', reason: 'limit-out-of-budget' };
+      const channel = await resolveChannel(reference, signal);
+      if (typeof channel !== 'string') return { state: 'refused', reason: channel.error };
       return dispatch('mattermost_get_channel_history', { channel, ...bounded }, signal);
     },
     async getThread(input: ThreadInput, signal?: AbortSignal): Promise<MattermostResult> {

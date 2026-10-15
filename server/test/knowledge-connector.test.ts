@@ -178,8 +178,22 @@ test('a cut search result names the real search_knowledge limit follow-up; a lar
     assert.deepEqual(f.calls.at(-1), { name: 'search_knowledge', arguments: { query: 'q', limit: 25, include_sensitive: false } });
     const shaped = shapeLuxKnowledge('search_knowledge', text(second));
     assert.equal(shaped.partial, true);
-    assert.match(shaped.text, /\[omitted: 5 more hits; call search_knowledge again with limit=25 for the rest\]/);
+    assert.match(shaped.text, /\[omitted: 22 more hits; call search_knowledge again with limit=25 for the rest\]/);
     assert.equal(shaped.text.includes('Insight 21'), false);
+  } finally { await adapter.close(); await f.close(); }
+});
+
+test('a completed search shapes to the top 3 hits with their compact bodies in one call', async () => {
+  const all = Array.from({ length: 12 }, (_, index) => ({ id: index + 1, insight_title: `Insight ${index + 1}`, insight_type: 'PATTERN', updated_at: '2026-10-14', content: `Body of insight ${index + 1}. ${'Detail. '.repeat(100)}` }));
+  const f = await fixture({ call: () => ({ content: [{ type: 'text', text: JSON.stringify({ results: all }) }] }) });
+  const { adapter, registry } = setup(f.url);
+  try {
+    const { reader } = await readerFor(adapter, registry);
+    const result = complete(await reader.search({ query: 'q', limit: 12 }));
+    const shaped = shapeLuxKnowledge('search_knowledge', (result.decodedResult as { content?: { text?: string }[] }).content?.[0]?.text ?? '');
+    assert.equal((shaped.text.match(/^## /gm) ?? []).length, 3, 'a search result carries at most 3 bodies in one call');
+    assert.match(shaped.text, /Body of insight 1\./);
+    assert.equal(shaped.text.includes('Insight 4'), false, 'the fourth hit never reaches the model');
   } finally { await adapter.close(); await f.close(); }
 });
 

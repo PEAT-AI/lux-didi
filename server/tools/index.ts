@@ -197,11 +197,11 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
         return 'fresh';
       });
     },
-    refuse(input, _reason) {
+    refuse(input, reason) {
       const call = callDTO(input);
       return store.transaction(tx => {
         if (callRow(tx, call)) throw Error('refusal_collision'); validateCallRun(tx, call);
-        return persistTerminal(tx, call, 'refused', { response: { status: 'refused', reason: 'tool_refused' }, dataClasses: [] }, true);
+        return persistTerminal(tx, call, 'refused', { response: { status: 'refused', reason }, dataClasses: [] }, true);
       });
     },
     fail(input, status, reason) {
@@ -357,12 +357,22 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
         for (const name of p.toolNames) {
           if (definitions.some(d => d.name === name)) throw new ConnectorCompositionError('ambiguous_model_tool_name', p.connectionId, p.connector);
           const declaration = declarations.find(candidate => candidate.name === name);
-          if (!declaration) throw new ConnectorCompositionError('unknown_connector_tool', p.connectionId, p.connector);
+          // A connector capability granted for internal use (Mattermost channel-name resolution)
+          // is absent from the model-facing table; it stays dispatchable through the connector.
+          if (!declaration) {
+            if (descriptor.envelope.includes(name)) continue;
+            throw new ConnectorCompositionError('unknown_connector_tool', p.connectionId, p.connector);
+          }
           definitions.push({ name, description: declaration.description, effect: 'read', accountId: p.endpoint.account, resourceId: p.endpoint.resource, endpointId: p.endpoint.id, validate: declaration.validate,
+            ...(declaration.guidance === undefined ? {} : { guidance: declaration.guidance }),
             parameters: declaration.parameters,
             async execute(args, context) {
               if (context.signal.aborted) return { status: 'unknown' };
               if (!declaration.validate(args)) return { status: 'failed' };
+              // Normalize at the boundary; the intent hash below stays over the model's original args.
+              const prepared = declaration.normalize === undefined ? undefined : declaration.normalize(args);
+              if (declaration.normalize !== undefined && prepared === undefined) return { status: 'failed' };
+              const callArgs = prepared === undefined ? args : prepared.args;
               const gate = await resultGate.authorize({ ...context, grants: [] }, [], [], context.signal);
               if (context.signal.aborted) return { status: 'unknown' };
               if (gate.state !== 'allowed') return { status: 'failed' };
@@ -378,7 +388,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
               });
               if (!call) return { status: 'failed' };
               let evidence: Awaited<ReturnType<typeof reader.call>>;
-              try { evidence = await reader.call(name, args as Record<string, unknown>, context.signal); } catch (error) {
+              try { evidence = await reader.call(name, callArgs, context.signal); } catch (error) {
                 const code = error instanceof Error && 'code' in error && typeof error.code === 'string' && isToolFailureCode(error.code) ? error.code : 'handler_outcome';
                 options.log?.({ event: 'tool_failure', code, tool: name, connector: p.connector, errorClass: error instanceof SyntaxError ? 'SyntaxError' : error instanceof Error ? 'Error' : 'UnknownThrow', messageHead: code });
                 return { status: code === 'connector_error' || code === 'handler_outcome' ? 'failed' : 'unknown', code };
@@ -405,6 +415,9 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
                 // Only safe class/code metadata, never remote payloads or arbitrary exception text.
                 options.log?.({ event: 'tool_failure', code, tool: name, connector: p.connector, errorClass: error instanceof SyntaxError ? 'SyntaxError' : error instanceof Error ? 'Error' : 'UnknownThrow', messageHead: code });
                 return { status: 'failed', code };
+              }
+              if (prepared?.notice !== undefined && typeof value.response['text'] === 'string') {
+                value = { ...value, response: { ...value.response, text: `${value.response['text']} ${prepared.notice}` } };
               }
               return { status: 'completed', result: complete(call, value.response, value.dataClasses) };
             },

@@ -19,6 +19,29 @@ export * from './types.js';
 export { chatMigrations } from './schema.js';
 
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
+/** Stable capability identity: a description or schema reword never changes it. */
+export type CapabilityIdentity = { name: string; effect: string; accountId: string; resourceId: string };
+/**
+ * Admit a run's read registry against a session's frozen capability identity.
+ * A granted tool is kept only when its identity (name, effect, accountId,
+ * resourceId) is unchanged, so a description edit never drops it while a new
+ * effect or account still does. Every drop is reported once per session with
+ * the tool name and the changed field, metadata only.
+ */
+export function admitCapabilities<T extends CapabilityIdentity>(registry: readonly T[], admitted: readonly CapabilityIdentity[],
+  sessionId: string, logged: Set<string>, log: (line: string) => void): T[] {
+  const kept: T[] = [];
+  for (const tool of registry) {
+    const prior = admitted.find(candidate => candidate.name === tool.name);
+    if (prior && prior.effect === tool.effect && prior.accountId === tool.accountId && prior.resourceId === tool.resourceId) { kept.push(tool); continue; }
+    const field = !prior ? 'grant' : prior.effect !== tool.effect ? 'effect' : prior.accountId !== tool.accountId ? 'accountId' : 'resourceId';
+    const key = `${sessionId}\u0000${tool.name}`;
+    if (logged.has(key)) continue;
+    logged.add(key);
+    log(JSON.stringify({ event: 'chat_capability_dropped', sessionId, tool: tool.name, field }));
+  }
+  return kept;
+}
 /** Persisted policy subject: existing entry/session kinds only; revisions are authoritative. */
 type SelectedLabel = { kind: 'session' | 'entry'; id: string; schemaVersion: 1; ownerId: string; dataClass: DataClass; revision: number };
 /** The subset #checkPolicy reads back out of chat_run_policy.selected_labels. */
@@ -51,6 +74,7 @@ export class ChatService implements ChatPort {
   readonly #now: () => number;
   readonly #workers = new Map<string, AbortController>();
   readonly #toolAuthorities = new Map<string, { context: DomainContext; authority: LiveAuthority; policyMatches: boolean }>();
+  readonly #admissionLogged = new Set<string>();
   readonly #livePolicies = new Map<string, { session_id: string; selected_labels: string }>();
   readonly #subscribers = new Map<string, Set<Subscription<ChatEvent>>>();
   readonly #conversationSubscribers = new Map<string, Set<Subscription<ConversationEvent>>>();
@@ -110,16 +134,14 @@ export class ChatService implements ChatPort {
       const ownerSnapshot = JSON.parse(String(ownerRow.snapshot_json)) as OwnerRunSnapshot;
       const policyIdentity = hash(canonicalJSON(ownerSnapshot.connections.map(c => ({ connectionId: c.connectionId, sha256: c.sha256 }))));
       const registry = definitionsInTransaction(tools.owner, run.runId, tx).filter(t => t.effect === 'read' && t.name !== 'remember_note');
-      const descriptor = (t: ToolDefinition) => ({ name: t.name, description: t.description, parameters: t.parameters,
-        effect: t.effect, accountId: t.accountId, resourceId: t.resourceId });
       if (!frozen && registry.length) tx.run('INSERT INTO chat_capability_acceptances VALUES (?,?,?,?,?,?,?,?)',
         [run.sessionId, this.#config.route.provider, this.#config.route.model, routeIdentity, canonicalJSON([...permitted].sort()),
-          policyIdentity, canonicalJSON(registry.map(descriptor)), canonicalJSON(connectionIds)]);
+          policyIdentity, canonicalJSON(registry.map(t => ({ name: t.name, effect: t.effect, accountId: t.accountId, resourceId: t.resourceId }))), canonicalJSON(connectionIds)]);
       this.#toolAuthorities.set(run.runId, { context, authority: { ...acceptance, acceptedRunHash: accepted.sha256 },
         policyMatches: !frozen || frozen.policy_identity === policyIdentity });
       if (!frozen) return registry;
-      const admitted = JSON.parse(String(frozen.capabilities_json)) as ReturnType<typeof descriptor>[];
-      return registry.filter(tool => admitted.some(prior => canonicalJSON(prior) === canonicalJSON(descriptor(tool))));
+      const admitted = JSON.parse(String(frozen.capabilities_json)) as CapabilityIdentity[];
+      return admitCapabilities(registry, admitted, run.sessionId, this.#admissionLogged, line => console.warn(line));
     });
   }
 

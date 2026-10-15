@@ -3,6 +3,7 @@ import http.server
 import json
 import os
 import secrets
+import socketserver
 import sys
 import threading
 import uuid
@@ -139,7 +140,17 @@ class Fixture(http.server.BaseHTTPRequestHandler):
         else:
             self.reply({}, 401)
 
-server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Fixture)
+
+class FixtureServer(http.server.ThreadingHTTPServer):
+    # HTTPServer.server_bind resolves the bound address with socket.getfqdn, a
+    # blocking reverse-DNS lookup that hangs when mDNS name resolution stalls.
+    # The fixture only needs the address it bound, so skip it.
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+
+server = FixtureServer(("127.0.0.1", 0), Fixture)
 origin = "http://127.0.0.1:" + str(server.server_port)
 path = sys.argv[1]
 fd = os.open(path + ".pending", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)

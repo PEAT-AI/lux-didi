@@ -17,7 +17,7 @@ export const GOOGLE_FAMILIES: Readonly<Record<GoogleFamily, readonly GoogleTool[
 export type GoogleFamily = 'gmail' | 'calendar';
 
 /** Bounded argument defaults; a caller may only narrow them. */
-export const GOOGLE_DEFAULTS = { listResults: 10, maxListResults: 50, readBodyChars: 4000 } as const;
+export const GOOGLE_DEFAULTS = { listResults: 10, mailListResults: 5, maxListResults: 50, readBodyChars: 4000 } as const;
 
 export interface GoogleConfig {
   endpointId: string;
@@ -173,13 +173,13 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
   function gate(tool: GoogleTool): string | undefined {
     return preflight(registry, settings, tool);
   }
-  function listArgs(input: { maxResults?: number; pageToken?: string }): { ok: true; args: Record<string, unknown> } | { ok: false; reason: string } {
+  function listArgs(input: { maxResults?: number; pageToken?: string }, defaultResults: number = GOOGLE_DEFAULTS.listResults): { ok: true; args: Record<string, unknown> } | { ok: false; reason: string } {
     const args: Record<string, unknown> = {};
     if (input.maxResults !== undefined) {
       if (!Number.isSafeInteger(input.maxResults) || input.maxResults < 1 || input.maxResults > settings.maxListResults) return { ok: false, reason: 'max-results-out-of-budget' };
       args['maxResults'] = input.maxResults;
     } else {
-      args['maxResults'] = Math.min(GOOGLE_DEFAULTS.listResults, settings.maxListResults);
+      args['maxResults'] = Math.min(defaultResults, settings.maxListResults);
     }
     if (input.pageToken !== undefined) {
       if (typeof input.pageToken !== 'string' || input.pageToken.length < 1 || input.pageToken.length > 4096) return { ok: false, reason: 'invalid-page-token' };
@@ -197,7 +197,10 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
     async gmailList(input: GmailListInput, signal?: AbortSignal): Promise<GoogleResult> {
       const denied = gate('gmail_list');
       if (denied) return { state: 'refused', reason: denied };
-      const bounded = listArgs(input);
+      // The digest renders at most GMAIL_LIST_MESSAGES (5) lines and the remote gmail_list issues one
+      // metadata GET per listed message, so requesting more only adds sequential round trips without
+      // changing what the owner sees. A caller may still raise maxResults explicitly up to the budget.
+      const bounded = listArgs(input, GOOGLE_DEFAULTS.mailListResults);
       if (!bounded.ok) return { state: 'refused', reason: bounded.reason };
       if (input.q !== undefined) {
         if (typeof input.q !== 'string' || input.q.length < 1 || input.q.length > 2048) return { state: 'refused', reason: 'invalid-query' };
@@ -216,14 +219,14 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
     async gcalCalendars(input: GcalCalendarsInput, signal?: AbortSignal): Promise<GoogleResult> {
       const denied = gate('gcal_calendars');
       if (denied) return { state: 'refused', reason: denied };
-      const bounded = listArgs(input);
+      const bounded = listArgs(input, GOOGLE_DEFAULTS.listResults);
       if (!bounded.ok) return { state: 'refused', reason: bounded.reason };
       return dispatch('gcal_calendars', bounded.args, signal);
     },
     async gcalList(input: GcalListInput, signal?: AbortSignal): Promise<GoogleResult> {
       const denied = gate('gcal_list');
       if (denied) return { state: 'refused', reason: denied };
-      const bounded = listArgs(input);
+      const bounded = listArgs(input, GOOGLE_DEFAULTS.listResults);
       if (!bounded.ok) return { state: 'refused', reason: bounded.reason };
       const calendarId = input.calendarId ?? 'primary';
       if (typeof calendarId !== 'string' || calendarId.length < 1 || calendarId.length > 4096) return { state: 'refused', reason: 'invalid-calendar-id' };

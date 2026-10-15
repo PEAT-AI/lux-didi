@@ -11,7 +11,7 @@ import { connectionsMarkup } from './connector-status';
 import { settingsMarkup } from './settings-view';
 import { answerMarkup } from './markdown';
 import { applyTheme, loadTheme, saveTheme, type Theme } from './theme';
-import type { Session, Entry, Commitment, CommitmentDetail, Plan, Recall, Status, LiveCurrent } from './protocol';
+import type { Session, Entry, Commitment, CommitmentDetail, Plan, Recall, Status, LiveCurrent, ResearchProgressView } from './protocol';
 
 type Tab = 'Conversation' | 'Today' | 'Memory' | 'Settings';
 // --- Three-lane layout, native bridge and the web Live state machine (#255) ---
@@ -89,9 +89,30 @@ function activityLineMarkup() {
   if (key !== activityKey) { activityKey = key; activityStartedAt = Date.now(); }
   return activityMarkup(activity, activity ? Date.now() - activityStartedAt : 0);
 }
+// The lookup line under the orb: one quiet line while Naya looks, source by source (U1).
+const LOOKUP_SOURCE_WORDS: Record<string, string> = { knowledge: 'notes', calendar: 'calendar', mail: 'mail', chat: 'chat' };
+const SLOW_LOOKUP_MS = 6000;
+function lookupLineMarkup(current: LiveCurrent | undefined): string {
+  const entries = current?.entries ?? [];
+  let progress: ResearchProgressView | undefined;
+  for (let index = entries.length - 1; index >= 0; index--) {
+    const candidate = entries[index]!;
+    if (candidate.kind === 'researchProgress' && candidate.progress) { progress = candidate.progress; break; }
+  }
+  if (!progress || progress.phase === 'done' || progress.phase === 'stopped') return '';
+  const done = new Set(progress.sourcesDone);
+  const sources = [...progress.sourcesDone, ...progress.sourcesPending].map(kind => {
+    const word = LOOKUP_SOURCE_WORDS[kind] ?? kind;
+    return done.has(kind)
+      ? `<span class="lookup-source lookup-source-done"><span class="lookup-check" aria-hidden="true">&#10003;</span>${word}</span>`
+      : `<span class="lookup-source">${word}</span>`;
+  });
+  const verb = progress.elapsedMs >= SLOW_LOOKUP_MS ? 'Still looking in' : 'Looking in';
+  return `<p class="lookup-line" role="status" aria-live="polite">${verb} ${sources.join(', ')}</p>`;
+}
 function orbCaptionMarkup() {
   const honesty=!live||live.state==='idle'||live.muted===true;
-  return `<p class="orb-label" role="status" aria-live="polite">${e(orbLabel())}</p>${activityLineMarkup()}${honesty?'<p class="voice-honesty"><strong>Not listening</strong><span>Voice stays on your Mac. Use its native record control.</span></p>':''}`;
+  return `<p class="orb-label" role="status" aria-live="polite">${e(orbLabel())}</p>${activityLineMarkup()}${lookupLineMarkup(live)}${honesty?'<p class="voice-honesty"><strong>Not listening</strong><span>Voice stays on your Mac. Use its native record control.</span></p>':''}`;
 }
 function orbMarkup() {
   const glow = ['CONNECTED','LISTENING','SPEAKING','PROCESSING'].includes(orbState());

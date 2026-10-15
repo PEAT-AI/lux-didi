@@ -120,7 +120,12 @@
 @keyframes activity-pulse{0%,100%{opacity:.35;transform:scale(.8)}50%{opacity:1;transform:scale(1)}}
 @keyframes activity-in{from{opacity:0;transform:translateY(2px)}to{opacity:1;transform:none}}
 @keyframes activity-fade{0%,72%{opacity:1}100%{opacity:0}}
-@media (prefers-reduced-motion:reduce){.activity-line,.activity-done{animation:none}.activity-indicator{animation:none;opacity:.75}}
+/* Lookup line under the orb: one quiet line while Naya looks, each source checked as it lands (U1). */
+.lookup-line{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:6px;max-width:420px;margin:2px auto 0;padding:0 22px 4px;font-size:.84rem;color:var(--muted);animation:activity-in .3s ease-out}
+.lookup-line .lookup-source{display:inline-flex;align-items:center;gap:3px}
+.lookup-source-done{color:var(--green)}
+.lookup-check{color:var(--green);font-weight:700;line-height:1}
+@media (prefers-reduced-motion:reduce){.activity-line,.activity-done,.lookup-line{animation:none}.activity-indicator{animation:none;opacity:.75}}
 /* --- Three-lane layout: rail | Voice | Chat, global header, sheets, live pill. --- */
 .app-shell{flex-direction:column;height:100vh;overflow:hidden}
 .app-header{display:flex;align-items:center;gap:10px;height:56px;flex-shrink:0;padding:0 12px;border-bottom:1px solid var(--border);background:var(--surface);position:relative;z-index:30}

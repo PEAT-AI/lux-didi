@@ -2,17 +2,19 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { createContext, runInContext } from 'node:vm';
+import ts from 'typescript';
 
 // The lookup line is a pure projection of the live entries, so run it straight from main.ts.
-// main.ts has module side effects, so the source block alone runs in a bare vm context.
+// main.ts has module side effects, so the source block alone is transpiled and run in a bare vm.
 function lookupLine(live: unknown): string {
   const source = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
   const start = source.indexOf('const LOOKUP_SOURCE_WORDS');
   const end = source.indexOf('function orbCaptionMarkup()');
   assert.ok(start >= 0 && end > start, 'the lookup line source lives in main.ts');
+  const js = ts.transpileModule(source.slice(start, end), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText;
   const context: Record<string, unknown> = {};
   createContext(context);
-  runInContext(source.slice(start, end), context);
+  runInContext(js, context);
   return (context['lookupLineMarkup'] as (value: unknown) => string)(live);
 }
 
@@ -30,7 +32,7 @@ test('the lookup line names the sources and checks each one that is done', () =>
 
 test('a lookup past six seconds says it is still looking', () => {
   const markup = lookupLine(liveWith([entry({ researchId: 'r1', phase: 'started', sourcesDone: [], sourcesPending: ['calendar', 'mail'], elapsedMs: 6000 })]));
-  assert.match(markup, /Still looking in calendar, mail/);
+  assert.equal(markup.replace(/<[^>]*>/g, ''), 'Still looking in calendar, mail');
 });
 
 test('the line clears on done and on stopped', () => {

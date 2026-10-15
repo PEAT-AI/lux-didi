@@ -2228,7 +2228,7 @@ test('U1: research progress reaches the live channel with metadata only', async 
   await settleLiveTool(h, 'r1', 'research', { action: 'start', question: 'what is on my calendar' });
   const entries = h.owner.current().entries.filter(entry => entry.kind === 'researchProgress');
   assert.ok(entries.length > 0, 'a research progress entry reaches the live channel');
-  const progress = entries.at(-1)!.progress as Record<string, unknown>;
+  const progress = entries.at(-1)!.progress as unknown as Record<string, unknown>;
   assert.deepEqual(Object.keys(progress).sort(), ['elapsedMs', 'phase', 'researchId', 'sourcesDone', 'sourcesPending']);
   assert.ok(['started', 'round', 'done', 'stopped'].includes(String(progress.phase)));
   assert.ok(Array.isArray(progress.sourcesDone) && Array.isArray(progress.sourcesPending));

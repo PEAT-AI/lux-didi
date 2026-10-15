@@ -82,8 +82,14 @@ export interface LivePageProjection {
   jobs?: PendingLiveJob[];
   memory?: LiveMemoryProjection;
   state: 'idle' | 'listening' | 'thinking' | 'speaking' | 'rebuilding' | 'ended' | 'error'; since: number | null;
-  entries: { seq: number; kind: 'continuity' | 'inputTranscription' | 'outputTranscription' | 'toolCall' | 'toolResult' | 'interrupted' | 'turnComplete' | 'terminal'; event?: 'rebuilding' | 'resumed'; reason?: string; text?: string; tool?: { name: string; status: 'called' | 'completed' | 'error'; markdown?: string; sources?: { title: string; url?: string }[] } }[];
+  entries: { seq: number; kind: 'continuity' | 'inputTranscription' | 'outputTranscription' | 'toolCall' | 'toolResult' | 'interrupted' | 'turnComplete' | 'terminal' | 'researchProgress'; event?: 'rebuilding' | 'resumed'; reason?: string; text?: string; tool?: { name: string; status: 'called' | 'completed' | 'error'; markdown?: string; sources?: { title: string; url?: string }[] }; progress?: ResearchProgressView }[];
   cursor: number;
+}
+
+/** Metadata only: the research phase and source kinds, never the question or a result. */
+export interface ResearchProgressView {
+  researchId: string; phase: 'started' | 'round' | 'done' | 'stopped';
+  sourcesDone: string[]; sourcesPending: string[]; elapsedMs: number;
 }
 export interface LiveOwnerConfig {
   readonly tools?: LiveToolsComposition;
@@ -126,7 +132,7 @@ export interface LiveSessionSnapshot {
 export type JournalKind =
   | 'toolCall' | 'toolResult' | 'continuity' | 'remember_deferred'
   | 'inputTranscription' | 'outputTranscription' | 'ready' | 'interrupted' | 'generationComplete'
-  | 'turnComplete' | 'waitingForInput' | 'terminal';
+  | 'turnComplete' | 'waitingForInput' | 'terminal' | 'researchProgress';
 
 export interface LiveFragment {
   waitedMs?: number;

@@ -77,7 +77,8 @@ try {
     assert.equal((await page.locator('#live-panel .live-state').textContent()).trim(),'Speaking');
     assert.equal(await page.getByText('Not listening',{exact:true}).count(),0);
     assert.equal(await page.getByText('what is lux 123',{exact:true}).count(),1);
-    assert.equal(await page.locator('.live-latest-turn').first().getByText('Here is the answer.',{exact:true}).count(),1);
+    assert.equal(await page.locator('.live-latest-turn').count(),1);
+    assert.match(await page.locator('.live-latest-turn').innerText(),/Here is the answer\./);
     const link=page.locator('#live-panel .live-result p a[href="https://example.org"]');
     assert.equal(await link.count(),1);
     assert.equal(await link.getAttribute('rel'),'noopener noreferrer');

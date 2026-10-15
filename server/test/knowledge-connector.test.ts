@@ -231,6 +231,31 @@ test('X2: get_insight normalization accepts every servable id shape and names wh
   assert.equal(norm({ ids: ['not-an-id'] }), undefined, 'an all-unreadable list still refuses');
 });
 
+// K2 (#250): the model sometimes sends several ids inside one string; split it by the
+// separators a list of ids can carry, each token keeping the X2 single-id forms.
+test('K2: get_insight splits a string that holds several ids', () => {
+  const norm = (args: unknown) => normalizeGetInsightArgs(args, 10);
+  assert.deepEqual(norm('89820, 89933'), { args: { ids: [89820, 89933] } }, 'a comma-separated string is split');
+  assert.deepEqual(norm('89820; 89933'), { args: { ids: [89820, 89933] } }, 'a semicolon-separated string is split');
+  assert.deepEqual(norm('89820 89933'), { args: { ids: [89820, 89933] } }, 'a whitespace-separated string is split');
+  assert.deepEqual(norm('[89820, 89933]'), { args: { ids: [89820, 89933] } }, 'JSON array text is parsed');
+  assert.deepEqual(norm('#89820, #89933'), { args: { ids: [89820, 89933] } }, 'prefixed tokens in one string are split');
+  assert.deepEqual(norm({ ids: '89820, 89933' }), { args: { ids: [89820, 89933] } }, 'a multi-id string under `ids` is split');
+  assert.deepEqual(norm({ id: '#89820 89933' }), { args: { ids: [89820, 89933] } }, 'prefixed and separated tokens are all served');
+});
+
+test('K2: a multi-id string drops unreadable tokens, dedupes and caps like a list', () => {
+  const norm = (args: unknown) => normalizeGetInsightArgs(args, 10);
+  const mixed = norm('89820, not-an-id, 89933')!;
+  assert.deepEqual(mixed.args, { ids: [89820, 89933] }, 'the readable tokens are served');
+  assert.match(mixed.notice!, /not-an-id/, 'the dropped token is named');
+  assert.deepEqual(norm('89820, 89820'), { args: { ids: [89820] } }, 'repeated ids dedupe');
+  const many = Array.from({ length: 12 }, (_, i) => 90000 + i).join(', ');
+  const capped = norm(many)!;
+  assert.deepEqual(capped.args.ids, [90000, 90001, 90002, 90003, 90004, 90005, 90006, 90007, 90008, 90009], 'the split list caps at maxGetIds');
+  assert.match(capped.notice!, /first 10/, 'the cap is named');
+});
+
 test('X2: get_insight forwards a requested include_links to the MCP call', async () => {
   const f = await fixture({ call: () => ({ content: [{ type: 'text', text: 'synthetic by-id payload' }] }) });
   const { adapter, registry } = setup(f.url);

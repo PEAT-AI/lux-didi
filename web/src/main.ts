@@ -99,7 +99,7 @@ function orbMarkup() {
 }
 function liveTurns(): number { return live && Array.isArray(live.entries) ? liveTranscript(live).length : 0; }
 function voiceEmptyMarkup() {
-  return `<div class="voice-empty"><div class="voice-orb-large"><canvas id="didi-orb" width="440" height="440" aria-hidden="true"></canvas></div><p class="voice-empty-line">Press Start or \u2318\u21e7Space to talk</p></div>`;
+  return `<div class="voice-empty"><div class="voice-orb-large"><canvas id="didi-orb-large" width="440" height="440" aria-hidden="true"></canvas></div><p class="voice-empty-line">Press Start or \u2318\u21e7Space to talk</p></div>`;
 }
 function voiceBodyMarkup() {
   return liveTurns() ? liveMarkup(live, livePoll) : voiceEmptyMarkup();
@@ -191,7 +191,7 @@ function voiceHeadMarkup() {
   const error = liveErrorText(view.error, view.reason);
   const last = view.lastSessionEndedAt ? `Last session ${e(datetime(view.lastSessionEndedAt))}` : 'No session yet';
   const active = view.state === 'live' || view.state === 'muted' || view.state === 'starting';
-  const orb = '<div class="voice-orb"><canvas id="didi-orb-header" width="120" height="120" aria-hidden="true"></canvas></div>';
+  const orb = '<div class="voice-orb"><canvas id="didi-orb" width="120" height="120" aria-hidden="true"></canvas></div>';
   return `${orb}<div class="voice-status"><p class="voice-state" role="status" aria-live="polite">${e(liveStateCopy(view.state))}</p><p class="voice-time">${last}</p></div><div class="voice-actions">${active ? `<button id="voice-stop" class="stop-pill">Stop</button><button id="voice-mute" class="quiet">${view.state === 'muted' ? 'Unmute' : 'Mute'}</button>` : `<button id="voice-start" class="start-pill" ${startAvailable(view) ? '' : 'aria-disabled="true"'}>Start</button>`}<button id="new-conversation" class="icon-button" aria-label="New conversation" title="New conversation"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button></div>${error ? `<p class="voice-error" role="alert">${e(error)}</p>` : ''}`;
 }
 function chatHeadMarkup() {
@@ -231,8 +231,8 @@ function render() {
   attachMemoryDeleteControls(root, !writable() || busy || connectedView.active, id => void deleteMemory(id));
   const canvas=document.getElementById('didi-orb') as HTMLCanvasElement | null;
   if(canvas)orb=new Orb(canvas,appliedOrbState=orbState());
-  const headCanvas=document.getElementById('didi-orb-header') as HTMLCanvasElement | null;
-  if(headCanvas)orbHeader=new Orb(headCanvas,appliedOrbState??'CONNECTED');
+  const largeCanvas=document.getElementById('didi-orb-large') as HTMLCanvasElement | null;
+  if(largeCanvas)orbHeader=new Orb(largeCanvas,appliedOrbState??'CONNECTED');
   if (focusId) { const next=document.getElementById(focusId) as HTMLInputElement | HTMLTextAreaElement | null; next?.focus({preventScroll:true}); if(selection && next && selection[0]!==null) next.setSelectionRange(selection[0],selection[1]); }
   paintedLivePoll=document.getElementById('live-panel') ? livePoll : undefined;
 }

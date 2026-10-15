@@ -63,9 +63,9 @@ try {
     await page.locator('#connected-send').waitFor(); await page.locator('#didi-orb').waitFor();
     // V2-R1: no turns yet, so the Voice lane shows one calm empty state with the real orb (~180 px), centred.
     await page.locator('.voice-empty').waitFor();
-    const measured = await page.waitForFunction(() => { const o = document.querySelector('#didi-orb'), s = document.querySelector('.voice-empty'); if (!o || !s) return false; const or = o.getBoundingClientRect(), sr = s.getBoundingClientRect(); if (Math.round(or.width) !== 180 || Math.round(or.height) !== 180 || sr.width === 0) return false; return { orb: { x: or.x, y: or.y, width: or.width, height: or.height }, stage: { x: sr.x, y: sr.y, width: sr.width, height: sr.height } }; });
+    const measured = await page.waitForFunction(() => { const o = document.querySelector('#didi-orb-large'), s = document.querySelector('.voice-empty'); if (!o || !s) return false; const or = o.getBoundingClientRect(), sr = s.getBoundingClientRect(); if (Math.round(or.width) !== 180 || Math.round(or.height) !== 180 || sr.width === 0) return false; return { orb: { x: or.x, y: or.y, width: or.width, height: or.height }, stage: { x: sr.x, y: sr.y, width: sr.width, height: sr.height } }; });
     const { orb: desktopOrb, stage } = await measured.jsonValue();
-    assert.ok(await page.locator('#didi-orb').isVisible(), 'V2 desktop empty-state orb canvas is visible');
+    assert.ok(await page.locator('#didi-orb-large').isVisible(), 'V2 desktop empty-state orb canvas is visible');
     assert.equal(Math.round(desktopOrb.width), 180, 'V2 empty-state orb canvas is 180 CSS px wide at 1440');
     assert.equal(Math.round(desktopOrb.height), 180, 'V2 empty-state orb canvas is square');
     assert.ok(Math.abs((desktopOrb.x + desktopOrb.width / 2) - (stage.x + stage.width / 2)) <= 1, 'V2 orb canvas is horizontally centred in the empty state');
@@ -126,7 +126,7 @@ try {
     assert.ok(await page.locator('.lane-switch').isVisible(), 'the narrow switcher is visible');
     assert.equal(await page.locator('#lane-voice').isVisible(), true, 'the Voice segment is visible');
     assert.equal(await page.locator('#lane-chat').isVisible(), false, 'the Chat lane hides behind the switcher');
-    const mobileOrb = await page.locator('#didi-orb').boundingBox();
+    const mobileOrb = await page.locator('#didi-orb-large').boundingBox();
     assert.equal(Math.round(mobileOrb.width), 180, 'V2 narrow empty-state orb canvas is 180 CSS px wide at 375');
     assert.equal(Math.round(mobileOrb.height), 180, 'V2 narrow empty-state orb canvas is square');
     await page.locator('[data-segment="chat"]').click();

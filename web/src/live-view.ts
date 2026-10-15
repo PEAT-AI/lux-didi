@@ -134,7 +134,7 @@ export function liveTranscript(live: LiveCurrent): LiveLine[] {
     const role = entry.kind === 'inputTranscription' ? 'user' : entry.kind === 'outputTranscription' ? 'naya' : undefined;
     if (role && entry.text) {
       const existing = segment.get(role);
-      if (existing) existing.text += joinChunk(existing.text, entry.text);
+      if (existing) existing.text = joinChunk(existing.text, entry.text);
       else segment.set(role, { role, text: entry.text });
     }
     if (entry.kind === 'turnComplete' || entry.kind === 'interrupted' || entry.kind === 'terminal') flush();
@@ -229,7 +229,7 @@ export function liveMarkup(live: LiveCurrent | undefined, poll: LivePollState = 
     const role = entry.kind === 'inputTranscription' ? 'user' : entry.kind === 'outputTranscription' ? 'naya' : undefined;
     if (role && entry.text) {
       const existing = pending.find(line => line.role === role);
-      if (existing) existing.text += joinChunk(existing.text, entry.text);
+      if (existing) existing.text = joinChunk(existing.text, entry.text);
       else pending.push({ role, text: entry.text });
     }
     if (entry.kind === 'turnComplete' || entry.kind === 'interrupted' || entry.kind === 'terminal') flush();

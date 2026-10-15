@@ -10,7 +10,7 @@ const installedProof = readFileSync(new URL('../../Sources/LuxDidi/InstalledProo
 test('the Voice lane is the compact header plus one calm empty state, with the U1 transcript call site kept', () => {
   assert.doesNotMatch(source, /voice-heading|NAYA VOICE|Here with you/);
   assert.match(voice, /voiceEmptyMarkup\(\)/);
-  assert.match(voice, /liveMarkup\(live, livePoll, true\)/, 'X3 merges onto this call site');
+  assert.match(voice, /liveMarkup\(live, livePoll\)/, 'the U1 transcript renderer is the lane body');
   assert.match(voice, /Press Start or/);
   assert.doesNotMatch(voice, /connectionsMarkup\(/);
 });

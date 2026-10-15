@@ -23,7 +23,7 @@ let sessions: Session[] = [], entries: Entry[] = [], session: Session | undefine
 let plan: Plan | undefined, recall: Recall | undefined;
 let recent: Commitment[] = [], editing: Commitment | undefined, detail: CommitmentDetail | undefined;
 let draftOwner: string | undefined;
-let titleDraft = '', queryDraft = '', editTitle = '', editNotes = '', editDue = '', memoryFilter = '';
+let messageDraft = '', titleDraft = '', queryDraft = '', editTitle = '', editNotes = '', editDue = '', memoryFilter = '';
 let notice = '', error = '', busy = false, readBusy = false, pairingBusy = false;
 let pairingRequired = false, sessionMore = false, entriesMore = false;
 let controller: AbortController | undefined;
@@ -232,7 +232,7 @@ async function pairBrowser(code: string){
   finally{if(version===authorityVersion()){pairingBusy=false;render();}}
 }
 function adoptOwner(current: Status){
-  if(draftOwner && draftOwner!==current.assistantId){titleDraft='';queryDraft='';memoryFilter='';}
+  if(draftOwner && draftOwner!==current.assistantId){messageDraft='';titleDraft='';queryDraft='';memoryFilter='';}
   draftOwner=current.assistantId;
 }
 async function connect(background=false) {
@@ -303,7 +303,7 @@ onAuthorityChanged(reason=>{
   connectedView.reset();live=undefined;livePoll={};paintedLivePoll=undefined;connections=[];connectionsStale=false;
   statusUnavailable=false;status=undefined;sessions=[];entries=[];session=undefined;plan=undefined;recall=undefined;recent=[];
   detail=undefined;editing=undefined;editTitle='';editNotes='';editDue='';sessionMore=false;entriesMore=false;error='';notice='';
-  if(reason==='logout'){draftOwner=undefined;titleDraft='';queryDraft='';memoryFilter='';notice='This browser is unpaired.';}
+  if(reason==='logout'){draftOwner=undefined;messageDraft='';titleDraft='';queryDraft='';memoryFilter='';notice='This browser is unpaired.';}
   pairingRequired=reason==='unauthenticated'||reason==='logout';connection=pairingRequired?'Pair this browser':'Disconnected';
   render();if(reason==='changed'){backoff=30000;schedulePoll();}
 });

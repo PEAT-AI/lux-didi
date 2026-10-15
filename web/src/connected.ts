@@ -1,6 +1,6 @@
 import { ApiError, authorityVersion, assertAuthority, request, stream } from './api';
 import { renderToolEvidence } from './markdown.ts';
-import type { Entry, Session, Recall, MemorySelectionSnapshot, ConnectedRouteStatus, ConnectedConsent, Status, ToolEvidence } from './protocol';
+import type { Entry, Session, Recall, MemorySelectionSnapshot, ConnectedRouteStatus, Status, ToolEvidence } from './protocol';
 interface RouteStatus extends ConnectedRouteStatus {}
 interface Conversation { scope: 'conversation' | 'standing'; sessionId: string; provider: string; model: string; state: 'active' | 'revoked' | 'route_changed'; revision: number; permittedClasses: string[]; latestRunId: string | null }
 interface Run { toolEvidence?: ToolEvidence[]; finalEntryId: string | null; runId: string; sessionId: string; state: 'accepted' | 'dispatch_intent' | 'terminal'; outcome: string | null; finalText: string | null; partialText: string; mayHaveBeenSent: boolean; sequence: number; memorySelection: MemorySelectionSnapshot | null }
@@ -332,8 +332,3 @@ export class ConnectedView {
 
 /** The entry already names the speaker, so a leading 'Naya:' from the model is dropped. */
 function answerText(entry: Entry): string { return entry.role === 'assistant' ? entry.text.replace(/^\s*Naya:\s*/, '') : entry.text; }
-
-/** Only a server-resolved grant is passed to this display boundary. */
-export function connectedConsentIndicator(grant: ConnectedConsent): string {
-  return `<p class="connected-consent-indicator" role="status">Connected as ${escape(grant.provider)}, ${escape(grant.scope)} consent${grant.scope === 'standing' && grant.state === 'active' ? ', <button id="connected-standing-revoke" class="secondary">Revoke</button>' : ''}</p>`;
-}

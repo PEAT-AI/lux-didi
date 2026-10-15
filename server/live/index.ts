@@ -10,7 +10,7 @@ import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, validateResearch
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
 import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';
-import type { LiveToolsComposition, LivePageProjection, LiveToolProjection } from './types.js';
+import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, ResearchProgressView } from './types.js';
 import { publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, composeLiveSessionInstruction, connectorGroupNames, toolGroupNames } from '../prompt/index.js';
 import { hostLogEvent } from '../host/log.js';
 import { validateAcceptedPrompt } from './config.js';
@@ -440,6 +440,7 @@ export class LiveSessionOwner {
           const tool = JSON.parse(String(item.tool_json)) as LiveToolProjection;
           entries.push({ seq, kind, tool: kind === 'toolCall' ? { name: tool.name, status: 'called' } : { name: tool.name, status: tool.status, markdown: tool.markdown, sources: tool.sources.map(source => ({ title: source.title, ...(source.url ? { url: source.url } : {}) })) } });
         } else if (kind === 'continuity') entries.push({ seq, kind, ...JSON.parse(String(item.text)) });
+        else if (kind === 'researchProgress') { const p = JSON.parse(String(item.text)) as ResearchProgressView; entries.push({ seq, kind, progress: { researchId: p.researchId, phase: p.phase, sourcesDone: p.sourcesDone, sourcesPending: p.sourcesPending, elapsedMs: p.elapsedMs } }); }
         else if (kind === 'interrupted' || kind === 'turnComplete' || kind === 'terminal') entries.push({ seq, kind });
       }
       return { state, ...(pastSession ? { pastSession } : {}), since: Number(row.created_at), memory: memoryProjection(row['memory_provenance']), ...(jobs.length ? { jobs } : {}), entries, cursor: rows.length ? Number(rows[rows.length - 1]!.journal_id) : cursor };
@@ -1002,7 +1003,14 @@ export class LiveSessionOwner {
     };
     const scheduler = handle.researchScheduler ??= new ResearchScheduler({
       now: () => this.#now(), configured, selector: this.#research, execute,
-      emit: progress => hostLogEvent({ event: 'research_progress', ...progress }),
+      emit: progress => {
+        hostLogEvent({ event: 'research_progress', ...progress });
+        // U1: the voice lane sees the lookup as it runs, on the channel it already polls.
+        if (!this.#settled(handle) && generation === handle.generation) {
+          const view: ResearchProgressView = { researchId: progress.researchId, phase: progress.phase, sourcesDone: [...progress.sourcesDone], sourcesPending: [...progress.sourcesPending], elapsedMs: progress.elapsedMs };
+          this.#persist(handle, { type: 'continuity', sequence: 0, text: JSON.stringify(view) }, 'researchProgress');
+        }
+      },
       log: entry => hostLogEvent(entry), ledger: handle.researchLedger,
     });
     const responses: { id: string; name: string; response: JsonObject }[] = [];

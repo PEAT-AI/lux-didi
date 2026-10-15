@@ -357,7 +357,12 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
         for (const name of p.toolNames) {
           if (definitions.some(d => d.name === name)) throw new ConnectorCompositionError('ambiguous_model_tool_name', p.connectionId, p.connector);
           const declaration = declarations.find(candidate => candidate.name === name);
-          if (!declaration) throw new ConnectorCompositionError('unknown_connector_tool', p.connectionId, p.connector);
+          // A connector capability granted for internal use (Mattermost channel-name resolution)
+          // is absent from the model-facing table; it stays dispatchable through the connector.
+          if (!declaration) {
+            if (descriptor.envelope.includes(name)) continue;
+            throw new ConnectorCompositionError('unknown_connector_tool', p.connectionId, p.connector);
+          }
           definitions.push({ name, description: declaration.description, effect: 'read', accountId: p.endpoint.account, resourceId: p.endpoint.resource, endpointId: p.endpoint.id, validate: declaration.validate,
             parameters: declaration.parameters,
             async execute(args, context) {

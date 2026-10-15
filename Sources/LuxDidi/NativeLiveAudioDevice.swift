@@ -165,6 +165,18 @@ struct NativePlaybackQueue {
 
     static func ms(_ frames: Int) -> Int { frames * 1000 / frameRate }
 }
+/// Contract C1: deterministic wait-cue scheduler skeleton (red stage, implementation follows).
+struct NativeWaitCueScheduler {
+    static let maximumCues = 3
+    enum Event: Equatable { case toolMarker(atMs: Int), drained(atMs: Int), modelAudio(atMs: Int), interrupted(atMs: Int) }
+    mutating func apply(_ event: Event) -> [Int] { [] }
+}
+enum NativeWaitCue {
+    static let amplitude: Float = 0.05
+    static let totalFrames = 1
+    static let noteFrames = 1
+    static func samples() -> [Float] { [] }
+}
 struct NativeAudioCaptureSummary: Sendable {
     let capture: NativeCaptureStatistics
     let drainFrames: Int

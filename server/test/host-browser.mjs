@@ -60,7 +60,15 @@ async function step(name, action) {
   console.log(`HOST browser PASS: ${name}`);
 }
 async function visible(text) { await page.getByText(text, { exact: true }).first().waitFor(); }
-async function tab(name) { if (await page.locator('#sheet').count()) await page.locator('#sheet-close').click(); await page.locator(`[data-tab="${name}"]`).click(); }
+// U1 (#282): both side panels launch collapsed, so a rail item is hidden until the owner opens
+// the panel with its header toggle. Open it the way the owner does and assert the open state.
+async function openPanel(id) {
+  const control = page.locator(`#panel-toggle-${id}`);
+  if (await control.getAttribute('aria-expanded') !== 'true') await control.click();
+  await page.locator(`#panel-${id}[data-state="open"]`).waitFor();
+  assert.equal(await control.getAttribute('aria-expanded'), 'true', `${id} panel toggled open`);
+}
+async function tab(name) { if (await page.locator('#sheet').count()) await page.locator('#sheet-close').click(); await openPanel('left'); await page.locator(`[data-tab="${name}"]`).click(); }
 async function submit(id) { await page.locator(`${id} button[type="submit"], ${id} button:not([type])`).first().click(); }
 let sessionId, entryId, commitmentId, originalEpoch, originalAssistant;
 try {
@@ -97,6 +105,13 @@ try {
     assert.doesNotMatch(await page.locator('body').innerText(), /Cannot read properties|displayName/);
     assert.equal(await page.locator('#live-panel ol').count(), 0);
     assert.ok(await page.locator('#connected-send').isDisabled());
+  });
+  await step('collapsed side panels hide their rail items until the owner opens them', async () => {
+    assert.equal(await page.locator('#panel-toggle-left').getAttribute('aria-expanded'), 'false');
+    assert.equal(await page.locator('[data-tab="Memory"]').isVisible(), false, 'a collapsed panel renders none of its rail items');
+    await page.screenshot({ path: join(artifacts, 'desktop-panels-collapsed.png'), fullPage: true });
+    await openPanel('left');
+    assert.equal(await page.locator('[data-tab="Memory"]').isVisible(), true, 'the opened panel renders its rail items');
   });
   await step('shipped conversation renders meaningful durable text', async () => {
     const created = await api('/sessions', 'POST', { title: 'Host browser conversation', timeZone: 'UTC' });

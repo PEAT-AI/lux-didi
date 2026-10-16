@@ -172,11 +172,20 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
         .map(id => tx.get("SELECT id, summary FROM conversation_summaries WHERE id=? AND status='complete'", [id]))
         .filter((row): row is NonNullable<typeof row> => !!row && typeof row['summary'] === 'string')
         .map(row => ({ id: String(row['id']), summary: String(row['summary']) }));
-      return { transcript, injected };
+      const grant = tx.get('SELECT chosen_input_class FROM live_grants WHERE live_session_id=?', [liveSessionId]);
+      const dataClass = grant && typeof grant['chosen_input_class'] === 'string' ? String(grant['chosen_input_class']) : 'ordinary';
+      return { transcript, injected, dataClass };
     });
     if (!prepared) return;
     const { transcript, injected } = prepared;
     const endedAt = transcript.endedAt ?? options.now();
+    // Privacy: only ordinary-class Live sessions are distilled; anything else is sealed skipped,
+    // mirroring the voice memory source which never lets a non-ordinary label leave the port.
+    if (prepared.dataClass !== 'ordinary') {
+      options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, status: 'skipped', endedAt, inputTruncated: !!runOptions.deadHost, injectedSummaryIds: injected.map(i => i.id), now: options.now() }));
+      options.log({ event: 'conversation_summary_skipped', liveSessionId, reason: 'non_ordinary' });
+      return;
+    }
     if (transcript.ownerTurns < SUMMARY_MIN_OWNER_TURNS) {
       options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, status: 'skipped', endedAt, inputTruncated: !!runOptions.deadHost, injectedSummaryIds: injected.map(i => i.id), now: options.now() }));
       options.log({ event: 'conversation_summary_skipped', liveSessionId, reason: 'too_few_turns' });

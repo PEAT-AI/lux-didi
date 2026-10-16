@@ -520,7 +520,7 @@ test('durable diagnostics rotate privately and persist only safe structured even
 
 test('host diagnostics admit the release 3c metadata-only events and strip free text', () => {
   const researchId = '3f2a9c1e-0b7d-4a2f-9c3e-1d2b3a4c5d6e';
-  const run = { event: 'research_run', researchId, questionClass: 'quick_fact', rounds: 2, perRound: [{ candidates: [{ kind: 'calendar_window', pUseful: 0.6 }], chosen: ['calendar_window'] }], stopReason: 'answered', status: 'answered', ops: 3, sources: [{ kind: 'calendar', disposition: 'completed', latencyMs: 12 }], elapsedMs: 120, deadAirMs: 5, selectorMs: 20, fallbackUsed: false, replyBytes: 340, driver: 'selector' };
+  const run = { event: 'research_run', researchId, questionClass: 'quick_fact', rounds: 2, perRound: [{ candidates: [{ kind: 'calendar_window', pUseful: 0.6 }], chosen: ['calendar_window'] }], stopReason: 'answered', status: 'answered', ops: 3, sources: [{ kind: 'calendar', disposition: 'completed', latencyMs: 12 }], elapsedMs: 120, deadAirMs: 5, selectorMs: 20, fallbackUsed: false, replyBytes: 340, driver: 'selector', unchecked: ['mail'], canContinue: true, findingChars: [12] };
   assert.deepEqual(safeEvent(run), run);
   // #260: the three drivers are admitted as an enum; the run line keeps the field it was given.
   for (const driver of ['selector', 'fallback', 'single-source-hint']) {

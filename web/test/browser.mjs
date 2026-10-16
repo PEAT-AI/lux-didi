@@ -254,12 +254,15 @@ try {
     };
 
     // Idle default at three widths: the orb is the hero, the feed sits below it and never covers it.
+    fixture.setLive(session('idle', '2026-10-11T16:00:00Z', 0, []));
+    await page.reload();
+    await page.locator('#didi-orb').waitFor();
     await collapsePanels();
     await page.waitForFunction(() => document.querySelector('.app-shell')?.dataset.left === 'collapsed' && document.querySelector('.app-shell')?.dataset.right === 'collapsed', { timeout: 4000 });
     for (const [w, h] of [[900, 700], [1440, 900], [2000, 1250]]) {
       await page.setViewportSize({ width: w, height: h });
       fixture.setLive(session('idle', '2026-10-11T16:00:00Z', 0, []));
-      await page.waitForFunction(() => document.querySelector('.feed-empty'), null, { timeout: 12000 }).catch(async error => { console.error('FE1-DIAG', w, JSON.stringify(await page.evaluate(() => ({ state: document.querySelector('.voice-state')?.textContent, panel: document.querySelector('#live-panel')?.outerHTML })))); throw error; });
+      await page.waitForFunction(() => document.querySelector('.feed-empty'), null, { timeout: 12000 });
       const geo = await page.evaluate(() => {
         const lane = document.querySelector('#lane-voice').getBoundingClientRect();
         const orb = document.querySelector('.orb-stage').getBoundingClientRect();

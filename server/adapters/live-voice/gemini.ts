@@ -8,8 +8,14 @@ import { LiveVoiceError, liveVoiceActivityDefaults, liveVoiceTimerDefaults } fro
 const networkErrors = new Set(['ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ECONNREFUSED', 'ECONNABORTED', 'ENETUNREACH', 'EHOSTUNREACH', 'ENOTFOUND', 'EAI_AGAIN']);
 const ENDPOINT = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent';
 const FRESH_OPENING = 'Greet the person briefly to begin the conversation.';
+const FRESH_OPENING_ACCENT = 'Greet the person briefly to begin the conversation, speaking in this voice and accent: ';
 // 3.8-only tool-response tail: keep the model speaking in the composed voice after tool data.
 const TOOL_VOICE_ANCHOR = 'Answer aloud in your own words, briefly, in the voice and accent defined for Naya; do not read raw text, ids or URLs.';
+const TOOL_VOICE_ANCHOR_ACCENT = 'Answer aloud in your own words, briefly, in this voice and accent: ';
+const TOOL_VOICE_ANCHOR_TAIL = '. Do not read raw text, ids or URLs.';
+// A carried accent restates at each recency frontier; without one every text is byte-identical to before.
+const freshOpening = (accent: string | undefined): string => accent === undefined ? FRESH_OPENING : `${FRESH_OPENING_ACCENT}${accent}`;
+const toolVoiceAnchor = (accent: string | undefined): string => accent === undefined ? TOOL_VOICE_ANCHOR : `${TOOL_VOICE_ANCHOR_ACCENT}${accent}${TOOL_VOICE_ANCHOR_TAIL}`;
 // Issue 1014: the one Live write tool. It is declared NON_BLOCKING and its reply is scheduled SILENT,
 // so a memory save never interrupts the turn; every read tool stays BLOCKING.
 const MEMORY_TOOL = 'remember_note';
@@ -96,8 +102,10 @@ export class GeminiLiveVoiceAdapter implements LiveVoicePort {
     if (!object(request) || !object(request.system) || typeof request.system.text !== 'string' || !request.system.text.length
       || (request.history !== undefined && !Array.isArray(request.history))) fail('invalid_request');
     if (request.opening !== undefined && request.opening !== 'user_first' && request.opening !== 'model_first') fail('invalid_request');
+    if (request.voiceAccent !== undefined && (typeof request.voiceAccent !== 'string' || !request.voiceAccent.length)) fail('invalid_request');
     if (request.resumptionHandle !== undefined && (typeof request.resumptionHandle !== 'string' || !request.resumptionHandle.length || request.resumptionHandle.length > 8192)) fail('invalid_request');
     const opening = request.opening ?? 'user_first';
+    const accent = request.voiceAccent;
     const declared = classList(request.dataClasses, 'invalid_request');
     if (declared.some(c => !settings.allowed.includes(c))) fail('route_denied');
     const checkClass = (value: unknown) => {
@@ -131,11 +139,11 @@ export class GeminiLiveVoiceAdapter implements LiveVoicePort {
     } });
     const initial = request.resumptionHandle ? undefined : history.length
       ? JSON.stringify({ clientContent: { turns: history, turnComplete: opening === 'model_first' } })
-      : opening === 'model_first' ? JSON.stringify({ realtimeInput: { text: FRESH_OPENING } }) : undefined;
+      : opening === 'model_first' ? JSON.stringify({ realtimeInput: { text: freshOpening(accent) } }) : undefined;
     if (Buffer.byteLength(setup) > settings.limits.maxOutgoingBytes || (initial && Buffer.byteLength(initial) > settings.limits.maxOutgoingBytes)) fail('outgoing_limit');
     if (!object(control) || !(control.signal instanceof AbortSignal) || !Number.isSafeInteger(control.deadlineMs)
       || control.deadlineMs <= 0 || control.deadlineMs - Date.now() > 2_147_483_647) fail('invalid_request');
-    return new Session(settings, declared, setup, initial, control.signal, control.deadlineMs, control.idleResetMs ?? settings.limits.idleMs, live38);
+    return new Session(settings, declared, setup, initial, control.signal, control.deadlineMs, control.idleResetMs ?? settings.limits.idleMs, live38, accent);
   }
 }
 
@@ -178,7 +186,7 @@ class Session implements LiveVoiceSession {
   private creatingSocket = false;
   constructor(private readonly settings: Settings, private readonly declared: readonly DataClass[], setup: string, initial: string | undefined,
     private readonly signal: AbortSignal, private readonly deadlineMs: number, private readonly idleResetMs: number,
-    private readonly acceptsEmptyReadyLifecycle: boolean) {
+    private readonly acceptsEmptyReadyLifecycle: boolean, private readonly voiceAccent: string | undefined) {
     // Failure remains observable through ready/done/events, without an unhandled rejection.
     void this.ready.catch(() => {});
     let consumed = false;
@@ -505,7 +513,7 @@ class Session implements LiveVoiceSession {
     // 3.8 Live only: a last, non-schema key on each response keeps the reply in Naya's voice
     // right after the tool data; other models keep the exact response object.
     const responses = live38Pattern.test(this.settings.modelId)
-      ? input.responses.map(r => ({ ...r, ...(r.name === MEMORY_TOOL ? { scheduling: 'SILENT' } : {}), response: { ...r.response, _voice_anchor: TOOL_VOICE_ANCHOR } }))
+      ? input.responses.map(({ id, name, response }) => ({ id, name, ...(name === MEMORY_TOOL ? { scheduling: 'SILENT' } : {}), response: { ...response, _voice_anchor: toolVoiceAnchor(this.voiceAccent) } }))
       : input.responses;
     const frame = JSON.stringify({ toolResponse: { functionResponses: responses } });
     if (this.write(frame)) this.pendingCalls = [];

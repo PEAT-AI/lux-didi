@@ -342,19 +342,19 @@ test('P1: the tool conduct forbids narrating during a tool run', () => {
   assert.match(NAYA_TOOLS, /three to five word/i);
 });
 
-test('P1: exactly one LANGUAGE line and the accent lives only in the head block', () => {
+test('P1: exactly one LANGUAGE line, the accent leads the head block and is restated at the terminal anchor', () => {
   const accent = 'strong Indian accent with a warm lilt';
   const overlay: PersonaOverlay = { schemaVersion: 1, text: 'Overlay persona block', accent };
   const result = composeLiveInstruction({ base: NAYA_BASE, overlay, language: 'en' });
   assert.equal(result.text.split('LANGUAGE:').length - 1, 1, 'one language line');
   const head = result.sections.find(section => section.id === 'voice-head');
   assert.ok(head, 'the head voice block is its own section');
-  assert.equal(result.text.split(accent).length - 1, 1, 'the accent text appears exactly once');
   const accentAt = result.text.indexOf(accent);
   assert.ok(accentAt !== -1 && accentAt < result.text.indexOf(NAYA_BASE), 'the accent is stated in the head block before the base');
   const anchorAt = result.text.lastIndexOf('FINAL VOICE ANCHOR:');
   assert.ok(anchorAt > accentAt && result.text.slice(anchorAt).includes('accent defined at the top'), 'the anchor references the head accent');
-  assert.doesNotMatch(result.text.slice(anchorAt), new RegExp(accent), 'the terminal anchor never repeats the accent in full');
+  assert.ok(result.text.slice(anchorAt).includes(`VOICE AND ACCENT (repeat): ${accent}`), 'the terminal anchor restates the accent in full');
+  assert.equal(result.text.split(accent).length - 1, 2, 'the accent leads the head block and is restated once at the anchor');
   assert.doesNotMatch(result.text, /ACCENT: /);
 });
 

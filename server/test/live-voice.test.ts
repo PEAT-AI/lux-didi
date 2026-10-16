@@ -855,7 +855,7 @@ test('P3: a carried voice accent restates the tool anchor and _voice_anchor is t
   assert.equal(entry.response._voice_anchor, `Answer aloud in your own words, briefly, in this voice and accent: ${accent}. Do not read raw text, ids or URLs.`);
   assert.equal(Object.keys(entry.response).at(-1), '_voice_anchor', '_voice_anchor is the last key of the response');
   assert.equal(Object.keys(entry).at(-1), 'response', 'the anchor-bearing response is the last key of the serialised entry');
-  assert.ok(serialised.endsWith(`Do not read raw text, ids or URLs."}}`), 'the serialised entry closes on the accent restatement');
+  assert.ok(serialised.endsWith('Do not read raw text, ids or URLs."}}]}}'), 'the serialised frame closes on the accent restatement');
 });
 
 test('P2: a carried voice accent restates the model-first opening nudge', async t => {

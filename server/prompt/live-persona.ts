@@ -45,6 +45,8 @@ export const MEMORY_SECTION_CHAR_LIMIT = 1_500;
 /** Owner lore is dense; it is clipped to this many characters and never yielded. */
 export const OWNER_LORE_CHAR_LIMIT = 5_000;
 const separator = '\n\n';
+/** The closed set of Live instruction section ids; the host-log allowlist validates against it. */
+export const LIVE_INSTRUCTION_SECTION_IDS = Object.freeze(['voice-head', 'base', 'runtime', 'tools', 'owner-style', 'owner-lore', 'overlay', 'pickup', 'memory', 'voice'] as const);
 // Generic lead voice block: the accent text comes only from the overlay or the input accent.
 const VOICE_HEAD_PREFIX = 'VOICE AND ACCENT (every turn, including right after tool results): ';
 function headVoiceBlock(accent: string | undefined): string | undefined {
@@ -170,11 +172,15 @@ function displayLanguage(code: string): string {
   catch { return code; }
 }
 
-function voiceAnchor(language: string | undefined): string {
+function voiceAnchor(language: string | undefined, accent: string | undefined): string {
   const languageLine = language === undefined
     ? 'LANGUAGE: Speak in the language the user uses.'
     : `LANGUAGE: Speak and answer in ${displayLanguage(language)} by default.`;
-  const final = 'FINAL VOICE ANCHOR: hold the voice and accent defined at the top for every turn, including immediately after reading or summarizing tool results; never drift to a neutral or other accent. Begin speaking now as Naya.';
+  const final = [
+    'FINAL VOICE ANCHOR: hold the voice and accent defined at the top for every turn, including immediately after reading or summarizing tool results; never drift to a neutral or other accent.',
+    ...(accent !== undefined ? [`VOICE AND ACCENT (repeat): ${accent}`] : []),
+    'Begin speaking now as Naya.',
+  ].join(' ');
   return [languageLine, final].join(separator);
 }
 
@@ -193,7 +199,7 @@ function assemble(parts: readonly string[]): string { return parts.join(separato
 export function composeLiveInstruction(input: ComposeLiveInstructionInput): ComposedLiveInstruction {
   if (!input || typeof input.base !== 'string' || !input.base.length) throw new PersonaOverlayError('invalid_overlay');
   const head = headVoiceBlock(input.overlay?.accent ?? input.accent);
-  const voice = voiceAnchor(input.language);
+  const voice = voiceAnchor(input.language, input.overlay?.accent ?? input.accent);
   const owner = input.ownerProfile === undefined ? [] : ownerProfileSections(input.ownerProfile)
     .map(section => ({ id: section.id, text: `[${section.id}]\n${section.text}` }));
   const ownerLore = owner.filter(section => section.id === 'owner-lore')

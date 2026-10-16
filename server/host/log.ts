@@ -2,6 +2,7 @@ import { clientDiagnostic } from '../http/routes.js';
 import { TOOL_FAILURE_CODES } from '../adapters/model/types.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 import { ConfigError } from '../config/files.js';
+import { LIVE_INSTRUCTION_SECTION_IDS } from '../prompt/live-persona.js';
 import { closeSync, constants, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, renameSync, unlinkSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -76,12 +77,23 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
       'localWriteEnqueuedCalls','localWriteEnqueuedPCMBytes','localWriteCallbackSuccessCalls','localWriteCallbackSuccessPCMBytes',
       'localWriteCallbackErrorCalls','localWriteCallbackErrorPCMBytes','localWriteCallbackPendingCalls','localWriteCallbackPendingPCMBytes',
       'inputTranscriptionEvents','inputTranscriptionCharacters','generationCompleteEvents','turnCompleteEvents','outputAudioFrames','outputAudioPCMBytes',
-      'outputAudioAfterInitialTurnFrames','outputAudioAfterInitialTurnPCMBytes'];
+      'outputAudioAfterInitialTurnFrames','outputAudioAfterInitialTurnPCMBytes','headVoiceChars','terminalVoiceChars','toolAnchorChars'];
     const keys = ['event','terminalCode',...numeric].sort();
     if (Object.keys(value).sort().join(',') !== keys.join(',') || typeof value.terminalCode !== 'string'
       || !/^[a-z][a-z0-9_]{0,63}$/.test(value.terminalCode)
       || numeric.some(key => !Number.isSafeInteger(value[key]) || Number(value[key]) < 0)) return;
     return Object.fromEntries(['event','terminalCode',...numeric].map(key => [key, value[key]]));
+  }
+  if (value.event === 'live_instruction_sizes') {
+    // Closed shape: a total and per-section character counts only, every id a known section, never text.
+    if (Object.keys(value).sort().join(',') !== ['event','total','sections'].sort().join(',')) return;
+    if (!Number.isSafeInteger(value.total) || Number(value.total) < 0) return;
+    const sections = value.sections;
+    if (!sections || typeof sections !== 'object' || Array.isArray(sections)) return;
+    const ids = Object.keys(sections);
+    if (ids.length > 16 || ids.some(id => !(LIVE_INSTRUCTION_SECTION_IDS as readonly string[]).includes(id)
+      || !Number.isSafeInteger((sections as Record<string, unknown>)[id]) || Number((sections as Record<string, unknown>)[id]) < 0)) return;
+    return { event: 'live_instruction_sizes', total: value.total, sections: Object.fromEntries(ids.map(id => [id, (sections as Record<string, unknown>)[id]])) };
   }
   if (value.event === 'live_frame_rejected') {
     // Closed shape: code, error constructor name, frame kind, byte length and key-name paths only, never a value or id.

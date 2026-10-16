@@ -26,6 +26,8 @@ test('public template is content-versioned; sections/order/hashes are determinis
   const a = compilePrompt(input()); const b = compilePrompt(input());
   assert.deepEqual(a, b);
   assert.match(PUBLIC_PERSONA, /^You are Didi, a personal AI assistant\./);
+  assert.match(PUBLIC_PERSONA, /Scale depth to the question: quick requests get quick answers, substantive questions get the reasoning, the tradeoffs and a pointed counterquestion where it helps\./);
+  assert.ok(!/Keep spoken answers brief/.test(PUBLIC_PERSONA), 'the written-vs-spoken brevity rule is gone');
   assert.ok(a.system.includes(PUBLIC_PERSONA));
   assert.equal(PROMPT_VERSION, 'didi-v1-' + createHash('sha256').update(PUBLIC_PERSONA + '\n\n' + a.system.split('[rules]\n')[1]!.split('\n\n[preferences]')[0]!).digest('hex'));
   assert.deepEqual(a.manifest.sections.map(s => s.id), ['persona', 'rules', 'preferences', 'capabilities']);

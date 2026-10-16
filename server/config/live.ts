@@ -1,4 +1,4 @@
-import { canonicalSpeechLanguage, composeLiveInstruction, loadPersonaOverlay, NAYA_BASE, PersonaOverlayError, publicOwnerProfile, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, type OwnerProfileSnapshot } from '../prompt/index.js';
+import { canonicalSpeechLanguage, composeLiveInstruction, loadPersonaOverlay, NAYA_LIVE_BASE, PersonaOverlayError, publicOwnerProfile, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, type OwnerProfileSnapshot } from '../prompt/index.js';
 import { dirname, join } from 'node:path';
 import type { DataClass } from '../adapters/live-voice/index.js';
 import { compileVoiceInstruction, createCapabilitySnapshot, PROMPT_VERSION, validatePreferences, type ValidatedPreferences } from '../prompt/index.js';
@@ -105,7 +105,7 @@ export function loadLiveConfig(options: { configDir: string; ownerId: string; ow
     if (input['enabled'] === false) return { status: 'disabled', config };
     // Freeze the Naya baseline and voice anchor; the validated overlay joins at session CREATE.
     const composed = composeLiveInstruction({
-      base: NAYA_BASE,
+      base: NAYA_LIVE_BASE,
       ...(overlay?.accent !== undefined ? { accent: overlay.accent } : {}),
       ...(language !== undefined ? { language } : {}),
     });
@@ -115,7 +115,7 @@ export function loadLiveConfig(options: { configDir: string; ownerId: string; ow
       capabilities: createCapabilitySnapshot([], []), trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
     });
     const accepted = composeLiveInstruction({
-      base: NAYA_BASE, ownerProfile,
+      base: NAYA_LIVE_BASE, ownerProfile,
       ...(overlay?.accent !== undefined ? { accent: overlay.accent } : {}),
       ...(language !== undefined ? { language } : {}),
     });

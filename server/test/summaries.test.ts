@@ -8,7 +8,7 @@ import { domainMigrations } from '../domain/schema.js';
 import { liveMigrations } from '../live/schema.js';
 import * as summaries from '../domain/summaries.js';
 import { buildEarlierConversationsSection } from '../prompt/live-persona.js';
-import { composeLiveSessionInstruction, NAYA_BASE, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, composeLiveInstruction } from '../prompt/live-persona.js';
+import { composeLiveSessionInstruction, NAYA_LIVE_BASE, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, composeLiveInstruction } from '../prompt/live-persona.js';
 import { compilePrompt, createCapabilitySnapshot, PROMPT_VERSION, validatePreferences } from '../prompt/index.js';
 import type { ModelControl, ModelPort, ModelRequest, ModelResult, Transport } from '../adapters/model/types.js';
 import { GeminiAdapter } from '../adapters/model/index.js';
@@ -298,7 +298,7 @@ test('voice and text chat render the same summary for the same past session', ()
     assert.equal(section.selectedIds.length, 1);
     assert.match(section.section, /moved to Lisbon/);
 
-    const baseline = composeLiveInstruction({ base: NAYA_BASE, language: 'en' });
+    const baseline = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en' });
     const voice = composeLiveSessionInstruction({ text: baseline.text, tools: [], records: [],
       trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, earlierConversations: section.section });
     assert.equal(voice.earlierConversationsIncluded, true);

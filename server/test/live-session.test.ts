@@ -32,7 +32,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadLiveConfig, liveSetupLanguage } from '../config/live.js';
-import { NAYA_BASE, NAYA_TOOLS, MEMORY_SECTION_CHAR_LIMIT, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
+import { NAYA_LIVE_BASE, NAYA_TOOLS, MEMORY_SECTION_CHAR_LIMIT, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
 import { GeminiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
 import type { GeminiLiveVoiceOptions, LiveVoiceLimits, LiveVoiceRequest } from '../adapters/live-voice/index.js';
 import { chatMigrations } from '../chat/index.js';
@@ -739,7 +739,7 @@ test('tool-enabled Live CREATE freezes an expanded classified owner system byte 
   const h = await harness(t, { tools: true, routeClasses: ['ordinary', 'private', 'sensitive'], acceptedPrompt: ownerId => {
     const ownerProfile = { schemaVersion: 1 as const, kind: 'profile' as const, ownerId, profileVersion: 'fixture', displayName: 'Example',
       style: { text: style, dataClass: 'private' as const }, lore: { text: lore, dataClass: 'sensitive' as const } };
-    expectedSystem = composeLiveInstruction({ base: NAYA_BASE, ownerProfile, language: 'en' }).text;
+    expectedSystem = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile, language: 'en' }).text;
     return { schemaVersion: 1, ownerProfile, compilerVersion: PROMPT_VERSION,
       system: expectedSystem, dataClasses: ['ordinary', 'private', 'sensitive'] };
   } });
@@ -1539,8 +1539,8 @@ function writePrivate(dir: string, name: string, text: string): void {
 test('Live attach setup carries the composed Naya instruction and the bare language code', async t => {
   const h = await harness(t);
   const overlay = { schemaVersion: 1 as const, text: 'SYNTHETIC local overlay persona', greeting: 'Synthetic greeting' };
-  const composed = composeLiveInstruction({ base: NAYA_BASE, overlay, language: 'de' });
-  assert.ok(composed.text.includes(NAYA_BASE), 'composed instruction carries the public base');
+  const composed = composeLiveInstruction({ base: NAYA_LIVE_BASE, overlay, language: 'de' });
+  assert.ok(composed.text.includes(NAYA_LIVE_BASE), 'composed instruction carries the public base');
   const acceptedPrompt = { schemaVersion: 1, ownerProfile: { schemaVersion: 1, kind: 'default', ownerId: h.store.assistantId, displayName: 'Lux Didi' },
     compilerVersion: PROMPT_VERSION, system: composed.text, dataClasses: ['ordinary'] };
   const profile = validateLiveProfile({ ...profileInput(), language: 'de', acceptedPrompt });
@@ -1578,8 +1578,8 @@ test('loadLiveConfig keeps public prompt bytes and composes classified owner sec
   const status = loadLiveConfig({ configDir, ownerId: 'synthetic-owner', ownerProfile });
   assert.equal(status.status, 'configured');
   if (status.status === 'configured') {
-    const expected = composeLiveInstruction({ base: NAYA_BASE, accent: overlay.accent, language: 'de' });
-    const accepted = composeLiveInstruction({ base: NAYA_BASE, ownerProfile, accent: overlay.accent, language: 'de' });
+    const expected = composeLiveInstruction({ base: NAYA_LIVE_BASE, accent: overlay.accent, language: 'de' });
+    const accepted = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile, accent: overlay.accent, language: 'de' });
     assert.deepEqual(status.config.profile.overlay, overlay);
     assert.equal(status.config.profile.language, 'de-DE', 'the owner regional tag is kept for the setup frame');
     assert.equal(status.config.profile.prompt.text, expected.text);
@@ -1841,7 +1841,7 @@ test('the anchor diagnostics report the serialized anchors, not the overlay acce
   const accent = 'SYNTHETIC-ACCENT-DESCRIPTION';
   const overlay = { schemaVersion: 1 as const, text: 'SYNTHETIC overlay persona', accent };
   // The anchor is composed with the bare primary language (AC1), while the setup frame carries the owner tag.
-  const composed = composeLiveInstruction({ base: NAYA_BASE, overlay, language: 'en' });
+  const composed = composeLiveInstruction({ base: NAYA_LIVE_BASE, overlay, language: 'en' });
   const sectionChars = (id: string): number => composed.sections.find(section => section.id === id)?.chars ?? 0;
   const h = await harness(t, { language: 'en-IN', overlay, acceptedPrompt: ownerId => ({
     schemaVersion: 1, ownerProfile: { schemaVersion: 1, kind: 'default', ownerId, displayName: 'Lux Didi' },
@@ -1871,7 +1871,7 @@ test('AC2: with no accent the head and tool anchors are absent while the termina
   const lines: string[] = [];
   t.mock.method(console, 'error', (...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
   const overlay = { schemaVersion: 1 as const, text: 'SYNTHETIC overlay persona' };
-  const composed = composeLiveInstruction({ base: NAYA_BASE, overlay, language: 'en' });
+  const composed = composeLiveInstruction({ base: NAYA_LIVE_BASE, overlay, language: 'en' });
   const sectionChars = (id: string): number => composed.sections.find(section => section.id === id)?.chars ?? 0;
   const h = await harness(t, { language: 'en', overlay, acceptedPrompt: ownerId => ({
     schemaVersion: 1, ownerProfile: { schemaVersion: 1, kind: 'default', ownerId, displayName: 'Lux Didi' },

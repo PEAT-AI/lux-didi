@@ -42,6 +42,7 @@ async function auditLayout(page) {
         labels: document.querySelectorAll('.live-turns .entry strong, .live-turns .entry header').length,
         scrollDistance: transcript ? Math.max(0, rn(transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight)) : null,
         jumpVisible: pillVoice ? !pillVoice.hidden : null,
+        viewportWidth: window.innerWidth,
       },
       chat: {
         visible: vis('#panel-right'),
@@ -67,7 +68,7 @@ function assertAudit(a, label, failures) {
   const bad = m => failures.push(m);
   const inb = (v, lo, hi, what) => { if (!(v >= lo && v <= hi)) bad(`${label} ${what}: ${v} not in [${lo},${hi}]`); };
   if (a.voice.visible) {
-    if (a.voice.stageHeight && a.voice.laneHeight) inb(a.voice.stageHeight / a.voice.laneHeight, 0.28, 0.48, 'orb stage share of the lane');
+    if (a.voice.stageHeight && a.voice.laneHeight) { const narrow = a.voice.viewportWidth < 900; inb(a.voice.stageHeight / a.voice.laneHeight, narrow ? 0.28 : 0.34, 0.44, 'orb stage share of the lane'); }
     if (a.voice.stageHeight && a.voice.orb) inb(a.voice.orb / a.voice.stageHeight, 0.52, 0.58, 'orb diameter of the stage');
     if (a.voice.orbCentre !== null) inb(a.voice.orbCentre, 0, 1, 'orb centred in the stage');
     if (a.voice.column > 760) bad(`${label} voice column wider than 760: ${a.voice.column}`);
@@ -269,7 +270,7 @@ try {
         const feed = document.querySelector('.transcript').getBoundingClientRect();
         return { share: orb.height / lane.height, feedTop: feed.top, orbBottom: orb.bottom };
       });
-      assert.ok(geo.share >= 0.30 && geo.share <= 0.48, `the orb area is 34-44% of the voice lane (${(geo.share * 100).toFixed(0)}% at ${w})`);
+      assert.ok(geo.share >= 0.34 && geo.share <= 0.44, `the orb area is 34-44% of the voice lane (${(geo.share * 100).toFixed(0)}% at ${w})`);
       assert.ok(geo.feedTop >= geo.orbBottom - 1, 'the feed starts below the orb, which is never covered');
       await shoot(`idle-${w}.png`);
     }
@@ -293,7 +294,7 @@ try {
     ]));
     await page.waitForFunction(() => document.querySelectorAll('#live-panel .live-tool-result').length === 1, null, { timeout: 12000 });
     const orbHandle = await page.evaluateHandle(() => document.querySelector('#didi-orb'));
-    const rowHandle = await page.evaluateHandle(() => document.querySelector('.live-turns [data-seg="tool:4"]'));
+    const segsBefore = await page.evaluate(() => [...document.querySelectorAll('.live-turns > *')].map(n => n.dataset.seg ?? n.className));
     fixture.setLive(session('speaking', '2026-10-12T09:00:00Z', 4, [
       { seq: 1, kind: 'inputTranscription', text: 'what is on my calendar' },
       { seq: 2, kind: 'toolCall', tool: { name: 'search_calendar', status: 'pending' } },
@@ -301,8 +302,10 @@ try {
       { seq: 4, kind: 'toolResult', tool: { name: 'search_calendar', status: 'completed', markdown: 'review at 10:00' } },
     ]));
     await page.waitForFunction(() => document.querySelector('.live-turns')?.textContent?.includes('standup at 2'), null, { timeout: 12000 });
-    assert.ok(await orbHandle.evaluate(el => el === document.querySelector('#didi-orb')), 'the orb instance survives a poll, never torn down');
-    assert.ok(await rowHandle.evaluate(el => el === document.querySelector('.live-turns [data-seg="tool:4"]')), 'an existing feed row survives the poll in place');
+    const segsNow = await page.evaluate(() => [...document.querySelectorAll('.live-turns > *')].map(n => n.dataset.seg ?? n.className));
+    assert.ok(await orbHandle.evaluate(el => el === document.querySelector('#didi-orb')), 'the orb instance survives a poll, so no full render tears the feed down');
+    assert.deepEqual(segsNow, segsBefore, 'the feed keeps the same rows across the poll while the answer extends in place');
+    assert.match(await page.locator('.live-turns').innerText(), /standup at 2/, 'the streaming answer extended in place');
     await shoot('call-result-card.png');
 
     // Scroll up: "Back to live" appears, and a background poll never yanks the reader back.

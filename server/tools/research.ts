@@ -706,22 +706,27 @@ export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResul
       for (const line of raw.filter(entry => entry.startsWith('- '))) {
         const parts = line.slice(2).replace(/\s*\[id [^\]]+\]/g, '').trim().split(' | ');
         const subject = parts[0] ?? '';
-        const sender = parts[1] ?? '';
-        const date = (parts[2] ?? '').trim();
-        const excerpt = parts.slice(3).join(' | ');
-        lines.push(`${sender} | ${subject} | ${date}${excerpt ? ` | ${clip(excerpt, RESEARCH.mailSnippetChars)}` : ''}`);
+        let sender = ''; let date = '';
+        const rest: string[] = [];
+        for (const part of parts.slice(1)) {
+          if (part.startsWith('from: ')) sender = part.slice(6).trim();
+          else if (part.startsWith('date: ')) date = part.slice(6).trim();
+          else rest.push(part);
+        }
+        const excerpt = clip(rest.join(' | '), RESEARCH.mailSnippetChars);
+        lines.push([sender, subject, date, excerpt].filter(value => value !== '').join(' | '));
         total += 1;
       }
     } else if (result.name === INTERNAL.mailRead) {
       const head: Record<string, string> = {};
       let index = 0;
       for (; index < raw.length; index++) {
-        const match = /^(subject|from|date): (.*)$/.exec(raw[index]!);
+        const match = /^(subject|from|to|date|cc|labels|attachments): (.*)$/.exec(raw[index]!);
         if (!match) break;
-        head[match[1]!] = match[2]!;
+        if (match[1] === 'subject' || match[1] === 'from' || match[1] === 'date') head[match[1]!] = match[2]!;
       }
       const body = clip(raw.slice(index).join(' '), RESEARCH.openedBodyChars);
-      lines.push(`${head['from'] ?? 'unknown sender'} | ${head['subject'] ?? '(no subject)'} | ${head['date'] ?? 'unknown date'} | ${body}`);
+      lines.push([head['from'] ?? '', head['subject'] ?? '(no subject)', head['date'] ?? '', body].filter(value => value !== '').join(' | '));
       total += 1;
     } else if (result.name === INTERNAL.knowledgeSearch || result.name === INTERNAL.knowledgeRead) {
       const items = insightItems(raw);

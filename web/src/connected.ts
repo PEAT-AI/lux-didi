@@ -1,5 +1,5 @@
 import { ApiError, authorityVersion, assertAuthority, request, stream } from './api.ts';
-import { answerMarkup, chatEntryMarkup, renderToolEvidence } from './markdown.ts';
+import { answerMarkup, chatEntryMarkup, renderToolEvidence, runFailureWords } from './markdown.ts';
 import { composerIntent, draftHeightPx } from './composer.ts';
 import { attachPin } from './autoscroll.ts';
 import type { Entry, Session, Recall, MemorySelectionSnapshot, ConnectedRouteStatus, Status, ToolEvidence } from './protocol';
@@ -9,28 +9,6 @@ interface Run { toolEvidence?: ToolEvidence[]; finalEntryId: string | null; runI
 interface ViewLifetime { owner: string; generation: number; authority: AbortSignal; local: AbortSignal }
 type RecalledNote = Recall['hits'][number];
 const escape = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
-
-/** Plain words for a failed run: what happened, and what the owner can do next. The raw outcome
- * code and the old "No saved answer: outcome_unknown" filler never reach the panel (M1). */
-export function runFailureWords(outcome: string | null, mayHaveBeenSent: boolean): string {
-  const detail: Record<string, string> = {
-    outcome_unknown: 'The app was interrupted before it could save an answer. Ask again to get a fresh answer.',
-    not_dispatched: 'The request never reached the model. Ask again.',
-    unavailable: 'The model is not available right now. Check the service, then ask again.',
-    input_too_large: 'Your message is too long for the model. Shorten it and ask again.',
-    compile_failed: 'The app could not build the request. Ask again; if it repeats, check the service log.',
-    persistence_failed: 'The answer could not be saved. Ask again.',
-    denied: 'The model declined the request. Rephrase and ask again.',
-    blocked: 'The request was blocked. Rephrase and ask again.',
-    error: 'The model failed. Ask again.',
-    empty: 'The model returned no answer. Ask again.',
-    truncated: 'The answer was cut short. Ask for a shorter answer, or ask again.',
-    cancelled: 'You cancelled this request. Ask again when ready.',
-    deadline: 'The model ran out of time. Ask again.',
-  };
-  const base = detail[outcome ?? ''] ?? 'The run did not finish. Ask again.';
-  return mayHaveBeenSent ? `${base} Content may have been sent before it stopped.` : base;
-}
 
 export class ConnectedView {
   #lastActive = false;

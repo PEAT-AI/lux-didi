@@ -61,9 +61,8 @@ test('the composer grows with the draft up to 40 percent of the lane, then scrol
   assert.equal(draftHeightPx(400, 0), 400, 'no lane measurement means no cap');
 });
 
-test('a failed run states in plain words what happened and what to do next (M1)', async () => {
-  (globalThis as { document?: unknown }).document = { querySelector: () => null };
-  const { runFailureWords } = await import('../src/connected.ts');
+test('a failed run states in plain words what happened and what to do next (M1)', () => {
+  const runFailureWords = markdown.runFailureWords;
   const words = runFailureWords('outcome_unknown', true);
   assert.equal(words.includes('outcome_unknown'), false, 'the raw outcome code never reaches the panel');
   assert.match(words, /interrupted before it could save an answer/);

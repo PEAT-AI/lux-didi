@@ -249,9 +249,8 @@ test('createGeminiSelector parses one complete text answer and treats a non-comp
   assert.equal(calls, 1);
 });
 
-// #263: the declaration names only the sources this session actually configured. A session with Google
-// (calendar, mail), Mattermost (team chat) and lux-knowledge (knowledge) names those four; the company
-// knowledge base appears only when Mongoose is configured.
+// #263: the declaration names only the sources this session configured and the host loop can read. A session
+// with Google (calendar, mail), Mattermost (team chat) and lux-knowledge (knowledge) names those four.
 test('the research declaration names only the configured sources and the valid hint values', () => {
   const google = ['gcal_calendars', 'gmail_list'];
   const base = researchSourcesFromToolNames([...google, 'mattermost_search', 'search_knowledge']);
@@ -260,13 +259,12 @@ test('the research declaration names only the configured sources and the valid h
   assert.match(description, /calendar, mail, team chat and knowledge base/);
   assert.doesNotMatch(description, /company knowledge base/);
   assert.ok(description.length < 500, `description ${description.length} chars`);
-  const withMongoose = researchSourcesFromToolNames([...google, 'mattermost_search', 'search_knowledge', 'ask_mongoose']);
-  assert.deepEqual(withMongoose, ['calendar', 'mail', 'chat', 'knowledge', 'mongoose']);
-  assert.match(researchDescription(withMongoose), /company knowledge base/);
-  assert.ok(researchDescription(withMongoose).length < 500);
+  // R2-R2: the loop has no Mongoose candidate, so a Mongoose-configured session still names only the four.
+  const withMongooseTools = researchSourcesFromToolNames([...google, 'mattermost_search', 'search_knowledge', 'ask_mongoose', 'search_mongoose']);
+  assert.deepEqual(withMongooseTools, ['calendar', 'mail', 'chat', 'knowledge']);
   const declaration = researchDeclaration(base);
   assert.equal(declaration.name, 'research');
   assert.equal(declaration.description, description);
   const properties = (declaration.parameters as unknown as { properties: Record<string, { description: string }> }).properties;
-  assert.match(properties['sources']!.description, /calendar, mail, chat, knowledge, mongoose/);
+  assert.match(properties['sources']!.description, /calendar, mail, chat, knowledge\./);
 });

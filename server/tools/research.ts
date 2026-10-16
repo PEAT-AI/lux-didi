@@ -368,19 +368,17 @@ export function validateResearch(args: unknown): boolean {
   return optionalString(args['researchId']) !== undefined;
 }
 
-/** The display order and human name of every research source a session may have configured. */
+/** The display order and human name of every research source the host loop can read today (R2-R2). */
 const SOURCE_LABELS: readonly (readonly [SourceKind, string])[] = [
   ['calendar', 'calendar'],
   ['mail', 'mail'],
   ['chat', 'team chat'],
   ['knowledge', 'knowledge base'],
-  ['mongoose', 'company knowledge base'],
 ];
 
-/** The connector tool whose presence means a source is configured. Same names the research loop fans out over. */
+/** The connector tool whose presence means a source is configured. Same four names the research loop fans out over. */
 const SOURCE_TOOLS: Readonly<Record<string, SourceKind>> = {
   search_knowledge: 'knowledge', gcal_calendars: 'calendar', gmail_list: 'mail', mattermost_search: 'chat',
-  ask_mongoose: 'mongoose', search_mongoose: 'mongoose',
 };
 
 /** Map the tool names a session actually configured to the research sources they expose, in display order. */
@@ -415,7 +413,7 @@ export function researchDeclaration(configured: readonly SourceKind[] = RESEARCH
         action: { type: 'string', enum: ['start', 'continue', 'stop'], description: 'start a lookup, continue one, or stop one.' },
         question: { type: 'string', minLength: 1, description: 'The owner question; required for start.' },
         researchId: { type: 'string', minLength: 1, description: 'The id a previous reply carried; required for continue and stop.' },
-        sources: { type: 'string', description: 'Optional single-source hint; valid values: calendar, mail, chat, knowledge, mongoose.' },
+        sources: { type: 'string', description: 'Optional single-source hint; valid values: calendar, mail, chat, knowledge.' },
         direction: { type: 'string', description: 'Optional steer for a continue, e.g. "look in mail".' },
       },
     },

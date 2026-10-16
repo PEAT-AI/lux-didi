@@ -196,7 +196,10 @@ try {
     assert.equal(await page.locator('#didi-orb').getAttribute('data-posture'),'listening');
     assert.equal((await page.locator('.orb-stage .voice-state').textContent()).trim(),'Listening');
     assert.equal(await page.getByText('Not listening',{exact:true}).count(),0);
-    assert.equal(await page.getByRole('button',{name:/record|microphone|mute/i}).count(),0);
+    assert.equal(await page.getByRole('button',{name:/record|microphone/i}).count(),0,'no push-to-talk control');
+    assert.equal(await page.getByRole('button',{name:/mute/i}).count(),1,'exactly the intended Mute control');
+    assert.equal(await page.locator('#voice-mute').count(),1,'the voice-lane Mute is the stage control (main.ts:124-127)');
+    assert.equal(await page.locator('#pill-mute').count(),0,'the live-pill Mute (main.ts:213) is machine-live gated, so absent for a projection');
     await page.screenshot({path:`${artifacts}/desktop-live-naya.png`,fullPage:true});
     fixture.setLive({state:'idle',since:'2026-10-11T16:00:00Z',entries:[],cursor:0});
   });

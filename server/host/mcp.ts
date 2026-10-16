@@ -174,7 +174,7 @@ export async function composeMcpRuntime(options: {
     // A missing or malformed credential is a visible, typed status; discovery never runs with a blank bearer.
     if (entry.credentialRef) {
       try { readMcpCredential(configDir, entry.credentialRef); }
-      catch { options.connectorLog?.(entry.connector, 'credential'); reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'credential-missing' }); return; }
+      catch { options.connectorLog?.(entry.connector, 'credential'); reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: `credential ${entry.credentialRef} missing or invalid` }); return; }
     }
     try {
       const discovery = await port.discover(entry.id);

@@ -9,6 +9,8 @@ import { openFixture, result } from './chat-process.js';
 import { ChatService, ChatError, chatMigrations, admitCapabilities, type ChatConfig, type RunSnapshot } from '../chat/index.js';
 import { Store } from '../runtime/store.js';
 import { PROMPT_VERSION, compilePrompt } from '../prompt/index.js';
+import * as summaries from '../domain/summaries.js';
+import { buildEarlierConversationsSection, composeLiveSessionInstruction, composeLiveInstruction, NAYA_BASE, TRUSTED_SYSTEM_CODE_UNIT_LIMIT } from '../prompt/live-persona.js';
 import type { ModelPort, ModelRequest, ModelControl, ModelResult } from '../adapters/model/types.js';
 
 class CountingModel implements ModelPort {
@@ -580,4 +582,31 @@ test('frozen capability admission keeps a reworded description and drops a chang
   admitCapabilities(effectChanged, frozen, 'session-b', seen, line => rerun.push(line));
   admitCapabilities(effectChanged, frozen, 'session-b', seen, line => rerun.push(line));
   assert.equal(rerun.length, 1);
+});
+
+// --- session memory v1: text chat and voice read one shared past --------------------------------
+
+test('text chat and voice receive the same summary for the same past session', async () => {
+  const NOW = 1_700_000_000_000;
+  const f = fixture({ now: () => NOW });
+  try {
+    f.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId: 'past-chat', status: 'complete', endedAt: NOW - 1_000, now: NOW,
+      summary: 'The owner said they moved to Lisbon; Naya noted the timezone change.' }));
+    const run = f.accept('What did we discuss?', 'parity');
+    const done = await terminal(f, run);
+    assert.equal(done.outcome, 'complete');
+    const request = f.model.calls.at(-1)!;
+    assert.ok(request.system.includes('moved to Lisbon'), 'text chat prompt carries the session summary');
+    assert.ok(request.system.includes('[earlier-conversations]'), 'text chat carries the shared section');
+
+    // The same single store read feeds the voice instruction.
+    const candidates = f.store.transaction(tx => summaries.injectionCandidates(tx));
+    const section = buildEarlierConversationsSection(candidates, { now: NOW, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
+    const baseline = composeLiveInstruction({ base: NAYA_BASE, language: 'en' });
+    const voice = composeLiveSessionInstruction({ text: baseline.text, tools: [], records: [],
+      trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, earlierConversations: section.section });
+    assert.equal(voice.earlierConversationsIncluded, true);
+    assert.ok(voice.text.includes('moved to Lisbon'), 'voice instruction carries the same session summary');
+    assert.ok(request.system.includes(section.section.replace('# Earlier conversations\n', '')), 'both prompts render the identical summary text');
+  } finally { f.close(); }
 });

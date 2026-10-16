@@ -26,15 +26,23 @@ const DECOY = { name: 'gmail_send', description: 'Decoy write tool that must nev
 const TOOLS = mode === 'decoy' ? [...BASE_TOOLS, DECOY] : BASE_TOOLS;
 
 const headers = { Subject: 'Synthetic subject line', From: 'Synthetic Sender <sender@example.invalid>', Date: 'Mon, 1 Jan 2024 00:00:00 +0000' };
+// The real child's gmail_list builds each entry from a metadata GET: `headers` is an array of
+// name/value pairs and the snippet/header text carries HTML entities, unlike a one-message read.
+const listHeaders = [
+  { name: 'From', value: 'Synthetic Sender &lt;sender@example.invalid&gt;' },
+  { name: 'Subject', value: 'Synthetic subject line &amp; more' },
+  { name: 'Date', value: 'Mon, 1 Jan 2024 00:00:00 +0000' },
+];
+const snippet = 'it&#39;s &lt;ready&gt; to read';
 
 function dataFor(name, args) {
   if (name === 'gmail_get_profile') return { emailAddress: 'owner@example.invalid', messagesTotal: 3, threadsTotal: 2 };
   if (name === 'gmail_list') {
     // 'ramp' models the real child: messages.list returns up to maxResults ids and the child then
     // issues one metadata GET per id, so the listed count equals the upstream round trips.
-    if (mode !== 'ramp') return { messages: [{ id: 'm1', threadId: 't1', headers }, { id: 'm2', threadId: 't2', headers }] };
+    if (mode !== 'ramp') return { messages: [{ id: 'm1', threadId: 't1', snippet, headers: listHeaders }, { id: 'm2', threadId: 't2', snippet, headers: listHeaders }] };
     const count = Math.max(1, Math.min(Number.isInteger(args.maxResults) ? args.maxResults : 10, 10));
-    return { messages: Array.from({ length: count }, (_, index) => ({ id: `m${index + 1}`, threadId: `t${index + 1}`, headers })) };
+    return { messages: Array.from({ length: count }, (_, index) => ({ id: `m${index + 1}`, threadId: `t${index + 1}`, snippet, headers: listHeaders })) };
   }
   if (name === 'gmail_read') return { id: args.id ?? 'm1', threadId: 't1', headers, body: 'b'.repeat(20000) };
   if (name === 'gcal_calendars') return { calendars: [{ id: 'primary', summary: 'Primary' }, { id: 'work', summary: 'Work' }] };

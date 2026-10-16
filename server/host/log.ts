@@ -96,15 +96,18 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return Object.fromEntries(['event','terminalCode',...numeric].map(key => [key, value[key]]));
   }
   if (value.event === 'live_instruction_sizes') {
-    // Closed shape: a total and per-section character counts only, every id a known section, never text.
-    if (Object.keys(value).sort().join(',') !== ['event','total','sections'].sort().join(',')) return;
+    // Closed shape: a total, per-section character counts (every id a known section), the effective
+    // languageCode (or `unset`) and the voice name; never any text.
+    if (Object.keys(value).sort().join(',') !== ['event','total','sections','languageCode','voice'].sort().join(',')) return;
     if (!Number.isSafeInteger(value.total) || Number(value.total) < 0) return;
+    if (!isSafeToken(value.voice)) return;
+    if (value.languageCode !== 'unset' && (typeof value.languageCode !== 'string' || !/^[a-z]{2}(?:-[A-Z]{2})?$/.test(value.languageCode))) return;
     const sections = value.sections;
     if (!sections || typeof sections !== 'object' || Array.isArray(sections)) return;
     const ids = Object.keys(sections);
     if (ids.length > 16 || ids.some(id => !(LIVE_INSTRUCTION_SECTION_IDS as readonly string[]).includes(id)
       || !Number.isSafeInteger((sections as Record<string, unknown>)[id]) || Number((sections as Record<string, unknown>)[id]) < 0)) return;
-    return { event: 'live_instruction_sizes', total: value.total, sections: Object.fromEntries(ids.map(id => [id, (sections as Record<string, unknown>)[id]])) };
+    return { event: 'live_instruction_sizes', total: value.total, sections: Object.fromEntries(ids.map(id => [id, (sections as Record<string, unknown>)[id]])), languageCode: value.languageCode, voice: value.voice };
   }
   if (value.event === 'live_frame_rejected') {
     // Closed shape: code, error constructor name, frame kind, byte length and key-name paths only, never a value or id.
@@ -277,15 +280,17 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     const subKeys = ['event', 'researchId', 'kind', 'tool', 'ok', 'items', 'rawBytes', 'keptBytes', 'queryChars', 'queryAuthor'];
     const hasError = Object.prototype.hasOwnProperty.call(value, 'errorCode');
     const hasWindow = Object.prototype.hasOwnProperty.call(value, 'window');
-    const allowed = [...subKeys, ...(hasError ? ['errorCode'] : []), ...(hasWindow ? ['window'] : [])];
+    const hasUnread = Object.prototype.hasOwnProperty.call(value, 'unread');
+    const allowed = [...subKeys, ...(hasError ? ['errorCode'] : []), ...(hasWindow ? ['window'] : []), ...(hasUnread ? ['unread'] : [])];
     if (Object.keys(value).sort().join(',') !== allowed.sort().join(',')) return;
     if (!isSafeId(value.researchId) || !isSafeMember(value.kind, RESEARCH_CANDIDATES) || !isSafeToken(value.tool)) return;
     if (typeof value.ok !== 'boolean') return;
     if (hasError && !isSafeToken(value.errorCode)) return;
     if (hasWindow && !isSafeMember(value.window, RESEARCH_WINDOW_KINDS)) return;
+    if (hasUnread && !isSafeCount(value.unread)) return;
     if (!isSafeCount(value.items) || !isSafeCount(value.rawBytes) || !isSafeCount(value.keptBytes) || !isSafeCount(value.queryChars)) return;
     if (!isSafeMember(value.queryAuthor, ['selector', 'fallback'])) return;
-    return { event: 'research_subcall', researchId: value.researchId, kind: value.kind, tool: value.tool, ok: value.ok, ...(hasError ? { errorCode: value.errorCode } : {}), items: value.items, rawBytes: value.rawBytes, keptBytes: value.keptBytes, queryChars: value.queryChars, queryAuthor: value.queryAuthor, ...(hasWindow ? { window: value.window } : {}) };
+    return { event: 'research_subcall', researchId: value.researchId, kind: value.kind, tool: value.tool, ok: value.ok, ...(hasError ? { errorCode: value.errorCode } : {}), items: value.items, rawBytes: value.rawBytes, keptBytes: value.keptBytes, queryChars: value.queryChars, queryAuthor: value.queryAuthor, ...(hasWindow ? { window: value.window } : {}), ...(hasUnread ? { unread: value.unread } : {}) };
   }
 }
 

@@ -34,6 +34,7 @@
     "dist/adapters/mcp",
     "dist/connectors",
     "dist/tools",
+    "dist/services",
     "adapters/mcp/SDK-LICENSE.txt",
     "dist/adapters/live-voice",
     "dist/live"

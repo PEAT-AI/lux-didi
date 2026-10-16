@@ -22,6 +22,8 @@ export interface McpConnectionBundle {
 }
 const credentialReference = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 const credentialLimit = 8 * 1024;
+/** The deliberate per-endpoint read deadline; a hybrid archive search may exceed the five-second discovery default. */
+const ENDPOINT_CALL_DEADLINE_MS = 30000;
 /** Same byte rules as the Gemini key file: non-empty printable ASCII, bounded. */
 function tokenValid(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= 1024 && /^[\x21-\x7e]+$/.test(value);
@@ -114,6 +116,8 @@ export async function composeMcpRuntime(options: {
   store: Store; ownerId: string; configDir: string;
   lookupAuthority(runId: string, signal: AbortSignal): Promise<LiveAuthority | null>;
   now?: () => number;
+  /** Test seam: override the endpoint read deadline; production uses {@link ENDPOINT_CALL_DEADLINE_MS}. */
+  callDeadlineMs?: number;
   /** Hold connector initialization until `start()`; the supervised host writes the ready frame first. */
   deferConnectors?: boolean;
 }): Promise<McpRuntimeComposition> {
@@ -125,8 +129,9 @@ export async function composeMcpRuntime(options: {
     : [];
   // One rule: every configured read connector gets the longer call deadline, so a real hybrid
   // archive search cannot hit the five-second default. Connect and discovery stay on budgets.timeoutMs.
+  const callDeadlineMs = options.callDeadlineMs ?? ENDPOINT_CALL_DEADLINE_MS;
   const callTimeoutMsByEndpoint = new Map(selection.state === 'configured'
-    ? selection.catalog.endpoints.map(entry => [entry.id, 30000] as const) : []);
+    ? selection.catalog.endpoints.map(entry => [entry.id, callDeadlineMs] as const) : []);
   const port = createMcpAdapter({ registry, store: new MemoryResultStore(), callTimeoutMsByEndpoint, resolveCredential: async reference => readMcpCredential(configDir, reference) });
   const reports = new Map<string, McpEndpointReport>();
   const connectors = new Map<string, string>();

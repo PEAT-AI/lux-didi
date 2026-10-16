@@ -69,8 +69,17 @@ function field(source: Record<string, unknown>, ...names: string[]): string {
   for (const name of names) { const value = str(source[name]); if (value) return value; }
   return '';
 }
+/** The Gmail helper returns `headers` as a name/value map for one message read and as an
+ * array of `{ name, value }` for a list entry (the metadata GET shape). Accept both, so a
+ * listed message keeps the sender and date the connector carried. */
 function header(source: Record<string, unknown>, name: string): string {
-  return str(isRecord(source['headers']) ? source['headers'][name] : undefined);
+  const headers = source['headers'];
+  if (isRecord(headers)) return decodeEntities(str(headers[name]));
+  if (Array.isArray(headers)) {
+    const match = headers.find(entry => isRecord(entry) && str(entry['name']).toLowerCase() === name.toLowerCase());
+    return match ? decodeEntities(str((match as Record<string, unknown>)['value'])) : '';
+  }
+  return '';
 }
 /** A run of text cut at the last sentence boundary before `limit`, so it never stops mid-sentence. */
 export function cutAtSentence(text: string, limit: number): { text: string; omitted: number } {
@@ -129,16 +138,23 @@ const TRACKING_QUERY = /[?&](?:utm_|fbclid|gclid|mc_eid|mc_cid|_hsenc|_hsmi|mkt_
 const DATA_IMAGE = /data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/gi;
 const CID_REF = /\[cid:[^\]]+\]|src=["']cid:[^"']+["']/gi;
 
+/** Decode the HTML entities a mail snippet or header carries into plain text, once, at the
+ * boundary where the connector result becomes model text. The UI never unescapes: it keeps
+ * rendering this text as text. */
 function decodeEntities(text: string): string {
-  return text.replace(/&(nbsp|amp|lt|gt|quot|#39|#x27);/gi, match => {
-    switch (match.toLowerCase()) {
-      case '&nbsp;': return ' ';
-      case '&amp;': return '&';
-      case '&lt;': return '<';
-      case '&gt;': return '>';
-      case '&quot;': return '"';
-      default: return "'";
+  return text.replace(/&(nbsp|amp|lt|gt|quot|apos|#x[0-9a-f]+|#[0-9]+);/gi, match => {
+    const body = match.slice(1, -1).toLowerCase();
+    switch (body) {
+      case 'nbsp': return ' ';
+      case 'amp': return '&';
+      case 'lt': return '<';
+      case 'gt': return '>';
+      case 'quot': return '"';
+      case 'apos': case '#39': case '#x27': return "'";
+      default: break;
     }
+    const code = body.startsWith('#x') ? Number.parseInt(body.slice(2), 16) : body.startsWith('#') ? Number.parseInt(body.slice(1), 10) : Number.NaN;
+    return Number.isInteger(code) && code >= 0 && code <= 0x10ffff ? String.fromCodePoint(code) : match;
   });
 }
 /** Convert an HTML mail body to plain text: drop script/style, break on block tags, strip the rest. */
@@ -187,6 +203,7 @@ export function cleanMailBody(raw: string): string {
   body = body.split('\n').filter(line => !MIME_LINE.test(line.trim())).join('\n');
   body = body.replace(DATA_IMAGE, '').replace(CID_REF, '');
   if (/<\w+[\s>]/.test(body)) body = htmlToText(body);
+  else body = decodeEntities(body);
   body = stripQuotedReply(body);
   body = stripSignature(body);
   body = stripTrackingUrls(body);
@@ -213,12 +230,10 @@ function attachmentNames(source: Record<string, unknown>): string[] {
 
 export function shapeGmailRead(data: Record<string, unknown>): ShapedResult {
   const subject = header(data, 'Subject') || '(no subject)';
-  const head = [
-    `subject: ${subject}`,
-    `from: ${senderName(data) || 'unknown sender'}`,
-    `to: ${header(data, 'To') || 'unknown recipients'}`,
-    `date: ${header(data, 'Date') || 'unknown date'}`,
-  ];
+  const head = [`subject: ${subject}`];
+  const from = senderName(data); if (from) head.push(`from: ${from}`);
+  const to = header(data, 'To'); if (to) head.push(`to: ${to}`);
+  const date = header(data, 'Date'); if (date) head.push(`date: ${date}`);
   const cc = header(data, 'Cc'); if (cc) head.push(`cc: ${cc}`);
   const tags = labels(data); if (tags.length) head.push(`labels: ${tags.join(', ')}`);
   const files = attachmentNames(data); if (files.length) head.push(`attachments: ${files.join(', ')}`);
@@ -233,7 +248,7 @@ export function shapeGmailList(data: Record<string, unknown>): ShapedResult {
   const sources: ShapedSource[] = [];
   const lines = messages.filter(isRecord).map(entry => {
     const unread = labels(entry).includes('UNREAD') ? ' [unread]' : '';
-    const snippet = str(entry['snippet']);
+    const snippet = decodeEntities(str(entry['snippet']));
     const excerpt = snippet ? cutAtSentence(snippet, GMAIL_LIST_EXCERPT_CHARS).text : '';
     const threadValue = entry['threadSize'] ?? entry['messageCount'];
     const size = typeof threadValue === 'number' && threadValue > 0 ? ` (thread ${threadValue})` : '';
@@ -241,7 +256,15 @@ export function shapeGmailList(data: Record<string, unknown>): ShapedResult {
     const url = inboxUrl(entry['id']);
     if (url) sources.push({ title: named ? `Gmail: ${named}` : 'Open in Gmail', url, sourceType: 'gmail' });
     const idValue = str(entry['id']);
-    return `- ${named || '(no subject)'} | ${senderName(entry) || 'unknown sender'} | ${header(entry, 'Date') || 'unknown date'}${unread}${size}${excerpt ? ` | ${excerpt}` : ''}${idValue ? ` [id ${idValue}]` : ''}`;
+    // A field the source truly lacks is omitted, never filled with the word "unknown".
+    const segments: string[] = [named || '(no subject)'];
+    const sender = senderName(entry);
+    if (sender) segments.push(`from: ${sender}`);
+    const date = header(entry, 'Date');
+    if (date) segments.push(`date: ${date}${unread}${size}`);
+    else if (`${unread}${size}`.trim()) segments.push(`${unread}${size}`.trim());
+    if (excerpt) segments.push(excerpt);
+    return `- ${segments.join(' | ')}${idValue ? ` [id ${idValue}]` : ''}`;
   });
   const body = listed(lines, GMAIL_LIST_MESSAGES, 'messages');
   return capped({ text: body.text, partial: body.omitted > 0, originalCharacters: lines.join('\n').length, omittedCharacters: body.omitted, sources });
@@ -287,8 +310,10 @@ export function shapeGcalList(data: Record<string, unknown>): ShapedResult {
     const recut = cutAtSentence(lines.join('\n'), Math.max(0, CALENDAR_EVENT_CHARS - note(cut.omitted).length));
     return `${recut.text}${note(recut.omitted)}`;
   });
+  const unread = isRecord(data['partial']) && typeof data['partial']['unread'] === 'number' && data['partial']['unread'] > 0 ? data['partial']['unread'] : 0;
   const body = listed(blocks, CALENDAR_EVENTS, 'events');
-  return capped({ text: body.text, partial: body.omitted > 0, originalCharacters: blocks.join('\n').length, omittedCharacters: body.omitted, sources });
+  const text = unread > 0 ? `${body.text}\n[calendar read incomplete: ${unread} calendar${unread === 1 ? '' : 's'} not read]` : body.text;
+  return capped({ text, partial: body.omitted > 0 || unread > 0, originalCharacters: blocks.join('\n').length, omittedCharacters: body.omitted, sources });
 }
 
 // --- Mattermost ----------------------------------------------------------------------------

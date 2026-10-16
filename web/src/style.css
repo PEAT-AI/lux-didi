@@ -410,7 +410,7 @@ html,body{height:100%;overflow:hidden}
 .orb-stage .start-pill,.orb-stage .stop-pill{padding:7px 16px}
 
 /* (5) The transcript begins below the stage and fades its first 32 px, so lines scroll away softly. */
-.transcript{mask-image:linear-gradient(to bottom,transparent 0,black 32px);-webkit-mask-image:linear-gradient(to bottom,transparent 0,black 32px)}
+.transcript{mask-image:linear-gradient(to bottom,transparent 0,var(--bg) 32px);-webkit-mask-image:linear-gradient(to bottom,transparent 0,var(--bg) 32px)}
 
 /* (6) The voice transcript uses the same centred 760 px column as the chat; the idle line is centred. */
 .transcript .live-turns{max-width:760px;margin:0 auto;padding:0}

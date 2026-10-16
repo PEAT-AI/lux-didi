@@ -47,6 +47,14 @@ async function api(path) {
   }, path);
 }
 async function step(name, action) { await action(); steps.push(name); console.log(`PASS ${name}`); }
+// U1 (#282): side panels launch collapsed, so a rail item is hidden until the owner opens the panel
+// with its header toggle. Open it the owner's way and assert the open state before using a rail item.
+async function openPanel(id) {
+  const control = page.locator(`#panel-toggle-${id}`);
+  if (await control.getAttribute('aria-expanded') !== 'true') await control.click();
+  await page.locator(`#panel-${id}[data-state="open"]`).waitFor();
+  assert.equal(await control.getAttribute('aria-expanded'), 'true', `${id} panel toggled open`);
+}
 try {
   await start();
   browser = await chromium.launch({ channel: 'chromium', headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
@@ -77,6 +85,9 @@ try {
     assert.equal(await page.locator('.voice-state').first().innerText(), 'Live is off', 'the header state is the one source of truth');
     assert.equal(await page.locator('.live-state').count(), 0, 'no second Live state surface');
   });
+  // The connected conversation lives in #panel-right (chat); U1 collapsed it by default, so open it
+  // the owner's way before reading or clicking its content.
+  await openPanel('right');
   await step('U3 declutter shots: the open chat without a grant', async () => {
     const u3 = '/Users/rob/.lux/reports/lux-didi-release-1014/u3-shots';
     await mkdir(u3, { recursive: true });
@@ -111,6 +122,8 @@ try {
     await mkdir(u3, { recursive: true });
     await page.locator('#connected-entries .assistant').first().waitFor();
     await page.screenshot({ path: join(u3, 'desktop-1440-chat-with-grant.png'), fullPage: true });
+    await openPanel('left');
+    assert.equal(await page.locator('[data-tab="Settings"]').isVisible(), true, 'the opened panel renders the Settings rail item');
     await page.locator('[data-tab="Settings"]').click();
     await page.locator('#connected-history').waitFor();
     await page.screenshot({ path: join(u3, 'desktop-1440-settings.png'), fullPage: true });

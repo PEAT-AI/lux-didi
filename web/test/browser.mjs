@@ -17,7 +17,7 @@ async function auditLayout(page) {
     const inset = (sel, lane) => { const el = q(sel); if (!el) return null; const b = r(el); return { left: rn(b.left - lane.left), right: rn(lane.right - b.right) }; };
     const size = sel => { const el = q(sel); if (!el) return null; const b = r(el); return { w: rn(b.width), h: rn(b.height), right: rn(b.right) }; };
     const gap = (a, b) => { const x = q(a), y = q(b); return x && y ? rn(r(y).left - r(x).right) : null; };
-    const voice = r(q('#lane-voice')), chat = r(q('#lane-chat'));
+    const voice = r(q('#lane-voice')), chat = r(q('#panel-right'));
     const field = q('.composer-field'), send = q('#connected-send'), draft = q('#connected-draft');
     const entries = [...document.querySelectorAll('.live-turns > *')];
     const entry = q('.live-turns .entry');
@@ -37,14 +37,14 @@ async function auditLayout(page) {
         orbCentre: stage && orb ? Math.abs(Math.round((r(orb).left + r(orb).width / 2) - (r(stage).left + r(stage).width / 2))) : null,
         column: rn(r(q('.transcript .live-turns')).width),
         userRight: (() => { const mine = q('.live-turns .entry.user'); return mine ? rn(r(q('.transcript .live-turns')).right - r(mine).right) : null; })(),
-        controlRight: rn(voice.right - r(q('#lane-voice .lane-toggle')).right),
-        toggleGap: gap('#new-conversation', '#lane-voice .lane-toggle'),
+        controlRight: rn(voice.right - r(q('#new-conversation')).right),
+        toggleGap: null,
         labels: document.querySelectorAll('.live-turns .entry strong, .live-turns .entry header').length,
         scrollDistance: transcript ? Math.max(0, rn(transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight)) : null,
         jumpVisible: pillVoice ? !pillVoice.hidden : null,
       },
       chat: {
-        visible: vis('#lane-chat'),
+        visible: vis('#panel-right'),
         column: chatList ? rn(r(chatList).width) : null,
         emptyInset: inset('.connected-empty', chat),
         composerInset: inset('#connected-send-form', chat),
@@ -91,6 +91,25 @@ function assertAudit(a, label, failures) {
   return a;
 }
 
+// U1 (#282): the two side panels are #panel-left (program menu) and #panel-right (chat), around the
+// always-open voice view. A collapsed panel is display:none, so it renders nothing.
+async function panelAudit(page) {
+  return await page.evaluate(() => {
+    const rect = el => { const b = el.getBoundingClientRect(); return { w: Math.round(b.width), left: Math.round(b.left), top: Math.round(b.top), h: Math.round(b.height) }; };
+    const box = sel => { const el = document.querySelector(sel); if (!el) return null; const r = rect(el); const cs = getComputedStyle(el); return { state: el.dataset.state, rendered: r.w > 0 && cs.display !== 'none', opacity: cs.opacity, ...r }; };
+    const ctl = sel => { const el = document.querySelector(sel); return el ? { rendered: el.getClientRects().length > 0, visible: getComputedStyle(el).visibility !== 'hidden', expanded: el.getAttribute('aria-expanded') } : null; };
+    const orb = document.querySelector('#orb-holder canvas') || document.querySelector('#didi-orb');
+    const panel = document.querySelector('#panel-left');
+    return {
+      left: box('#panel-left'), right: box('#panel-right'), voice: box('#lane-voice'),
+      orb: orb ? rect(orb) : null,
+      controlLeft: ctl('#panel-toggle-left'), controlRight: ctl('#panel-toggle-right'),
+      transitionMs: panel ? getComputedStyle(panel).transitionDuration : null,
+    };
+  });
+}
+const PANEL_SEED = '{"left":"open","right":"open","leftWidth":240,"rightWidth":360}';
+
 async function step(name,fn){const start=performance.now(); await fn(); timings.push({name,seconds:Math.round((performance.now()-start)/10)/100}); console.log(`PASS ${name}`);}
 try {
   browser=await chromium.launch({channel:'chromium',headless:true,args:['--use-angle=metal','--enable-gpu','--ignore-gpu-blocklist']});
@@ -122,8 +141,12 @@ try {
     assert.equal(await page.evaluate(()=>Object.keys(localStorage).length),0);
     assert.equal(await page.evaluate(()=>document.cookie),'');
     assert.equal(await page.locator('#lane-voice').count(),1);
-    assert.equal(await page.locator('#lane-chat').count(),1);
+    assert.equal(await page.locator('#panel-right').count(),1);
     assert.equal(await page.locator('.rail').count(),1);
+    // Default is both side panels collapsed; open both so the chat lane and the program menu are reachable.
+    await page.evaluate(() => { for (const id of ['panel-toggle-left','panel-toggle-right']) { const b = document.getElementById(id); if (b && b.getAttribute('aria-expanded') !== 'true') b.click(); } });
+    assert.deepEqual(await page.evaluate(() => ['panel-toggle-left','panel-toggle-right'].map(id => document.getElementById(id)?.getAttribute('aria-expanded'))), ['true','true'], 'both side panels report open before a rail route is used');
+    assert.equal(await page.locator('button[data-route="settings"]').isVisible(), true, 'the opened panel renders its rail items');
     await page.locator('button[data-route="settings"]').click();
     await page.locator('#sheet').waitFor();
     assert.match(await page.locator('#sheet').innerText(),/No model connected/);
@@ -132,6 +155,14 @@ try {
     assert.equal(await page.locator('#connection-state').getAttribute('aria-live'),'polite');
     assert.equal(await page.locator('.allow-link').first().evaluate(el => Math.round(el.getBoundingClientRect().height)), 28, 'the Allow control is a 28 px text button');
     await page.locator('#connected-draft').waitFor();
+  });
+
+  await step('Escape dismisses the side sheet (F1)', async () => {
+    await page.locator('button[data-route="settings"]').click();
+    await page.locator('#sheet').waitFor();
+    await page.keyboard.press('Escape');
+    await page.locator('#sheet').waitFor({ state: 'detached' });
+    assert.equal(await page.locator('#sheet').count(), 0, 'Escape removes the sheet overlay');
   });
 
   await step('classic Canvas orb is idle not listening and honors reduced motion',async()=>{
@@ -207,6 +238,112 @@ try {
   });
 
 
+  await step('U1 panels: two states, no residue, always-visible control, keyboard and drag', async () => {
+    const panelFixture = await startFixture({ configured: true });
+    const panelContext = await browser.newContext({ viewport: { width: 2000, height: 1250 } });
+    const panelPage = await panelContext.newPage(); panelPage.setDefaultTimeout(8000);
+    try {
+      await panelPage.goto(panelFixture.url);
+      await panelPage.locator('#pair-code').waitFor();
+      await panelPage.getByLabel('One-time pairing code').fill('synthetic-only');
+      await panelPage.getByRole('button',{name:'Pair this browser',exact:true}).click();
+      await panelPage.locator('#panel-toggle-left').waitFor();
+      const states = {};
+      for (const width of [900, 2000]) {
+        await panelPage.setViewportSize({ width, height: width === 900 ? 900 : 1250 });
+        await panelPage.evaluate(() => localStorage.removeItem('didi-layout'));
+        await panelPage.reload();
+        await panelPage.locator('#panel-toggle-left').waitFor();
+        const shot = name => panelPage.screenshot({ path: `${artifacts}/w${width}-${name}.png`, fullPage: true });
+        const expect = async (label, left, right) => {
+          await panelPage.waitForFunction(([l, r]) => {
+            const el = id => document.getElementById(id === 'left' ? 'panel-left' : 'panel-right');
+            const w = id => el(id)?.getBoundingClientRect().width ?? 0;
+            const settled = id => el(id)?.getAnimations().every(a => a.playState !== 'running') ?? true;
+            return el('left')?.dataset.state === l && el('right')?.dataset.state === r && (l === 'collapsed' ? w('left') < 1 : w('left') >= 200) && (r === 'collapsed' ? w('right') < 1 : w('right') >= 320) && settled('left') && settled('right');
+          }, [left, right], { timeout: 4000 });
+          const a = await panelAudit(panelPage);
+          assert.equal(a.left.state, left, `${label}: left state`);
+          assert.equal(a.right.state, right, `${label}: right state`);
+          assert.equal(a.left.rendered, left === 'open', `${label}: left renders only when open (${a.left.state} w=${a.left.w} opacity=${a.left.opacity})`);
+          assert.equal(a.right.rendered, right === 'open', `${label}: right renders only when open (${a.right.state} w=${a.right.w} opacity=${a.right.opacity})`);
+          if (left === 'open') assert.ok(a.left.w >= 200, `${label}: left at its minimum width`);
+          if (right === 'open') assert.ok(a.right.w >= 320, `${label}: right at its minimum width`);
+          if (left === 'collapsed') assert.equal(a.left.w, 0, `${label}: a collapsed left panel is zero width, no residue`);
+          if (right === 'collapsed') assert.equal(a.right.w, 0, `${label}: a collapsed right panel is zero width, no residue`);
+          assert.ok(a.controlLeft && a.controlLeft.rendered && a.controlLeft.visible, `${label}: the left control is always visible`);
+          assert.ok(a.controlRight && a.controlRight.rendered && a.controlRight.visible, `${label}: the right control is always visible`);
+          assert.ok(Number.parseFloat(a.transitionMs) <= 0.2, `${label}: the panel animates in at most 200 ms (${a.transitionMs})`);
+          return a;
+        };
+        const toggleLeft = () => panelPage.locator('#panel-toggle-left').click();
+        const toggleRight = () => panelPage.locator('#panel-toggle-right').click();
+
+        const base = await expect('default', 'collapsed', 'collapsed');
+        await shot('default');
+        const orbTop = base.orb ? base.orb.top : null;
+
+        await toggleLeft(); await expect('left open', 'open', 'collapsed'); await shot('left-open');
+        await toggleLeft();
+        await toggleRight(); await expect('right open', 'collapsed', 'open'); await shot('right-open');
+        await toggleLeft(); await expect('both open', 'open', 'open'); await shot('both-open');
+        const both = await panelAudit(panelPage);
+        if (orbTop !== null && both.orb) assert.ok(Math.abs(both.orb.top - orbTop) <= 1, `opening a panel must not jump the orb vertically (${orbTop} -> ${both.orb.top})`);
+        assert.equal(await panelPage.locator('#panel-toggle-left').getAttribute('aria-expanded'), 'true');
+        assert.equal(await panelPage.locator('#panel-toggle-right').getAttribute('aria-expanded'), 'true');
+
+        await toggleLeft(); await expect('left collapsed again', 'collapsed', 'open'); await shot('left-collapsed-again');
+        await toggleLeft();
+        await toggleRight(); await expect('right collapsed again', 'open', 'collapsed'); await shot('right-collapsed-again');
+
+        // collapse then expand in each direction: the same control restores the previous width
+        const leftOpen = await expect('left open again', 'open', 'collapsed');
+        await toggleLeft(); await expect('left collapse', 'collapsed', 'collapsed');
+        await toggleLeft(); const leftAgain = await expect('left expand', 'open', 'collapsed'); await shot('left-collapse-expand');
+        assert.equal(leftAgain.left.w, leftOpen.left.w, 'expanding restores the previous left width');
+        await toggleLeft();
+        await toggleRight(); const rightOpen = await expect('right re-open', 'collapsed', 'open');
+        await toggleRight(); await expect('right collapse', 'collapsed', 'collapsed');
+        await toggleRight(); const rightAgain = await expect('right expand', 'collapsed', 'open'); await shot('right-collapse-expand');
+        assert.equal(rightAgain.right.w, rightOpen.right.w, 'expanding restores the previous right width');
+
+        // keyboard: Cmd/Ctrl+1 toggles the left panel, Cmd/Ctrl+2 the right
+        await panelPage.keyboard.press(process.platform === 'darwin' ? 'Meta+1' : 'Control+1');
+        await expect('keyboard left on', 'open', 'open');
+        await panelPage.keyboard.press(process.platform === 'darwin' ? 'Meta+2' : 'Control+2');
+        await expect('keyboard right off', 'open', 'collapsed');
+        await panelPage.keyboard.press(process.platform === 'darwin' ? 'Meta+1' : 'Control+1');
+        await expect('keyboard left off', 'collapsed', 'collapsed');
+
+        // dragging the divider below the minimum collapses; dragging back out restores
+        await toggleLeft();
+        // Settle the expand transition before reading the divider box, so a mousedown lands on the
+        // divider and not on a moving target (a dropped drag under host load left the panel open).
+        await expect('drag start open', 'open', 'collapsed');
+        const grip = await panelPage.locator('[data-divider="left"]').boundingBox();
+        if (grip) {
+          await panelPage.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2);
+          await panelPage.mouse.down();
+          await panelPage.mouse.move(grip.x - 150, grip.y + grip.height / 2, { steps: 6 });
+          await panelPage.mouse.up();
+        }
+        await expect('drag collapse', 'collapsed', 'collapsed');
+        await panelPage.mouse.move((await panelPage.locator('[data-divider="left"]').boundingBox()).x + 4, grip.y + grip.height / 2);
+        await panelPage.mouse.down();
+        await panelPage.mouse.move((await panelPage.locator('[data-divider="left"]').boundingBox()).x + 40 + 220, grip.y + grip.height / 2, { steps: 6 });
+        await panelPage.mouse.up();
+        await expect('drag restore', 'open', 'collapsed');
+
+        await panelPage.emulateMedia({ reducedMotion: 'reduce' });
+        const reduced = await panelAudit(panelPage);
+        assert.equal(reduced.transitionMs, '0s', 'prefers-reduced-motion disables the panel animation');
+        await panelPage.emulateMedia({ reducedMotion: null });
+        states[`${width}`] = { default: base.left.state + '/' + base.right.state };
+      }
+      await writeFile(join(artifacts, 'u1-panels.json'), JSON.stringify(states, null, 2));
+    } finally { await panelContext.close(); await panelFixture.close(); }
+  });
+
   await step('V2-R4 layout audit A-G', async () => {
     const auditFixture = await startFixture({ configured: true });
     const auditContext = await browser.newContext({ viewport: { width: 1440, height: 900 } });
@@ -226,21 +363,20 @@ try {
         { seq: 5, kind: 'outputTranscription', text: 'Then run the layout audit.' },
         { seq: 6, kind: 'toolResult', tool: { name: 'lux-knowledge', status: 'completed', markdown: '**Found** three notes', sources: [{ title: 'note', url: 'https://example.org' }] } }
       ] });
-      const run = async (viewport, theme, segment) => {
+      const run = async (viewport, theme, layoutSeed) => {
         await auditPage.setViewportSize(viewport);
-        await auditPage.evaluate(m => localStorage.setItem('didi-theme', m), theme);
+        await auditPage.evaluate(([m, seed]) => { localStorage.setItem('didi-theme', m); localStorage.setItem('didi-layout', seed); }, [theme, layoutSeed]);
         await auditPage.reload();
         await auditPage.locator('.app-shell').waitFor();
-        if (segment) await auditPage.locator(`button[data-segment="${segment}"]`).click();
         await auditPage.waitForFunction(() => document.querySelector('#connected-send') !== null);
         const a = await auditLayout(auditPage);
-        assertAudit(a, `${viewport.width}x${viewport.height} ${theme}${segment ? ' ' + segment : ''}`, failures);
-        results[`${viewport.width}x${viewport.height}-${theme}${segment ? '-' + segment : ''}`] = a;
+        assertAudit(a, `${viewport.width}x${viewport.height} ${theme}`, failures);
+        results[`${viewport.width}x${viewport.height}-${theme}`] = a;
       };
-      await run({ width: 1440, height: 900 }, 'dark', null);
-      await run({ width: 1440, height: 900 }, 'light', null);
-      await run({ width: 800, height: 900 }, 'dark', 'chat');
-      await run({ width: 800, height: 900 }, 'light', 'voice');
+      await run({ width: 1440, height: 900 }, 'dark', PANEL_SEED);
+      await run({ width: 1440, height: 900 }, 'light', PANEL_SEED);
+      await run({ width: 800, height: 900 }, 'dark', '{"left":"collapsed","right":"open","leftWidth":240,"rightWidth":360}');
+      await run({ width: 800, height: 900 }, 'light', '{"left":"collapsed","right":"open","leftWidth":240,"rightWidth":360}');
       await writeFile(join(artifacts, 'v2r4-audit.json'), JSON.stringify(results, null, 2));
     } finally { await auditContext.close(); await auditFixture.close(); }
     console.log('V2R4_AUDIT', JSON.stringify(results));
@@ -249,6 +385,7 @@ try {
   });
 
   await step('settings unpair revokes the cookie and returns to pairing',async()=>{
+    await page.evaluate(() => { const b = document.getElementById('panel-toggle-left'); if (b && b.getAttribute('aria-expanded') !== 'true') b.click(); });
     await page.locator('button[data-route="settings"]').click();
     await page.locator('#sheet').waitFor();
     await page.getByRole('button',{name:'Unpair this browser',exact:true}).click();

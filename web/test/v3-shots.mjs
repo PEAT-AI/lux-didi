@@ -182,7 +182,7 @@ try {
       chatColumn: columnEl ? Math.round(columnEl.getBoundingClientRect().width - parseFloat(getComputedStyle(columnEl).paddingLeft) - parseFloat(getComputedStyle(columnEl).paddingRight)) : null,
       chatBubbleRight: columnEl && mine ? Math.round(contentRight('#connected-entries') - mine.right) : null,
       voiceBubbleRight: voiceColumn !== null && bubbleVoice ? Math.round(voiceColumn - bubbleVoice.right) : null,
-      composerBottom: Math.round(document.querySelector('#lane-chat').getBoundingClientRect().bottom - document.querySelector('.composer-field').getBoundingClientRect().bottom),
+      composerBottom: Math.round(document.querySelector('#panel-right').getBoundingClientRect().bottom - document.querySelector('.composer-field').getBoundingClientRect().bottom),
       viewport: `${document.documentElement.clientWidth}x${document.documentElement.clientHeight}`,
       sphere: sphere,
       stageBorder: Number.parseFloat(stageStyle.borderTopWidth) + Number.parseFloat(stageStyle.borderBottomWidth),
@@ -319,7 +319,8 @@ try {
   await page.locator('#connected-draft').fill('');
 
   await page.setViewportSize({ width: 800, height: 900 });
-  await page.locator('button[data-segment="voice"]').click();
+  // U1 (#282) removed the narrow Voice/Chat switcher; the Voice lane is always shown at narrow width.
+  assert.equal(await page.locator('#lane-voice').isVisible(), true, 'the narrow view shows the Voice lane without a switcher');
   table = await sample('800x900-narrow-voice', { width: 800, height: 900 });
   assert.equal(table.stageShare >= 0.3 && table.stageShare <= 0.36, true, 'the narrow voice view keeps the top third stage');
 } finally {

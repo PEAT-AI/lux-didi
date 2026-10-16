@@ -126,7 +126,7 @@ async function gmailHost(email: string) {
   const status = await fetch(host.descriptor.origin + '/api/v1/tools/status', { headers });
   const reports = (await status.json()).data.endpoints as Array<{ id: string; state: string; reasonCode?: string; identity?: IdentityProof }>;
   const log = await readFile(join(dir, 'state', 'logs', 'host.log'), 'utf8');
-  const identityLog = log.trim().split('\n').map(line => JSON.parse(line)).filter(record => record.event === 'connector_identity');
+  const identityLog = log.trim().split('\n').map(line => JSON.parse(line)).filter(record => record.event === 'connector_identity').map(record => ({ event: record.event, connector: record.connector, proven: record.proven, match: record.match }));
   await host.close();
   endpoint.closeAllConnections(); await new Promise<void>(done => endpoint.close(() => done()));
   await rm(dir, { recursive: true, force: true });

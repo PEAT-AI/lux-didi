@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { READY_TIMEOUT_MS, spawnSupervised, stopSupervised, waitForReady } from './strict-supervisor.mjs';
-import { launchTimeoutMs, noHostResults, supervisorNote } from './probes.mjs';
+import { launchTimeoutMs, noHostResults, researchDriver, researchFailureNote, RESEARCH_DRIVERS, supervisorNote } from './probes.mjs';
 
 const repoRoot = resolve(import.meta.dirname, '../../..');
 const smokeSource = join(repoRoot, 'scripts/smoke.sh');
@@ -47,7 +47,7 @@ test('the launch budget is SMOKE_LAUNCH_TIMEOUT_S seconds, defaulting to the cur
 
 // Build a throwaway repo whose scripts/smoke.sh is the real script, with a fake npm and node on PATH so no
 // real build runs and no probe host starts. The fake npm records its argv and rewrites the dist entry.
-async function smokeFixture({ distTime, sourceTime, buildOk = true }) {
+async function smokeFixture({ distTime, sourceTime, buildOk = true, nodeExit = 0 }) {
   const dir = await mkdtemp(join(tmpdir(), 'didi-smoke-build-'));
   const bin = join(dir, 'bin');
   const npmLog = join(dir, 'npm.log');
@@ -64,7 +64,7 @@ async function smokeFixture({ distTime, sourceTime, buildOk = true }) {
   const npm = join(bin, 'npm');
   await writeFile(npm, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${npmLog}'\n: > '${distEntry}'\nexit ${buildOk ? 0 : 1}\n`);
   const node = join(bin, 'node');
-  await writeFile(node, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${nodeLog}'\nexit 0\n`);
+  await writeFile(node, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${nodeLog}'\nexit ${nodeExit}\n`);
   await chmod(npm, 0o755);
   await chmod(node, 0o755);
   return { dir, bin, npmLog, nodeLog, distEntry };
@@ -73,7 +73,7 @@ async function smokeFixture({ distTime, sourceTime, buildOk = true }) {
 function runSmoke(fixture) {
   return spawnSync('bash', ['scripts/smoke.sh'], {
     cwd: fixture.dir,
-    env: { ...process.env, PATH: `${fixture.bin}:${process.env.PATH}`, NODE: join(fixture.bin, 'node') },
+    env: { ...process.env, PATH: `${fixture.bin}:${process.env.PATH}`, NODE: join(fixture.bin, 'node'), TMPDIR: fixture.dir },
     encoding: 'utf8',
   });
 }
@@ -109,5 +109,38 @@ test('smoke.sh reports a FAIL line and runs no probe when the dist cannot be bui
     assert.notEqual(result.status, 0);
     assert.match(result.stdout, /^FAIL probe0-build /m);
     assert.equal(existsSync(fixture.nodeLog), false, 'no probe runs on a failed build');
+  } finally { await rm(fixture.dir, { recursive: true, force: true }); }
+});
+
+// #260: probe5 must read the run's own driver, never re-derive it from selectorMs and fallbackUsed.
+test('probe5 accepts only the three drivers and fails on a missing one', () => {
+  assert.deepEqual(RESEARCH_DRIVERS, ['selector', 'fallback', 'single-source-hint']);
+  assert.equal(researchDriver({ driver: 'selector' }), 'selector');
+  assert.equal(researchDriver({ driver: 'fallback' }), 'fallback');
+  assert.equal(researchDriver({ driver: 'single-source-hint' }), 'single-source-hint');
+  assert.equal(researchDriver({}), null, 'a run line without a driver must fail');
+  assert.equal(researchDriver({ driver: 'owner secret' }), null);
+  assert.equal(researchDriver({ selectorMs: 20, fallbackUsed: false }), null, 'the old derivation must not pass');
+});
+
+// #260: the failure note keeps the not-called metadata, so a skipped research call is explainable.
+test('probe5 failure note keeps the not-called metadata', () => {
+  const note = researchFailureNote({ stage: 'call', calls: 0, runs: 0, outputFragments: 3, outputChars: 120, otherToolNames: ['search_knowledge'], otherToolCalls: 1, turnCompleteMs: 412 });
+  assert.match(note, /stage=call/);
+  assert.match(note, /calls=0/);
+  assert.match(note, /output_fragments=3/);
+  assert.match(note, /output_chars=120/);
+  assert.match(note, /other_tools=search_knowledge/);
+  assert.match(note, /other_tool_calls=1/);
+  assert.match(note, /turn_complete_ms=412/);
+});
+
+// #260: a failed run keeps the smoke data dir and prints its path; a green run keeps nothing new.
+test('smoke.sh keeps a failed run and prints its path', async () => {
+  const fixture = await smokeFixture({ distTime: null, sourceTime: new Date(), nodeExit: 1 });
+  try {
+    const result = runSmoke(fixture);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stdout, /^KEEP /m);
   } finally { await rm(fixture.dir, { recursive: true, force: true }); }
 });

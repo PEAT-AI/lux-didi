@@ -71,6 +71,15 @@ swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-
   Sources/LuxDidi/NativeLiveJournal.swift \
   Tests/DidiLiveTests/WaitCueTests.swift "$work/audio-callback-bridge.o" -o "$work/wait-cue"
 "$work/wait-cue"
+# #283 orb band analyzer and playback-aligned output timeline: synthetic PCM only, no engine or audio.
+swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library -import-objc-header Tests/DidiLiveTests/AudioCallbackBridge.h \
+  -target "$target" \
+  Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \
+  "${owner_flags[@]}" \
+  Sources/LuxDidi/NativeLiveOperatorHTTP.swift Sources/LuxDidi/AudioOwner.swift Sources/LuxDidi/NativeLiveAudioDevice.swift \
+  Sources/LuxDidi/NativeLiveJournal.swift \
+  Tests/DidiLiveTests/OrbEnvelopeTests.swift "$work/audio-callback-bridge.o" -o "$work/orb-envelope"
+"$work/orb-envelope"
 swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
   -target "$target" \
   Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \

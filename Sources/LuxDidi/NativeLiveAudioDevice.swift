@@ -278,6 +278,102 @@ struct NativeAudioCaptureSummary: Sendable {
     let playback: NativePlaybackStatistics
 }
 
+/// One orb analysis window (#283): linear RMS of the whole signal and of three bands, plus the
+/// half-wave rectified rise of the band levels (an onset, 0...1). Numbers only.
+struct NativeOrbBands: Equatable, Sendable {
+    var level: Float = 0, low: Float = 0, mid: Float = 0, high: Float = 0, flux: Float = 0
+    static let silent = NativeOrbBands()
+}
+
+/// Splits mono Int16 PCM into the orb's bands with two one-pole low-passes: low below ~300 Hz (the
+/// vowel body), mid ~300 Hz to 2 kHz, high above ~2 kHz (consonants), one band set per 10 ms window.
+/// It runs on the main actor over PCM the device already holds (the drained capture frame and the
+/// received model chunk), never on the tap or render thread, and it never touches the audio itself.
+struct NativeOrbAnalyzer {
+    static let windowMs = 10
+    let sampleRate: Double
+    let windowFrames: Int
+    private let lowAlpha: Float, midAlpha: Float
+    private var lowPass: Float = 0, midPass: Float = 0
+    private var sumAll: Float = 0, sumLow: Float = 0, sumMid: Float = 0, sumHigh: Float = 0
+    private var count = 0
+    private var previous: (Float, Float, Float) = (-60, -60, -60)
+
+    init(sampleRate: Double) {
+        self.sampleRate = sampleRate
+        windowFrames = max(1, Int(sampleRate) * Self.windowMs / 1000)
+        lowAlpha = Float(1 - exp(-2 * Double.pi * 300 / sampleRate))
+        midAlpha = Float(1 - exp(-2 * Double.pi * 2000 / sampleRate))
+    }
+
+    /// Little-endian Int16 mono samples in, one band set per completed 10 ms window out.
+    mutating func analyze(_ pcm: Data) -> [NativeOrbBands] {
+        let samples = pcm.count / 2
+        guard samples > 0 else { return [] }
+        var windows: [NativeOrbBands] = []
+        windows.reserveCapacity(samples / windowFrames + 1)
+        pcm.withUnsafeBytes { raw in
+            for index in 0..<samples {
+                let x = Float(Int16(littleEndian: raw.loadUnaligned(fromByteOffset: index * 2, as: Int16.self))) / 32768
+                lowPass += lowAlpha * (x - lowPass)
+                midPass += midAlpha * (x - midPass)
+                let low = lowPass, mid = midPass - lowPass, high = x - midPass
+                sumAll += x * x; sumLow += low * low; sumMid += mid * mid; sumHigh += high * high
+                count += 1
+                if count == windowFrames { windows.append(closeWindow()) }
+            }
+        }
+        return windows
+    }
+
+    static func decibels(_ rms: Float) -> Float { max(-60, 20 * log10(max(rms, 1e-6))) }
+
+    private mutating func closeWindow() -> NativeOrbBands {
+        let n = Float(count)
+        func rms(_ sum: Float) -> Float { min(1, (sum / n).squareRoot()) }
+        var bands = NativeOrbBands(level: rms(sumAll), low: rms(sumLow), mid: rms(sumMid), high: rms(sumHigh))
+        let now = (Self.decibels(bands.low), Self.decibels(bands.mid), Self.decibels(bands.high))
+        let rise = max(0, now.0 - previous.0) + max(0, now.1 - previous.1) + max(0, now.2 - previous.2)
+        bands.flux = min(1, rise / 30)
+        previous = now
+        sumAll = 0; sumLow = 0; sumMid = 0; sumHigh = 0; count = 0
+        return bands
+    }
+
+    mutating func reset() { self = NativeOrbAnalyzer(sampleRate: sampleRate) }
+}
+
+/// Model output for the orb, aligned with what is audible: windows are appended as chunks are
+/// scheduled and read back at the playback position (milliseconds since the player started), so
+/// the orb follows the voice the owner hears, not the chunk that just arrived ahead of it.
+struct NativeOrbTimeline {
+    private var analyzer = NativeOrbAnalyzer(sampleRate: Double(NativePlaybackQueue.frameRate))
+    private var windows: [NativeOrbBands] = []
+    private var consumed = 0
+    private var startedAtMs: Int?
+    var queuedWindows: Int { windows.count }
+
+    mutating func append(_ pcm: Data) { windows.append(contentsOf: analyzer.analyze(pcm)) }
+    /// The player started: position zero is the first window appended since the last reset.
+    mutating func started(atMs: Int) { if startedAtMs == nil { startedAtMs = atMs } }
+    /// The queue ran dry, was flushed or the audio was released: the next burst starts at zero.
+    mutating func reset() {
+        analyzer.reset(); windows.removeAll(keepingCapacity: true); consumed = 0; startedAtMs = nil
+    }
+    /// The window playing at `atMs`; silent before the player starts and past the scheduled audio.
+    mutating func sample(atMs: Int) -> NativeOrbBands {
+        guard let start = startedAtMs, atMs >= start else { return .silent }
+        let index = (atMs - start) / NativeOrbAnalyzer.windowMs - consumed
+        guard index >= 0, index < windows.count else { return .silent }
+        if index > 256 {
+            // Drop played windows in blocks, so reads stay O(1) and memory follows the queue.
+            windows.removeFirst(index); consumed += index
+            return windows[0]
+        }
+        return windows[index]
+    }
+}
+
 /// The tap and drain task meet only through this locked eight-frame queue.
 final class NativeCaptureBuffer: @unchecked Sendable {
     private let lock = NSLock()
@@ -440,6 +536,12 @@ struct NativeLiveInterruptionSample: Sendable {
     /// The orb renders this RMS and above as speech (web/src/orb.ts `audible`); telemetry counts buffers above it.
     static let meterSpeechThreshold: Float = 0.01
     @Published private(set) var route = ""
+    /// #283: the orb's band frames. Input is the latest drained capture window, output is read at the
+    /// playback position. Computed on the main actor from PCM already in hand; never fed back to audio.
+    private var inputOrb = NativeOrbAnalyzer(sampleRate: 16000)
+    private var inputBands = NativeOrbBands.silent
+    private var inputBandsAtMs = 0
+    private var outputOrb = NativeOrbTimeline()
     private var muted = false
     /// E1: the last few seconds of the per-buffer input levels the meter already computes. Numbers only,
     /// appended where `inputLevel` is published; never read on the audio path and never fed back to the engine.
@@ -846,6 +948,7 @@ struct NativeLiveInterruptionSample: Sendable {
                         self.recordLevel(level)
                         if failed { await self.interrupt(); return }
                         guard let frame else { break }
+                        if let bands = self.inputOrb.analyze(frame).last { self.inputBands = bands; self.inputBandsAtMs = self.nowMs() }
                         self.drainFrames += 1
                         let epoch = self.captureEpoch
                         do { try Task.checkCancellation(); try await send(frame, epoch) }
@@ -858,7 +961,14 @@ struct NativeLiveInterruptionSample: Sendable {
             }
         onCapturePrepared?(capture)
     }
-    func setMuted(_ muted: Bool) { if self.muted != muted { captureEpoch &+= 1 }; self.muted = muted; capture?.setMuted(muted); inputLevel = 0; if muted { cancelWaitCue(.interrupted(atMs: nowMs()), stopPlayer: true) } }
+    func setMuted(_ muted: Bool) { if self.muted != muted { captureEpoch &+= 1 }; self.muted = muted; capture?.setMuted(muted); inputLevel = 0; inputBands = .silent; if muted { cancelWaitCue(.interrupted(atMs: nowMs()), stopPlayer: true) } }
+    /// #283: the orb frame for this instant: the owner's latest capture window (silent once older than
+    /// 200 ms or while muted) and the model output window at the playback position.
+    func orbBands() -> (input: NativeOrbBands, output: NativeOrbBands) {
+        let now = nowMs()
+        let input = !muted && now - inputBandsAtMs <= 200 ? inputBands : .silent
+        return (input, outputOrb.sample(atMs: now))
+    }
     /// E1: append one already-computed meter level to a small bounded ring. Stores the number only.
     private func recordLevel(_ value: Float) {
         levelRing.append((at: now(), level: value))
@@ -986,6 +1096,7 @@ struct NativeLiveInterruptionSample: Sendable {
             }
         }
         outputLevel = pcm.isEmpty ? 0 : Float(min(1, sqrt(sum / Double(pcm.count / 2))))
+        outputOrb.append(pcm)
         lastModelAudioAt = now()
         player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
             Task { @MainActor in
@@ -995,11 +1106,12 @@ struct NativeLiveInterruptionSample: Sendable {
                     // node so the next burst re-fills the prebuffer before playback restarts.
                     self.player?.stop()
                     self.onOutput?(false); self.isPlayingOutput = false; self.outputLevel = 0
+                    self.outputOrb.reset()
                     self.startWaitCue()
                 }
             }
         }
-        if arrival.start { player.play() }
+        if arrival.start { player.play(); outputOrb.started(atMs: nowMs()) }
     }
     /// Barge-in: invalidate the queued turn so an in-flight chunk cannot be scheduled after the flush.
     func flush() async throws { flushOutput(); turnGeneration &+= 1 }
@@ -1007,6 +1119,7 @@ struct NativeLiveInterruptionSample: Sendable {
         // Contract C1: a barge-in, a rebuild or a session end tears down the wait cue with the turn.
         cancelWaitCue(.interrupted(atMs: nowMs()), stopPlayer: true)
         outputGeneration &+= 1; player?.stop(); playbackQueue.flush(); onOutput?(false); isPlayingOutput = false; outputLevel = 0
+        outputOrb.reset()
     }
     func stop() {
         cancelWaitCue(.interrupted(atMs: nowMs()), stopPlayer: true)
@@ -1040,6 +1153,7 @@ struct NativeLiveInterruptionSample: Sendable {
         if weakEngine != nil { log("audio_release_leak", ["reason": "engine_retained"]) }
         owner.release(holder: ObjectIdentifier(self))
         isCapturing = false; inputLevel = 0; outputLevel = 0; isPlayingOutput = false
+        inputBands = .silent; outputOrb.reset()
         audioReleaseCount += 1
         log("audio_released", ["reason": "release"])
     }

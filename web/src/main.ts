@@ -510,8 +510,9 @@ function paintLive(){
   // A poll rewrites the state line, the wrapper notices, the jobs and the transcript in place, so the
   // orb canvas, the controls and the reader's scroll position all keep (spec 1.3 causes 2, 3 and 4).
   const pill=document.getElementById('live-pill'),pillMarkup=livePillMarkup();
-  if(!!pill!==!!pillMarkup){render();return;} // a session start or end is the only full repaint, and it repins
-  if(pill&&pill.outerHTML!==pillMarkup)pill.outerHTML=pillMarkup;
+  if(pillMarkup&&!pill){document.querySelector('.brand-mini')?.insertAdjacentHTML('afterend',pillMarkup);}
+  else if(!pillMarkup&&pill){pill.remove();}
+  else if(pill&&pill.outerHTML!==pillMarkup){pill.outerHTML=pillMarkup;}
   const notices=document.getElementById('feed-notices'),noticeMarkup=liveNoticesMarkup(live,livePoll);
   if(notices&&notices.innerHTML!==noticeMarkup)notices.innerHTML=noticeMarkup;
   const jobs=document.getElementById('feed-jobs'),jobMarkup=liveJobsMarkup(live);

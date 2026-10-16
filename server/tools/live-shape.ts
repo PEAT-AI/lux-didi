@@ -109,9 +109,10 @@ function listed(items: string[], limit: number, label: string, followUp?: string
  * (`[omitted: ...]`), the calendar character cut (`[+N chars]`), and the `[id ...]` handle the model
  * needs to re-read one message, event or insight. The owner-facing evidence copy strips them; the
  * model's own copy keeps them. */
-export const MODEL_ONLY_NOTE = /[ \t]*\n*\[(?:omitted: [^\]\n]*|\+\d+ chars|id [^\]\s]*)\]/;
+export const MODEL_ONLY_NOTE = /[ \t]*\n*\[(?:omitted: [^\]\n]*|\+\d+ chars|id [^\]\s]*)\]/g;
+/** Uses the exported matcher alone, so the owner path and any caller can never diverge on the shape. */
 export function stripModelOnlyNotes(text: string): string {
-  return text.replace(/[ \t]*\n*\[(?:omitted: [^\]\n]*|\+\d+ chars|id [^\]\s]*)\]/g, '');
+  return text.replace(MODEL_ONLY_NOTE, '');
 }
 /** The hard per-result ceiling on model-visible text. A result already under `budget` is untouched;
  * otherwise it is cut at a sentence boundary and an omission note names the dropped characters and

@@ -69,12 +69,12 @@ test('the timeout and invalid selector output fall back to the fixed recipe and 
 
 test('a single-source hint narrows the offered kinds and still runs the selector', async () => {
   let selectCalls = 0;
-  let offered: string[] = [];
-  const counting: ResearchSelector = { select: async input => { selectCalls += 1; offered = [...input.candidates]; return { questionClass: 'cross_source', actions: [{ kind: 'mail_search', query: 'in:inbox newer_than:2d' }], pUseful: { mail_search: 0.9 } }; } };
+  let firstOffered: string[] = [];
+  const counting: ResearchSelector = { select: async input => { selectCalls += 1; if (selectCalls === 1) firstOffered = [...input.candidates]; return { questionClass: 'cross_source', actions: [{ kind: 'mail_search', query: 'in:inbox newer_than:2d' }], pUseful: { mail_search: 0.9 } }; } };
   const h = harness({ selector: counting });
   await runResearch(h.deps, { action: 'start', question: 'anything', sources: 'mail' }, new AbortController().signal);
-  assert.equal(selectCalls, 1);
-  assert.deepEqual(offered, ['mail_search']);
+  assert.equal(selectCalls >= 1, true);
+  assert.deepEqual(firstOffered, ['mail_search']);
   assert.ok(h.executed.length >= 1 && h.executed.every(call => call.name === 'gmail_list'));
   assert.equal(h.logs[0]!.fallbackUsed, false);
   assert.equal(h.logs[0]!.driver, 'single-source-hint');

@@ -62,7 +62,7 @@ const openTab = async name => { if (await page.locator('#sheet').count()) await 
 // The view writes its saved-selection key once it has restored and published a conversation; selecting before
 // that is a no-op because the view has no owner yet.
 const openSettings = async () => { await page.waitForFunction(() => Object.keys(localStorage).some(key => key.startsWith('didi-connected:'))); await openTab('Settings'); await page.locator('#connected-history').waitFor(); };
-const openConversation = async () => { if (await page.locator('#sheet').count()) await page.locator('#sheet-close').click(); await page.locator('#connected-panel').waitFor(); };
+const openConversation = async () => { if (await page.locator('#sheet').count()) await page.locator('#sheet-close').click(); await openPanel('right'); await page.locator('#connected-panel').waitFor(); };
 const selectValue = async () => { await openSettings(); const value = await page.locator('#connected-history').inputValue(); await openConversation(); return value; };
 const entryText = () => page.locator('#connected-entries').innerText();
 /** Screenshot the connected panel itself so the transcript, title and answer are the subject of the image.

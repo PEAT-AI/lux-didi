@@ -85,6 +85,9 @@ try {
     assert.equal(await page.locator('.voice-state').first().innerText(), 'Live is off', 'the header state is the one source of truth');
     assert.equal(await page.locator('.live-state').count(), 0, 'no second Live state surface');
   });
+  // The connected conversation lives in #panel-right (chat); U1 collapsed it by default, so open it
+  // the owner's way before reading or clicking its content.
+  await openPanel('right');
   await step('U3 declutter shots: the open chat without a grant', async () => {
     const u3 = '/Users/rob/.lux/reports/lux-didi-release-1014/u3-shots';
     await mkdir(u3, { recursive: true });

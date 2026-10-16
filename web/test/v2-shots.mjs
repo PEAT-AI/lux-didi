@@ -70,6 +70,9 @@ try {
   await page.locator('#pair-form').evaluate(form => form.requestSubmit());
   await page.locator('#connected-send').waitFor();
   await page.locator('#didi-orb').waitFor();
+  // U1 (#282): the chat lane is #panel-right and launches collapsed; open it the owner's way so the
+  // chat measurements and screenshots drive the real open chat.
+  await openPanel('right');
 
   const ready = async () => { await page.locator('.app-shell').waitFor(); await page.locator('#didi-orb').waitFor(); };
   // Probe: does the consent checkbox stick after a click?

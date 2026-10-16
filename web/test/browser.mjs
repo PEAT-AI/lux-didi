@@ -143,6 +143,8 @@ try {
     assert.equal(await page.locator('#lane-voice').count(),1);
     assert.equal(await page.locator('#panel-right').count(),1);
     assert.equal(await page.locator('.rail').count(),1);
+    // Default is both side panels collapsed; open both so the chat lane and the program menu are reachable.
+    await page.evaluate(() => { for (const id of ['panel-toggle-left','panel-toggle-right']) { const b = document.getElementById(id); if (b && b.getAttribute('aria-expanded') !== 'true') b.click(); } });
     await page.locator('button[data-route="settings"]').click();
     await page.locator('#sheet').waitFor();
     assert.match(await page.locator('#sheet').innerText(),/No model connected/);
@@ -362,6 +364,7 @@ try {
   });
 
   await step('settings unpair revokes the cookie and returns to pairing',async()=>{
+    await page.evaluate(() => { const b = document.getElementById('panel-toggle-left'); if (b && b.getAttribute('aria-expanded') !== 'true') b.click(); });
     await page.locator('button[data-route="settings"]').click();
     await page.locator('#sheet').waitFor();
     await page.getByRole('button',{name:'Unpair this browser',exact:true}).click();

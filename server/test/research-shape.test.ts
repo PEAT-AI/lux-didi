@@ -239,6 +239,14 @@ test('a failed sub-call is retried once inside the round', async () => {
   assert.equal(subcalls[0]!['ok'], true, 'the retried result is the one logged');
 });
 
+test('shapeBlock keeps mattermost posts rendered as **header** lines', () => {
+  const text = '**harbour | river | 2026-10-11T10:00:00.000Z [post p1]**\nhello there\n**other | alice | t [post p2]**\nsecond post';
+  const block = shapeBlock('chat_search', [sub('mattermost_search', text)]);
+  assert.equal(block.lines.length, 2);
+  assert.equal(block.lines[0], 'harbour | river | 2026-10-11T10:00:00.000Z | hello there');
+  assert.equal(block.total, 2);
+});
+
 test('the research_run line carries unchecked, canContinue and per-finding char counts', async () => {
   const logs: Record<string, unknown>[] = [];
   const selector: ResearchSelector = { async select() { return { questionClass: 'cross_source', actions: [{ kind: 'knowledge_search' }], pUseful: { knowledge_search: 1 } }; } };

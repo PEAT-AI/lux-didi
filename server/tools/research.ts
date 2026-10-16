@@ -655,10 +655,22 @@ export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResul
       // Calendar names are not events; the gcal_list follow-up in the same candidate carries them.
     } else {
       const cap = result.name.startsWith('mattermost') ? RESEARCH.chatTextChars : 400;
-      for (const line of raw.filter(entry => entry.startsWith('- '))) {
-        lines.push(clip(line.slice(2).replace(/\s*\[post [^\]]+\]/g, '').trim(), cap));
-        total += 1;
+      // Q1-R5: a mattermost search renders each post as a `**header**` line plus its text, a channel
+      // list as `- name` lines. Keep both; the old `- `-only filter dropped every search post.
+      let heading: string | undefined;
+      let body: string[] = [];
+      const flush = (): void => {
+        if (heading === undefined) { body = []; return; }
+        lines.push(clip(`${heading.replace(/\s*\[post [^\]]+\]/g, '').trim()}${body.length ? ` | ${body.join(' ')}` : ''}`, cap));
+        total += 1; heading = undefined; body = [];
+      };
+      for (const line of raw) {
+        const bold = /^\*\*(.+?)\*\*$/.exec(line);
+        if (bold) { flush(); heading = bold[1]!; continue; }
+        if (line.startsWith('- ')) { flush(); lines.push(clip(line.slice(2).replace(/\s*\[post [^\]]+\]/g, '').trim(), cap)); total += 1; continue; }
+        if (heading !== undefined) body.push(line);
       }
+      flush();
     }
   }
   const cap = LINE_CAP[kind] ?? lines.length;

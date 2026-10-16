@@ -314,7 +314,7 @@ const mattermostDescriptor: ConnectorDescriptor = {
     return [
       companyDeclaration('mattermost_whoami', 'Read the authenticated Mattermost identity.', text),
       companyDeclaration('mattermost_get_channel_history', 'Read bounded history from a Mattermost channel, newest first. channel is a channel name or display name; no channel list needed. An id still works. Returns at most 8 posts, 250 characters each.', text, 'channel', limit),
-      companyDeclaration('mattermost_get_thread', 'Read a bounded Mattermost thread. postId is a post id taken from a channel history. Returns at most 8 posts, 250 characters each.', text, 'postId', limit),
+      companyDeclaration('mattermost_get_thread', 'Read a bounded Mattermost thread. postId is a post id taken from a channel history. Returns at most 8 posts, 250 characters each.', text, 'postId'),
       companyDeclaration('mattermost_search', 'Search bounded Mattermost messages by query. No channel id needed: search first, no channel list needed. Put filters inside the query: From:<user>, After:<date>, In:<channel>, so "what did X say about Y" or "what happened in channel Z this week" is one call. Results are shaped newest first, at most 8 posts of 250 characters, not whole threads.', text, 'query', limit),
     ];
   },
@@ -324,7 +324,7 @@ const mattermostDescriptor: ConnectorDescriptor = {
       switch (tool) {
         case 'mattermost_whoami': return reader.whoami(signal);
         case 'mattermost_get_channel_history': return reader.getChannelHistory(args as { channel: string; limit?: number }, signal);
-        case 'mattermost_get_thread': return reader.getThread(args as { postId: string; limit?: number }, signal);
+        case 'mattermost_get_thread': return reader.getThread(args as { postId: string }, signal);
         case 'mattermost_search': return reader.search(args as { query: string; limit?: number }, signal);
         case 'mattermost_list_channels': return reader.listChannels(args, signal);
         default: throw new ConnectorCompositionError('unknown_connector_tool', endpoint.id, 'mattermost');

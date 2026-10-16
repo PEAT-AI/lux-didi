@@ -53,7 +53,7 @@ export type MattermostResult = MattermostEvidence | MattermostRefused | Mattermo
 
 export interface BoundedInput { limit?: number }
 export interface ChannelInput { channel: string; limit?: number }
-export interface ThreadInput { postId: string; limit?: number }
+export interface ThreadInput { postId: string }
 export interface QueryInput { query: string; limit?: number }
 
 export interface MattermostReader {
@@ -266,9 +266,9 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       if (denied) return { state: 'refused', reason: denied };
       const postId = boundedText(input.postId);
       if (postId === undefined) return { state: 'refused', reason: 'invalid-post-id' };
-      const bounded = limited(input.limit);
-      if (!bounded) return { state: 'refused', reason: 'limit-out-of-budget' };
-      return dispatch('mattermost_get_thread', { post_id: postId, ...bounded }, signal);
+      // The child's mattermost_get_thread schema declares only post_id (and format) and closes the
+      // object, so the pre-dispatch schema check refuses any extra key; send post_id alone.
+      return dispatch('mattermost_get_thread', { post_id: postId }, signal);
     },
     async search(input: QueryInput, signal?: AbortSignal): Promise<MattermostResult> {
       const denied = preflight(registry, settings, 'mattermost_search');

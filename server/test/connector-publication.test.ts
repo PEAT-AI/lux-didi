@@ -145,7 +145,7 @@ test('a proof for a replaced generation publishes nothing', async t => {
   await second;
   // Generation 2 cannot take the busy session, but the old proof published nothing either way.
   assert.deepEqual(mcp.connectionIds(), []);
-  assert.equal(mcp.registry.currentGrant('gmail')?.toolNames.includes('gmail_list'), false);
+  assert.equal(mcp.registry.currentGrant('gmail'), undefined);
 });
 
 test('shutdown during a proof publishes nothing and leaves no unhandled rejection', async t => {

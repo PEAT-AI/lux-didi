@@ -334,6 +334,34 @@ test('supervised actual child reports bounded matching readiness, closes on pipe
   } finally { if (child) await stopProcess(child); await rm(dir, { recursive: true, force: true }); }
 });
 
+test('supervised readiness is written before a connector handshake completes', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'didi-host-deferred-'));
+  let child: ChildProcess | undefined;
+  // Accept the connection and never answer: the connector handshake stays blocked for the full
+  // discovery budget, so only a host that publishes readiness first can pass the 3 s race.
+  const endpoint = createServer(() => { /* deliberately no response */ });
+  endpoint.listen(0, '127.0.0.1'); await once(endpoint, 'listening');
+  const address = endpoint.address(); if (!address || typeof address === 'string') throw new Error('no port');
+  try {
+    const config = join(dir, 'provider-config'); await mkdir(config, { mode: 0o700 });
+    await writeFile(join(config, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [
+      { id: 'gmail', connector: 'google', transport: 'streamable-http', url: `http://127.0.0.1:${address.port}/gmail`, account: 'synthetic', resource: 'gmail', credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'ordinary' },
+    ] }), { mode: 0o600 });
+    child = spawn(process.execPath, [resolve(import.meta.dirname, '../host/index.js'), '--supervised', '--data-dir', dir, '--config-dir', config, '--web-root', webRoot, '--port', '0'], { stdio: ['pipe', 'pipe', 'pipe'] });
+    let stderr = ''; child.stderr!.on('data', chunk => { stderr += String(chunk); });
+    const output = once(child.stdout!, 'data');
+    child.stdin!.write(`${JSON.stringify({ type: 'start', schemaVersion: 1, nonce: randomUUID() })}\n`);
+    const budget = new Promise<never>((_, reject) => { setTimeout(() => reject(new Error('readiness frame missed the 3 s budget')), 3_000); });
+    const [buffer] = await Promise.race([output, once(child, 'exit').then(([code]) => { throw new Error(`Supervised startup exited ${String(code)}: ${stderr}`); }), budget]);
+    const ready = JSON.parse(String(buffer).trim()) as { type: string };
+    assert.equal(ready.type, 'ready');
+  } finally {
+    if (child) await stopProcess(child);
+    await new Promise<void>(resolveClose => endpoint.close(() => resolveClose()));
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('supervised malformed/oversized/incomplete frames fail before readiness or state creation', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'didi-host-bad-frames-'));
   try {

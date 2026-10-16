@@ -98,24 +98,43 @@ import Combine
 
 import WebKit
 
-/// Feeds bounded local levels into the embedded web orb while a live session runs: input and output
-/// levels are batched by the bridge at the contract's 20 Hz cap. The renderer owns smoothing and
-/// geometry; this publisher never touches capture or transport authority.
+/// Feeds bounded local levels into the embedded web orb while a live session runs. Every tick
+/// (60 Hz, one per display refresh) posts the orb band frame: the owner's latest capture window and
+/// the model output window at the playback position (#283). The scalar input and output levels still
+/// go through the bridge's batched 20 Hz `levels` contract. The renderer owns smoothing and
+/// geometry; this publisher never touches capture, playback or transport authority.
 @MainActor final class NativeOrbLevelPublisher {
+    static let intervalNanos: UInt64 = 16_666_667
+    /// While both sides are silent, one silent frame per 200 ms is enough to hold the renderer at
+    /// rest (it treats a frame older than 500 ms as silence anyway).
+    static let silentRepeatSeconds: TimeInterval = 0.2
     private let device: NativeLiveAudioDevice
     private let bridge: NativeBridge
     private var task: Task<Void, Never>?
+    private var lastSilentAt: TimeInterval = 0
     init(device: NativeLiveAudioDevice, bridge: NativeBridge) { self.device = device; self.bridge = bridge }
     func start() {
         guard task == nil else { return }
         task = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self = self else { break }
-                self.bridge.pushLevels(input: Double(self.device.inputLevel), output: Double(self.device.outputLevel),
-                                       now: Date().timeIntervalSince1970)
-                try? await Task.sleep(nanoseconds: 66_000_000)
+                let now = Date().timeIntervalSince1970
+                self.bridge.pushLevels(input: Double(self.device.inputLevel), output: Double(self.device.outputLevel), now: now)
+                let bands = self.device.orbBands()
+                let frame = BridgeOrbFrame(input: BridgeOrbBands(bands.input), output: BridgeOrbBands(bands.output))
+                if !frame.isSilent || now - self.lastSilentAt >= Self.silentRepeatSeconds {
+                    if frame.isSilent { self.lastSilentAt = now } else { self.lastSilentAt = 0 }
+                    self.bridge.pushOrbFrame(frame)
+                }
+                try? await Task.sleep(nanoseconds: Self.intervalNanos)
             }
         }
     }
     func stop() { task?.cancel(); task = nil }
+}
+
+extension BridgeOrbBands {
+    init(_ bands: NativeOrbBands) {
+        self.init(level: Double(bands.level), low: Double(bands.low), mid: Double(bands.mid), high: Double(bands.high), flux: Double(bands.flux))
+    }
 }

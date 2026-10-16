@@ -184,6 +184,32 @@ struct BridgeOutbox {
     mutating func reset() { ready = false; pending = []; pendingCount = 0 }
 }
 
+/// One side of the orb's band frame (#283): linear RMS 0...1 of the whole signal and of the low
+/// (vowel body), mid and high bands, plus an onset value 0...1. Numbers only.
+struct BridgeOrbBands: Equatable {
+    var level: Double = 0, low: Double = 0, mid: Double = 0, high: Double = 0, flux: Double = 0
+    static let silent = BridgeOrbBands()
+    var isSilent: Bool { level <= 0 && low <= 0 && mid <= 0 && high <= 0 && flux <= 0 }
+    fileprivate var json: String {
+        func number(_ value: Double) -> String {
+            let bounded = value.isFinite ? min(1, max(0, value)) : 0
+            return String(format: "%.4f", bounded)
+        }
+        return "{\"level\":\(number(level)),\"low\":\(number(low)),\"mid\":\(number(mid)),\"high\":\(number(high)),\"flux\":\(number(flux))}"
+    }
+}
+
+/// The orb's display-rate frame: owner input and model output apart, posted straight to the
+/// renderer's own `window.didiOrbLevel` hook at 60 Hz. It is a renderer-only channel at display
+/// rate (never one call per audio buffer) and carries no transcript, route or control data; the
+/// batched 20 Hz `levels` contract below is unchanged.
+struct BridgeOrbFrame: Equatable {
+    var input: BridgeOrbBands
+    var output: BridgeOrbBands
+    var isSilent: Bool { input.isSilent && output.isSilent }
+    var script: String { "window.didiOrbLevel&&window.didiOrbLevel({\"v\":2,\"input\":\(input.json),\"output\":\(output.json)})" }
+}
+
 /// Caps the orb level stream at the contract's 20 Hz by batching every sample seen since the last
 /// flush; the web receives arrays, never one message per audio buffer.
 struct LevelBatcher {
@@ -267,6 +293,13 @@ struct LevelBatcher {
     func pushLevels(input: Double, output: Double, now: TimeInterval) {
         guard let batch = batcher.offer(input: input, output: output, now: now) else { return }
         send(.levels(input: batch.input, output: batch.output))
+    }
+
+    /// #283: one orb band frame to the renderer. Dropped (not queued) before the web is ready: a
+    /// stale level has no value once the page loads.
+    func pushOrbFrame(_ frame: BridgeOrbFrame) {
+        guard outbox.ready else { return }
+        sendJS?(frame.script)
     }
 
     func pushLiveState(_ state: BridgeLiveState) { send(.liveState(state)) }

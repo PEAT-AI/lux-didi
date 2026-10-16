@@ -241,17 +241,22 @@ test('shapeBlock shapes the real knowledge item form too', () => {
 });
 
 test('a failed sub-call is retried once inside the round', async () => {
-  let calls = 0;
+  let mailCalls = 0;
   const subcalls: Record<string, unknown>[] = [];
   const selector: ResearchSelector = { async select() { return { questionClass: 'cross_source', actions: [{ kind: 'mail_search', query: 'in:inbox newer_than:2d' }], pUseful: { mail_search: 1 } }; } };
   const deps: ResearchDeps = {
     now: () => 0, configured: CONFIGURED, selector,
-    execute: async (subs: readonly IntentSubCall[]) => { calls += 1; return subs.map((call, n) => ({ key: `r0~${n}~${call.key}`, name: call.name, ok: calls > 1, text: calls > 1 ? '- Subject | Sender | Mon | body [id m1]' : '', originalCharacters: 10, omittedCharacters: 0, ...(calls > 1 ? {} : { code: 'transient' }) })); },
+    execute: async (subs: readonly IntentSubCall[]) => subs.map((call, n) => {
+      if (call.name !== 'gmail_list') return { key: `r0~${n}~${call.key}`, name: call.name, ok: true, text: '### Title [id 1]', originalCharacters: 10, omittedCharacters: 0 };
+      mailCalls += 1;
+      return { key: `r0~${n}~${call.key}`, name: call.name, ok: mailCalls > 1, text: mailCalls > 1 ? '- Subject | Sender | Mon | body [id m1]' : '', originalCharacters: 10, omittedCharacters: 0, ...(mailCalls > 1 ? {} : { code: 'transient' }) };
+    }),
     emit: () => undefined, log: () => undefined, logSubcall: entry => subcalls.push(entry as unknown as Record<string, unknown>), ledger: new ResearchLedger(),
   };
   await runResearch(deps, { action: 'start', question: 'anything' }, new AbortController().signal);
-  assert.equal(calls >= 2, true, 'the failed call is retried');
-  assert.equal(subcalls[0]!['ok'], true, 'the retried result is the one logged');
+  assert.equal(mailCalls >= 2, true, 'the failed call is retried');
+  const mailLog = subcalls.find(entry => entry['tool'] === 'gmail_list');
+  assert.equal(mailLog!['ok'], true, 'the retried result is the one logged');
 });
 
 test('shapeBlock keeps mattermost posts rendered as **header** lines', () => {

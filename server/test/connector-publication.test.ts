@@ -21,6 +21,7 @@ interface FakeConnector {
   releaseConnect(): void;
   onDiscovery: Promise<void>;
   proofCount(): number;
+  discoveryCount(): number;
   waitProof(n: number): Promise<void>;
   releaseProof(index: number, identity: string): void;
   close(): Promise<void>;
@@ -30,10 +31,11 @@ interface FakeConnector {
  * One fake Gmail MCP endpoint with deferred promises instead of sleeps. `blockConnect` holds the
  * initialize handshake; proofs await an explicit identity from the test.
  */
-async function fakeConnector(options: { blockConnect?: boolean } = {}): Promise<FakeConnector> {
+async function fakeConnector(options: { blockConnect?: boolean; failDiscoveryOnce?: boolean } = {}): Promise<FakeConnector> {
   const calls: string[] = [];
   let connectResolve!: () => void; const connectGate = new Promise<void>(resolve => { connectResolve = resolve; });
   const tools = ['gmail_get_profile', 'gmail_list', 'gmail_read'].map(name => ({ name, inputSchema: { type: 'object', properties: {}, additionalProperties: true } }));
+  let discoveryFailures = options.failDiscoveryOnce ? 1 : 0;
   let discoveries = 0; const discoveryWaiters: Array<() => void> = [];
   const signalDiscovery = (): void => { discoveries++; for (const waiter of discoveryWaiters.splice(0)) waiter(); };
   let proofs = 0; const proofWaiters: Array<() => void> = [];
@@ -45,6 +47,12 @@ async function fakeConnector(options: { blockConnect?: boolean } = {}): Promise<
     if (message.id === undefined) { res.writeHead(202); res.end(); return; }
     if (message.method === 'initialize' && options.blockConnect) await connectGate;
     if (message.method === 'tools/list') signalDiscovery();
+    if (message.method === 'tools/list' && discoveryFailures > 0) {
+      discoveryFailures -= 1;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ jsonrpc: '2.0', id: message.id, error: { code: -32603, message: 'synthetic discovery failure' } }));
+      return;
+    }
     let identity: string | undefined;
     if (message.method === 'tools/call') {
       const name = String(message.params?.name ?? '');
@@ -70,16 +78,17 @@ async function fakeConnector(options: { blockConnect?: boolean } = {}): Promise<
     releaseConnect: connectResolve,
     onDiscovery: discoveries > 0 ? Promise.resolve() : new Promise<void>(resolveDiscovery => { discoveryWaiters.push(resolveDiscovery); }),
     proofCount: () => proofs,
+    discoveryCount: () => discoveries,
     waitProof: (n: number) => proofs >= n ? Promise.resolve() : new Promise<void>(resolveProof => { proofWaiters.push(() => { if (proofs >= n) resolveProof(); }); }),
     releaseProof: (index, identity) => { const next = pendingProofs.splice(index, 1)[0]; if (!next) throw new Error('no pending proof'); next(identity); },
     close: () => new Promise<void>(resolveClose => endpoint.close(() => resolveClose())),
   };
 }
 
-async function compose(t: TestContext, options: { ownerIdentity?: string | null; blockConnect?: boolean }) {
+async function compose(t: TestContext, options: { ownerIdentity?: string | null; blockConnect?: boolean; failDiscoveryOnce?: boolean; connectorLog?: (connector: string, stage: string, detail?: { reason?: string; exceptionCode?: string; endpointId?: string; attempt?: string }) => void }) {
   const dir = await mkdtemp(join(tmpdir(), 'didi-publication-'));
   const configDir = join(dir, 'provider-config'); await mkdir(configDir, { mode: 0o700 });
-  const fake = await fakeConnector(options.blockConnect === undefined ? {} : { blockConnect: options.blockConnect });
+  const fake = await fakeConnector({ ...(options.blockConnect === undefined ? {} : { blockConnect: options.blockConnect }), ...(options.failDiscoveryOnce === true ? { failDiscoveryOnce: true } : {}) });
   // A superseded generation can leave a proof POST in flight; close the composition so the adapter
   // aborts it before the fake endpoint is asked to close (F8-R3).
   t.after(async () => { await mcp.close(); await fake.close(); await rm(dir, { recursive: true, force: true }); });
@@ -89,7 +98,7 @@ async function compose(t: TestContext, options: { ownerIdentity?: string | null;
     endpoints: [{ id: 'gmail', connector: 'google', transport: 'streamable-http', url: fake.url, account: 'synthetic', resource: 'gmail', credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'ordinary' }],
   }), { mode: 0o600 });
   const store = new Store(join(dir, 'state'), hostMigrations);
-  const mcp = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null, deferConnectors: true });
+  const mcp = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null, deferConnectors: true, ...(options.connectorLog ? { connectorLog: options.connectorLog } : {}) });
   return { store, mcp, fake };
 }
 
@@ -270,4 +279,19 @@ test('a failed re-verification after a refresh leaves no grant', async t => {
   assert.deepEqual(mcp.connectionIds(), []);
   assert.equal(mcp.status().endpoints[0]!.state, 'error');
   assert.equal(mcp.status().endpoints[0]!.reasonCode, 'identity_mismatch');
+});
+
+test('a connector that fails discovery at first call gets one bounded re-discovery', async t => {
+  const events: { connector: string; stage: string; reason?: string; endpointId?: string; attempt?: string }[] = [];
+  const { mcp, fake } = await compose(t, { failDiscoveryOnce: true, connectorLog: (connector, stage, detail) => events.push({ connector, stage, ...(detail ?? {}) }) });
+  await mcp.start();
+  assert.equal(mcp.status().endpoints[0]!.state, 'connected', 'the bounded re-discovery recovers without a host restart');
+  assert.deepEqual(mcp.connectionIds(), ['gmail']);
+  assert.equal(fake.discoveryCount(), 2, 'exactly one re-discovery runs');
+  const failed = events.find(event => event.attempt === 'first-connect');
+  assert.ok(failed, 'the first connect logs its failure');
+  assert.equal(failed!.stage, 'first_call');
+  assert.equal(failed!.endpointId, 'gmail');
+  assert.ok(failed!.reason, 'the failure names its adapter reason');
+  assert.equal(events.filter(event => event.attempt === 'refresh').length, 0, 'a successful re-discovery emits no failure line');
 });

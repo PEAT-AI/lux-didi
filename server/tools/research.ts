@@ -68,6 +68,17 @@ export const RESEARCH = Object.freeze({
 
 export const RESEARCH_SOURCES: readonly SourceKind[] = ['knowledge', 'calendar', 'mail', 'chat', 'mongoose'];
 
+/**
+ * The closed code for a sub-call that never dispatched. The dispatch record's reason is already a
+ * code for the machine paths; a free-text argument-shape guidance collapses to `invalid_arguments`,
+ * so a refused sub-call is never logged as a bare failure.
+ */
+export function refusalCode(reason: string): string {
+  if (reason === 'unknown_tool' || reason === 'duplicate_call_id' || reason === 'grant_not_permitted'
+    || reason === 'stale_or_revoked_authority' || reason === 'round_deadline' || reason === 'round_cancelled') return reason;
+  return reason.startsWith('Invalid arguments for ') ? 'invalid_arguments' : 'refused';
+}
+
 /** The p50 of a source kind, in seconds; a source with no table entry uses the slowest configured. */
 export function p50SecondsOf(source: SourceKind): number {
   if (source === 'knowledge' || source === 'chat' || source === 'calendar') return RESEARCH.p50Seconds[source];
@@ -405,7 +416,7 @@ export interface RunState {
   researchId: string; runId: number; questionClass: QuestionClass; direction: string | undefined;
   startedAt: number; deadlineMs: number; rounds: number; maxRounds: number; ops: number;
   cancelled: boolean; ended: boolean; stopped: boolean; ledger: Map<string, LedgerEntry>;
-  evidence: Map<CandidateKind, string>; readKinds: Set<CandidateKind>; sourcesDone: Set<SourceKind>;
+  evidence: Map<CandidateKind, string>; readKinds: Set<CandidateKind>; sourcesDone: Set<SourceKind>; sourcesFailed: Set<SourceKind>;
 }
 
 /** Session-local in-memory ledger. Nothing here is persisted or logged beyond its metadata. */
@@ -421,7 +432,7 @@ export class ResearchLedger {
       researchId, runId: ++this.#counter, questionClass: input.questionClass, direction: input.direction,
       startedAt: input.now, deadlineMs: input.deadlineMs, rounds: 0, maxRounds: input.maxRounds, ops: 0,
       cancelled: false, ended: false, stopped: false,
-      ledger: new Map(), evidence: new Map(), readKinds: new Set(), sourcesDone: new Set(),
+      ledger: new Map(), evidence: new Map(), readKinds: new Set(), sourcesDone: new Set(), sourcesFailed: new Set(),
     };
     this.#runs.set(researchId, run);
     this.#activeId = researchId;
@@ -437,7 +448,7 @@ export class ResearchLedger {
       ...existing, runId: ++this.#counter, direction: input.direction ?? existing.direction,
       startedAt: input.now, deadlineMs: input.deadlineMs, maxRounds: input.maxRounds,
       rounds: 0, cancelled: false, ended: false, stopped: false,
-      ledger: new Map(existing.ledger), evidence: new Map(existing.evidence), readKinds: new Set(existing.readKinds), sourcesDone: new Set(existing.sourcesDone),
+      ledger: new Map(existing.ledger), evidence: new Map(existing.evidence), readKinds: new Set(existing.readKinds), sourcesDone: new Set(existing.sourcesDone), sourcesFailed: new Set(existing.sourcesFailed),
     };
     this.#runs.set(researchId, run);
     this.#activeId = researchId;
@@ -493,10 +504,14 @@ export interface ResearchSubcallLog {
 export interface ResearchDeps {
   now(): number;
   configured: readonly SourceKind[];
+  /** Re-resolved per run so a connector that comes up or down mid-session is reported truthfully. */
+  configuredNow?: (() => readonly SourceKind[]) | undefined;
   selector?: ResearchSelector | undefined;
   execute(subs: readonly IntentSubCall[], signal: AbortSignal): Promise<IntentSubResult[]>;
   emit(event: ResearchProgress): void;
   log(event: ResearchRunLog): void;
+  /** One metadata-only line when a second `start` joins a run already in flight. */
+  logJoined?: ((researchId: string) => void) | undefined;
   /** Metadata-only per-sub-call log; defaults to the host log sink. Never the query or result text. */
   logSubcall?: ((event: ResearchSubcallLog) => void) | undefined;
   ledger: ResearchLedger;
@@ -528,7 +543,7 @@ const SOURCE_LABELS: readonly (readonly [SourceKind, string])[] = [
 
 /** The connector tool whose presence means a source is configured. Same four names the research loop fans out over. */
 const SOURCE_TOOLS: Readonly<Record<string, SourceKind>> = {
-  search_knowledge: 'knowledge', gcal_calendars: 'calendar', gmail_list: 'mail', mattermost_search: 'chat',
+  search_knowledge: 'knowledge', gcal_list: 'calendar', gmail_list: 'mail', mattermost_search: 'chat',
 };
 
 /** Map the tool names a session actually configured to the research sources they expose, in display order. */
@@ -537,6 +552,17 @@ export function researchSourcesFromToolNames(names: Iterable<string>): SourceKin
   const found = new Set<SourceKind>();
   for (const [tool, source] of Object.entries(SOURCE_TOOLS)) if (present.has(tool)) found.add(source);
   return SOURCE_LABELS.map(([source]) => source).filter(source => found.has(source));
+}
+
+/**
+ * The research sources one approved connector covers. Used to keep a connector that is down in the
+ * configured set so its sources can be reported unreachable rather than silently vanishing.
+ */
+export function researchSourcesForConnector(connector: string): SourceKind[] {
+  if (connector === 'google') return ['calendar', 'mail'];
+  if (connector === 'mattermost') return ['chat'];
+  if (connector === 'lux-knowledge') return ['knowledge'];
+  return [];
 }
 
 /** The configured sources named for the model, joined as "a, b and c". */
@@ -588,6 +614,8 @@ function sourceKindOf(kind: CandidateKind): SourceKind | null {
 
 const OMITTED_NOTE = /^\[omitted:/u;
 const SOURCE_LABEL: Record<SourceKind, string> = { knowledge: 'knowledge', calendar: 'calendar', mail: 'mail', chat: 'chat', mongoose: 'mongoose' };
+/** Findings order: the owner's knowledge base leads, company sources follow. */
+const SOURCE_ORDER: readonly SourceKind[] = ['knowledge', 'calendar', 'mail', 'chat', 'mongoose'];
 const LINE_CAP: Partial<Record<CandidateKind, number>> = {
   mail_search: RESEARCH.mailLines, mail_open: 2,
   chat_search: RESEARCH.chatLines, chat_thread: 12,
@@ -796,11 +824,17 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   }
   const readSources = new Set(run.sourcesDone);
   const unchecked = configured.filter(source => !readSources.has(source));
+  // Outcome 2: name the sources this run could not reach, in one short clause the model can voice,
+  // so an outage is never hidden behind a narrow answer. `knowledge` leads the findings.
+  groups.sort((a, b) => SOURCE_ORDER.indexOf(a.source) - SOURCE_ORDER.indexOf(b.source));
+  const unreachable = SOURCE_LABELS.filter(([source]) => run.sourcesFailed.has(source)).map(([, label]) => label);
+  const note = unreachable.length === 0 ? undefined
+    : `I could not reach ${unreachable.length === 1 ? unreachable[0]! : `${unreachable.slice(0, -1).join(', ')} and ${unreachable[unreachable.length - 1]!}`} right now.`;
   let dropped = 0;
   const render = (): { findings: ReplyFinding[]; reply: JsonObject } => {
     const findings: ReplyFinding[] = groups.filter(group => group.lines.length > 0)
       .map(group => ({ source: group.source, text: `${group.label}: ${group.lines.length} of ${group.total} shown\n${group.lines.join('\n')}`, chars: group.lines.join('\n').length }));
-    return { findings, reply: { researchId: run.researchId, status, findings, unchecked, canContinue: canContinue || dropped > 0 } };
+    return { findings, reply: { researchId: run.researchId, status, findings, unchecked, canContinue: canContinue || dropped > 0, ...(note !== undefined ? { note } : {}) } };
   };
   // Trim the longest source first, never below one line while any source still has more than one.
   let guard = 4096;
@@ -818,7 +852,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
 export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal: AbortSignal): Promise<JsonObject> {
   const limit = deps.replyLimit ?? RESEARCH.replyLimitChars;
   const now = () => deps.now();
-  const configured = deps.configured;
+  const configured = (deps.configuredNow ?? (() => deps.configured))();
   const logSubcall = deps.logSubcall ?? ((event: ResearchSubcallLog): void => hostLogEvent(event));
 
   if (call.action === 'stop') {
@@ -854,24 +888,47 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
   deps.emit({ researchId: run.researchId, phase: 'started', sourcesDone: [], sourcesPending: [...configured], elapsedMs: 0 });
 
   const hint = hintedSources(call.sources, configured);
+  // Outcome 5: the owner's knowledge base is the prime source. Its read starts immediately, in
+  // parallel with source selection, unless the owner named one certain non-knowledge source.
+  const knowledgeSubs = candidateSubs('knowledge_search', { question, configured, evidence: run.evidence });
+  const knowledgeWanted = configured.includes('knowledge') && knowledgeSubs.length > 0 && !run.readKinds.has('knowledge_search')
+    && !(hint.length === 1 && hint[0] !== 'knowledge');
+  let knowledgeStartedAt = 0;
+  let knowledgePromise: Promise<IntentSubResult[]> | undefined;
+  let knowledgeConsumed = false;
   for (let round = 1; round <= run.maxRounds; round++) {
     if (signal.aborted) { run.stopped = true; stopReason = 'cancelled'; break; }
     if (run.cancelled || run.stopped) { stopReason = 'cancelled'; break; }
     const elapsed = now() - started;
     if (elapsed >= run.deadlineMs) { stopReason = 'deadline'; break; }
 
+    // Start the prime-source read right before source selection, so it runs in parallel with the
+    // selector rather than behind it.
+    if (round === 1 && knowledgeWanted && knowledgePromise === undefined) {
+      const remainingMs = deadlineAt - now();
+      if (remainingMs > 0) {
+        knowledgeStartedAt = now();
+        knowledgePromise = deps.execute(knowledgeSubs, AbortSignal.any([signal, AbortSignal.timeout(remainingMs)])).catch(() => [] as IntentSubResult[]);
+      }
+    }
+
     const completedKinds = [...run.readKinds];
     const offerable = offerableCandidates(configured, completedKinds);
     let selection: SelectorOutput;
     let usedFallbackThisRound = false;
     let narrowed: CandidateKind[] | undefined;
-    if (run.readKinds.size === 0 && hint.length === 1) {
+    // A single-source hint pins the whole run to that one source, so the selector is never called,
+    // in any round: once the source is read there is nothing left to select.
+    if (hint.length === 1) {
       const source = hint[0]!;
       narrowed = offerable.filter(kind => CANDIDATES.find(c => c.kind === kind)?.source === source);
       if (driver === undefined) driver = 'single-source-hint';
     }
     const candidatesForSelector = narrowed ?? offerable;
-    if (deps.selector === undefined) {
+    if (narrowed !== undefined) {
+      // Outcome 6: one certain source is deterministic; skip the selector call entirely.
+      selection = fallbackSelection(question || run.direction || '', configured, now());
+    } else if (deps.selector === undefined) {
       fallbackUsed = true;
       usedFallbackThisRound = true;
       selection = fallbackSelection(question || run.direction || '', configured, now());
@@ -902,6 +959,9 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
     run.questionClass = selection.questionClass;
 
     const chosen = selection.actions.map(action => action.kind).filter(kind => candidatesForSelector.includes(kind));
+    // Outcome 5: the pre-started knowledge read is included even when the selector did not pick it,
+    // so the prime source is always read once and its findings can rank first.
+    if (knowledgePromise !== undefined && !knowledgeConsumed && !chosen.includes('knowledge_search') && candidatesForSelector.includes('knowledge_search')) chosen.push('knowledge_search');
     perRound.push({ candidates: offerable.map(kind => ({ kind, pUseful: selection.pUseful[kind] ?? 0 })), chosen: [...chosen] });
 
     if (chosen.length === 0) { stopReason = selection.actions.some(a => a.kind === 'stop_insufficient') ? 'insufficient' : 'answered'; run.rounds = round; break; }
@@ -924,7 +984,8 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
         const action = selection.actions.find(entry => entry.kind === kind);
         const subs = candidateSubs(kind, { question, configured, evidence: run.evidence, query: action?.query, window: action?.window, nowMs: now() });
         if (subs.length === 0) return;
-        const at = now();
+        const consumeKnowledge = kind === 'knowledge_search' && knowledgePromise !== undefined && !knowledgeConsumed;
+        const at = consumeKnowledge ? knowledgeStartedAt : now();
         // Q1-R3(e): one retry for a transient failed sub-call, inside the round deadline.
         const executeWithRetry = async (list: IntentSubCall[]): Promise<IntentSubResult[]> => {
           let out: IntentSubResult[] = [];
@@ -938,7 +999,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
           }
           return out;
         };
-        const results: IntentSubResult[] = await executeWithRetry(subs);
+        const results: IntentSubResult[] = consumeKnowledge ? (knowledgeConsumed = true, await knowledgePromise!) : await executeWithRetry(subs);
         // Host-side second hops inside the same run: hydrate the top knowledge hits, open the top
         // mails when the question asks what a mail says, and fetch the thread of the top chat hit.
         const second: IntentSubCall[] = [];
@@ -966,8 +1027,14 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
         run.ledger.set(key, { kind, source, summary: block.text, lines: block.lines, total: block.total });
         const id = extractId(kind, results.filter(result => result.ok).map(result => result.text).join('\n'));
         if (id) run.evidence.set(kind, id);
-        if (results.some(result => result.ok && result.text.trim())) run.readKinds.add(kind);
-        if (source) run.sourcesDone.add(source);
+        // Outcome 2: a source counts as done only when at least one of its reads succeeded; a refused
+        // or failed read marks it failed so the reply can report it unreachable.
+        const succeeded = results.some(result => result.ok && result.text.trim());
+        if (succeeded) run.readKinds.add(kind);
+        if (source) {
+          if (succeeded) { run.sourcesDone.add(source); run.sourcesFailed.delete(source); }
+          else if (!run.sourcesDone.has(source)) run.sourcesFailed.add(source);
+        }
         const queryAuthor: 'selector' | 'fallback' = usedFallbackThisRound ? 'fallback' : 'selector';
         // Log the primary sub-calls and the host-side second hops (hydrate/open/thread) together:
         // `results` is `[...primary, ...second]`, so position is the stable key.
@@ -1010,7 +1077,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
   run.ended = true;
   const elapsedMs = now() - started;
   const status = stopReason === 'cancelled' || run.stopped ? 'stopped' : (run.readKinds.size > 0 ? (elapsedMs >= run.deadlineMs ? 'partial' : 'answered') : 'partial');
-  const canContinue = !run.stopped && !run.cancelled && run.rounds < run.maxRounds && configured.some(source => !run.sourcesDone.has(source));
+  const canContinue = !run.stopped && !run.cancelled && run.rounds < run.maxRounds && configured.some(source => !run.sourcesDone.has(source) && !run.sourcesFailed.has(source));
   deps.emit({ researchId: run.researchId, phase: 'done', sourcesDone: [...run.sourcesDone], sourcesPending: configured.filter(source => !run.sourcesDone.has(source)), elapsedMs });
   const reply = buildReply(run, status, configured, canContinue, limit);
   driver ??= 'single-source-hint';
@@ -1055,6 +1122,13 @@ export class ResearchScheduler {
 
   call(call: ResearchCall, signal: AbortSignal): Promise<JsonObject> {
     if (call.action === 'start') {
+      // Outcome 7: a second start while a run is in flight joins that run and returns its result,
+      // instead of starting a sequential second run.
+      const inflight = this.#resolveTarget(undefined);
+      if (inflight !== undefined) {
+        this.#deps.logJoined?.(inflight.id);
+        return inflight.entry.awaiter.promise;
+      }
       const id = call.researchId ?? newResearchId();
       return this.#drive({ ...call, researchId: id }, signal, id);
     }

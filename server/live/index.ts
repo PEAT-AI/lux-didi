@@ -7,7 +7,7 @@ import { definitionsInTransaction } from '../tools/index.js';
 import { LiveToolJobs, type JobTimer } from '../tools/jobs.js';
 import { declarationsFor, runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
-import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, validateResearch, type ResearchCall, type ResearchSelector, type SourceKind as ResearchSourceKind } from '../tools/research.js';
+import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, refusalCode, researchSourcesForConnector, validateResearch, type ResearchCall, type ResearchSelector, type SourceKind as ResearchSourceKind } from '../tools/research.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
 import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';
@@ -1030,9 +1030,19 @@ export class LiveSessionOwner {
     const names = new Set(handle.registry.map(tool => tool.name));
     const sources: ResearchSourceKind[] = [];
     if (names.has('search_knowledge')) sources.push('knowledge');
-    if (names.has('gcal_calendars')) sources.push('calendar');
+    // Outcome 3: detect a source by the tool its read actually uses, never a sibling, so a calendar
+    // read is never advertised when the connection only grants the calendar-list sibling.
+    if (names.has('gcal_list')) sources.push('calendar');
     if (names.has('gmail_list')) sources.push('mail');
     if (names.has('mattermost_search')) sources.push('chat');
+    // Outcome 2: an approved connector that is down keeps its sources in the configured set, so the
+    // reply can report them unreachable instead of silently narrowing to the sources still up.
+    for (const endpoint of this.#tools?.status?.().endpoints ?? []) {
+      if (endpoint.state === 'connected') continue;
+      for (const source of researchSourcesForConnector(endpoint.connector)) {
+        if (!sources.includes(source)) sources.push(source);
+      }
+    }
     return sources;
   }
 
@@ -1058,12 +1068,18 @@ export class LiveSessionOwner {
         const text = typeof response.text === 'string' ? response.text : '';
         const ok = record?.status === 'completed' && accepted !== undefined;
         // Q1-R3(d/e): a failed sub-call names its cause for the research_subcall log, never silently.
-        const code = ok ? undefined : (typeof response.code === 'string' ? response.code : typeof response.reason === 'string' ? response.reason : record ? String(record.status) : 'refused');
+        // A sub-call that never dispatched reports its real reason (unknown_tool, grant_not_permitted,
+        // invalid_arguments, round_deadline), never a bare refused.
+        const code = ok ? undefined
+          : typeof response.code === 'string' ? response.code
+          : typeof response.reason === 'string' ? response.reason
+          : record?.status === 'refused' ? refusalCode(record.reason)
+          : record ? String(record.status) : 'refused';
         return { key: call.id, name: call.name, ok, text, originalCharacters: typeof response.originalCharacters === 'number' ? response.originalCharacters : text.length, omittedCharacters: typeof response.omittedCharacters === 'number' ? response.omittedCharacters : 0, ...(code ? { code } : {}) };
       });
     };
     const scheduler = handle.researchScheduler ??= new ResearchScheduler({
-      now: () => this.#now(), configured, selector: this.#research, execute,
+      now: () => this.#now(), configured, configuredNow: () => this.#researchSources(handle), selector: this.#research, execute,
       emit: progress => {
         hostLogEvent({ event: 'research_progress', ...progress });
         // U1: the voice lane sees the lookup as it runs, on the channel it already polls.
@@ -1072,7 +1088,7 @@ export class LiveSessionOwner {
           this.#persist(handle, { type: 'continuity', sequence: 0, text: JSON.stringify(view) }, 'researchProgress');
         }
       },
-      log: entry => hostLogEvent(entry), ledger: handle.researchLedger,
+      log: entry => hostLogEvent(entry), logJoined: researchId => hostLogEvent({ event: 'research_joined', researchId }), ledger: handle.researchLedger,
     });
     const responses: { id: string; name: string; response: JsonObject }[] = [];
     const projections: LiveToolProjection[] = [];

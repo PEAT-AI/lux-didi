@@ -108,10 +108,19 @@ class ProbeRegistry extends McpRegistry {
     }
   }
 }
+/** Bounded connect-time detail on a connector_failure line: closed tokens only, never free text. */
+export interface ConnectorFailureDetail {
+  reason?: string;
+  exceptionCode?: string;
+  endpointId?: string;
+  /** Which connect pass this is: the first one, or the one bounded re-discovery. */
+  attempt?: 'first-connect' | 'refresh';
+}
+
 /** Compose the inert MCP runtime once at startup: config, owner and registry only, no remote work. */
 export async function composeMcpRuntime(options: {
   log?: ToolsOwnerOptions['log'];
-  connectorLog?: (connector: string, stage: string) => void;
+  connectorLog?: (connector: string, stage: string, detail?: ConnectorFailureDetail) => void;
   identityLog?: (connector: string, proven: boolean, match: boolean | null) => void;
   store: Store; ownerId: string; configDir: string;
   lookupAuthority(runId: string, signal: AbortSignal): Promise<LiveAuthority | null>;
@@ -168,23 +177,30 @@ export async function composeMcpRuntime(options: {
   }
   const active = endpoints.filter(entry => entry.enabled && entry.allowEgress);
 
-  const settle = async (entry: McpEndpointEntry, token: number): Promise<void> => {
+  const settle = async (entry: McpEndpointEntry, token: number, attempt: 'first-connect' | 'refresh'): Promise<{ retryable: boolean }> => {
     const previous = reports.get(entry.id);
     ready.delete(entry.id);
     const stale = (): boolean => closed || generations.get(entry.id) !== token;
     if (entry.configurationError || entry.unknownClass === null) {
       const code = entry.configurationError ?? 'unknown-class-missing';
-      reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: code, configurationError: code }); return;
+      reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: code, configurationError: code }); return { retryable: false };
     }
     // A missing or malformed credential is a visible, typed status; discovery never runs with a blank bearer.
     if (entry.credentialRef) {
       try { readMcpCredential(configDir, entry.credentialRef); }
-      catch { options.connectorLog?.(entry.connector, 'credential'); reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: `credential ${entry.credentialRef} missing or invalid` }); return; }
+      catch { options.connectorLog?.(entry.connector, 'credential', { endpointId: entry.id, attempt }); reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: `credential ${entry.credentialRef} missing or invalid` }); return { retryable: false }; }
     }
     try {
       const discovery = await port.discover(entry.id);
-      if (stale()) return;
-      if (discovery.state !== 'discovered') { options.connectorLog?.(entry.connector, mongooseFailureStage(discovery.reason, discovery.exception?.code)); reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: discovery.reason, ...(discovery.exception ? { exception: discovery.exception } : {}) }); return; }
+      if (stale()) return { retryable: false };
+      if (discovery.state !== 'discovered') {
+        const stage = mongooseFailureStage(discovery.reason, discovery.exception?.code);
+        options.connectorLog?.(entry.connector, stage, { reason: discovery.reason, ...(discovery.exception?.code ? { exceptionCode: discovery.exception.code } : {}), endpointId: entry.id, attempt });
+        reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: discovery.reason, ...(discovery.exception ? { exception: discovery.exception } : {}) });
+        // Outcome 4: only a first_call discovery failure is worth one bounded re-discovery; a
+        // credential or configuration error is stable and a later refresh still reconnects it.
+        return { retryable: stage === 'first_call' };
+      }
       const envelope = connectorEnvelopes[entry.connector] ?? [];
       const names = grantMode === 'owner-trusted-reads'
         ? discovery.tools.map(tool => tool.name).filter(name => envelope.includes(name)).sort()
@@ -192,7 +208,7 @@ export async function composeMcpRuntime(options: {
       // Healthy discovery without an approved envelope is status-only, not an empty owner policy.
       if (!names.length) {
         reports.set(entry.id, { id: entry.id, state: 'connected', tools: 0, lastHandshakeAt: new Date(discovery.observedAt).toISOString() });
-        return;
+        return { retryable: false };
       }
       // Reconcile through the owner projection; the durable row is authoritative over local config.
       const row = store.transaction(tx => tx.get('SELECT policy_json,policy_sha256,generation FROM tool_connections WHERE owner_id=? AND connection_id=?', [ownerId, entry.id]));
@@ -214,13 +230,13 @@ export async function composeMcpRuntime(options: {
         if (stored.ownerId !== ownerId || stored.connectionId !== entry.id || stored.generation !== Number(row.generation)) throw Error('connection_policy_binding');
         const legacy = stored.bindingMode === undefined;
         if (legacy && stored.route.identity !== stored.endpoint.id) {
-          reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'ambiguous-legacy-policy', configurationError: 'ambiguous-legacy-policy' }); return;
+          reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'ambiguous-legacy-policy', configurationError: 'ambiguous-legacy-policy' }); return { retryable: false };
         }
         const rank = { ordinary: 0, private: 1, sensitive: 2 };
         const oldClass = stored.sourcePolicy.unknownClass;
         const widened = names.some(name => !stored.toolNames.includes(name));
         if (canonicalJSON(stored.endpoint) !== canonicalJSON(policy.endpoint) || widened || (oldClass !== null && rank[entry.unknownClass] < rank[oldClass])) {
-          reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'owner-approval-required', configurationError: 'owner-approval-required' }); return;
+          reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'owner-approval-required', configurationError: 'owner-approval-required' }); return { retryable: false };
         }
         // Persisted approval fields are authoritative. A restart cannot re-enable a revocation.
         policy.enabled = stored.enabled; policy.bounds = stored.bounds;
@@ -251,21 +267,21 @@ export async function composeMcpRuntime(options: {
           // uncallable.
           identity = await proveIdentity({ source: identitySource, expected: expectedIdentities, timeoutMs: callTimeoutMsByEndpoint.get(entry.id) ?? IDENTITY_TIMEOUT_MS, call: (tool, args) => reader.call(tool, args) });
         } finally { registry.clearProbe(entry.id); }
-        if (stale()) return;
+        if (stale()) return { retryable: false };
         options.identityLog?.(entry.connector, identity.proven, identity.match);
         if (identityAction(identity) === 'refuse') {
           reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'identity-mismatch', reasonCode: 'identity_mismatch', identity });
-          return;
+          return { retryable: false };
         }
         if (!identity.proven) {
           reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'identity-unproven', identity });
-          return;
+          return { retryable: false };
         }
       } else if (identitySource && expectedIdentities.length === 0) {
         // No owner identity configured: the explicit no-comparison policy, never a failed proof.
         options.identityLog?.(entry.connector, true, null);
       }
-      if (stale()) return;
+      if (stale()) return { retryable: false };
       // Publish synchronously: re-read the durable policy, re-check liveness, then swap the
       // callable grant, all inside one synchronous transaction with no await between the check
       // and the registry swap. A superseded generation can never commit a grant.
@@ -282,30 +298,40 @@ export async function composeMcpRuntime(options: {
         registry.restore({ endpointId: stored.endpoint.id, schemaDigest: stored.schemaDigest, generation: stored.generation, account: stored.endpoint.account, resource: stored.endpoint.resource, toolNames: stored.toolNames, effect: 'read' });
         return true;
       });
-      if (!published) { reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: stale() ? 'generation-superseded' : 'connection-policy-changed' }); return; }
+      if (!published) { reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: stale() ? 'generation-superseded' : 'connection-policy-changed' }); return { retryable: false }; }
       ready.add(entry.id);
       reports.set(entry.id, { id: entry.id, state: 'connected', tools: names.length, lastHandshakeAt: new Date(now()).toISOString(), ...(identity ? { identity } : {}) });
+      return { retryable: false };
     } catch (error) {
-      if (stale()) return;
+      if (stale()) return { retryable: false };
       const localCodes = ['invalid_policy_shape', 'invalid_policy_version', 'invalid_policy_text', 'invalid_positive_integer', 'invalid_read_tools', 'invalid_unknown_class', 'invalid_data_classes', 'connection_owner_mismatch', 'connection_predecessor_mismatch', 'connection_identity_or_generation', 'connection_policy_missing_or_corrupt', 'projection_endpoint_mismatch', 'invalid-local-read-grant'];
       const exception = {
         class: error instanceof Error && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(error.constructor.name) ? error.constructor.name : 'Unknown',
         code: error instanceof Error && error.constructor === Error && localCodes.includes(error.message) ? error.message : 'unknown',
       };
       reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'discovery-unavailable', exception });
+      return { retryable: false };
     }
   };
 
   let startPromise: Promise<void> | undefined;
   const run = async (): Promise<void> => {
     if (closed) return;
-    await Promise.all(active.map(entry => {
+    // Outcome 4: one bounded re-discovery per run for a connector whose first connect failed at
+    // first_call, so a transient failure recovers without a host restart. Never repeated.
+    const rediscovered = new Set<string>();
+    await Promise.all(active.map(async entry => {
       const token = (generations.get(entry.id) ?? 0) + 1;
       generations.set(entry.id, token);
       // Any generation bump revokes the superseded grant before a replacement can publish, so an
       // already-admitted session snapshot cannot dispatch through the old generation.
       registry.suspend(entry.id);
-      return settle(entry, token).catch(() => { /* the per-connector report already carries the failure */ });
+      const first = await settle(entry, token, 'first-connect').catch(() => ({ retryable: false }));
+      if (!first.retryable || closed || rediscovered.has(entry.id)) return;
+      rediscovered.add(entry.id);
+      const retryToken = (generations.get(entry.id) ?? 0) + 1;
+      generations.set(entry.id, retryToken);
+      await settle(entry, retryToken, 'refresh').catch(() => { /* the per-connector report already carries the failure */ });
     }));
   };
   const composition: McpRuntimeComposition = {

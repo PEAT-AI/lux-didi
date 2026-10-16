@@ -121,7 +121,12 @@ export async function runToolCalls(owner: { journal: ToolCallJournal; resultGate
       } catch (error) {
         record.status = dispatched ? (tool?.effect === 'write' ? 'unknown' : 'failed') : 'refused';
         const code = error instanceof Error && 'code' in error && typeof error.code === 'string' && isToolFailureCode(error.code) ? error.code : 'handler_outcome';
-        record.reason = dispatched ? (error instanceof Interrupted ? 'handler_interrupted_or_failed' : code) : 'authority_or_validation_failed';
+        // A sub-call that never dispatched names the real reason: an interrupted round says which one,
+        // and every other path keeps the reason already recorded on the record (unknown_tool,
+        // grant_not_permitted, the validation guidance), never a bare wildcard.
+        record.reason = dispatched
+          ? (error instanceof Interrupted ? 'handler_interrupted_or_failed' : code)
+          : (error instanceof Interrupted ? (error.status === 'deadline' ? 'round_deadline' : 'round_cancelled') : record.reason);
         if (error instanceof Interrupted) interrupted = error;
       }
       if (journalState === 'failed') return { record, fatal: { status: 'error', reason: 'tool_journal_failed' } };

@@ -210,8 +210,9 @@ try {
     await page.locator('#chat-jump').click();
     await page.waitForFunction(() => document.querySelector('#transcript-jump').hidden && document.querySelector('#chat-jump').hidden);
   };
+  await page.setViewportSize({ width: 1440, height: 900 });
   await scrollUp();
-  table = await sample('1440x900-dark-c-scrolled-up');
+  table = await sample('1440x900-dark-c-scrolled-up', { width: 1440, height: 900 });
   assert.equal(table.voiceJump, true, 'the transcript offers Jump to latest once the reader scrolls up');
   assert.equal(table.chatJump, true, 'the chat list offers Jump to latest once the reader scrolls up');
   await repin();

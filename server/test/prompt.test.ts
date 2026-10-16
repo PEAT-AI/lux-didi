@@ -181,7 +181,8 @@ test('history keeps identity/chronology and classification; excludes provider-on
   const result = compilePrompt(i);
   assert.deepEqual(result.manifest.historyIds, ['older', 'turn-1']);
   assert.deepEqual(result.contents.map(c => c.role), ['model', 'user']);
-  assert.equal(JSON.parse(result.contents[0]!.parts[0]!.text!).id, 'older');
+  assert.equal(result.contents[0]!.parts[0]!.text, 'Earlier');
+  assert.equal(result.contents[0]!.parts[0]!.text!.startsWith('{"schemaVersion'), false);
   assert.ok(result.dataClasses.includes('sensitive'));
   rejects('schema', () => compilePrompt({ ...i, history: [{ ...i.history[0], thoughtSignature: 'host-only' }] } as unknown as CompileInput));
   rejects('budget', () => compilePrompt({ ...i, budgets: { ...i.budgets, historyChars: 1 } }));

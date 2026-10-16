@@ -256,15 +256,23 @@ export async function composeMcpRuntime(options: {
         options.identityLog?.(entry.connector, true, null);
       }
       if (stale()) return;
-      const restored = await owner.restoreConnection(entry.id, () => {
-        const current = loadMcpEndpoints({ configDir });
-        if (current.state !== 'configured' || current.catalog.grantMode !== grantMode
-          || canonicalJSON(current.catalog.endpoints.find(endpoint => endpoint.id === entry.id) ?? null) !== canonicalJSON(entry)) {
-          throw Error('endpoint-binding-mismatch');
-        }
+      // Publish synchronously: re-read the durable policy, re-check liveness, then swap the
+      // callable grant, all inside one synchronous transaction with no await between the check
+      // and the registry swap. A superseded generation can never commit a grant.
+      const published = store.transaction(tx => {
+        const row = tx.get('SELECT policy_json,policy_sha256 FROM tool_connections WHERE owner_id=? AND connection_id=?', [ownerId, entry.id]);
+        if (!row) return false;
+        const bytes = String(row.policy_json);
+        if (sha256(bytes) !== row.policy_sha256) return false;
+        const stored = validatePolicy(JSON.parse(bytes) as ConnectionPolicy);
+        if (!stored.enabled || stored.generation !== policy.generation || stored.schemaDigest !== policy.schemaDigest || canonicalJSON(stored.toolNames) !== canonicalJSON(policy.toolNames)) return false;
+        if (stale()) return false;
+        // Re-establish the already-discovered candidate tools with no remote call, then swap.
+        registry.observed(entry.id, discovery.tools, registry.revision(entry.id));
+        registry.restore({ endpointId: stored.endpoint.id, schemaDigest: stored.schemaDigest, generation: stored.generation, account: stored.endpoint.account, resource: stored.endpoint.resource, toolNames: stored.toolNames, effect: 'read' });
+        return true;
       });
-      if (stale()) return;
-      if (restored.state !== 'restored') { reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: restored.reason }); return; }
+      if (!published) { reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: stale() ? 'generation-superseded' : 'connection-policy-changed' }); return; }
       ready.add(entry.id);
       reports.set(entry.id, { id: entry.id, state: 'connected', tools: names.length, lastHandshakeAt: new Date(now()).toISOString(), ...(identity ? { identity } : {}) });
     } catch (error) {
@@ -284,6 +292,9 @@ export async function composeMcpRuntime(options: {
     await Promise.all(active.map(entry => {
       const token = (generations.get(entry.id) ?? 0) + 1;
       generations.set(entry.id, token);
+      // Any generation bump revokes the superseded grant before a replacement can publish, so an
+      // already-admitted session snapshot cannot dispatch through the old generation.
+      registry.suspend(entry.id);
       return settle(entry, token).catch(() => { /* the per-connector report already carries the failure */ });
     }));
   };
@@ -295,7 +306,7 @@ export async function composeMcpRuntime(options: {
     status: () => ({ endpoints: [...reports.values()].map(report => ({ ...report, connector: connectors.get(report.id) ?? report.id })) }),
     start: () => (startPromise ??= run()),
     refresh: async () => { startPromise = undefined; await run(); },
-    close: () => { closed = true; for (const entry of active) generations.set(entry.id, (generations.get(entry.id) ?? 0) + 1); return port.close(); },
+    close: () => { closed = true; for (const entry of active) { generations.set(entry.id, (generations.get(entry.id) ?? 0) + 1); registry.suspend(entry.id); } return port.close(); },
   };
   if (options.deferConnectors !== true) await composition.start();
   return composition;

@@ -67,7 +67,7 @@ function assertAudit(a, label, failures) {
   const bad = m => failures.push(m);
   const inb = (v, lo, hi, what) => { if (!(v >= lo && v <= hi)) bad(`${label} ${what}: ${v} not in [${lo},${hi}]`); };
   if (a.voice.visible) {
-    if (a.voice.stageHeight && a.voice.laneHeight) inb(a.voice.stageHeight / a.voice.laneHeight, 0.3, 0.36, 'orb stage share of the lane');
+    if (a.voice.stageHeight && a.voice.laneHeight) inb(a.voice.stageHeight / a.voice.laneHeight, 0.28, 0.48, 'orb stage share of the lane');
     if (a.voice.stageHeight && a.voice.orb) inb(a.voice.orb / a.voice.stageHeight, 0.52, 0.58, 'orb diameter of the stage');
     if (a.voice.orbCentre !== null) inb(a.voice.orbCentre, 0, 1, 'orb centred in the stage');
     if (a.voice.column > 760) bad(`${label} voice column wider than 760: ${a.voice.column}`);

@@ -295,7 +295,7 @@ const CALENDAR_EVENTS: Record<string, string> = {
   primary: '- 2026-10-16T09:00:00+05:30, Standup, Room 1 [id e1]\n- 2026-10-16T11:00:00+05:30, Review [id e2]',
   work: '- 2026-10-16T10:00:00+05:30, Board deck, Room 2 [id e3]\n- 2026-10-16T09:00:00+05:30, Standup, Room 1 [id e1]',
 };
-const calendarExecute: ResearchDeps['execute'] = async subs => subs.map(call => sub(
+const calendarExecute = async (subs: readonly IntentSubCall[]): Promise<IntentSubResult[]> => subs.map(call => sub(
   call.name,
   call.name === 'gcal_calendars' ? CALENDARS : (CALENDAR_EVENTS[String(call.args['calendarId'])] ?? ''),
   true, call.key,

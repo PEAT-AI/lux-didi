@@ -217,6 +217,7 @@ export async function startHost(config: HostConfig) {
     const composeLiveWithTools = composeLive as unknown as (...args: unknown[]) => ReturnType<typeof composeLive>;
     const { service: live } = composeLiveWithTools(store, providerConfigDir, config.liveTesting, config.now, owner.snapshot, liveTools);
     void summarizer.reconcile().catch(error => log.error(error));
+    void summarizer.requeueFailed().catch(error => log.error(error));
     // Observe the actual durable provider settlement, which does not emit console text.
     const attach = live.attach.bind(live);
     live.attach = (...args) => {

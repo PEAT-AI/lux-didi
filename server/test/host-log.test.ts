@@ -65,3 +65,28 @@ test('research_subcall carries the calendar window kind as a closed enum', () =>
   assert.equal(safeEvent({ ...base, window: 'yesterday' }), undefined, 'an unknown window is refused');
   assert.equal(safeEvent({ ...base, window: 'tomorrow', extra: 1 }), undefined, 'an extra key fails closed');
 });
+
+test('conversation_summary events keep the session id, counts, ms and reason codes only', () => {
+  const started = { event: 'conversation_summary_started', liveSessionId: 's-1', inputChars: 120, truncated: false };
+  assert.deepEqual(safeEvent(started), started);
+  assert.equal(safeEvent({ ...started, summary: 'the owner said something private' }), undefined, 'summary text is refused');
+  assert.equal(safeEvent({ ...started, liveSessionId: 'not a safe id' }), undefined, 'a malformed id is refused');
+  assert.equal(safeEvent({ ...started, inputChars: -1 }), undefined, 'a negative count is refused');
+
+  const completed = { event: 'conversation_summary_completed', liveSessionId: 's-1', inputChars: 120, outputChars: 40, durationMs: 12, truncated: false, retryCount: 0 };
+  assert.deepEqual(safeEvent(completed), completed);
+  assert.equal(safeEvent({ ...completed, durationMs: -1 }), undefined, 'a negative duration is refused');
+  assert.equal(safeEvent({ ...completed, transcript: 'leak' }), undefined, 'an unknown key fails closed');
+
+  const failed = { event: 'conversation_summary_failed', liveSessionId: 's-1', errorCode: 'deadline', retryCount: 2 };
+  assert.deepEqual(safeEvent(failed), failed);
+  assert.equal(safeEvent({ ...failed, errorCode: 'the model said no' }), undefined, 'a free-text error is refused');
+
+  const skipped = { event: 'conversation_summary_skipped', liveSessionId: 's-1', reason: 'too_few_turns' };
+  assert.deepEqual(safeEvent(skipped), skipped);
+  assert.equal(safeEvent({ ...skipped, reason: 'because the owner said X' }), undefined, 'a free-text reason is refused');
+
+  const recovery = { event: 'conversation_summary_recovery', requeued: 3, skipped: 7 };
+  assert.deepEqual(safeEvent(recovery), recovery);
+  assert.equal(safeEvent({ ...recovery, skipped: -1 }), undefined, 'a negative count is refused');
+});

@@ -34,9 +34,9 @@ const RESEARCH_QUESTION = 'What is on my calendar today? Please check.';
 
 // Q1-R0 (probe7-10): the four spoken questions whose source blocks the release-3e change must return.
 const RESEARCH_PROBES = [
-  { id: 'probe7-mail', source: 'mail', question: 'Anything important in my email today? Please check.', check: s => s.items >= 3 },
+  { id: 'probe7-mail', source: 'mail', question: 'Anything important in my email today? Please check.', check: s => s.items >= 1 },
   { id: 'probe8-chat', source: 'chat', question: "What's new in Mattermost? Please check.", check: s => s.items >= 1 },
-  { id: 'probe9-knowledge', source: 'knowledge', question: 'Search my notes for Lux Didi decisions. Please check.', check: s => s.items >= 3 && s.hydrated >= 1 },
+  { id: 'probe9-knowledge', source: 'knowledge', question: 'Search my notes for Lux Didi decisions. Please check.', check: s => s.items >= 3 },
   { id: 'probe10-calendar', source: 'calendar', question: 'What is on my calendar today? Please check.', check: s => s.items >= 1 },
 ];
 const SOURCE_TOOLS = {

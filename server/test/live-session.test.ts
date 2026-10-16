@@ -2171,6 +2171,7 @@ test('P1: session start logs the effective regional languageCode', async t => {
   assert.ok(logged, 'a per-section size line is logged at session start');
   assert.equal(logged.languageCode, 'en-IN', 'the configured regional tag is logged');
   assert.equal(logged.voice, 'ExplicitVoice', 'the configured voice name is logged');
+  assert.equal(h.requests.at(-1)!.languageCode, 'en-IN', 'the profile language reaches the adapter request');
 });
 
 test('U1: calendar and Gmail model text carries no raw url and names each source', () => {

@@ -551,6 +551,142 @@ test('one long-lived stdio client serves two sequential calls and never forks pe
     assert.equal((await adapter.call(req)).state, 'completed');
     assert.equal(readFileSync(pidFile, 'utf8'), first, 'the same child pid must serve both sequential calls');
     const pair = await Promise.all([adapter.call(req), adapter.call(req)]);
-    assert.equal(pair.some(result => result.state === 'refused' && result.reason === 'endpoint-busy'), true, 'a concurrent same-endpoint call is refused as endpoint-busy');
+    assert.deepEqual(pair.map(result => result.state), ['completed', 'completed'], 'two concurrent same-endpoint calls both complete, none is refused as busy');
+  } finally { await adapter.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+const flush = (): Promise<void> => new Promise<void>(resolve => setImmediate(resolve));
+
+/** The fixture server holds every tools/call on `gate` so the test can observe true concurrency. */
+function heldCall(): { call: () => Promise<unknown>; release: () => void; peak: () => number; arrived: () => number } {
+  let inFlight = 0; let peak = 0; let arrived = 0;
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  return {
+    release,
+    peak: () => peak,
+    arrived: () => arrived,
+    call: async () => { inFlight += 1; arrived += 1; peak = Math.max(peak, inFlight); await gate; inFlight -= 1; return { content: [{ type: 'text', text: 'synthetic pong' }] }; },
+  };
+}
+
+test('F6: N concurrent same-endpoint calls run at once, N+2 queue, and all complete', async () => {
+  const held = heldCall();
+  const f = await fixture({ call: held.call });
+  const { adapter, registry } = setup(f.url);
+  try {
+    await approve(adapter, registry);
+    const calls = Array.from({ length: 8 }, () => adapter.call(request));
+    for (let i = 0; i < 100 && held.peak() < 6; i++) await flush();
+    assert.equal(held.peak(), 6, 'six calls run at once; the two beyond the limit queue');
+    held.release();
+    const results = await Promise.all(calls);
+    assert.equal(results.every(result => result.state === 'completed'), true, JSON.stringify(results));
+    assert.equal(held.peak(), 6, 'the concurrency limit is never exceeded');
+  } finally { await adapter.close(); await f.close(); }
+});
+
+test('F6: a queued call aborted before dispatch never reaches the transport', async () => {
+  const held = heldCall();
+  const f = await fixture({ call: held.call });
+  const { adapter, registry } = setup(f.url);
+  try {
+    await approve(adapter, registry);
+    const running = Array.from({ length: 6 }, () => adapter.call(request));
+    for (let i = 0; i < 100 && held.arrived() < 6; i++) await flush();
+    assert.equal(held.arrived(), 6, 'six calls are in flight');
+    const controller = new AbortController();
+    const queued = adapter.call(request, controller.signal);
+    await flush();
+    controller.abort();
+    const rejected = await queued;
+    assert.equal(rejected.state, 'refused');
+    assert.equal(rejected.reason, 'cancelled-before-dispatch');
+    held.release();
+    const results = await Promise.all(running);
+    assert.equal(results.every(result => result.state === 'completed'), true);
+    assert.equal(held.arrived(), 6, 'the aborted queued call never reached the transport');
+  } finally { await adapter.close(); await f.close(); }
+});
+
+test('F8-R3: adapter close aborts an in-flight and a queued call with the close code', async () => {
+  const held = heldCall();
+  const f = await fixture({ call: held.call });
+  const { adapter, registry } = setup(f.url);
+  try {
+    await approve(adapter, registry);
+    const running = Array.from({ length: 6 }, () => adapter.call(request));
+    for (let i = 0; i < 100 && held.peak() < 6; i++) await flush();
+    assert.equal(held.peak(), 6, 'six calls are in flight');
+    const queued = adapter.call(request);
+    for (let i = 0; i < 20; i++) await flush();
+    assert.equal(held.arrived(), 6, 'the seventh call queues behind the limit');
+    const startedAt = Date.now();
+    await adapter.close();
+    assert.ok(Date.now() - startedAt < 2000, 'close completes promptly');
+    const results = await Promise.all([...running, queued]);
+    assert.equal(results.every(result => result.state === 'refused' && result.reason === 'adapter-closed'), true, JSON.stringify(results));
+  } finally { await adapter.close(); await f.close(); }
+});
+
+test('F6: five callers racing a cold endpoint create one session', async () => {
+  const f = await fixture();
+  const { adapter, registry } = setup(f.url);
+  try {
+    // Pre-approve without discovery so no session exists when the callers race.
+    const tools = [tool, writeTool];
+    const digest = registry.observed('source', tools, registry.revision('source'));
+    registry.approve({ endpointId: 'source', schemaDigest: digest, toolNames: tools.map(value => value.name), effect: 'read', account: 'account-a', resource: 'resource-a', generation: 1 });
+    const results = await Promise.all(Array.from({ length: 5 }, () => adapter.call(request)));
+    assert.equal(results.every(result => result.state === 'completed'), true, JSON.stringify(results));
+    assert.equal(f.observed.filter(row => row.method === 'initialize').length, 1, 'one session creation for five racing callers');
+  } finally { await adapter.close(); await f.close(); }
+});
+
+test('F6: discovery waits for in-flight calls and new calls wait for discovery', async () => {
+  const held = heldCall();
+  const f = await fixture({ call: held.call });
+  const { adapter, registry } = setup(f.url);
+  try {
+    await approve(adapter, registry);
+    const inFlight = adapter.call(request);
+    for (let i = 0; i < 100 && held.arrived() < 1; i++) await flush();
+    assert.equal(held.arrived(), 1, 'the first call is in flight');
+    const during = adapter.call(request);
+    let discovered: string | undefined;
+    void adapter.discover('source').then(result => { discovered = result.state; });
+    for (let i = 0; i < 50; i++) await flush();
+    assert.equal(discovered, undefined, 'discovery waits for the in-flight call');
+    held.release();
+    assert.equal((await inFlight).state, 'completed');
+    for (let i = 0; i < 100 && discovered === undefined; i++) await flush();
+    assert.equal(discovered, 'discovered', 'discovery completes once the calls drain');
+    assert.equal((await during).state, 'completed', 'a call waiting on discovery then completes');
+  } finally { await adapter.close(); await f.close(); }
+});
+
+test('F6: a dead stdio session fails every in-flight call once and the next call gets a fresh child', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-f6-death-'));
+  const pidFile = join(dir, 'child.pid');
+  const child = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'test', 'fixtures', 'stdio-mcp-child.mjs');
+  const endpoint: EndpointConfig = { id: 'doomed', transport: 'stdio', command: process.execPath, args: [child, 'exit-on-call', pidFile, 'stdio-pong'], env: { HOME: dir, PATH: process.env.PATH ?? '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' }, account: 'local', resource: 'doomed-fixture' } as unknown as EndpointConfig;
+  const registry = new McpRegistry();
+  registry.register(endpoint);
+  registry.enable('doomed'); registry.allowEgress('doomed');
+  const adapter = createMcpAdapter({ registry, store: new MemoryResultStore(), budgets: { timeoutMs: 4000 } });
+  try {
+    const discovery = await adapter.discover('doomed');
+    assert.equal(discovery.state, 'discovered');
+    if (discovery.state !== 'discovered') return;
+    registry.approve({ endpointId: 'doomed', schemaDigest: discovery.schemaDigest, toolNames: ['echo'], effect: 'read', account: 'local', resource: 'doomed-fixture', generation: 1 });
+    const req: CallRequest = { endpointId: 'doomed', toolName: 'echo', arguments: {}, generation: 1, account: 'local', resource: 'doomed-fixture' };
+    const firstPid = readFileSync(pidFile, 'utf8');
+    const results = await Promise.all([adapter.call(req), adapter.call(req), adapter.call(req)]);
+    assert.equal(results.every(result => result.state === 'unknown'), true, JSON.stringify(results));
+    assert.equal(new Set(results.map(result => result.state === 'unknown' ? result.reason : '')).size, 1, 'every in-flight call fails with one clean code');
+    assert.equal(adapter.visibleTools('doomed').length, 1, 'one death is counted once, so the connector stays usable');
+    const revived = await adapter.call(req);
+    assert.equal(revived.state, 'unknown');
+    assert.notEqual(readFileSync(pidFile, 'utf8'), firstPid, 'the next call gets a fresh child session');
   } finally { await adapter.close(); rmSync(dir, { recursive: true, force: true }); }
 });

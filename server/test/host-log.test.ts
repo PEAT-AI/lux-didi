@@ -24,3 +24,30 @@ test('an accent string never survives the host-log allowlist', () => {
   assert.equal(safeEvent({ event: 'live_instruction_sizes', total: 1, sections: { base: 1 }, accent }), undefined);
   assert.equal(safeEvent({ event: 'live_session_diagnostics', terminalCode: 'closed', accent }), undefined);
 });
+
+test('live_state keeps a closed transition shape for the orb timeline', () => {
+  const event = { event: 'live_state', state: 'speaking', at: 1_700_000_000_000 };
+  assert.deepEqual(safeEvent(event), event);
+  assert.equal(safeEvent({ ...event, extra: 1 }), undefined, 'an extra key fails closed');
+  assert.equal(safeEvent({ ...event, state: 'confused' }), undefined, 'a state outside the projection enum is refused');
+  assert.equal(safeEvent({ ...event, at: 'now' }), undefined, 'a non-integer timestamp is refused');
+  assert.equal(safeEvent({ ...event, at: -1 }), undefined, 'a negative timestamp is refused');
+});
+test('live_tool_turn admits a closed per-endpoint peak in-flight field', () => {
+  const base = { event: 'live_tool_turn', sequence: 3, toolCallsThisTurn: 2, toolLatencyMs: [{ tool: 'search_knowledge', ms: 12 }], toolResponseWhileGenerating: false };
+  const withPeak = { ...base, peakInFlight: [{ endpoint: 'lux', peak: 2 }] };
+  assert.deepEqual(safeEvent(withPeak), withPeak);
+  assert.equal(safeEvent(base)?.event, 'live_tool_turn', 'the field stays optional');
+  assert.equal(safeEvent({ ...base, peakInFlight: [{ endpoint: 'lux', peak: -1 }] }), undefined, 'a negative peak is refused');
+  assert.equal(safeEvent({ ...base, peakInFlight: [{ endpoint: 'lux', peak: 2, extra: 1 }] }), undefined, 'an extra peak key fails closed');
+  assert.equal(safeEvent({ ...base, peakInFlight: [{ endpoint: 'a b', peak: 1 }] }), undefined, 'a non-token endpoint is refused');
+  assert.equal(safeEvent({ ...base, peakInFlight: 'two' }), undefined, 'a non-array field is refused');
+});
+test('research_subcall carries the calendar window kind as a closed enum', () => {
+  const base = { event: 'research_subcall', researchId: 'r1', kind: 'calendar_window', tool: 'gcal_list', ok: true, items: 1, rawBytes: 10, keptBytes: 8, queryChars: 0, queryAuthor: 'selector' };
+  assert.deepEqual(safeEvent({ ...base, window: 'tomorrow' }), { ...base, window: 'tomorrow' });
+  assert.equal(safeEvent({ ...base, window: 'date' })?.window, 'date');
+  assert.equal(safeEvent({ ...base, window: '2026-10-16' }), undefined, 'a real date is refused');
+  assert.equal(safeEvent({ ...base, window: 'yesterday' }), undefined, 'an unknown window is refused');
+  assert.equal(safeEvent({ ...base, window: 'tomorrow', extra: 1 }), undefined, 'an extra key fails closed');
+});

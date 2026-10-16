@@ -588,7 +588,7 @@ test('a connector-rejected decoded content shape is logged and returned with inv
   assert.deepEqual(events, [{ event: 'tool_failure', code: 'invalid_result', tool: 'search_knowledge', connector: 'lux-knowledge', errorClass: 'Error', messageHead: 'invalid_result' }]);
 });
 
-test('W4-R5: a batch dispatches across endpoints in parallel, sequential and ordered within one endpoint', async () => {
+test('W4-R5/F6: a batch dispatches across and within endpoints concurrently and keeps batch order', async () => {
   const ref = { id: 'ref', sha256: 'a'.repeat(64) };
   let live = 0; let peak = 0; const order: string[] = [];
   const make = (name: string, endpointId: string) => ({
@@ -626,8 +626,8 @@ test('W4-R5: a batch dispatches across endpoints in parallel, sequential and ord
   const same = await runToolCalls(owner, [call('1', 'a1'), call('2', 'a2')], ctxFor(['a1', 'a2']) as never);
   assert.equal(same.error, undefined);
   assert.deepEqual(ids(same), ['1', '2'], 'results keep their original batch order');
-  assert.deepEqual(order, ['start:a1', 'end:a1', 'start:a2', 'end:a2'], 'one endpoint stays ordered and sequential');
-  assert.equal(peak, 1, 'a single endpoint must never dispatch concurrently');
+  assert.equal(order.filter(entry => entry.startsWith('start')).length, 2, 'both same-endpoint calls dispatch');
+  assert.equal(peak, 2, 'one endpoint dispatches concurrently, never refused as busy');
 });
 
 // K1: get_insight must open entries for a reasonable id shape instead of refusing at the boundary.

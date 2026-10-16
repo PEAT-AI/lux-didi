@@ -344,6 +344,23 @@ test('owner memory delete requires a principal, is idempotent and reports unknow
   } finally { await f.cleanup(); }
 });
 
+test('T13b a pending connector is projected as connecting, never error', async () => {
+  const f = await fixture(undefined, () => ({ endpoints: [
+    { id: 'gmail', state: 'connecting', tools: 0, lastHandshakeAt: null },
+    { id: 'bogus', state: 'not-a-state', tools: 0, lastHandshakeAt: null },
+  ] }));
+  try {
+    const browser = await pair(f);
+    const response = await fetch(`${f.service.origin}/api/v1/live/connections`, { headers: { Cookie: browser.cookie.split(';')[0]!, 'sec-fetch-site': 'same-origin' } });
+    assert.equal(response.status, 200);
+    const body = await response.json() as { data: Array<{ state: string; reasonCode: string | null }> };
+    assert.equal(body.data[0]!.state, 'connecting');
+    assert.equal(body.data[0]!.reasonCode, null);
+    assert.equal(body.data[1]!.state, 'error');
+    assert.equal(body.data[1]!.reasonCode, 'unknown');
+  } finally { await f.cleanup(); }
+});
+
 test('T13 connections preserve bounded typed configuration errors', async () => {
   const f = await fixture(undefined, () => ({ endpoints: [
     { id: 'missing-class', state: 'error', tools: 0, lastHandshakeAt: null, error: 'unknown-class-missing', configurationError: 'unknown-class-missing' },

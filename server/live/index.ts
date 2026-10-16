@@ -16,6 +16,8 @@ import { hostLogEvent } from '../host/log.js';
 import { validateAcceptedPrompt } from './config.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type { DataClass, LiveVoiceDiagnostics, LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort, LiveVoiceSession, LiveVoiceRequest } from '../adapters/live-voice/index.js';
+import { toolVoiceAnchor } from '../adapters/live-voice/gemini.js';
+import { headVoiceBlock, voiceAnchor } from '../prompt/live-persona.js';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
 import { liveProfileIdentity, validateLiveProfile } from './config.js';
 import { parseTerminal, persistedKinds, readFragmentPage, retainedBytes } from './journal.js';
@@ -256,6 +258,8 @@ export class LiveSessionOwner {
   #invalidated = false;
   #providerMemory = new WeakMap<ActiveSession, Map<string, number>>();
   #closed = false;
+  /** The last state projected to the web, so one host-log live_state fires per change (F7). */
+  #lastProjectedState: LivePageProjection['state'] | undefined;
 
   constructor(config: LiveOwnerConfig) {
     if (!config || typeof config !== 'object' || !config.store || !config.voice) throw new LiveError('invalid_config');
@@ -423,7 +427,7 @@ export class LiveSessionOwner {
   current(cursor = 0): LivePageProjection {
     if (!Number.isSafeInteger(cursor) || cursor < 0) throw new LiveError('invalid_request');
     const jobs = this.#jobProjection(false);
-    return this.#store.transaction(tx => {
+    const page: LivePageProjection = this.#store.transaction(tx => {
       const row = tx.get('SELECT live_session_id,lifecycle,created_at,updated_at,terminal_at,terminal_outcome,memory_provenance FROM live_sessions WHERE owner_assistant_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1', [this.#store.assistantId]);
       if (!row) return { state: 'idle', since: null, ...(jobs.length ? { jobs } : {}), entries: [], cursor };
       const handle = this.#active.get(String(row.live_session_id));
@@ -445,6 +449,16 @@ export class LiveSessionOwner {
       }
       return { state, ...(pastSession ? { pastSession } : {}), since: Number(row.created_at), memory: memoryProjection(row['memory_provenance']), ...(jobs.length ? { jobs } : {}), entries, cursor: rows.length ? Number(rows[rows.length - 1]!.journal_id) : cursor };
     });
+    this.#observeState(page.state);
+    return page;
+  }
+
+  /** One metadata-only host record per projected state change, so the orb timeline is reconstructable
+   *  from host.log even though audio is never journalled (F7). */
+  #observeState(state: LivePageProjection['state']): void {
+    if (state === this.#lastProjectedState) return;
+    this.#lastProjectedState = state;
+    hostLogEvent({ event: 'live_state', state, at: this.#now() });
   }
 
   get(liveSessionId: string): LiveSessionSnapshot {
@@ -771,10 +785,11 @@ export class LiveSessionOwner {
     void Promise.all(handle.diagnosticSnapshots).then(values => {
       const snapshots = values.filter((value): value is Readonly<LiveVoiceDiagnostics> => value !== undefined);
       const sum = (field: keyof LiveVoiceDiagnostics) => snapshots.reduce((total, value) => total + value[field], 0);
+      const accent = this.#profile.overlay?.accent;
       console.error(JSON.stringify({ event: 'live_session_diagnostics', terminalCode: handle.diagnosticTerminalCode,
-        headVoiceChars: this.#profile.overlay?.accent?.length ?? 0,
-        terminalVoiceChars: this.#profile.overlay?.accent?.length ?? 0,
-        toolAnchorChars: this.#profile.overlay?.accent?.length ?? 0,
+        headVoiceChars: headVoiceBlock(accent)?.length ?? 0,
+        terminalVoiceChars: voiceAnchor(this.#profile.language, accent).length,
+        toolAnchorChars: toolVoiceAnchor(accent).length,
         adapterGenerations: values.length, ownerAudioCalls: handle.ownerAudioCalls, ownerAudioBytes: handle.ownerAudioBytes,
         ownerRebuildingDropCalls: handle.ownerRebuildingDropCalls, ownerRebuildingDropBytes: handle.ownerRebuildingDropBytes,
         adapterAudioCalls: sum('audioCalls'), adapterAudioBytes: sum('audioBytes'),
@@ -853,7 +868,7 @@ export class LiveSessionOwner {
             const responses = event.calls.filter(call => handle.pendingCallIds.has(call.id)).map(call => ({ id: call.id, name: call.name, response: { error: 'tool_processing_failed' } }));
             try { if (responses.length) handle.session.sendToolResponse({ responses }); } catch { /* transport may have terminated */ }
             for (const call of event.calls) handle.pendingCallIds.delete(call.id);
-            handle.thinking = handle.pendingCallIds.size > 0;
+            handle.thinking = responses.length > 0 || handle.pendingCallIds.size > 0;
           }); continue;
         }
         if (event.type === 'toolCallCancellation') {
@@ -872,13 +887,17 @@ export class LiveSessionOwner {
         if (event.type === 'interrupted') {
           for (const id of handle.pendingCallIds) handle.bargeInCallIds.add(id);
           handle.speaking = false;
+          // A barge-in abandons any awaited output, and a tool that never resolves must not leave
+          // THINKING stuck (F4).
+          handle.thinking = false;
           // E1: one metadata-only host record per provider barge-in. Never audio, text or a provider payload.
           hostLogEvent({ event: 'live_interrupted', liveSessionId: handle.liveSessionId,
             turnCompleteSeen: handle.turnCompleteSeen,
             msSinceLastModelAudio: handle.lastModelAudioAt === undefined ? null : this.#now() - handle.lastModelAudioAt });
         }
-        if (event.type === 'turnComplete' || event.type === 'generationComplete') handle.speaking = false;
-        if (event.type === 'turnComplete') handle.turnCompleteSeen = true;
+        // generationComplete alone does not end SPEAKING: the orb holds it until the turn completes
+        // and playback drains (F2).
+        if (event.type === 'turnComplete') { handle.speaking = false; handle.turnCompleteSeen = true; handle.thinking = handle.pendingCallIds.size > 0; }
         if (event.type === 'waitingForInput') { handle.thinking = !event.value; if (event.value) handle.speaking = false; }
         if (event.type === 'audio') {
           handle.thinking = false; handle.speaking = true; handle.lastModelAudioAt = this.#now();
@@ -1025,15 +1044,21 @@ export class LiveSessionOwner {
     });
     const responses: { id: string; name: string; response: JsonObject }[] = [];
     const projections: LiveToolProjection[] = [];
-    for (const call of event.calls) {
+    // F6: every research call in one model message runs concurrently; the adapter bounds each source.
+    const settled = await Promise.all(event.calls.map(async call => {
       let response: JsonObject;
       try {
         if (!validateResearch(call.args)) throw Error('invalid_research_arguments');
         response = await scheduler.call(call.args as unknown as ResearchCall, handle.abort.signal);
       } catch (error) { response = { error: error instanceof Error ? error.message : 'research_failed' }; }
-      responses.push({ id: call.id, name: call.name, response });
-      const status = typeof response['status'] === 'string' ? response['status'] : 'error';
-      projections.push({ name: call.name, status: status === 'error' ? 'error' : 'completed', markdown: `research: ${status}`, sources: [] });
+      return { id: call.id, name: call.name, response };
+    }));
+    for (const entry of settled) {
+      responses.push(entry);
+      // F6-R1: the research reply carries no status field; a present `error` key is the failure shape.
+      const completed = entry.response['error'] === undefined;
+      const status: 'completed' | 'error' = completed ? 'completed' : 'error';
+      projections.push({ name: entry.name, status, markdown: `research: ${status}`, sources: [] });
     }
     return { responses, projections };
   }
@@ -1046,7 +1071,7 @@ export class LiveSessionOwner {
       if (sequence === 'overflow') { this.#settle(handle, { state: 'journal_limit' }, false, 'ended', { kind, sequence: event.sequence }); return; }
       this.#pushChunk(handle, { kind: 'marker', marker: { kind, sequence: event.sequence, journalSequence: sequence, text: null, finished: null, value: null, tool } });
     };
-    for (const call of event.calls) publish('toolCall', { name: call.name, status: 'error', markdown: '', sources: [] });
+    for (const call of event.calls) publish('toolCall', { name: call.name, status: 'called', markdown: '', sources: [] });
     if ((this.#settled(handle) || generation !== handle.generation)) return;
     let responses = event.calls.map(call => ({ id: call.id, name: call.name, response: { error: 'Tool not granted' } as JsonObject }));
     let projections: LiveToolProjection[] = event.calls.map(call => ({ name: call.name, status: 'error', markdown: 'Tool not granted', sources: [] }));
@@ -1171,7 +1196,14 @@ export class LiveSessionOwner {
         if (started !== undefined) latency.push({ tool: unit.call.name, ms: Math.max(0, this.#now() - started) });
         handle.callStartedAt.delete(unit.call.id);
       }
-      hostLogEvent({ event: 'live_tool_turn', sequence: event.sequence, toolCallsThisTurn: units.reduce((sum, unit) => sum + unit.subs.length + (followUps.get(unit.index)?.length ?? 0), 0), toolLatencyMs: latency, toolResponseWhileGenerating: handle.speaking });
+      // F6 diagnostics: the peak in-flight count per endpoint for this batch, endpoints and counts only.
+      const peaks = new Map<string, number>();
+      for (const sub of subCalls) {
+        const endpoint = handle.registry.find(tool => tool.name === sub.name)?.endpointId;
+        if (endpoint !== undefined) peaks.set(endpoint, (peaks.get(endpoint) ?? 0) + 1);
+      }
+      const peakInFlight = [...peaks.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([endpoint, count]) => ({ endpoint, peak: count }));
+      hostLogEvent({ event: 'live_tool_turn', sequence: event.sequence, toolCallsThisTurn: units.reduce((sum, unit) => sum + unit.subs.length + (followUps.get(unit.index)?.length ?? 0), 0), toolLatencyMs: latency, toolResponseWhileGenerating: handle.speaking, peakInFlight });
       }
     }
     if ((this.#settled(handle) || generation !== handle.generation)) return;
@@ -1188,7 +1220,9 @@ export class LiveSessionOwner {
       } catch { /* A cancelled provider batch or terminal transport cannot receive late answers. */ }
     }
     for (const call of event.calls) { handle.pendingCallIds.delete(call.id); handle.bargeInCallIds.delete(call.id); }
-    handle.thinking = handle.pendingCallIds.size > 0;
+    // A tool result keeps thinking until the model's first output audio or an explicit wait for input,
+    // so the orb never flashes LISTENING between the tool and her speech (F1).
+    handle.thinking = responses.length > 0 || handle.pendingCallIds.size > 0;
   }
   #persist(handle: ActiveSession, event: { type: 'continuity' | 'remember_deferred'; sequence: number; text: string } | LiveVoiceEvent | { type: 'toolCall' | 'toolResult'; sequence: number; tool: LiveToolProjection }, kind: JournalKind, transaction?: Transaction): number | 'overflow' {
     const text = 'text' in event ? event.text : null;

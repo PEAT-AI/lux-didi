@@ -68,7 +68,13 @@ effect, account, resource and monotonically increasing generation. Annotations, 
   after possible dispatch. HTTP errors, malformed results, lost sessions, oversized
   responses, timeout and cancellation are not retried or fabricated as empty results.
   A later explicit discovery can reconnect; it cannot replay a call.
-- Concurrent operations on one endpoint are locally refused (`endpoint-busy`).
+- Up to N calls per endpoint run concurrently (default 6, `maxConcurrentCallsByEndpoint` overrides one),
+  keyed apart by JSON-RPC id; calls beyond N queue in arrival order and honour their own `AbortSignal`
+  and deadline while queued, so a queued call that times out returns a clear `timeout` code and never
+  reaches the transport. Nothing is refused as `endpoint-busy`. Session creation is single-flight: one
+  session is created per endpoint at a time and concurrent callers await it. A dead session fails every
+  in-flight call with one shared code and is counted and retired once. Discovery is exclusive: it waits
+  for in-flight calls and new calls wait for discovery, so tools never change under a running call.
   Revocation or schema notification during a dispatched call prevents publication of
   its result/handle and returns `unknown`. Local abort returns promptly; the adapter
   best-effort sends `notifications/cancelled` through the SDK with its SDK-generated

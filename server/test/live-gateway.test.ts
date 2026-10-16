@@ -42,9 +42,9 @@ function configJson(enabled: boolean, extra: Record<string, unknown> = {}): Reco
   };
 }
 
-async function waitFor(predicate: () => boolean, ms = 5000): Promise<void> {
+async function waitFor(predicate: () => boolean | Promise<boolean>, ms = 5000): Promise<void> {
   const deadline = Date.now() + ms;
-  while (!predicate()) {
+  while (!(await predicate())) {
     if (Date.now() > deadline) throw new Error('timed out waiting for condition');
     await new Promise(resolve => setTimeout(resolve, 5));
   }
@@ -775,9 +775,14 @@ test('gateway forwards safe tool-call/result markers and keeps a refused tool ba
   h.store.transaction(tx => tx.run('INSERT INTO runtime_sessions VALUES (?,?,?,?)', [createHash('sha256').update(token).digest('hex'), 'active-page-client', 'csrf', Date.now() + 60_000]));
   const headers = { cookie: `didi_session=${token}` };
   const page = await json(h.origin, '/api/v1/live/current', { headers });
-  assert.equal(page.body.data.state, 'listening');
+  // F5: a tool result keeps THINKING until her first output audio or the turn completes (F8-R2).
+  assert.equal(page.body.data.state, 'thinking');
   assert.equal(page.body.data.entries.some((entry: any) => entry.kind === 'toolResult' && entry.tool.status === 'error'), true);
   for (const forbidden of ['liveSessionId', 'args', 'key', 'grants', 'pcm', 'thoughts']) assert.equal(JSON.stringify(page.body).includes(forbidden), false);
+  // Thinking must clear on the turn's completion even when no output audio ever arrives.
+  h.f.send({ serverContent: { turnComplete: true } });
+  await waitFor(async () => (await json(h.origin, '/api/v1/live/current', { headers })).body.data.state !== 'thinking');
+  assert.equal((await json(h.origin, '/api/v1/live/current', { headers })).body.data.state, 'listening');
   // Input resumes without requiring an audioStreamEnd turn boundary.
   ws.send(pcm, { binary: true }); await h.f.frame(3);
   const modelAudio = once(ws, 'message');

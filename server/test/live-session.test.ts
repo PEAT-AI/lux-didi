@@ -9,6 +9,8 @@ import { attachHostLogSink } from '../tools/host-events.js';
 import './intent-tools.test.js';
 // Side-effect import: register the research-loop suite in this process so a declared check runs it.
 import './research.test.js';
+// Side-effect import: register the host-log allowlist suite in the declared live-session check (F7).
+import './host-log.test.js';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
@@ -1442,7 +1444,7 @@ test('Live accepts a frozen real tool snapshot and projects only result-gated Ma
   assert.equal(h.calls.length, 2);
   const response = h.f.frames[1] as { toolResponse: { functionResponses: { id: string }[] } };
   assert.deepEqual(response.toolResponse.functionResponses.map(r => r.id), ['c1', 'c2']);
-  assert.equal(h.owner.current().state, 'listening');
+  assert.equal(h.owner.current().state, 'thinking', 'the tool result keeps thinking until the first output audio (F1)');
   const page = h.owner.current();
   assert.equal(page.entries.filter(e => e.kind === 'toolCall').length, 2);
   const result = page.entries.find(e => e.kind === 'toolResult')!.tool!;
@@ -1818,11 +1820,16 @@ test('the overlay accent reaches the adapter and is reported only as counts, nev
   attachment.close(); await attachment.done;
   const parse = (line: string): Record<string, unknown> => { try { return JSON.parse(line) as Record<string, unknown>; } catch { return {}; } };
   const diagnostics = (): Record<string, unknown>[] => lines.map(parse).filter(entry => entry.event === 'live_session_diagnostics');
-  for (let attempt = 0; attempt < 60 && !diagnostics().some(entry => entry.headVoiceChars === accent.length); attempt++) await tick();
-  const emitted = diagnostics().find(entry => entry.headVoiceChars === accent.length);
-  assert.ok(emitted, `the accent-bearing diagnostics reports the carried accent count; saw ${JSON.stringify(diagnostics())}`);
-  assert.equal(emitted.terminalVoiceChars, accent.length);
-  assert.equal(emitted.toolAnchorChars, accent.length);
+  const expectedHead = `VOICE AND ACCENT (every turn, including right after tool results): ${accent}`.length;
+  const expectedTool = `Answer aloud in your own words, briefly, in this voice and accent: ${accent}. Do not read raw text, ids or URLs.`.length;
+  for (let attempt = 0; attempt < 60 && !diagnostics().some(entry => entry.headVoiceChars === expectedHead); attempt++) await tick();
+  const emitted = diagnostics().find(entry => entry.headVoiceChars === expectedHead);
+  assert.ok(emitted, `the accent-bearing diagnostics reports the serialised head block; saw ${JSON.stringify(diagnostics())}`);
+  assert.equal(emitted.headVoiceChars, expectedHead, 'the head count is the serialised block, not the bare accent');
+  assert.equal(emitted.toolAnchorChars, expectedTool, 'the tool count is the serialised _voice_anchor');
+  assert.notEqual(emitted.terminalVoiceChars, emitted.headVoiceChars, 'the terminal anchor has its own serialised length');
+  assert.notEqual(emitted.terminalVoiceChars, emitted.toolAnchorChars, 'the terminal anchor differs from the tool anchor');
+  assert.ok(Number.isSafeInteger(emitted.terminalVoiceChars) && Number(emitted.terminalVoiceChars) > 0, 'the terminal count is a positive integer');
   assert.ok(safeEvent(emitted), 'the host log accepts the accent-bearing diagnostics shape');
   assert.equal(lines.some(line => line.includes(accent)), false, 'the accent text never reaches an emitted line');
 });
@@ -2279,6 +2286,45 @@ test('the calendar intent reads events from every calendar the owner keeps', asy
   assert.match(response.toolResponse.functionResponses[0]!.response.text, /Event on work/);
 });
 
+test('F1: thinking holds between the tool result and the first model audio', async t => {
+  const h = await harness(t, { tools: true });
+  const { attachment } = await attached(h, 'f1-thinking');
+  await settleLiveTool(h, 'c1', 'search_knowledge', { query: 'x', limit: 1 });
+  assert.equal(h.owner.current().state, 'thinking', 'the tool result never flashes listening before speech');
+  h.f.send({ serverContent: { modelTurn: { parts: [audio()] } } });
+  for (let i = 0; i < 200 && h.owner.current().state !== 'speaking'; i++) await tick();
+  assert.equal(h.owner.current().state, 'speaking', 'the first output audio ends thinking');
+  attachment.close(); await attachment.done;
+});
+
+test('F2: speaking holds past generationComplete until the turn completes', async t => {
+  const h = await harness(t);
+  const { session, attachment } = await attached(h, 'f2-speaking');
+  h.f.send({ serverContent: { modelTurn: { parts: [audio()] }, generationComplete: true } });
+  for (let i = 0; i < 200 && h.owner.current().state !== 'speaking'; i++) await tick();
+  await drain(h, session.liveSessionId, 2);
+  assert.equal(h.owner.current().state, 'speaking', 'generationComplete alone must not end speaking before playback drains');
+  h.f.send({ serverContent: { turnComplete: true } });
+  await drain(h, session.liveSessionId, 3);
+  assert.equal(h.owner.current().state, 'listening', 'turnComplete ends speaking');
+  attachment.close(); await attachment.done;
+});
+
+test('F4: a barge-in clears thinking for a tool that never resolves', async t => {
+  const started = deferred<void>(), finish = deferred<void>();
+  const h = await harness(t, { tools: true, beforeTool: async () => { started.resolve(); await finish.promise; } });
+  const { session, attachment } = await attached(h, 'f4-barge');
+  h.f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
+  await started.promise;
+  assert.equal(h.owner.current().state, 'thinking');
+  h.f.send({ serverContent: { interrupted: true } });
+  await drain(h, session.liveSessionId, 3);
+  assert.notEqual(h.owner.current().state, 'thinking', 'a barge-in never leaves THINKING stuck after a hung tool');
+  finish.resolve();
+  for (let i = 0; i < 200 && h.f.frames.length < 2; i++) await tick();
+  attachment.close(); await attachment.done;
+});
+
 test('U1: research progress reaches the live channel with metadata only', async t => {
   const h = await harness(t, { tools: true, calendar: true });
   await attached(h, 'lookup-progress');
@@ -2291,4 +2337,47 @@ test('U1: research progress reaches the live channel with metadata only', async 
   assert.ok(Array.isArray(progress.sourcesDone) && Array.isArray(progress.sourcesPending));
   assert.equal(typeof progress.elapsedMs, 'number');
   assert.doesNotMatch(JSON.stringify(progress), /what is on my calendar/, 'the question text never reaches the channel');
+});
+
+test('F6: three tool calls in one model message run concurrently and return three responses in order', async t => {
+  let inFlight = 0; let peak = 0;
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const h = await harness(t, { tools: true, beforeTool: async () => { inFlight += 1; peak = Math.max(peak, inFlight); if (inFlight < 3) await gate; else release(); inFlight -= 1; } });
+  await attached(h, 'parallel-tools');
+  const events: { event?: string; peakInFlight?: unknown }[] = [];
+  const detach = attachHostLogSink({ event: raw => { events.push(raw as { event?: string; peakInFlight?: unknown }); } });
+  try {
+    h.f.send({ toolCall: { functionCalls: [
+      { id: 'p1', name: 'search_knowledge', args: { query: 'one', limit: 1 } },
+      { id: 'p2', name: 'search_knowledge', args: { query: 'two', limit: 1 } },
+      { id: 'p3', name: 'search_knowledge', args: { query: 'three', limit: 1 } },
+    ] } });
+    for (let i = 0; i < 500 && peak < 3; i++) await tick();
+    assert.equal(peak, 3, 'three same-endpoint calls dispatch concurrently');
+    release();
+    for (let i = 0; i < 2000 && toolResponseCount(h) === 0; i++) await tick();
+  } finally { detach(); }
+  assert.equal(toolResponseCount(h), 1, 'one batch response frame for the three calls');
+  const frame = h.f.frames.find(entry => typeof entry === 'object' && entry !== null && 'toolResponse' in entry) as { toolResponse: { functionResponses: { id: string; name: string }[] } };
+  assert.deepEqual(frame.toolResponse.functionResponses.map(response => response.id), ['p1', 'p2', 'p3'], 'responses keep the model call order');
+  const turn = events.find(entry => entry.event === 'live_tool_turn');
+  assert.deepEqual(turn?.peakInFlight, [{ endpoint: 'lux', peak: 3 }], 'the batch logs one peak-in-flight record per endpoint');
+});
+
+test('F6-R1: a successful research call is journaled completed, not error', async t => {
+  const h = await harness(t, { tools: true, calendar: true });
+  await attached(h, 'research-status');
+  await settleLiveTool(h, 'r1', 'research', { action: 'start', question: 'what is on my calendar' });
+  const result = h.owner.current().entries.filter(entry => entry.kind === 'toolResult').at(-1);
+  assert.equal(result?.tool?.status, 'completed', 'a successful research reply is completed, not error');
+});
+test('F4: a pending research call is journalled as called, never error', async t => {
+  const h = await harness(t, { tools: true, calendar: true });
+  await attached(h, 'research-called');
+  await settleLiveTool(h, 'r1', 'research', { action: 'start', question: 'what is on my calendar' });
+  const rows = h.store.transaction(tx => tx.all("SELECT tool_json FROM live_journal WHERE kind='toolCall'", []));
+  const tools = rows.map(row => JSON.parse(String(row['tool_json'])) as { name?: string; status?: string });
+  const research = tools.find(tool => tool.name === 'research');
+  assert.equal(research?.status, 'called', `a pending research call is called; saw ${JSON.stringify(tools)}`);
 });

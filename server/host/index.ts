@@ -41,6 +41,9 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   const descriptor = values.get('--descriptor') ?? process.env.DIDI_DESCRIPTOR;
   if (descriptor) config.descriptor = resolve(descriptor);
   if (pairing) { process.stdout.write(`${await pairLocal(config.dataDir, config.descriptor)}\n`); return; }
+  // The supervised protocol writes its ready frame before any connector handshake; the connector
+  // round starts from `host.start()` after the frame. Non-supervised starts keep the awaited shape.
+  config.deferConnectors = supervised;
   const supervision = supervised ? supervise() : undefined;
   try {
     const nonce = supervision ? await supervision.nonce : undefined;
@@ -60,6 +63,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       process.stdout.on('error', stop);
       writeProtocolFrame(frame);
     } else process.stdout.write(`Didi host ${host.descriptor.origin}; local memory/commitments available; model/notifications unavailable\n`);
+    // The ready frame is on the wire; connector initialization starts here, each independently.
+    void host.start().catch(() => { /* the host status reports each connector failure */ });
   } catch (error) {
     if (supervision && error instanceof ServiceError) {
       try { writeProtocolFrame({ type: 'error', schemaVersion: 1, code: error.code }); } catch { /* the exit status is the remaining signal */ }

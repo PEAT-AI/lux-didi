@@ -16,6 +16,9 @@ const RESEARCH_STOPS = ['answered', 'selector_stop', 'insufficient', 'rounds_exh
 const RESEARCH_PHASES = ['started', 'round', 'done', 'stopped'];
 const RESEARCH_DRIVERS = ['selector', 'fallback', 'single-source-hint'];
 const RESEARCH_DISPOSITIONS = ['completed', 'skipped'];
+// The projected Live state enum, mirrored from LivePageProjection['state'].
+const LIVE_STATES = ['idle', 'listening', 'thinking', 'speaking', 'rebuilding', 'ended', 'error'];
+const RESEARCH_WINDOW_KINDS = ['today', 'tomorrow', 'week', 'date'];
 const isSafeToken = (value: unknown): value is string => typeof value === 'string' && SAFE_TOKEN.test(value);
 const isSafeId = (value: unknown): value is string => typeof value === 'string' && SAFE_ID.test(value);
 const isSafeCount = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;
@@ -170,9 +173,19 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeCount(value.deadAirMs)) return;
     return { event: 'live_dead_air', deadAirMs: value.deadAirMs };
   }
+  if (value.event === 'live_state') {
+    // F7: one closed-shape transition record per projected state change, so the orb timeline is
+    // reconstructable from host.log. Enums and an epoch millisecond only, never any turn content.
+    if (Object.keys(value).sort().join(',') !== ['event', 'state', 'at'].sort().join(',')) return;
+    if (!isSafeMember(value.state, LIVE_STATES)) return;
+    if (!isSafeCount(value.at)) return;
+    return { event: 'live_state', state: value.state, at: value.at };
+  }
   if (value.event === 'live_tool_turn') {
-    // O1: per-turn tool metrics, tool names and millisecond latency only, never arguments or results.
-    if (Object.keys(value).sort().join(',') !== ['event', 'sequence', 'toolCallsThisTurn', 'toolLatencyMs', 'toolResponseWhileGenerating'].sort().join(',')) return;
+    // O1/F6: per-turn tool metrics, tool names, millisecond latency and per-endpoint peak concurrency only.
+    const base = ['event', 'sequence', 'toolCallsThisTurn', 'toolLatencyMs', 'toolResponseWhileGenerating'];
+    const hasPeak = Object.prototype.hasOwnProperty.call(value, 'peakInFlight');
+    if (Object.keys(value).sort().join(',') !== [...base, ...(hasPeak ? ['peakInFlight'] : [])].sort().join(',')) return;
     if (!(value.sequence === null || isSafeCount(value.sequence))) return;
     if (!isSafeCount(value.toolCallsThisTurn) || typeof value.toolResponseWhileGenerating !== 'boolean') return;
     if (!Array.isArray(value.toolLatencyMs) || value.toolLatencyMs.length > 16) return;
@@ -184,7 +197,19 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
       if (!isSafeToken(row.tool) || !isSafeCount(row.ms)) return;
       latencies.push({ tool: row.tool, ms: row.ms });
     }
-    return { event: 'live_tool_turn', sequence: value.sequence, toolCallsThisTurn: value.toolCallsThisTurn, toolLatencyMs: latencies, toolResponseWhileGenerating: value.toolResponseWhileGenerating };
+    let peakInFlight: { endpoint: string; peak: number }[] | undefined;
+    if (hasPeak) {
+      if (!Array.isArray(value.peakInFlight) || value.peakInFlight.length > 16) return;
+      peakInFlight = [];
+      for (const entry of value.peakInFlight) {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return;
+        const row = entry as Record<string, unknown>;
+        if (Object.keys(row).sort().join(',') !== ['endpoint', 'peak'].sort().join(',')) return;
+        if (!isSafeToken(row.endpoint) || !isSafeCount(row.peak)) return;
+        peakInFlight.push({ endpoint: row.endpoint, peak: row.peak });
+      }
+    }
+    return { event: 'live_tool_turn', sequence: value.sequence, toolCallsThisTurn: value.toolCallsThisTurn, toolLatencyMs: latencies, toolResponseWhileGenerating: value.toolResponseWhileGenerating, ...(peakInFlight !== undefined ? { peakInFlight } : {}) };
   }
   if (value.event === 'tool_cancelled') {
     // O1: the cancelled tool, its call id and time in flight only, never arguments or results.
@@ -247,16 +272,20 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'research_run', researchId: value.researchId, questionClass: value.questionClass, rounds: value.rounds, perRound, stopReason: value.stopReason, status: value.status, ops: value.ops, sources, elapsedMs: value.elapsedMs, deadAirMs: value.deadAirMs, selectorMs: value.selectorMs, fallbackUsed: value.fallbackUsed, replyBytes: value.replyBytes, unchecked: value.unchecked, canContinue: value.canContinue, findingChars: value.findingChars, ...(hasDriver ? { driver: value.driver } : {}) };
   }
   if (value.event === 'research_subcall') {
-    // Q1: one metadata-only record per internal sub-call, never the query or result text.
+    // Q1: one metadata-only record per internal sub-call, never the query or result text. A calendar
+    // sub-call also carries the resolved window kind, a closed enum, never a time or title.
     const subKeys = ['event', 'researchId', 'kind', 'tool', 'ok', 'items', 'rawBytes', 'keptBytes', 'queryChars', 'queryAuthor'];
     const hasError = Object.prototype.hasOwnProperty.call(value, 'errorCode');
-    if (Object.keys(value).sort().join(',') !== (hasError ? [...subKeys, 'errorCode'] : subKeys).sort().join(',')) return;
+    const hasWindow = Object.prototype.hasOwnProperty.call(value, 'window');
+    const allowed = [...subKeys, ...(hasError ? ['errorCode'] : []), ...(hasWindow ? ['window'] : [])];
+    if (Object.keys(value).sort().join(',') !== allowed.sort().join(',')) return;
     if (!isSafeId(value.researchId) || !isSafeMember(value.kind, RESEARCH_CANDIDATES) || !isSafeToken(value.tool)) return;
     if (typeof value.ok !== 'boolean') return;
     if (hasError && !isSafeToken(value.errorCode)) return;
+    if (hasWindow && !isSafeMember(value.window, RESEARCH_WINDOW_KINDS)) return;
     if (!isSafeCount(value.items) || !isSafeCount(value.rawBytes) || !isSafeCount(value.keptBytes) || !isSafeCount(value.queryChars)) return;
     if (!isSafeMember(value.queryAuthor, ['selector', 'fallback'])) return;
-    return { event: 'research_subcall', researchId: value.researchId, kind: value.kind, tool: value.tool, ok: value.ok, ...(hasError ? { errorCode: value.errorCode } : {}), items: value.items, rawBytes: value.rawBytes, keptBytes: value.keptBytes, queryChars: value.queryChars, queryAuthor: value.queryAuthor };
+    return { event: 'research_subcall', researchId: value.researchId, kind: value.kind, tool: value.tool, ok: value.ok, ...(hasError ? { errorCode: value.errorCode } : {}), items: value.items, rawBytes: value.rawBytes, keptBytes: value.keptBytes, queryChars: value.queryChars, queryAuthor: value.queryAuthor, ...(hasWindow ? { window: value.window } : {}) };
   }
 }
 

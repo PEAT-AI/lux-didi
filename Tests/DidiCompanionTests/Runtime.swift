@@ -53,9 +53,9 @@ import Darwin
             } catch { fputs("KEYCHAIN-SDK child failed before completion\n", stderr); exit(1) }
         }
         let app = NSApplication.shared
-        // This foreground WK fixture needs regular activation semantics; the
-        // actual companion remains an accessory/menu-bar app in its own proof.
-        expect(app.setActivationPolicy(.regular), "foreground fixture activation policy accepted")
+        // The fixture renders a WK subtree for the AX proof but never takes focus:
+        // accessory keeps a window possible without regular activation semantics.
+        expect(app.setActivationPolicy(.accessory), "headless fixture activation policy accepted")
         // Publish the actual AppKit application/AX lifecycle, as production does.
         // An async CLI main alone leaves own-PID AXWindows NotImplemented.
         Task {
@@ -97,8 +97,7 @@ import Darwin
             let shell = CompanionWeb(descriptor: descriptor)
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 960, height: 700), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
             window.contentView = shell.webView
-            window.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            window.orderFront(nil)
             expect(!shell.webView.configuration.websiteDataStore.isPersistent, "nonpersistent website store")
             let cookie = try await client.bootstrap()
             expect(cookie.isHTTPOnly, "service cookie is HttpOnly")
@@ -121,8 +120,8 @@ import Darwin
             expect(!cancellation.ready && cancellation.events.last?["event"] as? String == "cancelled" &&
                    (cancellation.diagnostics["runLoop"] as? [String: Any])?["disposed"] as? Bool == true,
                    "cancelled readiness disposes callbacks without claiming activation")
-            let readiness = await OwnedWindowReadiness.wait(window) {
-                window.makeKeyAndOrderFront(nil)
+            let readiness = await OwnedWindowReadiness.wait(window, activating: false) {
+                window.orderFront(nil)
             }
             let readinessReport = URL(fileURLWithPath: CommandLine.arguments[2]).appendingPathComponent("connected-wk-readiness.json")
             let readinessData = try JSONSerialization.data(withJSONObject: ["nativePid": Int(getpid()), "windowId": window.windowNumber,
@@ -130,8 +129,8 @@ import Darwin
                 "hiddenDeadline": unavailable.events, "hiddenDiagnostics": unavailable.diagnostics, "cancelDiagnostics": cancellation.diagnostics], options: [.prettyPrinted, .sortedKeys])
             try readinessData.write(to: readinessReport, options: .atomic)
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: readinessReport.path)
-            expect(readiness.ready && NSApp.isActive && window.isMainWindow && window.isKeyWindow && window.isVisible && window.occlusionState.contains(.visible),
-                   "owned connected fixture window active/main/key/unoccluded before AX")
+            expect(readiness.ready && !NSApp.isActive && window.isVisible && window.occlusionState.contains(.visible),
+                   "owned connected fixture window visible/unoccluded without activation before AX")
             let connectedAX = await OwnedWindowProof.consumerTrace(window)
             // Retain the exact fixture observation even when its identity gate fails.
             let axReport = URL(fileURLWithPath: CommandLine.arguments[2]).appendingPathComponent("connected-wk-ax.json")
@@ -143,7 +142,7 @@ import Darwin
             expect(try await js(shell.webView, "typeof window.webkit?.messageHandlers") as? String == "undefined", "zero JavaScript authority handlers")
             expect(try await shell.webView.callAsyncJavaScript("const r = await fetch('/api/v1/auth/session'); const x = await r.json(); return Boolean(x.data.csrfToken)", arguments: [:], in: nil, contentWorld: .page) as? Bool == true, "page reads CSRF through normal API")
             let initial = try await js(shell.webView, "document.body.dataset.instance") as? String
-            window.orderOut(nil); window.makeKeyAndOrderFront(nil)
+            window.orderOut(nil); window.orderFront(nil)
             expect(try await js(shell.webView, "document.body.dataset.instance") as? String == initial, "hide/show preserves exact page session")
             expect(try await js(shell.webView, "window.open('/','evil') === null") as? Bool == true, "programmatic popup refused")
             _ = try await js(shell.webView, "let f=document.createElement('iframe'); f.src='/frame'; document.body.appendChild(f); 'attempted'")

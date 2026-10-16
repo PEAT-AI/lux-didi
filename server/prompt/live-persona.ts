@@ -51,7 +51,7 @@ const separator = '\n\n';
 export const LIVE_INSTRUCTION_SECTION_IDS = Object.freeze(['voice-head', 'base', 'runtime', 'tools', 'owner-style', 'owner-lore', 'overlay', 'pickup', 'memory', 'voice'] as const);
 // Generic lead voice block: the accent text comes only from the overlay or the input accent.
 const VOICE_HEAD_PREFIX = 'VOICE AND ACCENT (every turn, including right after tool results): ';
-function headVoiceBlock(accent: string | undefined): string | undefined {
+export function headVoiceBlock(accent: string | undefined): string | undefined {
   return accent === undefined ? undefined : `${VOICE_HEAD_PREFIX}${accent}`;
 }
 const overlayKeys = ['schemaVersion', 'text', 'greeting', 'accent'];
@@ -174,7 +174,7 @@ function displayLanguage(code: string): string {
   catch { return code; }
 }
 
-function voiceAnchor(language: string | undefined, accent: string | undefined): string {
+export function voiceAnchor(language: string | undefined, accent: string | undefined): string {
   const languageLine = language === undefined
     ? 'LANGUAGE: Speak in the language the user uses.'
     : `LANGUAGE: Speak and answer in ${displayLanguage(language)} by default.`;

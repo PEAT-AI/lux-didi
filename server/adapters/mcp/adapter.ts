@@ -11,8 +11,11 @@ export interface McpAdapterOptions {
   resolveCredential?: (reference: string) => Promise<string>;
   budgets?: Partial<McpBudgets>;
   callTimeoutMsByEndpoint?: ReadonlyMap<string, number>;
+  maxConcurrentCallsByEndpoint?: ReadonlyMap<string, number>;
   assertCredentialCurrent?: (reference: string) => void;
 }
+/** Concurrent dispatched calls allowed per endpoint; callers beyond it queue in arrival order. */
+const DEFAULT_MAX_CONCURRENT_CALLS = 6;
 class PolicyError extends Error { constructor(readonly reason: string) { super(reason); } }
 interface ChildExit { readonly exitCode: number | null; readonly signalCode: string | null; readonly pid?: number; readonly stdout?: { once(event: string, listener: () => void): unknown } | null; kill(signal?: NodeJS.Signals): boolean }
 /** The child may ignore the MCP close; after the bounded close it is SIGKILLed so the host can exit. */
@@ -48,7 +51,7 @@ function decodeSseResponse(bytes: Uint8Array, requestId: unknown): Uint8Array {
   throw new PolicyError('sdk_protocol_rejected');
 }
 interface Operation { scope: ResultScope; signal: AbortSignal; timeoutMs: number; dispatched: boolean; bytes?: Uint8Array; requestId?: string | number; explicitErrorCode?: number; explicitError?: unknown; receivedResult?: boolean }
-interface Session { client: Client; config: EndpointConfig; operation?: Operation; child?: ChildExit; pipeClosed?: boolean; dead?: boolean }
+interface Session { client: Client; config: EndpointConfig; operations: Map<number, Operation>; child?: ChildExit; pipeClosed?: boolean; dead?: boolean; failureReason?: string; deathCounted?: boolean; retiring?: Promise<void> }
 /** Two respawns per connector per session; the third child death suspends with a logged stage. */
 const MAX_RESPAWNS = 2;
 /**
@@ -89,7 +92,7 @@ function guardedFetch(session: Session, options: McpAdapterOptions, budgets: Mcp
     if (!['GET', 'POST', 'DELETE'].includes(request.method)) throw new PolicyError('method-refused');
     const packet = request.method === 'POST' ? await request.clone().json() as { method?: string; id?: string | number } : undefined;
     const isCall = packet?.method === 'tools/call';
-    const operation = isCall ? session.operation : undefined;
+    const operation = isCall && typeof packet?.id === 'number' ? session.operations.get(packet.id) : undefined;
     if (isCall && (!operation || operation.dispatched)) throw new PolicyError('call-replay-refused');
     if (operation && !options.registry.authorizesScope(operation.scope)) throw new PolicyError('grant-revoked-before-dispatch');
     // Cancellation notification gets its own short deadline, not the already aborted call signal.
@@ -177,12 +180,79 @@ function validateTool(value: unknown, validator: AjvJsonSchemaValidator): ToolDe
   return structuredClone(tool);
 }
 
+/** A per-endpoint FIFO slot pool: at most `limit` calls run, later callers queue and honour their signal. */
+class EndpointGate {
+  private active = 0;
+  private readonly waiting: { start: () => void; fail: (reason: unknown) => void }[] = [];
+  private readonly idle: (() => void)[] = [];
+  private exclusive = false;
+  private failed: string | undefined;
+  constructor(readonly limit: number) {}
+  private pump(): void {
+    if (this.exclusive) return;
+    while (this.waiting.length > 0 && this.active < this.limit) { this.active += 1; this.waiting.shift()!.start(); }
+  }
+  acquire(signal?: AbortSignal): Promise<void> {
+    if (this.failed !== undefined) return Promise.reject(new PolicyError(this.failed));
+    return new Promise<void>((resolve, reject) => {
+      const invoke = () => { cleanup(); resolve(); };
+      const fail = (reason: unknown) => { cleanup(); reject(reason); };
+      const entry = { start: invoke, fail };
+      const onAbort = () => {
+        const index = this.waiting.indexOf(entry);
+        if (index >= 0) this.waiting.splice(index, 1);
+        fail(signal?.reason);
+      };
+      const cleanup = () => { if (signal) signal.removeEventListener('abort', onAbort); };
+      if (signal?.aborted) { fail(signal.reason); return; }
+      if (signal) signal.addEventListener('abort', onAbort, { once: true });
+      this.waiting.push(entry);
+      this.pump();
+    });
+  }
+  release(): void {
+    this.active -= 1;
+    this.pump();
+    if (this.active === 0) this.wakeIdle();
+  }
+  /** Close the gate: every queued caller settles with `reason` and no new caller is admitted. */
+  fail(reason: string): void {
+    this.failed = reason;
+    for (const entry of this.waiting.splice(0)) entry.fail(new PolicyError(reason));
+  }
+  private wakeIdle(): void { for (const resolve of this.idle.splice(0)) resolve(); }
+  /** Block new calls, wait for every in-flight call to finish, then let the caller run alone. */
+  async acquireExclusive(): Promise<() => void> {
+    this.exclusive = true;
+    if (this.active > 0) await new Promise<void>(resolve => this.idle.push(resolve));
+    return () => { this.exclusive = false; this.pump(); if (this.active === 0) this.wakeIdle(); };
+  }
+}
 export function createMcpAdapter(options: McpAdapterOptions): McpPort {
   const budgets: McpBudgets = { timeoutMs: 5000, maxResponseBytes: 1024 * 1024, maxPages: 64, maxTools: 1000, projectionChars: 2048, ...options.budgets };
   for (const value of Object.values(budgets)) if (!Number.isSafeInteger(value) || value <= 0) throw new Error('invalid-adapter-budget');
   const callTimeouts = new Map(options.callTimeoutMsByEndpoint);
   for (const timeout of callTimeouts.values()) if (!Number.isSafeInteger(timeout) || timeout <= 0) throw new Error('invalid-adapter-budget');
-  const sessions = new Map<string, Session>(); const busy = new Set<string>();
+  const concurrency = new Map(options.maxConcurrentCallsByEndpoint);
+  for (const limit of concurrency.values()) if (!Number.isSafeInteger(limit) || limit <= 0) throw new Error('invalid-adapter-budget');
+  const sessions = new Map<string, Session>(); const gates = new Map<string, EndpointGate>(); const creating = new Map<string, Promise<Session>>();
+  function gateFor(endpointId: string): EndpointGate {
+    const existing = gates.get(endpointId);
+    if (existing) return existing;
+    const gate = new EndpointGate(concurrency.get(endpointId) ?? DEFAULT_MAX_CONCURRENT_CALLS);
+    gates.set(endpointId, gate);
+    return gate;
+  }
+  async function sessionForSingle(config: EndpointConfig): Promise<Session> {
+    // Single-flight: an in-flight creation is awaited by every caller, so one session is created once.
+    const inflight = creating.get(config.id);
+    if (inflight) return inflight;
+    const existing = sessions.get(config.id);
+    if (existing && !existing.dead) return existing;
+    const promise = sessionFor(config).finally(() => { if (creating.get(config.id) === promise) creating.delete(config.id); });
+    creating.set(config.id, promise);
+    return promise;
+  }
   const deaths = new Map<string, number>();
   const suspended = new Set<string>(); const waiters = new Map<string, Set<() => void>>();
   const schemaValidator = new AjvJsonSchemaValidator();
@@ -192,19 +262,23 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
     for (const resolve of waiters.get(id) ?? []) resolve(); waiters.delete(id);
   }
   async function retire(id: string): Promise<void> {
-    const session = sessions.get(id); sessions.delete(id);
-    if (session) {
+    const session = sessions.get(id);
+    if (!session) return;
+    if (session.retiring) { await session.retiring; return; }
+    sessions.delete(id);
+    session.retiring = (async () => {
       await bounded(session.client.close(), AbortSignal.timeout(200)).catch(() => {});
       // The SDK close keeps running past the bound; kill the child so a surviving stdio transport cannot hold the host open.
       killChild(session.child);
-    }
+    })();
+    await session.retiring;
   }
   async function sessionFor(config: EndpointConfig): Promise<Session> {
     const existing = sessions.get(config.id);
     if (existing && !existing.dead) return existing;
     if (existing) await retire(config.id);
     const client = new Client({ name: 'lux-didi-optional-mcp', version: '0.1.0' }, { enforceStrictCapabilities: true });
-    const session: Session = { client, config };
+    const session: Session = { client, config, operations: new Map() };
     // A dropped transport marks the session dead so the next call respawns. The notification-stream
     // budget breach is fatal at its source (onFatal), and a soft call error is never fatal here.
     client.onerror = () => { session.dead = true; }; // No remote error/header/body is ever logged.
@@ -234,7 +308,7 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
     // decode/validation ProtocolError is not proof of an explicit remote rejection.
     const onmessage = transport.onmessage;
     transport.onmessage = message => {
-      const operation = session.operation;
+      const operation = 'id' in message && typeof message.id === 'number' ? session.operations.get(message.id) : undefined;
       if (operation && isJSONRPCErrorResponse(message) && message.id === operation.requestId) { operation.explicitErrorCode = message.error.code; operation.explicitError = structuredClone(message.error); }
       if (operation && 'id' in message && message.id === operation.requestId && 'result' in message) operation.receivedResult = true;
       onmessage?.(message);
@@ -255,12 +329,13 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
   }
   return {
     async discover(endpointId: string): Promise<DiscoveryResult> {
-      if (closed || busy.has(endpointId)) return { state: 'unavailable', reason: closed ? 'adapter-closed' : 'endpoint-busy' };
-      busy.add(endpointId);
+      if (closed) return { state: 'unavailable', reason: 'adapter-closed' };
+      // Discovery is exclusive: it waits for in-flight calls and blocks new ones so tools never change under a call.
+      const releaseExclusive = await gateFor(endpointId).acquireExclusive();
       try {
         const config = options.registry.endpoint(endpointId); suspend(endpointId);
         const revision = options.registry.revision(endpointId);
-        const session = await sessionFor(config);
+        const session = await sessionForSingle(config);
         const tools: ToolDefinition[] = []; const names = new Set<string>(); const cursors = new Set<string>(); let cursor: string | undefined;
         const signal = AbortSignal.timeout(budgets.timeoutMs);
         for (let page = 0; ; page++) {
@@ -287,56 +362,83 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
         const code = error instanceof PolicyError ? error.reason
           : error instanceof Error && error.constructor === Error && localCodes.includes(error.message) ? error.message : 'unknown';
         return { state: 'unavailable', reason: error instanceof PolicyError ? error.reason : 'discovery-unavailable', exception: { class: className, code } };
-      } finally { busy.delete(endpointId); }
+      } finally { releaseExclusive(); }
     },
     visibleTools(endpointId: string) { return options.registry.visibleTools(endpointId); },
     async call(request: CallRequest, signal?: AbortSignal): Promise<CallResult> {
-      if (closed || busy.has(request.endpointId) || signal?.aborted) return { state: 'refused', reason: closed ? 'adapter-closed' : signal?.aborted ? 'cancelled-before-dispatch' : 'endpoint-busy' };
+      if (closed) return { state: 'refused', reason: 'adapter-closed' };
       let scope: ResultScope;
       try { scope = options.registry.authorize(request); } catch { return { state: 'refused', reason: 'local-read-grant-refused' }; }
       const config = options.registry.endpoint(request.endpointId);
-      busy.add(request.endpointId);
-      let session = sessions.get(request.endpointId);
-      if (session?.dead) { await retire(request.endpointId); session = undefined; }
-      if (!session) {
-        try { session = await sessionFor(config); }
-        catch { busy.delete(request.endpointId); return { state: 'refused', reason: 'discovery-required' }; }
-      }
       const timeoutMs = callTimeouts.get(request.endpointId) ?? budgets.timeoutMs;
       const deadline = AbortSignal.timeout(timeoutMs);
       const localSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
-      const operation: Operation = { scope, signal: localSignal, timeoutMs, dispatched: false }; session.operation = operation;
+      const gate = gateFor(request.endpointId);
+      try { await gate.acquire(localSignal); }
+      catch (error) {
+        // A closing adapter settles every queued call with the close code; a caller cancellation and
+        // a queued deadline each keep their own clear code.
+        if (error instanceof PolicyError && error.reason === 'adapter-closed') return { state: 'refused', reason: 'adapter-closed' };
+        if (signal?.aborted) return { state: 'refused', reason: 'cancelled-before-dispatch' };
+        return { state: 'refused', reason: 'timeout' };
+      }
       try {
-        // Supported SDK request API avoids callTool's automatic header-mismatch refresh/retry.
-        if (isStdioEndpoint(session.config)) operation.dispatched = true;
-        const result = await bounded(session.client.request({ method: 'tools/call', params: { name: request.toolName, arguments: request.arguments } }, { signal: localSignal, timeout: timeoutMs }), localSignal);
-        if (!options.registry.authorizesScope(scope)) throw new PolicyError('grant-revoked-after-dispatch');
-        if (!operation.bytes) {
-          // A stdio child has no HTTP response entity; the parsed JSON-RPC result is the entity.
-          if (!isStdioEndpoint(session.config)) throw new PolicyError('original-response-unavailable');
-          operation.bytes = new TextEncoder().encode(JSON.stringify(result));
+        if (closed) return { state: 'refused', reason: 'adapter-closed' };
+        if (signal?.aborted) return { state: 'refused', reason: 'cancelled-before-dispatch' };
+        let session = sessions.get(request.endpointId);
+        if (session?.dead) { await retire(request.endpointId); session = undefined; }
+        if (!session || creating.has(request.endpointId)) {
+          try { session = await sessionForSingle(config); }
+          catch { return { state: 'refused', reason: 'discovery-required' }; }
         }
-        return completed(scope, operation.bytes, result, result.isError ? 'tool-error' : 'completed');
-      } catch (error) {
-        if (operation.dispatched) {
-          if (error instanceof ProtocolError && operation.explicitErrorCode !== undefined && operation.bytes && options.registry.authorizesScope(scope)) return completed(scope, operation.bytes, { error: { code: operation.explicitErrorCode } }, 'protocol-error', operation.explicitErrorCode, operation.explicitError);
-          // Classify before retiring the child, so a local shutdown never rewrites the cause.
-          const stage = failureStage(error, operation, session, signal?.aborted === true, deadline.aborted);
-          // HTTP SDK cancellation aborts the request, rather than notifying. Use its
-          // supported notification API with the SDK-owned id; never wait indefinitely.
-          if (localSignal.aborted && operation.requestId !== undefined) await bounded(session.client.notification({ method: 'notifications/cancelled', params: { requestId: operation.requestId, reason: 'local cancellation' } }), AbortSignal.timeout(200)).catch(() => {});
-          // A dead transport is retired; the stdio child respawns on the next call, up to two deaths.
-          // A soft failure (timeout, cancellation, invalid_result) leaves the connector usable. Never retry this call.
-          if (stage === 'sdk_protocol_rejected') { suspend(request.endpointId); await retire(request.endpointId); }
-          else if (stage === 'child_exited' || stage === 'pipe_closed') {
-            const count = (deaths.get(request.endpointId) ?? 0) + 1; deaths.set(request.endpointId, count);
-            if (count > MAX_RESPAWNS) suspend(request.endpointId);
-            await retire(request.endpointId);
+        // The SDK assigns the JSON-RPC id synchronously, so the map keys every concurrent call apart.
+        const operation: Operation = { scope, signal: localSignal, timeoutMs, dispatched: false };
+        const requestId = (session.client as unknown as { _requestMessageId: number })._requestMessageId;
+        session.operations.set(requestId, operation);
+        try {
+          // Supported SDK request API avoids callTool's automatic header-mismatch refresh/retry.
+          if (isStdioEndpoint(session.config)) operation.dispatched = true;
+          const result = await bounded(session.client.request({ method: 'tools/call', params: { name: request.toolName, arguments: request.arguments } }, { signal: localSignal, timeout: timeoutMs }), localSignal);
+          if (!options.registry.authorizesScope(scope)) throw new PolicyError('grant-revoked-after-dispatch');
+          if (!operation.bytes) {
+            // A stdio child has no HTTP response entity; the parsed JSON-RPC result is the entity.
+            if (!isStdioEndpoint(session.config)) throw new PolicyError('original-response-unavailable');
+            operation.bytes = new TextEncoder().encode(JSON.stringify(result));
           }
-          return { state: 'unknown', reason: stage };
-        }
-        return { state: 'refused', reason: error instanceof PolicyError ? error.reason : 'pre-dispatch-refused' };
-      } finally { delete session.operation; busy.delete(request.endpointId); }
+          return completed(scope, operation.bytes, result, result.isError ? 'tool-error' : 'completed');
+        } catch (error) {
+          if (closed) return { state: 'refused', reason: 'adapter-closed' };
+          if (operation.dispatched) {
+            if (error instanceof ProtocolError && operation.explicitErrorCode !== undefined && operation.bytes && options.registry.authorizesScope(scope)) return completed(scope, operation.bytes, { error: { code: operation.explicitErrorCode } }, 'protocol-error', operation.explicitErrorCode, operation.explicitError);
+            // Classify before retiring the child, so a local shutdown never rewrites the cause.
+            let stage = failureStage(error, operation, session, signal?.aborted === true, deadline.aborted);
+            // A dead session fails every in-flight call with one shared, clean code.
+            if (signal?.aborted !== true && (stage === 'sdk_protocol_rejected' || stage === 'child_exited' || stage === 'pipe_closed')) {
+              session.dead = true;
+              if (session.failureReason === undefined) session.failureReason = stage;
+              else stage = session.failureReason;
+            }
+            // HTTP SDK cancellation aborts the request, rather than notifying. Use its
+            // supported notification API with the SDK-owned id; never wait indefinitely.
+            if (localSignal.aborted && operation.requestId !== undefined) await bounded(session.client.notification({ method: 'notifications/cancelled', params: { requestId: operation.requestId, reason: 'local cancellation' } }), AbortSignal.timeout(200)).catch(() => {});
+            // A dead transport is retired once; the stdio child respawns on the next call, up to two deaths.
+            // A soft failure (timeout, cancellation, invalid_result) leaves the connector usable. Never retry this call.
+            if (stage === 'sdk_protocol_rejected' || stage === 'child_exited' || stage === 'pipe_closed') {
+              if (!session.deathCounted) {
+                session.deathCounted = true;
+                if (stage === 'sdk_protocol_rejected') suspend(request.endpointId);
+                else {
+                  const count = (deaths.get(request.endpointId) ?? 0) + 1; deaths.set(request.endpointId, count);
+                  if (count > MAX_RESPAWNS) suspend(request.endpointId);
+                }
+              }
+              await retire(request.endpointId);
+            }
+            return { state: 'unknown', reason: stage };
+          }
+          return { state: 'refused', reason: error instanceof PolicyError ? error.reason : 'pre-dispatch-refused' };
+        } finally { session.operations.delete(requestId); }
+      } finally { gate.release(); }
     },
     readSlice(request: SliceRequest): SliceResult {
       if (closed) return { state: 'refused', reason: 'adapter-closed' };
@@ -357,6 +459,6 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
         set.add(done);
       });
     },
-    async close(): Promise<void> { closed = true; await Promise.all([...sessions.keys()].map(async id => { suspend(id); await retire(id); })); },
+    async close(): Promise<void> { closed = true; for (const gate of gates.values()) gate.fail('adapter-closed'); await Promise.all([...sessions.keys()].map(async id => { suspend(id); await retire(id); })); },
   };
 }

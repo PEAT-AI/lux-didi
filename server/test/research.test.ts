@@ -281,3 +281,54 @@ test('the research declaration names only the configured sources and the valid h
   const properties = (declaration.parameters as unknown as { properties: Record<string, { description: string }> }).properties;
   assert.match(properties['sources']!.description, /calendar, mail, chat, knowledge\./);
 });
+
+// --- Calendar merged read, window logging and knowledge carry (contract F4, #272) ---------------
+
+const calendarSelector: ResearchSelector = {
+  async select() { return { questionClass: 'quick_fact', actions: [{ kind: 'calendar_window', window: 'tomorrow' }], pUseful: { calendar_window: 1 } }; },
+};
+
+// The connector returns one merged, sorted, deduped, name-tagged result; research makes one call.
+const MERGED_CALENDAR = [
+  '- 2026-10-16T09:00:00+05:30, Standup, Room 1 | Primary [id e1]',
+  '- 2026-10-16T10:00:00+05:30, Board deck, Room 2 | Work [id e3]',
+  '- 2026-10-16T11:00:00+05:30, Review | Primary [id e2]',
+].join('\n');
+
+test('calendar research issues one merged sub-call per question and shapes every event', async () => {
+  const h = harness({ selector: calendarSelector, executeText: MERGED_CALENDAR });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what is on my calendar tomorrow' }, new AbortController().signal);
+  const reads = h.executed.filter(call => call.name === 'gcal_list');
+  assert.equal(reads.length, 1, 'one calendar sub-call per question');
+  assert.equal((reads[0]!.args as Record<string, unknown>)['calendarId'], undefined, 'the connector resolves the selected set');
+  const finding = (reply['findings'] as { source: string; text: string }[]).find(entry => entry.source === 'calendar')!;
+  assert.match(finding.text, /^calendar: 3 of 3 shown/);
+  assert.deepEqual(finding.text.split('\n').slice(1), [
+    '2026-10-16T09:00:00+05:30 | Standup | Room 1 | Primary',
+    '2026-10-16T10:00:00+05:30 | Board deck | Room 2 | Work',
+    '2026-10-16T11:00:00+05:30 | Review | Primary',
+  ]);
+});
+
+test('calendar sub-calls log the resolved window kind only, never a time or title', async () => {
+  const h = harness({ selector: calendarSelector, executeText: MERGED_CALENDAR });
+  await runResearch(h.deps, { action: 'start', question: 'what is on my calendar tomorrow' }, new AbortController().signal);
+  const calendarLogs = h.subcalls.filter(entry => entry.kind === 'calendar_window');
+  assert.equal(calendarLogs.length, 1);
+  assert.equal((calendarLogs[0] as unknown as Record<string, unknown>)['window'], 'tomorrow');
+  assert.equal(JSON.stringify(h.subcalls).includes('2026-10-16T'), false, 'the resolved times never reach the log');
+});
+
+test('knowledge shaping carries at least ninety percent of a 41-item ledger under the reply limit', async () => {
+  const body = 'k'.repeat(60);
+  const items = Array.from({ length: 41 }, (_, i) => `### Insight ${i} [id ${i + 1}]\n${body}`);
+  const h = harness({ selector: knowledge, executeText: items.join('\n') });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'anything' }, new AbortController().signal);
+  const finding = (reply['findings'] as { source: string; text: string }[]).find(entry => entry.source === 'knowledge')!;
+  const lines = finding.text.split('\n').slice(1);
+  assert.ok(lines.length >= 37, `carried ${lines.length} of 41 lines`);
+  const total = items.reduce((sum, _, i) => sum + `#${i + 1} Insight ${i} | ${body}`.length, 0);
+  const carried = lines.reduce((sum, line) => sum + line.length, 0);
+  assert.ok(carried / total >= 0.9, `carried ${carried} of ${total} bytes`);
+  assert.ok(JSON.stringify(reply).length <= RESEARCH.replyLimitChars);
+});

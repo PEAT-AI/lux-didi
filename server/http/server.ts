@@ -148,11 +148,11 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
         if (route.kind === 'liveConnections') {
           const endpoints = (options.toolsStatus?.().endpoints ?? []).map(value => {
             const row = value && typeof value === 'object' ? value as Record<string, unknown> : {};
-            const state = ['missing', 'configured', 'connected', 'error'].includes(String(row.state)) ? String(row.state) : 'error';
+            const state = ['missing', 'configured', 'connecting', 'connected', 'error'].includes(String(row.state)) ? String(row.state) : 'error';
             // Classify privately; return only closed reason tokens, never the original diagnostic.
             const error = typeof row.error === 'string' ? row.error : '';
             const configurationError = ['unknown-class-missing', 'unknown-class-invalid', 'owner-approval-required', 'ambiguous-legacy-policy'].includes(String(row.configurationError)) ? String(row.configurationError) : undefined;
-            const reasonCode = state === 'connected' || (state === 'configured' && !error) ? null
+            const reasonCode = state === 'connected' || state === 'connecting' || (state === 'configured' && !error) ? null
               : configurationError ? 'configuration_error'
               : /^credential .* missing or invalid$/.test(error) ? 'credential_missing'
               : /unreachable|ECONNREFUSED|ENOTFOUND|ETIMEDOUT/.test(error) ? 'unreachable'

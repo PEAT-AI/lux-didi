@@ -125,7 +125,7 @@ import AppKit
         deadline?.setEventHandler { [self] in MainActor.assumeIsolated { timeout() } }
         deadline?.resume()
         let configuration = NSWorkspace.OpenConfiguration()
-        configuration.activates = true
+        configuration.activates = false
         configuration.createsNewApplicationInstance = true
         configuration.promptsUserIfNeeded = false
         configuration.addsToRecentItems = false

@@ -9,10 +9,13 @@ import AppKit
     @MainActor private final class Cancellation {
         var action: (() -> Void)?
     }
-    private static func state(_ window: NSWindow) -> [String: Bool] {
-        ["owned": NSApp.windows.contains(where: { $0 === window }), "running": NSApp.isRunning,
-         "active": NSApp.isActive, "visible": window.isVisible, "main": window.isMainWindow,
-         "key": window.isKeyWindow, "unoccluded": window.occlusionState.contains(.visible)]
+    private static func state(_ window: NSWindow, activating: Bool = true) -> [String: Bool] {
+        var state: [String: Bool] = ["owned": NSApp.windows.contains(where: { $0 === window }), "running": NSApp.isRunning,
+         "visible": window.isVisible, "unoccluded": window.occlusionState.contains(.visible)]
+        if activating {
+            state["active"] = NSApp.isActive; state["main"] = window.isMainWindow; state["key"] = window.isKeyWindow
+        }
+        return state
     }
     // Privacy-safe per-record foreground classification. A LaunchServices launch
     // parent is not an ownership proof, so only self/foreign-unclassified/
@@ -65,6 +68,7 @@ import AppKit
         return state
     }
     static func wait(_ window: NSWindow, timeout: UInt64 = 8_000_000_000,
+                     activating: Bool = true,
                      request: () -> Void) async -> Outcome {
         let started = Date()
         let cancellation = Cancellation()
@@ -107,7 +111,7 @@ import AppKit
                 }
                 @MainActor func record(_ event: String, complete: Bool = true) {
                     guard !settled else { return }
-                    let snapshot = state(window)
+                    let snapshot = state(window, activating: activating)
                     let monotonicMs = Int(ProcessInfo.processInfo.systemUptime * 1000)
                     let ordinal = OwnedWindowReadiness.trace("readiness:" + event,
                         ["active": snapshot["active"] as Any? ?? NSNull(), "key": snapshot["key"] as Any? ?? NSNull(),
@@ -167,7 +171,7 @@ import AppKit
                 record("initial")
                 guard !settled else { return }
                 request()
-                if window.isVisible {
+                if activating, window.isVisible {
                     attempted = true
                     OwnedWindowReadiness.trace("activate-invocation",
                         ["api": "NSRunningApplication.activate(options:[])", "ordinalOfCall": 1])

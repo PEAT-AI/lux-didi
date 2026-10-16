@@ -12,6 +12,7 @@ import { PROMPT_VERSION, compilePrompt } from '../prompt/index.js';
 import * as summaries from '../domain/summaries.js';
 import { buildEarlierConversationsSection, composeLiveSessionInstruction, composeLiveInstruction, NAYA_BASE, TRUSTED_SYSTEM_CODE_UNIT_LIMIT } from '../prompt/live-persona.js';
 import type { ModelPort, ModelRequest, ModelControl, ModelResult } from '../adapters/model/types.js';
+import { stripModelOnlyNotes } from '../tools/live-shape.js';
 
 class CountingModel implements ModelPort {
   calls: ModelRequest[] = []; controls: ModelControl[] = [];
@@ -609,4 +610,22 @@ test('text chat and voice receive the same summary for the same past session', a
     assert.ok(voice.text.includes('moved to Lisbon'), 'voice instruction carries the same session summary');
     assert.ok(request.system.includes(section.section.replace('# Earlier conversations\n', '')), 'both prompts render the identical summary text');
   } finally { f.close(); }
+});
+
+test('the model-only omission note is stripped from the owner-facing evidence copy, never the model copy (C1-R1)', () => {
+  // Every shape live-shape.ts appends: list ceilings (with and without a follow-up argument),
+  // character ceilings, and single-item ceilings. The model keeps them; the owner copy drops them.
+  const notes = [
+    '[omitted: 4 more messages; final, this tool has no paging argument]',
+    '[omitted: 12 characters; final, this read has no paging argument]',
+    '[omitted: 3 hits; call search_knowledge again with limit=9 for the rest]',
+    '[omitted: 40 characters to keep this result under 8000; ask a narrower question or for fewer items for the rest]',
+  ];
+  for (const note of notes) {
+    assert.equal(stripModelOnlyNotes(`- chan | alice | 2026-01-01T00:00:00Z | hello\n\n${note}`), '- chan | alice | 2026-01-01T00:00:00Z | hello');
+    assert.equal(stripModelOnlyNotes(`body text\n${note}`), 'body text');
+    assert.equal(stripModelOnlyNotes(`line one\n${note}\nline three`), 'line one\nline three');
+  }
+  assert.equal(stripModelOnlyNotes('nothing to strip here'), 'nothing to strip here');
+  assert.equal(stripModelOnlyNotes('keep [note: this is not an omission]'), 'keep [note: this is not an omission]');
 });

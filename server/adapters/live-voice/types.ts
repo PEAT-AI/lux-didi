@@ -4,8 +4,38 @@ import type WebSocket from 'ws';
 import type { ClientOptions } from 'ws';
 export type { Credentials, DataClass } from '../model/types.js';
 
+// The checked provider union: the one place a provider name is written. A new provider joins this array
+// with its adapter and factory case, never as a bare literal at a call site.
+export const liveVoiceProviders = ['gemini'] as const;
+export type LiveVoiceProvider = (typeof liveVoiceProviders)[number];
+export function isLiveVoiceProvider(value: unknown): value is LiveVoiceProvider {
+  return typeof value === 'string' && (liveVoiceProviders as readonly string[]).includes(value);
+}
+/** Audio modality an adapter can emit or accept on the wire. */
+export type LiveVoiceModality = 'audio' | 'text';
+/**
+ * What an adapter declares about itself through the port. The host reads these flags instead of inferring
+ * provider behaviour from a model id. There is deliberately no accent capability (the accent is a prompt
+ * input every provider receives) and no tool-execution capability: the host is the sole executor of tools.
+ */
+export interface LiveVoiceCapabilities {
+  readonly provider: LiveVoiceProvider;
+  readonly supportsResumption: boolean;
+  readonly supportsGoAway: boolean;
+  readonly supportsInterruption: boolean;
+  readonly supportsServerVadConfig: boolean;
+  readonly inputRates: readonly number[];
+  readonly outputRates: readonly number[];
+  readonly outputModalities: readonly LiveVoiceModality[];
+  /** Reasoning control the adapter requests: 'minimal' asks for the provider minimum, 'provider_default' sends none. */
+  readonly thinking: 'minimal' | 'provider_default';
+  /** Whether tool declarations carry a per-tool blocking hint. A scheduling hint only; the host always executes tools. */
+  readonly supportsToolScheduling: boolean;
+  /** Whether a ready frame carrying no model turn is harmless. */
+  readonly toleratesEmptyReadyLifecycle: boolean;
+}
 export interface LiveVoiceRoute {
-  enabled: boolean; provider: 'gemini'; modelId: string; dataClasses: readonly DataClass[];
+  enabled: boolean; provider: LiveVoiceProvider; modelId: string; dataClasses: readonly DataClass[];
 }
 export interface LiveVoiceLimits {
   maxIncomingBytes: number; maxOutgoingBytes: number; maxBufferedBytes: number; upstreamStallMs: number;
@@ -35,8 +65,6 @@ export interface LiveVoiceRequest {
   opening?: 'user_first' | 'model_first';
   tools?: FunctionDeclaration[];
   languageCode?: string;
-  /** The composed accent text carried only to the wire; never logged, never an event field. */
-  voiceAccent?: string;
   system: { text: string; dataClass: DataClass };
   history?: readonly { role: 'user' | 'model'; text: string; dataClass: DataClass }[];
   dataClasses: readonly DataClass[];
@@ -98,6 +126,8 @@ export interface LiveVoiceSession {
   close(): void;
 }
 export interface LiveVoicePort {
+  /** The adapter's declared capabilities; the host reads these, never a model name. */
+  readonly capabilities: LiveVoiceCapabilities;
   open(request: LiveVoiceRequest, control: LiveVoiceControl): LiveVoiceSession;
 }
 export class LiveVoiceError extends Error {

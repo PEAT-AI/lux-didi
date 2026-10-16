@@ -16,8 +16,7 @@ import { hostLogEvent } from '../host/log.js';
 import { validateAcceptedPrompt } from './config.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type { DataClass, LiveVoiceDiagnostics, LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort, LiveVoiceSession, LiveVoiceRequest } from '../adapters/live-voice/index.js';
-import { effectiveLanguageCode } from '../adapters/live-voice/gemini.js';
-import { headVoiceBlock, voiceAnchor, canonicalSpeechLanguage } from '../prompt/live-persona.js';
+import { headVoiceBlock, voiceAnchor, canonicalSpeechLanguage, effectiveLanguageCode } from '../prompt/live-persona.js';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
 import { liveProfileIdentity, validateLiveProfile } from './config.js';
 import { parseTerminal, persistedKinds, readFragmentPage, retainedBytes } from './journal.js';
@@ -35,12 +34,6 @@ const pickupInstruction = 'The user has just picked up. Deliver the pending job 
 const RESUMPTION_TOOL_CALL_LIMIT = 5;
 /** One intent sub-read deadline: a slow source never holds the whole turn past this. */
 const INTENT_SUB_DEADLINE_MS = 8_000;
-
-/**
- * The adapter diagnostics plus the AC2 serialized tool-anchor count. The frozen port shape does not
- * carry the extra field yet, so it is read structurally here; the adapter always sets it.
- */
-type AnchoredDiagnostics = Readonly<LiveVoiceDiagnostics> & { readonly toolAnchorChars?: number };
 
 interface ActiveSession {
   inputFinal?: boolean;
@@ -88,7 +81,7 @@ interface ActiveSession {
   journalEvents: number;
   journalBytes: number;
   adapterOutcome: LiveVoiceOutcome | undefined;
-  diagnosticSnapshots: Promise<AnchoredDiagnostics | undefined>[];
+  diagnosticSnapshots: Promise<Readonly<LiveVoiceDiagnostics> | undefined>[];
   ownerAudioCalls: number; ownerAudioBytes: number; ownerRebuildingDropCalls: number; ownerRebuildingDropBytes: number;
   terminalOutcome: LiveTerminalOutcome | null;
   diagnosticTerminalCode: string; diagnosticsEmitted: boolean;
@@ -633,7 +626,6 @@ export class LiveSessionOwner {
     const request: LiveVoiceRequest = { opening: 'model_first',
       system: { text: system, dataClass: dataClasses[dataClasses.length - 1]! }, history: history ?? [], dataClasses,
       ...(this.#profile.language !== undefined ? { languageCode: this.#profile.language } : {}),
-      ...(this.#profile.overlay?.accent !== undefined ? { voiceAccent: this.#profile.overlay.accent } : {}),
       ...(declarations.length ? { tools: declarations } : {}) };
     const deadlineMs = Date.now() + this.#profile.limits.sessionMs;
     const deadlineAt = this.#now() + this.#profile.limits.sessionMs;
@@ -715,7 +707,7 @@ export class LiveSessionOwner {
     const saved = this.#store.transaction(tx => tx.get('SELECT resumption_handle FROM live_sessions WHERE live_session_id=?', [handle.liveSessionId]));
     const savedHandle = saved?.['resumption_handle'];
     const hasHandle = typeof savedHandle === 'string' && savedHandle.length > 0;
-    const reuse = hasHandle && handle.toolCalls < RESUMPTION_TOOL_CALL_LIMIT;
+    const reuse = this.#voice.capabilities.supportsResumption && hasHandle && handle.toolCalls < RESUMPTION_TOOL_CALL_LIMIT;
     if (handle.attempts >= 2 || (!reuse && !hasHandle) || remaining <= 0 || idle <= 0 || window <= 0) {
       this.#settle(handle, { state: 'failed', code: 'resume_failed' }, false, 'ended', null);
       return false;
@@ -789,7 +781,7 @@ export class LiveSessionOwner {
     if (handle.diagnosticsEmitted) return;
     handle.diagnosticsEmitted = true;
     void Promise.all(handle.diagnosticSnapshots).then(values => {
-      const snapshots = values.filter((value): value is AnchoredDiagnostics => value !== undefined);
+      const snapshots = values.filter((value): value is Readonly<LiveVoiceDiagnostics> => value !== undefined);
       const sum = (field: keyof LiveVoiceDiagnostics) => snapshots.reduce((total, value) => total + value[field], 0);
       const accent = this.#profile.overlay?.accent;
       // The head block and the terminal anchor are serialised once, at composition, so their counts come
@@ -799,11 +791,9 @@ export class LiveSessionOwner {
       const bareLanguage = canonicalSpeechLanguage(this.#profile.language);
       const terminalAnchor = [bareLanguage, undefined].map(language => voiceAnchor(language, accent))
         .find(candidate => handle.request.system.text.endsWith(candidate)) ?? voiceAnchor(bareLanguage, accent);
-      const toolAnchorChars = snapshots.reduce((value, snapshot) => Math.max(value, snapshot.toolAnchorChars ?? 0), 0);
       console.error(JSON.stringify({ event: 'live_session_diagnostics', terminalCode: handle.diagnosticTerminalCode,
         headVoiceChars: headVoiceBlock(accent)?.length ?? 0,
         terminalVoiceChars: terminalAnchor.length,
-        toolAnchorChars,
         adapterGenerations: values.length, ownerAudioCalls: handle.ownerAudioCalls, ownerAudioBytes: handle.ownerAudioBytes,
         ownerRebuildingDropCalls: handle.ownerRebuildingDropCalls, ownerRebuildingDropBytes: handle.ownerRebuildingDropBytes,
         adapterAudioCalls: sum('audioCalls'), adapterAudioBytes: sum('audioBytes'),

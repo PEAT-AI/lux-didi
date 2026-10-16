@@ -169,6 +169,12 @@ export function canonicalSpeechLanguage(language: string | undefined): string | 
   return /^[A-Za-z]{2}$/.test(primary) ? primary.toLowerCase() : undefined;
 }
 
+/**
+ * The languageCode actually written to the setup frame: bare `ar` is pinned to `ar-XA`, else it passes
+ * through. Provider-neutral, so it lives in the prompt layer rather than an adapter.
+ */
+export const effectiveLanguageCode = (languageCode: string): string => languageCode === 'ar' ? 'ar-XA' : languageCode;
+
 function displayLanguage(code: string): string {
   try { return new Intl.DisplayNames(['en'], { type: 'language' }).of(code) ?? code; }
   catch { return code; }

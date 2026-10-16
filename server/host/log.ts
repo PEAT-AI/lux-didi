@@ -88,7 +88,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
       'localWriteEnqueuedCalls','localWriteEnqueuedPCMBytes','localWriteCallbackSuccessCalls','localWriteCallbackSuccessPCMBytes',
       'localWriteCallbackErrorCalls','localWriteCallbackErrorPCMBytes','localWriteCallbackPendingCalls','localWriteCallbackPendingPCMBytes',
       'inputTranscriptionEvents','inputTranscriptionCharacters','generationCompleteEvents','turnCompleteEvents','outputAudioFrames','outputAudioPCMBytes',
-      'outputAudioAfterInitialTurnFrames','outputAudioAfterInitialTurnPCMBytes','headVoiceChars','terminalVoiceChars','toolAnchorChars'];
+      'outputAudioAfterInitialTurnFrames','outputAudioAfterInitialTurnPCMBytes','headVoiceChars','terminalVoiceChars'];
     const keys = ['event','terminalCode',...numeric].sort();
     if (Object.keys(value).sort().join(',') !== keys.join(',') || typeof value.terminalCode !== 'string'
       || !/^[a-z][a-z0-9_]{0,63}$/.test(value.terminalCode)

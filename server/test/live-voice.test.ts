@@ -151,7 +151,6 @@ test('wire setup/history snapshots, readiness, PCM and three independent output 
     generationCompleteEvents: 2, turnCompleteEvents: 3,
     outputAudioFrames: 2, outputAudioPCMBytes: pcm.byteLength * 2,
     outputAudioAfterInitialTurnFrames: 1, outputAudioAfterInitialTurnPCMBytes: pcm.byteLength,
-    toolAnchorChars: 0,
   });
 });
 
@@ -735,8 +734,9 @@ test('a non-LiveVoiceError decode failure is classified, skipped, and the next f
   assert.equal(captured.events.some(event => event.type === 'outcome'), false);
 });
 
-// Ruling L1-R2: after a tool result, the 3.8 model must still hear the voice requirement last.
-test('3.8 Live appends the tool voice anchor as the last key of each function response', async t => {
+// Ruling L1-R2 is superseded: the per-tool anchor is gone. 3.8 Live still takes the provider-default
+// thinking level, and its read-tool response carries the tool data with no accent key.
+test('3.8 Live takes the provider-default thinking level and sends tool data with no accent key', async t => {
   const f = await providerFixture(t);
   const modelId = 'models/gemini-3.8-live-test';
   const tools = [{ name: 'search_knowledge', description: 'Search', parameters: { type: 'OBJECT' } }];
@@ -753,8 +753,8 @@ test('3.8 Live appends the tool voice anchor as the last key of each function re
   session.sendToolResponse({ responses: [{ id: 'c1', name: 'search_knowledge', response: { markdown: 'one' } }] });
   await f.frame(2);
   const response = (f.frames[1] as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } }).toolResponse.functionResponses[0]!.response;
-  assert.deepEqual(Object.keys(response), ['markdown', '_voice_anchor'], 'the anchor follows the tool data');
-  assert.equal(response['_voice_anchor'], 'Answer aloud in your own words, briefly, in the voice and accent defined for Naya; do not read raw text, ids or URLs.');
+  assert.deepEqual(Object.keys(response), ['markdown'], 'the response carries the tool data only, no accent key');
+  assert.equal(response['_voice_anchor'], undefined, 'no per-tool accent key is present');
 });
 
 test('other models keep the exact tool response object with no voice anchor', async t => {
@@ -814,7 +814,7 @@ test('P1: the memory save response is scheduled SILENT', async t => {
   assert.equal(frame.scheduling, 'SILENT', 'the memory save reply is scheduled SILENT');
 });
 
-test('P1: a read tool response carries no scheduling and keeps only the voice anchor', async t => {
+test('P1: a read tool response carries no scheduling and only the tool data', async t => {
   const f = await providerFixture(t);
   const modelId = 'models/gemini-3.8-live-test';
   const tools = [{ name: 'search_knowledge', description: 'Search', parameters: { type: 'OBJECT' } }];
@@ -831,16 +831,15 @@ test('P1: a read tool response carries no scheduling and keeps only the voice an
   await f.frame(2);
   const frame = (f.frames[1] as { toolResponse: { functionResponses: { scheduling?: string; response: Record<string, unknown> }[] } }).toolResponse.functionResponses[0]!;
   assert.equal(frame.scheduling, undefined, 'a read response is not scheduled SILENT');
-  assert.deepEqual(Object.keys(frame.response), ['markdown', '_voice_anchor']);
+  assert.deepEqual(Object.keys(frame.response), ['markdown'], 'the response carries the tool data only, no accent key');
 });
 
-test('P3: a carried voice accent restates the tool anchor and _voice_anchor is the last serialised key', async t => {
+test('P3: a tool response serialises only the tool data and a memory save is still scheduled SILENT', async t => {
   const f = await providerFixture(t);
   const modelId = 'models/gemini-3.8-live-test';
-  const accent = 'SYNTHETIC-ACCENT-DESCRIPTION';
   const tools = [{ name: 'remember_note', description: 'Remember', parameters: { type: 'OBJECT' } }];
   const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory, modelId,
-    route: { enabled: true, provider: 'gemini', modelId, dataClasses: ['ordinary'] } })).open({ ...request(), tools, voiceAccent: accent }, control());
+    route: { enabled: true, provider: 'gemini', modelId, dataClasses: ['ordinary'] } })).open({ ...request(), tools }, control());
   t.after(() => session.close());
   const events = session.events[Symbol.asyncIterator]();
   await f.frame(1); f.send({ setupComplete: {} }); await session.ready;
@@ -852,44 +851,20 @@ test('P3: a carried voice accent restates the tool anchor and _voice_anchor is t
   await f.frame(2);
   const serialised = JSON.stringify(f.frames[1]);
   const entry = JSON.parse(serialised).toolResponse.functionResponses[0] as { scheduling?: string; response: Record<string, unknown> };
-  assert.deepEqual(Object.keys(entry), ['id', 'name', 'scheduling', 'response'], 'scheduling moves before response so the anchor serialises last');
-  assert.equal(entry.response._voice_anchor, `Answer aloud in your own words, briefly, in this voice and accent: ${accent}. Do not read raw text, ids or URLs.`);
-  assert.equal(Object.keys(entry.response).at(-1), '_voice_anchor', '_voice_anchor is the last key of the response');
-  assert.equal(Object.keys(entry).at(-1), 'response', 'the anchor-bearing response is the last key of the serialised entry');
-  assert.ok(serialised.endsWith('Do not read raw text, ids or URLs."}}]}}'), 'the serialised frame closes on the accent restatement');
+  assert.deepEqual(Object.keys(entry), ['id', 'name', 'scheduling', 'response'], 'scheduling sits before the response object');
+  assert.deepEqual(Object.keys(entry.response), ['remembered'], 'the response carries the tool data only, no accent key');
+  assert.equal(serialised.includes('_voice_anchor'), false, 'no per-tool accent key is serialised');
+  assert.equal(serialised.includes('Do not read raw text'), false, 'no accent text is serialised in a function response');
 });
 
-test('AC2: the tool anchor diagnostic counts the _voice_anchor actually serialized in a function response', async t => {
+test('AC2: the adapter no longer reports a tool-anchor count, and a function response carries no accent key', async t => {
   const f = await providerFixture(t);
   const modelId = 'models/gemini-3.8-live-test';
-  const accent = 'SYNTHETIC-ACCENT-DESCRIPTION';
   const tools = [{ name: 'search_knowledge', description: 'Search', parameters: { type: 'OBJECT' } }];
   const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory, modelId,
-    route: { enabled: true, provider: 'gemini', modelId, dataClasses: ['ordinary'] } })).open({ ...request(), tools, voiceAccent: accent }, control());
+    route: { enabled: true, provider: 'gemini', modelId, dataClasses: ['ordinary'] } })).open({ ...request(), tools }, control());
   t.after(() => session.close());
   const events = session.events[Symbol.asyncIterator]();
-  const anchorChars = (): number => (session.diagnostics?.() as { toolAnchorChars?: number } | undefined)?.toolAnchorChars ?? 0;
-  await f.frame(1); f.send({ setupComplete: {} }); await session.ready;
-  assert.equal((await events.next()).value?.type, 'ready');
-  assert.equal(anchorChars(), 0, 'no function response has been serialized yet');
-  f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x' } }] } });
-  assert.equal((await events.next()).value?.type, 'modelTurnStarted');
-  assert.equal((await events.next()).value?.type, 'toolCall');
-  session.sendToolResponse({ responses: [{ id: 'c1', name: 'search_knowledge', response: { markdown: 'one' } }] });
-  await f.frame(2);
-  assert.equal(anchorChars(), `Answer aloud in your own words, briefly, in this voice and accent: ${accent}. Do not read raw text, ids or URLs.`.length, 'the count is the serialized _voice_anchor, not the bare accent');
-});
-
-test('AC2: a model that serializes no anchor reports no tool anchor count', async t => {
-  const f = await providerFixture(t);
-  const modelId = 'models/gemini-3.1-flash-live-preview';
-  const accent = 'SYNTHETIC-ACCENT-DESCRIPTION';
-  const tools = [{ name: 'search_knowledge', description: 'Search', parameters: { type: 'OBJECT' } }];
-  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory, modelId,
-    route: { enabled: true, provider: 'gemini', modelId, dataClasses: ['ordinary'] } })).open({ ...request(), tools, voiceAccent: accent }, control());
-  t.after(() => session.close());
-  const events = session.events[Symbol.asyncIterator]();
-  const anchorChars = (): number => (session.diagnostics?.() as { toolAnchorChars?: number } | undefined)?.toolAnchorChars ?? 0;
   await f.frame(1); f.send({ setupComplete: {} }); await session.ready;
   assert.equal((await events.next()).value?.type, 'ready');
   f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x' } }] } });
@@ -897,18 +872,38 @@ test('AC2: a model that serializes no anchor reports no tool anchor count', asyn
   assert.equal((await events.next()).value?.type, 'toolCall');
   session.sendToolResponse({ responses: [{ id: 'c1', name: 'search_knowledge', response: { markdown: 'one' } }] });
   await f.frame(2);
-  assert.equal(anchorChars(), 0, 'the model gate serializes no anchor, so the count stays zero');
+  assert.equal('toolAnchorChars' in (session.diagnostics?.() ?? {}), false, 'the tool-anchor diagnostic is gone');
+  const frame = (f.frames[1] as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } }).toolResponse.functionResponses[0]!;
+  assert.equal('_voice_anchor' in frame.response, false, 'the response carries no per-tool accent key');
 });
 
-test('P2: a carried voice accent restates the model-first opening nudge', async t => {
+test('the adapter declares its capabilities per model, never a name lookup at the wire', async t => {
   const f = await providerFixture(t);
-  const accent = 'SYNTHETIC-ACCENT-DESCRIPTION';
+  const modern = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory, modelId: 'models/gemini-3.8-live-test',
+    route: { enabled: true, provider: 'gemini', modelId: 'models/gemini-3.8-live-test', dataClasses: ['ordinary'] } }));
+  const older = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory, modelId: 'models/gemini-3.1-flash-live-preview',
+    route: { enabled: true, provider: 'gemini', modelId: 'models/gemini-3.1-flash-live-preview', dataClasses: ['ordinary'] } }));
+  assert.equal(modern.capabilities.provider, 'gemini');
+  assert.equal(modern.capabilities.thinking, 'provider_default');
+  assert.equal(older.capabilities.thinking, 'minimal');
+  assert.equal(modern.capabilities.supportsToolScheduling, true);
+  assert.equal(older.capabilities.supportsToolScheduling, false);
+  assert.deepEqual(modern.capabilities.inputRates, [16000]);
+  assert.deepEqual(modern.capabilities.outputRates, [24000]);
+  assert.deepEqual(modern.capabilities.outputModalities, ['audio']);
+  assert.ok(modern.capabilities.supportsResumption && modern.capabilities.supportsGoAway
+    && modern.capabilities.supportsInterruption && modern.capabilities.supportsServerVadConfig);
+});
+
+test('P2: the model-first opening nudge carries no accent text', async t => {
+  const f = await providerFixture(t);
   const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory })).open({
-    ...request(), opening: 'model_first', history: [], voiceAccent: accent,
+    ...request(), opening: 'model_first', history: [],
   }, control());
   t.after(() => session.close());
   const events = session.events[Symbol.asyncIterator]();
   await f.frame(1); f.send({ setupComplete: {} }); await Promise.all([session.ready, f.frame(2)]);
-  assert.deepEqual(f.frames[1], { realtimeInput: { text: `Greet the person briefly to begin the conversation, speaking in this voice and accent: ${accent}` } });
+  assert.deepEqual(f.frames[1], { realtimeInput: { text: 'Greet the person briefly to begin the conversation.' } });
+  assert.equal(JSON.stringify(f.frames[1]).includes('voice and accent'), false, 'the opening trigger carries no accent text');
   void events;
 });

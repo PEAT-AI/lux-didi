@@ -57,11 +57,13 @@ causes, logs, CLI output, argv or serialized returned objects.
 `live.json`, at most 16 KiB, is a separate closed file in the same `configDir`
 (`<dataDir>/provider-config`). It carries the same five-field `preferences`
 block, and its `preferences.language` is the same explicit BCP47 locale. For
-Live it is additionally reduced to the bare ISO 639-1 primary subtag for
-`generationConfig.speechConfig.languageCode` (for example `de-DE` becomes `de`;
-the adapter pins `ar` to `ar-XA` and omits the field for a tag with no two-letter
-language). The literal key reference is still `gemini-primary`; the key file is
-separate and untouched.
+Live a valid language-region tag is kept end to end for
+`generationConfig.speechConfig.languageCode` (for example `de-DE` stays `de-DE`;
+the adapter pins bare `ar` to `ar-XA`). A tag that is not a two-letter language
+with an optional two-letter region (for example a script subtag) reduces to its
+bare primary subtag, and a tag with no two-letter primary is omitted. The voice
+anchor still reduces to the bare primary language name. The literal key reference
+is still `gemini-primary`; the key file is separate and untouched.
 
 ```json
 {"schemaVersion":1,"enabled":true,"provider":"gemini","modelId":"models/gemini-3.1-flash-live-preview","voice":"Aoede","keyReference":"gemini-primary","dataClasses":["ordinary"],"preferences":{"dataClass":"ordinary","language":"en","register":"plain","humor":"dry","verbosity":"brief"}}

@@ -386,7 +386,7 @@ test('owner-created synthetic catalog preserves explicit bounded source classes 
 });
 
 
-async function deadlineRuntime(t: TestContext, entries: { id: string; connector: string; url: string }[]) {
+async function deadlineRuntime(t: TestContext, entries: { id: string; connector: string; url: string }[], callDeadlineMs?: number) {
   const host = await import(hostModule);
   const dir = mkdtempSync(join(tmpdir(), 'didi-call-deadline-')); chmodSync(dir, 0o700);
   const store = new Store(join(dir, 'data'), toolsMigrations);
@@ -397,7 +397,7 @@ async function deadlineRuntime(t: TestContext, entries: { id: string; connector:
     enabled: true, allowEgress: true, unknownClass: 'ordinary',
   })) });
   t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
-  const runtime = await host.composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null });
+  const runtime = await host.composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null, ...(callDeadlineMs === undefined ? {} : { callDeadlineMs }) });
   t.after(() => runtime.close());
   function call(id: string, toolName: string, signal?: AbortSignal) {
     const grant = runtime.registry.currentGrant(id); assert.ok(grant);
@@ -407,7 +407,7 @@ async function deadlineRuntime(t: TestContext, entries: { id: string; connector:
   return { runtime, call };
 }
 
-test('host Google call budget admits a real slow read while other connectors retain five seconds', async t => {
+test('host Google call budget admits a real slow read while every configured connector shares the endpoint deadline', async t => {
   const google = await localSource(t); google.catalogNames(['gmail_list', 'gmail_get_profile']); google.callDelay(5500);
   const ordinary = await localSource(t); ordinary.callDelay(5500);
   const { runtime, call } = await deadlineRuntime(t, [
@@ -425,9 +425,16 @@ test('host Google call budget admits a real slow read while other connectors ret
     const entity = JSON.parse(Buffer.from(slice.bytes).toString());
     assert.equal(JSON.parse(entity.result.content[0].text).data.messages.length, 1);
   }
-  assert.equal(unchanged.state, 'unknown');
-  if (unchanged.state === 'unknown') assert.equal(unchanged.reason, 'timeout-or-cancelled');
-  assert.equal(ordinary.executed, 1);
+  // The deliberate budget is endpoint-scoped and shared: the same 5.5 s read also completes on a non-Google
+  // connector, so no configured connector keeps the old five-second default.
+  assert.equal(unchanged.state, 'completed'); assert.equal(ordinary.executed, 1);
+  // The deadline is still a real bound: a call past it fails with the timeout code instead of completing.
+  const slow = await localSource(t); slow.catalogNames(['gmail_list', 'gmail_get_profile']);
+  const late = await deadlineRuntime(t, [{ id: 'google', connector: 'google', url: slow.url }], 500);
+  slow.callDelay(2000);
+  const overdue = await late.call('google', 'gmail_list');
+  assert.equal(overdue.state, 'unknown'); if (overdue.state === 'unknown') assert.equal(overdue.reason, 'timeout');
+  assert.equal(slow.executed, 1);
 });
 
 test('host Google discovery preserves the five-second startup bound', async t => {
@@ -440,18 +447,21 @@ test('host Google discovery preserves the five-second startup bound', async t =>
   assert.equal(report?.error, 'timeout-or-cancelled'); assert.equal(google.executed, 0);
 });
 
-test('host Google earlier cancellation retires its call and preserves frozen authority', async t => {
+test('host Google earlier cancellation fails one call and preserves frozen authority', async t => {
   const google = await localSource(t); google.catalogNames(['gmail_list', 'gmail_get_profile']); google.callDelay(5500);
   const { runtime, call } = await deadlineRuntime(t, [{ id: 'google', connector: 'google', url: google.url }]);
+  const authority = runtime.registry.currentGrant('google'); assert.ok(authority);
   const controller = new AbortController();
   const pending = call('google', 'gmail_list', controller.signal);
-  const suspended = runtime.port.whenSuspended('google');
   const deadline = performance.now() + 1000;
   while (google.executed === 0) { assert.ok(performance.now() < deadline); await new Promise<void>(resolve => setImmediate(resolve)); }
   const began = performance.now(); controller.abort();
-  const result = await pending; await suspended;
+  const result = await pending;
   assert.ok(performance.now() - began < 1000);
   assert.equal(result.state, 'unknown');
-  assert.equal(runtime.registry.currentGrant('google'), undefined);
+  if (result.state === 'unknown') assert.equal(result.reason, 'cancelled');
+  // A cancellation is a soft failure: it fails this one call and never replays it, but the connector stays
+  // usable, so the connector is not suspended and the frozen authority is left intact (issue #211, W4-R4).
   assert.equal(google.executed, 1);
+  assert.deepEqual(runtime.registry.currentGrant('google'), authority);
 });

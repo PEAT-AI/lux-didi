@@ -123,3 +123,9 @@ test('a transcript answer renders a bare url as a named chip', () => {
 test('the default renderer still leaves a bare url as plain text', () => {
   assert.equal(renderMarkdown('see https://example.org/a').includes('<a'), false);
 });
+
+test('answer text is rendered as text: an entity is escaped, never decoded into html (M1)', () => {
+  const html = renderMarkdown("Tom&#39;s <b>bold</b>");
+  assert.equal(html.includes('<b>'), false, 'raw html from the answer is never injected');
+  assert.match(html, /Tom&amp;#39;s &lt;b&gt;bold&lt;\/b&gt;/);
+});

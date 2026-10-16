@@ -140,3 +140,19 @@ export async function stream(path: string, signal: AbortSignal, onFrame: (value:
 export function deleteMemoryEntry(id: string, signal?: AbortSignal): Promise<EntryDeletionResponse> {
   return request<EntryDeletionResponse>(`/entries/${encodeURIComponent(id)}`, { method: 'DELETE', body: {}, ...(signal ? { signal } : {}) });
 }
+
+/** One distilled conversation summary as the memory list shows it (session memory v1). */
+export interface MemorySummaryItem {
+  id: string; liveSessionId: string; status: 'complete' | 'skipped' | 'failed';
+  summary: string | null; endedAt: string | null; model: string | null; inputChars: number | null;
+  inputTruncated: boolean; injectedSummaryIds: string[]; createdAt: string;
+}
+export interface MemorySummaryDeleteResponse { deletedIds: string[]; notFound: boolean }
+
+export function listMemorySummaries(signal?: AbortSignal): Promise<{ items: MemorySummaryItem[] }> {
+  return request<{ items: MemorySummaryItem[] }>('/memory-summaries', { ...(signal ? { signal } : {}) });
+}
+
+export function deleteMemorySummary(id: string, signal?: AbortSignal): Promise<MemorySummaryDeleteResponse> {
+  return request<MemorySummaryDeleteResponse>(`/memory-summaries/${encodeURIComponent(id)}`, { method: 'DELETE', body: {}, ...(signal ? { signal } : {}) });
+}

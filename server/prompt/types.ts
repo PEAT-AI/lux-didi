@@ -28,6 +28,8 @@ export interface CompileInput {
   preferences: ValidatedPreferences; capabilities: CapabilitySnapshot;
   evidence: readonly Evidence[]; history: readonly HistoryItem[];
   budgets: { trustedChars: number; contextChars: number; historyChars: number };
+  /** Session memory v1: the rendered earlier-conversations section, shared with voice. */
+  earlierConversations?: string;
 }
 /** Input for the turn-less voice-instruction compiler. Same canonical assembly, no conversation turns. */
 export interface VoiceInstructionInput {

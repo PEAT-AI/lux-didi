@@ -27,6 +27,13 @@ function text(value: unknown, code: ConstructorParameters<typeof LiveConfigError
   if (typeof value !== 'string' || !value.length || value.length > 4096) fail(code);
   return value;
 }
+// A BCP-47 language with an optional two-letter region. Case-normalised to lower language,
+// upper region ("EN-in" -> "en-IN"); anything else is refused, never defaulted.
+function languageTag(value: unknown): string | undefined {
+  if (typeof value !== 'string' || !/^[A-Za-z]{2}(?:-[A-Za-z]{2})?$/.test(value)) return undefined;
+  const [primary = '', region] = value.split('-');
+  return region === undefined ? primary.toLowerCase() : `${primary.toLowerCase()}-${region.toUpperCase()}`;
+}
 function limit(value: unknown, name: keyof LiveLimits): number {
   if (value === undefined) return defaultLiveLimits[name];
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1 || value > limitBounds[name]) fail('invalid_limit');
@@ -95,7 +102,8 @@ export function validateLiveProfile(input: unknown): LiveProfile {
   const voice = text(input['voice'], 'invalid_voice');
   const keyReference = text(input['keyReference'], 'invalid_key_reference');
   const language = input['language'];
-  if (language !== undefined && (typeof language !== 'string' || !/^[a-z]{2}$/.test(language))) fail('invalid_language');
+  const normalizedLanguage = language === undefined ? undefined : languageTag(language);
+  if (language !== undefined && normalizedLanguage === undefined) fail('invalid_language');
   const route = input['route'];
   if (!object(route) || route['enabled'] !== true || route['provider'] !== 'gemini' || route['modelId'] !== liveModelId) fail('invalid_route');
   const dataClasses = Object.freeze(classList(route['dataClasses']));
@@ -108,7 +116,7 @@ export function validateLiveProfile(input: unknown): LiveProfile {
     ...(input['overlay'] !== undefined ? { overlay: validatePersonaOverlay(input['overlay']) } : {}),
     ...(input['acceptedPrompt'] !== undefined ? { acceptedPrompt: validateAcceptedPrompt(input['acceptedPrompt']) } : {}),
     provider: 'gemini', liveModelId, voice, keyReference,
-    ...(language !== undefined ? { language } : {}),
+    ...(normalizedLanguage !== undefined ? { language: normalizedLanguage } : {}),
     route: Object.freeze({ enabled: true, provider: 'gemini', modelId: liveModelId, dataClasses }),
     prompt: Object.freeze({ text: promptText, dataClass }), limits: limits(input['limits']),
   });

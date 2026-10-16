@@ -61,6 +61,16 @@ test('maps each connector state to its sentence and one-line next step', () => {
   for (const label of ['Connected', 'Configured', 'Credential missing', 'Failed']) assert.match(html, new RegExp(label));
 });
 
+test('a connector row carries the owner identity sentence when the host proved one', () => {
+  const OWNER = 'owner@example.test';
+  assert.equal(connectorState({ id: 'gmail', state: 'connected', identity: { proven: true, match: true, value: OWNER } })?.identity, `Connected as ${OWNER} \u2713`);
+  assert.equal(connectorState({ id: 'mattermost', state: 'connected', identity: { proven: true, match: false, value: 'other@example.test' } })?.identity, 'Signed in as a different account');
+  assert.equal(connectorState({ id: 'calendar', state: 'connected', identity: { proven: false, match: null, value: null } })?.identity, 'Account not verified');
+  assert.equal(connectorState({ id: 'knowledge', state: 'connected' })?.identity, undefined);
+  const html = settingsMarkup({ status, connections: [{ id: 'gmail', state: 'connected', tools: 3, lastHandshakeAt: null, reasonCode: null, identity: { proven: true, match: true, value: OWNER } }] });
+  assert.match(html, new RegExp(`Connected as ${OWNER}`));
+});
+
 test('renders limits in whole minutes and rejects unsafe values', () => {
   assert.equal(limitMinutes(900000), '15 min');
   assert.equal(limitMinutes(60000), '1 min');

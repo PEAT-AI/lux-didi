@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { connectionsMarkup } from '../src/connector-status.ts';
+import { connectionsMarkup, connectionIdentity } from '../src/connector-status.ts';
+
+// Synthetic identities only; no real owner address or token appears here.
+const OWNER = 'owner@example.test';
 
 test('connections renders all states using only allowlisted fields and fixed reason text', () => {
   const html = connectionsMarkup(['missing', 'configured', 'connected', 'error'].map((state, i) => ({
@@ -18,4 +21,28 @@ test('unknown reason and invalid scalar payloads never render free text', () => 
   const html = connectionsMarkup([{ id: 'safe', state: 'error', tools: 'TOKEN', lastHandshakeAt: 'SECRET', reasonCode: 'RAW SECRET' }]);
   assert.doesNotMatch(html, /TOKEN|SECRET/);
   assert.match(html, /unknown/i);
+});
+
+test('connectionIdentity names the owner account, the mismatch and the unverified states', () => {
+  assert.equal(connectionIdentity({ proven: true, match: true, value: OWNER }), `Connected as ${OWNER} \u2713`);
+  assert.equal(connectionIdentity({ proven: true, match: null, value: OWNER }), `Connected as ${OWNER}`);
+  assert.equal(connectionIdentity({ proven: true, match: false, value: 'other@example.test' }), 'Signed in as a different account');
+  assert.equal(connectionIdentity({ proven: false, match: null, value: null }), 'Account not verified');
+  assert.equal(connectionIdentity(undefined), undefined);
+  assert.equal(connectionIdentity({ proven: 'yes', match: true, value: OWNER }), undefined);
+  assert.equal(connectionIdentity({ proven: true, match: 'no', value: OWNER }), undefined);
+  assert.equal(connectionIdentity({ proven: true, match: true, value: 'PRIVATE TOKEN' }), undefined);
+  assert.equal(connectionIdentity({ proven: true, match: true, value: 42 }), undefined);
+});
+
+test('connections renders the identity line per source and never leaks a raw payload', () => {
+  const html = connectionsMarkup([
+    { id: 'gmail', state: 'connected', tools: 3, lastHandshakeAt: '2026-10-12T14:52:00Z', identity: { proven: true, match: true, value: OWNER } },
+    { id: 'mattermost', state: 'connected', tools: 5, lastHandshakeAt: '2026-10-12T14:52:00Z', identity: { proven: true, match: false, value: 'other@example.test' } },
+    { id: 'calendar', state: 'connected', tools: 2, lastHandshakeAt: '2026-10-12T14:52:00Z', identity: { proven: false, match: null, value: 'SECRET TOKEN' } },
+  ]);
+  assert.match(html, new RegExp(`Connected as ${OWNER}`));
+  assert.match(html, /Signed in as a different account/);
+  assert.match(html, /Account not verified/);
+  assert.doesNotMatch(html, /SECRET TOKEN|other@example.test/);
 });

@@ -4,7 +4,8 @@ import { deleteMemoryEntry } from './api';
 import { ConnectedView } from './connected';
 import { Orb, type VoiceState } from './orb';
 import { ApiError, request, pair, demoMode, onAuthorityChanged, authorityVersion, assertAuthority, restoreSession, logout, fetchLive } from './api';
-import { liveMarkup, liveLabel, liveVoiceState, liveDelay, pollLiveView, liveActivity, activityMarkup, liveTranscript, LiveMachine, LIVE_CONSENT, pillVisible, liveErrorText, startAvailable, stopAvailable, type LivePollState } from './live-view';
+import { liveMarkup, liveSegments, liveLabel, liveVoiceState, liveDelay, pollLiveView, liveActivity, activityMarkup, liveTranscript, LiveMachine, LIVE_CONSENT, pillVisible, liveErrorText, startAvailable, stopAvailable, type LivePollState } from './live-view';
+import { attachPin } from './autoscroll.ts';
 import { defaultLayout, isNarrow, toggleRail, toggleLane, selectSegment, openSheet, closeSheet, withViewport, collapseControl, focusTargetAfterCollapse, type LaneId, type RouteId } from './layout';
 import { installNativeBridge, type Bridge, type NativeLiveState } from './native-bridge';
 import { connectionsMarkup } from './connector-status';
@@ -25,7 +26,7 @@ const tabs: Tab[] = ['Conversation', 'Today', 'Memory', 'Settings'];
 let tab: Tab = 'Conversation';
 let theme: Theme = 'dark';
 let orb: Orb | undefined;
-let orbHeader: Orb | undefined;
+let transcriptPin: { repin(): void; stop(): void } | undefined;
 let appliedOrbState: VoiceState | undefined;
 let status: Status | undefined;
 const connectedView = new ConnectedView(() => orb?.setState(orbState()));
@@ -41,7 +42,6 @@ let controller: AbortController | undefined;
 let pollTimer: ReturnType<typeof setTimeout> | undefined, backoff = 30000;
 let live: LiveCurrent | undefined;
 let livePoll: LivePollState = {};
-let paintedLivePoll: LivePollState | undefined;
 let liveDetailsOpen = false;
 let historyOpen = false;
 let connections: unknown = [];
@@ -107,20 +107,34 @@ function lookupLineMarkup(current: LiveCurrent | undefined): string {
     .join(', ');
   return `Looking in ${sources}`;
 }
-function orbCaptionMarkup() {
-  const honesty=!live||live.state==='idle'||live.muted===true;
-  return `<p class="orb-label" role="status" aria-live="polite">${e(orbLabel())}</p>${activityLineMarkup()}${lookupLineMarkup(live)}${honesty?'<p class="voice-honesty"><strong>Not listening</strong><span>Voice stays on your Mac. Use its native record control.</span></p>':''}`;
+// The voice lane is the orb stage above the transcript (V3 items 1-3): the stage holds the top
+// third and never scrolls, the transcript owns the rest of the lane and scrolls on its own.
+function orbStateLineMarkup(): string {
+  const lookup = lookupLineMarkup(live);
+  if (lookup) return lookup;
+  // The projection names what Naya is doing (Listening, Speaking, Thinking); with no live projection
+  // the native state keeps the honest one line (Live is off, Starting, Muted, Needs your attention).
+  const projection = live && live.state !== 'idle' ? liveLabel(live) : undefined;
+  return e(projection ?? liveStateCopy(liveMachine.view.state));
 }
-function orbMarkup() {
+function orbControlsMarkup(): string {
+  const view = liveMachine.view;
+  // The control reflects the state: a live projection (listening, speaking, thinking) is a live
+  // session, so it offers Stop and Mute; Start belongs to Live is off alone (V3-R4 item 4).
+  const projectionLive = !!live && ['listening', 'speaking', 'thinking'].includes(live.state);
+  const active = view.state === 'live' || view.state === 'muted' || view.state === 'starting' || projectionLive;
+  const error = liveErrorText(view.error, view.reason);
+  return `${active ? `<button id="voice-stop" class="stop-pill">Stop</button><button id="voice-mute" class="quiet">${view.state === 'muted' ? 'Unmute' : 'Mute'}</button>` : `<button id="voice-start" class="start-pill" ${startAvailable(view) ? '' : 'aria-disabled="true"'}>Start</button>`}${error ? `<p class="voice-error" role="alert">${e(error)}</p>` : ''}`;
+}
+function orbCaptionMarkup(): string {
+  return `<p class="voice-state" id="voice-state" role="status" aria-live="polite">${orbStateLineMarkup()}</p>${activityLineMarkup()}`;
+}
+function orbStageMarkup(): string {
   const glow = ['CONNECTED','LISTENING','SPEAKING','PROCESSING'].includes(orbState());
-  return `<section class="orb-stage" data-state="${orbState()}" aria-label="Naya voice and activity"><div class="presence-glow${glow ? ' visible' : ''}" aria-hidden="true"></div><canvas id="didi-orb" width="440" height="440" aria-hidden="true"></canvas><div class="orb-caption">${orbCaptionMarkup()}</div></section>`;
+  return `<section class="orb-stage" id="orb-stage" data-state="${orbState()}" aria-label="Naya voice and activity"><div class="orb-holder"><div class="presence-glow${glow ? ' visible' : ''}" aria-hidden="true"></div><canvas id="didi-orb" width="440" height="440" aria-hidden="true"></canvas></div><div class="orb-caption">${orbCaptionMarkup()}</div><div class="orb-actions" id="orb-actions">${orbControlsMarkup()}</div></section>`;
 }
-function liveTurns(): number { return live && Array.isArray(live.entries) ? liveTranscript(live).length : 0; }
-function voiceEmptyMarkup() {
-  return `<div class="voice-empty"><div class="voice-orb-large"><canvas id="didi-orb-large" width="440" height="440" aria-hidden="true"></canvas></div><p class="voice-empty-line">Press Start or \u2318\u21e7Space to talk</p></div>`;
-}
-function voiceBodyMarkup() {
-  return liveTurns() ? liveMarkup(live, livePoll) : voiceEmptyMarkup();
+function voiceBodyMarkup(): string {
+  return `${orbStageMarkup()}<section class="transcript" id="transcript" aria-label="Naya live conversation">${liveMarkup(live, livePoll)}<button type="button" class="jump-pill" id="transcript-jump" hidden>Jump to latest</button></section>`;
 }
 function chatLane() {
   return `<div id="connected-panel"></div>`;
@@ -203,14 +217,9 @@ function consentPopoverMarkup() {
   if (!view.consentOpen) return '';
   return `<div class="consent-scrim"></div><section class="consent-popover" role="dialog" aria-modal="true" aria-label="${e(LIVE_CONSENT.title)}"><h2>${e(LIVE_CONSENT.title)}</h2><p>${e(LIVE_CONSENT.body)}</p><div class="consent-actions"><button id="consent-dismiss" class="quiet">${e(LIVE_CONSENT.dismiss)}</button><button id="consent-allow" class="primary">${e(LIVE_CONSENT.allow)}</button></div></section>`;
 }
-// The compact voice header is the only header, and every live surface reads the LiveMachine (one source of truth).
+// The stage controls: the new-session "+" and, from the lane shell, the lane toggle (V3 item 1).
 function voiceHeadMarkup() {
-  const view = liveMachine.view;
-  const error = liveErrorText(view.error, view.reason);
-  const last = view.lastSessionEndedAt ? `Last session ${e(datetime(view.lastSessionEndedAt))}` : 'No session yet';
-  const active = view.state === 'live' || view.state === 'muted' || view.state === 'starting';
-  const orb = '<div class="voice-orb"><canvas id="didi-orb" width="120" height="120" aria-hidden="true"></canvas></div>';
-  return `${orb}<div class="voice-status"><p class="voice-state" role="status" aria-live="polite">${e(liveStateCopy(view.state))}</p><p class="voice-time" id="voice-subtitle" data-normal="${e(last)}">${last}</p></div><div class="voice-actions">${active ? `<button id="voice-stop" class="stop-pill">Stop</button><button id="voice-mute" class="quiet">${view.state === 'muted' ? 'Unmute' : 'Mute'}</button>` : `<button id="voice-start" class="start-pill" ${startAvailable(view) ? '' : 'aria-disabled="true"'}>Start</button>`}<button id="new-conversation" class="icon-button" aria-label="New conversation" title="New conversation"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button></div>${error ? `<p class="voice-error" role="alert">${e(error)}</p>` : ''}`;
+  return '<button id="new-conversation" class="icon-button" aria-label="New conversation" title="New conversation"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>';
 }
 function chatHeadMarkup() {
   return `<p class="lane-title">Chat</p>`;
@@ -240,19 +249,17 @@ function render() {
   // Keep cursor and unsent text stable across connection checks and action completion.
   const focus = document.activeElement as HTMLInputElement | HTMLTextAreaElement | null;
   const focusId = focus?.id; const selection = focus && (focus.tagName === 'TEXTAREA' || ['text','search','password'].includes(focus.type)) ? [focus.selectionStart,focus.selectionEnd] : null;
-  orb?.destroy();orb=undefined;orbHeader?.destroy();orbHeader=undefined;
+  orb?.destroy();orb=undefined;transcriptPin?.stop();transcriptPin=undefined;
   root.innerHTML = `<a id="skip-to-content" class="skip" href="#main">Skip to content</a><div class="app-shell" data-rail="${layout.rail}" data-narrow="${layout.narrow}" data-segment="${layout.segment}" data-sheet="${layout.sheet ?? ''}"><header class="app-header">${pairingRequired ? '' : `<button id="rail-toggle" class="icon-button" aria-expanded="${layout.rail==='expanded'}" aria-controls="rail" aria-label="Program menu">☰</button>`}<a class="brand-mini" href="/" aria-label="Didi home"><img src="/icon.svg" alt="" width="22" height="22"><span>didi<span class="brand-dot">.</span></span></a>${pairingRequired ? '' : laneSwitcherMarkup()}${livePillMarkup()}<div class="connection"><span class="connection-dot ${connection==='Connected'?'online':''}"></span><span id="connection-state" role="status" aria-live="polite" aria-atomic="true">${e(connection)}</span><button id="reconnect-top" class="quiet" aria-label="Refresh connection">↻</button></div></header>${demoMode || status?.serviceMode==='synthetic-test' ? '<div class="demo-banner"><strong>Demo test mode</strong><span>Isolated synthetic data · not your personal service</span></div>' : ''}<div class="lane-row">${pairingRequired ? '' : railMarkup()}<main id="main" tabindex="-1" class="lanes">${error ? `<div class="alert" role="alert" aria-live="assertive">${e(error)}</div>` : ''}${notice ? `<div class="notice" role="status" aria-live="polite" aria-atomic="true">${e(notice)}</div>` : ''}${readBusy ? '<p class="loading" role="status" aria-live="polite" aria-atomic="true">Loading your records…</p>' : ''}${busy ? '<button id="cancel-request" class="quiet">Stop waiting</button>' : ''}${pairingRequired ? pairing() : `${laneShell('voice','Voice',voiceHeadMarkup(),voiceBodyMarkup())}${laneShell('chat','Chat',chatHeadMarkup(),chatLane())}`}</main></div>${sheetMarkup()}${consentPopoverMarkup()}</div>`;
   bind();
   bindScrollAnchors();
   connectedView.attach();
+  bindTranscript();
   for(const id of ['commitment-title','recall-query','memory-filter']){const field=document.getElementById(id) as HTMLInputElement | HTMLTextAreaElement | null;if(field)field.disabled=!status;}
   attachMemoryDeleteControls(root, !writable() || busy || connectedView.active, id => void deleteMemory(id));
   const canvas=document.getElementById('didi-orb') as HTMLCanvasElement | null;
   if(canvas)orb=new Orb(canvas,appliedOrbState=orbState());
-  const largeCanvas=document.getElementById('didi-orb-large') as HTMLCanvasElement | null;
-  if(largeCanvas)orbHeader=new Orb(largeCanvas,appliedOrbState??'CONNECTED');
   if (focusId) { const next=document.getElementById(focusId) as HTMLInputElement | HTMLTextAreaElement | null; next?.focus({preventScroll:true}); if(selection && next && selection[0]!==null) next.setSelectionRange(selection[0],selection[1]); }
-  paintedLivePoll=document.getElementById('live-panel') ? livePoll : undefined;
 }
 function button(id: string, action: () => void) { document.getElementById(id)?.addEventListener('click', action); }
 function form(id: string, action: () => void) { document.getElementById(id)?.addEventListener('submit', ev => { ev.preventDefault(); action(); }); }
@@ -267,9 +274,7 @@ function bind() {
   root.querySelector('.sheet-scrim')?.addEventListener('click', () => { layout = closeSheet(layout); render(); });
   root.querySelectorAll<HTMLElement>('button[data-lane]').forEach(el => el.onclick = () => { const id = el.dataset.lane as LaneId; layout = toggleLane(layout, id); render(); if (layout[id] === 'collapsed') document.getElementById(focusTargetAfterCollapse(id))?.focus(); });
   root.querySelectorAll<HTMLElement>('button[data-segment]').forEach(el => el.onclick = () => { const segment = el.dataset.segment as LaneId; layout = selectSegment(layout, segment); render(); document.getElementById(`lane-${segment}`)?.scrollIntoView({ block: 'start' }); });
-  document.getElementById('voice-start')?.addEventListener('click', () => liveMachine.requestStart());
-  document.getElementById('voice-stop')?.addEventListener('click', () => liveMachine.requestStop());
-  document.getElementById('voice-mute')?.addEventListener('click', () => liveMachine.toggleMute());
+  bindOrbControls();
   document.getElementById('pill-stop')?.addEventListener('click', () => liveMachine.requestStop());
   document.getElementById('pill-mute')?.addEventListener('click', () => liveMachine.toggleMute());
   document.getElementById('pill-unmute')?.addEventListener('click', () => liveMachine.toggleMute());
@@ -424,28 +429,46 @@ function scheduleLive(){
   const version=authorityVersion();if(liveDelay(live?.state,document.hidden)!==undefined&&!pairingRequired)liveTimer=setTimeout(()=>{if(version===authorityVersion())void pollLive();},liveDelay(live?.state,document.hidden));
 }
 function paintLive(){
-  // The voice lane body is either the empty state or the transcript panel. Swap between them with a
-  // full render, and otherwise replace the body in place, so there is never more than one #live-panel.
-  const body=document.querySelector<HTMLElement>('#lane-voice .lane-inner');
-  if(!body) return;
-  const panel=body.querySelector('#live-panel');
-  if(liveTurns()>0 ? !panel : !!panel){render();return;}
-  const replacePanel=paintedLivePoll?.live!==live || !!paintedLivePoll?.stale!==!!livePoll.stale || !!livePoll.stale && paintedLivePoll?.lastSuccess!==livePoll.lastSuccess;
-  if(panel && replacePanel){
-    body.innerHTML=liveMarkup(live,livePoll)
-  }
-  paintedLivePoll=panel ? livePoll : undefined;
+  // A poll rewrites the state line and the transcript only, so the orb canvas and the controls keep
+  // their listeners and the stage never moves (V3 item 8).
   const caption=document.querySelector('.orb-caption');const markup=orbCaptionMarkup();if(caption && caption.innerHTML!==markup)caption.innerHTML=markup;
-  // U1: the lookup progress stands in for the status subtitle while Naya looks, then the subtitle returns.
-  const subtitle=document.getElementById('voice-subtitle');
-  if(subtitle){const lookup=lookupLineMarkup(live);const next=lookup||subtitle.dataset.normal||'';if(subtitle.innerHTML!==next)subtitle.innerHTML=next;}
-  const next=orbState();if(next!==appliedOrbState){appliedOrbState=next;orb?.setState(next);orbHeader?.setState(next);}
+  const list=document.querySelector<HTMLElement>('#transcript .live-turns');
+  if(list)renderTranscript(list);
+  // The control reflects the projection: swap the actions in place and rebind, never tear the stage down.
+  const actions=document.getElementById('orb-actions');
+  if(actions){const controls=orbControlsMarkup();if(actions.innerHTML!==controls){actions.innerHTML=controls;bindOrbControls();}}
+  const next=orbState();if(next!==appliedOrbState){appliedOrbState=next;orb?.setState(next);}
+  if(liveMachine.view.state==='starting')transcriptPin?.repin();
+}
+function bindOrbControls() {
+  document.getElementById('voice-start')?.addEventListener('click', () => liveMachine.requestStart());
+  document.getElementById('voice-stop')?.addEventListener('click', () => liveMachine.requestStop());
+  document.getElementById('voice-mute')?.addEventListener('click', () => liveMachine.toggleMute());
+}
+function renderTranscript(list: HTMLElement) {
+  // Stable segment keys keep a streaming line in place: only lines that are new fade and rise in.
+  const segments = liveSegments(live);
+  const children = [...list.children] as HTMLElement[];
+  if (children.length === segments.length && segments.every((segment, index) => children[index]!.dataset.seg === segment.key)) {
+    segments.forEach((segment, index) => { const child = children[index]!; if (child.outerHTML !== segment.html) child.outerHTML = segment.html; });
+    return;
+  }
+  const known = new Set(children.map(child => child.dataset.seg ?? ''));
+  list.innerHTML = segments.map(segment => segment.html).join('') || '<p class="transcript-placeholder muted">Press Start or \u2318\u21e7Space to talk</p>';
+  for (const child of [...list.children] as HTMLElement[]) if (!known.has(child.dataset.seg ?? '')) child.classList.add('entry-new');
+}
+function bindTranscript() {
+  transcriptPin?.stop(); transcriptPin = undefined;
+  // The scroll container is the transcript itself; the pin watches the turns inside it.
+  const list = document.getElementById('transcript');
+  const pill = document.getElementById('transcript-jump');
+  if (list && pill) transcriptPin = attachPin(list, pill);
 }
 onAuthorityChanged(reason=>{
   ++readGeneration;controller?.abort();controller=undefined;busy=false;readBusy=false;pairingBusy=false;connectionsBusy=false;liveBusy=false;
   for(const timer of [pollTimer,liveTimer,connectionsTimer])if(timer)clearTimeout(timer);
   pollTimer=undefined;liveTimer=undefined;connectionsTimer=undefined;
-  connectedView.reset();live=undefined;livePoll={};paintedLivePoll=undefined;connections=[];connectionsStale=false;
+  connectedView.reset();live=undefined;livePoll={};connections=[];connectionsStale=false;
   statusUnavailable=false;status=undefined;sessions=[];entries=[];session=undefined;plan=undefined;recall=undefined;recent=[];
   detail=undefined;editing=undefined;editTitle='';editNotes='';editDue='';sessionMore=false;entriesMore=false;error='';notice='';
   if(reason==='logout'){draftOwner=undefined;messageDraft='';titleDraft='';queryDraft='';memoryFilter='';notice='This browser is unpaired.';}

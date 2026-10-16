@@ -61,6 +61,20 @@ test('renders an ordered list', () => {
   assert.match(renderMarkdown('1. one\n2. two'), /<ol><li>one<\/li><li>two<\/li><\/ol>/);
 });
 
+test('ordered lists keep their numbering across blank lines and paragraphs (V3 item 7)', () => {
+  const html = renderMarkdown('1. a\n\npara\n\n2. b\n\npara\n\n3. c');
+  const starts = [...html.matchAll(/<ol(?: start="(\d+)")?>/g)].map(match => Number(match[1] ?? 1));
+  assert.deepEqual(starts, [1, 2, 3], 'each item keeps the number it was written with');
+  assert.equal((html.match(/<li>/g) ?? []).length, 3);
+  assert.match(renderMarkdown('3. third'), /<ol start="3">/);
+});
+
+test('an indented paragraph stays in its item, so it aligns with the item text (V3 items 7 and 9)', () => {
+  const html = renderMarkdown('1. a\n\n   an indented paragraph\n\n2. b');
+  assert.equal(html, '<ol><li>a<p>an indented paragraph</p></li><li>b</li></ol>', 'one list, the paragraph nested in its item');
+  assert.equal((html.match(/<li>/g) ?? []).length, 2);
+});
+
 test('renders a blockquote', () => {
   assert.match(renderMarkdown('> quoted'), /<blockquote>quoted<\/blockquote>/);
 });

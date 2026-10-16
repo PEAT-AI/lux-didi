@@ -45,6 +45,9 @@ enum WindowFrameRestore {
     }
 }
 
+// Legacy visibility decision for the macOS fixture (`Tests/DidiMacTests`): a login
+// launch never shows a window, every other launch does. Production reads the richer
+// `LaunchKind` decision in SingleInstanceGuard.swift.
 enum NativeLaunchVisibility {
     static func shouldShow(loginLaunch: Bool) -> Bool { !loginLaunch }
 }

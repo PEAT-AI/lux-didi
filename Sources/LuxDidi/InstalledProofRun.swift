@@ -160,8 +160,8 @@ import CryptoKit
             var visual = report["visual"] as! [String: Any]
             visual["pageSnapshot"] = try await pageImage(fresh, to: proof.report.appendingPathExtension("web-page.png"))
             report["visual"] = visual; report["observations"] = observations
-            let readiness = await OwnedWindowReadiness.wait(window) {
-                window.makeKeyAndOrderFront(nil)
+            let readiness = await OwnedWindowReadiness.wait(window, activating: false) {
+                window.orderFront(nil)
             }
             let readinessTrace: [String: Any] = ["nativePid": Int(getpid()), "windowId": window.windowNumber,
                 "ready": readiness.ready, "events": readiness.events, "diagnostics": readiness.diagnostics]

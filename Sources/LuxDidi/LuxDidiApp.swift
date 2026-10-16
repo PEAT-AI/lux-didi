@@ -428,10 +428,13 @@ struct RootView: View {
     private var terminationMonitor: NSObjectProtocol?
     private var hotkeyCode: OSStatus = noErr
     private var loginLaunch = false
+    private var launchKind: LaunchKind = .interactive
     private var cleanQuit = false
     private var quitting = false
     func applicationDidFinishLaunching(_ notification: Notification) {
         loginLaunch = launchedAtLogin
+        launchKind = LaunchKind.resolve(arguments: CommandLine.arguments,
+            environment: ProcessInfo.processInfo.environment, loginLaunch: loginLaunch)
         OwnedWindowReadiness.trace("app:didFinishLaunching-entry",
             ["activationPolicy": NSApp.activationPolicy().rawValue, "isActive": NSApp.isActive])
         NSApp.setActivationPolicy(.accessory)
@@ -441,7 +444,7 @@ struct RootView: View {
         // One all-dark window: transparent hidden titlebar, traffic lights over the web rail.
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
-        window.isMovableByWindowBackground = false
+        window.isMovableByWindowBackground = true
         window.backgroundColor = BridgeTheme.dark.backgroundColor
         window.appearance = NSAppearance(named: BridgeTheme.dark.appearanceName)
         window.title = ""; window.center(); window.delegate = self
@@ -517,7 +520,7 @@ struct RootView: View {
             Task { @MainActor in self?.model.stopRecording("Mac is going to sleep") }
         }
         Task {
-            if NativeLaunchVisibility.shouldShow(loginLaunch: loginLaunch) { show() }
+            if launchKind.presentsWindowAtLaunch { show() }
             OwnedWindowReadiness.trace("app:refresh-start")
             await model.refresh()
             OwnedWindowReadiness.trace("app:refresh-end", ["isActive": NSApp.isActive])
@@ -582,15 +585,25 @@ struct RootView: View {
     }
 
     @objc func show() {
-        OwnedWindowReadiness.trace("app:show-entry", ["windowExists": window != nil])
-        OwnedWindowReadiness.trace("app:makeKeyAndOrderFront-before")
-        window.makeKeyAndOrderFront(nil)
-        OwnedWindowReadiness.trace("app:makeKeyAndOrderFront-after",
-            ["isVisible": window.isVisible, "isKey": window.isKeyWindow, "isMain": window.isMainWindow])
-        OwnedWindowReadiness.trace("app:activateIgnoringOtherApps-before", ["isActive": NSApp.isActive])
-        NSApp.activate(ignoringOtherApps: true)
-        OwnedWindowReadiness.trace("app:activateIgnoringOtherApps-after",
-            ["isActive": NSApp.isActive, "isKey": window.isKeyWindow, "isMain": window.isMainWindow])
+        presentWindow(activating: launchKind.activates)
+    }
+    /// Presents the window for the current launch kind. Only an interactive launch
+    /// makes the window key and activates the app; every other launch orders the
+    /// window front without taking focus.
+    private func presentWindow(activating: Bool) {
+        OwnedWindowReadiness.trace("app:show-entry", ["windowExists": window != nil, "activating": activating])
+        if activating {
+            OwnedWindowReadiness.trace("app:makeKeyAndOrderFront-before")
+            window.makeKeyAndOrderFront(nil)
+            OwnedWindowReadiness.trace("app:makeKeyAndOrderFront-after",
+                ["isVisible": window.isVisible, "isKey": window.isKeyWindow, "isMain": window.isMainWindow])
+            OwnedWindowReadiness.trace("app:activateIgnoringOtherApps-before", ["isActive": NSApp.isActive])
+            NSApp.activate(ignoringOtherApps: true)
+        } else {
+            window.orderFront(nil)
+        }
+        OwnedWindowReadiness.trace("app:present-after",
+            ["isVisible": window.isVisible, "isKey": window.isKeyWindow, "isMain": window.isMainWindow, "isActive": NSApp.isActive])
     }
     private var launchedAtLogin: Bool {
         NSAppleEventManager.shared().currentAppleEvent?.paramDescriptor(forKeyword: AEKeyword(keyAEPropData))?.enumCodeValue == OSType(keyAELaunchedAsLogInItem)
@@ -668,7 +681,7 @@ struct RootView: View {
             hosting.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             hosting.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
-        WindowDragBand.attach(to: container)
+        WindowDragBand.attach(to: container, afterTrafficLights: WindowDragBand.trafficLightInset(for: window))
         return container
     }
     private func applyBridgeTheme(_ theme: BridgeTheme) {
@@ -796,14 +809,13 @@ struct RootView: View {
         let proof: InstalledProofRequest?
         do { proof = try InstalledProofRequest.parse(arguments: Array(CommandLine.arguments.dropFirst())) }
         catch { fputs("INSTALLED-PROOF INVALID: unsafe or malformed arguments\n", stderr); exit(2) }
-        if proof == nil {
-            // CLI proof modes (--self-check, --ui-proof) run in the foreground and exit on
-            // their own; only an interactive launch yields to a running instance.
-            let arguments = CommandLine.arguments
-            let cliProof = arguments.contains("--self-check") || arguments.contains("--ui-proof")
-            let env = ProcessInfo.processInfo.environment
-            let verification = env["LUX_VERIFICATION_GATE_ROOT"] != nil || env["LUX_VERIFICATION_GATE_NONCE"] != nil
-            if !cliProof, SingleInstanceGuard.yieldToExistingInstance(verification: verification) { exit(0) }
+        // Every launch except the documented verification exemption yields to a live
+        // instance, before a window, host or audio is built. A check that cannot open
+        // its own window exits with a distinct code instead of reporting a false pass.
+        let launchKind = LaunchKind.resolve(arguments: CommandLine.arguments,
+            environment: ProcessInfo.processInfo.environment, loginLaunch: false)
+        if SingleInstanceGuard.yieldToExistingInstance(verification: launchKind == .verification) {
+            exit(launchKind.duplicateInstanceExitCodeForYield)
         }
         let app = NSApplication.shared
         let delegate = AppDelegate(proofRequest: proof); app.delegate = delegate

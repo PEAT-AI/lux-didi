@@ -1570,7 +1570,7 @@ test('loadLiveConfig keeps public prompt bytes and composes classified owner sec
     const expected = composeLiveInstruction({ base: NAYA_BASE, accent: overlay.accent, language: 'de' });
     const accepted = composeLiveInstruction({ base: NAYA_BASE, ownerProfile, accent: overlay.accent, language: 'de' });
     assert.deepEqual(status.config.profile.overlay, overlay);
-    assert.equal(status.config.profile.language, 'de');
+    assert.equal(status.config.profile.language, 'de-DE', 'the owner regional tag is kept for the setup frame');
     assert.equal(status.config.profile.prompt.text, expected.text);
     assert.equal(status.config.profile.acceptedPrompt?.system, accepted.text);
     assert.ok(accepted.text.length > 4096);

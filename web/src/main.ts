@@ -570,7 +570,14 @@ const installed = installNativeBridge(window as unknown as Record<string, unknow
 nativeBridge = installed.bridge;
 nativeFake = installed.fake;
 liveMachine = new LiveMachine(message => nativeBridge!.send(message));
-liveMachine.on(() => paintLive());
+// The consent popover is part of the shell and appears only on a render; every other Live change is a
+// cheap in-place repaint, so a poll or a call never tears the feed down (spec 1.3 causes 2, 3, 4).
+let appliedConsentOpen = liveMachine.view.consentOpen;
+liveMachine.on(() => {
+  const open = liveMachine.view.consentOpen;
+  if (open !== appliedConsentOpen) { appliedConsentOpen = open; render(); return; }
+  paintLive();
+});
 nativeBridge.onNative(message => liveMachine.receive(message));
 nativeBridge.send({ type: 'theme', mode: theme });
 nativeBridge.send({ type: 'ready' });

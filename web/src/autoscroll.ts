@@ -47,7 +47,16 @@ export function attachPin(
   const settle = () => { pinned = nextPinned(pinned, metrics()); if (pinned) list.scrollTop = list.scrollHeight; report(); };
   // Content grows in a mutation callback, before layout: follow on the next frame so the new height is real.
   const follow = () => { if (frame !== undefined) return; frame = requestAnimationFrame(() => { frame = undefined; settle(); }); };
-  list.addEventListener('scroll', () => { pinned = isPinned(metrics()); report(); }, { passive: true });
+  let lastHeight = list.scrollHeight, lastClientHeight = list.clientHeight;
+  list.addEventListener('scroll', () => {
+    const next = metrics();
+    // A resize or reflow moves the scroll position without the reader: only a deliberate scroll
+    // away from the bottom unpins, so a pinned view is never dropped by a layout change (V3 item 3).
+    const relayout = next.scrollHeight !== lastHeight || next.clientHeight !== lastClientHeight;
+    lastHeight = next.scrollHeight; lastClientHeight = next.clientHeight;
+    if (!relayout) pinned = isPinned(next);
+    report();
+  }, { passive: true });
   const observer = new MutationObserver(follow);
   observer.observe(list, { childList: true, subtree: true, characterData: true });
   // A viewport change resizes the list without a mutation: a pinned view follows that too.

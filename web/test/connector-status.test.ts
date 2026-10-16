@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { connectionsMarkup, connectionIdentity } from '../src/connector-status.ts';
+import { connectorState } from '../src/settings-view.ts';
 
 // Synthetic identities only; no real owner address or token appears here.
 const OWNER = 'owner@example.test';
@@ -45,4 +46,10 @@ test('connections renders the identity line per source and never leaks a raw pay
   assert.match(html, /Signed in as a different account/);
   assert.match(html, /Account not verified/);
   assert.doesNotMatch(html, /SECRET TOKEN|other@example.test/);
+});
+
+test('the settings connector row carries the same owner identity sentence', () => {
+  assert.equal(connectorState({ id: 'gmail', state: 'connected', identity: { proven: true, match: true, value: OWNER } })?.identity, `Connected as ${OWNER} \u2713`);
+  assert.equal(connectorState({ id: 'mattermost', state: 'connected', identity: { proven: true, match: false, value: 'other@example.test' } })?.identity, 'Signed in as a different account');
+  assert.equal(connectorState({ id: 'knowledge', state: 'connected' })?.identity, undefined);
 });

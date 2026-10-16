@@ -5,10 +5,12 @@ import * as labels from '../domain/labels.js';
 import { definitionsInTransaction } from '../tools/index.js';
 import { LiveToolJobs, type JobTimer } from '../tools/jobs.js';
 import { declarationsFor, runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
+import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
+import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, validateResearch, type ResearchCall, type ResearchSelector, type SourceKind as ResearchSourceKind } from '../tools/research.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
 import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';
-import type { LiveToolsComposition, LivePageProjection, LiveToolProjection } from './types.js';
+import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, ResearchProgressView } from './types.js';
 import { publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, composeLiveSessionInstruction, connectorGroupNames, toolGroupNames } from '../prompt/index.js';
 import { hostLogEvent } from '../host/log.js';
 import { validateAcceptedPrompt } from './config.js';
@@ -29,10 +31,16 @@ const pickupInstruction = 'The user has just picked up. Deliver the pending job 
 // Issue 1014: a session past this many tool calls starts a fresh setup instead of resuming into
 // drifted audio; a session under it still reuses the saved resumption handle.
 const RESUMPTION_TOOL_CALL_LIMIT = 5;
+/** One intent sub-read deadline: a slow source never holds the whole turn past this. */
+const INTENT_SUB_DEADLINE_MS = 8_000;
 
 interface ActiveSession {
   inputFinal?: boolean;
   inputAt?: number;
+  /** When the owner's turn finished, to measure dead air until the first model audio. */
+  inputFinalAt: number | undefined;
+  /** First model audio of the current turn; reset at each model turn start. */
+  firstAudioAt: number | undefined;
   inputJournalId?: number;
   inputFinalTimer?: ReturnType<JobTimer>;
   inputFinalWaiters?: Set<() => void>;
@@ -41,6 +49,8 @@ interface ActiveSession {
   sessionTimer: ReturnType<JobTimer> | undefined; idleTimer: ReturnType<JobTimer> | undefined;
   pendingCalls: Map<string, string>;
   toolCache: LiveToolCache;
+  researchLedger: ResearchLedger;
+  researchScheduler?: ResearchScheduler;
   registry: readonly ToolDefinition[];
   host: HostContext | undefined;
   toolStep: number;
@@ -49,6 +59,10 @@ interface ActiveSession {
   thinking: boolean;
   pendingCallIds: Set<string>;
   bargeInCallIds: Set<string>;
+  /** In-flight abort handle per model call id, so a provider cancellation aborts exactly that call. */
+  callAborts: Map<string, AbortController>;
+  /** Wall-clock start per model call id, for tool_cancelled ms-in-flight and per-turn latency. */
+  callStartedAt: Map<string, number>;
   speaking: boolean;
   // E1 interruption telemetry: provider-side facts for the last turn only, never audio or text.
   lastModelAudioAt?: number;
@@ -234,6 +248,7 @@ export class LiveSessionOwner {
   readonly #now: () => number;
   readonly #timeZone: string;
   readonly #schedule: NonNullable<LiveOwnerConfig['schedule']>;
+  readonly #research: ResearchSelector | undefined;
   #expiryTimer: ReturnType<NonNullable<LiveOwnerConfig['schedule']>> | undefined;
   readonly #profileIdentity: string;
   readonly #active = new Map<string, ActiveSession>();
@@ -248,6 +263,7 @@ export class LiveSessionOwner {
     this.#memorySource = config.memorySource;
     this.#store = config.store;
     this.#voice = config.voice;
+    this.#research = config.research;
     this.#profile = validateLiveProfile(config.profile);
     this.#timeZone = config.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
     const now = config.now ?? Date.now;
@@ -424,6 +440,7 @@ export class LiveSessionOwner {
           const tool = JSON.parse(String(item.tool_json)) as LiveToolProjection;
           entries.push({ seq, kind, tool: kind === 'toolCall' ? { name: tool.name, status: 'called' } : { name: tool.name, status: tool.status, markdown: tool.markdown, sources: tool.sources.map(source => ({ title: source.title, ...(source.url ? { url: source.url } : {}) })) } });
         } else if (kind === 'continuity') entries.push({ seq, kind, ...JSON.parse(String(item.text)) });
+        else if (kind === 'researchProgress') { const p = JSON.parse(String(item.text)) as ResearchProgressView; entries.push({ seq, kind, progress: { researchId: p.researchId, phase: p.phase, sourcesDone: p.sourcesDone, sourcesPending: p.sourcesPending, elapsedMs: p.elapsedMs } }); }
         else if (kind === 'interrupted' || kind === 'turnComplete' || kind === 'terminal') entries.push({ seq, kind });
       }
       return { state, ...(pastSession ? { pastSession } : {}), since: Number(row.created_at), memory: memoryProjection(row['memory_provenance']), ...(jobs.length ? { jobs } : {}), entries, cursor: rows.length ? Number(rows[rows.length - 1]!.journal_id) : cursor };
@@ -588,7 +605,10 @@ export class LiveSessionOwner {
         grants: registry.filter(tool => tool.effect === 'read' || this.#tools!.owner.liveRememberApproved() && tool.name === 'remember_note' && tool.accountId === 'gateway:live-voice' && tool.resourceId === 'owner-memory').map(tool => ({ tool: tool.name, effect: tool.effect, accountId: tool.accountId, resourceId: tool.resourceId })) };
     }
     const history = this.#jobHistory(liveSessionId, inputClass);
-    const declarations = registry.length ? declarationsFor(registry).declarations : [];
+    // Only the coarse intent tools (and remember) are declared to the model; the connector reads stay
+    // dispatchable through the registry so the intent fan-out and the session cache keep working.
+    const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || tool.name === 'remember_note');
+    const declarations = modelFacing.length ? declarationsFor(modelFacing).declarations : [];
     const system = acceptedPrompt.system;
     const request: LiveVoiceRequest = { opening: 'model_first',
       system: { text: system, dataClass: dataClasses[dataClasses.length - 1]! }, history: history ?? [], dataClasses,
@@ -610,7 +630,8 @@ export class LiveSessionOwner {
       deadlineMs, deadlineAt, idleAt: this.#now() + this.#profile.limits.idleMs, goAwayUntil: undefined,
       sessionTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()),
-      registry, host, toolStep: 0, toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false,
+      researchLedger: new ResearchLedger(),
+      registry, host, toolStep: 0, toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined,
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
       consumerState: 'attached', journalEvents: 0, journalBytes: 0, adapterOutcome: undefined,
@@ -800,6 +821,7 @@ export class LiveSessionOwner {
       for await (const event of session.events) {
         if (this.#settled(handle) || generation !== handle.generation) break;
         if (event.type === 'modelTurnStarted') {
+          handle.firstAudioAt = undefined;
           this.#beginModelTurn(handle);
           handle.turnCompleteSeen = false;
           continue;
@@ -830,7 +852,19 @@ export class LiveSessionOwner {
             handle.thinking = handle.pendingCallIds.size > 0;
           }); continue;
         }
-        if (event.type === 'toolCallCancellation') { for (const id of event.ids) handle.pendingCallIds.delete(id); handle.thinking = handle.pendingCallIds.size > 0; continue; }
+        if (event.type === 'toolCallCancellation') {
+          // A provider cancellation (after a barge-in) drops exactly the cancelled ids: their in-flight
+          // reads are aborted and no response is sent for them. A plain interrupted is different: those
+          // ids stay in pendingCallIds, so their response is still answered once, marked after_barge_in.
+          for (const id of event.ids) {
+            const started = handle.callStartedAt.get(id);
+            hostLogEvent({ event: 'tool_cancelled', tool: handle.pendingCalls.get(id) ?? 'unknown', id, msInFlight: started === undefined ? null : Math.max(0, this.#now() - started) });
+            handle.callAborts.get(id)?.abort();
+            handle.pendingCallIds.delete(id);
+          }
+          handle.thinking = handle.pendingCallIds.size > 0;
+          continue;
+        }
         if (event.type === 'interrupted') {
           for (const id of handle.pendingCallIds) handle.bargeInCallIds.add(id);
           handle.speaking = false;
@@ -842,12 +876,23 @@ export class LiveSessionOwner {
         if (event.type === 'turnComplete' || event.type === 'generationComplete') handle.speaking = false;
         if (event.type === 'turnComplete') handle.turnCompleteSeen = true;
         if (event.type === 'waitingForInput') { handle.thinking = !event.value; if (event.value) handle.speaking = false; }
-        if (event.type === 'audio') { handle.thinking = false; handle.speaking = true; handle.lastModelAudioAt = this.#now(); this.#pushChunk(handle, { kind: 'audio', pcm: event.pcm }); continue; }
+        if (event.type === 'audio') {
+          handle.thinking = false; handle.speaking = true; handle.lastModelAudioAt = this.#now();
+          if (handle.firstAudioAt === undefined) {
+            handle.firstAudioAt = this.#now();
+            if (handle.inputFinalAt !== undefined) {
+              hostLogEvent({ event: 'live_dead_air', deadAirMs: Math.max(0, handle.firstAudioAt - handle.inputFinalAt) });
+              handle.inputFinalAt = undefined;
+            }
+          }
+          this.#pushChunk(handle, { kind: 'audio', pcm: event.pcm }); continue;
+        }
         if (event.type === 'outcome') { outcome = event.outcome; continue; }
         if (event.type === 'inputTranscription') {
           handle.inputFinalTimer?.cancel();
           handle.inputAt = this.#now();
           handle.inputFinal = event.finished === true;
+          if (handle.inputFinal) handle.inputFinalAt = handle.inputAt;
         }
         const kind = journalKind(event.type);
         if (kind === null) continue;
@@ -867,7 +912,11 @@ export class LiveSessionOwner {
       if (handle.persistFailure) { handle.abort.abort(); handle.done.reject(handle.persistFailure); }
       else {
         outcome ??= await session.done.catch(() => undefined);
-        if (outcome?.recoverable && this.#rebuild(handle, outcome.code)) continue;
+        if (outcome?.recoverable) {
+          const rebuilt = this.#rebuild(handle, outcome.code);
+          if (outcome.upstream) hostLogEvent({ event: 'live_upstream_drop', errorKind: outcome.upstream.errorKind, closeCode: outcome.upstream.closeCode, bufferedAmount: outcome.upstream.bufferedAmount, writesFailed: outcome.upstream.writesFailed, sessionMs: outcome.upstream.sessionMs, rebuilt });
+          if (rebuilt) continue;
+        }
         if (handle.terminal) break;
         if (outcome) this.#settle(handle, { state: outcome.status, code: handle.rebuilding && outcome.code !== 'session_timeout' && outcome.code !== 'idle_timeout' && outcome.code !== 'deadline' || outcome.recoverable ? 'resume_failed' : outcome.code === 'deadline' ? 'session_timeout' : outcome.code }, outcome.status === 'closed', 'ended', null);
         else this.#settle(handle, { state: 'outcome_unknown' }, false, 'ended', null);
@@ -895,6 +944,7 @@ export class LiveSessionOwner {
         return;
       }
       handle.inputFinal = true;
+      handle.inputFinalAt = this.#now();
       for (const resolve of handle.inputFinalWaiters ?? []) resolve();
     }, Math.max(0, 300 - (this.#now() - handle.inputAt)));
     handle.inputFinalTimer.unref();
@@ -921,6 +971,63 @@ export class LiveSessionOwner {
     }
   }
 
+  #researchSources(handle: ActiveSession): ResearchSourceKind[] {
+    const names = new Set(handle.registry.map(tool => tool.name));
+    const sources: ResearchSourceKind[] = [];
+    if (names.has('search_knowledge')) sources.push('knowledge');
+    if (names.has('gcal_calendars')) sources.push('calendar');
+    if (names.has('gmail_list')) sources.push('mail');
+    if (names.has('mattermost_search')) sources.push('chat');
+    return sources;
+  }
+
+  /** One BLOCKING research call runs its whole bounded loop; `interrupted` never aborts it. */
+  async #researchBatch(handle: ActiveSession, event: Extract<LiveVoiceEvent, { type: 'toolCall' }>, generation: number, host: HostContext, allowed: boolean): Promise<{ responses: { id: string; name: string; response: JsonObject }[]; projections: LiveToolProjection[] }> {
+    const configured = this.#researchSources(handle);
+    const gateAuthority = { isCurrent: async (_host: HostContext, _tool: ToolDefinition, signal: AbortSignal) => allowed && !signal.aborted && generation === handle.generation && !this.#settled(handle) };
+    const execute = async (subs: readonly IntentSubCall[], signal: AbortSignal): Promise<IntentSubResult[]> => {
+      const calls = subs.map((sub, n) => ({ id: `r${handle.toolStep}~${n}~${sub.key}`, name: sub.name, args: sub.args }));
+      const signalMap = new Map<string, AbortSignal>(calls.map(call => [call.id, signal]));
+      const control = { signal, deadlineMs: handle.deadlineMs };
+      const raw = await runToolCalls(this.#tools!.owner, calls, { registry: handle.registry, host, signals: signalMap, authority: gateAuthority, control, step: handle.toolStep, contentIndex: 0, seenIds: handle.seenIds, baseClasses: [handle.inputClass] });
+      const authorized = (this.lookupAuthority(host.runId) || this.lookupJobAuthority(host.runId)) ? await authorizeToolBatch(this.#tools!.owner, raw, { host, control, baseClasses: [handle.inputClass] }) : raw;
+      return calls.map(call => {
+        const slot = authorized.bindings.findIndex(binding => binding.callId === call.id);
+        const record = slot >= 0 ? authorized.tools[slot] : undefined;
+        const accepted = authorized.accepted.find(result => result.binding.callId === call.id);
+        const response = accepted?.response ?? {};
+        const text = typeof response.text === 'string' ? response.text : '';
+        const ok = record?.status === 'completed' && accepted !== undefined;
+        return { key: call.id, name: call.name, ok, text, originalCharacters: typeof response.originalCharacters === 'number' ? response.originalCharacters : text.length, omittedCharacters: typeof response.omittedCharacters === 'number' ? response.omittedCharacters : 0 };
+      });
+    };
+    const scheduler = handle.researchScheduler ??= new ResearchScheduler({
+      now: () => this.#now(), configured, selector: this.#research, execute,
+      emit: progress => {
+        hostLogEvent({ event: 'research_progress', ...progress });
+        // U1: the voice lane sees the lookup as it runs, on the channel it already polls.
+        if (!this.#settled(handle) && generation === handle.generation) {
+          const view: ResearchProgressView = { researchId: progress.researchId, phase: progress.phase, sourcesDone: [...progress.sourcesDone], sourcesPending: [...progress.sourcesPending], elapsedMs: progress.elapsedMs };
+          this.#persist(handle, { type: 'continuity', sequence: 0, text: JSON.stringify(view) }, 'researchProgress');
+        }
+      },
+      log: entry => hostLogEvent(entry), ledger: handle.researchLedger,
+    });
+    const responses: { id: string; name: string; response: JsonObject }[] = [];
+    const projections: LiveToolProjection[] = [];
+    for (const call of event.calls) {
+      let response: JsonObject;
+      try {
+        if (!validateResearch(call.args)) throw Error('invalid_research_arguments');
+        response = await scheduler.call(call.args as unknown as ResearchCall, handle.abort.signal);
+      } catch (error) { response = { error: error instanceof Error ? error.message : 'research_failed' }; }
+      responses.push({ id: call.id, name: call.name, response });
+      const status = typeof response['status'] === 'string' ? response['status'] : 'error';
+      projections.push({ name: call.name, status: status === 'error' ? 'error' : 'completed', markdown: `research: ${status}`, sources: [] });
+    }
+    return { responses, projections };
+  }
+
   async #toolBatch(handle: ActiveSession, event: Extract<LiveVoiceEvent, { type: 'toolCall' }>, generation: number): Promise<void> {
     handle.thinking = true;
     const publish = (kind: 'toolCall' | 'toolResult', tool: LiveToolProjection) => {
@@ -943,35 +1050,103 @@ export class LiveSessionOwner {
       const control = { signal: jobAbort.signal, deadlineMs: handle.deadlineMs };
       if (event.calls.some(call => call.name === 'remember_note')) await this.#waitForOwnerTranscript(handle, event.sequence);
       if (this.#settled(handle) || generation !== handle.generation) return;
+      if (event.calls.every(call => call.name === RESEARCH_TOOL_NAME)) {
+        const outcome = await this.#researchBatch(handle, event, generation, host, dispatchGate.state === 'allowed');
+        if (this.#settled(handle) || generation !== handle.generation) return;
+        responses = outcome.responses;
+        projections = outcome.projections;
+        hostLogEvent({ event: 'live_tool_turn', sequence: event.sequence, toolCallsThisTurn: event.calls.length, toolLatencyMs: [], toolResponseWhileGenerating: handle.speaking });
+      } else {
+      // One model call fans out to one or more internal reads; a plain call maps to itself. An intent
+      // is deliberately never cached: its sub-reads change per query or per minute.
+      interface Unit { index: number; call: (typeof event.calls)[number]; intent: IntentToolName | undefined; subs: { key: string; name: string; args: JsonObject }[]; plan: ReturnType<typeof planIntent> | undefined }
+      type Batch = Awaited<ReturnType<typeof runToolCalls>>;
+      const units: Unit[] = event.calls.map((call, index) => {
+        if (!isIntentTool(call.name)) return { index, call, intent: undefined, subs: [{ key: call.id, name: call.name, args: call.args as JsonObject }], plan: undefined };
+        const plan = planIntent(call.name, call.args);
+        return { index, call, intent: call.name, subs: plan.calls.map((sub, n) => ({ key: `${call.id}~${n}`, name: sub.name, args: sub.args })), plan };
+      });
       const cache = handle.toolCache;
       const cached = new Map<number, { response: JsonObject; projection: LiveToolProjection }>();
-      const pending: { index: number; call: (typeof event.calls)[number] }[] = [];
-      event.calls.forEach((call, index) => {
-        const hit = cache.cacheable(call.name) ? cache.get<{ response: JsonObject; projection: LiveToolProjection }>(call.name, call.args) : undefined;
-        if (!hit) { pending.push({ index, call }); return; }
-        // Metadata only: this idempotent read was answered from the session cache, with no connector call.
-        hostLogEvent({ event: 'live_read_cache', tool: call.name, cached: true });
-        cached.set(index, hit);
-      });
-      const batch = pending.length === 0 ? undefined : await (async () => {
+      const pending: Unit[] = [];
+      for (const unit of units) {
+        const hit = unit.intent === undefined && cache.cacheable(unit.call.name) ? cache.get<{ response: JsonObject; projection: LiveToolProjection }>(unit.call.name, unit.call.args) : undefined;
+        if (!hit) { pending.push(unit); continue; }
+        hostLogEvent({ event: 'live_read_cache', tool: unit.call.name, cached: true });
+        cached.set(unit.index, hit);
+      }
+      // One AbortController per model call; the batch stays a single dispatch so same-endpoint reads
+      // keep their order, and a cancellation aborts exactly its own call. Each intent sub-read also
+      // carries its own deadline, so one slow source never holds the whole turn.
+      const signals = new Map<string, AbortSignal>();
+      const registerSignals = (unit: Unit, subs: { key: string }[]): void => {
+        const aborter = handle.callAborts.get(unit.call.id)!;
+        const bounded = unit.intent === undefined ? aborter.signal : AbortSignal.any([aborter.signal, AbortSignal.timeout(INTENT_SUB_DEADLINE_MS)]);
+        for (const sub of subs) signals.set(sub.key, bounded);
+      };
+      for (const unit of pending) {
+        handle.callAborts.set(unit.call.id, new AbortController());
+        handle.callStartedAt.set(unit.call.id, this.#now());
+        registerSignals(unit, unit.subs);
+      }
+      const subCalls = pending.flatMap(unit => unit.subs.map(sub => ({ id: sub.key, name: sub.name, args: sub.args })));
+      const offsets = new Map<number, number>();
+      { let at = 0; for (const unit of pending) { offsets.set(unit.index, at); at += unit.subs.length; } }
+      const runBatch = async (calls: { id: string; name: string; args: JsonObject }[], useStep: number): Promise<Batch | undefined> => {
+        if (calls.length === 0) return undefined;
         if (this.#settled(handle) || generation !== handle.generation) throw new LiveError('invalidated');
-        const raw = await runToolCalls(this.#tools!.owner, pending.map(entry => entry.call), { registry: handle.registry, host,
+        const raw = await runToolCalls(this.#tools!.owner, calls, { registry: handle.registry, host, signals,
           authority: { isCurrent: async (_host, _tool, signal) => dispatchGate.state === 'allowed' && !signal.aborted && generation === handle.generation && !this.#settled(handle) }, control,
-          step, contentIndex: 0, seenIds: handle.seenIds, baseClasses: [handle.inputClass] });
+          step: useStep, contentIndex: 0, seenIds: handle.seenIds, baseClasses: [handle.inputClass] });
         // Completion never sends to the old transport. With no active authority, retain references for pickup.
         if (!this.lookupAuthority(host.runId) && !this.lookupJobAuthority(host.runId)) return raw;
-        const gated = await authorizeToolBatch(this.#tools!.owner, raw, { host, control, baseClasses: [handle.inputClass] });
-        return gated;
-      })();
+        return await authorizeToolBatch(this.#tools!.owner, raw, { host, control, baseClasses: [handle.inputClass] });
+      };
+      const readSub = (source: Batch | undefined, key: string, name: string): IntentSubResult => {
+        const slot = source?.bindings.findIndex(binding => binding.callId === key) ?? -1;
+        const record = slot >= 0 ? source!.tools[slot] : undefined;
+        const accepted = source?.accepted.find(result => result.binding.callId === key);
+        const response = accepted?.response ?? {};
+        const text = typeof response.text === 'string' ? response.text : '';
+        const ok = record?.status === 'completed' && accepted !== undefined;
+        return { key, name, ok, text, originalCharacters: typeof response.originalCharacters === 'number' ? response.originalCharacters : text.length, omittedCharacters: typeof response.omittedCharacters === 'number' ? response.omittedCharacters : 0 };
+      };
+      const batch = await runBatch(subCalls, step);
       if ((this.#settled(handle) || generation !== handle.generation)) return;
-      const slots = new Map(pending.map((entry, slot) => [entry.index, slot] as const));
+      // Phase 2: calendar and brief enumerate their calendars first, then read a bounded event slice
+      // per calendar id the shaped list carried, so the calendar intent covers every calendar.
+      const followUps = new Map<number, IntentSubCall[]>();
+      const phase2: { id: string; name: string; args: JsonObject }[] = [];
+      for (const unit of pending) {
+        if (unit.plan?.follow === undefined) continue;
+        const phase1 = unit.subs.map(sub => readSub(batch, sub.key, sub.name));
+        const extra = unit.plan.follow(phase1).map((call, n) => ({ key: `${unit.call.id}~f${n}`, name: call.name, args: call.args }));
+        if (extra.length === 0) continue;
+        followUps.set(unit.index, extra);
+        registerSignals(unit, extra);
+        phase2.push(...extra.map(sub => ({ id: sub.key, name: sub.name, args: sub.args })));
+      }
+      const followBatch = await runBatch(phase2, ++handle.toolStep);
+      if ((this.#settled(handle) || generation !== handle.generation)) return;
+      for (const unit of pending) handle.callAborts.delete(unit.call.id);
       responses = event.calls.map((call, index) => {
         const hit = cached.get(index);
         if (hit) { projections[index] = hit.projection; return { id: call.id, name: call.name, response: hit.response }; }
-        const accepted = batch!.accepted.find(result => result.binding.callId === call.id && result.binding.name === call.name);
-        const record = batch!.tools[slots.get(index)!];
-        const reason = batch!.error?.reason ?? record?.reason ?? 'tool_result_denied';
-        const completed = accepted && record?.status === 'completed';
+        const unit = units[index]!;
+        const base = offsets.get(index) ?? 0;
+        const record = batch?.tools[base];
+        const reason = batch?.error?.reason ?? record?.reason ?? 'tool_result_denied';
+        if (unit.intent !== undefined && unit.plan !== undefined && batch) {
+          const first = unit.subs.map(sub => readSub(batch, sub.key, sub.name));
+          const second = (followUps.get(index) ?? []).map(sub => readSub(followBatch, sub.key, sub.name));
+          const subResults = [...first, ...second];
+          const digest = unit.plan.combine(subResults);
+          const ok = subResults.some(result => result.ok);
+          projections[index] = { name: call.name, status: ok ? 'completed' : 'error', markdown: noEmptyResult(digest.text), sources: [] };
+          return { id: call.id, name: call.name, response: ok ? intentResponse(digest, unit.intent) : { error: reason } };
+        }
+        const accepted = batch?.accepted.find(result => result.binding.callId === call.id && result.binding.name === call.name);
+        const completed = accepted !== undefined && record?.status === 'completed';
         const markdown = completed ? noEmptyResult(typeof accepted.response.markdown === 'string' ? accepted.response.markdown : typeof accepted.response.text === 'string' ? accepted.response.text : reason) : reason;
         const sources = completed ? sourceCards({ text: accepted.response.text, markdown: accepted.response.markdown, sources: accepted.response.sources }, Infinity) : [];
         const projection: LiveToolProjection = { name: call.name, status: completed ? 'completed' : 'error', markdown, sources };
@@ -979,6 +1154,15 @@ export class LiveSessionOwner {
         if (completed && cache.cacheable(call.name)) cache.set(call.name, call.args, { response: accepted.response, projection });
         return { id: call.id, name: call.name, response: completed ? accepted.response : { error: reason } };
       });
+      // Per-turn metadata only: the traces the council requires before any playback fence.
+      const latency: { tool: string; ms: number }[] = [];
+      for (const unit of pending) {
+        const started = handle.callStartedAt.get(unit.call.id);
+        if (started !== undefined) latency.push({ tool: unit.call.name, ms: Math.max(0, this.#now() - started) });
+        handle.callStartedAt.delete(unit.call.id);
+      }
+      hostLogEvent({ event: 'live_tool_turn', sequence: event.sequence, toolCallsThisTurn: units.reduce((sum, unit) => sum + unit.subs.length + (followUps.get(unit.index)?.length ?? 0), 0), toolLatencyMs: latency, toolResponseWhileGenerating: handle.speaking });
+      }
     }
     if ((this.#settled(handle) || generation !== handle.generation)) return;
     for (const [index, projection] of projections.entries()) {
@@ -996,7 +1180,6 @@ export class LiveSessionOwner {
     for (const call of event.calls) { handle.pendingCallIds.delete(call.id); handle.bargeInCallIds.delete(call.id); }
     handle.thinking = handle.pendingCallIds.size > 0;
   }
-
   #persist(handle: ActiveSession, event: { type: 'continuity' | 'remember_deferred'; sequence: number; text: string } | LiveVoiceEvent | { type: 'toolCall' | 'toolResult'; sequence: number; tool: LiveToolProjection }, kind: JournalKind, transaction?: Transaction): number | 'overflow' {
     const text = 'text' in event ? event.text : null;
     const finished = 'finished' in event && event.finished !== undefined ? (event.finished ? 1 : 0) : null;

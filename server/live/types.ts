@@ -1,4 +1,5 @@
 import type { createToolsOwner } from '../tools/index.js';
+import type { ResearchSelector } from '../tools/research.js';
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
 import type { DataClass, LiveVoiceOutcome, LiveVoicePort } from '../adapters/live-voice/index.js';
 import type { StorePort } from '../contracts/storage.js';
@@ -81,11 +82,19 @@ export interface LivePageProjection {
   jobs?: PendingLiveJob[];
   memory?: LiveMemoryProjection;
   state: 'idle' | 'listening' | 'thinking' | 'speaking' | 'rebuilding' | 'ended' | 'error'; since: number | null;
-  entries: { seq: number; kind: 'continuity' | 'inputTranscription' | 'outputTranscription' | 'toolCall' | 'toolResult' | 'interrupted' | 'turnComplete' | 'terminal'; event?: 'rebuilding' | 'resumed'; reason?: string; text?: string; tool?: { name: string; status: 'called' | 'completed' | 'error'; markdown?: string; sources?: { title: string; url?: string }[] } }[];
+  entries: { seq: number; kind: 'continuity' | 'inputTranscription' | 'outputTranscription' | 'toolCall' | 'toolResult' | 'interrupted' | 'turnComplete' | 'terminal' | 'researchProgress'; event?: 'rebuilding' | 'resumed'; reason?: string; text?: string; tool?: { name: string; status: 'called' | 'completed' | 'error'; markdown?: string; sources?: { title: string; url?: string }[] }; progress?: ResearchProgressView }[];
   cursor: number;
+}
+
+/** Metadata only: the research phase and source kinds, never the question or a result. */
+export interface ResearchProgressView {
+  researchId: string; phase: 'started' | 'round' | 'done' | 'stopped';
+  sourcesDone: string[]; sourcesPending: string[]; elapsedMs: number;
 }
 export interface LiveOwnerConfig {
   readonly tools?: LiveToolsComposition;
+  /** Optional same-provider text selector for the research loop; absent falls back to the fixed recipe. */
+  readonly research?: ResearchSelector;
   readonly memorySource?: LiveMemorySource;
   readonly store: LiveStorePort;
   readonly voice: LiveVoicePort;
@@ -123,7 +132,7 @@ export interface LiveSessionSnapshot {
 export type JournalKind =
   | 'toolCall' | 'toolResult' | 'continuity' | 'remember_deferred'
   | 'inputTranscription' | 'outputTranscription' | 'ready' | 'interrupted' | 'generationComplete'
-  | 'turnComplete' | 'waitingForInput' | 'terminal';
+  | 'turnComplete' | 'waitingForInput' | 'terminal' | 'researchProgress';
 
 export interface LiveFragment {
   waitedMs?: number;

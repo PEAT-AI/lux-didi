@@ -30,11 +30,12 @@ const CONNECTOR_READS = {
 };
 
 const QUESTION = 'Search lux knowledge for Lux Didi and open the most relevant entry.';
+const RESEARCH_QUESTION = 'What is on my calendar today? Please check.';
 
 function log(line) { process.stdout.write(line + '\n'); }
 function now() { return Date.now(); }
 
-const HOSTLESS_PROBES = ['probe2-connectors', 'probe3-text-turn', 'probe4-voice-turn'];
+const HOSTLESS_PROBES = ['probe2-connectors', 'probe3-text-turn', 'probe4-voice-turn', 'probe5-research'];
 
 /** The host launch budget in ms: SMOKE_LAUNCH_TIMEOUT_S seconds, defaulting to the native 6 s ready budget. */
 export function launchTimeoutMs(env = process.env) {
@@ -171,14 +172,16 @@ async function chatTurn({ base, token, epoch, dataDir, host, readyPid }) {
     }
   } catch { /* no diagnostics file means no recorded rejection */ }
   const pidStable = host.exited === null && host.pid === readyPid;
+  // #241: the intent surface answers "search then open" in one call, so the text turn must make
+  // exactly one tool call (the intent, or the one internal read it fans out to) and no get_insight turn.
   const ok = names.includes('search_knowledge') && names.includes('get_insight') && answerBytes > 0 && rejections.length === 0 && pidStable;
   return { ok, stage: 'turn', names, answerBytes, rejections, outcome: snap.outcome, pidStable };
 }
 
-function synthClip() {
+function synthClip(text = QUESTION) {
   // A short synthetic clip, written to a file: no microphone and no speaker is ever opened.
   const path = join(tmpdir(), `didi-smoke-clip-${randomUUID()}.wav`);
-  execFileSync('/usr/bin/say', ['-o', path, '--data-format=LEI16@16000', QUESTION], { stdio: 'ignore' });
+  execFileSync('/usr/bin/say', ['-o', path, '--data-format=LEI16@16000', text], { stdio: 'ignore' });
   return path;
 }
 
@@ -243,6 +246,117 @@ async function liveTurn({ base, token, epoch, clipPath }) {
   return { ok, stage: 'turn', toolResultAt: toolResultAt !== null, audioAfterResult: afterResult, openFor, lifecycle };
 }
 
+async function researchTurn({ base, token, epoch, dataDir, clipPath }) {
+  const headers = () => liveHeaders(token, epoch);
+  const created = await fetch(base + '/api/v1/live-sessions', { method: 'POST', headers: headers(), body: JSON.stringify({ inputClass: 'ordinary' }) });
+  if (created.status !== 200) return { ok: false, stage: 'create' };
+  const id = (await created.json()).data.liveSessionId;
+  // The audio socket probe4 uses is the host's one supported Live input channel: no microphone and no
+  // speaker is opened, only PCM synthesized to a file. The client text route is refused before it is live.
+  const ws = new WebSocket(base.replace('http://', 'ws://') + '/api/v1/live-sessions/' + id + '/audio',
+    { headers: { Authorization: `Bearer ${token}`, 'X-Didi-Authority-Epoch': epoch } });
+  const opened = await new Promise(resolve => {
+    ws.on('open', () => resolve(true));
+    ws.on('error', () => resolve(false));
+    setTimeout(() => resolve(ws.readyState === 1), 8000);
+  });
+  if (!opened) { try { ws.close(); } catch { /* noop */ } return { ok: false, stage: 'attach' }; }
+  const journal = async () => {
+    const response = await fetch(base + '/api/v1/live-sessions/' + id + '/journal?limit=200', { headers: headers() });
+    return (await response.json()).data;
+  };
+  try {
+    // The host commits a 'ready' journal fragment once the provider socket is live.
+    const readyDeadline = now() + 30000;
+    let ready = false;
+    while (now() < readyDeadline) {
+      const data = await journal().catch(() => null);
+      ready = Boolean(data && Array.isArray(data.fragments) && data.fragments.some(fragment => fragment.kind === 'ready'));
+      if (ready) break;
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+    if (!ready) return { ok: false, stage: 'ready' };
+    // Give the model's opening turn a short grace, then send ONE question as PCM over the audio socket.
+    const graceDeadline = now() + 12000;
+    while (now() < graceDeadline) {
+      const data = await journal().catch(() => null);
+      if (data && Array.isArray(data.fragments) && data.fragments.some(fragment => fragment.kind === 'turnComplete')) break;
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+    // Only this session's runs count: probe4's Live turn writes its own research_run line earlier in the
+    // same host log, so read only what is appended from here on. The journal sequence marks the same point
+    // for the question's own tool calls, so an opening-turn research call never counts.
+    let logBase = 0;
+    try { logBase = Buffer.byteLength(await readFile(join(dataDir, 'logs/host.log'), 'utf8'), 'utf8'); } catch { logBase = 0; }
+    let journalBase = 0;
+    { const data = await journal().catch(() => null); const fragments = data && Array.isArray(data.fragments) ? data.fragments : []; journalBase = fragments.reduce((max, fragment) => Math.max(max, Number(fragment.journalSequence) || 0), 0); }
+    const wav = await readFile(clipPath);
+    let offset = 12, pcm = null;
+    while (offset + 8 <= wav.length) {
+      const chunkId = wav.toString('ascii', offset, offset + 4);
+      const size = wav.readUInt32LE(offset + 4);
+      if (chunkId === 'data') { pcm = wav.subarray(offset + 8, offset + 8 + size); break; }
+      offset += 8 + size + (size & 1);
+    }
+    if (!pcm || !pcm.length) return { ok: false, stage: 'clip' };
+    const silence = Buffer.alloc(32000);
+    ws.send(silence);
+    await new Promise(resolve => setTimeout(resolve, 300));
+    for (let index = 0; index < pcm.length; index += 1600) {
+      ws.send(pcm.subarray(index, Math.min(index + 1600, pcm.length)));
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    ws.send(silence);
+    await new Promise(resolve => setTimeout(resolve, 300));
+    try { ws.send(JSON.stringify({ type: 'endAudioStream' })); } catch { /* noop */ }
+    const deadline = now() + 90000;
+    let calls = 0; let result = null; let outputChars = 0; let outputAtResult = null;
+    while (now() < deadline) {
+      const data = await journal().catch(() => null);
+      const all = data && Array.isArray(data.fragments) ? data.fragments : [];
+      const fragments = all.filter(fragment => (Number(fragment.journalSequence) || 0) > journalBase);
+      calls = fragments.filter(fragment => fragment.kind === 'toolCall' && fragment.tool && fragment.tool.name === 'research').length;
+      const results = fragments.filter(fragment => fragment.kind === 'toolResult' && fragment.tool && fragment.tool.name === 'research');
+      if (results.length) result = results[results.length - 1].tool;
+      const nextOutput = fragments.filter(fragment => fragment.kind === 'outputTranscription').reduce((sum, fragment) => sum + (typeof fragment.text === 'string' ? fragment.text.length : 0), 0);
+      // The response and the model's answer can land in the same one-second poll; anchor the "after" mark
+      // on the output seen before this poll, not on the output the poll already carries.
+      if (result && outputAtResult === null) outputAtResult = outputChars;
+      outputChars = nextOutput;
+      if (result && outputAtResult !== null && outputChars > outputAtResult) break;
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    // The per-run metadata reaches the host log only through the closed allowlist; read what this session appended.
+    const runs = []; let progress = 0;
+    try {
+      const hostLog = await readFile(join(dataDir, 'logs/host.log'), 'utf8');
+      const appended = Buffer.from(hostLog, 'utf8').subarray(logBase).toString('utf8');
+      for (const line of appended.split('\n')) {
+        if (!line.includes('"research_run"') && !line.includes('"research_progress"')) continue;
+        let record; try { record = JSON.parse(line); } catch { continue; }
+        if (record.event === 'research_run') runs.push(record);
+        else if (record.event === 'research_progress') progress += 1;
+      }
+    } catch { /* no host log means no recorded run */ }
+    if (calls !== 1) return { ok: false, stage: 'call', calls };
+    // The question is one research run. A model may call the tool more than once (start then continue or
+    // stop), but every run line for the question carries the one researchId the host minted.
+    const ids = [...new Set(runs.map(line => line.researchId))];
+    if (ids.length !== 1) return { ok: false, stage: 'runs', calls, runs: ids.length, detail: runs.map(line => `${line.status}:${line.stopReason}:${line.rounds}`).slice(0, 8).join(' ') };
+    const answered = runs.filter(line => (line.status === 'answered' || line.status === 'partial') && line.rounds >= 1);
+    if (!answered.length) return { ok: false, stage: 'status', calls, runs: runs.length };
+    const run = answered[answered.length - 1];
+    const read = Array.isArray(run.sources) ? run.sources.filter(source => source.disposition === 'completed').length : 0;
+    if (read < 1) return { ok: false, stage: 'sources', read };
+    if (!(run.replyBytes <= 2000)) return { ok: false, stage: 'over_cap', replyBytes: run.replyBytes };
+    if (outputAtResult === null || outputChars <= outputAtResult) return { ok: false, stage: 'no_output' };
+    // Three legitimate drivers; the run must name one of them and never none.
+    const driver = run.selectorMs > 0 ? 'selector' : (run.fallbackUsed === true ? 'fallback' : 'single-source-hint');
+    if (driver !== 'selector' && driver !== 'fallback' && driver !== 'single-source-hint') return { ok: false, stage: 'driver', driver };
+    return { ok: true, stage: 'turn', calls, rounds: run.rounds, sources: `${run.sources.length}(${read} read)`, driver, selectorMs: run.selectorMs, elapsedMs: run.elapsedMs, deadAirMs: run.deadAirMs, replyBytes: run.replyBytes, outputAfter: outputChars - outputAtResult, progress };
+  } finally { try { ws.close(); } catch { /* noop */ } }
+}
+
 async function main() {
   const dev = process.argv.includes('--dev');
   const results = [];
@@ -280,6 +394,15 @@ async function main() {
         results.push({ id: 'probe4-voice-turn', ok: voice.ok, note: voice.ok ? `tool_result=yes audio_after=${voice.audioAfterResult}B open_after=${voice.openFor}ms lifecycle=${voice.lifecycle}` : `stage=${voice.stage}` });
       } finally { await rm(clipPath, { force: true }); }
     } catch (error) { results.push({ id: 'probe4-voice-turn', ok: false, note: String(error && error.message).slice(0, 120) }); }
+    try {
+      const clipPath = synthClip(RESEARCH_QUESTION);
+      try {
+        const research = await researchTurn({ base, token, epoch, dataDir, clipPath });
+        results.push({ id: 'probe5-research', ok: research.ok, note: research.ok
+          ? `calls=${research.calls} rounds=${research.rounds} sources=${research.sources} driver=${research.driver} selectorMs=${research.selectorMs} elapsedMs=${research.elapsedMs} deadAirMs=${research.deadAirMs} reply=${research.replyBytes}B output_after=${research.outputAfter}B progress=${research.progress}`
+          : `stage=${research.stage} calls=${research.calls ?? 0} runs=${research.runs ?? 0} detail=${research.detail ?? 'n/a'} status=${research.status ?? 'n/a'} rounds=${research.rounds ?? 0} read=${research.read ?? 0} reply=${research.replyBytes ?? 0}B load=${loadAverageText()}` });
+      } finally { await rm(clipPath, { force: true }); }
+    } catch (error) { results.push({ id: 'probe5-research', ok: false, note: String(error && error.message).slice(0, 120) }); }
   } else {
     results.push(...noHostResults());
   }

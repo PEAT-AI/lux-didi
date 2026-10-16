@@ -94,6 +94,28 @@ final class NativeLiveJournal {
         append(record)
     }
 
+    /// P2-R1: one metadata-only `playback_overflow_flush` line: the playback memory guard dropped
+    /// the queued turn. Numbers and the session id only, never audio, text or a device label.
+    func appendPlaybackOverflow(sessionID: String, queuedMs: Int, buffers: Int) {
+        append([
+            "event": "playback_overflow_flush",
+            "liveSessionId": sessionID,
+            "queuedMs": queuedMs,
+            "buffers": buffers,
+        ])
+    }
+
+    /// Contract C1: one metadata-only `wait_cue` line per cue played: ISO time (added by `append`),
+    /// session id, milliseconds since the queue drained and the cue index 1...3. Numbers only.
+    func appendWaitCue(sessionID: String, msSinceDrain: Int, index: Int) {
+        append([
+            "event": "wait_cue",
+            "liveSessionId": sessionID,
+            "msSinceDrain": msSinceDrain,
+            "index": index,
+        ])
+    }
+
     private func write(_ record: [String: Any]) {
         guard let fileURL else { return }
         do {

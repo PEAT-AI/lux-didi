@@ -80,6 +80,13 @@ enum State: String, CaseIterable {
                 self.state = self.muted ? .muted : (speaking ? .speaking : .listening)
             }
         }
+        device.onUnderrun = { [weak self] arrival in
+            guard let self else { return }
+            self.appendLocalDiagnostic(["event": "playback_underrun",
+                "timestamp": ISO8601DateFormatter().string(from: Date()),
+                "session": String(self.captureDiagnosticOwner ?? 0),
+                "queuedMs": arrival.queuedMs, "sinceLastChunkMs": arrival.sinceLastChunkMs])
+        }
         device.onInputChange = { [weak self] name in
             guard let self else { return }
             self.journal.append(.routeChange)
@@ -108,6 +115,18 @@ enum State: String, CaseIterable {
                 turnCompleteSeen: sample.turnCompleteSeen,
                 rms: NativeLiveRms(mean: sample.rmsMean, max: sample.rmsMax, speechBuffers: sample.rmsSpeechBuffers),
                 at: sample.at)
+        }
+        // P2-R1: one native-live.log line when the playback memory guard drops the queued turn.
+        device.onPlaybackOverflow = { [weak self] queuedMs, buffers in
+            guard let self else { return }
+            self.journal.appendPlaybackOverflow(sessionID: await self.coordinator.sessionID ?? "unknown",
+                                                queuedMs: queuedMs, buffers: buffers)
+        }
+        // Contract C1: one native-live.log line per soft wait cue played.
+        device.onWaitCue = { [weak self] index, msSinceDrain in
+            guard let self else { return }
+            self.journal.appendWaitCue(sessionID: await self.coordinator.sessionID ?? "unknown",
+                                       msSinceDrain: msSinceDrain, index: index)
         }
     }
     // Presentation only: an offer never opens a session, an audio engine or the microphone.

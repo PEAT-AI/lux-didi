@@ -3,8 +3,8 @@ import Security
 import LocalAuthentication
 import Darwin
 
-// Real Security.framework calls in a separate, bounded test process. No global
-// interaction-policy change and no default/search-list/keychain/ACL mutation.
+// Real Security.framework calls in a separate, bounded test process. It inherits
+// the lifetime non-interactive policy and mutates no default/search-list/keychain/ACL.
 @MainActor enum KeychainSDKProof {
     static func run(mode: String, state: URL, output: URL) throws -> Bool {
         guard mode == "missing" || mode == "inherited" else { throw NativeServiceError.invalidRuntime }
@@ -22,9 +22,16 @@ import Darwin
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: output.path)
         }
         let readback = NativeKeychainPolicy.check()
-        let noninteractive = NativeKeychainPolicy.context?.interactionNotAllowed == true
+        // The real process-global readback, not only the held LAContext: the legacy
+        // keychain ignores per-call flags, so its flag must itself read false.
+        var legacyAllowed = DarwinBoolean(true)
+        let legacyReadback = SecKeychainGetUserInteractionAllowed(&legacyAllowed)
+        let noninteractive = legacyReadback == errSecSuccess && !legacyAllowed.boolValue
+            && NativeKeychainPolicy.context?.interactionNotAllowed == true
         report["policyReadbackStatus"] = Int(readback)
         report["policyReadbackAllowed"] = !noninteractive
+        report["legacyReadbackStatus"] = Int(legacyReadback)
+        report["legacyInteractionAllowed"] = legacyAllowed.boolValue
         guard readback == errSecSuccess, noninteractive else {
             report["stage"] = "lifetime-policy-not-established"; try write(); return false
         }

@@ -126,4 +126,24 @@ export const liveMigrations: readonly SchemaMigration[] = [{
   `DROP TABLE live_journal`,
   `ALTER TABLE live_journal_remember RENAME TO live_journal`,
   `CREATE INDEX live_journal_session ON live_journal(live_session_id, journal_id)`
+]}, { owner: 'live', version: 7, statements: [
+    `CREATE TABLE live_journal_progress (
+       journal_id INTEGER PRIMARY KEY AUTOINCREMENT,
+       live_session_id TEXT NOT NULL REFERENCES live_sessions(live_session_id),
+       provider_sequence INTEGER,
+       kind TEXT NOT NULL CHECK (kind IN ('inputTranscription','outputTranscription','ready','interrupted','generationComplete','turnComplete','waitingForInput','terminal','toolCall','toolResult','continuity','remember_deferred','researchProgress')),
+       text TEXT,
+       tool_json TEXT,
+       finished INTEGER CHECK (finished IS NULL OR finished IN (0,1)),
+       value INTEGER CHECK (value IS NULL OR value IN (0,1)),
+       terminal_outcome TEXT,
+       rejected_kind TEXT,
+       rejected_sequence INTEGER,
+       payload_bytes INTEGER NOT NULL,
+       arrived_at INTEGER NOT NULL
+     )`,
+  `INSERT INTO live_journal_progress SELECT * FROM live_journal`,
+  `DROP TABLE live_journal`,
+  `ALTER TABLE live_journal_progress RENAME TO live_journal`,
+  `CREATE INDEX live_journal_session ON live_journal(live_session_id, journal_id)`
 ]}];

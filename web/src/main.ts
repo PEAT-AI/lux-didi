@@ -11,7 +11,7 @@ import { connectionsMarkup } from './connector-status';
 import { settingsMarkup } from './settings-view';
 import { answerMarkup } from './markdown';
 import { applyTheme, loadTheme, saveTheme, type Theme } from './theme';
-import type { Session, Entry, Commitment, CommitmentDetail, Plan, Recall, Status, LiveCurrent } from './protocol';
+import type { Session, Entry, Commitment, CommitmentDetail, Plan, Recall, Status, LiveCurrent, ResearchProgressView } from './protocol';
 
 type Tab = 'Conversation' | 'Today' | 'Memory' | 'Settings';
 // --- Three-lane layout, native bridge and the web Live state machine (#255) ---
@@ -89,9 +89,27 @@ function activityLineMarkup() {
   if (key !== activityKey) { activityKey = key; activityStartedAt = Date.now(); }
   return activityMarkup(activity, activity ? Date.now() - activityStartedAt : 0);
 }
+// The lookup subtitle that stands in for the voice-lane status while Naya looks (U1).
+const LOOKUP_SOURCE_WORDS: Record<string, string> = { knowledge: 'lux', calendar: 'calendar', mail: 'mail', chat: 'Mattermost' };
+const SLOW_LOOKUP_MS = 6000;
+function lookupLineMarkup(current: LiveCurrent | undefined): string {
+  const entries = current?.entries ?? [];
+  let progress: ResearchProgressView | undefined;
+  for (let index = entries.length - 1; index >= 0; index--) {
+    const candidate = entries[index]!;
+    if (candidate.kind === 'researchProgress' && candidate.progress) { progress = candidate.progress; break; }
+  }
+  if (!progress || progress.phase === 'done' || progress.phase === 'stopped') return '';
+  if (progress.elapsedMs >= SLOW_LOOKUP_MS) return 'Still looking';
+  const done = new Set(progress.sourcesDone);
+  const sources = [...progress.sourcesDone, ...progress.sourcesPending]
+    .map(kind => done.has(kind) ? `${LOOKUP_SOURCE_WORDS[kind] ?? kind} <span class="lookup-check" aria-hidden="true">&#10003;</span>` : LOOKUP_SOURCE_WORDS[kind] ?? kind)
+    .join(', ');
+  return `Looking in ${sources}`;
+}
 function orbCaptionMarkup() {
   const honesty=!live||live.state==='idle'||live.muted===true;
-  return `<p class="orb-label" role="status" aria-live="polite">${e(orbLabel())}</p>${activityLineMarkup()}${honesty?'<p class="voice-honesty"><strong>Not listening</strong><span>Voice stays on your Mac. Use its native record control.</span></p>':''}`;
+  return `<p class="orb-label" role="status" aria-live="polite">${e(orbLabel())}</p>${activityLineMarkup()}${lookupLineMarkup(live)}${honesty?'<p class="voice-honesty"><strong>Not listening</strong><span>Voice stays on your Mac. Use its native record control.</span></p>':''}`;
 }
 function orbMarkup() {
   const glow = ['CONNECTED','LISTENING','SPEAKING','PROCESSING'].includes(orbState());
@@ -192,7 +210,7 @@ function voiceHeadMarkup() {
   const last = view.lastSessionEndedAt ? `Last session ${e(datetime(view.lastSessionEndedAt))}` : 'No session yet';
   const active = view.state === 'live' || view.state === 'muted' || view.state === 'starting';
   const orb = '<div class="voice-orb"><canvas id="didi-orb" width="120" height="120" aria-hidden="true"></canvas></div>';
-  return `${orb}<div class="voice-status"><p class="voice-state" role="status" aria-live="polite">${e(liveStateCopy(view.state))}</p><p class="voice-time">${last}</p></div><div class="voice-actions">${active ? `<button id="voice-stop" class="stop-pill">Stop</button><button id="voice-mute" class="quiet">${view.state === 'muted' ? 'Unmute' : 'Mute'}</button>` : `<button id="voice-start" class="start-pill" ${startAvailable(view) ? '' : 'aria-disabled="true"'}>Start</button>`}<button id="new-conversation" class="icon-button" aria-label="New conversation" title="New conversation"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button></div>${error ? `<p class="voice-error" role="alert">${e(error)}</p>` : ''}`;
+  return `${orb}<div class="voice-status"><p class="voice-state" role="status" aria-live="polite">${e(liveStateCopy(view.state))}</p><p class="voice-time" id="voice-subtitle" data-normal="${e(last)}">${last}</p></div><div class="voice-actions">${active ? `<button id="voice-stop" class="stop-pill">Stop</button><button id="voice-mute" class="quiet">${view.state === 'muted' ? 'Unmute' : 'Mute'}</button>` : `<button id="voice-start" class="start-pill" ${startAvailable(view) ? '' : 'aria-disabled="true"'}>Start</button>`}<button id="new-conversation" class="icon-button" aria-label="New conversation" title="New conversation"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button></div>${error ? `<p class="voice-error" role="alert">${e(error)}</p>` : ''}`;
 }
 function chatHeadMarkup() {
   return `<p class="lane-title">Chat</p>`;
@@ -418,6 +436,9 @@ function paintLive(){
   }
   paintedLivePoll=panel ? livePoll : undefined;
   const caption=document.querySelector('.orb-caption');const markup=orbCaptionMarkup();if(caption && caption.innerHTML!==markup)caption.innerHTML=markup;
+  // U1: the lookup progress stands in for the status subtitle while Naya looks, then the subtitle returns.
+  const subtitle=document.getElementById('voice-subtitle');
+  if(subtitle){const lookup=lookupLineMarkup(live);const next=lookup||subtitle.dataset.normal||'';if(subtitle.innerHTML!==next)subtitle.innerHTML=next;}
   const next=orbState();if(next!==appliedOrbState){appliedOrbState=next;orb?.setState(next);orbHeader?.setState(next);}
 }
 onAuthorityChanged(reason=>{

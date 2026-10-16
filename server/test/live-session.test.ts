@@ -4,6 +4,11 @@ import * as labels from '../domain/labels.js';
 import { composeLive, resolveLiveMemory } from '../host/live.js';
 import { captureHostDiagnostics, HostLog, safeEvent } from '../host/log.js';
 import { attachHostLogSink } from '../tools/host-events.js';
+// Side-effect import: register the intent-tool suite in this process so a declared check runs it
+// (live-session is in the contract scope; the check scripts are not).
+import './intent-tools.test.js';
+// Side-effect import: register the research-loop suite in this process so a declared check runs it.
+import './research.test.js';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
@@ -27,7 +32,7 @@ import { join } from 'node:path';
 import { loadLiveConfig } from '../config/live.js';
 import { NAYA_BASE, NAYA_TOOLS, MEMORY_SECTION_CHAR_LIMIT, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
 import { GeminiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
-import type { LiveVoiceLimits, LiveVoiceRequest } from '../adapters/live-voice/index.js';
+import type { GeminiLiveVoiceOptions, LiveVoiceLimits, LiveVoiceRequest } from '../adapters/live-voice/index.js';
 import { chatMigrations } from '../chat/index.js';
 import { domainMigrations } from '../domain/schema.js';
 import { createDomainPort } from '../domain/facade.js';
@@ -88,6 +93,7 @@ interface Harness {
 async function harness(t: TestContext, overrides: {
   limits?: Record<string, number>;
   adapterLimits?: Partial<LiveVoiceLimits>;
+  socketFactory?: NonNullable<GeminiLiveVoiceOptions['socketFactory']>;
   credentials?: { resolve(reference: string): Promise<string | undefined> };
   model?: string;
   tools?: boolean;
@@ -117,7 +123,7 @@ async function harness(t: TestContext, overrides: {
     ...(overrides.overlay ? { overlay: overrides.overlay } : {}), ...(overrides.system !== undefined ? { prompt: { text: overrides.system, dataClass: 'ordinary' } } : {}),
     ...(overrides.acceptedPrompt ? { acceptedPrompt: overrides.acceptedPrompt(store.assistantId) } : {}) });
   const voice = new GeminiLiveVoiceAdapter(options({
-    socketFactory: f.socketFactory, modelId: profile.liveModelId, voice: profile.voice, keyReference: profile.keyReference,
+    socketFactory: overrides.socketFactory ?? f.socketFactory, modelId: profile.liveModelId, voice: profile.voice, keyReference: profile.keyReference,
     route: { enabled: true, provider: 'gemini', modelId: profile.liveModelId, dataClasses: profile.route.dataClasses },
     credentials: overrides.credentials ?? { resolve: async () => CANARY },
     limits: { handshakeMs: 1000, idleMs: 2000, sessionMs: 4000, closeMs: 50, ...overrides.adapterLimits },
@@ -175,7 +181,7 @@ async function harness(t: TestContext, overrides: {
     let calendarEndpoint: { id: string; url: string; account: string; resource: string } | undefined;
     let calendarSdk: Server | undefined;
     let calendarTransport: WebStandardStreamableHTTPServerTransport | undefined;
-    const calendarSchemas = [{ name: 'gcal_calendars', inputSchema: { type: 'object' } }];
+    const calendarSchemas = [{ name: 'gcal_calendars', inputSchema: { type: 'object' } }, { name: 'gcal_list', inputSchema: { type: 'object' } }];
     if (overrides.calendar) {
       calendarEndpoint = { id: 'calendar', url: 'https://fixture.invalid/calendar', account: 'account', resource: 'resource' };
       registry.register(calendarEndpoint); registry.enable(calendarEndpoint.id); registry.allowEgress(calendarEndpoint.id);
@@ -184,7 +190,9 @@ async function harness(t: TestContext, overrides: {
       calendarSdk.setRequestHandler('tools/list', () => ({ tools: structuredClone(calendarSchemas) }) as never);
       calendarSdk.setRequestHandler('tools/call', req => {
         calls.push({ name: req.params.name, args: req.params.arguments });
-        return { content: [{ type: 'text', text: JSON.stringify({ calendars: [{ id: 'primary', summary: 'Primary' }] }) }] };
+        return { content: [{ type: 'text', text: JSON.stringify({ data: req.params.name === 'gcal_list'
+          ? { events: [{ summary: `Event on ${String(req.params.arguments?.['calendarId'] ?? 'primary')}` }] }
+          : { calendars: [{ id: 'primary', summary: 'Primary' }, { id: 'work', summary: 'Work' }] } }) }] };
       });
       await calendarSdk.connect(calendarTransport);
     }
@@ -218,7 +226,7 @@ async function harness(t: TestContext, overrides: {
     }
     if (overrides.calendar && calendarEndpoint) {
       toolOwner.applyConnection({ schemaVersion: 1, ownerId: store.assistantId, connectionId: 'calendar', generation: 1, enabled: true, connector: 'google',
-        endpoint: { ...calendarEndpoint, credentialRef: null }, toolNames: ['gcal_calendars'], schemaDigest: canonicalToolDigest(calendarSchemas),
+        endpoint: { ...calendarEndpoint, credentialRef: null }, toolNames: ['gcal_calendars', 'gcal_list'], schemaDigest: canonicalToolDigest(calendarSchemas),
         sourcePolicy: { id: 'live-fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
         route: { identity: liveProfileIdentity(profile), allowedClasses: ['ordinary'] },
         bounds: { maxQueryChars: 200, maxSearchLimit: 60, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 } });
@@ -914,6 +922,43 @@ test('live migrations preserve a populated accepted Store byte-for-byte', async 
     [chatMigrations, domainMigrations, liveMigrations].map(migrations => [migrations[0]!.owner, Math.max(...migrations.map(migration => migration.version))]));
 });
 
+test('U1-R2: the v7 live migration preserves every v6 journal row, its index and its foreign key, and admits a researchProgress row', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-live-v7-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const domain = createDomainPort({ outbox: Outbox });
+  const columns = 'journal_id,live_session_id,provider_sequence,kind,text,finished,value,terminal_outcome,rejected_kind,rejected_sequence,payload_bytes,arrived_at';
+  const kinds = ['inputTranscription', 'outputTranscription', 'ready', 'interrupted', 'generationComplete', 'turnComplete', 'waitingForInput', 'terminal', 'toolCall', 'toolResult', 'continuity', 'remember_deferred'];
+  const v6 = new Store(dir, [...domain.migrations, ...chatMigrations, ...liveMigrations.filter(migration => migration.version < 7)]);
+  v6.transaction(tx => {
+    tx.run(`INSERT INTO live_sessions(live_session_id,owner_assistant_id,authority_epoch,idempotency_key,fingerprint,client_id,audit_id,profile_identity,prompt_identity,lifecycle,dispatch_intent,ready,journal_events,journal_bytes,journal_complete,consumer_state,terminal_outcome,terminal_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,'terminal',1,1,12,10,1,'ended',?,1,1,1)`,
+      ['v6-live', v6.assistantId, v6.authorityEpoch, 'v6-key', 'fingerprint', 'client', 'audit', 'profile', 'prompt', JSON.stringify({ state: 'closed' })]);
+    kinds.forEach((kind, index) => {
+      const text = kind === 'inputTranscription' || kind === 'outputTranscription' ? `row ${index}` : kind === 'continuity' ? JSON.stringify({ event: 'resumed' }) : kind === 'remember_deferred' ? '5' : null;
+      const outcome = kind === 'terminal' ? JSON.stringify({ state: 'closed' }) : null;
+      tx.run(`INSERT INTO live_journal(${columns}) VALUES (?,?,'${index}',?,?,NULL,NULL,?,NULL,NULL,${index},${index})`, [100 + index, 'v6-live', kind, text, outcome]);
+    });
+  });
+  const v6Rows = v6.transaction(tx => tx.all(`SELECT ${columns} FROM live_journal ORDER BY journal_id`));
+  assert.equal(v6Rows.length, kinds.length);
+  v6.close();
+
+  const migrated = new Store(dir, [...domain.migrations, ...chatMigrations, ...liveMigrations]);
+  const rows = migrated.transaction(tx => tx.all(`SELECT ${columns} FROM live_journal ORDER BY journal_id`));
+  assert.deepEqual(rows, v6Rows, 'every v6 journal row survives the v7 rebuild unchanged');
+  const index = migrated.transaction(tx => tx.get("SELECT name FROM sqlite_master WHERE type='index' AND name='live_journal_session'"));
+  assert.ok(index, 'the live_journal_session index survives the v7 rebuild');
+  const tableSql = migrated.transaction(tx => String(tx.get("SELECT sql FROM sqlite_master WHERE type='table' AND name='live_journal'")!['sql']));
+  assert.match(tableSql, /REFERENCES live_sessions/, 'the journal foreign key survives the v7 rebuild');
+  migrated.transaction(tx => tx.run(`INSERT INTO live_journal(${columns}) VALUES (200,'v6-live',NULL,'researchProgress','{}',NULL,NULL,NULL,NULL,NULL,0,99)`));
+  assert.equal(migrated.transaction(tx => Number(tx.get("SELECT COUNT(*) AS n FROM live_journal WHERE kind='researchProgress'")!['n'])), 1, 'the v7 CHECK admits a researchProgress row');
+  const migratedRows = migrated.transaction(tx => tx.all(`SELECT ${columns} FROM live_journal ORDER BY journal_id`));
+  migrated.close();
+
+  const reopened = new Store(dir, [...domain.migrations, ...chatMigrations, ...liveMigrations]);
+  assert.deepEqual(reopened.transaction(tx => tx.all(`SELECT ${columns} FROM live_journal ORDER BY journal_id`)), migratedRows, 'a second open is idempotent');
+  reopened.close();
+});
+
 test('a failed store write aborts visibly and never fabricates a durable outcome', async t => {
   const h = await harness(t);
   const { session, attachment } = await attached(h);
@@ -1387,9 +1432,9 @@ test('Live accepts a frozen real tool snapshot and projects only result-gated Ma
   const { session, attachment } = await attached(h);
   assert.equal(h.owner.lookupAuthority(session.liveSessionId)?.actorId, h.ctx.clientId);
   const setup = (h.f.frames[0] as { setup: { tools: { functionDeclarations: { name: string; parameters: any }[] }[] } }).setup;
-  assert.deepEqual(setup.tools[0]!.functionDeclarations.map(tool => tool.name).sort(), ['get_insight', 'remember_note', 'search_knowledge']);
-  const derived = setup.tools[0]!.functionDeclarations.find(d => d.name === 'get_insight')!;
-  assert.equal(derived.parameters.properties.ids.type, 'STRING');
+  assert.deepEqual(setup.tools[0]!.functionDeclarations.map(tool => tool.name).sort(), ['remember_note', 'research']);
+  const derived = setup.tools[0]!.functionDeclarations.find(d => d.name === 'research')!;
+  assert.equal(derived.parameters.properties.question.type, 'STRING');
   const outputs = attachment.output[Symbol.asyncIterator]();
   assert.equal((await outputs.next()).value?.marker.kind, 'ready');
   h.f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }, { id: 'c2', name: 'get_insight', args: { ids: [123] } }] } });
@@ -1815,6 +1860,95 @@ test('an exhausted original budget never opens a replacement connection', async 
   assert.equal(h.f.connections, 1);
 });
 
+/** Replace a live client's send with one that reports a transport failure on the next write, asynchronously. */
+function failUpstream(client: unknown): void {
+  (client as { send: (data: string, a?: unknown, b?: unknown) => void }).send = (_data: string, a?: unknown, b?: unknown) => {
+    const callback = (typeof a === 'function' ? a : b) as ((error?: Error) => void) | undefined;
+    queueMicrotask(() => callback?.(Object.assign(new Error('synthetic upstream write failure'), { code: 'ECONNRESET' })));
+  };
+}
+
+test('a failed upstream audio write rebuilds the session once and logs one live_upstream_drop', async t => {
+  const records: Record<string, unknown>[] = [];
+  const detach = attachHostLogSink({ event: raw => { const record = raw as Record<string, unknown>; if (record.event === 'live_upstream_drop') records.push(record); } });
+  t.after(detach);
+  const sockets: unknown[] = [];
+  let h!: Harness;
+  h = await harness(t, { socketFactory: (url, config) => { const client = h.f.socketFactory(url, config); sockets.push(client); return client; } });
+  const { session, attachment } = await attached(h, 'upstream-drop');
+  const handle = 'synthetic-upstream-drop-handle';
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: handle } });
+  for (let i = 0; i < 100; i++) { if (h.store.transaction(tx => tx.get('SELECT resumption_handle FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!['resumption_handle'] === handle) break; await tick(); }
+  const output = attachment.output[Symbol.asyncIterator]();
+  attachment.sendAudio({ pcm }); await h.f.frame(2);
+  failUpstream(sockets[0]);
+  attachment.sendAudio({ pcm });
+  await continuity(output, 'rebuilding');
+  // Owner audio during the cut is accepted and dropped, never buffered without bound.
+  assert.doesNotThrow(() => attachment.sendAudio({ pcm }));
+  for (let i = 0; i < 50 && h.f.connections < 2; i++) await tick();
+  assert.equal(h.f.connections, 2, 'exactly one rebuild opened exactly one replacement connection');
+  h.f.send({ setupComplete: {} });
+  await continuity(output, 'resumed');
+  assert.equal(records.length, 1, 'one metadata record per occurrence');
+  assert.deepEqual(Object.keys(records[0]!).sort(), ['bufferedAmount', 'closeCode', 'errorKind', 'event', 'rebuilt', 'sessionMs', 'writesFailed'].sort());
+  assert.equal(records[0]!.errorKind, 'ECONNRESET');
+  assert.equal(records[0]!.rebuilt, true);
+  assert.ok((records[0]!.writesFailed as number) >= 1);
+  assert.ok((records[0]!.sessionMs as number) >= 0);
+  attachment.close(); await attachment.done;
+});
+
+test('two upstream rebuilds are the bound, then the call ends with resume_failed', async t => {
+  const sockets: unknown[] = [];
+  let h!: Harness;
+  h = await harness(t, { socketFactory: (url, config) => { const client = h.f.socketFactory(url, config); sockets.push(client); return client; } });
+  const { session, attachment } = await attached(h, 'upstream-bound');
+  const handle = 'synthetic-upstream-bound-handle';
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: handle } });
+  for (let i = 0; i < 100; i++) { if (h.store.transaction(tx => tx.get('SELECT resumption_handle FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!['resumption_handle'] === handle) break; await tick(); }
+  const output = attachment.output[Symbol.asyncIterator]();
+  for (let attempt = 0; attempt < 2; attempt++) {
+    attachment.sendAudio({ pcm }); await tick();
+    failUpstream(sockets[attempt]);
+    attachment.sendAudio({ pcm });
+    await continuity(output, 'rebuilding');
+    for (let i = 0; i < 50 && h.f.connections < attempt + 2; i++) await tick();
+    h.f.send({ setupComplete: {} });
+    await continuity(output, 'resumed');
+  }
+  attachment.sendAudio({ pcm }); await tick();
+  failUpstream(sockets[2]);
+  attachment.sendAudio({ pcm });
+  assert.deepEqual((await attachment.done).terminal, { state: 'failed', code: 'resume_failed' });
+  assert.equal(h.f.connections, 3, 'initial session plus exactly two rebuilds');
+});
+
+test('a pending tool call is never answered on the rebuilt socket', async t => {
+  let finish!: () => void;
+  const slow = new Promise<void>(resolve => { finish = resolve; });
+  const sockets: unknown[] = [];
+  let h!: Harness;
+  h = await harness(t, { tools: true, beforeTool: () => slow, socketFactory: (url, config) => { const client = h.f.socketFactory(url, config); sockets.push(client); return client; } });
+  const { session, attachment } = await attached(h, 'upstream-tool');
+  const handle = 'synthetic-upstream-tool-handle';
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: handle } });
+  for (let i = 0; i < 100; i++) { if (h.store.transaction(tx => tx.get('SELECT resumption_handle FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!['resumption_handle'] === handle) break; await tick(); }
+  const output = attachment.output[Symbol.asyncIterator]();
+  h.f.send({ toolCall: { functionCalls: [{ id: 'keep1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
+  while (!h.calls.length) await tick();
+  failUpstream(sockets[0]);
+  attachment.sendAudio({ pcm });
+  await continuity(output, 'rebuilding');
+  for (let i = 0; i < 50 && h.f.connections < 2; i++) await tick();
+  h.f.send({ setupComplete: {} });
+  await continuity(output, 'resumed');
+  finish();
+  for (let i = 0; i < 20; i++) await tick();
+  assert.equal(h.f.frames.some(frame => 'toolResponse' in (frame as object)), false, 'the orphaned tool response is never sent on the new socket');
+  attachment.close(); await attachment.done;
+});
+
 for (const outcome of ['failed', 'closed', 'unknown'] as const) {
   test(`page projects past Live ${outcome} with truthful timing`, async t => {
     const h = await harness(t);
@@ -2037,4 +2171,104 @@ test('E1: provider barge-in writes one metadata-only live_interrupted host recor
   assert.ok((record.msSinceLastModelAudio as number) >= 4200, 'ms since the last output chunk reflects the elapsed turn');
   assert.deepEqual(Object.keys(record).sort(), ['event', 'liveSessionId', 'msSinceLastModelAudio', 'turnCompleteSeen'],
     'metadata only: no audio bytes, text, device label or provider payload');
+});
+test('an intent call answers with one model tool call from one host-side fan-out', async t => {
+  const h = await harness(t, { tools: true });
+  await attached(h, 'intent-search');
+  h.f.send({ toolCall: { functionCalls: [{ id: 'i1', name: 'search', args: { query: 'lux didi' } }] } });
+  while (toolResponseCount(h) === 0) await tick();
+  assert.equal(toolResponseCount(h), 1, 'exactly one response for the one intent call');
+  const response = h.f.frames[1] as { toolResponse: { functionResponses: { id: string; name: string; response: { text: string } }[] } };
+  assert.equal(response.toolResponse.functionResponses.length, 1);
+  assert.equal(response.toolResponse.functionResponses[0]!.id, 'i1');
+  assert.equal(response.toolResponse.functionResponses[0]!.name, 'search');
+  assert.match(response.toolResponse.functionResponses[0]!.response.text, /Synthetic insight/);
+  assert.deepEqual(h.calls.map(call => call.name), ['search_knowledge'], 'the intent expands to the internal read');
+});
+
+test('a provider cancellation drops exactly the cancelled id and logs tool_cancelled', async t => {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const h = await harness(t, { tools: true, beforeTool: () => gate });
+  await attached(h, 'cancel-one');
+  const events: { event?: string; id?: string; tool?: string }[] = [];
+  const detach = attachHostLogSink({ event: raw => { events.push(raw as { event?: string; id?: string; tool?: string }); } });
+  try {
+    h.f.send({ toolCall: { functionCalls: [
+      { id: 'keep', name: 'search_knowledge', args: { query: 'x', limit: 1 } },
+      { id: 'drop', name: 'search_knowledge', args: { query: 'y', limit: 1 } },
+    ] } });
+    while (!h.calls.length) await tick();
+    h.f.send({ toolCallCancellation: { ids: ['drop'] } });
+    for (let i = 0; i < 40 && !events.some(entry => entry.event === 'tool_cancelled'); i++) await tick();
+    release();
+    for (let i = 0; i < 2000 && toolResponseCount(h) === 0; i++) await tick();
+  } finally { detach(); }
+  assert.equal(toolResponseCount(h), 1, 'only the kept id is answered');
+  const response = h.f.frames.find(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame) as { toolResponse: { functionResponses: { id: string }[] } };
+  assert.deepEqual(response.toolResponse.functionResponses.map(r => r.id), ['keep'], 'the cancelled id gets no response');
+  const cancelled = events.find(entry => entry.event === 'tool_cancelled');
+  assert.ok(cancelled, 'tool_cancelled is logged');
+  assert.equal(cancelled!.id, 'drop');
+  assert.equal(cancelled!.tool, 'search_knowledge');
+});
+
+test('a model turn logs tool metrics, metadata only', async t => {
+  const h = await harness(t, { tools: true });
+  await attached(h, 'tool-metrics');
+  const events: { event?: string; toolCallsThisTurn?: number; toolLatencyMs?: unknown[]; toolResponseWhileGenerating?: boolean }[] = [];
+  const detach = attachHostLogSink({ event: raw => { events.push(raw as typeof events[number]); } });
+  try {
+    h.f.send({ toolCall: { functionCalls: [{ id: 'm1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
+    for (let i = 0; i < 2000 && !events.some(entry => entry.event === 'live_tool_turn'); i++) await tick();
+  } finally { detach(); }
+  const metrics = events.find(entry => entry.event === 'live_tool_turn');
+  assert.ok(metrics, 'the per-turn metrics line is logged');
+  assert.equal(metrics!.toolCallsThisTurn, 1);
+  assert.ok(Array.isArray(metrics!.toolLatencyMs) && metrics!.toolLatencyMs!.length === 1, 'one latency per call');
+  assert.equal(typeof metrics!.toolResponseWhileGenerating, 'boolean');
+});
+test('a turn logs dead air from the owner turn end to the first model audio', async t => {
+  const h = await harness(t, { tools: true });
+  await attached(h, 'dead-air');
+  const events: { event?: string; deadAirMs?: number }[] = [];
+  const detach = attachHostLogSink({ event: raw => { events.push(raw as { event?: string; deadAirMs?: number }); } });
+  try {
+    h.f.send({ serverContent: { inputTranscription: { text: 'Fixture voice input', finished: true } } });
+    for (let i = 0; i < 40 && !events.some(entry => entry.event === 'live_dead_air'); i++) {
+      h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [audio()] } } });
+      await tick();
+    }
+    if (!events.some(entry => entry.event === 'live_dead_air')) { await tick(); }
+  } finally { detach(); }
+  const dead = events.find(entry => entry.event === 'live_dead_air');
+  assert.ok(dead, 'dead air is logged');
+  assert.equal(typeof dead!.deadAirMs, 'number');
+  assert.ok(dead!.deadAirMs! >= 0);
+});
+test('the calendar intent reads events from every calendar the owner keeps', async t => {
+  const h = await harness(t, { tools: true, calendar: true });
+  await attached(h, 'calendar-all');
+  h.f.send({ toolCall: { functionCalls: [{ id: 'cal', name: 'calendar', args: {} }] } });
+  for (let i = 0; i < 2000 && toolResponseCount(h) === 0; i++) await tick();
+  assert.equal(toolResponseCount(h), 1, 'one response for the calendar intent');
+  assert.ok(h.calls.some(call => call.name === 'gcal_calendars'), 'the calendars are enumerated first');
+  const response = h.f.frames.find(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame) as { toolResponse: { functionResponses: { response: { text: string } }[] } };
+  const lists = h.calls.filter(call => call.name === 'gcal_list').map(call => (call.args as { calendarId?: string }).calendarId).sort();
+  assert.deepEqual(lists, ['primary', 'work'], 'one event read per calendar, all calendars server-side');
+  assert.match(response.toolResponse.functionResponses[0]!.response.text, /Event on work/);
+});
+
+test('U1: research progress reaches the live channel with metadata only', async t => {
+  const h = await harness(t, { tools: true, calendar: true });
+  await attached(h, 'lookup-progress');
+  await settleLiveTool(h, 'r1', 'research', { action: 'start', question: 'what is on my calendar' });
+  const entries = h.owner.current().entries.filter(entry => entry.kind === 'researchProgress');
+  assert.ok(entries.length > 0, 'a research progress entry reaches the live channel');
+  const progress = entries.at(-1)!.progress as unknown as Record<string, unknown>;
+  assert.deepEqual(Object.keys(progress).sort(), ['elapsedMs', 'phase', 'researchId', 'sourcesDone', 'sourcesPending']);
+  assert.ok(['started', 'round', 'done', 'stopped'].includes(String(progress.phase)));
+  assert.ok(Array.isArray(progress.sourcesDone) && Array.isArray(progress.sourcesPending));
+  assert.equal(typeof progress.elapsedMs, 'number');
+  assert.doesNotMatch(JSON.stringify(progress), /what is on my calendar/, 'the question text never reaches the channel');
 });

@@ -256,7 +256,7 @@ export function liveMarkup(live: LiveCurrent | undefined, poll: LivePollState = 
   const flow = liveSegments(live).map(segment => segment.html);
   return `<section class="lane-convo live" id="live-panel" aria-label="Naya live conversation">
     ${muted}${stale}${error}${restored}
-    <div class="live-turns">${flow.join('') || '<p class="muted">No live transcription yet.</p>'}</div>
+    <div class="live-turns">${flow.join('') || '<p class="transcript-placeholder muted">Press Start or \u2318\u21e7Space to talk</p>'}</div>
     ${jobs}
   </section>`;
 }

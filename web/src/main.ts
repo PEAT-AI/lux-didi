@@ -119,13 +119,15 @@ function orbStateLineMarkup(): string {
 }
 function orbControlsMarkup(): string {
   const view = liveMachine.view;
-  const active = view.state === 'live' || view.state === 'muted' || view.state === 'starting';
+  // The control reflects the state: a live projection (listening, speaking, thinking) is a live
+  // session, so it offers Stop and Mute; Start belongs to Live is off alone (V3-R4 item 4).
+  const projectionLive = !!live && ['listening', 'speaking', 'thinking'].includes(live.state);
+  const active = view.state === 'live' || view.state === 'muted' || view.state === 'starting' || projectionLive;
   const error = liveErrorText(view.error, view.reason);
   return `${active ? `<button id="voice-stop" class="stop-pill">Stop</button><button id="voice-mute" class="quiet">${view.state === 'muted' ? 'Unmute' : 'Mute'}</button>` : `<button id="voice-start" class="start-pill" ${startAvailable(view) ? '' : 'aria-disabled="true"'}>Start</button>`}${error ? `<p class="voice-error" role="alert">${e(error)}</p>` : ''}`;
 }
 function orbCaptionMarkup(): string {
-  const idle = !live || live.state === 'idle';
-  return `<p class="voice-state" id="voice-state" role="status" aria-live="polite">${orbStateLineMarkup()}</p>${activityLineMarkup()}${idle ? '<p class="voice-hint">Press Start or \u2318\u21e7Space to talk</p>' : ''}`;
+  return `<p class="voice-state" id="voice-state" role="status" aria-live="polite">${orbStateLineMarkup()}</p>${activityLineMarkup()}`;
 }
 function orbStageMarkup(): string {
   const glow = ['CONNECTED','LISTENING','SPEAKING','PROCESSING'].includes(orbState());

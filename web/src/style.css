@@ -392,3 +392,36 @@ html,body{height:100%;overflow:hidden}
 .typing span:nth-child(3){animation-delay:.32s}
 @keyframes typing-dot{0%,60%,100%{opacity:.25;transform:translateY(0)}30%{opacity:.85;transform:translateY(-3px)}}
 @media(prefers-reduced-motion:reduce){.typing span{animation:none}}
+
+
+/* ---- V3-R4: the stage is not a card, the orb fills its box, the transcript fades (look ruling) ---- */
+
+/* (2) No card and no hard edges: the stage is the lane itself on the lane background, with a soft
+   radial glow behind the orb, and its content starts 24 px below the window header. */
+.orb-stage{border-bottom:0;background:none;padding:24px 24px 12px;gap:10px}
+.orb-stage .presence-glow{width:190%;height:190%}
+
+/* (1) The orb box keeps 55 percent of the stage height while the stage keeps its 24 px top inset. */
+.orb-holder{height:clamp(120px,calc(55% + 20px),200px)}
+
+/* (3) Every control stays inside the stage at every size. */
+.orb-stage .orb-caption{gap:4px}
+.orb-stage .orb-actions{gap:10px;flex-wrap:wrap;justify-content:center;max-width:100%}
+.orb-stage .start-pill,.orb-stage .stop-pill{padding:7px 16px}
+
+/* (5) The transcript begins below the stage and fades its first 32 px, so lines scroll away softly. */
+.transcript{mask-image:linear-gradient(to bottom,transparent 0,black 32px);-webkit-mask-image:linear-gradient(to bottom,transparent 0,black 32px)}
+
+/* (6) The voice transcript uses the same centred 760 px column as the chat; the idle line is centred. */
+.transcript .live-turns{max-width:760px;margin:0 auto;padding:0}
+.transcript-placeholder{margin:auto;text-align:center;color:var(--muted)}
+
+/* (7) One plus glyph at the left, one round send at the right, the same idle or with a draft. */
+#connected-send-form{display:flex;flex-direction:column;gap:8px}
+.connected-notes{width:100%;max-width:760px;margin:0 auto;box-sizing:border-box}
+.connected-notes>summary{display:none}
+.attach-button{position:relative}
+.attach-button .notes-count{position:absolute;top:-4px;right:-4px;min-width:16px;height:16px;border-radius:8px;background:var(--accent);color:var(--accent-contrast);font-size:10px;line-height:16px;text-align:center}
+
+/* (8) The consent line sits inside the 760 px column with the same side padding, small and muted. */
+#connected-panel .connected-disclosure{width:100%;max-width:760px;margin:12px auto 0;padding:0 24px;box-sizing:border-box;font-size:12px;line-height:1.5;color:var(--muted)}

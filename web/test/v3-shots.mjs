@@ -128,6 +128,28 @@ try {
     const columnEl = document.querySelector('#connected-entries');
     const mine = box('#connected-entries .entry.user'), bubbleVoice = box('.transcript .entry.user'), voiceColumn = contentRight('.transcript .live-turns');
     const rows = [...document.querySelectorAll('#connected-entries ol')].flatMap(list => [...list.children].map((_, index) => (list.start || 1) + index));
+    const stageStyle = getComputedStyle(document.querySelector('#orb-stage'));
+    const stageBox = box('#orb-stage'), transcriptBox = box('.transcript');
+    const pill = document.querySelector('#voice-stop') ? 'Stop' : document.querySelector('#voice-start') ? 'Start' : 'none';
+    const sphere = (() => {
+      const canvas = document.querySelector('#didi-orb');
+      if (!canvas) return null;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return null;
+      const { width, height } = canvas, data = ctx.getImageData(0, 0, width, height).data;
+      const boxSize = canvas.getBoundingClientRect().width || 1, scale = boxSize / width;
+      const bounds = alpha => {
+        let minX = width, maxX = -1, minY = height, maxY = -1;
+        for (let y = 0; y < height; y += 2) {
+          for (let x = 0; x < width; x += 2) {
+            if (data[(y * width + x) * 4 + 3] >= alpha) { if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; if (y > maxY) maxY = y; }
+          }
+        }
+        return maxX < 0 ? null : Math.round(Math.max(maxX - minX, maxY - minY) * scale);
+      };
+      const core = bounds(179), drawn = bounds(24);
+      return { box: Math.round(boxSize), core, coreShare: core === null ? null : Number((core / boxSize).toFixed(3)), drawn, drawnShare: drawn === null ? null : Number((drawn / boxSize).toFixed(3)) };
+    })();
     return {
       stageShare: voice && stage ? Number((stage.height / voice.height).toFixed(3)) : null,
       orbDiameter: orb ? orb.height : null,
@@ -141,6 +163,14 @@ try {
       voiceBubbleRight: voiceColumn !== null && bubbleVoice ? Math.round(voiceColumn - bubbleVoice.right) : null,
       composerBottom: Math.round(document.querySelector('#lane-chat').getBoundingClientRect().bottom - document.querySelector('.composer-field').getBoundingClientRect().bottom),
       viewport: `${document.documentElement.clientWidth}x${document.documentElement.clientHeight}`,
+      sphere: sphere,
+      stageBorder: Number.parseFloat(stageStyle.borderTopWidth) + Number.parseFloat(stageStyle.borderBottomWidth),
+      stageBackground: stageStyle.backgroundColor,
+      pill: pill,
+      mute: !!document.querySelector('#voice-mute'),
+      transcriptTopGap: stageBox && transcriptBox ? Math.round(transcriptBox.top - stageBox.bottom) : null,
+      voiceColumn: Math.round((() => { const el = document.querySelector('.transcript .live-turns'); return el ? el.getBoundingClientRect().width : 0; })()),
+      composerButtons: [...document.querySelectorAll('.composer-field button')].filter(button => button.getClientRects().length > 0).length,
       voiceWidth: voice ? voice.width : null,
       chatWidth: chat ? box('.chat-list').width : null,
       labels: document.querySelectorAll('.entry strong, .entry header').length,
@@ -171,6 +201,8 @@ try {
   assert.equal(table.documentScrolls, false, 'the document never scrolls');
   assert.equal(table.chatColumn <= 760, true, 'the chat column is at most 760 px');
   assert.equal(table.voiceJump, false, 'an empty transcript has nothing to jump to');
+  assert.equal(table.pill, 'Start', 'Live is off offers Start');
+  assert.equal(table.composerButtons, 2, 'the idle composer shows the attach plus and the send');
   const composerBottomIdle = table.composerBottom;
   await sample('2000x1250-dark-a-idle', { width: 2000, height: 1250 });
 
@@ -197,6 +229,11 @@ try {
   assert.equal(table.chatBubbleRight, 0, 'the chat owner bubble sits at the column right edge');
   assert.equal(table.voiceBubbleRight, 0, 'the voice owner bubble sits at the column right edge');
   assert.equal(table.voiceJump, false, 'a pinned transcript offers no jump pill');
+  assert.equal(table.pill, 'Stop', 'a live projection offers Stop, never Start');
+  assert.equal(table.mute, true, 'Mute sits beside Stop while Live is on');
+  assert.equal(table.stageBorder, 0, 'the stage draws no border');
+  assert.equal(table.transcriptTopGap >= 0, true, 'the transcript never draws under the stage');
+  assert.equal(table.composerButtons, 2, 'the composer shows exactly the attach plus and the send');
   await sample('2000x1250-dark-b-speaking', { width: 2000, height: 1250 });
 
   await page.evaluate(() => { for (const selector of ['.transcript', '#connected-entries']) { const el = document.querySelector(selector); if (el) el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight - 400); } });
@@ -239,13 +276,20 @@ try {
   await rm(state, { recursive: true, force: true }).catch(() => {});
 }
 
-const columns = ['viewport', 'stageShare', 'orbDiameter', 'orbShare', 'orbCentre', 'stageTop', 'transcriptDistance', 'chatDistance', 'chatColumn', 'chatBubbleRight', 'voiceBubbleRight', 'composerBottom', 'labels', 'documentScrolls', 'listNumbers', 'voiceJump', 'chatJump'];
+const columns = ['viewport', 'stageShare', 'orbDiameter', 'orbShare', 'sphereCore', 'sphereCoreShare', 'sphereDrawnShare', 'stageBorder', 'stageBackground', 'pill', 'mute', 'transcriptTopGap', 'voiceColumn', 'chatColumn', 'composerButtons', 'bubbleRight', 'composerBottom', 'labels', 'documentScrolls', 'listNumbers', 'voiceJump', 'chatJump'];
+const flatten = row => ({
+  ...row,
+  sphereCore: row.sphere ? row.sphere.core : null,
+  sphereCoreShare: row.sphere ? row.sphere.coreShare : null,
+  sphereDrawnShare: row.sphere ? row.sphere.drawnShare : null,
+  bubbleRight: row.chatBubbleRight !== null && row.chatBubbleRight !== undefined ? row.chatBubbleRight : row.voiceBubbleRight,
+});
 const markdown = [
   '# V3 DOM measurements (synthetic data, no images read)',
   '',
   `| shot | ${columns.join(' | ')} |`,
   `| --- | ${columns.map(() => '---').join(' | ')} |`,
-  ...tables.map(row => `| ${row.name} | ${columns.map(column => row[column]).join(' | ')} |`),
+  ...tables.map(row => { const flat = flatten(row); return `| ${flat.name} | ${columns.map(column => flat[column]).join(' | ')} |`; }),
   '',
   `Shots: ${shots.map(name => `${name}.png`).join(', ')}`,
   '',

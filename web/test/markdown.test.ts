@@ -69,9 +69,9 @@ test('ordered lists keep their numbering across blank lines and paragraphs (V3 i
   assert.match(renderMarkdown('3. third'), /<ol start="3">/);
 });
 
-test('an indented paragraph after an item keeps the next item number (V3 item 7)', () => {
+test('an indented paragraph stays in its item, so it aligns with the item text (V3 items 7 and 9)', () => {
   const html = renderMarkdown('1. a\n\n   an indented paragraph\n\n2. b');
-  assert.match(html, /<ol start="2">/);
+  assert.equal(html, '<ol><li>a<p>an indented paragraph</p></li><li>b</li></ol>', 'one list, the paragraph nested in its item');
   assert.equal((html.match(/<li>/g) ?? []).length, 2);
 });
 

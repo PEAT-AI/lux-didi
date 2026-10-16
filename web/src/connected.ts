@@ -169,7 +169,7 @@ export class ConnectedView {
     const c = this.#conversation, r = this.#run, available = this.#status.status === 'configured';
     const grant = this.#status.consent, ready = available && (!!grant || this.#consent);
     const provider = this.#status.provider, model = this.#status.model;
-    const notesSection = c && c.state === 'active' ? this.#notesSection() : '';
+    const notesSection = this.#notesSection();
     const typing = r && !r.finalEntryId && r.state !== 'terminal' && !r.partialText ? '<p class="typing" role="status" aria-label="Naya is typing"><span></span><span></span><span></span></p>' : '';
     panel.innerHTML = `<section class="connected-conversation" aria-label="Connected Naya conversation">
       ${grant || this.#consent ? '' : `<p class="connected-disclosure">Chat messages go to <strong>${escape(provider ?? 'the connected provider')}</strong> when you send them. <button type="button" id="connected-consent" class="allow-link">Allow</button></p>`}
@@ -178,7 +178,7 @@ export class ConnectedView {
       <button type="button" class="jump-pill" id="chat-jump" hidden>Jump to latest</button>
       </div>
       ${r ? this.#runSection(r) : ''}
-      <form id="connected-send-form"><label for="connected-draft" class="visually-hidden">Message for this connected conversation</label><div class="composer-field">${notesSection ? '<button type="button" id="connected-attach" class="attach-button" aria-label="Attach notes" title="Attach notes"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>' : ''}<textarea id="connected-draft" rows="1" placeholder="Message Naya" ${!ready || this.#busy ? 'disabled' : ''}>${escape(this.#draft)}</textarea>${notesSection}<button id="connected-send" class="send-button" aria-label="Send" ${!ready || this.#busy || (r && r.state !== 'terminal') || !this.#draft.trim() ? 'disabled' : ''}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button></div></form>
+      <form id="connected-send-form"><label for="connected-draft" class="visually-hidden">Message for this connected conversation</label>${notesSection}<div class="composer-field"><button type="button" id="connected-attach" class="attach-button" aria-label="Attach notes" title="Attach notes" aria-expanded="${this.#memoryOpen}" aria-controls="connected-notes"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>${this.#memorySelected.length ? `<span class="notes-count">${this.#memorySelected.length}</span>` : ''}</button><textarea id="connected-draft" rows="1" placeholder="Message Naya" ${!ready || this.#busy ? 'disabled' : ''}>${escape(this.#draft)}</textarea><button id="connected-send" class="send-button" aria-label="Send" ${!ready || this.#busy || (r && r.state !== 'terminal') || !this.#draft.trim() ? 'disabled' : ''}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button></div></form>
       ${this.#error ? `<p id="connected-error" role="alert">${escape(this.#error)}</p>` : ''}
       ${this.#pending && !c ? `<div id="connected-recovery" role="alert" data-recovery="pending-conversation-missing"><p>Unresolved turn: its conversation is not in the current list. The pending acceptance key and text are retained; nothing was resent.</p><button id="connected-retry" class="quiet">Retry the saved turn</button><button id="connected-reload" class="quiet">Reload history</button></div>` : ''}
     </section>`;
@@ -199,7 +199,12 @@ export class ConnectedView {
     };
     draftField?.addEventListener('input', event => { this.#draft = (event.target as HTMLTextAreaElement).value; this.#save(); growDraft(); syncSend(); });
     draftField?.addEventListener('keydown', event => { if (composerIntent(event) === 'send') { event.preventDefault(); void this.#send(); } });
-    panel.querySelector('#connected-attach')?.addEventListener('click', () => { const notes = panel.querySelector<HTMLDetailsElement>('#connected-notes'); if (notes) notes.open = !notes.open; });
+    panel.querySelector('#connected-attach')?.addEventListener('click', event => {
+      const notes = panel.querySelector<HTMLDetailsElement>('#connected-notes');
+      if (!notes) return;
+      notes.open = !notes.open;
+      (event.currentTarget as HTMLElement).setAttribute('aria-expanded', String(notes.open));
+    });
     if (this.#draft) growDraft();
     if (this.#refocusDraft) { this.#refocusDraft = false; draftField?.focus(); }
     this.#pin?.stop();

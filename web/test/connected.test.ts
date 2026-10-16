@@ -50,6 +50,16 @@ test('the owner-facing evidence card never carries the model-only omission note 
   assert.match(html, /href="https:\/\/example\.org\/c"/);
 });
 
+test('the owner-facing evidence card strips the calendar and handle bracket notes (C1-R1 F1)', () => {
+  const html = render([{ name: 'gcal_events',
+    markdown: '- 10:00, Standup [id e1]\n- 11:00, Review [id e2] [+40 chars]\n- mail from: alice | [id m9]',
+    sources: [] }]);
+  assert.doesNotMatch(html, /\[id /);
+  assert.doesNotMatch(html, /\[\+\d+ chars\]/);
+  assert.match(html, /Standup/);
+  assert.match(html, /Review/);
+});
+
 test('the chat lane labels nobody: the owner speaks in the shared bubble, Naya answers as markdown (V3 items 4 and 9)', () => {
   const mine = chatEntryMarkup('user', 'what should I focus on?');
   assert.match(mine, /^<article class="entry user"><p class="bubble">what should I focus on\?<\/p><\/article>$/);

@@ -629,3 +629,13 @@ test('the model-only omission note is stripped from the owner-facing evidence co
   assert.equal(stripModelOnlyNotes('nothing to strip here'), 'nothing to strip here');
   assert.equal(stripModelOnlyNotes('keep [note: this is not an omission]'), 'keep [note: this is not an omission]');
 });
+
+test('the calendar and handle bracket notes are stripped from the owner-facing evidence copy (C1-R1 F1)', () => {
+  // The other model-only annotations live-shape.ts appends: a calendar cut `[+N chars]` and the
+  // `[id ...]` handle the model needs to re-read one message, event or insight.
+  assert.equal(stripModelOnlyNotes('- 10:00, Standup [id e1]\n- 11:00, Review [id e2]'), '- 10:00, Standup\n- 11:00, Review');
+  assert.equal(stripModelOnlyNotes('- 10:00, Standup [id e1] [+40 chars]'), '- 10:00, Standup');
+  assert.equal(stripModelOnlyNotes('- mail from: alice | [id m9]'), '- mail from: alice |');
+  assert.equal(stripModelOnlyNotes('### Insight title (project) [id k3]'), '### Insight title (project)');
+  assert.equal(stripModelOnlyNotes('title [index] and [note: keep] stay'), 'title [index] and [note: keep] stay');
+});

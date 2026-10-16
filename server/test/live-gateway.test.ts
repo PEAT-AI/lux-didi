@@ -956,3 +956,22 @@ test('canonical host resumes one journal and never exposes the handle on the wir
   assert.equal(readFileSync(join(dataDir, 'logs', 'host.log'), 'utf8').includes(handle), false);
   assert.equal(JSON.stringify(frames).includes(handle), false);
 });
+
+test('AC1-R1: an owner live config with a regional tag reaches the setup frame and the setup log', async t => {
+  const regional = configJson(true, { preferences: { dataClass: 'ordinary', language: 'en-IN', register: 'plain', humor: 'dry', verbosity: 'balanced' } });
+  const events: unknown[][] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => { events.push(args); });
+  const h = await harness(t, { config: regional });
+  const created = await createBody(h, 'regional-language');
+  assert.equal(created.status, 200);
+  const ws = new WebSocket(`${h.origin.replace('http', 'ws')}/api/v1/live-sessions/${created.body.data.liveSessionId}/audio`, { headers: bearer(h) });
+  t.after(() => ws.close());
+  await once(ws, 'open');
+  await h.f.frame(1);
+  const setup = (h.f.frames[0] as { setup: Record<string, any> }).setup;
+  assert.equal(setup.generationConfig.speechConfig.languageCode, 'en-IN', 'the owner regional tag reaches the setup frame');
+  const logged = events.map(args => { try { return JSON.parse(args.map(String).join(' ')) as { event?: string; languageCode?: string; voice?: string }; } catch { return {}; } })
+    .find(entry => entry.event === 'live_instruction_sizes');
+  assert.equal(logged?.languageCode, 'en-IN', 'the setup log carries the effective languageCode');
+  assert.equal(logged?.voice, VOICE, 'the setup log carries the voice name');
+});

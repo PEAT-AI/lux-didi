@@ -96,15 +96,18 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return Object.fromEntries(['event','terminalCode',...numeric].map(key => [key, value[key]]));
   }
   if (value.event === 'live_instruction_sizes') {
-    // Closed shape: a total and per-section character counts only, every id a known section, never text.
-    if (Object.keys(value).sort().join(',') !== ['event','total','sections'].sort().join(',')) return;
+    // Closed shape: a total, per-section character counts (every id a known section), the effective
+    // languageCode (or `unset`) and the voice name; never any text.
+    if (Object.keys(value).sort().join(',') !== ['event','total','sections','languageCode','voice'].sort().join(',')) return;
     if (!Number.isSafeInteger(value.total) || Number(value.total) < 0) return;
+    if (!isSafeToken(value.voice)) return;
+    if (value.languageCode !== 'unset' && (typeof value.languageCode !== 'string' || !/^[a-z]{2}(?:-[A-Z]{2})?$/.test(value.languageCode))) return;
     const sections = value.sections;
     if (!sections || typeof sections !== 'object' || Array.isArray(sections)) return;
     const ids = Object.keys(sections);
     if (ids.length > 16 || ids.some(id => !(LIVE_INSTRUCTION_SECTION_IDS as readonly string[]).includes(id)
       || !Number.isSafeInteger((sections as Record<string, unknown>)[id]) || Number((sections as Record<string, unknown>)[id]) < 0)) return;
-    return { event: 'live_instruction_sizes', total: value.total, sections: Object.fromEntries(ids.map(id => [id, (sections as Record<string, unknown>)[id]])) };
+    return { event: 'live_instruction_sizes', total: value.total, sections: Object.fromEntries(ids.map(id => [id, (sections as Record<string, unknown>)[id]])), languageCode: value.languageCode, voice: value.voice };
   }
   if (value.event === 'live_frame_rejected') {
     // Closed shape: code, error constructor name, frame kind, byte length and key-name paths only, never a value or id.

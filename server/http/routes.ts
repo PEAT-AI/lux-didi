@@ -127,11 +127,19 @@ export function resolveRoute(method: string, url: URL, body?: Record<string, unk
   let input: Record<string, unknown> = body ? { ...body } : {};
   const session = /^\/api\/v1\/sessions\/([^/]+)(\/entries)?$/.exec(path);
   const entry = /^\/api\/v1\/entries\/([^/]+)$/.exec(path);
+  const summary = /^\/api\/v1\/memory-summaries\/([^/]+)$/.exec(path);
   const commitment = /^\/api\/v1\/commitments\/([^/]+)(?:\/(complete|cancel|reopen))?$/.exec(path);
   if (entry) {
     matched(['DELETE']); query(url, []); uuid(entry[1]);
     if (body) fields(body, []);
     operation = 'deleteEntry'; input = { id: entry[1] };
+  } else if (summary) {
+    matched(['DELETE']); query(url, []); uuid(summary[1]);
+    if (body) fields(body, []);
+    operation = 'deleteSummary'; input = { id: summary[1] };
+  } else if (path === '/api/v1/memory-summaries') {
+    matched(['GET']); query(url, []);
+    operation = 'listSummaries'; input = {};
   } else if (path === '/api/v1/sessions') {
     matched(['GET', 'POST']); query(url, []);
     operation = method === 'GET' ? 'listSessions' : 'createSession';

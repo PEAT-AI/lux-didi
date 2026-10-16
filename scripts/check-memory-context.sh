@@ -49,7 +49,7 @@ status=0
 # New selection tests + impacted CHAT/HTTP/HOST accept/dispatch/fingerprint/recovery
 # and CONNECTED authorization/context regressions, against the real compiled build.
 timeout 1200 node --test --test-reporter=tap --test-timeout=30000 \
-  server/dist/test/memory-context.test.js server/dist/test/chat.test.js server/dist/test/http.test.js \
+  server/dist/test/memory-context.test.js server/dist/test/summaries.test.js server/dist/test/chat.test.js server/dist/test/http.test.js \
   server/dist/test/host.test.js server/dist/test/connected.test.js \
   | tee "$log" || status=$?
 grep -Eq '^# tests [1-9][0-9]*$' "$log" || { echo 'check-memory-context: zero selected chat/connected tests' >&2; exit 1; }

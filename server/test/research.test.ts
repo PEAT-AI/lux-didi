@@ -147,6 +147,20 @@ test('a run past its deadline returns partial after one round', async () => {
   assert.equal(h.logs[0]!.rounds, 1);
 });
 
+test('a failed follow-up logs its real error code, never a bare failed', async () => {
+  const h = harness({
+    selector: selectorOf({ questionClass: 'cross_source', actions: [{ kind: 'chat_search' }], pUseful: { chat_search: 0.9 } }),
+    execute: async subs => subs.map(call => call.name === 'mattermost_get_thread'
+      ? { ...sub(call.name, '', false, call.key), code: 'sdk_protocol_rejected' }
+      : sub(call.name, 'the decision was [post p1] recorded', true, call.key)),
+  });
+  await runResearch(h.deps, { action: 'start', question: 'what did the team decide' }, new AbortController().signal);
+  const thread = h.subcalls.find(entry => entry.tool === 'mattermost_get_thread');
+  assert.ok(thread, 'the chat thread follow-up runs');
+  assert.equal(thread!.ok, false);
+  assert.equal(thread!.errorCode, 'sdk_protocol_rejected');
+});
+
 test('the whole serialized reply stays within the character cap', async () => {
   const h = harness({ selector: selectorOf({ questionClass: 'cross_source', actions: [{ kind: 'knowledge_search' }, { kind: 'chat_search' }], pUseful: { knowledge_search: 0.9, chat_search: 0.9 } }), executeText: 'x'.repeat(9_000) });
   const reply = await runResearch(h.deps, { action: 'start', question: 'anything' }, new AbortController().signal);

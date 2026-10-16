@@ -302,7 +302,12 @@ const calendarExecute: ResearchDeps['execute'] = async subs => subs.map(call => 
 ));
 
 test('calendar research reads every listed calendar, merges, sorts, dedupes by id and names each line', async () => {
-  const h = harness({ selector: calendarSelector, execute: calendarExecute });
+  const reads: string[] = [];
+  const execute: ResearchDeps['execute'] = async subs => {
+    for (const call of subs) if (call.name === 'gcal_list') reads.push(String(call.args['calendarId']));
+    return calendarExecute(subs);
+  };
+  const h = harness({ selector: calendarSelector, execute });
   const reply = await runResearch(h.deps, { action: 'start', question: 'what is on my calendar tomorrow' }, new AbortController().signal);
   const finding = (reply['findings'] as { source: string; text: string }[]).find(entry => entry.source === 'calendar')!;
   assert.match(finding.text, /^calendar: 3 of 3 shown/);
@@ -311,7 +316,6 @@ test('calendar research reads every listed calendar, merges, sorts, dedupes by i
     '2026-10-16T10:00:00+05:30 | Board deck | Room 2 | 0 attendees | Work',
     '2026-10-16T11:00:00+05:30 | Review | 0 attendees | Primary',
   ]);
-  const reads = h.executed.filter(call => call.name === 'gcal_list').map(call => String((call.args as Record<string, unknown>)['calendarId']));
   assert.deepEqual([...reads].sort(), ['primary', 'work']);
 });
 

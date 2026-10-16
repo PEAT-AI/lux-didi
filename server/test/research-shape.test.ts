@@ -176,6 +176,22 @@ test('research_subcall is a closed metadata shape, never the query or text', () 
   assert.equal(safeEvent({ ...good, queryAuthor: 'model' }), undefined);
 });
 
+test('research_subcall matches results by position even when execute keys are composed call ids', async () => {
+  const subcalls: Record<string, unknown>[] = [];
+  const selector: ResearchSelector = { async select() { return { questionClass: 'cross_source', actions: [{ kind: 'mail_search', query: 'in:inbox newer_than:2d' }], pUseful: { mail_search: 1 } }; } };
+  const deps: ResearchDeps = {
+    now: () => 0, configured: CONFIGURED, selector,
+    execute: async (subs: readonly IntentSubCall[]) => subs.map((call, n) => ({ key: `r0~${n}~${call.key}`, name: call.name, ok: true, text: '- Subject | Sender | Mon | body [id m1]', originalCharacters: 40, omittedCharacters: 0 })),
+    emit: () => undefined, log: () => undefined, logSubcall: entry => subcalls.push(entry as unknown as Record<string, unknown>), ledger: new ResearchLedger(),
+  };
+  const reply = await runResearch(deps, { action: 'start', question: 'anything' }, new AbortController().signal);
+  assert.equal(subcalls[0]!['ok'], true, 'a composed execute key must still find its result');
+  assert.ok((subcalls[0]!['items'] as number) >= 1);
+  assert.equal(subcalls[0]!['queryAuthor'], 'selector');
+  const findings = reply['findings'] as { text: string }[];
+  assert.match(findings[0]!.text, /^mail: 1 of 1 shown/);
+});
+
 test('the research_run line carries unchecked, canContinue and per-finding char counts', async () => {
   const logs: Record<string, unknown>[] = [];
   const selector: ResearchSelector = { async select() { return { questionClass: 'cross_source', actions: [{ kind: 'knowledge_search' }], pUseful: { knowledge_search: 1 } }; } };

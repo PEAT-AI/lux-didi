@@ -830,8 +830,9 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
         if (results.some(result => result.ok && result.text.trim())) run.readKinds.add(kind);
         if (source) run.sourcesDone.add(source);
         const queryAuthor: 'selector' | 'fallback' = usedFallbackThisRound ? 'fallback' : 'selector';
-        for (const sub of subs) {
-          const result = results.find(entry => entry.key === sub.key);
+        for (const [index, sub] of subs.entries()) {
+          // execute returns one result per sub-call in order, keyed by the host's composed call id.
+          const result = results[index];
           const raw = sub.args['query'] ?? sub.args['q'];
           logSubcall({
             event: 'research_subcall', researchId: run.researchId, kind, tool: sub.name,

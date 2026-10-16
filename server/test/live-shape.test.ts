@@ -70,6 +70,18 @@ test('gmail read keeps every field and strips HTML, quotes, signature, base64 an
   assert.equal(shaped.text.includes('utm_source'), false, 'tracking URL must be stripped');
 });
 
+test('gmail read decodes entities in the header and the plain-text body to text', () => {
+  const shaped = shapeGmailRead({ headers: { Subject: 'Q&amp;A &#39;now&#39;', From: 'Dana <d@example.invalid>', Date: 'Mon, 1 Jan 2024 00:00:00 +0000' }, body: "tom&#39;s &lt;note&gt; &amp; done" });
+  assert.match(shaped.text, /subject: Q&A 'now'/);
+  assert.match(shaped.text, /tom's <note> & done/);
+});
+
+test('gmail read omits an absent sender and date instead of printing the word unknown', () => {
+  const shaped = shapeGmailRead({ headers: { Subject: 'Only a subject' }, body: 'hello' });
+  assert.equal(shaped.text.includes('unknown'), false);
+  assert.match(shaped.text, /^subject: Only a subject\n\nhello$/);
+});
+
 test('gmail read reports a body cut as final, never mid-sentence and never promising a re-read', () => {
   const body = 'First sentence. Second sentence. Third sentence. '.repeat(600);
   const shaped = shapeGmailRead({ headers: HEADERS, body });
@@ -84,9 +96,27 @@ test('gmail list keeps sender, date, snippet, unread flag and thread size for ev
     { headers: { Subject: 'One', From: 'A <a@example.invalid>', Date: 'Mon' }, snippet: 'hello there', labelIds: ['UNREAD'], threadSize: 3 },
     { headers: { Subject: 'Two', From: 'B <b@example.invalid>', Date: 'Tue' } },
   ] });
-  assert.match(shaped.text, /- One \| A \| Mon \[unread\] \(thread 3\) \| hello there/);
-  assert.match(shaped.text, /- Two \| B \| Tue/);
+  assert.match(shaped.text, /- One \| from: A \| date: Mon \[unread\] \(thread 3\) \| hello there/);
+  assert.match(shaped.text, /- Two \| from: B \| date: Tue/);
   assert.equal(shaped.partial, false);
+});
+
+test('gmail list reads the helper list header array and decodes entities in the header and snippet', () => {
+  const shaped = shapeGmailList({ messages: [{
+    id: 'm1', threadId: 't1', snippet: 'it&#39;s &lt;ready&gt; &amp; set',
+    headers: [
+      { name: 'From', value: 'Dana &lt;dana@example.invalid&gt;' },
+      { name: 'Subject', value: 'Q&amp;A' },
+      { name: 'Date', value: 'Mon, 1 Jan 2024 00:00:00 +0000' },
+    ],
+  }] });
+  assert.match(shaped.text, /- Q&A \| from: Dana <dana@example\.invalid> \| date: Mon, 1 Jan 2024 00:00:00 \+0000 \| it's <ready> & set/);
+});
+
+test('gmail list omits a field the source lacks instead of printing the word unknown', () => {
+  const shaped = shapeGmailList({ messages: [{ id: 'm1', snippet: 'a message with no headers' }] });
+  assert.equal(shaped.text.includes('unknown'), false);
+  assert.match(shaped.text, /^- \(no subject\) \| a message with no headers \[id m1\]$/);
 });
 
 test('calendar list keeps time, title, location, attendees and conference presence within the event bound', () => {

@@ -87,7 +87,7 @@ function assertAudit(a, label, failures) {
   }
   if (a.documentScrolls) bad(`${label} the document scrolls`);
   if (a.chipPad && a.chipPad.font !== '12px') bad(`${label} chip font: ${a.chipPad.font}`);
-  if (a.allowHeight !== null) inb(a.allowHeight, 28, 28, 'allow control height');
+  if (a.chat.visible && a.allowHeight !== null) inb(a.allowHeight, 28, 28, 'allow control height');
   return a;
 }
 

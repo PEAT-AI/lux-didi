@@ -408,8 +408,7 @@ export class LiveSessionOwner {
   #jobProjection(pendingOnly: boolean): import('./types.js').PendingLiveJob[] {
     return this.#jobs.list().filter(job => job.deferred && (!pendingOnly || !job.delivered)).map(job => ({
       id: job.id, originSessionId: job.originSessionId, state: job.state, createdAt: job.createdAt, delivered: job.delivered,
-      markdown: job.result?.accepted.map(result => typeof result.response.text === 'string' ? result.response.text : JSON.stringify(result.response)).join('\n\n')
-        || `Job ${job.state}.`,
+      markdown: job.result?.accepted.map(result => typeof result.response.text === 'string' ? result.response.text : JSON.stringify(result.response)).join('\n\n') || '',
     }));
   }
 

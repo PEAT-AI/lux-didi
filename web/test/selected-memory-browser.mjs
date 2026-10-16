@@ -46,6 +46,14 @@ async function shot(name) {
   await panel.screenshot({ path: join(artifacts, `${name}-${sha}.png`) });
 }
 async function step(name, action) { await action(); steps.push(name); console.log(`PASS ${name}`); }
+// U1 (#282): the chat lane is #panel-right and launches collapsed, so its content is hidden until the
+// owner opens the panel. Open it the owner's way and assert the open state before using the chat.
+async function openPanel(id) {
+  const control = page.locator(`#panel-toggle-${id}`);
+  if (await control.getAttribute('aria-expanded') !== 'true') await control.click();
+  await page.locator(`#panel-${id}[data-state="open"]`).waitFor();
+  assert.equal(await control.getAttribute('aria-expanded'), 'true', `${id} panel toggled open`);
+}
 async function find(query) {
   await page.locator('#connected-notes-query').fill(query);
   await page.locator('#connected-notes-search').evaluate(form => form.requestSubmit());
@@ -72,6 +80,7 @@ try {
     await writeFile(join(artifacts, `renderer-${sha}.json`), JSON.stringify({ sha, renderer, step: 'selected-memory' }, null, 2));
     assert.match(String(renderer), /Metal|ANGLE/i, `Hardware renderer, saw ${renderer}`);
     const pairing = await operator('/auth/pairing'); await page.locator('#pair-code').fill(pairing.pairingCode); await page.locator('#pair-form').evaluate(form => form.requestSubmit());
+    await openPanel('right');
     await page.locator('#connected-route').waitFor();
     await page.waitForFunction(() => document.querySelector('#connected-route')?.textContent.includes('gemini-connected-test'));
     assert.equal(Math.round((await page.locator('#didi-orb').boundingBox()).width), 190, 'Preserve the accepted desktop orb layout');

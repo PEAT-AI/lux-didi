@@ -42,3 +42,11 @@ test('installed proof opens collapsed saved history through its summary before s
   assert.ok(disclosureClick < sessionClick);
   assert.match(installedProof, /summary\.click\(\); return !history\.open/);
 });
+
+test('FE1 the feed is one surface, patched in place and never rebuilt on a poll', () => {
+  assert.equal((source.match(/liveMarkup\(live, livePoll\)/g) ?? []).length, 1, 'exactly one feed surface in the voice lane');
+  assert.match(source, /liveMachine\.on\(\(\) => paintLive\(\)\)/, 'a Live state change repaints, never a full render');
+  assert.match(source, /feed-notices/, 'the wrapper notices are patched in place');
+  assert.match(source, /feed-jobs/, 'the background job results are patched in place');
+  assert.match(source, /earlierSession\(prior\.live\)/, 'a session boundary is captured page-side, not by the host');
+});

@@ -137,7 +137,7 @@ function orbStageMarkup(): string {
   return `<section class="orb-stage" id="orb-stage" data-state="${orbState()}" aria-label="Naya voice and activity"><div class="orb-holder"><div class="presence-glow${glow ? ' visible' : ''}" aria-hidden="true"></div><canvas id="didi-orb" width="440" height="440" aria-hidden="true"></canvas></div><div class="orb-caption">${orbCaptionMarkup()}</div><div class="orb-actions" id="orb-actions">${orbControlsMarkup()}</div></section>`;
 }
 function voiceBodyMarkup(): string {
-  return `${orbStageMarkup()}<section class="transcript" id="transcript" aria-label="Naya live conversation">${liveMarkup(live, livePoll)}<button type="button" class="jump-pill" id="transcript-jump" hidden>Jump to latest</button></section>`;
+  return `${orbStageMarkup()}<section class="transcript" id="transcript" aria-label="Naya live conversation">${liveMarkup(live, livePoll)}<button type="button" class="jump-pill" id="transcript-jump" hidden>Back to live</button></section>`;
 }
 function chatLane() {
   return `<div id="connected-panel"></div>`;

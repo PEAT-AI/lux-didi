@@ -343,6 +343,18 @@ html,body{height:100%;overflow:hidden}
 @media(max-width:880px){.orb-stage{height:clamp(160px,34%,240px)}}
 .transcript{position:relative;flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable;padding:24px 24px 28px}
 .transcript .live-turns,.transcript .feed{display:flex;flex-direction:column;gap:56px;max-width:min(var(--feed-measure),100%);margin:0 auto;padding:0}
+/* FE1: the seven feed item types (spec 2.2). Turn rows keep their headline; tool results and past
+   sessions carry their detail collapsed, so the feed reads headline first. */
+.feed-divider{align-self:stretch;margin:0 auto;width:100%;text-align:center;font-size:12px;color:var(--muted);letter-spacing:.02em}
+.feed-empty{margin:0 auto;text-align:center;color:var(--muted)}
+.feed-session{display:flex;flex-direction:column;gap:16px}
+.feed-session>summary{list-style:none;cursor:pointer}
+.feed-session>summary::-webkit-details-marker{display:none}
+.feed-session>summary::marker{content:""}
+.feed-session-body{display:flex;flex-direction:column;gap:16px;opacity:.72}
+.feed-activity{align-self:flex-start;max-width:100%}
+.feed-notices{display:flex;flex-direction:column;gap:8px;max-width:min(var(--feed-measure),100%);margin:0 auto}
+.feed-jobs{display:flex;flex-direction:column;gap:16px;max-width:min(var(--feed-measure),100%);margin:0 auto;padding-top:16px}
 .transcript .entry,.transcript .live-tool-result,.transcript .live-remember,.transcript .live-job{align-self:flex-start;max-width:100%}
 .transcript .entry.user{align-self:flex-end}
 .transcript .entry.assistant,.transcript .entry.user{max-width:80%}

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { createContext, runInContext } from 'node:vm';
-import { liveStateLabel, liveVoiceState, pendingToolNames, liveLabel, liveDelay, mergeLive, liveTranscript, liveResult, liveMarkup, liveActivity, activityMarkup, SLOW_TOOL_MS } from '../src/live-view.ts';
+import { liveStateLabel, liveVoiceState, pendingToolNames, liveLabel, liveDelay, mergeLive, liveTranscript, liveResult, liveMarkup, liveActivity, activityMarkup, SLOW_TOOL_MS, liveSegments, sessionItems, sessionDividerText, earlierSession } from '../src/live-view.ts';
 import { posture } from '../src/orb-level.ts';
 import './connector-status.test.ts';
 import { pollLiveView } from '../src/live-view.ts';
@@ -663,4 +663,68 @@ test('the PROCESSING override follows the playback band, never the owner capture
   assert.equal(posture('LISTENING', { level: 0, playback: 0 }), 'listening');
   assert.equal(posture('CONNECTING', { level: 0, playback: 0 }), 'thinking');
   assert.equal(posture('ERROR', { level: 0, playback: 0 }), 'quiet');
+});
+
+// --- FE1: the living feed (large orb, item types, per-session boundary) ---
+
+test('FE1 the live session opens with its dated divider', () => {
+  const segments = liveSegments(speaking);
+  assert.equal(segments[0]!.key, 'divider:session');
+  assert.match(segments[0]!.html, /class="feed-divider"/);
+  assert.match(segments[0]!.html, /Today|Yesterday|[A-Z][a-z]{2} \d/);
+});
+
+test('FE1 a tool in flight adds one live activity row that resolves in place', () => {
+  const pending = { state: 'thinking', since: '2026-10-11T16:00:00Z', cursor: 2, entries: [
+    { seq: 1, kind: 'toolCall', tool: { name: 'search_calendar', status: 'pending' } },
+  ] } as unknown as LiveCurrent;
+  const segs = sessionItems(pending);
+  assert.equal(segs.filter(s => s.key === 'activity').length, 1);
+  assert.match(segs.find(s => s.key === 'activity')!.html, /feed-activity/);
+  const resolved = { ...pending, cursor: 3, entries: [...pending.entries, { seq: 2, kind: 'toolResult', tool: { name: 'search_calendar', status: 'completed', markdown: 'ok' } }] } as unknown as LiveCurrent;
+  assert.equal(sessionItems(resolved).filter(s => s.key === 'activity').length, 0, 'the activity row resolves into the result card');
+  assert.match(sessionItems(resolved).find(s => s.key === 'tool:2')!.html, /data-feed="tool"/);
+});
+
+test('FE1 the session divider names today, yesterday or the short date', () => {
+  const now = new Date(2026, 9, 15, 12, 0);
+  assert.equal(sessionDividerText(new Date(2026, 9, 15, 8, 31).toISOString(), now), 'Today, 08:31');
+  assert.equal(sessionDividerText(new Date(2026, 9, 14, 9, 15).toISOString(), now), 'Yesterday, 09:15');
+  assert.equal(sessionDividerText(null, now), 'Earlier');
+});
+
+test('FE1 a terminal newest session collapses under its divider with the empty line above', () => {
+  const ended = { state: 'ended', since: '2026-10-11T16:00:00Z', cursor: 3, entries: [
+    { seq: 1, kind: 'inputTranscription', text: 'hello' },
+    { seq: 2, kind: 'outputTranscription', text: 'Hi there' },
+    { seq: 3, kind: 'turnComplete' },
+  ], pastSession: { outcome: 'closed', endedAt: '2026-10-11T16:05:00Z', lastObservedAt: '2026-10-11T16:05:00Z' } } as unknown as LiveCurrent;
+  const html = liveMarkup(ended);
+  assert.match(html, /feed-empty/);
+  assert.match(html, /class="feed-session"/);
+  assert.ok(html.indexOf('feed-empty') < html.indexOf('class="feed-session"'), 'the empty line sits above the collapsed session');
+  const details = html.slice(html.indexOf('class="feed-session"'));
+  assert.doesNotMatch(details.slice(0, details.indexOf('>')), /open/, 'the past session is closed by default');
+});
+
+test('FE1 an ended session becomes one collapsed dated block when a new one starts', () => {
+  const previous = { state: 'ended', since: '2026-10-11T16:00:00Z', cursor: 3, entries: [
+    { seq: 1, kind: 'inputTranscription', text: 'old question' },
+    { seq: 2, kind: 'outputTranscription', text: 'Old answer' },
+    { seq: 3, kind: 'turnComplete' },
+  ], pastSession: { outcome: 'closed', endedAt: '2026-10-11T16:05:00Z', lastObservedAt: null } } as unknown as LiveCurrent;
+  const block = earlierSession(previous)!;
+  assert.match(block.html, /class="feed-session"/);
+  assert.match(block.html, /Old answer/);
+  const fresh = { state: 'listening', since: '2026-10-12T16:00:00Z', cursor: 0, entries: [] } as unknown as LiveCurrent;
+  const html = liveMarkup(fresh, { live: fresh, earlier: [block] });
+  assert.ok(html.indexOf('feed-session') < html.indexOf('divider:session'), 'the ended block sits above the fresh divider');
+});
+
+test('FE1 the feed is one surface with headline rows and collapsed detail', () => {
+  const html = liveMarkup(speaking);
+  assert.equal((html.match(/class="feed live-turns"/g) ?? []).length, 1, 'exactly one feed list');
+  assert.match(html, /data-feed="turn"/);
+  assert.match(html, /data-feed="tool"/);
+  assert.match(html, /<details class="live-tool-result"[^>]*><summary/);
 });

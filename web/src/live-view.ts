@@ -3,7 +3,7 @@
 import { escapeHtml, renderMarkdown, sourcesFooter, TRANSCRIPT_MARKDOWN } from './markdown.ts';
 import { toolConnector, toolPhrase, toolPhrases } from './tool-phrases.ts';
 import type { VoiceState } from './orb.ts';
-import { levelPeak } from './orb-level.ts';
+import { levelPeak, playbackPeak } from './orb-level.ts';
 import type { LiveCurrent, LiveEntry, LiveSource, LiveState, LiveTool } from './protocol.ts';
 
 const LABELS: Record<LiveState, string> = {
@@ -98,10 +98,11 @@ export function activityMarkup(activity: LiveActivity | undefined, elapsedMs = 0
   return `<p class="activity-line activity-${activity.kind}" role="status" aria-live="polite">${indicator}<span class="activity-text">${escapeHtml(text)}</span></p>`;
 }
 
-/** 1 Hz while active, 4 s while idle or terminal, paused while the document is hidden. */
+/** 250 ms while a session is not idle, 4 s while idle or terminal, paused while the document is hidden.
+ *  The faster active cadence learns a state change within 250 ms (F3). */
 export function liveDelay(state: LiveState | undefined, hidden: boolean): number | undefined {
   if (hidden) return undefined;
-  return state === undefined || state === 'idle' || state === 'ended' || state === 'error' ? 4000 : 1000;
+  return state === undefined || state === 'idle' || state === 'ended' || state === 'error' ? 4000 : 250;
 }
 
 /** Merge cursor paged entries by seq, newest value winning; a changed session start replaces the accumulated transcript. */
@@ -414,7 +415,7 @@ export class LiveMachine {
   #forwardLevels(input: number[], output: number[]): void {
     const peak = levelPeak(input, output);
     if (peak === undefined) return;
-    (globalThis as unknown as { didiOrbLevel?: (sample: { level: number }) => void }).didiOrbLevel?.({ level: peak });
+    (globalThis as unknown as { didiOrbLevel?: (sample: { level: number; playback: number }) => void }).didiOrbLevel?.({ level: peak, playback: playbackPeak(output) ?? 0 });
   }
 
   /** The only Start path. Without consent it opens the popover and sends nothing to native. */

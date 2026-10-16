@@ -9,6 +9,8 @@ import { attachHostLogSink } from '../tools/host-events.js';
 import './intent-tools.test.js';
 // Side-effect import: register the research-loop suite in this process so a declared check runs it.
 import './research.test.js';
+// Side-effect import: register the host-log allowlist suite in the declared live-session check (F7).
+import './host-log.test.js';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
@@ -1442,7 +1444,7 @@ test('Live accepts a frozen real tool snapshot and projects only result-gated Ma
   assert.equal(h.calls.length, 2);
   const response = h.f.frames[1] as { toolResponse: { functionResponses: { id: string }[] } };
   assert.deepEqual(response.toolResponse.functionResponses.map(r => r.id), ['c1', 'c2']);
-  assert.equal(h.owner.current().state, 'listening');
+  assert.equal(h.owner.current().state, 'thinking', 'the tool result keeps thinking until the first output audio (F1)');
   const page = h.owner.current();
   assert.equal(page.entries.filter(e => e.kind === 'toolCall').length, 2);
   const result = page.entries.find(e => e.kind === 'toolResult')!.tool!;
@@ -2277,6 +2279,45 @@ test('the calendar intent reads events from every calendar the owner keeps', asy
   const lists = h.calls.filter(call => call.name === 'gcal_list').map(call => (call.args as { calendarId?: string }).calendarId).sort();
   assert.deepEqual(lists, ['primary', 'work'], 'one event read per calendar, all calendars server-side');
   assert.match(response.toolResponse.functionResponses[0]!.response.text, /Event on work/);
+});
+
+test('F1: thinking holds between the tool result and the first model audio', async t => {
+  const h = await harness(t, { tools: true });
+  const { attachment } = await attached(h, 'f1-thinking');
+  await settleLiveTool(h, 'c1', 'search_knowledge', { query: 'x', limit: 1 });
+  assert.equal(h.owner.current().state, 'thinking', 'the tool result never flashes listening before speech');
+  h.f.send({ serverContent: { modelTurn: { parts: [audio()] } } });
+  for (let i = 0; i < 200 && h.owner.current().state !== 'speaking'; i++) await tick();
+  assert.equal(h.owner.current().state, 'speaking', 'the first output audio ends thinking');
+  attachment.close(); await attachment.done;
+});
+
+test('F2: speaking holds past generationComplete until the turn completes', async t => {
+  const h = await harness(t);
+  const { session, attachment } = await attached(h, 'f2-speaking');
+  h.f.send({ serverContent: { modelTurn: { parts: [audio()] }, generationComplete: true } });
+  for (let i = 0; i < 200 && h.owner.current().state !== 'speaking'; i++) await tick();
+  await drain(h, session.liveSessionId, 2);
+  assert.equal(h.owner.current().state, 'speaking', 'generationComplete alone must not end speaking before playback drains');
+  h.f.send({ serverContent: { turnComplete: true } });
+  await drain(h, session.liveSessionId, 3);
+  assert.equal(h.owner.current().state, 'listening', 'turnComplete ends speaking');
+  attachment.close(); await attachment.done;
+});
+
+test('F4: a barge-in clears thinking for a tool that never resolves', async t => {
+  const started = deferred<void>(), finish = deferred<void>();
+  const h = await harness(t, { tools: true, beforeTool: async () => { started.resolve(); await finish.promise; } });
+  const { session, attachment } = await attached(h, 'f4-barge');
+  h.f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
+  await started.promise;
+  assert.equal(h.owner.current().state, 'thinking');
+  h.f.send({ serverContent: { interrupted: true } });
+  await drain(h, session.liveSessionId, 3);
+  assert.notEqual(h.owner.current().state, 'thinking', 'a barge-in never leaves THINKING stuck after a hung tool');
+  finish.resolve();
+  for (let i = 0; i < 200 && h.f.frames.length < 2; i++) await tick();
+  attachment.close(); await attachment.done;
 });
 
 test('U1: research progress reaches the live channel with metadata only', async t => {

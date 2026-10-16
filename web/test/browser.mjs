@@ -177,6 +177,8 @@ try {
     await page.waitForFunction(()=>document.querySelector('#didi-orb').dataset.state==='SPEAKING',{timeout:12000});
     await page.waitForFunction(()=>document.querySelectorAll('#live-panel').length===1&&document.querySelectorAll('#live-panel .live-tool-result').length===1,{timeout:12000});
     assert.equal(await page.locator('#didi-orb').getAttribute('data-posture'),'speaking');
+    const transition=await page.locator('#didi-orb').evaluate(el=>el.didiFrameStats().transition);
+    assert.notEqual(transition.activity,transition.target,'the frame after the state change draws the smoothed activity, not the target (F5)');
     assert.equal((await page.locator('.orb-stage .voice-state').textContent()).trim(),'Speaking');
     assert.equal(await page.getByText('Not listening',{exact:true}).count(),0);
     assert.equal(await page.getByText('what is lux 123',{exact:true}).count(),1);

@@ -24,3 +24,12 @@ test('an accent string never survives the host-log allowlist', () => {
   assert.equal(safeEvent({ event: 'live_instruction_sizes', total: 1, sections: { base: 1 }, accent }), undefined);
   assert.equal(safeEvent({ event: 'live_session_diagnostics', terminalCode: 'closed', accent }), undefined);
 });
+
+test('live_state keeps a closed transition shape for the orb timeline', () => {
+  const event = { event: 'live_state', state: 'speaking', at: 1_700_000_000_000 };
+  assert.deepEqual(safeEvent(event), event);
+  assert.equal(safeEvent({ ...event, extra: 1 }), undefined, 'an extra key fails closed');
+  assert.equal(safeEvent({ ...event, state: 'confused' }), undefined, 'a state outside the projection enum is refused');
+  assert.equal(safeEvent({ ...event, at: 'now' }), undefined, 'a non-integer timestamp is refused');
+  assert.equal(safeEvent({ ...event, at: -1 }), undefined, 'a negative timestamp is refused');
+});

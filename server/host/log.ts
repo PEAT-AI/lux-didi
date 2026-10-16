@@ -16,6 +16,8 @@ const RESEARCH_STOPS = ['answered', 'selector_stop', 'insufficient', 'rounds_exh
 const RESEARCH_PHASES = ['started', 'round', 'done', 'stopped'];
 const RESEARCH_DRIVERS = ['selector', 'fallback', 'single-source-hint'];
 const RESEARCH_DISPOSITIONS = ['completed', 'skipped'];
+// The projected Live state enum, mirrored from LivePageProjection['state'].
+const LIVE_STATES = ['idle', 'listening', 'thinking', 'speaking', 'rebuilding', 'ended', 'error'];
 const isSafeToken = (value: unknown): value is string => typeof value === 'string' && SAFE_TOKEN.test(value);
 const isSafeId = (value: unknown): value is string => typeof value === 'string' && SAFE_ID.test(value);
 const isSafeCount = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;
@@ -169,6 +171,14 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (Object.keys(value).sort().join(',') !== ['event', 'deadAirMs'].sort().join(',')) return;
     if (!isSafeCount(value.deadAirMs)) return;
     return { event: 'live_dead_air', deadAirMs: value.deadAirMs };
+  }
+  if (value.event === 'live_state') {
+    // F7: one closed-shape transition record per projected state change, so the orb timeline is
+    // reconstructable from host.log. Enums and an epoch millisecond only, never any turn content.
+    if (Object.keys(value).sort().join(',') !== ['event', 'state', 'at'].sort().join(',')) return;
+    if (!isSafeMember(value.state, LIVE_STATES)) return;
+    if (!isSafeCount(value.at)) return;
+    return { event: 'live_state', state: value.state, at: value.at };
   }
   if (value.event === 'live_tool_turn') {
     // O1: per-turn tool metrics, tool names and millisecond latency only, never arguments or results.

@@ -2,21 +2,14 @@
  * See orb-provenance.md for bounded extraction and MIT noise dependency.
  */
 import { ClassicRenderer, clampFrameDelta, smoothingAlpha, ORB_SMOOTHING_TAU, speakingActivityTarget } from './orb-classic.ts';
-import { levelFrame, type LevelSample } from './orb-level.ts';
+import { levelFrame, posture, type LevelSample } from './orb-level.ts';
 export type VoiceState = 'IDLE' | 'CONNECTING' | 'CONNECTED' | 'LISTENING' | 'PROCESSING' | 'SPEAKING' | 'RECONNECTING' | 'ERROR' | 'DISCONNECTED' | 'INTERRUPTED';
-export interface AudioFrame { level: number; low: number; mid: number; high: number; flux: number; timestamp: number }
-export const silentFrame = (): AudioFrame => ({level:0,low:0,mid:0,high:0,flux:0,timestamp:performance.now()});
+export interface AudioFrame { level: number; low: number; mid: number; high: number; flux: number; playback: number; timestamp: number }
+export const silentFrame = (): AudioFrame => ({level:0,low:0,mid:0,high:0,flux:0,playback:0,timestamp:performance.now()});
 export class LatestFrame {
   private frame = silentFrame();
   push(frame: AudioFrame) { this.frame = {...frame}; }
   read(now: number): AudioFrame { return now-this.frame.timestamp>500 ? silentFrame() : this.frame; }
-}
-export function posture(state: VoiceState, audible: boolean) {
-  if(state === 'SPEAKING' || state === 'PROCESSING' && audible) return 'speaking';
-  if(state === 'LISTENING') return 'listening';
-  if(state === 'CONNECTING' || state === 'PROCESSING') return 'thinking';
-  if(['ERROR','DISCONNECTED','INTERRUPTED'].includes(state)) return 'quiet';
-  return 'idle';
 }
 export class Orb {
   private context: CanvasRenderingContext2D | null;
@@ -37,11 +30,15 @@ export class Orb {
   private level = 0;
   private phase = 0;
   private destroyed = false;
+  private painted = false;
+  private lastActivity = 1;
+  private lastTarget = 1;
+  private transition: { activity: number; target: number } | undefined;
   readonly audio = new LatestFrame();
   constructor(private canvas: HTMLCanvasElement, private state: VoiceState) {
     this.context=canvas.getContext('2d');
     if(this.context)this.classic=new ClassicRenderer(this.context);
-    Object.defineProperty(canvas,'didiFrameStats',{value:()=>({frames:this.durations.length,maxDrawMs:Math.max(0,...this.durations),meanDrawMs:this.durations.reduce((a,b)=>a+b,0)/Math.max(1,this.durations.length)}),configurable:true});
+    Object.defineProperty(canvas,'didiFrameStats',{value:()=>({frames:this.durations.length,maxDrawMs:Math.max(0,...this.durations),meanDrawMs:this.durations.reduce((a,b)=>a+b,0)/Math.max(1,this.durations.length),activity:this.lastActivity,target:this.lastTarget,transition:this.transition}),configurable:true});
     this.observer=new ResizeObserver(()=>this.resize());this.observer.observe(canvas);
     this.motion.addEventListener('change',this.reset);
     document.addEventListener('visibilitychange',this.reset);
@@ -50,7 +47,7 @@ export class Orb {
     // smoothing and geometry, never capture or transport authority.
     (globalThis as unknown as { didiOrbLevel?: (sample: LevelSample) => void }).didiOrbLevel = sample => this.audio.push(levelFrame(sample));
   }
-  setState(state: VoiceState) { this.state=state; this.reset(); }
+  setState(state: VoiceState) { this.state=state; this.reset(); this.transition={activity:this.lastActivity,target:this.lastTarget}; }
   private resize() {
     this.size=Math.max(1,this.canvas.clientWidth);
     const ratio=Math.min(devicePixelRatio||1,2);
@@ -63,7 +60,11 @@ export class Orb {
     this.animation=undefined;this.lastTime=0;
     this.canvas.dataset.motion=this.motion.matches?'still':'animated';
     this.canvas.dataset.state=this.state;
-    this.draw(performance.now(),true);
+    // The first paint (and reduced motion / a hidden tab) may snap to the target. A state change
+    // while animating draws the smoothed activity so the transition crossfades, never snaps (F5).
+    const still=this.motion.matches||document.hidden||!this.painted;
+    this.painted=true;
+    this.draw(performance.now(),still);
     if(!this.motion.matches&&!document.hidden&&this.context)this.animation=requestAnimationFrame(this.tick);
   };
   private tick = (time: number) => {
@@ -80,8 +81,8 @@ export class Orb {
     const ctx=this.context;if(!ctx)return;
     const dt=this.lastTime?clampFrameDelta((time-this.lastTime)/1000):0.016;
     this.lastTime=time;
-    const frame=this.audio.read(time), audible=frame.level>0.01;
-    const active=posture(this.state,audible);
+    const frame=this.audio.read(time);
+    const active=posture(this.state,frame);
     const target=Math.min(1,Math.max(0,frame.level));
     this.level+=(target-this.level)*smoothingAlpha(dt,target>this.level?ORB_SMOOTHING_TAU.playbackAttack:ORB_SMOOTHING_TAU.playbackDecay);
     const low=Math.min(1,Math.max(0,frame.low));
@@ -101,6 +102,8 @@ export class Orb {
     else if(this.state==='ERROR') { activityTarget=0.6; glow=0.2; flare=0.15; }
     else if(this.state==='IDLE'||this.state==='DISCONNECTED'||this.state==='INTERRUPTED') { activityTarget=0.5; glow=0.1; flare=0.05; }
     this.activity+=(activityTarget-this.activity)*smoothingAlpha(dt,activityTarget>this.activity?ORB_SMOOTHING_TAU.activityAttack:ORB_SMOOTHING_TAU.activityDecay);
+    const drawnActivity=still?activityTarget:this.activity;
+    this.lastActivity=drawnActivity;this.lastTarget=activityTarget;
     if(!still)this.phase+=dt;
     if(this.canvas.dataset.posture!==active)this.canvas.dataset.posture=active;
     const s=this.size,c=s/2;
@@ -112,7 +115,7 @@ export class Orb {
     ctx.save();ctx.translate(c,c);ctx.scale(heroScale,heroScale);ctx.translate(-c,-c);
     const hueTarget=this.state==='ERROR'?0:active==='listening'?45:active==='speaking'?160:active==='thinking'?195:['IDLE','DISCONNECTED','RECONNECTING','INTERRUPTED'].includes(this.state)?210:174;
     this.hue=this.hue===undefined?hueTarget:this.hue+(hueTarget-this.hue)*smoothingAlpha(dt,0.18);
-    this.classic?.draw(c,c,s*0.05,this.hue,still?0.8:this.phase,active,this.level,still?activityTarget:this.activity,glow,flare,this.mid,this.high,this.flux);
+    this.classic?.draw(c,c,s*0.05,this.hue,still?0.8:this.phase,active,this.level,drawnActivity,glow,flare,this.mid,this.high,this.flux);
     ctx.restore();
     // Nothing reaches the square edge: the outermost band fades the whole drawing (rings and glow
     // included) to transparent, so the canvas never shows a straight cut (V3-R6 item 1).

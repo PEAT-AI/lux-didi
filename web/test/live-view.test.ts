@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { createContext, runInContext } from 'node:vm';
 import { liveStateLabel, liveVoiceState, pendingToolNames, liveLabel, liveDelay, mergeLive, liveTranscript, liveResult, liveMarkup, liveActivity, activityMarkup, SLOW_TOOL_MS } from '../src/live-view.ts';
+import { posture } from '../src/orb-level.ts';
 import './connector-status.test.ts';
 import { pollLiveView } from '../src/live-view.ts';
 import type { LiveCurrent } from '../src/protocol.ts';
@@ -80,11 +81,12 @@ test('maps live state to the orb VoiceState', () => {
   assert.equal(liveVoiceState('error'), 'ERROR');
 });
 
-test('poll interval is 1 s when active and 4 s when idle, paused when hidden', () => {
+test('poll interval is 250 ms when active and 4 s when idle, paused when hidden', () => {
   assert.equal(liveDelay('idle', false), 4000);
   assert.equal(liveDelay(undefined, false), 4000);
-  assert.equal(liveDelay('speaking', false), 1000);
-  assert.equal(liveDelay('listening', false), 1000);
+  assert.equal(liveDelay('speaking', false), 250);
+  assert.equal(liveDelay('listening', false), 250);
+  assert.equal(liveDelay('thinking', false), 250);
   assert.equal(liveDelay('speaking', true), undefined);
 });
 
@@ -421,7 +423,7 @@ test('remembered note text is escaped and never rendered as raw markup', () => {
 test('terminal Live uses idle cadence while active and hidden cadence stay unchanged', () => {
   assert.equal(liveDelay('ended', false), 4000);
   assert.equal(liveDelay('error', false), 4000);
-  assert.equal(liveDelay('rebuilding', false), 1000);
+  assert.equal(liveDelay('rebuilding', false), 250);
   assert.equal(liveDelay('ended', true), undefined);
 });
 
@@ -652,4 +654,13 @@ test('output transcript chunks join with a space at a sentence boundary (V2-R2 i
   const lines = liveTranscript(live);
   assert.equal(lines.length, 1);
   assert.equal(lines[0].text, 'Ship the three-lane UI and the live pill. I checked the calendar.');
+});
+
+test('the PROCESSING override follows the playback band, never the owner capture (F6)', () => {
+  assert.equal(posture('PROCESSING', { level: 0.9, playback: 0 }), 'thinking', 'the owner talking does not make the orb speak');
+  assert.equal(posture('PROCESSING', { level: 0, playback: 0.9 }), 'speaking', 'audible playback during a tool turn still speaks');
+  assert.equal(posture('SPEAKING', { level: 0, playback: 0 }), 'speaking');
+  assert.equal(posture('LISTENING', { level: 0, playback: 0 }), 'listening');
+  assert.equal(posture('CONNECTING', { level: 0, playback: 0 }), 'thinking');
+  assert.equal(posture('ERROR', { level: 0, playback: 0 }), 'quiet');
 });

@@ -410,12 +410,12 @@ try {
         await shot('default');
         // FE1 residue: a collapsed side panel leaves no 1 px border or divider line at the window edge.
         const residue = await panelPage.evaluate(() => {
-          const cs = sel => getComputedStyle(document.querySelector(sel));
+          const cs = (sel, pseudo) => getComputedStyle(document.querySelector(sel), pseudo);
           return {
             leftBorder: parseFloat(cs('#panel-left').borderRightWidth) || 0,
             rightBorder: parseFloat(cs('#panel-right').borderLeftWidth) || 0,
-            leftDivider: cs('[data-divider="left"]').display,
-            rightDivider: cs('[data-divider="right"]').display,
+            leftDivider: cs('[data-divider="left"]', '::after').display,
+            rightDivider: cs('[data-divider="right"]', '::after').display,
           };
         });
         assert.equal(residue.leftBorder, 0, 'a collapsed left panel leaves no border at the window edge');

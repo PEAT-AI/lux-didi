@@ -154,8 +154,8 @@
 .lane-chat{flex:0 0 var(--panel-right-w,360px);display:flex;flex-direction:column;border-left:1px solid var(--border)}
 .lane-chat[data-state="open"]{min-width:320px}
 /* Residue (U1 follow-up): a collapsed side panel leaves no 1 px divider line at the window edge. */
-.lane-row:has(> .panel-left[data-state="collapsed"]) > .divider[data-divider="left"],
-.lanes:has(> .panel-right[data-state="collapsed"]) > .divider[data-divider="right"]{display:none}
+.lane-row:has(> .panel-left[data-state="collapsed"]) > .divider[data-divider="left"]::after,
+.lanes:has(> .panel-right[data-state="collapsed"]) > .divider[data-divider="right"]::after{display:none}
 .panel-left[data-state="collapsed"],.lane-chat[data-state="collapsed"]{border:0}
 .divider{flex:0 0 6px;align-self:stretch;cursor:col-resize;position:relative;z-index:6;background:transparent}
 .divider::after{content:"";position:absolute;top:0;bottom:0;left:50%;width:2px;transform:translateX(-1px);background:var(--border)}

@@ -552,7 +552,7 @@ nativeBridge.send({ type: 'ready' });
 // torn down under a measurement (the frozen connected-browser smoke measures right after setViewportSize).
 window.addEventListener('resize', () => { const next = withViewport(layout, window.innerWidth); if (next !== layout) applyLayout(next); });
 document.addEventListener('keydown', event => {
-  if (event.key === 'Escape' && layout.sheet) { applyLayout(closeSheet(layout)); return; }
+  if (event.key === 'Escape' && layout.sheet) { layout = closeSheet(layout); render(); return; }
   const panel = shortcutPanel(event.key, event.metaKey || event.ctrlKey);
   if (panel) { event.preventDefault(); applyLayout(togglePanel(layout, panel)); }
 });

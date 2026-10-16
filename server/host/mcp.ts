@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { mongooseFailureStage } from '../connectors/mongoose.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
-import { bindingDigestOf, isStdioEndpoint, type CallRequest, type McpPort, type ResultScope } from '../adapters/mcp/port.js';
+import { bindingDigestOf, isStdioEndpoint, type CallRequest, type McpPort, type ReadGrant, type ResultScope, type ToolDefinition } from '../adapters/mcp/port.js';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
 import { CONNECTOR_ENVELOPES } from '../connectors/index.js';
 import { identityAction, proveIdentity, type IdentityProof } from '../connectors/identity.js';
@@ -80,9 +80,22 @@ const connectorEnvelopes: Readonly<Record<string, readonly string[]>> = CONNECTO
  * callable grant is published only after a successful proof (see settle below).
  */
 class ProbeRegistry extends McpRegistry {
-  private readonly probes = new Map<string, { tool: string; generation: number; schemaDigest: string; account: string; resource: string }>();
-  grantProbe(id: string, probe: { tool: string; generation: number; schemaDigest: string; account: string; resource: string }): void { this.probes.set(id, probe); }
+  private readonly probes = new Map<string, { tool: string; generation: number; schemaDigest: string; account: string; resource: string; tools: readonly ToolDefinition[] }>();
+  grantProbe(id: string, probe: { tool: string; generation: number; schemaDigest: string; account: string; resource: string; tools: readonly ToolDefinition[] }): void { this.probes.set(id, probe); }
   clearProbe(id: string): void { this.probes.delete(id); }
+  /** The private candidate grant: exactly the identity tool, never a model-facing tool. */
+  override currentGrant(id: string): ReadGrant | undefined {
+    const standing = super.currentGrant(id);
+    if (standing) return standing;
+    const probe = this.probes.get(id);
+    return probe ? { endpointId: id, schemaDigest: probe.schemaDigest, generation: probe.generation, account: probe.account, resource: probe.resource, toolNames: [probe.tool], effect: 'read' } : undefined;
+  }
+  override visibleTools(id: string): readonly ToolDefinition[] {
+    const standing = super.visibleTools(id);
+    if (standing.length) return standing;
+    const probe = this.probes.get(id);
+    return probe ? probe.tools.filter(tool => tool.name === probe.tool) : [];
+  }
   override authorize(request: CallRequest): ResultScope {
     try { return super.authorize(request); } catch (error) {
       const probe = this.probes.get(request.endpointId);
@@ -223,7 +236,7 @@ export async function composeMcpRuntime(options: {
       const identitySource = descriptor?.identity?.(policy) ?? null;
       let identity: IdentityProof | undefined;
       if (identitySource && descriptor && expectedIdentities.length) {
-        registry.grantProbe(entry.id, { tool: identitySource.tool, generation: policy.generation, schemaDigest: policy.schemaDigest, account: policy.endpoint.account, resource: policy.endpoint.resource });
+        registry.grantProbe(entry.id, { tool: identitySource.tool, generation: policy.generation, schemaDigest: policy.schemaDigest, account: policy.endpoint.account, resource: policy.endpoint.resource, tools: discovery.tools });
         try {
           const reader = descriptor.createReader({ port, registry, endpoint: policy.endpoint, schemaDigest: policy.schemaDigest, generation: policy.generation, policy });
           identity = await proveIdentity({ source: identitySource, expected: expectedIdentities, call: (tool, args) => reader.call(tool, args) });

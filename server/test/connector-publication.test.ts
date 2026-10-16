@@ -111,8 +111,9 @@ test('pre-proof discovery exposes nothing, mismatch refuses, match publishes', a
   // Discovery is done and the identity proof is in flight: no declaration, no grant, no read handler.
   assert.equal(mcp.connectionIds().length, 0);
   assert.notEqual(mcp.status().endpoints[0]!.state, 'connected');
-  assert.equal(mcp.registry.currentGrant('gmail'), undefined);
-  assert.deepEqual(mcp.registry.visibleTools('gmail'), []);
+  // Only the private identity candidate exists; no model-facing tool is callable.
+  assert.deepEqual(mcp.registry.visibleTools('gmail').map(tool => tool.name), ['gmail_get_profile']);
+  assert.equal(mcp.registry.currentGrant('gmail')?.toolNames.includes('gmail_list'), false);
   assert.deepEqual(fake.calls.filter(name => name !== 'gmail_get_profile'), []);
   fake.releaseProof(OTHER);
   await started;

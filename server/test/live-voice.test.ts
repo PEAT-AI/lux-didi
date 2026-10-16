@@ -858,6 +858,47 @@ test('P3: a carried voice accent restates the tool anchor and _voice_anchor is t
   assert.ok(serialised.endsWith('Do not read raw text, ids or URLs."}}]}}'), 'the serialised frame closes on the accent restatement');
 });
 
+test('AC2: the tool anchor diagnostic counts the _voice_anchor actually serialized in a function response', async t => {
+  const f = await providerFixture(t);
+  const modelId = 'models/gemini-3.8-live-test';
+  const accent = 'SYNTHETIC-ACCENT-DESCRIPTION';
+  const tools = [{ name: 'search_knowledge', description: 'Search', parameters: { type: 'OBJECT' } }];
+  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory, modelId,
+    route: { enabled: true, provider: 'gemini', modelId, dataClasses: ['ordinary'] } })).open({ ...request(), tools, voiceAccent: accent }, control());
+  t.after(() => session.close());
+  const events = session.events[Symbol.asyncIterator]();
+  const anchorChars = (): number => (session.diagnostics?.() as { toolAnchorChars?: number } | undefined)?.toolAnchorChars ?? 0;
+  await f.frame(1); f.send({ setupComplete: {} }); await session.ready;
+  assert.equal((await events.next()).value?.type, 'ready');
+  assert.equal(anchorChars(), 0, 'no function response has been serialized yet');
+  f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x' } }] } });
+  assert.equal((await events.next()).value?.type, 'modelTurnStarted');
+  assert.equal((await events.next()).value?.type, 'toolCall');
+  session.sendToolResponse({ responses: [{ id: 'c1', name: 'search_knowledge', response: { markdown: 'one' } }] });
+  await f.frame(2);
+  assert.equal(anchorChars(), `Answer aloud in your own words, briefly, in this voice and accent: ${accent}. Do not read raw text, ids or URLs.`.length, 'the count is the serialized _voice_anchor, not the bare accent');
+});
+
+test('AC2: a model that serializes no anchor reports no tool anchor count', async t => {
+  const f = await providerFixture(t);
+  const modelId = 'models/gemini-3.1-flash-live-preview';
+  const accent = 'SYNTHETIC-ACCENT-DESCRIPTION';
+  const tools = [{ name: 'search_knowledge', description: 'Search', parameters: { type: 'OBJECT' } }];
+  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory, modelId,
+    route: { enabled: true, provider: 'gemini', modelId, dataClasses: ['ordinary'] } })).open({ ...request(), tools, voiceAccent: accent }, control());
+  t.after(() => session.close());
+  const events = session.events[Symbol.asyncIterator]();
+  const anchorChars = (): number => (session.diagnostics?.() as { toolAnchorChars?: number } | undefined)?.toolAnchorChars ?? 0;
+  await f.frame(1); f.send({ setupComplete: {} }); await session.ready;
+  assert.equal((await events.next()).value?.type, 'ready');
+  f.send({ toolCall: { functionCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x' } }] } });
+  assert.equal((await events.next()).value?.type, 'modelTurnStarted');
+  assert.equal((await events.next()).value?.type, 'toolCall');
+  session.sendToolResponse({ responses: [{ id: 'c1', name: 'search_knowledge', response: { markdown: 'one' } }] });
+  await f.frame(2);
+  assert.equal(anchorChars(), 0, 'the model gate serializes no anchor, so the count stays zero');
+});
+
 test('P2: a carried voice accent restates the model-first opening nudge', async t => {
   const f = await providerFixture(t);
   const accent = 'SYNTHETIC-ACCENT-DESCRIPTION';

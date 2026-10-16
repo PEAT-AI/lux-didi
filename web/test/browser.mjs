@@ -145,6 +145,8 @@ try {
     assert.equal(await page.locator('.rail').count(),1);
     // Default is both side panels collapsed; open both so the chat lane and the program menu are reachable.
     await page.evaluate(() => { for (const id of ['panel-toggle-left','panel-toggle-right']) { const b = document.getElementById(id); if (b && b.getAttribute('aria-expanded') !== 'true') b.click(); } });
+    assert.deepEqual(await page.evaluate(() => ['panel-toggle-left','panel-toggle-right'].map(id => document.getElementById(id)?.getAttribute('aria-expanded'))), ['true','true'], 'both side panels report open before a rail route is used');
+    assert.equal(await page.locator('button[data-route="settings"]').isVisible(), true, 'the opened panel renders its rail items');
     await page.locator('button[data-route="settings"]').click();
     await page.locator('#sheet').waitFor();
     assert.match(await page.locator('#sheet').innerText(),/No model connected/);

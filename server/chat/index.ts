@@ -8,6 +8,7 @@ import { publicOwnerProfile, validateOwnerProfile, PROMPT_VERSION } from '../pro
 import { runTools } from '../adapters/model/loop.js';
 import { declarationsFor } from '../tools/declarations.js';
 import { definitionsInTransaction } from '../tools/index.js';
+import { stripModelOnlyNotes } from '../tools/live-shape.js';
 import { canonicalJSON } from '../tools/canonical.js';
 import type { LiveAuthority, RunAcceptance, RunSnapshot as OwnerRunSnapshot } from '../tools/types.js';
 import type { ToolEvidence } from './types.js';
@@ -153,7 +154,8 @@ export class ChatService implements ChatPort {
       const response = result.response;
       const text = typeof response.markdown === 'string' ? response.markdown : typeof response.text === 'string' ? response.text : 'Tool refused or unavailable.';
       const sources = sourceCards({ text: response.text, markdown: response.markdown, sources: response.sources });
-      return [{ name: result.name, markdown: text.slice(0, 4096), sources }];
+      // Owner-facing copy only: the model's own functionResponse keeps the paging/omission note.
+      return [{ name: result.name, markdown: stripModelOnlyNotes(text).slice(0, 4096), sources }];
     })).slice(0, 16);
   }
 

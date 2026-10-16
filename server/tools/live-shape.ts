@@ -105,6 +105,12 @@ function listed(items: string[], limit: number, label: string, followUp?: string
   const suffix = omitted > 0 ? `\n\n[omitted: ${omitted} more ${label}; ${followUp ?? 'final, this tool has no paging argument'}]` : '';
   return { text: shown.join('\n') + suffix, omitted };
 }
+/** The model-only omission/paging note a shaped result appends: it tells the model whether and how
+ * to fetch the rest. The owner-facing evidence copy strips it; the model's own copy keeps it. */
+export const MODEL_ONLY_NOTE = /\[omitted: [^\]\n]*\]/;
+export function stripModelOnlyNotes(text: string): string {
+  return text.replace(/\n*\[omitted: [^\]\n]*\]/g, '');
+}
 /** The hard per-result ceiling on model-visible text. A result already under `budget` is untouched;
  * otherwise it is cut at a sentence boundary and an omission note names the dropped characters and
  * how to ask for the rest, so the whole text (note included) stays within `budget`. */

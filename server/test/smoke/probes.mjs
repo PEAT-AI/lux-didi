@@ -31,11 +31,13 @@ const CONNECTOR_READS = {
 
 const QUESTION = 'Search lux knowledge for Lux Didi and open the most relevant entry.';
 const RESEARCH_QUESTION = 'What is on my calendar today? Please check.';
+// #263: a calendar question with no source hint must still reach research, never a "no calendar access" refusal.
+const MEETINGS_QUESTION = 'Do I have any meetings today?';
 
 function log(line) { process.stdout.write(line + '\n'); }
 function now() { return Date.now(); }
 
-const HOSTLESS_PROBES = ['probe2-connectors', 'probe3-text-turn', 'probe4-voice-turn', 'probe5-research'];
+const HOSTLESS_PROBES = ['probe2-connectors', 'probe3-text-turn', 'probe4-voice-turn', 'probe5-research', 'probe6-meetings'];
 
 /** #260: the three drivers a research_run may name. probe5 reads the run's own field, never derives it. */
 export const RESEARCH_DRIVERS = ['selector', 'fallback', 'single-source-hint'];
@@ -283,7 +285,7 @@ async function liveTurn({ base, token, epoch, clipPath }) {
   return { ok, stage: 'turn', toolResultAt: toolResultAt !== null, audioAfterResult: afterResult, openFor, lifecycle };
 }
 
-async function researchTurn({ base, token, epoch, dataDir, clipPath }) {
+async function researchTurn({ base, token, epoch, dataDir, clipPath, requireSingleCall = true, requireDriver = true, requireRead = true }) {
   const headers = () => liveHeaders(token, epoch);
   const created = await fetch(base + '/api/v1/live-sessions', { method: 'POST', headers: headers(), body: JSON.stringify({ inputClass: 'ordinary' }) });
   if (created.status !== 200) return { ok: false, stage: 'create' };
@@ -387,22 +389,22 @@ async function researchTurn({ base, token, epoch, dataDir, clipPath }) {
       otherToolCalls: lastFragments.filter(fragment => fragment.kind === 'toolCall' && fragment.tool && typeof fragment.tool.name === 'string' && fragment.tool.name !== 'research').length,
       turnCompleteMs: (() => { const done = lastFragments.find(fragment => fragment.kind === 'turnComplete' && Number.isFinite(fragment.arrivedAt)); return done ? done.arrivedAt - questionAt : null; })(),
     };
-    if (calls !== 1) return { ok: false, stage: 'call', calls, ...notCalled };
+    if (requireSingleCall ? calls !== 1 : calls < 1) return { ok: false, stage: 'call', calls, ...notCalled };
     // The question is one research run. A model may call the tool more than once (start then continue or
     // stop), but every run line for the question carries the one researchId the host minted.
     const ids = [...new Set(runs.map(line => line.researchId))];
-    if (ids.length !== 1) return { ok: false, stage: 'runs', calls, runs: ids.length, detail: runs.map(line => `${line.status}:${line.stopReason}:${line.rounds}`).slice(0, 8).join(' '), ...notCalled };
+    if (requireSingleCall ? ids.length !== 1 : ids.length < 1) return { ok: false, stage: 'runs', calls, runs: ids.length, detail: runs.map(line => `${line.status}:${line.stopReason}:${line.rounds}`).slice(0, 8).join(' '), ...notCalled };
     const answered = runs.filter(line => (line.status === 'answered' || line.status === 'partial') && line.rounds >= 1);
     if (!answered.length) return { ok: false, stage: 'status', calls, runs: runs.length, ...notCalled };
     const run = answered[answered.length - 1];
     const read = Array.isArray(run.sources) ? run.sources.filter(source => source.disposition === 'completed').length : 0;
-    if (read < 1) return { ok: false, stage: 'sources', read, ...notCalled };
-    if (!(run.replyBytes <= 2000)) return { ok: false, stage: 'over_cap', replyBytes: run.replyBytes, ...notCalled };
-    if (outputAtResult === null || outputChars <= outputAtResult) return { ok: false, stage: 'no_output', ...notCalled };
+    if (requireRead && read < 1) return { ok: false, stage: 'sources', read, ...notCalled };
+    if (requireRead && !(run.replyBytes <= 2000)) return { ok: false, stage: 'over_cap', replyBytes: run.replyBytes, ...notCalled };
+    if (requireRead && (outputAtResult === null || outputChars <= outputAtResult)) return { ok: false, stage: 'no_output', ...notCalled };
     // #260: the run names its own driver; a run line without one of the three fails and is never guessed.
     const driver = researchDriver(run);
-    if (driver === null) return { ok: false, stage: 'driver', driver: run.driver ?? 'missing', ...notCalled };
-    return { ok: true, stage: 'turn', calls, rounds: run.rounds, sources: `${run.sources.length}(${read} read)`, driver, selectorMs: run.selectorMs, elapsedMs: run.elapsedMs, deadAirMs: run.deadAirMs, replyBytes: run.replyBytes, outputAfter: outputChars - outputAtResult, progress, ...notCalled };
+    if (requireDriver && driver === null) return { ok: false, stage: 'driver', driver: run.driver ?? 'missing', ...notCalled };
+    return { ok: true, stage: 'turn', calls, rounds: run.rounds, sources: `${run.sources.length}(${read} read)`, driver: driver ?? 'any', selectorMs: run.selectorMs, elapsedMs: run.elapsedMs, deadAirMs: run.deadAirMs, replyBytes: run.replyBytes, outputAfter: outputChars - outputAtResult, progress, ...notCalled };
   } finally { try { ws.close(); } catch { /* noop */ } }
 }
 
@@ -465,6 +467,17 @@ async function main() {
           : researchFailureNote({ stage: research.stage, calls: research.calls, runs: research.runs, detail: research.detail, status: research.status, rounds: research.rounds, read: research.read, replyBytes: research.replyBytes, outputFragments: research.outputFragments, outputChars: research.outputChars, otherToolNames: research.otherToolNames, otherToolCalls: research.otherToolCalls, turnCompleteMs: research.turnCompleteMs }) + ` load=${loadAverageText()}` });
       } finally { await rm(clipPath, { force: true }); }
     } catch (error) { results.push({ id: 'probe5-research', ok: false, note: String(error && error.message).slice(0, 120) }); }
+    // #263: a plain calendar question must reach research, never a "no calendar access" refusal. Called and
+    // answered is the pass; the driver and the read shape are probe5's stricter job.
+    try {
+      const clipPath = synthClip(MEETINGS_QUESTION);
+      try {
+        const research = await researchTurn({ base, token, epoch, dataDir, clipPath, requireSingleCall: false, requireDriver: false, requireRead: false });
+        results.push({ id: 'probe6-meetings', ok: research.ok, note: research.ok
+          ? `calls=${research.calls} rounds=${research.rounds} driver=${research.driver} progress=${research.progress}`
+          : `stage=${research.stage} calls=${research.calls ?? 0} runs=${research.runs ?? 0}` });
+      } finally { await rm(clipPath, { force: true }); }
+    } catch (error) { results.push({ id: 'probe6-meetings', ok: false, note: String(error && error.message).slice(0, 120) }); }
   } else {
     results.push(...noHostResults());
   }

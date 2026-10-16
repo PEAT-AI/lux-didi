@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   RESEARCH, ResearchLedger, ResearchScheduler, createGeminiSelector, fallbackSelection, offerableCandidates,
-  parseSelector, pUsefulOf, runResearch, validateResearch, worthContinuing,
+  parseSelector, pUsefulOf, researchDeclaration, researchDescription, researchSourcesFromToolNames, runResearch,
+  validateResearch, worthContinuing,
   type ResearchDeps, type ResearchProgress, type ResearchRunLog, type ResearchSelector, type SelectorOutput, type SourceKind,
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
@@ -246,4 +247,24 @@ test('createGeminiSelector parses one complete text answer and treats a non-comp
   const bad = createGeminiSelector({ async generate() { return { status: 'error', text: '' } as never; } });
   assert.equal(await bad.select({ question: 'q', configured: CONFIGURED, completed: [], candidates: ['knowledge_search'] }, new AbortController().signal), null);
   assert.equal(calls, 1);
+});
+
+// #263: the declaration names only the sources this session configured and the host loop can read. A session
+// with Google (calendar, mail), Mattermost (team chat) and lux-knowledge (knowledge) names those four.
+test('the research declaration names only the configured sources and the valid hint values', () => {
+  const google = ['gcal_calendars', 'gmail_list'];
+  const base = researchSourcesFromToolNames([...google, 'mattermost_search', 'search_knowledge']);
+  assert.deepEqual(base, ['calendar', 'mail', 'chat', 'knowledge']);
+  const description = researchDescription(base);
+  assert.match(description, /calendar, mail, team chat and knowledge base/);
+  assert.doesNotMatch(description, /company knowledge base/);
+  assert.ok(description.length < 500, `description ${description.length} chars`);
+  // R2-R2: the loop has no Mongoose candidate, so a Mongoose-configured session still names only the four.
+  const withMongooseTools = researchSourcesFromToolNames([...google, 'mattermost_search', 'search_knowledge', 'ask_mongoose', 'search_mongoose']);
+  assert.deepEqual(withMongooseTools, ['calendar', 'mail', 'chat', 'knowledge']);
+  const declaration = researchDeclaration(base);
+  assert.equal(declaration.name, 'research');
+  assert.equal(declaration.description, description);
+  const properties = (declaration.parameters as unknown as { properties: Record<string, { description: string }> }).properties;
+  assert.match(properties['sources']!.description, /calendar, mail, chat, knowledge\./);
 });

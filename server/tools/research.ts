@@ -368,10 +368,44 @@ export function validateResearch(args: unknown): boolean {
   return optionalString(args['researchId']) !== undefined;
 }
 
-export function researchDeclaration(): { name: string; description: string; guidance: string; parameters: JsonObject; validate(args: unknown): boolean } {
+/** The display order and human name of every research source the host loop can read today (R2-R2). */
+const SOURCE_LABELS: readonly (readonly [SourceKind, string])[] = [
+  ['calendar', 'calendar'],
+  ['mail', 'mail'],
+  ['chat', 'team chat'],
+  ['knowledge', 'knowledge base'],
+];
+
+/** The connector tool whose presence means a source is configured. Same four names the research loop fans out over. */
+const SOURCE_TOOLS: Readonly<Record<string, SourceKind>> = {
+  search_knowledge: 'knowledge', gcal_calendars: 'calendar', gmail_list: 'mail', mattermost_search: 'chat',
+};
+
+/** Map the tool names a session actually configured to the research sources they expose, in display order. */
+export function researchSourcesFromToolNames(names: Iterable<string>): SourceKind[] {
+  const present = new Set(names);
+  const found = new Set<SourceKind>();
+  for (const [tool, source] of Object.entries(SOURCE_TOOLS)) if (present.has(tool)) found.add(source);
+  return SOURCE_LABELS.map(([source]) => source).filter(source => found.has(source));
+}
+
+/** The configured sources named for the model, joined as "a, b and c". */
+function sourceListText(sources: readonly SourceKind[]): string {
+  const labels = SOURCE_LABELS.filter(([source]) => sources.includes(source)).map(([, label]) => label);
+  if (labels.length === 0) return 'configured sources';
+  if (labels.length === 1) return labels[0]!;
+  return `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]!}`;
+}
+
+/** The declaration description names the sources this session actually configured, never a source it lacks. */
+export function researchDescription(sources: readonly SourceKind[]): string {
+  return `The owner's ${sourceListText(sources)}, in one lookup. Use it for every question about his day, schedule, meetings, mail, messages, notes or past work. The host decides per question which sources are worth reading and whether one more read is worth the wait. Call start with the question; call continue with the researchId to keep looking; call stop with the researchId to stop.`;
+}
+
+export function researchDeclaration(configured: readonly SourceKind[] = RESEARCH_SOURCES): { name: string; description: string; guidance: string; parameters: JsonObject; validate(args: unknown): boolean } {
   return {
     name: RESEARCH_TOOL_NAME,
-    description: 'Look something up for the owner, as deeply as the question deserves. The host decides per question which sources are worth reading and whether one more read is worth the wait. Call start with the question; call continue with the researchId to keep looking; call stop with the researchId to stop.',
+    description: researchDescription(configured),
     guidance: 'start needs {"action":"start","question":"the question"}; continue needs {"action":"continue","researchId":"..."}. An optional "sources" hint of exactly one source makes the first round deterministic; an optional "direction" steers a continue.',
     parameters: {
       type: 'object', additionalProperties: false, required: ['action'],
@@ -379,7 +413,7 @@ export function researchDeclaration(): { name: string; description: string; guid
         action: { type: 'string', enum: ['start', 'continue', 'stop'], description: 'start a lookup, continue one, or stop one.' },
         question: { type: 'string', minLength: 1, description: 'The owner question; required for start.' },
         researchId: { type: 'string', minLength: 1, description: 'The id a previous reply carried; required for continue and stop.' },
-        sources: { type: 'string', description: 'Optional single-source hint, e.g. mail or calendar.' },
+        sources: { type: 'string', description: 'Optional single-source hint; valid values: calendar, mail, chat, knowledge.' },
         direction: { type: 'string', description: 'Optional steer for a continue, e.g. "look in mail".' },
       },
     },

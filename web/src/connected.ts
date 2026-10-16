@@ -1,5 +1,5 @@
 import { ApiError, authorityVersion, assertAuthority, request, stream } from './api.ts';
-import { answerMarkup, chatEntryMarkup, renderToolEvidence } from './markdown.ts';
+import { answerMarkup, chatEntryMarkup, renderToolEvidence, runFailureWords } from './markdown.ts';
 import { composerIntent, draftHeightPx } from './composer.ts';
 import { attachPin } from './autoscroll.ts';
 import type { Entry, Session, Recall, MemorySelectionSnapshot, ConnectedRouteStatus, Status, ToolEvidence } from './protocol';
@@ -228,7 +228,7 @@ export class ConnectedView {
   }
   #runSection(r: Run): string {
     const failed = r.state === 'terminal' && r.outcome !== 'complete';
-    const message = failed ? `No saved answer: ${escape(r.outcome)}.${r.mayHaveBeenSent ? ' Content may have been sent.' : ''}` : '';
+    const message = failed ? escape(runFailureWords(r.outcome, r.mayHaveBeenSent)) : '';
     const provisional = r.partialText && r.outcome !== 'complete' ? `<p class="provisional"><strong>Provisional · not a saved answer</strong><br>${escape(r.partialText)}</p>` : '';
     const cancel = r.state !== 'terminal' ? '<button id="connected-cancel" class="quiet">Cancel model run</button>' : '';
     const hidden = !message && !provisional && !cancel;

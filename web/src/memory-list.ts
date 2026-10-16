@@ -29,6 +29,7 @@ export function memoryItemKindNote(item: MemoryListItem): string | null {
 export function memoryItemOrigin(item: MemoryListItem): string {
   switch (item.origin) {
     case 'live-voice': return 'Live voice via remember_note';
+    case 'conversation summary': return 'Conversation summary';
     case 'chat': return 'Saved from chat';
     case 'page': return 'Saved from the page';
     default: return 'Origin unknown';
@@ -90,9 +91,13 @@ export async function deleteMemoryAndReload<T>(id: string, actions: {
   actions.apply(payload);
   const retained = response !== null && typeof response === 'object'
     && 'liveSessionRetainsUntilRebuild' in response && response.liveSessionRetainsUntilRebuild === true;
-  actions.deleted?.(retained
-    ? "Naya's current live conversation still has this note until it reconnects or ends."
-    : 'Memory deleted.');
+  const cascadeCount = response !== null && typeof response === 'object' && Array.isArray((response as { deletedIds?: unknown }).deletedIds)
+    ? (response as { deletedIds: unknown[] }).deletedIds.length : 0;
+  actions.deleted?.(cascadeCount > 1
+    ? `Deleted ${cascadeCount} conversation summaries.`
+    : retained
+      ? "Naya's current live conversation still has this note until it reconnects or ends."
+      : 'Memory deleted.');
   return true;
 }
 

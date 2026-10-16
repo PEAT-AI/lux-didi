@@ -99,10 +99,24 @@ test('candidateSubs uses the authored query and the per-source limits', () => {
 // --- Telegraphic shaping ---------------------------------------------------------------------
 
 test('shapeBlock emits one mail line per item with a count line, never the id in the snippet', () => {
-  const text = '- Budget | Alice | Mon [unread] | body here [id m1]';
+  const text = '- Budget | from: Alice | date: Mon [unread] | body here [id m1]';
   const block = shapeBlock('mail_search', [sub('gmail_list', text)]);
   assert.equal(block.lines[0], 'Alice | Budget | Mon [unread] | body here');
   assert.match(block.text, /^mail: 1 of 1 shown\nAlice \| Budget/);
+});
+
+test('shapeBlock reads labelled list lines and omits an absent sender and date', () => {
+  const text = '- Budget | from: Alice | date: Mon | body here [id m1]\n- No sender | body two [id m2]';
+  const block = shapeBlock('mail_search', [sub('gmail_list', text)]);
+  assert.equal(block.lines[0], 'Alice | Budget | Mon | body here');
+  assert.equal(block.lines[1], 'No sender | body two');
+  assert.equal(block.text.includes('unknown'), false);
+});
+
+test('shapeBlock keeps sender and date from an opened mail, past the to line', () => {
+  const text = 'subject: Budget\nfrom: Alice\nto: rob@example.invalid\ndate: Mon\n\nbody text';
+  const block = shapeBlock('mail_open', [sub('gmail_read', text)]);
+  assert.equal(block.lines[0], 'Alice | Budget | Mon | body text');
 });
 
 test('shapeBlock collapses knowledge headings to id and title and caps the block', () => {
@@ -138,7 +152,7 @@ test('a mail search id flows into a second read in the same run', async () => {
     execute: async (subs: readonly IntentSubCall[]) => {
       for (const call of subs) executed.push({ name: call.name, args: call.args });
       return subs.map(call => call.name === 'gmail_list'
-        ? sub(call.name, '- Budget | Alice | Mon [unread] | body here [id m1]', true, call.key)
+        ? sub(call.name, '- Budget | from: Alice | date: Mon [unread] | body here [id m1]', true, call.key)
         : sub(call.name, 'subject: Budget\nfrom: Alice\ndate: Mon\n\nthe body', true, call.key));
     },
     emit: () => undefined,
@@ -154,7 +168,7 @@ test('a mail search id flows into a second read in the same run', async () => {
 
 test('packing floors at one line per source, caps at the reply limit and sets canContinue', async () => {
   const knowledge = Array.from({ length: 8 }, (_, i) => `### Insight ${i} (PATTERN | 2026-10-0${i}) [id ${i + 1}]\n${'k'.repeat(600)}`).join('\n');
-  const mail = Array.from({ length: 8 }, (_, i) => `- Subject ${i} | Sender ${i} | Mon | ${'m'.repeat(190)} [id m${i}]`).join('\n');
+  const mail = Array.from({ length: 8 }, (_, i) => `- Subject ${i} | from: Sender ${i} | date: Mon | ${'m'.repeat(190)} [id m${i}]`).join('\n');
   const selector: ResearchSelector = { async select() { return { questionClass: 'cross_source', actions: [{ kind: 'knowledge_search' }, { kind: 'mail_search' }], pUseful: { knowledge_search: 1, mail_search: 1 } }; } };
   const deps: ResearchDeps = {
     now: () => 0, configured: CONFIGURED, selector, replyLimit: 3_000,

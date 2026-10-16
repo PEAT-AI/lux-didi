@@ -5,6 +5,8 @@ import type { DataClass, ToolDefinition } from '../adapters/model/types.js';
 import { declarationsFor } from '../tools/declarations.js';
 import { compilePrompt, createCapabilitySnapshot, PROMPT_VERSION, PromptCompileError,
   type CompileInput, type CompiledPrompt, type Evidence, type HistoryItem } from '../prompt/index.js';
+import { buildEarlierConversationsSection } from '../prompt/live-persona.js';
+import * as summaries from '../domain/summaries.js';
 import { ChatError, type ChatConfig, type ClassificationSubject } from './types.js';
 import { selectedEvidenceId, type RunSelection } from './memorySelection.js';
 
@@ -47,6 +49,10 @@ export function assemble(config: ChatConfig, sessionId: string, currentId: strin
     return { session, recall, today };
   });
   if (read.session.nextCursor !== null || read.recall?.nextCursor || read.today?.nextCursor) throw new ContextFailure('unavailable');
+  // Session memory v1: text chat reads the same summaries store voice reads, so one past serves both.
+  const earlier = buildEarlierConversationsSection(
+    config.store.transaction(tx => summaries.injectionCandidates(tx)),
+    { now: config.now ? config.now() : Date.now(), timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
   config.store.transaction(tx => classify(config, { kind: 'session', id: sessionId }, tx));
   const history: HistoryItem[] = read.session.entries.map((entry: Entry) => {
     if (entry.role === 'system') throw new ContextFailure('unavailable');
@@ -79,7 +85,8 @@ export function assemble(config: ChatConfig, sessionId: string, currentId: strin
   }
   const capabilities = chatCapabilities(registry, [...configured].map(([id, available]) => ({ id, state: available ? 'available' : 'missing' })));
   const base: CompileInput = { ownerId: config.store.assistantId, persona: 'didi', promptVersion: PROMPT_VERSION,
-    ...(ownerProfile ? { ownerProfile } : {}), preferences: config.preferences, capabilities, evidence, history: [current], budgets: config.context.budgets };
+    ...(ownerProfile ? { ownerProfile } : {}), preferences: config.preferences, capabilities, evidence, history: [current], budgets: config.context.budgets,
+    ...(earlier.section ? { earlierConversations: earlier.section } : {}) };
   let compiled: CompiledPrompt;
   try { compiled = compilePrompt(base); }
   catch (error) {

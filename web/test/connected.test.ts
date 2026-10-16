@@ -60,3 +60,14 @@ test('the composer grows with the draft up to 40 percent of the lane, then scrol
   assert.equal(draftHeightPx(400, 800), 320, 'capped at 40 percent of the lane height');
   assert.equal(draftHeightPx(400, 0), 400, 'no lane measurement means no cap');
 });
+
+test('a failed run states in plain words what happened and what to do next (M1)', () => {
+  const runFailureWords = markdown.runFailureWords;
+  const words = runFailureWords('outcome_unknown', true);
+  assert.equal(words.includes('outcome_unknown'), false, 'the raw outcome code never reaches the panel');
+  assert.match(words, /interrupted before it could save an answer/);
+  assert.match(words, /Ask again/);
+  assert.match(words, /Content may have been sent before it stopped\./);
+  assert.equal(runFailureWords('cancelled', false).includes('may have been sent'), false, 'a cancel does not claim content was sent');
+  assert.equal(runFailureWords('input_too_large', false).includes('unknown'), false);
+});

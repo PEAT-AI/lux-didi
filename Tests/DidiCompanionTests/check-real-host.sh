@@ -5,6 +5,7 @@ app="$1"; proof="$2"; node="$3"
 work="$(mktemp -d "${TMPDIR:-/tmp}/didi-native-real-host.XXXXXX")"
 cleanup() {
   status=$?
+  trap - EXIT INT TERM
   # Terminate every staged/verification instance this run launched, by recorded pid,
   # never the owner's installed instance.
   while IFS= read -r f; do
@@ -21,7 +22,7 @@ cleanup() {
   fi
   exit "$status"
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM
 mkdir "$work/source" "$proof/real-host"
 chmod 700 "$proof/real-host"
 git archive HEAD server web | tar -x -C "$work/source"

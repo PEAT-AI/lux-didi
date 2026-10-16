@@ -12,7 +12,8 @@ cd "$(dirname "$0")/.."
 if [ "${1:-}" = "--before-state" ]; then
   base="${2:-5c8bb463d877311e122f077ab7c01a1f221a0edb}"
   work="$(mktemp -d "${TMPDIR:-/tmp}/didi-before-state.XXXXXX")"
-  trap 'rm -rf "$work"' EXIT
+  cleanup_before_state() { status=$?; trap - EXIT INT TERM; rm -rf "$work"; exit "$status"; }
+  trap cleanup_before_state EXIT INT TERM
   git archive "$base" Sources/LuxDidi | tar -x -C "$work"
   bundle="$work/bundle"
   mkdir -p "$bundle/Contents/Resources/server/dist/host" "$bundle/Contents/Resources/web/dist"
@@ -104,7 +105,7 @@ if [ "${1:-}" = "--leased-run" ]; then
     return 0
   }
   cleanup_active_observation() {
-    result=$?; trap - EXIT
+    result=$?; trap - EXIT INT TERM
     stop_display_assertion
     terminate_launched_apps
     if [ -n "$active_held_pid" ]; then
@@ -116,7 +117,7 @@ if [ "${1:-}" = "--leased-run" ]; then
     fi
     exit "$result"
   }
-  trap cleanup_active_observation EXIT
+  trap cleanup_active_observation EXIT INT TERM
   /usr/bin/caffeinate -d -u -w "$$" -t "$display_assertion_max" &
   active_caffeinate_pid=$!
   begin_observation() {
@@ -197,7 +198,8 @@ if [ "${1:-}" = "--leased-run" ]; then
     HOME="$real_home" CFFIXED_USER_HOME="$real_home" "$work/observer" --verification "$app" "$held_root" "$(uuidgen)" held-http-failure --installed-proof --proof-state "$held_root/state" --proof-report "$held_root/report.json" &
     held_pid=$!
     cleanup_held_failure() {
-      result=$?; trap - EXIT
+      result=$?; trap - EXIT INT TERM
+      terminate_launched_apps || true
       if [ "$result" -ne 0 ]; then
         bash Tests/DidiCompanionTests/launch-probe/produce.sh --signal-stage "$held_root" cancel || { signal_result=$?; [ "$result" -ne 0 ] || result=$signal_result; }
       fi
@@ -205,7 +207,7 @@ if [ "${1:-}" = "--leased-run" ]; then
       [ "$result" -ne 0 ] || result=$joined
       exit "$result"
     }
-    trap cleanup_held_failure EXIT
+    trap cleanup_held_failure EXIT INT TERM
     bash Tests/DidiCompanionTests/launch-probe/produce.sh --await-stage "$held_root" || exit "$?"
     held_origin="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["service"]["origin"])' "$held_root/report.json")"
     held_token="$(tr -d '\n' < "$held_root/state/admin-credential")"
@@ -496,7 +498,8 @@ fi
 # compilation and bundling stay outside the browser lease.
 work="$(mktemp -d "${TMPDIR:-/tmp}/didi-macos-install.XXXXXX")"
 work="$(cd "$work" && pwd -P)"
-trap 'rm -rf "$work"' EXIT
+cleanup_prepared() { status=$?; trap - EXIT INT TERM; rm -rf "$work"; exit "$status"; }
+trap cleanup_prepared EXIT INT TERM
 parent="${LUX_DIDI_PROOF_DIR:-${TMPDIR:-/tmp}}"
 mkdir -p "$parent"
 proof="$(mktemp -d "$parent/macos-install-proof-${LUX_WORKER_RUN_ID:-$$}.XXXXXX")"

@@ -259,7 +259,7 @@ try {
     for (const [w, h] of [[900, 700], [1440, 900], [2000, 1250]]) {
       await page.setViewportSize({ width: w, height: h });
       fixture.setLive(session('idle', '2026-10-11T16:00:00Z', 0, []));
-      await page.waitForFunction(() => document.querySelector('.feed-empty'), null, { timeout: 12000 }).catch(async error => { console.error('FE1-DIAG', w, JSON.stringify(await page.evaluate(() => ({ panel: document.querySelector('#live-panel')?.outerHTML.slice(0, 240), buckets: [...document.querySelectorAll('.live-turns > *')].map(n => n.className) })))); throw error; });
+      await page.waitForFunction(() => document.querySelector('.feed-empty'), null, { timeout: 12000 }).catch(async error => { console.error('FE1-DIAG', w, JSON.stringify(await page.evaluate(() => ({ state: document.querySelector('.voice-state')?.textContent, panel: document.querySelector('#live-panel')?.outerHTML })))); throw error; });
       const geo = await page.evaluate(() => {
         const lane = document.querySelector('#lane-voice').getBoundingClientRect();
         const orb = document.querySelector('.orb-stage').getBoundingClientRect();

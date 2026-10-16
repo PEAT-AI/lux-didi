@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { JsonObject, ModelPort, ModelRequest } from '../adapters/model/types.js';
-import { INTERNAL, calendarIds, type IntentSubCall, type IntentSubResult } from './intent.js';
+import { INTERNAL, type IntentSubCall, type IntentSubResult } from './intent.js';
 import { hostLogEvent } from './host-events.js';
 
 /**
@@ -48,9 +48,6 @@ export const RESEARCH = Object.freeze({
   continueRounds: 3,
   maxOps: 8,
   maxConcurrent: 4,
-  /** Per-calendar event reads run in bounded parallel; the adapter serializes one endpoint, so the
-   * bound is a safety ceiling, not a promise of N-way transport concurrency. */
-  calendarConcurrency: 6,
   /** Q1-R3(b): the real Gemini selector needs ~3 s; the old 2 s deadline denied every selector call. */
   selectorDeadlineMs: 6_000,
   /** Selector wall time charged to the value-of-information decision, in seconds. */
@@ -356,9 +353,9 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; c
   const keywords = contentKeywords(config.question).join(' ');
   if (kind === 'knowledge_search') return [search(INTERNAL.knowledgeSearch, { query: config.query ?? (keywords || 'recent notes'), limit: RESEARCH.knowledgeLines }, 'k0')];
   if (kind === 'calendar_window') {
-    // The calendar list only: one event read per listed calendar follows, the same selection rule the
-    // intent path uses, so a calendar answer covers every calendar the owner keeps.
-    return [search(INTERNAL.calendars, { maxResults: 20 }, 'cal0')];
+    // One call covers every selected calendar: the connector resolves the set and merges the reads.
+    const range = windowRange(config.window ?? 'today', config.nowMs ?? Date.now());
+    return [search(INTERNAL.calendarList, { timeMin: range.timeMin, timeMax: range.timeMax, maxResults: RESEARCH.calendarLines }, 'cal0')];
   }
   if (kind === 'mail_search') return [search(INTERNAL.mailList, { q: config.query ?? 'in:inbox newer_than:2d', maxResults: RESEARCH.mailLines }, 'm0')];
   if (kind === 'mail_open') { const id = config.evidence.get('mail_search'); return id ? [search(INTERNAL.mailRead, { id }, 'mo0')] : []; }
@@ -373,18 +370,6 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; c
     return subs;
   }
   return [];
-}
-
-/**
- * One event read per calendar the listed calendars name, mirroring `calendarFollow` in intent.ts, with
- * the resolved RFC3339 window attached. `calendarIds` bounds and deduplicates the selection.
- */
-export function calendarEventSubs(listed: string, window: string, nowMs: number): IntentSubCall[] {
-  const range = windowRange(window, nowMs);
-  return calendarIds(listed).map(id => ({
-    key: `cal:${id}`, name: INTERNAL.calendarList,
-    args: { calendarId: id, timeMin: range.timeMin, timeMax: range.timeMax, maxResults: RESEARCH.calendarLines },
-  }));
 }
 
 const MAIL_ID_TAG = /\[id ([A-Za-z0-9_-]+)\]/;
@@ -653,60 +638,47 @@ interface CalendarEvent { id: string; start: string; line: string }
 function calendarEvents(raw: readonly string[]): CalendarEvent[] {
   const items: CalendarEvent[] = [];
   let current: CalendarEvent | undefined;
-  const flush = (): void => { if (current !== undefined) items.push(current); current = undefined; };
+  let attendees: number | undefined;
+  const flush = (): void => {
+    if (current === undefined) return;
+    items.push({ ...current, line: `${current.line}${attendees !== undefined ? ` | ${attendees} attendees` : ''}` });
+    current = undefined; attendees = undefined;
+  };
   for (const line of raw) {
     if (line.startsWith('- ')) {
       flush();
-      const body = line.slice(2);
-      const idMatch = / \[id ([^\]\s]+)\]\s*$/.exec(body);
+      let body = line.slice(2);
+      // The merged connector line tags the event `... | <calendar>` before the `[id ...]`.
+      let calendar = '';
+      const pipeAt = body.indexOf(' | ');
+      if (pipeAt >= 0) { calendar = body.slice(pipeAt + 3); body = body.slice(0, pipeAt); }
+      const idMatch = / \[id ([^\]\s]+)\]\s*$/.exec(calendar || body);
       const id = idMatch?.[1] ?? '';
-      const text = idMatch ? body.slice(0, idMatch.index).trimEnd() : body;
-      const parts = text.split(', ');
+      if (idMatch) { if (calendar) calendar = calendar.slice(0, idMatch.index).trim(); else body = body.slice(0, idMatch.index).trimEnd(); }
+      const parts = body.split(', ');
       const start = parts[0] ?? '';
       const title = parts[1] ?? '(no title)';
       const location = parts.slice(2).join(', ');
-      current = { id, start, line: `${start} | ${title}${location ? ` | ${location}` : ''} | 0 attendees` };
+      current = { id, start, line: `${start} | ${title}${location ? ` | ${location}` : ''}${calendar ? ` | ${calendar}` : ''}` };
     } else if (line.startsWith('attendees: ') && current !== undefined) {
-      const count = line.slice('attendees: '.length).split(',').map(part => part.trim()).filter(Boolean).length;
-      current = { ...current, line: current.line.replace(/\| \d+ attendees$/u, `| ${count} attendees`) };
+      attendees = line.slice('attendees: '.length).split(',').map(part => part.trim()).filter(Boolean).length;
     }
   }
   flush();
   return items;
 }
 
-/** The `- Name [id]` calendar list as an id to name map, so each event line can name its calendar. */
-function calendarNameMap(text: string): Map<string, string> {
-  const names = new Map<string, string>();
-  for (const line of itemLines(text)) {
-    if (!line.startsWith('- ')) continue;
-    const match = /^(.*?)\s*\[([^\]\n]{1,256})\]\s*$/.exec(line.slice(2));
-    if (match) names.set(match[2]!, match[1]!.trim());
-  }
-  return names;
-}
-
-/** The calendar id carried in an event sub-call key, `cal:<id>` (the host may prefix the batch key). */
-function calendarIdOfKey(key: string): string | undefined {
-  const at = key.lastIndexOf('cal:');
-  return at >= 0 ? key.slice(at + 'cal:'.length) : undefined;
-}
-
-/** Merge every listed calendar's events: dedupe by event id, sort by start, tag each line with its calendar. */
+/** Merge the connector's shaped event lines: dedupe by event id and sort by start (the connector already merged). */
 function shapeCalendarBlock(results: readonly IntentSubResult[]): { text: string; source: SourceKind | null; lines: string[]; total: number } {
-  const listed = results.find(result => result.ok && result.name === INTERNAL.calendars);
-  const names = listed ? calendarNameMap(listed.text) : new Map<string, string>();
   const merged: { start: string; line: string }[] = [];
   const seen = new Set<string>();
   for (const result of results) {
     if (!result.ok || result.name !== INTERNAL.calendarList || !result.text.trim()) continue;
-    const id = calendarIdOfKey(result.key);
-    const name = (id !== undefined ? names.get(id) : undefined) ?? 'calendar';
     for (const event of calendarEvents(itemLines(result.text))) {
       const dedupe = event.id || `${event.start}|${event.line}`;
       if (seen.has(dedupe)) continue;
       seen.add(dedupe);
-      merged.push({ start: event.start, line: `${event.line} | ${name}` });
+      merged.push({ start: event.start, line: event.line });
     }
   }
   merged.sort((a, b) => a.start.localeCompare(b.start));
@@ -833,33 +805,6 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   }
   const { findings, reply } = render();
   return { ...reply, findings };
-}
-
-/**
- * Run one execute call per calendar in bounded parallel, then retry any refused read once through a
- * single sequential batch. The adapter refuses concurrent same-endpoint calls, so the retry keeps
- * every calendar read; the bound is a safety ceiling, not N-way transport concurrency.
- */
-async function executeCalendarReads(deps: ResearchDeps, calls: readonly IntentSubCall[], signal: AbortSignal): Promise<IntentSubResult[]> {
-  const out: (IntentSubResult | undefined)[] = new Array(calls.length);
-  let next = 0;
-  const worker = async (): Promise<void> => {
-    while (next < calls.length) {
-      const index = next++;
-      try { out[index] = (await deps.execute([calls[index]!], signal))[0]; }
-      catch { out[index] = undefined; }
-    }
-  };
-  const width = Math.max(1, Math.min(RESEARCH.calendarConcurrency, calls.length));
-  await Promise.all(Array.from({ length: width }, worker));
-  const missing = calls.map((_, index) => index).filter(index => !(out[index]?.ok));
-  if (missing.length) {
-    try {
-      const retried = await deps.execute(missing.map(index => calls[index]!), signal);
-      missing.forEach((index, position) => { const result = retried[position]; if (result?.ok) out[index] = result; });
-    } catch { /* keep the pooled result */ }
-  }
-  return calls.map((call, index) => out[index] ?? { key: call.key, name: call.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0 });
 }
 
 /** The bounded loop. One call runs it start to finish within the run deadline. */
@@ -1003,16 +948,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
           const id = extractId('chat_search', primaryText);
           if (id) second.push({ key: 'ct', name: 'mattermost_get_thread', args: { postId: id, limit: 12 } });
         }
-        if (kind === 'calendar_window') {
-          // One event read per listed calendar, so the answer covers every calendar, not just primary.
-          const listed = results.find(result => result.ok && result.name === INTERNAL.calendars);
-          const follow = listed ? calendarEventSubs(listed.text, action?.window ?? 'today', now()) : [];
-          if (follow.length) {
-            const extra = await executeCalendarReads(deps, follow, roundSignal);
-            results.push(...extra);
-            second.push(...follow);
-          }
-        } else if (second.length) {
+        if (second.length) {
           const extra = await executeWithRetry(second);
           results.push(...extra);
         }

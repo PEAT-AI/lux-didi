@@ -52,7 +52,18 @@ export type GoogleResult = GoogleEvidence | GoogleRefused | GoogleUnknown;
 export interface GmailListInput { maxResults?: number; q?: string; pageToken?: string }
 export interface GmailReadInput { id: string; format?: 'metadata' | 'full' }
 export interface GcalCalendarsInput { maxResults?: number; pageToken?: string }
-export interface GcalListInput { calendarId?: string; maxResults?: number; pageToken?: string; timeMin?: string; timeMax?: string; timeZone?: string; now?: () => number }
+export interface GcalListInput { calendarId?: string; calendarIds?: readonly string[]; maxResults?: number; pageToken?: string; timeMin?: string; timeMax?: string; timeZone?: string; now?: () => number }
+
+/** How many per-calendar event reads a single connector call may keep in flight at once. */
+export const GOOGLE_CALENDAR_CONCURRENCY = 6;
+
+const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
+/** The first text content item of a decoded MCP result, without the stored payload round trip. */
+function contentText(parsed: unknown): string | undefined {
+  if (!isRecord(parsed) || !Array.isArray(parsed['content']) || parsed['content'].length < 1) return undefined;
+  const first = parsed['content'][0];
+  return isRecord(first) && typeof first['text'] === 'string' ? first['text'] : undefined;
+}
 
 /** RFC3339 timestamp with a numeric offset, e.g. 2026-10-14T00:00:00+05:30. */
 const RFC3339 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
@@ -188,6 +199,99 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
     return { ok: true, args };
   }
 
+  /** The RFC3339 window for one event read: explicit args, else the host local day. */
+  function eventWindow(input: GcalListInput): { ok: true; timeMin: string | undefined; timeMax: string | undefined } | { ok: false; reason: string } {
+    const timeZone = input.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const window = input.timeMin !== undefined || input.timeMax !== undefined
+      ? { timeMin: input.timeMin, timeMax: input.timeMax }
+      : localDayWindow((input.now ?? Date.now)(), timeZone);
+    if (window.timeMin !== undefined && (typeof window.timeMin !== 'string' || !RFC3339.test(window.timeMin) || window.timeMin.length > 64)) return { ok: false, reason: 'invalid-time-window' };
+    if (window.timeMax !== undefined && (typeof window.timeMax !== 'string' || !RFC3339.test(window.timeMax) || window.timeMax.length > 64)) return { ok: false, reason: 'invalid-time-window' };
+    return { ok: true, timeMin: window.timeMin, timeMax: window.timeMax };
+  }
+
+  /** The `data` object of one completed google envelope, decoded from the local result, never the payload. */
+  function envelopeData(evidence: GoogleEvidence): Record<string, unknown> {
+    const text = contentText(evidence.decodedResult);
+    if (text === undefined) return {};
+    let envelope: unknown;
+    try { envelope = JSON.parse(text); } catch { return {}; }
+    return isRecord(envelope) && isRecord(envelope['data']) ? envelope['data'] : {};
+  }
+
+  function calendarsOf(evidence: GoogleEvidence): { id: string; name: string }[] {
+    const list = envelopeData(evidence)['calendars'];
+    if (!Array.isArray(list)) return [];
+    return list.filter(isRecord).map(entry => ({ id: typeof entry['id'] === 'string' ? entry['id'] : '', name: String(entry['summary'] ?? entry['name'] ?? 'calendar') })).filter(entry => entry.id.length > 0);
+  }
+
+  function eventsOf(evidence: GoogleEvidence): Record<string, unknown>[] {
+    const list = envelopeData(evidence)['events'];
+    return Array.isArray(list) ? list.filter(isRecord) : [];
+  }
+
+  function startOf(event: Record<string, unknown>): string {
+    const start = event['start'];
+    if (isRecord(start)) return String(start['dateTime'] ?? start['date'] ?? '');
+    return String(start ?? '');
+  }
+
+  /**
+   * One merged event read over every selected calendar: resolve the selected set (or take the caller's
+   * list), read each calendar in bounded parallel, and return one result sorted by start with a shared
+   * event deduplicated by id and each event tagged with its calendar name.
+   */
+  async function gcalWindow(baseArgs: Record<string, unknown>, explicit: readonly string[] | undefined, signal?: AbortSignal): Promise<GoogleResult> {
+    const listed = await dispatch('gcal_calendars', { maxResults: Math.min(GOOGLE_DEFAULTS.listResults, settings.maxListResults) }, signal);
+    if (listed.state !== 'completed') return listed;
+    const calendars = calendarsOf(listed);
+    const names = new Map(calendars.map(entry => [entry.id, entry.name]));
+    const selected = explicit ?? calendars.map(entry => entry.id);
+    const out: (GoogleEvidence | undefined)[] = new Array(selected.length);
+    let failure: GoogleResult | undefined;
+    let refusal: GoogleResult | undefined;
+    let next = 0;
+    const worker = async (): Promise<void> => {
+      while (next < selected.length) {
+        const index = next++;
+        const result = await dispatch('gcal_list', { ...baseArgs, calendarId: selected[index]! }, signal);
+        if (result.state === 'completed') out[index] = result;
+        else if (result.state === 'refused') refusal ??= result;
+        else failure ??= result;
+      }
+    };
+    await Promise.all(Array.from({ length: Math.max(1, Math.min(GOOGLE_CALENDAR_CONCURRENCY, selected.length)) }, worker));
+    // The adapter refuses a concurrent same-endpoint call, so a refused read is retried once, in order.
+    for (const index of selected.map((_, i) => i).filter(i => out[i] === undefined)) {
+      const result = await dispatch('gcal_list', { ...baseArgs, calendarId: selected[index]! }, signal);
+      if (result.state === 'completed') out[index] = result;
+      else if (result.state === 'refused') refusal ??= result;
+      else failure ??= result;
+    }
+    // A credentialed or failed read must stay visible: never an empty success.
+    if (out.every(entry => entry === undefined) && (failure ?? refusal) !== undefined) return (failure ?? refusal)!;
+    const merged: Record<string, unknown>[] = [];
+    const seen = new Set<string>();
+    for (const [index, evidence] of out.entries()) {
+      const id = selected[index];
+      if (evidence === undefined || id === undefined) continue;
+      const name = names.get(id) ?? 'calendar';
+      for (const event of eventsOf(evidence)) {
+        const eventId = typeof event['id'] === 'string' ? event['id'] : '';
+        if (eventId && seen.has(eventId)) continue;
+        if (eventId) seen.add(eventId);
+        merged.push({ ...structuredClone(event), calendar: name });
+      }
+    }
+    merged.sort((a, b) => startOf(a).localeCompare(startOf(b)));
+    return {
+      state: 'completed', tool: 'gcal_list',
+      source: structuredClone(listed.source), observedAt: listed.observedAt, coverage: structuredClone(listed.coverage),
+      decodedResult: { content: [{ type: 'text', text: JSON.stringify({ data: { events: merged } }) }] },
+      projection: structuredClone(listed.projection), response: structuredClone(listed.response),
+    };
+  }
+
   return {
     async gmailProfile(signal?: AbortSignal): Promise<GoogleResult> {
       const denied = gate('gmail_get_profile');
@@ -228,17 +332,20 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
       if (denied) return { state: 'refused', reason: denied };
       const bounded = listArgs(input, GOOGLE_DEFAULTS.listResults);
       if (!bounded.ok) return { state: 'refused', reason: bounded.reason };
-      const calendarId = input.calendarId ?? 'primary';
-      if (typeof calendarId !== 'string' || calendarId.length < 1 || calendarId.length > 4096) return { state: 'refused', reason: 'invalid-calendar-id' };
-      bounded.args['calendarId'] = calendarId;
-      const timeZone = input.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
-      const window = input.timeMin !== undefined || input.timeMax !== undefined
-        ? { timeMin: input.timeMin, timeMax: input.timeMax }
-        : localDayWindow((input.now ?? Date.now)(), timeZone);
-      if (window.timeMin !== undefined && (typeof window.timeMin !== 'string' || !RFC3339.test(window.timeMin) || window.timeMin.length > 64)) return { state: 'refused', reason: 'invalid-time-window' };
-      if (window.timeMax !== undefined && (typeof window.timeMax !== 'string' || !RFC3339.test(window.timeMax) || window.timeMax.length > 64)) return { state: 'refused', reason: 'invalid-time-window' };
+      const window = eventWindow(input);
+      if (!window.ok) return { state: 'refused', reason: window.reason };
       bounded.args['timeMin'] = window.timeMin;
       bounded.args['timeMax'] = window.timeMax;
+      // No calendarId (or an explicit list) means every selected calendar, merged into one result.
+      if (input.calendarIds !== undefined) {
+        const ids = input.calendarIds;
+        if (!Array.isArray(ids) || ids.length < 1 || ids.length > 50 || !ids.every(id => typeof id === 'string' && id.length >= 1 && id.length <= 4096)) return { state: 'refused', reason: 'invalid-calendar-ids' };
+        return await gcalWindow(bounded.args, ids, signal);
+      }
+      if (input.calendarId === undefined) return await gcalWindow(bounded.args, undefined, signal);
+      const calendarId = input.calendarId;
+      if (typeof calendarId !== 'string' || calendarId.length < 1 || calendarId.length > 4096) return { state: 'refused', reason: 'invalid-calendar-id' };
+      bounded.args['calendarId'] = calendarId;
       return dispatch('gcal_list', bounded.args, signal);
     },
   };

@@ -75,12 +75,15 @@ test('the fallback mail query carries operators and keywords, chat carries after
   assert.equal(candidateSubs('mail_search', { question: 'q', configured: CONFIGURED, evidence: new Map() })[0]?.args['q'], 'in:inbox newer_than:2d');
 });
 
-test('a calendar window is asked for, and the calendar list is the only primary read', () => {
+test('a calendar window is asked for, and one merged event read covers every selected calendar', () => {
   const selection = fallbackSelection('What is on my calendar tomorrow?', CONFIGURED, Date.parse('2026-10-16T12:00:00Z'));
   assert.equal(selection.actions.find(action => action.kind === 'calendar_window')?.window, 'tomorrow');
   const subs = candidateSubs('calendar_window', { question: 'q', configured: ['calendar'], evidence: new Map(), window: 'tomorrow', nowMs: Date.parse('2026-10-16T12:00:00Z') });
-  assert.equal(subs.length, 1, 'the calendar list only, never a primary-calendar event read');
-  assert.equal(subs[0]?.name, 'gcal_calendars');
+  assert.equal(subs.length, 1, 'one merged connector call, never one sub-call per calendar');
+  assert.equal(subs[0]?.name, 'gcal_list');
+  assert.equal(subs[0]?.args['calendarId'], undefined, 'the connector resolves the selected set itself');
+  assert.match(String(subs[0]?.args['timeMin']), /^\d{4}-\d{2}-\d{2}T/);
+  assert.match(String(subs[0]?.args['timeMax']), /^\d{4}-\d{2}-\d{2}T/);
 });
 
 test('candidateSubs uses the authored query and the per-source limits', () => {

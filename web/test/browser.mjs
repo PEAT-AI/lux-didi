@@ -24,6 +24,7 @@ async function auditLayout(page) {
     const summary = q('.live-tool-result > summary');
     const stage = q('#orb-stage'), orb = q('#orb-holder canvas'), transcript = q('.transcript'), pillVoice = q('#transcript-jump');
     const chatList = q('#connected-entries'), pillChat = q('#chat-jump');
+    const vis = sel => { const el = q(sel); return !!el && el.getClientRects().length > 0; };
     return {
       voice: {
         visible: vis('#lane-voice'),

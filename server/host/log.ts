@@ -183,7 +183,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'research_run') {
     // 241: run metadata only (rounds, candidate kinds, pUseful, dispositions, latencies, selector timing),
     // never question text, evidence or item ids.
-    const keys = ['event', 'researchId', 'questionClass', 'rounds', 'perRound', 'stopReason', 'status', 'ops', 'sources', 'elapsedMs', 'deadAirMs', 'selectorMs', 'fallbackUsed', 'replyBytes'];
+    const keys = ['event', 'researchId', 'questionClass', 'rounds', 'perRound', 'stopReason', 'status', 'ops', 'sources', 'elapsedMs', 'deadAirMs', 'selectorMs', 'fallbackUsed', 'replyBytes', 'unchecked', 'canContinue', 'findingChars'];
     // #260: the run's own driver is optional (a stop line makes no selection) but is admitted only as
     // one of the three; any other value refuses the whole event, as the closed sets above do.
     const hasDriver = Object.prototype.hasOwnProperty.call(value, 'driver');
@@ -221,7 +221,22 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
       if (!isSafeMember(row.kind, RESEARCH_SOURCES) || !isSafeMember(row.disposition, RESEARCH_DISPOSITIONS) || !isSafeCount(row.latencyMs)) return;
       sources.push({ kind: row.kind, disposition: row.disposition, latencyMs: row.latencyMs });
     }
-    return { event: 'research_run', researchId: value.researchId, questionClass: value.questionClass, rounds: value.rounds, perRound, stopReason: value.stopReason, status: value.status, ops: value.ops, sources, elapsedMs: value.elapsedMs, deadAirMs: value.deadAirMs, selectorMs: value.selectorMs, fallbackUsed: value.fallbackUsed, replyBytes: value.replyBytes, ...(hasDriver ? { driver: value.driver } : {}) };
+    if (!Array.isArray(value.unchecked) || value.unchecked.length > 8 || !isSafeMembers(value.unchecked, RESEARCH_SOURCES)) return;
+    if (typeof value.canContinue !== 'boolean') return;
+    if (!Array.isArray(value.findingChars) || value.findingChars.length > 32 || value.findingChars.some(count => !isSafeCount(count))) return;
+    return { event: 'research_run', researchId: value.researchId, questionClass: value.questionClass, rounds: value.rounds, perRound, stopReason: value.stopReason, status: value.status, ops: value.ops, sources, elapsedMs: value.elapsedMs, deadAirMs: value.deadAirMs, selectorMs: value.selectorMs, fallbackUsed: value.fallbackUsed, replyBytes: value.replyBytes, unchecked: value.unchecked, canContinue: value.canContinue, findingChars: value.findingChars, ...(hasDriver ? { driver: value.driver } : {}) };
+  }
+  if (value.event === 'research_subcall') {
+    // Q1: one metadata-only record per internal sub-call, never the query or result text.
+    const subKeys = ['event', 'researchId', 'kind', 'tool', 'ok', 'items', 'rawBytes', 'keptBytes', 'queryChars', 'queryAuthor'];
+    const hasError = Object.prototype.hasOwnProperty.call(value, 'errorCode');
+    if (Object.keys(value).sort().join(',') !== (hasError ? [...subKeys, 'errorCode'] : subKeys).sort().join(',')) return;
+    if (!isSafeId(value.researchId) || !isSafeMember(value.kind, RESEARCH_CANDIDATES) || !isSafeToken(value.tool)) return;
+    if (typeof value.ok !== 'boolean') return;
+    if (hasError && !isSafeToken(value.errorCode)) return;
+    if (!isSafeCount(value.items) || !isSafeCount(value.rawBytes) || !isSafeCount(value.keptBytes) || !isSafeCount(value.queryChars)) return;
+    if (!isSafeMember(value.queryAuthor, ['selector', 'fallback'])) return;
+    return { event: 'research_subcall', researchId: value.researchId, kind: value.kind, tool: value.tool, ok: value.ok, ...(hasError ? { errorCode: value.errorCode } : {}), items: value.items, rawBytes: value.rawBytes, keptBytes: value.keptBytes, queryChars: value.queryChars, queryAuthor: value.queryAuthor };
   }
 }
 

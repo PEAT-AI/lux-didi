@@ -328,7 +328,7 @@ h3{font-size:14px}
 .connected-notes{position:static;right:auto;top:auto;transform:none;bottom:auto;order:2}
 
 
-/* ---- V3: the orb is the hero of the voice lane, the chat lane is a classic chat (#264) ---- */
+/* ---- V3: the orb is the hero of the voice lane, the chat lane is a classic chat (issue 264) ---- */
 
 /* Both lanes: the document never scrolls, each lane's list scrolls on its own. */
 html,body{height:100%;overflow:hidden}

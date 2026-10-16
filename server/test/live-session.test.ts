@@ -1930,6 +1930,12 @@ test('a resume does not extend the original idle expiry', async t => {
   assert.equal(h.f.connections, 2);
 });
 
+test('the live recovery path carries no model or provider id literal', () => {
+  const source = readFileSync(new URL('../../live/index.ts', import.meta.url), 'utf8');
+  assert.equal(/models\//.test(source), false, 'no model resource path');
+  assert.equal(/gemini-\d/.test(source), false, 'no model id literal');
+});
+
 async function transcription(output: AsyncIterator<import('../live/types.js').LiveOutputChunk>, text: string) {
   for (;;) {
     const item = await output.next(); assert.equal(item.done, false);

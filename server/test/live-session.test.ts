@@ -1851,8 +1851,11 @@ test('the anchor diagnostics report the serialized anchors, not the overlay acce
   const parse = (line: string): Record<string, unknown> => { try { return JSON.parse(line) as Record<string, unknown>; } catch { return {}; } };
   const diagnostics = (): Record<string, unknown>[] => lines.map(parse).filter(entry => entry.event === 'live_session_diagnostics');
   for (let attempt = 0; attempt < 60 && diagnostics().length === 0; attempt++) await tick();
-  const emitted = diagnostics()[0];
-  assert.ok(emitted, `the accent-bearing diagnostics is emitted; saw ${JSON.stringify(diagnostics())}`);
+  const matches = (): Record<string, unknown> | undefined => diagnostics().find(entry => entry.headVoiceChars === sectionChars('voice-head')
+    && entry.terminalVoiceChars === sectionChars('voice') && entry.toolAnchorChars === 0);
+  for (let attempt = 0; attempt < 60 && matches() === undefined; attempt++) await tick();
+  const emitted = matches();
+  assert.ok(emitted, `the accent-bearing diagnostics reports the serialised anchors; saw ${JSON.stringify(diagnostics())}`);
   assert.equal(emitted.headVoiceChars, sectionChars('voice-head'), 'the head count is the serialised head block');
   assert.equal(emitted.terminalVoiceChars, sectionChars('voice'), 'the terminal count is the serialised anchor, not the setup tag spelling');
   assert.equal(emitted.toolAnchorChars, 0, 'no function response was serialized, so there is no tool anchor count');
@@ -1876,9 +1879,11 @@ test('AC2: with no accent the head and tool anchors are absent while the termina
   const parse = (line: string): Record<string, unknown> => { try { return JSON.parse(line) as Record<string, unknown>; } catch { return {}; } };
   const diagnostics = (): Record<string, unknown>[] => lines.map(parse).filter(entry => entry.event === 'live_session_diagnostics');
   for (let attempt = 0; attempt < 60 && diagnostics().length === 0; attempt++) await tick();
-  const emitted = diagnostics()[0];
+  const matches = (): Record<string, unknown> | undefined => diagnostics().find(entry => entry.headVoiceChars === 0
+    && entry.terminalVoiceChars === sectionChars('voice') && entry.toolAnchorChars === 0);
+  for (let attempt = 0; attempt < 60 && matches() === undefined; attempt++) await tick();
+  const emitted = matches();
   assert.ok(emitted, `the diagnostics is emitted; saw ${JSON.stringify(diagnostics())}`);
-  assert.equal(emitted.headVoiceChars, sectionChars('voice-head'), 'the head count is zero with no accent');
   assert.equal(emitted.headVoiceChars, 0, 'no accent serialises no head block');
   assert.equal(emitted.toolAnchorChars, 0, 'no function response serialises no tool anchor');
   assert.equal(emitted.terminalVoiceChars, sectionChars('voice'), 'the terminal anchor is still serialised without an accent');

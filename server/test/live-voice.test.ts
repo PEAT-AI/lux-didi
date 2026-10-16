@@ -151,6 +151,7 @@ test('wire setup/history snapshots, readiness, PCM and three independent output 
     generationCompleteEvents: 2, turnCompleteEvents: 3,
     outputAudioFrames: 2, outputAudioPCMBytes: pcm.byteLength * 2,
     outputAudioAfterInitialTurnFrames: 1, outputAudioAfterInitialTurnPCMBytes: pcm.byteLength,
+    toolAnchorChars: 0,
   });
 });
 

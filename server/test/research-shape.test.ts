@@ -64,14 +64,14 @@ test('the fallback mail query carries operators and keywords, chat carries after
   const mailQuery = mail.actions.find(action => action.kind === 'mail_search')?.query ?? '';
   assert.match(mailQuery, /^in:inbox newer_than:14d /);
   assert.match(mailQuery, /release/);
-  const chat = fallbackSelection("What's new in Mattermost?", CONFIGURED, Date.parse('2026-10-16T12:00:00Z'));
-  assert.match(chat.actions.find(action => action.kind === 'chat_search')?.query ?? '', /^after:2026-10-15/);
+  assert.equal(fallbackSelection("What's new in Mattermost?", CONFIGURED, Date.parse('2026-10-16T12:00:00Z')).actions.find(action => action.kind === 'chat_search')?.query, 'after:yesterday');
   const knowledge = fallbackSelection('Search my notes for Lux Didi decisions', CONFIGURED, Date.parse('2026-10-16T12:00:00Z'));
   const knowledgeQuery = knowledge.actions.find(action => action.kind === 'knowledge_search')?.query ?? '';
   assert.equal(/[?:"]|in:|after:|newer_than/.test(knowledgeQuery), false);
-  assert.match(knowledgeQuery, /lux/);
-  assert.equal(fallbackSelection('Anything important in my email today?', CONFIGURED, Date.parse('2026-10-16T12:00:00Z')).actions.find(action => action.kind === 'mail_search')?.query, 'in:inbox newer_than:2d', 'domain-generic words are not mailed as keywords');
-  assert.equal(fallbackSelection("What's new in Mattermost?", CONFIGURED, Date.parse('2026-10-16T12:00:00Z')).actions.find(action => action.kind === 'chat_search')?.query, 'after:2026-10-15');
+  assert.equal(knowledgeQuery, 'lux didi decisions', 'source words like notes are not content keywords');
+  assert.equal(fallbackSelection('Anything important in my email today?', CONFIGURED, Date.parse('2026-10-16T12:00:00Z')).actions.find(action => action.kind === 'mail_search')?.query, 'in:inbox newer_than:1d is:important', 'today and important are operators');
+  assert.equal(fallbackSelection('Anything unread in my inbox?', CONFIGURED, Date.parse('2026-10-16T12:00:00Z')).actions.find(action => action.kind === 'mail_search')?.query, 'in:inbox newer_than:2d is:unread');
+  assert.equal(fallbackSelection('What is important in my email this week?', CONFIGURED, Date.parse('2026-10-16T12:00:00Z')).actions.find(action => action.kind === 'mail_search')?.query, 'in:inbox newer_than:7d is:important');
   assert.equal(candidateSubs('mail_search', { question: 'q', configured: CONFIGURED, evidence: new Map() })[0]?.args['q'], 'in:inbox newer_than:2d');
 });
 
@@ -223,6 +223,20 @@ test('shapeBlock shapes the real knowledge item form too', () => {
   const block = shapeBlock('knowledge_search', [sub('search_knowledge', '**#90082** [BUG_GOTCHA] a title\n  an excerpt line\n  Score: 0.2\n## #4 [pattern]\nother body')]);
   assert.equal(block.lines[0], '#90082 [BUG_GOTCHA] a title | an excerpt line Score: 0.2');
   assert.equal(block.lines[1], '#4 [pattern] | other body');
+});
+
+test('a failed sub-call is retried once inside the round', async () => {
+  let calls = 0;
+  const subcalls: Record<string, unknown>[] = [];
+  const selector: ResearchSelector = { async select() { return { questionClass: 'cross_source', actions: [{ kind: 'mail_search', query: 'in:inbox newer_than:2d' }], pUseful: { mail_search: 1 } }; } };
+  const deps: ResearchDeps = {
+    now: () => 0, configured: CONFIGURED, selector,
+    execute: async (subs: readonly IntentSubCall[]) => { calls += 1; return subs.map((call, n) => ({ key: `r0~${n}~${call.key}`, name: call.name, ok: calls > 1, text: calls > 1 ? '- Subject | Sender | Mon | body [id m1]' : '', originalCharacters: 10, omittedCharacters: 0, ...(calls > 1 ? {} : { code: 'transient' }) })); },
+    emit: () => undefined, log: () => undefined, logSubcall: entry => subcalls.push(entry as unknown as Record<string, unknown>), ledger: new ResearchLedger(),
+  };
+  await runResearch(deps, { action: 'start', question: 'anything' }, new AbortController().signal);
+  assert.equal(calls >= 2, true, 'the failed call is retried');
+  assert.equal(subcalls[0]!['ok'], true, 'the retried result is the one logged');
 });
 
 test('the research_run line carries unchecked, canContinue and per-finding char counts', async () => {

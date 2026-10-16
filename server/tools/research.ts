@@ -48,7 +48,8 @@ export const RESEARCH = Object.freeze({
   continueRounds: 3,
   maxOps: 8,
   maxConcurrent: 4,
-  selectorDeadlineMs: 2_000,
+  /** Q1-R3(b): the real Gemini selector needs ~3 s; the old 2 s deadline denied every selector call. */
+  selectorDeadlineMs: 6_000,
   /** Selector wall time charged to the value-of-information decision, in seconds. */
   tSelSeconds: 1.0,
   /** Seconds of owner patience one useful answer class is worth. */
@@ -237,7 +238,7 @@ export function createGeminiSelector(model: ModelPort, promptVersion = 'research
 // Candidate planning
 
 const STOP_WORDS = new Set(['a', 'an', 'and', 'any', 'anything', 'are', 'around', 'as', 'at', 'be', 'been', 'but', 'by', 'can', 'check', 'could', 'did', 'do', 'does', 'find', 'for', 'from', 'get', 'give', 'had', 'has', 'have', 'how', 'i', 'in', 'into', 'is', 'it', 'its', 'just', 'know', 'latest', 'like', 'look', 'me', 'more', 'most', 'my', 'need', 'new', 'newest', 'of', 'on', 'or', 'our', 'out', 'over', 'please', 'said', 'say', 'search', 'see', 'show', 'so', 'some', 'tell', 'that', 'the', 'their', 'them', 'then', 'there', 'these', 'they', 'this', 'to', 'up', 'us', 'want', 'was', 'we', 'were', 'what', 'whats', 'when', 'where', 'which', 'who', 'why', 'will', 'with', 'would', 'you', 'your',
-  'anything', 'chat', 'email', 'emails', 'gmail', 'important', 'inbox', 'mail', 'mattermost', 'recent', 'slack', 'something', 'things', 'today', 'tomorrow', 'urgent', 'yesterday']);
+  'anything', 'calendar', 'chat', 'email', 'emails', 'gmail', 'important', 'inbox', 'knowledge', 'mail', 'mattermost', 'messages', 'notes', 'recent', 'slack', 'something', 'team', 'things', 'today', 'tomorrow', 'unread', 'urgent', 'yesterday']);
 const WORD_SHAPE = /[^a-z0-9@._:-]+/g;
 
 /** The content keywords of a spoken question: stop words and filler removed, 3 to 8 of them. */
@@ -250,10 +251,6 @@ export function contentKeywords(question: string, max = 8): string[] {
     if (kept.length >= max) break;
   }
   return kept;
-}
-
-function isoDate(nowMs: number, dayOffset: number): string {
-  return new Date(nowMs + dayOffset * 86_400_000).toISOString().slice(0, 10);
 }
 
 function localOffset(date: Date): string {
@@ -284,12 +281,22 @@ export function windowRange(window: string, nowMs: number): { timeMin: string; t
 }
 
 /** The deterministic fallback query per source: never the raw sentence. */
-export function fallbackQuery(kind: CandidateKind, question: string, nowMs: number): { query?: string; window?: string } {
+export function fallbackQuery(kind: CandidateKind, question: string, _nowMs: number): { query?: string; window?: string } {
+  const text = question.toLowerCase();
   const keywords = contentKeywords(question);
   const terms = keywords.join(' ');
   if (kind === 'knowledge_search') return terms ? { query: terms } : {};
-  if (kind === 'mail_search') return { query: terms ? `in:inbox newer_than:14d ${terms}` : 'in:inbox newer_than:2d' };
-  if (kind === 'chat_search') return { query: `after:${isoDate(nowMs, -1)}${terms ? ` ${terms}` : ''}` };
+  if (kind === 'mail_search') {
+    const flags: string[] = [];
+    if (/\bimportant\b/.test(text)) flags.push('is:important');
+    if (/\bunread\b/.test(text)) flags.push('is:unread');
+    const window = /\btoday\b/.test(text) ? 'newer_than:1d'
+      : /\b(this week|week)\b/.test(text) ? 'newer_than:7d'
+      : /\byesterday\b/.test(text) ? 'newer_than:2d'
+      : terms ? 'newer_than:14d' : 'newer_than:2d';
+    return { query: ['in:inbox', window, ...flags, ...keywords].join(' ') };
+  }
+  if (kind === 'chat_search') return { query: `after:yesterday${terms ? ` ${terms}` : ''}` };
   if (kind === 'calendar_window') {
     const text = question.toLowerCase();
     if (/tomorrow/.test(text)) return { window: 'tomorrow' };
@@ -824,8 +831,20 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
         const subs = candidateSubs(kind, { question, configured, evidence: run.evidence, query: action?.query, window: action?.window, nowMs: now() });
         if (subs.length === 0) return;
         const at = now();
-        let results: IntentSubResult[] = [];
-        try { results = await deps.execute(subs, roundSignal); } catch { results = []; }
+        // Q1-R3(e): one retry for a transient failed sub-call, inside the round deadline.
+        const executeWithRetry = async (list: IntentSubCall[]): Promise<IntentSubResult[]> => {
+          let out: IntentSubResult[] = [];
+          try { out = await deps.execute(list, roundSignal); } catch { out = []; }
+          const failed = list.map((_, index) => index).filter(index => !(out[index]?.ok));
+          if (failed.length > 0 && deadlineAt - now() > 1_000) {
+            try {
+              const retried = await deps.execute(failed.map(index => list[index]!), roundSignal);
+              failed.forEach((index, position) => { const result = retried[position]; if (result?.ok) out[index] = result; });
+            } catch { /* keep the first attempt's result */ }
+          }
+          return out;
+        };
+        const results: IntentSubResult[] = await executeWithRetry(subs);
         // Host-side second hops inside the same run: hydrate the top knowledge hits, open the top
         // mails when the question asks what a mail says, and fetch the thread of the top chat hit.
         const second: IntentSubCall[] = [];
@@ -843,9 +862,8 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
           if (id) second.push({ key: 'ct', name: 'mattermost_get_thread', args: { postId: id, limit: 12 } });
         }
         if (second.length) {
-          let extra: IntentSubResult[] = [];
-          try { extra = await deps.execute(second, roundSignal); } catch { extra = []; }
-          results = [...results, ...extra];
+          const extra = await executeWithRetry(second);
+          results.push(...extra);
         }
         latencies.set(kind, now() - at);
         const source = sourceKindOf(kind);

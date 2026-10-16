@@ -998,7 +998,9 @@ export class LiveSessionOwner {
         const response = accepted?.response ?? {};
         const text = typeof response.text === 'string' ? response.text : '';
         const ok = record?.status === 'completed' && accepted !== undefined;
-        return { key: call.id, name: call.name, ok, text, originalCharacters: typeof response.originalCharacters === 'number' ? response.originalCharacters : text.length, omittedCharacters: typeof response.omittedCharacters === 'number' ? response.omittedCharacters : 0 };
+        // Q1-R3(d/e): a failed sub-call names its cause for the research_subcall log, never silently.
+        const code = ok ? undefined : (typeof response.code === 'string' ? response.code : record ? String(record.status) : 'refused');
+        return { key: call.id, name: call.name, ok, text, originalCharacters: typeof response.originalCharacters === 'number' ? response.originalCharacters : text.length, omittedCharacters: typeof response.omittedCharacters === 'number' ? response.omittedCharacters : 0, ...(code ? { code } : {}) };
       });
     };
     const scheduler = handle.researchScheduler ??= new ResearchScheduler({

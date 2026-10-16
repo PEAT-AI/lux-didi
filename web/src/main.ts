@@ -428,6 +428,15 @@ function scheduleLive(){
   if(liveTimer)clearTimeout(liveTimer);liveTimer=undefined;
   const version=authorityVersion();if(liveDelay(live?.state,document.hidden)!==undefined&&!pairingRequired)liveTimer=setTimeout(()=>{if(version===authorityVersion())void pollLive();},liveDelay(live?.state,document.hidden));
 }
+function paintLive(){
+  // A poll rewrites the state line and the transcript only, so the orb canvas and the controls keep
+  // their listeners and the stage never moves (V3 item 8).
+  const caption=document.querySelector('.orb-caption');const markup=orbCaptionMarkup();if(caption && caption.innerHTML!==markup)caption.innerHTML=markup;
+  const list=document.querySelector<HTMLElement>('#transcript .live-turns');
+  if(list)renderTranscript(list);
+  const next=orbState();if(next!==appliedOrbState){appliedOrbState=next;orb?.setState(next);}
+  if(liveMachine.view.state==='starting')transcriptPin?.repin();
+}
 function renderTranscript(list: HTMLElement) {
   // Stable segment keys keep a streaming line in place: only lines that are new fade and rise in.
   const segments = liveSegments(live);
@@ -445,15 +454,6 @@ function bindTranscript() {
   const list = document.querySelector<HTMLElement>('#transcript .live-turns');
   const pill = document.getElementById('transcript-jump');
   if (list && pill) transcriptPin = attachPin(list, pill);
-}
-function paintLive(){
-  // A poll rewrites the state line and the transcript only, so the orb canvas and the controls keep
-  // their listeners and the stage never moves (V3 item 8).
-  const caption=document.querySelector('.orb-caption');const markup=orbCaptionMarkup();if(caption && caption.innerHTML!==markup)caption.innerHTML=markup;
-  const list=document.querySelector<HTMLElement>('#transcript .live-turns');
-  if(list)renderTranscript(list);
-  const next=orbState();if(next!==appliedOrbState){appliedOrbState=next;orb?.setState(next);}
-  if(liveMachine.view.state==='starting')transcriptPin?.repin();
 }
 onAuthorityChanged(reason=>{
   ++readGeneration;controller?.abort();controller=undefined;busy=false;readBusy=false;pairingBusy=false;connectionsBusy=false;liveBusy=false;

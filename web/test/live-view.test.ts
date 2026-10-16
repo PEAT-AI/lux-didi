@@ -53,7 +53,8 @@ test('the thinking label never names a tool; the activity line carries the phras
   assert.deepEqual(pendingToolNames(thinking), ['search_knowledge']);
   assert.equal(liveLabel(thinking), 'Thinking');
   assert.doesNotMatch(liveLabel(thinking), /search_knowledge/);
-  assert.match(liveMarkup(thinking), /activity-line/, 'the activity line carries the phrase, the label lives in the stage');
+  assert.match(activityMarkup(liveActivity(thinking)), /activity-line/, 'the activity line carries the phrase, the label lives in the stage');
+  assert.doesNotMatch(activityMarkup(liveActivity(thinking)), /search_knowledge/, 'the activity line never names a raw tool');
   assert.doesNotMatch(liveMarkup(thinking), /Thinking \(/);
 });
 
@@ -330,7 +331,7 @@ test('rebuilding is a non-error voice status and restoration is not transcript t
   const live = { state: 'rebuilding', cursor: 1, entries: [{ seq: 1, kind: 'continuity', event: 'rebuilding', reason: 'go_away' }] } as unknown as LiveCurrent;
   assert.equal(liveStateLabel(live.state), 'Reconnecting to the voice service');
   assert.notEqual(liveVoiceState(live.state), 'ERROR');
-  assert.match(liveMarkup(live), /Reconnecting to the voice service/);
+  assert.match(liveLabel(live), /Reconnecting to the voice service/);
   assert.doesNotMatch(liveMarkup(live), /session has stopped/);
   assert.deepEqual(liveTranscript(live), []);
 });
@@ -344,7 +345,7 @@ for (const [outcome, phrase] of [['failed', 'ended with an error'], ['closed', '
     const displayTime = new Date(time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     assert.ok(label.includes(displayTime));
     assert.doesNotMatch(liveMarkup(live), /Something went wrong/);
-    assert.ok(liveMarkup(live).includes(label));
+    assert.equal(liveLabel(live), label);
     assert.match(liveMarkup(live), /id="live-panel"/);
   });
 }

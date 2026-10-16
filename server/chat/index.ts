@@ -20,6 +20,12 @@ export * from './types.js';
 export { chatMigrations } from './schema.js';
 
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
+/** Owner-facing evidence text. The model's own functionResponse keeps the model-only bracket notes;
+ * this copy strips them, so the strip call site is exercised without a full tool run. */
+export function ownerEvidenceMarkdown(response: Record<string, unknown>): string {
+  const text = typeof response.markdown === 'string' ? response.markdown : typeof response.text === 'string' ? response.text : 'Tool refused or unavailable.';
+  return stripModelOnlyNotes(text).slice(0, 4096);
+}
 /** Stable capability identity: a description or schema reword never changes it. */
 export type CapabilityIdentity = { name: string; effect: string; accountId: string; resourceId: string };
 /**
@@ -152,10 +158,9 @@ export class ChatService implements ChatPort {
       const result = part.functionResponse;
       if (!result) return [];
       const response = result.response;
-      const text = typeof response.markdown === 'string' ? response.markdown : typeof response.text === 'string' ? response.text : 'Tool refused or unavailable.';
       const sources = sourceCards({ text: response.text, markdown: response.markdown, sources: response.sources });
       // Owner-facing copy only: the model's own functionResponse keeps the paging/omission note.
-      return [{ name: result.name, markdown: stripModelOnlyNotes(text).slice(0, 4096), sources }];
+      return [{ name: result.name, markdown: ownerEvidenceMarkdown(response), sources }];
     })).slice(0, 16);
   }
 

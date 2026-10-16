@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { fork } from 'node:child_process';
 import { once } from 'node:events';
 import { openFixture, result } from './chat-process.js';
-import { ChatService, ChatError, chatMigrations, admitCapabilities, type ChatConfig, type RunSnapshot } from '../chat/index.js';
+import { ChatService, ChatError, chatMigrations, admitCapabilities, ownerEvidenceMarkdown, type ChatConfig, type RunSnapshot } from '../chat/index.js';
 import { Store } from '../runtime/store.js';
 import { PROMPT_VERSION, compilePrompt } from '../prompt/index.js';
 import * as summaries from '../domain/summaries.js';
@@ -613,8 +613,9 @@ test('text chat and voice receive the same summary for the same past session', a
 });
 
 test('the model-only omission note is stripped from the owner-facing evidence copy, never the model copy (C1-R1)', () => {
-  // Every shape live-shape.ts appends: list ceilings (with and without a follow-up argument),
-  // character ceilings, and single-item ceilings. The model keeps them; the owner copy drops them.
+  // The `[omitted: ...]` shapes live-shape.ts appends: list ceilings (with and without a follow-up
+  // argument), character ceilings, and single-item ceilings. The model keeps them; the owner copy
+  // drops them. The `[+N chars]` and `[id ...]` shapes are covered by the sibling test below.
   const notes = [
     '[omitted: 4 more messages; final, this tool has no paging argument]',
     '[omitted: 12 characters; final, this read has no paging argument]',
@@ -638,4 +639,10 @@ test('the calendar and handle bracket notes are stripped from the owner-facing e
   assert.equal(stripModelOnlyNotes('- mail from: alice | [id m9]'), '- mail from: alice |');
   assert.equal(stripModelOnlyNotes('### Insight title (project) [id k3]'), '### Insight title (project)');
   assert.equal(stripModelOnlyNotes('title [index] and [note: keep] stay'), 'title [index] and [note: keep] stay');
+});
+
+test('the owner evidence projection strips the notes at the call site that feeds the panel (C1-R1 F3)', () => {
+  assert.equal(ownerEvidenceMarkdown({ markdown: '- 10:00, Standup [id e1] [+40 chars]\n- x [omitted: 2 more events; final, this tool has no paging argument]' }), '- 10:00, Standup\n- x');
+  assert.equal(ownerEvidenceMarkdown({ text: 'plain text' }), 'plain text');
+  assert.equal(ownerEvidenceMarkdown({}), 'Tool refused or unavailable.');
 });

@@ -195,7 +195,10 @@ try {
     const sessionToken = (await context.cookies()).find(cookie => cookie.name === 'didi_session').value;
     assert.ok(!rendered.includes(credential) && !rendered.includes(sessionToken));
     assert.equal(await page.evaluate(() => document.cookie), '');
-    assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0);
+    // U1 (#282) persists the owner's panel layout, so the shipped UI retains exactly that one local
+    // preference and nothing else; no credential, session token or conversation content is stored.
+    assert.deepEqual(await page.evaluate(() => Object.keys(localStorage)), ['didi-layout']);
+    assert.equal(await page.evaluate(() => sessionStorage.length), 0);
     const privatePaths = await page.evaluate(async () => Promise.all(['/.env', '/admin-credential', '/server/runtime/store.ts'].map(async path => (await fetch(path)).status)));
     assert.ok(privatePaths.every(status => status >= 400));
     const cachedPaths = await page.evaluate(async () => (await Promise.all((await caches.keys()).map(async name => (await (await caches.open(name)).keys()).map(req => new URL(req.url).pathname)))).flat());

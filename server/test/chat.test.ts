@@ -10,7 +10,7 @@ import { ChatService, ChatError, chatMigrations, admitCapabilities, type ChatCon
 import { Store } from '../runtime/store.js';
 import { PROMPT_VERSION, compilePrompt } from '../prompt/index.js';
 import * as summaries from '../domain/summaries.js';
-import { buildEarlierConversationsSection, composeLiveSessionInstruction, composeLiveInstruction, NAYA_BASE, TRUSTED_SYSTEM_CODE_UNIT_LIMIT } from '../prompt/live-persona.js';
+import { buildEarlierConversationsSection, composeLiveSessionInstruction, composeLiveInstruction, NAYA_LIVE_BASE, TRUSTED_SYSTEM_CODE_UNIT_LIMIT } from '../prompt/live-persona.js';
 import type { ModelPort, ModelRequest, ModelControl, ModelResult } from '../adapters/model/types.js';
 
 class CountingModel implements ModelPort {
@@ -170,10 +170,10 @@ test('long archive selects contiguous whole-turn suffix using actual compiler ac
     for (let i = 0; i < 180; i++) f.store.transaction(tx => f.domain.execute(tx, 'appendEntry', { sessionId: f.session.id, text: `old-${i} ${'x'.repeat(70)}`, role: 'user', timeZone: 'UTC' }, f.context));
     const run = f.accept('Current'); await terminal(f, run);
     const request = f.model.calls[0]!; const contents = request.contents;
-    assert.equal(JSON.parse(contents.at(-1)!.parts[0]!.text!).text, 'Current'); assert.ok(contents.length < 181);
+    assert.equal(contents.at(-1)!.parts[0]!.text, 'Current'); assert.ok(contents.length < 181);
     const trace = f.store.transaction(tx => tx.get('SELECT trace FROM chat_runs WHERE run_id=?', [run.runId]));
     const parsed = JSON.parse(String(trace!.trace)); assert.equal(parsed.omittedHistoryCount, 181 - contents.length);
-    const texts = contents.slice(0, -1).map(c => JSON.parse(c.parts[0]!.text!).text);
+    const texts = contents.slice(0, -1).map(c => c.parts[0]!.text);
     assert.deepEqual(texts, f.entries().slice(180 - texts.length, 180).map(e => e.text));
     assert.equal(f.entries().length, 182); assert.deepEqual(request.declarations, []);
     assert.equal(request.promptVersion, PROMPT_VERSION); assert.ok(request.system.includes('de-DE'));
@@ -602,7 +602,7 @@ test('text chat and voice receive the same summary for the same past session', a
     // The same single store read feeds the voice instruction.
     const candidates = f.store.transaction(tx => summaries.injectionCandidates(tx));
     const section = buildEarlierConversationsSection(candidates, { now: NOW, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
-    const baseline = composeLiveInstruction({ base: NAYA_BASE, language: 'en' });
+    const baseline = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en' });
     const voice = composeLiveSessionInstruction({ text: baseline.text, tools: [], records: [],
       trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, earlierConversations: section.section });
     assert.equal(voice.earlierConversationsIncluded, true);

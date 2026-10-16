@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import type { DataClass, FunctionDeclaration, ToolDefinition } from '../adapters/model/types.js';
 import { PromptCompileError, type OwnerProfileSnapshot, type CapabilitySnapshot, type CompileInput, type CompiledPrompt, type Evidence, type HistoryItem, type SourceAvailability, type ValidatedPreferences, type VoiceInstruction, type VoiceInstructionInput } from './types.js';
 import { PUBLIC_PERSONA, PROMPT_VERSION, TRUSTED_RULES } from './template.js';
-import { ownerProfileSections, TRUSTED_SYSTEM_CODE_UNIT_LIMIT } from './live-persona.js';
+import { NAYA_CHARACTER, NAYA_TEXT_SURFACE, ownerProfileSections, TRUSTED_SYSTEM_CODE_UNIT_LIMIT } from './live-persona.js';
 export * from './types.js';
 export * from './live-persona.js';
 export * from './runtime-context.js';
@@ -165,9 +165,11 @@ function history(raw: unknown, ownerId: string): HistoryItem {
 /** Pure compilation of explicitly supplied material. No stores, clocks, env or egress. */
 /** The canonical trusted sections: persona + rules + preferences + capabilities. No turns. */
 function systemSections(prefs: ValidatedPreferences, caps: CapabilitySnapshot, owner: OwnerProfileSnapshot): Array<{ id: string; text: string }> {
-  const { ownerId: _preferenceOwner, ...trustedPrefs } = prefs;
+  // humor and verbosity contradict the authored owner style and verbosity is never interpreted: keep
+  // them out of the model-visible preferences payload. The generic Didi persona is only for no profile.
+  const { ownerId: _preferenceOwner, humor: _humor, verbosity: _verbosity, ...trustedPrefs } = prefs;
   return [
-    { id: 'persona', text: PUBLIC_PERSONA },
+    { id: 'persona', text: owner.kind === 'default' ? PUBLIC_PERSONA : `${NAYA_CHARACTER}\n\n${NAYA_TEXT_SURFACE}` },
     ...ownerProfileSections(owner),
     { id: 'rules', text: TRUSTED_RULES },
     { id: 'preferences', text: JSON.stringify(trustedPrefs) },
@@ -223,10 +225,8 @@ export function compilePrompt(input: CompileInput): CompiledPrompt {
   }
   const system = sections.map(section => `[${section.id}]\n${section.text}`).join('\n\n');
   if (system.length > trustedLimit) fail('budget');
-  const contents = turns.map(t => {
-    const { ownerId: _owner, ...data } = t;
-    return { role: t.role, parts: [{ text: JSON.stringify(data) }] };
-  });
+  // Prior turns go to the model as plain role turns, never as JSON envelope strings.
+  const contents = turns.map(t => ({ role: t.role, parts: [{ text: t.text }] }));
   const historyChars = JSON.stringify(contents).length;
   if (historyChars > historyLimit) fail('budget');
   // Fixed-width counts keep the notice's exact cost invariant during selection.

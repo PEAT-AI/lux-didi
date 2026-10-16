@@ -33,8 +33,9 @@ block canvas, pointer-events none, filter transition, neutral grayscale/brightne
 opacity. Didi supplies wrapper sizing/labels/layout and static reduced-motion.
 
 Deliberate adaptations: classic renderer rather than the 133KB Angular component;
-no visage or alternate themes; fixed injected idle24/active30 fps
-budget (not a claim to copy device-tier service); silent production audio frame;
+no visage or alternate themes; an injected fps budget of 60 active, 30 idle in a
+focused window and 12 idle unfocused (#283; Vicuna's high tier is 60 active / 12
+idle, this is not a copy of its device-tier service);
 current five-channel/playback/activity asymmetric smoothing constants, current >0.01
 speaking distinction, current state palette and neutral filter. Source feasibility
 and real browser rendering are separate from exact pixel parity or WKWebView proof.
@@ -50,3 +51,18 @@ and real browser rendering are separate from exact pixel parity or WKWebView pro
 - The five-band frame is no longer silent: the native player output tap and the capture
   tap post bounded levels to the renderer's `window.didiOrbLevel`; the renderer only
   smooths and draws, and never touches capture or transport authority.
+
+## #283 motion additions
+
+- The native tap posts a 60 Hz band frame (`{v: 2, input, output}`: broadband,
+  low <300 Hz, mid, high RMS and an onset flux per 10 ms window) straight to
+  `window.didiOrbLevel`; output windows are read at the playback position.
+- `orb-level.ts` maps the RMS onto a perceptual dB scale (-50 to -16 dBFS) in
+  place of Vicuna's analyser bytes, and owns the motion envelope: Vicuna's low
+  attack with shorter releases (low 0.09 s, macro 0.06/0.13 s) so syllables
+  read, a capped and gentler speaking curve, breath, eased glow/flare/scale and
+  an integrated swirl.
+- `orb-classic.ts` blooms the wobbly and hot core with the smoothed low band
+  (`BODY_BLOOM`), brightens the small sparkles with flux (`FLUX_SPARKLE`), and
+  eases tentacle parameters with an integrated phase; thinking's tentacle speed
+  is 2.4 (Vicuna 5.0) for a calm swirl.

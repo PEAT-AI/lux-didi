@@ -144,7 +144,7 @@ async function attached(h: Harness, key = 'k1') {
   h.f.send({ setupComplete: {} });
   await attachment.ready;
   await h.f.frame(2);
-  assert.deepEqual(h.f.frames[1], { realtimeInput: { text: 'Greet the person briefly to begin the conversation.' } });
+  assert.deepEqual(h.f.frames[1], { realtimeInput: { text: 'Open the conversation now with one fresh, specific line.' } });
   h.f.frames.splice(1, 1);
   return { session, attachment };
 }

@@ -131,6 +131,42 @@ export function endedSessionsWithoutSummary(tx: Transaction): EndedSession[] {
     deadHost: deadHostOutcome(row['outcome']) }));
 }
 
+export interface FailedSummaryCandidate { liveSessionId: string; endedAt: number | null }
+
+/**
+ * Failed-deadline rows whose session journal still exists, newest first; the host-start requeue list.
+ * A row whose journal was already pruned or deleted cannot be distilled again and is never returned.
+ */
+export function failedDeadlineSessionsWithJournal(tx: Transaction, limit: number): FailedSummaryCandidate[] {
+  if (!hasTable(tx)) return [];
+  return tx.all(
+    `SELECT c.live_session_id AS id, c.ended_at AS ended_at
+       FROM conversation_summaries c
+      WHERE c.status = 'failed' AND c.error_code = 'deadline'
+        AND EXISTS (SELECT 1 FROM live_journal j WHERE j.live_session_id = c.live_session_id)
+      ORDER BY (c.ended_at IS NULL), c.ended_at DESC, c.rowid DESC
+      LIMIT ?`, [limit],
+  ).map(row => ({ liveSessionId: String(row['id']), endedAt: row['ended_at'] === null || row['ended_at'] === undefined ? null : Number(row['ended_at']) }));
+}
+
+/** Total failed-deadline rows with a surviving journal, so the requeue can report what it left for later. */
+export function countFailedDeadlineSessionsWithJournal(tx: Transaction): number {
+  if (!hasTable(tx)) return 0;
+  const row = tx.get(
+    `SELECT COUNT(*) AS n FROM conversation_summaries c
+      WHERE c.status = 'failed' AND c.error_code = 'deadline'
+        AND EXISTS (SELECT 1 FROM live_journal j WHERE j.live_session_id = c.live_session_id)`);
+  return Number(row?.['n'] ?? 0);
+}
+
+/** Remove a failed row so distillation may run once more for its session; refuses any non-failed row. */
+export function removeFailed(tx: Transaction, liveSessionId: string): boolean {
+  const row = tx.get("SELECT id FROM conversation_summaries WHERE live_session_id=? AND status='failed'", [liveSessionId]);
+  if (!row) return false;
+  tx.run('DELETE FROM conversation_summaries WHERE live_session_id=?', [liveSessionId]);
+  return true;
+}
+
 /** Recovery seals a dead host's non-terminal sessions as `not_started` or `outcome_unknown`. */
 export function deadHostOutcome(value: unknown): boolean {
   if (typeof value !== 'string') return false;

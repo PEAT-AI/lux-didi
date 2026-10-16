@@ -8,11 +8,12 @@ import { domainMigrations } from '../domain/schema.js';
 import { liveMigrations } from '../live/schema.js';
 import * as summaries from '../domain/summaries.js';
 import { buildEarlierConversationsSection } from '../prompt/live-persona.js';
-import { composeLiveSessionInstruction, NAYA_BASE, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, composeLiveInstruction } from '../prompt/live-persona.js';
+import { composeLiveSessionInstruction, NAYA_LIVE_BASE, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, composeLiveInstruction } from '../prompt/live-persona.js';
 import { compilePrompt, createCapabilitySnapshot, PROMPT_VERSION, validatePreferences } from '../prompt/index.js';
-import type { ModelControl, ModelPort, ModelRequest, ModelResult } from '../adapters/model/types.js';
+import type { ModelControl, ModelPort, ModelRequest, ModelResult, Transport } from '../adapters/model/types.js';
+import { GeminiAdapter } from '../adapters/model/index.js';
 import {
-  DISTILLATION_PROMPT, SUMMARY_MAX_RETRIES, buildDistillationInput, capDistillationInput,
+  DISTILLATION_PROMPT, SUMMARY_MAX_RETRIES, SUMMARY_RECOVERY_LIMIT, buildDistillationInput, capDistillationInput,
   createSummarizer, parseDistillationResult,
 } from '../services/summarize.js';
 
@@ -71,6 +72,21 @@ function withTurns(store: Store, id: string, outcome?: string): void {
   seedSession(store, id, outcome === undefined ? {} : { outcome });
   seedTurn(store, id, 'inputTranscription', 'one');
   seedTurn(store, id, 'inputTranscription', 'two');
+}
+
+/** A real GeminiAdapter over a deterministic SSE transport, so controlled() is exercised for real. */
+function distillAdapter(summary: string, transport?: Transport): GeminiAdapter {
+  const body = { candidates: [{ content: { role: 'model', parts: [{ text: JSON.stringify({ skip: false, summary }) }] }, finishReason: 'STOP' }] };
+  return new GeminiAdapter({
+    modelId: 'gemini-2.5-flash', keyReference: 'gemini-primary',
+    credentials: { resolve: async () => 'synthetic-key' },
+    route: { enabled: true, provider: 'gemini', modelId: 'gemini-2.5-flash', dataClasses: ['ordinary'] },
+    timingKind: 'synthetic',
+    transport: transport ?? (async () => {
+      const bytes = new TextEncoder().encode(`data: ${JSON.stringify(body)}\r\n\r\n`);
+      return new Response(new ReadableStream({ start(c) { c.enqueue(bytes); c.close(); } }), { headers: { 'content-type': 'text/event-stream' } });
+    }),
+  });
 }
 
 test('the distillation prompt is the authored verbatim constant and output parses tolerantly', () => {
@@ -282,7 +298,7 @@ test('voice and text chat render the same summary for the same past session', ()
     assert.equal(section.selectedIds.length, 1);
     assert.match(section.section, /moved to Lisbon/);
 
-    const baseline = composeLiveInstruction({ base: NAYA_BASE, language: 'en' });
+    const baseline = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en' });
     const voice = composeLiveSessionInstruction({ text: baseline.text, tools: [], records: [],
       trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, earlierConversations: section.section });
     assert.equal(voice.earlierConversationsIncluded, true);
@@ -299,5 +315,60 @@ test('voice and text chat render the same summary for the same past session', ()
     });
     assert.ok(compiled.system.includes('moved to Lisbon'));
     assert.ok(compiled.system.includes('[earlier-conversations]'));
+  } finally { h.cleanup(); }
+});
+
+test('a summary completes through the real controlled() path within its computed absolute budget', async () => {
+  const h = open();
+  try {
+    withTurns(h.store, 's-real');
+    const model = distillAdapter('The owner asked about the calendar.');
+    const s = createSummarizer({ store: h.store, model, modelId: 'gemini-2.5-flash', timeZone: 'UTC', now: () => Date.now(), log: () => {} });
+    await s.distill('s-real');
+    const row = h.store.transaction(tx => summaries.getBySession(tx, 's-real'))!;
+    assert.equal(row.status, 'complete');
+    assert.equal(row.summary, 'The owner asked about the calendar.');
+  } finally { h.cleanup(); }
+});
+
+test('an already-expired absolute deadline fails loud through the real controlled() path', async () => {
+  const h = open();
+  try {
+    withTurns(h.store, 's-expired');
+    let transports = 0;
+    const model = distillAdapter('never sent', async () => { transports++; throw Error('transport must not run'); });
+    const s = createSummarizer({ store: h.store, model, modelId: 'gemini-2.5-flash', timeZone: 'UTC', now: () => Date.now(), deadlineBudgetMs: -1, log: () => {} });
+    await s.distill('s-expired');
+    const row = h.store.transaction(tx => summaries.getBySession(tx, 's-expired'))!;
+    assert.equal(row.status, 'failed');
+    assert.equal(row.errorCode, 'deadline');
+    assert.equal(transports, 0, 'an expired deadline is refused before the transport runs');
+  } finally { h.cleanup(); }
+});
+
+test('host-start recovery re-queues the newest 30 failed-deadline sessions whose journal survives', async () => {
+  const h = open();
+  try {
+    for (let i = 0; i < 36; i++) {
+      const id = `s-rec-${String(i).padStart(2, '0')}`;
+      withTurns(h.store, id);
+      h.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId: id, status: 'failed', errorCode: 'deadline', endedAt: NOW + i, now: NOW }));
+    }
+    seedSession(h.store, 's-nojournal');
+    h.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId: 's-nojournal', status: 'failed', errorCode: 'deadline', endedAt: NOW + 100, now: NOW }));
+
+    const bounded = h.store.transaction(tx => summaries.failedDeadlineSessionsWithJournal(tx, SUMMARY_RECOVERY_LIMIT));
+    assert.equal(bounded.length, 30, 'the requeue list is capped at the newest 30');
+    assert.equal(bounded[0]!.liveSessionId, 's-rec-35', 'newest first');
+    assert.equal(h.store.transaction(tx => summaries.countFailedDeadlineSessionsWithJournal(tx)), 36, 'a row with no journal is excluded');
+
+    const model = new FakeModel([reply('{"skip": false, "summary": "recovered"}')]);
+    await summarizer(h.store, model).requeueFailed();
+
+    const status = (id: string) => h.store.transaction(tx => summaries.getBySession(tx, id))!.status;
+    assert.equal(model.calls, 30, 'exactly the bounded set is distilled');
+    for (let i = 35; i >= 6; i--) assert.equal(status(`s-rec-${String(i).padStart(2, '0')}`), 'complete', `s-rec-${i} recovered`);
+    for (let i = 5; i >= 0; i--) assert.equal(status(`s-rec-${String(i).padStart(2, '0')}`), 'failed', `s-rec-${i} left for a later start`);
+    assert.equal(status('s-nojournal'), 'failed', 'a row with no surviving journal is never re-queued');
   } finally { h.cleanup(); }
 });

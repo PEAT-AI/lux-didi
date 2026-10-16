@@ -24,3 +24,11 @@ test('the jump pill is offered exactly while the view is away from the bottom', 
   assert.equal(jumpVisible(false, list(300)), true);
   assert.equal(jumpVisible(true, list(300)), false, 'a pinned view follows by itself, so no pill');
 });
+
+test('FE1 a poll that grows the feed never re-pins a reader who scrolled up; a new session does', () => {
+  const grown = list(200, 1400, 400);
+  assert.equal(nextPinned(false, grown), false, 'growth alone never drags a reader back to the bottom');
+  // A new session starts pinned: the binder re-settles to the newest line until the reader takes over.
+  assert.equal(nextPinned(true, grown), true);
+  assert.equal(jumpVisible(false, grown), true, 'Back to live is offered while the reader is away from the bottom');
+});

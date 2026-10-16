@@ -32,9 +32,9 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadLiveConfig, liveSetupLanguage } from '../config/live.js';
-import { NAYA_BASE, NAYA_TOOLS, MEMORY_SECTION_CHAR_LIMIT, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
+import { NAYA_LIVE_BASE, NAYA_TOOLS, MEMORY_SECTION_CHAR_LIMIT, LIVE_INSTRUCTION_HARD_LIMIT, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
 import { GeminiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
-import type { GeminiLiveVoiceOptions, LiveVoiceLimits, LiveVoiceRequest } from '../adapters/live-voice/index.js';
+import type { GeminiLiveVoiceOptions, LiveVoiceLimits, LiveVoicePort, LiveVoiceRequest } from '../adapters/live-voice/index.js';
 import { chatMigrations } from '../chat/index.js';
 import { domainMigrations } from '../domain/schema.js';
 import { createDomainPort } from '../domain/facade.js';
@@ -43,6 +43,7 @@ import { Store } from '../runtime/store.js';
 import type { Transaction } from '../contracts/storage.js';
 import { createLiveSessionOwner, LiveConfigError, LiveError, liveMigrations, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, control, deferred, fixture, options, pcm } from './live-voice-fixture.js';
+import { fakeLiveVoicePort } from './fixtures/fake-live-voice.js';
 import { CONNECTOR_DESCRIPTORS, MATTERMOST_TOOLS } from '../connectors/index.js';
 import { buildRuntimeContext } from '../prompt/index.js';
 
@@ -96,6 +97,7 @@ async function harness(t: TestContext, overrides: {
   limits?: Record<string, number>;
   adapterLimits?: Partial<LiveVoiceLimits>;
   socketFactory?: NonNullable<GeminiLiveVoiceOptions['socketFactory']>;
+  port?: LiveVoicePort;
   credentials?: { resolve(reference: string): Promise<string | undefined> };
   model?: string;
   tools?: boolean;
@@ -127,7 +129,7 @@ async function harness(t: TestContext, overrides: {
     ...(overrides.overlay ? { overlay: overrides.overlay } : {}), ...(overrides.system !== undefined ? { prompt: { text: overrides.system, dataClass: 'ordinary' } } : {}),
     ...(overrides.language !== undefined ? { language: overrides.language } : {}),
     ...(overrides.acceptedPrompt ? { acceptedPrompt: overrides.acceptedPrompt(store.assistantId) } : {}) });
-  const voice = new GeminiLiveVoiceAdapter(options({
+  const voice = overrides.port ?? new GeminiLiveVoiceAdapter(options({
     socketFactory: overrides.socketFactory ?? f.socketFactory, modelId: profile.liveModelId, voice: profile.voice, keyReference: profile.keyReference,
     route: { enabled: true, provider: 'gemini', modelId: profile.liveModelId, dataClasses: profile.route.dataClasses },
     credentials: overrides.credentials ?? { resolve: async () => CANARY },
@@ -261,7 +263,7 @@ async function harness(t: TestContext, overrides: {
   return { requests, calls, get memorySelections() { return memorySelections; }, f, store, owner, ctx: context(store), dir, advance: ms => { if (overrides.scheduler) overrides.scheduler.now += ms; else clock += ms; } };
 }
 
-async function attached(h: Harness, key = 'k1', opening = 'Greet the person briefly to begin the conversation.') {
+async function attached(h: Harness, key = 'k1', opening = 'Open the conversation now with one fresh, specific line.') {
   const session = h.owner.create({ idempotencyKey: key, inputClass: 'ordinary' }, h.ctx);
   assert.equal(h.owner.current().state, 'idle', 'accepted without an attachment is not listening');
   const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
@@ -273,6 +275,57 @@ async function attached(h: Harness, key = 'k1', opening = 'Greet the person brie
   h.f.frames.splice(1, 1);
   return { session, attachment };
 }
+
+test('a test-only port with different capabilities drives the live session with no model-name branch', async t => {
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port, language: 'en-IN' });
+  const session = h.owner.create({ idempotencyKey: 'fake-port', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  assert.equal(h.owner.current().state, 'listening');
+  assert.equal(fake.sessionsOpened, 1, 'the host opened the port once');
+  // The host reads the declared capabilities, not a model name; the fake differs from Gemini on every axis.
+  assert.equal(fake.port.capabilities.supportsResumption, false);
+  assert.equal(fake.port.capabilities.supportsGoAway, false);
+  assert.deepEqual(fake.port.capabilities.inputRates, [8000]);
+  assert.deepEqual(fake.port.capabilities.outputRates, [24000]);
+  assert.deepEqual(fake.port.capabilities.outputModalities, ['audio', 'text']);
+  const request = h.requests.at(-1)!;
+  assert.equal(request.languageCode, 'en-IN', 'the setup language reaches the port');
+  assert.ok(request.system.text.length > 0, 'the system instruction reaches the port');
+  assert.equal('modelId' in request, false, 'the port request carries no model name');
+  const output = attachment.output[Symbol.asyncIterator]();
+  assert.equal((await output.next()).value?.kind, 'marker');
+  fake.emit({ type: 'audio', pcm: new Uint8Array([1, 2, 3]), mimeType: 'audio/pcm;rate=24000' });
+  const chunk = await output.next();
+  assert.equal(chunk.value?.kind, 'audio', 'the fake session audio reached the attached consumer');
+  assert.deepEqual([...(chunk.value as { pcm: Uint8Array }).pcm], [1, 2, 3]);
+  h.owner.revoke(session.liveSessionId);
+  await attachment.done;
+});
+
+test('the host reuses a resumption handle only when the adapter declares the capability', async t => {
+  for (const supportsResumption of [true, false]) {
+    const fake = fakeLiveVoicePort({ supportsResumption });
+    const h = await harness(t, { port: fake.port, language: 'en-IN' });
+    const session = h.owner.create({ idempotencyKey: `resume-cap-${supportsResumption}`, inputClass: 'ordinary' }, h.ctx);
+    const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+    await attachment.ready;
+    const storedHandle = (): unknown => h.store.transaction(tx => tx.get('SELECT resumption_handle FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!['resumption_handle'];
+    fake.emit({ type: 'resumptionHandle', handle: 'resumption-h1' });
+    for (let i = 0; i < 100 && storedHandle() !== 'resumption-h1'; i++) await tick();
+    assert.equal(storedHandle(), 'resumption-h1', 'the adapter handle is persisted');
+    // A goAway is a recoverable outcome; the host rebuilds and decides from the declared capability whether to reuse the handle.
+    fake.emit({ type: 'goAway', timeLeftMs: 5000 });
+    for (let i = 0; i < 100 && fake.sessionsOpened < 2; i++) await tick();
+    assert.equal(fake.sessionsOpened, 2, 'the host reopened on the recoverable outcome');
+    const reopened = h.requests.at(-1)!;
+    if (supportsResumption) assert.equal(reopened.resumptionHandle, 'resumption-h1', 'the declared capability reuses the handle');
+    else assert.equal(reopened.resumptionHandle, undefined, 'a port without the capability gets no handle');
+    h.owner.revoke(session.liveSessionId);
+    await attachment.done;
+  }
+});
 
 test('typed text reaches the adapter as a realtime text turn and journals a You turn', async t => {
   const h = await harness(t);
@@ -293,9 +346,9 @@ test('fresh owner Start selects model-first with no fabricated history', async t
   assert.deepEqual(h.requests[0]!.history, []);
   h.f.send({ setupComplete: {} });
   await Promise.all([attachment.ready, h.f.frame(2)]);
-  assert.deepEqual(h.f.frames[1], { realtimeInput: { text: 'Greet the person briefly to begin the conversation.' } });
+  assert.deepEqual(h.f.frames[1], { realtimeInput: { text: 'Open the conversation now with one fresh, specific line.' } });
   const persisted = JSON.stringify(h.store.transaction(tx => tx.all('SELECT kind,text FROM live_journal WHERE live_session_id=?', [session.liveSessionId])));
-  assert.equal(persisted.includes('Greet the person'), false, 'the server-owned directive is not user transcription or history');
+  assert.equal(persisted.includes('Open the conversation now'), false, 'the server-owned directive is not user transcription or history');
   h.owner.revoke(session.liveSessionId);
   await attachment.done;
 });
@@ -506,7 +559,7 @@ test('audio is rejected before ready and PCM never reaches the store', async t =
   await h.f.frame(1);
   h.f.send({ setupComplete: {} });
   await Promise.all([attachment.ready, h.f.frame(2)]);
-  assert.deepEqual(h.f.frames[1], { realtimeInput: { text: 'Greet the person briefly to begin the conversation.' } });
+  assert.deepEqual(h.f.frames[1], { realtimeInput: { text: 'Open the conversation now with one fresh, specific line.' } });
   attachment.sendAudio({ pcm });
   await h.f.frame(3);
   assert.deepEqual(h.f.frames[2], { realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: Buffer.from(pcm).toString('base64') } } });
@@ -724,12 +777,13 @@ test('profile validation rejects text-model fallback and bounds, and validation 
   assert.throws(() => h.owner.create({ idempotencyKey: 'class', inputClass: 'private' }, h.ctx), (error: unknown) => error instanceof LiveError && error.code === 'invalid_request');
 });
 
-test('accepted complete system uses the shared 60k bound while generic prompt text stays at 4096', () => {
+test('accepted complete system uses the shared 60k bound while prompt text is bounded by the live hard limit', () => {
   const ownerProfile = { schemaVersion: 1 as const, kind: 'default' as const, ownerId: 'assistant-test', displayName: 'Lux Didi' as const };
   const acceptedPrompt = { schemaVersion: 1, ownerProfile, compilerVersion: PROMPT_VERSION, system: 'A'.repeat(60_000), dataClasses: ['ordinary'] };
   assert.equal(validateLiveProfile({ ...profileInput(), acceptedPrompt }).acceptedPrompt?.system.length, 60_000);
   assert.throws(() => validateLiveProfile({ ...profileInput(), acceptedPrompt: { ...acceptedPrompt, system: 'A'.repeat(60_001) } }), LiveConfigError);
-  assert.throws(() => validateLiveProfile({ ...profileInput(), prompt: { text: 'A'.repeat(4097), dataClass: 'ordinary' } }), LiveConfigError);
+  assert.equal(validateLiveProfile({ ...profileInput(), prompt: { text: 'A'.repeat(LIVE_INSTRUCTION_HARD_LIMIT), dataClass: 'ordinary' } }).prompt.text.length, LIVE_INSTRUCTION_HARD_LIMIT);
+  assert.throws(() => validateLiveProfile({ ...profileInput(), prompt: { text: 'A'.repeat(LIVE_INSTRUCTION_HARD_LIMIT + 1), dataClass: 'ordinary' } }), LiveConfigError);
 });
 
 test('tool-enabled Live CREATE freezes an expanded classified owner system byte for byte', async t => {
@@ -739,13 +793,13 @@ test('tool-enabled Live CREATE freezes an expanded classified owner system byte 
   const h = await harness(t, { tools: true, routeClasses: ['ordinary', 'private', 'sensitive'], acceptedPrompt: ownerId => {
     const ownerProfile = { schemaVersion: 1 as const, kind: 'profile' as const, ownerId, profileVersion: 'fixture', displayName: 'Example',
       style: { text: style, dataClass: 'private' as const }, lore: { text: lore, dataClass: 'sensitive' as const } };
-    expectedSystem = composeLiveInstruction({ base: NAYA_BASE, ownerProfile, language: 'en' }).text;
+    expectedSystem = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile, language: 'en' }).text;
     return { schemaVersion: 1, ownerProfile, compilerVersion: PROMPT_VERSION,
       system: expectedSystem, dataClasses: ['ordinary', 'private', 'sensitive'] };
   } });
   const created = h.owner.create({ idempotencyKey: 'expanded-owner-tools', inputClass: 'ordinary' }, h.ctx);
   const frozen = h.store.transaction(tx => JSON.parse(String(tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [created.liveSessionId])!['accepted_prompt_snapshot'])));
-  assert.ok(frozen.system.length > 4_096 && frozen.system.length <= 16_000, 'the frozen system is dense but inside the hard limit');
+  assert.ok(frozen.system.length > 4_096 && frozen.system.length <= LIVE_INSTRUCTION_HARD_LIMIT, 'the frozen system is dense but inside the hard limit');
   assert.equal(frozen.system, composeLiveSessionInstruction({ text: expectedSystem, tools: ['search_knowledge', 'get_insight'], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
     runtimeContext: buildRuntimeContext({ now: new Date(NOW), timeZone: 'Asia/Kolkata', connected: ['knowledge base', 'memory'], unavailable: [] }) }).text);
   assert.equal(frozen.system.split(style).length - 1, 1);
@@ -1287,7 +1341,7 @@ test('attach wins before deadline including opening, and expiry wins after it wi
 
 test('trusted clock rejects fractional milliseconds and maximum timer delay stays bounded', async t => {
   const h = await harness(t);
-  assert.throws(() => createLiveSessionOwner({ store: h.store, voice: { open() { throw new Error('unexpected open'); } }, profile: validateLiveProfile(profileInput()), now: () => NOW + 0.5 }), { code: 'invalid_config' });
+  assert.throws(() => createLiveSessionOwner({ store: h.store, voice: { capabilities: fakeLiveVoicePort().port.capabilities, open() { throw new Error('unexpected open'); } }, profile: validateLiveProfile(profileInput()), now: () => NOW + 0.5 }), { code: 'invalid_config' });
   const scheduler = new DeadlineClock();
   const max = await harness(t, { scheduler, limits: { unusedMs: 2_147_483_647 } });
   const row = max.owner.create({ idempotencyKey: 'deadline-max', inputClass: 'ordinary' }, max.ctx);
@@ -1308,7 +1362,7 @@ test('Live persists the exact typed accepted instruction before intent and corru
   const acceptedPrompt = { schemaVersion: 1, ownerProfile, compilerVersion: PROMPT_VERSION, system: 'SYNTHETIC exact accepted A', dataClasses: ['ordinary'] };
   const owner = createLiveSessionOwner({ store: h.store,
     profile: validateLiveProfile({ ...profileInput(), acceptedPrompt }),
-    voice: { open() { calls++; throw new Error('synthetic unavailable'); } }, now: () => NOW });
+    voice: { capabilities: fakeLiveVoicePort().port.capabilities, open() { calls++; throw new Error('synthetic unavailable'); } }, now: () => NOW });
   t.after(() => owner.shutdown());
   const run = owner.create({ idempotencyKey: 'owner-frozen', inputClass: 'ordinary' }, h.ctx);
   const row = h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot,dispatch_intent FROM live_sessions WHERE live_session_id=?', [run.liveSessionId]))!;
@@ -1330,7 +1384,7 @@ test('private style alone and sensitive lore alone deny voice before adapter or 
       style: { text: 'SYNTHETIC style', dataClass: styleClass }, lore: { text: 'SYNTHETIC lore', dataClass: loreClass } };
     const owner = createLiveSessionOwner({ store: h.store, profile: validateLiveProfile({ ...profileInput(),
       acceptedPrompt: { schemaVersion: 1, ownerProfile, compilerVersion: PROMPT_VERSION, system: 'SYNTHETIC instruction', dataClasses: ['ordinary', styleClass, loreClass].filter((c, i, cs) => cs.indexOf(c) === i) } }),
-      voice: { open() { calls++; throw Error('must not open'); } }, now: () => NOW });
+      voice: { capabilities: fakeLiveVoicePort().port.capabilities, open() { calls++; throw Error('must not open'); } }, now: () => NOW });
     assert.throws(() => owner.create({ idempotencyKey: `denied-${styleClass}-${loreClass}`, inputClass: 'ordinary' }, h.ctx));
     assert.equal(calls, 0); await owner.shutdown();
   }
@@ -1539,8 +1593,8 @@ function writePrivate(dir: string, name: string, text: string): void {
 test('Live attach setup carries the composed Naya instruction and the bare language code', async t => {
   const h = await harness(t);
   const overlay = { schemaVersion: 1 as const, text: 'SYNTHETIC local overlay persona', greeting: 'Synthetic greeting' };
-  const composed = composeLiveInstruction({ base: NAYA_BASE, overlay, language: 'de' });
-  assert.ok(composed.text.includes(NAYA_BASE), 'composed instruction carries the public base');
+  const composed = composeLiveInstruction({ base: NAYA_LIVE_BASE, overlay, language: 'de' });
+  assert.ok(composed.text.includes(NAYA_LIVE_BASE), 'composed instruction carries the public base');
   const acceptedPrompt = { schemaVersion: 1, ownerProfile: { schemaVersion: 1, kind: 'default', ownerId: h.store.assistantId, displayName: 'Lux Didi' },
     compilerVersion: PROMPT_VERSION, system: composed.text, dataClasses: ['ordinary'] };
   const profile = validateLiveProfile({ ...profileInput(), language: 'de', acceptedPrompt });
@@ -1578,8 +1632,8 @@ test('loadLiveConfig keeps public prompt bytes and composes classified owner sec
   const status = loadLiveConfig({ configDir, ownerId: 'synthetic-owner', ownerProfile });
   assert.equal(status.status, 'configured');
   if (status.status === 'configured') {
-    const expected = composeLiveInstruction({ base: NAYA_BASE, accent: overlay.accent, language: 'de' });
-    const accepted = composeLiveInstruction({ base: NAYA_BASE, ownerProfile, accent: overlay.accent, language: 'de' });
+    const expected = composeLiveInstruction({ base: NAYA_LIVE_BASE, accent: overlay.accent, language: 'de' });
+    const accepted = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile, accent: overlay.accent, language: 'de' });
     assert.deepEqual(status.config.profile.overlay, overlay);
     assert.equal(status.config.profile.language, 'de-DE', 'the owner regional tag is kept for the setup frame');
     assert.equal(status.config.profile.prompt.text, expected.text);
@@ -1592,6 +1646,28 @@ test('loadLiveConfig keeps public prompt bytes and composes classified owner sec
   const bad = loadLiveConfig({ configDir, ownerId: 'synthetic-owner', ownerProfile });
   assert.equal(bad.status, 'error');
   if (bad.status === 'error') assert.equal(bad.code, 'invalid_overlay');
+});
+
+test('loadLiveConfig accepts a base prompt past the 4096 identifier bound while it stays inside the live hard limit', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'didi-live-config-big-base-'));
+  const dataDir = join(root, 'data'); const configDir = join(dataDir, 'provider-config');
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  chmodSync(dataDir, 0o700); chmodSync(configDir, 0o700);
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const live = { schemaVersion: 1, enabled: true, provider: 'gemini', modelId: 'models/gemini-3.1-flash-live-preview', voice: 'Aoede', keyReference: 'gemini-primary',
+    dataClasses: ['ordinary', 'private', 'sensitive'], preferences: { dataClass: 'ordinary', language: 'en', register: 'plain', humor: 'dry', verbosity: 'brief' } };
+  writePrivate(configDir, 'live.json', `${JSON.stringify(live)}\n`);
+  // The frozen base character plus a long authored accent is a PROMPT, not a 4096-byte identifier: it is
+  // bounded by the live instruction hard limit, the shape P3's enlarged Naya character produces.
+  const overlay = { schemaVersion: 1 as const, text: 'SYNTHETIC local overlay persona', greeting: 'Synthetic greeting', accent: `Synthetic accent ${'A'.repeat(1200)}` };
+  writePrivate(dataDir, 'persona-overlay.json', JSON.stringify(overlay));
+  const status = loadLiveConfig({ configDir, ownerId: 'synthetic-owner' });
+  assert.equal(status.status, 'configured');
+  if (status.status === 'configured') {
+    const composed = composeLiveInstruction({ base: NAYA_LIVE_BASE, accent: overlay.accent, language: 'en' });
+    assert.ok(composed.text.length > 4_096 && composed.text.length <= LIVE_INSTRUCTION_HARD_LIMIT, `base prompt ${composed.text.length} chars`);
+    assert.equal(status.config.profile.prompt.text, composed.text);
+  }
 });
 
 test('configured owner system survives CREATE and attach open byte for byte before provider setup', async t => {
@@ -1841,37 +1917,37 @@ test('the anchor diagnostics report the serialized anchors, not the overlay acce
   const accent = 'SYNTHETIC-ACCENT-DESCRIPTION';
   const overlay = { schemaVersion: 1 as const, text: 'SYNTHETIC overlay persona', accent };
   // The anchor is composed with the bare primary language (AC1), while the setup frame carries the owner tag.
-  const composed = composeLiveInstruction({ base: NAYA_BASE, overlay, language: 'en' });
+  const composed = composeLiveInstruction({ base: NAYA_LIVE_BASE, overlay, language: 'en' });
   const sectionChars = (id: string): number => composed.sections.find(section => section.id === id)?.chars ?? 0;
   const h = await harness(t, { language: 'en-IN', overlay, acceptedPrompt: ownerId => ({
     schemaVersion: 1, ownerProfile: { schemaVersion: 1, kind: 'default', ownerId, displayName: 'Lux Didi' },
     compilerVersion: PROMPT_VERSION, system: composed.text, dataClasses: ['ordinary'] }) });
-  const { attachment } = await attached(h, 'accent-carried', `Greet the person briefly to begin the conversation, speaking in this voice and accent: ${accent}`);
-  assert.equal(h.requests.at(-1)?.voiceAccent, accent, 'the accent is carried on the session request');
+  const { attachment } = await attached(h, 'accent-carried');
+  assert.ok(h.requests.at(-1)?.system.text.includes(accent), 'the accent lives in the system instruction, not the request');
   assert.equal(h.requests.at(-1)?.languageCode, 'en-IN', 'the owner tag reaches the adapter as the setup language');
   attachment.close(); await attachment.done;
   const parse = (line: string): Record<string, unknown> => { try { return JSON.parse(line) as Record<string, unknown>; } catch { return {}; } };
   const diagnostics = (): Record<string, unknown>[] => lines.map(parse).filter(entry => entry.event === 'live_session_diagnostics');
   for (let attempt = 0; attempt < 60 && diagnostics().length === 0; attempt++) await tick();
   const matches = (): Record<string, unknown> | undefined => diagnostics().find(entry => entry.headVoiceChars === sectionChars('voice-head')
-    && entry.terminalVoiceChars === sectionChars('voice') && entry.toolAnchorChars === 0);
+    && entry.terminalVoiceChars === sectionChars('voice'));
   for (let attempt = 0; attempt < 60 && matches() === undefined; attempt++) await tick();
   const emitted = matches();
   assert.ok(emitted, `the accent-bearing diagnostics reports the serialised anchors; saw ${JSON.stringify(diagnostics())}`);
   assert.equal(emitted.headVoiceChars, sectionChars('voice-head'), 'the head count is the serialised head block');
   assert.equal(emitted.terminalVoiceChars, sectionChars('voice'), 'the terminal count is the serialised anchor, not the setup tag spelling');
-  assert.equal(emitted.toolAnchorChars, 0, 'no function response was serialized, so there is no tool anchor count');
+  assert.equal('toolAnchorChars' in emitted, false, 'the tool-anchor diagnostic is gone');
   assert.notEqual(emitted.terminalVoiceChars, emitted.headVoiceChars, 'the terminal anchor has its own serialised length');
   assert.ok(Number.isSafeInteger(emitted.terminalVoiceChars) && Number(emitted.terminalVoiceChars) > 0, 'the terminal count is a positive integer');
   assert.ok(safeEvent(emitted), 'the host log accepts the accent-bearing diagnostics shape');
   assert.equal(lines.some(line => line.includes(accent)), false, 'the accent text never reaches an emitted line');
 });
 
-test('AC2: with no accent the head and tool anchors are absent while the terminal anchor remains', async t => {
+test('AC2: with no accent the head block is absent while the terminal anchor remains', async t => {
   const lines: string[] = [];
   t.mock.method(console, 'error', (...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
   const overlay = { schemaVersion: 1 as const, text: 'SYNTHETIC overlay persona' };
-  const composed = composeLiveInstruction({ base: NAYA_BASE, overlay, language: 'en' });
+  const composed = composeLiveInstruction({ base: NAYA_LIVE_BASE, overlay, language: 'en' });
   const sectionChars = (id: string): number => composed.sections.find(section => section.id === id)?.chars ?? 0;
   const h = await harness(t, { language: 'en', overlay, acceptedPrompt: ownerId => ({
     schemaVersion: 1, ownerProfile: { schemaVersion: 1, kind: 'default', ownerId, displayName: 'Lux Didi' },
@@ -1882,12 +1958,12 @@ test('AC2: with no accent the head and tool anchors are absent while the termina
   const diagnostics = (): Record<string, unknown>[] => lines.map(parse).filter(entry => entry.event === 'live_session_diagnostics');
   for (let attempt = 0; attempt < 60 && diagnostics().length === 0; attempt++) await tick();
   const matches = (): Record<string, unknown> | undefined => diagnostics().find(entry => entry.headVoiceChars === 0
-    && entry.terminalVoiceChars === sectionChars('voice') && entry.toolAnchorChars === 0);
+    && entry.terminalVoiceChars === sectionChars('voice'));
   for (let attempt = 0; attempt < 60 && matches() === undefined; attempt++) await tick();
   const emitted = matches();
   assert.ok(emitted, `the diagnostics is emitted; saw ${JSON.stringify(diagnostics())}`);
   assert.equal(emitted.headVoiceChars, 0, 'no accent serialises no head block');
-  assert.equal(emitted.toolAnchorChars, 0, 'no function response serialises no tool anchor');
+  assert.equal('toolAnchorChars' in emitted, false, 'the tool-anchor diagnostic is gone');
   assert.equal(emitted.terminalVoiceChars, sectionChars('voice'), 'the terminal anchor is still serialised without an accent');
 });
 

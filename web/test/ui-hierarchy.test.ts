@@ -24,7 +24,7 @@ test('the Voice lane is the orb stage above its transcript, and the old header r
 test('the Voice lane controls are small icon buttons in the stage top right, not a header row', () => {
   assert.match(head, /id="new-conversation"/);
   assert.doesNotMatch(head, /voice-orb|voice-time|voice-status|voice-state/);
-  assert.match(source, /lane-toggle/, 'the collapse control is still rendered by the lane shell');
+  assert.match(source, /panel-toggle/, 'the always-visible panel control is rendered in the header');
   assert.match(source, /id="transcript-jump"/);
 });
 
@@ -41,4 +41,12 @@ test('installed proof opens collapsed saved history through its summary before s
   assert.ok(installedProof.slice(disclosureClick, sessionClick).includes('.click()'));
   assert.ok(disclosureClick < sessionClick);
   assert.match(installedProof, /summary\.click\(\); return !history\.open/);
+});
+
+test('FE1 the feed is one surface, patched in place and never rebuilt on a poll', () => {
+  assert.equal((source.match(/liveMarkup\(live, livePoll\)/g) ?? []).length, 1, 'exactly one feed surface in the voice lane');
+  assert.match(source, /liveMachine\.on\(\(\) => \{[\s\S]*?paintLive\(\);/, 'a Live state change repaints, not a full render');
+  assert.match(source, /feed-notices/, 'the wrapper notices are patched in place');
+  assert.match(source, /feed-jobs/, 'the background job results are patched in place');
+  assert.match(source, /earlierSession\(prior\.live\)/, 'a session boundary is captured page-side, not by the host');
 });

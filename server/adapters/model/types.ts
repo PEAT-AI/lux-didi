@@ -39,6 +39,14 @@ export interface ModelResult {
   timings: Timings;
 }
 export type ModelEvent = { type: 'text'; text: string; provisional: true } | { type: 'outcome'; status: ModelStatus };
+/**
+ * Absolute wall-clock milliseconds (a `Date.now()` epoch). A relative budget is
+ * deliberately not assignable, so a timeout expressed in milliseconds-since-now
+ * can never be passed where an epoch is expected. Build one with `deadlineAt`.
+ */
+export type DeadlineAtMs = number & { readonly __deadlineAtMs: unique symbol };
+/** The only producer of a `DeadlineAtMs`: an absolute epoch from a relative budget. */
+export function deadlineAt(nowMs: number, budgetMs: number): DeadlineAtMs { return (nowMs + budgetMs) as DeadlineAtMs; }
 export interface ModelControl { signal: AbortSignal; deadlineMs: number; onEvent?: (event: ModelEvent) => void }
 export interface ModelPort { generate(request: ModelRequest, control: ModelControl): Promise<ModelResult> }
 export type Transport = (url: string, init: RequestInit) => Promise<Response>;

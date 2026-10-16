@@ -19,6 +19,9 @@ const RESEARCH_DISPOSITIONS = ['completed', 'skipped'];
 // The projected Live state enum, mirrored from LivePageProjection['state'].
 const LIVE_STATES = ['idle', 'listening', 'thinking', 'speaking', 'rebuilding', 'ended', 'error'];
 const RESEARCH_WINDOW_KINDS = ['today', 'tomorrow', 'week', 'date'];
+// W13 distillation outcomes and the closed reason/error tokens they may name, never any summary text.
+const SUMMARY_EVENTS = new Set(['conversation_summary_started', 'conversation_summary_completed', 'conversation_summary_failed', 'conversation_summary_skipped']);
+const SUMMARY_REASONS = ['non_ordinary', 'too_few_turns', 'model_skip'];
 const isSafeToken = (value: unknown): value is string => typeof value === 'string' && SAFE_TOKEN.test(value);
 const isSafeId = (value: unknown): value is string => typeof value === 'string' && SAFE_ID.test(value);
 const isSafeCount = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;
@@ -38,12 +41,23 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'tool_failure', code: value.code, tool: value.tool, connector: value.connector, errorClass: value.errorClass, messageHead: value.messageHead };
   }
   if (value.event === 'connector_failure') {
-    // Closed connect-time stage only, never a message, a URL or a credential value.
+    // Closed connect-time stage only, never a message, a URL or a credential value. The diagnostic
+    // fields are bounded tokens; a free-text reason or an out-of-vocabulary attempt drops the event.
     const stages = ['credential', 'spawn', 'handshake', 'first_call'];
+    const attempts = ['first-connect', 'refresh'];
     const token = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(v);
-    if (Object.keys(value).sort().join(',') !== ['connector', 'event', 'stage'].sort().join(',')) return;
+    const hasReason = Object.prototype.hasOwnProperty.call(value, 'reason');
+    const hasException = Object.prototype.hasOwnProperty.call(value, 'exceptionCode');
+    const hasEndpoint = Object.prototype.hasOwnProperty.call(value, 'endpointId');
+    const hasAttempt = Object.prototype.hasOwnProperty.call(value, 'attempt');
+    const allowed = ['connector', 'event', 'stage', ...(hasReason ? ['reason'] : []), ...(hasException ? ['exceptionCode'] : []), ...(hasEndpoint ? ['endpointId'] : []), ...(hasAttempt ? ['attempt'] : [])];
+    if (Object.keys(value).sort().join(',') !== allowed.sort().join(',')) return;
     if (!token(value.connector) || typeof value.stage !== 'string' || !stages.includes(value.stage)) return;
-    return { event: 'connector_failure', connector: value.connector, stage: value.stage };
+    if (hasReason && !token(value.reason)) return;
+    if (hasException && !token(value.exceptionCode)) return;
+    if (hasEndpoint && !isSafeId(value.endpointId)) return;
+    if (hasAttempt && (typeof value.attempt !== 'string' || !attempts.includes(value.attempt))) return;
+    return { event: 'connector_failure', connector: value.connector, stage: value.stage, ...(hasReason ? { reason: value.reason } : {}), ...(hasException ? { exceptionCode: value.exceptionCode } : {}), ...(hasEndpoint ? { endpointId: value.endpointId } : {}), ...(hasAttempt ? { attempt: value.attempt } : {}) };
   }
   if (value.event === 'connector_identity') {
     // Closed identity proof only: a connector name and two booleans, never the identity itself.
@@ -88,7 +102,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
       'localWriteEnqueuedCalls','localWriteEnqueuedPCMBytes','localWriteCallbackSuccessCalls','localWriteCallbackSuccessPCMBytes',
       'localWriteCallbackErrorCalls','localWriteCallbackErrorPCMBytes','localWriteCallbackPendingCalls','localWriteCallbackPendingPCMBytes',
       'inputTranscriptionEvents','inputTranscriptionCharacters','generationCompleteEvents','turnCompleteEvents','outputAudioFrames','outputAudioPCMBytes',
-      'outputAudioAfterInitialTurnFrames','outputAudioAfterInitialTurnPCMBytes','headVoiceChars','terminalVoiceChars','toolAnchorChars'];
+      'outputAudioAfterInitialTurnFrames','outputAudioAfterInitialTurnPCMBytes','headVoiceChars','terminalVoiceChars'];
     const keys = ['event','terminalCode',...numeric].sort();
     if (Object.keys(value).sort().join(',') !== keys.join(',') || typeof value.terminalCode !== 'string'
       || !/^[a-z][a-z0-9_]{0,63}$/.test(value.terminalCode)
@@ -291,6 +305,30 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeCount(value.items) || !isSafeCount(value.rawBytes) || !isSafeCount(value.keptBytes) || !isSafeCount(value.queryChars)) return;
     if (!isSafeMember(value.queryAuthor, ['selector', 'fallback'])) return;
     return { event: 'research_subcall', researchId: value.researchId, kind: value.kind, tool: value.tool, ok: value.ok, ...(hasError ? { errorCode: value.errorCode } : {}), items: value.items, rawBytes: value.rawBytes, keptBytes: value.keptBytes, queryChars: value.queryChars, queryAuthor: value.queryAuthor, ...(hasWindow ? { window: value.window } : {}), ...(hasUnread ? { unread: value.unread } : {}) };
+  }
+  if (value.event === 'conversation_summary_recovery') {
+    // OUTCOME 3: the host-start recovery sweep, a count of rows re-queued and rows left for later only.
+    if (Object.keys(value).sort().join(',') !== ['event', 'requeued', 'skipped'].sort().join(',')) return;
+    if (!isSafeCount(value.requeued) || !isSafeCount(value.skipped)) return;
+    return { event: 'conversation_summary_recovery', requeued: value.requeued, skipped: value.skipped };
+  }
+  if (typeof value.event === 'string' && SUMMARY_EVENTS.has(value.event)) {
+    // W13: the distiller's outcome, session id, character counts, milliseconds and reason codes only.
+    const counts = ['inputChars', 'outputChars', 'durationMs', 'retryCount'] as const;
+    const allowed = ['event', 'liveSessionId', ...counts, 'truncated', 'errorCode', 'reason'];
+    if (Object.keys(value).some(key => !allowed.includes(key))) return;
+    if (!isSafeId(value.liveSessionId)) return;
+    for (const name of counts) if (name in value && !isSafeCount(value[name])) return;
+    if ('truncated' in value && typeof value.truncated !== 'boolean') return;
+    if ('errorCode' in value && !isSafeToken(value.errorCode)) return;
+    if ('reason' in value && !isSafeMember(value.reason, SUMMARY_REASONS)) return;
+    return value;
+  }
+  if (value.event === 'research_joined') {
+    // Metadata only: the run id a second start joined. No question, no result text.
+    if (Object.keys(value).sort().join(',') !== ['event', 'researchId'].sort().join(',')) return;
+    if (!isSafeId(value.researchId)) return;
+    return { event: 'research_joined', researchId: value.researchId };
   }
 }
 

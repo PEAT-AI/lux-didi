@@ -106,6 +106,21 @@ import SwiftUI
         check(first?.input == [1] && first?.output == [2] && held == nil && rest?.input == [3, 5] && rest?.output == [4, 6],
               "samples batch into arrays without dropping")
 
+        // 7b. Orb band frame (#283): bounded numbers on the renderer's own hook, dropped before ready.
+        let orb = BridgeOrbFrame(input: BridgeOrbBands(level: 0.5, low: 2, mid: -1, high: .nan, flux: 0.25), output: .silent)
+        check(orb.script == "window.didiOrbLevel&&window.didiOrbLevel({\"v\":2,\"input\":{\"level\":0.5000,\"low\":1.0000,\"mid\":0.0000,\"high\":0.0000,\"flux\":0.2500},\"output\":{\"level\":0.0000,\"low\":0.0000,\"mid\":0.0000,\"high\":0.0000,\"flux\":0.0000}})",
+              "orb frame encodes clamped band numbers only (got \(orb.script))")
+        check(BridgeOrbFrame(input: .silent, output: .silent).isSilent && !orb.isSilent, "orb frame knows silence")
+        let orbBridge = NativeBridge(consent: ConsentStore(defaults: scratchDefaults("orb")))
+        var orbScripts: [String] = []
+        orbBridge.sendJS = { orbScripts.append($0) }
+        orbBridge.pushOrbFrame(orb)
+        check(orbScripts.isEmpty, "an orb frame before ready is dropped, never queued")
+        orbBridge.handle(["type": "ready"])
+        orbScripts.removeAll()
+        orbBridge.pushOrbFrame(orb)
+        check(orbScripts == [orb.script], "an orb frame after ready is posted once")
+
         // 8. Conversation state maps onto the bridge vocabulary.
         check(BridgeLiveStateMapping.state(from: "connecting") == "starting", "connecting maps to starting")
         check(BridgeLiveStateMapping.state(from: "listening") == "live", "listening maps to live")

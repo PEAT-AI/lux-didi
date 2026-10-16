@@ -1,6 +1,6 @@
-import { canonicalSpeechLanguage, composeLiveInstruction, loadPersonaOverlay, NAYA_BASE, PersonaOverlayError, publicOwnerProfile, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, type OwnerProfileSnapshot } from '../prompt/index.js';
+import { canonicalSpeechLanguage, composeLiveInstruction, loadPersonaOverlay, NAYA_LIVE_BASE, PersonaOverlayError, publicOwnerProfile, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, type OwnerProfileSnapshot } from '../prompt/index.js';
 import { dirname, join } from 'node:path';
-import type { DataClass } from '../adapters/live-voice/index.js';
+import { isLiveVoiceProvider, type DataClass } from '../adapters/live-voice/index.js';
 import { compileVoiceInstruction, createCapabilitySnapshot, PROMPT_VERSION, validatePreferences, type ValidatedPreferences } from '../prompt/index.js';
 import { liveIdentityOf, validateLiveProfile } from '../live/config.js';
 import { LiveConfigError, type LiveProfile } from '../live/types.js';
@@ -84,7 +84,8 @@ export function loadLiveConfig(options: { configDir: string; ownerId: string; ow
     for (const key of requiredKeys) if (!(key in input)) fail('invalid_profile');
     if (input['schemaVersion'] !== 1) fail('invalid_profile');
     if (typeof input['enabled'] !== 'boolean') fail('invalid_profile');
-    if (input['provider'] !== 'gemini') throw new LiveConfigError('invalid_provider');
+    const provider = input['provider'];
+    if (!isLiveVoiceProvider(provider)) throw new LiveConfigError('invalid_provider');
     if (input['keyReference'] !== reference) fail('invalid_reference');
     const model = modelId(input['modelId']);
     const chosenVoice = voice(input['voice']);
@@ -95,7 +96,7 @@ export function loadLiveConfig(options: { configDir: string; ownerId: string; ow
     );
     const config: LiveConfiguredProfile = Object.freeze({
       preferences, model, voice: chosenVoice, dataClasses,
-      profileIdentity: liveIdentityOf({ provider: 'gemini', liveModelId: model, voice: chosenVoice, keyReference: reference, modelId: model, dataClasses }),
+      profileIdentity: liveIdentityOf({ provider, liveModelId: model, voice: chosenVoice, keyReference: reference, modelId: model, dataClasses }),
     });
     // The optional local overlay lives beside the data directory, outside Git; an invalid file
     // fails closed into a typed status instead of silently falling back to the public base.
@@ -105,7 +106,7 @@ export function loadLiveConfig(options: { configDir: string; ownerId: string; ow
     if (input['enabled'] === false) return { status: 'disabled', config };
     // Freeze the Naya baseline and voice anchor; the validated overlay joins at session CREATE.
     const composed = composeLiveInstruction({
-      base: NAYA_BASE,
+      base: NAYA_LIVE_BASE,
       ...(overlay?.accent !== undefined ? { accent: overlay.accent } : {}),
       ...(language !== undefined ? { language } : {}),
     });
@@ -115,7 +116,7 @@ export function loadLiveConfig(options: { configDir: string; ownerId: string; ow
       capabilities: createCapabilitySnapshot([], []), trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
     });
     const accepted = composeLiveInstruction({
-      base: NAYA_BASE, ownerProfile,
+      base: NAYA_LIVE_BASE, ownerProfile,
       ...(overlay?.accent !== undefined ? { accent: overlay.accent } : {}),
       ...(language !== undefined ? { language } : {}),
     });

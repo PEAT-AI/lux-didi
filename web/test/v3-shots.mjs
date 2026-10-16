@@ -112,6 +112,14 @@ try {
   await start();
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, timezoneId: 'UTC' });
   const page = await context.newPage();
+  // U1 (#282): the chat lane is #panel-right and launches collapsed, so its content is hidden until the
+  // owner opens the panel. Open it the owner's way and assert the open state before reading the chat.
+  const openPanel = async id => {
+    const control = page.locator(`#panel-toggle-${id}`);
+    if (await control.getAttribute('aria-expanded') !== 'true') await control.click();
+    await page.locator(`#panel-${id}[data-state="open"]`).waitFor();
+    assert.equal(await control.getAttribute('aria-expanded'), 'true', `${id} panel toggled open`);
+  };
   const envelope = data => ({ data, authorityEpoch: descriptor.authorityEpoch });
   await page.route('**/api/v1/live/current*', route => live ? route.fulfill({ json: envelope(live) }) : route.continue());
   await page.route('**/api/v1/sessions/synthetic-session', route => chatOn ? route.fulfill({ json: envelope({ entries: chatEntries, items: [] }) }) : route.continue());
@@ -128,6 +136,7 @@ try {
   await page.reload();
   await page.locator('#didi-orb').waitFor();
   await page.locator('.connected-disclosure').waitFor({ timeout: 15000 });
+  await openPanel('right');
 
   const measure = () => page.evaluate(() => {
     const box = selector => { const el = document.querySelector(selector); if (!el) return null; const rect = el.getBoundingClientRect(); return { width: Math.round(rect.width), height: Math.round(rect.height), top: Math.round(rect.top), bottom: Math.round(rect.bottom), left: Math.round(rect.left), right: Math.round(rect.right) }; };
@@ -173,7 +182,7 @@ try {
       chatColumn: columnEl ? Math.round(columnEl.getBoundingClientRect().width - parseFloat(getComputedStyle(columnEl).paddingLeft) - parseFloat(getComputedStyle(columnEl).paddingRight)) : null,
       chatBubbleRight: columnEl && mine ? Math.round(contentRight('#connected-entries') - mine.right) : null,
       voiceBubbleRight: voiceColumn !== null && bubbleVoice ? Math.round(voiceColumn - bubbleVoice.right) : null,
-      composerBottom: Math.round(document.querySelector('#lane-chat').getBoundingClientRect().bottom - document.querySelector('.composer-field').getBoundingClientRect().bottom),
+      composerBottom: Math.round(document.querySelector('#panel-right').getBoundingClientRect().bottom - document.querySelector('.composer-field').getBoundingClientRect().bottom),
       viewport: `${document.documentElement.clientWidth}x${document.documentElement.clientHeight}`,
       sphere: sphere,
       stageBorder: Number.parseFloat(stageStyle.borderTopWidth) + Number.parseFloat(stageStyle.borderBottomWidth),
@@ -310,7 +319,8 @@ try {
   await page.locator('#connected-draft').fill('');
 
   await page.setViewportSize({ width: 800, height: 900 });
-  await page.locator('button[data-segment="voice"]').click();
+  // U1 (#282) removed the narrow Voice/Chat switcher; the Voice lane is always shown at narrow width.
+  assert.equal(await page.locator('#lane-voice').isVisible(), true, 'the narrow view shows the Voice lane without a switcher');
   table = await sample('800x900-narrow-voice', { width: 800, height: 900 });
   assert.equal(table.stageShare >= 0.3 && table.stageShare <= 0.36, true, 'the narrow voice view keeps the top third stage');
 } finally {

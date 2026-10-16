@@ -55,6 +55,14 @@ try {
   await start();
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, timezoneId: 'UTC' });
   const page = await context.newPage();
+  // U1 (#282): side panels launch collapsed, so a rail item is hidden until the owner opens the panel
+  // with its header toggle. Open it the owner's way and assert the open state before using a rail item.
+  const openPanel = async id => {
+    const control = page.locator(`#panel-toggle-${id}`);
+    if (await control.getAttribute('aria-expanded') !== 'true') await control.click();
+    await page.locator(`#panel-${id}[data-state="open"]`).waitFor();
+    assert.equal(await control.getAttribute('aria-expanded'), 'true', `${id} panel toggled open`);
+  };
   await page.goto(descriptor.origin);
   await page.locator('#pair-code').waitFor();
   const pairing = await operator('/auth/pairing');
@@ -62,6 +70,9 @@ try {
   await page.locator('#pair-form').evaluate(form => form.requestSubmit());
   await page.locator('#connected-send').waitFor();
   await page.locator('#didi-orb').waitFor();
+  // U1 (#282): the chat lane is #panel-right and launches collapsed; open it the owner's way so the
+  // chat measurements and screenshots drive the real open chat.
+  await openPanel('right');
 
   const ready = async () => { await page.locator('.app-shell').waitFor(); await page.locator('#didi-orb').waitFor(); };
   // Probe: does the consent checkbox stick after a click?
@@ -141,6 +152,8 @@ try {
   await shot('1440x900-light-idle');
 
   await setTheme('dark');
+  await openPanel('left');
+  assert.equal(await page.locator('[data-tab="Settings"]').isVisible(), true, 'the opened panel renders the Settings rail item');
   await page.locator('[data-tab="Settings"]').click();
   await page.locator('#sheet').waitFor();
   await shot('1440x900-dark-sheet');

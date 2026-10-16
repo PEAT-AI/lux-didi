@@ -136,7 +136,7 @@ await model.generate(request, control); // existing route/authority checks requi
 The Live path composes its system instruction separately from the text compiler:
 `composeLiveInstruction({base, runtimeContext?, ownerProfile?, overlay?, language?, memory?, tools?})`
 in `server/prompt/live-persona.ts` returns `{text, sha256, sections}`. The order is
-fixed: the public neutral Naya base (`NAYA_BASE`, no biography), the host-generated
+fixed: the shared public Naya character plus the voice surface (`NAYA_LIVE_BASE`, no biography), the host-generated
 runtime context (`server/prompt/runtime-context.ts`, from the Mac clock and timezone),
 owner lore, historical memory, the tool conduct, owner style, the optional local overlay
 verbatim, then the terminal LANGUAGE AND VOICE anchor (a LANGUAGE paragraph, exactly one

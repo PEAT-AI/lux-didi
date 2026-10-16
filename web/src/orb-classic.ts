@@ -59,6 +59,15 @@ export function speakingTentacleOffsets(motion: number): {
   return { ampBase: motion * 0.4, ampTip: motion * 0.6, reach: motion * 0.4 };
 }
 
+/** Body bloom (#283): the wobbly core and hot core grow with the smoothed LOW band (vowel body), so
+ *  the body swells on vowels and rests between syllables. Consonants live in mid/high and never
+ *  reach it. */
+export const BODY_BLOOM = 0.22;
+/** Flux (onsets) only brightens the small sparkles; it never feeds `activity` or the body. */
+export const FLUX_SPARKLE = 1.4;
+
+type TentacleParams = { speed: number; ampBase: number; ampTip: number; lag: number; reach: number };
+
 export class ClassicRenderer {
   private seed = 20261009;
   private noise = {noise2D: createNoise2D(() => {
@@ -73,14 +82,23 @@ export class ClassicRenderer {
   private smoothedMid = 0;
   private smoothedHigh = 0;
   private smoothedFlux = 0;
+  private body = 0;
+  private lastAmbient: number | undefined;
+  private frameDt = 0;
+  private tentacle: TentacleParams | undefined;
+  private tentaclePhase = 0;
   constructor(private ctx: CanvasRenderingContext2D) {}
   private isSpeaking() { return this.state === 'speaking'; }
   private isListening() { return this.state === 'listening'; }
   private isProcessing() { return this.state === 'thinking'; }
   draw(cx: number, cy: number, radius: number, hue: number, time: number, state: string,
-       level: number, activity: number, glow: number, flare: number, mid: number, high: number, flux: number) {
+       level: number, activity: number, glow: number, flare: number, mid: number, high: number, flux: number, low = 0) {
+    this.frameDt = this.lastAmbient === undefined ? 0 : Math.min(0.1, Math.max(0, time - this.lastAmbient));
+    this.lastAmbient = time;
     this.ambientTime = time; this.state = state; this.smoothedPlaybackLevel = level;
     this.smoothedMid = mid; this.smoothedHigh = high; this.smoothedFlux = flux;
+    this.body = Math.min(1, Math.max(0, low));
+    const bodyRadius = radius * (1 + BODY_BLOOM * this.body);
     this.drawAmbientCorona(cx, cy, radius, hue, activity);
     this.drawLuminousGlow(cx, cy, radius, hue, glow);
     this.drawRadialFlares(cx, cy, radius, hue, flare, activity);
@@ -88,10 +106,10 @@ export class ClassicRenderer {
     this.drawBrightFlares(cx, cy, radius, hue, flare, activity);
     this.drawLuminousProminences(cx, cy, radius, hue, activity);
     this.drawTechRings(cx, cy, radius, hue, activity);
-    this.drawWobblyCore(cx, cy, radius, hue, activity);
+    this.drawWobblyCore(cx, cy, bodyRadius, hue, activity);
     this.drawSparkleBurst(cx, cy, radius, hue, activity);
     this.drawTwinklingRing(cx, cy, radius, hue, activity);
-    this.drawHotCore(cx, cy, radius * 0.5, hue, activity);
+    this.drawHotCore(cx, cy, bodyRadius * 0.5, hue, activity);
   }
   private drawAmbientCorona(cx: number, cy: number, radius: number, hue: number, activity: number, presenceMul = 1): void {
     if (!this.ctx) return;
@@ -479,7 +497,7 @@ export class ClassicRenderer {
       // Alpha: BASE + activity BOOST
       const baseAlpha = Math.max(0, 0.4 - phase * 0.15);
       const alphaBoost = Math.max(0, 0.5 - phase * 0.2) * Math.max(0, activity - 0.5);
-      const alpha = baseAlpha + alphaBoost;
+      const alpha = (baseAlpha + alphaBoost) * (1 + FLUX_SPARKLE * this.smoothedFlux);
 
       // Teal sparkle
       const sparkleGrad = ctx.createRadialGradient(x, y, 0, x, y, size * 3);
@@ -525,15 +543,15 @@ export class ClassicRenderer {
       // Size: BASE + activity BOOST
       const baseSize = 2 + twinkle * 2;
       const sizeBoost = twinkle * 2 * Math.max(0, activity - 0.5);
-      const size = baseSize + sizeBoost;
+      const size = (baseSize + sizeBoost) * (1 + 0.35 * this.smoothedFlux);
 
       const x = cx + Math.cos(angle) * dist;
       const y = cy + Math.sin(angle) * dist;
 
-      // Alpha: BASE + activity BOOST
+      // Alpha: BASE + activity BOOST, brightened by onsets (flux) only
       const baseAlpha = 0.3 + twinkle * 0.35;
       const alphaBoost = twinkle * 0.35 * Math.max(0, activity - 0.5);
-      const alpha = baseAlpha + alphaBoost;
+      const alpha = (baseAlpha + alphaBoost) * (1 + FLUX_SPARKLE * this.smoothedFlux);
 
       // Teal twinkle
       ctx.fillStyle = `hsla(${hue}, 90%, 32%, ${alpha * 0.12})`;
@@ -644,8 +662,15 @@ export class ClassicRenderer {
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
 
-    // Determine state-specific parameters for tentacle behavior
-    const params = this.getTentacleParams();
+    // State parameters ease towards the posture's values and the swing phase integrates the eased
+    // speed, so a state change bends the arms over ~0.4 s instead of jumping them (#283).
+    const target = this.getTentacleParams();
+    const ease = 1 - Math.exp(-this.frameDt / 0.4);
+    const eased = this.tentacle ?? { ...target };
+    for (const key of Object.keys(target) as (keyof TentacleParams)[]) eased[key] += (target[key] - eased[key]) * ease;
+    this.tentacle = eased;
+    this.tentaclePhase += this.frameDt * eased.speed;
+    const params = eased;
 
     // Modulate parameters with audio level for SPEAKING state
     let ampBase = params.ampBase;
@@ -676,7 +701,7 @@ export class ClassicRenderer {
       const baseY = cy + Math.sin(baseAngle) * baseDist;
 
       // Mid point (elbow): animated angle with base amplitude
-      const elbowTime = this.ambientTime * params.speed + armOffset;
+      const elbowTime = this.tentaclePhase + armOffset;
       const elbowAngleOffset = Math.sin(elbowTime) * ampBase;
       const elbowAngle = baseAngle + elbowAngleOffset;
       const elbowDist = baseDist + radius * reach * 0.5;
@@ -684,7 +709,7 @@ export class ClassicRenderer {
       const midY = cy + Math.sin(elbowAngle) * elbowDist;
 
       // Tip point: animated with lag for trailing effect
-      const tipTime = this.ambientTime * params.speed - params.lag + armOffset;
+      const tipTime = this.tentaclePhase - params.lag + armOffset;
       const tipAngleOffset = Math.sin(tipTime) * ampTip;
       const tipAngle = baseAngle + tipAngleOffset;
       const tipDist = baseDist + radius * reach * 1.0;
@@ -714,7 +739,7 @@ export class ClassicRenderer {
     if (this.isListening()) {
       return { speed: 1.0, ampBase: 0.2, ampTip: 0.4, lag: 1.5, reach: 0.7 }; // Reduced reach
     } else if (this.isProcessing()) {
-      return { speed: 5.0, ampBase: 0.15, ampTip: 0.25, lag: 0.3, reach: 0.75 }; // Reduced reach
+      return { speed: 2.4, ampBase: 0.15, ampTip: 0.3, lag: 0.6, reach: 0.75 }; // Calm swirl while thinking (#283)
     } else if (this.isSpeaking()) {
       return { speed: 2.2, ampBase: 0.5, ampTip: 1.2, lag: 0.9, reach: 1.4 }; // More organic, longer, wobblier octopus-plant tentacles
     } else {

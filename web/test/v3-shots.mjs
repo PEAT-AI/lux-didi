@@ -104,10 +104,11 @@ try {
   await start();
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, timezoneId: 'UTC' });
   const page = await context.newPage();
-  await page.route('**/api/v1/live/current*', route => live ? route.fulfill({ json: { data: live } }) : route.continue());
-  await page.route('**/api/v1/sessions/synthetic-session', route => chatOn ? route.fulfill({ json: { data: { entries: chatEntries, items: [] } } }) : route.continue());
-  await page.route('**/api/v1/sessions', route => chatOn && route.request().method() === 'GET' ? route.fulfill({ json: { data: { items: [session] } } }) : route.continue());
-  await page.route('**/api/v1/conversations/synthetic-session', route => chatOn ? route.fulfill({ json: { data: conversation } }) : route.continue());
+  const envelope = data => ({ data, authorityEpoch: descriptor.authorityEpoch });
+  await page.route('**/api/v1/live/current*', route => live ? route.fulfill({ json: envelope(live) }) : route.continue());
+  await page.route('**/api/v1/sessions/synthetic-session', route => chatOn ? route.fulfill({ json: envelope({ entries: chatEntries, items: [] }) }) : route.continue());
+  await page.route('**/api/v1/sessions', route => chatOn && route.request().method() === 'GET' ? route.fulfill({ json: envelope({ items: [session] }) }) : route.continue());
+  await page.route('**/api/v1/conversations/synthetic-session', route => chatOn ? route.fulfill({ json: envelope(conversation) }) : route.continue());
   await page.goto(descriptor.origin);
   await page.locator('#pair-code').waitFor();
   const pairing = await operator('/auth/pairing');
@@ -162,7 +163,7 @@ try {
   assert.equal(table.labels, 0, 'no speaker labels anywhere');
   assert.equal(table.documentScrolls, false, 'the document never scrolls');
   assert.equal(table.chatColumn <= 760, true, 'the chat column is at most 760 px');
-  assert.equal(table.chatBubbleRight, 0, 'the owner bubble sits at the column right edge');
+  assert.equal(table.voiceJump, false, 'an empty transcript has nothing to jump to');
   const composerBottomIdle = table.composerBottom;
   await sample('2000x1250-dark-a-idle');
 
@@ -172,7 +173,12 @@ try {
   await page.locator('#didi-orb').waitFor();
   const allow = page.locator('#connected-consent');
   if (await allow.count()) await allow.click();
-  await page.waitForFunction(() => document.querySelectorAll('#connected-entries .entry').length === 12);
+  try {
+    await page.waitForFunction(() => document.querySelectorAll('#connected-entries .entry').length === 12, { timeout: 20000 });
+  } catch (error) {
+    const panel = await page.locator('#connected-panel').innerText().catch(() => 'unreadable');
+    throw Error(`synthetic chat did not render: ${panel.replace(/\s+/g, ' ').slice(0, 400)}`);
+  }
   await page.waitForFunction(() => document.querySelectorAll('.transcript .entry').length === 30);
   await page.waitForFunction(() => document.querySelectorAll('.transcript .live-tool-result').length === 2);
   table = await sample('1440x900-dark-b-speaking', { width: 1440, height: 900 });
@@ -181,7 +187,9 @@ try {
   assert.equal(table.chatDistance <= 2, true, 'the chat list stays pinned at the bottom');
   assert.equal(table.composerBottom, composerBottomIdle, 'the composer never moves when lines arrive');
   assert.equal(table.listNumbers, '1,2,3,4,5', 'the ordered list keeps its numbering');
-  assert.equal(table.voiceBubbleRight, table.chatBubbleRight, 'both lanes right-align the owner bubble the same way');
+  assert.equal(table.chatBubbleRight, 0, 'the chat owner bubble sits at the column right edge');
+  assert.equal(table.voiceBubbleRight, 0, 'the voice owner bubble sits at the column right edge');
+  assert.equal(table.voiceJump, false, 'a pinned transcript offers no jump pill');
   await sample('2000x1250-dark-b-speaking');
 
   await page.evaluate(() => { for (const selector of ['.transcript', '#connected-entries']) { const el = document.querySelector(selector); if (el) el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight - 400); } });
@@ -204,9 +212,9 @@ try {
   await page.locator('button[data-segment="voice"]').click();
   table = await sample('800x900-narrow-voice');
   assert.equal(table.stageShare >= 0.3 && table.stageShare <= 0.36, true, 'the narrow voice view keeps the top third stage');
-  await rm(state, { recursive: true, force: true }).catch(() => {});
 } finally {
   await stop(); await browser.close();
+  await rm(state, { recursive: true, force: true }).catch(() => {});
 }
 
 const columns = ['stageShare', 'orbDiameter', 'orbShare', 'orbCentre', 'stageTop', 'transcriptDistance', 'chatDistance', 'chatColumn', 'chatBubbleRight', 'voiceBubbleRight', 'composerBottom', 'labels', 'documentScrolls', 'listNumbers', 'voiceJump', 'chatJump'];

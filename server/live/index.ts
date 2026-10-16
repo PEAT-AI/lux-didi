@@ -364,7 +364,7 @@ export class LiveSessionOwner {
       if (this.#tools) {
         const acceptance: RunAcceptance = { ownerId: assistantId, actorId: context.clientId, runId: liveSessionId,
           authorityEpoch: context.authorityEpoch, revision: this.#revision,
-          route: { identity: this.#profileIdentity, provider: 'gemini', modelId: this.#profile.liveModelId, allowedClasses: [...this.#profile.route.dataClasses] },
+          route: { identity: this.#profileIdentity, provider: this.#profile.provider, modelId: this.#profile.liveModelId, allowedClasses: [...this.#profile.route.dataClasses] },
           allowedClasses: [...this.#profile.route.dataClasses], connectionIds: [...this.#tools.connectionIds()] };
         toolAcceptance = { acceptance, sha256: this.#tools.owner.snapshotRun(tx, acceptance).sha256 };
         toolNames = [...definitionsInTransaction(this.#tools.owner, liveSessionId, tx).map(tool => tool.name).filter(name => name !== 'remember_note'), 'remember_note'];
@@ -398,7 +398,7 @@ export class LiveSessionOwner {
       if (toolAcceptance) tx.run('INSERT INTO live_tool_acceptances VALUES (?,?,?)', [liveSessionId, JSON.stringify(toolAcceptance.acceptance), toolAcceptance.sha256]);
       if (pickupJob) { pickupJob.deliverySessionId = liveSessionId; this.#jobs.save(pickupJob, tx); }
       tx.run('INSERT INTO live_grants(grant_id, live_session_id, provider, model, voice, key_reference, permitted_classes, chosen_input_class, revision, granted_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
-        [randomUUID(), liveSessionId, 'gemini', this.#profile.liveModelId, this.#profile.voice, this.#profile.keyReference,
+        [randomUUID(), liveSessionId, this.#profile.provider, this.#profile.liveModelId, this.#profile.voice, this.#profile.keyReference,
           JSON.stringify(this.#profile.route.dataClasses), input.inputClass, this.#revision, now]);
       return this.#snapshot(tx, tx.get('SELECT * FROM live_sessions WHERE live_session_id=?', [liveSessionId])!);
     });
@@ -1370,7 +1370,7 @@ export class LiveSessionOwner {
       dispatchIntent: Number(row['dispatch_intent']) === 1, ready: Number(row['ready']) === 1,
       profileIdentity: String(row['profile_identity']), promptIdentity: String(row['prompt_identity']),
       grant: {
-        grantId: String(grant['grant_id']), provider: 'gemini', model: String(grant['model']), voice: String(grant['voice']),
+        grantId: String(grant['grant_id']), provider: this.#profile.provider, model: String(grant['model']), voice: String(grant['voice']),
         keyReference: String(grant['key_reference']), permittedClasses: JSON.parse(String(grant['permitted_classes'])) as DataClass[],
         chosenInputClass: String(grant['chosen_input_class']) as DataClass, revision: Number(grant['revision']), grantedAt: Number(grant['granted_at']),
       },

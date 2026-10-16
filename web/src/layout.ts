@@ -18,8 +18,6 @@ export const RIGHT_MIN_PX = 320;
 /** The width a panel opens at when no previous width is known. */
 export const LEFT_DEFAULT_PX = 240;
 export const RIGHT_DEFAULT_PX = 360;
-/** The centre voice view keeps at least this much room, which is what caps a panel's width. */
-export const VOICE_MIN_PX = 360;
 /** A drag can never widen a panel past this. */
 export const PANEL_MAX_PX = 640;
 

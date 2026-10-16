@@ -6,7 +6,6 @@ import {
   RIGHT_MIN_PX,
   LEFT_DEFAULT_PX,
   RIGHT_DEFAULT_PX,
-  VOICE_MIN_PX,
   PANEL_MAX_PX,
   LAYOUT_KEY,
   clampWidth,
@@ -37,10 +36,9 @@ test('the launch is both side panels collapsed around an always-open voice view'
   assert.equal(state.rightWidth, RIGHT_DEFAULT_PX);
 });
 
-test('the published sizes match the spec and the voice view has a minimum', () => {
+test('the published sizes match the spec', () => {
   assert.equal(LEFT_MIN_PX, 200);
   assert.equal(RIGHT_MIN_PX, 320);
-  assert.equal(VOICE_MIN_PX, 360);
   assert.equal(panelMin('left'), LEFT_MIN_PX);
   assert.equal(panelMin('right'), RIGHT_MIN_PX);
   assert.equal(panelDefaultWidth('left'), LEFT_DEFAULT_PX);

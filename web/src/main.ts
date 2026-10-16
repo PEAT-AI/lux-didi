@@ -4,7 +4,7 @@ import { deleteMemoryEntry, deleteMemorySummary, listMemorySummaries, type Memor
 import { ConnectedView } from './connected';
 import { Orb, type VoiceState } from './orb';
 import { ApiError, request, pair, demoMode, onAuthorityChanged, authorityVersion, assertAuthority, restoreSession, logout, fetchLive } from './api';
-import { liveMarkup, liveSegments, liveLabel, liveVoiceState, liveDelay, pollLiveView, liveActivity, activityMarkup, liveTranscript, LiveMachine, LIVE_CONSENT, pillVisible, liveErrorText, startAvailable, stopAvailable, type LivePollState } from './live-view';
+import { liveMarkup, liveSegments, liveLabel, liveVoiceState, liveDelay, pollLiveView, liveTranscript, LiveMachine, LIVE_CONSENT, pillVisible, liveErrorText, startAvailable, stopAvailable, earlierSession, liveNoticesMarkup, liveJobsMarkup, FEED_EMPTY, type LivePollState, type EarlierSession } from './live-view';
 import { attachPin } from './autoscroll.ts';
 import { dragPanel, isNarrow, loadLayout, openSheet, closeSheet, PANEL_IDS, panelControl, panelLabel, panelOpen, panelWidth, saveLayout, shortcutPanel, togglePanel, withViewport, type LayoutState, type PanelId, type RouteId } from './layout';
 import { installNativeBridge, type Bridge, type NativeLiveState } from './native-bridge';
@@ -27,6 +27,9 @@ let tab: Tab = 'Conversation';
 let theme: Theme = 'dark';
 let orb: Orb | undefined;
 let transcriptPin: { repin(): void; stop(): void } | undefined;
+// Ended sessions kept by the page (never the host): each collapses under a dated divider when a new
+// session starts, so the live feed is only the current session (spec 1.3 cause 1, page-side only).
+let earlierFeed: EarlierSession[] = [];
 let appliedOrbState: VoiceState | undefined;
 let status: Status | undefined;
 const connectedView = new ConnectedView(() => orb?.setState(orbState()));
@@ -60,7 +63,7 @@ function localInput(value: string | null) { if (!value) return ''; const d = new
 function writable() { return connection === 'Connected' && !busy; }
 const disabled = (condition: boolean) => condition ? 'disabled' : '';
 function themeStorage(): Storage | undefined { try { return window.localStorage; } catch { return undefined; } }
-function notify(message: string, failure = false) { notice = failure ? '' : message; error = failure ? message : ''; render(); }
+function notify(message: string, failure = false) { notice = failure ? '' : message; error = failure ? message : ''; if (document.querySelector('.app-shell')) paintNotices(); else render(); }
 function failure(err: unknown, mutation = false) {
   if (err instanceof DOMException && err.name === 'AbortError') return 'Stopped waiting. A sent change may still have been saved. Refresh before trying again.';
   if (err instanceof ApiError) return err.message;
@@ -82,14 +85,7 @@ function orbLabel() {
   return live?liveLabel(live):state==='PROCESSING'?'Working on your request':state==='CONNECTING'?'Connecting':state==='DISCONNECTED'?'Waiting for connection':state==='ERROR'?'Needs your attention':'Ready when you are';
 }
 // The honesty line is true only when the projection is idle, the native app reports muted, or there is no projection.
-// The activity line shares one start clock: a slow call adds its elapsed seconds only after SLOW_TOOL_MS.
-let activityStartedAt = 0, activityKey = '';
-function activityLineMarkup() {
-  const activity = liveActivity(live);
-  const key = activity ? `${activity.kind}:${activity.text}` : '';
-  if (key !== activityKey) { activityKey = key; activityStartedAt = Date.now(); }
-  return activityMarkup(activity, activity ? Date.now() - activityStartedAt : 0);
-}
+// The activity row lives once, in the feed (spec 2.2 item 2); the orb caption keeps the state word only.
 // The lookup subtitle that stands in for the voice-lane status while Naya looks (U1).
 const LOOKUP_SOURCE_WORDS: Record<string, string> = { knowledge: 'lux', calendar: 'calendar', mail: 'mail', chat: 'Mattermost' };
 const SLOW_LOOKUP_MS = 6000;
@@ -128,14 +124,14 @@ function orbControlsMarkup(): string {
   return `${active ? `<button id="voice-stop" class="stop-pill">Stop</button><button id="voice-mute" class="quiet">${view.state === 'muted' ? 'Unmute' : 'Mute'}</button>` : `<button id="voice-start" class="start-pill" ${startAvailable(view) ? '' : 'aria-disabled="true"'}>Start</button>`}${error ? `<p class="voice-error" role="alert">${e(error)}</p>` : ''}`;
 }
 function orbCaptionMarkup(): string {
-  return `<p class="voice-state" id="voice-state" role="status" aria-live="polite">${orbStateLineMarkup()}</p>${activityLineMarkup()}`;
+  return `<p class="voice-state" id="voice-state" role="status" aria-live="polite">${orbStateLineMarkup()}</p>`;
 }
 function orbStageMarkup(): string {
   const glow = ['CONNECTED','LISTENING','SPEAKING','PROCESSING'].includes(orbState());
   return `<section class="orb-stage" id="orb-stage" data-state="${orbState()}" aria-label="Naya voice and activity"><div class="orb-holder"><div class="presence-glow${glow ? ' visible' : ''}" aria-hidden="true"></div><canvas id="didi-orb" width="440" height="440" aria-hidden="true"></canvas></div><div class="orb-caption">${orbCaptionMarkup()}</div><div class="orb-actions" id="orb-actions">${orbControlsMarkup()}</div></section>`;
 }
 function voiceBodyMarkup(): string {
-  return `${orbStageMarkup()}<section class="transcript" id="transcript" aria-label="Naya live conversation">${liveMarkup(live, livePoll)}<button type="button" class="jump-pill" id="transcript-jump" hidden>Jump to latest</button></section>`;
+  return `${orbStageMarkup()}<section class="transcript" id="transcript" aria-label="Naya live conversation">${liveMarkup(live, livePoll)}<button type="button" class="jump-pill" id="transcript-jump" hidden>Back to live</button></section>`;
 }
 function chatLane() {
   return `<div id="connected-panel"></div>`;
@@ -456,6 +452,7 @@ async function connect(background=false) {
     if(!background||populate){await loadTab();assertAuthority(version);await connectedView.refresh(current.assistantId);assertAuthority(version);}
   } catch(err){if(version!==authorityVersion())return;error=failure(err);statusUnavailable=true;if(connection!=='Offline')connection=navigator.onLine?'Disconnected':'Offline';backoff=Math.min(backoff*2,120000);}
   if(version!==authorityVersion())return;
+  if(background&&document.querySelector('.app-shell')){const dot=document.querySelector('.connection-dot');if(dot)dot.classList.toggle('online',connection==='Connected');const state=document.getElementById('connection-state');if(state)state.textContent=connection;paintLive();schedulePoll();void pollLive();void pollConnections();return;}
   render();schedulePoll();void pollLive();void pollConnections();
 }
 function schedulePoll(){if(pollTimer)clearTimeout(pollTimer);pollTimer=undefined;const version=authorityVersion();if(!document.hidden&&!pairingRequired)pollTimer=setTimeout(()=>{if(version===authorityVersion())void connect(true);},backoff);}
@@ -470,7 +467,13 @@ async function pollLive(){
     const prior=livePoll;
     const next=await pollLiveView(prior,cursor=>fetchLive(cursor,AbortSignal.timeout(8000)));
     if(version!==authorityVersion()||livePoll!==prior)return;
-    livePoll=next;live=livePoll.live;paintLive();
+    // A session boundary: the ended session's rows stay, collapsed under their dated divider, so a new
+    // session starts fresh instead of inheriting the old feed (spec 1.3 cause 1, page-side only).
+    if(prior.live&&next.live&&prior.live.since!==next.live.since){
+      const block=earlierSession(prior.live);
+      if(block&&!earlierFeed.some(entry=>entry.at===block.at))earlierFeed=[...earlierFeed,block];
+    }
+    livePoll={...next,earlier:earlierFeed};live=livePoll.live;paintLive();
   }
   finally{if(version===authorityVersion()){liveBusy=false;scheduleLive();}}
 }
@@ -496,9 +499,25 @@ function scheduleLive(){
   if(liveTimer)clearTimeout(liveTimer);liveTimer=undefined;
   const version=authorityVersion();if(liveDelay(live?.state,document.hidden)!==undefined&&!pairingRequired)liveTimer=setTimeout(()=>{if(version===authorityVersion())void pollLive();},liveDelay(live?.state,document.hidden));
 }
+function paintNotices(){
+  // The error and notice banners live at the top of the lane row; patch them in place so a notify
+  // never rebuilds the feed (spec 1.3 cause 2).
+  const lane=document.querySelector<HTMLElement>('main.lanes');if(!lane)return;
+  lane.querySelector(':scope > .alert')?.remove();lane.querySelector(':scope > .notice')?.remove();
+  const markup=`${error?`<div class="alert" role="alert" aria-live="assertive">${e(error)}</div>`:''}${notice?`<div class="notice" role="status" aria-live="polite" aria-atomic="true">${e(notice)}</div>`:''}`;
+  if(markup)lane.insertAdjacentHTML('afterbegin',markup);
+}
 function paintLive(){
-  // A poll rewrites the state line and the transcript only, so the orb canvas and the controls keep
-  // their listeners and the stage never moves (V3 item 8).
+  // A poll rewrites the state line, the wrapper notices, the jobs and the transcript in place, so the
+  // orb canvas, the controls and the reader's scroll position all keep (spec 1.3 causes 2, 3 and 4).
+  const pill=document.getElementById('live-pill'),pillMarkup=livePillMarkup();
+  if(pillMarkup&&!pill){document.querySelector('.brand-mini')?.insertAdjacentHTML('afterend',pillMarkup);bindPill();}
+  else if(!pillMarkup&&pill){pill.remove();}
+  else if(pill&&pill.outerHTML!==pillMarkup){pill.outerHTML=pillMarkup;bindPill();}
+  const notices=document.getElementById('feed-notices'),noticeMarkup=liveNoticesMarkup(live,livePoll);
+  if(notices&&notices.innerHTML!==noticeMarkup)notices.innerHTML=noticeMarkup;
+  const jobs=document.getElementById('feed-jobs'),jobMarkup=liveJobsMarkup(live);
+  if(jobs&&jobs.innerHTML!==jobMarkup)jobs.innerHTML=jobMarkup;
   const caption=document.querySelector('.orb-caption');const markup=orbCaptionMarkup();if(caption && caption.innerHTML!==markup)caption.innerHTML=markup;
   const list=document.querySelector<HTMLElement>('#transcript .live-turns');
   if(list)renderTranscript(list);
@@ -513,16 +532,22 @@ function bindOrbControls() {
   document.getElementById('voice-stop')?.addEventListener('click', () => liveMachine.requestStop());
   document.getElementById('voice-mute')?.addEventListener('click', () => liveMachine.toggleMute());
 }
+function bindPill() {
+  // The pill is inserted in place by paintLive, so its own controls are bound here, not by a render.
+  document.getElementById('pill-stop')?.addEventListener('click', () => liveMachine.requestStop());
+  document.getElementById('pill-mute')?.addEventListener('click', () => liveMachine.toggleMute());
+  document.getElementById('pill-unmute')?.addEventListener('click', () => liveMachine.toggleMute());
+}
 function renderTranscript(list: HTMLElement) {
   // Stable segment keys keep a streaming line in place: only lines that are new fade and rise in.
-  const segments = liveSegments(live);
+  const segments = liveSegments(live, livePoll.earlier ?? []);
   const children = [...list.children] as HTMLElement[];
   if (children.length === segments.length && segments.every((segment, index) => children[index]!.dataset.seg === segment.key)) {
     segments.forEach((segment, index) => { const child = children[index]!; if (child.outerHTML !== segment.html) child.outerHTML = segment.html; });
     return;
   }
   const known = new Set(children.map(child => child.dataset.seg ?? ''));
-  list.innerHTML = segments.map(segment => segment.html).join('') || '<p class="transcript-placeholder muted">Press Start or \u2318\u21e7Space to talk</p>';
+  list.innerHTML = segments.map(segment => segment.html).join('') || FEED_EMPTY;
   for (const child of [...list.children] as HTMLElement[]) if (!known.has(child.dataset.seg ?? '')) child.classList.add('entry-new');
 }
 function bindTranscript() {
@@ -536,7 +561,7 @@ onAuthorityChanged(reason=>{
   ++readGeneration;controller?.abort();controller=undefined;busy=false;readBusy=false;pairingBusy=false;connectionsBusy=false;liveBusy=false;
   for(const timer of [pollTimer,liveTimer,connectionsTimer])if(timer)clearTimeout(timer);
   pollTimer=undefined;liveTimer=undefined;connectionsTimer=undefined;
-  connectedView.reset();live=undefined;livePoll={};connections=[];connectionsStale=false;
+  connectedView.reset();live=undefined;livePoll={};earlierFeed=[];connections=[];connectionsStale=false;
   statusUnavailable=false;status=undefined;sessions=[];entries=[];session=undefined;plan=undefined;recall=undefined;recent=[];
   detail=undefined;editing=undefined;editTitle='';editNotes='';editDue='';sessionMore=false;entriesMore=false;error='';notice='';
   if(reason==='logout'){draftOwner=undefined;messageDraft='';titleDraft='';queryDraft='';memoryFilter='';notice='This browser is unpaired.';}
@@ -552,7 +577,14 @@ const installed = installNativeBridge(window as unknown as Record<string, unknow
 nativeBridge = installed.bridge;
 nativeFake = installed.fake;
 liveMachine = new LiveMachine(message => nativeBridge!.send(message));
-liveMachine.on(() => render());
+// The consent popover is part of the shell and appears only on a render; every other Live change is a
+// cheap in-place repaint, so a poll or a call never tears the feed down (spec 1.3 causes 2, 3, 4).
+let appliedConsentOpen = liveMachine.view.consentOpen;
+liveMachine.on(() => {
+  const open = liveMachine.view.consentOpen;
+  if (open !== appliedConsentOpen) { appliedConsentOpen = open; render(); return; }
+  paintLive();
+});
 nativeBridge.onNative(message => liveMachine.receive(message));
 nativeBridge.send({ type: 'theme', mode: theme });
 nativeBridge.send({ type: 'ready' });

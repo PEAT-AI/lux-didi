@@ -42,6 +42,7 @@ async function auditLayout(page) {
         labels: document.querySelectorAll('.live-turns .entry strong, .live-turns .entry header').length,
         scrollDistance: transcript ? Math.max(0, rn(transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight)) : null,
         jumpVisible: pillVoice ? !pillVoice.hidden : null,
+        viewportWidth: window.innerWidth,
       },
       chat: {
         visible: vis('#panel-right'),
@@ -67,7 +68,7 @@ function assertAudit(a, label, failures) {
   const bad = m => failures.push(m);
   const inb = (v, lo, hi, what) => { if (!(v >= lo && v <= hi)) bad(`${label} ${what}: ${v} not in [${lo},${hi}]`); };
   if (a.voice.visible) {
-    if (a.voice.stageHeight && a.voice.laneHeight) inb(a.voice.stageHeight / a.voice.laneHeight, 0.3, 0.36, 'orb stage share of the lane');
+    if (a.voice.stageHeight && a.voice.laneHeight) { const narrow = a.voice.viewportWidth < 900; inb(a.voice.stageHeight / a.voice.laneHeight, narrow ? 0.28 : 0.34, 0.44, 'orb stage share of the lane'); }
     if (a.voice.stageHeight && a.voice.orb) inb(a.voice.orb / a.voice.stageHeight, 0.52, 0.58, 'orb diameter of the stage');
     if (a.voice.orbCentre !== null) inb(a.voice.orbCentre, 0, 1, 'orb centred in the stage');
     if (a.voice.column > 760) bad(`${label} voice column wider than 760: ${a.voice.column}`);
@@ -113,7 +114,7 @@ const PANEL_SEED = '{"left":"open","right":"open","leftWidth":240,"rightWidth":3
 async function step(name,fn){const start=performance.now(); await fn(); timings.push({name,seconds:Math.round((performance.now()-start)/10)/100}); console.log(`PASS ${name}`);}
 try {
   browser=await chromium.launch({channel:'chromium',headless:true,args:['--use-angle=metal','--enable-gpu','--ignore-gpu-blocklist']});
-  const context=await browser.newContext({viewport:{width:1440,height:1000}}); const page=await context.newPage();page.setDefaultTimeout(8000);
+  const context=await browser.newContext({viewport:{width:1440,height:1000}}); const page=await context.newPage();page.setDefaultTimeout(8000);page.on('pageerror',e=>console.error('PAGE-ERROR',e.message));
   await page.addInitScript(() => {
     const describe = element => element ? {tag:element.tagName,id:element.id,text:element.tagName === 'BODY' ? '' : (element.textContent || '').trim().slice(0,80)} : null;
     const events = []; window.__keyboardProof = {events};
@@ -238,6 +239,141 @@ try {
   });
 
 
+  await step('FE1 living feed: in-place updates, no re-pin on poll, session boundary', async () => {
+    const fe1 = process.env.DIDI_FE1_SHOTS || join(artifacts, 'fe1-shots');
+    await mkdir(fe1, { recursive: true });
+    const shoot = name => page.screenshot({ path: join(fe1, name), fullPage: true });
+    const collapsePanels = () => page.evaluate(() => { for (const id of ['panel-toggle-left', 'panel-toggle-right']) { const b = document.getElementById(id); if (b && b.getAttribute('aria-expanded') === 'true') b.click(); } });
+    const session = (state, since, cursor, entries, extra = {}) => ({ state, since, cursor, entries, ...extra });
+    const base = [
+      { seq: 1, kind: 'inputTranscription', text: 'what is on my calendar' },
+      { seq: 2, kind: 'outputTranscription', text: 'You have a review at 10.' },
+      { seq: 3, kind: 'turnComplete' },
+    ];
+    const grow = n => {
+      const entries = [...base]; let seq = 4;
+      for (let i = 0; i < n; i++) { entries.push({ seq: seq++, kind: 'outputTranscription', text: `Update ${i + 1}: the research is still progressing calmly.` }); entries.push({ seq: seq++, kind: 'turnComplete' }); }
+      return entries;
+    };
+
+    // Idle default at three widths: the orb is the hero, the feed sits below it and never covers it.
+    fixture.setLive(session('idle', '2026-10-11T16:00:00Z', 0, []));
+    await page.reload();
+    await page.locator('#didi-orb').waitFor();
+    await collapsePanels();
+    await page.waitForFunction(() => document.querySelector('.app-shell')?.dataset.left === 'collapsed' && document.querySelector('.app-shell')?.dataset.right === 'collapsed', { timeout: 4000 });
+    for (const [w, h] of [[900, 700], [1440, 900], [2000, 1250]]) {
+      await page.setViewportSize({ width: w, height: h });
+      fixture.setLive(session('idle', '2026-10-11T16:00:00Z', 0, []));
+      await page.waitForFunction(() => document.querySelector('.feed-empty'), null, { timeout: 12000 });
+      const geo = await page.evaluate(() => {
+        const lane = document.querySelector('#lane-voice').getBoundingClientRect();
+        const orb = document.querySelector('.orb-stage').getBoundingClientRect();
+        const feed = document.querySelector('.transcript').getBoundingClientRect();
+        return { share: orb.height / lane.height, feedTop: feed.top, orbBottom: orb.bottom };
+      });
+      assert.ok(geo.share >= 0.34 && geo.share <= 0.44, `the orb area is 34-44% of the voice lane (${(geo.share * 100).toFixed(0)}% at ${w})`);
+      assert.ok(geo.feedTop >= geo.orbBottom - 1, 'the feed starts below the orb, which is never covered');
+      // FE1-R1 (1): the orb element itself is the hero size spec 2.1 names for these three widths.
+      const orbBand = { 900: [180, 220], 1440: [270, 330], 2000: [400, 480] }[w];
+      const orbPx = await page.evaluate(() => { const r = document.querySelector('#didi-orb').getBoundingClientRect(); return { w: Math.round(r.width), h: Math.round(r.height) }; });
+      assert.ok(orbPx.w >= orbBand[0] && orbPx.w <= orbBand[1] && orbPx.h >= orbBand[0] && orbPx.h <= orbBand[1], `the orb renders the hero diameter at ${w} (${orbPx.w}x${orbPx.h}, band ${orbBand[0]}-${orbBand[1]})`);
+      await shoot(`idle-${w}.png`);
+    }
+
+    // A call in progress: a live activity row while the tool runs, then its result card.
+    await page.setViewportSize({ width: 1440, height: 900 });
+    fixture.setLive(session('thinking', '2026-10-12T09:00:00Z', 2, [
+      { seq: 1, kind: 'inputTranscription', text: 'what is on my calendar' },
+      { seq: 2, kind: 'toolCall', tool: { name: 'search_calendar', status: 'pending' } },
+    ]));
+    await page.waitForSelector('.feed-activity', { timeout: 12000 });
+    await shoot('call-in-progress.png');
+
+    // The tool resolves into its result card, then the streaming answer extends in place: the first
+    // row keeps its node identity, so the poll patches instead of rebuilding the feed (spec 1.3 cause 3).
+    fixture.setLive(session('speaking', '2026-10-12T09:00:00Z', 4, [
+      { seq: 1, kind: 'inputTranscription', text: 'what is on my calendar' },
+      { seq: 2, kind: 'toolCall', tool: { name: 'search_calendar', status: 'pending' } },
+      { seq: 3, kind: 'outputTranscription', text: 'You have a review at 10.' },
+      { seq: 4, kind: 'toolResult', tool: { name: 'search_calendar', status: 'completed', markdown: 'review at 10:00' } },
+    ]));
+    await page.waitForFunction(() => document.querySelectorAll('#live-panel .live-tool-result').length === 1, null, { timeout: 12000 });
+    const orbHandle = await page.evaluateHandle(() => document.querySelector('#didi-orb'));
+    const segsBefore = await page.evaluate(() => [...document.querySelectorAll('.live-turns > *')].map(n => n.dataset.seg ?? n.className));
+    fixture.setLive(session('speaking', '2026-10-12T09:00:00Z', 4, [
+      { seq: 1, kind: 'inputTranscription', text: 'what is on my calendar' },
+      { seq: 2, kind: 'toolCall', tool: { name: 'search_calendar', status: 'pending' } },
+      { seq: 3, kind: 'outputTranscription', text: 'You have a review at 10, and a standup at 2.' },
+      { seq: 4, kind: 'toolResult', tool: { name: 'search_calendar', status: 'completed', markdown: 'review at 10:00' } },
+    ]));
+    await page.waitForFunction(() => document.querySelector('.live-turns')?.textContent?.includes('standup at 2'), null, { timeout: 12000 });
+    const segsNow = await page.evaluate(() => [...document.querySelectorAll('.live-turns > *')].map(n => n.dataset.seg ?? n.className));
+    assert.ok(await orbHandle.evaluate(el => el === document.querySelector('#didi-orb')), 'the orb instance survives a poll, so no full render tears the feed down');
+    assert.deepEqual(segsNow, segsBefore, 'the feed keeps the same rows across the poll while the answer extends in place');
+    assert.match(await page.locator('.live-turns').innerText(), /standup at 2/, 'the streaming answer extended in place');
+    await shoot('call-result-card.png');
+
+    // Scroll up: "Back to live" appears, and a background poll never yanks the reader back.
+    fixture.setLive(session('speaking', '2026-10-12T09:00:00Z', 4 + 2 * 20, [
+      { seq: 1, kind: 'inputTranscription', text: 'what is on my calendar' },
+      { seq: 2, kind: 'outputTranscription', text: 'You have a review at 10.' },
+      { seq: 3, kind: 'turnComplete' },
+      ...grow(20).slice(3),
+    ]));
+    await page.waitForFunction(() => document.querySelectorAll('.live-turns .entry').length > 8, { timeout: 12000 });
+    await page.waitForTimeout(600);
+    await page.evaluate(() => { const t = document.querySelector('.transcript'); t.scrollTop = 0; t.dispatchEvent(new Event('scroll')); });
+    await page.waitForFunction(() => { const p = document.querySelector('#transcript-jump'); return p && !p.hidden; }, { timeout: 8000 });
+    assert.equal((await page.locator('#transcript-jump').innerText()).trim(), 'Back to live');
+    await shoot('scrolled-back-to-live.png');
+    const beforePoll = await page.evaluate(() => document.querySelector('.transcript').scrollTop);
+    fixture.setLive(session('speaking', '2026-10-12T09:00:00Z', 4 + 2 * 22, [
+      { seq: 1, kind: 'inputTranscription', text: 'what is on my calendar' },
+      { seq: 2, kind: 'outputTranscription', text: 'You have a review at 10.' },
+      { seq: 3, kind: 'turnComplete' },
+      ...grow(22).slice(3),
+    ]));
+    await page.waitForTimeout(1500);
+    const afterPoll = await page.evaluate(() => document.querySelector('.transcript').scrollTop);
+    assert.ok(Math.abs(afterPoll - beforePoll) <= 2, `a background poll must not re-pin the reader (${beforePoll} -> ${afterPoll})`);
+    assert.ok(!(await page.locator('#transcript-jump').isHidden()), 'the reader still has Back to live after the poll');
+
+    // A finished session collapses under its dated divider, not as the live feed.
+    fixture.setLive(session('ended', '2026-10-12T09:00:00Z', 4, [
+      { seq: 1, kind: 'inputTranscription', text: 'what is on my calendar' },
+      { seq: 2, kind: 'outputTranscription', text: 'You have a review at 10.' },
+      { seq: 3, kind: 'turnComplete' },
+    ], { pastSession: { outcome: 'closed', endedAt: '2026-10-12T09:05:00Z', lastObservedAt: '2026-10-12T09:05:00Z' } }));
+    await page.waitForSelector('.feed-session', { timeout: 12000 });
+    assert.equal(await page.locator('.feed-empty').count(), 1, 'an idle terminal session shows the empty line above its divider');
+    await shoot('session-collapsed.png');
+
+    // Reduced motion: the calm animation is off.
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    fixture.setLive(session('thinking', '2026-10-12T10:00:00Z', 2, [
+      { seq: 1, kind: 'inputTranscription', text: 'and tomorrow' },
+      { seq: 2, kind: 'toolCall', tool: { name: 'search_calendar', status: 'pending' } },
+    ]));
+    await page.waitForSelector('.feed-activity', { timeout: 12000 });
+    const motion = await page.evaluate(() => {
+      const ind = document.querySelector('.feed-activity .activity-indicator');
+      return ind ? getComputedStyle(ind).animationName : 'missing';
+    });
+    assert.equal(motion, 'none', 'reduced motion turns the activity pulse off');
+    await shoot('reduced-motion.png');
+    await page.emulateMedia({ reducedMotion: null });
+
+    // Light theme: the feed flips with the page, the orb keeps its dark stage.
+    await page.evaluate(() => { document.documentElement.dataset.theme = 'light'; });
+    fixture.setLive(session('speaking', '2026-10-12T11:00:00Z', 3, base));
+    await page.waitForFunction(() => document.querySelectorAll('.live-turns .entry').length >= 1, { timeout: 12000 });
+    await shoot('light-theme.png');
+    await page.evaluate(() => { document.documentElement.dataset.theme = 'dark'; });
+    await page.setViewportSize({ width: 1440, height: 900 });
+    fixture.setLive(session('idle', '2026-10-11T16:00:00Z', 0, []));
+  });
+
   await step('U1 panels: two states, no residue, always-visible control, keyboard and drag', async () => {
     const panelFixture = await startFixture({ configured: true });
     const panelContext = await browser.newContext({ viewport: { width: 2000, height: 1250 } });
@@ -281,6 +417,20 @@ try {
 
         const base = await expect('default', 'collapsed', 'collapsed');
         await shot('default');
+        // FE1 residue: a collapsed side panel leaves no 1 px border or divider line at the window edge.
+        const residue = await panelPage.evaluate(() => {
+          const cs = (sel, pseudo) => getComputedStyle(document.querySelector(sel), pseudo);
+          return {
+            leftBorder: parseFloat(cs('#panel-left').borderRightWidth) || 0,
+            rightBorder: parseFloat(cs('#panel-right').borderLeftWidth) || 0,
+            leftDivider: cs('[data-divider="left"]', '::after').display,
+            rightDivider: cs('[data-divider="right"]', '::after').display,
+          };
+        });
+        assert.equal(residue.leftBorder, 0, 'a collapsed left panel leaves no border at the window edge');
+        assert.equal(residue.rightBorder, 0, 'a collapsed right panel leaves no border at the window edge');
+        assert.equal(residue.leftDivider, 'none', 'the left divider is hidden when its panel is collapsed');
+        assert.equal(residue.rightDivider, 'none', 'the right divider is hidden when its panel is collapsed');
         const orbTop = base.orb ? base.orb.top : null;
 
         await toggleLeft(); await expect('left open', 'open', 'collapsed'); await shot('left-open');
@@ -369,6 +519,9 @@ try {
         await auditPage.reload();
         await auditPage.locator('.app-shell').waitFor();
         await auditPage.waitForFunction(() => document.querySelector('#connected-send') !== null);
+        // The pin settles on the next animation frame (autoscroll.ts follow), so wait for the transcript to
+        // reach its settled state before measuring; a genuinely unpinned view times out here and still fails.
+        await auditPage.waitForFunction(() => { const t = document.querySelector('.transcript'); return !t || Math.max(0, Math.round(t.scrollHeight - t.scrollTop - t.clientHeight)) <= 2; }, null, { timeout: 4000 }).catch(() => {});
         const a = await auditLayout(auditPage);
         assertAudit(a, `${viewport.width}x${viewport.height} ${theme}`, failures);
         results[`${viewport.width}x${viewport.height}-${theme}`] = a;

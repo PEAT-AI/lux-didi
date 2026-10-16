@@ -148,7 +148,7 @@ export function liveTranscript(live: LiveCurrent): LiveLine[] {
   return lines;
 }
 
-export interface LivePollState { live?: LiveCurrent; lastSuccess?: Date; stale?: boolean }
+export interface LivePollState { live?: LiveCurrent; lastSuccess?: Date; stale?: boolean; earlier?: EarlierSession[] }
 /** The polling boundary preserves the last projection on failure, never raw errors. */
 export async function pollLiveView(previous: LivePollState, fetch: (cursor?: string | number) => Promise<LiveCurrent>, now: () => Date = () => new Date()): Promise<LivePollState> {
   try {
@@ -211,25 +211,82 @@ function rememberCardMarkup(entry: LiveEntry): string {
 function toolChipMarkup(entry: LiveEntry): string {
   const phrase = escapeHtml(toolPhrase(entry.tool?.name ?? '') + (entry.tool?.status ? ` (${entry.tool.status})` : ''));
   const body = entry.tool?.status === 'error' ? '' : `${renderMarkdown(entry.tool?.markdown ?? '', TRANSCRIPT_MARKDOWN)}${sourcesMarkup(entry.tool?.sources ?? [])}`;
-  return `<details class="live-tool-result" data-result-seq="${entry.seq}" data-seg="tool:${entry.seq}"><summary>${phrase}</summary>${body}</details>`;
+  return `<details class="live-tool-result" data-feed="tool" data-result-seq="${entry.seq}" data-seg="tool:${entry.seq}"><summary>${phrase}</summary>${body}</details>`;
 }
 
 /** One transcript line: the owner's words in the shared right-aligned chat bubble, Naya's words as
- * plain markdown, never a speaker label (V3 item 2). */
+ * a keeper row whose first sentence is the visible headline and whose full answer is a closed detail
+ * (spec 2.2 item 1). The assistant class and the leading markdown div are kept for the live-view contract. */
 export function liveLineMarkup(line: LiveLine, seg = ''): string {
   const key = seg ? ` data-seg="${seg}"` : '';
-  return line.role === 'user'
-    ? `<article class="entry user"${key}><p class="bubble">${escapeHtml(line.text)}</p></article>`
-    : `<article class="entry assistant"${key}><div class="markdown">${renderMarkdown(line.text, TRANSCRIPT_MARKDOWN)}</div></article>`;
+  if (line.role === 'user') return `<article class="entry user" data-feed="turn"${key}><p class="bubble">${escapeHtml(line.text)}</p></article>`;
+  const headline = turnHeadline(line.text);
+  const detail = line.text.trim() === headline ? '' : `<details class="feed-turn-detail"><summary>Full answer</summary><div class="markdown">${renderMarkdown(line.text, TRANSCRIPT_MARKDOWN)}</div></details>`;
+  return `<article class="entry assistant" data-feed="turn"${key}><div class="markdown">${renderMarkdown(headline, TRANSCRIPT_MARKDOWN)}</div>${detail}</article>`;
 }
 
 /** The transcript IS the lane: turns flow on the lane background, with a one-line tool chip where a
  * tool result landed. No card, no duplicate latest-answer block, no history disclosure (V2-R2 item 4).
  * Segments are keyed by the seq of the entry that opened them, so a streaming line updates in place. */
-export function liveSegments(live: LiveCurrent | undefined): LiveSegment[] {
-  const segments: LiveSegment[] = [];
+export interface EarlierSession { at: string; html: string }
+
+/** A session boundary line: "Today, 14:02", "Yesterday, 09:15", else the short date. */
+export function sessionDividerText(iso: string | number | null | undefined, now: Date = new Date()): string {
+  if (!iso) return 'Earlier';
+  const d = new Date(iso);
+  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const midnight = (x: Date) => Date.UTC(x.getFullYear(), x.getMonth(), x.getDate());
+  const days = Math.round((midnight(now) - midnight(d)) / 86400000);
+  const day = days === 0 ? 'Today' : days === 1 ? 'Yesterday' : d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  return `${day}, ${time}`;
+}
+
+/** The live tool activity promoted to a feed row; it resolves in place once the tool answers. */
+export function activityRowMarkup(live: LiveCurrent | undefined, elapsedMs = 0): string {
+  const activity = liveActivity(live);
+  if (!activity || (activity.kind !== 'tools' && activity.kind !== 'thinking')) return '';
+  return `<div class="feed-activity" data-seg="activity">${activityMarkup(activity, elapsedMs)}</div>`;
+}
+
+/** The first sentence of an answer, the headline of the keeper turn row (spec 2.2 item 1). */
+export function turnHeadline(text: string): string {
+  const trimmed = text.trim();
+  const match = trimmed.match(/^[\s\S]*?[.!?](?=\s|$)/);
+  return (match ? match[0] : trimmed).trim();
+}
+
+/** The first turn's headline of a session, for its collapsed divider line (FE1-R1 item 2). */
+export function sessionHeadline(live: LiveCurrent | undefined): string | undefined {
+  if (!live) return undefined;
+  const line = liveTranscript(live).find(item => item.role === 'naya');
+  return line ? turnHeadline(line.text) : undefined;
+}
+
+/** How many conversational turns a session holds, mirroring the feed flush boundaries. */
+export function sessionTurnCount(live: LiveCurrent | undefined): number {
+  let count = 0, has = false;
+  for (const entry of live?.entries ?? []) {
+    if ((entry.kind === 'inputTranscription' || entry.kind === 'outputTranscription') && entry.text) has = true;
+    if (entry.kind === 'turnComplete' || entry.kind === 'interrupted' || entry.kind === 'terminal') { if (has) count++; has = false; }
+  }
+  if (has) count++;
+  return count;
+}
+
+/** A finished session's collapsed line: its date, the first turn headline and the turn count. */
+function sessionSummaryMarkup(live: LiveCurrent | undefined, at: string): string {
+  const headline = sessionHeadline(live);
+  const turns = sessionTurnCount(live);
+  const count = turns ? `<span class="feed-session-count">${turns} ${turns === 1 ? 'turn' : 'turns'}</span>` : '';
+  const line = headline ? `<span class="feed-session-headline">${escapeHtml(headline)}</span>` : '';
+  return `<span class="feed-divider-date">${escapeHtml(at)}</span>${line}${count}`;
+}
+
+/** The turn, tool, remember and activity rows of one session, without any session divider. */
+export function sessionItems(live: LiveCurrent | undefined): LiveSegment[] {
+  const items: LiveSegment[] = [];
   let pending: (LiveLine & { seq: number })[] = [];
-  const flush = () => { for (const line of pending) { const key = `${line.role}:${line.seq}`; segments.push({ key, html: liveLineMarkup(line, key) }); } pending = []; };
+  const flush = () => { for (const line of pending) { const key = `${line.role}:${line.seq}`; items.push({ key, html: liveLineMarkup(line, key) }); } pending = []; };
   for (const entry of live?.entries ?? []) {
     const role = entry.kind === 'inputTranscription' ? 'user' : entry.kind === 'outputTranscription' ? 'naya' : undefined;
     if (role && entry.text) {
@@ -238,11 +295,41 @@ export function liveSegments(live: LiveCurrent | undefined): LiveSegment[] {
       else pending.push({ role, text: entry.text, seq: entry.seq });
     }
     if (entry.kind === 'turnComplete' || entry.kind === 'interrupted' || entry.kind === 'terminal') flush();
-    if (entry.kind === 'toolResult' && entry.tool?.name === 'remember_note') { flush(); segments.push({ key: `remember:${entry.seq}`, html: rememberCardMarkup(entry) }); }
-    else if (entry.kind === 'toolResult') { flush(); segments.push({ key: `tool:${entry.seq}`, html: toolChipMarkup(entry) }); }
+    if (entry.kind === 'toolResult' && entry.tool?.name === 'remember_note') { flush(); items.push({ key: `remember:${entry.seq}`, html: rememberCardMarkup(entry) }); }
+    else if (entry.kind === 'toolResult') { flush(); items.push({ key: `tool:${entry.seq}`, html: toolChipMarkup(entry) }); }
   }
   flush();
+  const activity = activityRowMarkup(live);
+  if (activity) items.push({ key: 'activity', html: activity });
+  return items;
+}
+
+export function liveSegments(live: LiveCurrent | undefined, earlier: EarlierSession[] = []): LiveSegment[] {
+  const segments: LiveSegment[] = [];
+  for (const past of earlier) segments.push({ key: `earlier:${past.at}`, html: past.html });
+  const items = sessionItems(live);
+  // A terminal newest session is not the live feed: its items collapse under their dated divider, so a
+  // new session starts fresh instead of inheriting the ended one (spec 1.3 cause 1, page-side only).
+  if (live?.pastSession && items.length) {
+    segments.push({ key: 'empty', html: FEED_EMPTY });
+    const at = sessionDividerText(live.pastSession.endedAt ?? live.since);
+    segments.push({ key: 'past-session', html: `<details class="feed-session" data-seg="past-session"><summary class="feed-divider">${sessionSummaryMarkup(live, at)}</summary><div class="feed-session-body">${items.map(segment => segment.html).join('')}</div></details>` });
+  } else if (items.length) {
+    if (live?.since) segments.push({ key: 'divider:session', html: `<div class="feed-divider" data-seg="divider:session" role="separator">${escapeHtml(sessionDividerText(live.since))}</div>` });
+    segments.push(...items);
+  } else if (live) {
+    segments.push({ key: 'empty', html: FEED_EMPTY });
+  }
   return segments;
+}
+
+/** The previous session as one collapsed, dated block for the feed (page-side session boundary). */
+export function earlierSession(previous: LiveCurrent | undefined): EarlierSession | undefined {
+  if (!previous) return undefined;
+  const items = sessionItems(previous);
+  if (!items.length) return undefined;
+  const at = sessionDividerText(previous.pastSession?.endedAt ?? previous.since);
+  return { at, html: `<details class="feed-session" data-seg="earlier:${at}"><summary class="feed-divider">${sessionSummaryMarkup(previous, at)}</summary><div class="feed-session-body">${items.map(segment => segment.html).join('')}</div></details>` };
 }
 
 /** A job's raw state word shown as a plain human sentence; the enum token never reaches the panel. */
@@ -255,20 +342,34 @@ export function jobStateLabel(state: LiveJob['state']): string {
   }
 }
 
-export function liveMarkup(live: LiveCurrent | undefined, poll: LivePollState = {}): string {
+/** The wrapper notices inside the live panel: muted, stale, error and restored. Kept apart from the
+ * feed body so a poll can repaint them in place without a full render (spec 1.3 cause 2). */
+export function liveNoticesMarkup(live: LiveCurrent | undefined, poll: LivePollState = {}): string {
   const state = live?.state;
-  const jobs = (live?.jobs ?? []).map(job => `<article class="live-job" data-job-id="${escapeHtml(job.id)}"><p class="live-tool-chip">${escapeHtml(jobStateLabel(job.state))}</p>${renderMarkdown(job.markdown, TRANSCRIPT_MARKDOWN)}${!job.delivered && job.state !== 'in_progress' ? '<p class="muted">Call Naya back: choose Start Live voice in the native app to pick up this result.</p>' : ''}</article>`).join('');
   const latest = live?.entries.at(-1);
   const restored = state !== 'rebuilding' && latest?.kind === 'continuity' && latest.event === 'resumed'
     ? `<p role="status" data-continuity-seq="${latest.seq}">Connection restored</p>` : '';
   const error = state === 'error' ? '<p class="muted" role="status">Naya reported an error. The live session has stopped.</p>' : '';
   const muted = live?.muted ? '<p class="muted live-muted" role="status">Microphone muted</p>' : '';
   const stale = poll.stale ? `<p class="live-stale" role="status">Live view stale${poll.lastSuccess ? ' since ' + escapeHtml(poll.lastSuccess.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })) : ', no successful poll yet'}, service unreachable</p>` : '';
-  const flow = liveSegments(live).map(segment => segment.html);
+  return `${muted}${stale}${error}${restored}`;
+}
+
+/** The background job results, kept in their own container so a poll repaints them in place. */
+export function liveJobsMarkup(live: LiveCurrent | undefined): string {
+  return (live?.jobs ?? []).map(job => `<article class="live-job" data-job-id="${escapeHtml(job.id)}"><p class="live-tool-chip">${escapeHtml(jobStateLabel(job.state))}</p>${renderMarkdown(job.markdown, TRANSCRIPT_MARKDOWN)}${!job.delivered && job.state !== 'in_progress' ? '<p class="muted">Call Naya back: choose Start Live voice in the native app to pick up this result.</p>' : ''}</article>`).join('');
+}
+
+/** The idle feed: one calm invitation, reused by the wrapper and the in-place transcript painter. */
+export const FEED_EMPTY = '<p class="feed-empty transcript-placeholder muted" data-seg="empty">Ask me anything<br><span>Start with the mic or \u2318\u21e7Space</span></p>';
+
+export function liveMarkup(live: LiveCurrent | undefined, poll: LivePollState = {}): string {
+  const flow = liveSegments(live, poll.earlier).map(segment => segment.html);
+  const body = flow.join('') || FEED_EMPTY;
   return `<section class="lane-convo live" id="live-panel" aria-label="Naya live conversation">
-    ${muted}${stale}${error}${restored}
-    <div class="live-turns">${flow.join('') || '<p class="transcript-placeholder muted">Press Start or \u2318\u21e7Space to talk</p>'}</div>
-    ${jobs}
+    <div class="feed-notices" id="feed-notices">${liveNoticesMarkup(live, poll)}</div>
+    <div class="feed live-turns">${body}</div>
+    <div class="feed-jobs" id="feed-jobs">${liveJobsMarkup(live)}</div>
   </section>`;
 }
 

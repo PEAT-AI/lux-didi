@@ -486,6 +486,8 @@ export interface ResearchSubcallLog {
   queryAuthor: 'selector' | 'fallback';
   /** Calendar sub-calls only: the resolved window kind, a closed enum, never a time or title. */
   window?: WindowKind;
+  /** Calendar sub-calls only: how many selected calendars the read did not reach before the deadline. */
+  unread?: number;
 }
 
 export interface ResearchDeps {
@@ -967,6 +969,8 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
         for (const [index, sub] of [...subs, ...second].entries()) {
           const result = results[index];
           const raw = sub.args['query'] ?? sub.args['q'];
+          const calText = result?.text ?? '';
+          const partial = /\[calendar read incomplete: (\d+) calendars? not read\]/.exec(calText);
           logSubcall({
             event: 'research_subcall', researchId: run.researchId, kind, tool: sub.name,
             ok: result?.ok ?? false, ...(result !== undefined && !result.ok && result.code !== undefined ? { errorCode: result.code } : {}),
@@ -974,6 +978,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
             rawBytes: result?.originalCharacters ?? 0, keptBytes: result?.text.length ?? 0,
             queryChars: typeof raw === 'string' ? raw.length : 0, queryAuthor,
             ...(kind === 'calendar_window' ? { window: windowKind(action?.window ?? 'today') } : {}),
+            ...(partial ? { unread: Number(partial[1]) } : {}),
           });
         }
       }));

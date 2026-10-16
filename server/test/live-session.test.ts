@@ -1818,11 +1818,16 @@ test('the overlay accent reaches the adapter and is reported only as counts, nev
   attachment.close(); await attachment.done;
   const parse = (line: string): Record<string, unknown> => { try { return JSON.parse(line) as Record<string, unknown>; } catch { return {}; } };
   const diagnostics = (): Record<string, unknown>[] => lines.map(parse).filter(entry => entry.event === 'live_session_diagnostics');
-  for (let attempt = 0; attempt < 60 && !diagnostics().some(entry => entry.headVoiceChars === accent.length); attempt++) await tick();
-  const emitted = diagnostics().find(entry => entry.headVoiceChars === accent.length);
-  assert.ok(emitted, `the accent-bearing diagnostics reports the carried accent count; saw ${JSON.stringify(diagnostics())}`);
-  assert.equal(emitted.terminalVoiceChars, accent.length);
-  assert.equal(emitted.toolAnchorChars, accent.length);
+  const expectedHead = `VOICE AND ACCENT (every turn, including right after tool results): ${accent}`.length;
+  const expectedTool = `Answer aloud in your own words, briefly, in this voice and accent: ${accent}. Do not read raw text, ids or URLs.`.length;
+  for (let attempt = 0; attempt < 60 && !diagnostics().some(entry => entry.headVoiceChars === expectedHead); attempt++) await tick();
+  const emitted = diagnostics().find(entry => entry.headVoiceChars === expectedHead);
+  assert.ok(emitted, `the accent-bearing diagnostics reports the serialised head block; saw ${JSON.stringify(diagnostics())}`);
+  assert.equal(emitted.headVoiceChars, expectedHead, 'the head count is the serialised block, not the bare accent');
+  assert.equal(emitted.toolAnchorChars, expectedTool, 'the tool count is the serialised _voice_anchor');
+  assert.notEqual(emitted.terminalVoiceChars, emitted.headVoiceChars, 'the terminal anchor has its own serialised length');
+  assert.notEqual(emitted.terminalVoiceChars, emitted.toolAnchorChars, 'the terminal anchor differs from the tool anchor');
+  assert.ok(Number.isSafeInteger(emitted.terminalVoiceChars) && Number(emitted.terminalVoiceChars) > 0, 'the terminal count is a positive integer');
   assert.ok(safeEvent(emitted), 'the host log accepts the accent-bearing diagnostics shape');
   assert.equal(lines.some(line => line.includes(accent)), false, 'the accent text never reaches an emitted line');
 });
@@ -2291,4 +2296,14 @@ test('U1: research progress reaches the live channel with metadata only', async 
   assert.ok(Array.isArray(progress.sourcesDone) && Array.isArray(progress.sourcesPending));
   assert.equal(typeof progress.elapsedMs, 'number');
   assert.doesNotMatch(JSON.stringify(progress), /what is on my calendar/, 'the question text never reaches the channel');
+});
+
+test('F4: a pending research call is journalled as called, never error', async t => {
+  const h = await harness(t, { tools: true, calendar: true });
+  await attached(h, 'research-called');
+  await settleLiveTool(h, 'r1', 'research', { action: 'start', question: 'what is on my calendar' });
+  const rows = h.store.transaction(tx => tx.all("SELECT tool_json FROM live_journal WHERE kind='toolCall'", []));
+  const tools = rows.map(row => JSON.parse(String(row['tool_json'])) as { name?: string; status?: string });
+  const research = tools.find(tool => tool.name === 'research');
+  assert.equal(research?.status, 'called', `a pending research call is called; saw ${JSON.stringify(tools)}`);
 });

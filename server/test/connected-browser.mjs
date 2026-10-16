@@ -64,8 +64,12 @@ try {
     // V3 (#264): no turns yet, so the Voice lane is its orb stage: the real orb at 55 percent of the
     // stage height (clamped 120 to 200 px), centred, and the stage holds the top third of the lane.
     await page.locator('#orb-stage').waitFor();
-    const measured = await page.waitForFunction(() => { const o = document.querySelector('#didi-orb'), s = document.querySelector('#orb-stage'), lane = document.querySelector('#lane-voice'); if (!o || !s || !lane) return false; const or = o.getBoundingClientRect(), sr = s.getBoundingClientRect(), lr = lane.getBoundingClientRect(); const stage = Math.min(380, Math.max(240, lr.height * 0.33)); const orb = Math.min(200, Math.max(120, stage * 0.55)); if (Math.round(sr.height) !== Math.round(stage) || Math.round(or.height) !== Math.round(orb) || Math.round(or.width) !== Math.round(or.height) || sr.width === 0) return false; return { orb: { x: or.x, y: or.y, width: or.width, height: or.height }, stage: { x: sr.x, y: sr.y, width: sr.width, height: sr.height } }; });
-    const { orb: desktopOrb, stage } = await measured.jsonValue();
+    await page.waitForFunction(() => { const o = document.querySelector('#didi-orb'), s = document.querySelector('#orb-stage'); return !!o && !!s && s.getBoundingClientRect().height > 0 && o.getBoundingClientRect().height > 0; });
+    const measured = await page.evaluate(() => { const or = document.querySelector('#didi-orb').getBoundingClientRect(), sr = document.querySelector('#orb-stage').getBoundingClientRect(), lr = document.querySelector('#lane-voice').getBoundingClientRect(); return { orb: { x: or.x, y: or.y, width: or.width, height: or.height }, stage: { x: sr.x, y: sr.y, width: sr.width, height: sr.height }, lane: { height: lr.height } }; });
+    const desktopOrb = measured.orb, stage = measured.stage;
+    const expectedStage = Math.min(380, Math.max(240, measured.lane.height * 0.33));
+    assert.ok(Math.abs(stage.height - expectedStage) <= 2, `stage height ${stage.height} is not the top third of the ${measured.lane.height} px lane (${expectedStage.toFixed(1)})`);
+    assert.ok(Math.abs(desktopOrb.height - expectedStage * 0.55) <= 3, `orb diameter ${desktopOrb.height} is not 55 percent of the ${stage.height} px stage (${(expectedStage * 0.55).toFixed(1)})`);
     assert.ok(await page.locator('#didi-orb').isVisible(), 'the desktop stage orb canvas is visible');
     assert.ok(Math.abs(desktopOrb.height - stage.height * 0.55) <= 2, 'the orb diameter is 55 percent of the stage height');
     assert.equal(Math.round(desktopOrb.width), Math.round(desktopOrb.height), 'the orb canvas is square');

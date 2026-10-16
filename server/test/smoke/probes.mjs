@@ -38,7 +38,7 @@ const MEETINGS_QUESTION = 'Do I have any meetings today?';
 // Q1-R5: the reply must carry what was kept, up to the 6,000 cap, minus the JSON envelope.
 const REPLY_ENVELOPE_BYTES = 700;
 const carried = s => s.replyBytes >= Math.min(s.keptBytes, 5000) - REPLY_ENVELOPE_BYTES;
-const RESEARCH_PROBES = [
+export const RESEARCH_PROBES = [
   { id: 'probe7-mail', source: 'mail', question: 'Anything important in my email today? Please check.', check: s => s.items >= 1 && carried(s) },
   { id: 'probe8-chat', source: 'chat', question: "What's new in Mattermost? Please check.", check: s => s.items >= 1 && carried(s) },
   { id: 'probe9-knowledge', source: 'knowledge', question: 'Search my notes for Lux Didi decisions. Please check.', check: s => s.items >= 3 && carried(s) },
@@ -333,6 +333,31 @@ async function liveTurn({ base, token, epoch, clipPath }) {
   return { ok, stage: 'turn', toolResultAt: toolResultAt !== null, audioAfterResult: afterResult, openFor, lifecycle };
 }
 
+/**
+ * The turn classification, pure over the metadata already collected from the host: the smoke harness tests it
+ * without a host. A question may take more than one research call (start then continue, or two researchIds),
+ * so research having been called at all is the only hard requirement (#271); the single-run invariant is the
+ * researchId, checked below.
+ */
+export function researchTurnResult({ calls, runs = [], subcalls = [], findings = [], progress = 0, outputChars = 0, outputAtResult = null, requireSingleCall = true, requireDriver = true, requireRead = true, enforce = true, notCalled = {} }) {
+  if (calls < 1) return { ok: false, stage: 'call', calls, ...notCalled };
+  const answered = runs.filter(line => (line.status === 'answered' || line.status === 'partial') && line.rounds >= 1);
+  const run = answered[answered.length - 1] ?? null;
+  const meta = { calls, runs, subcalls, findings, run, progress, outputChars, outputAtResult };
+  if (!enforce) return { ok: true, stage: 'turn', rounds: run?.rounds ?? 0, replyBytes: run?.replyBytes ?? 0, ...meta, ...notCalled };
+  const ids = [...new Set(runs.map(line => line.researchId))];
+  if (requireSingleCall ? ids.length !== 1 : ids.length < 1) return { ok: false, stage: 'runs', calls, runs: ids.length, detail: runs.map(line => `${line.status}:${line.stopReason}:${line.rounds}`).slice(0, 8).join(' '), ...notCalled };
+  if (!answered.length) return { ok: false, stage: 'status', calls, runs: runs.length, ...notCalled };
+  const read = Array.isArray(run.sources) ? run.sources.filter(source => source.disposition === 'completed').length : 0;
+  if (requireRead && read < 1) return { ok: false, stage: 'sources', read, ...notCalled };
+  if (requireRead && !(run.replyBytes <= 2000)) return { ok: false, stage: 'over_cap', replyBytes: run.replyBytes, ...notCalled };
+  if (requireRead && (outputAtResult === null || outputChars <= outputAtResult)) return { ok: false, stage: 'no_output', ...notCalled };
+  // #260: the run names its own driver; a run line without one of the three fails and is never guessed.
+  const driver = researchDriver(run);
+  if (requireDriver && driver === null) return { ok: false, stage: 'driver', driver: run.driver ?? 'missing', ...notCalled };
+  return { ok: true, stage: 'turn', calls, rounds: run.rounds, sources: `${run.sources.length}(${read} read)`, driver: driver ?? 'any', selectorMs: run.selectorMs, elapsedMs: run.elapsedMs, deadAirMs: run.deadAirMs, replyBytes: run.replyBytes, outputAfter: outputChars - outputAtResult, progress, ...notCalled };
+}
+
 async function researchTurn({ base, token, epoch, dataDir, clipPath, requireSingleCall = true, requireDriver = true, requireRead = true, enforce = true }) {
   const headers = () => liveHeaders(token, epoch);
   const created = await fetch(base + '/api/v1/live-sessions', { method: 'POST', headers: headers(), body: JSON.stringify({ inputClass: 'ordinary' }) });
@@ -438,25 +463,10 @@ async function researchTurn({ base, token, epoch, dataDir, clipPath, requireSing
       otherToolCalls: lastFragments.filter(fragment => fragment.kind === 'toolCall' && fragment.tool && typeof fragment.tool.name === 'string' && fragment.tool.name !== 'research').length,
       turnCompleteMs: (() => { const done = lastFragments.find(fragment => fragment.kind === 'turnComplete' && Number.isFinite(fragment.arrivedAt)); return done ? done.arrivedAt - questionAt : null; })(),
     };
-    if (requireSingleCall ? calls !== 1 : calls < 1) return { ok: false, stage: 'call', calls, ...notCalled };
-    // The question is one research run. A model may call the tool more than once (start then continue or
-    // stop), but every run line for the question carries the one researchId the host minted.
+    // A question may take more than one research call (start then continue, or two researchIds); the
+    // classification and every subcall of the turn are aggregated in researchTurnResult (#271).
     const findings = result && Array.isArray(result.findings) ? result.findings : [];
-    const answered = runs.filter(line => (line.status === 'answered' || line.status === 'partial') && line.rounds >= 1);
-    const run = answered[answered.length - 1] ?? null;
-    const meta = { calls, runs, subcalls, findings, run, progress, outputChars, outputAtResult };
-    if (!enforce) return { ok: true, stage: 'turn', rounds: run?.rounds ?? 0, replyBytes: run?.replyBytes ?? 0, ...meta, ...notCalled };
-    const ids = [...new Set(runs.map(line => line.researchId))];
-    if (requireSingleCall ? ids.length !== 1 : ids.length < 1) return { ok: false, stage: 'runs', calls, runs: ids.length, detail: runs.map(line => `${line.status}:${line.stopReason}:${line.rounds}`).slice(0, 8).join(' '), ...notCalled };
-    if (!answered.length) return { ok: false, stage: 'status', calls, runs: runs.length, ...notCalled };
-    const read = Array.isArray(run.sources) ? run.sources.filter(source => source.disposition === 'completed').length : 0;
-    if (requireRead && read < 1) return { ok: false, stage: 'sources', read, ...notCalled };
-    if (requireRead && !(run.replyBytes <= 2000)) return { ok: false, stage: 'over_cap', replyBytes: run.replyBytes, ...notCalled };
-    if (requireRead && (outputAtResult === null || outputChars <= outputAtResult)) return { ok: false, stage: 'no_output', ...notCalled };
-    // #260: the run names its own driver; a run line without one of the three fails and is never guessed.
-    const driver = researchDriver(run);
-    if (requireDriver && driver === null) return { ok: false, stage: 'driver', driver: run.driver ?? 'missing', ...notCalled };
-    return { ok: true, stage: 'turn', calls, rounds: run.rounds, sources: `${run.sources.length}(${read} read)`, driver: driver ?? 'any', selectorMs: run.selectorMs, elapsedMs: run.elapsedMs, deadAirMs: run.deadAirMs, replyBytes: run.replyBytes, outputAfter: outputChars - outputAtResult, progress, ...notCalled };
+    return researchTurnResult({ calls, runs, subcalls, findings, progress, outputChars, outputAtResult, requireSingleCall, requireDriver, requireRead, enforce, notCalled });
   } finally { try { ws.close(); } catch { /* noop */ } }
 }
 
@@ -472,7 +482,7 @@ async function keepFailureEvidence(dataDir) {
 }
 
 /** Metadata-only per-source projection: item counts, kept bytes and query author, never text. */
-function sourceSummary(turn, source) {
+export function sourceSummary(turn, source) {
   const tools = SOURCE_TOOLS[source] ?? [];
   const findings = Array.isArray(turn.findings) ? turn.findings : [];
   const finding = findings.find(entry => entry && entry.source === source);
@@ -481,7 +491,7 @@ function sourceSummary(turn, source) {
   const items = subs.reduce((sum, entry) => sum + (Number(entry.items) || 0), 0);
   const keptBytes = subs.reduce((sum, entry) => sum + (Number(entry.keptBytes) || 0), 0);
   const hydrated = subs.filter(entry => entry.tool === 'get_insight' && entry.ok === true).length;
-  return { items, lines: lines.length, keptBytes, hydrated, queryAuthor: subs.length ? subs[subs.length - 1].queryAuthor : 'n/a', replyBytes: turn.run ? turn.run.replyBytes : 0 };
+  return { items, lines: lines.length, keptBytes, hydrated, calls: turn.calls ?? 0, queryAuthor: subs.length ? subs[subs.length - 1].queryAuthor : 'n/a', replyBytes: turn.run ? turn.run.replyBytes : 0 };
 }
 
 async function main() {
@@ -550,7 +560,7 @@ async function main() {
           const turn = await researchTurn({ base, token, epoch, dataDir, clipPath, enforce: false });
           const summary = sourceSummary(turn, spec.source);
           const ok = spec.check(summary);
-          results.push({ id: spec.id, ok, note: `items=${summary.items} kept=${summary.keptBytes}B reply=${summary.replyBytes}B queryAuthor=${summary.queryAuthor} hydrated=${summary.hydrated}` + (ok ? '' : ' stage=criteria') });
+          results.push({ id: spec.id, ok, note: `items=${summary.items} calls=${summary.calls} kept=${summary.keptBytes}B reply=${summary.replyBytes}B queryAuthor=${summary.queryAuthor} hydrated=${summary.hydrated}` + (ok ? '' : ' stage=criteria') });
         } finally { await rm(clipPath, { force: true }); }
       } catch (error) { results.push({ id: spec.id, ok: false, note: String(error && error.message).slice(0, 120) }); }
     }

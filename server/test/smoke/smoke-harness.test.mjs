@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { READY_TIMEOUT_MS, spawnSupervised, stopSupervised, waitForReady } from './strict-supervisor.mjs';
-import { launchTimeoutMs, noHostResults, researchDriver, researchFailureNote, RESEARCH_DRIVERS, supervisorNote } from './probes.mjs';
+import { launchTimeoutMs, noHostResults, researchDriver, researchFailureNote, RESEARCH_DRIVERS, RESEARCH_PROBES, researchTurnResult, sourceSummary, supervisorNote } from './probes.mjs';
 
 const repoRoot = resolve(import.meta.dirname, '../../..');
 const smokeSource = join(repoRoot, 'scripts/smoke.sh');
@@ -143,4 +143,43 @@ test('smoke.sh keeps a failed run and prints its path', async () => {
     assert.notEqual(result.status, 0);
     assert.match(result.stdout, /^KEEP /m);
   } finally { await rm(fixture.dir, { recursive: true, force: true }); }
+});
+
+// #271: a turn may make more than one research call (start then continue, or two researchIds). The probe
+// must aggregate the real items of every research subcall in the turn, name the call count in its line, and
+// still fail when research was never called.
+const chatProbe = RESEARCH_PROBES.find(spec => spec.id === 'probe8-chat');
+
+test('probe8 aggregates chat items across two research calls on one researchId', () => {
+  const runs = [{ researchId: 'r1', status: 'answered', rounds: 2, replyBytes: 2600, sources: [{ disposition: 'completed' }], driver: 'selector' }];
+  const subcalls = [
+    { tool: 'mattermost_search', items: 12, keptBytes: 2600, queryAuthor: 'user' },
+    { tool: 'mattermost_search', items: 4, keptBytes: 400, queryAuthor: 'user' },
+  ];
+  const turn = researchTurnResult({ calls: 2, runs, subcalls, enforce: false });
+  const summary = sourceSummary(turn, 'chat');
+  assert.equal(summary.items, 16, 'both subcalls of the turn must count');
+  assert.equal(summary.calls, 2, 'the probe line must name the call count');
+  assert.equal(chatProbe.check(summary), true);
+});
+
+test('probe8 counts chat items when the turn made two researchIds', () => {
+  const runs = [
+    { researchId: 'r1', status: 'answered', rounds: 1, replyBytes: 2600, sources: [{ disposition: 'completed' }], driver: 'selector' },
+    { researchId: 'r2', status: 'answered', rounds: 1, replyBytes: 2600, sources: [{ disposition: 'completed' }], driver: 'selector' },
+  ];
+  const subcalls = [{ tool: 'mattermost_search', items: 7, keptBytes: 2600, queryAuthor: 'user' }];
+  const turn = researchTurnResult({ calls: 2, runs, subcalls, enforce: false });
+  const summary = sourceSummary(turn, 'chat');
+  assert.equal(summary.items, 7, 'chat items from the first researchId must count');
+  assert.equal(summary.calls, 2);
+  assert.equal(chatProbe.check(summary), true);
+});
+
+test('probe8 still fails when research was never called', () => {
+  const turn = researchTurnResult({ calls: 0, runs: [], subcalls: [], enforce: false });
+  const summary = sourceSummary(turn, 'chat');
+  assert.equal(turn.ok, false);
+  assert.equal(summary.items, 0);
+  assert.equal(chatProbe.check(summary), false);
 });

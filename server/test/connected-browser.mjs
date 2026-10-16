@@ -47,6 +47,14 @@ async function api(path) {
   }, path);
 }
 async function step(name, action) { await action(); steps.push(name); console.log(`PASS ${name}`); }
+// U1 (#282): side panels launch collapsed, so a rail item is hidden until the owner opens the panel
+// with its header toggle. Open it the owner's way and assert the open state before using a rail item.
+async function openPanel(id) {
+  const control = page.locator(`#panel-toggle-${id}`);
+  if (await control.getAttribute('aria-expanded') !== 'true') await control.click();
+  await page.locator(`#panel-${id}[data-state="open"]`).waitFor();
+  assert.equal(await control.getAttribute('aria-expanded'), 'true', `${id} panel toggled open`);
+}
 try {
   await start();
   browser = await chromium.launch({ channel: 'chromium', headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
@@ -111,6 +119,8 @@ try {
     await mkdir(u3, { recursive: true });
     await page.locator('#connected-entries .assistant').first().waitFor();
     await page.screenshot({ path: join(u3, 'desktop-1440-chat-with-grant.png'), fullPage: true });
+    await openPanel('left');
+    assert.equal(await page.locator('[data-tab="Settings"]').isVisible(), true, 'the opened panel renders the Settings rail item');
     await page.locator('[data-tab="Settings"]').click();
     await page.locator('#connected-history').waitFor();
     await page.screenshot({ path: join(u3, 'desktop-1440-settings.png'), fullPage: true });

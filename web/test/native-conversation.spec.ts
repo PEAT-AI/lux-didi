@@ -49,7 +49,15 @@ async function api(path) {
     const body = await response.json(); if (!response.ok) throw Error(body.error.message); return body.data;
   }, path);
 }
-const openTab = async name => { if (await page.locator('#sheet').count()) await page.locator('#sheet-close').click(); await page.locator(`button[data-tab="${name}"]`).click(); };
+// U1 (#282): side panels launch collapsed, so a rail item is hidden until the owner opens the panel
+// with its header toggle. Open it the owner's way and assert the open state before using a rail item.
+const openPanel = async id => {
+  const control = page.locator(`#panel-toggle-${id}`);
+  if (await control.getAttribute('aria-expanded') !== 'true') await control.click();
+  await page.locator(`#panel-${id}[data-state="open"]`).waitFor();
+  assert.equal(await control.getAttribute('aria-expanded'), 'true', `${id} panel toggled open`);
+};
+const openTab = async name => { if (await page.locator('#sheet').count()) await page.locator('#sheet-close').click(); await openPanel('left'); assert.equal(await page.locator(`button[data-tab="${name}"]`).isVisible(), true, 'the opened panel renders the rail item'); await page.locator(`button[data-tab="${name}"]`).click(); };
 // The connected history select is owned by the Settings tab; the conversation pane lives on Conversation.
 // The view writes its saved-selection key once it has restored and published a conversation; selecting before
 // that is a no-op because the view has no owner yet.

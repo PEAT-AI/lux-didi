@@ -13,6 +13,16 @@ import AppKit
     var deadline: DispatchSourceTimer?
     var fd: Int32 = -1
     func applicationDidFinishLaunching(_ notification: Notification) {
+        let arguments = CommandLine.arguments
+        if let flag = arguments.firstIndex(of: "--single-instance-hold") {
+            if SingleInstanceGuard.yieldToExistingInstance(verification: false) { exit(0) }
+            if flag + 1 < arguments.count {
+                let root = arguments[flag + 1]
+                try? Data("\(getpid())\n".utf8).write(to: URL(fileURLWithPath: root + "/pid-" + String(getpid())))
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 60) { exit(0) }
+            return
+        }
         do {
             let args = CommandLine.arguments
             guard args.count == 4 else { throw ProbeFailure.invalid("arguments") }

@@ -34,10 +34,10 @@ const RESEARCH_QUESTION = 'What is on my calendar today? Please check.';
 
 // Q1-R0 (probe7-10): the four spoken questions whose source blocks the release-3e change must return.
 const RESEARCH_PROBES = [
-  { id: 'probe7-mail', source: 'mail', question: 'Anything important in my email today?', check: s => s.items >= 1 && s.lines >= 3 },
-  { id: 'probe8-chat', source: 'chat', question: "What's new in Mattermost?", check: s => s.items >= 1 },
-  { id: 'probe9-knowledge', source: 'knowledge', question: 'Search my notes for Lux Didi decisions', check: s => s.items >= 3 && s.hydrated >= 1 },
-  { id: 'probe10-calendar', source: 'calendar', question: 'What is on my calendar today?', check: s => s.lines >= 1 },
+  { id: 'probe7-mail', source: 'mail', question: 'Anything important in my email today? Please check.', check: s => s.items >= 3 },
+  { id: 'probe8-chat', source: 'chat', question: "What's new in Mattermost? Please check.", check: s => s.items >= 1 },
+  { id: 'probe9-knowledge', source: 'knowledge', question: 'Search my notes for Lux Didi decisions. Please check.', check: s => s.items >= 3 && s.hydrated >= 1 },
+  { id: 'probe10-calendar', source: 'calendar', question: 'What is on my calendar today? Please check.', check: s => s.items >= 1 },
 ];
 const SOURCE_TOOLS = {
   mail: ['gmail_list', 'gmail_read'],
@@ -503,7 +503,7 @@ async function main() {
           const turn = await researchTurn({ base, token, epoch, dataDir, clipPath, enforce: false });
           const summary = sourceSummary(turn, spec.source);
           const ok = spec.check(summary);
-          results.push({ id: spec.id, ok, note: `items=${summary.items} lines=${summary.lines} reply=${summary.replyBytes}B queryAuthor=${summary.queryAuthor}` + (ok ? '' : ` stage=criteria kept=${summary.keptBytes}B`) });
+          results.push({ id: spec.id, ok, note: `items=${summary.items} kept=${summary.keptBytes}B reply=${summary.replyBytes}B queryAuthor=${summary.queryAuthor} hydrated=${summary.hydrated}` + (ok ? '' : ' stage=criteria') });
         } finally { await rm(clipPath, { force: true }); }
       } catch (error) { results.push({ id: spec.id, ok: false, note: String(error && error.message).slice(0, 120) }); }
     }

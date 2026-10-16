@@ -2292,3 +2292,37 @@ test('U1: research progress reaches the live channel with metadata only', async 
   assert.equal(typeof progress.elapsedMs, 'number');
   assert.doesNotMatch(JSON.stringify(progress), /what is on my calendar/, 'the question text never reaches the channel');
 });
+
+test('F6: three tool calls in one model message run concurrently and return three responses in order', async t => {
+  let inFlight = 0; let peak = 0;
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const h = await harness(t, { tools: true, beforeTool: async () => { inFlight += 1; peak = Math.max(peak, inFlight); if (inFlight < 3) await gate; else release(); inFlight -= 1; } });
+  await attached(h, 'parallel-tools');
+  const events: { event?: string; peakInFlight?: unknown }[] = [];
+  const detach = attachHostLogSink({ event: raw => { events.push(raw as { event?: string; peakInFlight?: unknown }); } });
+  try {
+    h.f.send({ toolCall: { functionCalls: [
+      { id: 'p1', name: 'search_knowledge', args: { query: 'one', limit: 1 } },
+      { id: 'p2', name: 'search_knowledge', args: { query: 'two', limit: 1 } },
+      { id: 'p3', name: 'search_knowledge', args: { query: 'three', limit: 1 } },
+    ] } });
+    for (let i = 0; i < 500 && peak < 3; i++) await tick();
+    assert.equal(peak, 3, 'three same-endpoint calls dispatch concurrently');
+    release();
+    for (let i = 0; i < 2000 && toolResponseCount(h) === 0; i++) await tick();
+  } finally { detach(); }
+  assert.equal(toolResponseCount(h), 1, 'one batch response frame for the three calls');
+  const frame = h.f.frames.find(entry => typeof entry === 'object' && entry !== null && 'toolResponse' in entry) as { toolResponse: { functionResponses: { id: string; name: string }[] } };
+  assert.deepEqual(frame.toolResponse.functionResponses.map(response => response.id), ['p1', 'p2', 'p3'], 'responses keep the model call order');
+  const turn = events.find(entry => entry.event === 'live_tool_turn');
+  assert.deepEqual(turn?.peakInFlight, [{ endpoint: 'lux', peak: 3 }], 'the batch logs one peak-in-flight record per endpoint');
+});
+
+test('F6-R1: a successful research call is journaled completed, not error', async t => {
+  const h = await harness(t, { tools: true, calendar: true });
+  await attached(h, 'research-status');
+  await settleLiveTool(h, 'r1', 'research', { action: 'start', question: 'what is on my calendar' });
+  const result = h.owner.current().entries.filter(entry => entry.kind === 'toolResult').at(-1);
+  assert.equal(result?.tool?.status, 'completed', 'a successful research reply is completed, not error');
+});

@@ -1871,7 +1871,7 @@ test('AC2: with no accent the head and tool anchors are absent while the termina
   const overlay = { schemaVersion: 1 as const, text: 'SYNTHETIC overlay persona' };
   const composed = composeLiveInstruction({ base: NAYA_BASE, overlay, language: 'en' });
   const sectionChars = (id: string): number => composed.sections.find(section => section.id === id)?.chars ?? 0;
-  const h = await harness(t, { overlay, acceptedPrompt: ownerId => ({
+  const h = await harness(t, { language: 'en', overlay, acceptedPrompt: ownerId => ({
     schemaVersion: 1, ownerProfile: { schemaVersion: 1, kind: 'default', ownerId, displayName: 'Lux Didi' },
     compilerVersion: PROMPT_VERSION, system: composed.text, dataClasses: ['ordinary'] }) });
   const { attachment } = await attached(h, 'no-accent');

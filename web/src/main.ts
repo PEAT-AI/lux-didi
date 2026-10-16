@@ -131,7 +131,7 @@ function orbCaptionMarkup(): string {
 }
 function orbStageMarkup(): string {
   const glow = ['CONNECTED','LISTENING','SPEAKING','PROCESSING'].includes(orbState());
-  return `<section class="orb-stage" id="orb-stage" data-state="${orbState()}" aria-label="Naya voice and activity"><div class="orb-holder"><div class="presence-glow${glow ? ' visible' : ''}" aria-hidden="true"></div><canvas id="didi-orb" width="440" height="440" aria-hidden="true"></canvas></div><div class="orb-caption">${orbCaptionMarkup()}</div><div class="orb-actions">${orbControlsMarkup()}</div></section>`;
+  return `<section class="orb-stage" id="orb-stage" data-state="${orbState()}" aria-label="Naya voice and activity"><div class="orb-holder"><div class="presence-glow${glow ? ' visible' : ''}" aria-hidden="true"></div><canvas id="didi-orb" width="440" height="440" aria-hidden="true"></canvas></div><div class="orb-caption">${orbCaptionMarkup()}</div><div class="orb-actions" id="orb-actions">${orbControlsMarkup()}</div></section>`;
 }
 function voiceBodyMarkup(): string {
   return `${orbStageMarkup()}<section class="transcript" id="transcript" aria-label="Naya live conversation">${liveMarkup(live, livePoll)}<button type="button" class="jump-pill" id="transcript-jump" hidden>Jump to latest</button></section>`;
@@ -274,9 +274,7 @@ function bind() {
   root.querySelector('.sheet-scrim')?.addEventListener('click', () => { layout = closeSheet(layout); render(); });
   root.querySelectorAll<HTMLElement>('button[data-lane]').forEach(el => el.onclick = () => { const id = el.dataset.lane as LaneId; layout = toggleLane(layout, id); render(); if (layout[id] === 'collapsed') document.getElementById(focusTargetAfterCollapse(id))?.focus(); });
   root.querySelectorAll<HTMLElement>('button[data-segment]').forEach(el => el.onclick = () => { const segment = el.dataset.segment as LaneId; layout = selectSegment(layout, segment); render(); document.getElementById(`lane-${segment}`)?.scrollIntoView({ block: 'start' }); });
-  document.getElementById('voice-start')?.addEventListener('click', () => liveMachine.requestStart());
-  document.getElementById('voice-stop')?.addEventListener('click', () => liveMachine.requestStop());
-  document.getElementById('voice-mute')?.addEventListener('click', () => liveMachine.toggleMute());
+  bindOrbControls();
   document.getElementById('pill-stop')?.addEventListener('click', () => liveMachine.requestStop());
   document.getElementById('pill-mute')?.addEventListener('click', () => liveMachine.toggleMute());
   document.getElementById('pill-unmute')?.addEventListener('click', () => liveMachine.toggleMute());
@@ -436,8 +434,16 @@ function paintLive(){
   const caption=document.querySelector('.orb-caption');const markup=orbCaptionMarkup();if(caption && caption.innerHTML!==markup)caption.innerHTML=markup;
   const list=document.querySelector<HTMLElement>('#transcript .live-turns');
   if(list)renderTranscript(list);
+  // The control reflects the projection: swap the actions in place and rebind, never tear the stage down.
+  const actions=document.getElementById('orb-actions');
+  if(actions){const controls=orbControlsMarkup();if(actions.innerHTML!==controls){actions.innerHTML=controls;bindOrbControls();}}
   const next=orbState();if(next!==appliedOrbState){appliedOrbState=next;orb?.setState(next);}
   if(liveMachine.view.state==='starting')transcriptPin?.repin();
+}
+function bindOrbControls() {
+  document.getElementById('voice-start')?.addEventListener('click', () => liveMachine.requestStart());
+  document.getElementById('voice-stop')?.addEventListener('click', () => liveMachine.requestStop());
+  document.getElementById('voice-mute')?.addEventListener('click', () => liveMachine.toggleMute());
 }
 function renderTranscript(list: HTMLElement) {
   // Stable segment keys keep a streaming line in place: only lines that are new fade and rise in.

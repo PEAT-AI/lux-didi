@@ -142,7 +142,7 @@ test('a stale proof never publishes or overwrites a replaced generation', async 
   // The old generation's proof now resolves with a mismatch: it must authorize nothing.
   fake.releaseProof(0, OTHER);
   await first;
-  assert.notEqual(mcp.status().endpoints[0]!.state, 'error');
+  assert.notEqual(mcp.status().endpoints[0]!.state, 'error', JSON.stringify(mcp.status().endpoints[0]));
   // Generation 2 then proves the owner and is the only round that publishes.
   await fake.waitProof(2);
   fake.releaseProof(0, OWNER);

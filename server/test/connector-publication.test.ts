@@ -8,6 +8,7 @@ import { once } from 'node:events';
 import { Store } from '../runtime/store.js';
 import { hostMigrations } from '../host/runtime.js';
 import { composeMcpRuntime } from '../host/mcp.js';
+import type { RunAcceptance } from '../tools/types.js';
 
 // Every identity below is synthetic; no real account, address or token appears in this file.
 const OWNER = 'owner@example.test';
@@ -174,16 +175,71 @@ test('no owner identity publishes after discovery under the no-comparison policy
   assert.equal(fake.calls.filter(name => name === 'gmail_get_profile').length, 0);
 });
 
-test('a session accepted while verifying keeps no tools from that connector after it settles', async t => {
+test('connectionIds is empty while a connector is verifying', async t => {
   const { mcp, fake } = await compose(t, { ownerIdentity: OWNER });
   const started = mcp.start();
   await fake.onDiscovery;
   await fake.waitProof(1);
-  const admittedWhileVerifying = [...mcp.connectionIds()];
-  assert.deepEqual(admittedWhileVerifying, []);
+  assert.deepEqual(mcp.connectionIds(), []);
   fake.releaseProof(0, OWNER);
   await started;
-  // The later session sees the connector; the earlier session's snapshot never gains it.
-  assert.deepEqual(admittedWhileVerifying, []);
   assert.deepEqual(mcp.connectionIds(), ['gmail']);
+});
+
+test('a Live acceptance snapshot taken while verifying never gains the connector', async t => {
+  const { store, mcp, fake } = await compose(t, { ownerIdentity: OWNER });
+  const remember = (): { remembered: boolean; code: string } => ({ remembered: false, code: 'owner_transcript_not_final' });
+  const started = mcp.start();
+  await fake.onDiscovery;
+  await fake.waitProof(1);
+  const acceptance: RunAcceptance = {
+    ownerId: store.assistantId, actorId: 'synthetic-actor', runId: 'live-verifying', authorityEpoch: store.authorityEpoch, revision: 1,
+    route: { identity: 'gateway:live-voice', provider: 'gemini', modelId: 'models/synthetic', allowedClasses: ['ordinary'] },
+    allowedClasses: ['ordinary'], connectionIds: [...mcp.connectionIds()],
+  };
+  store.transaction(tx => mcp.owner.snapshotRun(tx, acceptance));
+  assert.equal(mcp.owner.liveDefinitions('live-verifying', remember).some(tool => tool.name.startsWith('gmail')), false);
+  fake.releaseProof(0, OWNER);
+  await started;
+  // The recorded acceptance snapshot is immutable: the same session still has no connector tool.
+  assert.equal(mcp.owner.liveDefinitions('live-verifying', remember).some(tool => tool.name.startsWith('gmail')), false);
+  // A session accepted after readiness does carry the connector tools.
+  store.transaction(tx => mcp.owner.snapshotRun(tx, { ...acceptance, runId: 'live-ready', connectionIds: [...mcp.connectionIds()] }));
+  assert.equal(mcp.owner.liveDefinitions('live-ready', remember).some(tool => tool.name.startsWith('gmail')), true);
+});
+
+test('a refresh suspends the ready grant before the replacement publishes and refuses old calls', async t => {
+  const { mcp, fake } = await compose(t, { ownerIdentity: OWNER });
+  const first = mcp.start();
+  await fake.waitProof(1);
+  fake.releaseProof(0, OWNER);
+  await first;
+  assert.deepEqual(mcp.connectionIds(), ['gmail']);
+  const refreshed = mcp.refresh();
+  // The generation bump drops the callable grant before any replacement can publish.
+  assert.equal(mcp.registry.currentGrant('gmail'), undefined);
+  assert.deepEqual(mcp.registry.visibleTools('gmail'), []);
+  assert.deepEqual(mcp.connectionIds(), []);
+  await fake.waitProof(2);
+  fake.releaseProof(0, OWNER);
+  await refreshed;
+  assert.deepEqual(mcp.connectionIds(), ['gmail']);
+  assert.equal(fake.calls.includes('gmail_list'), false);
+});
+
+test('a failed re-verification after a refresh leaves no grant', async t => {
+  const { mcp, fake } = await compose(t, { ownerIdentity: OWNER });
+  const first = mcp.start();
+  await fake.waitProof(1);
+  fake.releaseProof(0, OWNER);
+  await first;
+  assert.deepEqual(mcp.connectionIds(), ['gmail']);
+  const refreshed = mcp.refresh();
+  await fake.waitProof(2);
+  fake.releaseProof(0, OTHER);
+  await refreshed;
+  assert.equal(mcp.registry.currentGrant('gmail'), undefined);
+  assert.deepEqual(mcp.connectionIds(), []);
+  assert.equal(mcp.status().endpoints[0]!.state, 'error');
+  assert.equal(mcp.status().endpoints[0]!.reasonCode, 'identity_mismatch');
 });

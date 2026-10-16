@@ -716,7 +716,7 @@ test('FE1 an ended session becomes one collapsed dated block when a new one star
   const block = earlierSession(previous)!;
   assert.match(block.html, /class="feed-session"/);
   assert.match(block.html, /Old answer/);
-  const fresh = { state: 'listening', since: '2026-10-12T16:00:00Z', cursor: 0, entries: [] } as unknown as LiveCurrent;
+  const fresh = { state: 'listening', since: '2026-10-12T16:00:00Z', cursor: 1, entries: [{ seq: 1, kind: 'inputTranscription', text: 'new question' }] } as unknown as LiveCurrent;
   const html = liveMarkup(fresh, { live: fresh, earlier: [block] });
   assert.ok(html.indexOf('feed-session') < html.indexOf('divider:session'), 'the ended block sits above the fresh divider');
 });

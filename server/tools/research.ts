@@ -785,6 +785,17 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
       else { if (driver === undefined) driver = 'selector'; if (output.actions.length === 0) { selection = output; stopReason = output.questionClass === 'quick_fact' ? 'answered' : 'selector_stop'; } else selection = output; }
     }
 
+    // A single-source hint must always run that source, even when the question carried no terms
+    // the fallback could match (an empty or terse spoken question): seed the hinted searches.
+    if (narrowed !== undefined) {
+      const text = question || run.direction || '';
+      for (const kind of narrowed) {
+        if (selection.actions.some(action => action.kind === kind)) continue;
+        selection.actions.push({ kind, ...fallbackQuery(kind, text, now()) });
+        selection.pUseful[kind] = 0.6;
+      }
+    }
+
     if (run.ledger.size === 0 && question) run.questionClass = selection.questionClass;
     run.questionClass = selection.questionClass;
 

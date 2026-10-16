@@ -80,6 +80,13 @@ test('a single-source hint narrows the offered kinds and still runs the selector
   assert.equal(h.logs[0]!.driver, 'single-source-hint');
 });
 
+test('a single-source hint with no usable question still runs the hinted source', async () => {
+  const h = harness({ selector: undefined });
+  await runResearch(h.deps, { action: 'start', question: '', sources: 'mail' }, new AbortController().signal);
+  assert.ok(h.executed.some(call => call.name === 'gmail_list'), 'the hinted source always runs');
+  assert.equal(h.logs[0]!.driver, 'single-source-hint');
+});
+
 test('every lookup names the driver the loop used', async () => {
   const hinted = harness({ selector: knowledge });
   await runResearch(hinted.deps, { action: 'start', question: 'anything', sources: 'mail' }, new AbortController().signal);

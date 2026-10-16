@@ -510,9 +510,9 @@ function paintLive(){
   // A poll rewrites the state line, the wrapper notices, the jobs and the transcript in place, so the
   // orb canvas, the controls and the reader's scroll position all keep (spec 1.3 causes 2, 3 and 4).
   const pill=document.getElementById('live-pill'),pillMarkup=livePillMarkup();
-  if(pillMarkup&&!pill){document.querySelector('.brand-mini')?.insertAdjacentHTML('afterend',pillMarkup);}
+  if(pillMarkup&&!pill){document.querySelector('.brand-mini')?.insertAdjacentHTML('afterend',pillMarkup);bindPill();}
   else if(!pillMarkup&&pill){pill.remove();}
-  else if(pill&&pill.outerHTML!==pillMarkup){pill.outerHTML=pillMarkup;}
+  else if(pill&&pill.outerHTML!==pillMarkup){pill.outerHTML=pillMarkup;bindPill();}
   const notices=document.getElementById('feed-notices'),noticeMarkup=liveNoticesMarkup(live,livePoll);
   if(notices&&notices.innerHTML!==noticeMarkup)notices.innerHTML=noticeMarkup;
   const jobs=document.getElementById('feed-jobs'),jobMarkup=liveJobsMarkup(live);
@@ -530,6 +530,12 @@ function bindOrbControls() {
   document.getElementById('voice-start')?.addEventListener('click', () => liveMachine.requestStart());
   document.getElementById('voice-stop')?.addEventListener('click', () => liveMachine.requestStop());
   document.getElementById('voice-mute')?.addEventListener('click', () => liveMachine.toggleMute());
+}
+function bindPill() {
+  // The pill is inserted in place by paintLive, so its own controls are bound here, not by a render.
+  document.getElementById('pill-stop')?.addEventListener('click', () => liveMachine.requestStop());
+  document.getElementById('pill-mute')?.addEventListener('click', () => liveMachine.toggleMute());
+  document.getElementById('pill-unmute')?.addEventListener('click', () => liveMachine.toggleMute());
 }
 function renderTranscript(list: HTMLElement) {
   // Stable segment keys keep a streaming line in place: only lines that are new fade and rise in.

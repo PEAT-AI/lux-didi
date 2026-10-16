@@ -215,12 +215,14 @@ function toolChipMarkup(entry: LiveEntry): string {
 }
 
 /** One transcript line: the owner's words in the shared right-aligned chat bubble, Naya's words as
- * plain markdown, never a speaker label (V3 item 2). */
+ * a keeper row whose first sentence is the visible headline and whose full answer is a closed detail
+ * (spec 2.2 item 1). The assistant class and the leading markdown div are kept for the live-view contract. */
 export function liveLineMarkup(line: LiveLine, seg = ''): string {
   const key = seg ? ` data-seg="${seg}"` : '';
-  return line.role === 'user'
-    ? `<article class="entry user" data-feed="turn"${key}><p class="bubble">${escapeHtml(line.text)}</p></article>`
-    : `<article class="entry assistant" data-feed="turn"${key}><div class="markdown">${renderMarkdown(line.text, TRANSCRIPT_MARKDOWN)}</div></article>`;
+  if (line.role === 'user') return `<article class="entry user" data-feed="turn"${key}><p class="bubble">${escapeHtml(line.text)}</p></article>`;
+  const headline = turnHeadline(line.text);
+  const detail = line.text.trim() === headline ? '' : `<details class="feed-turn-detail"><summary>Full answer</summary><div class="markdown">${renderMarkdown(line.text, TRANSCRIPT_MARKDOWN)}</div></details>`;
+  return `<article class="entry assistant" data-feed="turn"${key}><div class="markdown">${renderMarkdown(headline, TRANSCRIPT_MARKDOWN)}</div>${detail}</article>`;
 }
 
 /** The transcript IS the lane: turns flow on the lane background, with a one-line tool chip where a
@@ -244,6 +246,13 @@ export function activityRowMarkup(live: LiveCurrent | undefined, elapsedMs = 0):
   const activity = liveActivity(live);
   if (!activity || (activity.kind !== 'tools' && activity.kind !== 'thinking')) return '';
   return `<div class="feed-activity" data-seg="activity">${activityMarkup(activity, elapsedMs)}</div>`;
+}
+
+/** The first sentence of an answer, the headline of the keeper turn row (spec 2.2 item 1). */
+export function turnHeadline(text: string): string {
+  const trimmed = text.trim();
+  const match = trimmed.match(/^[\s\S]*?[.!?](?=\s|$)/);
+  return (match ? match[0] : trimmed).trim();
 }
 
 /** The turn, tool, remember and activity rows of one session, without any session divider. */

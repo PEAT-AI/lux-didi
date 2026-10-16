@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { createContext, runInContext } from 'node:vm';
-import { liveStateLabel, liveVoiceState, pendingToolNames, liveLabel, liveDelay, mergeLive, liveTranscript, liveResult, liveMarkup, liveActivity, activityMarkup, SLOW_TOOL_MS, liveSegments, sessionItems, sessionDividerText, earlierSession } from '../src/live-view.ts';
+import { liveStateLabel, liveVoiceState, pendingToolNames, liveLabel, liveDelay, mergeLive, liveTranscript, liveResult, liveMarkup, liveActivity, activityMarkup, SLOW_TOOL_MS, liveSegments, sessionItems, sessionDividerText, earlierSession, turnHeadline } from '../src/live-view.ts';
 import { posture } from '../src/orb-level.ts';
 import './connector-status.test.ts';
 import { pollLiveView } from '../src/live-view.ts';
@@ -727,4 +727,18 @@ test('FE1 the feed is one surface with headline rows and collapsed detail', () =
   assert.match(html, /data-feed="turn"/);
   assert.match(html, /data-feed="tool"/);
   assert.match(html, /<details class="live-tool-result"[^>]*><summary/);
+});
+
+test('FE1 the turn row shows a headline and keeps the full answer in a closed detail', () => {
+  const live = { state: 'speaking', since: '2026-10-11T16:00:00Z', cursor: 5, entries: [
+    { seq: 1, kind: 'inputTranscription', text: 'what next?' },
+    { seq: 2, kind: 'outputTranscription', text: 'Ship the UI. Then run the audit.' },
+    { seq: 3, kind: 'turnComplete' },
+  ] } as unknown as LiveCurrent;
+  const html = liveMarkup(live);
+  assert.equal(turnHeadline('Ship the UI. Then run the audit.'), 'Ship the UI.');
+  assert.match(html, /<article class="entry assistant" data-feed="turn"[^>]*><div class="markdown"><p>Ship the UI\.<\/p>/, 'the first sentence is the visible headline');
+  assert.match(html, /<details class="feed-turn-detail"><summary>Full answer<\/summary>/, 'the full answer is a closed detail');
+  assert.doesNotMatch(html.slice(0, html.indexOf('feed-turn-detail')), /Then run the audit/, 'only the headline is visible above the detail');
+  assert.match(html, /what next\?/, "the owner's verbatim line is kept in the detail");
 });

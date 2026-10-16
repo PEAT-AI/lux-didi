@@ -293,7 +293,7 @@ try {
     ]));
     await page.waitForFunction(() => document.querySelectorAll('#live-panel .live-tool-result').length === 1, null, { timeout: 12000 });
     const orbHandle = await page.evaluateHandle(() => document.querySelector('#didi-orb'));
-    const rowHandle = await page.evaluateHandle(() => document.querySelector('.live-turns [data-seg="user:1"]'));
+    const rowHandle = await page.evaluateHandle(() => document.querySelector('.live-turns [data-seg="tool:4"]'));
     fixture.setLive(session('speaking', '2026-10-12T09:00:00Z', 4, [
       { seq: 1, kind: 'inputTranscription', text: 'what is on my calendar' },
       { seq: 2, kind: 'toolCall', tool: { name: 'search_calendar', status: 'pending' } },
@@ -302,7 +302,7 @@ try {
     ]));
     await page.waitForFunction(() => document.querySelector('.live-turns')?.textContent?.includes('standup at 2'), null, { timeout: 12000 });
     assert.ok(await orbHandle.evaluate(el => el === document.querySelector('#didi-orb')), 'the orb instance survives a poll, never torn down');
-    assert.ok(await rowHandle.evaluate(el => el === document.querySelector('.live-turns [data-seg="user:1"]')), 'an existing feed row survives the poll in place');
+    assert.ok(await rowHandle.evaluate(el => el === document.querySelector('.live-turns [data-seg="tool:4"]')), 'an existing feed row survives the poll in place');
     await shoot('call-result-card.png');
 
     // Scroll up: "Back to live" appears, and a background poll never yanks the reader back.

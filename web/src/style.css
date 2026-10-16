@@ -355,6 +355,14 @@ html,body{height:100%;overflow:hidden}
 .feed-activity{align-self:flex-start;max-width:100%}
 .feed-notices{display:flex;flex-direction:column;gap:8px;max-width:min(var(--feed-measure),100%);margin:0 auto}
 .feed-jobs{display:flex;flex-direction:column;gap:16px;max-width:min(var(--feed-measure),100%);margin:0 auto;padding-top:16px}
+/* FE1: the keeper turn row, headline sentence visible, the full answer and the owner's lines in a
+   closed detail (spec 2.2 item 1). */
+.entry[data-feed="turn"] > .markdown{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.feed-turn-detail{align-self:flex-start;max-width:100%}
+.feed-turn-detail>summary{cursor:pointer;list-style:none;font-size:12px;color:var(--muted)}
+.feed-turn-detail>summary::-webkit-details-marker{display:none}
+.feed-turn-detail>summary::marker{content:""}
+.feed-turn-detail .entry.user{max-width:100%}
 .transcript .entry,.transcript .live-tool-result,.transcript .live-remember,.transcript .live-job{align-self:flex-start;max-width:100%}
 .transcript .entry.user{align-self:flex-end}
 .transcript .entry.assistant,.transcript .entry.user{max-width:80%}

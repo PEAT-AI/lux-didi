@@ -180,7 +180,7 @@ test('result ignores a tool result that errored', () => {
   assert.equal(liveResult(errored), undefined);
 });
 
-test('no transcript line carries a speaker label; the owner's words are the right-aligned bubble', () => {
+test('no transcript line carries a speaker label; the owner speaks in the shared bubble', () => {
   const html = liveMarkup({ state: 'speaking', cursor: 3, entries: [
     { seq: 1, kind: 'inputTranscription', text: 'what should I focus on?' },
     { seq: 2, kind: 'outputTranscription', text: '**Start** with the release checklist' },

@@ -192,6 +192,25 @@ test('research_subcall matches results by position even when execute keys are co
   assert.match(findings[0]!.text, /^mail: 1 of 1 shown/);
 });
 
+test('knowledge hydration logs the get_insight second hop', async () => {
+  const subcalls: Record<string, unknown>[] = [];
+  const selector: ResearchSelector = { async select() { return { questionClass: 'cross_source', actions: [{ kind: 'knowledge_search', query: 'lux didi' }], pUseful: { knowledge_search: 1 } }; } };
+  const deps: ResearchDeps = {
+    now: () => 0, configured: CONFIGURED, selector,
+    execute: async (subs: readonly IntentSubCall[]) => subs.map((call, n) => ({
+      key: `r0~${n}~${call.key}`, name: call.name, ok: true,
+      text: call.name === 'search_knowledge' ? '### Title (PATTERN) [id 7]\nbody text' : 'full body',
+      originalCharacters: 20, omittedCharacters: 0,
+    })),
+    emit: () => undefined, log: () => undefined, logSubcall: entry => subcalls.push(entry as unknown as Record<string, unknown>), ledger: new ResearchLedger(),
+  };
+  await runResearch(deps, { action: 'start', question: 'anything' }, new AbortController().signal);
+  const hydrate = subcalls.find(entry => entry['tool'] === 'get_insight');
+  assert.ok(hydrate, 'the get_insight second hop is logged');
+  assert.equal(hydrate['ok'], true);
+  assert.equal(hydrate['kind'], 'knowledge_search');
+});
+
 test('the research_run line carries unchecked, canContinue and per-finding char counts', async () => {
   const logs: Record<string, unknown>[] = [];
   const selector: ResearchSelector = { async select() { return { questionClass: 'cross_source', actions: [{ kind: 'knowledge_search' }], pUseful: { knowledge_search: 1 } }; } };

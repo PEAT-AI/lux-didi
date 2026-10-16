@@ -830,8 +830,9 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
         if (results.some(result => result.ok && result.text.trim())) run.readKinds.add(kind);
         if (source) run.sourcesDone.add(source);
         const queryAuthor: 'selector' | 'fallback' = usedFallbackThisRound ? 'fallback' : 'selector';
-        for (const [index, sub] of subs.entries()) {
-          // execute returns one result per sub-call in order, keyed by the host's composed call id.
+        // Log the primary sub-calls and the host-side second hops (hydrate/open/thread) together:
+        // `results` is `[...primary, ...second]`, so position is the stable key.
+        for (const [index, sub] of [...subs, ...second].entries()) {
           const result = results[index];
           const raw = sub.args['query'] ?? sub.args['q'];
           logSubcall({

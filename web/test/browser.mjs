@@ -155,6 +155,14 @@ try {
     await page.locator('#connected-draft').waitFor();
   });
 
+  await step('Escape dismisses the side sheet (F1)', async () => {
+    await page.locator('button[data-route="settings"]').click();
+    await page.locator('#sheet').waitFor();
+    await page.keyboard.press('Escape');
+    await page.locator('#sheet').waitFor({ state: 'detached' });
+    assert.equal(await page.locator('#sheet').count(), 0, 'Escape removes the sheet overlay');
+  });
+
   await step('classic Canvas orb is idle not listening and honors reduced motion',async()=>{
     const canvas=page.locator('#didi-orb');
     assert.equal(await canvas.getAttribute('data-state'),'CONNECTED');

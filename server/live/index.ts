@@ -990,10 +990,14 @@ export class LiveSessionOwner {
     const configured = this.#researchSources(handle);
     const gateAuthority = { isCurrent: async (_host: HostContext, _tool: ToolDefinition, signal: AbortSignal) => allowed && !signal.aborted && generation === handle.generation && !this.#settled(handle) };
     const execute = async (subs: readonly IntentSubCall[], signal: AbortSignal): Promise<IntentSubResult[]> => {
-      const calls = subs.map((sub, n) => ({ id: `r${handle.toolStep}~${n}~${sub.key}`, name: sub.name, args: sub.args }));
+      // Q1-R3(d): a research run issues several execute batches (search, then hydrate/open/thread, then a
+      // retry). They shared handle.toolStep, so executionId (`runId:step:index`) collided and the journal
+      // refused the second batch as tool_intent_exists. Take a fresh step per batch.
+      const step = handle.toolStep++;
+      const calls = subs.map((sub, n) => ({ id: `r${step}~${n}~${sub.key}`, name: sub.name, args: sub.args }));
       const signalMap = new Map<string, AbortSignal>(calls.map(call => [call.id, signal]));
       const control = { signal, deadlineMs: handle.deadlineMs };
-      const raw = await runToolCalls(this.#tools!.owner, calls, { registry: handle.registry, host, signals: signalMap, authority: gateAuthority, control, step: handle.toolStep, contentIndex: 0, seenIds: handle.seenIds, baseClasses: [handle.inputClass] });
+      const raw = await runToolCalls(this.#tools!.owner, calls, { registry: handle.registry, host, signals: signalMap, authority: gateAuthority, control, step, contentIndex: 0, seenIds: handle.seenIds, baseClasses: [handle.inputClass] });
       const authorized = (this.lookupAuthority(host.runId) || this.lookupJobAuthority(host.runId)) ? await authorizeToolBatch(this.#tools!.owner, raw, { host, control, baseClasses: [handle.inputClass] }) : raw;
       return calls.map(call => {
         const slot = authorized.bindings.findIndex(binding => binding.callId === call.id);
@@ -1002,7 +1006,9 @@ export class LiveSessionOwner {
         const response = accepted?.response ?? {};
         const text = typeof response.text === 'string' ? response.text : '';
         const ok = record?.status === 'completed' && accepted !== undefined;
-        return { key: call.id, name: call.name, ok, text, originalCharacters: typeof response.originalCharacters === 'number' ? response.originalCharacters : text.length, omittedCharacters: typeof response.omittedCharacters === 'number' ? response.omittedCharacters : 0 };
+        // Q1-R3(d/e): a failed sub-call names its cause for the research_subcall log, never silently.
+        const code = ok ? undefined : (typeof response.code === 'string' ? response.code : record ? String(record.status) : 'refused');
+        return { key: call.id, name: call.name, ok, text, originalCharacters: typeof response.originalCharacters === 'number' ? response.originalCharacters : text.length, omittedCharacters: typeof response.omittedCharacters === 'number' ? response.omittedCharacters : 0, ...(code ? { code } : {}) };
       });
     };
     const scheduler = handle.researchScheduler ??= new ResearchScheduler({

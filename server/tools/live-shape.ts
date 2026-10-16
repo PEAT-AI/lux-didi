@@ -240,7 +240,8 @@ export function shapeGmailList(data: Record<string, unknown>): ShapedResult {
     const named = header(entry, 'Subject');
     const url = inboxUrl(entry['id']);
     if (url) sources.push({ title: named ? `Gmail: ${named}` : 'Open in Gmail', url, sourceType: 'gmail' });
-    return `- ${named || '(no subject)'} | ${senderName(entry) || 'unknown sender'} | ${header(entry, 'Date') || 'unknown date'}${unread}${size}${excerpt ? ` | ${excerpt}` : ''}`;
+    const idValue = str(entry['id']);
+    return `- ${named || '(no subject)'} | ${senderName(entry) || 'unknown sender'} | ${header(entry, 'Date') || 'unknown date'}${unread}${size}${excerpt ? ` | ${excerpt}` : ''}${idValue ? ` [id ${idValue}]` : ''}`;
   });
   const body = listed(lines, GMAIL_LIST_MESSAGES, 'messages');
   return capped({ text: body.text, partial: body.omitted > 0, originalCharacters: lines.join('\n').length, omittedCharacters: body.omitted, sources });
@@ -310,7 +311,8 @@ function renderPost(post: Record<string, unknown>): { lines: string[]; omitted: 
   const channel = field(post, 'channel', 'channel_name', 'channel_id');
   const author = field(post, 'author', 'author_name', 'user_name', 'username');
   const time = field(post, 'time', 'timestamp') || scalar(post['create_at']);
-  const header2 = [channel, author, time].filter(Boolean).join(' | ');
+  const postId = str(post['id'] ?? post['post_id']);
+  const header2 = [channel, author, time].filter(Boolean).join(' | ') + (postId ? ` [post ${postId}]` : '');
   const raw = str(post['text'] ?? post['message']);
   const cut = cutAtSentence(raw, MATTERMOST_MESSAGE_CHARS);
   const reactions = reactionCount(post);

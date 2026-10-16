@@ -4,9 +4,10 @@ import {
   RESEARCH, ResearchLedger, ResearchScheduler, createGeminiSelector, fallbackSelection, offerableCandidates,
   parseSelector, pUsefulOf, researchDeclaration, researchDescription, researchSourcesFromToolNames, runResearch,
   validateResearch, worthContinuing,
-  type ResearchDeps, type ResearchProgress, type ResearchRunLog, type ResearchSelector, type SelectorOutput, type SourceKind,
+  type ResearchDeps, type ResearchProgress, type ResearchRunLog, type ResearchSelector, type ResearchSubcallLog, type SelectorOutput, type SourceKind,
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
+import './research-shape.test.js';
 
 const CONFIGURED: readonly SourceKind[] = ['knowledge', 'calendar', 'mail', 'chat'];
 
@@ -21,11 +22,12 @@ function deferred<T>(): Deferred<T> {
   return { promise, resolve };
 }
 
-interface Harness { deps: ResearchDeps; progress: ResearchProgress[]; logs: ResearchRunLog[]; executed: { name: string; args: unknown }[] }
+interface Harness { deps: ResearchDeps; progress: ResearchProgress[]; logs: ResearchRunLog[]; subcalls: ResearchSubcallLog[]; executed: { name: string; args: unknown }[] }
 
-function harness(opts: { selector?: ResearchSelector | undefined; execute?: ResearchDeps['execute']; now?: () => number; ledger?: ResearchLedger; executeText?: string } = {}): Harness {
+function harness(opts: { selector?: ResearchSelector | undefined; execute?: ResearchDeps['execute']; now?: () => number; ledger?: ResearchLedger; executeText?: string; replyLimit?: number } = {}): Harness {
   const progress: ResearchProgress[] = [];
   const logs: ResearchRunLog[] = [];
+  const subcalls: ResearchSubcallLog[] = [];
   const executed: { name: string; args: unknown }[] = [];
   const deps: ResearchDeps = {
     now: opts.now ?? (() => 0),
@@ -36,10 +38,12 @@ function harness(opts: { selector?: ResearchSelector | undefined; execute?: Rese
     }),
     emit: event => progress.push(event),
     log: entry => logs.push(entry),
+    logSubcall: entry => subcalls.push(entry),
     ledger: opts.ledger ?? new ResearchLedger(),
+    ...(opts.replyLimit !== undefined ? { replyLimit: opts.replyLimit } : {}),
     ...(opts.selector !== undefined ? { selector: opts.selector } : {}),
   };
-  return { deps, progress, logs, executed };
+  return { deps, progress, logs, subcalls, executed };
 }
 
 const selectorOf = (output: SelectorOutput): ResearchSelector => ({ select: async () => output });
@@ -64,14 +68,23 @@ test('the timeout and invalid selector output fall back to the fixed recipe and 
   assert.equal(reply['status'], 'answered');
 });
 
-test('a single-source hint skips the round-1 selector', async () => {
+test('a single-source hint narrows the offered kinds and still runs the selector', async () => {
   let selectCalls = 0;
-  const counting: ResearchSelector = { select: async () => { selectCalls += 1; return { questionClass: 'cross_source', actions: [], pUseful: {} }; } };
+  let firstOffered: string[] = [];
+  const counting: ResearchSelector = { select: async input => { selectCalls += 1; if (selectCalls === 1) firstOffered = [...input.candidates]; return { questionClass: 'cross_source', actions: [{ kind: 'mail_search', query: 'in:inbox newer_than:2d' }], pUseful: { mail_search: 0.9 } }; } };
   const h = harness({ selector: counting });
   await runResearch(h.deps, { action: 'start', question: 'anything', sources: 'mail' }, new AbortController().signal);
-  assert.equal(selectCalls, 0);
+  assert.equal(selectCalls >= 1, true);
+  assert.deepEqual(firstOffered, ['mail_search']);
   assert.ok(h.executed.length >= 1 && h.executed.every(call => call.name === 'gmail_list'));
   assert.equal(h.logs[0]!.fallbackUsed, false);
+  assert.equal(h.logs[0]!.driver, 'single-source-hint');
+});
+
+test('a single-source hint with no usable question still runs the hinted source', async () => {
+  const h = harness({ selector: undefined });
+  await runResearch(h.deps, { action: 'start', question: '', sources: 'mail' }, new AbortController().signal);
+  assert.ok(h.executed.some(call => call.name === 'gmail_list'), 'the hinted source always runs');
   assert.equal(h.logs[0]!.driver, 'single-source-hint');
 });
 

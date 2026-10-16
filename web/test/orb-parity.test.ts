@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { levelFrame } from '../src/orb-level.ts';
+import { Orb, posture } from '../src/orb.ts';
 
 const source = readFileSync(new URL('../src/orb-classic.ts', import.meta.url), 'utf8');
 const style = readFileSync(new URL('../src/style.css', import.meta.url), 'utf8');
@@ -79,3 +80,58 @@ test('typed text to Naya is an input under the voice card that posts to the live
   assert.match(main, /id="live-text"/);
   assert.ok(main.includes("request<{ sent: boolean }>('/live/text'"));
 });
+
+test('the PROCESSING override follows the playback band, never the owner capture (F6)', () => {
+  assert.equal(posture('PROCESSING', { level: 0.9, playback: 0 }), 'thinking', 'the owner talking does not make the orb speak');
+  assert.equal(posture('PROCESSING', { level: 0, playback: 0.9 }), 'speaking', 'audible playback during a tool turn still speaks');
+  assert.equal(posture('SPEAKING', { level: 0, playback: 0 }), 'speaking');
+  assert.equal(posture('LISTENING', { level: 0, playback: 0 }), 'listening');
+  assert.equal(posture('CONNECTING', { level: 0, playback: 0 }), 'thinking');
+  assert.equal(posture('ERROR', { level: 0, playback: 0 }), 'quiet');
+});
+
+test('a state change draws the transition frame with the smoothed activity, not the target (F5)', () => {
+  const { canvas, restore } = stubDom();
+  try {
+    const orb = new Orb(canvas as unknown as HTMLCanvasElement, 'CONNECTED');
+    orb.setState('SPEAKING');
+    const stats = (canvas as { didiFrameStats(): { activity: number; target: number } }).didiFrameStats();
+    assert.equal(typeof stats.activity, 'number');
+    assert.equal(typeof stats.target, 'number');
+    assert.notEqual(stats.activity, stats.target, 'the first frame after a state change crossfades from the smoothed activity');
+  } finally {
+    restore();
+  }
+});
+
+// Minimal DOM so the Canvas Orb runs headless under node --test; it renders through a no-op context.
+function stubDom() {
+  const saved: Record<string, unknown> = {
+    matchMedia: (globalThis as Record<string, unknown>).matchMedia,
+    ResizeObserver: (globalThis as Record<string, unknown>).ResizeObserver,
+    document: (globalThis as Record<string, unknown>).document,
+    requestAnimationFrame: (globalThis as Record<string, unknown>).requestAnimationFrame,
+    cancelAnimationFrame: (globalThis as Record<string, unknown>).cancelAnimationFrame,
+    devicePixelRatio: (globalThis as Record<string, unknown>).devicePixelRatio,
+  };
+  const gradient = { addColorStop() {} };
+  const ctx = new Proxy({}, {
+    get: (target, key) => (Reflect.has(target, key) ? Reflect.get(target, key) : () => gradient),
+    set: (target, key, value) => { Reflect.set(target, key, value); return true; },
+  });
+  const canvas = { width: 0, height: 0, clientWidth: 220, dataset: {} as Record<string, string>, getContext: () => ctx };
+  const globals = globalThis as Record<string, unknown>;
+  globals.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+  globals.ResizeObserver = class { observe() {} disconnect() {} };
+  globals.document = { hidden: false, addEventListener() {}, removeEventListener() {} };
+  globals.requestAnimationFrame = () => 1;
+  globals.cancelAnimationFrame = () => {};
+  globals.devicePixelRatio = 1;
+  const restore = () => {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete globals[key];
+      else globals[key] = value;
+    }
+  };
+  return { canvas, restore };
+}

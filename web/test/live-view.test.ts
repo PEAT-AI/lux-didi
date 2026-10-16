@@ -4,6 +4,8 @@ import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { createContext, runInContext } from 'node:vm';
 import { liveStateLabel, liveVoiceState, pendingToolNames, liveLabel, liveDelay, mergeLive, liveTranscript, liveResult, liveMarkup, liveActivity, activityMarkup, SLOW_TOOL_MS } from '../src/live-view.ts';
+// Side-effect import: register the orb parity suite (F5 drawn activity, F6 posture) in the declared web checks.
+import './orb-parity.test.ts';
 import './connector-status.test.ts';
 import { pollLiveView } from '../src/live-view.ts';
 import type { LiveCurrent } from '../src/protocol.ts';
@@ -80,11 +82,12 @@ test('maps live state to the orb VoiceState', () => {
   assert.equal(liveVoiceState('error'), 'ERROR');
 });
 
-test('poll interval is 1 s when active and 4 s when idle, paused when hidden', () => {
+test('poll interval is 250 ms when active and 4 s when idle, paused when hidden', () => {
   assert.equal(liveDelay('idle', false), 4000);
   assert.equal(liveDelay(undefined, false), 4000);
-  assert.equal(liveDelay('speaking', false), 1000);
-  assert.equal(liveDelay('listening', false), 1000);
+  assert.equal(liveDelay('speaking', false), 250);
+  assert.equal(liveDelay('listening', false), 250);
+  assert.equal(liveDelay('thinking', false), 250);
   assert.equal(liveDelay('speaking', true), undefined);
 });
 
@@ -421,7 +424,7 @@ test('remembered note text is escaped and never rendered as raw markup', () => {
 test('terminal Live uses idle cadence while active and hidden cadence stay unchanged', () => {
   assert.equal(liveDelay('ended', false), 4000);
   assert.equal(liveDelay('error', false), 4000);
-  assert.equal(liveDelay('rebuilding', false), 1000);
+  assert.equal(liveDelay('rebuilding', false), 250);
   assert.equal(liveDelay('ended', true), undefined);
 });
 

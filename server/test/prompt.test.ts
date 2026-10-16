@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { GeminiAdapter } from '../adapters/model/gemini.js';
 import type { ToolDefinition } from '../adapters/model/types.js';
-import { compilePrompt, compileVoiceInstruction, createCapabilitySnapshot, validateOwnerProfile, validatePreferences, PUBLIC_PERSONA, PROMPT_VERSION, PromptCompileError, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, type CompileInput, type Evidence } from '../prompt/index.js';
+import { compilePrompt, compileVoiceInstruction, createCapabilitySnapshot, validateOwnerProfile, validatePreferences, PUBLIC_PERSONA, NAYA_CHARACTER, NAYA_TEXT_SURFACE, PROMPT_VERSION, PromptCompileError, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, type CompileInput, type Evidence } from '../prompt/index.js';
 
 const rawPreferences = { schemaVersion: 1, ownerId: 'alice', dataClass: 'private', language: 'en', register: 'plain', humor: 'dry', verbosity: 'brief' };
 const tool: ToolDefinition = { name: 'read_note', description: 'Read a note', parameters: { type: 'object', properties: { id: { type: 'string' } } }, effect: 'read', accountId: 'account', resourceId: 'notes', validate: () => true, execute: async () => ({ status: 'completed', result: { id: 'read_note', sha256: createHash('sha256').update('read_note synthetic result').digest('hex') } }) };
@@ -254,6 +254,29 @@ test('owner profile shares exact classified canonical text and turn-less voice a
   assert.deepEqual(compiled.dataClasses, ['ordinary', 'private', 'sensitive']);
   assert.deepEqual((voice as unknown as { dataClasses: string[] }).dataClasses, ['private', 'sensitive']);
 });
+test('the owner chat persona is the shared character and text surface, not the Didi persona', () => {
+  const base = input();
+  const withProfile = compilePrompt({ ...base, ownerProfile: syntheticOwner } as CompileInput);
+  assert.ok(withProfile.system.includes(NAYA_CHARACTER), 'the owner chat prompt carries the shared character');
+  assert.ok(withProfile.system.includes(NAYA_TEXT_SURFACE), 'the owner chat prompt carries the text surface');
+  assert.equal(withProfile.system.includes('You are Didi'), false, 'the Didi persona is gone for an owner profile');
+  assert.equal(withProfile.system.includes('"humor"'), false, 'the preferences payload drops humor');
+  assert.equal(withProfile.system.includes('"verbosity"'), false, 'the preferences payload drops verbosity');
+  const noProfile = compilePrompt(base);
+  assert.ok(noProfile.system.includes(PUBLIC_PERSONA), 'the no-profile chat keeps the Didi persona');
+  assert.match(noProfile.system, /You are Didi/);
+});
+
+test('prior turns reach the model as plain role turns, never as JSON envelope strings', () => {
+  const compiled = compilePrompt({ ...input(), history: [
+    { schemaVersion: 1, ownerId: 'alice', dataClass: 'ordinary', id: 'turn-1', role: 'user', text: 'What next?' },
+    { schemaVersion: 1, ownerId: 'alice', dataClass: 'ordinary', id: 'turn-2', role: 'model', text: 'The plan.' },
+  ] });
+  assert.deepEqual(compiled.contents.map(c => c.role), ['user', 'model']);
+  assert.deepEqual(compiled.contents.map(c => c.parts[0]!.text), ['What next?', 'The plan.']);
+  for (const c of compiled.contents) assert.equal(c.parts[0]!.text!.startsWith('{"schemaVersion'), false, 'a turn is never a JSON envelope');
+});
+
 test('owner text is never truncated and unknown classes/fields and wrong owner are rejected', () => {
   for (const ownerProfile of [
     { ...syntheticOwner, ownerId: 'other' }, { ...syntheticOwner, hidden: 'override' },

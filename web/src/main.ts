@@ -454,7 +454,7 @@ function renderTranscript(list: HTMLElement) {
     return;
   }
   const known = new Set(children.map(child => child.dataset.seg ?? ''));
-  list.innerHTML = segments.map(segment => segment.html).join('') || '<p class="muted">No live transcription yet.</p>';
+  list.innerHTML = segments.map(segment => segment.html).join('') || '<p class="transcript-placeholder muted">Press Start or \u2318\u21e7Space to talk</p>';
   for (const child of [...list.children] as HTMLElement[]) if (!known.has(child.dataset.seg ?? '')) child.classList.add('entry-new');
 }
 function bindTranscript() {

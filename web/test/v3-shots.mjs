@@ -148,8 +148,11 @@ try {
         }
         return maxX < 0 ? null : Math.round(Math.max(maxX - minX, maxY - minY) * scale);
       };
-      const core = bounds(179), drawn = bounds(24);
-      return { box: Math.round(boxSize), core, coreShare: core === null ? null : Number((core / boxSize).toFixed(3)), drawn, drawnShare: drawn === null ? null : Number((drawn / boxSize).toFixed(3)) };
+      const core = bounds(179), drawn = bounds(8);
+      let border = 0;
+      for (let x = 0; x < width; x++) for (const y of [0, height - 1]) if (data[(y * width + x) * 4 + 3] > 8) border++;
+      for (let y = 0; y < height; y++) for (const x of [0, width - 1]) if (data[(y * width + x) * 4 + 3] > 8) border++;
+      return { box: Math.round(boxSize), core, coreShare: core === null ? null : Number((core / boxSize).toFixed(3)), drawn, drawnShare: drawn === null ? null : Number((drawn / boxSize).toFixed(3)), border };
     })();
     return {
       stageShare: voice && stage ? Number((stage.height / voice.height).toFixed(3)) : null,
@@ -172,6 +175,20 @@ try {
       transcriptTopGap: stageBox && transcriptBox ? Math.round(transcriptBox.top - stageBox.bottom) : null,
       voiceColumn: Math.round((() => { const el = document.querySelector('.transcript .live-turns'); return el ? el.getBoundingClientRect().width : 0; })()),
       composerButtons: [...document.querySelectorAll('.composer-field button')].filter(button => button.getClientRects().length > 0).length,
+      emptyBarsAboveComposer: (() => {
+        const form = document.querySelector('#connected-send-form'), list = document.querySelector('#connected-entries');
+        if (!form || !list) return 0;
+        const top = list.getBoundingClientRect().bottom, bottom = form.getBoundingClientRect().top;
+        return [...document.querySelectorAll('.connected-conversation *')].filter(el => {
+          const rect = el.getBoundingClientRect();
+          if (rect.height <= 0 || rect.width <= 0 || rect.top < top - 1 || rect.bottom > bottom + 1) return false;
+          if (el.textContent.trim().length) return false;
+          const style = getComputedStyle(el);
+          const bordered = ['borderTopWidth', 'borderRightWidth', 'borderBottomWidth', 'borderLeftWidth'].some(side => Number.parseFloat(style[side]) > 0);
+          return bordered || style.backgroundImage !== 'none' || style.backgroundColor !== 'rgba(0, 0, 0, 0)';
+        }).length;
+      })(),
+      attachGlyph: (() => { const svg = document.querySelector('#connected-attach svg'); if (!svg) return null; const rect = svg.getBoundingClientRect(); const style = getComputedStyle(svg); return { w: Math.round(rect.width), h: Math.round(rect.height), fill: style.fill, color: getComputedStyle(svg.parentElement).color }; })(),
       attachVisible: (() => { const el = document.querySelector('#connected-attach'); return !!el && el.getClientRects().length > 0; })(),
       pillInsideStage: (() => { const control = document.querySelector('#voice-stop') ?? document.querySelector('#voice-start'); if (!control || !stageBox) return null; const rect = control.getBoundingClientRect(); return rect.top >= stageBox.top - 0.5 && rect.bottom <= stageBox.bottom + 0.5 && rect.left >= stageBox.left - 0.5 && rect.right <= stageBox.right + 0.5; })(),
       consentInset: (() => { const el = document.querySelector('.connected-disclosure'); if (!el) return null; const column = document.querySelector('#connected-entries'); return column ? Math.round(el.getBoundingClientRect().left + Number.parseFloat(getComputedStyle(el).paddingLeft) - column.getBoundingClientRect().left) : null; })(),
@@ -208,6 +225,9 @@ try {
   assert.equal(table.pill, 'Start', 'Live is off offers Start');
   assert.equal(table.composerButtons, 2, 'the idle composer shows the attach plus and the send');
   assert.equal(table.attachVisible, true, 'the attach plus is visible in idle as well as with a draft');
+  assert.equal(table.orbBorderPixels, 0, `no drawing pixel touches the orb box border (${table.orbBorderPixels})`);
+  assert.equal(table.emptyBarsAboveComposer, 0, 'no empty bordered bar sits above the composer');
+  assert.equal(table.attachGlyph !== null && table.attachGlyph.w >= 14 && table.attachGlyph.h >= 14, true, `the attach control draws a real glyph (${JSON.stringify(table.attachGlyph)})`);
   assert.equal(table.pillInsideStage, true, 'every control sits fully inside the stage');
   assert.equal(table.consentInset, 24, 'the consent line uses the column side padding');
   assert.equal(table.composerBottom >= 16 && table.composerBottom <= 24, true, `the composer sits 16 to 24 px above the lane bottom (${table.composerBottom})`);
@@ -236,6 +256,9 @@ try {
     throw Error(`the chat list is not pinned: ${JSON.stringify({ ...chatState, distance: table.chatDistance })}`);
   }
   assert.equal(table.composerBottom, composerBottomIdle, `the composer never moves when lines arrive (${composerBottomIdle} then ${table.composerBottom})`);
+  assert.equal(table.orbBorderPixels, 0, `no drawing pixel touches the orb box border (${table.orbBorderPixels})`);
+  assert.equal(table.orbDrawingShare <= 0.95, true, `the whole drawing stays inside the box with margin (${table.orbDrawingShare})`);
+  assert.equal(table.emptyBarsAboveComposer, 0, 'no empty bordered bar sits above the composer');
   assert.equal(table.listNumbers, '1,2,3,4,5', `the ordered list keeps its numbering (${table.listNumbers})`);
   assert.equal(table.chatBubbleRight, 0, 'the chat owner bubble sits at the column right edge');
   assert.equal(table.voiceBubbleRight, 0, 'the voice owner bubble sits at the column right edge');
@@ -287,12 +310,13 @@ try {
   await rm(state, { recursive: true, force: true }).catch(() => {});
 }
 
-const columns = ['viewport', 'stageShare', 'orbDiameter', 'orbShare', 'sphereCore', 'sphereCoreShare', 'sphereDrawnShare', 'stageBorder', 'pill', 'mute', 'pillInsideStage', 'transcriptTopGap', 'voiceColumn', 'chatColumn', 'composerButtons', 'attachVisible', 'consentInset', 'bubbleRight', 'composerBottom', 'labels', 'documentScrolls', 'listNumbers', 'voiceJump', 'chatJump'];
+const columns = ['viewport', 'stageShare', 'orbDiameter', 'orbShare', 'sphereCore', 'sphereCoreShare', 'orbDrawingShare', 'orbBorderPixels', 'stageBorder', 'pill', 'mute', 'pillInsideStage', 'transcriptTopGap', 'voiceColumn', 'chatColumn', 'composerButtons', 'attachVisible', 'emptyBarsAboveComposer', 'consentInset', 'bubbleRight', 'composerBottom', 'labels', 'documentScrolls', 'listNumbers', 'voiceJump', 'chatJump'];
 const flatten = row => ({
   ...row,
   sphereCore: row.sphere ? row.sphere.core : null,
   sphereCoreShare: row.sphere ? row.sphere.coreShare : null,
-  sphereDrawnShare: row.sphere ? row.sphere.drawnShare : null,
+  orbDrawingShare: row.sphere ? row.sphere.drawnShare : null,
+  orbBorderPixels: row.sphere ? row.sphere.border : null,
   bubbleRight: row.chatBubbleRight !== null && row.chatBubbleRight !== undefined ? row.chatBubbleRight : row.voiceBubbleRight,
 });
 const markdown = [

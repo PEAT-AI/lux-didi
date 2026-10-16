@@ -15,7 +15,7 @@ import type { ToolCallIntent } from '../adapters/model/types.js';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
-import type { EndpointConfig, McpPort } from '../adapters/mcp/port.js';
+import type { CallResult, CompletedResult, EndpointConfig, McpPort, ResultScope } from '../adapters/mcp/port.js';
 import { composeMcpRuntime } from '../host/mcp.js';
 import { GOOGLE_FAMILIES, GOOGLE_TOOLS, createGoogleReader, type GoogleConfig, type GoogleEvidence, type GoogleResult } from '../connectors/index.js';
 import { credentialFailure, decodeGoogleEnvelope, googleToolStatus, readGooglePayload, renderGoogleTool } from '../tools/google.js';
@@ -110,24 +110,24 @@ test('a granted google endpoint calls the real child with bounded defaults and b
     assert.match(readProjection.text, /subject: Synthetic subject line/);
     assert.match(readProjection.text, /body truncated|\[omitted: \d+ characters of body; final/);
 
-    const events = completed(await calendar.gcalList({}));
+    const events = completed(await calendar.gcalList({ calendarId: 'primary' }));
     payloadPorts.set(events, adapter);
     const calendarEnvelope = envelopeOf(events);
     const received = calendarEnvelope['received'] as Record<string, unknown>;
     assert.equal(received['calendarId'], 'primary');
     assert.equal(typeof received['timeMin'], 'string');
     assert.equal(typeof received['timeMax'], 'string');
-    const windowed = completed(await calendar.gcalList({ timeMin: '2026-10-12T00:00:00+05:30', timeMax: '2026-10-13T00:00:00+05:30' }));
+    const windowed = completed(await calendar.gcalList({ calendarId: 'primary', timeMin: '2026-10-12T00:00:00+05:30', timeMax: '2026-10-13T00:00:00+05:30' }));
     payloadPorts.set(windowed, adapter);
     const windowReceived = envelopeOf(windowed)['received'] as Record<string, unknown>;
     assert.equal(windowReceived['timeMin'], '2026-10-12T00:00:00+05:30');
     assert.equal(windowReceived['timeMax'], '2026-10-13T00:00:00+05:30');
-    const localDefault = completed(await calendar.gcalList({ timeZone: 'Asia/Kolkata', now: () => Date.parse('2026-10-14T12:00:00Z') }));
+    const localDefault = completed(await calendar.gcalList({ calendarId: 'primary', timeZone: 'Asia/Kolkata', now: () => Date.parse('2026-10-14T12:00:00Z') }));
     payloadPorts.set(localDefault, adapter);
     const defaultReceived = envelopeOf(localDefault)['received'] as Record<string, unknown>;
     assert.equal(defaultReceived['timeMin'], '2026-10-14T00:00:00+05:30');
     assert.equal(defaultReceived['timeMax'], '2026-10-15T00:00:00+05:30');
-    const refused = await calendar.gcalList({ timeMin: 'not-a-window' });
+    const refused = await calendar.gcalList({ calendarId: 'primary', timeMin: 'not-a-window' });
     assert.equal(refused.state === 'refused' ? refused.reason : '', 'invalid-time-window');
     const eventProjection = renderGoogleTool('gcal_list', (calendarEnvelope['data'] as Record<string, unknown>));
     assert.match(eventProjection.text, /2024-01-01T09:00:00Z, Synthetic standup, Room 1/);
@@ -323,7 +323,7 @@ test('a credential-failing call flips the calendar endpoint to configured/auth-n
 
     const definition = runtime.owner.definitions('run').find(candidate => candidate.name === 'gcal_list');
     assert(definition?.execute);
-    const callArgs = {};
+    const callArgs = { calendarId: 'primary' };
     const intent: ToolCallIntent = { runId: 'run', actorId: 'actor', authorityEpoch: store.authorityEpoch, revision: 1, executionId: 'run:1:0', toolName: 'gcal_list', argumentsHash: sha256(JSON.stringify(callArgs)), callId: 'call', accountId: ACCOUNT, resourceId: RESOURCE };
     assert.equal(runtime.owner.journal.intent(intent), 'fresh');
     const failed = await definition!.execute!(callArgs, { ...intent, signal: new AbortController().signal });
@@ -380,4 +380,92 @@ test('gmail_list projects an SSE MCP entity from separately decodedResult', asyn
   if (!projected.ok) throw Error('projection failed');
   assert(projected.projection.text.includes('Synthetic SSE'));
   assert(!projected.projection.text.includes('synthetic-unclassified'));
+});
+
+// --- F4-R2: the connector resolves the selected calendars and merges in bounded parallel ---------
+
+const CALENDAR_DIGEST = 'synthetic-calendar-digest';
+
+async function calendarReader(port: McpPort) {
+  const registry = new McpRegistry();
+  const endpoint = config('calendar-fake', 'ok', join(tmpdir(), 'calendar-fake.pid'));
+  registry.register(endpoint); registry.enable(endpoint.id); registry.allowEgress(endpoint.id);
+  const tools = [{ name: 'gcal_calendars', inputSchema: { type: 'object' } }, { name: 'gcal_list', inputSchema: { type: 'object' } }];
+  const digest = registry.observed('calendar-fake', tools, registry.revision('calendar-fake'));
+  registry.approve({ endpointId: 'calendar-fake', schemaDigest: digest, toolNames: ['gcal_calendars', 'gcal_list'], effect: 'read', account: ACCOUNT, resource: RESOURCE, generation: 1 });
+  return createGoogleReader({ port, registry, config: { endpointId: 'calendar-fake', account: ACCOUNT, resource: RESOURCE, schemaDigest: digest, generation: 1, family: 'calendar' } });
+}
+function dataOf(result: GoogleResult): Record<string, unknown> {
+  if (result.state !== 'completed') throw new Error(`not completed: ${JSON.stringify(result)}`);
+  const content = (result.decodedResult as { content?: { text?: string }[] }).content;
+  const envelope = JSON.parse(content?.[0]?.text ?? '{}') as { data?: Record<string, unknown> };
+  return envelope.data ?? {};
+}
+function fakeCalendarPort(options: { calendars: { id: string; summary: string }[]; eventsFor: (id: string, index: number) => Record<string, unknown>; defer?: boolean }): { port: McpPort; listArgs: Record<string, unknown>[]; peak: () => number; pending: () => number; release: () => void } {
+  const scope = { endpointId: 'calendar-fake', url: 'https://fake.invalid', schemaDigest: CALENDAR_DIGEST, toolName: 'gcal_list', generation: 1, account: ACCOUNT, resource: RESOURCE } as unknown as ResultScope;
+  const completed = (data: unknown): CompletedResult => ({
+    state: 'completed', decodedResult: { content: [{ type: 'text', text: JSON.stringify({ data }) }] },
+    source: scope, coverage: { completeCorpus: false, basis: 'single-tool-result', remoteSideEffects: 'unverified' },
+    freshness: { receivedAt: 0, sourceVersion: 'unknown' },
+    projection: { text: '', omitted: false, originalCharacters: 0, omittedCharacters: 0 },
+    payload: { state: 'unavailable', reason: 'capacity' },
+  });
+  const listArgs: Record<string, unknown>[] = [];
+  const gates: (() => void)[] = [];
+  let inFlight = 0, peak = 0, index = 0;
+  const port: McpPort = {
+    discover: async () => ({ state: 'discovered', endpointId: 'calendar-fake', schemaDigest: CALENDAR_DIGEST, tools: [{ name: 'gcal_calendars', inputSchema: { type: 'object' } }, { name: 'gcal_list', inputSchema: { type: 'object' } }], observedAt: 0 }),
+    visibleTools: () => [],
+    whenSuspended: async () => undefined,
+    close: async () => undefined,
+    readSlice: () => ({ state: 'unavailable', reason: 'synthetic' }),
+    async call(request): Promise<CallResult> {
+      if (request.toolName === 'gcal_calendars') return completed({ calendars: options.calendars });
+      const id = String(request.arguments['calendarId']);
+      listArgs.push({ ...request.arguments });
+      const at = index++;
+      if (options.defer) {
+        inFlight += 1; peak = Math.max(peak, inFlight);
+        await new Promise<void>(resolve => gates.push(resolve));
+        inFlight -= 1;
+      }
+      return completed({ events: [options.eventsFor(id, at)] });
+    },
+  };
+  return { port, listArgs, peak: () => peak, pending: () => gates.length, release: () => { for (const gate of gates.splice(0)) gate(); } };
+}
+
+test('a calendar read with no id resolves every selected calendar and merges, sorts, dedupes and tags', async () => {
+  const shared = { id: 'e-shared', summary: 'Standup', start: { dateTime: '2026-10-16T09:00:00+05:30' } };
+  const later = { id: 'e-later', summary: 'Review', start: { dateTime: '2026-10-16T11:00:00+05:30' } };
+  const fake = fakeCalendarPort({ calendars: [{ id: 'a', summary: 'Alpha' }, { id: 'b', summary: 'Beta' }, { id: 'c', summary: 'Gamma' }], eventsFor: (id) => (id === 'c' ? later : shared) });
+  const result = await (await calendarReader(fake.port)).gcalList({});
+  const data = dataOf(result);
+  const events = data['events'] as Record<string, unknown>[];
+  assert.equal(events.length, 2, 'a shared event is deduped by id across calendars');
+  assert.deepEqual(events.map(event => [event['id'], event['calendar']]), [['e-shared', 'Alpha'], ['e-later', 'Gamma']]);
+  assert.deepEqual(fake.listArgs.map(args => args['calendarId']).sort(), ['a', 'b', 'c']);
+  const projection = renderGoogleTool('gcal_list', data);
+  assert.match(projection.text, /2026-10-16T09:00:00\+05:30, Standup \| Alpha/);
+  assert.match(projection.text, /2026-10-16T11:00:00\+05:30, Review \| Gamma/);
+});
+
+test('per-calendar reads run concurrently inside the connector, bounded at six, with no sleeps', async () => {
+  const ids = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
+  const fake = fakeCalendarPort({
+    calendars: ids.map((id, i) => ({ id, summary: id.toUpperCase() + String(i) })),
+    eventsFor: (id, index) => ({ id: `e-${id}`, summary: `Event ${id}`, start: { dateTime: `2026-10-16T0${index}:00:00+05:30` } }),
+    defer: true,
+  });
+  const tick = (): Promise<void> => new Promise(resolve => setImmediate(resolve));
+  const run = (await calendarReader(fake.port)).gcalList({});
+  let done = false; void run.then(() => { done = true; }, () => { done = true; });
+  for (let i = 0; i < 200 && !done && fake.pending() < 6; i += 1) await tick();
+  assert.equal(fake.peak(), 6, 'at most six per-calendar reads are in flight');
+  for (let i = 0; i < 200 && !done; i += 1) { fake.release(); await tick(); }
+  fake.release();
+  const result = await run;
+  const events = dataOf(result)['events'] as Record<string, unknown>[];
+  assert.equal(events.length, 8);
+  assert.deepEqual(events.map(event => event['calendar']), ids.map(id => id.toUpperCase() + String(ids.indexOf(id))));
 });

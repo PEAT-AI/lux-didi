@@ -75,14 +75,15 @@ test('the fallback mail query carries operators and keywords, chat carries after
   assert.equal(candidateSubs('mail_search', { question: 'q', configured: CONFIGURED, evidence: new Map() })[0]?.args['q'], 'in:inbox newer_than:2d');
 });
 
-test('a calendar window is asked for, and the sub-call gets an RFC3339 range', () => {
+test('a calendar window is asked for, and one merged event read covers every selected calendar', () => {
   const selection = fallbackSelection('What is on my calendar tomorrow?', CONFIGURED, Date.parse('2026-10-16T12:00:00Z'));
   assert.equal(selection.actions.find(action => action.kind === 'calendar_window')?.window, 'tomorrow');
   const subs = candidateSubs('calendar_window', { question: 'q', configured: ['calendar'], evidence: new Map(), window: 'tomorrow', nowMs: Date.parse('2026-10-16T12:00:00Z') });
-  assert.equal(subs[0]?.name, 'gcal_calendars');
-  assert.equal(subs[1]?.name, 'gcal_list');
-  assert.match(String(subs[1]?.args['timeMin']), /^\d{4}-\d{2}-\d{2}T/);
-  assert.match(String(subs[1]?.args['timeMax']), /^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(subs.length, 1, 'one merged connector call, never one sub-call per calendar');
+  assert.equal(subs[0]?.name, 'gcal_list');
+  assert.equal(subs[0]?.args['calendarId'], undefined, 'the connector resolves the selected set itself');
+  assert.match(String(subs[0]?.args['timeMin']), /^\d{4}-\d{2}-\d{2}T/);
+  assert.match(String(subs[0]?.args['timeMax']), /^\d{4}-\d{2}-\d{2}T/);
 });
 
 test('candidateSubs uses the authored query and the per-source limits', () => {
@@ -107,7 +108,7 @@ test('shapeBlock emits one mail line per item with a count line, never the id in
 test('shapeBlock collapses knowledge headings to id and title and caps the block', () => {
   const hits = Array.from({ length: 8 }, (_, i) => `### Insight ${i} (PATTERN | 2026-10-0${i}) [id ${i + 1}]\nsome body text for insight ${i}`).join('\n');
   const block = shapeBlock('knowledge_search', [sub('search_knowledge', hits)]);
-  assert.equal(block.lines.length, RESEARCH.knowledgeLines);
+  assert.equal(block.lines.length, Math.min(8, RESEARCH.knowledgeLines));
   assert.equal(block.total, 8);
   assert.match(block.lines[0]!, /^#1 Insight 0 .*\| some body text/);
 });

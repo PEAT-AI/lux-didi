@@ -331,12 +331,15 @@ export interface ResearchProgress {
   researchId: string; phase: 'started' | 'round' | 'done' | 'stopped';
   sourcesDone: SourceKind[]; sourcesPending: SourceKind[]; elapsedMs: number;
 }
+export type ResearchDriver = 'selector' | 'fallback' | 'single-source-hint';
+
 export interface ResearchRunLog {
   event: 'research_run'; researchId: string; questionClass: QuestionClass; rounds: number;
   perRound: { candidates: { kind: CandidateKind; pUseful: number }[]; chosen: CandidateKind[] }[];
   stopReason: string; status: 'answered' | 'partial' | 'stopped' | 'unavailable'; ops: number;
   sources: { kind: SourceKind; disposition: string; latencyMs: number }[];
   elapsedMs: number; deadAirMs: number; selectorMs: number; fallbackUsed: boolean; replyBytes: number;
+  driver?: ResearchDriver;
 }
 
 export interface ResearchDeps {
@@ -463,6 +466,9 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
   const sourceLog: ResearchRunLog['sources'] = [];
   let selectorMs = 0;
   let fallbackUsed = false;
+  // #260: how this run chose its sources, recorded where the loop decides it. selector dominates a
+  // later fallback; the fixed recipe and the single-source hint never override a selector decision.
+  let driver: ResearchDriver | undefined;
   let stopReason = 'rounds_exhausted';
   const started = run.startedAt;
   const deadlineAt = started + run.deadlineMs;
@@ -484,10 +490,12 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
       const source = hint[0]!;
       const kinds = offerable.filter(kind => CANDIDATES.find(c => c.kind === kind)?.source === source);
       selection = { questionClass: 'quick_fact', actions: kinds.map(kind => ({ kind })), pUseful: Object.fromEntries(kinds.map(kind => [kind, 0.6])) };
+      if (driver === undefined) driver = 'single-source-hint';
     } else if (deps.selector === undefined) {
       fallbackUsed = true;
       usedFallbackThisRound = true;
       selection = fallbackSelection(question || run.direction || '', configured);
+      if (driver === undefined) driver = 'fallback';
     } else {
       const selStart = now();
       let output: SelectorOutput | null = null;
@@ -495,9 +503,8 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
         output = await deps.selector.select({ question, questionClass: run.questionClass, direction: run.direction, configured, completed: [...run.ledger.values()].map(entry => ({ kind: entry.kind, summary: entry.summary })), candidates: offerable }, AbortSignal.any([signal, AbortSignal.timeout(RESEARCH.selectorDeadlineMs)]));
       } catch { output = null; }
       selectorMs += now() - selStart;
-      if (output === null) { fallbackUsed = true; usedFallbackThisRound = true; selection = fallbackSelection(question || run.direction || '', configured); }
-      else if (output.actions.length === 0) { selection = output; stopReason = output.questionClass === 'quick_fact' ? 'answered' : 'selector_stop'; }
-      else selection = output;
+      if (output === null) { fallbackUsed = true; usedFallbackThisRound = true; selection = fallbackSelection(question || run.direction || '', configured); if (driver === undefined) driver = 'fallback'; }
+      else { driver = 'selector'; if (output.actions.length === 0) { selection = output; stopReason = output.questionClass === 'quick_fact' ? 'answered' : 'selector_stop'; } else selection = output; }
     }
 
     if (run.ledger.size === 0 && question) run.questionClass = selection.questionClass;
@@ -561,7 +568,8 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
   const canContinue = !run.stopped && !run.cancelled && run.rounds < run.maxRounds && configured.some(source => !run.sourcesDone.has(source));
   deps.emit({ researchId: run.researchId, phase: 'done', sourcesDone: [...run.sourcesDone], sourcesPending: configured.filter(source => !run.sourcesDone.has(source)), elapsedMs });
   const reply = buildReply(run, status, configured, canContinue, limit);
-  deps.log({ event: 'research_run', researchId: run.researchId, questionClass: run.questionClass, rounds: run.rounds, perRound, stopReason, status, ops: run.ops, sources: sourceLog, elapsedMs, deadAirMs: elapsedMs, selectorMs, fallbackUsed, replyBytes: JSON.stringify(reply).length });
+  driver ??= 'single-source-hint';
+  deps.log({ event: 'research_run', researchId: run.researchId, questionClass: run.questionClass, rounds: run.rounds, perRound, stopReason, status, ops: run.ops, sources: sourceLog, elapsedMs, deadAirMs: elapsedMs, selectorMs, fallbackUsed, replyBytes: JSON.stringify(reply).length, driver });
   return reply;
 }
 

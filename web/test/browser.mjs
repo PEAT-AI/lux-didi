@@ -246,6 +246,11 @@ try {
         await panelPage.locator('#panel-toggle-left').waitFor();
         const shot = name => panelPage.screenshot({ path: `${artifacts}/w${width}-${name}.png`, fullPage: true });
         const expect = async (label, left, right) => {
+          await panelPage.waitForFunction(([l, r]) => {
+            const el = id => document.getElementById(id === 'left' ? 'panel-left' : 'panel-right');
+            const w = id => el(id)?.getBoundingClientRect().width ?? 0;
+            return el('left')?.dataset.state === l && el('right')?.dataset.state === r && (l === 'collapsed' ? w('left') < 1 : w('left') >= 200) && (r === 'collapsed' ? w('right') < 1 : w('right') >= 320);
+          }, [left, right], { timeout: 4000 });
           const a = await panelAudit(panelPage);
           assert.equal(a.left.state, left, `${label}: left state`);
           assert.equal(a.right.state, right, `${label}: right state`);

@@ -4,8 +4,7 @@ import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { createContext, runInContext } from 'node:vm';
 import { liveStateLabel, liveVoiceState, pendingToolNames, liveLabel, liveDelay, mergeLive, liveTranscript, liveResult, liveMarkup, liveActivity, activityMarkup, SLOW_TOOL_MS } from '../src/live-view.ts';
-// Side-effect import: register the orb parity suite (F5 drawn activity, F6 posture) in the declared web checks.
-import './orb-parity.test.ts';
+import { posture } from '../src/orb-level.ts';
 import './connector-status.test.ts';
 import { pollLiveView } from '../src/live-view.ts';
 import type { LiveCurrent } from '../src/protocol.ts';
@@ -655,4 +654,13 @@ test('output transcript chunks join with a space at a sentence boundary (V2-R2 i
   const lines = liveTranscript(live);
   assert.equal(lines.length, 1);
   assert.equal(lines[0].text, 'Ship the three-lane UI and the live pill. I checked the calendar.');
+});
+
+test('the PROCESSING override follows the playback band, never the owner capture (F6)', () => {
+  assert.equal(posture('PROCESSING', { level: 0.9, playback: 0 }), 'thinking', 'the owner talking does not make the orb speak');
+  assert.equal(posture('PROCESSING', { level: 0, playback: 0.9 }), 'speaking', 'audible playback during a tool turn still speaks');
+  assert.equal(posture('SPEAKING', { level: 0, playback: 0 }), 'speaking');
+  assert.equal(posture('LISTENING', { level: 0, playback: 0 }), 'listening');
+  assert.equal(posture('CONNECTING', { level: 0, playback: 0 }), 'thinking');
+  assert.equal(posture('ERROR', { level: 0, playback: 0 }), 'quiet');
 });

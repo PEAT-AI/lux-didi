@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { levelFrame, posture } from '../src/orb-level.ts';
+import { levelFrame } from '../src/orb-level.ts';
 
 const source = readFileSync(new URL('../src/orb-classic.ts', import.meta.url), 'utf8');
 const style = readFileSync(new URL('../src/style.css', import.meta.url), 'utf8');
@@ -78,13 +78,4 @@ test('typed text to Naya is an input under the voice card that posts to the live
   assert.match(main, /id="live-text-form"/);
   assert.match(main, /id="live-text"/);
   assert.ok(main.includes("request<{ sent: boolean }>('/live/text'"));
-});
-
-test('the PROCESSING override follows the playback band, never the owner capture (F6)', () => {
-  assert.equal(posture('PROCESSING', { level: 0.9, playback: 0 }), 'thinking', 'the owner talking does not make the orb speak');
-  assert.equal(posture('PROCESSING', { level: 0, playback: 0.9 }), 'speaking', 'audible playback during a tool turn still speaks');
-  assert.equal(posture('SPEAKING', { level: 0, playback: 0 }), 'speaking');
-  assert.equal(posture('LISTENING', { level: 0, playback: 0 }), 'listening');
-  assert.equal(posture('CONNECTING', { level: 0, playback: 0 }), 'thinking');
-  assert.equal(posture('ERROR', { level: 0, playback: 0 }), 'quiet');
 });

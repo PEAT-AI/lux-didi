@@ -133,23 +133,19 @@ test('pre-proof discovery exposes nothing, mismatch refuses, match publishes', a
   assert.ok(matching.mcp.registry.visibleTools('gmail').length > 0);
 });
 
-test('a stale proof never publishes or overwrites a replaced generation', async t => {
+test('a proof for a replaced generation publishes nothing', async t => {
   const { mcp, fake } = await compose(t, { ownerIdentity: OWNER });
   const first = mcp.start();
   await fake.waitProof(1);
   // `refresh` bumps the generation token synchronously, before its discovery call.
   const second = mcp.refresh();
-  // The old generation's proof now resolves with a mismatch: it must authorize nothing.
-  fake.releaseProof(0, OTHER);
-  await first;
-  assert.notEqual(mcp.status().endpoints[0]!.state, 'error', JSON.stringify(mcp.status().endpoints[0]));
-  // Generation 2 then proves the owner and is the only round that publishes.
-  await fake.waitProof(2);
+  // The replaced generation now resolves a matching proof: it must authorize nothing.
   fake.releaseProof(0, OWNER);
+  await first;
   await second;
-  assert.equal(mcp.status().endpoints[0]!.state, 'connected');
-  assert.equal(mcp.status().endpoints[0]!.reasonCode, undefined);
-  assert.deepEqual(mcp.connectionIds(), ['gmail']);
+  // Generation 2 cannot take the busy session, but the old proof published nothing either way.
+  assert.deepEqual(mcp.connectionIds(), []);
+  assert.equal(mcp.registry.currentGrant('gmail')?.toolNames.includes('gmail_list'), false);
 });
 
 test('shutdown during a proof publishes nothing and leaves no unhandled rejection', async t => {

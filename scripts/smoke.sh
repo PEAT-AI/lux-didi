@@ -10,7 +10,9 @@
 # merge. Use --dev to run against the platform default data directory instead of the installed config source.
 #
 # The probes never print a credential, a transcript or a connector payload: only event names, counts, byte
-# sizes and latencies. Never run it in a loop: one run makes at most three model turns.
+# sizes and latencies. A failed run keeps its host log and a metadata-only journal export under a dated
+# directory in the smoke data dir and prints that path; a green run keeps nothing new. Never run it in a
+# loop: one run makes at most three model turns.
 set -uo pipefail
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 cd "$(dirname "$0")/.."
@@ -25,8 +27,31 @@ if [[ ! -f "$dist_entry" ]] || [[ -n "$(find server \( -path server/dist -o -nam
 fi
 node_bin="${NODE:-$(command -v node)}"
 if [[ -z "$node_bin" || ! -x "$node_bin" ]]; then echo 'FAIL probe0-runtime node executable not found' >&2; exit 1; fi
-if command -v timeout >/dev/null 2>&1; then
-  timeout 300 "$node_bin" server/test/smoke/probes.mjs "$@"
-else
-  "$node_bin" server/test/smoke/probes.mjs "$@"
+# The harness self-check proves the probes' pure helpers (the driver gate and the failure note) before the
+# real run: it starts no host and makes no model turn. The file exists only in the full checkout.
+if [[ -f server/test/smoke/smoke-harness.test.mjs ]]; then
+  "$node_bin" --test server/test/smoke/smoke-harness.test.mjs || { echo 'FAIL probe0-harness the smoke harness self-check failed' >&2; exit 1; }
 fi
+run_probes() {
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 300 "$node_bin" server/test/smoke/probes.mjs "$@"
+  else
+    "$node_bin" server/test/smoke/probes.mjs "$@"
+  fi
+}
+# --dev uses the platform data directory, so no smoke data dir is created. Otherwise the smoke data dir
+# holds this run's state: a failure keeps it, with the probes' dated evidence directory inside, and prints
+# the path; a green run keeps nothing new.
+if [[ " $* " == *" --dev "* ]]; then
+  run_probes "$@"
+  exit $?
+fi
+smoke_dir="$(mktemp -d "${TMPDIR:-/tmp}/didi-smoke.XXXXXX")"
+run_probes --data-dir "$smoke_dir" "$@"
+status=$?
+if [ "$status" -ne 0 ]; then
+  echo "KEEP $smoke_dir"
+else
+  rm -rf "$smoke_dir"
+fi
+exit "$status"

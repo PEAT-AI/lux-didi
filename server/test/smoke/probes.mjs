@@ -8,7 +8,7 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { homedir, loadavg, tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -36,6 +36,42 @@ function log(line) { process.stdout.write(line + '\n'); }
 function now() { return Date.now(); }
 
 const HOSTLESS_PROBES = ['probe2-connectors', 'probe3-text-turn', 'probe4-voice-turn', 'probe5-research'];
+
+/** #260: the three drivers a research_run may name. probe5 reads the run's own field, never derives it. */
+export const RESEARCH_DRIVERS = ['selector', 'fallback', 'single-source-hint'];
+
+/** The run line's own driver, or null when it is absent or not one of the three. */
+export function researchDriver(run) {
+  return run && typeof run.driver === 'string' && RESEARCH_DRIVERS.includes(run.driver) ? run.driver : null;
+}
+
+/** probe5's failure note: the stage and the not-called metadata, never question text or transcript. */
+export function researchFailureNote(meta) {
+  const names = Array.isArray(meta.otherToolNames) ? meta.otherToolNames : [];
+  return `stage=${meta.stage} calls=${meta.calls ?? 0} runs=${meta.runs ?? 0} detail=${meta.detail ?? 'n/a'} status=${meta.status ?? 'n/a'} rounds=${meta.rounds ?? 0} read=${meta.read ?? 0} reply=${meta.replyBytes ?? 0}B`
+    + ` output_fragments=${meta.outputFragments ?? 0} output_chars=${meta.outputChars ?? 0} other_tools=${names.join(',') || 'none'} other_tool_calls=${meta.otherToolCalls ?? 0} turn_complete_ms=${meta.turnCompleteMs ?? 'n/a'}`;
+}
+
+/** Metadata-only projection of a journal page: the columns, never the retained transcript text. */
+function journalMetadata(fragments) {
+  return (Array.isArray(fragments) ? fragments : []).map(fragment => ({
+    journalSequence: fragment.journalSequence ?? null,
+    providerSequence: fragment.providerSequence ?? null,
+    kind: fragment.kind ?? null,
+    tool: fragment.tool && typeof fragment.tool.name === 'string' ? fragment.tool.name : null,
+    textChars: typeof fragment.text === 'string' ? fragment.text.length : 0,
+    finished: fragment.finished ?? null,
+    arrivedAt: fragment.arrivedAt ?? null,
+  }));
+}
+
+// A failed run keeps these under a dated directory in the smoke data dir; the host API is gone by then.
+const journalExports = [];
+function recordJournal(liveSessionId, fragments) {
+  const record = { liveSessionId, fragments: journalMetadata(fragments) };
+  const at = journalExports.findIndex(entry => entry.liveSessionId === liveSessionId);
+  if (at >= 0) journalExports[at] = record; else journalExports.push(record);
+}
 
 /** The host launch budget in ms: SMOKE_LAUNCH_TIMEOUT_S seconds, defaulting to the native 6 s ready budget. */
 export function launchTimeoutMs(env = process.env) {
@@ -232,6 +268,7 @@ async function liveTurn({ base, token, epoch, clipPath }) {
   while (now() < deadline) {
     const data = await journal().catch(() => null);
     const kinds = data && Array.isArray(data.fragments) ? data.fragments.map(fragment => fragment.kind) : [];
+    if (data && Array.isArray(data.fragments)) recordJournal(id, data.fragments);
     if (kinds.includes('toolResult') && toolResultAt === null) { toolResultAt = now(); audioAtResult = audioBytes; }
     if (toolResultAt !== null && now() - toolResultAt >= 5000) break;
     await new Promise(resolve => setTimeout(resolve, 1000));
@@ -309,12 +346,15 @@ async function researchTurn({ base, token, epoch, dataDir, clipPath }) {
     ws.send(silence);
     await new Promise(resolve => setTimeout(resolve, 300));
     try { ws.send(JSON.stringify({ type: 'endAudioStream' })); } catch { /* noop */ }
-    const deadline = now() + 90000;
-    let calls = 0; let result = null; let outputChars = 0; let outputAtResult = null;
+    const questionAt = now();
+    const deadline = questionAt + 90000;
+    let calls = 0; let result = null; let outputChars = 0; let outputAtResult = null; let lastFragments = [];
     while (now() < deadline) {
       const data = await journal().catch(() => null);
       const all = data && Array.isArray(data.fragments) ? data.fragments : [];
       const fragments = all.filter(fragment => (Number(fragment.journalSequence) || 0) > journalBase);
+      lastFragments = fragments;
+      recordJournal(id, all);
       calls = fragments.filter(fragment => fragment.kind === 'toolCall' && fragment.tool && fragment.tool.name === 'research').length;
       const results = fragments.filter(fragment => fragment.kind === 'toolResult' && fragment.tool && fragment.tool.name === 'research');
       if (results.length) result = results[results.length - 1].tool;
@@ -338,31 +378,53 @@ async function researchTurn({ base, token, epoch, dataDir, clipPath }) {
         else if (record.event === 'research_progress') progress += 1;
       }
     } catch { /* no host log means no recorded run */ }
-    if (calls !== 1) return { ok: false, stage: 'call', calls };
+    // Not-called metadata (#260): what the turn did instead of research, so a skipped run is explainable.
+    const outputFragments = lastFragments.filter(fragment => fragment.kind === 'outputTranscription');
+    const notCalled = {
+      outputFragments: outputFragments.length,
+      outputChars: outputFragments.reduce((sum, fragment) => sum + (typeof fragment.text === 'string' ? fragment.text.length : 0), 0),
+      otherToolNames: [...new Set(lastFragments.filter(fragment => fragment.kind === 'toolCall' && fragment.tool && typeof fragment.tool.name === 'string' && fragment.tool.name !== 'research').map(fragment => fragment.tool.name))],
+      otherToolCalls: lastFragments.filter(fragment => fragment.kind === 'toolCall' && fragment.tool && typeof fragment.tool.name === 'string' && fragment.tool.name !== 'research').length,
+      turnCompleteMs: (() => { const done = lastFragments.find(fragment => fragment.kind === 'turnComplete' && Number.isFinite(fragment.arrivedAt)); return done ? done.arrivedAt - questionAt : null; })(),
+    };
+    if (calls !== 1) return { ok: false, stage: 'call', calls, ...notCalled };
     // The question is one research run. A model may call the tool more than once (start then continue or
     // stop), but every run line for the question carries the one researchId the host minted.
     const ids = [...new Set(runs.map(line => line.researchId))];
-    if (ids.length !== 1) return { ok: false, stage: 'runs', calls, runs: ids.length, detail: runs.map(line => `${line.status}:${line.stopReason}:${line.rounds}`).slice(0, 8).join(' ') };
+    if (ids.length !== 1) return { ok: false, stage: 'runs', calls, runs: ids.length, detail: runs.map(line => `${line.status}:${line.stopReason}:${line.rounds}`).slice(0, 8).join(' '), ...notCalled };
     const answered = runs.filter(line => (line.status === 'answered' || line.status === 'partial') && line.rounds >= 1);
-    if (!answered.length) return { ok: false, stage: 'status', calls, runs: runs.length };
+    if (!answered.length) return { ok: false, stage: 'status', calls, runs: runs.length, ...notCalled };
     const run = answered[answered.length - 1];
     const read = Array.isArray(run.sources) ? run.sources.filter(source => source.disposition === 'completed').length : 0;
-    if (read < 1) return { ok: false, stage: 'sources', read };
-    if (!(run.replyBytes <= 2000)) return { ok: false, stage: 'over_cap', replyBytes: run.replyBytes };
-    if (outputAtResult === null || outputChars <= outputAtResult) return { ok: false, stage: 'no_output' };
-    // Three legitimate drivers; the run must name one of them and never none.
-    const driver = run.selectorMs > 0 ? 'selector' : (run.fallbackUsed === true ? 'fallback' : 'single-source-hint');
-    if (driver !== 'selector' && driver !== 'fallback' && driver !== 'single-source-hint') return { ok: false, stage: 'driver', driver };
-    return { ok: true, stage: 'turn', calls, rounds: run.rounds, sources: `${run.sources.length}(${read} read)`, driver, selectorMs: run.selectorMs, elapsedMs: run.elapsedMs, deadAirMs: run.deadAirMs, replyBytes: run.replyBytes, outputAfter: outputChars - outputAtResult, progress };
+    if (read < 1) return { ok: false, stage: 'sources', read, ...notCalled };
+    if (!(run.replyBytes <= 2000)) return { ok: false, stage: 'over_cap', replyBytes: run.replyBytes, ...notCalled };
+    if (outputAtResult === null || outputChars <= outputAtResult) return { ok: false, stage: 'no_output', ...notCalled };
+    // #260: the run names its own driver; a run line without one of the three fails and is never guessed.
+    const driver = researchDriver(run);
+    if (driver === null) return { ok: false, stage: 'driver', driver: run.driver ?? 'missing', ...notCalled };
+    return { ok: true, stage: 'turn', calls, rounds: run.rounds, sources: `${run.sources.length}(${read} read)`, driver, selectorMs: run.selectorMs, elapsedMs: run.elapsedMs, deadAirMs: run.deadAirMs, replyBytes: run.replyBytes, outputAfter: outputChars - outputAtResult, progress, ...notCalled };
   } finally { try { ws.close(); } catch { /* noop */ } }
+}
+
+/** A failed run keeps the host log and a metadata-only journal export under a dated directory (#260). */
+async function keepFailureEvidence(dataDir) {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const directory = join(dataDir, stamp);
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const hostLog = join(dataDir, 'logs', 'host.log');
+  if (existsSync(hostLog)) await copyFile(hostLog, join(directory, 'host.log'));
+  if (journalExports.length) await writeFile(join(directory, 'journal.json'), `${JSON.stringify(journalExports)}\n`);
+  return directory;
 }
 
 async function main() {
   const dev = process.argv.includes('--dev');
   const results = [];
-  const dataDir = dev
+  const dataDirArg = process.argv.indexOf('--data-dir');
+  const externalDataDir = dataDirArg >= 0 ? process.argv[dataDirArg + 1] || undefined : undefined;
+  const dataDir = externalDataDir ?? (dev
     ? join(homedir(), 'Library/Application Support/Lux Didi')
-    : await mkdtemp(join(tmpdir(), 'didi-smoke-'));
+    : await mkdtemp(join(tmpdir(), 'didi-smoke-')));
   const config = dev ? { configDir: undefined, ownerProfilePath: undefined } : await installedConfig();
   const serverEntry = join(root, 'server/dist/host/index.js');
   const webRoot = join(root, 'web/dist');
@@ -400,7 +462,7 @@ async function main() {
         const research = await researchTurn({ base, token, epoch, dataDir, clipPath });
         results.push({ id: 'probe5-research', ok: research.ok, note: research.ok
           ? `calls=${research.calls} rounds=${research.rounds} sources=${research.sources} driver=${research.driver} selectorMs=${research.selectorMs} elapsedMs=${research.elapsedMs} deadAirMs=${research.deadAirMs} reply=${research.replyBytes}B output_after=${research.outputAfter}B progress=${research.progress}`
-          : `stage=${research.stage} calls=${research.calls ?? 0} runs=${research.runs ?? 0} detail=${research.detail ?? 'n/a'} status=${research.status ?? 'n/a'} rounds=${research.rounds ?? 0} read=${research.read ?? 0} reply=${research.replyBytes ?? 0}B load=${loadAverageText()}` });
+          : researchFailureNote({ stage: research.stage, calls: research.calls, runs: research.runs, detail: research.detail, status: research.status, rounds: research.rounds, read: research.read, replyBytes: research.replyBytes, outputFragments: research.outputFragments, outputChars: research.outputChars, otherToolNames: research.otherToolNames, otherToolCalls: research.otherToolCalls, turnCompleteMs: research.turnCompleteMs }) + ` load=${loadAverageText()}` });
       } finally { await rm(clipPath, { force: true }); }
     } catch (error) { results.push({ id: 'probe5-research', ok: false, note: String(error && error.message).slice(0, 120) }); }
   } else {
@@ -411,12 +473,20 @@ async function main() {
   results.unshift({ id: 'probe1-strict-supervisor', ok: supervisorOk, note: supervisorNote(launch, host) });
 
   await stopSupervised(host);
-  if (!dev) await rm(dataDir, { recursive: true, force: true });
+  const failed = results.some(result => !result.ok && !result.skip);
 
   for (const result of results) log(`${result.skip ? 'SKIP' : result.ok ? 'PASS' : 'FAIL'} ${result.id} ${result.note}`);
   const passed = results.filter(result => result.ok).length;
   const skipped = results.filter(result => result.skip).length;
   log(`SUMMARY ${results.length} probes: ${passed} pass ${results.length - passed - skipped} fail${skipped ? ` ${skipped} skip` : ''}`);
+  // A failed run keeps its evidence; a green run keeps nothing new. The caller that owns the data dir
+  // (scripts/smoke.sh) prints the path it kept, so a standalone run prints it here instead.
+  if (failed) {
+    const evidence = await keepFailureEvidence(dataDir);
+    if (!externalDataDir) log(`KEEP ${evidence}`);
+  } else if (!dev && !externalDataDir) {
+    await rm(dataDir, { recursive: true, force: true });
+  }
   process.exit(passed === results.length ? 0 : 1);
 }
 

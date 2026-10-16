@@ -57,6 +57,7 @@ test('the timeout and invalid selector output fall back to the fixed recipe and 
   const h = harness({ selector: timedOut });
   const reply = await runResearch(h.deps, { action: 'start', question: 'what did the team decide about the release' }, new AbortController().signal);
   assert.equal(h.logs[0]!.fallbackUsed, true);
+  assert.equal(h.logs[0]!.driver, 'fallback');
   assert.equal(h.logs[0]!.rounds, 1);
   assert.ok(h.executed.length >= 1);
   assert.equal(reply['status'], 'answered');
@@ -70,6 +71,20 @@ test('a single-source hint skips the round-1 selector', async () => {
   assert.equal(selectCalls, 0);
   assert.ok(h.executed.length >= 1 && h.executed.every(call => call.name === 'gmail_list'));
   assert.equal(h.logs[0]!.fallbackUsed, false);
+  assert.equal(h.logs[0]!.driver, 'single-source-hint');
+});
+
+test('every lookup names the driver the loop used', async () => {
+  const hinted = harness({ selector: knowledge });
+  await runResearch(hinted.deps, { action: 'start', question: 'anything', sources: 'mail' }, new AbortController().signal);
+  assert.equal(hinted.logs[0]!.driver, 'single-source-hint');
+  const chosen = harness({ selector: knowledge });
+  await runResearch(chosen.deps, { action: 'start', question: 'what is the release status' }, new AbortController().signal);
+  assert.equal(chosen.logs[0]!.driver, 'selector');
+  const timedOut: ResearchSelector = { select: async () => { throw new Error('aborted'); } };
+  const fell = harness({ selector: timedOut });
+  await runResearch(fell.deps, { action: 'start', question: 'what is the release status' }, new AbortController().signal);
+  assert.equal(fell.logs[0]!.driver, 'fallback');
 });
 
 test('continue reuses the ledger and never re-reads a completed operation', async () => {

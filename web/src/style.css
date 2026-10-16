@@ -145,8 +145,8 @@
 .lanes{flex:1;min-width:0;display:flex;position:relative;overflow:hidden;padding:0}
 .lane{min-width:0;position:relative}
 .lane-voice{flex:1 1 auto;display:flex;flex-direction:column;min-width:0}
-/* A side panel has exactly two states (#282): open at its readable width, or collapsed at zero width and
-   invisible. The transition is the 150 ms expand/collapse; prefers-reduced-motion turns it off. */
+/* A side panel has exactly two states (issue 282): open at its readable width, or collapsed at zero
+   width and invisible. The transition is the 150 ms expand/collapse; prefers-reduced-motion turns it off. */
 .panel{opacity:1;transition:flex-basis .15s ease,opacity .15s ease}
 .panel[data-state="collapsed"]{flex-basis:0;min-width:0;opacity:0;pointer-events:none;overflow:hidden;padding:0;border-width:0}
 .panel-left[data-state="open"]{min-width:200px}

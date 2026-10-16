@@ -609,6 +609,26 @@ test('F6: a queued call aborted before dispatch never reaches the transport', as
   } finally { await adapter.close(); await f.close(); }
 });
 
+test('F8-R3: adapter close aborts an in-flight and a queued call with the close code', async () => {
+  const held = heldCall();
+  const f = await fixture({ call: held.call });
+  const { adapter, registry } = setup(f.url);
+  try {
+    await approve(adapter, registry);
+    const running = Array.from({ length: 6 }, () => adapter.call(request));
+    for (let i = 0; i < 100 && held.peak() < 6; i++) await flush();
+    assert.equal(held.peak(), 6, 'six calls are in flight');
+    const queued = adapter.call(request);
+    for (let i = 0; i < 20; i++) await flush();
+    assert.equal(held.arrived(), 6, 'the seventh call queues behind the limit');
+    const startedAt = Date.now();
+    await adapter.close();
+    assert.ok(Date.now() - startedAt < 2000, 'close completes promptly');
+    const results = await Promise.all([...running, queued]);
+    assert.equal(results.every(result => result.state === 'refused' && result.reason === 'adapter-closed'), true, JSON.stringify(results));
+  } finally { await adapter.close(); await f.close(); }
+});
+
 test('F6: five callers racing a cold endpoint create one session', async () => {
   const f = await fixture();
   const { adapter, registry } = setup(f.url);

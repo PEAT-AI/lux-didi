@@ -186,12 +186,14 @@ class EndpointGate {
   private readonly waiting: { start: () => void; fail: (reason: unknown) => void }[] = [];
   private readonly idle: (() => void)[] = [];
   private exclusive = false;
+  private failed: string | undefined;
   constructor(readonly limit: number) {}
   private pump(): void {
     if (this.exclusive) return;
     while (this.waiting.length > 0 && this.active < this.limit) { this.active += 1; this.waiting.shift()!.start(); }
   }
   acquire(signal?: AbortSignal): Promise<void> {
+    if (this.failed !== undefined) return Promise.reject(new PolicyError(this.failed));
     return new Promise<void>((resolve, reject) => {
       const invoke = () => { cleanup(); resolve(); };
       const fail = (reason: unknown) => { cleanup(); reject(reason); };
@@ -212,6 +214,11 @@ class EndpointGate {
     this.active -= 1;
     this.pump();
     if (this.active === 0) this.wakeIdle();
+  }
+  /** Close the gate: every queued caller settles with `reason` and no new caller is admitted. */
+  fail(reason: string): void {
+    this.failed = reason;
+    for (const entry of this.waiting.splice(0)) entry.fail(new PolicyError(reason));
   }
   private wakeIdle(): void { for (const resolve of this.idle.splice(0)) resolve(); }
   /** Block new calls, wait for every in-flight call to finish, then let the caller run alone. */
@@ -368,8 +375,10 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
       const localSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
       const gate = gateFor(request.endpointId);
       try { await gate.acquire(localSignal); }
-      catch {
-        // A queued call the caller cancels never dispatches; a deadline while queued is a clear timeout.
+      catch (error) {
+        // A closing adapter settles every queued call with the close code; a caller cancellation and
+        // a queued deadline each keep their own clear code.
+        if (error instanceof PolicyError && error.reason === 'adapter-closed') return { state: 'refused', reason: 'adapter-closed' };
         if (signal?.aborted) return { state: 'refused', reason: 'cancelled-before-dispatch' };
         return { state: 'refused', reason: 'timeout' };
       }
@@ -398,6 +407,7 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
           }
           return completed(scope, operation.bytes, result, result.isError ? 'tool-error' : 'completed');
         } catch (error) {
+          if (closed) return { state: 'refused', reason: 'adapter-closed' };
           if (operation.dispatched) {
             if (error instanceof ProtocolError && operation.explicitErrorCode !== undefined && operation.bytes && options.registry.authorizesScope(scope)) return completed(scope, operation.bytes, { error: { code: operation.explicitErrorCode } }, 'protocol-error', operation.explicitErrorCode, operation.explicitError);
             // Classify before retiring the child, so a local shutdown never rewrites the cause.
@@ -449,6 +459,6 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
         set.add(done);
       });
     },
-    async close(): Promise<void> { closed = true; await Promise.all([...sessions.keys()].map(async id => { suspend(id); await retire(id); })); },
+    async close(): Promise<void> { closed = true; for (const gate of gates.values()) gate.fail('adapter-closed'); await Promise.all([...sessions.keys()].map(async id => { suspend(id); await retire(id); })); },
   };
 }

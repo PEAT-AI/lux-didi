@@ -80,7 +80,9 @@ async function compose(t: TestContext, options: { ownerIdentity?: string | null;
   const dir = await mkdtemp(join(tmpdir(), 'didi-publication-'));
   const configDir = join(dir, 'provider-config'); await mkdir(configDir, { mode: 0o700 });
   const fake = await fakeConnector(options.blockConnect === undefined ? {} : { blockConnect: options.blockConnect });
-  t.after(async () => { await fake.close(); await rm(dir, { recursive: true, force: true }); });
+  // A superseded generation can leave a proof POST in flight; close the composition so the adapter
+  // aborts it before the fake endpoint is asked to close (F8-R3).
+  t.after(async () => { await mcp.close(); await fake.close(); await rm(dir, { recursive: true, force: true }); });
   await writeFile(join(configDir, 'mcp.json'), JSON.stringify({
     schemaVersion: 1, grantMode: 'owner-trusted-reads',
     ...(options.ownerIdentity === undefined || options.ownerIdentity === null ? {} : { ownerIdentity: options.ownerIdentity }),

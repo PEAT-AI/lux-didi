@@ -41,14 +41,16 @@ export function attachPin(
   onPinnedChange?: (pinned: boolean) => void,
   initiallyPinned = true,
 ): { repin(): void; pinned(): boolean; stop(): void } {
-  let pinned = initiallyPinned;
+  let pinned = initiallyPinned, frame: number | undefined;
   const metrics = (): ScrollMetrics => ({ scrollTop: list.scrollTop, scrollHeight: list.scrollHeight, clientHeight: list.clientHeight });
   const report = () => { if (pill) pill.hidden = !jumpVisible(pinned, metrics()); onPinnedChange?.(pinned); };
   const settle = () => { pinned = nextPinned(pinned, metrics()); if (pinned) list.scrollTop = list.scrollHeight; report(); };
+  // Content grows in a mutation callback, before layout: follow on the next frame so the new height is real.
+  const follow = () => { if (frame !== undefined) return; frame = requestAnimationFrame(() => { frame = undefined; settle(); }); };
   list.addEventListener('scroll', () => { pinned = isPinned(metrics()); report(); }, { passive: true });
-  const observer = new MutationObserver(settle);
+  const observer = new MutationObserver(follow);
   observer.observe(list, { childList: true, subtree: true, characterData: true });
   pill?.addEventListener('click', () => { pinned = true; settle(); });
-  settle();
-  return { repin() { pinned = true; settle(); }, pinned: () => pinned, stop() { observer.disconnect(); } };
+  follow();
+  return { repin() { pinned = true; settle(); }, pinned: () => pinned, stop() { if (frame !== undefined) cancelAnimationFrame(frame); observer.disconnect(); } };
 }

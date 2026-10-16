@@ -172,7 +172,7 @@ try {
   assert.equal(table.chatColumn <= 760, true, 'the chat column is at most 760 px');
   assert.equal(table.voiceJump, false, 'an empty transcript has nothing to jump to');
   const composerBottomIdle = table.composerBottom;
-  await sample('2000x1250-dark-a-idle');
+  await sample('2000x1250-dark-a-idle', { width: 2000, height: 1250 });
 
   live = { state: 'speaking', since: '2026-10-16T09:00:00Z', cursor: seq, entries: transcriptLines };
   chatOn = true;
@@ -197,27 +197,38 @@ try {
   assert.equal(table.chatBubbleRight, 0, 'the chat owner bubble sits at the column right edge');
   assert.equal(table.voiceBubbleRight, 0, 'the voice owner bubble sits at the column right edge');
   assert.equal(table.voiceJump, false, 'a pinned transcript offers no jump pill');
-  await sample('2000x1250-dark-b-speaking');
+  await sample('2000x1250-dark-b-speaking', { width: 2000, height: 1250 });
 
   await page.evaluate(() => { for (const selector of ['.transcript', '#connected-entries']) { const el = document.querySelector(selector); if (el) el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight - 400); } });
   await page.waitForFunction(() => !document.querySelector('#transcript-jump').hidden && !document.querySelector('#chat-jump').hidden);
+  const scrollUp = async () => {
+    await page.evaluate(() => { for (const selector of ['.transcript', '#connected-entries']) { const el = document.querySelector(selector); if (el) el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight - 400); } });
+    await page.waitForFunction(() => !document.querySelector('#transcript-jump').hidden && !document.querySelector('#chat-jump').hidden);
+  };
+  const repin = async () => {
+    await page.locator('#transcript-jump').click();
+    await page.locator('#chat-jump').click();
+    await page.waitForFunction(() => document.querySelector('#transcript-jump').hidden && document.querySelector('#chat-jump').hidden);
+  };
+  await scrollUp();
   table = await sample('1440x900-dark-c-scrolled-up');
   assert.equal(table.voiceJump, true, 'the transcript offers Jump to latest once the reader scrolls up');
   assert.equal(table.chatJump, true, 'the chat list offers Jump to latest once the reader scrolls up');
-  await page.locator('#transcript-jump').click();
-  await page.locator('#chat-jump').click();
-  await page.waitForFunction(() => document.querySelector('#transcript-jump').hidden && document.querySelector('#chat-jump').hidden);
+  await repin();
+  await scrollUp();
+  await sample('2000x1250-dark-c-scrolled-up', { width: 2000, height: 1250 });
+  await repin();
 
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.locator('#connected-draft').fill('Synthetic draft line one\nSynthetic draft line two\nSynthetic draft line three\nSynthetic draft line four\nSynthetic draft line five\nSynthetic draft line six');
   await page.waitForFunction(() => document.querySelector('#connected-draft').getBoundingClientRect().height > 56);
   await sample('1440x900-dark-d-draft');
-  await sample('2000x1250-dark-d-draft');
+  await sample('2000x1250-dark-d-draft', { width: 2000, height: 1250 });
   await page.locator('#connected-draft').fill('');
 
   await page.setViewportSize({ width: 800, height: 900 });
   await page.locator('button[data-segment="voice"]').click();
-  table = await sample('800x900-narrow-voice');
+  table = await sample('800x900-narrow-voice', { width: 800, height: 900 });
   assert.equal(table.stageShare >= 0.3 && table.stageShare <= 0.36, true, 'the narrow voice view keeps the top third stage');
 } finally {
   await stop(); await browser.close();

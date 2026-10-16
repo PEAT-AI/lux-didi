@@ -847,7 +847,6 @@ export class LiveSessionOwner {
    * against the per-episode bound, backoff is 0/2/5 s, and the current session deadline does not move.
    */
   async #recoverFromDrop(handle: ActiveSession, outcome: LiveVoiceOutcome | undefined): Promise<boolean> {
-    console.error(JSON.stringify({ event: 'dbg_recover', phase: 'enter', recoveries: handle.recoveries, last: handle.lastRecoveryPath ?? null }));
     const now = this.#now();
     if (handle.lastHealthyAt !== undefined && now - handle.lastHealthyAt >= RECOVERY_HEALTHY_MS) handle.recoveries = 0;
     if (handle.recoveries >= RECOVERY_MAX_CONSECUTIVE) { this.#settle(handle, { state: 'failed', code: 'resume_failed' }, false, 'ended', null); return false; }
@@ -877,7 +876,6 @@ export class LiveSessionOwner {
       // A failed resume leaves an unusable handle: clear it so the next drop goes straight to fresh seeded.
       if (failedResume) this.#store.transaction(tx => tx.run('UPDATE live_sessions SET resumption_handle=NULL WHERE live_session_id=?', [handle.liveSessionId]));
       this.#logRecovery(handle, path, 'opened', closeCode, reason, seed);
-      console.error(JSON.stringify({ event: 'dbg_recover', phase: 'opened', path }));
       return true;
     }
     handle.recoveries += 1;

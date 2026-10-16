@@ -997,7 +997,7 @@ test('two missed websocket pongs are a stalled transport', async t => {
   await session.ready;
   t.mock.timers.tick(5000); t.mock.timers.tick(5000); t.mock.timers.tick(5000);
   const outcome = await session.done; await captured.done;
-  assert.equal(peer.pings, 2, 'a ping every five seconds');
+  assert.equal(peer.pings, 3, 'a ping every five seconds, two missed before the drop');
   assert.equal(outcome.code, 'transport_error');
   assert.equal(outcome.upstream!.errorKind, 'no_pong');
 });

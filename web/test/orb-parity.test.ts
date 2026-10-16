@@ -44,7 +44,10 @@ test('a native level sample folds into a bounded five-band frame', () => {
   assert.equal(frame.mid, 1, 'a missing band defaults to the scalar level');
   assert.equal(frame.high, 1);
   assert.equal(frame.flux, 0);
-  assert.equal(levelFrame({ level: 0.5 }).mid, 0.5);
+  // #283: native RMS is mapped onto a perceptual (dB) scale, like Vicuna's analyser bands.
+  const half = levelFrame({ level: 0.05 });
+  assert.ok(half.level > 0.5 && half.level < 0.8, `speech-level RMS maps into the upper middle (${half.level})`);
+  assert.equal(half.mid, half.level);
   assert.equal(levelFrame({ level: Number.NaN }).level, 0, 'a non-finite level is clamped to silence');
 });
 

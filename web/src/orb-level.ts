@@ -55,6 +55,20 @@ export function levelFrame(sample: LevelSample): AudioFrame {
   };
 }
 
+export const silentFrame = (): AudioFrame => ({level:0,low:0,mid:0,high:0,flux:0,playback:0,rich:false,timestamp:performance.now()});
+/** The latest drive frame. While the native 60 Hz band frame is flowing, the legacy 20 Hz scalar
+ *  from the `levels` bridge path is ignored, so the two never interleave. */
+export class LatestFrame {
+  private frame = silentFrame();
+  private richAt = -Infinity;
+  push(frame: AudioFrame) {
+    if (frame.rich) this.richAt = frame.timestamp;
+    else if (frame.timestamp - this.richAt < 300) return;
+    this.frame = { ...frame };
+  }
+  read(now: number): AudioFrame { return now - this.frame.timestamp > 500 ? silentFrame() : this.frame; }
+}
+
 /** The audible level of one batched native tap: the louder of capture and playback, so the orb answers
  *  whoever is speaking (V3 item 1). Undefined when the batch carries no usable number. */
 export function levelPeak(input: readonly number[], output: readonly number[]): number | undefined {
@@ -97,13 +111,13 @@ export function follow(current: number, target: number, dt: number, attack: numb
 export const MOTION_TAU = {
   // Vowel body (low band): Vicuna's attack; a shorter release so the body visibly rests between
   // syllables at 4 to 6 per second instead of holding one flat bloom through a sentence.
-  lowAttack: 0.038689247052, lowDecay: 0.11,
+  lowAttack: 0.038689247052, lowDecay: 0.09,
   // Broadband playback level for tentacles and glow (Vicuna's playback taus).
   levelAttack: 0.032626919816, levelDecay: 0.057934324946,
   fluxAttack: 0.010355582243, fluxDecay: 0.09,
-  // Speaking macro: blooms into a syllable (~60 ms), releases over ~160 ms (Vicuna 80/250 held the
+  // Speaking macro: blooms into a syllable (~60 ms), releases over ~130 ms (Vicuna 80/250 held the
   // bloom flat across syllables once the low band carried real vowel energy).
-  activityAttack: 0.06, activityDecay: 0.16,
+  activityAttack: 0.06, activityDecay: 0.13,
   // Listening is softer: the orb leans towards the owner, it does not jump.
   listenAttack: 0.1, listenDecay: 0.32,
   // Phrase-level swell of the whole body: follows sentences, not syllables.

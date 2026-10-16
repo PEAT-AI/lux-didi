@@ -2,23 +2,10 @@
  * See orb-provenance.md for bounded extraction and MIT noise dependency.
  */
 import { ClassicRenderer, clampFrameDelta, smoothingAlpha, ORB_SMOOTHING_TAU } from './orb-classic.ts';
-import { frameInterval, initialMotion, levelFrame, posture, shouldPaint, stepMotion, type LevelSample, type MotionState } from './orb-level.ts';
+import { LatestFrame, frameInterval, initialMotion, levelFrame, posture, shouldPaint, stepMotion, type LevelSample, type MotionState } from './orb-level.ts';
 export type VoiceState = 'IDLE' | 'CONNECTING' | 'CONNECTED' | 'LISTENING' | 'PROCESSING' | 'SPEAKING' | 'RECONNECTING' | 'ERROR' | 'DISCONNECTED' | 'INTERRUPTED';
 export type { AudioFrame } from './orb-level.ts';
-import type { AudioFrame } from './orb-level.ts';
-export const silentFrame = (): AudioFrame => ({level:0,low:0,mid:0,high:0,flux:0,playback:0,rich:false,timestamp:performance.now()});
-/** The latest drive frame. While the native 60 Hz band frame is flowing, the legacy 20 Hz scalar
- *  from the `levels` bridge path is ignored, so the two never interleave. */
-export class LatestFrame {
-  private frame = silentFrame();
-  private richAt = -Infinity;
-  push(frame: AudioFrame) {
-    if(frame.rich)this.richAt=frame.timestamp;
-    else if(frame.timestamp-this.richAt<300)return;
-    this.frame = {...frame};
-  }
-  read(now: number): AudioFrame { return now-this.frame.timestamp>500 ? silentFrame() : this.frame; }
-}
+export { LatestFrame, silentFrame } from './orb-level.ts';
 /** Presence (#283): the classic geometry draws at 5 percent of the canvas; the whole drawing is
  *  scaled about the centre so the average speaking footprint fills most of the canvas, and a
  *  destination-out band fades everything before the square edge. */

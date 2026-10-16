@@ -401,7 +401,7 @@ function dataOf(result: GoogleResult): Record<string, unknown> {
   const envelope = JSON.parse(content?.[0]?.text ?? '{}') as { data?: Record<string, unknown> };
   return envelope.data ?? {};
 }
-function fakeCalendarPort(options: { calendars: { id: string; summary: string }[]; eventsFor: (id: string, index: number) => Record<string, unknown>; defer?: boolean }): { port: McpPort; listArgs: Record<string, unknown>[]; peak: () => number; pending: () => number; release: () => void } {
+function fakeCalendarPort(options: { calendars: { id: string; summary: string; primary?: boolean }[]; eventsFor: (id: string, index: number) => Record<string, unknown>; defer?: boolean; delayMs?: number }): { port: McpPort; listArgs: Record<string, unknown>[]; peak: () => number; pending: () => number; release: () => void } {
   const scope = { endpointId: 'calendar-fake', url: 'https://fake.invalid', schemaDigest: CALENDAR_DIGEST, toolName: 'gcal_list', generation: 1, account: ACCOUNT, resource: RESOURCE } as unknown as ResultScope;
   const completed = (data: unknown): CompletedResult => ({
     state: 'completed', decodedResult: { content: [{ type: 'text', text: JSON.stringify({ data }) }] },
@@ -419,11 +419,12 @@ function fakeCalendarPort(options: { calendars: { id: string; summary: string }[
     whenSuspended: async () => undefined,
     close: async () => undefined,
     readSlice: () => ({ state: 'unavailable', reason: 'synthetic' }),
-    async call(request): Promise<CallResult> {
+    async call(request, signal): Promise<CallResult> {
       if (request.toolName === 'gcal_calendars') return completed({ calendars: options.calendars });
       const id = String(request.arguments['calendarId']);
       listArgs.push({ ...request.arguments });
       const at = index++;
+      if (options.delayMs !== undefined) await new Promise<void>(resolve => { const timer = setTimeout(resolve, options.delayMs!); signal?.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, { once: true }); });
       if (options.defer) {
         inFlight += 1; peak = Math.max(peak, inFlight);
         await new Promise<void>(resolve => gates.push(resolve));
@@ -468,4 +469,21 @@ test('per-calendar reads run concurrently inside the connector, bounded at six, 
   const events = dataOf(result)['events'] as Record<string, unknown>[];
   assert.equal(events.length, 8);
   assert.deepEqual(events.map(event => event['calendar']), ids.map(id => id.toUpperCase() + String(ids.indexOf(id))));
+});
+
+// --- F9-R1: the primary calendar is always read; unread calendars are reported, never dropped --------
+
+test('a calendar read returns the primary and counts the calendars the deadline cut off', async () => {
+  const calendars = [{ id: 'primary', summary: 'Me', primary: true }, ...Array.from({ length: 9 }, (_, i) => ({ id: `other-${i}`, summary: `Other ${i}` }))];
+  // 3.5 s per calendar read; the sub-deadline fires at 3.6 s, after the primary has answered.
+  const fake = fakeCalendarPort({ calendars, eventsFor: id => ({ id: `event-${id}`, summary: id, start: { dateTime: '2026-10-16T09:00:00+05:30' } }), delayMs: 3_500 });
+  const controller = new AbortController();
+  const reader = await calendarReader(fake.port);
+  const run = reader.gcalList({ timeMin: '2026-10-16T00:00:00+05:30', timeMax: '2026-10-17T00:00:00+05:30' }, controller.signal);
+  setTimeout(() => controller.abort(), 3_600);
+  const result = await run;
+  const data = dataOf(result);
+  assert.deepEqual(data['partial'], { unread: 9 }, 'the nine calendars the deadline cut off are named, not dropped');
+  const events = data['events'] as Record<string, unknown>[];
+  assert.equal(events.some(event => event['id'] === 'event-primary' && event['calendar'] === 'Me'), true, 'the primary calendar is always returned');
 });

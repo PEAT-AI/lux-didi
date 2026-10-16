@@ -287,8 +287,10 @@ export function shapeGcalList(data: Record<string, unknown>): ShapedResult {
     const recut = cutAtSentence(lines.join('\n'), Math.max(0, CALENDAR_EVENT_CHARS - note(cut.omitted).length));
     return `${recut.text}${note(recut.omitted)}`;
   });
+  const unread = isRecord(data['partial']) && typeof data['partial']['unread'] === 'number' && data['partial']['unread'] > 0 ? data['partial']['unread'] : 0;
   const body = listed(blocks, CALENDAR_EVENTS, 'events');
-  return capped({ text: body.text, partial: body.omitted > 0, originalCharacters: blocks.join('\n').length, omittedCharacters: body.omitted, sources });
+  const text = unread > 0 ? `${body.text}\n[calendar read incomplete: ${unread} calendar${unread === 1 ? '' : 's'} not read]` : body.text;
+  return capped({ text, partial: body.omitted > 0 || unread > 0, originalCharacters: blocks.join('\n').length, omittedCharacters: body.omitted, sources });
 }
 
 // --- Mattermost ----------------------------------------------------------------------------

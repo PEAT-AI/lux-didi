@@ -219,10 +219,10 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
     return isRecord(envelope) && isRecord(envelope['data']) ? envelope['data'] : {};
   }
 
-  function calendarsOf(evidence: GoogleEvidence): { id: string; name: string }[] {
+  function calendarsOf(evidence: GoogleEvidence): { id: string; name: string; primary: boolean }[] {
     const list = envelopeData(evidence)['calendars'];
     if (!Array.isArray(list)) return [];
-    return list.filter(isRecord).map(entry => ({ id: typeof entry['id'] === 'string' ? entry['id'] : '', name: String(entry['summary'] ?? entry['name'] ?? 'calendar') })).filter(entry => entry.id.length > 0);
+    return list.filter(isRecord).map(entry => ({ id: typeof entry['id'] === 'string' ? entry['id'] : '', name: String(entry['summary'] ?? entry['name'] ?? 'calendar'), primary: entry['primary'] === true })).filter(entry => entry.id.length > 0);
   }
 
   function eventsOf(evidence: GoogleEvidence): Record<string, unknown>[] {
@@ -244,32 +244,39 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
   async function gcalWindow(baseArgs: Record<string, unknown>, explicit: readonly string[] | undefined, signal?: AbortSignal): Promise<GoogleResult> {
     const listed = await dispatch('gcal_calendars', { maxResults: Math.min(GOOGLE_DEFAULTS.listResults, settings.maxListResults) }, signal);
     if (listed.state !== 'completed') return listed;
-    const calendars = calendarsOf(listed);
+    // The owner's primary calendar is always read first and awaited inside the sub-deadline; every other
+    // calendar is read concurrently afterwards, and whichever does not finish before the caller's deadline
+    // is reported as unread (never silently dropped).
+    const calendars = calendarsOf(listed).sort((a, b) => Number(b.primary) - Number(a.primary));
     const names = new Map(calendars.map(entry => [entry.id, entry.name]));
     const selected = explicit ?? calendars.map(entry => entry.id);
     const out: (GoogleEvidence | undefined)[] = new Array(selected.length);
     let failure: GoogleResult | undefined;
     let refusal: GoogleResult | undefined;
-    let next = 0;
-    const worker = async (): Promise<void> => {
-      while (next < selected.length) {
-        const index = next++;
-        const result = await dispatch('gcal_list', { ...baseArgs, calendarId: selected[index]! }, signal);
-        if (result.state === 'completed') out[index] = result;
-        else if (result.state === 'refused') refusal ??= result;
-        else failure ??= result;
-      }
-    };
-    await Promise.all(Array.from({ length: Math.max(1, Math.min(GOOGLE_CALENDAR_CONCURRENCY, selected.length)) }, worker));
-    // The adapter refuses a concurrent same-endpoint call, so a refused read is retried once, in order.
-    for (const index of selected.map((_, i) => i).filter(i => out[i] === undefined)) {
-      const result = await dispatch('gcal_list', { ...baseArgs, calendarId: selected[index]! }, signal);
+    const record = (index: number, result: GoogleResult): void => {
       if (result.state === 'completed') out[index] = result;
       else if (result.state === 'refused') refusal ??= result;
       else failure ??= result;
-    }
+    };
+    const primaryOnly = explicit === undefined && selected.length > 0 && calendars[0]?.primary === true;
+    // 1. The primary calendar, awaited on its own so it never loses the race to the deadline.
+    if (primaryOnly && signal?.aborted !== true) record(0, await dispatch('gcal_list', { ...baseArgs, calendarId: selected[0]! }, signal));
+    // 2. Every remaining calendar, concurrently, cut short by the caller's deadline.
+    let next = primaryOnly ? 1 : 0;
+    const worker = async (): Promise<void> => {
+      while (next < selected.length && signal?.aborted !== true) {
+        const index = next++;
+        record(index, await dispatch('gcal_list', { ...baseArgs, calendarId: selected[index]! }, signal));
+      }
+    };
+    const width = Math.max(1, Math.min(GOOGLE_CALENDAR_CONCURRENCY, Math.max(0, selected.length - next)));
+    await Promise.race([
+      Promise.all(Array.from({ length: width }, worker)),
+      new Promise<void>(resolve => { if (signal?.aborted === true) resolve(); else signal?.addEventListener('abort', () => resolve(), { once: true }); }),
+    ]);
     // A credentialed or failed read must stay visible: never an empty success.
     if (out.every(entry => entry === undefined) && (failure ?? refusal) !== undefined) return (failure ?? refusal)!;
+    const unread = selected.filter((_, index) => out[index] === undefined).length;
     const merged: Record<string, unknown>[] = [];
     const seen = new Set<string>();
     for (const [index, evidence] of out.entries()) {
@@ -287,8 +294,9 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
     return {
       state: 'completed', tool: 'gcal_list',
       source: structuredClone(listed.source), observedAt: listed.observedAt, coverage: structuredClone(listed.coverage),
-      decodedResult: { content: [{ type: 'text', text: JSON.stringify({ data: { events: merged } }) }] },
-      projection: structuredClone(listed.projection), response: structuredClone(listed.response),
+      decodedResult: { content: [{ type: 'text', text: JSON.stringify({ data: unread > 0 ? { events: merged, partial: { unread } } : { events: merged } }) }] },
+      projection: structuredClone(listed.projection),
+      response: structuredClone(listed.response),
     };
   }
 

@@ -327,14 +327,25 @@ struct LevelBatcher {
 /// mouse events to an AppKit sibling added to it, so the hosting view must sit inside this container
 /// and the band must be a sibling of the hosting view, not its subview.
 @MainActor enum WindowDragBand {
+    /// Width reserved for the close/minimize/zoom buttons when the window's real
+    /// button frames are not available yet. The band starts after this zone so the
+    /// traffic lights always receive their own clicks.
+    static let trafficLightReserve: CGFloat = 80
+
+    static func trafficLightInset(for window: NSWindow?) -> CGFloat {
+        guard let zoom = window?.standardWindowButton(.zoomButton) else { return trafficLightReserve }
+        let maxX = zoom.frame.maxX
+        return maxX >= 20 ? maxX + 6 : trafficLightReserve
+    }
+
     @discardableResult
-    static func attach(to container: NSView) -> WindowDragBandView {
+    static func attach(to container: NSView, afterTrafficLights trafficLightsMaxX: CGFloat = trafficLightReserve) -> WindowDragBandView {
         let band = WindowDragBandView()
         band.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(band)
         NSLayoutConstraint.activate([
             band.topAnchor.constraint(equalTo: container.topAnchor),
-            band.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            band.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: max(trafficLightsMaxX, 0)),
             band.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             band.heightAnchor.constraint(equalToConstant: WindowDragBandView.bandHeight),
         ])

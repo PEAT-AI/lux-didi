@@ -16,11 +16,11 @@ fi
 bash scripts/run-local.sh --build-only
 log=$(mktemp)
 trap 'rm -f "$log"' EXIT
-for file in server/dist/test/host.test.js server/dist/test/http.test.js server/dist/test/host-stdout.test.js; do
+for file in server/dist/test/host.test.js server/dist/test/http.test.js server/dist/test/host-stdout.test.js server/dist/test/connector-publication.test.js; do
   test -s "$file" || { echo "Missing selected test: $file" >&2; exit 1; }
 done
 http_status=0
-node --test --test-reporter=tap --test-timeout=15000 server/dist/test/host.test.js server/dist/test/http.test.js server/dist/test/host-stdout.test.js | tee "$log" || http_status=$?
+node --test --test-reporter=tap --test-timeout=15000 server/dist/test/host.test.js server/dist/test/http.test.js server/dist/test/host-stdout.test.js server/dist/test/connector-publication.test.js | tee "$log" || http_status=$?
 grep -Eq '^# tests [1-9][0-9]*$' "$log" || { echo 'Zero selected tests' >&2; exit 1; }
 # Preserve every HTTP failure while still collecting discriminating real-browser proof.
 # Deliberately not the web fixture producer: this drives the shipped UI on the real host.

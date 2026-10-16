@@ -379,6 +379,11 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
             parameters: declaration.parameters,
             async execute(args, context) {
               if (context.signal.aborted) return { status: 'unknown' };
+              // Independent dispatch guard, checked at call time and not at declaration time: a
+              // connector whose current generation is not published and ready never reaches its
+              // handler, even when a stale run snapshot still names one of its tools.
+              const grant = registry.currentGrant(p.endpoint.id);
+              if (!grant || grant.generation !== p.generation || !grant.toolNames.includes(name)) return { status: 'failed' };
               if (!declaration.validate(args)) return { status: 'failed' };
               // Normalize at the boundary; the intent hash below stays over the model's original args.
               const prepared = declaration.normalize === undefined ? undefined : declaration.normalize(args);

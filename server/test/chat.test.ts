@@ -6,12 +6,13 @@ import { join } from 'node:path';
 import { fork } from 'node:child_process';
 import { once } from 'node:events';
 import { openFixture, result } from './chat-process.js';
-import { ChatService, ChatError, chatMigrations, admitCapabilities, type ChatConfig, type RunSnapshot } from '../chat/index.js';
+import { ChatService, ChatError, chatMigrations, admitCapabilities, ownerEvidenceMarkdown, type ChatConfig, type RunSnapshot } from '../chat/index.js';
 import { Store } from '../runtime/store.js';
 import { PROMPT_VERSION, compilePrompt } from '../prompt/index.js';
 import * as summaries from '../domain/summaries.js';
 import { buildEarlierConversationsSection, composeLiveSessionInstruction, composeLiveInstruction, NAYA_LIVE_BASE, TRUSTED_SYSTEM_CODE_UNIT_LIMIT } from '../prompt/live-persona.js';
 import type { ModelPort, ModelRequest, ModelControl, ModelResult } from '../adapters/model/types.js';
+import { stripModelOnlyNotes } from '../tools/live-shape.js';
 
 class CountingModel implements ModelPort {
   calls: ModelRequest[] = []; controls: ModelControl[] = [];
@@ -609,4 +610,39 @@ test('text chat and voice receive the same summary for the same past session', a
     assert.ok(voice.text.includes('moved to Lisbon'), 'voice instruction carries the same session summary');
     assert.ok(request.system.includes(section.section.replace('# Earlier conversations\n', '')), 'both prompts render the identical summary text');
   } finally { f.close(); }
+});
+
+test('the model-only omission note is stripped from the owner-facing evidence copy, never the model copy (C1-R1)', () => {
+  // The `[omitted: ...]` shapes live-shape.ts appends: list ceilings (with and without a follow-up
+  // argument), character ceilings, and single-item ceilings. The model keeps them; the owner copy
+  // drops them. The `[+N chars]` and `[id ...]` shapes are covered by the sibling test below.
+  const notes = [
+    '[omitted: 4 more messages; final, this tool has no paging argument]',
+    '[omitted: 12 characters; final, this read has no paging argument]',
+    '[omitted: 3 hits; call search_knowledge again with limit=9 for the rest]',
+    '[omitted: 40 characters to keep this result under 8000; ask a narrower question or for fewer items for the rest]',
+  ];
+  for (const note of notes) {
+    assert.equal(stripModelOnlyNotes(`- chan | alice | 2026-01-01T00:00:00Z | hello\n\n${note}`), '- chan | alice | 2026-01-01T00:00:00Z | hello');
+    assert.equal(stripModelOnlyNotes(`body text\n${note}`), 'body text');
+    assert.equal(stripModelOnlyNotes(`line one\n${note}\nline three`), 'line one\nline three');
+  }
+  assert.equal(stripModelOnlyNotes('nothing to strip here'), 'nothing to strip here');
+  assert.equal(stripModelOnlyNotes('keep [note: this is not an omission]'), 'keep [note: this is not an omission]');
+});
+
+test('the calendar and handle bracket notes are stripped from the owner-facing evidence copy (C1-R1 F1)', () => {
+  // The other model-only annotations live-shape.ts appends: a calendar cut `[+N chars]` and the
+  // `[id ...]` handle the model needs to re-read one message, event or insight.
+  assert.equal(stripModelOnlyNotes('- 10:00, Standup [id e1]\n- 11:00, Review [id e2]'), '- 10:00, Standup\n- 11:00, Review');
+  assert.equal(stripModelOnlyNotes('- 10:00, Standup [id e1] [+40 chars]'), '- 10:00, Standup');
+  assert.equal(stripModelOnlyNotes('- mail from: alice | [id m9]'), '- mail from: alice |');
+  assert.equal(stripModelOnlyNotes('### Insight title (project) [id k3]'), '### Insight title (project)');
+  assert.equal(stripModelOnlyNotes('title [index] and [note: keep] stay'), 'title [index] and [note: keep] stay');
+});
+
+test('the owner evidence projection strips the notes at the call site that feeds the panel (C1-R1 F3)', () => {
+  assert.equal(ownerEvidenceMarkdown({ markdown: '- 10:00, Standup [id e1] [+40 chars]\n- x [omitted: 2 more events; final, this tool has no paging argument]' }), '- 10:00, Standup\n- x');
+  assert.equal(ownerEvidenceMarkdown({ text: 'plain text' }), 'plain text');
+  assert.equal(ownerEvidenceMarkdown({}), 'Tool refused or unavailable.');
 });

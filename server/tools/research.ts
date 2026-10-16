@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { JsonObject, ModelPort, ModelRequest } from '../adapters/model/types.js';
-import { INTERNAL, type IntentSubCall, type IntentSubResult } from './intent.js';
+import { INTERNAL, calendarIds, type IntentSubCall, type IntentSubResult } from './intent.js';
 import { hostLogEvent } from './host-events.js';
 
 /**
@@ -48,6 +48,9 @@ export const RESEARCH = Object.freeze({
   continueRounds: 3,
   maxOps: 8,
   maxConcurrent: 4,
+  /** Per-calendar event reads run in bounded parallel; the adapter serializes one endpoint, so the
+   * bound is a safety ceiling, not a promise of N-way transport concurrency. */
+  calendarConcurrency: 6,
   /** Q1-R3(b): the real Gemini selector needs ~3 s; the old 2 s deadline denied every selector call. */
   selectorDeadlineMs: 6_000,
   /** Selector wall time charged to the value-of-information decision, in seconds. */
@@ -62,8 +65,8 @@ export const RESEARCH = Object.freeze({
   replyLimitChars: 6_000,
   /** Hard cap on a selector-authored query, and the per-source reply bounds. */
   queryLimitChars: 200,
-  mailLines: 8, chatLines: 8, knowledgeLines: 5, calendarLines: 12,
-  mailSnippetChars: 200, chatTextChars: 300, knowledgeBodyChars: 600, openedBodyChars: 1_500,
+  mailLines: 8, chatLines: 8, knowledgeLines: 40, calendarLines: 12,
+  mailSnippetChars: 200, chatTextChars: 300, knowledgeBodyChars: 1_200, openedBodyChars: 1_500,
 });
 
 export const RESEARCH_SOURCES: readonly SourceKind[] = ['knowledge', 'calendar', 'mail', 'chat', 'mongoose'];
@@ -280,6 +283,12 @@ export function windowRange(window: string, nowMs: number): { timeMin: string; t
   return { timeMin: isoLocal(start), timeMax: isoLocal(end) };
 }
 
+/** The resolved window kind, a closed enum for the host log: today, tomorrow, week or a single date. */
+export type WindowKind = 'today' | 'tomorrow' | 'week' | 'date';
+export function windowKind(window: string): WindowKind {
+  return window === 'today' || window === 'tomorrow' || window === 'week' ? window : 'date';
+}
+
 /** The deterministic fallback query per source: never the raw sentence. */
 export function fallbackQuery(kind: CandidateKind, question: string, _nowMs: number): { query?: string; window?: string } {
   const text = question.toLowerCase();
@@ -347,11 +356,9 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; c
   const keywords = contentKeywords(config.question).join(' ');
   if (kind === 'knowledge_search') return [search(INTERNAL.knowledgeSearch, { query: config.query ?? (keywords || 'recent notes'), limit: RESEARCH.knowledgeLines }, 'k0')];
   if (kind === 'calendar_window') {
-    const range = windowRange(config.window ?? 'today', config.nowMs ?? Date.now());
-    return [
-      search(INTERNAL.calendars, { maxResults: 20 }, 'cal0'),
-      search(INTERNAL.calendarList, { timeMin: range.timeMin, timeMax: range.timeMax, maxResults: RESEARCH.calendarLines }, 'cal1'),
-    ];
+    // The calendar list only: one event read per listed calendar follows, the same selection rule the
+    // intent path uses, so a calendar answer covers every calendar the owner keeps.
+    return [search(INTERNAL.calendars, { maxResults: 20 }, 'cal0')];
   }
   if (kind === 'mail_search') return [search(INTERNAL.mailList, { q: config.query ?? 'in:inbox newer_than:2d', maxResults: RESEARCH.mailLines }, 'm0')];
   if (kind === 'mail_open') { const id = config.evidence.get('mail_search'); return id ? [search(INTERNAL.mailRead, { id }, 'mo0')] : []; }
@@ -366,6 +373,18 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; c
     return subs;
   }
   return [];
+}
+
+/**
+ * One event read per calendar the listed calendars name, mirroring `calendarFollow` in intent.ts, with
+ * the resolved RFC3339 window attached. `calendarIds` bounds and deduplicates the selection.
+ */
+export function calendarEventSubs(listed: string, window: string, nowMs: number): IntentSubCall[] {
+  const range = windowRange(window, nowMs);
+  return calendarIds(listed).map(id => ({
+    key: `cal:${id}`, name: INTERNAL.calendarList,
+    args: { calendarId: id, timeMin: range.timeMin, timeMax: range.timeMax, maxResults: RESEARCH.calendarLines },
+  }));
 }
 
 const MAIL_ID_TAG = /\[id ([A-Za-z0-9_-]+)\]/;
@@ -480,6 +499,8 @@ export interface ResearchSubcallLog {
   event: 'research_subcall'; researchId: string; kind: CandidateKind; tool: string; ok: boolean;
   errorCode?: string; items: number; rawBytes: number; keptBytes: number; queryChars: number;
   queryAuthor: 'selector' | 'fallback';
+  /** Calendar sub-calls only: the resolved window kind, a closed enum, never a time or title. */
+  window?: WindowKind;
 }
 
 export interface ResearchDeps {
@@ -626,25 +647,73 @@ function insightItems(raw: readonly string[]): string[] {
   return items;
 }
 
-function calendarItems(raw: readonly string[]): string[] {
-  const items: string[] = [];
-  let current: string | undefined;
+/** One calendar event line: its id (when the shaped list carries one), start and rendered line. */
+interface CalendarEvent { id: string; start: string; line: string }
+
+function calendarEvents(raw: readonly string[]): CalendarEvent[] {
+  const items: CalendarEvent[] = [];
+  let current: CalendarEvent | undefined;
   const flush = (): void => { if (current !== undefined) items.push(current); current = undefined; };
   for (const line of raw) {
     if (line.startsWith('- ')) {
       flush();
-      const parts = line.slice(2).split(', ');
+      const body = line.slice(2);
+      const idMatch = / \[id ([^\]\s]+)\]\s*$/.exec(body);
+      const id = idMatch?.[1] ?? '';
+      const text = idMatch ? body.slice(0, idMatch.index).trimEnd() : body;
+      const parts = text.split(', ');
       const start = parts[0] ?? '';
       const title = parts[1] ?? '(no title)';
       const location = parts.slice(2).join(', ');
-      current = `${start} | ${title}${location ? ` | ${location}` : ''} | 0 attendees`;
+      current = { id, start, line: `${start} | ${title}${location ? ` | ${location}` : ''} | 0 attendees` };
     } else if (line.startsWith('attendees: ') && current !== undefined) {
       const count = line.slice('attendees: '.length).split(',').map(part => part.trim()).filter(Boolean).length;
-      current = current.replace(/\| \d+ attendees$/u, `| ${count} attendees`);
+      current = { ...current, line: current.line.replace(/\| \d+ attendees$/u, `| ${count} attendees`) };
     }
   }
   flush();
   return items;
+}
+
+/** The `- Name [id]` calendar list as an id to name map, so each event line can name its calendar. */
+function calendarNameMap(text: string): Map<string, string> {
+  const names = new Map<string, string>();
+  for (const line of itemLines(text)) {
+    if (!line.startsWith('- ')) continue;
+    const match = /^(.*?)\s*\[([^\]\n]{1,256})\]\s*$/.exec(line.slice(2));
+    if (match) names.set(match[2]!, match[1]!.trim());
+  }
+  return names;
+}
+
+/** The calendar id carried in an event sub-call key, `cal:<id>` (the host may prefix the batch key). */
+function calendarIdOfKey(key: string): string | undefined {
+  const at = key.lastIndexOf('cal:');
+  return at >= 0 ? key.slice(at + 'cal:'.length) : undefined;
+}
+
+/** Merge every listed calendar's events: dedupe by event id, sort by start, tag each line with its calendar. */
+function shapeCalendarBlock(results: readonly IntentSubResult[]): { text: string; source: SourceKind | null; lines: string[]; total: number } {
+  const listed = results.find(result => result.ok && result.name === INTERNAL.calendars);
+  const names = listed ? calendarNameMap(listed.text) : new Map<string, string>();
+  const merged: { start: string; line: string }[] = [];
+  const seen = new Set<string>();
+  for (const result of results) {
+    if (!result.ok || result.name !== INTERNAL.calendarList || !result.text.trim()) continue;
+    const id = calendarIdOfKey(result.key);
+    const name = (id !== undefined ? names.get(id) : undefined) ?? 'calendar';
+    for (const event of calendarEvents(itemLines(result.text))) {
+      const dedupe = event.id || `${event.start}|${event.line}`;
+      if (seen.has(dedupe)) continue;
+      seen.add(dedupe);
+      merged.push({ start: event.start, line: `${event.line} | ${name}` });
+    }
+  }
+  merged.sort((a, b) => a.start.localeCompare(b.start));
+  const lines = merged.map(entry => entry.line);
+  const shown = lines.slice(0, RESEARCH.calendarLines);
+  if (!shown.length) return { text: '', source: 'calendar', lines: [], total: 0 };
+  return { text: `calendar: ${shown.length} of ${lines.length} shown\n${shown.join('\n')}`, source: 'calendar', lines: shown, total: lines.length };
 }
 
 /**
@@ -652,6 +721,7 @@ function calendarItems(raw: readonly string[]): string[] {
  * shaped line so the host can open the top mail or fetch the top chat thread without a second search.
  */
 export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResult[]): { text: string; source: SourceKind | null; lines: string[]; total: number } {
+  if (kind === 'calendar_window') return shapeCalendarBlock(results);
   const ok = results.filter(result => result.ok && result.text.trim());
   const source = sourceKindOf(kind) ?? (ok.length ? sourceKindOfKindName(ok[0]!.name) : null);
   const lines: string[] = [];
@@ -683,10 +753,10 @@ export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResul
       const items = insightItems(raw);
       lines.push(...items); total += items.length;
     } else if (result.name === INTERNAL.calendarList) {
-      const items = calendarItems(raw);
+      const items = calendarEvents(raw).map(event => event.line);
       lines.push(...items); total += items.length;
     } else if (result.name === INTERNAL.calendars) {
-      // Calendar names are not events; the gcal_list follow-up in the same candidate carries them.
+      // Calendar names are not events; the per-calendar follow-up carries them and names each line.
     } else {
       const cap = result.name.startsWith('mattermost') ? RESEARCH.chatTextChars : 400;
       // Q1-R5: a mattermost search renders each post as a `**header**` line plus its text, a channel
@@ -765,6 +835,32 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   return { ...reply, findings };
 }
 
+/**
+ * Run one execute call per calendar in bounded parallel, then retry any refused read once through a
+ * single sequential batch. The adapter refuses concurrent same-endpoint calls, so the retry keeps
+ * every calendar read; the bound is a safety ceiling, not N-way transport concurrency.
+ */
+async function executeCalendarReads(deps: ResearchDeps, calls: readonly IntentSubCall[], signal: AbortSignal): Promise<IntentSubResult[]> {
+  const out: (IntentSubResult | undefined)[] = new Array(calls.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < calls.length) {
+      const index = next++;
+      try { out[index] = (await deps.execute([calls[index]!], signal))[0]; }
+      catch { out[index] = undefined; }
+    }
+  };
+  const width = Math.max(1, Math.min(RESEARCH.calendarConcurrency, calls.length));
+  await Promise.all(Array.from({ length: width }, worker));
+  const missing = calls.map((_, index) => index).filter(index => !(out[index]?.ok));
+  if (missing.length) {
+    try {
+      const retried = await deps.execute(missing.map(index => calls[index]!), signal);
+      missing.forEach((index, position) => { const result = retried[position]; if (result?.ok) out[index] = result; });
+    } catch { /* keep the pooled result */ }
+  }
+  return calls.map((call, index) => out[index] ?? { key: call.key, name: call.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0 });
+}
 
 /** The bounded loop. One call runs it start to finish within the run deadline. */
 export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal: AbortSignal): Promise<JsonObject> {
@@ -907,7 +1003,16 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
           const id = extractId('chat_search', primaryText);
           if (id) second.push({ key: 'ct', name: 'mattermost_get_thread', args: { postId: id, limit: 12 } });
         }
-        if (second.length) {
+        if (kind === 'calendar_window') {
+          // One event read per listed calendar, so the answer covers every calendar, not just primary.
+          const listed = results.find(result => result.ok && result.name === INTERNAL.calendars);
+          const follow = listed ? calendarEventSubs(listed.text, action?.window ?? 'today', now()) : [];
+          if (follow.length) {
+            const extra = await executeCalendarReads(deps, follow, roundSignal);
+            results.push(...extra);
+            second.push(...follow);
+          }
+        } else if (second.length) {
           const extra = await executeWithRetry(second);
           results.push(...extra);
         }
@@ -932,6 +1037,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
             items: result ? itemLines(result.text).length : 0,
             rawBytes: result?.originalCharacters ?? 0, keptBytes: result?.text.length ?? 0,
             queryChars: typeof raw === 'string' ? raw.length : 0, queryAuthor,
+            ...(kind === 'calendar_window' ? { window: windowKind(action?.window ?? 'today') } : {}),
           });
         }
       }));

@@ -16,6 +16,8 @@ import { hostLogEvent } from '../host/log.js';
 import { validateAcceptedPrompt } from './config.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type { DataClass, LiveVoiceDiagnostics, LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort, LiveVoiceSession, LiveVoiceRequest } from '../adapters/live-voice/index.js';
+import { toolVoiceAnchor } from '../adapters/live-voice/gemini.js';
+import { headVoiceBlock, voiceAnchor } from '../prompt/live-persona.js';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
 import { liveProfileIdentity, validateLiveProfile } from './config.js';
 import { parseTerminal, persistedKinds, readFragmentPage, retainedBytes } from './journal.js';
@@ -771,10 +773,11 @@ export class LiveSessionOwner {
     void Promise.all(handle.diagnosticSnapshots).then(values => {
       const snapshots = values.filter((value): value is Readonly<LiveVoiceDiagnostics> => value !== undefined);
       const sum = (field: keyof LiveVoiceDiagnostics) => snapshots.reduce((total, value) => total + value[field], 0);
+      const accent = this.#profile.overlay?.accent;
       console.error(JSON.stringify({ event: 'live_session_diagnostics', terminalCode: handle.diagnosticTerminalCode,
-        headVoiceChars: this.#profile.overlay?.accent?.length ?? 0,
-        terminalVoiceChars: this.#profile.overlay?.accent?.length ?? 0,
-        toolAnchorChars: this.#profile.overlay?.accent?.length ?? 0,
+        headVoiceChars: headVoiceBlock(accent)?.length ?? 0,
+        terminalVoiceChars: voiceAnchor(this.#profile.language, accent).length,
+        toolAnchorChars: toolVoiceAnchor(accent).length,
         adapterGenerations: values.length, ownerAudioCalls: handle.ownerAudioCalls, ownerAudioBytes: handle.ownerAudioBytes,
         ownerRebuildingDropCalls: handle.ownerRebuildingDropCalls, ownerRebuildingDropBytes: handle.ownerRebuildingDropBytes,
         adapterAudioCalls: sum('audioCalls'), adapterAudioBytes: sum('audioBytes'),
@@ -1046,7 +1049,7 @@ export class LiveSessionOwner {
       if (sequence === 'overflow') { this.#settle(handle, { state: 'journal_limit' }, false, 'ended', { kind, sequence: event.sequence }); return; }
       this.#pushChunk(handle, { kind: 'marker', marker: { kind, sequence: event.sequence, journalSequence: sequence, text: null, finished: null, value: null, tool } });
     };
-    for (const call of event.calls) publish('toolCall', { name: call.name, status: 'error', markdown: '', sources: [] });
+    for (const call of event.calls) publish('toolCall', { name: call.name, status: 'called', markdown: '', sources: [] });
     if ((this.#settled(handle) || generation !== handle.generation)) return;
     let responses = event.calls.map(call => ({ id: call.id, name: call.name, response: { error: 'Tool not granted' } as JsonObject }));
     let projections: LiveToolProjection[] = event.calls.map(call => ({ name: call.name, status: 'error', markdown: 'Tool not granted', sources: [] }));

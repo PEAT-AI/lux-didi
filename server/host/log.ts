@@ -16,6 +16,7 @@ const RESEARCH_STOPS = ['answered', 'selector_stop', 'insufficient', 'rounds_exh
 const RESEARCH_PHASES = ['started', 'round', 'done', 'stopped'];
 const RESEARCH_DRIVERS = ['selector', 'fallback', 'single-source-hint'];
 const RESEARCH_DISPOSITIONS = ['completed', 'skipped'];
+const RESEARCH_WINDOW_KINDS = ['today', 'tomorrow', 'week', 'date'];
 const isSafeToken = (value: unknown): value is string => typeof value === 'string' && SAFE_TOKEN.test(value);
 const isSafeId = (value: unknown): value is string => typeof value === 'string' && SAFE_ID.test(value);
 const isSafeCount = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;
@@ -247,16 +248,20 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'research_run', researchId: value.researchId, questionClass: value.questionClass, rounds: value.rounds, perRound, stopReason: value.stopReason, status: value.status, ops: value.ops, sources, elapsedMs: value.elapsedMs, deadAirMs: value.deadAirMs, selectorMs: value.selectorMs, fallbackUsed: value.fallbackUsed, replyBytes: value.replyBytes, unchecked: value.unchecked, canContinue: value.canContinue, findingChars: value.findingChars, ...(hasDriver ? { driver: value.driver } : {}) };
   }
   if (value.event === 'research_subcall') {
-    // Q1: one metadata-only record per internal sub-call, never the query or result text.
+    // Q1: one metadata-only record per internal sub-call, never the query or result text. A calendar
+    // sub-call also carries the resolved window kind, a closed enum, never a time or title.
     const subKeys = ['event', 'researchId', 'kind', 'tool', 'ok', 'items', 'rawBytes', 'keptBytes', 'queryChars', 'queryAuthor'];
     const hasError = Object.prototype.hasOwnProperty.call(value, 'errorCode');
-    if (Object.keys(value).sort().join(',') !== (hasError ? [...subKeys, 'errorCode'] : subKeys).sort().join(',')) return;
+    const hasWindow = Object.prototype.hasOwnProperty.call(value, 'window');
+    const allowed = [...subKeys, ...(hasError ? ['errorCode'] : []), ...(hasWindow ? ['window'] : [])];
+    if (Object.keys(value).sort().join(',') !== allowed.sort().join(',')) return;
     if (!isSafeId(value.researchId) || !isSafeMember(value.kind, RESEARCH_CANDIDATES) || !isSafeToken(value.tool)) return;
     if (typeof value.ok !== 'boolean') return;
     if (hasError && !isSafeToken(value.errorCode)) return;
+    if (hasWindow && !isSafeMember(value.window, RESEARCH_WINDOW_KINDS)) return;
     if (!isSafeCount(value.items) || !isSafeCount(value.rawBytes) || !isSafeCount(value.keptBytes) || !isSafeCount(value.queryChars)) return;
     if (!isSafeMember(value.queryAuthor, ['selector', 'fallback'])) return;
-    return { event: 'research_subcall', researchId: value.researchId, kind: value.kind, tool: value.tool, ok: value.ok, ...(hasError ? { errorCode: value.errorCode } : {}), items: value.items, rawBytes: value.rawBytes, keptBytes: value.keptBytes, queryChars: value.queryChars, queryAuthor: value.queryAuthor };
+    return { event: 'research_subcall', researchId: value.researchId, kind: value.kind, tool: value.tool, ok: value.ok, ...(hasError ? { errorCode: value.errorCode } : {}), items: value.items, rawBytes: value.rawBytes, keptBytes: value.keptBytes, queryChars: value.queryChars, queryAuthor: value.queryAuthor, ...(hasWindow ? { window: value.window } : {}) };
   }
 }
 

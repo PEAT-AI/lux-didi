@@ -268,7 +268,9 @@ export function shapeGcalList(data: Record<string, unknown>): ShapedResult {
     const named = field(entry, 'summary', 'title');
     const title = named || '(no title)';
     const location = field(entry, 'location');
-    const lines = [`- ${start}, ${title}${location ? `, ${location}` : ''}`];
+    const eventId = str(entry['id']);
+    // The event id stays in the shaped line so a fan-out over calendars can dedupe a shared event.
+    const lines = [`- ${start}, ${title}${location ? `, ${location}` : ''}${eventId ? ` [id ${eventId}]` : ''}`];
     const attendees = Array.isArray(entry['attendees']) ? entry['attendees'] : [];
     const names = attendees.filter(isRecord).map(a => field(a, 'displayName', 'email')).filter(Boolean);
     if (names.length) lines.push(`  attendees: ${names.join(', ')}`);

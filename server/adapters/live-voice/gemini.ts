@@ -15,7 +15,7 @@ const TOOL_VOICE_ANCHOR_ACCENT = 'Answer aloud in your own words, briefly, in th
 const TOOL_VOICE_ANCHOR_TAIL = '. Do not read raw text, ids or URLs.';
 // A carried accent restates at each recency frontier; without one every text is byte-identical to before.
 const freshOpening = (accent: string | undefined): string => accent === undefined ? FRESH_OPENING : `${FRESH_OPENING_ACCENT}${accent}`;
-const toolVoiceAnchor = (accent: string | undefined): string => accent === undefined ? TOOL_VOICE_ANCHOR : `${TOOL_VOICE_ANCHOR_ACCENT}${accent}${TOOL_VOICE_ANCHOR_TAIL}`;
+export const toolVoiceAnchor = (accent: string | undefined): string => accent === undefined ? TOOL_VOICE_ANCHOR : `${TOOL_VOICE_ANCHOR_ACCENT}${accent}${TOOL_VOICE_ANCHOR_TAIL}`;
 // Issue 1014: the one Live write tool. It is declared NON_BLOCKING and its reply is scheduled SILENT,
 // so a memory save never interrupts the turn; every read tool stays BLOCKING.
 const MEMORY_TOOL = 'remember_note';

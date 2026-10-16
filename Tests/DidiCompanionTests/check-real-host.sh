@@ -5,6 +5,15 @@ app="$1"; proof="$2"; node="$3"
 work="$(mktemp -d "${TMPDIR:-/tmp}/didi-native-real-host.XXXXXX")"
 cleanup() {
   status=$?
+  trap - EXIT INT TERM
+  # Terminate every staged/verification instance this run launched, by recorded pid,
+  # never the owner's installed instance.
+  while IFS= read -r f; do
+    pid="$(python3 -c 'import json,sys;print(int(json.load(open(sys.argv[1])).get("pid",0)))' "$f" 2>/dev/null || true)"
+    [ -n "$pid" ] && [ "$pid" -gt 0 ] || continue
+    exe="$(ps -p "$pid" -o comm= 2>/dev/null || true)"
+    case "$exe" in "$app"/*|"$work"/*) kill "$pid" 2>/dev/null || true ;; esac
+  done < <(find "$proof" -maxdepth 3 -name identity.json 2>/dev/null)
   if [ "$status" -ne 0 ]; then
     chmod 700 "$work"
     printf 'REAL-HOST FAILURE status=%s retained-work=%s\n' "$status" "$work" >&2
@@ -13,7 +22,7 @@ cleanup() {
   fi
   exit "$status"
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM
 mkdir "$work/source" "$proof/real-host"
 chmod 700 "$proof/real-host"
 git archive HEAD server web | tar -x -C "$work/source"

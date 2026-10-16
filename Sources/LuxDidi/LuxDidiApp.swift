@@ -796,6 +796,15 @@ struct RootView: View {
         let proof: InstalledProofRequest?
         do { proof = try InstalledProofRequest.parse(arguments: Array(CommandLine.arguments.dropFirst())) }
         catch { fputs("INSTALLED-PROOF INVALID: unsafe or malformed arguments\n", stderr); exit(2) }
+        if proof == nil {
+            // CLI proof modes (--self-check, --ui-proof) run in the foreground and exit on
+            // their own; only an interactive launch yields to a running instance.
+            let arguments = CommandLine.arguments
+            let cliProof = arguments.contains("--self-check") || arguments.contains("--ui-proof")
+            let env = ProcessInfo.processInfo.environment
+            let verification = env["LUX_VERIFICATION_GATE_ROOT"] != nil || env["LUX_VERIFICATION_GATE_NONCE"] != nil
+            if !cliProof, SingleInstanceGuard.yieldToExistingInstance(verification: verification) { exit(0) }
+        }
         let app = NSApplication.shared
         let delegate = AppDelegate(proofRequest: proof); app.delegate = delegate
         withExtendedLifetime(delegate) { app.run() }

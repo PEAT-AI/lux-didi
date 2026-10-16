@@ -232,6 +232,7 @@ import AppKit
     }
     func dispose() {
         settled = true; deadline?.cancel(); watch?.cancel()
+        terminateOwnedLaunch()
         activationObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
         activationObservers.removeAll()
         trace("observer:disposed", ["activationObserversRemaining": activationObservers.count])
@@ -239,6 +240,14 @@ import AppKit
         if kernel >= 0 { close(kernel); kernel = -1 }
         if serviceFD >= 0 { close(serviceFD); serviceFD = -1 }
         if control >= 0 { close(control); control = -1 }
+    }
+    // Terminate only the disposable staged/probe bundle this observer launched,
+    // never the owner's installed instance nor any process the observer did not start.
+    func terminateOwnedLaunch() {
+        for app in [target, lastLaunched] {
+            guard let app, app.processIdentifier > 0, app.processIdentifier != getpid(), !app.isTerminated else { continue }
+            app.forceTerminate()
+        }
     }
     func complete(_ raw: Int64, flags: UInt32, filter: Int16) {
         guard !settled, let record else { return }

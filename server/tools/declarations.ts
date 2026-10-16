@@ -140,17 +140,10 @@ export async function runToolCalls(owner: { journal: ToolCallJournal; resultGate
         contentIndex: ctx.contentIndex, partIndex: 0, result: structuredClone(ref) };
       return { record, binding, response: { functionResponse: { ...(call.id !== undefined ? { id: call.id } : {}), name: call.name, response: {} } } };
   };
-  // Dispatch across endpoints in parallel, sequential and ordered within one endpoint (the adapter refuses a
-  // concurrent same-endpoint call). Results keep their original batch order in the combined response.
-  const groups = new Map<string, number[]>();
-  calls.forEach((call, index) => {
-    const key = registry.find(t => t.name === call.name)?.endpointId ?? `unknown:${index}`;
-    const list = groups.get(key) ?? []; list.push(index); groups.set(key, list);
-  });
+  // Dispatch the whole batch concurrently; the adapter bounds each endpoint and queues beyond its limit.
+  // Results keep their original batch order because each runOne writes its own index.
   const outcomes: CallOutcome[] = new Array(calls.length);
-  await Promise.all([...groups.values()].map(async indices => {
-    for (const index of indices) outcomes[index] = await runOne(index, calls[index]!);
-  }));
+  await Promise.all(calls.map(async (_, index) => { outcomes[index] = await runOne(index, calls[index]!); }));
   const tools: ToolRecord[] = [], bindings: ToolResultBinding[] = [], responses: Part[] = [];
   const fatal = (status: LoopResult['status'], reason: string) => ({ tools, bindings, responses, error: { status, reason }, accepted: [] as { binding: ToolResultBinding; response: JsonObject }[] });
   for (const result of outcomes) {

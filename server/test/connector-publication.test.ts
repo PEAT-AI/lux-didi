@@ -145,6 +145,10 @@ test('a proof for a replaced generation publishes nothing', async t => {
   // The replaced generation now resolves a matching proof: it must authorize nothing.
   fake.releaseProof(0, OWNER);
   await first;
+  // The replacement round carries its own pending proof; settle it (a different account, so it still
+  // publishes nothing) rather than waiting out a fixed proof timeout.
+  await fake.waitProof(2);
+  fake.releaseProof(0, OTHER);
   await second;
   // Generation 2 cannot take the busy session, but the old proof published nothing either way.
   assert.deepEqual(mcp.connectionIds(), []);
@@ -214,7 +218,7 @@ test('a slow identity proof inside the endpoint call deadline still publishes th
   // F9: the proof is one read call, so it is bounded by the endpoint's own call deadline, not a shorter
   // fixed bound. A healthy connector whose first identity call is slow under host load must be proven,
   // never wrongly marked unproven and fail-closed. The fake answers at 4.2 s, past the old 4 s bound.
-  const { mcp, fake } = await compose(t, { ownerIdentity: OWNER });
+  const { store, mcp, fake } = await compose(t, { ownerIdentity: OWNER });
   const remember = (): { remembered: boolean; code: string } => ({ remembered: false, code: 'owner_transcript_not_final' });
   const started = mcp.start();
   await fake.onDiscovery;
@@ -223,7 +227,13 @@ test('a slow identity proof inside the endpoint call deadline still publishes th
   fake.releaseProof(0, OWNER);
   await started;
   assert.deepEqual(mcp.connectionIds(), ['gmail']);
-  assert.equal(mcp.owner.liveDefinitions('live-ready', remember).some(tool => tool.name.startsWith('gmail')), true);
+  const acceptance: RunAcceptance = {
+    ownerId: store.assistantId, actorId: 'synthetic-actor', runId: 'live-slow-proof', authorityEpoch: store.authorityEpoch, revision: 1,
+    route: { identity: 'gateway:live-voice', provider: 'gemini', modelId: 'models/synthetic', allowedClasses: ['ordinary'] },
+    allowedClasses: ['ordinary'], connectionIds: [...mcp.connectionIds()],
+  };
+  store.transaction(tx => mcp.owner.snapshotRun(tx, acceptance));
+  assert.equal(mcp.owner.liveDefinitions('live-slow-proof', remember).some(tool => tool.name.startsWith('gmail')), true);
 });
 
 test('a refresh suspends the ready grant before the replacement publishes and refuses old calls', async t => {

@@ -2176,10 +2176,17 @@ test('active page does not carry past session metadata', async t => {
 
 
 for (const status of [401, 403, 429]) test(`resumed HTTP upgrade refusal ${status} falls back to fresh then ends after three failures`, async t => {
-  const h = await harness(t, { limits: { idleMs: 600_000, sessionMs: 600_000 } });
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, limits: { idleMs: 600_000, sessionMs: 600_000 } });
   const { session, attachment } = await attached(h, `resume-refused-${status}`);
   h.f.refuseUpgrades(status);
   h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-refused-resumption-secret' }, goAway: { timeLeft: '10s' } });
+  // Drive the injected scheduler through the 0/2/5 s backoff until the bound settles.
+  let settled = false;
+  for (let i = 0; i < 60 && !settled; i++) {
+    h.advance(1000); scheduler.runDue(); await tick();
+    settled = h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.some(row => row.kind === 'terminal');
+  }
   assert.deepEqual((await attachment.done).terminal, { state: 'failed', code: 'resume_failed' });
   assert.ok(h.f.attempts >= 3, 'a refused resume falls back to fresh and retries to the bound');
   assert.equal(h.f.connections, 1, 'no refused upgrade ever connects');

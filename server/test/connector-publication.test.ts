@@ -21,7 +21,7 @@ interface FakeConnector {
   onDiscovery: Promise<void>;
   proofCount(): number;
   waitProof(n: number): Promise<void>;
-  releaseProof(identity: string): void;
+  releaseProof(index: number, identity: string): void;
   close(): Promise<void>;
 }
 
@@ -70,7 +70,7 @@ async function fakeConnector(options: { blockConnect?: boolean } = {}): Promise<
     onDiscovery: discoveries > 0 ? Promise.resolve() : new Promise<void>(resolveDiscovery => { discoveryWaiters.push(resolveDiscovery); }),
     proofCount: () => proofs,
     waitProof: (n: number) => proofs >= n ? Promise.resolve() : new Promise<void>(resolveProof => { proofWaiters.push(() => { if (proofs >= n) resolveProof(); }); }),
-    releaseProof: identity => { const next = pendingProofs.shift(); if (!next) throw new Error('no pending proof'); next(identity); },
+    releaseProof: (index, identity) => { const next = pendingProofs.splice(index, 1)[0]; if (!next) throw new Error('no pending proof'); next(identity); },
     close: () => new Promise<void>(resolveClose => endpoint.close(() => resolveClose())),
   };
 }
@@ -115,7 +115,7 @@ test('pre-proof discovery exposes nothing, mismatch refuses, match publishes', a
   assert.deepEqual(mcp.registry.visibleTools('gmail').map(tool => tool.name), ['gmail_get_profile']);
   assert.equal(mcp.registry.currentGrant('gmail')?.toolNames.includes('gmail_list'), false);
   assert.deepEqual(fake.calls.filter(name => name !== 'gmail_get_profile'), []);
-  fake.releaseProof(OTHER);
+  fake.releaseProof(0, OTHER);
   await started;
   assert.equal(mcp.status().endpoints[0]!.state, 'error');
   assert.equal(mcp.status().endpoints[0]!.reasonCode, 'identity_mismatch');
@@ -125,7 +125,7 @@ test('pre-proof discovery exposes nothing, mismatch refuses, match publishes', a
   const matching = await compose(t, { ownerIdentity: OWNER });
   const startedMatch = matching.mcp.start();
   await matching.fake.waitProof(1);
-  matching.fake.releaseProof(OWNER);
+  matching.fake.releaseProof(0, OWNER);
   await startedMatch;
   assert.equal(matching.mcp.status().endpoints[0]!.state, 'connected');
   assert.deepEqual(matching.mcp.connectionIds(), ['gmail']);
@@ -139,11 +139,11 @@ test('a stale proof never overwrites the connector a newer generation published'
   await fake.waitProof(1);
   const second = mcp.refresh();
   await fake.waitProof(2);
-  fake.releaseProof(OWNER);
+  fake.releaseProof(1, OWNER);
   await second;
   assert.equal(mcp.status().endpoints[0]!.state, 'connected');
   // The old generation's proof resolves with a mismatch after generation 2 won: authorize nothing.
-  fake.releaseProof(OTHER);
+  fake.releaseProof(0, OTHER);
   await first;
   assert.equal(mcp.status().endpoints[0]!.state, 'connected');
   assert.equal(mcp.status().endpoints[0]!.reasonCode, undefined);
@@ -159,7 +159,7 @@ test('shutdown during a proof publishes nothing and leaves no unhandled rejectio
   const started = mcp.start();
   await fake.waitProof(1);
   await mcp.close();
-  fake.releaseProof(OWNER);
+  fake.releaseProof(0, OWNER);
   await started;
   await new Promise<void>(resolveTurn => { setImmediate(resolveTurn); });
   assert.equal(mcp.connectionIds().length, 0);
@@ -183,7 +183,7 @@ test('a session accepted while verifying keeps no tools from that connector afte
   await fake.waitProof(1);
   const admittedWhileVerifying = [...mcp.connectionIds()];
   assert.deepEqual(admittedWhileVerifying, []);
-  fake.releaseProof(OWNER);
+  fake.releaseProof(0, OWNER);
   await started;
   // The later session sees the connector; the earlier session's snapshot never gains it.
   assert.deepEqual(admittedWhileVerifying, []);

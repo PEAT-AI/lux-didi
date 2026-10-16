@@ -18,7 +18,7 @@ import { GeminiAdapter } from '../adapters/model/index.js';
 import { liveMigrations } from '../live/schema.js';
 import * as summaries from '../domain/summaries.js';
 import { createSummarizer } from '../services/summarize.js';
-import { buildEarlierConversationsSection, composeLiveInstruction, composeLiveSessionInstruction, NAYA_BASE, TRUSTED_SYSTEM_CODE_UNIT_LIMIT } from '../prompt/live-persona.js';
+import { buildEarlierConversationsSection, composeLiveInstruction, composeLiveSessionInstruction, NAYA_LIVE_BASE, TRUSTED_SYSTEM_CODE_UNIT_LIMIT } from '../prompt/live-persona.js';
 import type { DomainContext, SourceRef } from '../contracts/domain.js';
 
 class CountingModel implements ModelPort {
@@ -631,7 +631,7 @@ test('a distilled session A is injected into session B chat context and Live ins
     // MEM1 Live instruction: the same store read the Live composer uses.
     const section = f.store.transaction(tx => buildEarlierConversationsSection(summaries.injectionCandidates(tx), { now: 0, timeZone: 'UTC' }));
     assert.match(section.section, /moved to Lisbon/);
-    const baseline = composeLiveInstruction({ base: NAYA_BASE, language: 'en' });
+    const baseline = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en' });
     const voice = composeLiveSessionInstruction({ text: baseline.text, tools: [], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, earlierConversations: section.section });
     assert.equal(voice.earlierConversationsIncluded, true);
     assert.ok(voice.text.includes('moved to Lisbon'), 'the Live instruction carries the past summary');

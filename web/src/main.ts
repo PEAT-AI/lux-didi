@@ -4,7 +4,7 @@ import { deleteMemoryEntry } from './api';
 import { ConnectedView } from './connected';
 import { Orb, type VoiceState } from './orb';
 import { ApiError, request, pair, demoMode, onAuthorityChanged, authorityVersion, assertAuthority, restoreSession, logout, fetchLive } from './api';
-import { liveMarkup, liveSegments, liveLabel, liveVoiceState, liveDelay, pollLiveView, liveActivity, activityMarkup, liveTranscript, LiveMachine, LIVE_CONSENT, pillVisible, liveErrorText, startAvailable, stopAvailable, type LivePollState } from './live-view';
+import { liveMarkup, liveSegments, liveLabel, liveVoiceState, liveDelay, pollLiveView, liveActivity, activityMarkup, liveTranscript, LiveMachine, LIVE_CONSENT, pillVisible, liveErrorText, startAvailable, stopAvailable, earlierSession, liveNoticesMarkup, liveJobsMarkup, type LivePollState, type EarlierSession } from './live-view';
 import { attachPin } from './autoscroll.ts';
 import { dragPanel, isNarrow, loadLayout, openSheet, closeSheet, PANEL_IDS, panelControl, panelLabel, panelOpen, panelWidth, saveLayout, shortcutPanel, togglePanel, withViewport, type LayoutState, type PanelId, type RouteId } from './layout';
 import { installNativeBridge, type Bridge, type NativeLiveState } from './native-bridge';
@@ -27,6 +27,9 @@ let tab: Tab = 'Conversation';
 let theme: Theme = 'dark';
 let orb: Orb | undefined;
 let transcriptPin: { repin(): void; stop(): void } | undefined;
+// Ended sessions kept by the page (never the host): each collapses under a dated divider when a new
+// session starts, so the live feed is only the current session (spec 1.3 cause 1, page-side only).
+let earlierFeed: EarlierSession[] = [];
 let appliedOrbState: VoiceState | undefined;
 let status: Status | undefined;
 const connectedView = new ConnectedView(() => orb?.setState(orbState()));
@@ -59,7 +62,7 @@ function localInput(value: string | null) { if (!value) return ''; const d = new
 function writable() { return connection === 'Connected' && !busy; }
 const disabled = (condition: boolean) => condition ? 'disabled' : '';
 function themeStorage(): Storage | undefined { try { return window.localStorage; } catch { return undefined; } }
-function notify(message: string, failure = false) { notice = failure ? '' : message; error = failure ? message : ''; render(); }
+function notify(message: string, failure = false) { notice = failure ? '' : message; error = failure ? message : ''; if (document.querySelector('.app-shell')) paintNotices(); else render(); }
 function failure(err: unknown, mutation = false) {
   if (err instanceof DOMException && err.name === 'AbortError') return 'Stopped waiting. A sent change may still have been saved. Refresh before trying again.';
   if (err instanceof ApiError) return err.message;
@@ -448,6 +451,7 @@ async function connect(background=false) {
     if(!background||populate){await loadTab();assertAuthority(version);await connectedView.refresh(current.assistantId);assertAuthority(version);}
   } catch(err){if(version!==authorityVersion())return;error=failure(err);statusUnavailable=true;if(connection!=='Offline')connection=navigator.onLine?'Disconnected':'Offline';backoff=Math.min(backoff*2,120000);}
   if(version!==authorityVersion())return;
+  if(background&&document.querySelector('.app-shell')){const dot=document.querySelector('.connection-dot');if(dot)dot.classList.toggle('online',connection==='Connected');const state=document.getElementById('connection-state');if(state)state.textContent=connection;paintLive();schedulePoll();void pollLive();void pollConnections();return;}
   render();schedulePoll();void pollLive();void pollConnections();
 }
 function schedulePoll(){if(pollTimer)clearTimeout(pollTimer);pollTimer=undefined;const version=authorityVersion();if(!document.hidden&&!pairingRequired)pollTimer=setTimeout(()=>{if(version===authorityVersion())void connect(true);},backoff);}
@@ -462,7 +466,13 @@ async function pollLive(){
     const prior=livePoll;
     const next=await pollLiveView(prior,cursor=>fetchLive(cursor,AbortSignal.timeout(8000)));
     if(version!==authorityVersion()||livePoll!==prior)return;
-    livePoll=next;live=livePoll.live;paintLive();
+    // A session boundary: the ended session's rows stay, collapsed under their dated divider, so a new
+    // session starts fresh instead of inheriting the old feed (spec 1.3 cause 1, page-side only).
+    if(prior.live&&next.live&&prior.live.since!==next.live.since){
+      const block=earlierSession(prior.live);
+      if(block&&!earlierFeed.some(entry=>entry.at===block.at))earlierFeed=[...earlierFeed,block];
+    }
+    livePoll={...next,earlier:earlierFeed};live=livePoll.live;paintLive();
   }
   finally{if(version===authorityVersion()){liveBusy=false;scheduleLive();}}
 }
@@ -488,9 +498,24 @@ function scheduleLive(){
   if(liveTimer)clearTimeout(liveTimer);liveTimer=undefined;
   const version=authorityVersion();if(liveDelay(live?.state,document.hidden)!==undefined&&!pairingRequired)liveTimer=setTimeout(()=>{if(version===authorityVersion())void pollLive();},liveDelay(live?.state,document.hidden));
 }
+function paintNotices(){
+  // The error and notice banners live at the top of the lane row; patch them in place so a notify
+  // never rebuilds the feed (spec 1.3 cause 2).
+  const lane=document.querySelector<HTMLElement>('main.lanes');if(!lane)return;
+  lane.querySelector(':scope > .alert')?.remove();lane.querySelector(':scope > .notice')?.remove();
+  const markup=`${error?`<div class="alert" role="alert" aria-live="assertive">${e(error)}</div>`:''}${notice?`<div class="notice" role="status" aria-live="polite" aria-atomic="true">${e(notice)}</div>`:''}`;
+  if(markup)lane.insertAdjacentHTML('afterbegin',markup);
+}
 function paintLive(){
-  // A poll rewrites the state line and the transcript only, so the orb canvas and the controls keep
-  // their listeners and the stage never moves (V3 item 8).
+  // A poll rewrites the state line, the wrapper notices, the jobs and the transcript in place, so the
+  // orb canvas, the controls and the reader's scroll position all keep (spec 1.3 causes 2, 3 and 4).
+  const pill=document.getElementById('live-pill'),pillMarkup=livePillMarkup();
+  if(!!pill!==!!pillMarkup){render();return;} // a session start or end is the only full repaint, and it repins
+  if(pill&&pill.outerHTML!==pillMarkup)pill.outerHTML=pillMarkup;
+  const notices=document.getElementById('feed-notices'),noticeMarkup=liveNoticesMarkup(live,livePoll);
+  if(notices&&notices.innerHTML!==noticeMarkup)notices.innerHTML=noticeMarkup;
+  const jobs=document.getElementById('feed-jobs'),jobMarkup=liveJobsMarkup(live);
+  if(jobs&&jobs.innerHTML!==jobMarkup)jobs.innerHTML=jobMarkup;
   const caption=document.querySelector('.orb-caption');const markup=orbCaptionMarkup();if(caption && caption.innerHTML!==markup)caption.innerHTML=markup;
   const list=document.querySelector<HTMLElement>('#transcript .live-turns');
   if(list)renderTranscript(list);
@@ -507,7 +532,7 @@ function bindOrbControls() {
 }
 function renderTranscript(list: HTMLElement) {
   // Stable segment keys keep a streaming line in place: only lines that are new fade and rise in.
-  const segments = liveSegments(live);
+  const segments = liveSegments(live, livePoll.earlier ?? []);
   const children = [...list.children] as HTMLElement[];
   if (children.length === segments.length && segments.every((segment, index) => children[index]!.dataset.seg === segment.key)) {
     segments.forEach((segment, index) => { const child = children[index]!; if (child.outerHTML !== segment.html) child.outerHTML = segment.html; });
@@ -528,7 +553,7 @@ onAuthorityChanged(reason=>{
   ++readGeneration;controller?.abort();controller=undefined;busy=false;readBusy=false;pairingBusy=false;connectionsBusy=false;liveBusy=false;
   for(const timer of [pollTimer,liveTimer,connectionsTimer])if(timer)clearTimeout(timer);
   pollTimer=undefined;liveTimer=undefined;connectionsTimer=undefined;
-  connectedView.reset();live=undefined;livePoll={};connections=[];connectionsStale=false;
+  connectedView.reset();live=undefined;livePoll={};earlierFeed=[];connections=[];connectionsStale=false;
   statusUnavailable=false;status=undefined;sessions=[];entries=[];session=undefined;plan=undefined;recall=undefined;recent=[];
   detail=undefined;editing=undefined;editTitle='';editNotes='';editDue='';sessionMore=false;entriesMore=false;error='';notice='';
   if(reason==='logout'){draftOwner=undefined;messageDraft='';titleDraft='';queryDraft='';memoryFilter='';notice='This browser is unpaired.';}
@@ -544,7 +569,7 @@ const installed = installNativeBridge(window as unknown as Record<string, unknow
 nativeBridge = installed.bridge;
 nativeFake = installed.fake;
 liveMachine = new LiveMachine(message => nativeBridge!.send(message));
-liveMachine.on(() => render());
+liveMachine.on(() => paintLive());
 nativeBridge.onNative(message => liveMachine.receive(message));
 nativeBridge.send({ type: 'theme', mode: theme });
 nativeBridge.send({ type: 'ready' });

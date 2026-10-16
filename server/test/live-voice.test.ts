@@ -951,7 +951,7 @@ class StallPeer extends EventEmitter {
   terminate() { this.close(); }
   ping() { this.pings += 1; }
 }
-function stallSession(t: TestContext, peer: StallPeer) {
+function stallSession(peer: StallPeer) {
   return new GeminiLiveVoiceAdapter(options({ limits: { upstreamStallMs: 400, maxBufferedBytes: 2 * 1024 * 1024 }, socketFactory: () => {
     queueMicrotask(() => { peer.readyState = 1; peer.emit('open'); peer.emit('message', Buffer.from(JSON.stringify({ setupComplete: {} }))); });
     return peer as unknown as WebSocket;
@@ -961,7 +961,7 @@ function stallSession(t: TestContext, peer: StallPeer) {
 test('an upstream queue held above 128 KB for two seconds is a stalled transport', async t => {
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
   const peer = new StallPeer();
-  const session = stallSession(t, peer);
+  const session = stallSession(peer);
   const captured = collect(session);
   await session.ready;
   peer.bufferedAmount = 200 * 1024;
@@ -977,7 +977,7 @@ test('an upstream queue held above 128 KB for two seconds is a stalled transport
 test('a queue that never drains for two seconds is a stalled transport', async t => {
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
   const peer = new StallPeer();
-  const session = stallSession(t, peer);
+  const session = stallSession(peer);
   const captured = collect(session);
   await session.ready;
   peer.bufferedAmount = 1024;
@@ -992,7 +992,7 @@ test('a queue that never drains for two seconds is a stalled transport', async t
 test('two missed websocket pongs are a stalled transport', async t => {
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
   const peer = new StallPeer();
-  const session = stallSession(t, peer);
+  const session = stallSession(peer);
   const captured = collect(session);
   await session.ready;
   t.mock.timers.tick(15_000);
@@ -1005,7 +1005,7 @@ test('two missed websocket pongs are a stalled transport', async t => {
 test('an elevated upstream queue is surfaced once, above 64 KB', async t => {
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
   const peer = new StallPeer();
-  const session = stallSession(t, peer);
+  const session = stallSession(peer);
   const captured = collect(session);
   await session.ready;
   peer.bufferedAmount = 100 * 1024;

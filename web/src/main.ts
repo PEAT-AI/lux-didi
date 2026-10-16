@@ -112,7 +112,10 @@ function lookupLineMarkup(current: LiveCurrent | undefined): string {
 function orbStateLineMarkup(): string {
   const lookup = lookupLineMarkup(live);
   if (lookup) return lookup;
-  return e(live ? liveLabel(live) : liveStateCopy(liveMachine.view.state));
+  // The projection names what Naya is doing (Listening, Speaking, Thinking); with no live projection
+  // the native state keeps the honest one line (Live is off, Starting, Muted, Needs your attention).
+  const projection = live && live.state !== 'idle' ? liveLabel(live) : undefined;
+  return e(projection ?? liveStateCopy(liveMachine.view.state));
 }
 function orbControlsMarkup(): string {
   const view = liveMachine.view;

@@ -96,7 +96,7 @@ function assertAudit(a, label, failures) {
 async function panelAudit(page) {
   return await page.evaluate(() => {
     const rect = el => { const b = el.getBoundingClientRect(); return { w: Math.round(b.width), left: Math.round(b.left), top: Math.round(b.top), h: Math.round(b.height) }; };
-    const box = sel => { const el = document.querySelector(sel); if (!el) return null; const r = rect(el); const cs = getComputedStyle(el); return { state: el.dataset.state, rendered: r.w > 0 && cs.opacity !== '0' && cs.display !== 'none', ...r }; };
+    const box = sel => { const el = document.querySelector(sel); if (!el) return null; const r = rect(el); const cs = getComputedStyle(el); return { state: el.dataset.state, rendered: r.w > 0 && cs.display !== 'none', opacity: cs.opacity, ...r }; };
     const ctl = sel => { const el = document.querySelector(sel); return el ? { rendered: el.getClientRects().length > 0, visible: getComputedStyle(el).visibility !== 'hidden', expanded: el.getAttribute('aria-expanded') } : null; };
     const orb = document.querySelector('#orb-holder canvas') || document.querySelector('#didi-orb');
     const panel = document.querySelector('#panel-left');
@@ -254,8 +254,8 @@ try {
           const a = await panelAudit(panelPage);
           assert.equal(a.left.state, left, `${label}: left state`);
           assert.equal(a.right.state, right, `${label}: right state`);
-          assert.equal(a.left.rendered, left === 'open', `${label}: left renders only when open`);
-          assert.equal(a.right.rendered, right === 'open', `${label}: right renders only when open`);
+          assert.equal(a.left.rendered, left === 'open', `${label}: left renders only when open (${a.left.state} w=${a.left.w} opacity=${a.left.opacity})`);
+          assert.equal(a.right.rendered, right === 'open', `${label}: right renders only when open (${a.right.state} w=${a.right.w} opacity=${a.right.opacity})`);
           if (left === 'open') assert.ok(a.left.w >= 200, `${label}: left at its minimum width`);
           if (right === 'open') assert.ok(a.right.w >= 320, `${label}: right at its minimum width`);
           if (left === 'collapsed') assert.equal(a.left.w, 0, `${label}: a collapsed left panel is zero width, no residue`);

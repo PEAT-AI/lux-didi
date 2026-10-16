@@ -195,7 +195,7 @@ const RAIL_ICONS: Record<RouteId, string> = {
 function railMarkup() {
   const items: [RouteId, string][] = [['today', 'Today'], ['memory', 'Memory'], ['settings', 'Settings'], ['diagnostics', 'Diagnostics']];
   const tabName: Partial<Record<RouteId, string>> = { today: 'Today', memory: 'Memory', settings: 'Settings' };
-  return `<nav class="rail panel panel-left" id="panel-left" aria-label="Program menu" data-state="${layout.left}">${items.map(([id, label]) => `<button class="rail-item" data-route="${id}"${tabName[id] ? ` data-tab="${tabName[id]}"` : ''} aria-expanded="${layout.sheet === id}" aria-controls="sheet" aria-label="${label}" title="${label}"><span class="rail-icon" aria-hidden="true">${RAIL_ICONS[id]}</span><span class="rail-label">${label}</span></button>`).join('')}</nav>`;
+  return `<nav class="rail sidepanel panel-left" id="panel-left" aria-label="Program menu" data-state="${layout.left}">${items.map(([id, label]) => `<button class="rail-item" data-route="${id}"${tabName[id] ? ` data-tab="${tabName[id]}"` : ''} aria-expanded="${layout.sheet === id}" aria-controls="sheet" aria-label="${label}" title="${label}"><span class="rail-icon" aria-hidden="true">${RAIL_ICONS[id]}</span><span class="rail-label">${label}</span></button>`).join('')}</nav>`;
 }
 function sheetMarkup() {
   if (!layout.sheet) return '';
@@ -242,7 +242,7 @@ function voiceViewMarkup() {
 function panelMarkup(id: PanelId, label: string, headerHtml: string, bodyHtml: string) {
   const state = layout[id];
   const cls = id === 'right' ? 'lane-chat' : 'lane-left';
-  return `<section class="lane ${cls} panel panel-${id}" id="panel-${id}" data-state="${state}" role="region" aria-label="${label}"><header class="lane-head">${headerHtml}</header><div class="lane-inner" id="panel-${id}-primary" tabindex="-1">${bodyHtml}</div></section>`;
+  return `<section class="lane ${cls} sidepanel panel-${id}" id="panel-${id}" data-state="${state}" role="region" aria-label="${label}"><header class="lane-head">${headerHtml}</header><div class="lane-inner" id="panel-${id}-primary" tabindex="-1">${bodyHtml}</div></section>`;
 }
 const scrollAnchor = new WeakMap<HTMLElement, boolean>();
 const scrollObserver = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(entries => { for (const entry of entries) { const el = entry.target as HTMLElement; if (scrollAnchor.get(el)) el.scrollTop = el.scrollHeight; } }) : undefined;

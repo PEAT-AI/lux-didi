@@ -147,9 +147,9 @@
 .lane-voice{flex:1 1 auto;display:flex;flex-direction:column;min-width:0}
 /* A side panel has exactly two states (issue 282): open at its readable width, or collapsed at zero
    width and invisible. The transition is the 150 ms expand/collapse; prefers-reduced-motion turns it off. */
-.panel{opacity:1;transition:flex-basis .15s ease,opacity .15s ease}
-.panel[data-state="collapsed"]{flex-basis:0;min-width:0;opacity:0;pointer-events:none;overflow:hidden;padding:0;border-width:0}
-.panel[data-state="collapsed"] > *{display:none}
+.sidepanel{opacity:1;transition:flex-basis .15s ease,opacity .15s ease}
+.sidepanel[data-state="collapsed"]{flex-basis:0;min-width:0;opacity:0;pointer-events:none;overflow:hidden;padding:0;border-width:0}
+.sidepanel[data-state="collapsed"] > *{display:none}
 .panel-left[data-state="open"]{min-width:200px}
 .lane-chat{flex:0 0 var(--panel-right-w,360px);display:flex;flex-direction:column;border-left:1px solid var(--border)}
 .lane-chat[data-state="open"]{min-width:320px}
@@ -159,7 +159,7 @@
 .panel-toggle{width:32px;height:32px;flex-shrink:0;border-radius:8px;border:1px solid var(--border);background:var(--surface-2);color:var(--text);cursor:pointer;font:inherit}
 .panel-toggle[aria-expanded="true"]{background:var(--accent-soft)}
 .panel-toggle:hover{background:var(--surface-3)}
-@media (prefers-reduced-motion: reduce){.panel{transition:none}}
+@media (prefers-reduced-motion: reduce){.sidepanel{transition:none}}
 .lane-inner{flex:1;min-width:0;min-height:0;overflow-y:auto;display:flex;flex-direction:column}
 .voice-head{position:sticky;top:0;z-index:4;display:flex;align-items:center;gap:12px;min-height:96px;padding:10px 42px 10px 16px;background:var(--bg);border-bottom:1px solid var(--border)}
 .voice-orb-mini{width:56px;height:56px;border-radius:50%;flex-shrink:0;background:radial-gradient(circle at 50% 40%,var(--orb-core),var(--orb-edge));box-shadow:0 0 0 1px var(--border),0 0 22px var(--glow)}

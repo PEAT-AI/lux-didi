@@ -451,7 +451,8 @@ function renderTranscript(list: HTMLElement) {
 }
 function bindTranscript() {
   transcriptPin?.stop(); transcriptPin = undefined;
-  const list = document.querySelector<HTMLElement>('#transcript .live-turns');
+  // The scroll container is the transcript itself; the pin watches the turns inside it.
+  const list = document.getElementById('transcript');
   const pill = document.getElementById('transcript-jump');
   if (list && pill) transcriptPin = attachPin(list, pill);
 }

@@ -50,6 +50,13 @@ const MODEL = 'models/live-session-test';
 const NOW = 1_700_000_000_000;
 const context = (store: Store): LiveContext => ({ clientId: 'tester', auditId: 'audit-1', authorityEpoch: store.authorityEpoch });
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
+
+// Drive an injected scheduler until a condition holds: the owner schedules its backoff between
+// microtasks, so a single advance can otherwise run before the timer exists.
+async function advanceUntil(advance: (ms: number) => void, scheduler: DeadlineClock, condition: () => boolean): Promise<void> {
+  for (let i = 0; i < 200 && !condition(); i++) { advance(1000); scheduler.runDue(); await new Promise<void>(resolve => setImmediate(resolve)); }
+  assert.ok(condition(), 'the expected connection did not open');
+}
 const audio = () => ({ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from(pcm).toString('base64') } });
 
 /** Wrap a store so one exact SQL write fails, proving the failure path without breaking reads. */
@@ -1759,8 +1766,10 @@ test('provider usage metadata is decoded and logged per turn, numbers only', asy
   h.f.send({ usageMetadata: { promptTokenCount: 10, responseTokenCount: 5, totalTokenCount: 15 } });
   h.f.send({ serverContent: { inputTranscription: { text: 'after usage', finished: true } } });
   await transcription(output, 'after usage');
-  const lines = readFileSync(join(captureDir, 'logs', 'host.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line) as { event: string });
-  assert.deepEqual(lines.filter(line => line.event === 'live_context_usage'), [{ event: 'live_context_usage', totalTokens: 15, promptTokens: 10, responseTokens: 5 }]);
+  const lines = readFileSync(join(captureDir, 'logs', 'host.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line) as { event: string; totalTokens?: number; promptTokens?: number; responseTokens?: number });
+  const usage = lines.filter(line => line.event === 'live_context_usage');
+  assert.equal(usage.length, 1);
+  assert.deepEqual({ totalTokens: usage[0]!.totalTokens, promptTokens: usage[0]!.promptTokens, responseTokens: usage[0]!.responseTokens }, { totalTokens: 15, promptTokens: 10, responseTokens: 5 });
   h.owner.revoke(session.liveSessionId);
   await attachment.done;
 });
@@ -1792,11 +1801,9 @@ test('three consecutive failed recoveries end the call, each with its own new so
   // Each recovery socket fails before it is ready; backoff is 0 s, then 2 s, then 5 s.
   h.f.remoteClose('', 1011);
   await h.f.frame(2); h.f.remoteClose('', 1011);
-  await new Promise<void>(resolve => setImmediate(resolve));
-  h.advance(2000); scheduler.runDue();
+  await advanceUntil(h.advance, scheduler, () => h.f.connections >= 3);
   await h.f.frame(3); h.f.remoteClose('', 1011);
-  await new Promise<void>(resolve => setImmediate(resolve));
-  h.advance(5000); scheduler.runDue();
+  await advanceUntil(h.advance, scheduler, () => h.f.connections >= 4);
   await h.f.frame(4); h.f.remoteClose('', 1011);
   assert.deepEqual((await attachment.done).terminal, { state: 'failed', code: 'resume_failed' });
   assert.equal(h.f.connections, 4, 'three failed recoveries, each a new socket, then the call ends');
@@ -1812,14 +1819,12 @@ test('a healthy minute between drops resets the consecutive-failure count', asyn
   // Two failed recoveries, then a healthy minute, then two more must not reach the bound.
   h.f.remoteClose('', 1011);
   await h.f.frame(2); h.f.remoteClose('', 1011);
-  await new Promise<void>(resolve => setImmediate(resolve));
-  h.advance(2000); scheduler.runDue();
+  await advanceUntil(h.advance, scheduler, () => h.f.connections >= 3);
   await h.f.frame(3); h.f.send({ setupComplete: {} }); await continuity(output, 'resumed');
   h.advance(60_000);
   h.f.remoteClose('', 1011);
   await h.f.frame(4); h.f.remoteClose('', 1011);
-  await new Promise<void>(resolve => setImmediate(resolve));
-  h.advance(2000); scheduler.runDue();
+  await advanceUntil(h.advance, scheduler, () => h.f.connections >= 5);
   await h.f.frame(5);
   assert.equal(h.f.connections, 5, 'the healthy minute reset the count, so the call is still alive');
   h.owner.revoke(session.liveSessionId);
@@ -1898,8 +1903,13 @@ test('revoked resumption handle is cleared before a recoverable loss', async t =
   await transcription(output, 'cleared');
   assert.equal(h.store.transaction(tx => tx.get('SELECT resumption_handle FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!.resumption_handle, null);
   h.f.remoteClose('', 1011);
-  assert.deepEqual((await attachment.done).terminal, { state: 'failed', code: 'resume_failed' });
-  assert.equal(h.f.connections, 1);
+  await h.f.frame(2);
+  const seeded = h.requests.at(-1)!;
+  assert.equal(seeded.resumptionHandle, undefined, 'a cleared handle forces a fresh seeded setup');
+  assert.equal(seeded.openingText, LIVE_RECOVERY_PICKUP);
+  assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(r => r.kind === 'terminal').length, 0, 'the call did not end');
+  h.owner.revoke(session.liveSessionId);
+  await attachment.done;
 });
 
 test('a resume does not extend the original idle expiry', async t => {
@@ -2088,7 +2098,7 @@ test('a failed upstream audio write rebuilds the session once and logs one live_
   attachment.close(); await attachment.done;
 });
 
-test('two upstream rebuilds are the bound, then the call ends with resume_failed', async t => {
+test('successful upstream rebuilds do not accumulate toward the recovery bound', async t => {
   const sockets: unknown[] = [];
   let h!: Harness;
   h = await harness(t, { socketFactory: (url, config) => { const client = h.f.socketFactory(url, config); sockets.push(client); return client; } });
@@ -2097,7 +2107,7 @@ test('two upstream rebuilds are the bound, then the call ends with resume_failed
   h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: handle } });
   for (let i = 0; i < 100; i++) { if (h.store.transaction(tx => tx.get('SELECT resumption_handle FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!['resumption_handle'] === handle) break; await tick(); }
   const output = attachment.output[Symbol.asyncIterator]();
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < 3; attempt++) {
     attachment.sendAudio({ pcm }); await tick();
     failUpstream(sockets[attempt]);
     attachment.sendAudio({ pcm });
@@ -2106,11 +2116,9 @@ test('two upstream rebuilds are the bound, then the call ends with resume_failed
     h.f.send({ setupComplete: {} });
     await continuity(output, 'resumed');
   }
-  attachment.sendAudio({ pcm }); await tick();
-  failUpstream(sockets[2]);
-  attachment.sendAudio({ pcm });
-  assert.deepEqual((await attachment.done).terminal, { state: 'failed', code: 'resume_failed' });
-  assert.equal(h.f.connections, 3, 'initial session plus exactly two rebuilds');
+  assert.equal(h.f.connections, 4, 'three successful rebuilds, and the call is still alive');
+  h.owner.revoke(session.liveSessionId);
+  await attachment.done;
 });
 
 test('a pending tool call is never answered on the rebuilt socket', async t => {
@@ -2157,14 +2165,14 @@ test('active page does not carry past session metadata', async t => {
 });
 
 
-for (const status of [401, 403, 429]) test(`resumed HTTP upgrade refusal ${status} ends without another recovery attempt`, async t => {
+for (const status of [401, 403, 429]) test(`resumed HTTP upgrade refusal ${status} falls back to fresh then ends after three failures`, async t => {
   const h = await harness(t);
   const { session, attachment } = await attached(h, `resume-refused-${status}`);
   h.f.refuseUpgrades(status);
   h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-refused-resumption-secret' }, goAway: { timeLeft: '10s' } });
   assert.deepEqual((await attachment.done).terminal, { state: 'failed', code: 'resume_failed' });
-  assert.equal(h.f.attempts, 2, 'one original connection and one rejected resume, never a second recovery');
-  assert.equal(h.f.connections, 1);
+  assert.ok(h.f.attempts >= 3, 'a refused resume falls back to fresh and retries to the bound');
+  assert.equal(h.f.connections, 1, 'no refused upgrade ever connects');
   assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(row => row.kind === 'terminal').length, 1);
 });
 

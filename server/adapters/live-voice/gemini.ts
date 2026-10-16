@@ -404,7 +404,7 @@ class Session implements LiveVoiceSession {
         if ((activity.type ?? activity.voiceActivityType) === 'ACTIVITY_START') events.push({ type: 'waitingForInput', value: true });
         if ((activity.type ?? activity.voiceActivityType) === 'ACTIVITY_END') events.push({ type: 'waitingForInput', value: false });
       }
-      const knownKeys = ['error', 'toolCall', 'toolCallCancellation', 'setupComplete', 'serverContent', 'voiceActivity', 'sessionResumptionUpdate', 'goAway', 'usageMetadata'];
+      const knownKeys = ['error', 'toolCall', 'toolCallCancellation', 'setupComplete', 'serverContent', 'voiceActivity', 'sessionResumptionUpdate', 'goAway'];
       for (const key of Object.keys(message)) {
         if (knownKeys.includes(key) && !(key === 'serverContent' && object(message.serverContent) && !Object.keys(message.serverContent).length)) continue;
         this.unknownTopLevelKeys = Math.min(65535, this.unknownTopLevelKeys + 1);

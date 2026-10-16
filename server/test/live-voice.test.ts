@@ -936,7 +936,7 @@ test('provider usage metadata is decoded into a provider-neutral contextUsage ev
   const captured = collect(session); t.after(() => session.close());
   await f.frame(1); f.send({ setupComplete: {} }); await session.ready;
   f.send({ usageMetadata: { promptTokenCount: 3, responseTokenCount: 4, totalTokenCount: 7 } });
-  await new Promise<void>(resolve => setImmediate(resolve));
+  for (let i = 0; i < 50 && !captured.events.some(event => event.type === 'contextUsage'); i++) await new Promise<void>(resolve => setImmediate(resolve));
   const usage = captured.events.filter(event => event.type === 'contextUsage') as { type: 'contextUsage'; totalTokens: number; promptTokens?: number; responseTokens?: number }[];
   assert.equal(usage.length, 1);
   assert.deepEqual({ totalTokens: usage[0]!.totalTokens, promptTokens: usage[0]!.promptTokens, responseTokens: usage[0]!.responseTokens }, { totalTokens: 7, promptTokens: 3, responseTokens: 4 });
@@ -995,7 +995,7 @@ test('two missed websocket pongs are a stalled transport', async t => {
   const session = stallSession(peer);
   const captured = collect(session);
   await session.ready;
-  t.mock.timers.tick(15_000);
+  t.mock.timers.tick(5000); t.mock.timers.tick(5000); t.mock.timers.tick(5000);
   const outcome = await session.done; await captured.done;
   assert.equal(peer.pings, 2, 'a ping every five seconds');
   assert.equal(outcome.code, 'transport_error');

@@ -274,10 +274,12 @@ export function liveSegments(live: LiveCurrent | undefined, earlier: EarlierSess
   const items = sessionItems(live);
   // A terminal newest session is not the live feed: its items collapse under their dated divider, so a
   // new session starts fresh instead of inheriting the ended one (spec 1.3 cause 1, page-side only).
-  if (live?.pastSession && items.length) {
-    const at = sessionDividerText(live.pastSession.endedAt ?? live.since);
-    segments.push({ key: 'past-session', html: `<details class="feed-session" data-seg="past-session"><summary class="feed-divider">${escapeHtml(at)}</summary><div class="feed-session-body">${items.map(segment => segment.html).join('')}</div></details>` });
-  } else {
+  if (live?.pastSession) {
+    if (items.length) {
+      const at = sessionDividerText(live.pastSession.endedAt ?? live.since);
+      segments.push({ key: 'past-session', html: `<details class="feed-session" data-seg="past-session"><summary class="feed-divider">${escapeHtml(at)}</summary><div class="feed-session-body">${items.map(segment => segment.html).join('')}</div></details>` });
+    }
+  } else if (items.length) {
     if (live?.since) segments.push({ key: 'divider:session', html: `<div class="feed-divider" data-seg="divider:session" role="separator">${escapeHtml(sessionDividerText(live.since))}</div>` });
     segments.push(...items);
   }
@@ -311,10 +313,12 @@ export function liveJobsMarkup(live: LiveCurrent | undefined): string {
   return (live?.jobs ?? []).map(job => `<article class="live-job" data-job-id="${escapeHtml(job.id)}"><p class="live-tool-chip">${job.state === 'in_progress' ? 'Background task in progress' : 'Background task ' + escapeHtml(job.state)}</p>${renderMarkdown(job.markdown, TRANSCRIPT_MARKDOWN)}${!job.delivered && job.state !== 'in_progress' ? '<p class="muted">Call Naya back: choose Start Live voice in the native app to pick up this result.</p>' : ''}</article>`).join('');
 }
 
+/** The idle feed: one calm invitation, reused by the wrapper and the in-place transcript painter. */
+export const FEED_EMPTY = '<p class="feed-empty transcript-placeholder muted">Ask me anything<br><span>Start with the mic or \u2318\u21e7Space</span></p>';
+
 export function liveMarkup(live: LiveCurrent | undefined, poll: LivePollState = {}): string {
   const flow = liveSegments(live, poll.earlier).map(segment => segment.html);
-  const empty = '<p class="feed-empty transcript-placeholder muted">Ask me anything<br><span>Start with the mic or \u2318\u21e7Space</span></p>';
-  const body = live?.pastSession ? empty + flow.join('') : (flow.join('') || empty);
+  const body = live?.pastSession ? FEED_EMPTY + flow.join('') : (flow.join('') || FEED_EMPTY);
   return `<section class="lane-convo live" id="live-panel" aria-label="Naya live conversation">
     <div class="feed-notices" id="feed-notices">${liveNoticesMarkup(live, poll)}</div>
     <div class="feed live-turns">${body}</div>

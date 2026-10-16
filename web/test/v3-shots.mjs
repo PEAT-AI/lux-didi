@@ -119,6 +119,7 @@ try {
   await page.evaluate(() => localStorage.setItem('didi-theme', 'dark'));
   await page.reload();
   await page.locator('#didi-orb').waitFor();
+  await page.locator('.connected-disclosure').waitFor({ timeout: 15000 });
 
   const measure = () => page.evaluate(() => {
     const box = selector => { const el = document.querySelector(selector); if (!el) return null; const rect = el.getBoundingClientRect(); return { width: Math.round(rect.width), height: Math.round(rect.height), top: Math.round(rect.top), bottom: Math.round(rect.bottom), left: Math.round(rect.left), right: Math.round(rect.right) }; };
@@ -171,6 +172,9 @@ try {
       transcriptTopGap: stageBox && transcriptBox ? Math.round(transcriptBox.top - stageBox.bottom) : null,
       voiceColumn: Math.round((() => { const el = document.querySelector('.transcript .live-turns'); return el ? el.getBoundingClientRect().width : 0; })()),
       composerButtons: [...document.querySelectorAll('.composer-field button')].filter(button => button.getClientRects().length > 0).length,
+      attachVisible: (() => { const el = document.querySelector('#connected-attach'); return !!el && el.getClientRects().length > 0; })(),
+      pillInsideStage: (() => { const control = document.querySelector('#voice-stop') ?? document.querySelector('#voice-start'); if (!control || !stageBox) return null; const rect = control.getBoundingClientRect(); return rect.top >= stageBox.top - 0.5 && rect.bottom <= stageBox.bottom + 0.5 && rect.left >= stageBox.left - 0.5 && rect.right <= stageBox.right + 0.5; })(),
+      consentInset: (() => { const el = document.querySelector('.connected-disclosure'); if (!el) return null; const column = document.querySelector('#connected-entries'); return column ? Math.round(el.getBoundingClientRect().left + Number.parseFloat(getComputedStyle(el).paddingLeft) - column.getBoundingClientRect().left) : null; })(),
       voiceWidth: voice ? voice.width : null,
       chatWidth: chat ? box('.chat-list').width : null,
       labels: document.querySelectorAll('.entry strong, .entry header').length,
@@ -203,6 +207,10 @@ try {
   assert.equal(table.voiceJump, false, 'an empty transcript has nothing to jump to');
   assert.equal(table.pill, 'Start', 'Live is off offers Start');
   assert.equal(table.composerButtons, 2, 'the idle composer shows the attach plus and the send');
+  assert.equal(table.attachVisible, true, 'the attach plus is visible in idle as well as with a draft');
+  assert.equal(table.pillInsideStage, true, 'every control sits fully inside the stage');
+  assert.equal(table.consentInset, 24, 'the consent line uses the column side padding');
+  assert.equal(table.composerBottom >= 16 && table.composerBottom <= 24, true, `the composer sits 16 to 24 px above the lane bottom (${table.composerBottom})`);
   const composerBottomIdle = table.composerBottom;
   await sample('2000x1250-dark-a-idle', { width: 2000, height: 1250 });
 
@@ -276,7 +284,7 @@ try {
   await rm(state, { recursive: true, force: true }).catch(() => {});
 }
 
-const columns = ['viewport', 'stageShare', 'orbDiameter', 'orbShare', 'sphereCore', 'sphereCoreShare', 'sphereDrawnShare', 'stageBorder', 'stageBackground', 'pill', 'mute', 'transcriptTopGap', 'voiceColumn', 'chatColumn', 'composerButtons', 'bubbleRight', 'composerBottom', 'labels', 'documentScrolls', 'listNumbers', 'voiceJump', 'chatJump'];
+const columns = ['viewport', 'stageShare', 'orbDiameter', 'orbShare', 'sphereCore', 'sphereCoreShare', 'sphereDrawnShare', 'stageBorder', 'pill', 'mute', 'pillInsideStage', 'transcriptTopGap', 'voiceColumn', 'chatColumn', 'composerButtons', 'attachVisible', 'consentInset', 'bubbleRight', 'composerBottom', 'labels', 'documentScrolls', 'listNumbers', 'voiceJump', 'chatJump'];
 const flatten = row => ({
   ...row,
   sphereCore: row.sphere ? row.sphere.core : null,

@@ -417,8 +417,8 @@ html,body{height:100%;overflow:hidden}
 .transcript-placeholder{margin:auto;text-align:center;color:var(--muted)}
 
 /* (7) One plus glyph at the left, one round send at the right, the same idle or with a draft. */
-#connected-send-form{display:flex;flex-direction:column;gap:8px}
-.connected-notes{width:100%;max-width:760px;margin:0 auto;box-sizing:border-box}
+#connected-send-form{display:block}
+.connected-notes{width:100%;max-width:760px;margin:0 auto 8px;box-sizing:border-box}
 .connected-notes>summary{display:none}
 .attach-button{position:relative}
 .attach-button .notes-count{position:absolute;top:-4px;right:-4px;min-width:16px;height:16px;border-radius:8px;background:var(--accent);color:var(--accent-contrast);font-size:10px;line-height:16px;text-align:center}

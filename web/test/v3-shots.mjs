@@ -182,11 +182,11 @@ try {
   await page.waitForFunction(() => document.querySelectorAll('.transcript .entry').length === 30);
   await page.waitForFunction(() => document.querySelectorAll('.transcript .live-tool-result').length === 2);
   table = await sample('1440x900-dark-b-speaking', { width: 1440, height: 900 });
-  assert.equal(table.stageTop, idleStageTop, 'appending 30 lines never moves the orb stage');
-  assert.equal(table.transcriptDistance <= 2, true, 'the transcript stays pinned at the bottom');
-  assert.equal(table.chatDistance <= 2, true, 'the chat list stays pinned at the bottom');
-  assert.equal(table.composerBottom, composerBottomIdle, 'the composer never moves when lines arrive');
-  assert.equal(table.listNumbers, '1,2,3,4,5', 'the ordered list keeps its numbering');
+  assert.equal(table.stageTop, idleStageTop, `appending 30 lines never moves the orb stage (${idleStageTop} then ${table.stageTop})`);
+  assert.equal(table.transcriptDistance <= 2, true, `the transcript stays pinned at the bottom (distance ${table.transcriptDistance})`);
+  assert.equal(table.chatDistance <= 2, true, `the chat list stays pinned at the bottom (distance ${table.chatDistance})`);
+  assert.equal(table.composerBottom, composerBottomIdle, `the composer never moves when lines arrive (${composerBottomIdle} then ${table.composerBottom})`);
+  assert.equal(table.listNumbers, '1,2,3,4,5', `the ordered list keeps its numbering (${table.listNumbers})`);
   assert.equal(table.chatBubbleRight, 0, 'the chat owner bubble sits at the column right edge');
   assert.equal(table.voiceBubbleRight, 0, 'the voice owner bubble sits at the column right edge');
   assert.equal(table.voiceJump, false, 'a pinned transcript offers no jump pill');

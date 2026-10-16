@@ -320,7 +320,7 @@ test('calendar sub-calls log the resolved window kind only, never a time or titl
   await runResearch(h.deps, { action: 'start', question: 'what is on my calendar tomorrow' }, new AbortController().signal);
   const calendarLogs = h.subcalls.filter(entry => entry.kind === 'calendar_window');
   assert.ok(calendarLogs.length >= 3);
-  for (const entry of calendarLogs) assert.equal((entry as Record<string, unknown>)['window'], 'tomorrow');
+  for (const entry of calendarLogs) assert.equal((entry as unknown as Record<string, unknown>)['window'], 'tomorrow');
   assert.equal(JSON.stringify(h.subcalls).includes('2026-10-16T'), false, 'the resolved times never reach the log');
 });
 

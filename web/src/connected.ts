@@ -188,7 +188,10 @@ export class ConnectedView {
     const growDraft = () => {
       if (!draftField) return;
       draftField.style.height = 'auto';
-      draftField.style.height = `${draftHeightPx(draftField.scrollHeight, panel.closest<HTMLElement>('.lane')?.clientHeight ?? 0)}px`;
+      const height = draftHeightPx(draftField.scrollHeight, panel.closest<HTMLElement>('.lane')?.clientHeight ?? 0);
+      draftField.style.height = `${height}px`;
+      // Past the cap the draft scrolls inside the pill instead of growing the lane (V3 item 5).
+      draftField.style.overflowY = draftField.scrollHeight > height + 1 ? 'auto' : 'hidden';
     };
     const syncSend = () => {
       const send = panel.querySelector<HTMLButtonElement>('#connected-send');

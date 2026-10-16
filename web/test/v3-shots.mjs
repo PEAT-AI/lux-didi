@@ -123,7 +123,7 @@ try {
   const measure = () => page.evaluate(() => {
     const box = selector => { const el = document.querySelector(selector); if (!el) return null; const rect = el.getBoundingClientRect(); return { width: Math.round(rect.width), height: Math.round(rect.height), top: Math.round(rect.top), bottom: Math.round(rect.bottom), left: Math.round(rect.left), right: Math.round(rect.right) }; };
     const list = selector => { const el = document.querySelector(selector); return el ? { distance: Math.max(0, Math.round(el.scrollHeight - el.scrollTop - el.clientHeight)), top: Math.round(el.scrollTop) } : null; };
-    const voice = box('#lane-voice'), stage = box('#orb-stage'), orb = box('#orb-holder canvas'), transcript = list('.transcript'), chat = list('#connected-entries');
+    const voice = box('#lane-voice'), stage = box('#orb-stage'), orb = box('.orb-holder canvas'), transcript = list('.transcript'), chat = list('#connected-entries');
     const contentRight = selector => { const el = document.querySelector(selector); if (!el) return null; return el.getBoundingClientRect().right - parseFloat(getComputedStyle(el).paddingRight); };
     const columnEl = document.querySelector('#connected-entries');
     const mine = box('#connected-entries .entry.user'), bubbleVoice = box('.transcript .entry.user'), voiceColumn = contentRight('.transcript .live-turns');
@@ -139,7 +139,10 @@ try {
       chatColumn: columnEl ? Math.round(columnEl.getBoundingClientRect().width - parseFloat(getComputedStyle(columnEl).paddingLeft) - parseFloat(getComputedStyle(columnEl).paddingRight)) : null,
       chatBubbleRight: columnEl && mine ? Math.round(contentRight('#connected-entries') - mine.right) : null,
       voiceBubbleRight: voiceColumn !== null && bubbleVoice ? Math.round(voiceColumn - bubbleVoice.right) : null,
-      composerBottom: Math.round(document.querySelector('.composer-field').getBoundingClientRect().bottom - document.querySelector('#lane-chat').getBoundingClientRect().bottom),
+      composerBottom: Math.round(document.querySelector('#lane-chat').getBoundingClientRect().bottom - document.querySelector('.composer-field').getBoundingClientRect().bottom),
+      viewport: `${document.documentElement.clientWidth}x${document.documentElement.clientHeight}`,
+      voiceWidth: voice ? voice.width : null,
+      chatWidth: chat ? box('.chat-list').width : null,
       labels: document.querySelectorAll('.entry strong, .entry header').length,
       documentScrolls: document.documentElement.scrollHeight > document.documentElement.clientHeight,
       listNumbers: rows.join(','),
@@ -151,7 +154,11 @@ try {
   let idleStageTop = null;
 
   const sample = async (name, viewport) => {
-    if (viewport) await page.setViewportSize(viewport);
+    if (viewport) {
+      await page.setViewportSize(viewport);
+      await page.waitForFunction(size => document.documentElement.clientWidth === size.width && document.documentElement.clientHeight === size.height, viewport);
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    }
     const table = await measure();
     await page.screenshot({ path: join(out, `${name}.png`) });
     shots.push(name); tables.push({ name, ...table });
@@ -217,7 +224,7 @@ try {
   await rm(state, { recursive: true, force: true }).catch(() => {});
 }
 
-const columns = ['stageShare', 'orbDiameter', 'orbShare', 'orbCentre', 'stageTop', 'transcriptDistance', 'chatDistance', 'chatColumn', 'chatBubbleRight', 'voiceBubbleRight', 'composerBottom', 'labels', 'documentScrolls', 'listNumbers', 'voiceJump', 'chatJump'];
+const columns = ['viewport', 'stageShare', 'orbDiameter', 'orbShare', 'orbCentre', 'stageTop', 'transcriptDistance', 'chatDistance', 'chatColumn', 'chatBubbleRight', 'voiceBubbleRight', 'composerBottom', 'labels', 'documentScrolls', 'listNumbers', 'voiceJump', 'chatJump'];
 const markdown = [
   '# V3 DOM measurements (synthetic data, no images read)',
   '',

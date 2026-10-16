@@ -639,6 +639,7 @@ test('a distilled session A is injected into session B chat context and Live ins
     // MEM1 chat context: the composed system prompt of a real chat turn.
     const session = f.enroll();
     await f.chat.accept({ sessionId: session.id, text: 'hello', idempotencyKey: randomUUID() }, f.context);
+    await model.waitFor(1);
     const request = model.calls.at(-1)!;
     assert.ok(request.system.includes('[earlier-conversations]'), 'the chat prompt carries the section');
     assert.ok(request.system.includes('moved to Lisbon'), 'the chat prompt carries the past summary');

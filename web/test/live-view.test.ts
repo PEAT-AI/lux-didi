@@ -53,7 +53,7 @@ test('the thinking label never names a tool; the activity line carries the phras
   assert.deepEqual(pendingToolNames(thinking), ['search_knowledge']);
   assert.equal(liveLabel(thinking), 'Thinking');
   assert.doesNotMatch(liveLabel(thinking), /search_knowledge/);
-  assert.match(liveMarkup(thinking), /Thinking<\/p>/);
+  assert.match(liveMarkup(thinking), /activity-line/, 'the activity line carries the phrase, the label lives in the stage');
   assert.doesNotMatch(liveMarkup(thinking), /Thinking \(/);
 });
 
@@ -149,7 +149,7 @@ test('a typed turn interleaved with streamed Naya fragments joins one Naya card 
     { role: 'user', text: 'Tell me more' },
   ]);
   const html = liveMarkup(live);
-  assert.match(html, /class="entry assistant"[^>]*><div class="markdown">Hello there/);
+  assert.match(html, /class="entry assistant"[^>]*><div class="markdown"><p>Hello there/);
 });
 
 test('transcript preserves exact fragment deltas without spaces or deduplication', () => {

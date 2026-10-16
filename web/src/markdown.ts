@@ -126,6 +126,12 @@ export function sourcesFooter(sources: readonly { title: string; url?: string }[
 }
 
 /** Chat consumes only bounded accepted projections, never connector HTML or provider parts. */
+export function chatEntryMarkup(role: 'user' | 'assistant', text: string): string {
+  return role === 'assistant'
+    ? `<article class="entry assistant">${answerMarkup(text)}</article>`
+    : `<article class="entry user"><p class="bubble">${escapeHtml(text)}</p></article>`;
+}
+
 export function renderToolEvidence(evidence: readonly import('./protocol.ts').ToolEvidence[]): string {
   return evidence.slice(0, 16).map(tool => {
     const label = toolLabel(tool.name);

@@ -1,5 +1,6 @@
 import { ApiError, authorityVersion, assertAuthority, request, stream } from './api.ts';
-import { answerMarkup, renderToolEvidence } from './markdown.ts';
+import { answerMarkup, chatEntryMarkup, renderToolEvidence } from './markdown.ts';
+import { composerIntent, draftHeightPx } from './composer.ts';
 import { attachPin } from './autoscroll.ts';
 import type { Entry, Session, Recall, MemorySelectionSnapshot, ConnectedRouteStatus, Status, ToolEvidence } from './protocol';
 interface RouteStatus extends ConnectedRouteStatus {}
@@ -9,23 +10,6 @@ interface ViewLifetime { owner: string; generation: number; authority: AbortSign
 type RecalledNote = Recall['hits'][number];
 const escape = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 
-/** One chat turn: the owner's words in the shared pill bubble, Naya's answer as markdown with no
- * bubble and no speaker label (V3 item 4). */
-export function chatEntryMarkup(role: 'user' | 'assistant', text: string): string {
-  return role === 'assistant'
-    ? `<article class="entry assistant">${answerMarkup(text)}</article>`
-    : `<article class="entry user"><p class="bubble">${escape(text)}</p></article>`;
-}
-
-/** Enter sends the draft; Shift+Enter and an unfinished IME commit insert text instead (V3 item 5). */
-export function composerIntent(event: { key: string; shiftKey?: boolean; isComposing?: boolean }): 'send' | undefined {
-  return event.key === 'Enter' && !event.shiftKey && !event.isComposing ? 'send' : undefined;
-}
-
-/** The composer grows with the draft up to 40 percent of the lane height, then scrolls inside (V3 item 5). */
-export function draftHeightPx(contentHeight: number, laneHeight: number, min = 56): number {
-  return Math.max(min, Math.min(contentHeight, laneHeight > 0 ? Math.round(laneHeight * 0.4) : contentHeight));
-}
 export class ConnectedView {
   #lastActive = false;
   #displayName = 'Lux Didi';

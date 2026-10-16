@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 
 const source = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
-const stage = source.slice(source.indexOf('function orbStageMarkup()'), source.indexOf('function chatLane()'));
+const stage = source.slice(source.indexOf('function orbStateLineMarkup()'), source.indexOf('function chatLane()'));
 const head = source.slice(source.indexOf('function voiceHeadMarkup()'), source.indexOf('function chatHeadMarkup()'));
 const installedProof = readFileSync(new URL('../../Sources/LuxDidi/InstalledProofRun.swift', import.meta.url), 'utf8');
 
@@ -13,7 +13,7 @@ test('the Voice lane is the orb stage above its transcript, and the old header r
   assert.doesNotMatch(source, /class="voice-orb"/, 'no small header orb remains');
   assert.match(stage, /class="orb-stage"/);
   assert.match(stage, /class="orb-holder"/);
-  assert.match(stage, /liveStateCopy\(view\.state\)/, 'the state line lives under the orb');
+  assert.match(stage, /liveStateCopy\(liveMachine\.view\.state\)/, 'the state line lives under the orb');
   assert.match(stage, /id="voice-start"/);
   assert.match(stage, /liveMarkup\(live, livePoll\)/, 'the U1 transcript renderer is the lane body');
   assert.match(stage, /id="transcript-jump"/);

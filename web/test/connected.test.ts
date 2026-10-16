@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import * as markdown from '../src/markdown.ts';
-import { chatEntryMarkup, composerIntent, draftHeightPx } from '../src/connected.ts';
+import { chatEntryMarkup } from '../src/markdown.ts';
+import { composerIntent, draftHeightPx } from '../src/composer.ts';
 import type { ToolEvidence } from '../src/protocol.ts';
 
 // Missing evidence rendering is the base behavior, represented as an empty projection.
@@ -42,7 +43,7 @@ test('the chat lane labels nobody: the owner speaks in the shared bubble, Naya a
   const mine = chatEntryMarkup('user', 'what should I focus on?');
   assert.match(mine, /^<article class="entry user"><p class="bubble">what should I focus on\?<\/p><\/article>$/);
   const hers = chatEntryMarkup('assistant', '**Start** here');
-  assert.match(hers, /^<article class="entry assistant"><div class="markdown"><strong>Start<\/strong> here<\/div><\/article>$/);
+  assert.match(hers, /^<article class="entry assistant"><div class="markdown"><p><strong>Start<\/strong> here<\/p><\/div><\/article>$/);
   assert.equal(/>You<|>Naya</.test(mine + hers), false, 'no speaker labels in the chat lane');
 });
 

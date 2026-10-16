@@ -1041,15 +1041,21 @@ export class LiveSessionOwner {
     });
     const responses: { id: string; name: string; response: JsonObject }[] = [];
     const projections: LiveToolProjection[] = [];
-    for (const call of event.calls) {
+    // F6: every research call in one model message runs concurrently; the adapter bounds each source.
+    const settled = await Promise.all(event.calls.map(async call => {
       let response: JsonObject;
       try {
         if (!validateResearch(call.args)) throw Error('invalid_research_arguments');
         response = await scheduler.call(call.args as unknown as ResearchCall, handle.abort.signal);
       } catch (error) { response = { error: error instanceof Error ? error.message : 'research_failed' }; }
-      responses.push({ id: call.id, name: call.name, response });
-      const status = typeof response['status'] === 'string' ? response['status'] : 'error';
-      projections.push({ name: call.name, status: status === 'error' ? 'error' : 'completed', markdown: `research: ${status}`, sources: [] });
+      return { id: call.id, name: call.name, response };
+    }));
+    for (const entry of settled) {
+      responses.push(entry);
+      // F6-R1: the research reply carries no status field; a present `error` key is the failure shape.
+      const completed = entry.response['error'] === undefined;
+      const status: 'completed' | 'error' = completed ? 'completed' : 'error';
+      projections.push({ name: entry.name, status, markdown: `research: ${status}`, sources: [] });
     }
     return { responses, projections };
   }
@@ -1187,7 +1193,14 @@ export class LiveSessionOwner {
         if (started !== undefined) latency.push({ tool: unit.call.name, ms: Math.max(0, this.#now() - started) });
         handle.callStartedAt.delete(unit.call.id);
       }
-      hostLogEvent({ event: 'live_tool_turn', sequence: event.sequence, toolCallsThisTurn: units.reduce((sum, unit) => sum + unit.subs.length + (followUps.get(unit.index)?.length ?? 0), 0), toolLatencyMs: latency, toolResponseWhileGenerating: handle.speaking });
+      // F6 diagnostics: the peak in-flight count per endpoint for this batch, endpoints and counts only.
+      const peaks = new Map<string, number>();
+      for (const sub of subCalls) {
+        const endpoint = handle.registry.find(tool => tool.name === sub.name)?.endpointId;
+        if (endpoint !== undefined) peaks.set(endpoint, (peaks.get(endpoint) ?? 0) + 1);
+      }
+      const peakInFlight = [...peaks.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([endpoint, count]) => ({ endpoint, peak: count }));
+      hostLogEvent({ event: 'live_tool_turn', sequence: event.sequence, toolCallsThisTurn: units.reduce((sum, unit) => sum + unit.subs.length + (followUps.get(unit.index)?.length ?? 0), 0), toolLatencyMs: latency, toolResponseWhileGenerating: handle.speaking, peakInFlight });
       }
     }
     if ((this.#settled(handle) || generation !== handle.generation)) return;

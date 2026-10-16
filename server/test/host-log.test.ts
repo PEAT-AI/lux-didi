@@ -33,3 +33,13 @@ test('live_state keeps a closed transition shape for the orb timeline', () => {
   assert.equal(safeEvent({ ...event, at: 'now' }), undefined, 'a non-integer timestamp is refused');
   assert.equal(safeEvent({ ...event, at: -1 }), undefined, 'a negative timestamp is refused');
 });
+test('live_tool_turn admits a closed per-endpoint peak in-flight field', () => {
+  const base = { event: 'live_tool_turn', sequence: 3, toolCallsThisTurn: 2, toolLatencyMs: [{ tool: 'search_knowledge', ms: 12 }], toolResponseWhileGenerating: false };
+  const withPeak = { ...base, peakInFlight: [{ endpoint: 'lux', peak: 2 }] };
+  assert.deepEqual(safeEvent(withPeak), withPeak);
+  assert.equal(safeEvent(base)?.event, 'live_tool_turn', 'the field stays optional');
+  assert.equal(safeEvent({ ...base, peakInFlight: [{ endpoint: 'lux', peak: -1 }] }), undefined, 'a negative peak is refused');
+  assert.equal(safeEvent({ ...base, peakInFlight: [{ endpoint: 'lux', peak: 2, extra: 1 }] }), undefined, 'an extra peak key fails closed');
+  assert.equal(safeEvent({ ...base, peakInFlight: [{ endpoint: 'a b', peak: 1 }] }), undefined, 'a non-token endpoint is refused');
+  assert.equal(safeEvent({ ...base, peakInFlight: 'two' }), undefined, 'a non-array field is refused');
+});

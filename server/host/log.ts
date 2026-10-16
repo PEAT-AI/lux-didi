@@ -181,8 +181,10 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'live_state', state: value.state, at: value.at };
   }
   if (value.event === 'live_tool_turn') {
-    // O1: per-turn tool metrics, tool names and millisecond latency only, never arguments or results.
-    if (Object.keys(value).sort().join(',') !== ['event', 'sequence', 'toolCallsThisTurn', 'toolLatencyMs', 'toolResponseWhileGenerating'].sort().join(',')) return;
+    // O1/F6: per-turn tool metrics, tool names, millisecond latency and per-endpoint peak concurrency only.
+    const base = ['event', 'sequence', 'toolCallsThisTurn', 'toolLatencyMs', 'toolResponseWhileGenerating'];
+    const hasPeak = Object.prototype.hasOwnProperty.call(value, 'peakInFlight');
+    if (Object.keys(value).sort().join(',') !== [...base, ...(hasPeak ? ['peakInFlight'] : [])].sort().join(',')) return;
     if (!(value.sequence === null || isSafeCount(value.sequence))) return;
     if (!isSafeCount(value.toolCallsThisTurn) || typeof value.toolResponseWhileGenerating !== 'boolean') return;
     if (!Array.isArray(value.toolLatencyMs) || value.toolLatencyMs.length > 16) return;
@@ -194,7 +196,19 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
       if (!isSafeToken(row.tool) || !isSafeCount(row.ms)) return;
       latencies.push({ tool: row.tool, ms: row.ms });
     }
-    return { event: 'live_tool_turn', sequence: value.sequence, toolCallsThisTurn: value.toolCallsThisTurn, toolLatencyMs: latencies, toolResponseWhileGenerating: value.toolResponseWhileGenerating };
+    let peakInFlight: { endpoint: string; peak: number }[] | undefined;
+    if (hasPeak) {
+      if (!Array.isArray(value.peakInFlight) || value.peakInFlight.length > 16) return;
+      peakInFlight = [];
+      for (const entry of value.peakInFlight) {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return;
+        const row = entry as Record<string, unknown>;
+        if (Object.keys(row).sort().join(',') !== ['endpoint', 'peak'].sort().join(',')) return;
+        if (!isSafeToken(row.endpoint) || !isSafeCount(row.peak)) return;
+        peakInFlight.push({ endpoint: row.endpoint, peak: row.peak });
+      }
+    }
+    return { event: 'live_tool_turn', sequence: value.sequence, toolCallsThisTurn: value.toolCallsThisTurn, toolLatencyMs: latencies, toolResponseWhileGenerating: value.toolResponseWhileGenerating, ...(peakInFlight !== undefined ? { peakInFlight } : {}) };
   }
   if (value.event === 'tool_cancelled') {
     // O1: the cancelled tool, its call id and time in flight only, never arguments or results.

@@ -317,6 +317,9 @@ try {
 
         // dragging the divider below the minimum collapses; dragging back out restores
         await toggleLeft();
+        // Settle the expand transition before reading the divider box, so a mousedown lands on the
+        // divider and not on a moving target (a dropped drag under host load left the panel open).
+        await expect('drag start open', 'open', 'collapsed');
         const grip = await panelPage.locator('[data-divider="left"]').boundingBox();
         if (grip) {
           await panelPage.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2);

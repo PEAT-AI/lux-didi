@@ -39,6 +39,19 @@ function strings(value: unknown): string[] {
   return typeof value === 'string' && value.length > 0 ? [value] : [];
 }
 
+/** Unwrap the connector's MCP result to its payload: content text JSON, then the `data` field when present. */
+function payloadOf(decoded: unknown): unknown {
+  if (!isRecord(decoded)) return undefined;
+  if (Array.isArray(decoded['content'])) {
+    const first = decoded['content'][0];
+    if (!isRecord(first) || typeof first['text'] !== 'string') return undefined;
+    let parsed: unknown;
+    try { parsed = JSON.parse(first['text']); } catch { return undefined; }
+    return isRecord(parsed) && isRecord(parsed['data']) ? parsed['data'] : parsed;
+  }
+  return isRecord(decoded['data']) ? decoded['data'] : decoded;
+}
+
 /** Trim and case-fold; the identity comparison is exact, never a substring or a domain suffix. */
 export function normalizeIdentity(value: string): string {
   return value.trim().toLowerCase();
@@ -52,13 +65,15 @@ export function identityMatch(expected: readonly string[], actual: readonly stri
 
 /** Gmail proves itself with the profile's emailAddress. */
 export function gmailIdentityValues(decoded: unknown): string[] {
-  return isRecord(decoded) ? strings(decoded['emailAddress']) : [];
+  const payload = payloadOf(decoded);
+  return isRecord(payload) ? strings(payload['emailAddress']) : [];
 }
 
 /** Calendar proves itself with the primary calendar id; a shared calendar is not an account. */
 export function calendarIdentityValues(decoded: unknown): string[] {
-  if (!isRecord(decoded) || !Array.isArray(decoded['calendars'])) return [];
-  const list = decoded['calendars'].filter(isRecord);
+  const payload = payloadOf(decoded);
+  if (!isRecord(payload) || !Array.isArray(payload['calendars'])) return [];
+  const list = payload['calendars'].filter(isRecord);
   const primary = list.filter(entry => entry['primary'] === true);
   const chosen = primary.length > 0 ? primary : list.filter(entry => typeof entry['id'] === 'string' && entry['id'].includes('@'));
   return chosen.flatMap(entry => strings(entry['id']));
@@ -66,7 +81,8 @@ export function calendarIdentityValues(decoded: unknown): string[] {
 
 /** Mattermost proves itself with the session's username and email; either may match. */
 export function mattermostIdentityValues(decoded: unknown): string[] {
-  return isRecord(decoded) ? [...strings(decoded['username']), ...strings(decoded['email'])] : [];
+  const payload = payloadOf(decoded);
+  return isRecord(payload) ? [...strings(payload['username']), ...strings(payload['email'])] : [];
 }
 
 /** Classify one identity probe: a refused/unknown result or an empty value set is unproven. */

@@ -161,14 +161,15 @@ async function mcpCall(endpoint, configDir) {
 const IDENTITY_ENDPOINTS = new Set(['gmail', 'calendar', 'mattermost']);
 function identityValues(id, decoded) {
   if (!decoded || typeof decoded !== 'object') return [];
-  if (id === 'gmail') return typeof decoded.emailAddress === 'string' ? [decoded.emailAddress] : [];
+  const payload = decoded.data && typeof decoded.data === 'object' ? decoded.data : decoded;
+  if (id === 'gmail') return typeof payload.emailAddress === 'string' ? [payload.emailAddress] : [];
   if (id === 'calendar') {
-    const list = Array.isArray(decoded.calendars) ? decoded.calendars.filter(entry => entry && typeof entry === 'object') : [];
+    const list = Array.isArray(payload.calendars) ? payload.calendars.filter(entry => entry && typeof entry === 'object') : [];
     const primary = list.filter(entry => entry.primary === true);
     const chosen = primary.length ? primary : list.filter(entry => typeof entry.id === 'string' && entry.id.includes('@'));
     return chosen.filter(entry => typeof entry.id === 'string').map(entry => entry.id);
   }
-  if (id === 'mattermost') return [decoded.username, decoded.email].filter(value => typeof value === 'string' && value.length > 0);
+  if (id === 'mattermost') return [payload.username, payload.email].filter(value => typeof value === 'string' && value.length > 0);
   return [];
 }
 function identityToken(values, expected) {

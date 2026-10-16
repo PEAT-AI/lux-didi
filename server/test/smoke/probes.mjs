@@ -168,10 +168,35 @@ async function mcpCall(endpoint, configDir) {
     const content = Array.isArray(result.content) ? result.content : [];
     const bytes = content.reduce((total, part) => total + (typeof part.text === 'string' ? part.text.length : 0), 0);
     if (result.isError) return { state: 'down', stage: 'read', ms: now() - started, detail: 'tool returned an error' };
-    return { state: 'up', stage: 'read', ms: now() - started, bytes, tools: names.length };
+    let decoded;
+    const textPart = content.find(part => typeof part.text === 'string');
+    if (textPart) { try { decoded = JSON.parse(textPart.text); } catch { decoded = undefined; } }
+    return { state: 'up', stage: 'read', ms: now() - started, bytes, tools: names.length, decoded };
   } catch (error) {
     return { state: 'down', stage: 'connect', ms: now() - started, detail: String(error && error.message).slice(0, 120) };
   } finally { try { await client.close(); } catch { /* already closed */ } }
+}
+
+// Metadata-only identity check: the connector's own account against the operator's asserted owner.
+const IDENTITY_ENDPOINTS = new Set(['gmail', 'calendar', 'mattermost']);
+function identityValues(id, decoded) {
+  if (!decoded || typeof decoded !== 'object') return [];
+  const payload = decoded.data && typeof decoded.data === 'object' ? decoded.data : decoded;
+  if (id === 'gmail') return typeof payload.emailAddress === 'string' ? [payload.emailAddress] : [];
+  if (id === 'calendar') {
+    const list = Array.isArray(payload.calendars) ? payload.calendars.filter(entry => entry && typeof entry === 'object') : [];
+    const primary = list.filter(entry => entry.primary === true);
+    const chosen = primary.length ? primary : list.filter(entry => typeof entry.id === 'string' && entry.id.includes('@'));
+    return chosen.filter(entry => typeof entry.id === 'string').map(entry => entry.id);
+  }
+  if (id === 'mattermost') return [payload.username, payload.email].filter(value => typeof value === 'string' && value.length > 0);
+  return [];
+}
+function identityToken(values, expected) {
+  const wanted = new Set(expected.filter(value => typeof value === 'string' && value.length > 0).map(value => value.trim().toLowerCase()));
+  if (!values.length) return 'unproven';
+  if (!wanted.size) return 'match';
+  return values.some(value => wanted.has(value.trim().toLowerCase())) ? 'match' : 'mismatch';
 }
 
 async function probeConnectors({ configDir }) {
@@ -180,12 +205,17 @@ async function probeConnectors({ configDir }) {
   let doc;
   try { doc = await readJson(file); } catch { return { ok: false, parts: ['mcp.json unreadable'], endpoints: 0, skipped: 0, checked: 0 }; }
   const endpoints = (doc.endpoints ?? []).filter(endpoint => endpoint.enabled !== false);
+  const expected = [doc.ownerIdentity, doc.ownerChatUsername];
   const parts = [];
   let failed = 0;
   let skipped = 0;
   for (const endpoint of endpoints) {
     const result = await mcpCall(endpoint, configDir);
-    if (result.state === 'up') parts.push(`${endpoint.id}=up(${result.ms}ms,${result.bytes}B)`);
+    if (result.state === 'up') {
+      const identity = IDENTITY_ENDPOINTS.has(endpoint.id) ? ` identity=${identityToken(identityValues(endpoint.id, result.decoded), expected)}` : '';
+      if (identity === ' identity=mismatch') failed += 1;
+      parts.push(`${endpoint.id}=up(${result.ms}ms,${result.bytes}B)${identity}`);
+    }
     else if (result.state === 'unconfigured' || result.state === 'skipped') { skipped += 1; parts.push(`${endpoint.id}=unconfigured`); }
     else { failed += 1; parts.push(`${endpoint.id}=down[${result.stage}](${result.ms}ms${result.detail ? ':' + result.detail : ''})`); }
   }

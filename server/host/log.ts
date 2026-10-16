@@ -42,6 +42,14 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!token(value.connector) || typeof value.stage !== 'string' || !stages.includes(value.stage)) return;
     return { event: 'connector_failure', connector: value.connector, stage: value.stage };
   }
+  if (value.event === 'connector_identity') {
+    // Closed identity proof only: a connector name and two booleans, never the identity itself.
+    const token = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(v);
+    if (Object.keys(value).sort().join(',') !== ['connector', 'event', 'match', 'proven'].sort().join(',')) return;
+    if (!token(value.connector) || typeof value.proven !== 'boolean') return;
+    if (value.match !== null && typeof value.match !== 'boolean') return;
+    return { event: 'connector_identity', connector: value.connector, proven: value.proven, match: value.match };
+  }
   if (value.event === 'mattermost_shape') {
     // Closed shape: tool, recognised shape kind and sizes only, never any message content.
     const token = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(v);

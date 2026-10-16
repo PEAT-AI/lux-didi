@@ -197,6 +197,18 @@ export function mcpErrorCode(error: unknown): string { return error instanceof C
 
 const endpointFile = 'mcp.json';
 const endpointLimit = 32768;
+/** An optional operator-asserted owner email; absence is the deliberate public default. */
+function optionalIdentity(value: unknown): string | null {
+  if (value === undefined) return null;
+  if (typeof value !== 'string' || value.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) fail('invalid_profile');
+  return value;
+}
+/** An optional operator-asserted chat username, compared exactly against a chat connector's own username. */
+function optionalUsername(value: unknown): string | null {
+  if (value === undefined) return null;
+  if (typeof value !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value)) fail('invalid_profile');
+  return value;
+}
 /** Installed <dataDir>/provider-config/mcp.json: a small, owner-only, secret-free endpoint catalog. */
 export interface HttpMcpEndpointEntry {
   id: string; transport: 'streamable-http'; url: string; connector: string;
@@ -210,7 +222,7 @@ export interface StdioMcpEndpointEntry {
   connector: string; account: string; resource: string; credentialRef: null; enabled: boolean; allowEgress: boolean;
 }
 export type McpEndpointEntry = HttpMcpEndpointEntry | StdioMcpEndpointEntry;
-export interface McpEndpointCatalog { grantMode: 'explicit' | 'owner-trusted-reads'; endpoints: readonly McpEndpointEntry[] }
+export interface McpEndpointCatalog { grantMode: 'explicit' | 'owner-trusted-reads'; endpoints: readonly McpEndpointEntry[]; ownerIdentity: string | null; ownerChatUsername: string | null }
 export type McpEndpointSelection = { state: 'missing' } | { state: 'configured'; catalog: McpEndpointCatalog };
 function endpointUrl(value: unknown): string {
   if (typeof value !== 'string' || value.length > 4096 || value.includes('\0')) fail('invalid_profile');
@@ -259,14 +271,17 @@ export function loadMcpEndpoints(options: { configDir: string }): McpEndpointSel
   try { raw = readPrivate(join(configDir, endpointFile), endpointLimit); }
   catch (error) { if (error instanceof ConfigError && error.code === 'file_missing') return { state: 'missing' }; throw error; }
   const parsed = parseJson(raw);
-  const optionalGrantMode = parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) && Object.hasOwn(parsed, 'grantMode');
-  const file = fields(parsed, optionalGrantMode ? ['schemaVersion', 'grantMode', 'endpoints'] : ['schemaVersion', 'endpoints'], 'invalid_profile');
+  const present = (key: string): boolean => parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) && Object.hasOwn(parsed, key);
+  const optionalGrantMode = present('grantMode');
+  const file = fields(parsed, ['schemaVersion', ...(optionalGrantMode ? ['grantMode'] : []), ...(present('ownerIdentity') ? ['ownerIdentity'] : []), ...(present('ownerChatUsername') ? ['ownerChatUsername'] : []), 'endpoints'], 'invalid_profile');
   if (file['schemaVersion'] !== 1) fail('invalid_profile');
+  const ownerIdentity = optionalIdentity(file['ownerIdentity']);
+  const ownerChatUsername = optionalUsername(file['ownerChatUsername']);
   const grantMode = file['grantMode'] ?? 'explicit';
   if (grantMode !== 'explicit' && grantMode !== 'owner-trusted-reads') fail('invalid_profile');
   const rawEndpoints = file['endpoints'];
   if (!Array.isArray(rawEndpoints) || rawEndpoints.length > 64) fail('invalid_profile');
   const seen = new Set<string>(); const endpoints: McpEndpointEntry[] = [];
   for (const item of rawEndpoints) { const entry = endpointEntry(item); if (seen.has(entry.id)) fail('invalid_profile'); seen.add(entry.id); endpoints.push(entry); }
-  return { state: 'configured', catalog: { grantMode, endpoints } };
+  return { state: 'configured', catalog: { grantMode, endpoints, ownerIdentity, ownerChatUsername } };
 }

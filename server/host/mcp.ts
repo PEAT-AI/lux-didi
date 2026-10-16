@@ -12,6 +12,7 @@ import { MemoryResultStore } from '../adapters/mcp/store.js';
 import type { McpPort } from '../adapters/mcp/port.js';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
 import { CONNECTOR_ENVELOPES } from '../connectors/index.js';
+import { identityAction, proveIdentity, type IdentityProof } from '../connectors/identity.js';
 
 export interface McpConnectionBundle {
   state: 'applied' | 'unchanged' | 'refused' | 'pending';
@@ -59,7 +60,7 @@ export function composeMcpConnection(options: { store: Store; owner: ToolsOwner;
 }
 
 export type McpEndpointState = 'missing' | 'configured' | 'connected' | 'error';
-export interface McpEndpointReport { id: string; state: McpEndpointState; tools: number; lastHandshakeAt: string | null; error?: string; configurationError?: 'unknown-class-missing' | 'unknown-class-invalid' | 'owner-approval-required' | 'ambiguous-legacy-policy'; exception?: { class: string; code: string } }
+export interface McpEndpointReport { id: string; state: McpEndpointState; tools: number; lastHandshakeAt: string | null; error?: string; reasonCode?: 'identity_mismatch'; identity?: IdentityProof; configurationError?: 'unknown-class-missing' | 'unknown-class-invalid' | 'owner-approval-required' | 'ambiguous-legacy-policy'; exception?: { class: string; code: string } }
 export interface McpRuntimeComposition {
   registry: McpRegistry;
   port: McpPort;
@@ -76,6 +77,8 @@ export async function composeMcpRuntime(options: {
   log?: ToolsOwnerOptions['log'];
   /** Closed connect-time failure stage for one connector, never a message or a credential value. */
   connectorLog?: (connector: string, stage: string) => void;
+  /** Closed identity proof per connector: two booleans and a connector name, never the identity itself. */
+  identityLog?: (connector: string, proven: boolean, match: boolean | null) => void;
   store: Store; ownerId: string; configDir: string;
   lookupAuthority(runId: string, signal: AbortSignal): Promise<LiveAuthority | null>;
   now?: () => number;
@@ -83,6 +86,10 @@ export async function composeMcpRuntime(options: {
   const { store, ownerId, configDir } = options; const now = options.now ?? Date.now;
   const registry = new McpRegistry();
   const selection = loadMcpEndpoints({ configDir });
+  // One configured owner identity, compared against every identity-bearing connector; absence refuses nothing.
+  const expectedIdentities = selection.state === 'configured'
+    ? [selection.catalog.ownerIdentity, selection.catalog.ownerChatUsername].filter((value): value is string => typeof value === 'string' && value.length > 0)
+    : [];
   // One rule: every configured read connector gets the longer call deadline, so a real hybrid
   // archive search cannot hit the five-second default. Connect and discovery stay on budgets.timeoutMs.
   const callTimeoutMsByEndpoint = new Map(selection.state === 'configured'
@@ -198,7 +205,20 @@ export async function composeMcpRuntime(options: {
       if (restored.state !== 'restored') { reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: restored.reason }); return; }
       usable.add(entry.id);
       const granted = names.length;
-      reports.set(entry.id, { id: entry.id, state: 'connected', tools: granted, lastHandshakeAt: new Date(now()).toISOString() });
+      const descriptor = CONNECTOR_DESCRIPTORS[entry.connector];
+      const identitySource = descriptor?.identity?.(policy) ?? null;
+      let identity: IdentityProof | undefined;
+      if (identitySource && descriptor) {
+        const reader = descriptor.createReader({ port, registry, endpoint: policy.endpoint, schemaDigest: policy.schemaDigest, generation: policy.generation, policy });
+        identity = await proveIdentity({ source: identitySource, expected: expectedIdentities, call: (tool, args) => reader.call(tool, args) });
+        options.identityLog?.(entry.connector, identity.proven, identity.match);
+        if (identityAction(identity) === 'refuse') {
+          usable.delete(entry.id);
+          reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'identity-mismatch', reasonCode: 'identity_mismatch', identity });
+          return;
+        }
+      }
+      reports.set(entry.id, { id: entry.id, state: 'connected', tools: granted, lastHandshakeAt: new Date(now()).toISOString(), ...(identity ? { identity } : {}) });
     } catch (error) {
       const localCodes = ['invalid_policy_shape', 'invalid_policy_version', 'invalid_policy_text', 'invalid_positive_integer', 'invalid_read_tools', 'invalid_unknown_class', 'invalid_data_classes', 'connection_owner_mismatch', 'connection_predecessor_mismatch', 'connection_identity_or_generation', 'connection_policy_missing_or_corrupt', 'projection_endpoint_mismatch', 'invalid-local-read-grant'];
       const exception = {

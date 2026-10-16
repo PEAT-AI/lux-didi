@@ -6,7 +6,22 @@ const REASONS: Record<string, [string, string]> = {
   discovery_failed: ['Tool discovery failed', 'check the service tool configuration, then restart Lux Didi'],
   handshake_failed: ['Handshake failed', 'check the service is ready, then restart Lux Didi'],
   unknown: ['Connection issue unknown', 'check the local service configuration, then restart Lux Didi'],
+  identity_mismatch: ['Signed in as a different account', 'each connector must sign in as the owner account'],
 };
+
+/** The one identity sentence per connection: the owner's account, a mismatch, or unverified. */
+export function connectionIdentity(identity: unknown): string | undefined {
+  if (!identity || typeof identity !== 'object' || Array.isArray(identity)) return undefined;
+  const row = identity as Record<string, unknown>;
+  if (typeof row.proven !== 'boolean') return undefined;
+  const match = row.match;
+  if (match !== null && typeof match !== 'boolean') return undefined;
+  if (!row.proven) return 'Account not verified';
+  if (match === false) return 'Signed in as a different account';
+  const value = typeof row.value === 'string' && /^[\w.@+-]{1,254}$/.test(row.value) ? row.value : undefined;
+  if (!value) return undefined;
+  return match === true ? `Connected as ${value} \u2713` : `Connected as ${value}`;
+}
 export function connectionsMarkup(endpoints: unknown, stale = false): string {
   const rows = (Array.isArray(endpoints) ? endpoints : []).map(value => {
     if (!value || typeof value !== 'object') return '';
@@ -17,7 +32,9 @@ export function connectionsMarkup(endpoints: unknown, stale = false): string {
     const time = typeof row.lastHandshakeAt === 'string' && /^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/.test(row.lastHandshakeAt) && Number.isFinite(Date.parse(row.lastHandshakeAt)) ? row.lastHandshakeAt : 'Never';
     const reason = typeof row.reasonCode === 'string' && Object.hasOwn(REASONS, row.reasonCode) ? REASONS[row.reasonCode] : REASONS.unknown;
     const issue = row.reasonCode !== null || state === 'missing' || state === 'error';
-    return `<li><strong>${escapeHtml(id)}</strong>: ${state}, ${tools} tools <small>Last handshake: ${escapeHtml(time)}</small>${issue ? `<p>${reason[0]}. ${reason[1]}</p>` : ''}</li>`;
+    const identity = connectionIdentity(row.identity);
+    const identityHtml = identity ? ` <span class="connection-identity">${escapeHtml(identity)}</span>` : '';
+    return `<li><strong>${escapeHtml(id)}</strong>: ${state}, ${tools} tools <small>Last handshake: ${escapeHtml(time)}</small>${identityHtml}${issue ? `<p>${reason[0]}. ${reason[1]}</p>` : ''}</li>`;
   }).join('');
   return `<section id="connections-panel" class="panel connections-card" aria-label="Connections"><h2>Connections</h2>${stale ? '<p role="status" class="live-stale">Connections status unavailable; displayed values may be stale.</p>' : ''}<ul>${rows || '<li class="muted">No connections configured.</li>'}</ul></section>`;
 }

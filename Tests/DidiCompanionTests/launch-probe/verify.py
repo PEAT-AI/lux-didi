@@ -62,7 +62,22 @@ if __name__ == '__main__' and len(sys.argv) > 1 and sys.argv[1] in ('--held', '-
     verify_held(sys.argv[2], failure=sys.argv[1] == '--held-failure', driver=sys.argv[1] == '--held-driver')
     sys.exit(0)
 
+def verify_single_instance(root, live):
+    pids = []
+    for name in os.listdir(root):
+        if name.startswith('pid-'):
+            with open(os.path.join(root, name)) as handle:
+                pids.append(int(handle.read().strip()))
+    assert live == 1, ('live native instances', live)
+    assert len(pids) == 1, ('launch records', pids)
+    assert pids[0] > 0
+    print('PASS: two forced same-bundle launches left exactly one native instance')
+
+
 if __name__ == '__main__':
+    if sys.argv[1] == '--single-instance':
+        verify_single_instance(sys.argv[2], int(sys.argv[3]))
+        sys.exit(0)
     reports = []
     for case in ('0', '42', 'signal'):
         path = os.path.join(sys.argv[1], case, 'observer.json')

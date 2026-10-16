@@ -83,9 +83,30 @@ if [ "${1:-}" = "--leased-run" ]; then
       active_caffeinate_pid=""
     fi
   }
+  terminate_launched_apps() {
+    local f pid exe
+    while IFS= read -r f; do
+      pid="$(python3 -c 'import json,sys;print(int(json.load(open(sys.argv[1])).get("pid",0)))' "$f" 2>/dev/null || true)"
+      [ -n "$pid" ] && [ "$pid" -gt 0 ] || continue
+      exe="$(ps -p "$pid" -o comm= 2>/dev/null || true)"
+      case "$exe" in "$work"/*) kill "$pid" 2>/dev/null || true ;; esac
+    done < <(find "$proof" -maxdepth 3 -name identity.json 2>/dev/null)
+    return 0
+  }
+  assert_launched_apps_gone() {
+    local f pid exe
+    while IFS= read -r f; do
+      pid="$(python3 -c 'import json,sys;print(int(json.load(open(sys.argv[1])).get("pid",0)))' "$f" 2>/dev/null || true)"
+      [ -n "$pid" ] && [ "$pid" -gt 0 ] || continue
+      exe="$(ps -p "$pid" -o comm= 2>/dev/null || true)"
+      case "$exe" in "$work"/*) echo "MACOS-INSTALL FAIL: launched native pid $pid still alive ($exe)" >&2; return 1 ;; esac
+    done < <(find "$proof" -maxdepth 3 -name identity.json 2>/dev/null)
+    return 0
+  }
   cleanup_active_observation() {
     result=$?; trap - EXIT
     stop_display_assertion
+    terminate_launched_apps
     if [ -n "$active_held_pid" ]; then
       if bash Tests/DidiCompanionTests/launch-probe/produce.sh --signal-stage "$active_held_root" cancel; then :
       else signal_result=$?; echo 'MACOS-INSTALL: observation cancellation signal failed' >&2; [ "$result" -ne 0 ] || result=$signal_result; fi
@@ -465,6 +486,8 @@ PY_REJECT
   codesign --verify --deep --strict "$apps/Lux Didi.app"
   node Tests/DidiMacTests/staged-app-proof.mjs "$apps/Lux Didi.app" --forbid "$HOME"
   echo "MACOS-INSTALL: install and rollback pass rollback=$(basename "$rollback")"
+  terminate_launched_apps
+  assert_launched_apps_gone || exit 1
   printf 'MACOS-INSTALL PASS proof=%s\n' "$proof"
   exit
 fi

@@ -183,7 +183,10 @@ class Session implements LiveVoiceSession {
     localWriteCallbackErrorCalls: 0, localWriteCallbackErrorPCMBytes: 0, localWriteCallbackPendingCalls: 0, localWriteCallbackPendingPCMBytes: 0,
     inputTranscriptionEvents: 0, inputTranscriptionCharacters: 0, generationCompleteEvents: 0, turnCompleteEvents: 0,
     outputAudioFrames: 0, outputAudioPCMBytes: 0, outputAudioAfterInitialTurnFrames: 0, outputAudioAfterInitialTurnPCMBytes: 0,
-  } satisfies LiveVoiceDiagnostics;
+    // AC2: the length of the `_voice_anchor` actually serialized in a function response, measured here
+    // where the response is built (0 until a response carries it, and 0 on a model that serializes none).
+    toolAnchorChars: 0,
+  } satisfies LiveVoiceDiagnostics & { toolAnchorChars: number };
   readonly diagnostics = (): Readonly<LiveVoiceDiagnostics> => Object.freeze({ ...this.diagnostic });
   private creatingSocket = false;
   constructor(private readonly settings: Settings, private readonly declared: readonly DataClass[], setup: string, initial: string | undefined,
@@ -513,10 +516,13 @@ class Session implements LiveVoiceSession {
     if (!object(input) || !Array.isArray(input.responses) || !this.pendingCalls.length || input.responses.length !== this.pendingCalls.length ||
       new Set(input.responses.map(r => r.id)).size !== input.responses.length || input.responses.some(r => !object(r) || !object(r.response) || !this.pendingCalls.some(c => c.id === r.id && c.name === r.name))) fail('invalid_request');
     // 3.8 Live only: a last, non-schema key on each response keeps the reply in Naya's voice
-    // right after the tool data; other models keep the exact response object.
-    const responses = live38Pattern.test(this.settings.modelId)
-      ? input.responses.map(({ id, name, response }) => ({ id, name, ...(name === MEMORY_TOOL ? { scheduling: 'SILENT' } : {}), response: { ...response, _voice_anchor: toolVoiceAnchor(this.voiceAccent) } }))
-      : input.responses;
+    // right after the tool data; other models keep the exact response object. The diagnostic records
+    // the exact length serialized so a call can prove the per-tool anchor was in force.
+    const anchor = live38Pattern.test(this.settings.modelId) ? toolVoiceAnchor(this.voiceAccent) : undefined;
+    const responses = anchor === undefined
+      ? input.responses
+      : input.responses.map(({ id, name, response }) => ({ id, name, ...(name === MEMORY_TOOL ? { scheduling: 'SILENT' } : {}), response: { ...response, _voice_anchor: anchor } }));
+    this.diagnostic.toolAnchorChars = anchor?.length ?? 0;
     const frame = JSON.stringify({ toolResponse: { functionResponses: responses } });
     if (this.write(frame)) this.pendingCalls = [];
   }

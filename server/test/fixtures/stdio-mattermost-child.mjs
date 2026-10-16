@@ -9,6 +9,17 @@ const mode = process.argv[2] ?? 'ok';
 const READS = ['mattermost_whoami', 'mattermost_get_channel_history', 'mattermost_get_thread', 'mattermost_search', 'mattermost_list_channels'];
 const WRITES = ['mattermost_post_message', 'mattermost_react', 'mattermost_edit_post'];
 
+// Per-tool input schemas mirroring the real mattermost-mcp child (src/mcp/tools.ts):
+// mattermost_get_thread takes only post_id and format and closes the object, so an undeclared
+// limit is rejected; mattermost_get_channel_history and mattermost_search do declare limit.
+const READ_SCHEMAS = {
+  mattermost_whoami: { type: 'object' },
+  mattermost_get_channel_history: { type: 'object', additionalProperties: false, required: ['channel'], properties: { channel: { type: 'string' }, limit: { type: 'integer' }, format: { type: 'string', enum: ['concise', 'detailed'] } } },
+  mattermost_get_thread: { type: 'object', additionalProperties: false, required: ['post_id'], properties: { post_id: { type: 'string' }, format: { type: 'string', enum: ['concise', 'detailed'] } } },
+  mattermost_search: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' } } },
+  mattermost_list_channels: { type: 'object' },
+};
+
 const posts = [
   { channel: 'town-square', author: 'Rob', time: '2026-10-11T10:00:00Z', text: 'Standup at ten', permalink: 'https://chat.peat-cloud.com/team/pl/abcdef1234567890abcdefghij' },
   { channel: 'town-square', author: 'Dana', time: '2026-10-11T10:01:00Z', text: 'On it', permalink: 'https://chat.peat-cloud.com/team/pl/0987654321fedcba0987654321' },
@@ -18,10 +29,16 @@ const posts = [
 
 const server = new Server({ name: 'stdio-mattermost-fixture', version: '1' }, { capabilities: { tools: {} } });
 server.setRequestHandler('tools/list', () => ({
-  tools: [...READS, ...WRITES].map(name => ({ name, description: `Synthetic ${name}`, inputSchema: { type: 'object' } })),
+  tools: [...READS, ...WRITES].map(name => ({ name, description: `Synthetic ${name}`, inputSchema: READ_SCHEMAS[name] ?? { type: 'object' } })),
 }));
 server.setRequestHandler('tools/call', request => {
   const name = request.params.name;
+  const schema = READ_SCHEMAS[name];
+  if (schema?.additionalProperties === false) {
+    const declared = Object.keys(schema.properties ?? {});
+    const extra = Object.keys(request.params.arguments ?? {}).filter(key => !declared.includes(key));
+    if (extra.length > 0) return { isError: true, content: [{ type: 'text', text: `unexpected argument(s): ${extra.join(', ')}` }] };
+  }
   if (WRITES.includes(name)) {
     return { isError: true, content: [{ type: 'text', text: `forbidden write tool ${name} was called` }] };
   }

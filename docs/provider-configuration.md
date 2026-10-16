@@ -59,10 +59,13 @@ causes, logs, CLI output, argv or serialized returned objects.
 block, and its `preferences.language` is the same explicit BCP47 locale. For
 Live a valid language-region tag is kept end to end for
 `generationConfig.speechConfig.languageCode` (for example `de-DE` stays `de-DE`;
-the adapter pins bare `ar` to `ar-XA`). A tag that is not a two-letter language
-with an optional two-letter region (for example a script subtag) reduces to its
-bare primary subtag, and a tag with no two-letter primary is omitted. The voice
-anchor still reduces to the bare primary language name. The literal key reference
+the adapter pins bare `ar` to `ar-XA`). Every Live session therefore
+sends an explicit language: the owner's tag when it is a two-letter language
+with an optional two-letter region, otherwise the bare primary subtag of the
+owner's BCP47 locale (for example a script subtag `zh-Hans-CN` sends `zh`),
+otherwise `en`. The setup is never left unset, so the voice always has an
+explicit language pin. The voice anchor still reduces to the bare primary
+language name. The literal key reference
 is still `gemini-primary`; the key file is separate and untouched.
 
 ```json

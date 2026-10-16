@@ -419,7 +419,12 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
               }
               if (evidence.state !== 'completed') {
                 const status = evidence.state === 'tool-error' || evidence.state === 'protocol-error' ? descriptor.status?.(evidence) : undefined;
-                if (!status) return { status: 'failed' };
+                if (!status) {
+                  // Keep the failure cause truthful: a refused connector read names its reason; a child
+                  // tool/protocol error is an unusable result. Either way surface a real code.
+                  const failureCode = evidence.state === 'refused' ? dispatchedFailureCode(evidence.reason) : 'invalid_result';
+                  return { status: 'failed', code: failureCode };
+                }
                 // A classified failure is visible: the endpoint flips to configured and the call
                 // returns the plain reason as its projection, never an empty success.
                 reportToolStatus?.(p.endpoint.id, status);

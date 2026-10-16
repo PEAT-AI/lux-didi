@@ -94,7 +94,7 @@ test('a granted google endpoint calls the real child with bounded defaults and b
     assert.equal((listEnvelope['received'] as Record<string, unknown>)['maxResults'], GMAIL_LIST_MESSAGES);
     const listProjection = renderGoogleTool('gmail_list', (listEnvelope['data'] as Record<string, unknown>));
     assert.equal(listProjection.partial, false);
-    assert.match(listProjection.text, /Synthetic subject line & more \| from: Synthetic Sender \| date: Mon, 1 Jan 2024 \| it's <ready> to read/);
+    assert.match(listProjection.text, /Synthetic subject line & more \| from: Synthetic Sender \| date: Mon, 1 Jan 2024 00:00:00 \+0000 \| it's <ready> to read/);
     assert.equal(/https?:\/\//.test(listProjection.text), false, 'gmail model text holds no raw url');
     assert.deepEqual(listProjection.sources, [{ title: 'Gmail: Synthetic subject line & more', url: 'https://mail.google.com/mail/u/0/#inbox/m1', sourceType: 'gmail' }, { title: 'Gmail: Synthetic subject line & more', url: 'https://mail.google.com/mail/u/0/#inbox/m2', sourceType: 'gmail' }]);
 
@@ -279,7 +279,7 @@ test('the owner composes the google tool table and a Live-shaped gmail_list call
     assert.equal(stored.response['tool'], 'gmail_list');
     assert.match(String(stored.response['text']), /Synthetic subject line & more \| from: Synthetic Sender \| date: Mon, 1 Jan 2024/);
     assert.equal(/https?:\/\//.test(String(stored.response['text'])), false, 'gmail model text holds no raw url');
-    assert.deepEqual(stored.response['sources'], [{ title: 'Gmail: Synthetic subject line & more', url: 'https://mail.google.com/mail/u/0/#inbox/m1', sourceType: 'gmail' }, { title: 'Gmail: Synthetic subject line', url: 'https://mail.google.com/mail/u/0/#inbox/m2', sourceType: 'gmail' }]);
+    assert.deepEqual(stored.response['sources'], [{ title: 'Gmail: Synthetic subject line & more', url: 'https://mail.google.com/mail/u/0/#inbox/m1', sourceType: 'gmail' }, { title: 'Gmail: Synthetic subject line & more', url: 'https://mail.google.com/mail/u/0/#inbox/m2', sourceType: 'gmail' }]);
   } finally {
     await adapter.close();
     store.close();

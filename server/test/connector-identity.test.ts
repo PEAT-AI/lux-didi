@@ -120,7 +120,7 @@ async function gmailHost(email: string) {
   const url = `http://127.0.0.1:${address.port}/gmail`;
   await writeFile(join(config, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', ownerIdentity: OWNER, endpoints: [
     { id: 'gmail', connector: 'google', transport: 'streamable-http', url, account: 'synthetic', resource: 'gmail', credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'ordinary' },
-  ] }));
+  ] }), { mode: 0o600 });
   const host = await startHost({ dataDir: join(dir, 'state'), configDir: config, webRoot, port: 0 });
   const headers = { Authorization: `Bearer ${host.store.adminCredential}`, 'Content-Type': 'application/json', 'X-Didi-Authority-Epoch': host.descriptor.authorityEpoch, 'Idempotency-Key': randomUUID() };
   const status = await fetch(host.descriptor.origin + '/api/v1/tools/status', { headers });

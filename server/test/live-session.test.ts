@@ -1258,7 +1258,7 @@ test('timer storage failure is a causal uncaught process failure with durable ro
     const store = new Store(${JSON.stringify(dir)}, liveMigrations);
     let clock = ${NOW}, callback;
     const owner = createLiveSessionOwner({ store, profile: validateLiveProfile(${JSON.stringify(profileInput({ unusedMs: 20 }))}),
-      now: () => clock, voice: { capabilities: fakeLiveVoicePort().port.capabilities, open() { throw new Error('unexpected provider open'); } },
+      now: () => clock, voice: { open() { throw new Error('unexpected provider open'); } },
       schedule(fn) { callback = fn; return { unref() {}, cancel() {} }; } });
     const row = owner.create({ idempotencyKey: 'child-fault', inputClass: 'ordinary' }, { clientId: 'tester', auditId: 'fault', authorityEpoch: store.authorityEpoch });
     process.stdout.write(row.liveSessionId);

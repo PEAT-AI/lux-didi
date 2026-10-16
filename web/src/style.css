@@ -351,6 +351,9 @@ html,body{height:100%;overflow:hidden}
 .feed-session>summary{list-style:none;cursor:pointer}
 .feed-session>summary::-webkit-details-marker{display:none}
 .feed-session>summary::marker{content:""}
+.feed-session>summary.feed-divider{display:flex;flex-direction:column;gap:2px}
+.feed-session-headline{color:var(--text);font-size:13px}
+.feed-session-count{color:var(--muted)}
 .feed-session-body{display:flex;flex-direction:column;gap:16px;opacity:.72}
 .feed-activity{align-self:flex-start;max-width:100%}
 .feed-notices{display:flex;flex-direction:column;gap:8px;max-width:min(var(--feed-measure),100%);margin:0 auto}
@@ -405,11 +408,16 @@ html,body{height:100%;overflow:hidden}
 /* (2) No card and no hard edges: the stage is the lane itself on the lane background, with a soft
    radial glow behind the orb, and its content starts 24 px below the window header. overflow stays
    visible so the 190 percent halo is never clipped into a rectangular edge (F8). */
-.orb-stage{max-width:none;min-height:0;border:0;border-radius:0;box-shadow:none;background:none;overflow:visible;padding:24px 24px 12px;gap:10px}
+.orb-stage{max-width:none;min-height:0;border:0;border-radius:0;box-shadow:none;background:none;overflow:visible;padding:0 24px;gap:4px;height:auto}
 .orb-stage .presence-glow{width:190%;height:190%}
 
-/* (1) The orb box keeps 55 percent of the stage height while the stage keeps its 24 px top inset. */
-.orb-holder{height:clamp(120px,calc(55% + 20px),200px)}
+/* FE1-R1 (1): the orb is the hero. Spec 2.1 wants the orb area at 34 to 44 percent of the voice lane
+   height, about 200 px at 900, 300 px at 1440x900 and 440 px at 2000x1250; the caption and controls stay
+   under it and never push the feed up. The orb-holder is the orb's box; the stage sizes to it. */
+.orb-holder{height:200px;max-height:none}
+@media(min-width:1200px){.orb-holder{height:300px}}
+@media(min-width:1700px){.orb-holder{height:440px}}
+@media(max-width:880px){.orb-stage{height:clamp(200px,30%,260px)}.orb-holder{height:180px}}
 
 /* (3) Every control stays inside the stage at every size. */
 .orb-stage .orb-caption{gap:4px}

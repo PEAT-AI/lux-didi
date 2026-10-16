@@ -4,7 +4,7 @@ import { deleteMemoryEntry } from './api';
 import { ConnectedView } from './connected';
 import { Orb, type VoiceState } from './orb';
 import { ApiError, request, pair, demoMode, onAuthorityChanged, authorityVersion, assertAuthority, restoreSession, logout, fetchLive } from './api';
-import { liveMarkup, liveSegments, liveLabel, liveVoiceState, liveDelay, pollLiveView, liveActivity, activityMarkup, liveTranscript, LiveMachine, LIVE_CONSENT, pillVisible, liveErrorText, startAvailable, stopAvailable, earlierSession, liveNoticesMarkup, liveJobsMarkup, FEED_EMPTY, type LivePollState, type EarlierSession } from './live-view';
+import { liveMarkup, liveSegments, liveLabel, liveVoiceState, liveDelay, pollLiveView, liveTranscript, LiveMachine, LIVE_CONSENT, pillVisible, liveErrorText, startAvailable, stopAvailable, earlierSession, liveNoticesMarkup, liveJobsMarkup, FEED_EMPTY, type LivePollState, type EarlierSession } from './live-view';
 import { attachPin } from './autoscroll.ts';
 import { dragPanel, isNarrow, loadLayout, openSheet, closeSheet, PANEL_IDS, panelControl, panelLabel, panelOpen, panelWidth, saveLayout, shortcutPanel, togglePanel, withViewport, type LayoutState, type PanelId, type RouteId } from './layout';
 import { installNativeBridge, type Bridge, type NativeLiveState } from './native-bridge';
@@ -84,14 +84,7 @@ function orbLabel() {
   return live?liveLabel(live):state==='PROCESSING'?'Working on your request':state==='CONNECTING'?'Connecting':state==='DISCONNECTED'?'Waiting for connection':state==='ERROR'?'Needs your attention':'Ready when you are';
 }
 // The honesty line is true only when the projection is idle, the native app reports muted, or there is no projection.
-// The activity line shares one start clock: a slow call adds its elapsed seconds only after SLOW_TOOL_MS.
-let activityStartedAt = 0, activityKey = '';
-function activityLineMarkup() {
-  const activity = liveActivity(live);
-  const key = activity ? `${activity.kind}:${activity.text}` : '';
-  if (key !== activityKey) { activityKey = key; activityStartedAt = Date.now(); }
-  return activityMarkup(activity, activity ? Date.now() - activityStartedAt : 0);
-}
+// The activity row lives once, in the feed (spec 2.2 item 2); the orb caption keeps the state word only.
 // The lookup subtitle that stands in for the voice-lane status while Naya looks (U1).
 const LOOKUP_SOURCE_WORDS: Record<string, string> = { knowledge: 'lux', calendar: 'calendar', mail: 'mail', chat: 'Mattermost' };
 const SLOW_LOOKUP_MS = 6000;
@@ -130,7 +123,7 @@ function orbControlsMarkup(): string {
   return `${active ? `<button id="voice-stop" class="stop-pill">Stop</button><button id="voice-mute" class="quiet">${view.state === 'muted' ? 'Unmute' : 'Mute'}</button>` : `<button id="voice-start" class="start-pill" ${startAvailable(view) ? '' : 'aria-disabled="true"'}>Start</button>`}${error ? `<p class="voice-error" role="alert">${e(error)}</p>` : ''}`;
 }
 function orbCaptionMarkup(): string {
-  return `<p class="voice-state" id="voice-state" role="status" aria-live="polite">${orbStateLineMarkup()}</p>${activityLineMarkup()}`;
+  return `<p class="voice-state" id="voice-state" role="status" aria-live="polite">${orbStateLineMarkup()}</p>`;
 }
 function orbStageMarkup(): string {
   const glow = ['CONNECTED','LISTENING','SPEAKING','PROCESSING'].includes(orbState());

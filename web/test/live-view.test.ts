@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { createContext, runInContext } from 'node:vm';
-import { liveStateLabel, liveVoiceState, pendingToolNames, liveLabel, liveDelay, mergeLive, liveTranscript, liveResult, liveMarkup, liveActivity, activityMarkup, SLOW_TOOL_MS, liveSegments, sessionItems, sessionDividerText, earlierSession, turnHeadline } from '../src/live-view.ts';
+import { liveStateLabel, liveVoiceState, pendingToolNames, liveLabel, liveDelay, mergeLive, liveTranscript, liveResult, liveMarkup, liveActivity, activityMarkup, SLOW_TOOL_MS, liveSegments, sessionItems, sessionDividerText, earlierSession, turnHeadline, sessionTurnCount, sessionHeadline, FEED_EMPTY } from '../src/live-view.ts';
 import { posture } from '../src/orb-level.ts';
 import './connector-status.test.ts';
 import { pollLiveView } from '../src/live-view.ts';
@@ -741,4 +741,30 @@ test('FE1 the turn row shows a headline and keeps the full answer in a closed de
   assert.match(html, /<details class="feed-turn-detail"><summary>Full answer<\/summary>/, 'the full answer is a closed detail');
   assert.doesNotMatch(html.slice(0, html.indexOf('feed-turn-detail')), /Then run the audit/, 'only the headline is visible above the detail');
   assert.match(html, /what next\?/, "the owner's verbatim line is kept in the detail");
+});
+
+test('FE1-R1 a finished session shows its first turn headline and turn count, collapsed', () => {
+  const ended = { state: 'ended', since: '2026-10-11T16:00:00Z', cursor: 6, entries: [
+    { seq: 1, kind: 'inputTranscription', text: 'first question' },
+    { seq: 2, kind: 'outputTranscription', text: 'Ship the UI. Then run the audit.' },
+    { seq: 3, kind: 'turnComplete' },
+    { seq: 4, kind: 'inputTranscription', text: 'and then?' },
+    { seq: 5, kind: 'outputTranscription', text: 'Thanks for watching.' },
+    { seq: 6, kind: 'turnComplete' },
+  ], pastSession: { outcome: 'closed', endedAt: '2026-10-11T16:05:00Z', lastObservedAt: '2026-10-11T16:05:00Z' } } as unknown as LiveCurrent;
+  const html = liveMarkup(ended);
+  assert.match(html, /<details class="feed-session" data-seg="past-session">/, 'the finished session is a closed, expandable block');
+  assert.match(html, /<summary class="feed-divider"><span class="feed-divider-date">/, 'the divider date leads the summary');
+  assert.match(html, /class="feed-session-headline">Ship the UI\.</, 'the first turn headline is shown under the divider');
+  assert.match(html, /class="feed-session-count">2 turns</, 'the turn count is shown');
+  assert.equal(sessionTurnCount(ended), 2);
+  assert.equal(sessionHeadline(ended), 'Ship the UI.');
+  assert.match(html, /Ship the UI\. Then run the audit\./, 'the full answer stays in the collapsed body');
+});
+
+test('FE1-R1 the orb caption carries the state word only, never the activity row', () => {
+  const source = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
+  const caption = source.slice(source.indexOf('function orbCaptionMarkup()'), source.indexOf('function orbStageMarkup()'));
+  assert.doesNotMatch(caption, /activityLineMarkup|activityMarkup|feed-activity/, 'the activity row lives in the feed alone');
+  assert.match(caption, /voice-state/);
 });

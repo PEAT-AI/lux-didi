@@ -272,6 +272,10 @@ try {
       });
       assert.ok(geo.share >= 0.34 && geo.share <= 0.44, `the orb area is 34-44% of the voice lane (${(geo.share * 100).toFixed(0)}% at ${w})`);
       assert.ok(geo.feedTop >= geo.orbBottom - 1, 'the feed starts below the orb, which is never covered');
+      // FE1-R1 (1): the orb element itself is the hero size spec 2.1 names for these three widths.
+      const orbBand = { 900: [180, 220], 1440: [270, 330], 2000: [400, 480] }[w];
+      const orbPx = await page.evaluate(() => { const r = document.querySelector('#didi-orb').getBoundingClientRect(); return { w: Math.round(r.width), h: Math.round(r.height) }; });
+      assert.ok(orbPx.w >= orbBand[0] && orbPx.w <= orbBand[1] && orbPx.h >= orbBand[0] && orbPx.h <= orbBand[1], `the orb renders the hero diameter at ${w} (${orbPx.w}x${orbPx.h}, band ${orbBand[0]}-${orbBand[1]})`);
       await shoot(`idle-${w}.png`);
     }
 

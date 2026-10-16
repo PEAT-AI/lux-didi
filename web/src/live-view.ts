@@ -255,6 +255,33 @@ export function turnHeadline(text: string): string {
   return (match ? match[0] : trimmed).trim();
 }
 
+/** The first turn's headline of a session, for its collapsed divider line (FE1-R1 item 2). */
+export function sessionHeadline(live: LiveCurrent | undefined): string | undefined {
+  if (!live) return undefined;
+  const line = liveTranscript(live).find(item => item.role === 'naya');
+  return line ? turnHeadline(line.text) : undefined;
+}
+
+/** How many conversational turns a session holds, mirroring the feed flush boundaries. */
+export function sessionTurnCount(live: LiveCurrent | undefined): number {
+  let count = 0, has = false;
+  for (const entry of live?.entries ?? []) {
+    if ((entry.kind === 'inputTranscription' || entry.kind === 'outputTranscription') && entry.text) has = true;
+    if (entry.kind === 'turnComplete' || entry.kind === 'interrupted' || entry.kind === 'terminal') { if (has) count++; has = false; }
+  }
+  if (has) count++;
+  return count;
+}
+
+/** A finished session's collapsed line: its date, the first turn headline and the turn count. */
+function sessionSummaryMarkup(live: LiveCurrent | undefined, at: string): string {
+  const headline = sessionHeadline(live);
+  const turns = sessionTurnCount(live);
+  const count = turns ? `<span class="feed-session-count">${turns} ${turns === 1 ? 'turn' : 'turns'}</span>` : '';
+  const line = headline ? `<span class="feed-session-headline">${escapeHtml(headline)}</span>` : '';
+  return `<span class="feed-divider-date">${escapeHtml(at)}</span>${line}${count}`;
+}
+
 /** The turn, tool, remember and activity rows of one session, without any session divider. */
 export function sessionItems(live: LiveCurrent | undefined): LiveSegment[] {
   const items: LiveSegment[] = [];
@@ -286,7 +313,7 @@ export function liveSegments(live: LiveCurrent | undefined, earlier: EarlierSess
   if (live?.pastSession && items.length) {
     segments.push({ key: 'empty', html: FEED_EMPTY });
     const at = sessionDividerText(live.pastSession.endedAt ?? live.since);
-    segments.push({ key: 'past-session', html: `<details class="feed-session" data-seg="past-session"><summary class="feed-divider">${escapeHtml(at)}</summary><div class="feed-session-body">${items.map(segment => segment.html).join('')}</div></details>` });
+    segments.push({ key: 'past-session', html: `<details class="feed-session" data-seg="past-session"><summary class="feed-divider">${sessionSummaryMarkup(live, at)}</summary><div class="feed-session-body">${items.map(segment => segment.html).join('')}</div></details>` });
   } else if (items.length) {
     if (live?.since) segments.push({ key: 'divider:session', html: `<div class="feed-divider" data-seg="divider:session" role="separator">${escapeHtml(sessionDividerText(live.since))}</div>` });
     segments.push(...items);
@@ -302,7 +329,7 @@ export function earlierSession(previous: LiveCurrent | undefined): EarlierSessio
   const items = sessionItems(previous);
   if (!items.length) return undefined;
   const at = sessionDividerText(previous.pastSession?.endedAt ?? previous.since);
-  return { at, html: `<details class="feed-session" data-seg="earlier:${at}"><summary class="feed-divider">${escapeHtml(at)}</summary><div class="feed-session-body">${items.map(segment => segment.html).join('')}</div></details>` };
+  return { at, html: `<details class="feed-session" data-seg="earlier:${at}"><summary class="feed-divider">${sessionSummaryMarkup(previous, at)}</summary><div class="feed-session-body">${items.map(segment => segment.html).join('')}</div></details>` };
 }
 
 /** The wrapper notices inside the live panel: muted, stale, error and restored. Kept apart from the

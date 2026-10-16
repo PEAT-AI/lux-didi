@@ -8,7 +8,7 @@ import { effectiveLanguageCode } from '../../prompt/live-persona.js';
 // Fixed official v1beta endpoint. Neither destination nor credentials are public events.
 const networkErrors = new Set(['ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ECONNREFUSED', 'ECONNABORTED', 'ENETUNREACH', 'EHOSTUNREACH', 'ENOTFOUND', 'EAI_AGAIN']);
 const ENDPOINT = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent';
-const FRESH_OPENING = 'Greet the person briefly to begin the conversation.';
+const FRESH_OPENING = 'Open the conversation now with one fresh, specific line.';
 // The model-first opening nudge is provider-neutral and accent-free: the accent lives in the system
 // instruction, the voice and the language in the setup frame, for every provider.
 // Issue 1014: the one Live write tool. It is declared NON_BLOCKING and its reply is scheduled SILENT,

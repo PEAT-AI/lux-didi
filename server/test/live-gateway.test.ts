@@ -263,7 +263,7 @@ for (const mode of ['failed', 'healthy', 'fixture-only'] as const) test(`Swift s
   await Promise.race([ready, setup.then(() => ready)]);
   // The owner opens model-first, so frame 1 is the greeting text, not capture.
   await h.f.frame(2);
-  assert.deepEqual(h.f.frames[1], { realtimeInput: { text: 'Greet the person briefly to begin the conversation.' } });
+  assert.deepEqual(h.f.frames[1], { realtimeInput: { text: 'Open the conversation now with one fresh, specific line.' } });
   // The coordinator sends capture only after ready; FoundationLiveSocket sends PCM as binary,
   // and endAudioStream as one text JSON control, not a terminal close.
   ws.send(Buffer.from(pcm));

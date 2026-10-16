@@ -263,7 +263,7 @@ async function harness(t: TestContext, overrides: {
   return { requests, calls, get memorySelections() { return memorySelections; }, f, store, owner, ctx: context(store), dir, advance: ms => { if (overrides.scheduler) overrides.scheduler.now += ms; else clock += ms; } };
 }
 
-async function attached(h: Harness, key = 'k1', opening = 'Greet the person briefly to begin the conversation.') {
+async function attached(h: Harness, key = 'k1', opening = 'Open the conversation now with one fresh, specific line.') {
   const session = h.owner.create({ idempotencyKey: key, inputClass: 'ordinary' }, h.ctx);
   assert.equal(h.owner.current().state, 'idle', 'accepted without an attachment is not listening');
   const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
@@ -323,9 +323,9 @@ test('fresh owner Start selects model-first with no fabricated history', async t
   assert.deepEqual(h.requests[0]!.history, []);
   h.f.send({ setupComplete: {} });
   await Promise.all([attachment.ready, h.f.frame(2)]);
-  assert.deepEqual(h.f.frames[1], { realtimeInput: { text: 'Greet the person briefly to begin the conversation.' } });
+  assert.deepEqual(h.f.frames[1], { realtimeInput: { text: 'Open the conversation now with one fresh, specific line.' } });
   const persisted = JSON.stringify(h.store.transaction(tx => tx.all('SELECT kind,text FROM live_journal WHERE live_session_id=?', [session.liveSessionId])));
-  assert.equal(persisted.includes('Greet the person'), false, 'the server-owned directive is not user transcription or history');
+  assert.equal(persisted.includes('Open the conversation now'), false, 'the server-owned directive is not user transcription or history');
   h.owner.revoke(session.liveSessionId);
   await attachment.done;
 });
@@ -536,7 +536,7 @@ test('audio is rejected before ready and PCM never reaches the store', async t =
   await h.f.frame(1);
   h.f.send({ setupComplete: {} });
   await Promise.all([attachment.ready, h.f.frame(2)]);
-  assert.deepEqual(h.f.frames[1], { realtimeInput: { text: 'Greet the person briefly to begin the conversation.' } });
+  assert.deepEqual(h.f.frames[1], { realtimeInput: { text: 'Open the conversation now with one fresh, specific line.' } });
   attachment.sendAudio({ pcm });
   await h.f.frame(3);
   assert.deepEqual(h.f.frames[2], { realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: Buffer.from(pcm).toString('base64') } } });

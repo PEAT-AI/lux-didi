@@ -58,7 +58,7 @@ test('empty-history model-first sends one server-owned Companion greeting withou
   await f.frame(1);
   f.send({ setupComplete: {} });
   await Promise.all([session.ready, f.frame(2)]);
-  assert.deepEqual(f.frames[1], { realtimeInput: { text: 'Greet the person briefly to begin the conversation.' } });
+  assert.deepEqual(f.frames[1], { realtimeInput: { text: 'Open the conversation now with one fresh, specific line.' } });
   assert.equal((await events.next()).value?.type, 'ready');
   assert.equal(f.frames.length, 2, 'exactly one fresh opening directive is sent without PCM');
 });
@@ -74,7 +74,7 @@ test('a failed fresh opening write never resolves public ready', async t => {
   const socket = f.clients[0]!;
   const send = socket.send.bind(socket) as (data: string, callback?: (error?: Error) => void) => void;
   t.mock.method(socket, 'send', (data: string, callback?: (error?: Error) => void) => {
-    if (data.includes('Greet the person briefly')) throw Error('synthetic opening write failure');
+    if (data.includes('Open the conversation now')) throw Error('synthetic opening write failure');
     send(data, callback);
   });
   f.send({ setupComplete: {} });
@@ -903,7 +903,7 @@ test('P2: the model-first opening nudge carries no accent text', async t => {
   t.after(() => session.close());
   const events = session.events[Symbol.asyncIterator]();
   await f.frame(1); f.send({ setupComplete: {} }); await Promise.all([session.ready, f.frame(2)]);
-  assert.deepEqual(f.frames[1], { realtimeInput: { text: 'Greet the person briefly to begin the conversation.' } });
+  assert.deepEqual(f.frames[1], { realtimeInput: { text: 'Open the conversation now with one fresh, specific line.' } });
   assert.equal(JSON.stringify(f.frames[1]).includes('voice and accent'), false, 'the opening trigger carries no accent text');
   void events;
 });

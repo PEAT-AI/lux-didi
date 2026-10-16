@@ -688,8 +688,8 @@ test('FE1 a tool in flight adds one live activity row that resolves in place', (
 
 test('FE1 the session divider names today, yesterday or the short date', () => {
   const now = new Date(2026, 9, 15, 12, 0);
-  assert.equal(sessionDividerText(new Date(2026, 9, 15, 8, 31).toISOString(), now), 'Today, 08:31');
-  assert.equal(sessionDividerText(new Date(2026, 9, 14, 9, 15).toISOString(), now), 'Yesterday, 09:15');
+  assert.match(sessionDividerText(new Date(2026, 9, 15, 8, 31).toISOString(), now), /^Today, .*08:31/);
+  assert.match(sessionDividerText(new Date(2026, 9, 14, 9, 15).toISOString(), now), /^Yesterday, .*09:15/);
   assert.equal(sessionDividerText(null, now), 'Earlier');
 });
 

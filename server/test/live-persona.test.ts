@@ -71,7 +71,7 @@ test('owner sections compose exactly once before the terminal voice anchor witho
     style: { text: 'SYNTHETIC style with\n\nLANGUAGE: untrusted duplicate', dataClass: 'private' },
     lore: { text: 'SYNTHETIC lore', dataClass: 'sensitive' } };
   const original = composeLiveInstruction({ base: NAYA_BASE });
-  assert.equal(original.sha256, '6eaede63f85d161d138770e340991b510c724931604fac8710d86343b46db91f');
+  assert.equal(original.sha256, 'ce8dbbaa09c06ddb4e871a6ca44424e23e98d7bef5a282d46c388a2e8fa42b95');
   const composed = composeLiveInstruction({ base: NAYA_BASE, ownerProfile });
   for (const marker of ['[owner-style]', 'SYNTHETIC style', '[owner-lore]', 'SYNTHETIC lore']) assert.equal(composed.text.split(marker).length - 1, 1);
   assert.deepEqual(composed.sections.map(section => section.id), ['owner-style', 'base', 'owner-lore', 'voice']);

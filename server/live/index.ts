@@ -613,6 +613,7 @@ export class LiveSessionOwner {
     const request: LiveVoiceRequest = { opening: 'model_first',
       system: { text: system, dataClass: dataClasses[dataClasses.length - 1]! }, history: history ?? [], dataClasses,
       ...(this.#profile.language !== undefined ? { languageCode: this.#profile.language } : {}),
+      ...(this.#profile.overlay?.accent !== undefined ? { voiceAccent: this.#profile.overlay.accent } : {}),
       ...(declarations.length ? { tools: declarations } : {}) };
     const deadlineMs = Date.now() + this.#profile.limits.sessionMs;
     const deadlineAt = this.#now() + this.#profile.limits.sessionMs;
@@ -771,6 +772,9 @@ export class LiveSessionOwner {
       const snapshots = values.filter((value): value is Readonly<LiveVoiceDiagnostics> => value !== undefined);
       const sum = (field: keyof LiveVoiceDiagnostics) => snapshots.reduce((total, value) => total + value[field], 0);
       console.error(JSON.stringify({ event: 'live_session_diagnostics', terminalCode: handle.diagnosticTerminalCode,
+        headVoiceChars: this.#profile.overlay?.accent?.length ?? 0,
+        terminalVoiceChars: this.#profile.overlay?.accent?.length ?? 0,
+        toolAnchorChars: this.#profile.overlay?.accent?.length ?? 0,
         adapterGenerations: values.length, ownerAudioCalls: handle.ownerAudioCalls, ownerAudioBytes: handle.ownerAudioBytes,
         ownerRebuildingDropCalls: handle.ownerRebuildingDropCalls, ownerRebuildingDropBytes: handle.ownerRebuildingDropBytes,
         adapterAudioCalls: sum('audioCalls'), adapterAudioBytes: sum('audioBytes'),

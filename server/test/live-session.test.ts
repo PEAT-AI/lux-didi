@@ -255,7 +255,7 @@ async function harness(t: TestContext, overrides: {
   return { requests, calls, get memorySelections() { return memorySelections; }, f, store, owner, ctx: context(store), dir, advance: ms => { if (overrides.scheduler) overrides.scheduler.now += ms; else clock += ms; } };
 }
 
-async function attached(h: Harness, key = 'k1') {
+async function attached(h: Harness, key = 'k1', opening = 'Greet the person briefly to begin the conversation.') {
   const session = h.owner.create({ idempotencyKey: key, inputClass: 'ordinary' }, h.ctx);
   assert.equal(h.owner.current().state, 'idle', 'accepted without an attachment is not listening');
   const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
@@ -263,7 +263,7 @@ async function attached(h: Harness, key = 'k1') {
   h.f.send({ setupComplete: {} });
   await attachment.ready;
   await h.f.frame(2);
-  assert.deepEqual(h.f.frames[1], { realtimeInput: { text: 'Greet the person briefly to begin the conversation.' } });
+  assert.deepEqual(h.f.frames[1], { realtimeInput: { text: opening } });
   h.f.frames.splice(1, 1);
   return { session, attachment };
 }
@@ -1808,6 +1808,25 @@ test('the exact live diagnostics object the owner emits is accepted by the host 
   assert.equal(accepted.terminalCode, emitted.terminalCode);
 });
 
+test('the overlay accent reaches the adapter and is reported only as counts, never text', async t => {
+  const lines: string[] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
+  const accent = 'SYNTHETIC-ACCENT-DESCRIPTION';
+  const h = await harness(t, { overlay: { schemaVersion: 1, text: 'SYNTHETIC overlay persona', accent } });
+  const { attachment } = await attached(h, 'accent-carried', `Greet the person briefly to begin the conversation, speaking in this voice and accent: ${accent}`);
+  assert.equal(h.requests.at(-1)?.voiceAccent, accent, 'the accent is carried on the session request');
+  attachment.close(); await attachment.done;
+  const parse = (line: string): Record<string, unknown> => { try { return JSON.parse(line) as Record<string, unknown>; } catch { return {}; } };
+  const diagnostics = (): Record<string, unknown>[] => lines.map(parse).filter(entry => entry.event === 'live_session_diagnostics');
+  for (let attempt = 0; attempt < 60 && !diagnostics().some(entry => entry.headVoiceChars === accent.length); attempt++) await tick();
+  const emitted = diagnostics().find(entry => entry.headVoiceChars === accent.length);
+  assert.ok(emitted, `the accent-bearing diagnostics reports the carried accent count; saw ${JSON.stringify(diagnostics())}`);
+  assert.equal(emitted.terminalVoiceChars, accent.length);
+  assert.equal(emitted.toolAnchorChars, accent.length);
+  assert.ok(safeEvent(emitted), 'the host log accepts the accent-bearing diagnostics shape');
+  assert.equal(lines.some(line => line.includes(accent)), false, 'the accent text never reaches an emitted line');
+});
+
 test('queued PCM is dropped at the cut and capture during rebuilding is never replayed', async t => {
   const diagnosticLines: string[] = [];
   t.mock.method(console, 'error', (...args: unknown[]) => {
@@ -2116,6 +2135,7 @@ test('P1: session start logs the composed instruction size per section', async t
   assert.ok(logged, 'a per-section size line is logged at session start');
   assert.ok(typeof logged.total === 'number' && logged.total > 0);
   assert.ok(logged.sections && Object.values(logged.sections).every(value => typeof value === 'number'), 'only counts are logged');
+  assert.ok(safeEvent(logged as unknown as Record<string, unknown>), 'the size line is accepted by the host log whitelist');
 });
 
 test('U1: calendar and Gmail model text carries no raw url and names each source', () => {

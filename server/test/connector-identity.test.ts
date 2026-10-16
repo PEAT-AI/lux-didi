@@ -1,11 +1,18 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { createServer } from 'node:http';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { once } from 'node:events';
+import { randomUUID } from 'node:crypto';
 import {
   calendarIdentityValues, classifyIdentity, gmailIdentityValues, identityAction, identityMatch,
   mattermostIdentityValues, normalizeIdentity, projectIdentity, proveIdentity,
   type IdentityProof, type IdentitySource,
 } from '../connectors/identity.js';
 import { safeEvent } from '../host/log.js';
+import { startHost } from '../host/runtime.js';
 import type { ConnectorResult } from '../connectors/index.js';
 
 // Every identity below is synthetic; no real account, address or token appears in this file.
@@ -85,4 +92,60 @@ test('projectIdentity returns a closed shape, dropping anything unvalidated', ()
   assert.equal(projectIdentity(OWNER), undefined);
   const long = 'a'.repeat(300);
   assert.deepEqual((projectIdentity({ proven: true, match: true, value: long }) as IdentityProof).value, null);
+});
+
+// Real refusal wiring: one fake Gmail endpoint, the real host compose path, synthetic identities only.
+const webRoot = resolve(import.meta.dirname, '../../../web/dist');
+
+async function gmailHost(email: string) {
+  const dir = await mkdtemp(join(tmpdir(), 'didi-identity-'));
+  const config = join(dir, 'provider-config');
+  await mkdir(config, { mode: 0o700 });
+  const tools = ['gmail_get_profile', 'gmail_list', 'gmail_read'].map(name => ({ name, inputSchema: { type: 'object', properties: {}, additionalProperties: true } }));
+  const reply = (message: { id?: unknown; method: string }) => message.id === undefined ? undefined : {
+    jsonrpc: '2.0', id: message.id, result: message.method === 'initialize'
+      ? { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'fake', version: '1' } }
+      : message.method === 'tools/list' ? { tools }
+      : message.method === 'tools/call' ? { content: [{ type: 'text', text: JSON.stringify({ emailAddress: email }) }] } : {},
+  };
+  const endpoint = createServer(async (req, res) => {
+    if (req.method !== 'POST') { res.writeHead(405); res.end(); return; }
+    const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
+    const response = reply(JSON.parse(Buffer.concat(chunks).toString()));
+    res.writeHead(response ? 200 : 202, { 'content-type': 'application/json' });
+    res.end(response ? JSON.stringify(response) : undefined);
+  });
+  endpoint.listen(0, '127.0.0.1'); await once(endpoint, 'listening');
+  const address = endpoint.address(); if (!address || typeof address === 'string') throw new Error('no port');
+  const url = `http://127.0.0.1:${address.port}/gmail`;
+  await writeFile(join(config, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', ownerIdentity: OWNER, endpoints: [
+    { id: 'gmail', connector: 'google', transport: 'streamable-http', url, account: 'synthetic', resource: 'gmail', credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'ordinary' },
+  ] }));
+  const host = await startHost({ dataDir: join(dir, 'state'), configDir: config, webRoot, port: 0 });
+  const headers = { Authorization: `Bearer ${host.store.adminCredential}`, 'Content-Type': 'application/json', 'X-Didi-Authority-Epoch': host.descriptor.authorityEpoch, 'Idempotency-Key': randomUUID() };
+  const status = await fetch(host.descriptor.origin + '/api/v1/tools/status', { headers });
+  const reports = (await status.json()).data.endpoints as Array<{ id: string; state: string; reasonCode?: string; identity?: IdentityProof }>;
+  const log = await readFile(join(dir, 'state', 'logs', 'host.log'), 'utf8');
+  const identityLog = log.trim().split('\n').map(line => JSON.parse(line)).filter(record => record.event === 'connector_identity');
+  await host.close();
+  endpoint.closeAllConnections(); await new Promise<void>(done => endpoint.close(() => done()));
+  await rm(dir, { recursive: true, force: true });
+  return { reports, identityLog };
+}
+
+test('a proven mismatch refuses the connector and logs the closed identity event', async () => {
+  const { reports, identityLog } = await gmailHost(OTHER);
+  assert.equal(reports.length, 1);
+  assert.equal(reports[0]!.state, 'error');
+  assert.equal(reports[0]!.reasonCode, 'identity_mismatch');
+  assert.deepEqual(reports[0]!.identity, { proven: true, match: false, value: OTHER });
+  assert.deepEqual(identityLog, [{ event: 'connector_identity', connector: 'google', proven: true, match: false }]);
+});
+
+test('a proven match keeps the connector and logs only the booleans', async () => {
+  const { reports, identityLog } = await gmailHost(OWNER.toUpperCase());
+  assert.equal(reports[0]!.state, 'connected');
+  assert.equal(reports[0]!.reasonCode, undefined);
+  assert.deepEqual(reports[0]!.identity, { proven: true, match: true, value: OWNER.toUpperCase() });
+  assert.deepEqual(identityLog, [{ event: 'connector_identity', connector: 'google', proven: true, match: true }]);
 });

@@ -98,6 +98,14 @@ const session = { id: 'synthetic-session', title: 'Synthetic release checklist' 
 const conversation = { scope: 'conversation', sessionId: 'synthetic-session', provider: 'synthetic', state: 'active', revision: 1, permittedClasses: [], latestRunId: null };
 let live = null, chatOn = false;
 
+const flatten = row => ({
+  ...row,
+  sphereCore: row.sphere ? row.sphere.core : null,
+  sphereCoreShare: row.sphere ? row.sphere.coreShare : null,
+  orbDrawingShare: row.sphere ? row.sphere.drawnShare : null,
+  orbBorderPixels: row.sphere ? row.sphere.border : null,
+  bubbleRight: row.chatBubbleRight !== null && row.chatBubbleRight !== undefined ? row.chatBubbleRight : row.voiceBubbleRight,
+});
 const shots = [], tables = [];
 const browser = await chromium.launch({ channel: 'chromium', headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
 try {
@@ -188,7 +196,7 @@ try {
           return bordered || style.backgroundImage !== 'none' || style.backgroundColor !== 'rgba(0, 0, 0, 0)';
         }).length;
       })(),
-      attachGlyph: (() => { const svg = document.querySelector('#connected-attach svg'); if (!svg) return null; const rect = svg.getBoundingClientRect(); const style = getComputedStyle(svg); return { w: Math.round(rect.width), h: Math.round(rect.height), fill: style.fill, color: getComputedStyle(svg.parentElement).color }; })(),
+      attachGlyph: (() => { const glyph = document.querySelector('#connected-attach .attach-plus'); if (!glyph) return null; const rect = glyph.getBoundingClientRect(); return { w: Math.round(rect.width), h: Math.round(rect.height), text: glyph.textContent, color: getComputedStyle(glyph).color }; })(),
       attachVisible: (() => { const el = document.querySelector('#connected-attach'); return !!el && el.getClientRects().length > 0; })(),
       pillInsideStage: (() => { const control = document.querySelector('#voice-stop') ?? document.querySelector('#voice-start'); if (!control || !stageBox) return null; const rect = control.getBoundingClientRect(); return rect.top >= stageBox.top - 0.5 && rect.bottom <= stageBox.bottom + 0.5 && rect.left >= stageBox.left - 0.5 && rect.right <= stageBox.right + 0.5; })(),
       consentInset: (() => { const el = document.querySelector('.connected-disclosure'); if (!el) return null; const column = document.querySelector('#connected-entries'); return column ? Math.round(el.getBoundingClientRect().left + Number.parseFloat(getComputedStyle(el).paddingLeft) - column.getBoundingClientRect().left) : null; })(),
@@ -210,7 +218,7 @@ try {
       await page.waitForFunction(size => document.documentElement.clientWidth === size.width && document.documentElement.clientHeight === size.height, viewport);
       await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     }
-    const table = await measure();
+    const table = flatten(await measure());
     await page.screenshot({ path: join(out, `${name}.png`) });
     shots.push(name); tables.push({ name, ...table });
     return table;
@@ -227,7 +235,7 @@ try {
   assert.equal(table.attachVisible, true, 'the attach plus is visible in idle as well as with a draft');
   assert.equal(table.orbBorderPixels, 0, `no drawing pixel touches the orb box border (${table.orbBorderPixels})`);
   assert.equal(table.emptyBarsAboveComposer, 0, 'no empty bordered bar sits above the composer');
-  assert.equal(table.attachGlyph !== null && table.attachGlyph.w >= 14 && table.attachGlyph.h >= 14, true, `the attach control draws a real glyph (${JSON.stringify(table.attachGlyph)})`);
+  assert.equal(table.attachGlyph !== null && table.attachGlyph.w >= 8 && table.attachGlyph.h >= 10 && table.attachGlyph.text === '+', true, `the attach control draws a real plus glyph (${JSON.stringify(table.attachGlyph)})`);
   assert.equal(table.pillInsideStage, true, 'every control sits fully inside the stage');
   assert.equal(table.consentInset, 24, 'the consent line uses the column side padding');
   assert.equal(table.composerBottom >= 16 && table.composerBottom <= 24, true, `the composer sits 16 to 24 px above the lane bottom (${table.composerBottom})`);
@@ -311,14 +319,7 @@ try {
 }
 
 const columns = ['viewport', 'stageShare', 'orbDiameter', 'orbShare', 'sphereCore', 'sphereCoreShare', 'orbDrawingShare', 'orbBorderPixels', 'stageBorder', 'pill', 'mute', 'pillInsideStage', 'transcriptTopGap', 'voiceColumn', 'chatColumn', 'composerButtons', 'attachVisible', 'emptyBarsAboveComposer', 'consentInset', 'bubbleRight', 'composerBottom', 'labels', 'documentScrolls', 'listNumbers', 'voiceJump', 'chatJump'];
-const flatten = row => ({
-  ...row,
-  sphereCore: row.sphere ? row.sphere.core : null,
-  sphereCoreShare: row.sphere ? row.sphere.coreShare : null,
-  orbDrawingShare: row.sphere ? row.sphere.drawnShare : null,
-  orbBorderPixels: row.sphere ? row.sphere.border : null,
-  bubbleRight: row.chatBubbleRight !== null && row.chatBubbleRight !== undefined ? row.chatBubbleRight : row.voiceBubbleRight,
-});
+
 const markdown = [
   '# V3 DOM measurements (synthetic data, no images read)',
   '',

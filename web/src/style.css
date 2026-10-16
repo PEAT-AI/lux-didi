@@ -420,7 +420,8 @@ html,body{height:100%;overflow:hidden}
 #connected-send-form{display:block}
 .connected-notes{width:100%;max-width:760px;margin:0 auto 8px;box-sizing:border-box;order:0}
 .connected-notes>summary{display:none}
-.attach-button{position:relative}
+.attach-button{position:relative;color:var(--text-secondary)}
+.attach-plus{font-size:19px;line-height:1;transform:translateY(-1px)}
 .attach-button .notes-count{position:absolute;top:-4px;right:-4px;min-width:16px;height:16px;border-radius:8px;background:var(--accent);color:var(--accent-contrast);font-size:10px;line-height:16px;text-align:center}
 
 /* (8) The consent line sits inside the 760 px column with the same side padding, small and muted. */

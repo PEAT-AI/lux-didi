@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  RESEARCH, ResearchLedger, SELECTOR_SYSTEM, candidateSubs, fallbackSelection, parseSelector, runResearch, shapeBlock,
+  RESEARCH, ResearchLedger, SELECTOR_SYSTEM, candidateSubs, extractInsightIds, fallbackSelection, parseSelector, runResearch, shapeBlock,
   type CandidateKind, type ResearchDeps, type ResearchSelector, type SourceKind,
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
@@ -209,6 +209,17 @@ test('knowledge hydration logs the get_insight second hop', async () => {
   assert.ok(hydrate, 'the get_insight second hop is logged');
   assert.equal(hydrate['ok'], true);
   assert.equal(hydrate['kind'], 'knowledge_search');
+});
+
+test('extractInsightIds reads both the shaped and the raw knowledge heading forms', () => {
+  assert.deepEqual(extractInsightIds('### A (PATTERN) [id 5]\nbody'), [5]);
+  assert.deepEqual(extractInsightIds('_confidence: low_\n## #12 [note]\ncontent'), [12]);
+});
+
+test('shapeBlock shapes raw knowledge markdown headings too', () => {
+  const block = shapeBlock('knowledge_search', [sub('search_knowledge', '## #3 [note] ordinary\nsome body here\n## #4 [pattern]\nother body')]);
+  assert.equal(block.lines[0], '#3 [note] ordinary | some body here');
+  assert.equal(block.total, 2);
 });
 
 test('the research_run line carries unchecked, canContinue and per-finding char counts', async () => {

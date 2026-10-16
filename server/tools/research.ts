@@ -370,13 +370,17 @@ export function extractId(kind: CandidateKind, text: string): string | undefined
   return undefined;
 }
 
-/** Every insight id the shaped knowledge list carried, in order, for hydration. */
+/** Every insight id the shaped knowledge list carried, in order, for hydration. Handles both the
+ * shaped `[id N]` form and the raw knowledge markdown `## #N [type]` heading form. */
 export function extractInsightIds(text: string, max = 3): number[] {
   const ids: number[] = [];
-  for (const match of text.matchAll(/\[id (\d+)\]/g)) {
-    const id = Number(match[1]);
-    if (Number.isSafeInteger(id) && !ids.includes(id)) ids.push(id);
+  const push = (value: string | undefined): void => {
+    const id = Number(value);
+    if (Number.isSafeInteger(id) && id > 0 && !ids.includes(id)) ids.push(id);
+  };
+  for (const line of text.split('\n')) {
     if (ids.length >= max) break;
+    push(line.match(/\[id (\d+)\]/)?.[1] ?? line.match(/^#{2,3}\s*#(\d+)\b/)?.[1]);
   }
   return ids;
 }
@@ -550,20 +554,25 @@ function itemLines(text: string): string[] {
   return text.split('\n').map(line => line.trim()).filter(line => line && !OMITTED_NOTE.test(line));
 }
 
-/** `### title (kind | date) [id N]` headings collapse to `#N title | body`, one per insight. */
+/** A knowledge heading, shaped `### title (kind | date) [id N]` or raw markdown `## #N [type] title`. */
+function knowledgeHeadingOf(line: string): { id: string | undefined; title: string } {
+  const id = line.match(/\[id (\d+)\]/)?.[1] ?? line.match(/^#{2,3}\s*#(\d+)\b/)?.[1];
+  const title = line.replace(/^#{2,3}\s*/, '').replace(/\[id \d+\]/gu, '').replace(/^#\d+\b\s*/, '').replace(/\s+/g, ' ').trim();
+  return { id, title };
+}
+
+/** Knowledge headings collapse to `#id title | body`, one per insight. */
 function insightItems(raw: readonly string[]): string[] {
   const items: string[] = [];
-  let heading: string | undefined;
+  let heading: { id: string | undefined; title: string } | undefined;
   let body: string[] = [];
   const flush = (): void => {
     if (heading === undefined) return;
-    const id = heading.match(/\[id (\d+)\]/)?.[1];
-    const title = heading.replace(/\[id \d+\]/u, '').replace(/\s+/g, ' ').trim();
-    items.push(`${id ? `#${id} ` : ''}${title}${body.length ? ` | ${clip(body.join(' '), RESEARCH.knowledgeBodyChars)}` : ''}`);
+    items.push(`${heading.id ? `#${heading.id} ` : ''}${heading.title}${body.length ? ` | ${clip(body.join(' '), RESEARCH.knowledgeBodyChars)}` : ''}`);
     heading = undefined; body = [];
   };
   for (const line of raw) {
-    if (line.startsWith('### ')) { flush(); heading = line.slice(4); } else body.push(line);
+    if (/^#{2,3}\s+/.test(line)) { flush(); heading = knowledgeHeadingOf(line); } else body.push(line);
   }
   flush();
   return items;

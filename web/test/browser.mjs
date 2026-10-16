@@ -283,7 +283,15 @@ try {
     await page.waitForSelector('.feed-activity', { timeout: 12000 });
     await shoot('call-in-progress.png');
 
-    // In-place update: a marker on the first row survives the poll that extends the streaming answer.
+    // The tool resolves into its result card, then the streaming answer extends in place: the first
+    // row keeps its node identity, so the poll patches instead of rebuilding the feed (spec 1.3 cause 3).
+    fixture.setLive(session('speaking', '2026-10-12T09:00:00Z', 4, [
+      { seq: 1, kind: 'inputTranscription', text: 'what is on my calendar' },
+      { seq: 2, kind: 'toolCall', tool: { name: 'search_calendar', status: 'pending' } },
+      { seq: 3, kind: 'outputTranscription', text: 'You have a review at 10.' },
+      { seq: 4, kind: 'toolResult', tool: { name: 'search_calendar', status: 'completed', markdown: 'review at 10:00' } },
+    ]));
+    await page.waitForFunction(() => document.querySelectorAll('#live-panel .live-tool-result').length === 1, null, { timeout: 12000 });
     await page.evaluate(() => { const first = document.querySelector('.live-turns')?.firstElementChild; if (first) first.dataset.fe1Mark = 'keep'; });
     fixture.setLive(session('speaking', '2026-10-12T09:00:00Z', 4, [
       { seq: 1, kind: 'inputTranscription', text: 'what is on my calendar' },
@@ -291,7 +299,7 @@ try {
       { seq: 3, kind: 'outputTranscription', text: 'You have a review at 10, and a standup at 2.' },
       { seq: 4, kind: 'toolResult', tool: { name: 'search_calendar', status: 'completed', markdown: 'review at 10:00' } },
     ]));
-    await page.waitForFunction(() => document.querySelector('.live-turns')?.textContent?.includes('standup at 2'), { timeout: 12000 });
+    await page.waitForFunction(() => document.querySelector('.live-turns')?.textContent?.includes('standup at 2'), null, { timeout: 12000 });
     assert.equal(await page.evaluate(() => document.querySelector('.live-turns')?.firstElementChild?.dataset.fe1Mark), 'keep', 'the feed updates in place, never rebuilt by the poll');
     await shoot('call-result-card.png');
 

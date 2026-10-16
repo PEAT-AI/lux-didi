@@ -1647,6 +1647,28 @@ test('loadLiveConfig keeps public prompt bytes and composes classified owner sec
   if (bad.status === 'error') assert.equal(bad.code, 'invalid_overlay');
 });
 
+test('loadLiveConfig accepts a base prompt past the 4096 identifier bound while it stays inside the live hard limit', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'didi-live-config-big-base-'));
+  const dataDir = join(root, 'data'); const configDir = join(dataDir, 'provider-config');
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  chmodSync(dataDir, 0o700); chmodSync(configDir, 0o700);
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const live = { schemaVersion: 1, enabled: true, provider: 'gemini', modelId: 'models/gemini-3.1-flash-live-preview', voice: 'Aoede', keyReference: 'gemini-primary',
+    dataClasses: ['ordinary', 'private', 'sensitive'], preferences: { dataClass: 'ordinary', language: 'en', register: 'plain', humor: 'dry', verbosity: 'brief' } };
+  writePrivate(configDir, 'live.json', `${JSON.stringify(live)}\n`);
+  // The frozen base character plus a long authored accent is a PROMPT, not a 4096-byte identifier: it is
+  // bounded by the live instruction hard limit, the shape P3's enlarged Naya character produces.
+  const overlay = { schemaVersion: 1 as const, text: 'SYNTHETIC local overlay persona', greeting: 'Synthetic greeting', accent: `Synthetic accent ${'A'.repeat(1200)}` };
+  writePrivate(dataDir, 'persona-overlay.json', JSON.stringify(overlay));
+  const status = loadLiveConfig({ configDir, ownerId: 'synthetic-owner' });
+  assert.equal(status.status, 'configured');
+  if (status.status === 'configured') {
+    const composed = composeLiveInstruction({ base: NAYA_LIVE_BASE, accent: overlay.accent, language: 'en' });
+    assert.ok(composed.text.length > 4_096 && composed.text.length <= LIVE_INSTRUCTION_HARD_LIMIT, `base prompt ${composed.text.length} chars`);
+    assert.equal(status.config.profile.prompt.text, composed.text);
+  }
+});
+
 test('configured owner system survives CREATE and attach open byte for byte before provider setup', async t => {
   const f = await fixture(t);
   const root = mkdtempSync(join(tmpdir(), 'didi-live-owner-reopen-'));

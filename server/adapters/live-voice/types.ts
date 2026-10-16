@@ -65,6 +65,12 @@ export interface LiveVoiceRequest {
   opening?: 'user_first' | 'model_first';
   tools?: FunctionDeclaration[];
   languageCode?: string;
+  /**
+   * The opening input used instead of the fresh-call greeting: a fresh setup with no handle sends it as the
+   * owner's first words (after any history), so a seeded recovery continues instead of greeting. Generated
+   * host text only, never owner content, and carried to the wire only.
+   */
+  openingText?: string;
   system: { text: string; dataClass: DataClass };
   history?: readonly { role: 'user' | 'model'; text: string; dataClass: DataClass }[];
   dataClasses: readonly DataClass[];
@@ -109,6 +115,8 @@ export type LiveVoiceEvent = { sequence: number } & (
   | { type: 'waitingForInput'; value: boolean }
   | { type: 'interactionStatus'; value: string }
   | { type: 'goAway'; timeLeftMs: number }
+  | { type: 'contextUsage'; totalTokens: number; promptTokens?: number; responseTokens?: number }
+  | { type: 'upstreamQueue'; bufferedBytes: number }
   | { type: 'resumptionHandle'; handle: string | null }
   | { type: 'outcome'; outcome: LiveVoiceOutcome }
 );

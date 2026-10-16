@@ -32,7 +32,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadLiveConfig, liveSetupLanguage } from '../config/live.js';
-import { NAYA_LIVE_BASE, NAYA_TOOLS, MEMORY_SECTION_CHAR_LIMIT, LIVE_INSTRUCTION_HARD_LIMIT, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
+import { NAYA_LIVE_BASE, NAYA_TOOLS, MEMORY_SECTION_CHAR_LIMIT, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_RECOVERY_PICKUP, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
 import { GeminiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
 import type { GeminiLiveVoiceOptions, LiveVoiceLimits, LiveVoicePort, LiveVoiceRequest } from '../adapters/live-voice/index.js';
 import { chatMigrations } from '../chat/index.js';
@@ -51,6 +51,13 @@ const MODEL = 'models/live-session-test';
 const NOW = 1_700_000_000_000;
 const context = (store: Store): LiveContext => ({ clientId: 'tester', auditId: 'audit-1', authorityEpoch: store.authorityEpoch });
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
+
+// Drive an injected scheduler until a condition holds: the owner schedules its backoff between
+// microtasks, so a single advance can otherwise run before the timer exists.
+async function advanceUntil(advance: (ms: number) => void, scheduler: DeadlineClock, condition: () => boolean): Promise<void> {
+  for (let i = 0; i < 200 && !condition(); i++) { advance(1000); scheduler.runDue(); await new Promise<void>(resolve => setImmediate(resolve)); }
+  assert.ok(condition(), 'the expected connection did not open');
+}
 const audio = () => ({ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from(pcm).toString('base64') } });
 
 /** Wrap a store so one exact SQL write fails, proving the failure path without breaking reads. */
@@ -1798,28 +1805,139 @@ async function continuity(output: AsyncIterator<import('../live/types.js').LiveO
   }
 }
 
-test('resumed setup policy rejection ends once with resume_failed', async t => {
-  const h = await harness(t);
+test('a resumed setup rejection falls back to one fresh seeded session with the journal history and pickup', async t => {
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, limits: { sessionMs: 600_000, idleMs: 600_000 } });
   const { session, attachment } = await attached(h, 'resume-policy');
-  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-policy-resumption-secret' }, goAway: { timeLeft: '10s' } });
+  const output = attachment.output[Symbol.asyncIterator]();
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-policy-resumption-secret' } });
+  h.f.send({ serverContent: { inputTranscription: { text: 'first turn', finished: true } } });
+  await transcription(output, 'first turn');
+  h.f.send({ serverContent: { outputTranscription: { text: 'first answer', finished: true } } });
+  await transcription(output, 'first answer');
+  h.f.send({ serverContent: { inputTranscription: { text: 'second turn', finished: true } } });
+  await transcription(output, 'second turn');
+  // The resumed socket fails before it is ready, so the owner falls back to one fresh seeded setup.
+  h.f.send({ goAway: { timeLeft: '10s' } });
   await h.f.frame(2); h.f.remoteClose('', 1008);
+  await advanceUntil(h.advance, scheduler, () => h.requests.length >= 3);
+  assert.equal(h.requests[1]!.resumptionHandle, 'synthetic-policy-resumption-secret', 'the first recovery reuses the handle');
+  const seeded = h.requests[2]!;
+  assert.equal(seeded.resumptionHandle, undefined, 'the fresh seeded setup carries no handle');
+  assert.equal(seeded.openingText, LIVE_RECOVERY_PICKUP, 'the pickup line replaces the fresh-call greeting');
+  assert.deepEqual(seeded.history!.map(turn => [turn.role, turn.text]), [['user', 'first turn'], ['model', 'first answer'], ['user', 'second turn']], 'the journal turns are in order');
+  assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(r => r.kind === 'terminal').length, 0, 'the call did not end');
+  h.owner.revoke(session.liveSessionId);
+  await attachment.done;
+});
+
+test('provider usage metadata is decoded and logged per turn, numbers only', async t => {
+  const captureDir = mkdtempSync(join(tmpdir(), 'didi-live-usage-'));
+  const stop = captureHostDiagnostics(new HostLog(captureDir));
+  t.after(() => { stop(); rmSync(captureDir, { recursive: true, force: true }); });
+  const h = await harness(t);
+  const { session, attachment } = await attached(h, 'usage-log');
+  const output = attachment.output[Symbol.asyncIterator]();
+  h.f.send({ usageMetadata: { promptTokenCount: 10, responseTokenCount: 5, totalTokenCount: 15 } });
+  h.f.send({ serverContent: { inputTranscription: { text: 'after usage', finished: true } } });
+  await transcription(output, 'after usage');
+  const lines = readFileSync(join(captureDir, 'logs', 'host.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line) as { event: string; totalTokens?: number; promptTokens?: number; responseTokens?: number });
+  const usage = lines.filter(line => line.event === 'live_context_usage');
+  assert.equal(usage.length, 1);
+  assert.deepEqual({ totalTokens: usage[0]!.totalTokens, promptTokens: usage[0]!.promptTokens, responseTokens: usage[0]!.responseTokens }, { totalTokens: 15, promptTokens: 10, responseTokens: 5 });
+  h.owner.revoke(session.liveSessionId);
+  await attachment.done;
+});
+
+test('dead air after a tool response earns one neutral continuation input', async t => {
+  const captureDir = mkdtempSync(join(tmpdir(), 'didi-live-nudge-'));
+  const stop = captureHostDiagnostics(new HostLog(captureDir));
+  t.after(() => { stop(); rmSync(captureDir, { recursive: true, force: true }); });
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, tools: true, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+  const { session, attachment } = await attached(h, 'dead-air');
+  h.f.send({ toolCall: { functionCalls: [{ id: 'n1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
+  await h.f.frame(h.f.frames.length + 1);
+  h.advance(8000); scheduler.runDue();
+  await h.f.frame(h.f.frames.length + 1);
+  const nudges = h.f.frames.filter(frame => (frame as { realtimeInput?: { text?: string } }).realtimeInput?.text === 'Continue.');
+  assert.equal(nudges.length, 1, 'exactly one neutral continuation input');
+  const lines = readFileSync(join(captureDir, 'logs', 'host.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line) as { event: string });
+  assert.equal(lines.filter(line => line.event === 'live_dead_air_nudge').length, 1);
+  h.owner.revoke(session.liveSessionId);
+  await attachment.done;
+});
+
+test('three consecutive failed recoveries end the call, each with its own new socket', async t => {
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, limits: { sessionMs: 600_000, idleMs: 600_000 } });
+  const { session, attachment } = await attached(h, 'recovery-bound');
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-bound-resumption-secret' } });
+  // Each recovery socket fails before it is ready; backoff is 0 s, then 2 s, then 5 s.
+  h.f.remoteClose('', 1011);
+  await h.f.frame(2); h.f.remoteClose('', 1011);
+  await advanceUntil(h.advance, scheduler, () => h.f.connections >= 3);
+  await h.f.frame(3); h.f.remoteClose('', 1011);
+  await advanceUntil(h.advance, scheduler, () => h.f.connections >= 4);
+  await h.f.frame(4); h.f.remoteClose('', 1011);
   assert.deepEqual((await attachment.done).terminal, { state: 'failed', code: 'resume_failed' });
+  assert.equal(h.f.connections, 4, 'three failed recoveries, each a new socket, then the call ends');
   assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(r => r.kind === 'terminal').length, 1);
 });
 
-test('third recoverable loss ends the same session without a fourth connection', async t => {
-  const h = await harness(t);
-  const { session, attachment } = await attached(h, 'resume-attempts');
+test('a healthy minute between drops resets the consecutive-failure count', async t => {
+  const captureDir = mkdtempSync(join(tmpdir(), 'didi-live-reset-'));
+  const stop = captureHostDiagnostics(new HostLog(captureDir));
+  t.after(() => { stop(); rmSync(captureDir, { recursive: true, force: true }); });
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, limits: { sessionMs: 600_000, idleMs: 600_000 } });
+  const { session, attachment } = await attached(h, 'recovery-reset');
   const output = attachment.output[Symbol.asyncIterator]();
-  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-attempt-resumption-secret' } });
-  for (let connection = 2; connection <= 3; connection++) {
-    h.f.send({ goAway: { timeLeft: '10s' } }); await h.f.frame(connection);
-    h.f.send({ setupComplete: {} }); await continuity(output, 'resumed');
-  }
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-reset-resumption-secret' } });
+  // Two failed recoveries, then a healthy minute: the next drop must count as attempt one again.
   h.f.remoteClose('', 1011);
-  assert.deepEqual((await attachment.done).terminal, { state: 'failed', code: 'resume_failed' });
-  assert.equal(h.f.connections, 3);
+  await h.f.frame(2); h.f.remoteClose('', 1011);
+  await advanceUntil(h.advance, scheduler, () => h.f.connections >= 3);
+  await h.f.frame(3); h.f.send({ setupComplete: {} }); await continuity(output, 'resumed');
+  h.advance(60_000);
+  h.f.remoteClose('', 1011);
+  await advanceUntil(h.advance, scheduler, () => h.f.connections >= 4);
+  await h.f.frame(4);
+  const lines = readFileSync(join(captureDir, 'logs', 'host.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line) as { event: string; attempt?: number });
+  const recoveries = lines.filter(line => line.event === 'live_recovery');
+  assert.ok(recoveries.length >= 3, 'the recovery attempts were logged');
+  assert.equal(recoveries.at(-1)!.attempt, 1, 'the healthy minute reset the consecutive-failure count');
+  h.owner.revoke(session.liveSessionId);
+  await attachment.done;
+});
+
+test('a provider session deadline continues in a new seeded window; the call ceiling ends the call', async t => {
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, limits: { sessionMs: 1000, callMaxMs: 1500, idleMs: 600_000 } });
+  const { session, attachment } = await attached(h, 'session-continue');
+  const output = attachment.output[Symbol.asyncIterator]();
+  h.f.send({ serverContent: { inputTranscription: { text: 'still here', finished: true } } });
+  await transcription(output, 'still here');
+  h.advance(1000); scheduler.runDue();
+  await h.f.frame(2); h.f.send({ setupComplete: {} });
+  assert.equal(h.requests[1]!.openingText, LIVE_RECOVERY_PICKUP, 'the session deadline continues through the fresh seeded path');
+  assert.deepEqual(h.requests[1]!.history!.map(turn => [turn.role, turn.text]), [['user', 'still here']]);
+  h.advance(500); scheduler.runDue();
+  assert.deepEqual((await attachment.done).terminal, { state: 'failed', code: 'session_timeout' }, 'only the call ceiling ends a call for time');
+  assert.equal(h.f.connections, 2);
   assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(r => r.kind === 'terminal').length, 1);
+});
+
+test('idle expiry still ends a call after a resume', async t => {
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, limits: { sessionMs: 600_000, idleMs: 1000 } });
+  const { attachment } = await attached(h, 'idle-after-resume');
+  const output = attachment.output[Symbol.asyncIterator]();
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-idle-resumption-secret' }, goAway: { timeLeft: '10s' } });
+  await h.f.frame(2); h.f.send({ setupComplete: {} }); await continuity(output, 'resumed');
+  h.advance(1000); scheduler.runDue();
+  assert.deepEqual((await attachment.done).terminal, { state: 'failed', code: 'idle_timeout' });
+  assert.equal(h.f.connections, 2);
 });
 
 test('a post-ready rejected frame resumes the same live session for a seventh turn', async t => {
@@ -1865,25 +1983,33 @@ test('revoked resumption handle is cleared before a recoverable loss', async t =
   await transcription(output, 'cleared');
   assert.equal(h.store.transaction(tx => tx.get('SELECT resumption_handle FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!.resumption_handle, null);
   h.f.remoteClose('', 1011);
-  assert.deepEqual((await attachment.done).terminal, { state: 'failed', code: 'resume_failed' });
-  assert.equal(h.f.connections, 1);
+  await h.f.frame(2);
+  const seeded = h.requests.at(-1)!;
+  assert.equal(seeded.resumptionHandle, undefined, 'a cleared handle forces a fresh seeded setup');
+  assert.equal(seeded.openingText, LIVE_RECOVERY_PICKUP);
+  assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(r => r.kind === 'terminal').length, 0, 'the call did not end');
+  h.owner.revoke(session.liveSessionId);
+  await attachment.done;
 });
 
-test('resumption cannot extend the original session budget or idle expiry', async t => {
-  for (const limit of ['sessionMs', 'idleMs'] as const) {
-    const scheduler = new DeadlineClock();
-    const h = await harness(t, { scheduler, limits: { sessionMs: 1000, idleMs: 1000, [limit]: 100 } });
-    const { attachment } = await attached(h, `resume-${limit}`);
-    const output = attachment.output[Symbol.asyncIterator]();
-    h.advance(60);
-    h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-budget-resumption-secret' }, goAway: { timeLeft: '10s' } });
-    await h.f.frame(2); h.f.send({ setupComplete: {} }); await continuity(output, 'resumed');
-    h.advance(40); scheduler.runDue();
-    const terminal = (await attachment.done).terminal!;
-    assert.equal(terminal.state, 'failed');
-    assert.equal('code' in terminal && terminal.code, limit === 'sessionMs' ? 'session_timeout' : 'idle_timeout');
-    assert.equal(h.f.connections, 2);
-  }
+test('a resume does not extend the original idle expiry', async t => {
+  const scheduler = new DeadlineClock();
+  // The session budget is large so only the idle timeout can end this call.
+  const h = await harness(t, { scheduler, limits: { sessionMs: 600_000, idleMs: 1000 } });
+  const { attachment } = await attached(h, 'resume-idle');
+  const output = attachment.output[Symbol.asyncIterator]();
+  h.advance(60);
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-budget-resumption-secret' }, goAway: { timeLeft: '10s' } });
+  await h.f.frame(2); h.f.send({ setupComplete: {} }); await continuity(output, 'resumed');
+  h.advance(1000); scheduler.runDue();
+  assert.deepEqual((await attachment.done).terminal, { state: 'failed', code: 'idle_timeout' });
+  assert.equal(h.f.connections, 2);
+});
+
+test('the live recovery path carries no model or provider id literal', () => {
+  const source = readFileSync(new URL('../../live/index.ts', import.meta.url), 'utf8');
+  assert.equal(/models\//.test(source), false, 'no model resource path');
+  assert.equal(/gemini-\d/.test(source), false, 'no model id literal');
 });
 
 async function transcription(output: AsyncIterator<import('../live/types.js').LiveOutputChunk>, text: string) {
@@ -2058,7 +2184,7 @@ test('a failed upstream audio write rebuilds the session once and logs one live_
   attachment.close(); await attachment.done;
 });
 
-test('two upstream rebuilds are the bound, then the call ends with resume_failed', async t => {
+test('successful upstream rebuilds do not accumulate toward the recovery bound', async t => {
   const sockets: unknown[] = [];
   let h!: Harness;
   h = await harness(t, { socketFactory: (url, config) => { const client = h.f.socketFactory(url, config); sockets.push(client); return client; } });
@@ -2067,7 +2193,7 @@ test('two upstream rebuilds are the bound, then the call ends with resume_failed
   h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: handle } });
   for (let i = 0; i < 100; i++) { if (h.store.transaction(tx => tx.get('SELECT resumption_handle FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!['resumption_handle'] === handle) break; await tick(); }
   const output = attachment.output[Symbol.asyncIterator]();
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < 3; attempt++) {
     attachment.sendAudio({ pcm }); await tick();
     failUpstream(sockets[attempt]);
     attachment.sendAudio({ pcm });
@@ -2076,11 +2202,9 @@ test('two upstream rebuilds are the bound, then the call ends with resume_failed
     h.f.send({ setupComplete: {} });
     await continuity(output, 'resumed');
   }
-  attachment.sendAudio({ pcm }); await tick();
-  failUpstream(sockets[2]);
-  attachment.sendAudio({ pcm });
-  assert.deepEqual((await attachment.done).terminal, { state: 'failed', code: 'resume_failed' });
-  assert.equal(h.f.connections, 3, 'initial session plus exactly two rebuilds');
+  assert.equal(h.f.connections, 4, 'three successful rebuilds, and the call is still alive');
+  h.owner.revoke(session.liveSessionId);
+  await attachment.done;
 });
 
 test('a pending tool call is never answered on the rebuilt socket', async t => {
@@ -2127,14 +2251,21 @@ test('active page does not carry past session metadata', async t => {
 });
 
 
-for (const status of [401, 403, 429]) test(`resumed HTTP upgrade refusal ${status} ends without another recovery attempt`, async t => {
-  const h = await harness(t);
+for (const status of [401, 403, 429]) test(`resumed HTTP upgrade refusal ${status} falls back to fresh then ends after three failures`, async t => {
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, limits: { idleMs: 600_000, sessionMs: 600_000 } });
   const { session, attachment } = await attached(h, `resume-refused-${status}`);
   h.f.refuseUpgrades(status);
   h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-refused-resumption-secret' }, goAway: { timeLeft: '10s' } });
+  // Drive the injected scheduler through the 0/2/5 s backoff until the bound settles.
+  let settled = false;
+  for (let i = 0; i < 60 && !settled; i++) {
+    h.advance(1000); scheduler.runDue(); await tick();
+    settled = h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.some(row => row.kind === 'terminal');
+  }
   assert.deepEqual((await attachment.done).terminal, { state: 'failed', code: 'resume_failed' });
-  assert.equal(h.f.attempts, 2, 'one original connection and one rejected resume, never a second recovery');
-  assert.equal(h.f.connections, 1);
+  assert.ok(h.f.attempts >= 3, 'a refused resume falls back to fresh and retries to the bound');
+  assert.equal(h.f.connections, 1, 'no refused upgrade ever connects');
   assert.equal(h.owner.listFragments({ liveSessionId: session.liveSessionId }).fragments.filter(row => row.kind === 'terminal').length, 1);
 });
 

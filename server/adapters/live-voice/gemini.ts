@@ -11,6 +11,16 @@ const ENDPOINT = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativ
 const FRESH_OPENING = 'Open the conversation now with one fresh, specific line.';
 // The model-first opening nudge is provider-neutral and accent-free: the accent lives in the system
 // instruction, the voice and the language in the setup frame, for every provider.
+// Upstream liveness limits for the send path (release 3g-c). The hard ceiling (half the send buffer held for
+// `upstreamStallMs`) is joined by two earlier signals and a websocket ping, so a stalled socket reaches the
+// owner recovery path before the provider session is lost.
+const STALL_QUEUE_BYTES = 128 * 1024; // queued bytes held above this for STALL_QUIET_MS counts as a stall
+const STALL_QUIET_MS = 2_000;         // no drain (or queue held) this long counts as a stall
+const PING_INTERVAL_MS = 5_000;        // websocket ping cadence
+const PING_MISSED_LIMIT = 2;           // missed pongs before the socket is declared stalled
+// Observability (release 3g-c): while the send queue is elevated, surface its depth about once a second.
+const QUEUE_LOG_BYTES = 64 * 1024;
+const QUEUE_LOG_INTERVAL_MS = 1_000;
 // Issue 1014: the one Live write tool. It is declared NON_BLOCKING and its reply is scheduled SILENT,
 // so a memory save never interrupts the turn; every read tool stays BLOCKING.
 const MEMORY_TOOL = 'remember_note';
@@ -151,9 +161,12 @@ export class GeminiLiveVoiceAdapter implements LiveVoicePort {
       realtimeInputConfig: { automaticActivityDetection: { ...liveVoiceActivityDefaults } },
       systemInstruction: { parts: [{ text: system }] }, inputAudioTranscription: {}, outputAudioTranscription: {},
     } });
-    const initial = request.resumptionHandle ? undefined : history.length
-      ? JSON.stringify({ clientContent: { turns: history, turnComplete: opening === 'model_first' } })
-      : opening === 'model_first' ? JSON.stringify({ realtimeInput: { text: FRESH_OPENING } }) : undefined;
+    const initial = request.resumptionHandle ? undefined
+      : request.openingText !== undefined
+        ? JSON.stringify({ clientContent: { turns: [...history, { role: 'user', parts: [{ text: request.openingText }] }], turnComplete: opening === 'model_first' } })
+      : history.length
+        ? JSON.stringify({ clientContent: { turns: history, turnComplete: opening === 'model_first' } })
+        : opening === 'model_first' ? JSON.stringify({ realtimeInput: { text: FRESH_OPENING } }) : undefined;
     if (Buffer.byteLength(setup) > settings.limits.maxOutgoingBytes || (initial && Buffer.byteLength(initial) > settings.limits.maxOutgoingBytes)) fail('outgoing_limit');
     if (!object(control) || !(control.signal instanceof AbortSignal) || !Number.isSafeInteger(control.deadlineMs)
       || control.deadlineMs <= 0 || control.deadlineMs - Date.now() > 2_147_483_647) fail('invalid_request');
@@ -175,6 +188,13 @@ class Session implements LiveVoiceSession {
   private readonly startedAt = Date.now();
   private upstreamDrop: LiveVoiceUpstreamDrop | undefined;
   private stalledSince: number | undefined;
+  private queueStalledSince: number | undefined;
+  private lastQueuedBytes: number | undefined;
+  private lastDrainAt = Date.now();
+  private awaitingPong = false;
+  private missedPongs = 0;
+  private pingTimer: ReturnType<typeof setTimeout> | undefined;
+  private lastQueueLogAt: number | undefined;
   private sequence = 0;
   private secret = '';
   private queue: { event: LiveVoiceEvent; bytes: number }[] = [];
@@ -259,6 +279,8 @@ class Session implements LiveVoiceSession {
       socket.on('error', this.onError); socket.on('close', this.onClose);
       socket.on('message', this.onMessage);
       socket.on('unexpected-response', this.onUnexpectedResponse);
+      socket.on('pong', this.onPong);
+      this.schedulePing(socket);
       socket.once('open', this.onOpen = () => { if (this.checkpoint()) this.write(setup); });
       // The trusted seam/resolver can invalidate authority synchronously too.
       if (!this.checkpoint()) this.shutdownSocket();
@@ -288,12 +310,48 @@ class Session implements LiveVoiceSession {
   }
   private watchUpstreamStall(socket: WebSocket): void {
     if (this.terminal || socket !== this.socket) return;
-    if (socket.bufferedAmount <= Math.max(1, Math.floor(this.settings.limits.maxBufferedBytes / 2))) { this.stalledSince = undefined; return; }
     const now = Date.now();
-    if (this.stalledSince === undefined) { this.stalledSince = now; return; }
+    const buffered = socket.bufferedAmount;
+    const half = Math.max(1, Math.floor(this.settings.limits.maxBufferedBytes / 2));
     // Deferred so a detected stall never throws out of the audio send that observed it.
-    if (now - this.stalledSince >= this.settings.limits.upstreamStallMs) queueMicrotask(() => { if (socket === this.socket) this.dropUpstream('stalled', socket); });
+    const drop = (errorKind: string) => queueMicrotask(() => { if (socket === this.socket) this.dropUpstream(errorKind, socket); });
+    // Hard ceiling: the queue held past half the send-buffer budget for upstreamStallMs (existing rule).
+    if (buffered > half) {
+      if (this.stalledSince === undefined) this.stalledSince = now;
+      else if (now - this.stalledSince >= this.settings.limits.upstreamStallMs) { drop('stalled'); return; }
+    } else this.stalledSince = undefined;
+    // Earlier signal: queued bytes held above 128 KB for STALL_QUIET_MS.
+    if (buffered > STALL_QUEUE_BYTES) {
+      if (this.queueStalledSince === undefined) this.queueStalledSince = now;
+      else if (now - this.queueStalledSince >= STALL_QUIET_MS) { drop('queue_stalled'); return; }
+    } else this.queueStalledSince = undefined;
+    // Earlier signal: the queue never drains for STALL_QUIET_MS while bytes are still owed.
+    if (this.lastQueuedBytes === undefined || buffered < this.lastQueuedBytes) { this.lastQueuedBytes = buffered; this.lastDrainAt = now; }
+    else this.lastQueuedBytes = buffered;
+    if (buffered > 0 && now - this.lastDrainAt >= STALL_QUIET_MS) { drop('no_drain'); return; }
+    // Observability: report an elevated queue depth about once a second while it is above 64 KB.
+    if (buffered > QUEUE_LOG_BYTES && (this.lastQueueLogAt === undefined || now - this.lastQueueLogAt >= QUEUE_LOG_INTERVAL_MS)) {
+      this.lastQueueLogAt = now;
+      this.emit({ type: 'upstreamQueue', bufferedBytes: buffered });
+    }
   }
+  // Websocket ping liveness: ping every PING_INTERVAL_MS, and two missed pongs declare the socket stalled.
+  private schedulePing(socket: WebSocket): void {
+    this.pingTimer = setTimeout(() => {
+      this.pingTimer = undefined;
+      if (this.terminal || socket !== this.socket) return;
+      if (socket.readyState !== WebSocket.OPEN) return;
+      try { socket.ping(); } catch { return; }
+      if (this.awaitingPong) {
+        this.missedPongs += 1;
+        if (this.missedPongs >= PING_MISSED_LIMIT) { this.dropUpstream('no_pong', socket); return; }
+      }
+      this.awaitingPong = true;
+      this.schedulePing(socket);
+    }, PING_INTERVAL_MS);
+    this.timers.add(this.pingTimer);
+  }
+  private readonly onPong = () => { this.awaitingPong = false; this.missedPongs = 0; };
   private readonly onError = (error: Error) => { this.socketFailure(error); };
   private readonly onUnexpectedResponse = (_request: ClientRequest, response: IncomingMessage) => {
     // Classify the HTTP refusal before ws can replace it with an untyped error/1006.
@@ -380,8 +438,17 @@ class Session implements LiveVoiceSession {
         events.push({ type: 'goAway', timeLeftMs: Number(away.timeLeft.slice(0, -1)) * 1000 });
         this.timer(Math.max(1, Math.ceil(Number(away.timeLeft.slice(0, -1)) * 1000)), 'go_away');
       }
+      if ('usageMetadata' in message) {
+        const usage = message.usageMetadata;
+        if (object(usage) && typeof usage.totalTokenCount === 'number' && Number.isSafeInteger(usage.totalTokenCount) && usage.totalTokenCount >= 0) {
+          const count = (value: unknown): number | undefined => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+          const promptTokens = count(usage.promptTokenCount), responseTokens = count(usage.responseTokenCount);
+          events.push({ type: 'contextUsage', totalTokens: usage.totalTokenCount,
+            ...(promptTokens !== undefined ? { promptTokens } : {}), ...(responseTokens !== undefined ? { responseTokens } : {}) });
+        }
+      }
       for (const event of events) { if (!this.checkpoint() || !this.emit(event)) return; }
-      this.touch(events.some(event => event.type !== 'ready' && event.type !== 'resumptionHandle' && event.type !== 'goAway'));
+      this.touch(events.some(event => event.type !== 'ready' && event.type !== 'resumptionHandle' && event.type !== 'goAway' && event.type !== 'contextUsage'));
 
     } catch (error) {
       const code = error instanceof LiveVoiceError ? error.code : 'protocol_error';

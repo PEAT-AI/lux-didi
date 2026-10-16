@@ -47,7 +47,7 @@ Input is nonempty even-byte PCM16 little-endian 16 kHz. Output requires `audio/p
 
 ## Events and truthful boundaries
 
-One session spans multiple turns. Events have a monotonically increasing adapter-owned sequence, not provider IDs or durable turn IDs. Supported events: `ready`, `audio`, `inputTranscription`, `outputTranscription`, `modelText`, `generationComplete`, `turnComplete`, `interrupted`, `waitingForInput`, `interactionStatus`, `goAway`, `resumptionAvailability`, and one terminal `outcome`. Audio events expose an owned Uint8Array and the validated output MIME type. Text transcription events preserve optional provider `finished`; this is not a heard, committed or recallable flag. `modelText.thought` preserves thought versus other model text; neither is labeled a spoken answer.
+One session spans multiple turns. Events have a monotonically increasing adapter-owned sequence, not provider IDs or durable turn IDs. Supported events: `ready`, `audio`, `inputTranscription`, `outputTranscription`, `modelText`, `generationComplete`, `turnComplete`, `interrupted`, `waitingForInput`, `interactionStatus`, `goAway`, `contextUsage`, `upstreamQueue`, `resumptionHandle`, and one terminal `outcome`. `contextUsage` is provider-neutral token use decoded from the provider's usage metadata (no behaviour reads it yet); `upstreamQueue` is the elevated send-queue depth. Audio events expose an owned Uint8Array and the validated output MIME type. Text transcription events preserve optional provider `finished`; this is not a heard, committed or recallable flag. `modelText.thought` preserves thought versus other model text; neither is labeled a spoken answer.
 
 Combined serverContent fields are not discarded. Deterministic projection within one envelope is model parts, input transcription, output transcription, interruption, generation boundary, turn boundary, then activity facts. Ordering across envelopes follows actual ws delivery. Input transcription can arrive after output completion and remains independent evidence; durable association belongs to later orchestration. Interrupted output is followed by turnComplete without generationComplete. Generated audio does not prove playback.
 
@@ -131,6 +131,14 @@ rejection (including 1008), authentication, quota and local session, idle or
 deadline expiry stay final. Limits supplied by the owner override connection timers,
 including the remaining session/idle budget on resumed connections. Recovery
 attempts and durable continuity belong only to the live owner.
+
+The adapter also watches its own send path for a dead upstream and hands a
+recoverable `transport_error` to the owner before the provider session is lost. A
+socket whose queued bytes stay above 128 KB for 2 s, or that does not drain at all
+for 2 s, is stalled, in addition to the existing hard ceiling (half the send buffer
+held for `upstreamStallMs`). The adapter sends a websocket ping every 5 s and two
+missed pongs declare the socket stalled. While the queue is above 64 KB its depth is
+surfaced about once a second for logging.
 
 
 At the socket boundary, any non-101 HTTP upgrade response is a final

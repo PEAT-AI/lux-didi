@@ -169,6 +169,45 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (value.rebuilt !== true && value.rebuilt !== false) return;
     return { event: 'live_upstream_drop', errorKind: value.errorKind, closeCode: value.closeCode, bufferedAmount: value.bufferedAmount, writesFailed: value.writesFailed, sessionMs: value.sessionMs, rebuilt: value.rebuilt };
   }
+  if (value.event === 'live_recovery') {
+    // Closed shape: one metadata-only record per recovery attempt. Never audio, text or a provider payload;
+    // seedTurns/seedChars are the rebuilt journal seed's size, path is the transport chosen.
+    if (Object.keys(value).sort().join(',') !== ['event', 'path', 'attempt', 'code', 'closeCode', 'reason', 'seedTurns', 'seedChars'].sort().join(',')) return;
+    if (!isSafeMember(value.path, ['resume', 'fresh_seeded'])) return;
+    if (!isSafeCount(value.attempt) || Number(value.attempt) < 1) return;
+    if (!isSafeToken(value.code)) return;
+    if (!(value.closeCode === null || (Number.isSafeInteger(value.closeCode) && Number(value.closeCode) >= 0 && Number(value.closeCode) <= 65535))) return;
+    if (!(value.reason === null || isSafeToken(value.reason))) return;
+    if (!isSafeCount(value.seedTurns) || !isSafeCount(value.seedChars)) return;
+    return { event: 'live_recovery', path: value.path, attempt: value.attempt, code: value.code, closeCode: value.closeCode, reason: value.reason, seedTurns: value.seedTurns, seedChars: value.seedChars };
+  }
+  if (value.event === 'live_go_away') {
+    // Closed shape: the draining deadline the provider announced, in milliseconds.
+    if (Object.keys(value).sort().join(',') !== ['event', 'timeLeftMs'].sort().join(',')) return;
+    if (!isSafeCount(value.timeLeftMs)) return;
+    return { event: 'live_go_away', timeLeftMs: value.timeLeftMs };
+  }
+  if (value.event === 'live_upstream_queue') {
+    // Closed shape: the upstream send queue depth while it is elevated, sampled about once a second.
+    if (Object.keys(value).sort().join(',') !== ['event', 'bufferedBytes'].sort().join(',')) return;
+    if (!isSafeCount(value.bufferedBytes)) return;
+    return { event: 'live_upstream_queue', bufferedBytes: value.bufferedBytes };
+  }
+  if (value.event === 'live_context_usage') {
+    // Closed shape: provider-neutral token counts only; no behaviour reads them yet (release 3g-c).
+    const keys = Object.keys(value).sort().join(',');
+    if (keys !== ['event', 'totalTokens'].sort().join(',') && keys !== ['event', 'totalTokens', 'promptTokens'].sort().join(',') && keys !== ['event', 'totalTokens', 'promptTokens', 'responseTokens'].sort().join(',') && keys !== ['event', 'totalTokens', 'responseTokens'].sort().join(',')) return;
+    if (!isSafeCount(value.totalTokens)) return;
+    if (!(value.promptTokens === undefined || isSafeCount(value.promptTokens))) return;
+    if (!(value.responseTokens === undefined || isSafeCount(value.responseTokens))) return;
+    return { event: 'live_context_usage', totalTokens: value.totalTokens, ...(value.promptTokens !== undefined ? { promptTokens: value.promptTokens } : {}), ...(value.responseTokens !== undefined ? { responseTokens: value.responseTokens } : {}) };
+  }
+  if (value.event === 'live_dead_air_nudge') {
+    // Closed shape: the elapsed dead air before a single neutral continuation input was sent.
+    if (Object.keys(value).sort().join(',') !== ['event', 'elapsedMs'].sort().join(',')) return;
+    if (!isSafeCount(value.elapsedMs)) return;
+    return { event: 'live_dead_air_nudge', elapsedMs: value.elapsedMs };
+  }
   if (value.event === 'live_read_cache') {
     // Closed shape: the cached tool name and cache-hit flag only, never a request or result body.
     if (Object.keys(value).sort().join(',') !== ['event', 'tool', 'cached'].sort().join(',')) return;

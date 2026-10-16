@@ -129,10 +129,6 @@
 .brand-mini{display:flex;align-items:center;gap:8px;color:var(--text);font-weight:600;text-decoration:none}
 .icon-button{width:32px;height:32px;border-radius:8px;border:1px solid var(--border);background:var(--surface-2);color:var(--text);cursor:pointer;font:inherit}
 .connection{margin-left:auto;display:flex;align-items:center;gap:8px}
-.lane-switch{display:none}
-[data-narrow="true"] .lane-switch{display:inline-flex;gap:4px;margin-left:12px;padding:3px;border-radius:10px;background:var(--surface-2);border:1px solid var(--border)}
-.seg{border:0;background:transparent;color:var(--text-secondary);border-radius:8px;padding:5px 12px;cursor:pointer;font:inherit}
-.seg.active{background:var(--surface-3);color:var(--text)}
 .live-pill{display:flex;align-items:center;gap:8px;padding:4px 6px 4px 12px;border-radius:999px;border:1px solid var(--accent);background:var(--accent-soft);color:var(--text);font-size:.82rem}
 .live-dot{width:8px;height:8px;border-radius:50%;background:var(--accent);animation:live-pulse 1.4s ease-in-out infinite}
 @keyframes live-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.7)}}
@@ -140,22 +136,30 @@
 .pill-button{border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:999px;padding:4px 10px;cursor:pointer;font:inherit;font-size:.8rem}
 .pill-button.danger{border-color:var(--danger);color:var(--danger-text)}
 .lane-row{display:flex;flex:1;min-height:0}
-.rail{width:80px;flex-shrink:0;background:var(--surface-2);border-right:1px solid var(--border);display:flex;flex-direction:column;gap:6px;padding:10px 8px;overflow:hidden}
-[data-rail="expanded"] .rail{width:220px}
+.panel-left{flex:0 0 var(--panel-left-w,240px);min-width:0;background:var(--surface-2);border-right:1px solid var(--border);display:flex;flex-direction:column;gap:6px;padding:10px 8px;overflow:hidden}
 .rail-item{display:flex;align-items:center;gap:12px;padding:10px;border-radius:10px;border:0;background:transparent;color:var(--text-secondary);cursor:pointer;font:inherit;text-align:left}
 .rail-item:hover{background:var(--surface-3);color:var(--text)}
 .rail-item[aria-expanded="true"]{background:var(--accent-soft);color:var(--text)}
 .rail-glyph{font-size:15px;width:20px;text-align:center;flex-shrink:0}
-.rail-label{display:none;white-space:nowrap}
-[data-rail="expanded"] .rail-label{display:inline}
+.rail-label{white-space:nowrap}
 .lanes{flex:1;min-width:0;display:flex;position:relative;overflow:hidden;padding:0}
-.lane{display:flex;min-width:0;flex:1 1 0;border-right:1px solid var(--border);position:relative}
-.lane[hidden]{display:none}
-.lane[data-state="collapsed"]{flex:0 0 56px}
-.lane[data-state="collapsed"] .lane-inner{display:none}
+.lane{min-width:0;position:relative}
+.lane-voice{flex:1 1 auto;display:flex;flex-direction:column;min-width:0}
+/* A side panel has exactly two states (#282): open at its readable width, or collapsed at zero width and
+   invisible. The transition is the 150 ms expand/collapse; prefers-reduced-motion turns it off. */
+.panel{opacity:1;transition:flex-basis .15s ease,opacity .15s ease}
+.panel[data-state="collapsed"]{flex-basis:0;min-width:0;opacity:0;pointer-events:none;overflow:hidden;padding:0;border-width:0}
+.panel-left[data-state="open"]{min-width:200px}
+.lane-chat{flex:0 0 var(--panel-right-w,360px);display:flex;flex-direction:column;border-left:1px solid var(--border)}
+.lane-chat[data-state="open"]{min-width:320px}
+.divider{flex:0 0 6px;align-self:stretch;cursor:col-resize;position:relative;z-index:6;background:transparent}
+.divider::after{content:"";position:absolute;top:0;bottom:0;left:50%;width:2px;transform:translateX(-1px);background:var(--border)}
+.divider:hover::after,.divider:focus-visible::after{background:var(--accent)}
+.panel-toggle{width:32px;height:32px;flex-shrink:0;border-radius:8px;border:1px solid var(--border);background:var(--surface-2);color:var(--text);cursor:pointer;font:inherit}
+.panel-toggle[aria-expanded="true"]{background:var(--accent-soft)}
+.panel-toggle:hover{background:var(--surface-3)}
+@media (prefers-reduced-motion: reduce){.panel{transition:none}}
 .lane-inner{flex:1;min-width:0;min-height:0;overflow-y:auto;display:flex;flex-direction:column}
-.lane-toggle{position:absolute;top:10px;right:8px;z-index:6;width:26px;height:26px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text-secondary);cursor:pointer;font:inherit;line-height:1}
-.lane-toggle[aria-disabled="true"]{opacity:.45;cursor:not-allowed}
 .voice-head{position:sticky;top:0;z-index:4;display:flex;align-items:center;gap:12px;min-height:96px;padding:10px 42px 10px 16px;background:var(--bg);border-bottom:1px solid var(--border)}
 .voice-orb-mini{width:56px;height:56px;border-radius:50%;flex-shrink:0;background:radial-gradient(circle at 50% 40%,var(--orb-core),var(--orb-edge));box-shadow:0 0 0 1px var(--border),0 0 22px var(--glow)}
 .voice-orb-mini[data-state="LIVE"]{box-shadow:0 0 0 1px var(--accent),0 0 30px var(--glow)}
@@ -192,7 +196,6 @@
 [data-narrow="true"] .sheet{top:56px;width:100%}
 [data-narrow="true"] .app-header{flex-wrap:wrap;height:auto;min-height:56px;padding:6px 10px}
 [data-narrow="true"] .brand-mini{display:none}
-[data-narrow="true"] .lane-switch{margin-left:0}
 /* Chat lane: header-less body with a docked composer; only the entries scroll. */
 .lane-chat .lane-inner{overflow:hidden}
 .chat-fill{height:100%;min-height:0;display:flex;flex-direction:column}
@@ -212,9 +215,6 @@ h3{font-size:14px}
 .voice-state{font-size:16px}
 .lane-head{display:flex;align-items:center;gap:12px;height:96px;padding:0 12px 0 24px;border-bottom:1px solid var(--border);position:sticky;top:0;z-index:4;background:var(--bg)}
 .lane-head .lane-title{margin:0;font-size:14px;font-weight:600;color:var(--text)}
-.lane-toggle{position:static;width:28px;height:28px;flex-shrink:0;margin-left:auto;border:0;background:transparent;color:var(--text-secondary);border-radius:8px;cursor:pointer;font:inherit;line-height:1}
-.lane-toggle:hover{background:var(--surface-2);color:var(--text)}
-.lane-toggle[aria-disabled="true"]{opacity:.45;cursor:not-allowed}
 .voice-orb,.voice-orb canvas{width:40px;height:40px}
 .voice-orb canvas{display:block}
 .voice-status{min-width:0}
@@ -235,10 +235,6 @@ h3{font-size:14px}
 [data-narrow="true"] .lane-row{display:flex;min-height:0}
 [data-narrow="true"] .lanes{flex-direction:row;overflow:hidden}
 [data-narrow="true"] .lane{flex:1 1 0;border-right:0}
-[data-narrow="true"] .lane-voice{display:none}
-[data-narrow="true"] .lane-chat{display:none}
-[data-narrow="true"][data-segment="voice"] .lane-voice{display:flex}
-[data-narrow="true"][data-segment="chat"] .lane-chat{display:flex}
 [data-narrow="true"] .app-header{flex-wrap:wrap;height:auto;min-height:56px;padding:6px 10px}
 [data-narrow="true"] .brand-mini{display:none}
 [data-narrow="true"] .lane-switch{margin-left:0}
@@ -343,7 +339,6 @@ html,body{height:100%;overflow:hidden}
 /* The orb stage holds the top third of the voice lane and never scrolls. */
 #lane-voice .lane-inner{padding:0;height:100%;min-height:0;overflow:visible;display:flex;flex-direction:column}
 #lane-voice .lane-head{position:absolute;top:10px;right:10px;left:auto;height:auto;min-height:0;padding:0;border:0;background:none;z-index:6;gap:6px}
-#lane-voice .lane-toggle{position:static;top:auto;right:auto;margin:0}
 .orb-stage{flex:0 0 auto;height:clamp(240px,33%,380px);min-height:240px;max-height:380px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:0 24px;position:relative;max-width:none;border:0;border-radius:0;box-shadow:none;background:none}
 .orb-holder{position:relative;display:grid;place-items:center;height:clamp(120px,55%,200px);max-height:200px;aspect-ratio:1;flex:0 0 auto}
 .orb-holder canvas{width:100%;height:100%;margin:0;display:block}

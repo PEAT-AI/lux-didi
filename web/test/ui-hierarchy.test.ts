@@ -24,7 +24,7 @@ test('the Voice lane is the orb stage above its transcript, and the old header r
 test('the Voice lane controls are small icon buttons in the stage top right, not a header row', () => {
   assert.match(head, /id="new-conversation"/);
   assert.doesNotMatch(head, /voice-orb|voice-time|voice-status|voice-state/);
-  assert.match(source, /lane-toggle/, 'the collapse control is still rendered by the lane shell');
+  assert.match(source, /panel-toggle/, 'the always-visible panel control is rendered in the header');
   assert.match(source, /id="transcript-jump"/);
 });
 

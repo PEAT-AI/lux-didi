@@ -6,7 +6,7 @@ import { Orb, type VoiceState } from './orb';
 import { ApiError, request, pair, demoMode, onAuthorityChanged, authorityVersion, assertAuthority, restoreSession, logout, fetchLive } from './api';
 import { liveMarkup, liveSegments, liveLabel, liveVoiceState, liveDelay, pollLiveView, liveActivity, activityMarkup, liveTranscript, LiveMachine, LIVE_CONSENT, pillVisible, liveErrorText, startAvailable, stopAvailable, type LivePollState } from './live-view';
 import { attachPin } from './autoscroll.ts';
-import { defaultLayout, isNarrow, toggleRail, toggleLane, selectSegment, openSheet, closeSheet, withViewport, collapseControl, focusTargetAfterCollapse, type LaneId, type RouteId } from './layout';
+import { dragPanel, isNarrow, loadLayout, openSheet, closeSheet, PANEL_IDS, panelControl, panelLabel, panelOpen, panelWidth, saveLayout, shortcutPanel, togglePanel, withViewport, type LayoutState, type PanelId, type RouteId } from './layout';
 import { installNativeBridge, type Bridge, type NativeLiveState } from './native-bridge';
 import { connectionsMarkup } from './connector-status';
 import { settingsMarkup } from './settings-view';
@@ -16,7 +16,7 @@ import type { Session, Entry, Commitment, CommitmentDetail, Plan, Recall, Status
 
 type Tab = 'Conversation' | 'Today' | 'Memory' | 'Settings';
 // --- Three-lane layout, native bridge and the web Live state machine (#255) ---
-let layout = defaultLayout(isNarrow(typeof window !== 'undefined' ? window.innerWidth : 1440));
+let layout: LayoutState = loadLayout(themeStorage(), isNarrow(typeof window !== 'undefined' ? window.innerWidth : 1440));
 let nativeBridge: Bridge | undefined;
 let nativeFake: { requestStart(): void; requestStop(): void } | undefined;
 let liveMachine = new LiveMachine(() => {});
@@ -195,7 +195,7 @@ const RAIL_ICONS: Record<RouteId, string> = {
 function railMarkup() {
   const items: [RouteId, string][] = [['today', 'Today'], ['memory', 'Memory'], ['settings', 'Settings'], ['diagnostics', 'Diagnostics']];
   const tabName: Partial<Record<RouteId, string>> = { today: 'Today', memory: 'Memory', settings: 'Settings' };
-  return `<nav class="rail" id="rail" aria-label="Program menu" data-rail="${layout.rail}">${items.map(([id, label]) => `<button class="rail-item" data-route="${id}"${tabName[id] ? ` data-tab="${tabName[id]}"` : ''} aria-expanded="${layout.sheet === id}" aria-controls="sheet" aria-label="${label}" title="${label}"><span class="rail-icon" aria-hidden="true">${RAIL_ICONS[id]}</span><span class="rail-label">${label}</span></button>`).join('')}</nav>`;
+  return `<nav class="rail panel panel-left" id="panel-left" aria-label="Program menu" data-state="${layout.left}">${items.map(([id, label]) => `<button class="rail-item" data-route="${id}"${tabName[id] ? ` data-tab="${tabName[id]}"` : ''} aria-expanded="${layout.sheet === id}" aria-controls="sheet" aria-label="${label}" title="${label}"><span class="rail-icon" aria-hidden="true">${RAIL_ICONS[id]}</span><span class="rail-label">${label}</span></button>`).join('')}</nav>`;
 }
 function sheetMarkup() {
   if (!layout.sheet) return '';
@@ -203,8 +203,18 @@ function sheetMarkup() {
   const title = layout.sheet.charAt(0).toUpperCase() + layout.sheet.slice(1);
   return `<div class="sheet-scrim" data-close-sheet></div><aside class="sheet" id="sheet" role="dialog" aria-modal="true" aria-label="${title}"><header class="sheet-head"><h2>${title}</h2><button class="icon-button" id="sheet-close" aria-label="Close ${title}">\u2715</button></header><div class="sheet-body">${content}</div></aside>`;
 }
-function laneSwitcherMarkup() {
-  return `<div class="lane-switch" role="tablist" aria-label="Voice or Chat">${(['voice', 'chat'] as LaneId[]).map(id => `<button role="tab" data-segment="${id}" aria-selected="${layout.segment === id}" class="seg${layout.segment === id ? ' active' : ''}">${id === 'voice' ? 'Voice' : 'Chat'}</button>`).join('')}</div>`;
+// The two always-visible panel controls, one fixed slot per panel in the header, so the same control
+// opens and closes its panel in every state (#282).
+function panelControlsMarkup() {
+  const chatIcon = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M4 5.5h16v11H9l-5 4z"/></svg>';
+  return PANEL_IDS.map(id => {
+    const control = panelControl(layout, id);
+    const glyph = id === 'left' ? '\u2630' : chatIcon;
+    return `<button class="panel-toggle" id="panel-toggle-${id}" data-panel="${id}" aria-expanded="${control['aria-expanded']}" aria-controls="${control['aria-controls']}" aria-label="${control.label}" title="${control.title}">${glyph}</button>`;
+  }).join('');
+}
+function dividerMarkup(id: PanelId) {
+  return `<div class="divider" data-divider="${id}" role="separator" aria-orientation="vertical" aria-label="Resize ${panelLabel(id)}" tabindex="0"></div>`;
 }
 function livePillMarkup() {
   const view = liveMachine.view;
@@ -217,18 +227,22 @@ function consentPopoverMarkup() {
   if (!view.consentOpen) return '';
   return `<div class="consent-scrim"></div><section class="consent-popover" role="dialog" aria-modal="true" aria-label="${e(LIVE_CONSENT.title)}"><h2>${e(LIVE_CONSENT.title)}</h2><p>${e(LIVE_CONSENT.body)}</p><div class="consent-actions"><button id="consent-dismiss" class="quiet">${e(LIVE_CONSENT.dismiss)}</button><button id="consent-allow" class="primary">${e(LIVE_CONSENT.allow)}</button></div></section>`;
 }
-// The stage controls: the new-session "+" and, from the lane shell, the lane toggle (V3 item 1).
+// The stage controls: the new-session "+" in the voice stage top right.
 function voiceHeadMarkup() {
   return '<button id="new-conversation" class="icon-button" aria-label="New conversation" title="New conversation"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>';
 }
 function chatHeadMarkup() {
   return `<p class="lane-title">Chat</p>`;
 }
-function laneShell(id: LaneId, label: string, headerHtml: string, bodyHtml: string) {
+// The centre voice view is always open. The two side panels are #panel-left (program menu) and
+// #panel-right (chat); a collapsed panel keeps its place in the DOM but is zero-width and invisible.
+function voiceViewMarkup() {
+  return `<section class="lane lane-voice" id="lane-voice" role="region" aria-label="Voice"><header class="lane-head">${voiceHeadMarkup()}</header><div class="lane-inner" id="lane-voice-primary" tabindex="-1">${voiceBodyMarkup()}</div></section>`;
+}
+function panelMarkup(id: PanelId, label: string, headerHtml: string, bodyHtml: string) {
   const state = layout[id];
-  const control = collapseControl(layout, id);
-  const verb = state === 'open' ? 'Hide' : 'Show';
-  return `<section class="lane lane-${id}" id="lane-${id}" data-state="${state}" role="region" aria-label="${label}"><header class="lane-head">${headerHtml}<button class="lane-toggle" data-lane="${id}" aria-expanded="${control['aria-expanded']}" aria-controls="${control['aria-controls']}"${control['aria-disabled'] ? ' aria-disabled="true"' : ''} title="${verb} ${label.toLowerCase()}" aria-label="${verb} ${label.toLowerCase()}">${state === 'open' ? '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16M15 9.5l-2.5 2.5 2.5 2.5"/></svg>' : '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16M12.5 9.5L15 12l-2.5 2.5"/></svg>'}</button></header><div class="lane-inner" id="lane-${id}-primary" tabindex="-1">${bodyHtml}</div></section>`;
+  const cls = id === 'right' ? 'lane-chat' : 'lane-left';
+  return `<section class="lane ${cls} panel panel-${id}" id="panel-${id}" data-state="${state}" role="region" aria-label="${label}"><header class="lane-head">${headerHtml}</header><div class="lane-inner" id="panel-${id}-primary" tabindex="-1">${bodyHtml}</div></section>`;
 }
 const scrollAnchor = new WeakMap<HTMLElement, boolean>();
 const scrollObserver = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(entries => { for (const entry of entries) { const el = entry.target as HTMLElement; if (scrollAnchor.get(el)) el.scrollTop = el.scrollHeight; } }) : undefined;
@@ -250,7 +264,7 @@ function render() {
   const focus = document.activeElement as HTMLInputElement | HTMLTextAreaElement | null;
   const focusId = focus?.id; const selection = focus && (focus.tagName === 'TEXTAREA' || ['text','search','password'].includes(focus.type)) ? [focus.selectionStart,focus.selectionEnd] : null;
   orb?.destroy();orb=undefined;transcriptPin?.stop();transcriptPin=undefined;
-  root.innerHTML = `<a id="skip-to-content" class="skip" href="#main">Skip to content</a><div class="app-shell" data-rail="${layout.rail}" data-narrow="${layout.narrow}" data-segment="${layout.segment}" data-sheet="${layout.sheet ?? ''}"><header class="app-header">${pairingRequired ? '' : `<button id="rail-toggle" class="icon-button" aria-expanded="${layout.rail==='expanded'}" aria-controls="rail" aria-label="Program menu">☰</button>`}<a class="brand-mini" href="/" aria-label="Didi home"><img src="/icon.svg" alt="" width="22" height="22"><span>didi<span class="brand-dot">.</span></span></a>${pairingRequired ? '' : laneSwitcherMarkup()}${livePillMarkup()}<div class="connection"><span class="connection-dot ${connection==='Connected'?'online':''}"></span><span id="connection-state" role="status" aria-live="polite" aria-atomic="true">${e(connection)}</span><button id="reconnect-top" class="quiet" aria-label="Refresh connection">↻</button></div></header>${demoMode || status?.serviceMode==='synthetic-test' ? '<div class="demo-banner"><strong>Demo test mode</strong><span>Isolated synthetic data · not your personal service</span></div>' : ''}<div class="lane-row">${pairingRequired ? '' : railMarkup()}<main id="main" tabindex="-1" class="lanes">${error ? `<div class="alert" role="alert" aria-live="assertive">${e(error)}</div>` : ''}${notice ? `<div class="notice" role="status" aria-live="polite" aria-atomic="true">${e(notice)}</div>` : ''}${readBusy ? '<p class="loading" role="status" aria-live="polite" aria-atomic="true">Loading your records…</p>' : ''}${busy ? '<button id="cancel-request" class="quiet">Stop waiting</button>' : ''}${pairingRequired ? pairing() : `${laneShell('voice','Voice',voiceHeadMarkup(),voiceBodyMarkup())}${laneShell('chat','Chat',chatHeadMarkup(),chatLane())}`}</main></div>${sheetMarkup()}${consentPopoverMarkup()}</div>`;
+  root.innerHTML = `<a id="skip-to-content" class="skip" href="#main">Skip to content</a><div class="app-shell" style="--panel-left-w:${layout.leftWidth}px;--panel-right-w:${layout.rightWidth}px" data-left="${layout.left}" data-right="${layout.right}" data-narrow="${layout.narrow}" data-sheet="${layout.sheet ?? ''}"><header class="app-header">${pairingRequired ? '' : panelControlsMarkup()}<a class="brand-mini" href="/" aria-label="Didi home"><img src="/icon.svg" alt="" width="22" height="22"><span>didi<span class="brand-dot">.</span></span></a>${livePillMarkup()}<div class="connection"><span class="connection-dot ${connection==='Connected'?'online':''}"></span><span id="connection-state" role="status" aria-live="polite" aria-atomic="true">${e(connection)}</span><button id="reconnect-top" class="quiet" aria-label="Refresh connection">↻</button></div></header>${demoMode || status?.serviceMode==='synthetic-test' ? '<div class="demo-banner"><strong>Demo test mode</strong><span>Isolated synthetic data · not your personal service</span></div>' : ''}<div class="lane-row">${pairingRequired ? '' : railMarkup()}${pairingRequired ? '' : dividerMarkup('left')}<main id="main" tabindex="-1" class="lanes">${error ? `<div class="alert" role="alert" aria-live="assertive">${e(error)}</div>` : ''}${notice ? `<div class="notice" role="status" aria-live="polite" aria-atomic="true">${e(notice)}</div>` : ''}${readBusy ? '<p class="loading" role="status" aria-live="polite" aria-atomic="true">Loading your records…</p>' : ''}${busy ? '<button id="cancel-request" class="quiet">Stop waiting</button>' : ''}${pairingRequired ? pairing() : `${voiceViewMarkup()}${dividerMarkup('right')}${panelMarkup('right','Chat',chatHeadMarkup(),chatLane())}`}</main></div>${sheetMarkup()}${consentPopoverMarkup()}</div>`;
   bind();
   bindScrollAnchors();
   connectedView.attach();
@@ -261,6 +275,53 @@ function render() {
   if(canvas)orb=new Orb(canvas,appliedOrbState=orbState());
   if (focusId) { const next=document.getElementById(focusId) as HTMLInputElement | HTMLTextAreaElement | null; next?.focus({preventScroll:true}); if(selection && next && selection[0]!==null) next.setSelectionRange(selection[0],selection[1]); }
 }
+function applyLayout(next: LayoutState) {
+  layout = next;
+  saveLayout(themeStorage(), layout);
+  const shell = root.querySelector<HTMLElement>('.app-shell');
+  if (!shell) { render(); return; }
+  shell.dataset.left = layout.left;
+  shell.dataset.right = layout.right;
+  shell.dataset.narrow = String(layout.narrow);
+  shell.style.setProperty('--panel-left-w', `${layout.leftWidth}px`);
+  shell.style.setProperty('--panel-right-w', `${layout.rightWidth}px`);
+  for (const id of PANEL_IDS) {
+    const panel = document.getElementById(id === 'left' ? 'panel-left' : 'panel-right');
+    if (panel) panel.dataset.state = layout[id];
+    const control = panelControl(layout, id);
+    const toggle = document.getElementById(`panel-toggle-${id}`);
+    if (toggle) { toggle.setAttribute('aria-expanded', control['aria-expanded']); toggle.setAttribute('title', control.title); toggle.setAttribute('aria-label', control.label); }
+  }
+}
+// A divider drag updates the stored width, animating in place; the state machine decides on release whether
+// the drag collapsed the panel (below its minimum) or opened it at the clamped width.
+function attachDivider(el: HTMLElement, id: PanelId) {
+  el.addEventListener('pointerdown', event => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const shell = root.querySelector<HTMLElement>('.app-shell');
+    const prop = id === 'left' ? '--panel-left-w' : '--panel-right-w';
+    const panel = document.getElementById(id === 'left' ? 'panel-left' : 'panel-right');
+    const startX = event.clientX;
+    const startWidth = panelOpen(layout, id) ? panelWidth(layout, id) : 0;
+    const dir = id === 'left' ? 1 : -1;
+    el.setPointerCapture(event.pointerId);
+    const move = (moveEvent: PointerEvent) => {
+      const width = Math.max(0, startWidth + dir * (moveEvent.clientX - startX));
+      shell?.style.setProperty(prop, `${width}px`);
+      if (panel && width > 0) panel.dataset.state = 'open';
+    };
+    const finish = (upEvent: PointerEvent) => {
+      el.removeEventListener('pointermove', move);
+      el.removeEventListener('pointerup', finish);
+      el.removeEventListener('pointercancel', finish);
+      applyLayout(dragPanel(layout, id, Math.max(0, startWidth + dir * (upEvent.clientX - startX))));
+    };
+    el.addEventListener('pointermove', move);
+    el.addEventListener('pointerup', finish);
+    el.addEventListener('pointercancel', finish);
+  });
+}
 function button(id: string, action: () => void) { document.getElementById(id)?.addEventListener('click', action); }
 function form(id: string, action: () => void) { document.getElementById(id)?.addEventListener('submit', ev => { ev.preventDefault(); action(); }); }
 function input(id: string, action: (value: string) => void) { document.getElementById(id)?.addEventListener('input', ev=>action((ev.target as HTMLInputElement).value)); }
@@ -268,12 +329,11 @@ function findCommitment(id: string) { return [...(plan?.items.map(i=>i.commitmen
 // Attached by every full bind and after the periodic settings-summary re-render, which replaces the select.
 function bindConnectedHistory() { document.getElementById('connected-history')?.addEventListener('change',ev=>{const next=(ev.target as HTMLSelectElement).value;if(next)void connectedView.select(next).catch(err=>{error=failure(err);render();});}); }
 function bind() {
-  document.getElementById('rail-toggle')?.addEventListener('click', () => { layout = toggleRail(layout); render(); });
   root.querySelectorAll<HTMLElement>('button[data-route]').forEach(el => el.onclick = () => { const route = el.dataset.route as RouteId; layout = openSheet(layout, route); if (route === 'today') { tab = 'Today'; void loadTab(); } else if (route === 'memory') { tab = 'Memory'; } notice = ''; error = ''; render(); });
   document.getElementById('sheet-close')?.addEventListener('click', () => { layout = closeSheet(layout); render(); });
   root.querySelector('.sheet-scrim')?.addEventListener('click', () => { layout = closeSheet(layout); render(); });
-  root.querySelectorAll<HTMLElement>('button[data-lane]').forEach(el => el.onclick = () => { const id = el.dataset.lane as LaneId; layout = toggleLane(layout, id); render(); if (layout[id] === 'collapsed') document.getElementById(focusTargetAfterCollapse(id))?.focus(); });
-  root.querySelectorAll<HTMLElement>('button[data-segment]').forEach(el => el.onclick = () => { const segment = el.dataset.segment as LaneId; layout = selectSegment(layout, segment); render(); document.getElementById(`lane-${segment}`)?.scrollIntoView({ block: 'start' }); });
+  root.querySelectorAll<HTMLElement>('button[data-panel]').forEach(el => el.onclick = () => applyLayout(togglePanel(layout, el.dataset.panel as PanelId)));
+  root.querySelectorAll<HTMLElement>('[data-divider]').forEach(el => attachDivider(el, el.dataset.divider as PanelId));
   bindOrbControls();
   document.getElementById('pill-stop')?.addEventListener('click', () => liveMachine.requestStop());
   document.getElementById('pill-mute')?.addEventListener('click', () => liveMachine.toggleMute());
@@ -490,9 +550,12 @@ nativeBridge.send({ type: 'theme', mode: theme });
 nativeBridge.send({ type: 'ready' });
 // A viewport flip only changes the narrow breakpoint; update the attribute in place so the orb canvas is never
 // torn down under a measurement (the frozen connected-browser smoke measures right after setViewportSize).
-window.addEventListener('resize', () => { const next = withViewport(layout, window.innerWidth); if (next !== layout) { layout = next; root.querySelector('.app-shell')?.setAttribute('data-narrow', String(layout.narrow));
-    root.querySelector('.app-shell')?.setAttribute('data-segment', layout.segment); } });
-document.addEventListener('keydown', event => { if (event.key === 'Escape' && layout.sheet) { layout = closeSheet(layout); render(); } });
+window.addEventListener('resize', () => { const next = withViewport(layout, window.innerWidth); if (next !== layout) applyLayout(next); });
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && layout.sheet) { applyLayout(closeSheet(layout)); return; }
+  const panel = shortcutPanel(event.key, event.metaKey || event.ctrlKey);
+  if (panel) { event.preventDefault(); applyLayout(togglePanel(layout, panel)); }
+});
 render();void connect();
 
 

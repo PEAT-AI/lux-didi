@@ -17,7 +17,7 @@ async function auditLayout(page) {
     const inset = (sel, lane) => { const el = q(sel); if (!el) return null; const b = r(el); return { left: rn(b.left - lane.left), right: rn(lane.right - b.right) }; };
     const size = sel => { const el = q(sel); if (!el) return null; const b = r(el); return { w: rn(b.width), h: rn(b.height), right: rn(b.right) }; };
     const gap = (a, b) => { const x = q(a), y = q(b); return x && y ? rn(r(y).left - r(x).right) : null; };
-    const voice = r(q('#lane-voice')), chat = r(q('#lane-chat'));
+    const voice = r(q('#lane-voice')), chat = r(q('#panel-right'));
     const field = q('.composer-field'), send = q('#connected-send'), draft = q('#connected-draft');
     const entries = [...document.querySelectorAll('.live-turns > *')];
     const entry = q('.live-turns .entry');
@@ -37,14 +37,14 @@ async function auditLayout(page) {
         orbCentre: stage && orb ? Math.abs(Math.round((r(orb).left + r(orb).width / 2) - (r(stage).left + r(stage).width / 2))) : null,
         column: rn(r(q('.transcript .live-turns')).width),
         userRight: (() => { const mine = q('.live-turns .entry.user'); return mine ? rn(r(q('.transcript .live-turns')).right - r(mine).right) : null; })(),
-        controlRight: rn(voice.right - r(q('#lane-voice .lane-toggle')).right),
-        toggleGap: gap('#new-conversation', '#lane-voice .lane-toggle'),
+        controlRight: rn(voice.right - r(q('#new-conversation')).right),
+        toggleGap: null,
         labels: document.querySelectorAll('.live-turns .entry strong, .live-turns .entry header').length,
         scrollDistance: transcript ? Math.max(0, rn(transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight)) : null,
         jumpVisible: pillVoice ? !pillVoice.hidden : null,
       },
       chat: {
-        visible: vis('#lane-chat'),
+        visible: vis('#panel-right'),
         column: chatList ? rn(r(chatList).width) : null,
         emptyInset: inset('.connected-empty', chat),
         composerInset: inset('#connected-send-form', chat),
@@ -96,7 +96,7 @@ function assertAudit(a, label, failures) {
 async function panelAudit(page) {
   return await page.evaluate(() => {
     const rect = el => { const b = el.getBoundingClientRect(); return { w: Math.round(b.width), left: Math.round(b.left), top: Math.round(b.top), h: Math.round(b.height) }; };
-    const box = sel => { const el = document.querySelector(sel); return el ? { state: el.dataset.state, rendered: el.getClientRects().length > 0, ...rect(el) } : null; };
+    const box = sel => { const el = document.querySelector(sel); if (!el) return null; const r = rect(el); const cs = getComputedStyle(el); return { state: el.dataset.state, rendered: r.w > 0 && cs.opacity !== '0' && cs.display !== 'none', ...r }; };
     const ctl = sel => { const el = document.querySelector(sel); return el ? { rendered: el.getClientRects().length > 0, visible: getComputedStyle(el).visibility !== 'hidden', expanded: el.getAttribute('aria-expanded') } : null; };
     const orb = document.querySelector('#orb-holder canvas') || document.querySelector('#didi-orb');
     const panel = document.querySelector('#panel-left');
@@ -141,7 +141,7 @@ try {
     assert.equal(await page.evaluate(()=>Object.keys(localStorage).length),0);
     assert.equal(await page.evaluate(()=>document.cookie),'');
     assert.equal(await page.locator('#lane-voice').count(),1);
-    assert.equal(await page.locator('#lane-chat').count(),1);
+    assert.equal(await page.locator('#panel-right').count(),1);
     assert.equal(await page.locator('.rail').count(),1);
     await page.locator('button[data-route="settings"]').click();
     await page.locator('#sheet').waitFor();

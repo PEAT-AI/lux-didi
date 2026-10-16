@@ -149,7 +149,7 @@ test('a typed turn interleaved with streamed Naya fragments joins one Naya card 
     { role: 'user', text: 'Tell me more' },
   ]);
   const html = liveMarkup(live);
-  assert.match(html, /class="entry assistant"><div class="markdown">Hello there/);
+  assert.match(html, /class="entry assistant"[^>]*><div class="markdown">Hello there/);
 });
 
 test('transcript preserves exact fragment deltas without spaces or deduplication', () => {
@@ -186,8 +186,8 @@ test('no transcript line carries a speaker label; the owner's words are the righ
     { seq: 2, kind: 'outputTranscription', text: '**Start** with the release checklist' },
     { seq: 3, kind: 'turnComplete' },
   ] });
-  assert.match(html, /<article class="entry user"><p class="bubble">what should I focus on\?<\/p><\/article>/, 'the owner speaks in the shared chat bubble');
-  assert.match(html, /<article class="entry assistant"><div class="markdown">/, 'Naya answers without a bubble');
+  assert.match(html, /<article class="entry user"[^>]*><p class="bubble">what should I focus on\?<\/p><\/article>/, 'the owner speaks in the shared chat bubble');
+  assert.match(html, /<article class="entry assistant"[^>]*><div class="markdown">/, 'Naya answers without a bubble');
   assert.match(html, /<strong>Start<\/strong> with the release checklist/, 'markdown still renders');
   assert.equal((html.match(/>You<|>Naya</g) ?? []).length, 0, 'no speaker labels in either lane');
   assert.equal((html.match(/class="entry user"/g) ?? []).length, 1);

@@ -10,6 +10,7 @@ const FENCE = /^```/;
 const HEADING = /^(#{1,3})\s+(.*)$/;
 const BULLET = /^\s*[-*]\s+/;
 const ORDERED = /^\s*\d+[.)]\s+/;
+const ORDERED_START = /^\s*(\d+)[.)]\s+/;
 const QUOTE = /^\s*>\s?/;
 
 /** Options that keep a bubble's own title above its body text and turn raw links into chips. */
@@ -74,9 +75,10 @@ export function renderMarkdown(source: string, options: MarkdownOptions = {}): s
       continue;
     }
     if (ORDERED.test(line)) {
+      const start = Number(ORDERED_START.exec(line)![1]);
       const items: string[] = [];
       while (index < lines.length && ORDERED.test(lines[index]!)) { items.push(`<li>${inline(lines[index]!.replace(ORDERED, ''), options)}</li>`); index++; }
-      blocks.push(`<ol>${items.join('')}</ol>`);
+      blocks.push(`<ol${start === 1 ? '' : ` start="${start}"`}>${items.join('')}</ol>`);
       continue;
     }
     if (QUOTE.test(line)) {

@@ -1,5 +1,6 @@
-import { ApiError, authorityVersion, assertAuthority, request, stream } from './api';
+import { ApiError, authorityVersion, assertAuthority, request, stream } from './api.ts';
 import { answerMarkup, renderToolEvidence } from './markdown.ts';
+import { attachPin } from './autoscroll.ts';
 import type { Entry, Session, Recall, MemorySelectionSnapshot, ConnectedRouteStatus, Status, ToolEvidence } from './protocol';
 interface RouteStatus extends ConnectedRouteStatus {}
 interface Conversation { scope: 'conversation' | 'standing'; sessionId: string; provider: string; model: string; state: 'active' | 'revoked' | 'route_changed'; revision: number; permittedClasses: string[]; latestRunId: string | null }
@@ -7,6 +8,24 @@ interface Run { toolEvidence?: ToolEvidence[]; finalEntryId: string | null; runI
 interface ViewLifetime { owner: string; generation: number; authority: AbortSignal; local: AbortSignal }
 type RecalledNote = Recall['hits'][number];
 const escape = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
+
+/** One chat turn: the owner's words in the shared pill bubble, Naya's answer as markdown with no
+ * bubble and no speaker label (V3 item 4). */
+export function chatEntryMarkup(role: 'user' | 'assistant', text: string): string {
+  return role === 'assistant'
+    ? `<article class="entry assistant">${answerMarkup(text)}</article>`
+    : `<article class="entry user"><p class="bubble">${escape(text)}</p></article>`;
+}
+
+/** Enter sends the draft; Shift+Enter and an unfinished IME commit insert text instead (V3 item 5). */
+export function composerIntent(event: { key: string; shiftKey?: boolean; isComposing?: boolean }): 'send' | undefined {
+  return event.key === 'Enter' && !event.shiftKey && !event.isComposing ? 'send' : undefined;
+}
+
+/** The composer grows with the draft up to 40 percent of the lane height, then scrolls inside (V3 item 5). */
+export function draftHeightPx(contentHeight: number, laneHeight: number, min = 56): number {
+  return Math.max(min, Math.min(contentHeight, laneHeight > 0 ? Math.round(laneHeight * 0.4) : contentHeight));
+}
 export class ConnectedView {
   #lastActive = false;
   #displayName = 'Lux Didi';
@@ -30,7 +49,7 @@ export class ConnectedView {
   async recoverHistory() { if (this.#pending) return this.#action(lifetime => this.#recoverPending(lifetime)); const c = this.#conversation; if (c) return this.#action(lifetime => this.select(c.sessionId, lifetime)); }
   #owner = ''; #status: RouteStatus = { status: 'unconfigured' }; #conversation: Conversation | undefined;
   #conversations: { title: string; conversation: Conversation }[] = []; #entries: Entry[] = [];
-  #run: Run | undefined; #draft = ''; #pending: { key: string; text: string; sessionId: string; selectedMemoryEntryIds: string[] } | undefined;
+  #run: Run | undefined; #draft = ''; #pin: { repin(): void; stop(): void } | undefined; #chatPinned = true; #chatScroll: number | undefined; #refocusDraft = false; #pending: { key: string; text: string; sessionId: string; selectedMemoryEntryIds: string[] } | undefined;
   #memoryQuery = ''; #memoryHits: RecalledNote[] = []; #memorySelected: RecalledNote[] = []; #memoryError = ''; #memoryBusy = false; #memoryOpen = false;
   #error = ''; #busy = false; #controller: AbortController | undefined; #generation = 0; #consent = false; #remember = true;
   #conversationController: AbortController | undefined; #selectionToken = 0;
@@ -46,7 +65,7 @@ export class ConnectedView {
     assertAuthority(lifetime.authority);
     if (!this.#current(lifetime)) throw new ApiError('VIEW_CHANGED', 'The conversation changed. Recover its current history before trying again.', 0);
   }
-  detach(preserveBusy = false) { this.#controller?.abort(); this.#controller = undefined; this.#lifecycleController.abort(); this.#lifecycleController = new AbortController(); this.#generation++; if (!preserveBusy) this.#busy = false; this.#memoryBusy = false; }
+  detach(preserveBusy = false) { this.#controller?.abort(); this.#controller = undefined; this.#pin?.stop(); this.#pin = undefined; this.#lifecycleController.abort(); this.#lifecycleController = new AbortController(); this.#generation++; if (!preserveBusy) this.#busy = false; this.#memoryBusy = false; }
   reset() { this.#consent = false; this.#remember = true; this.detach(); this.#selectionToken++; this.#closeConversationStream(); this.#attaching.clear(); this.#owner = ''; this.#displayName = 'Lux Didi'; this.#status = { status: 'unconfigured' }; this.#error = ''; this.#conversation = undefined; this.#run = undefined; this.#entries = []; this.#conversations = []; this.#draft = ''; this.#pending = undefined; this.#memoryQuery = ''; this.#memoryHits = []; this.#memorySelected = []; this.#memoryError = ''; this.#memoryBusy = false; this.#memoryOpen = false; }
   async refresh(owner: string) {
     if (owner !== this.#owner) { this.reset(); this.#owner = owner; }
@@ -166,18 +185,43 @@ export class ConnectedView {
     const c = this.#conversation, r = this.#run, available = this.#status.status === 'configured';
     const grant = this.#status.consent, ready = available && (!!grant || this.#consent);
     const provider = this.#status.provider, model = this.#status.model;
+    const notesSection = c && c.state === 'active' ? this.#notesSection() : '';
+    const typing = r && !r.finalEntryId && r.state !== 'terminal' && !r.partialText ? '<p class="typing" role="status" aria-label="Naya is typing"><span></span><span></span><span></span></p>' : '';
     panel.innerHTML = `<section class="connected-conversation" aria-label="Connected Naya conversation">
       ${grant || this.#consent ? '' : `<p class="connected-disclosure">Chat messages go to <strong>${escape(provider ?? 'the connected provider')}</strong> when you send them. <button type="button" id="connected-consent" class="allow-link">Allow</button></p>`}
-      <div id="connected-entries" class="connected-entries">${this.#entries.length ? this.#entries.map(entry => `${entry.id === r?.finalEntryId ? renderToolEvidence(r.toolEvidence ?? []) : ''}<article class="entry ${entry.role}"><header><strong>${entry.role === 'assistant' ? 'Naya' : 'You'}</strong></header>${entry.role === 'assistant' ? answerMarkup(answerText(entry)) : `<p>${escape(answerText(entry))}</p>`}</article>`).join('') + (r && !r.finalEntryId ? renderToolEvidence(r.toolEvidence ?? []) : '') : '<p class="connected-empty muted">Ask anything. Naya can read your mail, calendar, Mattermost and lux.</p>'}</div>
+      <div class="chat-list" id="chat-list">
+      <div id="connected-entries" class="connected-entries">${this.#entries.length ? this.#entries.map(entry => `${entry.id === r?.finalEntryId ? renderToolEvidence(r.toolEvidence ?? []) : ''}${chatEntryMarkup(entry.role === 'assistant' ? 'assistant' : 'user', answerText(entry))}`).join('') + (r && !r.finalEntryId ? renderToolEvidence(r.toolEvidence ?? []) : '') + typing : '<p class="connected-empty muted">What can I find for you?</p>'}</div>
+      <button type="button" class="jump-pill" id="chat-jump" hidden>Jump to latest</button>
+      </div>
       ${r ? this.#runSection(r) : ''}
-      <form id="connected-send-form"><label for="connected-draft" class="visually-hidden">Message for this connected conversation</label><div class="composer-field"><textarea id="connected-draft" rows="2" placeholder="Message Naya" ${!ready || this.#busy ? 'disabled' : ''}>${escape(this.#draft)}</textarea>${c && c.state === 'active' ? this.#notesSection() : ''}<button id="connected-send" class="send-button" aria-label="Send" ${!ready || this.#busy || (r && r.state !== 'terminal') ? 'disabled' : ''}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button></div></form>
+      <form id="connected-send-form"><label for="connected-draft" class="visually-hidden">Message for this connected conversation</label><div class="composer-field">${notesSection ? '<button type="button" id="connected-attach" class="attach-button" aria-label="Attach notes" title="Attach notes"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>' : ''}<textarea id="connected-draft" rows="1" placeholder="Message Naya" ${!ready || this.#busy ? 'disabled' : ''}>${escape(this.#draft)}</textarea>${notesSection}<button id="connected-send" class="send-button" aria-label="Send" ${!ready || this.#busy || (r && r.state !== 'terminal') || !this.#draft.trim() ? 'disabled' : ''}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button></div></form>
       ${this.#error ? `<p id="connected-error" role="alert">${escape(this.#error)}</p>` : ''}
       ${this.#pending && !c ? `<div id="connected-recovery" role="alert" data-recovery="pending-conversation-missing"><p>Unresolved turn: its conversation is not in the current list. The pending acceptance key and text are retained; nothing was resent.</p><button id="connected-retry" class="quiet">Retry the saved turn</button><button id="connected-reload" class="quiet">Reload history</button></div>` : ''}
     </section>`;
     panel.querySelector<HTMLButtonElement>('#connected-consent')?.addEventListener('click', () => { this.#consent = true; this.attach(); });
     panel.querySelector<HTMLInputElement>('#connected-remember')?.addEventListener('change', event => { this.#remember = (event.target as HTMLInputElement).checked; });
-    panel.querySelector<HTMLTextAreaElement>('#connected-draft')?.addEventListener('input', event => { this.#draft = (event.target as HTMLTextAreaElement).value; this.#save(); });
-    panel.querySelector<HTMLTextAreaElement>('#connected-draft')?.addEventListener('keydown', event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); void this.#send(); } });
+    const draftField = panel.querySelector<HTMLTextAreaElement>('#connected-draft');
+    const growDraft = () => {
+      if (!draftField) return;
+      draftField.style.height = 'auto';
+      draftField.style.height = `${draftHeightPx(draftField.scrollHeight, panel.closest<HTMLElement>('.lane')?.clientHeight ?? 0)}px`;
+    };
+    const syncSend = () => {
+      const send = panel.querySelector<HTMLButtonElement>('#connected-send');
+      if (send) send.disabled = !ready || this.#busy || !!(r && r.state !== 'terminal') || !this.#draft.trim();
+    };
+    draftField?.addEventListener('input', event => { this.#draft = (event.target as HTMLTextAreaElement).value; this.#save(); growDraft(); syncSend(); });
+    draftField?.addEventListener('keydown', event => { if (composerIntent(event) === 'send') { event.preventDefault(); void this.#send(); } });
+    panel.querySelector('#connected-attach')?.addEventListener('click', () => { const notes = panel.querySelector<HTMLDetailsElement>('#connected-notes'); if (notes) notes.open = !notes.open; });
+    if (this.#draft) growDraft();
+    if (this.#refocusDraft) { this.#refocusDraft = false; draftField?.focus(); }
+    this.#pin?.stop();
+    const list = panel.querySelector<HTMLElement>('#connected-entries');
+    if (list) {
+      this.#pin = attachPin(list, panel.querySelector<HTMLElement>('#chat-jump'), pinned => { this.#chatPinned = pinned; }, this.#chatPinned);
+      if (!this.#chatPinned && this.#chatScroll !== undefined) list.scrollTop = this.#chatScroll;
+      list.addEventListener('scroll', () => { this.#chatScroll = list.scrollTop; }, { passive: true });
+    }
     panel.querySelector('#connected-retry')?.addEventListener('click', () => { void this.recoverHistory(); });
     panel.querySelector('#connected-reload')?.addEventListener('click', () => { void this.refresh(this.#owner); });
     panel.querySelector('#connected-send-form')?.addEventListener('submit', event => { event.preventDefault(); void this.#send(); });
@@ -278,7 +322,7 @@ export class ConnectedView {
         throw error;
       }
       this.#check(lifetime);
-      this.#run = run; if (this.#draft.trim() === text) this.#draft = ''; this.#pending = undefined; this.#save();
+      this.#run = run; if (this.#draft.trim() === text) this.#draft = ''; this.#pending = undefined; this.#save(); this.#pin?.repin(); this.#refocusDraft = true;
       const entries = (await request<{ entries: Entry[] }>(`/sessions/${c.sessionId}`, { signal: lifetime.local })).entries; this.#check(lifetime); this.#entries = entries;
       void this.#watch(run.runId, lifetime); return this.#lifetime();
     });

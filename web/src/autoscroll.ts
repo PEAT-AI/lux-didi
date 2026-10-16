@@ -1,0 +1,54 @@
+// The terminal-style pin rule shared by the voice transcript and the chat list (V3 items 3 and 6).
+// The maths is pure so the rule is testable headless; the binder at the end reads metrics and writes
+// scrollTop only, so both lists follow exactly the same rule, including the "Jump to latest" pill.
+
+export const PIN_SLACK_PX = 48;
+
+export interface ScrollMetrics {
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+}
+
+/** How far the list is scrolled from its newest line; 0 means the bottom edge is exactly in view. */
+export function distanceFromBottom(metrics: ScrollMetrics): number {
+  return metrics.scrollHeight - metrics.scrollTop - metrics.clientHeight;
+}
+
+/** The view is pinned while it sits within the slack of the bottom. */
+export function isPinned(metrics: ScrollMetrics, slack = PIN_SLACK_PX): boolean {
+  return distanceFromBottom(metrics) <= slack;
+}
+
+/** A pinned view keeps following new and growing lines; a reader who scrolled up keeps their place. */
+export function nextPinned(pinned: boolean, metrics: ScrollMetrics, slack = PIN_SLACK_PX): boolean {
+  return pinned || isPinned(metrics, slack);
+}
+
+/** The "Jump to latest" pill is offered exactly while the list is not following the bottom. */
+export function jumpVisible(pinned: boolean, metrics: ScrollMetrics, slack = PIN_SLACK_PX): boolean {
+  return !nextPinned(pinned, metrics, slack);
+}
+
+/**
+ * Bind one list and its jump pill. Every content change re-settles the pin: a pinned list stays at the
+ * bottom (scrolling up still stops the follow), the pill reports the state, and clicking it, like a new
+ * Live session, re-pins. Returns a `repin` handle for that explicit re-pin.
+ */
+export function attachPin(
+  list: HTMLElement,
+  pill: HTMLElement | null,
+  onPinnedChange?: (pinned: boolean) => void,
+  initiallyPinned = true,
+): { repin(): void; pinned(): boolean; stop(): void } {
+  let pinned = initiallyPinned;
+  const metrics = (): ScrollMetrics => ({ scrollTop: list.scrollTop, scrollHeight: list.scrollHeight, clientHeight: list.clientHeight });
+  const report = () => { if (pill) pill.hidden = !jumpVisible(pinned, metrics()); onPinnedChange?.(pinned); };
+  const settle = () => { pinned = nextPinned(pinned, metrics()); if (pinned) list.scrollTop = list.scrollHeight; report(); };
+  list.addEventListener('scroll', () => { pinned = isPinned(metrics()); report(); }, { passive: true });
+  const observer = new MutationObserver(settle);
+  observer.observe(list, { childList: true, subtree: true, characterData: true });
+  pill?.addEventListener('click', () => { pinned = true; settle(); });
+  settle();
+  return { repin() { pinned = true; settle(); }, pinned: () => pinned, stop() { observer.disconnect(); } };
+}

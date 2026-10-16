@@ -370,8 +370,8 @@ export function extractId(kind: CandidateKind, text: string): string | undefined
   return undefined;
 }
 
-/** Every insight id the shaped knowledge list carried, in order, for hydration. Handles both the
- * shaped `[id N]` form and the raw knowledge markdown `## #N [type]` heading form. */
+/** Every insight id the shaped or raw knowledge text carried, in order, for hydration. Handles the
+ * shaped `[id N]` form, the raw `## #N [type]` heading form and the real `**#N** [TYPE] title` item. */
 export function extractInsightIds(text: string, max = 3): number[] {
   const ids: number[] = [];
   const push = (value: string | undefined): void => {
@@ -380,7 +380,7 @@ export function extractInsightIds(text: string, max = 3): number[] {
   };
   for (const line of text.split('\n')) {
     if (ids.length >= max) break;
-    push(line.match(/\[id (\d+)\]/)?.[1] ?? line.match(/^#{2,3}\s*#(\d+)\b/)?.[1]);
+    push(line.match(/\[id (\d+)\]/)?.[1] ?? line.match(/^#{2,3}\s*#(\d+)\b/)?.[1] ?? line.match(/\*\*#(\d+)\*\*/)?.[1]);
   }
   return ids;
 }
@@ -561,18 +561,24 @@ function knowledgeHeadingOf(line: string): { id: string | undefined; title: stri
   return { id, title };
 }
 
-/** Knowledge headings collapse to `#id title | body`, one per insight. */
+const KNOWLEDGE_BULLET = /^\s*(?:-\s+)?\*\*#(\d+)\*\*\s*(.*)$/;
+const KNOWLEDGE_MD_HEADING = /^#{2,3}\s+/;
+
+/** Knowledge headings collapse to `#id title | body`, one per insight, in the shaped and raw forms. */
 function insightItems(raw: readonly string[]): string[] {
   const items: string[] = [];
   let heading: { id: string | undefined; title: string } | undefined;
   let body: string[] = [];
   const flush = (): void => {
-    if (heading === undefined) return;
+    if (heading === undefined) { body = []; return; }
     items.push(`${heading.id ? `#${heading.id} ` : ''}${heading.title}${body.length ? ` | ${clip(body.join(' '), RESEARCH.knowledgeBodyChars)}` : ''}`);
     heading = undefined; body = [];
   };
   for (const line of raw) {
-    if (/^#{2,3}\s+/.test(line)) { flush(); heading = knowledgeHeadingOf(line); } else body.push(line);
+    const bullet = KNOWLEDGE_BULLET.exec(line);
+    if (bullet) { flush(); heading = { id: bullet[1], title: bullet[2]!.replace(/\s+/g, ' ').trim() }; continue; }
+    if (KNOWLEDGE_MD_HEADING.test(line)) { flush(); heading = knowledgeHeadingOf(line); continue; }
+    body.push(line);
   }
   flush();
   return items;

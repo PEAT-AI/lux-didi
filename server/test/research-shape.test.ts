@@ -211,15 +211,16 @@ test('knowledge hydration logs the get_insight second hop', async () => {
   assert.equal(hydrate['kind'], 'knowledge_search');
 });
 
-test('extractInsightIds reads both the shaped and the raw knowledge heading forms', () => {
+test('extractInsightIds reads the shaped, raw and real knowledge id forms', () => {
   assert.deepEqual(extractInsightIds('### A (PATTERN) [id 5]\nbody'), [5]);
   assert.deepEqual(extractInsightIds('_confidence: low_\n## #12 [note]\ncontent'), [12]);
+  assert.deepEqual(extractInsightIds("# Knowledge Search\n_confidence: low_\n**#90082** [BUG_GOTCHA] title\n  excerpt"), [90082]);
 });
 
-test('shapeBlock shapes raw knowledge markdown headings too', () => {
-  const block = shapeBlock('knowledge_search', [sub('search_knowledge', '## #3 [note] ordinary\nsome body here\n## #4 [pattern]\nother body')]);
-  assert.equal(block.lines[0], '#3 [note] ordinary | some body here');
-  assert.equal(block.total, 2);
+test('shapeBlock shapes the real knowledge item form too', () => {
+  const block = shapeBlock('knowledge_search', [sub('search_knowledge', '**#90082** [BUG_GOTCHA] a title\n  an excerpt line\n  Score: 0.2\n## #4 [pattern]\nother body')]);
+  assert.equal(block.lines[0], '#90082 [BUG_GOTCHA] a title | an excerpt line Score: 0.2');
+  assert.equal(block.lines[1], '#4 [pattern] | other body');
 });
 
 test('the research_run line carries unchecked, canContinue and per-finding char counts', async () => {

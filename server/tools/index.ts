@@ -9,7 +9,7 @@ import { ConnectorCompositionError, connectorDescriptor, CONNECTOR_ENVELOPES } f
 import { canonicalJSON, detached, sha256 } from './canonical.js';
 import type { BoundConnection, ConnectionApplyResult, ConnectionPolicy, HttpConnectionEndpoint, ModelSnapshot, RunAcceptance, RunSnapshot, StdioConnectionEndpoint, ToolsOwner, ToolsOwnerOptions } from './types.js';
 import { REMEMBER_IDENTITY, REMEMBER_PARAMETERS, validateRemember } from './remember.js';
-import { researchDeclaration } from './research.js';
+import { researchDeclaration, researchSourcesFromToolNames } from './research.js';
 export { toolsMigrations } from './schema.js';
 export type * from './types.js';
 
@@ -327,12 +327,13 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
       // stay in the registry so the research fan-out and the session cache keep working, but the Live
       // session never declares them to the provider. A research tool is answered by a host-side loop
       // in the Live session, so its own execute is never reached.
-      const definitions: ToolDefinition[] = [researchDeclaration()].map(declaration => ({
+      const ownerTools = owner.definitions(runId);
+      const definitions: ToolDefinition[] = [researchDeclaration(researchSourcesFromToolNames(ownerTools.map(tool => tool.name)))].map(declaration => ({
         name: declaration.name, description: declaration.description, guidance: declaration.guidance, parameters: declaration.parameters,
         effect: 'read', accountId: 'gateway:live-voice', resourceId: 'intent', validate: declaration.validate,
         async execute() { return { status: 'failed' as const, code: 'handler_outcome' as const }; },
       }));
-      definitions.push(...owner.definitions(runId).filter(tool => tool.name !== REMEMBER_IDENTITY.name));
+      definitions.push(...ownerTools.filter(tool => tool.name !== REMEMBER_IDENTITY.name));
       definitions.push({ ...REMEMBER_IDENTITY, description: 'Remember a note explicitly requested in the owner’s finalized words.', effect: 'write', parameters: REMEMBER_PARAMETERS, validate: validateRemember,
         async execute(args, context) {
           if (context.runId !== runId || !validateRemember(args) || context.signal.aborted) return { status: 'failed' };

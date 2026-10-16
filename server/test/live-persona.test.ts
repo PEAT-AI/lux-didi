@@ -137,7 +137,16 @@ test('the target budget yields memory first and never drops the base, overlay or
 
 test('the tools conduct text is authored, generic and names no connector beyond the families', () => {
   assert.match(NAYA_TOOLS, /^# Tools and how to use them\n\n/);
-  assert.match(NAYA_TOOLS, /knowledge base first, before memory/);
+  assert.match(NAYA_TOOLS, /You have two tools: research and remember_note\./);
+  // #263: a name after a colon reads as a tool name to the model. The retired routing targets must never
+  // reappear, because the Live session declares only research and remember_note.
+  for (const retired of ['calendar', 'mail', 'brief', 'search', 'chat']) {
+    assert.doesNotMatch(NAYA_TOOLS, new RegExp(`:\\s*${retired}\\b`, 'i'), `retired routing target: ${retired}`);
+  }
+  // It names the source families the research tool reaches instead of routing to a tool per family.
+  assert.match(NAYA_TOOLS, /his calendar and availability/);
+  assert.match(NAYA_TOOLS, /the team chat/);
+  assert.match(NAYA_TOOLS, /his knowledge base of notes/);
   assert.match(NAYA_TOOLS, /Paging and omission notes in a result are for you; never read them aloud\./);
   assert.match(NAYA_TOOLS, /at most a three to five word acknowledgement/);
   assert.match(NAYA_TOOLS, /There is no background work and no callback: never promise to check later, call back or keep an eye on something\./);

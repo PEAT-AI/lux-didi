@@ -29,6 +29,8 @@ export class LiveConfigError extends Error {
 
 export interface LiveLimits {
   sessionMs: number; idleMs: number; unusedMs: number; handshakeMs: number; closeMs: number;
+  /** Total call ceiling: only this ceiling and the idle timeout end a call for time (release 3g-c). */
+  callMaxMs: number;
   journalMaxEvents: number; journalMaxBytes: number; consumerQueueEvents: number; consumerQueueBytes: number;
   wsBufferedBytes: number;
 }

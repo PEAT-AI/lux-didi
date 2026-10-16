@@ -46,6 +46,12 @@ export const LIVE_INSTRUCTION_HARD_LIMIT = 16_000;
 export const MEMORY_SECTION_CHAR_LIMIT = 1_500;
 /** Owner lore is dense; it is clipped to this many characters and never yielded. */
 export const OWNER_LORE_CHAR_LIMIT = 5_000;
+/**
+ * The opening input for a fresh seeded recovery (release 3g-c): the connection dropped and returned, so
+ * continue the conversation instead of greeting. Exact text is asserted in tests and sent as the opening
+ * input on a fresh setup, replacing the fresh-call greeting.
+ */
+export const LIVE_RECOVERY_PICKUP = 'The connection dropped for a moment and is back. Continue the conversation exactly where it was. Do not greet and do not re-introduce yourself. If you were in the middle of an answer, say in a few words that you are back and finish the thought; otherwise answer the owner\'s last words.';
 const separator = '\n\n';
 /** The closed set of Live instruction section ids; the host-log allowlist validates against it. */
 export const LIVE_INSTRUCTION_SECTION_IDS = Object.freeze(['voice-head', 'base', 'runtime', 'tools', 'owner-style', 'owner-lore', 'overlay', 'pickup', 'memory', 'voice'] as const);

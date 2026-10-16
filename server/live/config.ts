@@ -10,11 +10,13 @@ const modelPattern = /^models\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const maxTimer = 2_147_483_647;
 const limitBounds: Readonly<Record<keyof LiveLimits, number>> = {
   sessionMs: maxTimer, idleMs: maxTimer, unusedMs: maxTimer, handshakeMs: maxTimer, closeMs: maxTimer,
+  callMaxMs: maxTimer,
   journalMaxEvents: 1_000_000, journalMaxBytes: 1024 * 1024 * 1024,
   consumerQueueEvents: 65_536, consumerQueueBytes: 64 * 1024 * 1024, wsBufferedBytes: 64 * 1024 * 1024,
 };
 export const defaultLiveLimits: Readonly<LiveLimits> = Object.freeze({
   ...liveVoiceTimerDefaults, unusedMs: 300_000,
+  callMaxMs: 4 * 60 * 60 * 1000,
   journalMaxEvents: 16_384, journalMaxBytes: 16 * 1024 * 1024,
   consumerQueueEvents: 256, consumerQueueBytes: 2 * 1024 * 1024, wsBufferedBytes: 4 * 1024 * 1024,
 });
@@ -46,7 +48,8 @@ function limits(value: unknown): LiveLimits {
   return Object.freeze({
     sessionMs: limit(source['sessionMs'], 'sessionMs'), idleMs: limit(source['idleMs'], 'idleMs'),
     unusedMs: limit(source['unusedMs'], 'unusedMs'), handshakeMs: limit(source['handshakeMs'], 'handshakeMs'),
-    closeMs: limit(source['closeMs'], 'closeMs'), journalMaxEvents: limit(source['journalMaxEvents'], 'journalMaxEvents'),
+    closeMs: limit(source['closeMs'], 'closeMs'), callMaxMs: limit(source['callMaxMs'], 'callMaxMs'),
+    journalMaxEvents: limit(source['journalMaxEvents'], 'journalMaxEvents'),
     journalMaxBytes: limit(source['journalMaxBytes'], 'journalMaxBytes'),
     consumerQueueEvents: limit(source['consumerQueueEvents'], 'consumerQueueEvents'),
     consumerQueueBytes: limit(source['consumerQueueBytes'], 'consumerQueueBytes'),

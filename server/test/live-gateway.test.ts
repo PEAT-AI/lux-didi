@@ -975,3 +975,21 @@ test('AC1-R1: an owner live config with a regional tag reaches the setup frame a
   assert.equal(logged?.languageCode, 'en-IN', 'the setup log carries the effective languageCode');
   assert.equal(logged?.voice, VOICE, 'the setup log carries the voice name');
 });
+
+test('AC2: a locale with no two-letter language still sends an explicit en setup language', async t => {
+  const locale = configJson(true, { preferences: { dataClass: 'ordinary', language: 'fil-PH', register: 'plain', humor: 'dry', verbosity: 'balanced' } });
+  const events: unknown[][] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => { events.push(args); });
+  const h = await harness(t, { config: locale });
+  const created = await createBody(h, 'default-language');
+  assert.equal(created.status, 200);
+  const ws = new WebSocket(`${h.origin.replace('http', 'ws')}/api/v1/live-sessions/${created.body.data.liveSessionId}/audio`, { headers: bearer(h) });
+  t.after(() => ws.close());
+  await once(ws, 'open');
+  await h.f.frame(1);
+  const setup = (h.f.frames[0] as { setup: Record<string, any> }).setup;
+  assert.equal(setup.generationConfig.speechConfig.languageCode, 'en', 'a locale with no two-letter primary still frames the explicit default');
+  const logged = events.map(args => { try { return JSON.parse(args.map(String).join(' ')) as { event?: string; languageCode?: string }; } catch { return {}; } })
+    .find(entry => entry.event === 'live_instruction_sizes');
+  assert.equal(logged?.languageCode, 'en', 'the setup log carries the effective default languageCode');
+});

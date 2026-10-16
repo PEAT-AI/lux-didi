@@ -31,7 +31,7 @@ import { once } from 'node:events';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadLiveConfig } from '../config/live.js';
+import { loadLiveConfig, liveSetupLanguage } from '../config/live.js';
 import { NAYA_BASE, NAYA_TOOLS, MEMORY_SECTION_CHAR_LIMIT, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
 import { GeminiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
 import type { GeminiLiveVoiceOptions, LiveVoiceLimits, LiveVoiceRequest } from '../adapters/live-voice/index.js';
@@ -674,6 +674,15 @@ test('live timer defaults are a 5 minute idle and a 60 minute session, and an ex
   const edited = validateLiveProfile(profileInput({ idleMs: 12_345, sessionMs: 67_890 })).limits;
   assert.equal(edited.idleMs, 12_345);
   assert.equal(edited.sessionMs, 67_890);
+});
+
+test('AC2: every Live session sends an explicit setup language: owner tag, locale primary subtag, or en', () => {
+  assert.equal(liveSetupLanguage(undefined), 'en', 'no configured locale still sends an explicit language');
+  assert.equal(liveSetupLanguage('en'), 'en', 'a configured bare language stays en');
+  assert.equal(liveSetupLanguage('en-IN'), 'en-IN', 'a configured regional tag stays end to end (AC1)');
+  assert.equal(liveSetupLanguage('EN-in'), 'en-IN', 'the owner tag is case-normalised');
+  assert.equal(liveSetupLanguage('zh-Hans-CN'), 'zh', 'a script locale reduces to its bare primary subtag');
+  assert.equal(liveSetupLanguage('fil-PH'), 'en', 'a locale with no two-letter primary language falls back to en');
 });
 
 test('live profile language accepts a BCP-47 tag with optional region, case-normalised, and fails closed', () => {
@@ -1826,28 +1835,60 @@ test('the exact live diagnostics object the owner emits is accepted by the host 
   assert.equal(accepted.terminalCode, emitted.terminalCode);
 });
 
-test('the overlay accent reaches the adapter and is reported only as counts, never text', async t => {
+test('the anchor diagnostics report the serialized anchors, not the overlay accent length', async t => {
   const lines: string[] = [];
   t.mock.method(console, 'error', (...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
   const accent = 'SYNTHETIC-ACCENT-DESCRIPTION';
-  const h = await harness(t, { overlay: { schemaVersion: 1, text: 'SYNTHETIC overlay persona', accent } });
+  const overlay = { schemaVersion: 1 as const, text: 'SYNTHETIC overlay persona', accent };
+  // The anchor is composed with the bare primary language (AC1), while the setup frame carries the owner tag.
+  const composed = composeLiveInstruction({ base: NAYA_BASE, overlay, language: 'en' });
+  const sectionChars = (id: string): number => composed.sections.find(section => section.id === id)?.chars ?? 0;
+  const h = await harness(t, { language: 'en-IN', overlay, acceptedPrompt: ownerId => ({
+    schemaVersion: 1, ownerProfile: { schemaVersion: 1, kind: 'default', ownerId, displayName: 'Lux Didi' },
+    compilerVersion: PROMPT_VERSION, system: composed.text, dataClasses: ['ordinary'] }) });
   const { attachment } = await attached(h, 'accent-carried', `Greet the person briefly to begin the conversation, speaking in this voice and accent: ${accent}`);
   assert.equal(h.requests.at(-1)?.voiceAccent, accent, 'the accent is carried on the session request');
+  assert.equal(h.requests.at(-1)?.languageCode, 'en-IN', 'the owner tag reaches the adapter as the setup language');
   attachment.close(); await attachment.done;
   const parse = (line: string): Record<string, unknown> => { try { return JSON.parse(line) as Record<string, unknown>; } catch { return {}; } };
   const diagnostics = (): Record<string, unknown>[] => lines.map(parse).filter(entry => entry.event === 'live_session_diagnostics');
-  const expectedHead = `VOICE AND ACCENT (every turn, including right after tool results): ${accent}`.length;
-  const expectedTool = `Answer aloud in your own words, briefly, in this voice and accent: ${accent}. Do not read raw text, ids or URLs.`.length;
-  for (let attempt = 0; attempt < 60 && !diagnostics().some(entry => entry.headVoiceChars === expectedHead); attempt++) await tick();
-  const emitted = diagnostics().find(entry => entry.headVoiceChars === expectedHead);
-  assert.ok(emitted, `the accent-bearing diagnostics reports the serialised head block; saw ${JSON.stringify(diagnostics())}`);
-  assert.equal(emitted.headVoiceChars, expectedHead, 'the head count is the serialised block, not the bare accent');
-  assert.equal(emitted.toolAnchorChars, expectedTool, 'the tool count is the serialised _voice_anchor');
+  for (let attempt = 0; attempt < 60 && diagnostics().length === 0; attempt++) await tick();
+  const matches = (): Record<string, unknown> | undefined => diagnostics().find(entry => entry.headVoiceChars === sectionChars('voice-head')
+    && entry.terminalVoiceChars === sectionChars('voice') && entry.toolAnchorChars === 0);
+  for (let attempt = 0; attempt < 60 && matches() === undefined; attempt++) await tick();
+  const emitted = matches();
+  assert.ok(emitted, `the accent-bearing diagnostics reports the serialised anchors; saw ${JSON.stringify(diagnostics())}`);
+  assert.equal(emitted.headVoiceChars, sectionChars('voice-head'), 'the head count is the serialised head block');
+  assert.equal(emitted.terminalVoiceChars, sectionChars('voice'), 'the terminal count is the serialised anchor, not the setup tag spelling');
+  assert.equal(emitted.toolAnchorChars, 0, 'no function response was serialized, so there is no tool anchor count');
   assert.notEqual(emitted.terminalVoiceChars, emitted.headVoiceChars, 'the terminal anchor has its own serialised length');
-  assert.notEqual(emitted.terminalVoiceChars, emitted.toolAnchorChars, 'the terminal anchor differs from the tool anchor');
   assert.ok(Number.isSafeInteger(emitted.terminalVoiceChars) && Number(emitted.terminalVoiceChars) > 0, 'the terminal count is a positive integer');
   assert.ok(safeEvent(emitted), 'the host log accepts the accent-bearing diagnostics shape');
   assert.equal(lines.some(line => line.includes(accent)), false, 'the accent text never reaches an emitted line');
+});
+
+test('AC2: with no accent the head and tool anchors are absent while the terminal anchor remains', async t => {
+  const lines: string[] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
+  const overlay = { schemaVersion: 1 as const, text: 'SYNTHETIC overlay persona' };
+  const composed = composeLiveInstruction({ base: NAYA_BASE, overlay, language: 'en' });
+  const sectionChars = (id: string): number => composed.sections.find(section => section.id === id)?.chars ?? 0;
+  const h = await harness(t, { language: 'en', overlay, acceptedPrompt: ownerId => ({
+    schemaVersion: 1, ownerProfile: { schemaVersion: 1, kind: 'default', ownerId, displayName: 'Lux Didi' },
+    compilerVersion: PROMPT_VERSION, system: composed.text, dataClasses: ['ordinary'] }) });
+  const { attachment } = await attached(h, 'no-accent');
+  attachment.close(); await attachment.done;
+  const parse = (line: string): Record<string, unknown> => { try { return JSON.parse(line) as Record<string, unknown>; } catch { return {}; } };
+  const diagnostics = (): Record<string, unknown>[] => lines.map(parse).filter(entry => entry.event === 'live_session_diagnostics');
+  for (let attempt = 0; attempt < 60 && diagnostics().length === 0; attempt++) await tick();
+  const matches = (): Record<string, unknown> | undefined => diagnostics().find(entry => entry.headVoiceChars === 0
+    && entry.terminalVoiceChars === sectionChars('voice') && entry.toolAnchorChars === 0);
+  for (let attempt = 0; attempt < 60 && matches() === undefined; attempt++) await tick();
+  const emitted = matches();
+  assert.ok(emitted, `the diagnostics is emitted; saw ${JSON.stringify(diagnostics())}`);
+  assert.equal(emitted.headVoiceChars, 0, 'no accent serialises no head block');
+  assert.equal(emitted.toolAnchorChars, 0, 'no function response serialises no tool anchor');
+  assert.equal(emitted.terminalVoiceChars, sectionChars('voice'), 'the terminal anchor is still serialised without an accent');
 });
 
 test('queued PCM is dropped at the cut and capture during rebuilding is never replayed', async t => {

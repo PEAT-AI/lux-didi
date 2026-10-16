@@ -105,6 +105,15 @@ function listed(items: string[], limit: number, label: string, followUp?: string
   const suffix = omitted > 0 ? `\n\n[omitted: ${omitted} more ${label}; ${followUp ?? 'final, this tool has no paging argument'}]` : '';
   return { text: shown.join('\n') + suffix, omitted };
 }
+/** The model-only bracket annotations a shaped result appends: the omission/paging note
+ * (`[omitted: ...]`), the calendar character cut (`[+N chars]`), and the `[id ...]` handle the model
+ * needs to re-read one message, event or insight. The owner-facing evidence copy strips them; the
+ * model's own copy keeps them. */
+export const MODEL_ONLY_NOTE = /[ \t]*\n*\[(?:omitted: [^\]\n]*|\+\d+ chars|id [^\]\s]*)\]/g;
+/** Uses the exported matcher alone, so the owner path and any caller can never diverge on the shape. */
+export function stripModelOnlyNotes(text: string): string {
+  return text.replace(MODEL_ONLY_NOTE, '');
+}
 /** The hard per-result ceiling on model-visible text. A result already under `budget` is untouched;
  * otherwise it is cut at a sentence boundary and an omission note names the dropped characters and
  * how to ask for the rest, so the whole text (note included) stays within `budget`. */

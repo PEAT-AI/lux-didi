@@ -39,6 +39,27 @@ test('chat cards enforce display bounds and empty evidence has no invented card'
   assert.doesNotMatch(html, /TAIL-SENTINEL|source 8/);
 });
 
+test('the owner-facing evidence card never carries the model-only omission note (C1-R1)', () => {
+  const note = '[omitted: 4 more messages; final, this tool has no paging argument]';
+  const html = render([{ name: 'mattermost_get_channel_history',
+    markdown: `- chan | alice | 2026-01-01T00:00:00Z | hello\n- chan | bob | 2026-01-01T00:01:00Z | hi\n\n${note}`,
+    sources: [{ title: 'Channel', url: 'https://example.org/c' }] }]);
+  assert.doesNotMatch(html, /\[omitted:/);
+  assert.match(html, /hello/);
+  assert.match(html, /Mattermost/);
+  assert.match(html, /href="https:\/\/example\.org\/c"/);
+});
+
+test('the owner-facing evidence card strips the calendar and handle bracket notes (C1-R1 F1)', () => {
+  const html = render([{ name: 'gcal_events',
+    markdown: '- 10:00, Standup [id e1]\n- 11:00, Review [id e2] [+40 chars]\n- mail from: alice | [id m9]',
+    sources: [] }]);
+  assert.doesNotMatch(html, /\[id /);
+  assert.doesNotMatch(html, /\[\+\d+ chars\]/);
+  assert.match(html, /Standup/);
+  assert.match(html, /Review/);
+});
+
 test('the chat lane labels nobody: the owner speaks in the shared bubble, Naya answers as markdown (V3 items 4 and 9)', () => {
   const mine = chatEntryMarkup('user', 'what should I focus on?');
   assert.match(mine, /^<article class="entry user"><p class="bubble">what should I focus on\?<\/p><\/article>$/);

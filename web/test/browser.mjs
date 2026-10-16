@@ -255,6 +255,7 @@ try {
 
     // Idle default at three widths: the orb is the hero, the feed sits below it and never covers it.
     await collapsePanels();
+    await page.waitForFunction(() => document.querySelector('.app-shell')?.dataset.left === 'collapsed' && document.querySelector('.app-shell')?.dataset.right === 'collapsed', { timeout: 4000 });
     for (const [w, h] of [[900, 700], [1440, 900], [2000, 1250]]) {
       await page.setViewportSize({ width: w, height: h });
       fixture.setLive(session('idle', '2026-10-11T16:00:00Z', 0, []));
@@ -279,15 +280,15 @@ try {
     await page.waitForSelector('.feed-activity', { timeout: 12000 });
     await shoot('call-in-progress.png');
 
-    // In-place update: a marker on the first row survives the poll that appends the tool result.
+    // In-place update: a marker on the first row survives the poll that extends the streaming answer.
     await page.evaluate(() => { const first = document.querySelector('.live-turns')?.firstElementChild; if (first) first.dataset.fe1Mark = 'keep'; });
     fixture.setLive(session('speaking', '2026-10-12T09:00:00Z', 4, [
       { seq: 1, kind: 'inputTranscription', text: 'what is on my calendar' },
       { seq: 2, kind: 'toolCall', tool: { name: 'search_calendar', status: 'pending' } },
-      { seq: 3, kind: 'outputTranscription', text: 'You have a review at 10.' },
+      { seq: 3, kind: 'outputTranscription', text: 'You have a review at 10, and a standup at 2.' },
       { seq: 4, kind: 'toolResult', tool: { name: 'search_calendar', status: 'completed', markdown: 'review at 10:00' } },
     ]));
-    await page.waitForFunction(() => document.querySelectorAll('#live-panel .live-tool-result').length === 1, { timeout: 12000 });
+    await page.waitForFunction(() => document.querySelector('.live-turns')?.textContent?.includes('standup at 2'), { timeout: 12000 });
     assert.equal(await page.evaluate(() => document.querySelector('.live-turns')?.firstElementChild?.dataset.fe1Mark), 'keep', 'the feed updates in place, never rebuilt by the poll');
     await shoot('call-result-card.png');
 
@@ -299,6 +300,7 @@ try {
       ...grow(20).slice(3),
     ]));
     await page.waitForFunction(() => document.querySelectorAll('.live-turns .entry').length > 8, { timeout: 12000 });
+    await page.waitForTimeout(600);
     await page.evaluate(() => { const t = document.querySelector('.transcript'); t.scrollTop = 0; t.dispatchEvent(new Event('scroll')); });
     await page.waitForFunction(() => { const p = document.querySelector('#transcript-jump'); return p && !p.hidden; }, { timeout: 8000 });
     assert.equal((await page.locator('#transcript-jump').innerText()).trim(), 'Back to live');

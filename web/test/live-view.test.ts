@@ -219,7 +219,7 @@ test('background job results remain in the page without starting audio, includin
   assert.match(markup, /Actual failure/);
   assert.match(markup, /Call Naya back/);
   assert.doesNotMatch(markup, /<script>|<audio|autoplay/);
-  assert.match(liveMarkup({ ...current, jobs: [] } as LiveCurrent), /No live transcription yet/);
+  assert.match(liveMarkup({ ...current, jobs: [] } as LiveCurrent), /transcript-placeholder/, 'an empty transcript shows the one calm placeholder line');
 });
 
 

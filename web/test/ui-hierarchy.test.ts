@@ -17,7 +17,7 @@ test('the Voice lane is the orb stage above its transcript, and the old header r
   assert.match(stage, /id="voice-start"/);
   assert.match(stage, /liveMarkup\(live, livePoll\)/, 'the U1 transcript renderer is the lane body');
   assert.match(stage, /id="transcript-jump"/);
-  assert.match(stage, /Press Start or/);
+  assert.match(stage, /class="transcript"/, 'the transcript is the lane body below the stage');
   assert.doesNotMatch(stage, /connectionsMarkup\(/);
 });
 

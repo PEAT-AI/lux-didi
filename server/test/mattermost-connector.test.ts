@@ -102,9 +102,21 @@ test('input budgets refuse malformed arguments before any wire call', async t =>
   const digest = await approve(f.adapter, f.registry);
   const r = reader(f.adapter, f.registry, digest);
   assert.equal((await r.getChannelHistory({ channel: '' })).state, 'refused');
-  assert.equal((await r.getThread({ postId: 'p', limit: 0 })).state, 'refused');
+  assert.equal((await r.getThread({ postId: '' })).state, 'refused');
   assert.equal((await r.search({ query: '   ' })).state, 'refused');
   assert.equal((await r.listChannels({ limit: 9999 })).state, 'refused');
+});
+
+test('a thread read sends only the arguments the child declares, so the thread body reaches the model', async t => {
+  const f = setup('ok');
+  t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
+  const digest = await approve(f.adapter, f.registry);
+  const result = await reader(f.adapter, f.registry, digest).getThread({ postId: 'abcdef1234567890abcdefghij' });
+  assert.equal(result.state, 'completed');
+  const projected = projectMattermostResult(f.adapter, result);
+  assert.equal(projected.ok, true);
+  if (!projected.ok) return;
+  assert.ok(projected.projection.text.includes('Standup at ten'), 'the thread body reaches the model');
 });
 
 test('a tool outside the read grant refuses before dispatch', async t => {

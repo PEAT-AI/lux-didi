@@ -1,6 +1,7 @@
 import { sourceCards } from '../tools/source-cards.js';
 import { noEmptyResult } from '../tools/live-shape.js';
 import * as memory from '../domain/memory.js';
+import * as summaries from '../domain/summaries.js';
 import * as labels from '../domain/labels.js';
 import { definitionsInTransaction } from '../tools/index.js';
 import { LiveToolJobs, type JobTimer } from '../tools/jobs.js';
@@ -11,7 +12,7 @@ import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
 import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, ResearchProgressView } from './types.js';
-import { publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, composeLiveSessionInstruction, connectorGroupNames, toolGroupNames } from '../prompt/index.js';
+import { publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, composeLiveSessionInstruction, connectorGroupNames, toolGroupNames } from '../prompt/index.js';
 import { hostLogEvent } from '../host/log.js';
 import { validateAcceptedPrompt } from './config.js';
 import { createHash, randomUUID } from 'node:crypto';
@@ -99,6 +100,15 @@ export { liveProfileIdentity, validateLiveProfile, defaultLiveLimits } from './c
 const keyPattern = /^[A-Za-z0-9_.:-]{1,128}$/;
 const classes: readonly DataClass[] = ['ordinary', 'private', 'sensitive'];
 const maxPage = 500;
+
+/**
+ * Trusted in-process hooks wired through the existing tools composition seam:
+ * terminal distillation and allowlisted metadata logging. Never accepted from transport.
+ */
+type SummaryHooks = {
+  onSessionTerminal?: (liveSessionId: string) => void;
+  log?: (event: { event: string } & Record<string, unknown>) => void;
+};
 
 function identity(value: unknown): string { return createHash('sha256').update(JSON.stringify(value)).digest('hex'); }
 function journalKind(type: string): JournalKind | null { return (persistedKinds as readonly string[]).includes(type) ? type as JournalKind : null; }
@@ -243,6 +253,8 @@ export function redactDeletedMemorySnapshots(store: LiveStorePort, tx: Transacti
 export class LiveSessionOwner {
   readonly #jobs: LiveToolJobs;
   readonly #tools: LiveToolsComposition | undefined;
+  readonly #onSessionTerminal: ((liveSessionId: string) => void) | undefined;
+  readonly #summaryLog: ((event: { event: string } & Record<string, unknown>) => void) | undefined;
   readonly #memorySource: LiveOwnerConfig['memorySource'];
   readonly #store: LiveStorePort;
   readonly #voice: LiveVoicePort;
@@ -264,6 +276,9 @@ export class LiveSessionOwner {
   constructor(config: LiveOwnerConfig) {
     if (!config || typeof config !== 'object' || !config.store || !config.voice) throw new LiveError('invalid_config');
     this.#tools = config.tools;
+    const summaryHooks = config.tools as unknown as SummaryHooks | undefined;
+    this.#onSessionTerminal = summaryHooks?.onSessionTerminal;
+    this.#summaryLog = summaryHooks?.log;
     this.#memorySource = config.memorySource;
     this.#store = config.store;
     this.#voice = config.voice;
@@ -361,22 +376,26 @@ export class LiveSessionOwner {
       let records: ReturnType<NonNullable<LiveOwnerConfig['memorySource']>>;
       try { records = this.#memorySource?.(tx) ?? []; }
       catch { throw new LiveError('memory_unavailable'); }
+      const earlier = buildEarlierConversationsSection(summaries.injectionCandidates(tx), { now, timeZone: this.#timeZone });
       let composed: ReturnType<typeof composeLiveSessionInstruction>;
       try { composed = composeLiveSessionInstruction({ text: configuredPrompt.system, tools: toolNames,
         runtimeContext: this.#liveRuntimeContext(toolNames),
         records: records.filter(record => record.dataClass === 'ordinary'), trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
+        ...(earlier.section ? { earlierConversations: earlier.section } : {}),
         ...(this.#profile.overlay ? { overlay: this.#profile.overlay } : {}),
         ...(pickup ? { pickupNote: pickupInstruction } : {}) }); }
       catch (error) { if (error instanceof Error && 'code' in error && error.code === 'instruction_too_large') throw new LiveError('instruction_too_large'); throw error; }
       console.error(JSON.stringify({ event: 'live_instruction_sizes', total: composed.text.length, sections: Object.fromEntries(composed.sections.map(section => [section.id, section.chars])) }));
       const memory = { status: composed.omitted.length ? composed.selectedIds.length ? 'partial' : 'omitted' : composed.selectedIds.length ? 'selected' : 'empty',
         selectedIds: composed.selectedIds, omitted: composed.omitted };
+      const injectedSummaryIds = composed.earlierConversationsIncluded ? [...earlier.selectedIds] : [];
+      if (injectedSummaryIds.length || earlier.omitted.length) this.#summaryLog?.({ event: 'conversation_summary_injection', injected: injectedSummaryIds.length, omitted: earlier.omitted.length });
       const acceptedPrompt = validateAcceptedPrompt({ ...configuredPrompt, system: composed.text, memory, ...(pickup ? { pickup } : {}) }, assistantId);
       const promptIdentity = identity({ text: acceptedPrompt.system, dataClass: this.#profile.prompt.dataClass });
       const fingerprint = fingerprintFor(promptIdentity);
       tx.run('INSERT INTO live_sessions(live_session_id, owner_assistant_id, authority_epoch, idempotency_key, fingerprint, client_id, audit_id, profile_identity, prompt_identity, lifecycle, dispatch_intent, ready, journal_events, journal_bytes, journal_complete, consumer_state, terminal_outcome, terminal_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,0,0,0,0,0,?,NULL,NULL,?,?)',
         [liveSessionId, assistantId, context.authorityEpoch, input.idempotencyKey, fingerprint, context.clientId, context.auditId, this.#profileIdentity, promptIdentity, 'accepted', 'detached', now, now]);
-      tx.run('UPDATE live_sessions SET accepted_prompt_snapshot=?,memory_provenance=? WHERE live_session_id=?', [JSON.stringify(acceptedPrompt), JSON.stringify(memory), liveSessionId]);
+      tx.run('UPDATE live_sessions SET accepted_prompt_snapshot=?,memory_provenance=? WHERE live_session_id=?', [JSON.stringify(acceptedPrompt), JSON.stringify({ ...memory, injectedSummaryIds }), liveSessionId]);
       if (toolAcceptance) tx.run('INSERT INTO live_tool_acceptances VALUES (?,?,?)', [liveSessionId, JSON.stringify(toolAcceptance.acceptance), toolAcceptance.sha256]);
       if (pickupJob) { pickupJob.deliverySessionId = liveSessionId; this.#jobs.save(pickupJob, tx); }
       tx.run('INSERT INTO live_grants(grant_id, live_session_id, provider, model, voice, key_reference, permitted_classes, chosen_input_class, revision, granted_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
@@ -1273,6 +1292,8 @@ export class LiveSessionOwner {
       return;
     }
     // The terminal fact is durable before it is emitted; committed markers stay queued on overflow.
+    // Distillation is scheduled here, never awaited: close returns immediately.
+    this.#onSessionTerminal?.(handle.liveSessionId);
     this.#pushChunk(handle, { kind: 'marker', marker: { kind: 'terminal', sequence: null, journalSequence, text: null, finished: null, value: null } });
     handle.consumer?.close();
     handle.abort.abort();

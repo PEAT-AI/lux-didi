@@ -18,6 +18,9 @@ import { toolsMigrations } from '../tools/index.js';
 import { composeChat, type ModelTesting } from './connected.js';
 import { composeLive, type LiveTesting } from './live.js';
 import { composeMcpRuntime } from './mcp.js';
+import { loadProviderConfig } from '../config/index.js';
+import { GeminiAdapter } from '../adapters/model/index.js';
+import { createSummarizer } from '../services/summarize.js';
 import type { LiveAuthority, ToolsOwner } from '../tools/types.js';
 
 /** The one migration list the host applies and every Store reopen reuses, so a host-written database never refuses a downgrade. */
@@ -187,16 +190,33 @@ export async function startHost(config: HostConfig) {
       return null;
     };
     const mcp = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir: providerConfigDir, lookupAuthority, deferConnectors: config.deferConnectors === true, log: event => log.event(event), connectorLog: (connector, stage) => log.event({ event: 'connector_failure', connector, stage }), identityLog: (connector, proven, match) => log.event({ event: 'connector_identity', connector, proven, match }) });
-    const liveTools: LiveToolsComposition = {
+    // Session memory v1: one async distillation per ended Live session, plus the host-start reconciler.
+    // The distiller reuses the text model the provider config already names for chat and tools.
+    const providerLoaded = loadProviderConfig({ configDir: providerConfigDir, ownerId: store.assistantId });
+    let summaryModel: GeminiAdapter | null = null;
+    let summaryModelId: string | null = null;
+    if (providerLoaded.status === 'ready') {
+      summaryModelId = providerLoaded.profile.modelId;
+      try { summaryModel = new GeminiAdapter({ modelId: providerLoaded.profile.modelId, keyReference: providerLoaded.profile.keyReference,
+        route: providerLoaded.route, credentials: config.modelTesting?.credentials ?? providerLoaded.credentials,
+        ...(config.modelTesting?.transport ? { transport: config.modelTesting.transport } : {}) }); }
+      catch { summaryModel = null; }
+    }
+    const summarizer = createSummarizer({ store, model: summaryModel, modelId: summaryModelId ?? 'unconfigured',
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, now: config.now ?? Date.now, log: event => log.event(event) });
+    const liveTools: LiveToolsComposition & { onSessionTerminal?: (liveSessionId: string) => void; log?: (event: { event: string } & Record<string, unknown>) => void } = {
       owner: mcp.owner,
       connectionIds: () => mcp.connectionIds(),
       status: () => mcp.status(),
       registerAuthoritySource: source => { authoritySources.push(source); },
       lookupAuthority,
+      onSessionTerminal: liveSessionId => summarizer.schedule(liveSessionId),
+      log: event => log.event(event),
     };
     const { chat, status } = composeChat(store, domain, providerConfigDir, config.modelTesting, config.now, owner.snapshot, liveTools);
     const composeLiveWithTools = composeLive as unknown as (...args: unknown[]) => ReturnType<typeof composeLive>;
     const { service: live } = composeLiveWithTools(store, providerConfigDir, config.liveTesting, config.now, owner.snapshot, liveTools);
+    void summarizer.reconcile().catch(error => log.error(error));
     // Observe the actual durable provider settlement, which does not emit console text.
     const attach = live.attach.bind(live);
     live.attach = (...args) => {

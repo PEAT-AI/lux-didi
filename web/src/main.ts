@@ -1,6 +1,6 @@
 import './style.css';
-import { memoryDeleteControl, deleteMemoryAndReload, attachMemoryDeleteControls, memoryListMarkup } from './memory-list';
-import { deleteMemoryEntry } from './api';
+import { memoryDeleteControl, deleteMemoryAndReload, attachMemoryDeleteControls, memoryListMarkup, type MemoryListItem } from './memory-list';
+import { deleteMemoryEntry, deleteMemorySummary, listMemorySummaries, type MemorySummaryItem } from './api';
 import { ConnectedView } from './connected';
 import { Orb, type VoiceState } from './orb';
 import { ApiError, request, pair, demoMode, onAuthorityChanged, authorityVersion, assertAuthority, restoreSession, logout, fetchLive } from './api';
@@ -32,6 +32,7 @@ let status: Status | undefined;
 const connectedView = new ConnectedView(() => orb?.setState(orbState()));
 let connection: 'Connecting' | 'Connected' | 'Disconnected' | 'Offline' | 'Pair this browser' = 'Connecting';
 let sessions: Session[] = [], entries: Entry[] = [], session: Session | undefined;
+let memorySummaries: MemorySummaryItem[] = [], summaryIds = new Set<string>();
 let plan: Plan | undefined, recall: Recall | undefined;
 let recent: Commitment[] = [], editing: Commitment | undefined, detail: CommitmentDetail | undefined;
 let draftOwner: string | undefined;
@@ -172,7 +173,8 @@ function today() {
   ${detail ? `<section class="panel editor"><h2>Commitment history</h2><p>${e(detail.commitment.title)}</p>${detail.history.length ? detail.history.map(h=>`<p>Revision ${h.revision} · ${e(h.operation)} · ${e(datetime(h.recordedAt))}<br>${e(h.title)} · ${e(datetime(h.dueAt))}</p>`).join('') : '<p class="muted">No history returned by the service.</p>'}<button id="close-history" class="quiet">Close history</button></section>` : ''}`;
 }
 function memory() {
-  return `<section class="page-heading"><div><p class="eyebrow">REMEMBER, WITH CONTEXT</p><h1>Pick up the thread.</h1><p>Your words, connected to where they came from.</p></div></section>${memoryListMarkup(entries, { filter: status ? memoryFilter : '', disabled: !writable() || busy || connectedView.active })}<section class="panel recall"><form id="recall-form"><label for="recall-query">Search your memory</label><div class="search-row"><input id="recall-query" type="search" value="${e(status ? queryDraft : '')}" maxlength="500" placeholder="A phrase, a project, a thought…"><button ${disabled(connection !== 'Connected' || readBusy || !status?.capabilities.memory)}>Search</button></div></form>${recall ? `<p class="muted">${recall.totalMatches} ${recall.totalMatches === 1 ? 'match' : 'matches'}${recall.truncated || recall.nextCursor ? ' · Partial results; more are available in the service.' : ''}</p>${recall.hits.length ? recall.hits.map(hit=>`<article class="recall-hit"><p>${e(hit.snippet)}</p><small>${e(datetime(hit.sourceTimestamp))}</small>${sourceMarkup(hit.sourceRefs)}${hit.entryId ? memoryDeleteControl(hit.entryId, !writable() || busy || connectedView.active) : ''}<button class="quiet" data-source="${e(hit.sessionId)}">Open conversation source</button></article>`).join('') : '<div class="empty"><h3>No matches yet.</h3><p>Try a different phrase. Didi won’t invent a memory to fill the gap.</p></div>'}` : '<div class="empty"><span class="empty-icon" aria-hidden="true">↗</span><h3>Find the words you kept.</h3><p>Search saved conversations. Unavailable sources stay clearly marked.</p></div>'}</section>`;
+  const items: MemoryListItem[] = [...entries, ...memorySummaries.map(item => ({ id: item.id, text: item.summary ?? '', origin: 'conversation summary', capturedAt: item.endedAt ?? item.createdAt }))];
+  return `<section class="page-heading"><div><p class="eyebrow">REMEMBER, WITH CONTEXT</p><h1>Pick up the thread.</h1><p>Your words, connected to where they came from.</p></div></section>${memoryListMarkup(items, { filter: status ? memoryFilter : '', disabled: !writable() || busy || connectedView.active })}<section class="panel recall"><form id="recall-form"><label for="recall-query">Search your memory</label><div class="search-row"><input id="recall-query" type="search" value="${e(status ? queryDraft : '')}" maxlength="500" placeholder="A phrase, a project, a thought…"><button ${disabled(connection !== 'Connected' || readBusy || !status?.capabilities.memory)}>Search</button></div></form>${recall ? `<p class="muted">${recall.totalMatches} ${recall.totalMatches === 1 ? 'match' : 'matches'}${recall.truncated || recall.nextCursor ? ' · Partial results; more are available in the service.' : ''}</p>${recall.hits.length ? recall.hits.map(hit=>`<article class="recall-hit"><p>${e(hit.snippet)}</p><small>${e(datetime(hit.sourceTimestamp))}</small>${sourceMarkup(hit.sourceRefs)}${hit.entryId ? memoryDeleteControl(hit.entryId, !writable() || busy || connectedView.active) : ''}<button class="quiet" data-source="${e(hit.sessionId)}">Open conversation source</button></article>`).join('') : '<div class="empty"><h3>No matches yet.</h3><p>Try a different phrase. Didi won’t invent a memory to fill the gap.</p></div>'}` : '<div class="empty"><span class="empty-icon" aria-hidden="true">↗</span><h3>Find the words you kept.</h3><p>Search saved conversations. Unavailable sources stay clearly marked.</p></div>'}</section>`;
 }
 function settingsInput() { return { status, statusUnavailable, connections, connectionsUnavailable: connectionsStale, theme, connected: { conversations: connectedView.history, remember: connectedView.remember, busy: connectedView.busy, standingRevoke: connectedView.standingRevoke, conversationState: connectedView.conversationState } }; }
 function settings() {
@@ -338,12 +340,18 @@ async function loadPlan() {
   const current=await request<Plan>(`/plan?date=${localDate()}&timeZone=${encodeURIComponent(zone)}`);
   if(version===authorityVersion()&&generation===readGeneration)plan=current;
 }
+async function loadSummaries(): Promise<void> {
+  const data = await listMemorySummaries();
+  memorySummaries = data.items;
+  summaryIds = new Set(data.items.map(item => item.id));
+}
 async function loadTab() {
   if(connection!=='Connected')return;
   const version=authorityVersion(),generation=++readGeneration;readBusy=true;render();
   try {
     if(tab==='Today')await loadPlan();
     if(tab==='Conversation'){const list=await request<{items:Session[];nextCursor:string|null}>('/sessions');if(version===authorityVersion()&&generation===readGeneration){sessions=list.items;sessionMore=!!list.nextCursor;}}
+    if(tab==='Memory')await loadSummaries();
   } catch(err){if(version===authorityVersion()&&generation===readGeneration)error=failure(err);}
   finally{if(version===authorityVersion()&&generation===readGeneration){readBusy=false;render();}}
 }
@@ -501,19 +509,22 @@ async function deleteMemory(id: string) {
   await mutate(async (signal,version) => {
     const deleted = await deleteMemoryAndReload(id, {
       confirm: () => window.confirm('Delete this memory permanently? Earlier chat and voice transcripts are not rewritten.'),
-      remove: entryId => deleteMemoryEntry(entryId, signal),
+      remove: entryId => summaryIds.has(entryId) ? deleteMemorySummary(entryId, signal) : deleteMemoryEntry(entryId, signal),
       deleted: message => {if(version===authorityVersion())notify(message);},
       reload: async () => {
         assertAuthority(version);
         const current = session ? await request<{session:Session;entries:Entry[];nextCursor:string|null}>(`/sessions/${encodeURIComponent(session.id)}`, { signal }) : undefined;
         assertAuthority(version);
         const results = recall ? await request<Recall>(`/recall?q=${encodeURIComponent(queryDraft)}&limit=50`, { signal }) : undefined;
-        return { current, results };
+        assertAuthority(version);
+        const summaryPayload = await listMemorySummaries(signal);
+        return { current, results, summaryPayload };
       },
-      apply: ({ current, results }) => {
+      apply: ({ current, results, summaryPayload }) => {
         if(version!==authorityVersion())return;
         if (current) { session = current.session; entries = current.entries; entriesMore = !!current.nextCursor; }
         recall = results;
+        memorySummaries = summaryPayload.items; summaryIds = new Set(summaryPayload.items.map(item => item.id));
       },
     });
     if (!deleted || version!==authorityVersion()) return;

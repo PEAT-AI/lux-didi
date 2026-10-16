@@ -514,6 +514,9 @@ try {
         await auditPage.reload();
         await auditPage.locator('.app-shell').waitFor();
         await auditPage.waitForFunction(() => document.querySelector('#connected-send') !== null);
+        // The pin settles on the next animation frame (autoscroll.ts follow), so wait for the transcript to
+        // reach its settled state before measuring; a genuinely unpinned view times out here and still fails.
+        await auditPage.waitForFunction(() => { const t = document.querySelector('.transcript'); return !t || Math.max(0, Math.round(t.scrollHeight - t.scrollTop - t.clientHeight)) <= 2; }, null, { timeout: 4000 }).catch(() => {});
         const a = await auditLayout(auditPage);
         assertAudit(a, `${viewport.width}x${viewport.height} ${theme}`, failures);
         results[`${viewport.width}x${viewport.height}-${theme}`] = a;

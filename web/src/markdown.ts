@@ -146,10 +146,10 @@ export function chatEntryMarkup(role: 'user' | 'assistant', text: string): strin
     : `<article class="entry user"><p class="bubble">${escapeHtml(text)}</p></article>`;
 }
 
-/** Mirrors server/tools/live-shape.ts stripModelOnlyNotes: a model-only omission/paging note must
- * never reach the owner, including from evidence persisted before the server-side strip. Kept local
- * so the web bundle carries no server import. */
-const MODEL_ONLY_NOTE = /\n*\[omitted: [^\]\n]*\]/g;
+/** Mirrors server/tools/live-shape.ts stripModelOnlyNotes: the model-only bracket annotations
+ * (`[omitted: ...]`, `[+N chars]`, `[id ...]`) must never reach the owner, including from evidence
+ * persisted before the server-side strip. Kept local so the web bundle carries no server import. */
+const MODEL_ONLY_NOTE = /[ \t]*\n*\[(?:omitted: [^\]\n]*|\+\d+ chars|id [^\]\s]*)\]/g;
 
 export function renderToolEvidence(evidence: readonly import('./protocol.ts').ToolEvidence[]): string {
   return evidence.slice(0, 16).map(tool => {

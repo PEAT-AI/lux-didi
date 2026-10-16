@@ -50,7 +50,10 @@ export function attachPin(
   list.addEventListener('scroll', () => { pinned = isPinned(metrics()); report(); }, { passive: true });
   const observer = new MutationObserver(follow);
   observer.observe(list, { childList: true, subtree: true, characterData: true });
+  // A viewport change resizes the list without a mutation: a pinned view follows that too.
+  const resizer = new ResizeObserver(follow);
+  resizer.observe(list);
   pill?.addEventListener('click', () => { pinned = true; settle(); });
   follow();
-  return { repin() { pinned = true; settle(); }, pinned: () => pinned, stop() { if (frame !== undefined) cancelAnimationFrame(frame); observer.disconnect(); } };
+  return { repin() { pinned = true; settle(); }, pinned: () => pinned, stop() { if (frame !== undefined) cancelAnimationFrame(frame); observer.disconnect(); resizer.disconnect(); } };
 }

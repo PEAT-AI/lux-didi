@@ -398,6 +398,11 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
                 return expected;
               });
               if (!call) return { status: 'failed' };
+              // Independent dispatch guard, checked at call time and not at declaration time: a
+              // connector whose current generation is not published and ready never reaches its
+              // handler, even when a stale run snapshot still names one of its tools.
+              const grant = registry.currentGrant(p.endpoint.id);
+              if (!grant || grant.generation !== p.generation) return { status: 'failed' };
               let evidence: Awaited<ReturnType<typeof reader.call>>;
               try { evidence = await reader.call(name, callArgs, context.signal); } catch (error) {
                 const code = error instanceof Error && 'code' in error && typeof error.code === 'string' && isToolFailureCode(error.code) ? error.code : 'handler_outcome';

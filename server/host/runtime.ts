@@ -33,7 +33,7 @@ export interface LiveToolsComposition {
   lookupAuthority(runId: string, signal: AbortSignal): Promise<LiveAuthority | null>;
 }
 
-export interface HostConfig { dataDir: string; webRoot: string; port?: number; descriptor?: string; configDir?: string; ownerProfilePath?: string; modelTesting?: ModelTesting; liveTesting?: LiveTesting; now?: () => number }
+export interface HostConfig { dataDir: string; webRoot: string; port?: number; descriptor?: string; configDir?: string; ownerProfilePath?: string; modelTesting?: ModelTesting; liveTesting?: LiveTesting; now?: () => number; deferConnectors?: boolean }
 export function defaultDataDir(): string {
   if (platform() === 'darwin') return join(homedir(), 'Library', 'Application Support', 'Lux Didi');
   if (platform() === 'win32') return join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'), 'Lux Didi');
@@ -186,7 +186,7 @@ export async function startHost(config: HostConfig) {
       for (const source of authoritySources) { const value = await source(runId, signal); if (value) return value; }
       return null;
     };
-    const mcp = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir: providerConfigDir, lookupAuthority, log: event => log.event(event), connectorLog: (connector, stage) => log.event({ event: 'connector_failure', connector, stage }), identityLog: (connector, proven, match) => log.event({ event: 'connector_identity', connector, proven, match }) });
+    const mcp = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir: providerConfigDir, lookupAuthority, deferConnectors: config.deferConnectors === true, log: event => log.event(event), connectorLog: (connector, stage) => log.event({ event: 'connector_failure', connector, stage }), identityLog: (connector, proven, match) => log.event({ event: 'connector_identity', connector, proven, match }) });
     const liveTools: LiveToolsComposition = {
       owner: mcp.owner,
       connectionIds: () => mcp.connectionIds(),
@@ -212,7 +212,7 @@ export async function startHost(config: HostConfig) {
       await publish(descriptorPath, descriptor); // Never use a stale descriptor as authority or carry bearer material.
       startupStage = 'ready';
       let closed = false;
-      return { store, chat, service, descriptor, descriptorPath, tools: liveTools, async close() {
+      return { store, chat, service, descriptor, descriptorPath, tools: liveTools, start: () => mcp.start(), async close() {
         if (closed) return; closed = true;
         logExit('ready', 'close');
         removeOwnDescriptor(descriptorPath);

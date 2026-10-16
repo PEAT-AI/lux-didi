@@ -1,9 +1,9 @@
-import { liveVoiceTimerDefaults } from '../adapters/live-voice/types.js';
+import { liveVoiceTimerDefaults, isLiveVoiceProvider } from '../adapters/live-voice/types.js';
 import { createHash } from 'node:crypto';
 import type { DataClass } from '../adapters/live-voice/index.js';
 import { validatePersonaOverlay } from '../prompt/live-persona.js';
 import { ownerProfileClasses, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, validateOwnerProfile } from '../prompt/index.js';
-import { LiveConfigError, type AcceptedPromptSnapshot, type LiveLimits, type LiveProfile, type LiveMemoryProvenance } from './types.js';
+import { LiveConfigError, type AcceptedPromptSnapshot, type LiveLimits, type LiveProfile, type LiveMemoryProvenance, type LiveProvider } from './types.js';
 
 const classes: readonly DataClass[] = ['ordinary', 'private', 'sensitive'];
 const modelPattern = /^models\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
@@ -96,7 +96,8 @@ export function validateAcceptedPrompt(input: unknown, ownerId?: string): Accept
 
 export function validateLiveProfile(input: unknown): LiveProfile {
   if (!object(input)) fail('invalid_object');
-  if (input['provider'] !== 'gemini') fail('invalid_provider');
+  const provider = input['provider'];
+  if (!isLiveVoiceProvider(provider)) fail('invalid_provider');
   const liveModelId = text(input['liveModelId'], 'invalid_model');
   if (!modelPattern.test(liveModelId)) fail('invalid_model');
   const voice = text(input['voice'], 'invalid_voice');
@@ -105,7 +106,7 @@ export function validateLiveProfile(input: unknown): LiveProfile {
   const normalizedLanguage = language === undefined ? undefined : languageTag(language);
   if (language !== undefined && normalizedLanguage === undefined) fail('invalid_language');
   const route = input['route'];
-  if (!object(route) || route['enabled'] !== true || route['provider'] !== 'gemini' || route['modelId'] !== liveModelId) fail('invalid_route');
+  if (!object(route) || route['enabled'] !== true || !isLiveVoiceProvider(route['provider']) || route['provider'] !== provider || route['modelId'] !== liveModelId) fail('invalid_route');
   const dataClasses = Object.freeze(classList(route['dataClasses']));
   const prompt = input['prompt'];
   if (!object(prompt)) fail('invalid_prompt');
@@ -115,15 +116,15 @@ export function validateLiveProfile(input: unknown): LiveProfile {
   return Object.freeze({
     ...(input['overlay'] !== undefined ? { overlay: validatePersonaOverlay(input['overlay']) } : {}),
     ...(input['acceptedPrompt'] !== undefined ? { acceptedPrompt: validateAcceptedPrompt(input['acceptedPrompt']) } : {}),
-    provider: 'gemini', liveModelId, voice, keyReference,
+    provider, liveModelId, voice, keyReference,
     ...(normalizedLanguage !== undefined ? { language: normalizedLanguage } : {}),
-    route: Object.freeze({ enabled: true, provider: 'gemini', modelId: liveModelId, dataClasses }),
+    route: Object.freeze({ enabled: true, provider, modelId: liveModelId, dataClasses }),
     prompt: Object.freeze({ text: promptText, dataClass }), limits: limits(input['limits']),
   });
 }
 
 /** Canonical frozen identity from sanitized fields. Shared by the owner, config and status projection. */
-export function liveIdentityOf(input: { provider: 'gemini'; liveModelId: string; voice: string; keyReference: string; modelId: string; dataClasses: readonly DataClass[] }): string {
+export function liveIdentityOf(input: { provider: LiveProvider; liveModelId: string; voice: string; keyReference: string; modelId: string; dataClasses: readonly DataClass[] }): string {
   return createHash('sha256').update(JSON.stringify({
     provider: input.provider, liveModelId: input.liveModelId, voice: input.voice,
     keyReference: input.keyReference,

@@ -1,13 +1,13 @@
 import type { createToolsOwner } from '../tools/index.js';
 import type { ResearchSelector } from '../tools/research.js';
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
-import type { DataClass, LiveVoiceOutcome, LiveVoicePort } from '../adapters/live-voice/index.js';
+import type { DataClass, LiveVoiceOutcome, LiveVoicePort, LiveVoiceProvider } from '../adapters/live-voice/index.js';
 import type { StorePort } from '../contracts/storage.js';
 
 /** The same canonical Store, which alone exposes the canonical assistant identity. */
 export interface LiveStorePort extends StorePort { readonly assistantId: string }
 
-export type LiveProvider = 'gemini';
+export type LiveProvider = LiveVoiceProvider;
 export type LiveLifecycle = 'accepted' | 'opening' | 'active' | 'terminal';
 export type LiveConsumerState = 'detached' | 'attached' | 'ended' | 'backpressure';
 export type LiveInvalidationReason = 'revoked' | 'authority' | 'profile';
@@ -52,12 +52,12 @@ export interface AcceptedPromptSnapshot {
 export interface LiveProfile {
   readonly overlay?: import('../prompt/live-persona.js').PersonaOverlay;
   readonly acceptedPrompt?: AcceptedPromptSnapshot;
-  readonly provider: 'gemini';
+  readonly provider: LiveProvider;
   readonly liveModelId: string;
   readonly voice: string;
   readonly keyReference: string;
   readonly language?: string;
-  readonly route: { readonly enabled: true; readonly provider: 'gemini'; readonly modelId: string; readonly dataClasses: readonly DataClass[] };
+  readonly route: { readonly enabled: true; readonly provider: LiveProvider; readonly modelId: string; readonly dataClasses: readonly DataClass[] };
   readonly prompt: { readonly text: string; readonly dataClass: DataClass };
   readonly limits: LiveLimits;
 }

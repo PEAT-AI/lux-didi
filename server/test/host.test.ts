@@ -596,7 +596,7 @@ test('Live session diagnostics persist only the closed content-free counter sche
       'localWriteEnqueuedCalls','localWriteEnqueuedPCMBytes','localWriteCallbackSuccessCalls','localWriteCallbackSuccessPCMBytes',
       'localWriteCallbackErrorCalls','localWriteCallbackErrorPCMBytes','localWriteCallbackPendingCalls','localWriteCallbackPendingPCMBytes',
       'inputTranscriptionEvents','inputTranscriptionCharacters','generationCompleteEvents','turnCompleteEvents','outputAudioFrames','outputAudioPCMBytes',
-      'outputAudioAfterInitialTurnFrames','outputAudioAfterInitialTurnPCMBytes','headVoiceChars','terminalVoiceChars','toolAnchorChars'];
+      'outputAudioAfterInitialTurnFrames','outputAudioAfterInitialTurnPCMBytes','headVoiceChars','terminalVoiceChars'];
     const event = Object.fromEntries(numeric.map((key, index) => [key, index]));
     log.event({ event: 'live_session_diagnostics', terminalCode: 'client_closed', ...event });
     log.event({ event: 'live_session_diagnostics', terminalCode: 'client_closed', ...event, text: 'SECRET-transcript' });

@@ -286,7 +286,7 @@ try {
         await toggleRight(); await expect('right collapsed again', 'open', 'collapsed'); await shot('right-collapsed-again');
 
         // collapse then expand in each direction: the same control restores the previous width
-        await toggleLeft(); const leftOpen = await expect('left re-open', 'open', 'collapsed');
+        const leftOpen = await expect('left open again', 'open', 'collapsed');
         await toggleLeft(); await expect('left collapse', 'collapsed', 'collapsed');
         await toggleLeft(); const leftAgain = await expect('left expand', 'open', 'collapsed'); await shot('left-collapse-expand');
         assert.equal(leftAgain.left.w, leftOpen.left.w, 'expanding restores the previous left width');
@@ -298,9 +298,11 @@ try {
 
         // keyboard: Cmd/Ctrl+1 toggles the left panel, Cmd/Ctrl+2 the right
         await panelPage.keyboard.press(process.platform === 'darwin' ? 'Meta+1' : 'Control+1');
-        await expect('keyboard left', 'collapsed', 'open');
+        await expect('keyboard left on', 'open', 'open');
         await panelPage.keyboard.press(process.platform === 'darwin' ? 'Meta+2' : 'Control+2');
-        await expect('keyboard right', 'collapsed', 'collapsed');
+        await expect('keyboard right off', 'open', 'collapsed');
+        await panelPage.keyboard.press(process.platform === 'darwin' ? 'Meta+1' : 'Control+1');
+        await expect('keyboard left off', 'collapsed', 'collapsed');
 
         // dragging the divider below the minimum collapses; dragging back out restores
         await toggleLeft();

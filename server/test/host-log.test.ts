@@ -5,23 +5,37 @@ import { safeEvent } from '../host/log.js';
 // The known Live instruction section ids, mirrored from ComposedSection.
 const SECTIONS = ['voice-head', 'base', 'runtime', 'tools', 'owner-style', 'owner-lore', 'overlay', 'pickup', 'memory', 'voice'];
 
+const SIZE = { event: 'live_instruction_sizes', total: 100, sections: { 'voice-head': 30, base: 70 }, languageCode: 'unset', voice: 'Aoede' };
+
 test('live_instruction_sizes keeps a closed section schema of counts only', () => {
-  const event = { event: 'live_instruction_sizes', total: 100, sections: { 'voice-head': 30, base: 70 } };
-  assert.deepEqual(safeEvent(event), event);
-  assert.equal(safeEvent({ ...event, extra: 1 }), undefined, 'an extra key fails closed');
-  assert.equal(safeEvent({ ...event, sections: { 'unknown-section': 1 } }), undefined, 'an unknown section id is refused');
-  assert.equal(safeEvent({ ...event, sections: { base: 'seventy' } }), undefined, 'a non-integer count is refused');
-  assert.equal(safeEvent({ ...event, sections: { base: -1 } }), undefined, 'a negative count is refused');
-  assert.equal(safeEvent({ ...event, total: 1.5 }), undefined, 'a non-integer total is refused');
-  assert.equal(safeEvent({ ...event, total: -1 }), undefined, 'a negative total is refused');
+  assert.deepEqual(safeEvent(SIZE), SIZE);
+  assert.equal(safeEvent({ ...SIZE, extra: 1 }), undefined, 'an extra key fails closed');
+  assert.equal(safeEvent({ ...SIZE, sections: { 'unknown-section': 1 } }), undefined, 'an unknown section id is refused');
+  assert.equal(safeEvent({ ...SIZE, sections: { base: 'seventy' } }), undefined, 'a non-integer count is refused');
+  assert.equal(safeEvent({ ...SIZE, sections: { base: -1 } }), undefined, 'a negative count is refused');
+  assert.equal(safeEvent({ ...SIZE, total: 1.5 }), undefined, 'a non-integer total is refused');
+  assert.equal(safeEvent({ ...SIZE, total: -1 }), undefined, 'a negative total is refused');
   for (const id of SECTIONS) {
-    assert.equal(!!safeEvent({ event: 'live_instruction_sizes', total: 1, sections: { [id]: 1 } }), true, `${id} is a known section id`);
+    assert.equal(!!safeEvent({ ...SIZE, total: 1, sections: { [id]: 1 } }), true, `${id} is a known section id`);
   }
+});
+
+test('live_instruction_sizes carries the effective languageCode and voice as closed metadata', () => {
+  assert.equal(safeEvent({ ...SIZE, languageCode: 'en' })?.languageCode, 'en');
+  assert.equal(safeEvent({ ...SIZE, languageCode: 'en-IN' })?.languageCode, 'en-IN');
+  assert.equal(safeEvent({ ...SIZE, languageCode: 'unset' })?.languageCode, 'unset');
+  assert.equal(safeEvent({ ...SIZE, languageCode: 'en-in' }), undefined, 'an unnormalised tag is refused');
+  assert.equal(safeEvent({ ...SIZE, languageCode: 'english' }), undefined, 'a non-tag is refused');
+  assert.equal(safeEvent({ ...SIZE, languageCode: 'en-IND' }), undefined, 'a three-letter region is refused');
+  assert.equal(safeEvent({ ...SIZE, voice: 'Aoede' })?.voice, 'Aoede');
+  assert.equal(safeEvent({ ...SIZE, voice: 'bad voice' }), undefined, 'an unsafe voice name is refused');
+  assert.equal(safeEvent({ event: 'live_instruction_sizes', total: 1, sections: { base: 1 } }), undefined, 'a size line without the language field fails closed');
+  assert.equal(safeEvent({ event: 'live_instruction_sizes', total: 1, sections: { base: 1 }, languageCode: 'unset' }), undefined, 'a size line without the voice field fails closed');
 });
 
 test('an accent string never survives the host-log allowlist', () => {
   const accent = 'SYNTHETIC-ACCENT-DESCRIPTION';
-  assert.equal(safeEvent({ event: 'live_instruction_sizes', total: 1, sections: { base: 1 }, accent }), undefined);
+  assert.equal(safeEvent({ ...SIZE, total: 1, sections: { base: 1 }, accent }), undefined);
   assert.equal(safeEvent({ event: 'live_session_diagnostics', terminalCode: 'closed', accent }), undefined);
 });
 

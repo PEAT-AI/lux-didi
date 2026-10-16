@@ -106,6 +106,7 @@ async function harness(t: TestContext, overrides: {
   toolError?: boolean;
   scheduler?: DeadlineClock;
   system?: string;
+  language?: string;
   acceptedPrompt?: (ownerId: string) => NonNullable<ReturnType<typeof validateLiveProfile>['acceptedPrompt']>;
   routeClasses?: readonly ('ordinary' | 'private' | 'sensitive')[];
   overlay?: { schemaVersion: 1; text: string; accent?: string };
@@ -123,6 +124,7 @@ async function harness(t: TestContext, overrides: {
   const profile = validateLiveProfile({ ...initialProfile,
     ...(overrides.routeClasses ? { route: { ...initialProfile.route, dataClasses: overrides.routeClasses } } : {}),
     ...(overrides.overlay ? { overlay: overrides.overlay } : {}), ...(overrides.system !== undefined ? { prompt: { text: overrides.system, dataClass: 'ordinary' } } : {}),
+    ...(overrides.language !== undefined ? { language: overrides.language } : {}),
     ...(overrides.acceptedPrompt ? { acceptedPrompt: overrides.acceptedPrompt(store.assistantId) } : {}) });
   const voice = new GeminiLiveVoiceAdapter(options({
     socketFactory: overrides.socketFactory ?? f.socketFactory, modelId: profile.liveModelId, voice: profile.voice, keyReference: profile.keyReference,
@@ -670,6 +672,18 @@ test('live timer defaults are a 5 minute idle and a 60 minute session, and an ex
   const edited = validateLiveProfile(profileInput({ idleMs: 12_345, sessionMs: 67_890 })).limits;
   assert.equal(edited.idleMs, 12_345);
   assert.equal(edited.sessionMs, 67_890);
+});
+
+test('live profile language accepts a BCP-47 tag with optional region, case-normalised, and fails closed', () => {
+  assert.equal(validateLiveProfile(profileInput()).language, undefined, 'no configured language stays unset');
+  assert.equal(validateLiveProfile({ ...profileInput(), language: 'en' }).language, 'en');
+  assert.equal(validateLiveProfile({ ...profileInput(), language: 'en-IN' }).language, 'en-IN');
+  assert.equal(validateLiveProfile({ ...profileInput(), language: 'de-DE' }).language, 'de-DE');
+  assert.equal(validateLiveProfile({ ...profileInput(), language: 'EN-in' }).language, 'en-IN');
+  for (const bad of ['english', 'e', 'en-IND', 'en_US', '', 'en-', '-IN', 'e1', 'en-IN-x', ' en']) {
+    assert.throws(() => validateLiveProfile({ ...profileInput(), language: bad }),
+      (error: unknown) => error instanceof LiveConfigError && error.code === 'invalid_language', `rejects ${JSON.stringify(bad)}`);
+  }
 });
 
 test('profile validation rejects text-model fallback and bounds, and validation precedes credentials', async t => {
@@ -2137,12 +2151,26 @@ test('P1: session start logs the composed instruction size per section', async t
   t.mock.method(console, 'error', (...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
   const h = await harness(t);
   await attached(h, 'p1-size-log');
-  const logged = lines.map(line => { try { return JSON.parse(line) as { event?: string; sections?: Record<string, number>; total?: number }; } catch { return {}; } })
+  const logged = lines.map(line => { try { return JSON.parse(line) as { event?: string; sections?: Record<string, number>; total?: number; languageCode?: string; voice?: string }; } catch { return {}; } })
     .find(entry => entry.event === 'live_instruction_sizes');
   assert.ok(logged, 'a per-section size line is logged at session start');
   assert.ok(typeof logged.total === 'number' && logged.total > 0);
   assert.ok(logged.sections && Object.values(logged.sections).every(value => typeof value === 'number'), 'only counts are logged');
+  assert.equal(logged.languageCode, 'unset', 'no configured language logs unset');
+  assert.equal(logged.voice, 'ExplicitVoice', 'the configured voice name is logged');
   assert.ok(safeEvent(logged as unknown as Record<string, unknown>), 'the size line is accepted by the host log whitelist');
+});
+
+test('P1: session start logs the effective regional languageCode', async t => {
+  const lines: string[] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
+  const h = await harness(t, { language: 'en-IN' });
+  await attached(h, 'p1-size-language');
+  const logged = lines.map(line => { try { return JSON.parse(line) as { event?: string; languageCode?: string; voice?: string }; } catch { return {}; } })
+    .find(entry => entry.event === 'live_instruction_sizes');
+  assert.ok(logged, 'a per-section size line is logged at session start');
+  assert.equal(logged.languageCode, 'en-IN', 'the configured regional tag is logged');
+  assert.equal(logged.voice, 'ExplicitVoice', 'the configured voice name is logged');
 });
 
 test('U1: calendar and Gmail model text carries no raw url and names each source', () => {

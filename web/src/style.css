@@ -148,7 +148,7 @@
 /* A side panel has exactly two states (issue 282): open at its readable width, or collapsed at zero
    width and invisible. The transition is the 150 ms expand/collapse; prefers-reduced-motion turns it off. */
 .sidepanel{opacity:1;transition:flex-basis .15s ease,opacity .15s ease}
-.sidepanel[data-state="collapsed"]{flex-basis:0;min-width:0;opacity:0;pointer-events:none;overflow:hidden;padding:0;border-width:0}
+.sidepanel[data-state="collapsed"]{flex:0 0 0;width:0;min-width:0;opacity:0;pointer-events:none;overflow:hidden;padding:0;border:0;margin:0}
 .sidepanel[data-state="collapsed"] > *{display:none}
 .panel-left[data-state="open"]{min-width:200px}
 .lane-chat{flex:0 0 var(--panel-right-w,360px);display:flex;flex-direction:column;border-left:1px solid var(--border)}

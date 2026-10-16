@@ -221,8 +221,9 @@ try {
   await repin();
 
   await page.setViewportSize({ width: 1440, height: 900 });
-  // The draft frames are about the composer: return both lists to the newest line first.
-  for (const selector of ['#transcript-jump', '#chat-jump']) { const pill = page.locator(selector); if (await pill.isVisible()) await pill.click(); }
+  // The draft frames are about the composer: scroll both lists back to the newest line first.
+  await page.evaluate(() => { for (const selector of ['.transcript', '#connected-entries']) { const el = document.querySelector(selector); if (el) el.scrollTop = el.scrollHeight; } });
+  await page.waitForFunction(() => document.querySelector('#transcript-jump').hidden && document.querySelector('#chat-jump').hidden);
   await page.locator('#connected-draft').fill('Synthetic draft line one\nSynthetic draft line two\nSynthetic draft line three\nSynthetic draft line four\nSynthetic draft line five\nSynthetic draft line six');
   await page.waitForFunction(() => document.querySelector('#connected-draft').getBoundingClientRect().height > 56);
   await sample('1440x900-dark-d-draft');

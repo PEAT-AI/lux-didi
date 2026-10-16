@@ -256,6 +256,8 @@ export class LiveSessionOwner {
   #invalidated = false;
   #providerMemory = new WeakMap<ActiveSession, Map<string, number>>();
   #closed = false;
+  /** The last state projected to the web, so one host-log live_state fires per change (F7). */
+  #lastProjectedState: LivePageProjection['state'] | undefined;
 
   constructor(config: LiveOwnerConfig) {
     if (!config || typeof config !== 'object' || !config.store || !config.voice) throw new LiveError('invalid_config');
@@ -423,7 +425,7 @@ export class LiveSessionOwner {
   current(cursor = 0): LivePageProjection {
     if (!Number.isSafeInteger(cursor) || cursor < 0) throw new LiveError('invalid_request');
     const jobs = this.#jobProjection(false);
-    return this.#store.transaction(tx => {
+    const page = this.#store.transaction(tx => {
       const row = tx.get('SELECT live_session_id,lifecycle,created_at,updated_at,terminal_at,terminal_outcome,memory_provenance FROM live_sessions WHERE owner_assistant_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1', [this.#store.assistantId]);
       if (!row) return { state: 'idle', since: null, ...(jobs.length ? { jobs } : {}), entries: [], cursor };
       const handle = this.#active.get(String(row.live_session_id));
@@ -445,6 +447,16 @@ export class LiveSessionOwner {
       }
       return { state, ...(pastSession ? { pastSession } : {}), since: Number(row.created_at), memory: memoryProjection(row['memory_provenance']), ...(jobs.length ? { jobs } : {}), entries, cursor: rows.length ? Number(rows[rows.length - 1]!.journal_id) : cursor };
     });
+    this.#observeState(page.state);
+    return page;
+  }
+
+  /** One metadata-only host record per projected state change, so the orb timeline is reconstructable
+   *  from host.log even though audio is never journalled (F7). */
+  #observeState(state: LivePageProjection['state']): void {
+    if (state === this.#lastProjectedState) return;
+    this.#lastProjectedState = state;
+    hostLogEvent({ event: 'live_state', state, at: this.#now() });
   }
 
   get(liveSessionId: string): LiveSessionSnapshot {
@@ -853,7 +865,7 @@ export class LiveSessionOwner {
             const responses = event.calls.filter(call => handle.pendingCallIds.has(call.id)).map(call => ({ id: call.id, name: call.name, response: { error: 'tool_processing_failed' } }));
             try { if (responses.length) handle.session.sendToolResponse({ responses }); } catch { /* transport may have terminated */ }
             for (const call of event.calls) handle.pendingCallIds.delete(call.id);
-            handle.thinking = handle.pendingCallIds.size > 0;
+            handle.thinking = responses.length > 0 || handle.pendingCallIds.size > 0;
           }); continue;
         }
         if (event.type === 'toolCallCancellation') {
@@ -872,13 +884,17 @@ export class LiveSessionOwner {
         if (event.type === 'interrupted') {
           for (const id of handle.pendingCallIds) handle.bargeInCallIds.add(id);
           handle.speaking = false;
+          // A barge-in abandons any awaited output, and a tool that never resolves must not leave
+          // THINKING stuck (F4).
+          handle.thinking = false;
           // E1: one metadata-only host record per provider barge-in. Never audio, text or a provider payload.
           hostLogEvent({ event: 'live_interrupted', liveSessionId: handle.liveSessionId,
             turnCompleteSeen: handle.turnCompleteSeen,
             msSinceLastModelAudio: handle.lastModelAudioAt === undefined ? null : this.#now() - handle.lastModelAudioAt });
         }
-        if (event.type === 'turnComplete' || event.type === 'generationComplete') handle.speaking = false;
-        if (event.type === 'turnComplete') handle.turnCompleteSeen = true;
+        // generationComplete alone does not end SPEAKING: the orb holds it until the turn completes
+        // and playback drains (F2).
+        if (event.type === 'turnComplete') { handle.speaking = false; handle.turnCompleteSeen = true; handle.thinking = handle.pendingCallIds.size > 0; }
         if (event.type === 'waitingForInput') { handle.thinking = !event.value; if (event.value) handle.speaking = false; }
         if (event.type === 'audio') {
           handle.thinking = false; handle.speaking = true; handle.lastModelAudioAt = this.#now();
@@ -1188,7 +1204,9 @@ export class LiveSessionOwner {
       } catch { /* A cancelled provider batch or terminal transport cannot receive late answers. */ }
     }
     for (const call of event.calls) { handle.pendingCallIds.delete(call.id); handle.bargeInCallIds.delete(call.id); }
-    handle.thinking = handle.pendingCallIds.size > 0;
+    // A tool result keeps thinking until the model's first output audio or an explicit wait for input,
+    // so the orb never flashes LISTENING between the tool and her speech (F1).
+    handle.thinking = responses.length > 0 || handle.pendingCallIds.size > 0;
   }
   #persist(handle: ActiveSession, event: { type: 'continuity' | 'remember_deferred'; sequence: number; text: string } | LiveVoiceEvent | { type: 'toolCall' | 'toolResult'; sequence: number; tool: LiveToolProjection }, kind: JournalKind, transaction?: Transaction): number | 'overflow' {
     const text = 'text' in event ? event.text : null;

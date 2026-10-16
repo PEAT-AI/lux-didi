@@ -189,7 +189,7 @@ export async function startHost(config: HostConfig) {
       for (const source of authoritySources) { const value = await source(runId, signal); if (value) return value; }
       return null;
     };
-    const mcp = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir: providerConfigDir, lookupAuthority, deferConnectors: config.deferConnectors === true, log: event => log.event(event), connectorLog: (connector, stage) => log.event({ event: 'connector_failure', connector, stage }), identityLog: (connector, proven, match) => log.event({ event: 'connector_identity', connector, proven, match }) });
+    const mcp = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir: providerConfigDir, lookupAuthority, deferConnectors: config.deferConnectors === true, log: event => log.event(event), connectorLog: (connector, stage, detail) => log.event({ event: 'connector_failure', connector, stage, ...(detail ?? {}) }), identityLog: (connector, proven, match) => log.event({ event: 'connector_identity', connector, proven, match }) });
     // Session memory v1: one async distillation per ended Live session, plus the host-start reconciler.
     // The distiller reuses the text model the provider config already names for chat and tools.
     const providerLoaded = loadProviderConfig({ configDir: providerConfigDir, ownerId: store.assistantId });

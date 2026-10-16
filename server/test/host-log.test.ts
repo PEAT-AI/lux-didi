@@ -65,3 +65,26 @@ test('research_subcall carries the calendar window kind as a closed enum', () =>
   assert.equal(safeEvent({ ...base, window: 'yesterday' }), undefined, 'an unknown window is refused');
   assert.equal(safeEvent({ ...base, window: 'tomorrow', extra: 1 }), undefined, 'an extra key fails closed');
 });
+test('connector_failure admits bounded reason, exception, endpoint and attempt, and drops free text', () => {
+  const base = { event: 'connector_failure', connector: 'google', stage: 'first_call' };
+  assert.deepEqual(safeEvent({ ...base, reason: 'sdk_protocol_rejected', exceptionCode: 'PolicyError', endpointId: 'gcal', attempt: 'first-connect' }),
+    { ...base, reason: 'sdk_protocol_rejected', exceptionCode: 'PolicyError', endpointId: 'gcal', attempt: 'first-connect' });
+  assert.deepEqual(safeEvent(base), base, 'the detail fields stay optional');
+  assert.equal(safeEvent({ ...base, reason: 'a free text reason with spaces' }), undefined, 'a free-text reason is refused');
+  assert.equal(safeEvent({ ...base, endpointId: 'has space' }), undefined, 'a non-id endpoint is refused');
+  assert.equal(safeEvent({ ...base, attempt: 'third-time' }), undefined, 'an out-of-vocabulary attempt is refused');
+  assert.equal(safeEvent({ ...base, message: 'SECRET' }), undefined, 'an extra key fails closed');
+});
+
+test('research_joined carries the run id only', () => {
+  assert.deepEqual(safeEvent({ event: 'research_joined', researchId: 'r1' }), { event: 'research_joined', researchId: 'r1' });
+  assert.equal(safeEvent({ event: 'research_joined', researchId: 'r1', question: 'SECRET' }), undefined);
+  assert.equal(safeEvent({ event: 'research_joined', researchId: 'has space' }), undefined);
+});
+
+test('research_subcall keeps a real error code but drops a free-text one', () => {
+  const base = { event: 'research_subcall', researchId: 'r1', kind: 'calendar_window', tool: 'gcal_list', ok: false, items: 0, rawBytes: 0, keptBytes: 0, queryChars: 0, queryAuthor: 'selector' };
+  assert.equal(safeEvent({ ...base, errorCode: 'unknown_tool' })?.errorCode, 'unknown_tool');
+  assert.equal(safeEvent({ ...base, errorCode: 'invalid_arguments' })?.errorCode, 'invalid_arguments');
+  assert.equal(safeEvent({ ...base, errorCode: 'has space' }), undefined);
+});

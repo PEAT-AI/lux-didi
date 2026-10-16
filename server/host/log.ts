@@ -38,12 +38,23 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'tool_failure', code: value.code, tool: value.tool, connector: value.connector, errorClass: value.errorClass, messageHead: value.messageHead };
   }
   if (value.event === 'connector_failure') {
-    // Closed connect-time stage only, never a message, a URL or a credential value.
+    // Closed connect-time stage only, never a message, a URL or a credential value. The diagnostic
+    // fields are bounded tokens; a free-text reason or an out-of-vocabulary attempt drops the event.
     const stages = ['credential', 'spawn', 'handshake', 'first_call'];
+    const attempts = ['first-connect', 'refresh'];
     const token = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(v);
-    if (Object.keys(value).sort().join(',') !== ['connector', 'event', 'stage'].sort().join(',')) return;
+    const hasReason = Object.prototype.hasOwnProperty.call(value, 'reason');
+    const hasException = Object.prototype.hasOwnProperty.call(value, 'exceptionCode');
+    const hasEndpoint = Object.prototype.hasOwnProperty.call(value, 'endpointId');
+    const hasAttempt = Object.prototype.hasOwnProperty.call(value, 'attempt');
+    const allowed = ['connector', 'event', 'stage', ...(hasReason ? ['reason'] : []), ...(hasException ? ['exceptionCode'] : []), ...(hasEndpoint ? ['endpointId'] : []), ...(hasAttempt ? ['attempt'] : [])];
+    if (Object.keys(value).sort().join(',') !== allowed.sort().join(',')) return;
     if (!token(value.connector) || typeof value.stage !== 'string' || !stages.includes(value.stage)) return;
-    return { event: 'connector_failure', connector: value.connector, stage: value.stage };
+    if (hasReason && !token(value.reason)) return;
+    if (hasException && !token(value.exceptionCode)) return;
+    if (hasEndpoint && !isSafeId(value.endpointId)) return;
+    if (hasAttempt && (typeof value.attempt !== 'string' || !attempts.includes(value.attempt))) return;
+    return { event: 'connector_failure', connector: value.connector, stage: value.stage, ...(hasReason ? { reason: value.reason } : {}), ...(hasException ? { exceptionCode: value.exceptionCode } : {}), ...(hasEndpoint ? { endpointId: value.endpointId } : {}), ...(hasAttempt ? { attempt: value.attempt } : {}) };
   }
   if (value.event === 'connector_identity') {
     // Closed identity proof only: a connector name and two booleans, never the identity itself.
@@ -291,6 +302,12 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeCount(value.items) || !isSafeCount(value.rawBytes) || !isSafeCount(value.keptBytes) || !isSafeCount(value.queryChars)) return;
     if (!isSafeMember(value.queryAuthor, ['selector', 'fallback'])) return;
     return { event: 'research_subcall', researchId: value.researchId, kind: value.kind, tool: value.tool, ok: value.ok, ...(hasError ? { errorCode: value.errorCode } : {}), items: value.items, rawBytes: value.rawBytes, keptBytes: value.keptBytes, queryChars: value.queryChars, queryAuthor: value.queryAuthor, ...(hasWindow ? { window: value.window } : {}), ...(hasUnread ? { unread: value.unread } : {}) };
+  }
+  if (value.event === 'research_joined') {
+    // Metadata only: the run id a second start joined. No question, no result text.
+    if (Object.keys(value).sort().join(',') !== ['event', 'researchId'].sort().join(',')) return;
+    if (!isSafeId(value.researchId)) return;
+    return { event: 'research_joined', researchId: value.researchId };
   }
 }
 

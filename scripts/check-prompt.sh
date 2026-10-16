@@ -16,11 +16,15 @@ trap 'rm -rf "$out"' EXIT
 cd "$root"
 # Stage only this unit under a temporary ESM marker, so the isolated worktree
 # follows SERVICE's actual NodeNext conventions without a competing manifest.
-mkdir -p "$out/source/adapters/model" "$out/source/test" "$out/source/prompt" "$out/source/tools"
+mkdir -p "$out/source/adapters/model" "$out/source/test" "$out/source/prompt" "$out/source/tools" "$out/source/host" "$out/source/http" "$out/source/config" "$out/source/contracts"
 cp server/adapters/model/*.ts "$out/source/adapters/model/"
 cp server/tools/declarations.ts server/tools/host-events.ts server/tools/research.ts server/tools/intent.ts server/tools/live-shape.ts "$out/source/tools/"
 cp server/prompt/*.ts "$out/source/prompt/"
-cp server/test/prompt.test.ts server/test/model.test.ts server/test/live-persona.test.ts server/test/runtime-context.test.ts server/test/research.test.ts "$out/source/test/"
+cp server/host/log.ts "$out/source/host/"
+cp server/http/routes.ts "$out/source/http/"
+cp server/config/files.ts "$out/source/config/"
+cp server/contracts/*.ts "$out/source/contracts/"
+cp server/test/prompt.test.ts server/test/model.test.ts server/test/live-persona.test.ts server/test/runtime-context.test.ts server/test/research.test.ts server/test/research-shape.test.ts "$out/source/test/"
 printf '{"type":"module"}\n' > "$out/package.json"
 node "$deps/typescript/bin/tsc" --target ES2023 --module NodeNext --moduleResolution NodeNext \
   --strict --noUncheckedIndexedAccess --exactOptionalPropertyTypes \

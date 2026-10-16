@@ -1,0 +1,121 @@
+import type { ConnectorEvidence, ConnectorResult } from './index.js';
+
+/**
+ * Owner-identity verification for the identity-bearing connectors (release 3f).
+ *
+ * The operator asserts one expected owner identity; each connector proves its own account once
+ * at host start with the connector's own tool. Comparison is exact and case-insensitive. A proof
+ * failure is never a refusal: the connector stays usable, only a positive mismatch refuses it.
+ * Identity values never reach the host log: only a connector name and two booleans.
+ */
+export const IDENTITY_TIMEOUT_MS = 4000;
+
+/** One identity-bearing connector's own-account probe, bound to the reader that can call it. */
+export interface IdentitySource {
+  /** Tool whose result reports the connector's own account identity. */
+  tool: string;
+  args: Record<string, unknown>;
+  /** Every identity string the decoded result reports; empty when the result carries none. */
+  values(decoded: unknown): string[];
+}
+
+/** The closed identity proof the host keeps in memory: booleans for the log, the value for the local UI. */
+export interface IdentityProof {
+  /** The connector answered with at least one identity value. */
+  proven: boolean;
+  /** null when unproven, or when no owner identity is configured (nothing to match against). */
+  match: boolean | null;
+  /** The connector's own primary identity value, for the local UI only; never logged. */
+  value: string | null;
+}
+
+export type IdentityAction = 'offer' | 'refuse' | 'unproven';
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function strings(value: unknown): string[] {
+  return typeof value === 'string' && value.length > 0 ? [value] : [];
+}
+
+/** Trim and case-fold; the identity comparison is exact, never a substring or a domain suffix. */
+export function normalizeIdentity(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+/** True when at least one connector-reported value exactly (case-insensitively) equals an expected identity. */
+export function identityMatch(expected: readonly string[], actual: readonly string[]): boolean {
+  const wanted = new Set(expected.filter(value => value.length > 0).map(normalizeIdentity));
+  return actual.some(value => wanted.has(normalizeIdentity(value)));
+}
+
+/** Gmail proves itself with the profile's emailAddress. */
+export function gmailIdentityValues(decoded: unknown): string[] {
+  return isRecord(decoded) ? strings(decoded['emailAddress']) : [];
+}
+
+/** Calendar proves itself with the primary calendar id; a shared calendar is not an account. */
+export function calendarIdentityValues(decoded: unknown): string[] {
+  if (!isRecord(decoded) || !Array.isArray(decoded['calendars'])) return [];
+  const list = decoded['calendars'].filter(isRecord);
+  const primary = list.filter(entry => entry['primary'] === true);
+  const chosen = primary.length > 0 ? primary : list.filter(entry => typeof entry['id'] === 'string' && entry['id'].includes('@'));
+  return chosen.flatMap(entry => strings(entry['id']));
+}
+
+/** Mattermost proves itself with the session's username and email; either may match. */
+export function mattermostIdentityValues(decoded: unknown): string[] {
+  return isRecord(decoded) ? [...strings(decoded['username']), ...strings(decoded['email'])] : [];
+}
+
+/** Classify one identity probe: a refused/unknown result or an empty value set is unproven. */
+export function classifyIdentity(result: ConnectorResult, source: IdentitySource, expected: readonly string[]): IdentityProof {
+  if (!('decodedResult' in result)) return { proven: false, match: null, value: null };
+  const values = source.values((result as ConnectorEvidence).decodedResult);
+  const value = values[0] ?? null;
+  if (value === null) return { proven: false, match: null, value: null };
+  if (expected.length === 0) return { proven: true, match: null, value };
+  return { proven: true, match: identityMatch(expected, values), value };
+}
+
+/** The one decision the host takes on a proof: offer the connector, refuse a mismatch, else keep it unproven. */
+export function identityAction(proof: IdentityProof): IdentityAction {
+  if (proof.match === false) return 'refuse';
+  return proof.proven ? 'offer' : 'unproven';
+}
+
+/**
+ * Run one connector identity probe under a short timeout. A throw, a timeout, a refused call or an
+ * empty value set is unproven, never a refusal: the connector stays usable and is shown unverified.
+ */
+export async function proveIdentity(input: {
+  source: IdentitySource;
+  expected: readonly string[];
+  call(tool: string, args: Record<string, unknown>): Promise<ConnectorResult>;
+  timeoutMs?: number;
+}): Promise<IdentityProof> {
+  const timeoutMs = input.timeoutMs ?? IDENTITY_TIMEOUT_MS;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const result = await Promise.race([
+      input.call(input.source.tool, input.source.args),
+      new Promise<ConnectorResult>(resolve => { timer = setTimeout(() => resolve({ state: 'unknown', reason: 'identity-timeout' }), timeoutMs); }),
+    ]);
+    return classifyIdentity(result, input.source, input.expected);
+  } catch {
+    return { proven: false, match: null, value: null };
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+/** Closed projection of a stored proof for the status payload; anything unvalidated is dropped. */
+export function projectIdentity(value: unknown): IdentityProof | undefined {
+  if (!isRecord(value) || typeof value['proven'] !== 'boolean') return undefined;
+  const match = value['match'];
+  if (match !== null && typeof match !== 'boolean') return undefined;
+  const raw = value['value'];
+  const identityValue = typeof raw === 'string' && raw.length > 0 && raw.length <= 254 ? raw : null;
+  return { proven: value['proven'], match, value: identityValue };
+}

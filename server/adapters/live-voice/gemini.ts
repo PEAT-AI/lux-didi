@@ -16,6 +16,8 @@ const TOOL_VOICE_ANCHOR_TAIL = '. Do not read raw text, ids or URLs.';
 // A carried accent restates at each recency frontier; without one every text is byte-identical to before.
 const freshOpening = (accent: string | undefined): string => accent === undefined ? FRESH_OPENING : `${FRESH_OPENING_ACCENT}${accent}`;
 export const toolVoiceAnchor = (accent: string | undefined): string => accent === undefined ? TOOL_VOICE_ANCHOR : `${TOOL_VOICE_ANCHOR_ACCENT}${accent}${TOOL_VOICE_ANCHOR_TAIL}`;
+// The languageCode actually written to the setup frame: bare `ar` is pinned to `ar-XA`, else it passes through.
+export const effectiveLanguageCode = (languageCode: string): string => languageCode === 'ar' ? 'ar-XA' : languageCode;
 // Issue 1014: the one Live write tool. It is declared NON_BLOCKING and its reply is scheduled SILENT,
 // so a memory save never interrupts the turn; every read tool stays BLOCKING.
 const MEMORY_TOOL = 'remember_note';
@@ -130,7 +132,7 @@ export class GeminiLiveVoiceAdapter implements LiveVoicePort {
     const setup = JSON.stringify({ setup: {
       model: settings.modelId,
       sessionResumption: request.resumptionHandle ? { handle: request.resumptionHandle } : {},
-      generationConfig: { responseModalities: ['AUDIO'], speechConfig: { ...(request.languageCode ? { languageCode: request.languageCode === 'ar' ? 'ar-XA' : request.languageCode } : {}), voiceConfig: { prebuiltVoiceConfig: { voiceName: settings.voice } } },
+      generationConfig: { responseModalities: ['AUDIO'], speechConfig: { ...(request.languageCode ? { languageCode: effectiveLanguageCode(request.languageCode) } : {}), voiceConfig: { prebuiltVoiceConfig: { voiceName: settings.voice } } },
         ...(!live38 ? { thinkingConfig: { thinkingLevel: 'minimal' } } : {}) },
       ...(declarations?.length ? { tools: [{ functionDeclarations: declarations }] } : {}),
       contextWindowCompression: { slidingWindow: { targetTokens: 32000 } },

@@ -486,6 +486,8 @@ export interface ResearchSubcallLog {
   queryAuthor: 'selector' | 'fallback';
   /** Calendar sub-calls only: the resolved window kind, a closed enum, never a time or title. */
   window?: WindowKind;
+  /** Calendar sub-calls only: how many selected calendars the read did not reach before the deadline. */
+  unread?: number;
 }
 
 export interface ResearchDeps {
@@ -704,22 +706,27 @@ export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResul
       for (const line of raw.filter(entry => entry.startsWith('- '))) {
         const parts = line.slice(2).replace(/\s*\[id [^\]]+\]/g, '').trim().split(' | ');
         const subject = parts[0] ?? '';
-        const sender = parts[1] ?? '';
-        const date = (parts[2] ?? '').trim();
-        const excerpt = parts.slice(3).join(' | ');
-        lines.push(`${sender} | ${subject} | ${date}${excerpt ? ` | ${clip(excerpt, RESEARCH.mailSnippetChars)}` : ''}`);
+        let sender = ''; let date = '';
+        const rest: string[] = [];
+        for (const part of parts.slice(1)) {
+          if (part.startsWith('from: ')) sender = part.slice(6).trim();
+          else if (part.startsWith('date: ')) date = part.slice(6).trim();
+          else rest.push(part);
+        }
+        const excerpt = clip(rest.join(' | '), RESEARCH.mailSnippetChars);
+        lines.push([sender, subject, date, excerpt].filter(value => value !== '').join(' | '));
         total += 1;
       }
     } else if (result.name === INTERNAL.mailRead) {
       const head: Record<string, string> = {};
       let index = 0;
       for (; index < raw.length; index++) {
-        const match = /^(subject|from|date): (.*)$/.exec(raw[index]!);
+        const match = /^(subject|from|to|date|cc|labels|attachments): (.*)$/.exec(raw[index]!);
         if (!match) break;
-        head[match[1]!] = match[2]!;
+        if (match[1] === 'subject' || match[1] === 'from' || match[1] === 'date') head[match[1]!] = match[2]!;
       }
       const body = clip(raw.slice(index).join(' '), RESEARCH.openedBodyChars);
-      lines.push(`${head['from'] ?? 'unknown sender'} | ${head['subject'] ?? '(no subject)'} | ${head['date'] ?? 'unknown date'} | ${body}`);
+      lines.push([head['from'] ?? '', head['subject'] ?? '(no subject)', head['date'] ?? '', body].filter(value => value !== '').join(' | '));
       total += 1;
     } else if (result.name === INTERNAL.knowledgeSearch || result.name === INTERNAL.knowledgeRead) {
       const items = insightItems(raw);
@@ -967,6 +974,8 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
         for (const [index, sub] of [...subs, ...second].entries()) {
           const result = results[index];
           const raw = sub.args['query'] ?? sub.args['q'];
+          const calText = result?.text ?? '';
+          const partial = /\[calendar read incomplete: (\d+) calendars? not read\]/.exec(calText);
           logSubcall({
             event: 'research_subcall', researchId: run.researchId, kind, tool: sub.name,
             ok: result?.ok ?? false, ...(result !== undefined && !result.ok && result.code !== undefined ? { errorCode: result.code } : {}),
@@ -974,6 +983,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
             rawBytes: result?.originalCharacters ?? 0, keptBytes: result?.text.length ?? 0,
             queryChars: typeof raw === 'string' ? raw.length : 0, queryAuthor,
             ...(kind === 'calendar_window' ? { window: windowKind(action?.window ?? 'today') } : {}),
+            ...(partial ? { unread: Number(partial[1]) } : {}),
           });
         }
       }));

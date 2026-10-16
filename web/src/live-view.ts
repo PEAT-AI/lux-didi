@@ -4,7 +4,7 @@ import { escapeHtml, renderMarkdown, sourcesFooter, TRANSCRIPT_MARKDOWN } from '
 import { toolConnector, toolPhrase, toolPhrases } from './tool-phrases.ts';
 import type { VoiceState } from './orb.ts';
 import { levelPeak, playbackPeak } from './orb-level.ts';
-import type { LiveCurrent, LiveEntry, LiveSource, LiveState, LiveTool } from './protocol.ts';
+import type { LiveCurrent, LiveEntry, LiveJob, LiveSource, LiveState, LiveTool } from './protocol.ts';
 
 const LABELS: Record<LiveState, string> = {
   idle: 'Ready when you are',
@@ -332,6 +332,16 @@ export function earlierSession(previous: LiveCurrent | undefined): EarlierSessio
   return { at, html: `<details class="feed-session" data-seg="earlier:${at}"><summary class="feed-divider">${sessionSummaryMarkup(previous, at)}</summary><div class="feed-session-body">${items.map(segment => segment.html).join('')}</div></details>` };
 }
 
+/** A job's raw state word shown as a plain human sentence; the enum token never reaches the panel. */
+export function jobStateLabel(state: LiveJob['state']): string {
+  switch (state) {
+    case 'in_progress': return 'Background task in progress';
+    case 'completed': return 'Background task finished';
+    case 'failed': return 'Background task failed';
+    case 'unknown': return 'Background task was interrupted before its result was known';
+  }
+}
+
 /** The wrapper notices inside the live panel: muted, stale, error and restored. Kept apart from the
  * feed body so a poll can repaint them in place without a full render (spec 1.3 cause 2). */
 export function liveNoticesMarkup(live: LiveCurrent | undefined, poll: LivePollState = {}): string {
@@ -347,7 +357,7 @@ export function liveNoticesMarkup(live: LiveCurrent | undefined, poll: LivePollS
 
 /** The background job results, kept in their own container so a poll repaints them in place. */
 export function liveJobsMarkup(live: LiveCurrent | undefined): string {
-  return (live?.jobs ?? []).map(job => `<article class="live-job" data-job-id="${escapeHtml(job.id)}"><p class="live-tool-chip">${job.state === 'in_progress' ? 'Background task in progress' : 'Background task ' + escapeHtml(job.state)}</p>${renderMarkdown(job.markdown, TRANSCRIPT_MARKDOWN)}${!job.delivered && job.state !== 'in_progress' ? '<p class="muted">Call Naya back: choose Start Live voice in the native app to pick up this result.</p>' : ''}</article>`).join('');
+  return (live?.jobs ?? []).map(job => `<article class="live-job" data-job-id="${escapeHtml(job.id)}"><p class="live-tool-chip">${escapeHtml(jobStateLabel(job.state))}</p>${renderMarkdown(job.markdown, TRANSCRIPT_MARKDOWN)}${!job.delivered && job.state !== 'in_progress' ? '<p class="muted">Call Naya back: choose Start Live voice in the native app to pick up this result.</p>' : ''}</article>`).join('');
 }
 
 /** The idle feed: one calm invitation, reused by the wrapper and the in-place transcript painter. */

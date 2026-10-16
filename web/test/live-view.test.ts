@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { createContext, runInContext } from 'node:vm';
-import { liveStateLabel, liveVoiceState, pendingToolNames, liveLabel, liveDelay, mergeLive, liveTranscript, liveResult, liveMarkup, liveActivity, activityMarkup, SLOW_TOOL_MS, liveSegments, sessionItems, sessionDividerText, earlierSession, turnHeadline, sessionTurnCount, sessionHeadline, FEED_EMPTY } from '../src/live-view.ts';
+import { liveStateLabel, liveVoiceState, pendingToolNames, liveLabel, liveDelay, mergeLive, liveTranscript, liveResult, liveMarkup, liveActivity, activityMarkup, jobStateLabel, SLOW_TOOL_MS, liveSegments, sessionItems, sessionDividerText, earlierSession, turnHeadline, sessionTurnCount, sessionHeadline, FEED_EMPTY } from '../src/live-view.ts';
 import { posture } from '../src/orb-level.ts';
 import './connector-status.test.ts';
 import { pollLiveView } from '../src/live-view.ts';
@@ -665,6 +665,7 @@ test('the PROCESSING override follows the playback band, never the owner capture
   assert.equal(posture('ERROR', { level: 0, playback: 0 }), 'quiet');
 });
 
+
 // --- FE1: the living feed (large orb, item types, per-session boundary) ---
 
 test('FE1 the live session opens with its dated divider', () => {
@@ -767,4 +768,20 @@ test('FE1-R1 the orb caption carries the state word only, never the activity row
   const caption = source.slice(source.indexOf('function orbCaptionMarkup()'), source.indexOf('function orbStageMarkup()'));
   assert.doesNotMatch(caption, /activityLineMarkup|activityMarkup|feed-activity/, 'the activity row lives in the feed alone');
   assert.match(caption, /voice-state/);
+});
+test('a job state renders as a plain human sentence, never the raw enum token (M1)', () => {
+  assert.equal(jobStateLabel('in_progress'), 'Background task in progress');
+  assert.equal(jobStateLabel('completed'), 'Background task finished');
+  assert.equal(jobStateLabel('failed'), 'Background task failed');
+  assert.equal(jobStateLabel('unknown'), 'Background task was interrupted before its result was known');
+  for (const state of ['in_progress', 'completed', 'failed', 'unknown'] as const) {
+    assert.equal(jobStateLabel(state).includes('unknown'), false, 'the raw state word never reaches the panel');
+  }
+});
+
+test('a live job card shows the plain sentence, not "Background task unknown" (M1)', () => {
+  const live = { state: 'idle', entries: [], cursor: 0, jobs: [{ id: 'j1', originSessionId: 's1', state: 'unknown', createdAt: 0, markdown: 'result', delivered: false }] } as LiveCurrent;
+  const html = liveMarkup(live);
+  assert.match(html, /Background task was interrupted before its result was known/);
+  assert.equal(html.includes('Background task unknown'), false);
 });

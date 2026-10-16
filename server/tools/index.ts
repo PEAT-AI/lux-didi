@@ -409,7 +409,9 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
                 options.log?.({ event: 'tool_failure', code, tool: name, connector: p.connector, errorClass: error instanceof SyntaxError ? 'SyntaxError' : error instanceof Error ? 'Error' : 'UnknownThrow', messageHead: code });
                 return { status: code === 'connector_error' || code === 'handler_outcome' ? 'failed' : 'unknown', code };
               }
-              if (context.signal.aborted) return { status: 'unknown' };
+              // A completed read carries real data even when the turn deadline fired while it finished:
+              // never discard it silently (F9 partial calendar reads); a refused or unknown result stays unknown.
+              if (context.signal.aborted && evidence.state !== 'completed') return { status: 'unknown' };
               if (evidence.state === 'unknown') {
                 const code = dispatchedFailureCode(evidence.reason);
                 options.log?.({ event: 'tool_failure', code, tool: name, connector: p.connector, errorClass: 'Error', messageHead: code });

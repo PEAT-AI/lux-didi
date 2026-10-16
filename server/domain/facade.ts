@@ -2,6 +2,7 @@ import type { DomainContext, DomainOperation, DomainOperations, DomainPort, Tran
 import { REMINDER_ROUTE, REMINDER_UNBOUND_GRANT } from './contract.js';
 import type { DomainTarget, OutboxEvent, OutboxPort } from './contract.js';
 import * as memory from './memory.js';
+import * as summaries from './summaries.js';
 import type { Clock } from './memory.js';
 import * as commitments from './commitments.js';
 import type { CommitmentRecord } from './commitments.js';
@@ -230,6 +231,17 @@ class Domain implements DomainPort {
       case 'plan': {
         const i = input as DomainOperations['plan']['input'];
         return dto.toPlanDTO(commitments.dailyPlan(tx, i.date, i.timeZone)) as DomainOperations[K]['output'];
+      }
+      case 'listSummaries':
+        return { items: summaries.listSummaries(tx).map(record => ({
+          id: record.id, liveSessionId: record.liveSessionId, status: record.status, summary: record.summary,
+          endedAt: record.endedAt === null ? null : new Date(record.endedAt).toISOString(), model: record.model,
+          inputChars: record.inputChars, inputTruncated: record.inputTruncated,
+          injectedSummaryIds: [...record.injectedSummaryIds], createdAt: new Date(record.createdAt).toISOString(),
+        })) } as DomainOperations[K]['output'];
+      case 'deleteSummary': {
+        const i = input as DomainOperations['deleteSummary']['input'];
+        return summaries.deleteSummary(tx, i.id) as DomainOperations[K]['output'];
       }
       default: {
         throw new Error(`unknown domain operation: ${String(op)}`);

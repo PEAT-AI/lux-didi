@@ -14,6 +14,15 @@ const requiredKeys = ['schemaVersion', 'enabled', 'provider', 'modelId', 'voice'
 const classes: readonly DataClass[] = ['ordinary', 'private', 'sensitive'];
 const modelPattern = /^models\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
+// A two-letter language with an optional two-letter region, case-normalised, or undefined when the
+// tag carries a script/sub-language or no two-letter language. The setup languageCode keeps this
+// end to end; the voice anchor (a separate consumer) still reduces to the bare primary locally.
+function liveLanguageTag(value: string | undefined): string | undefined {
+  if (typeof value !== 'string' || !/^[A-Za-z]{2}(?:-[A-Za-z]{2})?$/.test(value)) return undefined;
+  const [primary = '', region] = value.split('-');
+  return region === undefined ? primary.toLowerCase() : `${primary.toLowerCase()}-${region.toUpperCase()}`;
+}
+
 /** The frozen, sanitized Live identity. Never carries key bytes or prompt text. */
 export interface LiveConfiguredProfile {
   readonly preferences: ValidatedPreferences;
@@ -83,6 +92,7 @@ export function loadLiveConfig(options: { configDir: string; ownerId: string; ow
     // fails closed into a typed status instead of silently falling back to the public base.
     const overlay = loadPersonaOverlay({ dataDir: dirname(options.configDir) });
     const language = canonicalSpeechLanguage(preferences.language);
+    const setupLanguage = liveLanguageTag(preferences.language) ?? language;
     if (input['enabled'] === false) return { status: 'disabled', config };
     // Freeze the Naya baseline and voice anchor; the validated overlay joins at session CREATE.
     const composed = composeLiveInstruction({
@@ -102,7 +112,7 @@ export function loadLiveConfig(options: { configDir: string; ownerId: string; ow
     });
     const profile = validateLiveProfile({
       provider: input['provider'], liveModelId: model, voice: chosenVoice, keyReference: reference,
-      ...(language !== undefined ? { language } : {}),
+      ...(setupLanguage !== undefined ? { language: setupLanguage } : {}),
       route: { enabled: true, provider: input['provider'], modelId: model, dataClasses },
       prompt: { text: composed.text, dataClass: preferences.dataClass },
       ...(overlay !== undefined ? { overlay } : {}),

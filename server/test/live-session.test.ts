@@ -106,9 +106,11 @@ async function harness(t: TestContext, overrides: {
   toolError?: boolean;
   scheduler?: DeadlineClock;
   system?: string;
+  language?: string;
   acceptedPrompt?: (ownerId: string) => NonNullable<ReturnType<typeof validateLiveProfile>['acceptedPrompt']>;
   routeClasses?: readonly ('ordinary' | 'private' | 'sensitive')[];
   overlay?: { schemaVersion: 1; text: string; accent?: string };
+  onSessionTerminal?: (liveSessionId: string) => void;
   memoryFailure?: boolean;
   failingWrite?: string;
 } = {}): Promise<Harness> {
@@ -123,6 +125,7 @@ async function harness(t: TestContext, overrides: {
   const profile = validateLiveProfile({ ...initialProfile,
     ...(overrides.routeClasses ? { route: { ...initialProfile.route, dataClasses: overrides.routeClasses } } : {}),
     ...(overrides.overlay ? { overlay: overrides.overlay } : {}), ...(overrides.system !== undefined ? { prompt: { text: overrides.system, dataClass: 'ordinary' } } : {}),
+    ...(overrides.language !== undefined ? { language: overrides.language } : {}),
     ...(overrides.acceptedPrompt ? { acceptedPrompt: overrides.acceptedPrompt(store.assistantId) } : {}) });
   const voice = new GeminiLiveVoiceAdapter(options({
     socketFactory: overrides.socketFactory ?? f.socketFactory, modelId: profile.liveModelId, voice: profile.voice, keyReference: profile.keyReference,
@@ -237,6 +240,7 @@ async function harness(t: TestContext, overrides: {
     }
     toolOwner.projectConnection('lux');
     tools = { owner: toolOwner, connectionIds: () => ['lux', ...(overrides.mattermost ? ['mattermost'] : []), ...(overrides.calendar ? ['calendar'] : [])] };
+    if (overrides.onSessionTerminal) tools = Object.assign({ ...tools }, { onSessionTerminal: overrides.onSessionTerminal });
     t.after(async () => { await port.close(); await transport.close(); await sdk.close(); if (mattermostSdk) await mattermostSdk.close(); if (calendarSdk) await calendarSdk.close(); });
   }
   const memorySource = (tx: import('../contracts/storage.js').Transaction) => {
@@ -670,6 +674,18 @@ test('live timer defaults are a 5 minute idle and a 60 minute session, and an ex
   const edited = validateLiveProfile(profileInput({ idleMs: 12_345, sessionMs: 67_890 })).limits;
   assert.equal(edited.idleMs, 12_345);
   assert.equal(edited.sessionMs, 67_890);
+});
+
+test('live profile language accepts a BCP-47 tag with optional region, case-normalised, and fails closed', () => {
+  assert.equal(validateLiveProfile(profileInput()).language, undefined, 'no configured language stays unset');
+  assert.equal(validateLiveProfile({ ...profileInput(), language: 'en' }).language, 'en');
+  assert.equal(validateLiveProfile({ ...profileInput(), language: 'en-IN' }).language, 'en-IN');
+  assert.equal(validateLiveProfile({ ...profileInput(), language: 'de-DE' }).language, 'de-DE');
+  assert.equal(validateLiveProfile({ ...profileInput(), language: 'EN-in' }).language, 'en-IN');
+  for (const bad of ['english', 'e', 'en-IND', 'en_US', '', 'en-', '-IN', 'e1', 'en-IN-x', ' en']) {
+    assert.throws(() => validateLiveProfile({ ...profileInput(), language: bad }),
+      (error: unknown) => error instanceof LiveConfigError && error.code === 'invalid_language', `rejects ${JSON.stringify(bad)}`);
+  }
 });
 
 test('profile validation rejects text-model fallback and bounds, and validation precedes credentials', async t => {
@@ -1556,7 +1572,7 @@ test('loadLiveConfig keeps public prompt bytes and composes classified owner sec
     const expected = composeLiveInstruction({ base: NAYA_BASE, accent: overlay.accent, language: 'de' });
     const accepted = composeLiveInstruction({ base: NAYA_BASE, ownerProfile, accent: overlay.accent, language: 'de' });
     assert.deepEqual(status.config.profile.overlay, overlay);
-    assert.equal(status.config.profile.language, 'de');
+    assert.equal(status.config.profile.language, 'de-DE', 'the owner regional tag is kept for the setup frame');
     assert.equal(status.config.profile.prompt.text, expected.text);
     assert.equal(status.config.profile.acceptedPrompt?.system, accepted.text);
     assert.ok(accepted.text.length > 4096);
@@ -2137,12 +2153,27 @@ test('P1: session start logs the composed instruction size per section', async t
   t.mock.method(console, 'error', (...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
   const h = await harness(t);
   await attached(h, 'p1-size-log');
-  const logged = lines.map(line => { try { return JSON.parse(line) as { event?: string; sections?: Record<string, number>; total?: number }; } catch { return {}; } })
+  const logged = lines.map(line => { try { return JSON.parse(line) as { event?: string; sections?: Record<string, number>; total?: number; languageCode?: string; voice?: string }; } catch { return {}; } })
     .find(entry => entry.event === 'live_instruction_sizes');
   assert.ok(logged, 'a per-section size line is logged at session start');
   assert.ok(typeof logged.total === 'number' && logged.total > 0);
   assert.ok(logged.sections && Object.values(logged.sections).every(value => typeof value === 'number'), 'only counts are logged');
+  assert.equal(logged.languageCode, 'unset', 'no configured language logs unset');
+  assert.equal(logged.voice, 'ExplicitVoice', 'the configured voice name is logged');
   assert.ok(safeEvent(logged as unknown as Record<string, unknown>), 'the size line is accepted by the host log whitelist');
+});
+
+test('P1: session start logs the effective regional languageCode', async t => {
+  const lines: string[] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
+  const h = await harness(t, { language: 'en-IN' });
+  await attached(h, 'p1-size-language');
+  const logged = lines.map(line => { try { return JSON.parse(line) as { event?: string; languageCode?: string; voice?: string }; } catch { return {}; } })
+    .find(entry => entry.event === 'live_instruction_sizes');
+  assert.ok(logged, 'a per-section size line is logged at session start');
+  assert.equal(logged.languageCode, 'en-IN', 'the configured regional tag is logged');
+  assert.equal(logged.voice, 'ExplicitVoice', 'the configured voice name is logged');
+  assert.equal(h.requests.at(-1)!.languageCode, 'en-IN', 'the profile language reaches the adapter request');
 });
 
 test('U1: calendar and Gmail model text carries no raw url and names each source', () => {
@@ -2380,4 +2411,25 @@ test('F4: a pending research call is journalled as called, never error', async t
   const tools = rows.map(row => JSON.parse(String(row['tool_json'])) as { name?: string; status?: string });
   const research = tools.find(tool => tool.name === 'research');
   assert.equal(research?.status, 'called', `a pending research call is called; saw ${JSON.stringify(tools)}`);
+});
+
+// --- session memory v1: terminal distillation is scheduled, never awaited by close -------------
+
+test('a terminal Live session schedules distillation without awaiting it and records injected summary ids', async t => {
+  const terminal: string[] = [];
+  let release: (() => void) | undefined;
+  const neverSettles = new Promise<void>(resolve => { release = resolve; });
+  const h = await harness(t, { tools: true, onSessionTerminal: liveSessionId => { terminal.push(liveSessionId); return neverSettles as unknown as void; } });
+  const session = h.owner.create({ idempotencyKey: 'summary-terminal', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await h.f.frame(1);
+  h.f.send({ setupComplete: {} });
+  await Promise.all([attachment.ready, h.f.frame(2)]);
+  h.owner.revoke(session.liveSessionId);
+  // revoke returned while the hook's promise is still pending: close never awaited distillation.
+  assert.deepEqual(terminal, [session.liveSessionId]);
+  await attachment.done;
+  release?.();
+  const row = h.store.transaction(tx => tx.get('SELECT memory_provenance FROM live_sessions WHERE live_session_id=?', [session.liveSessionId])!);
+  assert.ok(String(row['memory_provenance']).includes('injectedSummaryIds'));
 });

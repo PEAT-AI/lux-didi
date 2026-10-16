@@ -304,6 +304,29 @@ test('a test-only port with different capabilities drives the live session with 
   await attachment.done;
 });
 
+test('the host reuses a resumption handle only when the adapter declares the capability', async t => {
+  for (const supportsResumption of [true, false]) {
+    const fake = fakeLiveVoicePort({ supportsResumption });
+    const h = await harness(t, { port: fake.port, language: 'en-IN' });
+    const session = h.owner.create({ idempotencyKey: `resume-cap-${supportsResumption}`, inputClass: 'ordinary' }, h.ctx);
+    const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+    await attachment.ready;
+    const storedHandle = (): unknown => h.store.transaction(tx => tx.get('SELECT resumption_handle FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]))!['resumption_handle'];
+    fake.emit({ type: 'resumptionHandle', handle: 'resumption-h1' });
+    for (let i = 0; i < 100 && storedHandle() !== 'resumption-h1'; i++) await tick();
+    assert.equal(storedHandle(), 'resumption-h1', 'the adapter handle is persisted');
+    // A goAway is a recoverable outcome; the host rebuilds and decides from the declared capability whether to reuse the handle.
+    fake.emit({ type: 'goAway', timeLeftMs: 5000 });
+    for (let i = 0; i < 100 && fake.sessionsOpened < 2; i++) await tick();
+    assert.equal(fake.sessionsOpened, 2, 'the host reopened on the recoverable outcome');
+    const reopened = h.requests.at(-1)!;
+    if (supportsResumption) assert.equal(reopened.resumptionHandle, 'resumption-h1', 'the declared capability reuses the handle');
+    else assert.equal(reopened.resumptionHandle, undefined, 'a port without the capability gets no handle');
+    h.owner.revoke(session.liveSessionId);
+    await attachment.done;
+  }
+});
+
 test('typed text reaches the adapter as a realtime text turn and journals a You turn', async t => {
   const h = await harness(t);
   await attached(h, 'typed');

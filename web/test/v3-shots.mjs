@@ -221,6 +221,8 @@ try {
   await repin();
 
   await page.setViewportSize({ width: 1440, height: 900 });
+  // The draft frames are about the composer: return both lists to the newest line first.
+  for (const selector of ['#transcript-jump', '#chat-jump']) { const pill = page.locator(selector); if (await pill.isVisible()) await pill.click(); }
   await page.locator('#connected-draft').fill('Synthetic draft line one\nSynthetic draft line two\nSynthetic draft line three\nSynthetic draft line four\nSynthetic draft line five\nSynthetic draft line six');
   await page.waitForFunction(() => document.querySelector('#connected-draft').getBoundingClientRect().height > 56);
   await sample('1440x900-dark-d-draft');

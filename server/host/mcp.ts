@@ -12,7 +12,7 @@ import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { bindingDigestOf, isStdioEndpoint, type CallRequest, type McpPort, type ReadGrant, type ResultScope, type ToolDefinition } from '../adapters/mcp/port.js';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
 import { CONNECTOR_ENVELOPES } from '../connectors/index.js';
-import { identityAction, proveIdentity, type IdentityProof } from '../connectors/identity.js';
+import { identityAction, proveIdentity, IDENTITY_TIMEOUT_MS, type IdentityProof } from '../connectors/identity.js';
 
 export interface McpConnectionBundle {
   state: 'applied' | 'unchanged' | 'refused' | 'pending';
@@ -239,7 +239,12 @@ export async function composeMcpRuntime(options: {
         registry.grantProbe(entry.id, { tool: identitySource.tool, generation: policy.generation, schemaDigest: policy.schemaDigest, account: policy.endpoint.account, resource: policy.endpoint.resource, tools: discovery.tools });
         try {
           const reader = descriptor.createReader({ port, registry, endpoint: policy.endpoint, schemaDigest: policy.schemaDigest, generation: policy.generation, policy });
-          identity = await proveIdentity({ source: identitySource, expected: expectedIdentities, call: (tool, args) => reader.call(tool, args) });
+          // The proof is one read call, so it is bounded by the endpoint's own call deadline (30 s for a
+          // configured read connector), never a shorter fixed bound. A healthy connector whose first
+          // identity call is slow under host load is proven rather than wrongly marked unproven and
+          // fail-closed; a connector that never answers still times out at the call deadline and stays
+          // uncallable.
+          identity = await proveIdentity({ source: identitySource, expected: expectedIdentities, timeoutMs: callTimeoutMsByEndpoint.get(entry.id) ?? IDENTITY_TIMEOUT_MS, call: (tool, args) => reader.call(tool, args) });
         } finally { registry.clearProbe(entry.id); }
         if (stale()) return;
         options.identityLog?.(entry.connector, identity.proven, identity.match);

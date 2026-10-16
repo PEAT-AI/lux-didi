@@ -143,8 +143,10 @@ test('the tools conduct text is authored, generic and names no connector beyond 
   for (const retired of ['calendar', 'mail', 'brief', 'search', 'chat']) {
     assert.doesNotMatch(NAYA_TOOLS, new RegExp(`:\\s*${retired}\\b`, 'i'), `retired routing target: ${retired}`);
   }
-  // It names the source families the research tool reaches instead of routing to a tool per family.
+  // It names every configured source family the research tool reaches, instead of routing to a tool per
+  // family. Mail is included because it was the incident's working case (R2 stage 1).
   assert.match(NAYA_TOOLS, /his calendar and availability/);
+  assert.match(NAYA_TOOLS, /his mail/);
   assert.match(NAYA_TOOLS, /the team chat/);
   assert.match(NAYA_TOOLS, /his knowledge base of notes/);
   assert.match(NAYA_TOOLS, /Paging and omission notes in a result are for you; never read them aloud\./);

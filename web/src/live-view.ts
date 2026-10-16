@@ -274,14 +274,15 @@ export function liveSegments(live: LiveCurrent | undefined, earlier: EarlierSess
   const items = sessionItems(live);
   // A terminal newest session is not the live feed: its items collapse under their dated divider, so a
   // new session starts fresh instead of inheriting the ended one (spec 1.3 cause 1, page-side only).
-  if (live?.pastSession) {
-    if (items.length) {
-      const at = sessionDividerText(live.pastSession.endedAt ?? live.since);
-      segments.push({ key: 'past-session', html: `<details class="feed-session" data-seg="past-session"><summary class="feed-divider">${escapeHtml(at)}</summary><div class="feed-session-body">${items.map(segment => segment.html).join('')}</div></details>` });
-    }
+  if (live?.pastSession && items.length) {
+    segments.push({ key: 'empty', html: FEED_EMPTY });
+    const at = sessionDividerText(live.pastSession.endedAt ?? live.since);
+    segments.push({ key: 'past-session', html: `<details class="feed-session" data-seg="past-session"><summary class="feed-divider">${escapeHtml(at)}</summary><div class="feed-session-body">${items.map(segment => segment.html).join('')}</div></details>` });
   } else if (items.length) {
     if (live?.since) segments.push({ key: 'divider:session', html: `<div class="feed-divider" data-seg="divider:session" role="separator">${escapeHtml(sessionDividerText(live.since))}</div>` });
     segments.push(...items);
+  } else if (live) {
+    segments.push({ key: 'empty', html: FEED_EMPTY });
   }
   return segments;
 }
@@ -314,11 +315,11 @@ export function liveJobsMarkup(live: LiveCurrent | undefined): string {
 }
 
 /** The idle feed: one calm invitation, reused by the wrapper and the in-place transcript painter. */
-export const FEED_EMPTY = '<p class="feed-empty transcript-placeholder muted">Ask me anything<br><span>Start with the mic or \u2318\u21e7Space</span></p>';
+export const FEED_EMPTY = '<p class="feed-empty transcript-placeholder muted" data-seg="empty">Ask me anything<br><span>Start with the mic or \u2318\u21e7Space</span></p>';
 
 export function liveMarkup(live: LiveCurrent | undefined, poll: LivePollState = {}): string {
   const flow = liveSegments(live, poll.earlier).map(segment => segment.html);
-  const body = live?.pastSession ? FEED_EMPTY + flow.join('') : (flow.join('') || FEED_EMPTY);
+  const body = flow.join('') || FEED_EMPTY;
   return `<section class="lane-convo live" id="live-panel" aria-label="Naya live conversation">
     <div class="feed-notices" id="feed-notices">${liveNoticesMarkup(live, poll)}</div>
     <div class="feed live-turns">${body}</div>

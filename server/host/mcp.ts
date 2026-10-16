@@ -317,21 +317,15 @@ export async function composeMcpRuntime(options: {
   let startPromise: Promise<void> | undefined;
   const run = async (): Promise<void> => {
     if (closed) return;
-    // Outcome 4: one bounded re-discovery per run for a connector whose first connect failed at
-    // first_call, so a transient failure recovers without a host restart. Never repeated.
-    const rediscovered = new Set<string>();
     await Promise.all(active.map(async entry => {
       const token = (generations.get(entry.id) ?? 0) + 1;
       generations.set(entry.id, token);
       // Any generation bump revokes the superseded grant before a replacement can publish, so an
       // already-admitted session snapshot cannot dispatch through the old generation.
       registry.suspend(entry.id);
-      const first = await settle(entry, token, 'first-connect').catch(() => ({ retryable: false }));
-      if (!first.retryable || closed || rediscovered.has(entry.id)) return;
-      rediscovered.add(entry.id);
-      const retryToken = (generations.get(entry.id) ?? 0) + 1;
-      generations.set(entry.id, retryToken);
-      await settle(entry, retryToken, 'refresh').catch(() => { /* the per-connector report already carries the failure */ });
+      // The startup path makes one connect pass only. A first_call failure is reported and left for
+      // a background retry; it must never double the five-second startup bound.
+      await settle(entry, token, 'first-connect').catch(() => { /* the per-connector report already carries the failure */ });
     }));
   };
   const composition: McpRuntimeComposition = {

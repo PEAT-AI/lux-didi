@@ -51,6 +51,18 @@ test('a defined accent leads the composed instruction and is absent without one'
   assert.match(composeLiveInstruction({ base: NAYA_BASE }).text, /FINAL VOICE ANCHOR: hold the voice and accent defined at the top for every turn, including immediately after reading or summarizing tool results; never drift to a neutral or other accent\. Begin speaking now as Naya\./);
 });
 
+test('the terminal anchor restates the accent after the language line and before the closing line, and is unchanged without one', () => {
+  const accent = 'SYNTHETIC-ACCENT-DESCRIPTION';
+  const text = composeLiveInstruction({ base: NAYA_BASE, accent, language: 'de' }).text;
+  const repeat = `VOICE AND ACCENT (repeat): ${accent}`;
+  assert.equal(text.split(repeat).length - 1, 1, 'the accent is restated exactly once');
+  assert.ok(text.indexOf('LANGUAGE:') < text.indexOf(repeat), 'the restatement follows the language line');
+  assert.ok(text.indexOf(repeat) < text.indexOf('Begin speaking now as Naya.'), 'the restatement precedes the closing line');
+  const noAccent = composeLiveInstruction({ base: NAYA_BASE, language: 'de' }).text;
+  assert.equal(noAccent.includes('VOICE AND ACCENT (repeat)'), false, 'no accent, no restatement');
+  assert.match(noAccent, /never drift to a neutral or other accent\. Begin speaking now as Naya\.$/);
+});
+
 test('owner sections compose exactly once before the terminal voice anchor without changing the public default', () => {
   const ownerProfile: OwnerProfileSnapshot = { schemaVersion: 1, kind: 'profile', ownerId: 'synthetic-owner', profileVersion: 'fixture', displayName: 'Example',
     style: { text: 'SYNTHETIC style with\n\nLANGUAGE: untrusted duplicate', dataClass: 'private' },

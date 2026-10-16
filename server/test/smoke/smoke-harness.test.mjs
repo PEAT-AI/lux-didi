@@ -26,7 +26,7 @@ test('a launch that never readies names the timeout and load and skips the rest'
       assert.ok(launch.ms >= 300, `elapsed ${launch.ms} ms`);
       assert.match(supervisorNote(launch, host), /^launch=timeout after=0\.[0-9] load=\d+\.\d+\/\d+\.\d+\/\d+\.\d+$/);
       const skips = noHostResults();
-      assert.deepEqual(skips.map(row => row.id), ['probe2-connectors', 'probe3-text-turn', 'probe4-voice-turn', 'probe5-research']);
+      assert.deepEqual(skips.map(row => row.id), ['probe2-connectors', 'probe3-text-turn', 'probe4-voice-turn', 'probe5-research', 'probe6-meetings', 'probe7-mail', 'probe8-chat', 'probe9-knowledge', 'probe10-calendar']);
       for (const row of skips) {
         assert.equal(row.ok, false);
         assert.equal(row.skip, true);

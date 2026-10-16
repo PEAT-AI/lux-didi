@@ -2,6 +2,7 @@ import { clientDiagnostic } from '../http/routes.js';
 import { TOOL_FAILURE_CODES } from '../adapters/model/types.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 import { ConfigError } from '../config/files.js';
+import { LIVE_INSTRUCTION_SECTION_IDS } from '../prompt/live-persona.js';
 import { closeSync, constants, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, renameSync, unlinkSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -41,6 +42,14 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!token(value.connector) || typeof value.stage !== 'string' || !stages.includes(value.stage)) return;
     return { event: 'connector_failure', connector: value.connector, stage: value.stage };
   }
+  if (value.event === 'connector_identity') {
+    // Closed identity proof only: a connector name and two booleans, never the identity itself.
+    const token = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(v);
+    if (Object.keys(value).sort().join(',') !== ['connector', 'event', 'match', 'proven'].sort().join(',')) return;
+    if (!token(value.connector) || typeof value.proven !== 'boolean') return;
+    if (value.match !== null && typeof value.match !== 'boolean') return;
+    return { event: 'connector_identity', connector: value.connector, proven: value.proven, match: value.match };
+  }
   if (value.event === 'mattermost_shape') {
     // Closed shape: tool, recognised shape kind and sizes only, never any message content.
     const token = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(v);
@@ -76,12 +85,23 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
       'localWriteEnqueuedCalls','localWriteEnqueuedPCMBytes','localWriteCallbackSuccessCalls','localWriteCallbackSuccessPCMBytes',
       'localWriteCallbackErrorCalls','localWriteCallbackErrorPCMBytes','localWriteCallbackPendingCalls','localWriteCallbackPendingPCMBytes',
       'inputTranscriptionEvents','inputTranscriptionCharacters','generationCompleteEvents','turnCompleteEvents','outputAudioFrames','outputAudioPCMBytes',
-      'outputAudioAfterInitialTurnFrames','outputAudioAfterInitialTurnPCMBytes'];
+      'outputAudioAfterInitialTurnFrames','outputAudioAfterInitialTurnPCMBytes','headVoiceChars','terminalVoiceChars','toolAnchorChars'];
     const keys = ['event','terminalCode',...numeric].sort();
     if (Object.keys(value).sort().join(',') !== keys.join(',') || typeof value.terminalCode !== 'string'
       || !/^[a-z][a-z0-9_]{0,63}$/.test(value.terminalCode)
       || numeric.some(key => !Number.isSafeInteger(value[key]) || Number(value[key]) < 0)) return;
     return Object.fromEntries(['event','terminalCode',...numeric].map(key => [key, value[key]]));
+  }
+  if (value.event === 'live_instruction_sizes') {
+    // Closed shape: a total and per-section character counts only, every id a known section, never text.
+    if (Object.keys(value).sort().join(',') !== ['event','total','sections'].sort().join(',')) return;
+    if (!Number.isSafeInteger(value.total) || Number(value.total) < 0) return;
+    const sections = value.sections;
+    if (!sections || typeof sections !== 'object' || Array.isArray(sections)) return;
+    const ids = Object.keys(sections);
+    if (ids.length > 16 || ids.some(id => !(LIVE_INSTRUCTION_SECTION_IDS as readonly string[]).includes(id)
+      || !Number.isSafeInteger((sections as Record<string, unknown>)[id]) || Number((sections as Record<string, unknown>)[id]) < 0)) return;
+    return { event: 'live_instruction_sizes', total: value.total, sections: Object.fromEntries(ids.map(id => [id, (sections as Record<string, unknown>)[id]])) };
   }
   if (value.event === 'live_frame_rejected') {
     // Closed shape: code, error constructor name, frame kind, byte length and key-name paths only, never a value or id.
@@ -183,7 +203,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'research_run') {
     // 241: run metadata only (rounds, candidate kinds, pUseful, dispositions, latencies, selector timing),
     // never question text, evidence or item ids.
-    const keys = ['event', 'researchId', 'questionClass', 'rounds', 'perRound', 'stopReason', 'status', 'ops', 'sources', 'elapsedMs', 'deadAirMs', 'selectorMs', 'fallbackUsed', 'replyBytes'];
+    const keys = ['event', 'researchId', 'questionClass', 'rounds', 'perRound', 'stopReason', 'status', 'ops', 'sources', 'elapsedMs', 'deadAirMs', 'selectorMs', 'fallbackUsed', 'replyBytes', 'unchecked', 'canContinue', 'findingChars'];
     // #260: the run's own driver is optional (a stop line makes no selection) but is admitted only as
     // one of the three; any other value refuses the whole event, as the closed sets above do.
     const hasDriver = Object.prototype.hasOwnProperty.call(value, 'driver');
@@ -221,7 +241,22 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
       if (!isSafeMember(row.kind, RESEARCH_SOURCES) || !isSafeMember(row.disposition, RESEARCH_DISPOSITIONS) || !isSafeCount(row.latencyMs)) return;
       sources.push({ kind: row.kind, disposition: row.disposition, latencyMs: row.latencyMs });
     }
-    return { event: 'research_run', researchId: value.researchId, questionClass: value.questionClass, rounds: value.rounds, perRound, stopReason: value.stopReason, status: value.status, ops: value.ops, sources, elapsedMs: value.elapsedMs, deadAirMs: value.deadAirMs, selectorMs: value.selectorMs, fallbackUsed: value.fallbackUsed, replyBytes: value.replyBytes, ...(hasDriver ? { driver: value.driver } : {}) };
+    if (!Array.isArray(value.unchecked) || value.unchecked.length > 8 || !isSafeMembers(value.unchecked, RESEARCH_SOURCES)) return;
+    if (typeof value.canContinue !== 'boolean') return;
+    if (!Array.isArray(value.findingChars) || value.findingChars.length > 32 || value.findingChars.some(count => !isSafeCount(count))) return;
+    return { event: 'research_run', researchId: value.researchId, questionClass: value.questionClass, rounds: value.rounds, perRound, stopReason: value.stopReason, status: value.status, ops: value.ops, sources, elapsedMs: value.elapsedMs, deadAirMs: value.deadAirMs, selectorMs: value.selectorMs, fallbackUsed: value.fallbackUsed, replyBytes: value.replyBytes, unchecked: value.unchecked, canContinue: value.canContinue, findingChars: value.findingChars, ...(hasDriver ? { driver: value.driver } : {}) };
+  }
+  if (value.event === 'research_subcall') {
+    // Q1: one metadata-only record per internal sub-call, never the query or result text.
+    const subKeys = ['event', 'researchId', 'kind', 'tool', 'ok', 'items', 'rawBytes', 'keptBytes', 'queryChars', 'queryAuthor'];
+    const hasError = Object.prototype.hasOwnProperty.call(value, 'errorCode');
+    if (Object.keys(value).sort().join(',') !== (hasError ? [...subKeys, 'errorCode'] : subKeys).sort().join(',')) return;
+    if (!isSafeId(value.researchId) || !isSafeMember(value.kind, RESEARCH_CANDIDATES) || !isSafeToken(value.tool)) return;
+    if (typeof value.ok !== 'boolean') return;
+    if (hasError && !isSafeToken(value.errorCode)) return;
+    if (!isSafeCount(value.items) || !isSafeCount(value.rawBytes) || !isSafeCount(value.keptBytes) || !isSafeCount(value.queryChars)) return;
+    if (!isSafeMember(value.queryAuthor, ['selector', 'fallback'])) return;
+    return { event: 'research_subcall', researchId: value.researchId, kind: value.kind, tool: value.tool, ok: value.ok, ...(hasError ? { errorCode: value.errorCode } : {}), items: value.items, rawBytes: value.rawBytes, keptBytes: value.keptBytes, queryChars: value.queryChars, queryAuthor: value.queryAuthor };
   }
 }
 

@@ -10,6 +10,7 @@ import { redactDeletedMemorySnapshots } from '../live/index.js';
 import type { ConnectedStatus } from '../host/connected.js';
 import { ServiceError } from '../contracts/errors.js';
 import { clientDiagnostic, object, resolveRoute } from './routes.js';
+import { projectIdentity } from '../connectors/identity.js';
 import { ConversationSelection, NO_SELECTION } from './conversationSelection.js';
 import { createStaticHandler } from './static.js';
 import type { DataClass } from '../adapters/live-voice/index.js';
@@ -156,12 +157,15 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
               : /^credential .* missing or invalid$/.test(error) ? 'credential_missing'
               : /unreachable|ECONNREFUSED|ENOTFOUND|ETIMEDOUT/.test(error) ? 'unreachable'
               : /discovery/.test(error) ? 'discovery_failed'
-              : /handshake/.test(error) ? 'handshake_failed' : 'unknown';
+              : /handshake/.test(error) ? 'handshake_failed'
+              : /identity/.test(error) ? 'identity_mismatch' : 'unknown';
+            const identity = projectIdentity(row.identity);
             return {
               id: typeof row.id === 'string' && /^[\w.-]{1,128}$/.test(row.id) ? row.id : 'unknown', state,
               tools: typeof row.tools === 'number' && Number.isSafeInteger(row.tools) && row.tools >= 0 ? row.tools : 0,
               lastHandshakeAt: typeof row.lastHandshakeAt === 'string' && /^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/.test(row.lastHandshakeAt) && Number.isFinite(Date.parse(row.lastHandshakeAt)) ? row.lastHandshakeAt : null,
               reasonCode,
+              ...(identity ? { identity } : {}),
               ...(configurationError ? { configurationError } : {}),
             };
           });

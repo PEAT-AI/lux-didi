@@ -51,6 +51,18 @@ test('a defined accent leads the composed instruction and is absent without one'
   assert.match(composeLiveInstruction({ base: NAYA_BASE }).text, /FINAL VOICE ANCHOR: hold the voice and accent defined at the top for every turn, including immediately after reading or summarizing tool results; never drift to a neutral or other accent\. Begin speaking now as Naya\./);
 });
 
+test('the terminal anchor restates the accent after the language line and before the closing line, and is unchanged without one', () => {
+  const accent = 'SYNTHETIC-ACCENT-DESCRIPTION';
+  const text = composeLiveInstruction({ base: NAYA_BASE, accent, language: 'de' }).text;
+  const repeat = `VOICE AND ACCENT (repeat): ${accent}`;
+  assert.equal(text.split(repeat).length - 1, 1, 'the accent is restated exactly once');
+  assert.ok(text.indexOf('LANGUAGE:') < text.indexOf(repeat), 'the restatement follows the language line');
+  assert.ok(text.indexOf(repeat) < text.indexOf('Begin speaking now as Naya.'), 'the restatement precedes the closing line');
+  const noAccent = composeLiveInstruction({ base: NAYA_BASE, language: 'de' }).text;
+  assert.equal(noAccent.includes('VOICE AND ACCENT (repeat)'), false, 'no accent, no restatement');
+  assert.match(noAccent, /never drift to a neutral or other accent\. Begin speaking now as Naya\.$/);
+});
+
 test('owner sections compose exactly once before the terminal voice anchor without changing the public default', () => {
   const ownerProfile: OwnerProfileSnapshot = { schemaVersion: 1, kind: 'profile', ownerId: 'synthetic-owner', profileVersion: 'fixture', displayName: 'Example',
     style: { text: 'SYNTHETIC style with\n\nLANGUAGE: untrusted duplicate', dataClass: 'private' },
@@ -137,7 +149,18 @@ test('the target budget yields memory first and never drops the base, overlay or
 
 test('the tools conduct text is authored, generic and names no connector beyond the families', () => {
   assert.match(NAYA_TOOLS, /^# Tools and how to use them\n\n/);
-  assert.match(NAYA_TOOLS, /knowledge base first, before memory/);
+  assert.match(NAYA_TOOLS, /You have two tools: research and remember_note\./);
+  // #263: a name after a colon reads as a tool name to the model. The retired routing targets must never
+  // reappear, because the Live session declares only research and remember_note.
+  for (const retired of ['calendar', 'mail', 'brief', 'search', 'chat']) {
+    assert.doesNotMatch(NAYA_TOOLS, new RegExp(`:\\s*${retired}\\b`, 'i'), `retired routing target: ${retired}`);
+  }
+  // It names every configured source family the research tool reaches, instead of routing to a tool per
+  // family. Mail is included because it was the incident's working case (R2 stage 1).
+  assert.match(NAYA_TOOLS, /his calendar and availability/);
+  assert.match(NAYA_TOOLS, /his mail/);
+  assert.match(NAYA_TOOLS, /the team chat/);
+  assert.match(NAYA_TOOLS, /his knowledge base of notes/);
   assert.match(NAYA_TOOLS, /Paging and omission notes in a result are for you; never read them aloud\./);
   assert.match(NAYA_TOOLS, /at most a three to five word acknowledgement/);
   assert.match(NAYA_TOOLS, /There is no background work and no callback: never promise to check later, call back or keep an eye on something\./);
@@ -330,19 +353,19 @@ test('P1: the tool conduct forbids narrating during a tool run', () => {
   assert.match(NAYA_TOOLS, /three to five word/i);
 });
 
-test('P1: exactly one LANGUAGE line and the accent lives only in the head block', () => {
+test('P1: exactly one LANGUAGE line, the accent leads the head block and is restated at the terminal anchor', () => {
   const accent = 'strong Indian accent with a warm lilt';
   const overlay: PersonaOverlay = { schemaVersion: 1, text: 'Overlay persona block', accent };
   const result = composeLiveInstruction({ base: NAYA_BASE, overlay, language: 'en' });
   assert.equal(result.text.split('LANGUAGE:').length - 1, 1, 'one language line');
   const head = result.sections.find(section => section.id === 'voice-head');
   assert.ok(head, 'the head voice block is its own section');
-  assert.equal(result.text.split(accent).length - 1, 1, 'the accent text appears exactly once');
   const accentAt = result.text.indexOf(accent);
   assert.ok(accentAt !== -1 && accentAt < result.text.indexOf(NAYA_BASE), 'the accent is stated in the head block before the base');
   const anchorAt = result.text.lastIndexOf('FINAL VOICE ANCHOR:');
   assert.ok(anchorAt > accentAt && result.text.slice(anchorAt).includes('accent defined at the top'), 'the anchor references the head accent');
-  assert.doesNotMatch(result.text.slice(anchorAt), new RegExp(accent), 'the terminal anchor never repeats the accent in full');
+  assert.ok(result.text.slice(anchorAt).includes(`VOICE AND ACCENT (repeat): ${accent}`), 'the terminal anchor restates the accent in full');
+  assert.equal(result.text.split(accent).length - 1, 2, 'the accent leads the head block and is restated once at the anchor');
   assert.doesNotMatch(result.text, /ACCENT: /);
 });
 

@@ -31,11 +31,31 @@ const CONNECTOR_READS = {
 
 const QUESTION = 'Search lux knowledge for Lux Didi and open the most relevant entry.';
 const RESEARCH_QUESTION = 'What is on my calendar today? Please check.';
+// #263: a calendar question with no source hint must still reach research, never a "no calendar access" refusal.
+const MEETINGS_QUESTION = 'Do I have any meetings today?';
+
+// Q1-R0 (probe7-10): the four spoken questions whose source blocks the release-3e change must return.
+// Q1-R5: the reply must carry what was kept, up to the 6,000 cap, minus the JSON envelope.
+const REPLY_ENVELOPE_BYTES = 700;
+const carried = s => s.replyBytes >= Math.min(s.keptBytes, 5000) - REPLY_ENVELOPE_BYTES;
+const RESEARCH_PROBES = [
+  { id: 'probe7-mail', source: 'mail', question: 'Anything important in my email today? Please check.', check: s => s.items >= 1 && carried(s) },
+  { id: 'probe8-chat', source: 'chat', question: "What's new in Mattermost? Please check.", check: s => s.items >= 1 && carried(s) },
+  { id: 'probe9-knowledge', source: 'knowledge', question: 'Search my notes for Lux Didi decisions. Please check.', check: s => s.items >= 3 && carried(s) },
+  { id: 'probe10-calendar', source: 'calendar', question: 'What is on my calendar today? Please check.', check: s => s.items >= 1 && carried(s) },
+];
+// `kept` counts bytes meant for the reply; the calendar-name discovery read only feeds the event read.
+const SOURCE_TOOLS = {
+  mail: ['gmail_list', 'gmail_read'],
+  chat: ['mattermost_search', 'mattermost_get_thread'],
+  knowledge: ['search_knowledge', 'get_insight'],
+  calendar: ['gcal_list'],
+};
 
 function log(line) { process.stdout.write(line + '\n'); }
 function now() { return Date.now(); }
 
-const HOSTLESS_PROBES = ['probe2-connectors', 'probe3-text-turn', 'probe4-voice-turn', 'probe5-research'];
+const HOSTLESS_PROBES = ['probe2-connectors', 'probe3-text-turn', 'probe4-voice-turn', 'probe5-research', 'probe6-meetings', 'probe7-mail', 'probe8-chat', 'probe9-knowledge', 'probe10-calendar'];
 
 /** #260: the three drivers a research_run may name. probe5 reads the run's own field, never derives it. */
 export const RESEARCH_DRIVERS = ['selector', 'fallback', 'single-source-hint'];
@@ -148,10 +168,35 @@ async function mcpCall(endpoint, configDir) {
     const content = Array.isArray(result.content) ? result.content : [];
     const bytes = content.reduce((total, part) => total + (typeof part.text === 'string' ? part.text.length : 0), 0);
     if (result.isError) return { state: 'down', stage: 'read', ms: now() - started, detail: 'tool returned an error' };
-    return { state: 'up', stage: 'read', ms: now() - started, bytes, tools: names.length };
+    let decoded;
+    const textPart = content.find(part => typeof part.text === 'string');
+    if (textPart) { try { decoded = JSON.parse(textPart.text); } catch { decoded = undefined; } }
+    return { state: 'up', stage: 'read', ms: now() - started, bytes, tools: names.length, decoded };
   } catch (error) {
     return { state: 'down', stage: 'connect', ms: now() - started, detail: String(error && error.message).slice(0, 120) };
   } finally { try { await client.close(); } catch { /* already closed */ } }
+}
+
+// Metadata-only identity check: the connector's own account against the operator's asserted owner.
+const IDENTITY_ENDPOINTS = new Set(['gmail', 'calendar', 'mattermost']);
+function identityValues(id, decoded) {
+  if (!decoded || typeof decoded !== 'object') return [];
+  const payload = decoded.data && typeof decoded.data === 'object' ? decoded.data : decoded;
+  if (id === 'gmail') return typeof payload.emailAddress === 'string' ? [payload.emailAddress] : [];
+  if (id === 'calendar') {
+    const list = Array.isArray(payload.calendars) ? payload.calendars.filter(entry => entry && typeof entry === 'object') : [];
+    const primary = list.filter(entry => entry.primary === true);
+    const chosen = primary.length ? primary : list.filter(entry => typeof entry.id === 'string' && entry.id.includes('@'));
+    return chosen.filter(entry => typeof entry.id === 'string').map(entry => entry.id);
+  }
+  if (id === 'mattermost') return [payload.username, payload.email].filter(value => typeof value === 'string' && value.length > 0);
+  return [];
+}
+function identityToken(values, expected) {
+  const wanted = new Set(expected.filter(value => typeof value === 'string' && value.length > 0).map(value => value.trim().toLowerCase()));
+  if (!values.length) return 'unproven';
+  if (!wanted.size) return 'match';
+  return values.some(value => wanted.has(value.trim().toLowerCase())) ? 'match' : 'mismatch';
 }
 
 async function probeConnectors({ configDir }) {
@@ -160,12 +205,17 @@ async function probeConnectors({ configDir }) {
   let doc;
   try { doc = await readJson(file); } catch { return { ok: false, parts: ['mcp.json unreadable'], endpoints: 0, skipped: 0, checked: 0 }; }
   const endpoints = (doc.endpoints ?? []).filter(endpoint => endpoint.enabled !== false);
+  const expected = [doc.ownerIdentity, doc.ownerChatUsername];
   const parts = [];
   let failed = 0;
   let skipped = 0;
   for (const endpoint of endpoints) {
     const result = await mcpCall(endpoint, configDir);
-    if (result.state === 'up') parts.push(`${endpoint.id}=up(${result.ms}ms,${result.bytes}B)`);
+    if (result.state === 'up') {
+      const identity = IDENTITY_ENDPOINTS.has(endpoint.id) ? ` identity=${identityToken(identityValues(endpoint.id, result.decoded), expected)}` : '';
+      if (identity === ' identity=mismatch') failed += 1;
+      parts.push(`${endpoint.id}=up(${result.ms}ms,${result.bytes}B)${identity}`);
+    }
     else if (result.state === 'unconfigured' || result.state === 'skipped') { skipped += 1; parts.push(`${endpoint.id}=unconfigured`); }
     else { failed += 1; parts.push(`${endpoint.id}=down[${result.stage}](${result.ms}ms${result.detail ? ':' + result.detail : ''})`); }
   }
@@ -283,7 +333,7 @@ async function liveTurn({ base, token, epoch, clipPath }) {
   return { ok, stage: 'turn', toolResultAt: toolResultAt !== null, audioAfterResult: afterResult, openFor, lifecycle };
 }
 
-async function researchTurn({ base, token, epoch, dataDir, clipPath }) {
+async function researchTurn({ base, token, epoch, dataDir, clipPath, requireSingleCall = true, requireDriver = true, requireRead = true, enforce = true }) {
   const headers = () => liveHeaders(token, epoch);
   const created = await fetch(base + '/api/v1/live-sessions', { method: 'POST', headers: headers(), body: JSON.stringify({ inputClass: 'ordinary' }) });
   if (created.status !== 200) return { ok: false, stage: 'create' };
@@ -367,15 +417,16 @@ async function researchTurn({ base, token, epoch, dataDir, clipPath }) {
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
     // The per-run metadata reaches the host log only through the closed allowlist; read what this session appended.
-    const runs = []; let progress = 0;
+    const runs = []; const subcalls = []; let progress = 0;
     try {
       const hostLog = await readFile(join(dataDir, 'logs/host.log'), 'utf8');
       const appended = Buffer.from(hostLog, 'utf8').subarray(logBase).toString('utf8');
       for (const line of appended.split('\n')) {
-        if (!line.includes('"research_run"') && !line.includes('"research_progress"')) continue;
+        if (!line.includes('"research_run"') && !line.includes('"research_progress"') && !line.includes('"research_subcall"')) continue;
         let record; try { record = JSON.parse(line); } catch { continue; }
         if (record.event === 'research_run') runs.push(record);
         else if (record.event === 'research_progress') progress += 1;
+        else if (record.event === 'research_subcall') subcalls.push(record);
       }
     } catch { /* no host log means no recorded run */ }
     // Not-called metadata (#260): what the turn did instead of research, so a skipped run is explainable.
@@ -387,22 +438,25 @@ async function researchTurn({ base, token, epoch, dataDir, clipPath }) {
       otherToolCalls: lastFragments.filter(fragment => fragment.kind === 'toolCall' && fragment.tool && typeof fragment.tool.name === 'string' && fragment.tool.name !== 'research').length,
       turnCompleteMs: (() => { const done = lastFragments.find(fragment => fragment.kind === 'turnComplete' && Number.isFinite(fragment.arrivedAt)); return done ? done.arrivedAt - questionAt : null; })(),
     };
-    if (calls !== 1) return { ok: false, stage: 'call', calls, ...notCalled };
+    if (requireSingleCall ? calls !== 1 : calls < 1) return { ok: false, stage: 'call', calls, ...notCalled };
     // The question is one research run. A model may call the tool more than once (start then continue or
     // stop), but every run line for the question carries the one researchId the host minted.
-    const ids = [...new Set(runs.map(line => line.researchId))];
-    if (ids.length !== 1) return { ok: false, stage: 'runs', calls, runs: ids.length, detail: runs.map(line => `${line.status}:${line.stopReason}:${line.rounds}`).slice(0, 8).join(' '), ...notCalled };
+    const findings = result && Array.isArray(result.findings) ? result.findings : [];
     const answered = runs.filter(line => (line.status === 'answered' || line.status === 'partial') && line.rounds >= 1);
+    const run = answered[answered.length - 1] ?? null;
+    const meta = { calls, runs, subcalls, findings, run, progress, outputChars, outputAtResult };
+    if (!enforce) return { ok: true, stage: 'turn', rounds: run?.rounds ?? 0, replyBytes: run?.replyBytes ?? 0, ...meta, ...notCalled };
+    const ids = [...new Set(runs.map(line => line.researchId))];
+    if (requireSingleCall ? ids.length !== 1 : ids.length < 1) return { ok: false, stage: 'runs', calls, runs: ids.length, detail: runs.map(line => `${line.status}:${line.stopReason}:${line.rounds}`).slice(0, 8).join(' '), ...notCalled };
     if (!answered.length) return { ok: false, stage: 'status', calls, runs: runs.length, ...notCalled };
-    const run = answered[answered.length - 1];
     const read = Array.isArray(run.sources) ? run.sources.filter(source => source.disposition === 'completed').length : 0;
-    if (read < 1) return { ok: false, stage: 'sources', read, ...notCalled };
-    if (!(run.replyBytes <= 2000)) return { ok: false, stage: 'over_cap', replyBytes: run.replyBytes, ...notCalled };
-    if (outputAtResult === null || outputChars <= outputAtResult) return { ok: false, stage: 'no_output', ...notCalled };
+    if (requireRead && read < 1) return { ok: false, stage: 'sources', read, ...notCalled };
+    if (requireRead && !(run.replyBytes <= 2000)) return { ok: false, stage: 'over_cap', replyBytes: run.replyBytes, ...notCalled };
+    if (requireRead && (outputAtResult === null || outputChars <= outputAtResult)) return { ok: false, stage: 'no_output', ...notCalled };
     // #260: the run names its own driver; a run line without one of the three fails and is never guessed.
     const driver = researchDriver(run);
-    if (driver === null) return { ok: false, stage: 'driver', driver: run.driver ?? 'missing', ...notCalled };
-    return { ok: true, stage: 'turn', calls, rounds: run.rounds, sources: `${run.sources.length}(${read} read)`, driver, selectorMs: run.selectorMs, elapsedMs: run.elapsedMs, deadAirMs: run.deadAirMs, replyBytes: run.replyBytes, outputAfter: outputChars - outputAtResult, progress, ...notCalled };
+    if (requireDriver && driver === null) return { ok: false, stage: 'driver', driver: run.driver ?? 'missing', ...notCalled };
+    return { ok: true, stage: 'turn', calls, rounds: run.rounds, sources: `${run.sources.length}(${read} read)`, driver: driver ?? 'any', selectorMs: run.selectorMs, elapsedMs: run.elapsedMs, deadAirMs: run.deadAirMs, replyBytes: run.replyBytes, outputAfter: outputChars - outputAtResult, progress, ...notCalled };
   } finally { try { ws.close(); } catch { /* noop */ } }
 }
 
@@ -415,6 +469,19 @@ async function keepFailureEvidence(dataDir) {
   if (existsSync(hostLog)) await copyFile(hostLog, join(directory, 'host.log'));
   if (journalExports.length) await writeFile(join(directory, 'journal.json'), `${JSON.stringify(journalExports)}\n`);
   return directory;
+}
+
+/** Metadata-only per-source projection: item counts, kept bytes and query author, never text. */
+function sourceSummary(turn, source) {
+  const tools = SOURCE_TOOLS[source] ?? [];
+  const findings = Array.isArray(turn.findings) ? turn.findings : [];
+  const finding = findings.find(entry => entry && entry.source === source);
+  const lines = finding && typeof finding.text === 'string' ? finding.text.split('\n').slice(1).filter(Boolean) : [];
+  const subs = (Array.isArray(turn.subcalls) ? turn.subcalls : []).filter(entry => entry && tools.includes(entry.tool));
+  const items = subs.reduce((sum, entry) => sum + (Number(entry.items) || 0), 0);
+  const keptBytes = subs.reduce((sum, entry) => sum + (Number(entry.keptBytes) || 0), 0);
+  const hydrated = subs.filter(entry => entry.tool === 'get_insight' && entry.ok === true).length;
+  return { items, lines: lines.length, keptBytes, hydrated, queryAuthor: subs.length ? subs[subs.length - 1].queryAuthor : 'n/a', replyBytes: turn.run ? turn.run.replyBytes : 0 };
 }
 
 async function main() {
@@ -465,6 +532,28 @@ async function main() {
           : researchFailureNote({ stage: research.stage, calls: research.calls, runs: research.runs, detail: research.detail, status: research.status, rounds: research.rounds, read: research.read, replyBytes: research.replyBytes, outputFragments: research.outputFragments, outputChars: research.outputChars, otherToolNames: research.otherToolNames, otherToolCalls: research.otherToolCalls, turnCompleteMs: research.turnCompleteMs }) + ` load=${loadAverageText()}` });
       } finally { await rm(clipPath, { force: true }); }
     } catch (error) { results.push({ id: 'probe5-research', ok: false, note: String(error && error.message).slice(0, 120) }); }
+    // #263: a plain calendar question must reach research, never a "no calendar access" refusal. Called and
+    // answered is the pass; the driver and the read shape are probe5's stricter job.
+    try {
+      const clipPath = synthClip(MEETINGS_QUESTION);
+      try {
+        const research = await researchTurn({ base, token, epoch, dataDir, clipPath, requireSingleCall: false, requireDriver: false, requireRead: false });
+        results.push({ id: 'probe6-meetings', ok: research.ok, note: research.ok
+          ? `calls=${research.calls} rounds=${research.rounds} driver=${research.driver} progress=${research.progress}`
+          : `stage=${research.stage} calls=${research.calls ?? 0} runs=${research.runs ?? 0}` });
+      } finally { await rm(clipPath, { force: true }); }
+    } catch (error) { results.push({ id: 'probe6-meetings', ok: false, note: String(error && error.message).slice(0, 120) }); }
+    for (const spec of RESEARCH_PROBES) {
+      try {
+        const clipPath = synthClip(spec.question);
+        try {
+          const turn = await researchTurn({ base, token, epoch, dataDir, clipPath, enforce: false });
+          const summary = sourceSummary(turn, spec.source);
+          const ok = spec.check(summary);
+          results.push({ id: spec.id, ok, note: `items=${summary.items} kept=${summary.keptBytes}B reply=${summary.replyBytes}B queryAuthor=${summary.queryAuthor} hydrated=${summary.hydrated}` + (ok ? '' : ' stage=criteria') });
+        } finally { await rm(clipPath, { force: true }); }
+      } catch (error) { results.push({ id: spec.id, ok: false, note: String(error && error.message).slice(0, 120) }); }
+    }
   } else {
     results.push(...noHostResults());
   }

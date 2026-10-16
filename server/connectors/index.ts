@@ -12,6 +12,7 @@ import { createMattermostReader, MATTERMOST_TOOLS } from './mattermost.js';
 
 import { projectMongooseResult } from '../tools/mongoose.js';
 import { projectMattermostResult } from '../tools/mattermost.js';
+import { calendarIdentityValues, gmailIdentityValues, mattermostIdentityValues, type IdentitySource } from './identity.js';
 
 export * from './lux-knowledge.js';
 export * from './google.js';
@@ -67,6 +68,8 @@ export interface ConnectorDescriptor {
   project(evidence: ConnectorEvidence, port: McpPort, policy: ConnectionPolicy): ModelSnapshot;
   /** Connection status for a non-completed result, when the connector can classify it (R4). */
   status?(evidence: ConnectorEvidence): { state: 'configured'; reason: string } | undefined;
+  /** The connector's own-account identity probe for one approved policy, when it has one (release 3f). */
+  identity?(policy: ConnectionPolicy): IdentitySource | null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -264,6 +267,11 @@ const googleDescriptor: ConnectorDescriptor = {
   },
   project: googleProject,
   status: googleStatus,
+  identity(policy) {
+    return googleFamily(policy.toolNames) === 'calendar'
+      ? { tool: 'gcal_calendars', args: {}, values: calendarIdentityValues }
+      : { tool: 'gmail_get_profile', args: {}, values: gmailIdentityValues };
+  },
 };
 
 /** A local composition defect, distinct from a remote connector failure. */
@@ -324,6 +332,7 @@ const mattermostDescriptor: ConnectorDescriptor = {
     } };
   },
   project(evidence, port, policy) { return companyProjection(evidence, policy, projectMattermostResult(port, evidence)); },
+  identity() { return { tool: 'mattermost_whoami', args: {}, values: mattermostIdentityValues }; },
 };
 const mongooseDescriptor: ConnectorDescriptor = {
   id: 'mongoose', envelope: MONGOOSE_TOOLS,

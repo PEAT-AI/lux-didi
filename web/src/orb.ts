@@ -105,9 +105,23 @@ export class Orb {
     if(this.canvas.dataset.posture!==active)this.canvas.dataset.posture=active;
     const s=this.size,c=s/2;
     ctx.clearRect(0,0,s,s);
+    // The classic geometry draws the orb at 5 percent of a roomy canvas; the hero stage wants the
+    // visible orb to fill its box, so the whole drawing scales around the centre, rings and motion
+    // included, and nothing is redrawn past the box edge (V3-R4 item 1).
+    const heroScale=3.0;
+    ctx.save();ctx.translate(c,c);ctx.scale(heroScale,heroScale);ctx.translate(-c,-c);
     const hueTarget=this.state==='ERROR'?0:active==='listening'?45:active==='speaking'?160:active==='thinking'?195:['IDLE','DISCONNECTED','RECONNECTING','INTERRUPTED'].includes(this.state)?210:174;
     this.hue=this.hue===undefined?hueTarget:this.hue+(hueTarget-this.hue)*smoothingAlpha(dt,0.18);
     this.classic?.draw(c,c,s*0.05,this.hue,still?0.8:this.phase,active,this.level,still?activityTarget:this.activity,glow,flare,this.mid,this.high,this.flux);
+    ctx.restore();
+    // Nothing reaches the square edge: the outermost band fades the whole drawing (rings and glow
+    // included) to transparent, so the canvas never shows a straight cut (V3-R6 item 1).
+    ctx.save();
+    ctx.globalCompositeOperation='destination-out';
+    const edge=ctx.createRadialGradient(c,c,s*0.33,c,c,s*0.5);
+    edge.addColorStop(0,'rgba(0,0,0,0)');edge.addColorStop(0.55,'rgba(0,0,0,0.35)');edge.addColorStop(1,'rgba(0,0,0,1)');
+    ctx.fillStyle=edge;ctx.fillRect(0,0,s,s);
+    ctx.restore();
   }
 
   destroy() {

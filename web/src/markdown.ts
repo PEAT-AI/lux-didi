@@ -10,6 +10,9 @@ const FENCE = /^```/;
 const HEADING = /^(#{1,3})\s+(.*)$/;
 const BULLET = /^\s*[-*]\s+/;
 const ORDERED = /^\s*\d+[.)]\s+/;
+const ORDERED_START = /^\s*(\d+)[.)]\s+/;
+/** An indented continuation line of the list item above it (V3 item 9). */
+const CONTINUATION = /^\s{1,3}\S/;
 const QUOTE = /^\s*>\s?/;
 
 /** Options that keep a bubble's own title above its body text and turn raw links into chips. */
@@ -67,16 +70,29 @@ export function renderMarkdown(source: string, options: MarkdownOptions = {}): s
     }
     const heading = line.match(HEADING);
     if (heading) { const level = Math.min(3, Math.max(options.headingBase ?? 1, heading[1]!.length)); blocks.push(`<h${level}>${inline(heading[2]!, options)}</h${level}>`); index++; continue; }
-    if (BULLET.test(line)) {
+    if (BULLET.test(line) || ORDERED.test(line)) {
+      const ordered = ORDERED.test(line);
+      const marker = ordered ? ORDERED : BULLET;
+      const start = ordered ? Number(ORDERED_START.exec(line)![1]) : 1;
       const items: string[] = [];
-      while (index < lines.length && BULLET.test(lines[index]!)) { items.push(`<li>${inline(lines[index]!.replace(BULLET, ''), options)}</li>`); index++; }
-      blocks.push(`<ul>${items.join('')}</ul>`);
-      continue;
-    }
-    if (ORDERED.test(line)) {
-      const items: string[] = [];
-      while (index < lines.length && ORDERED.test(lines[index]!)) { items.push(`<li>${inline(lines[index]!.replace(ORDERED, ''), options)}</li>`); index++; }
-      blocks.push(`<ol>${items.join('')}</ol>`);
+      while (index < lines.length && marker.test(lines[index]!)) {
+        const parts = [`<li>${inline(lines[index]!.replace(marker, ''), options)}`];
+        index++;
+        // A blank line plus an indented paragraph stays in the item, so the paragraph aligns with the
+        // item text and the numbering never restarts (V3 items 7 and 9).
+        for (;;) {
+          const save = index;
+          while (index < lines.length && lines[index]!.trim() === '') index++;
+          if (index >= lines.length || !CONTINUATION.test(lines[index]!)) { index = save; break; }
+          const paragraph: string[] = [];
+          while (index < lines.length && lines[index]!.trim() !== '' && CONTINUATION.test(lines[index]!)) { paragraph.push(inline(lines[index]!.replace(/^\s{1,3}/, ''), options)); index++; }
+          parts.push(`<p>${paragraph.join('<br>')}</p>`);
+        }
+        while (index < lines.length && lines[index]!.trim() === '') index++;
+        parts.push('</li>');
+        items.push(parts.join(''));
+      }
+      blocks.push(`<${ordered ? 'ol' : 'ul'}${ordered && start !== 1 ? ` start="${start}"` : ''}>${items.join('')}</${ordered ? 'ol' : 'ul'}>`);
       continue;
     }
     if (QUOTE.test(line)) {
@@ -124,6 +140,12 @@ export function sourcesFooter(sources: readonly { title: string; url?: string }[
 }
 
 /** Chat consumes only bounded accepted projections, never connector HTML or provider parts. */
+export function chatEntryMarkup(role: 'user' | 'assistant', text: string): string {
+  return role === 'assistant'
+    ? `<article class="entry assistant">${answerMarkup(text)}</article>`
+    : `<article class="entry user"><p class="bubble">${escapeHtml(text)}</p></article>`;
+}
+
 export function renderToolEvidence(evidence: readonly import('./protocol.ts').ToolEvidence[]): string {
   return evidence.slice(0, 16).map(tool => {
     const label = toolLabel(tool.name);

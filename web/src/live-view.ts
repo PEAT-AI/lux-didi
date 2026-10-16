@@ -3,6 +3,7 @@
 import { escapeHtml, renderMarkdown, sourcesFooter, TRANSCRIPT_MARKDOWN } from './markdown.ts';
 import { toolConnector, toolPhrase, toolPhrases } from './tool-phrases.ts';
 import type { VoiceState } from './orb.ts';
+import { levelPeak } from './orb-level.ts';
 import type { LiveCurrent, LiveEntry, LiveSource, LiveState, LiveTool } from './protocol.ts';
 
 const LABELS: Record<LiveState, string> = {
@@ -117,6 +118,9 @@ export function mergeLive(previous: LiveCurrent | undefined, next: LiveCurrent):
 }
 
 export interface LiveLine { role: 'user' | 'naya'; text: string }
+/** One rendered transcript block with the key that keeps it stable across polls: a growing line keeps
+ * its key and is updated in place, a new line only ever appends (V3 item 2). */
+export interface LiveSegment { key: string; html: string }
 // Provider chunks can split mid-word, so only a sentence boundary earns a separator; otherwise the
 // fragments are concatenated verbatim. See V2-R2 item 1.
 export function joinChunk(previous: string, next: string): string {
@@ -191,13 +195,13 @@ function rememberCardMarkup(entry: LiveEntry): string {
   const known = REMEMBER_DECLINES[text];
   if (entry.tool?.status === 'error' || known) {
     const reason = known ?? (text || 'The note was not saved.');
-    return `<article class="live-remember declined" data-result-seq="${seq}"><h2>Not remembered</h2><p class="muted">${escapeHtml(reason)}</p></article>`;
+    return `<article class="live-remember declined" data-result-seq="${seq}" data-seg="remember:${seq}"><h2>Not remembered</h2><p class="muted">${escapeHtml(reason)}</p></article>`;
   }
   if (!text || REMEMBER_CODE.test(text)) {
     const detail = text ? ` (${escapeHtml(text)})` : '';
-    return `<article class="live-remember" data-result-seq="${seq}"><h2>Memory</h2><p class="muted">Naya did not report whether the note was saved${detail}.</p>${link}</article>`;
+    return `<article class="live-remember" data-result-seq="${seq}" data-seg="remember:${seq}"><h2>Memory</h2><p class="muted">Naya did not report whether the note was saved${detail}.</p>${link}</article>`;
   }
-  return `<article class="live-remember" data-result-seq="${seq}"><h2>Remembered</h2><p class="live-remember-text">${escapeHtml(text)}</p>${link}</article>`;
+  return `<article class="live-remember" data-result-seq="${seq}" data-seg="remember:${seq}"><h2>Remembered</h2><p class="live-remember-text">${escapeHtml(text)}</p>${link}</article>`;
 }
 
 /** Full section markup, id="live-panel" so the poller can replace it in place. */
@@ -206,12 +210,42 @@ function rememberCardMarkup(entry: LiveEntry): string {
 function toolChipMarkup(entry: LiveEntry): string {
   const phrase = escapeHtml(toolPhrase(entry.tool?.name ?? '') + (entry.tool?.status ? ` (${entry.tool.status})` : ''));
   const body = entry.tool?.status === 'error' ? '' : `${renderMarkdown(entry.tool?.markdown ?? '', TRANSCRIPT_MARKDOWN)}${sourcesMarkup(entry.tool?.sources ?? [])}`;
-  return `<details class="live-tool-result" data-result-seq="${entry.seq}"><summary>${phrase}</summary>${body}</details>`;
+  return `<details class="live-tool-result" data-result-seq="${entry.seq}" data-seg="tool:${entry.seq}"><summary>${phrase}</summary>${body}</details>`;
+}
+
+/** One transcript line: the owner's words in the shared right-aligned chat bubble, Naya's words as
+ * plain markdown, never a speaker label (V3 item 2). */
+export function liveLineMarkup(line: LiveLine, seg = ''): string {
+  const key = seg ? ` data-seg="${seg}"` : '';
+  return line.role === 'user'
+    ? `<article class="entry user"${key}><p class="bubble">${escapeHtml(line.text)}</p></article>`
+    : `<article class="entry assistant"${key}><div class="markdown">${renderMarkdown(line.text, TRANSCRIPT_MARKDOWN)}</div></article>`;
+}
+
+/** The transcript IS the lane: turns flow on the lane background, with a one-line tool chip where a
+ * tool result landed. No card, no duplicate latest-answer block, no history disclosure (V2-R2 item 4).
+ * Segments are keyed by the seq of the entry that opened them, so a streaming line updates in place. */
+export function liveSegments(live: LiveCurrent | undefined): LiveSegment[] {
+  const segments: LiveSegment[] = [];
+  let pending: (LiveLine & { seq: number })[] = [];
+  const flush = () => { for (const line of pending) { const key = `${line.role}:${line.seq}`; segments.push({ key, html: liveLineMarkup(line, key) }); } pending = []; };
+  for (const entry of live?.entries ?? []) {
+    const role = entry.kind === 'inputTranscription' ? 'user' : entry.kind === 'outputTranscription' ? 'naya' : undefined;
+    if (role && entry.text) {
+      const existing = pending.find(line => line.role === role);
+      if (existing) existing.text = joinChunk(existing.text, entry.text);
+      else pending.push({ role, text: entry.text, seq: entry.seq });
+    }
+    if (entry.kind === 'turnComplete' || entry.kind === 'interrupted' || entry.kind === 'terminal') flush();
+    if (entry.kind === 'toolResult' && entry.tool?.name === 'remember_note') { flush(); segments.push({ key: `remember:${entry.seq}`, html: rememberCardMarkup(entry) }); }
+    else if (entry.kind === 'toolResult') { flush(); segments.push({ key: `tool:${entry.seq}`, html: toolChipMarkup(entry) }); }
+  }
+  flush();
+  return segments;
 }
 
 export function liveMarkup(live: LiveCurrent | undefined, poll: LivePollState = {}): string {
   const state = live?.state;
-  const label = liveLabel(live);
   const jobs = (live?.jobs ?? []).map(job => `<article class="live-job" data-job-id="${escapeHtml(job.id)}"><p class="live-tool-chip">${job.state === 'in_progress' ? 'Background task in progress' : 'Background task ' + escapeHtml(job.state)}</p>${renderMarkdown(job.markdown, TRANSCRIPT_MARKDOWN)}${!job.delivered && job.state !== 'in_progress' ? '<p class="muted">Call Naya back: choose Start Live voice in the native app to pick up this result.</p>' : ''}</article>`).join('');
   const latest = live?.entries.at(-1);
   const restored = state !== 'rebuilding' && latest?.kind === 'continuity' && latest.event === 'resumed'
@@ -219,28 +253,10 @@ export function liveMarkup(live: LiveCurrent | undefined, poll: LivePollState = 
   const error = state === 'error' ? '<p class="muted" role="status">Naya reported an error. The live session has stopped.</p>' : '';
   const muted = live?.muted ? '<p class="muted live-muted" role="status">Microphone muted</p>' : '';
   const stale = poll.stale ? `<p class="live-stale" role="status">Live view stale${poll.lastSuccess ? ' since ' + escapeHtml(poll.lastSuccess.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })) : ', no successful poll yet'}, service unreachable</p>` : '';
-  // The transcript IS the lane: turns flow on the lane background, with a one-line tool chip where a
-  // tool result landed. No card, no duplicate latest-answer block, no history disclosure (V2-R2 item 4).
-  const flow: string[] = [];
-  let pending: LiveLine[] = [];
-  const lineMarkup = (line: LiveLine) => `<article class="entry ${line.role}"><strong>${line.role === 'user' ? 'You' : 'Naya'}</strong><div class="markdown">${renderMarkdown(line.text, TRANSCRIPT_MARKDOWN)}</div></article>`;
-  const flush = () => { for (const line of pending) flow.push(lineMarkup(line)); pending = []; };
-  for (const entry of live?.entries ?? []) {
-    const role = entry.kind === 'inputTranscription' ? 'user' : entry.kind === 'outputTranscription' ? 'naya' : undefined;
-    if (role && entry.text) {
-      const existing = pending.find(line => line.role === role);
-      if (existing) existing.text = joinChunk(existing.text, entry.text);
-      else pending.push({ role, text: entry.text });
-    }
-    if (entry.kind === 'turnComplete' || entry.kind === 'interrupted' || entry.kind === 'terminal') flush();
-    if (entry.kind === 'toolResult' && entry.tool?.name === 'remember_note') { flush(); flow.push(rememberCardMarkup(entry)); }
-    else if (entry.kind === 'toolResult') { flush(); flow.push(toolChipMarkup(entry)); }
-  }
-  flush();
+  const flow = liveSegments(live).map(segment => segment.html);
   return `<section class="lane-convo live" id="live-panel" aria-label="Naya live conversation">
-    <p class="live-state" role="status" aria-live="polite">${escapeHtml(label)}</p>
     ${muted}${stale}${error}${restored}
-    <div class="live-turns">${flow.join('') || '<p class="muted">No live transcription yet.</p>'}</div>
+    <div class="live-turns">${flow.join('') || '<p class="transcript-placeholder muted">Press Start or \u2318\u21e7Space to talk</p>'}</div>
     ${jobs}
   </section>`;
 }
@@ -388,8 +404,17 @@ export class LiveMachine {
         this.requestStop();
         break;
       case 'levels':
+        this.#forwardLevels(message.input, message.output);
         break;
     }
+  }
+
+  /** Native taps post the owner's capture and Naya's playback levels; the orb answers the louder
+   * side, so it animates for whoever is speaking (V3 item 1). The renderer owns smoothing. */
+  #forwardLevels(input: number[], output: number[]): void {
+    const peak = levelPeak(input, output);
+    if (peak === undefined) return;
+    (globalThis as unknown as { didiOrbLevel?: (sample: { level: number }) => void }).didiOrbLevel?.({ level: peak });
   }
 
   /** The only Start path. Without consent it opens the popover and sends nothing to native. */

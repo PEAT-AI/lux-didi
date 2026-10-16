@@ -123,7 +123,7 @@ export function composeLive(store: Store, configDir: string, testing?: LiveTesti
   const credentials = testing?.credentials ?? credentialsFor(configDir);
   const provider = testing?.researchSelector === undefined ? loadProviderConfig({ configDir, ownerId: store.assistantId }) : undefined;
   const researchSelector = testing?.researchSelector ?? (provider?.status === 'ready'
-    ? createGeminiSelector(new GeminiAdapter({ modelId: provider.profile.modelId, keyReference: provider.profile.keyReference, credentials }))
+    ? createGeminiSelector(new GeminiAdapter({ modelId: provider.profile.modelId, keyReference: provider.profile.keyReference, credentials, route: provider.route }))
     : undefined);
   const voice = new GeminiLiveVoiceAdapter({
     modelId: profile.liveModelId, voice: profile.voice, keyReference: profile.keyReference, credentials,

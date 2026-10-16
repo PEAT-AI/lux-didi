@@ -3,6 +3,7 @@
 // ever interpolated wholesale, so a secret-looking field cannot reach the page.
 import { nextStep, reasonCodes } from './next-steps.ts';
 import { escapeHtml } from './markdown.ts';
+import { connectionIdentity } from './connector-status.ts';
 import type { Theme } from './theme.ts';
 import type { LiveSummary } from './api.ts';
 
@@ -53,14 +54,16 @@ export function limitMinutes(value: unknown): string | undefined {
 }
 
 /** Whitelist one connection row: id, state and reasonCode, mapped to a fixed state name and next step. */
-export function connectorState(value: unknown): { id: string; state: string; next: string; guideUrl?: string } | undefined {
+export function connectorState(value: unknown): { id: string; state: string; next: string; identity?: string; guideUrl?: string } | undefined {
   const row = record(value);
   if (!row) return undefined;
   const id = typeof row.id === 'string' && /^[\w.-]{1,128}$/.test(row.id) ? row.id : undefined;
   if (!id) return undefined;
   const state = text(row.state) ?? 'unknown';
-  if (state === 'connected') return { id, state: 'Connected', next: nextStep(id, state).text };
-  if (state === 'configured') return { id, state: 'Configured', next: nextStep(id, state).text };
+  const identity = connectionIdentity(row.identity);
+  const withIdentity = <T extends { id: string; state: string; next: string }>(rowValue: T): T & { identity?: string } => (identity ? { ...rowValue, identity } : rowValue);
+  if (state === 'connected') return withIdentity({ id, state: 'Connected', next: nextStep(id, state).text });
+  if (state === 'configured') return withIdentity({ id, state: 'Configured', next: nextStep(id, state).text });
   const reason = typeof row.reasonCode === 'string' && reasonCodes.some(reason => reason === row.reasonCode) ? row.reasonCode : 'unknown';
   const label = state === 'missing' || reason === 'credential_missing' ? 'Credential missing' : 'Failed';
   const step = nextStep(id, state, reason);
@@ -108,7 +111,7 @@ function connectorsSection(connections: unknown, connectionsUnavailable: boolean
   if (connectionsUnavailable) return `<h3>Connectors</h3><p role="status" class="settings-unavailable">Connections unavailable. No connector values are shown while the service cannot be reached.</p>`;
   const rows = (Array.isArray(connections) ? connections : []).map(connectorState).filter((row): row is NonNullable<ReturnType<typeof connectorState>> => row !== undefined);
   if (rows.length === 0) return '<h3>Connectors</h3><p class="muted">No connectors configured.</p>';
-  return `<h3>Connectors</h3><ul class="settings-connectors">${rows.map(row => `<li><strong>${escapeHtml(row.id)}</strong>: ${escapeHtml(row.state)}. ${escapeHtml(row.next)}${row.guideUrl ? ` <a href="${escapeHtml(row.guideUrl)}" target="_blank" rel="noopener noreferrer">Setup guide</a>` : ''}</li>`).join('')}</ul>`;
+  return `<h3>Connectors</h3><ul class="settings-connectors">${rows.map(row => `<li><strong>${escapeHtml(row.id)}</strong>: ${escapeHtml(row.state)}.${row.identity ? ` ${escapeHtml(row.identity)}.` : ''} ${escapeHtml(row.next)}${row.guideUrl ? ` <a href="${escapeHtml(row.guideUrl)}" target="_blank" rel="noopener noreferrer">Setup guide</a>` : ''}</li>`).join('')}</ul>`;
 }
 
 function connectedSection(connected: SettingsInput['connected']): string {

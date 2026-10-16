@@ -326,3 +326,103 @@ h3{font-size:14px}
 #connected-draft{flex:1 1 auto;border:0;background:none;padding:6px 4px;min-height:40px;padding-right:4px}
 .send-button{position:static;right:auto;top:auto;transform:none;order:3}
 .connected-notes{position:static;right:auto;top:auto;transform:none;bottom:auto;order:2}
+
+
+/* ---- V3: the orb is the hero of the voice lane, the chat lane is a classic chat (issue 264) ---- */
+
+/* Both lanes: the document never scrolls, each lane's list scrolls on its own. */
+html,body{height:100%;overflow:hidden}
+.entry.user{background:var(--surface-2);border-radius:24px;padding:14px 22px;max-width:80%;align-self:flex-end;line-height:1.6}
+.entry.assistant{background:none;border:0;padding:0;line-height:1.6;align-self:flex-start}
+.entry .bubble{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
+.entry .markdown{overflow-wrap:anywhere}
+.entry .markdown p:first-child{margin-top:0}
+.entry .markdown p:last-child{margin-bottom:0}
+.entry .markdown{line-height:1.6}
+
+/* The orb stage holds the top third of the voice lane and never scrolls. */
+#lane-voice .lane-inner{padding:0;height:100%;min-height:0;overflow:hidden;display:flex;flex-direction:column}
+#lane-voice .lane-head{position:absolute;top:10px;right:10px;left:auto;height:auto;min-height:0;padding:0;border:0;background:none;z-index:6;gap:6px}
+#lane-voice .lane-toggle{position:static;top:auto;right:auto;margin:0}
+.orb-stage{flex:0 0 auto;height:clamp(240px,33%,380px);min-height:240px;max-height:380px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:0 24px;position:relative;max-width:none;border:0;border-radius:0;box-shadow:none;background:none}
+.orb-holder{position:relative;display:grid;place-items:center;height:clamp(120px,55%,200px);max-height:200px;aspect-ratio:1;flex:0 0 auto}
+.orb-holder canvas{width:100%;height:100%;margin:0;display:block}
+.orb-holder .presence-glow{width:150%;height:150%}
+.orb-stage .orb-caption{display:flex;flex-direction:column;align-items:center;gap:6px;text-align:center;max-width:520px}
+.orb-stage .voice-state{margin:0;font-size:.95rem;font-weight:500;color:var(--text);line-height:1.4}
+.orb-stage .voice-hint{margin:0;font-size:.8rem;color:var(--text-secondary)}
+.orb-stage .orb-actions{display:flex;align-items:center;gap:10px;position:relative}
+.orb-stage .voice-error{position:absolute;top:calc(100% + 6px);left:50%;transform:translateX(-50%);margin:0;font-size:.8rem;color:var(--danger-text);white-space:nowrap}
+
+/* The transcript: its own scroll container below the stage, newest at the bottom. */
+.transcript{position:relative;flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable;padding:24px 24px 28px}
+.transcript .live-turns{display:flex;flex-direction:column;gap:56px;max-width:760px;margin:0 auto;padding:0}
+.transcript .entry,.transcript .live-tool-result,.transcript .live-remember,.transcript .live-job{align-self:flex-start;max-width:100%}
+.transcript .entry.user{align-self:flex-end}
+.transcript .entry.assistant,.transcript .entry.user{max-width:80%}
+
+/* The jump pill: centred above the bottom edge, only while the reader is away from the newest line. */
+.jump-pill{position:sticky;bottom:12px;left:50%;transform:translateX(-50%);display:block;width:max-content;margin:0 auto;padding:6px 14px;border:1px solid var(--border);border-radius:999px;background:var(--surface-2);color:var(--text);font-size:12px;cursor:pointer;box-shadow:0 8px 20px var(--shadow);z-index:5}
+.jump-pill[hidden]{display:none}
+@keyframes entry-rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.entry-new{animation:entry-rise 160ms ease-out}
+@media(prefers-reduced-motion:reduce){.entry-new{animation:none}}
+
+/* The chat lane: a centred 760 px column, the list scrolls, the composer is fixed at the bottom. */
+#lane-chat .lane-inner{padding:0;height:100%;overflow:hidden;display:flex;flex-direction:column;min-height:0}
+.connected-conversation{display:flex;flex-direction:column;height:100%;min-height:0;overflow-wrap:anywhere}
+.chat-list{position:relative;flex:1 1 auto;min-height:0;display:flex;flex-direction:column}
+#connected-entries{flex:1 1 auto;min-height:0;width:100%;max-width:760px;margin:0 auto;overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable;display:flex;flex-direction:column;gap:56px;padding:28px 24px}
+#connected-entries .entry{max-width:80%;display:flex;flex-direction:column;background:none;border:0;padding:0;text-align:left}
+#connected-entries .entry.user{align-self:flex-end;background:var(--surface-2);border-radius:24px;padding:14px 22px}
+#connected-entries .connected-empty{margin:auto;text-align:center;color:var(--muted);font-size:.95rem}
+#connected-send-form{position:static;margin:0;flex:0 0 auto;padding:0 24px 20px;background:none}
+#connected-send-form .composer-field{position:relative;display:flex;align-items:flex-end;gap:10px;width:100%;max-width:760px;margin:0 auto;min-height:56px;box-sizing:border-box;padding:8px 8px 8px 16px;border:1px solid var(--border);border-radius:28px;background:var(--surface-2)}
+#connected-draft{flex:1 1 auto;min-height:32px;width:auto;margin:0;padding:14px 4px;border:0;background:none;resize:none;overflow-y:hidden;line-height:1.5}
+#connected-draft:focus{outline:none}
+.attach-button{flex:0 0 auto;width:32px;height:32px;margin:0 0 4px;display:inline-flex;align-items:center;justify-content:center;border-radius:50%;border:1px solid var(--border);background:none;color:var(--text-secondary);cursor:pointer}
+.attach-button:hover{color:var(--text);border-color:var(--muted)}
+.send-button{position:static;right:auto;top:auto;transform:none;flex:0 0 auto;width:36px;height:36px;margin:0 0 4px;display:inline-flex;align-items:center;justify-content:center;border:0;border-radius:50%;background:var(--accent);color:var(--accent-contrast);cursor:pointer}
+.send-button[disabled]{background:var(--surface-3);color:var(--muted);cursor:default}
+.send-button svg{display:block}
+.connected-notes{position:static;right:auto;top:auto;transform:none;margin:0 0 6px}
+.typing{display:flex;gap:5px;align-items:center;align-self:flex-start;padding:4px 2px}
+.typing span{width:6px;height:6px;border-radius:50%;background:var(--muted);animation:typing-dot 1.2s ease-in-out infinite}
+.typing span:nth-child(2){animation-delay:.16s}
+.typing span:nth-child(3){animation-delay:.32s}
+@keyframes typing-dot{0%,60%,100%{opacity:.25;transform:translateY(0)}30%{opacity:.85;transform:translateY(-3px)}}
+@media(prefers-reduced-motion:reduce){.typing span{animation:none}}
+
+
+/* ---- V3-R4: the stage is not a card, the orb fills its box, the transcript fades (look ruling) ---- */
+
+/* (2) No card and no hard edges: the stage is the lane itself on the lane background, with a soft
+   radial glow behind the orb, and its content starts 24 px below the window header. */
+.orb-stage{max-width:none;min-height:0;border:0;border-radius:0;box-shadow:none;background:none;padding:24px 24px 12px;gap:10px}
+.orb-stage .presence-glow{width:190%;height:190%}
+
+/* (1) The orb box keeps 55 percent of the stage height while the stage keeps its 24 px top inset. */
+.orb-holder{height:clamp(120px,calc(55% + 20px),200px)}
+
+/* (3) Every control stays inside the stage at every size. */
+.orb-stage .orb-caption{gap:4px}
+.orb-stage .orb-actions{gap:10px;flex-wrap:wrap;justify-content:center;max-width:100%}
+.orb-stage .start-pill,.orb-stage .stop-pill{padding:7px 16px}
+
+/* (5) The transcript begins below the stage and fades its first 32 px, so lines scroll away softly. */
+.transcript{mask-image:linear-gradient(to bottom,transparent 0,var(--bg) 32px);-webkit-mask-image:linear-gradient(to bottom,transparent 0,var(--bg) 32px)}
+
+/* (6) The voice transcript uses the same centred 760 px column as the chat; the idle line is centred. */
+.transcript .live-turns{max-width:760px;margin:0 auto;padding:0}
+.transcript-placeholder{margin:auto;text-align:center;color:var(--muted)}
+
+/* (7) One plus glyph at the left, one round send at the right, the same idle or with a draft. */
+#connected-send-form{display:block}
+.connected-notes{width:100%;max-width:760px;margin:0 auto 8px;box-sizing:border-box;order:0}
+.connected-notes>summary{display:none}
+.attach-button{position:relative;color:var(--text-secondary)}
+.attach-plus{font-size:19px;line-height:1;transform:translateY(-1px)}
+.attach-button .notes-count{position:absolute;top:-4px;right:-4px;min-width:16px;height:16px;border-radius:8px;background:var(--accent);color:var(--accent-contrast);font-size:10px;line-height:16px;text-align:center}
+
+/* (8) The consent line sits inside the 760 px column with the same side padding, small and muted. */
+#connected-panel .connected-disclosure{width:100%;max-width:760px;margin:12px auto 0;padding:0 24px;box-sizing:border-box;font-size:12px;line-height:1.5;color:var(--muted)}

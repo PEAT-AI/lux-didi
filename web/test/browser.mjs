@@ -22,42 +22,43 @@ async function auditLayout(page) {
     const entries = [...document.querySelectorAll('.live-turns > *')];
     const entry = q('.live-turns .entry');
     const summary = q('.live-tool-result > summary');
-    const label = q('.live-turns .entry strong');
-    const naya = q('.live-turns .entry.naya');
+    const stage = q('#orb-stage'), orb = q('#orb-holder canvas'), transcript = q('.transcript'), pillVoice = q('#transcript-jump');
+    const chatList = q('#connected-entries'), pillChat = q('#chat-jump');
     const allow = q('.allow-link');
     const cs = el => el ? getComputedStyle(el) : null;
     const vis = sel => { const el = q(sel); return !!el && el.getClientRects().length > 0; };
     return {
       voice: {
         visible: vis('#lane-voice'),
-        nayaInset: inset('.live-turns .entry.naya', voice),
-        userInset: inset('.live-turns .entry.user', voice),
-        turnInset: inset('.live-turns .entry', voice),
-        chipInset: inset('.live-tool-result', voice),
-        emptyInset: inset('.voice-empty', voice),
-        hideRight: rn(voice.right - r(q('#lane-voice .lane-toggle')).right),
-        headerOrb: size('#lane-voice .voice-orb canvas'),
-        startNewGap: gap('#voice-start', '#new-conversation'),
-        newHideGap: gap('#new-conversation', '#lane-voice .lane-toggle'),
+        laneHeight: rn(r(q('#lane-voice')).height),
+        stageHeight: stage ? rn(r(stage).height) : null,
+        stageTop: stage ? rn(r(stage).top) : null,
+        orb: orb ? rn(r(orb).height) : null,
+        orbCentre: stage && orb ? Math.abs(Math.round((r(orb).left + r(orb).width / 2) - (r(stage).left + r(stage).width / 2))) : null,
+        column: rn(r(q('.transcript .live-turns')).width),
+        userRight: (() => { const mine = q('.live-turns .entry.user'); return mine ? rn(r(q('.transcript .live-turns')).right - r(mine).right) : null; })(),
+        controlRight: rn(voice.right - r(q('#lane-voice .lane-toggle')).right),
+        toggleGap: gap('#new-conversation', '#lane-voice .lane-toggle'),
+        labels: document.querySelectorAll('.live-turns .entry strong, .live-turns .entry header').length,
+        scrollDistance: transcript ? Math.max(0, rn(transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight)) : null,
+        jumpVisible: pillVoice ? !pillVoice.hidden : null,
       },
       chat: {
         visible: vis('#lane-chat'),
+        column: chatList ? rn(r(chatList).width) : null,
         emptyInset: inset('.connected-empty', chat),
         composerInset: inset('#connected-send-form', chat),
-        composerBottom: rn(chat.bottom - r(q('#connected-send-form')).bottom),
+        composerBottom: rn(chat.bottom - r(q('.composer-field')).bottom),
         send: size('#connected-send'),
         sendInside: field && send ? rn(r(field).right - r(send).right) : null,
-        sendCentre: field && send ? Math.abs(Math.round((r(send).top + r(send).height / 2) - (r(field).top + r(field).height / 2))) : null,
-        clip: size('#connected-notes-summary'),
-        clipFont: cs(q('#connected-notes-summary'))?.width,
+        userRight: (() => { const mine = q('#connected-entries .entry.user'); return mine ? rn(r(chatList).right - r(mine).right) : null; })(),
+        labels: document.querySelectorAll('#connected-entries .entry strong, #connected-entries .entry header').length,
+        scrollDistance: chatList ? Math.max(0, rn(chatList.scrollHeight - chatList.scrollTop - chatList.clientHeight)) : null,
+        jumpVisible: pillChat ? !pillChat.hidden : null,
       },
+      documentScrolls: r(document.documentElement).height > r(document.documentElement).clientHeight,
       chipPad: summary ? { padding: `${cs(summary).paddingTop} ${cs(summary).paddingRight}`, font: cs(summary).fontSize, display: cs(summary).display } : null,
-      labelFont: label ? cs(label).fontSize : null,
-      nayaMax: naya ? cs(naya).maxWidth : null,
-      turnGap: entries.length > 1 ? rn(r(entries[1]).top - r(entries[0]).bottom) : null,
-      labelGap: entry && label ? rn(r(entry.querySelector('.markdown, p')).top - r(label).bottom) : null,
       allowHeight: allow ? rn(r(allow).height) : null,
-      draftMax: draft ? cs(draft).maxWidth : null,
     };
   });
 }
@@ -66,29 +67,27 @@ function assertAudit(a, label, failures) {
   const bad = m => failures.push(m);
   const inb = (v, lo, hi, what) => { if (!(v >= lo && v <= hi)) bad(`${label} ${what}: ${v} not in [${lo},${hi}]`); };
   if (a.voice.visible) {
-    if (a.voice.nayaInset) inb(a.voice.nayaInset.left, 24, 40, 'naya turn left inset');
-    if (a.voice.userInset) inb(a.voice.userInset.right, 24, 40, 'user turn right inset');
-    if (a.voice.chipInset) inb(a.voice.chipInset.left, 24, 40, 'chip left inset');
-    if (a.voice.emptyInset) inb(a.voice.emptyInset.left, 24, 40, 'empty left inset');
-    inb(a.voice.hideRight, 22, 26, 'Hide right inset');
+    if (a.voice.stageHeight && a.voice.laneHeight) inb(a.voice.stageHeight / a.voice.laneHeight, 0.3, 0.36, 'orb stage share of the lane');
+    if (a.voice.stageHeight && a.voice.orb) inb(a.voice.orb / a.voice.stageHeight, 0.52, 0.58, 'orb diameter of the stage');
+    if (a.voice.orbCentre !== null) inb(a.voice.orbCentre, 0, 1, 'orb centred in the stage');
+    if (a.voice.column > 760) bad(`${label} voice column wider than 760: ${a.voice.column}`);
+    if (a.voice.userRight !== null) inb(a.voice.userRight, 0, 1, 'owner bubble at the column right edge');
+    inb(a.voice.controlRight, 8, 12, 'stage controls right inset');
+    if (a.voice.toggleGap !== null) inb(a.voice.toggleGap, 4, 8, 'new-session to collapse gap');
+    if (a.voice.labels !== 0) bad(`${label} voice speaker labels: ${a.voice.labels}`);
+    if (a.voice.scrollDistance !== null) inb(a.voice.scrollDistance, 0, 2, 'transcript pinned to the newest line');
   }
-  if (a.voice.visible && a.voice.headerOrb) { inb(a.voice.headerOrb.w, 40, 56, 'header orb width'); inb(a.voice.headerOrb.h, 40, 56, 'header orb height'); }
-  if (a.voice.visible && a.voice.startNewGap !== null) inb(a.voice.startNewGap, 8, 12, 'Start to New gap');
-  if (a.voice.visible && a.voice.newHideGap !== null) inb(a.voice.newHideGap, 8, 12, 'New to Hide gap');
-  if (!a.chat.visible) return a;
-  if (a.chat.emptyInset) { inb(a.chat.emptyInset.left, 24, 400, 'chat empty left inset'); inb(a.chat.emptyInset.right, 24, 400, 'chat empty right inset'); }
-  if (a.chat.composerInset) { inb(a.chat.composerInset.left, 24, 40, 'composer left inset'); inb(a.chat.composerInset.right, 24, 40, 'composer right inset'); }
-  if (a.chat.composerBottom !== null) inb(a.chat.composerBottom, 14, 18, 'composer bottom gap');
-  if (a.chat.send) { inb(a.chat.send.w, 32, 32, 'send width'); inb(a.chat.send.h, 32, 32, 'send height'); }
-  if (a.chat.sendInside !== null) inb(a.chat.sendInside, 8, 16, 'send right inset in field');
-  if (a.chat.sendCentre !== null) inb(a.chat.sendCentre, 0, 2, 'send vertical centring');
-  if (a.chat.clip) inb(a.chat.clip.w, 28, 28, 'paperclip width');
+  if (a.chat.visible) {
+    if (a.chat.column > 760) bad(`${label} chat column wider than 760: ${a.chat.column}`);
+    if (a.chat.composerBottom !== null) inb(a.chat.composerBottom, 16, 26, 'composer above the lane bottom');
+    if (a.chat.sendInside !== null) inb(a.chat.sendInside, 8, 16, 'send right inset in the field');
+    if (a.chat.userRight !== null) inb(a.chat.userRight, 0, 1, 'chat owner bubble at the column right edge');
+    if (a.chat.labels !== 0) bad(`${label} chat speaker labels: ${a.chat.labels}`);
+    if (a.chat.scrollDistance !== null) inb(a.chat.scrollDistance, 0, 2, 'chat pinned to the newest line');
+  }
+  if (a.documentScrolls) bad(`${label} the document scrolls`);
   if (a.chipPad && a.chipPad.font !== '12px') bad(`${label} chip font: ${a.chipPad.font}`);
-  if (a.chipPad && a.chipPad.padding !== '4px 10px') bad(`${label} chip padding: ${a.chipPad.padding}`);
-  if (a.labelFont !== '12px') bad(`${label} turn label font: ${a.labelFont}`);
-  if (a.nayaMax !== '640px') bad(`${label} naya max width: ${a.nayaMax}`);
-  if (a.voice.visible && a.turnGap !== null) inb(a.turnGap, 16, 16, 'turn gap');
-  if (a.voice.visible && a.labelGap !== null) inb(a.labelGap, 3, 5, 'label to text gap');
+  if (a.chat.visible && a.allowHeight !== null) inb(a.allowHeight, 28, 28, 'allow control height');
   return a;
 }
 
@@ -178,7 +177,7 @@ try {
     await page.waitForFunction(()=>document.querySelector('#didi-orb').dataset.state==='SPEAKING',{timeout:12000});
     await page.waitForFunction(()=>document.querySelectorAll('#live-panel').length===1&&document.querySelectorAll('#live-panel .live-tool-result').length===1,{timeout:12000});
     assert.equal(await page.locator('#didi-orb').getAttribute('data-posture'),'speaking');
-    assert.equal((await page.locator('#live-panel .live-state').textContent()).trim(),'Speaking');
+    assert.equal((await page.locator('.orb-stage .voice-state').textContent()).trim(),'Speaking');
     assert.equal(await page.getByText('Not listening',{exact:true}).count(),0);
     assert.equal(await page.getByText('what is lux 123',{exact:true}).count(),1);
     assert.equal(await page.locator('#live-panel .live-result').count(),0,'no card inside the lane');
@@ -195,9 +194,12 @@ try {
     ]});
     await page.waitForFunction(()=>document.querySelector('#didi-orb').dataset.state==='LISTENING',{timeout:8000});
     assert.equal(await page.locator('#didi-orb').getAttribute('data-posture'),'listening');
-    assert.equal((await page.locator('#live-panel .live-state').textContent()).trim(),'Listening');
+    assert.equal((await page.locator('.orb-stage .voice-state').textContent()).trim(),'Listening');
     assert.equal(await page.getByText('Not listening',{exact:true}).count(),0);
-    assert.equal(await page.getByRole('button',{name:/record|microphone|mute/i}).count(),0);
+    assert.equal(await page.getByRole('button',{name:/record|microphone/i}).count(),0,'no push-to-talk control');
+    assert.equal(await page.getByRole('button',{name:/mute/i}).count(),1,'exactly the intended Mute control');
+    assert.equal(await page.locator('#voice-mute').count(),1,'the voice-lane Mute is the stage control (main.ts:124-127)');
+    assert.equal(await page.locator('#pill-mute').count(),0,'the live-pill Mute (main.ts:213) is machine-live gated, so absent for a projection');
     await page.screenshot({path:`${artifacts}/desktop-live-naya.png`,fullPage:true});
     fixture.setLive({state:'idle',since:'2026-10-11T16:00:00Z',entries:[],cursor:0});
   });

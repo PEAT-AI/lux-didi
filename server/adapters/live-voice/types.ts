@@ -35,6 +35,8 @@ export interface LiveVoiceRequest {
   opening?: 'user_first' | 'model_first';
   tools?: FunctionDeclaration[];
   languageCode?: string;
+  /** The composed accent text carried only to the wire; never logged, never an event field. */
+  voiceAccent?: string;
   system: { text: string; dataClass: DataClass };
   history?: readonly { role: 'user' | 'model'; text: string; dataClass: DataClass }[];
   dataClasses: readonly DataClass[];

@@ -53,7 +53,8 @@ test('the thinking label never names a tool; the activity line carries the phras
   assert.deepEqual(pendingToolNames(thinking), ['search_knowledge']);
   assert.equal(liveLabel(thinking), 'Thinking');
   assert.doesNotMatch(liveLabel(thinking), /search_knowledge/);
-  assert.match(liveMarkup(thinking), /Thinking<\/p>/);
+  assert.match(activityMarkup(liveActivity(thinking)), /activity-line/, 'the activity line carries the phrase, the label lives in the stage');
+  assert.doesNotMatch(activityMarkup(liveActivity(thinking)), /search_knowledge/, 'the activity line never names a raw tool');
   assert.doesNotMatch(liveMarkup(thinking), /Thinking \(/);
 });
 
@@ -131,7 +132,7 @@ test('transcript folds exact same-role fragments until a truthful turn boundary'
   ]);
   const html = liveMarkup(live);
   assert.doesNotMatch(html, /<ol class="entries live-transcript"/);
-  assert.equal((html.match(/<strong>Naya<\/strong>/g) ?? []).length, 4);
+  assert.equal((html.match(/class="entry assistant"/g) ?? []).length, 4);
 });
 
 test('a typed turn interleaved with streamed Naya fragments joins one Naya card in journal order', () => {
@@ -149,7 +150,7 @@ test('a typed turn interleaved with streamed Naya fragments joins one Naya card 
     { role: 'user', text: 'Tell me more' },
   ]);
   const html = liveMarkup(live);
-  assert.match(html, /<strong>Naya<\/strong>[\s\S]*Hello there/);
+  assert.match(html, /class="entry assistant"[^>]*><div class="markdown"><p>Hello there/);
 });
 
 test('transcript preserves exact fragment deltas without spaces or deduplication', () => {
@@ -180,19 +181,31 @@ test('result ignores a tool result that errored', () => {
   assert.equal(liveResult(errored), undefined);
 });
 
-test('markup renders the state label in a live region and the answer as markdown with a source anchor', () => {
+test('no transcript line carries a speaker label; the owner speaks in the shared bubble', () => {
+  const html = liveMarkup({ state: 'speaking', cursor: 3, entries: [
+    { seq: 1, kind: 'inputTranscription', text: 'what should I focus on?' },
+    { seq: 2, kind: 'outputTranscription', text: '**Start** with the release checklist' },
+    { seq: 3, kind: 'turnComplete' },
+  ] });
+  assert.match(html, /<article class="entry user"[^>]*><p class="bubble">what should I focus on\?<\/p><\/article>/, 'the owner speaks in the shared chat bubble');
+  assert.match(html, /<article class="entry assistant"[^>]*><div class="markdown">/, 'Naya answers without a bubble');
+  assert.match(html, /<strong>Start<\/strong> with the release checklist/, 'markdown still renders');
+  assert.equal((html.match(/>You<|>Naya</g) ?? []).length, 0, 'no speaker labels in either lane');
+  assert.equal((html.match(/class="entry user"/g) ?? []).length, 1);
+  assert.equal((html.match(/class="entry assistant"/g) ?? []).length, 1);
+});
+
+test('markup renders the answer as markdown with a source anchor', () => {
   const html = liveMarkup(speaking);
-  assert.match(html, /role="status" aria-live="polite"/);
-  assert.match(html, />Speaking</);
   assert.match(html, /<strong>Answer<\/strong>/);
   assert.match(html, /<a href="https:\/\/example\.org" target="_blank" rel="noopener noreferrer">/);
   assert.match(html, /lux 123/);
 });
 
-test('markup never claims heard or done and reports an error honestly', () => {
+test('markup never claims heard or done and keeps an honest state label', () => {
   const html = liveMarkup({ state: 'error', cursor: 0, entries: [] });
-  assert.match(html, /Something went wrong/);
   assert.equal(/heard/i.test(html), false);
+  assert.equal(liveLabel({ state: 'error', cursor: 0, entries: [] }), 'Something went wrong');
 });
 
 
@@ -206,7 +219,7 @@ test('background job results remain in the page without starting audio, includin
   assert.match(markup, /Actual failure/);
   assert.match(markup, /Call Naya back/);
   assert.doesNotMatch(markup, /<script>|<audio|autoplay/);
-  assert.match(liveMarkup({ ...current, jobs: [] } as LiveCurrent), /No live transcription yet/);
+  assert.match(liveMarkup({ ...current, jobs: [] } as LiveCurrent), /transcript-placeholder/, 'an empty transcript shows the one calm placeholder line');
 });
 
 
@@ -318,7 +331,7 @@ test('rebuilding is a non-error voice status and restoration is not transcript t
   const live = { state: 'rebuilding', cursor: 1, entries: [{ seq: 1, kind: 'continuity', event: 'rebuilding', reason: 'go_away' }] } as unknown as LiveCurrent;
   assert.equal(liveStateLabel(live.state), 'Reconnecting to the voice service');
   assert.notEqual(liveVoiceState(live.state), 'ERROR');
-  assert.match(liveMarkup(live), /Reconnecting to the voice service/);
+  assert.match(liveLabel(live), /Reconnecting to the voice service/);
   assert.doesNotMatch(liveMarkup(live), /session has stopped/);
   assert.deepEqual(liveTranscript(live), []);
 });
@@ -332,7 +345,7 @@ for (const [outcome, phrase] of [['failed', 'ended with an error'], ['closed', '
     const displayTime = new Date(time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     assert.ok(label.includes(displayTime));
     assert.doesNotMatch(liveMarkup(live), /Something went wrong/);
-    assert.ok(liveMarkup(live).includes(label));
+    assert.equal(liveLabel(live), label);
     assert.match(liveMarkup(live), /id="live-panel"/);
   });
 }

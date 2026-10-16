@@ -24,13 +24,15 @@ Report only what tools, memory or the owner's background actually contain. Never
  */
 export const NAYA_TOOLS = `# Tools and how to use them
 
-Routing: the owner's notes, decisions, projects and past work: the knowledge base first, before memory. Schedule and availability: calendar. What someone wrote by mail: mail. What the team said: team chat. A catch-up over everything: brief. Remember something only when the owner explicitly asks; confirm only after the tool returns remembered:true.
+You have two tools: research and remember_note. research is your only way into the owner's world: his calendar and availability, his mail, the team chat, and his knowledge base of notes, decisions, projects and past work. For any question about his day, meetings, schedule, mail, what someone wrote or said, his notes or his past work, call research with action start and the question in his words; the host chooses the sources. Never tell the owner you lack access to his calendar, mail, chat or notes, and never say a tool is missing, without calling research first. If research reports that a source did not answer, say that source is not answering right now and offer what did come back.
 
-One lookup tool, research: call it with action start and the question, and the host decides which sources are worth reading and whether one more read is worth the wait. It returns the findings, what it did not check, and whether more is available. Call it again with action continue and the researchId it returned to keep looking, or with action stop to stop. Put every independent call into the same turn so they run together. Paging and omission notes in a result are for you; never read them aloud.
+research returns the findings, what it did not check, and whether more is available. When a reply is partial and canContinue, offer to keep looking in one short sentence; when the owner says "keep looking", call research with action continue and the researchId, and when he says "stop", call it with action stop. Paging and omission notes in a result are for you; never read them aloud.
 
-While working: on the first tool call of a turn give at most a three to five word acknowledgement such as "One moment", or call the tool at once. Never describe the steps, never name a tool, channel or inbox, and never announce progress. Speak again with the answer. If the owner speaks while a read is in flight, answer the new question right away; when the earlier result arrives, mention it in a few words if it still matters, otherwise let it go. Say a three to five word acknowledgement before every research call, such as "One moment". When a research reply is partial and canContinue, offer to keep looking in one short sentence; when the owner says "keep looking", call research with action continue, and when the owner says "stop", call research with action stop. There is no background work and no callback: never promise to check later, call back or keep an eye on something.
+Remember something only when the owner explicitly asks: call remember_note and confirm only after it returns remembered:true.
 
-Empty or failed: if a search finds nothing after one sensible reformulation, say what was checked and that nothing came back. If a tool fails, say so plainly and offer what still works. Nothing is ever sent to another person by Naya.`;
+While working: before a research call say at most a three to five word acknowledgement such as "One moment", or call it at once. Never describe the steps, never name a tool, channel or inbox, and never announce progress. Speak again with the answer. If the owner speaks while a lookup is in flight, answer the new question right away; when the earlier result arrives, mention it in a few words if it still matters, otherwise let it go. There is no background work and no callback: never promise to check later, call back or keep an eye on something.
+
+Empty or failed: if research finds nothing, say what was checked and that nothing came back. Nothing is ever sent to another person by Naya.`;
 
 const maxOverlayBytes = 16 * 1024;
 const maxOptionalBytes = 4096;
@@ -45,6 +47,8 @@ export const MEMORY_SECTION_CHAR_LIMIT = 1_500;
 /** Owner lore is dense; it is clipped to this many characters and never yielded. */
 export const OWNER_LORE_CHAR_LIMIT = 5_000;
 const separator = '\n\n';
+/** The closed set of Live instruction section ids; the host-log allowlist validates against it. */
+export const LIVE_INSTRUCTION_SECTION_IDS = Object.freeze(['voice-head', 'base', 'runtime', 'tools', 'owner-style', 'owner-lore', 'overlay', 'pickup', 'memory', 'voice'] as const);
 // Generic lead voice block: the accent text comes only from the overlay or the input accent.
 const VOICE_HEAD_PREFIX = 'VOICE AND ACCENT (every turn, including right after tool results): ';
 function headVoiceBlock(accent: string | undefined): string | undefined {
@@ -170,11 +174,15 @@ function displayLanguage(code: string): string {
   catch { return code; }
 }
 
-function voiceAnchor(language: string | undefined): string {
+function voiceAnchor(language: string | undefined, accent: string | undefined): string {
   const languageLine = language === undefined
     ? 'LANGUAGE: Speak in the language the user uses.'
     : `LANGUAGE: Speak and answer in ${displayLanguage(language)} by default.`;
-  const final = 'FINAL VOICE ANCHOR: hold the voice and accent defined at the top for every turn, including immediately after reading or summarizing tool results; never drift to a neutral or other accent. Begin speaking now as Naya.';
+  const final = [
+    'FINAL VOICE ANCHOR: hold the voice and accent defined at the top for every turn, including immediately after reading or summarizing tool results; never drift to a neutral or other accent.',
+    ...(accent !== undefined ? [`VOICE AND ACCENT (repeat): ${accent}`] : []),
+    'Begin speaking now as Naya.',
+  ].join(' ');
   return [languageLine, final].join(separator);
 }
 
@@ -193,7 +201,7 @@ function assemble(parts: readonly string[]): string { return parts.join(separato
 export function composeLiveInstruction(input: ComposeLiveInstructionInput): ComposedLiveInstruction {
   if (!input || typeof input.base !== 'string' || !input.base.length) throw new PersonaOverlayError('invalid_overlay');
   const head = headVoiceBlock(input.overlay?.accent ?? input.accent);
-  const voice = voiceAnchor(input.language);
+  const voice = voiceAnchor(input.language, input.overlay?.accent ?? input.accent);
   const owner = input.ownerProfile === undefined ? [] : ownerProfileSections(input.ownerProfile)
     .map(section => ({ id: section.id, text: `[${section.id}]\n${section.text}` }));
   const ownerLore = owner.filter(section => section.id === 'owner-lore')

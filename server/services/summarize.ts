@@ -1,4 +1,5 @@
 import type { ModelPort, ModelRequest, ModelResult } from '../adapters/model/types.js';
+import { deadlineAt } from '../adapters/model/types.js';
 import type { StorePort, Transaction } from '../contracts/storage.js';
 import * as summaries from '../domain/summaries.js';
 
@@ -16,6 +17,10 @@ export const DISTILLATION_INPUT_HEAD_CHARS = 4_000;
 export const DISTILLATION_INPUT_TAIL_CHARS = 20_000;
 /** Up to two more attempts, only for transport or provider errors. */
 export const SUMMARY_MAX_RETRIES = 2;
+/** The default wall-clock budget, in milliseconds, for one distillation model call. */
+export const SUMMARY_DEADLINE_BUDGET_MS = 30_000;
+/** The newest failed-deadline sessions a single host start re-queues; older ones wait for a later start. */
+export const SUMMARY_RECOVERY_LIMIT = 30;
 export const SUMMARY_MIN_OWNER_TURNS = 2;
 
 /** Architect-authored distillation prompt, copied verbatim. */
@@ -128,7 +133,8 @@ export interface SummarizerOptions {
   readonly timeZone: string;
   readonly now: () => number;
   readonly log: (event: SummarizerLogEvent) => void;
-  readonly deadlineMs?: number;
+  /** A relative budget in milliseconds; the summarizer turns it into an absolute epoch. */
+  readonly deadlineBudgetMs?: number;
 }
 
 export interface Summarizer {
@@ -136,6 +142,8 @@ export interface Summarizer {
   schedule(liveSessionId: string): void;
   /** Distil every ended session without a row, one at a time. */
   reconcile(): Promise<void>;
+  /** Host start: re-run distillation once for failed-deadline sessions whose journal survives, newest first. */
+  requeueFailed(): Promise<void>;
   distill(liveSessionId: string, options?: { deadHost?: boolean }): Promise<void>;
 }
 
@@ -158,7 +166,7 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
       temperature: SUMMARY_TEMPERATURE,
       responseMimeType: 'application/json',
     };
-    return options.model!.generate(request, { signal, deadlineMs: options.deadlineMs ?? 30_000 });
+    return options.model!.generate(request, { signal, deadlineMs: deadlineAt(Date.now(), options.deadlineBudgetMs ?? SUMMARY_DEADLINE_BUDGET_MS) });
   }
 
   async function distill(liveSessionId: string, runOptions: { deadHost?: boolean } = {}): Promise<void> {
@@ -193,7 +201,8 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
     }
     const input = buildDistillationInput({ turns: transcript.turns, toolNames: transcript.toolNames, dateMs: endedAt, timeZone: options.timeZone, injected });
     const truncated = input.truncated || !!runOptions.deadHost;
-    options.log({ event: 'conversation_summary_distil_start', liveSessionId, inputChars: input.text.length, truncated });
+    options.log({ event: 'conversation_summary_started', liveSessionId, inputChars: input.text.length, truncated });
+    const startedAt = options.now();
     let retryCount = 0;
     let lastError = 'unknown';
     for (;;) {
@@ -217,7 +226,7 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
           return;
         }
         options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, status: 'complete', summary: parsed.summary, endedAt, model: options.modelId, inputChars: input.text.length, inputTruncated: truncated, injectedSummaryIds: injected.map(i => i.id), retryCount, now: options.now() }));
-        options.log({ event: 'conversation_summary_done', liveSessionId, inputChars: input.text.length, outputChars: parsed.summary.length, truncated, retryCount });
+        options.log({ event: 'conversation_summary_completed', liveSessionId, inputChars: input.text.length, outputChars: parsed.summary.length, durationMs: options.now() - startedAt, truncated, retryCount });
         return;
       }
       lastError = result ? result.status : lastError;
@@ -226,6 +235,24 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
     }
     options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, status: 'failed', endedAt, model: options.modelId, inputChars: input.text.length, inputTruncated: truncated, injectedSummaryIds: injected.map(i => i.id), retryCount, errorCode: lastError, now: options.now() }));
     options.log({ event: 'conversation_summary_failed', liveSessionId, errorCode: lastError, retryCount });
+  }
+
+  /**
+   * Host start: recover summaries lost while the deadline bug was live. Failed-deadline rows whose
+   * journal still exists are removed and distilled once more through the normal path; only the newest
+   * `SUMMARY_RECOVERY_LIMIT` are retried, older ones are counted and left for a later start.
+   */
+  async function requeueFailed(): Promise<void> {
+    if (!options.model) return;
+    const candidates = options.store.transaction(tx => summaries.failedDeadlineSessionsWithJournal(tx, SUMMARY_RECOVERY_LIMIT));
+    const total = options.store.transaction(tx => summaries.countFailedDeadlineSessionsWithJournal(tx));
+    options.log({ event: 'conversation_summary_recovery', requeued: candidates.length, skipped: Math.max(0, total - candidates.length) });
+    for (const candidate of candidates) {
+      await serialize(async () => {
+        const removed = options.store.transaction(tx => summaries.removeFailed(tx, candidate.liveSessionId));
+        if (removed) await distill(candidate.liveSessionId);
+      });
+    }
   }
 
   return {
@@ -241,5 +268,6 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
     distill(liveSessionId: string, runOptions?: { deadHost?: boolean }): Promise<void> {
       return serialize(() => distill(liveSessionId, runOptions));
     },
+    requeueFailed,
   };
 }

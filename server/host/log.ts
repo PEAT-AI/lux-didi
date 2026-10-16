@@ -19,6 +19,9 @@ const RESEARCH_DISPOSITIONS = ['completed', 'skipped'];
 // The projected Live state enum, mirrored from LivePageProjection['state'].
 const LIVE_STATES = ['idle', 'listening', 'thinking', 'speaking', 'rebuilding', 'ended', 'error'];
 const RESEARCH_WINDOW_KINDS = ['today', 'tomorrow', 'week', 'date'];
+// W13 distillation outcomes and the closed reason/error tokens they may name, never any summary text.
+const SUMMARY_EVENTS = new Set(['conversation_summary_started', 'conversation_summary_completed', 'conversation_summary_failed', 'conversation_summary_skipped']);
+const SUMMARY_REASONS = ['non_ordinary', 'too_few_turns', 'model_skip'];
 const isSafeToken = (value: unknown): value is string => typeof value === 'string' && SAFE_TOKEN.test(value);
 const isSafeId = (value: unknown): value is string => typeof value === 'string' && SAFE_ID.test(value);
 const isSafeCount = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;
@@ -291,6 +294,24 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeCount(value.items) || !isSafeCount(value.rawBytes) || !isSafeCount(value.keptBytes) || !isSafeCount(value.queryChars)) return;
     if (!isSafeMember(value.queryAuthor, ['selector', 'fallback'])) return;
     return { event: 'research_subcall', researchId: value.researchId, kind: value.kind, tool: value.tool, ok: value.ok, ...(hasError ? { errorCode: value.errorCode } : {}), items: value.items, rawBytes: value.rawBytes, keptBytes: value.keptBytes, queryChars: value.queryChars, queryAuthor: value.queryAuthor, ...(hasWindow ? { window: value.window } : {}), ...(hasUnread ? { unread: value.unread } : {}) };
+  }
+  if (value.event === 'conversation_summary_recovery') {
+    // OUTCOME 3: the host-start recovery sweep, a count of rows re-queued and rows left for later only.
+    if (Object.keys(value).sort().join(',') !== ['event', 'requeued', 'skipped'].sort().join(',')) return;
+    if (!isSafeCount(value.requeued) || !isSafeCount(value.skipped)) return;
+    return { event: 'conversation_summary_recovery', requeued: value.requeued, skipped: value.skipped };
+  }
+  if (typeof value.event === 'string' && SUMMARY_EVENTS.has(value.event)) {
+    // W13: the distiller's outcome, session id, character counts, milliseconds and reason codes only.
+    const counts = ['inputChars', 'outputChars', 'durationMs', 'retryCount'] as const;
+    const allowed = ['event', 'liveSessionId', ...counts, 'truncated', 'errorCode', 'reason'];
+    if (Object.keys(value).some(key => !allowed.includes(key))) return;
+    if (!isSafeId(value.liveSessionId)) return;
+    for (const name of counts) if (name in value && !isSafeCount(value[name])) return;
+    if ('truncated' in value && typeof value.truncated !== 'boolean') return;
+    if ('errorCode' in value && !isSafeToken(value.errorCode)) return;
+    if ('reason' in value && !isSafeMember(value.reason, SUMMARY_REASONS)) return;
+    return value;
   }
 }
 

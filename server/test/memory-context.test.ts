@@ -14,6 +14,11 @@ import { createDomainPort } from '../domain/facade.js';
 import { chatMigrations, ChatError, type ChatConfig, type RunSnapshot } from '../chat/index.js';
 import { domainMigrations } from '../domain/schema.js';
 import type { ModelPort, ModelRequest, ModelControl, ModelResult } from '../adapters/model/types.js';
+import { GeminiAdapter } from '../adapters/model/index.js';
+import { liveMigrations } from '../live/schema.js';
+import * as summaries from '../domain/summaries.js';
+import { createSummarizer } from '../services/summarize.js';
+import { buildEarlierConversationsSection, composeLiveInstruction, composeLiveSessionInstruction, NAYA_BASE, TRUSTED_SYSTEM_CODE_UNIT_LIMIT } from '../prompt/live-persona.js';
 import type { DomainContext, SourceRef } from '../contracts/domain.js';
 
 class CountingModel implements ModelPort {
@@ -588,3 +593,54 @@ for (const mode of ['accepted', 'intent'] as const) {
 
 // Sanity: the synthetic route classes the fixture uses.
 test('fixture route permits the enrolled consent classes', () => { assert.deepEqual([...ROUTE_CLASSES], ['ordinary', 'private']); });
+
+// OUTCOME 5: a summary distilled by the REAL summarizer over the real controlled() path reaches a later
+// session through both MEM1 injection surfaces: the Live instruction and the chat context prompt.
+test('a distilled session A is injected into session B chat context and Live instruction', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mem-inject-'));
+  const model = new CountingModel();
+  const f = openMemoryFixture(dir, model, {}, [...chatMigrations, ...liveMigrations]);
+  try {
+    const summaryText = 'The owner said they moved to Lisbon and Naya noted the timezone change.';
+    // Session A ends at epoch 0, which is the clock this fixture's chat context reads.
+    f.store.transaction(tx => {
+      tx.run(`INSERT INTO live_sessions (live_session_id, owner_assistant_id, authority_epoch, idempotency_key, fingerprint,
+          client_id, audit_id, profile_identity, prompt_identity, lifecycle, dispatch_intent, ready, journal_events, journal_bytes,
+          journal_complete, consumer_state, terminal_outcome, terminal_at, created_at, updated_at, memory_provenance)
+        VALUES (?,?,?,?,?,?,?,?,?,?,0,0,0,0,1,'ended',?,?,?,?,NULL)`,
+        ['live-A', f.store.assistantId, f.store.authorityEpoch, 'key-A', 'fp-A', 'client', 'audit', 'profile', 'prompt', 'terminal',
+          JSON.stringify({ state: 'closed', code: 'normal' }), 0, 0, 0]);
+      for (const text of ['one', 'two']) tx.run('INSERT INTO live_journal (live_session_id, kind, text, finished, payload_bytes, arrived_at) VALUES (?,?,?,1,?,?)', ['live-A', 'inputTranscription', text, text.length, 0]);
+    });
+    // A deterministic double behind the real adapter, so controlled() runs for real.
+    const adapter = new GeminiAdapter({ modelId: 'gemini-2.5-flash', keyReference: 'gemini-primary',
+      credentials: { resolve: async () => 'synthetic-key' },
+      route: { enabled: true, provider: 'gemini', modelId: 'gemini-2.5-flash', dataClasses: ['ordinary'] },
+      timingKind: 'synthetic',
+      transport: async () => {
+        const body = { candidates: [{ content: { role: 'model', parts: [{ text: JSON.stringify({ skip: false, summary: summaryText }) }] }, finishReason: 'STOP' }] };
+        const bytes = new TextEncoder().encode(`data: ${JSON.stringify(body)}\r\n\r\n`);
+        return new Response(new ReadableStream({ start(c) { c.enqueue(bytes); c.close(); } }), { headers: { 'content-type': 'text/event-stream' } });
+      } });
+    const summarizer = createSummarizer({ store: f.store, model: adapter, modelId: 'gemini-2.5-flash', timeZone: 'UTC', now: () => 0, log: () => {} });
+    await summarizer.distill('live-A');
+    const row = f.store.transaction(tx => summaries.getBySession(tx, 'live-A'))!;
+    assert.equal(row.status, 'complete');
+    assert.equal(row.summary, summaryText);
+
+    // MEM1 Live instruction: the same store read the Live composer uses.
+    const section = f.store.transaction(tx => buildEarlierConversationsSection(summaries.injectionCandidates(tx), { now: 0, timeZone: 'UTC' }));
+    assert.match(section.section, /moved to Lisbon/);
+    const baseline = composeLiveInstruction({ base: NAYA_BASE, language: 'en' });
+    const voice = composeLiveSessionInstruction({ text: baseline.text, tools: [], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, earlierConversations: section.section });
+    assert.equal(voice.earlierConversationsIncluded, true);
+    assert.ok(voice.text.includes('moved to Lisbon'), 'the Live instruction carries the past summary');
+
+    // MEM1 chat context: the composed system prompt of a real chat turn.
+    const session = f.enroll();
+    await f.chat.accept({ sessionId: session.id, text: 'hello', idempotencyKey: randomUUID() }, f.context);
+    const request = model.calls.at(-1)!;
+    assert.ok(request.system.includes('[earlier-conversations]'), 'the chat prompt carries the section');
+    assert.ok(request.system.includes('moved to Lisbon'), 'the chat prompt carries the past summary');
+  } finally { f.store.close(); rmSync(dir, { recursive: true, force: true }); }
+});

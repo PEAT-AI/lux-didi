@@ -112,6 +112,14 @@ try {
   await start();
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, timezoneId: 'UTC' });
   const page = await context.newPage();
+  // U1 (#282): the chat lane is #panel-right and launches collapsed, so its content is hidden until the
+  // owner opens the panel. Open it the owner's way and assert the open state before reading the chat.
+  const openPanel = async id => {
+    const control = page.locator(`#panel-toggle-${id}`);
+    if (await control.getAttribute('aria-expanded') !== 'true') await control.click();
+    await page.locator(`#panel-${id}[data-state="open"]`).waitFor();
+    assert.equal(await control.getAttribute('aria-expanded'), 'true', `${id} panel toggled open`);
+  };
   const envelope = data => ({ data, authorityEpoch: descriptor.authorityEpoch });
   await page.route('**/api/v1/live/current*', route => live ? route.fulfill({ json: envelope(live) }) : route.continue());
   await page.route('**/api/v1/sessions/synthetic-session', route => chatOn ? route.fulfill({ json: envelope({ entries: chatEntries, items: [] }) }) : route.continue());
@@ -128,6 +136,7 @@ try {
   await page.reload();
   await page.locator('#didi-orb').waitFor();
   await page.locator('.connected-disclosure').waitFor({ timeout: 15000 });
+  await openPanel('right');
 
   const measure = () => page.evaluate(() => {
     const box = selector => { const el = document.querySelector(selector); if (!el) return null; const rect = el.getBoundingClientRect(); return { width: Math.round(rect.width), height: Math.round(rect.height), top: Math.round(rect.top), bottom: Math.round(rect.bottom), left: Math.round(rect.left), right: Math.round(rect.right) }; };

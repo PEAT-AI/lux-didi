@@ -41,14 +41,16 @@ export function attachPin(
   onPinnedChange?: (pinned: boolean) => void,
   initiallyPinned = true,
 ): { repin(): void; pinned(): boolean; stop(): void } {
-  let pinned = initiallyPinned, frame: number | undefined;
+  let pinned = initiallyPinned ?? true, frame: number | undefined, following = false;
   const metrics = (): ScrollMetrics => ({ scrollTop: list.scrollTop, scrollHeight: list.scrollHeight, clientHeight: list.clientHeight });
   const report = () => { if (pill) pill.hidden = !jumpVisible(pinned, metrics()); onPinnedChange?.(pinned); };
   const settle = () => { pinned = nextPinned(pinned, metrics()); if (pinned) list.scrollTop = list.scrollHeight; report(); };
   // Content grows in a mutation callback, before layout: follow on the next frame so the new height is real.
-  const follow = () => { if (frame !== undefined) return; frame = requestAnimationFrame(() => { frame = undefined; settle(); }); };
+  const follow = () => { if (frame !== undefined) return; following = true; frame = requestAnimationFrame(() => { frame = undefined; following = false; settle(); }); };
   // A scroll that leaves the bottom is the reader taking over; a scroll back to it re-pins (V3 item 3).
-  list.addEventListener('scroll', () => { pinned = isPinned(metrics()); report(); }, { passive: true });
+  // While content is still settling (a growing line, a late font), the browser's own scroll moves are
+  // not the reader, so they never unpin a view that was following the bottom.
+  list.addEventListener('scroll', () => { if (following) return; pinned = isPinned(metrics()); report(); }, { passive: true });
   const observer = new MutationObserver(follow);
   observer.observe(list, { childList: true, subtree: true, characterData: true });
   // A viewport change resizes the list without a mutation: a pinned view follows that too.

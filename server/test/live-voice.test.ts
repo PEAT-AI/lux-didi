@@ -5,6 +5,7 @@ import { EventEmitter } from 'node:events';
 import { describe, test, type TestContext } from 'node:test';
 import WebSocket from 'ws';
 import { GeminiLiveVoiceAdapter, LiveVoiceError, liveVoiceActivityDefaults } from '../adapters/live-voice/index.js';
+import { LIVE_RECOVERY_PICKUP } from '../prompt/live-persona.js';
 import type { GeminiLiveVoiceOptions, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceRequest } from '../adapters/live-voice/index.js';
 import { CANARY, speechActivityFrames, collect, control, deferred, fixture as providerFixture, options, pcm, ready as providerReady, request } from './live-voice-fixture.js';
 import { safeEvent } from '../host/log.js';
@@ -911,4 +912,108 @@ test('P2: a carried voice accent restates the model-first opening nudge', async 
   await f.frame(1); f.send({ setupComplete: {} }); await Promise.all([session.ready, f.frame(2)]);
   assert.deepEqual(f.frames[1], { realtimeInput: { text: `Greet the person briefly to begin the conversation, speaking in this voice and accent: ${accent}` } });
   void events;
+});
+
+test('a fresh seeded opening sends the journal history then the pickup line as the opening input', async t => {
+  const f = await providerFixture(t);
+  const settings = options({ socketFactory: f.socketFactory });
+  const input = request();
+  input.opening = 'model_first';
+  input.history = [{ role: 'user', text: 'earlier question', dataClass: 'ordinary' }];
+  input.openingText = LIVE_RECOVERY_PICKUP;
+  const session = new GeminiLiveVoiceAdapter(settings).open(input, control()); t.after(() => session.close());
+  collect(session);
+  await f.frame(1); f.send({ setupComplete: {} }); await f.frame(2);
+  assert.deepEqual(f.frames[1], { clientContent: { turns: [
+    { role: 'user', parts: [{ text: 'earlier question' }] },
+    { role: 'user', parts: [{ text: LIVE_RECOVERY_PICKUP }] },
+  ], turnComplete: true } }, 'the history turns precede the pickup line as the opening input');
+});
+
+test('provider usage metadata is decoded into a provider-neutral contextUsage event', async t => {
+  const f = await providerFixture(t);
+  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory })).open(request(), control());
+  const captured = collect(session); t.after(() => session.close());
+  await f.frame(1); f.send({ setupComplete: {} }); await session.ready;
+  f.send({ usageMetadata: { promptTokenCount: 3, responseTokenCount: 4, totalTokenCount: 7 } });
+  await new Promise<void>(resolve => setImmediate(resolve));
+  const usage = captured.events.filter(event => event.type === 'contextUsage') as { type: 'contextUsage'; totalTokens: number; promptTokens?: number; responseTokens?: number }[];
+  assert.equal(usage.length, 1);
+  assert.deepEqual({ totalTokens: usage[0]!.totalTokens, promptTokens: usage[0]!.promptTokens, responseTokens: usage[0]!.responseTokens }, { totalTokens: 7, promptTokens: 3, responseTokens: 4 });
+});
+
+class StallPeer extends EventEmitter {
+  readyState = 1;
+  bufferedAmount = 0;
+  pings = 0;
+  send(_frame: string, callback?: (error?: Error) => void) { callback?.(); }
+  close() { this.readyState = 3; this.emit('close', 1000); }
+  terminate() { this.close(); }
+  ping() { this.pings += 1; }
+}
+function stallSession(t: TestContext, peer: StallPeer) {
+  return new GeminiLiveVoiceAdapter(options({ limits: { upstreamStallMs: 400, maxBufferedBytes: 2 * 1024 * 1024 }, socketFactory: () => {
+    queueMicrotask(() => { peer.readyState = 1; peer.emit('open'); peer.emit('message', Buffer.from(JSON.stringify({ setupComplete: {} }))); });
+    return peer as unknown as WebSocket;
+  } })).open(request(), { ...control(), deadlineMs: Date.now() + 600_000 });
+}
+
+test('an upstream queue held above 128 KB for two seconds is a stalled transport', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const peer = new StallPeer();
+  const session = stallSession(t, peer);
+  const captured = collect(session);
+  await session.ready;
+  peer.bufferedAmount = 200 * 1024;
+  session.sendAudio({ pcm, dataClass: 'ordinary' });
+  t.mock.timers.tick(2000);
+  session.sendAudio({ pcm, dataClass: 'ordinary' });
+  const outcome = await session.done; await captured.done;
+  assert.equal(outcome.code, 'transport_error');
+  assert.equal(outcome.recoverable, true);
+  assert.equal(outcome.upstream!.errorKind, 'queue_stalled');
+});
+
+test('a queue that never drains for two seconds is a stalled transport', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const peer = new StallPeer();
+  const session = stallSession(t, peer);
+  const captured = collect(session);
+  await session.ready;
+  peer.bufferedAmount = 1024;
+  session.sendAudio({ pcm, dataClass: 'ordinary' });
+  t.mock.timers.tick(2000);
+  session.sendAudio({ pcm, dataClass: 'ordinary' });
+  const outcome = await session.done; await captured.done;
+  assert.equal(outcome.code, 'transport_error');
+  assert.equal(outcome.upstream!.errorKind, 'no_drain');
+});
+
+test('two missed websocket pongs are a stalled transport', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const peer = new StallPeer();
+  const session = stallSession(t, peer);
+  const captured = collect(session);
+  await session.ready;
+  t.mock.timers.tick(15_000);
+  const outcome = await session.done; await captured.done;
+  assert.equal(peer.pings, 2, 'a ping every five seconds');
+  assert.equal(outcome.code, 'transport_error');
+  assert.equal(outcome.upstream!.errorKind, 'no_pong');
+});
+
+test('an elevated upstream queue is surfaced once, above 64 KB', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const peer = new StallPeer();
+  const session = stallSession(t, peer);
+  const captured = collect(session);
+  await session.ready;
+  peer.bufferedAmount = 100 * 1024;
+  session.sendAudio({ pcm, dataClass: 'ordinary' });
+  await new Promise<void>(resolve => setImmediate(resolve));
+  const queued = captured.events.filter(event => event.type === 'upstreamQueue') as { type: 'upstreamQueue'; bufferedBytes: number }[];
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0]!.bufferedBytes, 100 * 1024);
+  session.close();
+  await captured.done;
 });

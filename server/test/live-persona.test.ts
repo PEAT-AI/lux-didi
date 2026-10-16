@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   NAYA_BASE, NAYA_TOOLS, MEMORY_SECTION_CHAR_LIMIT, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_INSTRUCTION_TARGET_CHARS, OWNER_LORE_CHAR_LIMIT,
+  LIVE_RECOVERY_PICKUP,
   PersonaOverlayError, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, canonicalSpeechLanguage, composeLiveInstruction, composeLiveSessionInstruction, loadPersonaOverlay,
   validatePersonaOverlay, withToolsSection, buildEarlierConversationsSection, EARLIER_CONVERSATIONS_HEADER, type PersonaOverlay,
 } from '../prompt/live-persona.js';
@@ -451,4 +452,8 @@ test('the earlier-conversations section sits right after # Memory and yields bef
   assert.equal(huge.earlierConversationsIncluded, false);
   assert.ok(!huge.text.includes('EEEE'));
   assert.ok(huge.text.includes('SYNTHETIC retained memory'));
+});
+
+test('the recovery pickup line is the exact fixed text of release 3g-c', () => {
+  assert.equal(LIVE_RECOVERY_PICKUP, "The connection dropped for a moment and is back. Continue the conversation exactly where it was. Do not greet and do not re-introduce yourself. If you were in the middle of an answer, say in a few words that you are back and finish the thought; otherwise answer the owner's last words.");
 });

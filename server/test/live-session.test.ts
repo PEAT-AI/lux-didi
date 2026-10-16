@@ -777,12 +777,13 @@ test('profile validation rejects text-model fallback and bounds, and validation 
   assert.throws(() => h.owner.create({ idempotencyKey: 'class', inputClass: 'private' }, h.ctx), (error: unknown) => error instanceof LiveError && error.code === 'invalid_request');
 });
 
-test('accepted complete system uses the shared 60k bound while generic prompt text stays at 4096', () => {
+test('accepted complete system uses the shared 60k bound while prompt text is bounded by the live hard limit', () => {
   const ownerProfile = { schemaVersion: 1 as const, kind: 'default' as const, ownerId: 'assistant-test', displayName: 'Lux Didi' as const };
   const acceptedPrompt = { schemaVersion: 1, ownerProfile, compilerVersion: PROMPT_VERSION, system: 'A'.repeat(60_000), dataClasses: ['ordinary'] };
   assert.equal(validateLiveProfile({ ...profileInput(), acceptedPrompt }).acceptedPrompt?.system.length, 60_000);
   assert.throws(() => validateLiveProfile({ ...profileInput(), acceptedPrompt: { ...acceptedPrompt, system: 'A'.repeat(60_001) } }), LiveConfigError);
-  assert.throws(() => validateLiveProfile({ ...profileInput(), prompt: { text: 'A'.repeat(4097), dataClass: 'ordinary' } }), LiveConfigError);
+  assert.equal(validateLiveProfile({ ...profileInput(), prompt: { text: 'A'.repeat(LIVE_INSTRUCTION_HARD_LIMIT), dataClass: 'ordinary' } }).prompt.text.length, LIVE_INSTRUCTION_HARD_LIMIT);
+  assert.throws(() => validateLiveProfile({ ...profileInput(), prompt: { text: 'A'.repeat(LIVE_INSTRUCTION_HARD_LIMIT + 1), dataClass: 'ordinary' } }), LiveConfigError);
 });
 
 test('tool-enabled Live CREATE freezes an expanded classified owner system byte for byte', async t => {

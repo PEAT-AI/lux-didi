@@ -1,7 +1,7 @@
 import { liveVoiceTimerDefaults, isLiveVoiceProvider } from '../adapters/live-voice/types.js';
 import { createHash } from 'node:crypto';
 import type { DataClass } from '../adapters/live-voice/index.js';
-import { validatePersonaOverlay } from '../prompt/live-persona.js';
+import { LIVE_INSTRUCTION_HARD_LIMIT, validatePersonaOverlay } from '../prompt/live-persona.js';
 import { ownerProfileClasses, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, validateOwnerProfile } from '../prompt/index.js';
 import { LiveConfigError, type AcceptedPromptSnapshot, type LiveLimits, type LiveProfile, type LiveMemoryProvenance, type LiveProvider } from './types.js';
 
@@ -25,6 +25,12 @@ function object(value: unknown): value is Record<string, unknown> {
 function fail(code: ConstructorParameters<typeof LiveConfigError>[0]): never { throw new LiveConfigError(code); }
 function text(value: unknown, code: ConstructorParameters<typeof LiveConfigError>[0]): string {
   if (typeof value !== 'string' || !value.length || value.length > 4096) fail(code);
+  return value;
+}
+// The profile's prompt text is the frozen base character: a prompt, not a 4096-byte identifier, so it is
+// bounded by the live instruction hard limit instead of the generic text() bound.
+function basePromptText(value: unknown): string {
+  if (typeof value !== 'string' || !value.length || value.length > LIVE_INSTRUCTION_HARD_LIMIT) fail('invalid_prompt');
   return value;
 }
 // A BCP-47 language with an optional two-letter region. Case-normalised to lower language,
@@ -110,7 +116,7 @@ export function validateLiveProfile(input: unknown): LiveProfile {
   const dataClasses = Object.freeze(classList(route['dataClasses']));
   const prompt = input['prompt'];
   if (!object(prompt)) fail('invalid_prompt');
-  const promptText = text(prompt['text'], 'invalid_prompt');
+  const promptText = basePromptText(prompt['text']);
   if (!classes.includes(prompt['dataClass'] as DataClass) || !dataClasses.includes(prompt['dataClass'] as DataClass)) fail('invalid_prompt');
   const dataClass = prompt['dataClass'] as DataClass;
   return Object.freeze({

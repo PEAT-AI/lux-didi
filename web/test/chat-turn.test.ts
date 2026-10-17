@@ -245,11 +245,12 @@ test('the real view composes the turn: running steps, the answer with folded evi
     await view.select('s3');
     await settle();
     api.emit({ type: 'chat_step', runId: 'run-3', stepId: 'a', tool: 'mattermost_search', phase: 'end', resultCount: 13 });
+    api.emit({ type: 'chat_step', runId: 'run-3', stepId: 'b', tool: 'gcal_list', phase: 'end', resultCount: 2 });
     await settle();
     api.emit({ type: 'snapshot', run: runOf('3', { finalEntryId: 'e2' }) });
     await settle();
     view.attach();
-    assert.match(api.panel.innerHTML, /<summary>Checked Mattermost<\/summary>/, 'the folded summary names the source');
+    assert.match(api.panel.innerHTML, /<summary>Checked Mattermost and calendar<\/summary>/, 'the folded summary names its sources in prose');
     assert.match(api.panel.innerHTML, /The release is on friday\./);
     assert.match(api.panel.innerHTML, /class="chat-evidence"/);
     assert.match(api.panel.innerHTML, /class="chat-sources"/);

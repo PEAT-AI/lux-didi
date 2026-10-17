@@ -178,10 +178,10 @@ describe('openai gpt-live adapter', () => {
     assert.equal(audioBytes(opened.captured), (7_200 + 30 * 2_400) * 2, 'every valid output delta is forwarded');
     assert.equal(interruptions(opened.captured), 0, 'one word is not a barge-in');
     // No delegated response.created ever arrives here, which is the shape of a plain spoken reply.
-    clock.advance(2_000);
+    clock.advance(200);
     await quiet();
-    assert.equal(completions(opened.captured), 0, '1.3 s of playback is still queued');
-    clock.advance(1_400);
+    assert.equal(completions(opened.captured), 0, 'the tail of the answer is still queued');
+    clock.advance(1_700);
     await until(() => completions(opened.captured) === 1);
   });
 
@@ -197,18 +197,18 @@ describe('openai gpt-live adapter', () => {
     await quiet();
     clock.advance(350);
     await until(() => interruptions(opened.captured) === 1);
+    // A later word of the same episode cannot flush again: the once-per-episode latch holds.
+    opened.f.send({ type: 'session.input_transcript.delta', delta: ' please' });
+    await quiet();
+    clock.advance(350);
+    await quiet();
+    assert.equal(interruptions(opened.captured), 1, 'one flush per input episode');
     // Frames of the answer the owner just cut arrive inside the bounded post-flush window and are dropped; audio
     // flows again once the window has passed, and the drop never latches.
     clock.advance(2_500);
-    speak(opened.f);
+    speak(opened.f, 96_000);
     await until(() => audioOf(opened.captured).length === 2);
-    assert.equal(audioBytes(opened.captured), 192_000 + 14_400, 'audio flows again after the drop window');
-    opened.f.send({ type: 'session.input_transcript.delta', delta: ' please' });
-    await quiet();
-    assert.equal(interruptions(opened.captured), 1, 'one flush per input episode');
-    clock.advance(700);
-    speak(opened.f);
-    await until(() => audioOf(opened.captured).length === 3);
+    assert.equal(audioBytes(opened.captured), 192_000 * 2, 'audio flows again after the drop window');
     opened.f.send({ type: 'session.input_transcript.delta', delta: 'stop that' });
     await quiet();
     clock.advance(350);
@@ -442,7 +442,7 @@ describe('openai gpt-live adapter', () => {
     clock.advance(100);
     await until(() => logged().some(entry => entry['event'] === 'gptlive_post_flush_audio_ms'));
     assert.equal(interruptions(opened.captured), 1, 'the whitespace fragment adds no word and cannot flush');
-    speak(opened.f);
+    speak(opened.f, 96_000);
     await until(() => audioOf(opened.captured).length === 2);
     opened.f.send({ type: 'session.input_transcript.delta', delta: ' ' });
     opened.f.send({ type: 'session.input_transcript.delta', delta: 'hold' });

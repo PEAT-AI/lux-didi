@@ -13,7 +13,7 @@ import WebKit
     var error: String? {
         get {
             if supervisor?.state == .unavailable, supervisor?.startupFailureDiagnostic?.stage == .canonicalFile {
-                return "Didi couldn’t verify its saved connection. Reconnect the service explicitly."
+                return "Naya couldn’t verify its saved connection. Reconnect the service explicitly."
             }
             return operationError
         }
@@ -116,7 +116,7 @@ import WebKit
                         self?.liveAuthorityOwner.unavailable()
                         self?.bootstrapFailureCode = owner?.startupFailureCode
                         self?.bootstrapFailureDiagnostic = owner?.startupFailureDiagnostic
-                        self?.error = "Didi couldn’t verify its saved connection. Reconnect the service explicitly."
+                        self?.error = "Naya couldn’t verify its saved connection. Reconnect the service explicitly."
                     }
                     return
                 }
@@ -398,7 +398,7 @@ struct RootView: View {
             } else {
                 // Only on a failed configure, where there is no service page to show.
                 VStack(spacing: 12) {
-                    Text("Connect Didi").font(.title2)
+                    Text("Connect Naya").font(.title2)
                     Button("Connect") { Task { await model.reconnect() } }
                 }.foregroundStyle(.white)
             }

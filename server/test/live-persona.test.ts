@@ -8,7 +8,8 @@ import {
   NAYA_CHARACTER, NAYA_VOICE_SURFACE, NAYA_LIVE_BASE, NAYA_TOOLS, MEMORY_SECTION_CHAR_LIMIT, STANDING_MEMORY_CHAR_LIMIT, STANDING_MEMORY_PREFACE, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_INSTRUCTION_TARGET_CHARS, OWNER_LORE_CHAR_LIMIT,
   LIVE_RECOVERY_PICKUP,
   PersonaOverlayError, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, canonicalSpeechLanguage, composeLiveInstruction, composeLiveSessionInstruction, loadPersonaOverlay,
-  validatePersonaOverlay, withToolsSection, buildEarlierConversationsSection, EARLIER_CONVERSATIONS_HEADER, ownerProfileSections, LIVE_INSTRUCTION_SECTION_IDS, earlierConversationsBudget, type PersonaOverlay,
+  validatePersonaOverlay, withToolsSection, buildEarlierConversationsSection, EARLIER_CONVERSATIONS_HEADER, ownerProfileSections, LIVE_INSTRUCTION_SECTION_IDS, earlierConversationsBudget,
+  LIVE_ACCENTS, LIVE_DEFAULT_ACCENT, LIVE_ACCENT_PRESETS, accentAnchor, type PersonaOverlay,
 } from '../prompt/live-persona.js';
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
 
@@ -94,7 +95,7 @@ test('owner sections compose exactly once before the terminal voice anchor witho
   assert.equal(original.sha256, 'c670fdfbfa0919c369cb7e4153f6055b778eaf7158fbcf4337b45a47f3c43edf');
   const composed = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile });
   for (const marker of ['[owner-style]', 'SYNTHETIC style', '[owner-lore]', 'SYNTHETIC lore']) assert.equal(composed.text.split(marker).length - 1, 1);
-  assert.deepEqual(composed.sections.map(section => section.id), ['owner-style', 'base', 'owner-lore', 'voice']);
+  assert.deepEqual(composed.sections.map(section => section.id), ['voice-head', 'owner-style', 'base', 'owner-lore', 'voice']);
   assert.ok(composed.text.lastIndexOf('\n\nLANGUAGE:') > composed.text.indexOf('untrusted duplicate'));
   assert.ok(composed.text.endsWith('FINAL VOICE ANCHOR: hold the voice and accent defined at the top for every turn, including immediately after reading or summarizing tool results; never drift to a neutral or other accent. Begin speaking now as Naya.'));
 });
@@ -102,7 +103,7 @@ test('owner sections compose exactly once before the terminal voice anchor witho
 test('composition keeps base -> overlay -> voice order and hashes the exact text', () => {
   const overlay: PersonaOverlay = { schemaVersion: 1, text: 'Local overlay persona', greeting: 'Hello there' };
   const result = composeLiveInstruction({ base: 'PUBLIC BASE TEXT', overlay, language: 'de-DE' });
-  assert.deepEqual(result.sections.map(s => s.id), ['overlay', 'base', 'voice']);
+  assert.deepEqual(result.sections.map(s => s.id), ['voice-head', 'overlay', 'base', 'voice']);
   const baseAt = result.text.indexOf('PUBLIC BASE TEXT');
   const overlayAt = result.text.indexOf('Local overlay persona');
   const voiceAt = result.text.indexOf('LANGUAGE:');
@@ -119,7 +120,7 @@ test('composition keeps base -> overlay -> voice order and hashes the exact text
 test('missing and empty overlay sections are stripped, and the hash is stable', () => {
   const a = composeLiveInstruction({ base: 'PUBLIC BASE TEXT', language: 'en' });
   const b = composeLiveInstruction({ base: 'PUBLIC BASE TEXT', language: 'en' });
-  assert.deepEqual(a.sections.map(s => s.id), ['base', 'voice']);
+  assert.deepEqual(a.sections.map(s => s.id), ['voice-head', 'base', 'voice']);
   assert.equal(a.sha256, b.sha256, 'same input, same hash');
   assert.equal(a.text, b.text);
   assert.match(a.text, /^PUBLIC BASE TEXT\n\n/);
@@ -204,7 +205,7 @@ test('no declarations compose exactly the three existing sections and hash', () 
   const overlay: PersonaOverlay = { schemaVersion: 1, text: 'Local overlay persona', greeting: 'Hello there' };
   const withoutTools = composeLiveInstruction({ base: NAYA_LIVE_BASE, overlay, language: 'de-DE' });
   const withEmptyTools = composeLiveInstruction({ base: NAYA_LIVE_BASE, overlay, language: 'de-DE', tools: [] });
-  assert.deepEqual(withoutTools.sections.map(s => s.id), ['overlay', 'base', 'voice']);
+  assert.deepEqual(withoutTools.sections.map(s => s.id), ['voice-head', 'overlay', 'base', 'voice']);
   assert.equal(withEmptyTools.text, withoutTools.text, 'an empty declaration list adds nothing');
   assert.equal(withEmptyTools.sha256, withoutTools.sha256);
   assert.equal(withoutTools.sha256, sha(withoutTools.text), 'the no-tools fixture hashes its own text');
@@ -214,7 +215,7 @@ test('declarations add the tools section verbatim between base and overlay with 
   const overlay: PersonaOverlay = { schemaVersion: 1, text: 'Local overlay persona' };
   const tools = ['search_knowledge', 'get_insight'];
   const result = composeLiveInstruction({ base: NAYA_LIVE_BASE, overlay, language: 'en', tools });
-  assert.deepEqual(result.sections.map(s => s.id), ['overlay', 'base', 'tools', 'voice']);
+  assert.deepEqual(result.sections.map(s => s.id), ['voice-head', 'overlay', 'base', 'tools', 'voice']);
   const baseAt = result.text.indexOf(NAYA_LIVE_BASE);
   const toolsAt = result.text.indexOf(NAYA_TOOLS);
   const overlayAt = result.text.indexOf('Local overlay persona');
@@ -298,7 +299,7 @@ test('session composition places bounded whole memory records and pickup before 
   assert.ok(order.every(marker => composed.text.indexOf(marker) < trustedAnchor));
   assert.ok(composed.text.endsWith(baseline.text.slice(baseline.text.lastIndexOf('LANGUAGE:'))));
   const withMemory = composeLiveInstruction({ base: NAYA_LIVE_BASE, memory: 'Fixture memory section' });
-  assert.deepEqual(withMemory.sections.map(section => section.id), ['base', 'memory', 'voice']);
+  assert.deepEqual(withMemory.sections.map(section => section.id), ['voice-head', 'base', 'memory', 'voice']);
   const capped = composeLiveInstruction({ base: NAYA_LIVE_BASE, overlay: { schemaVersion: 1, text: 'Fixture overlay' }, memory: 'x'.repeat(BUDGET) });
   const memorySection = capped.sections.find(section => section.id === 'memory');
   assert.ok(memorySection, 'an over-long memory input is retained');
@@ -340,7 +341,7 @@ test('the public character, voice surface and tool conduct are the authored verb
 test('runtime context is inserted right after the base and before the tools', () => {
   const runtimeContext = '# Runtime context\n\nNow: Wed, 2026-10-14, 18:05 Asia/Kolkata (UTC+05:30)';
   const result = composeLiveInstruction({ base: NAYA_LIVE_BASE, runtimeContext, language: 'en', tools: ['search_knowledge'] });
-  assert.deepEqual(result.sections.map(section => section.id), ['base', 'tools', 'runtime', 'voice']);
+  assert.deepEqual(result.sections.map(section => section.id), ['voice-head', 'base', 'tools', 'runtime', 'voice']);
   assert.ok(result.text.indexOf(NAYA_LIVE_BASE) < result.text.indexOf(NAYA_TOOLS));
   assert.ok(result.text.indexOf(NAYA_TOOLS) < result.text.indexOf(runtimeContext));
 });
@@ -616,4 +617,65 @@ test('# Memory keeps its own budget when a standing set is present', () => {
   assert.ok(memory.chars <= MEMORY_SECTION_CHAR_LIMIT);
   assert.ok(composed.text.includes('Fixture ad hoc voice note'));
   assert.ok(composed.sections.some(section => section.id === 'standing-memory'));
+});
+
+test('PV1: the budget numbers are the wire-tested ones and a 25,000-char composition fits while 37,000 throws', () => {
+  assert.equal(LIVE_INSTRUCTION_TARGET_CHARS, 30_000);
+  assert.equal(LIVE_INSTRUCTION_HARD_LIMIT, 36_000);
+  // A gpt-live-1 probe accepted 28,000 and 60,000-character instructions and echoed them in full, so the
+  // smaller earlier-conversations block no longer has to compete with the persona for a 20,000-char ceiling.
+  const fits = composeLiveInstruction({ base: 'B'.repeat(24_900), language: 'en' });
+  assert.ok(fits.text.length >= 25_000, `the composition is at least 25,000 chars (${fits.text.length})`);
+  assert.ok(fits.text.length <= LIVE_INSTRUCTION_TARGET_CHARS, `and stays under the target (${fits.text.length})`);
+  assert.throws(() => composeLiveInstruction({ base: 'B'.repeat(37_000), language: 'en' }),
+    (error: unknown) => error instanceof PersonaOverlayError && error.code === 'instruction_too_large');
+});
+
+test('PV1: the accent block opens and closes the instruction, and the voice default emits none', () => {
+  assert.deepEqual([...LIVE_ACCENTS], ['indian-strong', 'indian-light', 'voice-default']);
+  assert.equal(LIVE_DEFAULT_ACCENT, 'indian-strong');
+  // The preset texts are pinned so swapping in the PV1-R1 wording is a deliberate edit, never silent drift.
+  assert.equal(LIVE_ACCENT_PRESETS['indian-strong'],
+    'PLACEHOLDER PV1-R1 strong Indian accent: speak English in a strong, unmistakable Indian accent, with Indian English rhythm and stress on every turn, including right after tool results.');
+  assert.equal(LIVE_ACCENT_PRESETS['indian-light'],
+    'PLACEHOLDER PV1-R1 light Indian accent: speak English in a light Indian accent, with Indian English rhythm and softer consonants on every turn, including right after tool results.');
+  assert.equal(accentAnchor(undefined), LIVE_ACCENT_PRESETS[LIVE_DEFAULT_ACCENT], 'an absent value means indian-strong');
+  assert.equal(accentAnchor('voice-default'), undefined, 'the voice default has no block');
+  const strong = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en', accentSelection: 'indian-strong' });
+  const block = LIVE_ACCENT_PRESETS['indian-strong'];
+  assert.ok(strong.text.startsWith(block), 'the head anchor opens the instruction');
+  assert.ok(strong.text.endsWith(block), 'the tail anchor closes it');
+  assert.equal(strong.text.split(block).length - 1, 2, 'exactly twice, never more');
+  const light = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en', accentSelection: 'indian-light' });
+  assert.ok(light.text.startsWith(LIVE_ACCENT_PRESETS['indian-light']) && light.text.endsWith(LIVE_ACCENT_PRESETS['indian-light']));
+  assert.ok(!light.text.includes(block), 'one selection only');
+  const own = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en', accentSelection: 'voice-default' });
+  assert.ok(!own.text.includes(block) && !own.text.includes(LIVE_ACCENT_PRESETS['indian-light']), 'no accent block at all');
+  assert.equal(own.sections.some(section => section.id === 'voice-head'), false, 'and no head block either');
+});
+
+test('PV1: the overlay accent detail follows the block, and the receipt lists style and lore apart', () => {
+  const overlay: PersonaOverlay = { schemaVersion: 1, text: 'OVERLAY PERSONA BLOCK', accent: 'SYNTHETIC-ACCENT-DESCRIPTION' };
+  const frozen = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile: syntheticOwner('OWNER STYLE BLOCK', 'OWNER LORE BLOCK'), overlay, language: 'en', accentSelection: 'indian-strong' });
+  const block = LIVE_ACCENT_PRESETS['indian-strong'];
+  assert.ok(frozen.text.startsWith(block), 'the block leads');
+  assert.ok(frozen.text.indexOf('SYNTHETIC-ACCENT-DESCRIPTION') > block.length, 'the private accent text still follows it');
+  const session = composeLiveSessionInstruction({ text: frozen.text, tools: [], records: [], trustedChars: BUDGET, accentSelection: 'indian-strong' });
+  assert.deepEqual(session.sections.map(section => section.id), ['voice-head', 'owner-style', 'overlay', 'base', 'owner-lore', 'voice']);
+  assert.ok(session.sections.find(section => section.id === 'owner-style')!.chars > 0, 'the style has its own chars');
+  assert.ok(session.sections.find(section => section.id === 'owner-lore')!.chars > 0, 'and so does the lore');
+  assert.equal(session.text, frozen.text, 'the split labels the same bytes, never a re-arrangement');
+});
+
+test('PV1: a saved accent takes the next session start, replacing the frozen block without an app restart', () => {
+  const frozen = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en', accentSelection: 'indian-strong' });
+  const session = composeLiveSessionInstruction({ text: frozen.text, tools: [], records: [], trustedChars: BUDGET, accentSelection: 'indian-light' });
+  const light = LIVE_ACCENT_PRESETS['indian-light'];
+  assert.ok(session.text.startsWith(light), 'the head anchor carries the new selection');
+  assert.ok(session.text.endsWith(light), 'and so does the tail anchor');
+  assert.ok(!session.text.includes(LIVE_ACCENT_PRESETS['indian-strong']), 'the frozen block is replaced, never doubled');
+  const same = composeLiveSessionInstruction({ text: frozen.text, tools: [], records: [], trustedChars: BUDGET, accentSelection: 'indian-strong' });
+  assert.equal(same.text, frozen.text, 'the same selection composes byte-identically');
+  const own = composeLiveSessionInstruction({ text: session.text, tools: [], records: [], trustedChars: BUDGET, accentSelection: 'voice-default' });
+  assert.ok(!own.text.includes(light), 'and the voice default removes a saved block at the next start');
 });

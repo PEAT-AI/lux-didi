@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { saveLiveSelection } from '../config/live.js';
+import { currentLiveAccent, loadLiveConfig, saveLiveSelection } from '../config/live.js';
 import { LiveConfigError } from '../live/types.js';
 
 /** A private config dir with both credential slots seeded: the switch never has to borrow a key. */
@@ -48,4 +48,24 @@ test('each provider saves its own voice, and the default stays the provider defa
   assert.deepEqual(saveLiveSelection({ configDir: f.configDir, provider: 'openai', voice: 'cinder' }),
     { provider: 'openai', modelId: 'gpt-live-1', voice: 'cinder' });
   assert.equal(f.saved()['voice'], 'cinder');
+});
+
+test('PV1: the accent selection validates, defaults and reaches the next session start', () => {
+  const f = fixture(t);
+  // Absent from live.json means indian-strong, and a load publishes that current value.
+  const loaded = loadLiveConfig({ configDir: f.configDir, ownerId: 'owner-fixture' });
+  assert.equal(loaded.status, 'configured');
+  assert.equal(currentLiveAccent(), 'indian-strong', 'an absent accent means indian-strong');
+  // A value outside the closed set is refused with its own typed code, which the route answers as a 400.
+  assert.throws(() => saveLiveSelection({ configDir: f.configDir, provider: 'openai', accent: 'fake-indian' }),
+    (error: unknown) => error instanceof LiveConfigError && error.code === 'invalid_accent');
+  assert.equal(f.saved()['accent'], undefined, 'a refused save writes nothing');
+  // A listed value is persisted and becomes the value the next session start composes with, with no restart.
+  assert.deepEqual(saveLiveSelection({ configDir: f.configDir, provider: 'openai', voice: 'marin', accent: 'indian-light' }),
+    { provider: 'openai', modelId: 'gpt-live-1', voice: 'marin', accent: 'indian-light' });
+  assert.equal(f.saved()['accent'], 'indian-light');
+  assert.equal(currentLiveAccent(), 'indian-light');
+  // The voice's own accent is a real selection, not an absence.
+  assert.equal(saveLiveSelection({ configDir: f.configDir, provider: 'openai', accent: 'voice-default' }).accent, 'voice-default');
+  assert.equal(currentLiveAccent(), 'voice-default');
 });

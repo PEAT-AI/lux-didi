@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
 import { describe, test } from 'node:test';
-import { LiveVoiceError, OpenAiLiveVoiceAdapter, OPENAI_DEFAULT_VOICE, OPENAI_DELIVERY_SECTION, OPENAI_LANGUAGE_SECTION, OPENAI_TOOLS_SECTION, openAiInstructions } from '../adapters/live-voice/index.js';
+import { LiveVoiceError, OpenAiLiveVoiceAdapter, OPENAI_DEFAULT_VOICE, OPENAI_DELIVERY_SECTION, OPENAI_TOOLS_SECTION, openAiInstructions } from '../adapters/live-voice/index.js';
 import type { LiveVoiceAdapterOptions, LiveVoiceEvent } from '../adapters/live-voice/index.js';
 import { CANARY, collect, control, FakeClock, fixture, options, pcm16, ready, request } from './openai-live-voice-fixture.js';
 import { safeEvent } from '../host/log.js';
@@ -69,7 +69,11 @@ describe('openai gpt-live adapter', () => {
     const instructions = start.session['instructions'] as string;
     assert.equal(instructions, openAiInstructions('Synthetic persona'));
     assert.ok(instructions.startsWith('Synthetic persona'), 'the shared persona is sent unchanged first');
-    for (const section of [OPENAI_LANGUAGE_SECTION, OPENAI_TOOLS_SECTION, OPENAI_DELIVERY_SECTION]) assert.ok(instructions.includes(section), section);
+    for (const section of [OPENAI_TOOLS_SECTION, OPENAI_DELIVERY_SECTION]) assert.ok(instructions.includes(section), section);
+    // PV1: the wrapper names no language, because the host's accent block carries the accent now.
+    assert.ok(!/^Language:/m.test(instructions), 'no Language line');
+    assert.ok(!instructions.includes('Language: speak English'), 'no language instruction line');
+    assert.ok(instructions.includes('Delivery: confident and warm underneath, dry and a little edgy; never sugary or sing-song; keep the wit.'), 'the delivery line, verbatim');
     for (const line of ['Do not treat a cough, music, or nearby conversation as a new request.', 'Keep listening while the owner pauses to think.']) assert.ok(instructions.includes(line), line);
     assert.deepEqual(start.session['audio'], { format: { type: 'audio/pcm', rate: 24_000 }, output: { voice: 'marin' } });
     const delegation = start.session['delegation'] as { type: string; responses: Record<string, unknown> };

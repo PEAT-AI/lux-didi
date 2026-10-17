@@ -168,3 +168,30 @@ test('the OpenAI voice list is the gpt-live-1 table in its own order, marin firs
   const geminiList = gemini.slice(gemini.indexOf('<datalist'), gemini.indexOf('</datalist>'));
   assert.deepEqual([...geminiList.matchAll(/<option value="([A-Za-z]+)"><\/option>/g)].map(match => match[1]), ['Aoede']);
 });
+
+test('PV1: the Accent row renders the three choices and selects the running one', () => {
+  const html = settingsMarkup({ status, summary: { ...summary, accent: 'indian-light' } });
+  assert.match(html, /<dt>Accent<\/dt><dd>Indian English, light<\/dd>/);
+  const at = html.indexOf('id="live-accent"');
+  assert.ok(at > 0, 'the accent select is in the switch form');
+  const select = html.slice(at, html.indexOf('</select>', at));
+  assert.deepEqual([...select.matchAll(/<option value="([a-z-]+)"/g)].map(match => match[1]), ['indian-strong', 'indian-light', 'voice-default']);
+  assert.match(select, /<option value="indian-light" selected>/);
+});
+
+test('PV1: an absent accent shows the default choice, never a blank select', () => {
+  const html = settingsMarkup({ status, summary });
+  const at = html.indexOf('id="live-accent"');
+  const select = html.slice(at, html.indexOf('</select>', at));
+  assert.match(select, /<option value="indian-strong" selected>/);
+  assert.match(html, /<dt>Accent<\/dt><dd><span class="settings-unavailable">Unavailable<\/span><\/dd>/);
+});
+
+test('PV1: a saved accent that differs from the running one shows a pending notice', () => {
+  const html = settingsMarkup({ status, summary: { ...summary, accent: 'indian-strong' },
+    saved: { provider: 'gemini', voice: 'Aoede', accent: 'indian-light', appliesAt: 'next_start' } });
+  assert.match(html, /Saved: gemini\/Aoede, accent Indian English, light, applies on next start/);
+  const same = settingsMarkup({ status, summary: { ...summary, accent: 'indian-light' },
+    saved: { provider: 'gemini', voice: 'Aoede', accent: 'indian-light', appliesAt: 'next_start' } });
+  assert.doesNotMatch(same, /Saved: /, 'the same selection is not a pending change');
+});

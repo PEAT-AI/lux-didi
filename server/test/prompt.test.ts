@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { GeminiAdapter } from '../adapters/model/gemini.js';
 import type { ToolDefinition } from '../adapters/model/types.js';
-import { compilePrompt, compileVoiceInstruction, createCapabilitySnapshot, validateOwnerProfile, validatePreferences, PUBLIC_PERSONA, NAYA_CHARACTER, NAYA_TEXT_SURFACE, PROMPT_VERSION, PromptCompileError, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, type CompileInput, type Evidence } from '../prompt/index.js';
+import { compilePrompt, compileVoiceInstruction, composeLiveInstruction, createCapabilitySnapshot, validateOwnerProfile, validatePreferences, PUBLIC_PERSONA, NAYA_CHARACTER, NAYA_LIVE_BASE, NAYA_TEXT_SURFACE, PROMPT_VERSION, PromptCompileError, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, type CompileInput, type Evidence } from '../prompt/index.js';
 
 const rawPreferences = { schemaVersion: 1, ownerId: 'alice', dataClass: 'private', language: 'en', register: 'plain', humor: 'dry', verbosity: 'brief' };
 const tool: ToolDefinition = { name: 'read_note', description: 'Read a note', parameters: { type: 'object', properties: { id: { type: 'string' } } }, effect: 'read', accountId: 'account', resourceId: 'notes', validate: () => true, execute: async () => ({ status: 'completed', result: { id: 'read_note', sha256: createHash('sha256').update('read_note synthetic result').digest('hex') } }) };
@@ -301,4 +301,10 @@ test('owner fields retain expanded UTF-16 content exactly under the shared compl
   assert.equal(compiled.system.split(ownerProfile.lore.text).length - 1, 1);
   assert.equal(ownerProfile.lore.text.length, 13_969);
   assert.ok(Buffer.byteLength(ownerProfile.lore.text, 'utf8') > ownerProfile.lore.text.length);
+});
+
+test('PV1: the persona base names the spoken cue and the single research call', () => {
+  const instruction = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en' }).text;
+  assert.ok(instruction.includes('Before any tool call, say one short line of at most six words that tells him what you are checking.'), 'the spoken cue is named');
+  assert.ok(instruction.includes('Put every lookup one question needs into one research call with several lookups; never make several research calls in a row for one question.'), 'and one research call carries the lookups');
 });

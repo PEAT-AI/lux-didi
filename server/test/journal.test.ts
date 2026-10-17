@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import type { TestContext } from 'node:test';
 import { attachHostLogSink } from '../tools/host-events.js';
 import {
-  capJournalText, configureDebugJournal, DebugJournal, JOURNAL_RESULT_LIMIT, resetDebugJournal,
+  capJournalText, configureDebugJournal, currentDebugJournal, DebugJournal, JOURNAL_RESULT_LIMIT, resetDebugJournal,
 } from '../host/journal.js';
 import { safeEvent } from '../host/log.js';
 import { randomUUID } from 'node:crypto';
@@ -340,6 +340,7 @@ test('a chat tool loop journals the call at the tools layer, not only in the wri
   const path = join(dir, 'debug', dayName(Date.now()), `chat-${run.runId}.jsonl`);
   assert.equal(existsSync(path), true, 'the chat run wrote its journal file');
   const calls = records(path).filter(line => line['event'] === 'tool');
+  if (calls.length !== 1) console.error(JSON.stringify({ probe: 'journal-dump', failures: currentDebugJournal()?.failures, lines: records(path) }));
   assert.equal(calls.length, 1, `the tool call reaches the session journal from the tools layer: ${JSON.stringify(records(path).map(line => line['event']))}`);
   assert.equal(calls[0]!['tool'], 'search_knowledge');
   assert.equal(typeof calls[0]!['ms'], 'number');

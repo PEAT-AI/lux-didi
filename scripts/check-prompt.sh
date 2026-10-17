@@ -16,8 +16,11 @@ trap 'rm -rf "$out"' EXIT
 cd "$root"
 # Stage only this unit under a temporary ESM marker, so the isolated worktree
 # follows SERVICE's actual NodeNext conventions without a competing manifest.
-mkdir -p "$out/source/adapters/model" "$out/source/test" "$out/source/prompt" "$out/source/tools" "$out/source/host" "$out/source/http" "$out/source/config" "$out/source/contracts"
+mkdir -p "$out/source/adapters/model" "$out/source/adapters/live-voice" "$out/source/adapters/mcp" "$out/source/connectors" "$out/source/test" "$out/source/prompt" "$out/source/tools" "$out/source/host" "$out/source/http" "$out/source/config" "$out/source/contracts"
 cp server/adapters/model/*.ts "$out/source/adapters/model/"
+cp server/adapters/live-voice/types.ts "$out/source/adapters/live-voice/"
+cp server/adapters/mcp/port.ts server/adapters/mcp/registry.ts "$out/source/adapters/mcp/"
+cp server/connectors/google.ts "$out/source/connectors/"
 cp server/tools/declarations.ts server/tools/host-events.ts server/tools/research.ts server/tools/intent.ts server/tools/live-shape.ts "$out/source/tools/"
 cp server/prompt/*.ts "$out/source/prompt/"
 cp server/host/log.ts "$out/source/host/"

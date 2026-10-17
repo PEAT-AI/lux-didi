@@ -42,7 +42,7 @@ import { createDomainPort } from '../domain/facade.js';
 import { Outbox } from '../runtime/outbox.js';
 import { Store } from '../runtime/store.js';
 import type { Transaction } from '../contracts/storage.js';
-import { createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
+import { createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, control, deferred, fixture, options, pcm } from './live-voice-fixture.js';
 import { fakeLiveVoicePort } from './fixtures/fake-live-voice.js';
 import { CONNECTOR_DESCRIPTORS, MATTERMOST_TOOLS } from '../connectors/index.js';
@@ -2794,4 +2794,28 @@ test('the earlier-conversations section fills the space under the target in a re
   const sections = sizes?.['sections'] as Record<string, number> | undefined;
   assert.ok(sections !== undefined && Number(sections['earlier-conversations']) > 0, 'the summary section is recorded per section');
   assert.ok(Number(sizes?.['total']) <= LIVE_INSTRUCTION_TARGET_CHARS, `under the target (${String(sizes?.['total'])})`);
+});
+
+test('a tool call in flight owns the silence, so the response watchdog never fires over it', async t => {
+  let finish!: () => void;
+  const slow = new Promise<void>(resolve => { finish = resolve; });
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { tools: true, beforeTool: () => slow, scheduler, limits: { idleMs: 600_000 } });
+  await attached(h);
+  const receipts: Record<string, unknown>[] = [];
+  const detach = attachHostLogSink({ event: raw => {
+    const record = raw as Record<string, unknown>;
+    if (record.event === 'live_watchdog' || record.event === 'live_dead_air_nudge') receipts.push(record);
+  } });
+  t.after(detach);
+  h.f.send({ toolCall: { functionCalls: [{ id: 'watchdog1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
+  while (!h.calls.length) await tick();
+  h.advance(RESPONSE_WATCHDOG_NUDGE_MS + RESPONSE_WATCHDOG_RECOVERY_MS + 20_000);
+  scheduler.runDue(); await tick();
+  assert.deepEqual(receipts, [], 'a working tool is not silence: no watchdog phase and no dead-air nudge');
+  assert.equal(h.requests.length, 1, 'no recovery while the tool is in flight');
+  finish();
+  await h.f.frame(2);
+  assert.ok(h.f.frames.some(frame => 'toolResponse' in (frame as object)), 'the tool response still reaches the provider');
+  assert.equal(h.requests.length, 1, 'a delivered tool response returns to the same session');
 });

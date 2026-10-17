@@ -399,8 +399,8 @@ test('the model phrasing decides, not a remember prefix, and the stored note rea
       assert.equal(result.remembered, true);
       assert.equal(typeof result.entryId, 'string');
       assert.ok(rows(h).some(row => String(row.text).includes(note) && utterance.toLowerCase().includes(String(row.text).toLowerCase())), 'the owner words are stored verbatim');
-      const journal = h.store.transaction(tx => tx.all("SELECT kind,text FROM live_journal WHERE live_session_id=? AND kind='toolResult'", [session.liveSessionId]));
-      assert.ok(journal.some(row => String(row['text']).includes('"name":"remember_note"') && String(row['text']).includes('"status":"completed"')), 'the journal confirms the stored note');
+      const journal = h.store.transaction(tx => tx.all("SELECT tool_json FROM live_journal WHERE live_session_id=? AND kind='toolResult'", [session.liveSessionId]));
+      assert.ok(journal.some(row => String(row['tool_json']).includes('"name":"remember_note"') && String(row['tool_json']).includes('"status":"completed"')), 'the journal confirms the stored note');
       const next = h.owner.create({ idempotencyKey: `next-${utterance.slice(0, 12)}`, inputClass: 'ordinary' }, h.ctx);
       assert.ok(String(frozen(h, next.liveSessionId)?.accepted_prompt_snapshot).includes(note), 'the next session recalls the note');
     });

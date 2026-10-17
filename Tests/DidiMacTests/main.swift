@@ -61,15 +61,24 @@ expect(expanded == 1 && dismissed == 2 && liveStopped == 1 && !miniOrb.isVisible
 miniOrb.show()
 expect(liveStarted == 2 && presented == 3, "a running Live is not restarted by the mini orb")
 
-// M3-R5 with M3-R10: two surfaces with two jobs, and the mic-live gate belongs to the
-// pill alone. The orb panel is the always-there presence, so no state takes it away; the
-// pill is on screen only while the microphone is live and switched on.
-expect(MiniOrbVisibility.belongsOnScreen(.orb, capturing: false, muted: false), "the orb is on screen in cold")
-expect(MiniOrbVisibility.belongsOnScreen(.orb, capturing: true, muted: true), "the orb is on screen in hot-muted")
-expect(MiniOrbVisibility.belongsOnScreen(.orb, capturing: true, muted: false), "the orb is on screen while live")
-expect(!MiniOrbVisibility.belongsOnScreen(.pill, capturing: false, muted: false), "no session, no pill")
-expect(!MiniOrbVisibility.belongsOnScreen(.pill, capturing: true, muted: true), "hot-muted hides the pill")
-expect(MiniOrbVisibility.belongsOnScreen(.pill, capturing: true, muted: false), "a live microphone shows the pill")
+// M3-R12: this build has one mini surface, and nothing hides it on microphone state.
+// Presence owns its visibility and its opacity (cold 0.35, hot-muted 0.55, live 1.0), so the
+// surface stays on screen in cold and in hot-muted, and only an explicit hide or expand
+// takes it away.
+var presence = "cold"
+var gateDismissals = 0
+var gatePresents = 0
+let surface = MiniOrbToggle(startLive: { presence = "live" }, stopLive: { presence = "cold" },
+                            liveIsRunning: { presence == "live" },
+                            presentPanel: { gatePresents += 1 },
+                            dismissPanel: { gateDismissals += 1 },
+                            expandToWindow: {})
+surface.showSurface()
+expect(surface.isVisible && gatePresents == 1, "the surface is on screen")
+presence = "hot-muted"
+expect(surface.isVisible && gateDismissals == 0, "hot-muted leaves the surface on screen")
+presence = "cold"
+expect(surface.isVisible && gateDismissals == 0, "cold leaves the surface on screen")
 
 // MINI2: the single key. Right Command is Naya's key; Right Option belongs to
 // SuperWhisper and is never watched. A tap fires, a chord use and a long hold do

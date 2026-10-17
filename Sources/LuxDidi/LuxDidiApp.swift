@@ -575,11 +575,9 @@ struct RootView: View {
                 guard let self else { return }
                 updateLiveStatus(state: state)
                 model.publishBridgeLive()
-                refreshMiniPill()
             }
             updateLiveStatus(state: conversation?.state ?? .idle)
             model.publishBridgeLive()
-            refreshMiniPill()
         }
         dictationObservation = model.voice.$state.sink { [weak self] state in
             self?.updateLiveStatus(dictationCapturing: state.phase == .recording)
@@ -716,12 +714,7 @@ struct RootView: View {
         loginMenuItem?.isEnabled = loginAvailability != nil
     }
     @objc func startLiveFromMenu() { menuBridge.start() }
-    @objc func muteLiveFromMenu() {
-        summonActions.mute()
-        // M3-R5: the menu's mute is a presence change too, and a toggle of the mute is not
-        // a live state publication, so the pill's gate is re-asked here.
-        refreshMiniPill()
-    }
+    @objc func muteLiveFromMenu() { summonActions.mute() }
     @objc func stopLiveFromMenu() { menuBridge.stop() }
     private var gettingStartedProofRows: [NativeGettingStartedItem]?
     @objc private func showGettingStarted() {
@@ -851,26 +844,8 @@ struct RootView: View {
         case .live: if model.live?.isMuted == true { model.handleBridgeCommand(.unmute) }
         }
         // M3-R5: muting takes the pill off the screen and unmuting brings it back.
-        refreshMiniPill()
     }
 
-    /// M3-R5: the pill is the mic-live indicator, kept true in one place. It is on screen
-    /// only while the microphone is live and not muted; cold and hot-muted are the orb's
-    /// states, so the pill leaves the screen for them and comes back with the microphone.
-    private func refreshMiniPill() {
-        // M3-R10: the gate is asked about the pill surface only. The orb panel is presented
-        // by the presence wagon for every state and is never hidden from here.
-        let shows = MiniOrbVisibility.belongsOnScreen(.pill,
-                                                     capturing: model.live?.isCapturing == true,
-                                                     muted: model.live?.isMuted == true)
-        if shows {
-            guard coordinator.mode == .mini, !miniOrb.isVisible else { return }
-            miniOrb.showSurface()
-        } else {
-            guard miniOrb.isVisible else { return }
-            miniOrb.hideSurface()
-        }
-    }
     private func hostMiniSurface() -> Bool { presentMiniPanel() }
     private func dismissMiniSurface() { miniOrb.hideSurface() }
     private func presentMiniThroughCoordinator() { _ = coordinator.presentMini() }

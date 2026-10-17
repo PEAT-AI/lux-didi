@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { createContext, runInContext } from 'node:vm';
-import { liveStateLabel, liveVoiceState, pendingToolNames, liveLabel, liveDelay, mergeLive, liveTranscript, liveResult, liveMarkup, liveActivity, activityMarkup, jobStateLabel, SLOW_TOOL_MS, liveSegments, sessionItems, sessionDividerText, earlierSession, pastSessionsMarkup, pastSessionListMarkup, openSegments, restoreOpen, jobGist, turnHeadline, sessionTurnCount, sessionHeadline, FEED_EMPTY } from '../src/live-view.ts';
+import { liveStateLabel, liveVoiceState, pendingToolNames, liveLabel, liveDelay, mergeLive, liveTranscript, liveResult, liveMarkup, liveActivity, activityMarkup, jobStateLabel, SLOW_TOOL_MS, liveSegments, sessionItems, sessionDividerText, earlierSession, pastSessionsMarkup, pastSessionListMarkup, openSegments, restoreOpen, jobGist, startingReset, turnHeadline, sessionTurnCount, sessionHeadline, FEED_EMPTY } from '../src/live-view.ts';
 import { posture } from '../src/orb-level.ts';
 import './connector-status.test.ts';
 import { pollLiveView } from '../src/live-view.ts';
@@ -826,4 +826,11 @@ test('a live job card shows the plain sentence, not "Background task unknown" (M
   const html = liveMarkup(live);
   assert.match(html, /Background task was interrupted before its result was known/);
   assert.equal(html.includes('Background task unknown'), false);
+});
+
+test('UI3b N2 the voice view drops to blank on the first starting frame and only then', () => {
+  assert.equal(startingReset(undefined, 'starting'), true, 'an app start enters starting and clears the lane');
+  assert.equal(startingReset('idle', 'starting'), true, 'a new Live session enters starting and clears the lane');
+  assert.equal(startingReset('starting', 'starting'), false, 'a second starting frame clears nothing again');
+  for (const state of ['live', 'idle', 'stopping', 'error'] as const) assert.equal(startingReset('idle', state), false, state);
 });

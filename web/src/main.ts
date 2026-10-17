@@ -4,7 +4,7 @@ import { deleteMemoryEntry, deleteMemorySummary, listMemorySummaries, type Memor
 import { ConnectedView } from './connected';
 import { Orb, type VoiceState } from './orb';
 import { ApiError, request, pair, demoMode, onAuthorityChanged, authorityVersion, assertAuthority, restoreSession, logout, fetchLive } from './api';
-import { liveMarkup, liveSegments, liveLabel, liveVoiceState, liveDelay, pollLiveView, liveTranscript, LiveMachine, LIVE_CONSENT, pillVisible, liveErrorText, startAvailable, stopAvailable, earlierSession, liveNoticesMarkup, liveJobsMarkup, pastSessionsMarkup, pastSessionListMarkup, openSegments, restoreOpen, FEED_EMPTY, type LivePollState, type EarlierSession } from './live-view';
+import { liveMarkup, liveSegments, liveLabel, liveVoiceState, liveDelay, pollLiveView, liveTranscript, LiveMachine, LIVE_CONSENT, pillVisible, liveErrorText, startAvailable, stopAvailable, earlierSession, liveNoticesMarkup, liveJobsMarkup, pastSessionsMarkup, pastSessionListMarkup, openSegments, restoreOpen, startingReset, FEED_EMPTY, type LivePollState, type EarlierSession } from './live-view';
 import { attachPin } from './autoscroll.ts';
 import { dragPanel, isNarrow, loadLayout, openSheet, closeSheet, PANEL_IDS, panelControl, panelLabel, panelOpen, panelWidth, saveLayout, shortcutPanel, togglePanel, withViewport, type LayoutState, type PanelId, type RouteId } from './layout';
 import { installNativeBridge, type Bridge, type NativeLiveState } from './native-bridge';
@@ -514,7 +514,7 @@ function paintNotices(){
 function paintLive(){
   // Every new Live session opens on a blank voice view (UI3b): the first `starting` frame drops the rows
   // of the session before it, before the new session's own rows exist. Memory stays model-side.
-  if(liveMachine.view.state==='starting'&&appliedLiveState!=='starting'){livePoll={earlier:livePoll.earlier};live=undefined;openBySeg.clear();}
+  if(startingReset(appliedLiveState,liveMachine.view.state)){livePoll={earlier:livePoll.earlier};live=undefined;openBySeg.clear();}
   appliedLiveState=liveMachine.view.state;
   // A poll rewrites the state line, the wrapper notices, the jobs and the transcript in place, so the
   // orb canvas, the controls and the reader's scroll position all keep (spec 1.3 causes 2, 3 and 4).
@@ -530,7 +530,12 @@ function paintLive(){
   const past=document.getElementById('past-sessions'),wanted=pastSessionsMarkup(livePoll.earlier??[]);
   if(past&&!wanted)past.remove();
   else if(!past&&wanted)document.getElementById('live-panel')?.insertAdjacentHTML('beforeend',wanted);
-  else {const rows=document.getElementById('past-session-list'),rowsMarkup=pastSessionListMarkup(livePoll.earlier??[]);if(rows&&rows.innerHTML!==rowsMarkup)rows.innerHTML=rowsMarkup;}
+  else {
+    // A row the owner opened stays open: the repaint compares the list with the rows it would write
+    // carrying the reader's open state, so an unchanged open session is never closed again (UI3b B1).
+    const rows=document.getElementById('past-session-list');
+    if(rows){const open=openSegments(rows.innerHTML),restored=restoreOpen(pastSessionListMarkup(livePoll.earlier??[]),open);if(rows.innerHTML!==restored)rows.innerHTML=restored;}
+  }
   const caption=document.querySelector('.orb-caption');const markup=orbCaptionMarkup();if(caption && caption.innerHTML!==markup)caption.innerHTML=markup;
   const list=document.querySelector<HTMLElement>('#transcript .live-turns');
   if(list)renderTranscript(list);

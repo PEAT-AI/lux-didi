@@ -148,6 +148,12 @@ export function liveTranscript(live: LiveCurrent): LiveLine[] {
   return lines;
 }
 
+/** The first frame of a new Live session: the voice view drops whatever the session before it painted,
+ * so a start (or a reconnect into `starting`) always opens blank (UI3b, N2). */
+export function startingReset(previous: string | undefined, state: string): boolean {
+  return state === 'starting' && previous !== 'starting';
+}
+
 export interface LivePollState { live?: LiveCurrent; lastSuccess?: Date; stale?: boolean; earlier?: EarlierSession[] }
 /** The polling boundary preserves the last projection on failure, never raw errors. */
 export async function pollLiveView(previous: LivePollState, fetch: (cursor?: string | number) => Promise<LiveCurrent>, now: () => Date = () => new Date()): Promise<LivePollState> {

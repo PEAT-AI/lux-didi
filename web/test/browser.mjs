@@ -371,6 +371,22 @@ try {
     await page.locator('#past-sessions .feed-session > summary').first().click();
     await page.waitForSelector('#past-sessions .feed-session .entry', { timeout: 8000 });
     await shoot('session-collapsed.png');
+    // UI3b B1: a poll that rewrites the panel must not close the session the owner opened.
+    fixture.setLive(session('thinking', '2026-10-12T11:00:00Z', 2, [
+      { seq: 1, kind: 'inputTranscription', text: 'and tomorrow' },
+      { seq: 2, kind: 'turnComplete' },
+    ], { pastSession: { outcome: 'closed', endedAt: '2026-10-12T11:05:00Z', lastObservedAt: '2026-10-12T11:05:00Z' } }));
+    await page.waitForFunction(() => document.querySelectorAll('#past-sessions .feed-session').length >= 2, { timeout: 8000 });
+    assert.equal(await page.locator('#past-sessions').evaluate(el => el.open), true, 'the panel stays open after the first poll');
+    assert.equal(await page.locator('#past-sessions .feed-session').first().evaluate(el => el.open), true, 'an opened past session survives the first poll repaint');
+    // A second poll rewrites the same list again; the opened row must still be open.
+    fixture.setLive(session('thinking', '2026-10-12T12:00:00Z', 2, [
+      { seq: 1, kind: 'inputTranscription', text: 'and the day after' },
+      { seq: 2, kind: 'turnComplete' },
+    ], { pastSession: { outcome: 'closed', endedAt: '2026-10-12T12:05:00Z', lastObservedAt: '2026-10-12T12:05:00Z' } }));
+    await page.waitForFunction(() => document.querySelectorAll('#past-sessions .feed-session').length >= 3, { timeout: 8000 });
+    assert.equal(await page.locator('#past-sessions').evaluate(el => el.open), true, 'the panel stays open after the second poll');
+    assert.equal(await page.locator('#past-sessions .feed-session').first().evaluate(el => el.open), true, 'an opened past session survives the second poll repaint');
 
     // Reduced motion: the calm animation is off.
     await page.emulateMedia({ reducedMotion: 'reduce' });

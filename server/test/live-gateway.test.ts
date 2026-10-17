@@ -830,7 +830,8 @@ test('trusted composition registers current Live authority and refuses after ter
 
 
 test('host Live status exposes only counts from the committed memory snapshot', async t => {
-  const h = await harness(t, { config: configJson(true), withKey: false });
+  // TRAIN3J-R3: a session create needs its provider key slot; this test's subject is the status projection.
+  const h = await harness(t, { config: configJson(true) });
   h.store.transaction(tx => {
     tx.run('INSERT INTO sessions VALUES (?,?,?,NULL,?,1,?,?)', ['memory-session', 'Fixture', 1, 'UTC', 1, 1]);
     tx.run('INSERT INTO entries VALUES (?,?,1,?,?,?, ?,1)', ['memory-entry', 'memory-session', 'user', 'Fixture durable owner note', 1, 'UTC']);

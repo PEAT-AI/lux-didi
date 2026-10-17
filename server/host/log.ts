@@ -124,6 +124,12 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'host_started' && typeof value.releaseCommit === 'string' && /^(?:[0-9a-f]{40}|unknown)$/.test(value.releaseCommit) && (value.configDir === 'effective' || value.configDir === 'seeded') && Number.isSafeInteger(value.endpoints) && Number(value.endpoints) >= 0 && Number(value.endpoints) <= 65535) {
     return { event: value.event, releaseCommit: value.releaseCommit, configDir: value.configDir, endpoints: value.endpoints };
   }
+  if (value.event === 'live_started' && (value.provider === 'openai' || value.provider === 'gemini')
+    && typeof value.modelId === 'string' && /^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(value.modelId)
+    && typeof value.voice === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(value.voice)) {
+    // Names only: what the running Live service will call, never a key, reference or prompt.
+    return { event: 'live_started', provider: value.provider, modelId: value.modelId, voice: value.voice };
+  }
   if (value.event === 'host_exit' && ['descriptor', 'log', 'store', 'owner', 'listen', 'ready'].includes(String(value.stage))
     && (value.reason === 'close' || value.reason === 'exit')
     && (value.signal === undefined || value.signal === 'SIGINT' || value.signal === 'SIGTERM')

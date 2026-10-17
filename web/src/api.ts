@@ -92,6 +92,8 @@ export interface LiveSummary {
   voice: string | null;
   personaName: string | null;
   limits: { sessionMs: number; idleMs: number } | null;
+  /** Present only while the running provider is OpenAI: the delegation backend its calls use. */
+  delegationModel?: string | null;
   profileEnabled: boolean;
 }
 

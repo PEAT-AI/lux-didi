@@ -1,6 +1,6 @@
 import './style.css';
 import { memoryDeleteControl, deleteMemoryAndReload, attachMemoryDeleteControls, memoryListMarkup, type MemoryListItem } from './memory-list';
-import { deleteMemoryEntry, deleteMemorySummary, listMemorySummaries, type MemorySummaryItem, saveLiveSelection } from './api';
+import { deleteMemoryEntry, deleteMemorySummary, fetchLiveSummary, listMemorySummaries, type LiveSelection, type LiveSummary, type MemorySummaryItem, saveLiveSelection } from './api';
 import { ConnectedView } from './connected';
 import { Orb, type VoiceState } from './orb';
 import { ApiError, request, pair, demoMode, onAuthorityChanged, authorityVersion, assertAuthority, restoreSession, logout, fetchLive } from './api';
@@ -9,7 +9,7 @@ import { attachPin } from './autoscroll.ts';
 import { dragPanel, isNarrow, loadLayout, openSheet, closeSheet, PANEL_IDS, panelControl, panelLabel, panelOpen, panelWidth, saveLayout, shortcutPanel, togglePanel, withViewport, type LayoutState, type PanelId, type RouteId } from './layout';
 import { installNativeBridge, type Bridge, type NativeLiveState } from './native-bridge';
 import { connectionsMarkup } from './connector-status';
-import { settingsMarkup } from './settings-view';
+import { providerDefaultVoice, providerVoices, settingsMarkup } from './settings-view';
 import { answerMarkup } from './markdown';
 import { applyTheme, loadTheme, saveTheme, type Theme } from './theme';
 import { isMiniRoute, miniMarkup, miniModeButtonMarkup, miniState, type MiniState } from './mini';
@@ -53,6 +53,11 @@ let liveDetailsOpen = false;
 let historyOpen = false;
 let connections: unknown = [];
 let connectionsStale = false;
+// The running Live config, and the owner's saved choice when this session saved one: the page must
+// show what actually runs, never a default that merely looks like it.
+let liveSummary: LiveSummary | undefined;
+let liveSummaryUnavailable = false;
+let liveSaved: LiveSelection | undefined;
 let statusUnavailable = false;
 let connectionsTimer: ReturnType<typeof setTimeout> | undefined;
 let connectionsBusy = false;
@@ -175,7 +180,7 @@ function memory() {
   const items: MemoryListItem[] = [...entries, ...memorySummaries.map(item => ({ id: item.id, text: item.summary ?? '', origin: 'conversation summary', capturedAt: item.endedAt ?? item.createdAt }))];
   return `<section class="page-heading"><div><p class="eyebrow">REMEMBER, WITH CONTEXT</p><h1>Pick up the thread.</h1><p>Your words, connected to where they came from.</p></div></section>${memoryListMarkup(items, { filter: status ? memoryFilter : '', disabled: !writable() || busy || connectedView.active })}<section class="panel recall"><form id="recall-form"><label for="recall-query">Search your memory</label><div class="search-row"><input id="recall-query" type="search" value="${e(status ? queryDraft : '')}" maxlength="500" placeholder="A phrase, a project, a thought…"><button ${disabled(connection !== 'Connected' || readBusy || !status?.capabilities.memory)}>Search</button></div></form>${recall ? `<p class="muted">${recall.totalMatches} ${recall.totalMatches === 1 ? 'match' : 'matches'}${recall.truncated || recall.nextCursor ? ' · Partial results; more are available in the service.' : ''}</p>${recall.hits.length ? recall.hits.map(hit=>`<article class="recall-hit"><p>${e(hit.snippet)}</p><small>${e(datetime(hit.sourceTimestamp))}</small>${sourceMarkup(hit.sourceRefs)}${hit.entryId ? memoryDeleteControl(hit.entryId, !writable() || busy || connectedView.active) : ''}<button class="quiet" data-source="${e(hit.sessionId)}">Open conversation source</button></article>`).join('') : '<div class="empty"><h3>No matches yet.</h3><p>Try a different phrase. Didi won’t invent a memory to fill the gap.</p></div>'}` : '<div class="empty"><span class="empty-icon" aria-hidden="true">↗</span><h3>Find the words you kept.</h3><p>Search saved conversations. Unavailable sources stay clearly marked.</p></div>'}</section>`;
 }
-function settingsInput() { return { status, statusUnavailable, connections, connectionsUnavailable: connectionsStale, theme, connected: { conversations: connectedView.history, remember: connectedView.remember, busy: connectedView.busy, standingRevoke: connectedView.standingRevoke, conversationState: connectedView.conversationState } }; }
+function settingsInput() { return { status, statusUnavailable, connections, connectionsUnavailable: connectionsStale, summary: liveSummary, summaryUnavailable: liveSummaryUnavailable, ...(liveSaved ? { saved: { provider: liveSaved.provider, voice: liveSaved.voice, appliesAt: liveSaved.appliesAt } } : {}), theme, connected: { conversations: connectedView.history, remember: connectedView.remember, busy: connectedView.busy, standingRevoke: connectedView.standingRevoke, conversationState: connectedView.conversationState } }; }
 function settings() {
   const permissions = typeof Notification === 'undefined' ? 'Not supported in this browser' : Notification.permission === 'granted' ? 'Allowed by this browser; no delivery is configured' : Notification.permission === 'denied' ? 'Blocked in browser settings' : 'Not requested';
   return `<section class="page-heading"><div><p class="eyebrow">YOUR SETUP, PLAINLY</p><h1>Make yourself at home.</h1><p>Know what’s connected. Choose what’s allowed.</p></div></section><div class="settings-grid">${settingsMarkup(settingsInput())}<section class="panel"><h2>Connection</h2><dl><dt>Service</dt><dd>${e(connection)}</dd><dt>Time zone</dt><dd>${e(zone)}</dd><dt>Privacy</dt><dd>Messages stay in your service. This browser keeps only the app shell for offline opening.</dd></dl><div class="button-row"><button id="reconnect" class="secondary" ${disabled(readBusy)}>Reconnect</button><button id="logout" class="quiet" ${disabled(!writable())}>Unpair this browser</button></div><p class="muted">Browser pairing uses a secure cookie, not a saved token. ${demoMode ? 'This is an isolated synthetic test service.' : 'Ask your local service for a one-time pairing code.'}</p></section>
@@ -355,6 +360,8 @@ function button(id: string, action: () => void) { document.getElementById(id)?.a
 function form(id: string, action: () => void) { document.getElementById(id)?.addEventListener('submit', ev => { ev.preventDefault(); action(); }); }
 function input(id: string, action: (value: string) => void) { document.getElementById(id)?.addEventListener('input', ev=>action((ev.target as HTMLInputElement).value)); }
 function findCommitment(id: string) { return [...(plan?.items.map(i=>i.commitment) ?? []), ...(plan?.unscheduled ?? []), ...recent].find(c=>c.id===id); }
+// A provider change rewrites the voice field and its list, so a Gemini save can never carry marin.
+function bindLiveProviderSwitch(){document.getElementById('live-provider')?.addEventListener('change',ev=>{const provider=(ev.target as HTMLSelectElement).value;const field=document.getElementById('live-voice') as HTMLInputElement|null;if(field)field.value=providerDefaultVoice(provider);const list=document.getElementById('live-voices');if(list)list.innerHTML=providerVoices(provider).map(name=>`<option value="${e(name)}"></option>`).join('');});}
 // Attached by every full bind and after the periodic settings-summary re-render, which replaces the select.
 function bindConnectedHistory() { document.getElementById('connected-history')?.addEventListener('change',ev=>{const next=(ev.target as HTMLSelectElement).value;if(next)void connectedView.select(next).catch(err=>{error=failure(err);render();});}); }
 function bind() {
@@ -384,7 +391,7 @@ function bind() {
   form('commitment-form',()=>{if(!titleDraft.trim())return;void mutate(async (signal,version)=>{await request<Commitment>('/commitments',{method:'POST',body:{title:titleDraft.trim(),dueAt:null,timeZone:zone},signal});assertAuthority(version);titleDraft='';await loadPlan();assertAuthority(version);notice='Commitment saved.';});});
   form('edit-form',()=>{if(!editing || !editTitle.trim())return;void changeCommitment(editing,'edit');});
   form('recall-form',()=>void searchRecall());
-  form('live-settings-form',()=>{const provider=(document.getElementById('live-provider') as HTMLSelectElement).value;const voice=(document.getElementById('live-voice') as HTMLInputElement).value.trim();const version=authorityVersion();void mutate(async(signal)=>{await saveLiveSelection({provider,voice},signal);if(version===authorityVersion()){notice='Saved. It applies when Lux Didi next starts.';render();}});});
+  form('live-settings-form',()=>{const provider=(document.getElementById('live-provider') as HTMLSelectElement).value;const voice=(document.getElementById('live-voice') as HTMLInputElement).value.trim();const version=authorityVersion();void mutate(async(signal)=>{const saved=await saveLiveSelection({provider,voice},signal);if(version===authorityVersion()){liveSaved=saved;notice='Saved. It applies when Lux Didi next starts.';render();}});});
   form('pair-form',()=>{const code=(document.getElementById('pair-code') as HTMLInputElement).value;void pairBrowser(code);});
   button('new-conversation',()=>{session=undefined;entries=[];entriesMore=false;historyOpen=true;notice='';render();});
   button('close-edit',()=>{editing=undefined;render();});button('close-history',()=>{detail=undefined;render();});
@@ -393,6 +400,7 @@ function bind() {
   button('cancel-request',()=>controller?.abort());
   document.getElementById('connected-remember')?.addEventListener('change',ev=>connectedView.setRemember((ev.target as HTMLInputElement).checked));
   bindConnectedHistory();
+  bindLiveProviderSwitch();
   document.getElementById('connected-standing-revoke')?.addEventListener('click',()=>void connectedView.revokeStanding());
   document.getElementById('connected-revoke')?.addEventListener('click',()=>void connectedView.revokeConversation());
   document.getElementById('connected-recover')?.addEventListener('click',()=>void connectedView.recoverHistory());
@@ -512,6 +520,18 @@ async function pollLive(){
   }
   finally{if(version===authorityVersion()){liveBusy=false;scheduleLive();}}
 }
+/** Replace the settings panel in place and re-bind the controls the replacement carries. */
+function repaintLiveSettings(){const panel=document.getElementById('settings-summary');if(!panel)return;panel.outerHTML=settingsMarkup(settingsInput());bindConnectedHistory();bindLiveProviderSwitch();}
+/**
+ * Read the running Live config from the same route the service renders its own summary through. A failed
+ * read says so and drops the old values, so the page never shows a default as if it were the running one.
+ */
+async function pollLiveSummary(){
+  const version=authorityVersion();
+  try{const current=await fetchLiveSummary(AbortSignal.timeout(8000));if(version!==authorityVersion())return;liveSummary=current;liveSummaryUnavailable=false;}
+  catch{if(version===authorityVersion()){liveSummary=undefined;liveSummaryUnavailable=true;}}
+  finally{if(version===authorityVersion())repaintLiveSettings();}
+}
 async function pollConnections(){
   if(connectionsTimer)clearTimeout(connectionsTimer);connectionsTimer=undefined;
   if(document.hidden||pairingRequired||connectionsBusy)return;
@@ -522,9 +542,8 @@ async function pollConnections(){
     if(version===authorityVersion()){
       connectionsBusy=false;
       const panel=document.getElementById('connections-panel');if(panel)panel.outerHTML=connectionsMarkup(connections,connectionsStale);
-      const summary=document.getElementById('settings-summary');if(summary)summary.outerHTML=settingsMarkup(settingsInput());
-      // The replaced summary carries a fresh #connected-history select; re-bind so the choice still publishes.
-      bindConnectedHistory();
+      // The running Live config refreshes on the same tick as the connectors.
+      void pollLiveSummary();
       if(!document.hidden&&!pairingRequired)connectionsTimer=setTimeout(()=>{if(version===authorityVersion())void pollConnections();},10000);
     }
   }

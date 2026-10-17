@@ -23,7 +23,7 @@ import { Pcm16Upsampler } from './resample.js';
  */
 const ENDPOINT = 'wss://api.openai.com/v1/live/sessions';
 /** Delegation backend pinned by the docs ("Start with gpt-6-luna", guides/live-delegation). */
-const BACKEND_MODEL = 'gpt-6-luna';
+export const OPENAI_DELEGATION_MODEL = 'gpt-6-luna';
 /** Documentation default and quality voice ("The default is marin", guides/live-conversations). */
 export const OPENAI_DEFAULT_VOICE = 'marin';
 /** `nira` is the documented Hindi voice (guides/live-conversations voice table), which the Language section forbids. */
@@ -158,7 +158,7 @@ export class OpenAiLiveVoiceAdapter implements LiveVoicePort {
         instructions,
         audio: { format: { type: 'audio/pcm', rate: 24_000 }, output: { voice: settings.voice } },
         ...(seed.items.length ? { input: seed.items } : {}),
-        delegation: { type: 'responses', responses: { model: BACKEND_MODEL, ...(tools?.length ? { tools } : {}), tool_choice: 'auto' } },
+        delegation: { type: 'responses', responses: { model: OPENAI_DELEGATION_MODEL, ...(tools?.length ? { tools } : {}), tool_choice: 'auto' } },
       },
     });
     if (Buffer.byteLength(start) > settings.limits.maxOutgoingBytes

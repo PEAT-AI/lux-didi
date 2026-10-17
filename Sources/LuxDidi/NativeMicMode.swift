@@ -78,20 +78,28 @@ public final class MicModeObserver: NSObject, @unchecked Sendable {
     }
 }
 
-/// The full app's one quiet line, at most once per app version (`#352`). Pure and injected: the caller
-/// passes the reading and the version, so the proof needs no window, no device and no clock.
-public struct MicModePrompt: Sendable, Equatable {
+/// The full app's one quiet line, at most once per app version (`#352`). The caller passes the reading,
+/// the version and where the asked version is remembered, so the proof needs no window, no device, no clock
+/// and no defaults: "once per app version" outlives the process, so it has to be stored, not inferred.
+public struct MicModePrompt: Sendable {
+    private let load: @Sendable () -> String?
+    private let save: @Sendable (String?) -> Void
     private var shownVersion: String?
+    private var loaded = false
     private var lastActive: MicMode?
 
-    public init() {}
+    public init(shownVersion: @escaping @Sendable () -> String? = { nil },
+                setShownVersion: @escaping @Sendable (String?) -> Void = { _ in }) {
+        self.load = shownVersion
+        self.save = setShownVersion
+    }
 
     /// A LIVE start asks. True at most once per app version, and again only after the mode went back
     /// from Voice Isolation to another mode.
     public mutating func liveStart(_ reading: MicModeReading, version: String) -> Bool {
         note(reading)
-        guard reading.active != .voiceIsolation, shownVersion != version else { return false }
-        shownVersion = version
+        guard reading.active != .voiceIsolation, shown() != version else { return false }
+        remember(version)
         return true
     }
 
@@ -99,7 +107,16 @@ public struct MicModePrompt: Sendable, Equatable {
     public mutating func modeChanged(_ reading: MicModeReading) { note(reading) }
 
     private mutating func note(_ reading: MicModeReading) {
-        if reading.active != .voiceIsolation, lastActive == .voiceIsolation { shownVersion = nil }
+        if reading.active != .voiceIsolation, lastActive == .voiceIsolation { remember(nil) }
         lastActive = reading.active
+    }
+
+    private mutating func shown() -> String? {
+        if !loaded { shownVersion = load(); loaded = true }
+        return shownVersion
+    }
+
+    private mutating func remember(_ version: String?) {
+        shownVersion = version; loaded = true; save(version)
     }
 }

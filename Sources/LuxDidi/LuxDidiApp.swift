@@ -41,7 +41,14 @@ import WebKit
     /// The Mac's Mic Mode as last read. Read and observed only: nothing here writes an audio setting,
     /// selects a mode or touches the gear.
     private(set) lazy var micMode = SystemMicMode.read()
-    private var micModePrompt = MicModePrompt()
+    /// The asked version is stored in the app's defaults, because "once per app version" outlives a relaunch.
+    private static let micModeShownVersionKey = "DidiMicModePromptVersion"
+    private lazy var micModePrompt = MicModePrompt(
+        shownVersion: { UserDefaults.standard.string(forKey: AppModel.micModeShownVersionKey) },
+        setShownVersion: { version in
+            if let version { UserDefaults.standard.set(version, forKey: AppModel.micModeShownVersionKey) }
+            else { UserDefaults.standard.removeObject(forKey: AppModel.micModeShownVersionKey) }
+        })
     private lazy var micModeObserver = MicModeObserver { [weak self] reading in
         Task { @MainActor in self?.micModeChanged(reading) }
     }

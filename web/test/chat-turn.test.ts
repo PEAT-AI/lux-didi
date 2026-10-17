@@ -1,9 +1,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import ts from 'typescript';
 import {
   evidenceMarkup, NO_ANSWER_WORDS, partialWords, relativeWords, eventWords, sourcesMarkup, stepsMarkup,
 } from '../src/markdown.ts';
-import { stepFinished, stepRunning, stepsSummary } from '../src/tool-phrases.ts';
+import { stepFinished, stepRunning, stepsSummary, TOOL_PHRASES, wroteExternally } from '../src/tool-phrases.ts';
 import type { ChatStep } from '../src/tool-phrases.ts';
 import type { ToolEvidence } from '../src/protocol.ts';
 
@@ -115,4 +120,134 @@ test('a stamp becomes relative words, and an unreadable stamp renders nothing at
   assert.equal(eventWords('2026-10-17T14:30:00', NOW), '14:30', 'a calendar time today is a clock time');
   assert.equal(eventWords('2026-10-18T09:00:00', NOW), 'tomorrow 09:00');
   assert.equal(eventWords('not a date', NOW), '');
+});
+
+test('a mail row without a sender keeps the subject first and drops the stamp it cannot place (F2)', () => {
+  const html = evidenceMarkup([{ name: 'gmail_list', markdown: '- Deck | date: 2026-10-16T08:00:00Z | ready', sources: [] }], NOW);
+  assert.doesNotMatch(html, /2026-10-16T08:00:00Z/, 'a raw ISO stamp never reaches the owner');
+  assert.match(html, /chat-evidence-line">Deck · yesterday</, 'the subject leads and the stamp is read as words');
+  const both = evidenceMarkup([{ name: 'gmail_list', markdown: '- Deck | from: Dana | date: 2026-10-16T08:00:00Z | ready', sources: [] }], NOW);
+  assert.match(both, /chat-evidence-line">Dana · Deck · yesterday</);
+});
+
+test('an evidence line keeps the underscores of a channel or branch name (F3)', () => {
+  const html = evidenceMarkup([{ name: 'mattermost_search', markdown: '- release_3k | alice | 2026-10-17T09:00:00Z | the fix_1015 branch is ready', sources: [] }], NOW);
+  assert.match(html, /release_3k · alice · 3 h ago/);
+  assert.match(html, /the fix_1015 branch is ready/);
+});
+
+test('every current tool is read-only for the send warning, so the suffix rule is a tripwire (F4)', () => {
+  for (const name of Object.keys(TOOL_PHRASES)) assert.equal(wroteExternally([name]), false, `${name} is read-only today`);
+  assert.equal(wroteExternally(['mattermost_post']), true, 'a writer must be named here deliberately');
+});
+
+// The component seam:
+// connected.ts runs unmodified against a fake API and a fake panel, so the turn is composed by the real
+// view rather than by a string the test writes (F1).
+const connectedSource = readFileSync(new URL('../src/connected.ts', import.meta.url), 'utf8');
+const TURN_DIR = mkdtempSync(join(tmpdir(), 'k4-turn-'));
+const SRC = new URL('../src/', import.meta.url);
+
+async function loadView() {
+  writeFileSync(join(TURN_DIR, 'api.mjs'), [
+    'export class ApiError extends Error { constructor(message, status) { super(message); this.status = status; } }',
+    'export const request = (...args) => globalThis.__turnApi.request(...args);',
+    'export const stream = (...args) => globalThis.__turnApi.stream(...args);',
+    'export const authorityVersion = () => "synthetic-authority-1";',
+    'export const assertAuthority = () => {};',
+  ].join('\n'));
+  const rewritten = connectedSource.replace(/from '(\.\/[a-z-]+)(\.ts)?'/g, (_match, name: string) => `from '${name === './api' ? './api.mjs' : new URL(`${name}.ts`, SRC).href}'`);
+  writeFileSync(join(TURN_DIR, 'connected.mjs'), ts.transpileModule(rewritten, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText);
+  return (await import(pathToFileURL(join(TURN_DIR, 'connected.mjs')).href)).ConnectedView;
+}
+
+const settle = async () => { for (let tick = 0; tick < 4; tick++) await new Promise(resolve => setImmediate(resolve)); };
+
+function installTurnApi(turns: Record<string, { conversation: Record<string, unknown>; entries: { id: string; role: 'user' | 'assistant'; text: string }[]; run: Record<string, unknown> }>) {
+  const panel = { innerHTML: '', querySelector: () => null, querySelectorAll: () => [] as unknown[] };
+  const originalDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  const originalStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: { getElementById: () => panel } });
+  Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: { getItem: () => '{}', setItem() {} } });
+  let onEvent: ((value: unknown) => void) | undefined;
+  (globalThis as unknown as { __turnApi: unknown }).__turnApi = {
+    request: async (path: string) => {
+      if (path === '/status') return { ownerProfile: { displayName: 'Lux Didi' } };
+      if (path === '/chat/status') return { status: 'configured', provider: 'p', model: 'm', consent: { sessionId: 's1', scope: 'standing', state: 'active' } };
+      if (path === '/sessions') return { items: [] };
+      const conversation = /^\/conversations\/([^/]+)$/.exec(path);
+      if (conversation) return turns[conversation[1]!]!.conversation;
+      const session = /^\/sessions\/([^/]+)$/.exec(path);
+      if (session) return { entries: turns[session[1]!]!.entries };
+      const run = /^\/chat\/([^/]+)$/.exec(path);
+      if (run) return turns[run[1]!]!.run;
+      throw new Error(`Unexpected request ${path}`);
+    },
+    stream: async (_path: string, _signal: unknown, handler: (value: unknown) => void) => { onEvent = handler; },
+  };
+  return {
+    panel,
+    emit(event: unknown) { onEvent?.(event); },
+    restore() {
+      if (originalDocument) Object.defineProperty(globalThis, 'document', originalDocument); else delete (globalThis as { document?: unknown }).document;
+      if (originalStorage) Object.defineProperty(globalThis, 'localStorage', originalStorage); else delete (globalThis as { localStorage?: unknown }).localStorage;
+      delete (globalThis as { __turnApi?: unknown }).__turnApi;
+    },
+  };
+}
+
+const shapedBody = 'shaped-body-that-is-not-an-answer';
+const evidence: ToolEvidence[] = [{ name: 'mattermost_search', markdown: `- chan | alice | 2026-10-17T09:00:00Z | ${shapedBody}`, sources: [{ title: 'Mattermost: one', url: 'https://mm.example.org/p/1' }] }];
+const runOf = (over: Record<string, unknown>) => ({ runId: 'run-1', sessionId: 's1', state: 'terminal', outcome: 'complete', finalEntryId: null, finalText: null, partialText: '', mayHaveBeenSent: false, sequence: 0, memorySelection: null, toolEvidence: evidence, ...over });
+const conversationOf = () => ({ scope: 'conversation', sessionId: 's1', provider: 'p', model: 'm', state: 'active', revision: 1, permittedClasses: [], latestRunId: 'run-1' });
+const ownerSays = { id: 'e1', role: 'user' as const, text: 'what changed?' };
+
+test('the real view composes the turn: running steps, the answer with folded evidence, then the honest no-answer state (F1)', async () => {
+  const ConnectedView = await loadView();
+  const api = installTurnApi({
+    s1: { conversation: conversationOf(), entries: [ownerSays], run: runOf({}) },
+    s2: { conversation: conversationOf(), entries: [ownerSays], run: runOf({ state: 'accepted' }) },
+    s3: { conversation: conversationOf(), entries: [ownerSays, { id: 'e2', role: 'assistant', text: 'The release is on friday.' }], run: runOf({ finalEntryId: 'e2' }) },
+    s4: { conversation: conversationOf(), entries: [ownerSays], run: runOf({ outcome: 'deadline', partialText: '' }) },
+  });
+  try {
+    const view = new ConnectedView(() => {});
+    await view.refresh('owner');
+    // A finished run with no answer: the honest line, never the shaped body, never an evidence block.
+    await view.select('s1');
+    assert.ok(api.panel.innerHTML.includes(NO_ANSWER_WORDS), 'the honest state is composed by the view');
+    assert.ok(!api.panel.innerHTML.includes(shapedBody), 'the shaped tool output is never the body');
+    assert.doesNotMatch(api.panel.innerHTML, /chat-evidence/);
+    // A live run: one quiet line per step from the run's own events, nothing folded before the answer.
+    await view.select('s2');
+    await settle();
+    api.emit({ type: 'chat_step', runId: 'run-1', stepId: 'a', tool: 'mattermost_search', phase: 'end', resultCount: 13 });
+    api.emit({ type: 'chat_step', runId: 'run-1', stepId: 'b', tool: 'gcal_list', phase: 'start' });
+    await settle();
+    view.attach();
+    assert.match(api.panel.innerHTML, /Searched Mattermost, 13 results/);
+    assert.match(api.panel.innerHTML, /Checking your calendar\.\.\./);
+    assert.doesNotMatch(api.panel.innerHTML, /chat-steps-done/);
+    assert.doesNotMatch(api.panel.innerHTML, /chat-evidence/, 'no evidence before the answer');
+    // A turn with an answer: steps summary, answer, evidence, sources, in that order.
+    await view.select('s3');
+    await settle();
+    api.emit({ type: 'chat_step', runId: 'run-1', stepId: 'a', tool: 'mattermost_search', phase: 'end', resultCount: 13 });
+    await settle();
+    view.attach();
+    assert.match(api.panel.innerHTML, /<summary>Checked Mattermost<\/summary>/, 'the folded summary names the source');
+    assert.match(api.panel.innerHTML, /The release is on friday\./);
+    assert.match(api.panel.innerHTML, /class="chat-evidence"/);
+    assert.match(api.panel.innerHTML, /class="chat-sources"/);
+    const order = ['what changed?', 'chat-steps-done', 'entry assistant', 'chat-evidence', 'chat-sources'].map(marker => api.panel.innerHTML.indexOf(marker));
+    assert.deepEqual(order, [...order].sort((left, right) => left - right), `turn order ${order.join(',')}`);
+    assert.ok(!api.panel.innerHTML.includes(shapedBody));
+    // A read-only run that ran out of time: plain copy and the next action, no send warning.
+    await view.select('s4');
+    await settle();
+    assert.match(api.panel.innerHTML, /ran out of time/i);
+    assert.match(api.panel.innerHTML, /id="connected-retry"/);
+    assert.doesNotMatch(api.panel.innerHTML, /may have been sent/i);
+    assert.ok(!api.panel.innerHTML.includes(shapedBody));
+  } finally { api.restore(); }
 });

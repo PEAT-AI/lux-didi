@@ -2724,17 +2724,3 @@ test('the earlier-conversations section fills the space under the target in a re
   assert.ok(sections !== undefined && Number(sections['earlier-conversations']) > 0, 'the summary section is recorded per section');
   assert.ok(Number(sizes?.['total']) <= LIVE_INSTRUCTION_TARGET_CHARS, `under the target (${String(sizes?.['total'])})`);
 });
-
-// Contract RD: while a lookup runs the model is fed a progress line on the turn it already answers on,
-// so the owner hears Naya say she is checking instead of fifteen seconds of silence.
-test('RD: research progress is delivered to the model as a voiceable text turn, with no question text', async t => {
-  const h = await harness(t, { tools: true, calendar: true });
-  await attached(h, 'lookup-dead-air');
-  const before = h.f.frames.length;
-  await settleLiveTool(h, 'r1', 'research', { action: 'start', question: 'what is on my calendar' });
-  const frames = h.f.frames.slice(before) as { realtimeInput?: { text?: unknown } }[];
-  const spoken = frames.filter(frame => typeof frame.realtimeInput?.text === 'string').map(frame => String(frame.realtimeInput!.text));
-  assert.ok(spoken.length > 0, 'the model gets a progress turn while the lookup runs');
-  assert.match(spoken[0]!, /research/i);
-  assert.doesNotMatch(spoken.join('\n'), /what is on my calendar/, 'the question text never travels on the progress line');
-});

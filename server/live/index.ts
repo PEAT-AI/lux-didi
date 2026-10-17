@@ -1567,7 +1567,9 @@ export class LiveSessionOwner {
       const call = event.calls[index]!;
       if (call.name === RESEARCH_TOOL_NAME) continue;
       const started = handle.callStartedAt.get(call.id);
-      const items = handle.liveStepItems.get(call.id);
+      // The digest's own item count when the shape carried one, else the shaped items themselves;
+      // never the citation count, which made a capped source undercount.
+      const items = handle.liveStepItems.get(call.id) ?? (projection.status === 'completed' ? countedLines(projection.markdown) : undefined);
       this.#recordStep(handle, {
         callId: call.id, stepId: `${call.id}:0`, source: stepSourceOf(call.name), action: stepActionOf(call.name),
         phase: 'end', ok: projection.status === 'completed',

@@ -40,17 +40,18 @@ test('a voice outside the provider own list is refused with the typed invalid_vo
 
 test('each provider saves its own voice, and the default stays the provider default', t => {
   const f = fixture(t);
+  // PV1: the selection result now carries the accent too, and an absent accent is indian-strong.
   assert.deepEqual(saveLiveSelection({ configDir: f.configDir, provider: 'openai', voice: 'marin' }),
-    { provider: 'openai', modelId: 'gpt-live-1', voice: 'marin' });
+    { provider: 'openai', modelId: 'gpt-live-1', voice: 'marin', accent: 'indian-strong' });
   assert.equal(f.saved()['provider'], 'openai');
   assert.deepEqual(saveLiveSelection({ configDir: f.configDir, provider: 'gemini' }),
-    { provider: 'gemini', modelId: 'models/gemini-3.8-live', voice: 'Aoede' });
+    { provider: 'gemini', modelId: 'models/gemini-3.8-live', voice: 'Aoede', accent: 'indian-strong' });
   assert.deepEqual(saveLiveSelection({ configDir: f.configDir, provider: 'openai', voice: 'cinder' }),
-    { provider: 'openai', modelId: 'gpt-live-1', voice: 'cinder' });
+    { provider: 'openai', modelId: 'gpt-live-1', voice: 'cinder', accent: 'indian-strong' });
   assert.equal(f.saved()['voice'], 'cinder');
 });
 
-test('PV1: the accent selection validates, defaults and reaches the next session start', () => {
+test('PV1: the accent selection validates, defaults and reaches the next session start', t => {
   const f = fixture(t);
   // Absent from live.json means indian-strong, and a load publishes that current value.
   const loaded = loadLiveConfig({ configDir: f.configDir, ownerId: 'owner-fixture' });

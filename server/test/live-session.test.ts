@@ -2194,7 +2194,7 @@ test('the anchor diagnostics report the serialized anchors, not the overlay acce
   assert.equal(lines.some(line => line.includes(accent)), false, 'the accent text never reaches an emitted line');
 });
 
-test('AC2: with no accent the head block is absent while the terminal anchor remains', async t => {
+test('PV1: the host accent block opens the head even with no overlay accent, and the terminal anchor still closes it', async t => {
   const lines: string[] = [];
   t.mock.method(console, 'error', (...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
   const overlay = { schemaVersion: 1 as const, text: 'SYNTHETIC overlay persona' };
@@ -2205,17 +2205,20 @@ test('AC2: with no accent the head block is absent while the terminal anchor rem
     compilerVersion: PROMPT_VERSION, system: composed.text, dataClasses: ['ordinary'] }) });
   const { attachment } = await attached(h, 'no-accent');
   attachment.close(); await attachment.done;
-  const parse = (line: string): Record<string, unknown> => { try { return JSON.parse(line) as Record<string, unknown>; } catch { return {}; } };
-  const diagnostics = (): Record<string, unknown>[] => lines.map(parse).filter(entry => entry.event === 'live_session_diagnostics');
+  const parse = (line: string): Record<string, unknown> | undefined => {
+    try { return JSON.parse(line) as Record<string, unknown>; } catch { return undefined; }
+  };
+  const diagnostics = (): Record<string, unknown>[] => lines.map(parse).filter((entry): entry is Record<string, unknown> => entry?.event === 'live_session_diagnostics');
   for (let attempt = 0; attempt < 60 && diagnostics().length === 0; attempt++) await tick();
-  const matches = (): Record<string, unknown> | undefined => diagnostics().find(entry => entry.headVoiceChars === 0
+  const matches = (): Record<string, unknown> | undefined => diagnostics().find(entry => entry.headVoiceChars === sectionChars('voice-head')
     && entry.terminalVoiceChars === sectionChars('voice'));
   for (let attempt = 0; attempt < 60 && matches() === undefined; attempt++) await tick();
   const emitted = matches();
   assert.ok(emitted, `the diagnostics is emitted; saw ${JSON.stringify(diagnostics())}`);
-  assert.equal(emitted.headVoiceChars, 0, 'no accent serialises no head block');
+  assert.ok(sectionChars('voice-head') > 0, 'the accent block alone gives the head its chars');
+  assert.equal(emitted.headVoiceChars, sectionChars('voice-head'), 'the head count is the serialised head, accent block included');
   assert.equal('toolAnchorChars' in emitted, false, 'the tool-anchor diagnostic is gone');
-  assert.equal(emitted.terminalVoiceChars, sectionChars('voice'), 'the terminal anchor is still serialised without an accent');
+  assert.equal(emitted.terminalVoiceChars, sectionChars('voice'), 'the terminal count is the serialised anchor plus the accent tail');
 });
 
 test('queued PCM is dropped at the cut and capture during rebuilding is never replayed', async t => {

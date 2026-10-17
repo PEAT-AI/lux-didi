@@ -203,7 +203,7 @@ function liveSwitch(summary: unknown, summaryUnavailable: boolean, saved?: Setti
 <datalist id="live-voices">${voices}</datalist>
 <label for="live-accent">Accent</label>
 <select id="live-accent" name="accent">${accentOptions}</select>
-<p class="muted">Saved to <code>live.json</code>. The accent applies from the next call; a call in progress is never switched.</p>
+<p class="muted">Saved to <code>live.json</code>. It applies when Lux Didi next starts; the accent applies from the next call. A call in progress is never switched.</p>
 <div class="button-row"><button type="submit">Save provider</button></div></form>`;
 }
 

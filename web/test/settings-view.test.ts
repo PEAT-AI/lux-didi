@@ -191,7 +191,7 @@ test('PV1: a saved accent that differs from the running one shows a pending noti
   const html = settingsMarkup({ status, summary: { ...summary, accent: 'indian-strong' },
     saved: { provider: 'gemini', voice: 'Aoede', accent: 'indian-light', appliesAt: 'next_start' } });
   assert.match(html, /Saved: gemini\/Aoede, accent Indian English, light, applies on next start/);
-  const same = settingsMarkup({ status, summary: { ...summary, accent: 'indian-light' },
-    saved: { provider: 'gemini', voice: 'Aoede', accent: 'indian-light', appliesAt: 'next_start' } });
+  const running = { ...summary, provider: 'gemini', voice: 'Aoede', accent: 'indian-light' };
+  const same = settingsMarkup({ status, summary: running, saved: { provider: 'gemini', voice: 'Aoede', accent: 'indian-light', appliesAt: 'next_start' } });
   assert.doesNotMatch(same, /Saved: /, 'the same selection is not a pending change');
 });

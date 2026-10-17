@@ -464,7 +464,7 @@ class Session implements LiveVoiceSession {
 
   private outputTranscript(message: ObjectValue): void {
     if (typeof message.delta !== 'string') fail('protocol_error');
-    if (this.generation === this.muted) return;
+    // Transcripts are never dropped: the host journals what was actually spoken, the mute only stops audio.
     if (message.delta.length) {
       this.outputTranscriptOpen = true;
       this.assistantSpeaking = true;

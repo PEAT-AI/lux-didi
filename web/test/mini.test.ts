@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import {
-  clickStep, installMiniClick, installMiniMeter, isMiniRoute, miniAriaLabel, miniBarHeights, miniMarkup,
+  clickStep, installMiniClick, installMiniMeter, installMiniVisuals, isMiniRoute, miniAriaLabel, miniBarHeights, miniMarkup,
   miniMeter, miniModeButtonMarkup, miniState, pillState, startMiniOrbVisuals, visualState,
-  type MiniState, type PillClickHost, type PillLevelHost, type PresenceStep,
+  type MiniState, type PillClickHost, type PillLevelHost, type PillVisualHost, type PresenceStep,
 } from '../src/mini.ts';
 import { ORB_VISUALS, TRANSITION_MS, DEBOUNCE_MS, type OrbVisual } from '../src/orb-states.ts';
 import { singleKeyRow, singleKeyState } from '../src/settings-view.ts';
@@ -34,7 +34,8 @@ test('one glance state folds voice and tool activity, error wins', () => {
 test('the pill is an orb and five level bars with no text at all', () => {
   const caption = '<p class="orb-label">Listening</p>';
   const html = miniMarkup('tool', caption);
-  assert.match(html, /class="mini-stage mini-pill"/);
+  assert.match(html, /class="mini-pill"/);
+  assert.match(html, /class="mini-stage"/);
   assert.match(html, /data-mini-state="tool"/);
   assert.match(html, /id="didi-orb"/);
   assert.equal((html.match(/<i data-bar="\d"><\/i>/g) ?? []).length, 5, 'exactly five level bars');
@@ -51,8 +52,13 @@ test('mini markup carries each glance state', () => {
   for (const state of ['idle', 'listening', 'thinking', 'speaking', 'muted', 'connecting', 'tool', 'error'] as const) {
     assert.match(miniMarkup(state, ''), new RegExp(`data-mini-state="${state}"`));
   }
-  assert.match(miniMarkup('speaking', ''), /presence-glow/, 'the glow is a state-independent element the CSS lights');
-  assert.doesNotMatch(miniMarkup('error', ''), /presence-glow visible/);
+  // M3-R4: the stage is the orb and its rings. The wash and the bars are pill chrome,
+  // so a stage captured on its own shows one orb.
+  for (const state of ['idle', 'listening', 'thinking', 'speaking', 'muted', 'connecting', 'tool', 'error'] as MiniState[]) {
+    const stage = /<section class="mini-stage"[^>]*>(.*?)<\/section>/.exec(miniMarkup(state, ''))?.[1] ?? '';
+    assert.equal((stage.match(/<canvas/g) ?? []).length, 1, `${state} stage holds exactly one orb canvas`);
+    assert.doesNotMatch(stage, /mini-level|data-bar|presence-glow/, `${state} stage holds no pill dot or bars`);
+  }
 });
 
 test('the level meter follows the input level and its curve is bounded', () => {
@@ -189,7 +195,15 @@ function fakePill(state: MiniState, bars = [0, 1, 2, 3, 4].map(() => ({ style: {
     querySelectorAll: () => bars,
     querySelector: (selector: string) => (selector === 'canvas' ? { canvas: true } : null),
   };
-  return { stage, bars, style };
+  // The pill is the chrome around the stage: the wash and the bars live there.
+  const pillStyle = { vars: new Map<string, string>(), setProperty(name: string, value: string) { this.vars.set(name, value); } };
+  const pill = {
+    style: pillStyle,
+    classList: { add: () => undefined },
+    querySelectorAll: () => bars,
+    querySelector: (selector: string) => (selector === 'canvas' ? { canvas: true } : null),
+  };
+  return { stage, pill, bars, style, pillStyle };
 }
 
 test('the mini markup and the pill carry no text in any state, only an aria label', () => {
@@ -241,12 +255,15 @@ test('every pill state has one visual', () => {
 });
 
 test('the pill loop eases to the state and gates the microphone', () => {
-  const { stage, bars, style } = fakePill('idle');
+  const { stage, pill, bars, style, pillStyle } = fakePill('idle');
+  let host: PillVisualHost = {};
   let clock = 0;
   const published: OrbVisual[] = [];
   const queued: Array<() => void> = [];
   const stop = startMiniOrbVisuals({
-    doc: { querySelector: () => stage as unknown as Element },
+    doc: {
+      querySelector: (selector: string) => (selector === '.mini-pill' ? pill : stage) as unknown as Element,
+    },
     now: () => clock,
     reducedMotion: () => false,
     frame: (tick) => { queued.push(tick); return queued.length; },
@@ -271,6 +288,11 @@ test('the pill loop eases to the state and gates the microphone', () => {
   step();
   assert.equal(published.at(-1)?.hue, ORB_VISUALS.listening.hue, 'it lands on the listening teal');
   assert.equal(style.vars.get('--mini-orb-grey'), '0.000', 'a live listening orb carries its colour');
+  assert.ok(Number.parseFloat(pillStyle.vars.get('--mini-wash') ?? '0') > 0.3, 'the wash follows the eased glow');
+  assert.equal(style.vars.get('--mini-orb-bright'), '1.000', 'a live orb is at full brightness');
+  host = {};
+  installMiniVisuals(host);
+  assert.equal(typeof host.didiOrbVisual, 'function', 'the strip reads the painted visual');
   // A thinking pill hears nothing: the bars are painted at silence, never at the level.
   stage.setAttribute('data-mini-state', 'thinking');
   clock += DEBOUNCE_MS * 2;

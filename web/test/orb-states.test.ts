@@ -32,13 +32,15 @@ test('every state has one visual, and the colours are the mini palette tokens', 
     Math.abs(ORB_VISUALS[state].hue - hueOf(token(name))) <= 1,
     `${state} uses --${name} (${token(name)}): ${ORB_VISUALS[state].hue} vs ${hueOf(token(name)).toFixed(1)}`);
   near('listening', 'mini-mark');          // the listening teal
-  near('tool', 'mini-thinking-warm');      // the tool amber
+  near('thinking', 'accent-warm');         // M3-R4: the amber at full strength, not a blend
+  near('tool', 'accent-warm');
   near('speaking', 'teal');
   near('cold', 'mini-stage-1');
-  // Thinking sits between the listening teal and the tool amber: a shift toward amber
-  // before the amber itself, which is the owner's word.
-  const [teal, amber, thinking] = [ORB_VISUALS.listening.hue, ORB_VISUALS.tool.hue, ORB_VISUALS.thinking.hue];
-  assert.ok(thinking < teal && thinking > amber, `thinking (${thinking}) is between ${teal} and ${amber}`);
+  // Thinking and tool are the same amber hue, so no screen can read either as the
+  // listening teal; motion is what separates them.
+  assert.equal(ORB_VISUALS.thinking.hue, ORB_VISUALS.tool.hue);
+  assert.ok(Math.abs(ORB_VISUALS.thinking.hue - ORB_VISUALS.listening.hue) > 60,
+    'the amber is far from the listening teal');
   // Cold and hot-muted share the quiet colour; hot-muted is the slightly more opaque
   // grey, and cold breathes the slowest of every state.
   assert.equal(ORB_VISUALS['hot-muted'].hue, ORB_VISUALS.cold.hue);

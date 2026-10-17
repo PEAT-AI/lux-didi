@@ -6,10 +6,11 @@
 // Named orb-states-shots.mjs, not orb-motion-shots.mjs: that path is already the
 // #283 evidence runner and stays as it is.
 //
-// Two sizes, because the owner reads the strip at both: the pill itself (64x26)
-// and the same renderer enlarged to 300x300, which is what makes an eased colour
-// and a breathe visible. Six frames per transition at 100 ms, starting at the
-// state change, so the strip shows the 250 ms debounce and then the 500 ms ease.
+// Two sizes, because the owner reads the strip at both: the pill itself (64x26, its
+// dot and bars stay) and the mini stage enlarged to 300x300, which is the orb and its
+// rings only and is what makes an eased colour and a breathe visible. Six frames per
+// transition at 100 ms, starting at the state change, so the strip shows the 250 ms
+// debounce and then the 500 ms ease.
 // Nothing here opens an image: each file is checked by its byte length and by the
 // width and height in its own PNG header.
 import { chromium } from 'playwright';
@@ -51,7 +52,7 @@ try {
   const page = await browser.newPage({ viewport: { width: 340, height: 340 } });
   page.on('pageerror', (error) => errors.push(error.message));
   await page.goto(`${fixture.url}/?view=mini`);
-  await page.locator('.mini-pill').waitFor();
+  await page.locator('.mini-pill .mini-stage').waitFor();
   const renderer = await page.evaluate(() => {
     const gl = document.createElement('canvas').getContext('webgl2')
       || document.createElement('canvas').getContext('webgl');
@@ -60,17 +61,27 @@ try {
   });
   assert.match(String(renderer), /Metal/i, `headless renderer must be Metal, got ${renderer}`);
 
-  /// The frame's own bytes. A still orb encodes to one identical PNG; a moving one
-  /// does not, so this is the number that says the picture actually moved.
-  const frameHash = async (name) => {
-    const bytes = await readFile(join(shots, `${name}.png`));
-    return bytes.subarray(20).toString('base64').length + ':' + bytes.length;
-  };
+  /// The visual the loop last painted. The hue and the glow are the state machine's own
+  /// eased numbers, so they prove a transition moved the colour, where a PNG byte count
+  /// would pass on the breathe alone (review F5).
+  const painted = () => page.evaluate(() => {
+    const visual = window.didiOrbVisual && window.didiOrbVisual();
+    return visual ? { hue: Math.round(visual.hue * 10) / 10, glow: Math.round(visual.glow * 1000) / 1000, state: visual.state } : null;
+  });
+  const HUES = { idle: 216, listening: 167, thinking: 34, tool: 34, speaking: 173, muted: 216 };
 
-  const setState = (state) => page.locator('.mini-pill').evaluate((el, next) => el.setAttribute('data-mini-state', next), state);
+  // The state lives on the mini stage (M3-R4: the stage is the orb, the pill is the chrome).
+  const setState = (state) => page.locator('.mini-stage').evaluate((el, next) => el.setAttribute('data-mini-state', next), state);
+  const enlarge = (on) => page.locator('.mini-stage').evaluate((el, big) => {
+    el.style.width = big ? '300px' : '';
+    el.style.height = big ? '300px' : '';
+    el.style.flex = big ? '0 0 300px' : '';
+    el.style.borderRadius = big ? '150px' : '';
+    el.querySelector('canvas').style.cssText = big ? 'width:300px;height:300px' : '';
+  }, on);
   const capture = async (name, pill) => {
     const path = join(shots, `${name}.png`);
-    await page.locator('.mini-pill').screenshot({ path });
+    await page.locator(pill ? '.mini-pill' : '.mini-stage').screenshot({ path });
     const size = await pngSize(path);
     assert.ok(size.bytes > 200, `${path} is a real render (${size.bytes} bytes)`);
     assert.deepEqual({ width: size.width, height: size.height }, pill ? { width: 64, height: 26 } : { width: 300, height: 300 },
@@ -82,18 +93,12 @@ try {
     await setState(state);
     await page.waitForTimeout(700);            // past the debounce and the ease
     await capture(`state-${state}-pill`, true);
-    // The same renderer enlarged to 300x300: the pill rules scaled up, nothing else.
-    await page.locator('.mini-pill').evaluate((el) => {
-      el.style.width = '300px'; el.style.height = '300px';
-      el.querySelector('canvas').style.cssText = 'flex:0 0 240px;width:240px;height:240px';
-    });
-    await page.waitForTimeout(120);
+    // The mini stage enlarged to 300x300: the orb and its rings, nothing else.
+    await enlarge(true);
+    await page.waitForTimeout(160);
     await capture(`state-${state}-300`, false);
-    await page.locator('.mini-pill').evaluate((el) => {
-      el.style.width = ''; el.style.height = '';
-      el.querySelector('canvas').style.cssText = '';
-    });
-    await page.waitForTimeout(60);
+    await enlarge(false);
+    await page.waitForTimeout(80);
   }
 
   for (const [from, to] of TRANSITIONS) {
@@ -101,17 +106,15 @@ try {
     await page.waitForTimeout(900);            // settle the strip's starting state
     for (const enlarged of [false, true]) {
       if (enlarged) {
-        await page.locator('.mini-pill').evaluate((el) => {
-          el.style.width = '300px'; el.style.height = '300px';
-          el.querySelector('canvas').style.cssText = 'flex:0 0 240px;width:240px;height:240px';
-        });
-        await page.waitForTimeout(120);
+        await enlarge(true);
+        await page.waitForTimeout(160);
         await setState(from);
         await page.waitForTimeout(900);
       }
       await setState(to);
       const started = Date.now();
       const samples = [];
+      const visuals = [];
       for (let frame = 0; frame < 6; frame += 1) {
         const due = started + frame * 100;
         const wait = due - Date.now();
@@ -119,16 +122,32 @@ try {
         const name = `transition-${from}-to-${to}-${frame}-${enlarged ? '300' : 'pill'}`;
         await capture(name, !enlarged);
         samples.push(await frameHash(name));
+        visuals.push(await painted());
       }
       const distinct = new Set(samples).size;
       assert.ok(distinct >= 3, `${from} to ${to} moves through at least three frames, got ${JSON.stringify(samples)}`);
-      moved.push(`${from}-to-${to}${enlarged ? '@300' : ''}:${distinct}`);
-      if (enlarged) {
-        await page.locator('.mini-pill').evaluate((el) => {
-          el.style.width = ''; el.style.height = '';
-          el.querySelector('canvas').style.cssText = '';
-        });
+      // The colour itself: it starts at the old state's hue, moves while the strip runs,
+      // and settles on the new one, so the six frames prove an eased colour change and not
+      // a breathe. The strip is only 600 ms long and the debounce takes the first 250, so
+      // the settle is read after the last frame.
+      const first = visuals[0], last = visuals.at(-1);
+      assert.ok(first && last, `${from} to ${to} reported a painted visual on every frame`);
+      assert.equal(first.hue, HUES[from], `${from} to ${to} starts on the ${from} hue`);
+      const settled = await (async () => {
+        await page.waitForTimeout(450);
+        const visual = await painted();
+        if (enlarged) await enlarge(false);
+        return visual;
+      })();
+      if (HUES[from] !== HUES[to]) {
+        const direction = Math.sign(HUES[to] - HUES[from]);
+        assert.ok(direction * (last.hue - first.hue) > 3, `${from} to ${to} moved toward ${to}: ${first.hue} then ${last.hue}`);
+        const between = visuals.map((v) => v.hue).filter((hue) => Math.abs(hue - HUES[from]) > 2 && Math.abs(hue - HUES[to]) > 2);
+        assert.ok(between.length >= 1, `${from} to ${to} shows an in-between colour: ${JSON.stringify(visuals.map((v) => v.hue))}`);
       }
+      assert.ok(settled && Math.abs(settled.hue - HUES[to]) <= 2, `${from} to ${to} settles on the ${to} hue, got ${JSON.stringify(settled)}`);
+      moved.push(`${from}-to-${to}${enlarged ? '@300' : ''}:${distinct}->${Math.round(settled.hue)}`);
+      if (enlarged) await enlarge(false);
     }
   }
   assert.deepEqual(errors, [], 'the pill raised no page error');

@@ -55,7 +55,7 @@ test('the answer is the only body text and its evidence is folded under it, newe
       '- standup | bob | 2026-10-17T11:00:00Z | moving the sync to ten',
     ].join('\n'), sources: [{ title: 'Mattermost: moving the sync', url: 'https://mm.example.org/p/1' }] },
     { name: 'gmail_list', markdown: '- Quarterly numbers | from: Dana | date: 2026-10-16T08:00:00Z | the deck is ready', sources: [{ title: 'Gmail: Quarterly numbers', url: 'https://mail.example.org/1' }] },
-    { name: 'gcal_list', markdown: '- 2026-10-17T14:30:00Z, Release review [id e1]', sources: [] },
+    { name: 'gcal_list', markdown: '- 2026-10-17T14:30:00, Release review [id e1]', sources: [] },
     { name: 'search_knowledge', markdown: '### Release rhythm (PATTERN | 2026-10-10) [id 42]\nReleases ship on fridays.', sources: [] },
   ];
   const html = evidenceMarkup(evidence, NOW);
@@ -108,11 +108,11 @@ test('a stamp becomes relative words, and an unreadable stamp renders nothing at
   assert.equal(relativeWords('2026-10-17T09:00:00Z', NOW), '3 h ago');
   assert.equal(relativeWords('2026-10-16T09:00:00Z', NOW), 'yesterday');
   assert.equal(relativeWords('2026-10-10T09:00:00Z', NOW), '7 days ago');
-  assert.equal(relativeWords('2026-11-20T09:00:00Z', NOW), '20 Nov');
+  assert.equal(relativeWords('2026-11-20T00:00:00', NOW), 'Nov 20');
   assert.equal(relativeWords('sometime', NOW), '');
   assert.equal(relativeWords('', NOW), '');
   assert.equal(relativeWords('1792000000000', NOW).endsWith('ago'), true, 'an epoch millisecond stamp is read');
-  assert.equal(eventWords('2026-10-17T14:30:00Z', NOW), '14:30', 'a calendar time today is a clock time');
-  assert.equal(eventWords('2026-10-18T09:00:00Z', NOW), 'tomorrow 09:00');
+  assert.equal(eventWords('2026-10-17T14:30:00', NOW), '14:30', 'a calendar time today is a clock time');
+  assert.equal(eventWords('2026-10-18T09:00:00', NOW), 'tomorrow 09:00');
   assert.equal(eventWords('not a date', NOW), '');
 });

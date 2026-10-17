@@ -6,8 +6,10 @@ import { composerIntent, draftHeightPx } from '../src/composer.ts';
 import type { ToolEvidence } from '../src/protocol.ts';
 
 // Missing evidence rendering is the base behavior, represented as an empty projection.
-const render = (markdown as typeof markdown & { renderToolEvidence?: (evidence: readonly ToolEvidence[]) => string }).renderToolEvidence ?? (() => '');
-const answer = (markdown as typeof markdown & { answerMarkup?: (text: string) => string }).answerMarkup ?? (() => '');
+// K4: the evidence block lists the items the answer used; the source chips are a separate row.
+const render = markdown.evidenceMarkup;
+const sources = markdown.sourcesMarkup;
+const answer = markdown.answerMarkup;
 
 test('a saved answer with a bullet list and a numbered list renders ul and ol inside a div, not a p', () => {
   const html = answer('- milk\n- eggs\n\n1. pay rent\n2. call bank');

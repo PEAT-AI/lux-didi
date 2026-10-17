@@ -65,11 +65,6 @@ function stepSourceOf(name: string): string {
   return STEP_SOURCES[prefix] ?? prefix;
 }
 
-/** Non-empty lines of a shaped result: one item per line, the same unit the research path counts. */
-function countedLines(text: string): number {
-  return text.split('\n').map(line => line.trim()).filter(Boolean).length;
-}
-
 /** The action word a direct tool asks its source for. */
 function stepActionOf(name: string): string {
   const suffix = name.split('_').slice(1).join('_');
@@ -1531,7 +1526,7 @@ export class LiveSessionOwner {
           const ok = subResults.some(result => result.ok);
           projections[index] = { name: call.name, status: ok ? 'completed' : 'error', markdown: noEmptyResult(digest.text), sources: [] };
           // The count the voice view shows is the items the source returned, never the citation count.
-          if (ok) handle.liveStepItems.set(call.id, digest.itemCount ?? countedLines(noEmptyResult(digest.text)));
+          if (ok && digest.itemCount !== undefined) handle.liveStepItems.set(call.id, digest.itemCount);
           return { id: call.id, name: call.name, response: ok ? intentResponse(digest, unit.intent) : { error: reason } };
         }
         const accepted = batch?.accepted.find(result => result.binding.callId === call.id && result.binding.name === call.name);
@@ -1567,9 +1562,10 @@ export class LiveSessionOwner {
       const call = event.calls[index]!;
       if (call.name === RESEARCH_TOOL_NAME) continue;
       const started = handle.callStartedAt.get(call.id);
-      // The digest's own item count when the shape carried one, else the shaped items themselves;
-      // never the citation count, which made a capped source undercount.
-      const items = handle.liveStepItems.get(call.id) ?? (projection.status === 'completed' ? countedLines(projection.markdown) : undefined);
+      // The count the source's own shape carried, never `sources.length`: those are citations, and a
+      // capped source undercounted against them (review finding F5). A shape with no item count stays
+      // uncounted rather than guessed, and the line reads "<source> answered".
+      const items = handle.liveStepItems.get(call.id);
       this.#recordStep(handle, {
         callId: call.id, stepId: `${call.id}:0`, source: stepSourceOf(call.name), action: stepActionOf(call.name),
         phase: 'end', ok: projection.status === 'completed',

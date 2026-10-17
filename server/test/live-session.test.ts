@@ -1556,7 +1556,7 @@ test('F2 the live tool steps retire when the turn completes, never into the next
   await h.f.frame(2);
   const ended = await waitFor(steps => (steps ?? [])[0]?.phase === 'end');
   assert.equal(ended![0]!.ok, true);
-  assert.equal(ended![0]!.resultCount, 1, 'the count is the items the source returned, never the citation count');
+  assert.equal(ended![0]!.resultCount, undefined, 'no fabricated count: this shape carries none, and the citation count is not the item count');
   h.f.send({ serverContent: { outputTranscription: { text: 'Here is the answer.', finished: true }, turnComplete: true } });
   await waitFor(steps => steps === undefined);
   assert.equal(h.owner.current().steps, undefined, 'the finished answer retires the list, so the next question shows nothing stale');

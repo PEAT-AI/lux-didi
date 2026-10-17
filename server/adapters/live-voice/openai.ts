@@ -182,6 +182,8 @@ export class OpenAiLiveVoiceAdapter implements LiveVoicePort {
     });
     if (Buffer.byteLength(start) > settings.limits.maxOutgoingBytes
       || Buffer.byteLength(JSON.stringify({ instructions, input: seed.items, tools })) > settings.limits.maxRequestBytes) fail('outgoing_limit');
+    // Receipt, metadata only: the size of the instructions exactly as sent, so a log proves nothing was cut.
+    console.error(JSON.stringify({ event: 'openai_instructions_size', chars: instructions.length, bytes: Buffer.byteLength(instructions) }));
     if (!(control.signal instanceof AbortSignal) || !Number.isSafeInteger(control.deadlineMs)
       || control.deadlineMs <= 0 || control.deadlineMs - Date.now() > 2_147_483_647) fail('invalid_request');
     return new Session(settings, start, control.signal, control.deadlineMs, control.idleResetMs ?? settings.limits.idleMs);
@@ -490,7 +492,8 @@ class Session implements LiveVoiceSession {
 
   private inputTranscript(message: ObjectValue): void {
     if (typeof message.delta !== 'string') fail('protocol_error');
-    if (!message.delta.length) return;
+    // Empty and whitespace-only deltas carry no word: they start no episode, take no word and never flush.
+    if (!message.delta.trim().length) return;
     this.noteInput(message.delta);
     this.userTranscriptOpen = true;
     this.diagnostic.inputTranscriptionEvents += 1;

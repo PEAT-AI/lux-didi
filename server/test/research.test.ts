@@ -428,3 +428,37 @@ test('knowledge findings rank first in the reply', async () => {
   const findings = reply['findings'] as { source: string }[];
   assert.equal(findings[0]?.source, 'knowledge', 'the prime source leads the findings');
 });
+
+test('an empty-but-successful read is a search that matched nothing, never an unreachable source', async () => {
+  const selector = selectorOf({ questionClass: 'quick_fact', actions: [{ kind: 'mail_search', query: 'from:landlord invoice' }], pUseful: { mail_search: 1 } });
+  const h = harness({ selector, executeText: '' });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'would you check my mail for the landlord invoice' }, new AbortController().signal);
+  const note = String(reply['note'] ?? '');
+  assert.equal(note.includes('could not reach'), false, 'a search that matched nothing is not an outage');
+  assert.match(note, /I searched your mail for "invoice" and found nothing matching/, 'the model gets a line it can voice');
+  assert.equal((reply['unchecked'] as string[]).includes('mail'), false, 'the source answered, so it is checked');
+  assert.equal(reply['status'], 'answered', 'a search that matched nothing still answered the question');
+});
+
+test('an identical duplicate read in one run is executed once', async () => {
+  let round = 0;
+  const selector: ResearchSelector = { select: async () => {
+    round += 1;
+    return round === 1
+      ? { questionClass: 'cross_source' as const, actions: [{ kind: 'brief' as const }], pUseful: { brief: 0.9 } }
+      : { questionClass: 'cross_source' as const, actions: [{ kind: 'mail_search' as const, query: 'newer_than:2d' }], pUseful: { mail_search: 0.9 } };
+  } };
+  const h = harness({ selector, executeText: '' });
+  await runResearch(h.deps, { action: 'start', question: 'anything new' }, new AbortController().signal);
+  const mailReads = h.executed.filter(call => call.name === 'gmail_list');
+  assert.equal(mailReads.length, 1, 'the same mail read is issued once');
+});
+
+test('the brief fan-out is credited to every source it read and its findings reach the answer', async () => {
+  const selector = selectorOf({ questionClass: 'cross_source', actions: [{ kind: 'brief' }], pUseful: { brief: 1 } });
+  const h = harness({ selector });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'catch me up' }, new AbortController().signal);
+  const sources = (reply['findings'] as { source?: string }[]).map(finding => finding.source);
+  for (const source of ['calendar', 'mail', 'chat', 'knowledge']) assert.ok(sources.includes(source), `the brief read of ${source} is delivered to the answer`);
+  assert.deepEqual(reply['unchecked'], [], 'every configured source was credited, so none is unchecked');
+});

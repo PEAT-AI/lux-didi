@@ -608,9 +608,11 @@ struct RootView: View {
             self?.liveStateObservation = conversation?.$state.sink { [weak self] state in
                 self?.updateLiveStatus(state: state)
                 self?.model.publishBridgeLive()
+                self?.presenceTransitioned(state)
             }
             self?.updateLiveStatus(state: conversation?.state ?? .idle)
             self?.model.publishBridgeLive()
+            self?.presenceTransitioned(conversation?.state ?? .idle)
         }
         dictationObservation = model.voice.$state.sink { [weak self] state in
             self?.updateLiveStatus(dictationCapturing: state.phase == .recording)
@@ -886,6 +888,16 @@ struct RootView: View {
         presence.setAlwaysShow(!presence.alwaysShow)
         presenceMenuItem?.state = presence.alwaysShow ? .on : .off
         pushPresenceState()
+    }
+    /// Council 2026-10-17 (P1-R1): the two facts the presence machine cannot observe for
+    /// itself. Provider readiness is the guarded barrier that opens LIVE, and a failed
+    /// session is the fail-loud teardown. `.pausedForInput` keeps its existing meaning.
+    private func presenceTransitioned(_ state: NativeLiveConversation.State) {
+        switch state {
+        case .listening, .speaking: presence.ready()
+        case .failed: presence.fail()
+        case .idle, .connecting, .muted, .ended, .outcomeUnknown, .pausedForInput, .rebuilding: break
+        }
     }
     /// The FULL window's mode button (#311), and the same path the web button
     /// takes through the bridge. Presentation only: Live keeps running.

@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { safeEvent } from '../host/log.js';
 
 // The known Live instruction section ids, mirrored from ComposedSection.
-const SECTIONS = ['voice-head', 'base', 'runtime', 'tools', 'owner-style', 'owner-lore', 'overlay', 'pickup', 'memory', 'voice'];
+const SECTIONS = ['voice-head', 'base', 'runtime', 'tools', 'owner-style', 'owner-lore', 'overlay', 'pickup', 'memory', 'earlier-conversations', 'voice'];
 
 const SIZE = { event: 'live_instruction_sizes', total: 100, sections: { 'voice-head': 30, base: 70 }, languageCode: 'unset', voice: 'Aoede' };
 
@@ -150,4 +150,15 @@ test('live_turn_script is a closed enum of script buckets with character counts 
   assert.equal(safeEvent({ ...turn, latinChars: 1.5 }), undefined, 'a non-integer count is refused');
   assert.equal(safeEvent({ ...turn, afterTool: 'yes' }), undefined, 'the flags are booleans');
   assert.equal(safeEvent({ ...turn, liveSessionId: 'not-a-session' }), undefined, 'a foreign id is refused');
+});
+
+test('conversation_summary_injection keeps counts and a size, never ids or text', () => {
+  const injection = { event: 'conversation_summary_injection', injected: 12, omitted: 8, chars: 3_400 };
+  assert.deepEqual(safeEvent(injection), injection);
+  assert.equal(safeEvent({ event: 'conversation_summary_injection', injected: 12, omitted: 8 }), undefined, 'a partial shape fails closed');
+  assert.equal(safeEvent({ ...injection, extra: 1 }), undefined, 'an extra key fails closed');
+  assert.equal(safeEvent({ ...injection, text: 'owner words' }), undefined, 'never the summary text');
+  assert.equal(safeEvent({ ...injection, ids: ['a'] }), undefined, 'never summary ids');
+  assert.equal(safeEvent({ ...injection, injected: 1.5 }), undefined, 'a non-integer count is refused');
+  assert.equal(safeEvent({ ...injection, omitted: -1 }), undefined, 'a negative count is refused');
 });

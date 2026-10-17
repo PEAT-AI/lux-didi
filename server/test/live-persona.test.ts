@@ -8,7 +8,7 @@ import {
   NAYA_CHARACTER, NAYA_VOICE_SURFACE, NAYA_LIVE_BASE, NAYA_TOOLS, MEMORY_SECTION_CHAR_LIMIT, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_INSTRUCTION_TARGET_CHARS, OWNER_LORE_CHAR_LIMIT,
   LIVE_RECOVERY_PICKUP,
   PersonaOverlayError, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, canonicalSpeechLanguage, composeLiveInstruction, composeLiveSessionInstruction, loadPersonaOverlay,
-  validatePersonaOverlay, withToolsSection, buildEarlierConversationsSection, EARLIER_CONVERSATIONS_HEADER, type PersonaOverlay,
+  validatePersonaOverlay, withToolsSection, buildEarlierConversationsSection, EARLIER_CONVERSATIONS_HEADER, ownerProfileSections, LIVE_INSTRUCTION_SECTION_IDS, earlierConversationsBudget, type PersonaOverlay,
 } from '../prompt/live-persona.js';
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
 
@@ -425,22 +425,33 @@ test('the earlier-conversations header is the authored verbatim constant', () =>
     "Short summaries of earlier conversations, written automatically. Use them as background when they are relevant; do not bring them up unprompted, do not say that you remember, and do not ask the owner to confirm them. They can be wrong; the owner's words now win.");
 });
 
-test('earlier-conversations selection is newest first, whole summaries only, capped at 6 items and 3000 chars', () => {
+test('earlier-conversations fills the space left under the budget, newest first, whole summaries only', () => {
   const now = Date.UTC(2026, 9, 20, 12, 0);
-  const candidates = Array.from({ length: 8 }, (_, i) => ({ id: `s${i}`, endedAt: now - i * 3_600_000, summary: `summary number ${i}` }));
-  const result = buildEarlierConversationsSection(candidates, { now, timeZone: 'UTC' });
-  assert.equal(result.selectedIds.length, 6);
-  assert.deepEqual(result.selectedIds, ['s0', 's1', 's2', 's3', 's4', 's5']);
-  assert.deepEqual(result.omitted.map(o => o.id), ['s6', 's7']);
+  const candidates = Array.from({ length: 20 }, (_, i) => ({ id: `s${String(i).padStart(2, '0')}`, endedAt: now - i * 3_600_000, summary: `summary number ${i}` }));
+  // Full budget: every whole summary fits, nothing is capped at six or at 3000 chars.
+  const full = buildEarlierConversationsSection(candidates, { now, timeZone: 'UTC' });
+  assert.equal(full.selectedIds.length, 20);
+  assert.deepEqual(full.omitted, []);
+  // Tight budget: as many whole summaries as fit, newest first, never over the budget.
+  const tight = buildEarlierConversationsSection(candidates, { now, timeZone: 'UTC', maxChars: 400 });
+  assert.ok(tight.selectedIds.length > 0 && tight.selectedIds.length < 20, 'a tight budget keeps a prefix');
+  assert.deepEqual(tight.selectedIds, candidates.map(candidate => candidate.id).filter(id => tight.selectedIds.includes(id)), 'newest first');
+  assert.ok(tight.section.length <= 400, `section stayed at the budget (${tight.section.length})`);
+  assert.deepEqual(tight.omitted.map(o => o.id), candidates.map(candidate => candidate.id).filter(id => !tight.selectedIds.includes(id)));
+  assert.ok(tight.omitted.every(o => o.reason === 'budget'));
+  for (const line of tight.section.split('\n').slice(2)) assert.match(line, /^[A-Z][a-z]{2} \d+ [A-Z][a-z]{2}, \w+: summary number \d+$/, 'no summary is cut mid-sentence');
+});
 
+test('a summary that does not fit is skipped and a smaller older one still fills the budget', () => {
+  const now = Date.UTC(2026, 9, 20, 12, 0);
   const big = buildEarlierConversationsSection([
     { id: 'a', endedAt: now, summary: 'x'.repeat(2_500) },
     { id: 'b', endedAt: now - 1, summary: 'y'.repeat(600) },
     { id: 'c', endedAt: now - 2, summary: 'small' },
-  ], { now, timeZone: 'UTC' });
-  assert.deepEqual(big.selectedIds, ['a', 'c'], 'b no longer fits the 3000-char budget; c still does');
+  ], { now, timeZone: 'UTC', maxChars: 3_000 });
+  assert.deepEqual(big.selectedIds, ['a', 'c'], 'b no longer fits the budget; c still does');
   assert.ok(big.omitted.some(o => o.id === 'b' && o.reason === 'budget'));
-  assert.ok(big.section.length <= EARLIER_CONVERSATIONS_HEADER.length + 3_000 + 64);
+  assert.ok(big.section.length <= 3_000);
 });
 
 test('earlier-conversations excludes summaries older than 14 days as stale', () => {
@@ -478,6 +489,7 @@ test('the earlier-conversations section sits right after # Memory and yields bef
     records: [{ id: 'fits', text: 'SYNTHETIC retained memory' }], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
     earlierConversations: 'E'.repeat(TRUSTED_SYSTEM_CODE_UNIT_LIMIT) });
   assert.equal(huge.earlierConversationsIncluded, false);
+  assert.equal(huge.sections.some(section => section.id === 'earlier-conversations'), false, 'a yielded section is not reported, so its logged size is zero');
   assert.ok(!huge.text.includes('EEEE'));
   assert.ok(huge.text.includes('SYNTHETIC retained memory'));
 });
@@ -492,4 +504,53 @@ test('the tool conduct gates research to factual questions and voices an empty s
 
 test('the voice surface asks for varied phrasing, never the same framing phrase twice', () => {
   assert.ok(NAYA_VOICE_SURFACE.includes('Vary your phrasing. Do not reuse the same framing phrase twice in one conversation.'), 'the phrasing rule is stated verbatim');
+});
+const occurrence = (text: string, block: string) => text.split(block).length - 1;
+
+const FIXTURE_OWNER: OwnerProfileSnapshot = { schemaVersion: 1, kind: 'profile', ownerId: 'synthetic-owner', profileVersion: 'fixture', displayName: 'Example',
+  style: { text: 'Fixture owner style block', dataClass: 'ordinary' }, lore: { text: 'Fixture owner lore block', dataClass: 'ordinary' } };
+
+test('session composition emits the owner style and lore once in every path', () => {
+  const [style, lore] = ownerProfileSections(FIXTURE_OWNER).map(section => section.text);
+  const session = (text: string) => composeLiveSessionInstruction({ text, tools: ['search_knowledge'], ownerProfile: FIXTURE_OWNER, records: [],
+    overlay: { schemaVersion: 1, text: 'Fixture overlay' }, trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT });
+  const native = session(composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en', accent: 'warm', ownerProfile: FIXTURE_OWNER }).text);
+  assert.equal(occurrence(native.text, style!), 1, 'owner style appears once on the native accent path');
+  assert.equal(occurrence(native.text, lore!), 1, 'owner lore appears once on the native accent path');
+  const plain = session(composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en', ownerProfile: FIXTURE_OWNER }).text);
+  assert.equal(occurrence(plain.text, style!), 1, 'owner style appears once without an accent');
+  assert.equal(occurrence(plain.text, lore!), 1, 'owner lore appears once without an accent');
+  const bare = session(NAYA_LIVE_BASE);
+  assert.equal(occurrence(bare.text, style!), 1, 'a bare base still gains the profile once');
+  assert.equal(occurrence(bare.text, lore!), 1, 'a bare base still gains the lore once');
+});
+
+test('every composed section id is on the LIVE_INSTRUCTION_SECTION_IDS allowlist', () => {
+  const allowed = new Set<string>(LIVE_INSTRUCTION_SECTION_IDS);
+  const instruction = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en', accent: 'warm', ownerProfile: FIXTURE_OWNER,
+    tools: ['search_knowledge'], memory: 'Fixture note', runtimeContext: 'Fixture runtime' });
+  for (const section of instruction.sections) assert.ok(allowed.has(section.id), `${section.id} is listed`);
+  const session = composeLiveSessionInstruction({ text: instruction.text, tools: ['search_knowledge'], ownerProfile: FIXTURE_OWNER,
+    records: [{ id: 'a', text: 'Fixture note' }], pickupNote: 'Fixture pickup', earlierConversations: '# Earlier conversations\nFixture header\nline',
+    trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT });
+  for (const section of session.sections) assert.ok(allowed.has(section.id), `${section.id} is listed`);
+  assert.ok(allowed.has('earlier-conversations'), 'the summary section is a known id');
+});
+
+test('the earlier-conversations budget is what the rest of the instruction leaves under the target', () => {
+  const now = Date.UTC(2026, 9, 20, 12, 0);
+  const candidates = Array.from({ length: 20 }, (_, i) => ({ id: `s${String(i).padStart(2, '0')}`, endedAt: now - i * 3_600_000,
+    summary: 'Synthetic past conversation about the Mongoose mint and the Friday delivery window.' }));
+  const build = (earlierSection?: string) => composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: ['search_knowledge'], records: [],
+    trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, ...(earlierSection ? { earlierConversations: earlierSection } : {}) });
+  const basis = build();
+  const budget = earlierConversationsBudget(basis.text.length);
+  assert.ok(budget > 0 && budget < LIVE_INSTRUCTION_TARGET_CHARS);
+  const section = buildEarlierConversationsSection(candidates, { now, timeZone: 'UTC', maxChars: budget });
+  assert.ok(section.selectedIds.length > 6, `the budget keeps more than the old six (${section.selectedIds.length})`);
+  const composed = build(section.section);
+  assert.ok(composed.text.length <= LIVE_INSTRUCTION_TARGET_CHARS, `stays under the target (${composed.text.length})`);
+  assert.ok(composed.text.length <= LIVE_INSTRUCTION_HARD_LIMIT);
+  assert.ok(composed.text.includes(NAYA_TOOLS), 'tools are never dropped for summaries');
+  assert.equal(composed.earlierConversationsIncluded, true);
 });

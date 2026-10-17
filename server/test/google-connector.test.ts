@@ -439,7 +439,7 @@ function fakeCalendarPort(options: { calendars: { id: string; summary: string; p
       listArgs.push({ ...request.arguments });
       const at = index++;
       const delay = options.delayFor?.(id) ?? options.delayMs;
-      if (delay !== undefined) await new Promise<void>(resolve => { const timer = setTimeout(resolve, options.delayMs!); signal?.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, { once: true }); });
+      if (delay !== undefined) await new Promise<void>(resolve => { const timer = setTimeout(resolve, delay); signal?.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, { once: true }); });
       if (options.defer) {
         inFlight += 1; peak = Math.max(peak, inFlight);
         await new Promise<void>(resolve => gates.push(resolve));

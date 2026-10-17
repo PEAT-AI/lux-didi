@@ -27,7 +27,7 @@ enum NativeGettingStartedItems {
             NativeGettingStartedItem(title: "Microphone", detail: microphone, command: nil),
             NativeGettingStartedItem(title: "Notifications", detail: notifications, command: nil),
             NativeGettingStartedItem(title: "Open at login", detail: login, command: nil),
-            NativeGettingStartedItem(title: "Show Didi", detail: "Control Option Space", command: nil),
+            NativeGettingStartedItem(title: "Show Naya", detail: "Control Option Space", command: nil),
             NativeGettingStartedItem(title: "Live shortcuts", detail: "Start: Control Option Shift L; mute: Control Option Shift M; stop: Escape", command: nil),
         ]
         rows += connections.map { id, state, reason in

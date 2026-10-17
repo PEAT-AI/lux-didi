@@ -92,6 +92,8 @@
 .chat-evidence-source ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .2rem; }
 .chat-evidence-item { display: flex; flex-direction: column; gap: .05rem; overflow-wrap: anywhere; }
 .chat-evidence-line { color: var(--text); }
+/* The answer body sits on the same inner inset as the evidence rows below it, so a turn reads as one column. */
+.chat-fill #connected-entries .entry.assistant .markdown { padding-left: .25rem; }
 .chat-evidence-snippet { color: var(--muted); }
 .chat-sources { display: flex; flex-wrap: wrap; gap: .4rem; align-items: baseline; margin: .5rem 0 0; font-size: .85rem; }
 .chat-sources-label, .chat-sources-more { color: var(--muted); }

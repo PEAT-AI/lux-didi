@@ -271,3 +271,12 @@ test('the real view composes the turn: running steps, the answer with folded evi
     assert.ok(!api.panel.innerHTML.includes(shapedBody), 'a timed-out turn never shows the shaped output');
   } finally { api.release(); api.restore(); }
 });
+
+test('the answer body carries the same inner inset as the evidence rows', () => {
+  const css = readFileSync(new URL('../src/style.css', import.meta.url), 'utf8');
+  const rule = /\.chat-fill #connected-entries \.entry\.assistant \.markdown \{ padding-left: ([^;]+); \}/.exec(css);
+  assert.ok(rule, 'the chat lane pins the answer body inset');
+  const evidence = /\.chat-evidence-source \{ margin: [^;]*?(\.[0-9]+rem) 0 0 \.25rem; \}/.exec(css);
+  assert.ok(evidence, 'the evidence rows keep their inner inset');
+  assert.equal(rule[1], '.25rem', 'the answer body uses the evidence rows inset token');
+});

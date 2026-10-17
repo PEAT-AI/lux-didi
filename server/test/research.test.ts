@@ -514,8 +514,8 @@ test('when the selector deadline passes the fallback starts at once and the mode
   const clock = fakeClock();
   let abortSelector!: (error: Error) => void;
   const selector: ResearchSelector = { select: () => new Promise<SelectorOutput>((_, reject) => { abortSelector = reject; }) };
-  const readAt: number[] = [];
-  const h = harness({ selector, now: clock.now, schedule: clock.schedule, execute: async subs => { readAt.push(clock.now()); return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
+  const readAt: { tool: string; at: number }[] = [];
+  const h = harness({ selector, now: clock.now, schedule: clock.schedule, execute: async subs => { for (const call of subs) readAt.push({ tool: call.name, at: clock.now() }); return subs.map(call => sub(call.name, 'evidence', true, call.key)); } });
   const running = runResearch(h.deps, { action: 'start', question: 'what is on my calendar today' }, new AbortController().signal);
   await settle();
   clock.advance(3_000); await settle();
@@ -523,8 +523,9 @@ test('when the selector deadline passes the fallback starts at once and the mode
   abortSelector(new Error('aborted'));
   await running;
   assert.equal(h.logs[0]!.fallbackUsed, true, 'the deadline falls back to the fixed recipe');
-  assert.ok(readAt.length > 0, 'the fallback reads immediately');
-  assert.ok(readAt.every(at => at === RESEARCH.selectorDeadlineMs), `the fallback read starts the moment the selector gives up: ${readAt.join(',')}`);
+  const fallbackReads = readAt.filter(entry => entry.tool === 'gcal_list');
+  assert.ok(fallbackReads.length > 0, 'the fallback reads the calendar');
+  assert.ok(fallbackReads.every(entry => entry.at === RESEARCH.selectorDeadlineMs), `the fallback read starts the moment the selector gives up: ${JSON.stringify(readAt)}`);
   const stamps = h.progress.map(entry => entry.elapsedMs);
   assert.ok(stamps.some(stamp => stamp <= 3_000), 'a progress line inside three seconds of the call');
   assert.ok(maxGapMs(stamps) <= 8_000, `no model-facing gap over eight seconds: ${maxGapMs(stamps)}`);

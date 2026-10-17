@@ -176,8 +176,11 @@ boundaries itself, and never drops an output frame doing it.
   queue from forwarded PCM: 24 kHz s16 mono is 48,000 bytes per second, appended behind whatever
   is still queued and reset by a flush or a provider error.
 - Receipts, metadata only and never transcript text: `gptlive_flush` {words, queuedMs},
-  `gptlive_turn_complete` {idleMs, drained} and `gptlive_post_flush_audio_ms` {ms}, the audio
-  still received after a barge-in before the next input episode.
+  `gptlive_turn_complete` {idleMs, drained}, `gptlive_post_flush_audio_ms` {ms} for the audio
+  still received after a barge-in before the next input episode, and `openai_instructions_size`
+  {chars, bytes} at session start, which proves in a log that the instructions were not cut.
+  Empty and whitespace-only input transcript deltas carry no word: they start no episode and
+  never flush.
 - The wrapper instructions additionally carry OpenAI's live prompting lines "Do not treat a
   cough, music, or nearby conversation as a new request." and "Keep listening while the owner
   pauses to think."

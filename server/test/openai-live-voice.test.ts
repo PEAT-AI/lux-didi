@@ -156,6 +156,8 @@ describe('openai gpt-live adapter', () => {
     await until(() => audioOf(opened.captured).length === 1);
     // The one-word phantom of the field log: a silent mic produced it, and it used to latch the session muted.
     opened.f.send({ type: 'session.input_transcript.delta', delta: 'mm' });
+    // Empty and whitespace-only deltas carry no word: they start no episode and never flush either (GL1-R1).
+    for (const delta of ['', '   ', '\n\t ']) opened.f.send({ type: 'session.input_transcript.delta', delta });
     for (let index = 0; index < 30; index += 1) speak(opened.f, 2_400);
     await until(() => audioOf(opened.captured).length === 31);
     assert.equal(audioBytes(opened.captured), (240 + 30 * 2_400) * 2, 'every valid output delta is forwarded');
@@ -189,6 +191,24 @@ describe('openai gpt-live adapter', () => {
     await until(() => audioOf(opened.captured).length === 3);
     opened.f.send({ type: 'session.input_transcript.delta', delta: 'stop that' });
     await until(() => interruptions(opened.captured) === 2);
+  });
+
+  test('the session logs the final instruction size and never the instruction text', async t => {
+    const logged: string[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => { logged.push(args.map(String).join(' ')); };
+    try {
+      const f = await fixture(t);
+      const session = new OpenAiLiveVoiceAdapter(options({ socketFactory: f.socketFactory })).open(request(), control());
+      t.after(() => session.close());
+    } finally { console.error = original; }
+    const receipt = logged.map(text => { try { return JSON.parse(text) as Record<string, unknown>; } catch { return undefined; } })
+      .find(entry => entry !== undefined && entry['event'] === 'openai_instructions_size');
+    assert.ok(receipt, 'the session start logs openai_instructions_size');
+    const instructions = openAiInstructions('Synthetic persona');
+    assert.equal(receipt['chars'], instructions.length);
+    assert.equal(receipt['bytes'], Buffer.byteLength(instructions));
+    assert.deepEqual(Object.keys(receipt).sort(), ['bytes', 'chars', 'event'], 'sizes only, never instruction text');
   });
 
   test('backchannels and a one-word stop never flush, and separate one-word episodes do not add up', async t => {

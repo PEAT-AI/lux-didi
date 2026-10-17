@@ -4,8 +4,8 @@
 <key>CFBundleExecutable</key><string>LuxDidi</string>
 <key>CFBundleIdentifier</key><string>ai.peat.lux-didi</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
-<key>CFBundleName</key><string>Lux Didi</string>
-<key>CFBundleDisplayName</key><string>Lux Didi</string>
+<key>CFBundleName</key><string>Naya</string>
+<key>CFBundleDisplayName</key><string>Naya</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleVersion</key><string>3</string>
 <key>CFBundleShortVersionString</key><string>0.1.2</string>

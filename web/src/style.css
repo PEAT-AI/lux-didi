@@ -468,3 +468,10 @@ html.mini .mini-stage .activity-thinking .activity-indicator{background:#d9a65a}
 html.mini .mini-stage .activity-failed{color:#f2a892}
 html.mini .mini-stage .activity-failed .activity-indicator{background:#d97f66}
 html.mini .mini-stage canvas[data-state=IDLE],html.mini .mini-stage canvas[data-state=DISCONNECTED],html.mini .mini-stage canvas[data-state=INTERRUPTED]{filter:grayscale(.82) brightness(.9) opacity(.9)}
+
+/* UI3a: the FULL window's one mode control (#311). A quiet text button that sits
+   with the live pill in the header; it is only rendered under the native bridge,
+   because only the app can move a surface. */
+.mini-mode{margin-left:2px;padding:3px 9px;border:1px solid var(--border);border-radius:999px;background:var(--surface-2);color:var(--text-secondary);font:inherit;font-size:12px;line-height:1.4;letter-spacing:.02em;cursor:pointer}
+.mini-mode:hover{background:var(--surface-3);color:var(--text)}
+.mini-mode:focus-visible{outline:2px solid var(--focus);outline-offset:2px}

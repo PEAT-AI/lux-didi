@@ -2,19 +2,27 @@
 
 ## Live with Naya
 
-Open Lux Didi from the menu bar. Press **Start Live** to talk with Naya.
+Open Naya from the Dock or the menu bar. Press **Start Live** to talk with Naya.
 Press **Mute** to pause the microphone, then press it again to resume. Press
 **Stop** to end Live. Live never starts just because you open the app.
 
 Global shortcuts:
 
 - Control Option Space: show or hide the mini orb. Showing it starts Live when Live is not already running; hiding it stops Live.
-- Control Option Shift Space: show or hide the full Didi window (Live keeps running when the window hides).
-- Control Option Shift L: show Didi and start Live.
+- Control Option Shift Space: show or hide the full Naya window (Live keeps running when the window hides).
+- Control Option Shift L: show Naya and start Live.
 - Control Option Shift M: mute or unmute Live.
 - Escape while the mini orb is focused: hide the orb and stop Live. Escape while the window is focused: hide the window; Live keeps running.
 
 Click the orb in the mini view to expand to the full window; Live keeps running.
+
+Naya has two modes and only one is ever on screen. The full window has a **mini**
+button in its header (its accessible label is "Show the mini orb") that moves the
+app to the floating orb. The orb shows only listening, thinking and talking and
+never takes focus; it can be dragged anywhere, and Naya remembers where you put it.
+Closing the window with Cmd+W while Live is running switches to the orb and keeps
+the session; closing it while Live is off just hides the window. A click on the
+Dock icon always brings the full window back.
 
 Use the menu if a shortcut is unavailable.
 

@@ -15,9 +15,10 @@ accounts, voice hardware or a healthy installed application.
   playback, mute/stop controls, transcript projection and local memory tools.
 - A shared same-origin web client with pairing, connected conversations, memory
   filters/deletion, origin/kind labels, Settings and connector next steps.
-- A Mac menu-bar application with service supervision, native web view, native
-  Save note and Send to Naya, Getting started, permission buttons, shortcuts,
-  login item control, notifications and safe diagnostics.
+- A regular Mac app named Naya (Dock icon, app icon, FULL window and MINI
+  floating orb) with service supervision, native web view, native Save note and
+  Send to Naya, Getting started, permission buttons, shortcuts, login item
+  control, notifications and safe diagnostics.
 - Canonical producers for a bundled-Node app, signature validation, installation,
   preservation of a prior app and restoration on failed post-swap verification.
 

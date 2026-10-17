@@ -38,3 +38,12 @@ export function miniMarkup(state: MiniState, caption: string): string {
     + `<canvas id="didi-orb" width="440" height="440" aria-hidden="true"></canvas>`
     + `<div class="orb-caption">${caption}</div></section>`;
 }
+
+/** The FULL window's one mode control (#311): a visible button with an
+ * accessible label that asks the native app for the mini orb. Only the native
+ * app can move a surface, so a browser shell renders no button at all. */
+export function miniModeButtonMarkup(native: boolean): string {
+  return native
+    ? '<button id="mini-mode" class="quiet mini-mode" aria-label="Show the mini orb" title="Mini orb (Control-Option-Space)">mini</button>'
+    : '';
+}

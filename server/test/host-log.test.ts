@@ -40,10 +40,16 @@ test('an accent string never survives the host-log allowlist', () => {
 });
 
 test('live_state keeps a closed transition shape for the orb timeline', () => {
-  const event = { event: 'live_state', state: 'speaking', at: 1_700_000_000_000 };
+  const event = { event: 'live_state', state: 'speaking', from: 'thinking', cause: 'audio', at: 1_700_000_000_000 };
   assert.deepEqual(safeEvent(event), event);
+  assert.deepEqual(safeEvent({ event: 'live_state', state: 'listening', cause: 'created', at: 1_700_000_000_000 }),
+    { event: 'live_state', state: 'listening', cause: 'created', at: 1_700_000_000_000 }, 'the opening state has no from');
   assert.equal(safeEvent({ ...event, extra: 1 }), undefined, 'an extra key fails closed');
+  assert.equal(safeEvent({ event: 'live_state', state: 'speaking', at: 1_700_000_000_000 }), undefined,
+    'a transition without its cause is refused (GL2-R1)');
   assert.equal(safeEvent({ ...event, state: 'confused' }), undefined, 'a state outside the projection enum is refused');
+  assert.equal(safeEvent({ ...event, from: 'confused' }), undefined, 'a previous state outside the enum is refused');
+  assert.equal(safeEvent({ ...event, cause: 'guess' }), undefined, 'a cause outside the closed set is refused');
   assert.equal(safeEvent({ ...event, at: 'now' }), undefined, 'a non-integer timestamp is refused');
   assert.equal(safeEvent({ ...event, at: -1 }), undefined, 'a negative timestamp is refused');
 });

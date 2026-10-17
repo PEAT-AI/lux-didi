@@ -5,6 +5,7 @@ import type { JsonObject } from '../model/types.js';
 import type { DataClass, LiveSocketFactory, LiveToolCall, LiveToolResponse, LiveVoiceAdapterOptions, LiveVoiceCapabilities, LiveVoiceClock, LiveVoiceControl, LiveVoiceDiagnostics, LiveVoiceErrorCode, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession, LiveVoiceUpstreamDrop } from './types.js';
 import { LiveVoiceError, liveVoiceTimerDefaults } from './types.js';
 import { Pcm16Upsampler } from './resample.js';
+import { hostLogEvent } from '../../tools/host-events.js';
 
 /**
  * The GPT-Live adapter over the provider-neutral voice port.
@@ -51,8 +52,15 @@ const QUEUE_LOG_BYTES = 64 * 1024;
 const QUEUE_LOG_INTERVAL_MS = 1_000;
 /** Turn taking: the owner's input episode ends after this much quiet on the input transcript. */
 const INPUT_EPISODE_QUIET_MS = 700;
+/** Audible silence: SPEAKING ends after this much output quiet with the local playback drained, and the 2000 ms
+ *  presentation idle stays the semantic end of the turn. */
+const OUTPUT_SILENCE_MS = 500;
 /** Presentation idle: the spoken reply is over after this much quiet with the local playback drained. */
 const TURN_IDLE_QUIET_MS = 2_000;
+/** After a barge-in flush the cut answer is dropped until the output shows a gap this long, or this long has
+ *  passed since the flush, whichever comes first. Both bounds are fixed, so the drop window never latches. */
+const POST_FLUSH_GAP_MS = 400;
+const POST_FLUSH_DROP_LIMIT_MS = 2_500;
 /** Forwarded output PCM is 24 kHz s16 mono, so the modelled native queue drains 48 bytes per millisecond. */
 const OUTPUT_PCM_BYTES_PER_MS = 48;
 /** Head start at the start of a speaking stretch: 300 ms of audio held back so the native 80 ms jitter buffer
@@ -187,7 +195,7 @@ export class OpenAiLiveVoiceAdapter implements LiveVoicePort {
     if (Buffer.byteLength(start) > settings.limits.maxOutgoingBytes
       || Buffer.byteLength(JSON.stringify({ instructions, input: seed.items, tools })) > settings.limits.maxRequestBytes) fail('outgoing_limit');
     // Receipt, metadata only: the size of the instructions exactly as sent, so a log proves nothing was cut.
-    console.error(JSON.stringify({ event: 'openai_instructions_size', chars: instructions.length, bytes: Buffer.byteLength(instructions) }));
+    hostLogEvent({ event: 'openai_instructions_size', chars: instructions.length, bytes: Buffer.byteLength(instructions) });
     if (!(control.signal instanceof AbortSignal) || !Number.isSafeInteger(control.deadlineMs)
       || control.deadlineMs <= 0 || control.deadlineMs - Date.now() > 2_147_483_647) fail('invalid_request');
     return new Session(settings, start, control.signal, control.deadlineMs, control.idleResetMs ?? settings.limits.idleMs);
@@ -271,6 +279,14 @@ class Session implements LiveVoiceSession {
   private idleQuiet: unknown;
   /** True between a delegated `response.created` and its `response.done`. */
   private delegatedOutstanding = false;
+  /** Audible silence of the current speaking stretch: its timer, whether its receipt was already sent, and the
+   *  arrival clock of the last output delta (dropped or forwarded), which is what a post-flush gap is read on. */
+  private outputSilence: unknown;
+  private silenceSent = false;
+  private lastOutputDeltaAt = 0;
+  /** When the owner's barge-in flushed the answer, and how much of the cut answer the drop window has discarded. */
+  private postFlushAt: number | undefined;
+  private postFlushDroppedMs = 0;
   /** Forwarded playback milliseconds since the last barge-in, reported as the post-flush receipt. */
   private postFlushMs: number | undefined;
   /** The head start of the current speaking stretch: PCM held until HEAD_START_MS or HEAD_START_BYTES, and its timer. */
@@ -480,11 +496,30 @@ class Session implements LiveVoiceSession {
   private outputAudio(message: ObjectValue): void {
     const pcm = this.audioDelta(message);
     if (!pcm) return;
+    const now = this.clock.now();
+    // The arrival clock every post-flush gap is read on: the frames of the cut answer arrive back to back, so a
+    // gap this long means the answer that replay would cut is over.
+    const gap = now - this.lastOutputDeltaAt;
+    this.lastOutputDeltaAt = now;
     this.diagnostic.outputAudioFrames += 1;
     this.diagnostic.outputAudioPCMBytes += pcm.byteLength;
-    // Contract invariant: no frame dropping. Output audio of an open session is always forwarded; an input
-    // transcript can never silence the assistant, because gpt-live-1 hands turn taking to the server.
+    // Contract invariant: no permanent frame dropping. Output audio of an open session is forwarded, and an input
+    // transcript never silences the assistant. The one bounded exception is the window right after a barge-in
+    // flush, where the frames of the answer the owner just cut are discarded so they cannot replay; it ends on an
+    // output gap or a fixed deadline and never latches.
+    if (this.postFlushAt !== undefined) {
+      if (now - this.postFlushAt >= POST_FLUSH_DROP_LIMIT_MS || gap >= POST_FLUSH_GAP_MS) {
+        this.postFlushAt = undefined;
+        hostLogEvent({ event: 'gptlive_post_flush_dropped_ms', ms: Math.round(this.postFlushDroppedMs) });
+        this.postFlushDroppedMs = 0;
+      } else {
+        this.postFlushDroppedMs += pcm.byteLength / OUTPUT_PCM_BYTES_PER_MS;
+        this.touch();
+        return;
+      }
+    }
     this.audioSinceCompletion = true;
+    this.silenceSent = false;
     if (!this.stretchOpen) {
       // Head start: the first audio of a speaking stretch is held so the 80 ms native jitter buffer starts full.
       this.stretchOpen = true;
@@ -500,6 +535,7 @@ class Session implements LiveVoiceSession {
     }
     this.queuePlayback(pcm.byteLength);
     this.emit({ type: 'audio', pcm, rate: 24_000 });
+    this.armOutputSilence();
     this.settleTurn();
     this.touch();
   }
@@ -516,6 +552,7 @@ class Session implements LiveVoiceSession {
     this.heldBytes = 0;
     this.queuePlayback(pcm.byteLength);
     this.emit({ type: 'audio', pcm, rate: 24_000 });
+    this.armOutputSilence();
     this.settleTurn();
   }
 
@@ -580,7 +617,13 @@ class Session implements LiveVoiceSession {
     this.playbackUntil = this.clock.now();
     this.discardHeadStart();
     this.postFlushMs = 0;
-    console.error(JSON.stringify({ event: 'gptlive_flush', words, queuedMs }));
+    // The frames of the answer the owner cut keep arriving for a moment; the bounded drop window keeps them out
+    // of the port so the cut answer cannot replay.
+    this.postFlushAt = this.playbackUntil;
+    this.postFlushDroppedMs = 0;
+    this.silenceSent = false;
+    if (this.outputSilence !== undefined) { this.clock.clearTimer(this.outputSilence); this.outputSilence = undefined; }
+    hostLogEvent({ event: 'gptlive_flush', words, queuedMs });
     this.emit({ type: 'interrupted' });
   }
 
@@ -589,6 +632,22 @@ class Session implements LiveVoiceSession {
     this.inputEpisode = '';
     this.flushed = false;
     this.reportPostFlush();
+    this.ownerTurnEnded();
+  }
+
+  /**
+   * The owner's episode is over with no assistant audio playing or held, so what comes next is her think time.
+   * gpt-live-1 sends no generation-start event on a plain turn, so the adapter synthesizes the pair the host
+   * needs: the final input transcript and a model turn start, which is what enters THINKING, resets the turn's
+   * completion flag (arming the response watchdog) and re-arms the once-per-episode barge-in latch.
+   */
+  private ownerTurnEnded(): void {
+    if (this.terminal) return;
+    const now = this.clock.now();
+    if (this.holding || this.heldBytes > 0 || this.playbackUntil > now) return;
+    this.endTurnTranscripts();
+    this.emit({ type: 'modelTurnStarted' });
+    this.touch();
   }
 
   /** Receipt, no transcript text: how much audio still arrived after a barge-in, before the next episode. */
@@ -596,7 +655,29 @@ class Session implements LiveVoiceSession {
     const ms = this.postFlushMs;
     if (ms === undefined) return;
     this.postFlushMs = undefined;
-    console.error(JSON.stringify({ event: 'gptlive_post_flush_audio_ms', ms: Math.round(ms) }));
+    hostLogEvent({ event: 'gptlive_post_flush_audio_ms', ms: Math.round(ms) });
+  }
+
+  /**
+   * Audible silence, the end of SPEAKING: OUTPUT_SILENCE_MS of output quiet with the modelled playback drained.
+   * The synthesized turnComplete at TURN_IDLE_QUIET_MS stays the semantic end of the turn; the host turns this
+   * receipt into LISTENING, and new audio before the completion simply re-enters SPEAKING.
+   */
+  private armOutputSilence(): void {
+    if (this.outputSilence !== undefined) this.clock.clearTimer(this.outputSilence);
+    this.outputSilence = this.clock.setTimer(OUTPUT_SILENCE_MS, () => { this.outputSilence = undefined; this.reachOutputSilence(); });
+  }
+
+  private reachOutputSilence(): void {
+    if (this.terminal || !this.audioSinceCompletion || this.silenceSent) return;
+    const drain = Math.ceil(this.playbackUntil - this.clock.now());
+    if (drain > 0) {
+      this.outputSilence = this.clock.setTimer(drain, () => { this.outputSilence = undefined; this.reachOutputSilence(); });
+      return;
+    }
+    this.silenceSent = true;
+    this.emit({ type: 'waitingForInput', value: true });
+    this.touch();
   }
 
   /**
@@ -618,9 +699,12 @@ class Session implements LiveVoiceSession {
     const idleMs = Math.max(0, Math.round(this.clock.now() - this.lastForwardedAt));
     this.audioSinceCompletion = false;
     this.stretchOpen = false;
+    // The semantic end of the turn subsumes the audible-silence receipt: no listening flip after the completion.
+    this.silenceSent = true;
+    if (this.outputSilence !== undefined) { this.clock.clearTimer(this.outputSilence); this.outputSilence = undefined; }
     if (this.outputTranscriptOpen) { this.outputTranscriptOpen = false; this.emit({ type: 'outputTranscription', text: '', finished: true }); }
     if (this.emit({ type: 'turnComplete' })) { this.diagnostic.turnCompleteEvents += 1; this.diagnostic.generationCompleteEvents += 1; }
-    console.error(JSON.stringify({ event: 'gptlive_turn_complete', idleMs, drained: true }));
+    hostLogEvent({ event: 'gptlive_turn_complete', idleMs, drained: true });
     this.touch();
   }
 
@@ -706,8 +790,8 @@ class Session implements LiveVoiceSession {
       this.emit({ type: 'interrupted' });
     }
     const error = object(message.error) ? message.error : {};
-    console.error(JSON.stringify({ event: 'live_provider_error', type: typeof error.type === 'string' ? error.type : 'unknown',
-      code: typeof error.code === 'string' ? error.code : 'none' }));
+    hostLogEvent({ event: 'live_provider_error', type: typeof error.type === 'string' ? error.type : 'unknown',
+      code: typeof error.code === 'string' ? error.code : 'none' });
     this.touch();
   }
 

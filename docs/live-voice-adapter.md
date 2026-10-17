@@ -157,8 +157,23 @@ protocol has no input buffer commit, clear or output-audio-done frame: the serve
 taking (`server/adapters/live-voice/openai.ts`). The adapter therefore derives both
 boundaries itself, and never drops an output frame doing it.
 
-- No frame dropping. Every valid `session.output_audio.delta` of an open session is forwarded
-  at 24 kHz. An input transcript event can never silence future output audio.
+- No permanent frame dropping. Every valid `session.output_audio.delta` of an open session is
+  forwarded at 24 kHz, and an input transcript event can never silence future output audio. The
+  one exception is bounded and never latches: see "A cut answer does not replay" below.
+- Think time. `gpt-live-1` sends no generation-start event on a plain turn, so when an input
+  episode ends with no assistant audio playing or held the adapter synthesizes the pair the host
+  needs: the owner's input transcript finished and a `modelTurnStarted`. The host maps that to
+  THINKING unless she is already speaking, and it resets the turn's completion flag, which is
+  what arms the response watchdog, so every owner turn is watched rather than only the first.
+- Audible silence. When output deltas have been quiet for 500 ms (`OUTPUT_SILENCE_MS`) and the
+  modelled playback has drained, the adapter emits `waitingForInput` true: the host leaves
+  SPEAKING for LISTENING there instead of waiting out the 2000 ms synthesized `turnComplete`,
+  which stays the semantic end of the turn. New audio before that completion re-enters SPEAKING.
+- A cut answer does not replay. After a barge-in flush the frames of the answer the owner cut
+  keep arriving; they are dropped until the output stream shows a gap of 400 ms
+  (`POST_FLUSH_GAP_MS`) or 2500 ms have passed since the flush (`POST_FLUSH_DROP_LIMIT_MS`),
+  whichever comes first, and then forwarded again. The window is bounded, so it cannot latch,
+  and it reports `gptlive_post_flush_dropped_ms` {ms} once when it ends.
 - Barge-in. The adapter emits `interrupted`, once per input episode, only when assistant audio
   is queued or playing (the modelled playback queue below) and the assembled input transcript
   of that episode holds at least two words. An input episode ends after 700 ms with no

@@ -18,6 +18,9 @@ const RESEARCH_DRIVERS = ['selector', 'fallback', 'single-source-hint'];
 const RESEARCH_DISPOSITIONS = ['completed', 'skipped'];
 // The projected Live state enum, mirrored from LivePageProjection['state'].
 const LIVE_STATES = ['idle', 'listening', 'thinking', 'speaking', 'rebuilding', 'ended', 'error'];
+/** GL2-R1: why a projected state changed, a closed set, so host.log can say what moved the orb. */
+export const LIVE_STATE_CAUSES = ['created', 'input', 'model_turn_start', 'audio', 'silence', 'turn_complete', 'interrupted',
+  'tool', 'settle', 'rebuild', 'poll'] as const;
 const RESEARCH_WINDOW_KINDS = ['today', 'tomorrow', 'week', 'date'];
 /** K6: the layers a routed research call may name, in the model's own words. */
 const ROUTED_SOURCES = ['memory', 'knowledge', 'company', 'calendar', 'mail', 'chat', 'replies'];
@@ -30,6 +33,9 @@ const isSafeId = (value: unknown): value is string => typeof value === 'string' 
 const isSafeCount = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;
 const isSafeMember = (value: unknown, allowed: readonly string[]): value is string => typeof value === 'string' && allowed.includes(value);
 const isSafeMembers = (value: unknown, allowed: readonly string[]): value is string[] => Array.isArray(value) && value.length <= 16 && value.every(item => isSafeMember(item, allowed));
+/** A closed shape: exactly these keys, so no field a later caller adds can slip through the whitelist. */
+const closedKeys = (value: Record<string, unknown>, keys: readonly string[]): boolean =>
+  Object.keys(value).sort().join(',') === [...keys].sort().join(',');
 
 // Only the existing diagnostic schemas cross this boundary, never arbitrary console text.
 export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
@@ -310,12 +316,42 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'live_turn_script', liveSessionId: value.liveSessionId, script: value.script, latinChars: value.latinChars, devanagariChars: value.devanagariChars, afterTool: value.afterTool, interrupted: value.interrupted };
   }
   if (value.event === 'live_state') {
-    // F7: one closed-shape transition record per projected state change, so the orb timeline is
-    // reconstructable from host.log. Enums and an epoch millisecond only, never any turn content.
-    if (Object.keys(value).sort().join(',') !== ['event', 'state', 'at'].sort().join(',')) return;
-    if (!isSafeMember(value.state, LIVE_STATES)) return;
+    // F7/GL2-R1: one closed-shape transition record per projected state change, with the state it came from
+    // and the cause, so the orb timeline is reconstructable from host.log. Enums and an epoch millisecond
+    // only, never any turn content.
+    const hasFrom = Object.prototype.hasOwnProperty.call(value, 'from');
+    if (!closedKeys(value, [...(hasFrom ? ['event', 'state', 'from', 'cause', 'at'] : ['event', 'state', 'cause', 'at'])])) return;
+    if (!isSafeMember(value.state, LIVE_STATES) || !isSafeMember(value.cause, LIVE_STATE_CAUSES)) return;
+    if (hasFrom && !isSafeMember(value.from, LIVE_STATES)) return;
     if (!isSafeCount(value.at)) return;
-    return { event: 'live_state', state: value.state, at: value.at };
+    return { event: 'live_state', state: value.state, ...(hasFrom ? { from: value.from } : {}), cause: value.cause, at: value.at };
+  }
+  // GL2-R1: the adapter receipts are metadata only (names, counts and milliseconds), so they cross the same
+  // boundary as live_state instead of sitting on stderr where no log could prove them.
+  if (value.event === 'openai_instructions_size') {
+    if (!closedKeys(value, ['event', 'chars', 'bytes'])) return;
+    if (!isSafeCount(value.chars) || !isSafeCount(value.bytes)) return;
+    return { event: 'openai_instructions_size', chars: value.chars, bytes: value.bytes };
+  }
+  if (value.event === 'gptlive_flush') {
+    if (!closedKeys(value, ['event', 'words', 'queuedMs'])) return;
+    if (!isSafeCount(value.words) || !isSafeCount(value.queuedMs)) return;
+    return { event: 'gptlive_flush', words: value.words, queuedMs: value.queuedMs };
+  }
+  if (value.event === 'gptlive_turn_complete') {
+    if (!closedKeys(value, ['event', 'idleMs', 'drained'])) return;
+    if (!isSafeCount(value.idleMs) || value.drained !== true) return;
+    return { event: 'gptlive_turn_complete', idleMs: value.idleMs, drained: true };
+  }
+  if (value.event === 'gptlive_post_flush_audio_ms' || value.event === 'gptlive_post_flush_dropped_ms') {
+    if (!closedKeys(value, ['event', 'ms'])) return;
+    if (!isSafeCount(value.ms)) return;
+    return { event: value.event, ms: value.ms };
+  }
+  if (value.event === 'live_provider_error') {
+    if (!closedKeys(value, ['event', 'type', 'code'])) return;
+    if (!isSafeToken(value.type) || !isSafeToken(value.code)) return;
+    return { event: 'live_provider_error', type: value.type, code: value.code };
   }
   if (value.event === 'live_tool_turn') {
     // O1/F6: per-turn tool metrics, tool names, millisecond latency and per-endpoint peak concurrency only.

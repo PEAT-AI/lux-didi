@@ -51,6 +51,21 @@ import Foundation
         steady.modeChanged(reading(0, 1))
         check(!steady.liveStart(reading(0, 1), version: "3.0"), "standard to wide spectrum is not a change back")
 
+        // 6. The shown version survives a relaunch: a second process in the same version stays quiet (VI1-F1).
+        final class Store: @unchecked Sendable { var value: String? }
+        let store = Store()
+        var firstLaunch = MicModePrompt(shownVersion: { store.value }, setShownVersion: { store.value = $0 })
+        check(firstLaunch.liveStart(reading(0, 0), version: "3.0"), "the first launch asks")
+        check(store.value == "3.0", "the asked version is stored, so a relaunch can read it")
+        var relaunch = MicModePrompt(shownVersion: { store.value }, setShownVersion: { store.value = $0 })
+        check(!relaunch.liveStart(reading(0, 0), version: "3.0"), "a relaunch inside the same version stays quiet")
+        check(relaunch.liveStart(reading(0, 0), version: "3.1"), "a new version asks again after a relaunch")
+        relaunch.modeChanged(reading(2, 2))
+        relaunch.modeChanged(reading(0, 0))
+        check(store.value == nil, "a change back from Voice Isolation clears the stored version")
+        check(relaunch.liveStart(reading(0, 0), version: "3.1"), "so the same version may ask once more after a change back")
+        check(store.value == "3.1", "and the stored version follows")
+
         print(failures == 0 ? "NATIVE-MIC-MODE TESTS PASS" : "NATIVE-MIC-MODE TESTS FAILED \(failures)")
         exit(failures == 0 ? 0 : 1)
     }

@@ -200,10 +200,10 @@ try {
     await page.locator('#connected-consent').click(); await page.locator('#connected-draft:not([disabled])').waitFor();
     child.send('hold-next'); const sent = waitPhase('transport');
     await page.locator('#connected-draft').fill('Cancel this explicitly sent synthetic turn.'); await page.locator('#connected-send').click(); await sent;
-    await page.locator('#connected-cancel').click(); await page.waitForFunction(() => document.querySelector('#connected-run')?.textContent.includes('No saved answer: cancelled'));
+    await page.locator('#connected-cancel').click(); await page.waitForFunction(() => document.querySelector('#connected-run')?.textContent.includes('You cancelled this request. Ask again when ready. Content may have been sent before it stopped.'));
     assert.equal(await page.locator('#connected-entries .assistant').count(), 0);
     child.send('fail-next'); await page.locator('#connected-draft').fill('Show an honest controlled provider failure.'); await page.locator('#connected-send').click();
-    await page.waitForFunction(() => document.querySelector('#connected-run')?.textContent.includes('No saved answer: error'));
+    await page.waitForFunction(() => document.querySelector('#connected-run')?.textContent.includes('The model failed. Ask again.'));
     assert.equal(await page.locator('#connected-entries .assistant').count(), 0);
     await page.screenshot({ path: join(artifacts, `truthful-errors-${sha}.png`), fullPage: true });
   });

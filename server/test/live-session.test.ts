@@ -2970,7 +2970,10 @@ test('an owner turn that ends arms the watchdog, and the next turn arms it again
   await ownerTurnEnd('what is on my plate');
   assert.deepEqual(phases(), ['armed'], 'the ended owner turn owes a reply');
   fake.emit({ type: 'turnComplete' });
-  await ownerTurnEnd('and then what');
+  // The second turn arms through the synthesized generation start alone, which is the event the real adapter
+  // emits when a plain owner episode ends: that is what stops the watchdog going blind after the first turn.
+  fake.emit({ type: 'modelTurnStarted' });
+  for (let attempt = 0; attempt < 6; attempt += 1) await tick();
   assert.deepEqual(phases(), ['armed', 'armed'], 'the second turn is watched as well, so the watchdog is never blind');
   attachment.close();
 });

@@ -326,6 +326,15 @@ try {
     await page.evaluate(() => { const t = document.querySelector('.transcript'); t.scrollTop = 0; t.dispatchEvent(new Event('scroll')); });
     await page.waitForFunction(() => { const p = document.querySelector('#transcript-jump'); return p && !p.hidden; }, { timeout: 8000 });
     assert.equal((await page.locator('#transcript-jump').innerText()).trim(), 'Jump to latest');
+    // UI3B-R3: the pill never covers the newest line, in either lane: each list reserves the pill's own
+    // height plus 12 px at its end.
+    const pillGap = await page.evaluate(() => {
+      const pill = document.querySelector('#transcript-jump'), voice = document.querySelector('.transcript'), chat = document.querySelector('#connected-entries');
+      return { height: pill.offsetHeight, voice: parseFloat(getComputedStyle(voice).paddingBottom), chat: parseFloat(getComputedStyle(chat).paddingBottom) };
+    });
+    assert.equal(pillGap.height > 0, true, `the pill has a real height (${pillGap.height})`);
+    assert.equal(pillGap.voice, pillGap.height + 12, `the voice transcript reserves the pill plus 12 px (${pillGap.voice})`);
+    assert.equal(pillGap.chat, pillGap.height + 12, `the chat list reserves the pill plus 12 px (${pillGap.chat})`);
     await shoot('scrolled-back-to-live.png');
     const beforePoll = await page.evaluate(() => document.querySelector('.transcript').scrollTop);
     fixture.setLive(session('speaking', '2026-10-12T09:00:00Z', 4 + 2 * 22, [
@@ -350,6 +359,13 @@ try {
     assert.equal(await page.locator('.feed-empty').count(), 1, 'an idle terminal session shows the empty line alone');
     assert.equal(await page.locator('.live-turns .entry').count(), 0, 'no line of the finished session stays in the lane');
     assert.equal(await page.locator('#past-sessions').evaluate(el => el.open), false, 'the past-sessions panel starts closed');
+    // UI3B-R3: the header mark is the orb, a round teal sphere of the same size, never a letter.
+    assert.deepEqual(await page.evaluate(() => {
+      const mark = document.querySelector('.brand-mini .brand-orb');
+      if (!mark) return null;
+      const box = mark.getBoundingClientRect(), style = getComputedStyle(mark);
+      return { w: Math.round(box.width), h: Math.round(box.height), radius: style.borderRadius, gradient: style.backgroundImage.includes('radial-gradient'), text: mark.textContent };
+    }), { w: 22, h: 22, radius: '50%', gradient: true, text: '' }, 'the header badge is a 22 px round orb mark, not a letter');
     await page.locator('#past-sessions > summary').click();
     // The panel lists dated sessions; opening one is how the owner reads it.
     await page.locator('#past-sessions .feed-session > summary').first().click();

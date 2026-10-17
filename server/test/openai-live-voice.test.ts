@@ -1,10 +1,20 @@
 import assert from 'node:assert/strict';
+import type { TestContext } from 'node:test';
 import { describe, test } from 'node:test';
 import { LiveVoiceError, OpenAiLiveVoiceAdapter, OPENAI_DEFAULT_VOICE, OPENAI_DELIVERY_SECTION, OPENAI_LANGUAGE_SECTION, OPENAI_TOOLS_SECTION, openAiInstructions } from '../adapters/live-voice/index.js';
 import type { LiveVoiceAdapterOptions, LiveVoiceEvent } from '../adapters/live-voice/index.js';
 import { CANARY, collect, control, FakeClock, fixture, options, pcm16, ready, request } from './openai-live-voice-fixture.js';
+import { safeEvent } from '../host/log.js';
+import { attachHostLogSink } from '../tools/host-events.js';
 
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
+/** The adapter receipts as the host log receives them: the durable sink captures exactly the emitted record. */
+function hostReceipts(t: TestContext): () => Record<string, unknown>[] {
+  const captured: Record<string, unknown>[] = [];
+  const detach = attachHostLogSink({ event: raw => { captured.push(raw as Record<string, unknown>); } });
+  t.after(() => detach());
+  return () => captured;
+}
 async function until(predicate: () => boolean): Promise<void> {
   for (let attempt = 0; attempt < 50 && !predicate(); attempt += 1) await tick();
   assert.ok(predicate(), 'expected event did not arrive');
@@ -202,21 +212,18 @@ describe('openai gpt-live adapter', () => {
   });
 
   test('the session logs the final instruction size and never the instruction text', async t => {
-    const logged: string[] = [];
-    const original = console.error;
-    console.error = (...args: unknown[]) => { logged.push(args.map(String).join(' ')); };
-    try {
-      const f = await fixture(t);
-      const session = new OpenAiLiveVoiceAdapter(options({ socketFactory: f.socketFactory })).open(request(), control());
-      t.after(() => session.close());
-    } finally { console.error = original; }
-    const receipt = logged.map(text => { try { return JSON.parse(text) as Record<string, unknown>; } catch { return undefined; } })
-      .find(entry => entry !== undefined && entry['event'] === 'openai_instructions_size');
-    assert.ok(receipt, 'the session start logs openai_instructions_size');
+    const logged = hostReceipts(t);
+    const f = await fixture(t);
+    const session = new OpenAiLiveVoiceAdapter(options({ socketFactory: f.socketFactory })).open(request(), control());
+    t.after(() => session.close());
+    await until(() => logged().some(entry => entry['event'] === 'openai_instructions_size'));
+    const receipt = logged().find(entry => entry['event'] === 'openai_instructions_size');
+    assert.ok(receipt, 'the session start sends openai_instructions_size to the host log');
     const instructions = openAiInstructions('Synthetic persona');
     assert.equal(receipt['chars'], instructions.length);
     assert.equal(receipt['bytes'], Buffer.byteLength(instructions));
     assert.deepEqual(Object.keys(receipt).sort(), ['bytes', 'chars', 'event'], 'sizes only, never instruction text');
+    assert.ok(safeEvent(receipt), 'the host log whitelist accepts the exact receipt shape');
   });
 
   test('backchannels and a one-word stop never flush, and separate one-word episodes do not add up', async t => {
@@ -368,13 +375,9 @@ describe('openai gpt-live adapter', () => {
   });
 
   test('a whitespace-only fragment starts no input episode and postpones no receipt', async t => {
-    const logged: string[] = [];
-    const original = console.error;
-    console.error = (...args: unknown[]) => { logged.push(args.map(String).join(' ')); };
-    t.after(() => { console.error = original; });
+    const logged = hostReceipts(t);
     const clock = new FakeClock();
     const opened = await ready(t, { clock });
-    const receipts = () => logged.flatMap(text => { try { return [JSON.parse(text) as Record<string, unknown>]; } catch { return []; } });
     speak(opened.f);
     await until(() => audioOf(opened.captured).length === 1);
     opened.f.send({ type: 'session.input_transcript.delta', delta: 'hold on' });
@@ -385,7 +388,7 @@ describe('openai gpt-live adapter', () => {
     opened.f.send({ type: 'session.input_transcript.delta', delta: ' ' });
     await until(() => opened.captured.events.some(event => event.type === 'inputTranscription' && event.text === ' '));
     clock.advance(100);
-    await until(() => receipts().some(entry => entry['event'] === 'gptlive_post_flush_audio_ms'));
+    await until(() => logged().some(entry => entry['event'] === 'gptlive_post_flush_audio_ms'));
     assert.equal(interruptions(opened.captured), 1, 'the whitespace fragment adds no word and cannot flush');
     speak(opened.f);
     await until(() => audioOf(opened.captured).length === 2);
@@ -395,6 +398,32 @@ describe('openai gpt-live adapter', () => {
     assert.equal(interruptions(opened.captured), 1, 'one word after a whitespace fragment is still one word');
     opened.f.send({ type: 'session.input_transcript.delta', delta: ' on' });
     await until(() => interruptions(opened.captured) === 2);
+  });
+
+  test('every GPT-Live receipt lands in the host log, names and numbers only', async t => {
+    const logged = hostReceipts(t);
+    const clock = new FakeClock();
+    const opened = await ready(t, { clock });
+    speak(opened.f);
+    await until(() => audioOf(opened.captured).length === 1);
+    opened.f.send({ type: 'session.input_transcript.delta', delta: 'hold on' });
+    await until(() => interruptions(opened.captured) === 1);
+    clock.advance(700);
+    await until(() => logged().some(entry => entry['event'] === 'gptlive_post_flush_audio_ms'));
+    clock.advance(2_500);
+    speak(opened.f);
+    await until(() => audioOf(opened.captured).length === 2);
+    clock.advance(2_000);
+    await until(() => logged().some(entry => entry['event'] === 'gptlive_turn_complete'));
+    const names = logged().map(entry => entry['event']);
+    for (const name of ['openai_instructions_size', 'gptlive_flush', 'gptlive_post_flush_audio_ms', 'gptlive_turn_complete']) {
+      assert.ok(names.includes(name), `${name} reached the host log`);
+    }
+    for (const entry of logged()) {
+      assert.ok(safeEvent(entry), `${String(entry['event'])} is accepted by the host log whitelist`);
+      assert.deepEqual(Object.values(entry).filter(value => typeof value === 'string' && value.length > 0), [entry['event']],
+        'a receipt carries its event name and numbers, never turn text');
+    }
   });
 
   test('a closed session leaks no turn-taking timer or latch into the next one', async t => {
@@ -592,10 +621,7 @@ describe('openai gpt-live turn states', () => {
   });
 
   test('a continuous stream of a cut answer is dropped until the 2500 ms bound, then plays', async t => {
-    const lines: string[] = [];
-    t.mock.method(console, 'error', (...args: unknown[]) => {
-      if (typeof args[0] === 'string' && args[0].includes('gptlive_post_flush_dropped_ms')) lines.push(args[0]);
-    });
+    const logged = hostReceipts(t);
     const clock = new FakeClock();
     const opened = await ready(t, { clock });
     speak(opened.f, 96_000);
@@ -608,8 +634,10 @@ describe('openai gpt-live turn states', () => {
     clock.advance(600);
     sendAudio(opened.f, 7_200);
     await until(() => audioOf(opened.captured).length === before + 1);
-    assert.equal(lines.length, 1, 'one receipt for the dropped window');
-    assert.ok((JSON.parse(lines[0]!) as { ms: number }).ms >= 2_000, 'the bound is what ended the drop');
+    const dropped = logged().filter(entry => entry['event'] === 'gptlive_post_flush_dropped_ms');
+    assert.equal(dropped.length, 1, 'one receipt for the dropped window');
+    assert.ok((dropped[0]!['ms'] as number) >= 2_000, 'the bound is what ended the drop');
+    assert.ok(safeEvent(dropped[0]), 'the host log whitelist accepts the dropped-window receipt');
   });
 
   test('a cut answer that resumes after a 400 ms gap plays at once', async t => {

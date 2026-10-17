@@ -5,6 +5,7 @@ import type { JsonObject } from '../model/types.js';
 import type { DataClass, LiveSocketFactory, LiveToolCall, LiveToolResponse, LiveVoiceAdapterOptions, LiveVoiceCapabilities, LiveVoiceClock, LiveVoiceControl, LiveVoiceDiagnostics, LiveVoiceErrorCode, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession, LiveVoiceUpstreamDrop } from './types.js';
 import { LiveVoiceError, liveVoiceTimerDefaults } from './types.js';
 import { Pcm16Upsampler } from './resample.js';
+import { hostLogEvent } from '../../tools/host-events.js';
 
 /**
  * The GPT-Live adapter over the provider-neutral voice port.
@@ -194,7 +195,7 @@ export class OpenAiLiveVoiceAdapter implements LiveVoicePort {
     if (Buffer.byteLength(start) > settings.limits.maxOutgoingBytes
       || Buffer.byteLength(JSON.stringify({ instructions, input: seed.items, tools })) > settings.limits.maxRequestBytes) fail('outgoing_limit');
     // Receipt, metadata only: the size of the instructions exactly as sent, so a log proves nothing was cut.
-    console.error(JSON.stringify({ event: 'openai_instructions_size', chars: instructions.length, bytes: Buffer.byteLength(instructions) }));
+    hostLogEvent({ event: 'openai_instructions_size', chars: instructions.length, bytes: Buffer.byteLength(instructions) });
     if (!(control.signal instanceof AbortSignal) || !Number.isSafeInteger(control.deadlineMs)
       || control.deadlineMs <= 0 || control.deadlineMs - Date.now() > 2_147_483_647) fail('invalid_request');
     return new Session(settings, start, control.signal, control.deadlineMs, control.idleResetMs ?? settings.limits.idleMs);
@@ -509,7 +510,7 @@ class Session implements LiveVoiceSession {
     if (this.postFlushAt !== undefined) {
       if (now - this.postFlushAt >= POST_FLUSH_DROP_LIMIT_MS || gap >= POST_FLUSH_GAP_MS) {
         this.postFlushAt = undefined;
-        console.error(JSON.stringify({ event: 'gptlive_post_flush_dropped_ms', ms: Math.round(this.postFlushDroppedMs) }));
+        hostLogEvent({ event: 'gptlive_post_flush_dropped_ms', ms: Math.round(this.postFlushDroppedMs) });
         this.postFlushDroppedMs = 0;
       } else {
         this.postFlushDroppedMs += pcm.byteLength / OUTPUT_PCM_BYTES_PER_MS;
@@ -622,7 +623,7 @@ class Session implements LiveVoiceSession {
     this.postFlushDroppedMs = 0;
     this.silenceSent = false;
     if (this.outputSilence !== undefined) { this.clock.clearTimer(this.outputSilence); this.outputSilence = undefined; }
-    console.error(JSON.stringify({ event: 'gptlive_flush', words, queuedMs }));
+    hostLogEvent({ event: 'gptlive_flush', words, queuedMs });
     this.emit({ type: 'interrupted' });
   }
 
@@ -654,7 +655,7 @@ class Session implements LiveVoiceSession {
     const ms = this.postFlushMs;
     if (ms === undefined) return;
     this.postFlushMs = undefined;
-    console.error(JSON.stringify({ event: 'gptlive_post_flush_audio_ms', ms: Math.round(ms) }));
+    hostLogEvent({ event: 'gptlive_post_flush_audio_ms', ms: Math.round(ms) });
   }
 
   /**
@@ -703,7 +704,7 @@ class Session implements LiveVoiceSession {
     if (this.outputSilence !== undefined) { this.clock.clearTimer(this.outputSilence); this.outputSilence = undefined; }
     if (this.outputTranscriptOpen) { this.outputTranscriptOpen = false; this.emit({ type: 'outputTranscription', text: '', finished: true }); }
     if (this.emit({ type: 'turnComplete' })) { this.diagnostic.turnCompleteEvents += 1; this.diagnostic.generationCompleteEvents += 1; }
-    console.error(JSON.stringify({ event: 'gptlive_turn_complete', idleMs, drained: true }));
+    hostLogEvent({ event: 'gptlive_turn_complete', idleMs, drained: true });
     this.touch();
   }
 
@@ -789,8 +790,8 @@ class Session implements LiveVoiceSession {
       this.emit({ type: 'interrupted' });
     }
     const error = object(message.error) ? message.error : {};
-    console.error(JSON.stringify({ event: 'live_provider_error', type: typeof error.type === 'string' ? error.type : 'unknown',
-      code: typeof error.code === 'string' ? error.code : 'none' }));
+    hostLogEvent({ event: 'live_provider_error', type: typeof error.type === 'string' ? error.type : 'unknown',
+      code: typeof error.code === 'string' ? error.code : 'none' });
     this.touch();
   }
 

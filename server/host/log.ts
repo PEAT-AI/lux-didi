@@ -30,6 +30,9 @@ const isSafeId = (value: unknown): value is string => typeof value === 'string' 
 const isSafeCount = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;
 const isSafeMember = (value: unknown, allowed: readonly string[]): value is string => typeof value === 'string' && allowed.includes(value);
 const isSafeMembers = (value: unknown, allowed: readonly string[]): value is string[] => Array.isArray(value) && value.length <= 16 && value.every(item => isSafeMember(item, allowed));
+/** A closed shape: exactly these keys, so no field a later caller adds can slip through the whitelist. */
+const closedKeys = (value: Record<string, unknown>, keys: readonly string[]): boolean =>
+  Object.keys(value).sort().join(',') === [...keys].sort().join(',');
 
 // Only the existing diagnostic schemas cross this boundary, never arbitrary console text.
 export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
@@ -316,6 +319,33 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeMember(value.state, LIVE_STATES)) return;
     if (!isSafeCount(value.at)) return;
     return { event: 'live_state', state: value.state, at: value.at };
+  }
+  // GL2-R1: the adapter receipts are metadata only (names, counts and milliseconds), so they cross the same
+  // boundary as live_state instead of sitting on stderr where no log could prove them.
+  if (value.event === 'openai_instructions_size') {
+    if (!closedKeys(value, ['event', 'chars', 'bytes'])) return;
+    if (!isSafeCount(value.chars) || !isSafeCount(value.bytes)) return;
+    return { event: 'openai_instructions_size', chars: value.chars, bytes: value.bytes };
+  }
+  if (value.event === 'gptlive_flush') {
+    if (!closedKeys(value, ['event', 'words', 'queuedMs'])) return;
+    if (!isSafeCount(value.words) || !isSafeCount(value.queuedMs)) return;
+    return { event: 'gptlive_flush', words: value.words, queuedMs: value.queuedMs };
+  }
+  if (value.event === 'gptlive_turn_complete') {
+    if (!closedKeys(value, ['event', 'idleMs', 'drained'])) return;
+    if (!isSafeCount(value.idleMs) || value.drained !== true) return;
+    return { event: 'gptlive_turn_complete', idleMs: value.idleMs, drained: true };
+  }
+  if (value.event === 'gptlive_post_flush_audio_ms' || value.event === 'gptlive_post_flush_dropped_ms') {
+    if (!closedKeys(value, ['event', 'ms'])) return;
+    if (!isSafeCount(value.ms)) return;
+    return { event: value.event, ms: value.ms };
+  }
+  if (value.event === 'live_provider_error') {
+    if (!closedKeys(value, ['event', 'type', 'code'])) return;
+    if (!isSafeToken(value.type) || !isSafeToken(value.code)) return;
+    return { event: 'live_provider_error', type: value.type, code: value.code };
   }
   if (value.event === 'live_tool_turn') {
     // O1/F6: per-turn tool metrics, tool names, millisecond latency and per-endpoint peak concurrency only.

@@ -488,6 +488,7 @@ test('the earlier-conversations section sits right after # Memory and yields bef
     records: [{ id: 'fits', text: 'SYNTHETIC retained memory' }], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
     earlierConversations: 'E'.repeat(TRUSTED_SYSTEM_CODE_UNIT_LIMIT) });
   assert.equal(huge.earlierConversationsIncluded, false);
+  assert.equal(huge.sections.some(section => section.id === 'earlier-conversations'), false, 'a yielded section is not reported, so its logged size is zero');
   assert.ok(!huge.text.includes('EEEE'));
   assert.ok(huge.text.includes('SYNTHETIC retained memory'));
 });

@@ -1,7 +1,7 @@
 // Read-only presentation of the Interface 3 live projection (W-B provides the route).
 // Pure mapping and markup only: no scheduling, no network, no fabricated state.
 import { decodeEntities, escapeHtml, renderMarkdown, sourcesFooter, TRANSCRIPT_MARKDOWN } from './markdown.ts';
-import { toolConnector, toolPhrase, toolPhrases } from './tool-phrases.ts';
+import { stepPhrase, toolConnector, toolPhrase, toolPhrases } from './tool-phrases.ts';
 import type { VoiceState } from './orb.ts';
 import { levelPeak, playbackPeak } from './orb-level.ts';
 import type { LiveCurrent, LiveEntry, LiveJob, LiveSource, LiveState, LiveTool } from './protocol.ts';
@@ -84,6 +84,58 @@ export function liveActivity(live: LiveCurrent | undefined): LiveActivity | unde
   }
   if (live.state === 'thinking') return { kind: 'thinking', text: 'Thinking' };
   return undefined;
+}
+
+/** A tool step as the voice view shows it: one line per source, its own state, its own phrase. */
+export interface LiveStepLine { key: string; text: string; done: boolean; failed: boolean }
+
+/** The steps of the turn in flight, one line per source, in the order the sources started. An end
+ *  step replaces its own start line in place, so a poll can never show both. */
+export function liveStepLines(live: LiveCurrent | undefined): LiveStepLine[] {
+  const byId = new Map<string, LiveStepLine>();
+  for (const step of live?.steps ?? []) {
+    byId.set(step.stepId, {
+      key: step.stepId,
+      text: stepPhrase(step),
+      done: step.phase === 'end' && step.ok !== false,
+      failed: step.phase === 'end' && step.ok === false,
+    });
+  }
+  return [...byId.values()];
+}
+
+/** Whether the answer of the turn that owns these steps has started: the last entry of the turn that
+ *  is a tool call, a tool result or spoken text decides it. Sticky, so a poll that leaves `speaking`
+ *  never repaints the finished list at full opacity. */
+export function stepsAnswered(live: LiveCurrent | undefined): boolean {
+  const entries = live?.entries ?? [];
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index]!;
+    if (entry.kind === 'outputTranscription') { if (entry.text) return true; continue; }
+    if (entry.kind === 'toolCall' || entry.kind === 'toolResult') return false;
+  }
+  return false;
+}
+
+/** The step list dims once she has started answering and stays dimmed for the rest of that answer:
+ *  the owner hears the answer now, and the lines stay a few seconds only so the last look-up is
+ *  still readable. */
+export function stepsFading(live: LiveCurrent | undefined): boolean {
+  if (live === undefined || (live.steps ?? []).length === 0) return false;
+  return live.state === 'speaking' || stepsAnswered(live);
+}
+
+/** The compact live step list under the orb. Empty when nothing is running. */
+export function stepListMarkup(live: LiveCurrent | undefined): string {
+  const lines = liveStepLines(live);
+  if (!lines.length) return '';
+  const rows = lines.map(line => {
+    const mark = line.failed ? '&#33;' : line.done ? '&#10003;' : '&#183;';
+    const state = line.failed ? 'failed' : line.done ? 'done' : 'running';
+    return `<p class="step-line step-${state}" role="listitem"><span class="step-mark" aria-hidden="true">${mark}</span><span class="step-text">${escapeHtml(line.text)}</span></p>`;
+  }).join('');
+  const fading = stepsFading(live) ? ' feed-steps-out' : '';
+  return `<div class="feed-steps${fading}" data-seg="steps" role="list" aria-label="What Naya is looking at">${rows}</div>`;
 }
 
 /** The activity line under the orb. A slow pending call appends its elapsed
@@ -247,11 +299,14 @@ export function sessionDividerText(iso: string | number | null | undefined, now:
   return `${day}, ${time}`;
 }
 
-/** The live tool activity promoted to a feed row; it resolves in place once the tool answers. */
+/** The live tool activity promoted to a feed row; it resolves in place once the tool answers, and
+ *  carries the step list of the sources still running under it. */
 export function activityRowMarkup(live: LiveCurrent | undefined, elapsedMs = 0): string {
   const activity = liveActivity(live);
-  if (!activity || (activity.kind !== 'tools' && activity.kind !== 'thinking')) return '';
-  return `<div class="feed-activity" data-seg="activity">${activityMarkup(activity, elapsedMs)}</div>`;
+  const steps = stepListMarkup(live);
+  const line = activity && (activity.kind === 'tools' || activity.kind === 'thinking') ? activityMarkup(activity, elapsedMs) : '';
+  if (!line && !steps) return '';
+  return `<div class="feed-activity" data-seg="activity">${line}${steps}</div>`;
 }
 
 /** The first sentence of an answer, the headline of the keeper turn row (spec 2.2 item 1). */

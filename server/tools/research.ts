@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { JsonObject, ModelPort, ModelRequest } from '../adapters/model/types.js';
 import { INTERNAL, type IntentSubCall, type IntentSubResult } from './intent.js';
-import { hostLogEvent } from './host-events.js';
+import { hostLogEvent, liveToolStep, stepSubject, type LiveToolStepBody } from './host-events.js';
 
 /**
  * The one declared Live read tool (#241). The model may answer with no tool at all; when it looks
@@ -38,6 +38,12 @@ export const CANDIDATES: readonly Candidate[] = Object.freeze([
   { kind: 'stop_answer', source: null },
   { kind: 'stop_insufficient', source: null },
 ]);
+
+/** The voice view's action word per candidate: what the source is being asked to do. */
+const STEP_ACTION: Record<CandidateKind, string> = {
+  knowledge_search: 'search', calendar_window: 'read', mail_search: 'search', mail_open: 'read',
+  chat_search: 'search', chat_thread: 'read', brief: 'search', stop_answer: 'search', stop_insufficient: 'search',
+};
 
 /** Every constant of the loop lives in this one exported object, the calibration record's basis. */
 export const RESEARCH = Object.freeze({
@@ -550,11 +556,14 @@ export interface ResearchDeps {
   logJoined?: ((researchId: string) => void) | undefined;
   /** Metadata-only per-sub-call log; defaults to the host log sink. Never the query or result text. */
   logSubcall?: ((event: ResearchSubcallLog) => void) | undefined;
+  /** One live step per source as it starts and ends; defaults to the host event the Live owner
+   *  forwards to the voice view. Never a message body, never an id. */
+  step?: ((step: LiveToolStepBody) => void) | undefined;
   ledger: ResearchLedger;
   replyLimit?: number;
 }
 
-export interface ResearchCall { action: ResearchAction; question?: string; researchId?: string; sources?: string; direction?: string }
+export interface ResearchCall { action: ResearchAction; question?: string; researchId?: string; sources?: string; direction?: string; /** The model call this run answers, stamped by the Live owner so a step can name it. Never from model arguments. */ callId?: string }
 
 const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 const optionalString = (value: unknown): string | undefined => typeof value === 'string' && value.trim() ? value : undefined;
@@ -924,6 +933,8 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
   const now = () => deps.now();
   const configured = (deps.configuredNow ?? (() => deps.configured))();
   const logSubcall = deps.logSubcall ?? ((event: ResearchSubcallLog): void => hostLogEvent(event));
+  const publishStep = deps.step ?? liveToolStep;
+  const stepCallId = call.callId ?? '';
 
   if (call.action === 'stop') {
     const run = call.researchId ? deps.ledger.stop(call.researchId) : deps.ledger.last();
@@ -1103,6 +1114,23 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
         const subs = candidateSubs(kind, { question, configured, evidence: run.evidence, query: action?.query, window: action?.window, nowMs: now() });
         if (subs.length === 0) return;
         readStarted.add(kind);
+        // The voice view sees each source start now and end where its part is credited below. One
+        // step id per source of this read, so the end line replaces its own start line in place.
+        const stepIds = new Map<SourceKind, string>();
+        const stepOf = (source: SourceKind): string => {
+          const known = stepIds.get(source);
+          if (known !== undefined) return known;
+          const id = `${stepCallId}:${kind}:${source}:${stepIds.size}`;
+          stepIds.set(source, id);
+          return id;
+        };
+        const subjectOfRead = stepSubject({ query: action?.query, window: action?.window });
+        const named = sourceKindOf(kind);
+        const startSources = named !== null ? [named]
+          : [...new Set(subs.map(sub => sourceKindOfKindName(sub.name)).filter((source): source is SourceKind => source !== null))];
+        for (const source of startSources) {
+          publishStep({ callId: stepCallId, stepId: stepOf(source), source, action: STEP_ACTION[kind], ...(subjectOfRead !== undefined ? { subject: subjectOfRead } : {}), phase: 'start' });
+        }
         // A single source outliving its own deadline is cut, so one slow connector cannot spend the turn.
         const cut = new AbortController();
         const readSignal = AbortSignal.any([roundSignal, cut.signal, abandon.get(kind)!.signal]);
@@ -1162,6 +1190,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
           const block = shapeBlock(shapeKindOf(part.source, kind), part.results);
           run.ledger.set(parts.length === 1 ? key : `${key}#${part.source ?? index}`, { kind, source: part.source, summary: block.text, lines: block.lines, total: block.total });
           if (part.source === null) continue;
+          publishStep({ callId: stepCallId, stepId: stepOf(part.source), source: part.source, action: STEP_ACTION[kind], ...(subjectOfRead !== undefined ? { subject: subjectOfRead } : {}), phase: 'end', resultCount: block.total, ok: part.results.some(result => result.ok), ms: Math.max(0, now() - at) });
           if (part.results.some(result => result.ok && result.text.trim())) {
             run.sourcesDone.add(part.source); run.sourcesFailed.delete(part.source); run.emptySearches.delete(part.source);
           } else if (part.results.some(result => result.ok)) {

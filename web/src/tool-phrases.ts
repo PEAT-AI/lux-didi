@@ -54,6 +54,42 @@ function joinAnd(items: string[]): string {
   return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
 }
 
+/** One live tool step, as the voice view receives it: source and action, plus its subject. */
+export interface ToolStepView { source: string; action: string; subject?: string; phase: 'start' | 'end'; resultCount?: number; ok?: boolean }
+
+/** Every source a step can name: the object reads after a verb, the noun starts a result line. */
+const STEP_SOURCES: Record<string, ToolPhrase & { noun: string; counted: string }> = {
+  knowledge: { verb: 'Searching', object: 'your knowledge base', noun: 'Knowledge', counted: 'notes' },
+  mail: { verb: 'Searching', object: 'your mail', noun: 'Mail', counted: 'messages' },
+  calendar: { verb: 'Checking', object: 'your calendar', noun: 'Calendar', counted: 'events' },
+  chat: { verb: 'Searching', object: 'Mattermost', noun: 'Mattermost', counted: 'messages' },
+  mongoose: { verb: 'Searching', object: 'Mongoose', noun: 'Mongoose', counted: 'results' },
+  web: { verb: 'Searching', object: 'the web', noun: 'Web', counted: 'pages' },
+  memory: { verb: 'Saving', object: 'your memory', noun: 'Memory', counted: 'notes' },
+};
+
+/** The verb a step action reads as, keyed by the action the server published. */
+const STEP_ACTIONS: Record<string, string> = { search: 'Searching', read: 'Reading', list: 'Listing', save: 'Saving', use: 'Using' };
+
+function stepSource(source: string): ToolPhrase & { noun: string; counted: string } {
+  return STEP_SOURCES[source] ?? { verb: 'Using', object: source, noun: source.charAt(0).toUpperCase() + source.slice(1), counted: 'results' };
+}
+
+/** One step as one calm line: "Searching Mattermost: release freeze, last 7 days" while it runs,
+ *  then "Mattermost: 13 messages" once it answers, or why it did not. */
+export function stepPhrase(step: ToolStepView): string {
+  const named = stepSource(step.source);
+  if (step.phase === 'start') {
+    const verb = STEP_ACTIONS[step.action] ?? STEP_ACTIONS['use']!;
+    return `${verb} ${named.object}${step.subject ? `: ${step.subject}` : ''}`;
+  }
+  if (step.ok === false) return `${named.noun} did not answer`;
+  if (step.resultCount === undefined) return `${named.noun} answered`;
+  if (step.resultCount === 0) return `${named.noun}: nothing found`;
+  if (step.resultCount === 1) return `${named.noun}: 1 ${named.counted.replace(/s$/, '')}`;
+  return `${named.noun}: ${step.resultCount} ${named.counted}`;
+}
+
 /** Several calls in one batch as one line: shared verbs merge their objects. */
 export function toolPhrases(names: string[]): string {
   const groups: { verb: string; objects: string[] }[] = [];

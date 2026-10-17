@@ -15,6 +15,7 @@ import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, ResearchProgressView } from './types.js';
 import { publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, composeLiveSessionInstruction, connectorGroupNames, toolGroupNames } from '../prompt/index.js';
 import { hostLogEvent } from '../host/log.js';
+import { liveToolStep, stepSubject, type LiveToolStepBody } from '../tools/host-events.js';
 import { validateAcceptedPrompt } from './config.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type { DataClass, LiveVoiceDiagnostics, LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort, LiveVoiceSession, LiveVoiceRequest } from '../adapters/live-voice/index.js';
@@ -59,6 +60,28 @@ const JOB_EXPIRY_MS = 86_400_000;
 /** One intent sub-read deadline: a slow source never holds the whole turn past this. */
 const INTENT_SUB_DEADLINE_MS = 8_000;
 
+/** How many tool steps the voice view keeps for the turn: one line per source, no scrollback. */
+const LIVE_STEPS_MAX = 8;
+
+/** The source a direct tool reads, in the same vocabulary research uses, so one phrase table serves both. */
+const STEP_SOURCES: Record<string, string> = {
+  gmail: 'mail', gcal: 'calendar', mattermost: 'chat', mongoose: 'mongoose',
+  lux: 'knowledge', search: 'knowledge', get: 'knowledge', remember: 'memory', open: 'web', research: 'knowledge',
+};
+
+function stepSourceOf(name: string): string {
+  const prefix = name.split('_')[0] ?? name;
+  return STEP_SOURCES[prefix] ?? prefix;
+}
+
+/** The action word a direct tool asks its source for. */
+function stepActionOf(name: string): string {
+  const suffix = name.split('_').slice(1).join('_');
+  if (/search|list|find/.test(suffix)) return 'search';
+  if (/note|remember|save/.test(suffix)) return 'save';
+  return 'read';
+}
+
 interface ActiveSession {
   inputFinal?: boolean;
   inputAt?: number;
@@ -89,6 +112,10 @@ interface ActiveSession {
   registry: readonly ToolDefinition[];
   host: HostContext | undefined;
   toolStep: number;
+  /** The live tool steps of the turn in flight, oldest first; never journalled. */
+  liveSteps: LiveToolStepBody[];
+  /** How many items each call of this turn returned, so its end step counts items and not citations. */
+  liveStepItems: Map<string, number>;
   toolCalls: number;
   seenIds: Set<string>;
   thinking: boolean;
@@ -554,7 +581,8 @@ export class LiveSessionOwner {
         else if (kind === 'researchProgress') { const p = JSON.parse(String(item.text)) as ResearchProgressView; entries.push({ seq, kind, progress: { researchId: p.researchId, phase: p.phase, sourcesDone: p.sourcesDone, sourcesPending: p.sourcesPending, elapsedMs: p.elapsedMs } }); }
         else if (kind === 'interrupted' || kind === 'turnComplete' || kind === 'terminal') entries.push({ seq, kind });
       }
-      return { state, ...(pastSession ? { pastSession } : {}), since: Number(row.created_at), memory: memoryProjection(row['memory_provenance']), ...(jobs.length ? { jobs } : {}), entries, cursor: rows.length ? Number(rows[rows.length - 1]!.journal_id) : cursor };
+      const steps = handle !== undefined ? handle.liveSteps.map(step => ({ ...step })) : [];
+      return { state, ...(pastSession ? { pastSession } : {}), since: Number(row.created_at), memory: memoryProjection(row['memory_provenance']), ...(jobs.length ? { jobs } : {}), entries, ...(steps.length ? { steps } : {}), cursor: rows.length ? Number(rows[rows.length - 1]!.journal_id) : cursor };
     });
     this.#observeState(page.state);
     return page;
@@ -756,7 +784,7 @@ export class LiveSessionOwner {
       sessionTimer: undefined, callTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()),
       researchLedger: new ResearchLedger(),
-      registry, host, toolStep: 0, toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
+      registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
       consumerState: 'attached', journalEvents: 0, journalBytes: 0, adapterOutcome: undefined,
@@ -1209,6 +1237,7 @@ export class LiveSessionOwner {
           handle.toolCalls += event.calls.length;
           handle.turnAfterTool = true;
           for (const call of event.calls) { handle.pendingCallIds.add(call.id); handle.pendingCalls.set(call.id, call.name); if (!handle.callStartedAt.has(call.id)) handle.callStartedAt.set(call.id, this.#now()); }
+          this.#openSteps(handle, event.calls);
           void this.#toolBatch(handle, event, generation).catch(() => {
             if (this.#settled(handle) || generation !== handle.generation) return;
             const responses = event.calls.filter(call => handle.pendingCallIds.has(call.id)).map(call => ({ id: call.id, name: call.name, response: { error: 'tool_processing_failed' } }));
@@ -1246,7 +1275,13 @@ export class LiveSessionOwner {
         }
         // generationComplete alone does not end SPEAKING: the orb holds it until the turn completes
         // and playback drains (F2).
-        if (event.type === 'turnComplete') { handle.speaking = false; handle.turnCompleteSeen = true; handle.thinking = handle.pendingCallIds.size > 0; logTurnScript(handle); }
+        if (event.type === 'turnComplete') {
+          handle.speaking = false; handle.turnCompleteSeen = true; handle.thinking = handle.pendingCallIds.size > 0;
+          // The answer is done, so the turn's step lines retire here: a later question that reads nothing
+          // must not show the previous turn's sources as if they were running (review finding F2).
+          if (handle.pendingCallIds.size === 0) handle.liveSteps = [];
+          logTurnScript(handle);
+        }
         if (event.type === 'waitingForInput') { handle.thinking = !event.value; if (event.value) handle.speaking = false; }
         if (event.type === 'audio') {
           handle.thinking = false; handle.speaking = true; handle.lastModelAudioAt = this.#now();
@@ -1414,6 +1449,8 @@ export class LiveSessionOwner {
         }
       },
       log: entry => hostLogEvent(entry), logJoined: researchId => hostLogEvent({ event: 'research_joined', researchId }), ledger: handle.researchLedger,
+      // U-k3: each source's read opens and closes one line in the voice view while it runs.
+      step: step => { if (this.#settled(handle) || generation !== handle.generation) return; this.#recordStep(handle, step); },
     });
     const responses: { id: string; name: string; response: JsonObject }[] = [];
     const projections: LiveToolProjection[] = [];
@@ -1422,7 +1459,7 @@ export class LiveSessionOwner {
       let response: JsonObject;
       try {
         if (!validateResearch(call.args)) throw Error('invalid_research_arguments');
-        response = await scheduler.call(call.args as unknown as ResearchCall, handle.abort.signal);
+        response = await scheduler.call({ ...(call.args as object), callId: call.id } as ResearchCall, handle.abort.signal);
       } catch (error) { response = { error: error instanceof Error ? error.message : 'research_failed' }; }
       return { id: call.id, name: call.name, response };
     }));
@@ -1434,6 +1471,29 @@ export class LiveSessionOwner {
       projections.push({ name: entry.name, status, markdown: `research: ${status}`, sources: [] });
     }
     return { responses, projections };
+  }
+
+  /** A fresh turn of tool work: the step list restarts and every direct call opens its own line.
+   *  A `research` call opens one line per source from inside the run instead. */
+  #openSteps(handle: ActiveSession, calls: readonly { id: string; name: string; args: JsonObject }[]): void {
+    handle.liveSteps = [];
+    handle.liveStepItems = new Map();
+    for (const call of calls) {
+      if (call.name === RESEARCH_TOOL_NAME) continue;
+      const subject = stepSubject(call.args);
+      const step = { callId: call.id, stepId: `${call.id}:0`, source: stepSourceOf(call.name), action: stepActionOf(call.name), ...(subject !== undefined ? { subject } : {}), phase: 'start' as const };
+      liveToolStep(step);
+      this.#recordStep(handle, step);
+    }
+  }
+
+  /** Keep one line per step: an end step replaces its own start line in place. */
+  #recordStep(handle: ActiveSession, step: LiveToolStepBody): void {
+    if (this.#settled(handle)) return;
+    const index = handle.liveSteps.findIndex(entry => entry.stepId === step.stepId);
+    if (index >= 0) { handle.liveSteps[index] = step; return; }
+    handle.liveSteps.push(step);
+    while (handle.liveSteps.length > LIVE_STEPS_MAX) handle.liveSteps.shift();
   }
 
   async #toolBatch(handle: ActiveSession, event: Extract<LiveVoiceEvent, { type: 'toolCall' }>, generation: number): Promise<void> {
@@ -1553,6 +1613,8 @@ export class LiveSessionOwner {
           const digest = unit.plan.combine(subResults);
           const ok = subResults.some(result => result.ok);
           projections[index] = { name: call.name, status: ok ? 'completed' : 'error', markdown: noEmptyResult(digest.text), sources: [] };
+          // The count the voice view shows is the items the source returned, never the citation count.
+          if (ok && digest.itemCount !== undefined) handle.liveStepItems.set(call.id, digest.itemCount);
           return { id: call.id, name: call.name, response: ok ? intentResponse(digest, unit.intent) : { error: reason } };
         }
         const accepted = batch?.accepted.find(result => result.binding.callId === call.id && result.binding.name === call.name);
@@ -1585,6 +1647,19 @@ export class LiveSessionOwner {
     for (const [index, projection] of projections.entries()) {
       const id = event.calls[index]!.id;
       if (handle.pendingCallIds.has(id)) publish('toolResult', handle.bargeInCallIds.has(id) ? { ...projection, code: 'after_barge_in' } : projection);
+      const call = event.calls[index]!;
+      if (call.name === RESEARCH_TOOL_NAME) continue;
+      const started = handle.callStartedAt.get(call.id);
+      // The count the source's own shape carried, never `sources.length`: those are citations, and a
+      // capped source undercounted against them (review finding F5). A shape with no item count stays
+      // uncounted rather than guessed, and the line reads "<source> answered".
+      const items = handle.liveStepItems.get(call.id);
+      this.#recordStep(handle, {
+        callId: call.id, stepId: `${call.id}:0`, source: stepSourceOf(call.name), action: stepActionOf(call.name),
+        phase: 'end', ok: projection.status === 'completed',
+        ...(items !== undefined ? { resultCount: items } : {}),
+        ...(started !== undefined ? { ms: Math.max(0, this.#now() - started) } : {}),
+      });
     }
     responses = responses.filter(response => handle.pendingCallIds.has(response.id));
     if (!(this.#settled(handle) || generation !== handle.generation)) {

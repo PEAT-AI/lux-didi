@@ -297,10 +297,13 @@ export function micModePromptMarkup(prompt: boolean): string {
  * reload (a reload never shows the line). Undefined for every other message, so a caller can pass them all.
  */
 export function micModeState(message: unknown): { preferred: string; active: string; prompt: boolean } | undefined {
-  const envelope = message as { type?: unknown; micMode?: { preferred?: unknown; active?: unknown; prompt?: unknown } } | undefined;
+  const envelope = message as {
+    type?: unknown; preferred?: unknown; active?: unknown; prompt?: unknown;
+    micMode?: { preferred?: unknown; active?: unknown; prompt?: unknown } | null;
+  } | undefined;
   if (!envelope || typeof envelope !== 'object') return undefined;
-  if (envelope.type !== 'micMode' && envelope.type !== 'hydrate') return undefined;
-  const mode = envelope.micMode;
+  // A change carries the names on the message itself; hydrate nests them and never prompts.
+  const mode = envelope.type === 'micMode' ? envelope : envelope.type === 'hydrate' ? envelope.micMode : undefined;
   if (!mode || typeof mode !== 'object') return undefined;
   const preferred = typeof mode.preferred === 'string' ? mode.preferred : 'unknown';
   const active = typeof mode.active === 'string' ? mode.active : 'unknown';

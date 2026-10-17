@@ -280,3 +280,23 @@ test('the answer body carries the same inner inset as the evidence rows', () => 
   assert.ok(evidence, 'the evidence rows keep their inner inset');
   assert.equal(rule[1], '.25rem', 'the answer body uses the evidence rows inset token');
 });
+
+test('the capture warning follows the write question, not the failure alone', async () => {
+  const ConnectedView = await loadView();
+  const writeEvidence: ToolEvidence[] = [{ name: 'mattermost_post', markdown: '', sources: [] }];
+  const api = installTurnApi({
+    r1: { conversation: conversationOf('run-5'), entries: [ownerSays], run: runOf('5', { outcome: 'error', mayHaveBeenSent: true }) },
+    w1: { conversation: conversationOf('run-6'), entries: [ownerSays], run: runOf('6', { outcome: 'error', mayHaveBeenSent: true, toolEvidence: writeEvidence }) },
+  });
+  try {
+    const view = new ConnectedView(() => {});
+    await view.refresh('owner');
+    // A read-only failed run asked whether it was sent: the answer is no, so the copy stays detached.
+    await view.select('r1');
+    assert.match(api.panel.innerHTML, /The model failed\. Ask again\./);
+    assert.doesNotMatch(api.panel.innerHTML, /Content may have been sent/, 'a read-only run never claims a capture');
+    // The same failure after a write action does carry it.
+    await view.select('w1');
+    assert.match(api.panel.innerHTML, /The model failed\. Ask again\. Content may have been sent before it stopped\./);
+  } finally { api.release(); api.restore(); }
+});

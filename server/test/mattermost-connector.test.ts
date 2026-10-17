@@ -12,6 +12,7 @@ import { MemoryResultStore } from '../adapters/mcp/store.js';
 import type { EndpointConfig, McpPort } from '../adapters/mcp/port.js';
 import { createMattermostReader, MATTERMOST_AUTH_NEEDED, MATTERMOST_TOOLS, parseChannelList, resolveChannelReference } from '../connectors/index.js';
 import { mattermostToolStatus, projectMattermostResult } from '../tools/mattermost.js';
+import { mongooseFailureStage } from '../connectors/mongoose.js';
 import { ResearchLedger, runResearch, type ResearchDeps } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 
@@ -210,4 +211,30 @@ test('the research chat thread read uses the argument name the child declares, s
   assert.ok(dispatched.includes('mattermost_get_thread'), 'the thread follow-up runs');
   const findings = reply['findings'] as { text?: string }[];
   assert.ok(JSON.stringify(findings).includes('Standup at ten'), 'the thread body reaches the answer, never an empty failure');
+});
+
+// #351: the connector's own process fails before the MCP handshake (a missing build, a moved
+// binary, a crashed child), so the host must name the cause instead of "unknown".
+test('a connector that cannot start reports a typed spawn reason and the child exit code', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-mattermost-'));
+  const registry = new McpRegistry();
+  registry.register({ ...config('mattermost', 'ok', dir), args: [join(dir, 'missing-connector.cjs')] });
+  registry.enable('mattermost'); registry.allowEgress('mattermost');
+  const adapter = createMcpAdapter({ registry, store: new MemoryResultStore() });
+  t.after(async () => { await adapter.close(); rmSync(dir, { recursive: true, force: true }); });
+  const started = Date.now();
+  const result = await adapter.discover('mattermost');
+  const elapsed = Date.now() - started;
+  assert.equal(result.state, 'unavailable');
+  if (result.state !== 'unavailable') throw new Error('not unavailable');
+  assert.equal(result.reason, 'connector-unavailable', 'the reason names a connector that never started');
+  assert.equal(result.exception?.code, 'child_exited', 'the child exited before the handshake');
+  assert.ok(elapsed < 2000, `a dead connector fails fast, took ${elapsed} ms`);
+});
+
+// #351: a connector that exited before its handshake is stable for the whole host start, so the
+// host logs one typed reason and never spends the bounded retry on it.
+test('a dead connector classifies as a spawn failure, so its discovery is never retried', () => {
+  assert.equal(mongooseFailureStage('connector-unavailable', 'child_exited'), 'spawn');
+  assert.notEqual(mongooseFailureStage('connector-unavailable', 'child_exited'), 'first_call');
 });

@@ -17,6 +17,12 @@ export interface McpAdapterOptions {
 /** Concurrent dispatched calls allowed per endpoint; callers beyond it queue in arrival order. */
 const DEFAULT_MAX_CONCURRENT_CALLS = 6;
 class PolicyError extends Error { constructor(readonly reason: string) { super(reason); } }
+/**
+ * #351: a stdio connector closed its pipe before the handshake finished, so it never started. The cause
+ * is local and stable (a missing build, a moved binary, a crashed child), never a transient read failure,
+ * so it carries its own reason and the child-exit code the host log already speaks.
+ */
+class ConnectorStartFailure extends Error { constructor(readonly code: 'child_exited' | 'pipe_closed', readonly className: string) { super('connector-unavailable'); } }
 interface ChildExit { readonly exitCode: number | null; readonly signalCode: string | null; readonly pid?: number; readonly stdout?: { once(event: string, listener: () => void): unknown } | null; kill(signal?: NodeJS.Signals): boolean }
 /** The child may ignore the MCP close; after the bounded close it is SIGKILLed so the host can exit. */
 function killChild(child: ChildExit | undefined): void {
@@ -302,7 +308,16 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
       transport = new StreamableHTTPClientTransport(new URL(config.url), { fetch: guardedFetch(session, options, budgets, () => suspend(config.id)), redirectPolicy: 'follow', reconnectionOptions: { maxRetries: 0, initialReconnectionDelay: 1000, maxReconnectionDelay: 1000, reconnectionDelayGrowFactor: 1 } });
     }
     sessions.set(config.id, session);
-    await bounded(client.connect(transport, { timeout: budgets.timeoutMs }), AbortSignal.timeout(budgets.timeoutMs));
+    try { await bounded(client.connect(transport, { timeout: budgets.timeoutMs }), AbortSignal.timeout(budgets.timeoutMs)); }
+    catch (error) {
+      // A stdio child that closes before the handshake never started, so name that cause instead of
+      // letting it surface as an anonymous discovery failure.
+      if (isStdioEndpoint(config) && error instanceof SdkError && error.code === SdkErrorCode.ConnectionClosed) {
+        const exited = session.child !== undefined && (session.child.exitCode !== null || session.child.signalCode !== null);
+        throw new ConnectorStartFailure(exited ? 'child_exited' : 'pipe_closed', error.constructor.name);
+      }
+      throw error;
+    }
     if (isStdioEndpoint(config)) captureChild(transport);
     // Observe the SDK transport's parsed messages, then forward unchanged. A local
     // decode/validation ProtocolError is not proof of an explicit remote rejection.
@@ -359,6 +374,7 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
         if (sessions.has(endpointId)) { suspend(endpointId); await retire(endpointId); }
         const className = error instanceof Error && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(error.constructor.name) ? error.constructor.name : 'Unknown';
         const localCodes = ['discovery-invalidated', 'source-egress-not-approved', 'invalid-endpoint-config', 'unknown-endpoint'];
+        if (error instanceof ConnectorStartFailure) return { state: 'unavailable', reason: 'connector-unavailable', exception: { class: error.className, code: error.code } };
         const code = error instanceof PolicyError ? error.reason
           : error instanceof Error && error.constructor === Error && localCodes.includes(error.message) ? error.message : 'unknown';
         return { state: 'unavailable', reason: error instanceof PolicyError ? error.reason : 'discovery-unavailable', exception: { class: className, code } };
@@ -389,7 +405,7 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort {
         if (session?.dead) { await retire(request.endpointId); session = undefined; }
         if (!session || creating.has(request.endpointId)) {
           try { session = await sessionForSingle(config); }
-          catch { return { state: 'refused', reason: 'discovery-required' }; }
+          catch (error) { return { state: 'refused', reason: error instanceof ConnectorStartFailure ? 'connector-unavailable' : 'discovery-required' }; }
         }
         // The SDK assigns the JSON-RPC id synchronously, so the map keys every concurrent call apart.
         const operation: Operation = { scope, signal: localSignal, timeoutMs, dispatched: false };

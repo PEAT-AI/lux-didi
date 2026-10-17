@@ -9,7 +9,7 @@ if [[ ! -f "$deps/typescript/bin/tsc" || ! -d "$deps/@types/node" || ! -d "$deps
 fi
 out="$(mktemp -d "${TMPDIR:-/tmp}/didi-google.XXXXXX")"
 trap 'rm -rf "$out"' EXIT
-mkdir -p "$out/source/"{tools,contracts,runtime,connectors,test,config,host,adapters/model,adapters/mcp}
+mkdir -p "$out/source/"{tools,contracts,runtime,connectors,test,config,host,adapters/model,adapters/mcp,adapters/live-voice}
 cp "$root"/server/tools/*.ts "$out/source/tools/"
 cp "$root"/server/contracts/{storage,errors}.ts "$out/source/contracts/"
 cp "$root/server/runtime/store.ts" "$out/source/runtime/"
@@ -17,6 +17,8 @@ cp "$root/server/runtime/outbox.ts" "$out/source/runtime/"
 cp "$root"/server/connectors/*.ts "$out/source/connectors/"
 cp "$root"/server/adapters/model/*.ts "$out/source/adapters/model/"
 cp "$root"/server/adapters/mcp/*.ts "$out/source/adapters/mcp/"
+# server/tools imports the Live provider union type: copy its declaration module too.
+cp "$root/server/adapters/live-voice/types.ts" "$out/source/adapters/live-voice/"
 cp "$root"/server/config/{mcp,files}.ts "$out/source/config/"
 cp "$root/server/host/mcp.ts" "$out/source/host/"
 cp "$root/server/test/google-connector.test.ts" "$out/source/test/"

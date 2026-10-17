@@ -9,13 +9,15 @@ if [[ ! -f "$deps/typescript/bin/tsc" || ! -d "$deps/@types/node" || ! -d "$deps
 fi
 out="$(mktemp -d "${TMPDIR:-/tmp}/didi-mcp-config.XXXXXX")"
 trap 'rm -rf "$out"' EXIT
-mkdir -p "$out/source/"{tools,contracts,runtime,connectors,test,config,host,adapters/model,adapters/mcp}
+mkdir -p "$out/source/"{tools,contracts,runtime,connectors,test,config,host,adapters/model,adapters/mcp,adapters/live-voice}
 cp "$root"/server/tools/*.ts "$out/source/tools/"
 cp "$root"/server/contracts/{storage,errors}.ts "$out/source/contracts/"
 cp "$root/server/runtime/store.ts" "$out/source/runtime/"
 cp "$root"/server/connectors/*.ts "$out/source/connectors/"
 cp "$root"/server/adapters/model/*.ts "$out/source/adapters/model/"
 cp "$root"/server/adapters/mcp/*.ts "$out/source/adapters/mcp/"
+# server/tools imports the Live provider union type: copy its declaration module too.
+cp "$root/server/adapters/live-voice/types.ts" "$out/source/adapters/live-voice/"
 cp "$root/server/config/files.ts" "$out/source/config/"
 # Red baseline may not have the new implementation yet; dynamic imports fail observably.
 inputs=("$out/source/test/mcp-config.test.ts")

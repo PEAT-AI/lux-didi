@@ -441,15 +441,9 @@ test('an empty-but-successful read is a search that matched nothing, never an un
 });
 
 test('an identical duplicate read in one run is executed once', async () => {
-  let round = 0;
-  const selector: ResearchSelector = { select: async () => {
-    round += 1;
-    return round === 1
-      ? { questionClass: 'cross_source' as const, actions: [{ kind: 'brief' as const }], pUseful: { brief: 0.9 } }
-      : { questionClass: 'cross_source' as const, actions: [{ kind: 'mail_search' as const, query: 'newer_than:2d' }], pUseful: { mail_search: 0.9 } };
-  } };
-  const h = harness({ selector, executeText: '' });
-  await runResearch(h.deps, { action: 'start', question: 'anything new' }, new AbortController().signal);
+  const twice = selectorOf({ questionClass: 'quick_fact', actions: [{ kind: 'mail_search', query: 'newer_than:2d' }, { kind: 'mail_search', query: 'newer_than:2d' }], pUseful: { mail_search: 0.9 } });
+  const h = harness({ selector: twice, executeText: '' });
+  await runResearch(h.deps, { action: 'start', question: 'anything new in the mail' }, new AbortController().signal);
   const mailReads = h.executed.filter(call => call.name === 'gmail_list');
   assert.equal(mailReads.length, 1, 'the same mail read is issued once');
 });

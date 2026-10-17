@@ -417,6 +417,10 @@ export interface RunState {
   startedAt: number; deadlineMs: number; rounds: number; maxRounds: number; ops: number;
   cancelled: boolean; ended: boolean; stopped: boolean; ledger: Map<string, LedgerEntry>;
   evidence: Map<CandidateKind, string>; readKinds: Set<CandidateKind>; sourcesDone: Set<SourceKind>; sourcesFailed: Set<SourceKind>;
+  /** Read signatures already issued this run, so an identical duplicate read is never executed twice. */
+  calls: Set<string>;
+  /** Per source, the query shape a search that matched nothing used, for a line the model can voice. */
+  emptySearches: Map<SourceKind, string>;
 }
 
 /** Session-local in-memory ledger. Nothing here is persisted or logged beyond its metadata. */
@@ -433,6 +437,7 @@ export class ResearchLedger {
       startedAt: input.now, deadlineMs: input.deadlineMs, rounds: 0, maxRounds: input.maxRounds, ops: 0,
       cancelled: false, ended: false, stopped: false,
       ledger: new Map(), evidence: new Map(), readKinds: new Set(), sourcesDone: new Set(), sourcesFailed: new Set(),
+      calls: new Set(), emptySearches: new Map(),
     };
     this.#runs.set(researchId, run);
     this.#activeId = researchId;
@@ -449,6 +454,7 @@ export class ResearchLedger {
       startedAt: input.now, deadlineMs: input.deadlineMs, maxRounds: input.maxRounds,
       rounds: 0, cancelled: false, ended: false, stopped: false,
       ledger: new Map(existing.ledger), evidence: new Map(existing.evidence), readKinds: new Set(existing.readKinds), sourcesDone: new Set(existing.sourcesDone), sourcesFailed: new Set(existing.sourcesFailed),
+      calls: new Set(existing.calls), emptySearches: new Map(existing.emptySearches),
     };
     this.#runs.set(researchId, run);
     this.#activeId = researchId;
@@ -610,6 +616,30 @@ function hintedSources(hint: unknown, configured: readonly SourceKind[]): Source
 
 function sourceKindOf(kind: CandidateKind): SourceKind | null {
   return CANDIDATES.find(candidate => candidate.kind === kind)?.source ?? null;
+}
+
+/** The sources one candidate's results belong to, one group per source: `brief` fans out over several. */
+function creditableSources(kind: CandidateKind, results: readonly IntentSubResult[]): { source: SourceKind | null; results: IntentSubResult[] }[] {
+  const own = sourceKindOf(kind);
+  if (own !== null) return [{ source: own, results: [...results] }];
+  const named = [...new Set(results.map(result => sourceKindOfKindName(result.name)))];
+  return named.map(source => ({ source, results: results.filter(result => sourceKindOfKindName(result.name) === source) }));
+}
+
+/** One read's identity: the same tool with the same arguments is the same read for this run. */
+function callSignature(call: IntentSubCall): string {
+  return `${call.name}:${JSON.stringify(call.args)}`;
+}
+
+/**
+ * The query shape a search that matched nothing used, for the line the model voices. Words only:
+ * provider operators and argument keys are dropped, and matched content is never carried here.
+ */
+function queryShapeOf(subs: readonly IntentSubCall[]): string {
+  const raw = subs[0]?.args['query'] ?? subs[0]?.args['q'] ?? subs[0]?.args['window'];
+  if (typeof raw !== 'string' || !raw.trim()) return '';
+  const words = raw.replace(/\b[\w-]+:[\w"/.-]+/gu, ' ').replace(/\b[\w-]+_[\w-]+\b/gu, ' ').replace(/\s+/gu, ' ').trim();
+  return words ? ` for "${clip(words, 60)}"` : ' with a keyword filter';
 }
 
 const OMITTED_NOTE = /^\[omitted:/u;
@@ -828,8 +858,13 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   // so an outage is never hidden behind a narrow answer. `knowledge` leads the findings.
   groups.sort((a, b) => SOURCE_ORDER.indexOf(a.source) - SOURCE_ORDER.indexOf(b.source));
   const unreachable = SOURCE_LABELS.filter(([source]) => run.sourcesFailed.has(source)).map(([, label]) => label);
-  const note = unreachable.length === 0 ? undefined
-    : `I could not reach ${unreachable.length === 1 ? unreachable[0]! : `${unreachable.slice(0, -1).join(', ')} and ${unreachable[unreachable.length - 1]!}`} right now.`;
+  const searchedNothing = SOURCE_LABELS.filter(([source]) => run.emptySearches.has(source) && !run.sourcesFailed.has(source))
+    .map(([source, label]) => `I searched your ${label}${run.emptySearches.get(source) ?? ''} and found nothing matching.`);
+  const clauses = [
+    ...(unreachable.length === 0 ? [] : [`I could not reach ${unreachable.length === 1 ? unreachable[0]! : `${unreachable.slice(0, -1).join(', ')} and ${unreachable[unreachable.length - 1]!}`} right now.`]),
+    ...searchedNothing,
+  ];
+  const note = clauses.length === 0 ? undefined : clauses.join(' ');
   let dropped = 0;
   const render = (): { findings: ReplyFinding[]; reply: JsonObject } => {
     const findings: ReplyFinding[] = groups.filter(group => group.lines.length > 0)
@@ -958,7 +993,8 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
     if (run.ledger.size === 0 && question) run.questionClass = selection.questionClass;
     run.questionClass = selection.questionClass;
 
-    const chosen = selection.actions.map(action => action.kind).filter(kind => candidatesForSelector.includes(kind));
+    // One round reads each candidate once: a selector that repeats an action is deduplicated here.
+    const chosen = [...new Set(selection.actions.map(action => action.kind).filter(kind => candidatesForSelector.includes(kind)))];
     // Outcome 5: the pre-started knowledge read is included even when the selector did not pick it,
     // so the prime source is always read once and its findings can rank first.
     if (knowledgePromise !== undefined && !knowledgeConsumed && !chosen.includes('knowledge_search') && candidatesForSelector.includes('knowledge_search')) chosen.push('knowledge_search');
@@ -984,6 +1020,11 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
         const action = selection.actions.find(entry => entry.kind === kind);
         const subs = candidateSubs(kind, { question, configured, evidence: run.evidence, query: action?.query, window: action?.window, nowMs: now() });
         if (subs.length === 0) return;
+        // Identical duplicate reads are deduplicated: a read this run already issued is reused, never
+        // sent twice, so the connector is asked one question once.
+        const issued = subs.filter(call => !run.calls.has(callSignature(call)));
+        if (issued.length === 0) return;
+        for (const call of issued) run.calls.add(callSignature(call));
         const consumeKnowledge = kind === 'knowledge_search' && knowledgePromise !== undefined && !knowledgeConsumed;
         const at = consumeKnowledge ? knowledgeStartedAt : now();
         // Q1-R3(e): one retry for a transient failed sub-call, inside the round deadline.
@@ -999,7 +1040,7 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
           }
           return out;
         };
-        const results: IntentSubResult[] = consumeKnowledge ? (knowledgeConsumed = true, await knowledgePromise!) : await executeWithRetry(subs);
+        const results: IntentSubResult[] = consumeKnowledge ? (knowledgeConsumed = true, await knowledgePromise!) : await executeWithRetry(issued);
         // Host-side second hops inside the same run: hydrate the top knowledge hits, open the top
         // mails when the question asks what a mail says, and fetch the thread of the top chat hit.
         const second: IntentSubCall[] = [];
@@ -1016,29 +1057,37 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
           const id = extractId('chat_search', primaryText);
           if (id) second.push({ key: 'ct', name: 'mattermost_get_thread', args: { postId: id } });
         }
-        if (second.length) {
-          const extra = await executeWithRetry(second);
+        const freshSecond = second.filter(call => !run.calls.has(callSignature(call)));
+        for (const call of freshSecond) run.calls.add(callSignature(call));
+        if (freshSecond.length) {
+          const extra = await executeWithRetry(freshSecond);
           results.push(...extra);
         }
         latencies.set(kind, now() - at);
-        const source = sourceKindOf(kind);
-        const block = shapeBlock(kind, results);
         const key = `${kind}:${subs.map(sub => JSON.stringify(sub.args)).join(',')}`;
-        run.ledger.set(key, { kind, source, summary: block.text, lines: block.lines, total: block.total });
+        // Outcome 2: the read is credited per source. `brief` fans out over several sources, so each
+        // one is credited and delivered on its own instead of the whole batch going uncredited.
+        const parts = creditableSources(kind, results);
+        for (const [index, part] of parts.entries()) {
+          const block = shapeBlock(kind, part.results);
+          run.ledger.set(parts.length === 1 ? key : `${key}#${part.source ?? index}`, { kind, source: part.source, summary: block.text, lines: block.lines, total: block.total });
+          if (part.source === null) continue;
+          if (part.results.some(result => result.ok && result.text.trim())) {
+            run.sourcesDone.add(part.source); run.sourcesFailed.delete(part.source); run.emptySearches.delete(part.source);
+          } else if (part.results.some(result => result.ok)) {
+            // The connector answered and matched nothing: that is a search, not an outage.
+            run.sourcesDone.add(part.source); run.sourcesFailed.delete(part.source);
+            run.emptySearches.set(part.source, queryShapeOf(subs));
+          } else if (!run.sourcesDone.has(part.source)) run.sourcesFailed.add(part.source);
+        }
+        // A source that answered counts as read, so an empty result is never re-offered as pending.
+        if (results.some(result => result.ok)) run.readKinds.add(kind);
         const id = extractId(kind, results.filter(result => result.ok).map(result => result.text).join('\n'));
         if (id) run.evidence.set(kind, id);
-        // Outcome 2: a source counts as done only when at least one of its reads succeeded; a refused
-        // or failed read marks it failed so the reply can report it unreachable.
-        const succeeded = results.some(result => result.ok && result.text.trim());
-        if (succeeded) run.readKinds.add(kind);
-        if (source) {
-          if (succeeded) { run.sourcesDone.add(source); run.sourcesFailed.delete(source); }
-          else if (!run.sourcesDone.has(source)) run.sourcesFailed.add(source);
-        }
         const queryAuthor: 'selector' | 'fallback' = usedFallbackThisRound ? 'fallback' : 'selector';
         // Log the primary sub-calls and the host-side second hops (hydrate/open/thread) together:
-        // `results` is `[...primary, ...second]`, so position is the stable key.
-        for (const [index, sub] of [...subs, ...second].entries()) {
+        // `results` is `[...issued, ...freshSecond]`, so position is the stable key.
+        for (const [index, sub] of [...issued, ...freshSecond].entries()) {
           const result = results[index];
           const raw = sub.args['query'] ?? sub.args['q'];
           const calText = result?.text ?? '';

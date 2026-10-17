@@ -51,9 +51,11 @@ try {
   for (const part of ['orb', 'glow']) {
     const b = geometry[part];
     assert.ok(b.left >= geometry.stage.left - 0.5 && b.right <= geometry.stage.right + 0.5 &&
-      b.top >= geometry.stage.top - 0.5 && b.bottom <= geometry.stage.bottom + 0.5, `${part} must fit inside the panel`);
+      b.top >= geometry.stage.top - 0.5 && b.bottom <= geometry.stage.bottom + 0.5,
+      `${part} must fit inside the panel: ${JSON.stringify({ part: b, stage: geometry.stage })}`);
   }
-  assert.ok(geometry.caption.top >= geometry.orb.bottom - 0.5, 'the caption sits below the orb');
+  assert.ok(geometry.caption.top >= geometry.orb.bottom - 0.5,
+    `the caption sits below the orb: ${JSON.stringify({ caption: geometry.caption, orb: geometry.orb })}`);
   assert.ok(geometry.caption.bottom <= geometry.stage.bottom + 0.5 && geometry.caption.left >= geometry.stage.left - 0.5 &&
     geometry.caption.right <= geometry.stage.right + 0.5, 'the caption stays inside the panel');
   assert.ok(Math.abs(geometry.orb.left - geometry.stage.left - (geometry.stage.right - geometry.orb.right)) < 1,

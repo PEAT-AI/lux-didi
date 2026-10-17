@@ -455,8 +455,10 @@ html,body{height:100%;overflow:hidden}
 html.mini{background:transparent}
 html.mini body{background:transparent;overflow:hidden}
 html.mini .mini-stage{position:relative;display:block;width:300px;height:300px;min-height:300px;max-width:none;border:none;border-radius:28px;margin:0;background:radial-gradient(circle at 50% 40%,#242a33 0,#161b21 58%,#0d1014 100%);overflow:hidden}
-html.mini .mini-stage .presence-glow{top:132px;left:50%;transform:translate(-50%,-50%);width:240px;height:240px}
-html.mini .mini-stage canvas{position:absolute;left:50%;top:132px;width:240px;height:240px;transform:translate(-50%,-50%);display:block}
+html.mini .mini-stage .presence-glow{top:132px;left:50%;transform:translate(-50%,-50%);width:240px;height:240px;margin:0}
+/* margin:0 overrides the full-window rule's -48px margins, which would push the
+   orb above the panel (UI3A-R8). */
+html.mini .mini-stage canvas{position:absolute;left:50%;top:132px;width:240px;height:240px;margin:0;transform:translate(-50%,-50%);display:block}
 html.mini .mini-stage .orb-caption{position:absolute;left:50%;bottom:12px;transform:translateX(-50%);width:276px;max-width:276px;margin:0;padding:0 12px;box-sizing:border-box}
 html.mini .mini-stage .orb-label{font-size:1.05rem;color:#f1ede2}
 html.mini .mini-stage .voice-honesty{font-size:.68rem;color:#b8c0c7}

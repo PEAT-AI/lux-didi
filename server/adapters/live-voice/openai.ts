@@ -492,9 +492,10 @@ class Session implements LiveVoiceSession {
 
   private inputTranscript(message: ObjectValue): void {
     if (typeof message.delta !== 'string') fail('protocol_error');
-    // Empty and whitespace-only deltas carry no word: they start no episode, take no word and never flush.
-    if (!message.delta.trim().length) return;
-    this.noteInput(message.delta);
+    if (!message.delta.length) return;
+    // Review F1: a whitespace-only fragment is still journaled below, but it carries no word, so it starts no
+    // episode, takes no word and never touches the barge-in latch.
+    if (message.delta.trim().length) this.noteInput(message.delta);
     this.userTranscriptOpen = true;
     this.diagnostic.inputTranscriptionEvents += 1;
     this.diagnostic.inputTranscriptionCharacters += message.delta.length;

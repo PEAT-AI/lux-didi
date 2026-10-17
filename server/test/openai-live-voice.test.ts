@@ -158,6 +158,13 @@ describe('openai gpt-live adapter', () => {
     opened.f.send({ type: 'session.input_transcript.delta', delta: 'mm' });
     // Empty and whitespace-only deltas carry no word: they start no episode and never flush either (GL1-R1).
     for (const delta of ['', '   ', '\n\t ']) opened.f.send({ type: 'session.input_transcript.delta', delta });
+    await until(() => opened.captured.events.some(event => event.type === 'inputTranscription' && event.text === '\n\t '));
+    const journaled = opened.captured.events.flatMap(event => (event.type === 'inputTranscription' ? [event.text] : []));
+    assert.deepEqual(journaled, ['mm', '   ', '\n\t '], 'a whitespace-only fragment is journaled, an empty one is not');
+    // It carries no word either: one word after a separator is still one word, so nothing flushes.
+    opened.f.send({ type: 'session.input_transcript.delta', delta: 'hold' });
+    await quiet();
+    assert.equal(interruptions(opened.captured), 0, 'a whitespace fragment leaves one word one word');
     for (let index = 0; index < 30; index += 1) speak(opened.f, 2_400);
     await until(() => audioOf(opened.captured).length === 31);
     assert.equal(audioBytes(opened.captured), (240 + 30 * 2_400) * 2, 'every valid output delta is forwarded');

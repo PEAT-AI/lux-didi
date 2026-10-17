@@ -1027,8 +1027,9 @@ test('OC1: an open action is a native_action control frame and its ack is the to
   assert.equal(action.target, 'https://example.test/notes/plan');
 
   ws.send(JSON.stringify({ type: 'native_action_result', id: action.id, ok: true, code: 'opened' }));
-  await waitFor(() => h.f.frames.some(frame => 'toolResponse' in frame));
-  const response = JSON.stringify(h.f.frames.filter(frame => 'toolResponse' in frame).at(-1));
+  const toolResponses = () => (h.f.frames as Record<string, unknown>[]).filter(frame => 'toolResponse' in frame);
+  await waitFor(() => toolResponses().length > 0);
+  const response = JSON.stringify(toolResponses().at(-1));
   assert.match(response, /"opened"/, 'the ack code reaches the model as the tool result');
 
   // A duplicate ack settles nothing and leaves the session usable for the next action.

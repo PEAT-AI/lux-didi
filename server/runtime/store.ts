@@ -101,6 +101,9 @@ export class Store {
         for (const sql of runtimeSchema) this.#db.exec(sql);
         this.applyMigrations(migrations);
         this.#db.prepare("UPDATE runtime_outbox SET state='unknown', claim_token=NULL, lease_until=NULL WHERE state='claimed'").run();
+        // Data hygiene at host start: a settled Live job row past its expiry is a delivered result from an
+        // older run, and nothing reads it again. Purging it here keeps old feed text out of every surface.
+        this.#db.prepare("DELETE FROM runtime_outbox WHERE entity_id LIKE 'live-job:%' AND state<>'pending' AND state<>'claimed' AND expires_at<=?").run(Date.now());
         for (const key of ['authorityEpoch', 'assistantId']) this.#db.prepare('INSERT OR IGNORE INTO runtime_meta VALUES (?,?)').run(key, randomUUID());
         this.authorityEpoch = String(this.#db.prepare('SELECT value FROM runtime_meta WHERE key=?').get('authorityEpoch')!.value);
         this.assistantId = String(this.#db.prepare('SELECT value FROM runtime_meta WHERE key=?').get('assistantId')!.value);

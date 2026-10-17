@@ -18,7 +18,7 @@ import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { createToolsOwner, toolsMigrations } from '../tools/index.js';
 import { declarationsFor, runToolCalls } from '../tools/declarations.js';
 import { shapeGcalCalendars, shapeGcalList, shapeGmailList } from '../tools/live-shape.js';
-import { LiveToolJobs, type ToolJobResult, type JobTimer } from '../tools/jobs.js';
+import { LiveToolJobs, type ToolJob, type ToolJobResult, type JobTimer } from '../tools/jobs.js';
 import type { LiveAuthority } from '../tools/types.js';
 import { liveProfileIdentity } from '../live/config.js';
 import type { ToolDefinition, HostContext } from '../adapters/model/types.js';
@@ -42,7 +42,7 @@ import { createDomainPort } from '../domain/facade.js';
 import { Outbox } from '../runtime/outbox.js';
 import { Store } from '../runtime/store.js';
 import type { Transaction } from '../contracts/storage.js';
-import { createLiveSessionOwner, LiveConfigError, LiveError, liveMigrations, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
+import { createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, control, deferred, fixture, options, pcm } from './live-voice-fixture.js';
 import { fakeLiveVoicePort } from './fixtures/fake-live-voice.js';
 import { CONNECTOR_DESCRIPTORS, MATTERMOST_TOOLS } from '../connectors/index.js';
@@ -702,9 +702,49 @@ test('durable tool jobs defer without replay and retain completed or failed outc
   store.close();
   store = new Store(dir, migrations);
   jobs = new LiveToolJobs(store, () => NOW);
-  assert.equal(jobs.pending().filter(job => job.state === 'unknown').length, 1);
-  assert.equal(jobs.pending().filter(job => job.state === 'completed').length, 1);
+  // These fixture rows are dated by the synthetic clock, so their one day outbox expiry is long past:
+  // host start purges them as stale data (UI3b), and nothing is replayed from them either.
+  assert.deepEqual(jobs.pending(), []);
   assert.equal(executions, 2, 'reopening never replays a dispatched tool');
+});
+
+test('the feed projects only the current session jobs and never a delivered row past its expiry', () => {
+  const job = (id: string, createdAt: number, originSessionId: string, extra: Partial<ToolJob> = {}): ToolJob => ({
+    id, originSessionId, state: 'completed', createdAt, delivered: false, deferred: true,
+    host: { runId: id } as ToolJob['host'], authority: { runId: id } as ToolJob['authority'], ...extra,
+  });
+  const jobs = [
+    job('here', NOW, 'session-now'),                                                       // this session, undelivered
+    job('picked-up', NOW - 5_000, 'session-old', { deliverySessionId: 'session-now' }),     // picked up by this session
+    job('elsewhere', NOW, 'session-old'),                                                  // another session
+    job('delivered-now', NOW, 'session-now', { delivered: true }),                          // delivered inside the day
+    job('delivered-old', NOW - 2 * 86_400_000, 'session-now', { delivered: true }),         // delivered and expired
+  ];
+  assert.deepEqual(feedJobs(jobs, 'session-now', NOW).map(row => row.id), ['here', 'picked-up', 'delivered-now']);
+  assert.deepEqual(feedJobs(jobs, 'session-old', NOW).map(row => row.id), ['elsewhere']);
+});
+
+test('host start purges settled job rows past their expiry and keeps the live ones', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-outbox-purge-'));
+  const migrations = createDomainPort({ outbox: Outbox }).migrations;
+  const now = Date.now();
+  let store = new Store(dir, migrations);
+  store.transaction(tx => {
+    const rows: [string, string, number][] = [
+      ['stale', 'acknowledged', now - 2 * 86_400_000],
+      ['unknown-old', 'unknown', now - 86_400_001],
+      ['fresh', 'unknown', now + 86_400_000],
+      ['waiting', 'pending', now - 86_400_000],
+    ];
+    for (const [id, state, expires] of rows) {
+      tx.run("INSERT INTO runtime_outbox(id,entity_id,entity_revision,authority_epoch,required_grant,payload,source_timezone,due_at,expires_at,state) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        [id, `live-job:${id}`, 1, store.authorityEpoch, 'live-tool-job', '{}', 'UTC', expires - 86_400_000, expires, state]);
+    }
+  });
+  store.close();
+  store = new Store(dir, migrations);
+  t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
+  assert.deepEqual(store.transaction(tx => tx.all('SELECT id FROM runtime_outbox ORDER BY id')).map(row => String(row.id)), ['fresh', 'waiting']);
 });
 
 test('expired job leases become unknown without replay or accepting late completion', async t => {

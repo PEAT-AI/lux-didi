@@ -314,7 +314,7 @@ try {
     assert.match(await page.locator('.live-turns').innerText(), /standup at 2/, 'the streaming answer extended in place');
     await shoot('call-result-card.png');
 
-    // Scroll up: "Back to live" appears, and a background poll never yanks the reader back.
+    // Scroll up: "Jump to latest" appears, and a background poll never yanks the reader back.
     fixture.setLive(session('speaking', '2026-10-12T09:00:00Z', 4 + 2 * 20, [
       { seq: 1, kind: 'inputTranscription', text: 'what is on my calendar' },
       { seq: 2, kind: 'outputTranscription', text: 'You have a review at 10.' },
@@ -325,7 +325,16 @@ try {
     await page.waitForTimeout(600);
     await page.evaluate(() => { const t = document.querySelector('.transcript'); t.scrollTop = 0; t.dispatchEvent(new Event('scroll')); });
     await page.waitForFunction(() => { const p = document.querySelector('#transcript-jump'); return p && !p.hidden; }, { timeout: 8000 });
-    assert.equal((await page.locator('#transcript-jump').innerText()).trim(), 'Back to live');
+    assert.equal((await page.locator('#transcript-jump').innerText()).trim(), 'Jump to latest');
+    // UI3B-R3: the pill never covers the newest line, in either lane: each list reserves the pill's own
+    // height plus 12 px at its end.
+    const pillGap = await page.evaluate(() => {
+      const pill = document.querySelector('#transcript-jump'), voice = document.querySelector('.transcript'), chat = document.querySelector('#connected-entries');
+      return { height: pill.offsetHeight, voice: parseFloat(getComputedStyle(voice).paddingBottom), chat: parseFloat(getComputedStyle(chat).paddingBottom) };
+    });
+    assert.equal(pillGap.height > 0, true, `the pill has a real height (${pillGap.height})`);
+    assert.equal(pillGap.voice, pillGap.height + 12, `the voice transcript reserves the pill plus 12 px (${pillGap.voice})`);
+    assert.equal(pillGap.chat, pillGap.height + 12, `the chat list reserves the pill plus 12 px (${pillGap.chat})`);
     await shoot('scrolled-back-to-live.png');
     const beforePoll = await page.evaluate(() => document.querySelector('.transcript').scrollTop);
     fixture.setLive(session('speaking', '2026-10-12T09:00:00Z', 4 + 2 * 22, [
@@ -337,7 +346,7 @@ try {
     await page.waitForTimeout(1500);
     const afterPoll = await page.evaluate(() => document.querySelector('.transcript').scrollTop);
     assert.ok(Math.abs(afterPoll - beforePoll) <= 2, `a background poll must not re-pin the reader (${beforePoll} -> ${afterPoll})`);
-    assert.ok(!(await page.locator('#transcript-jump').isHidden()), 'the reader still has Back to live after the poll');
+    assert.ok(!(await page.locator('#transcript-jump').isHidden()), 'the reader still has Jump to latest after the poll');
 
     // A finished session collapses under its dated divider, not as the live feed.
     fixture.setLive(session('ended', '2026-10-12T09:00:00Z', 4, [
@@ -345,9 +354,39 @@ try {
       { seq: 2, kind: 'outputTranscription', text: 'You have a review at 10.' },
       { seq: 3, kind: 'turnComplete' },
     ], { pastSession: { outcome: 'closed', endedAt: '2026-10-12T09:05:00Z', lastObservedAt: '2026-10-12T09:05:00Z' } }));
-    await page.waitForSelector('.feed-session', { timeout: 12000 });
-    assert.equal(await page.locator('.feed-empty').count(), 1, 'an idle terminal session shows the empty line above its divider');
+    // UI3b (UI3B-R1): the finished session leaves the lane blank and waits in the closed panel.
+    await page.waitForSelector('#past-sessions', { timeout: 12000 });
+    assert.equal(await page.locator('.feed-empty').count(), 1, 'an idle terminal session shows the empty line alone');
+    assert.equal(await page.locator('.live-turns .entry').count(), 0, 'no line of the finished session stays in the lane');
+    assert.equal(await page.locator('#past-sessions').evaluate(el => el.open), false, 'the past-sessions panel starts closed');
+    // UI3B-R3: the header mark is the orb, a round teal sphere of the same size, never a letter.
+    assert.deepEqual(await page.evaluate(() => {
+      const mark = document.querySelector('.brand-mini .brand-orb');
+      if (!mark) return null;
+      const box = mark.getBoundingClientRect(), style = getComputedStyle(mark);
+      return { w: Math.round(box.width), h: Math.round(box.height), radius: style.borderRadius, gradient: style.backgroundImage.includes('radial-gradient'), text: mark.textContent };
+    }), { w: 22, h: 22, radius: '50%', gradient: true, text: '' }, 'the header badge is a 22 px round orb mark, not a letter');
+    await page.locator('#past-sessions > summary').click();
+    // The panel lists dated sessions; opening one is how the owner reads it.
+    await page.locator('#past-sessions .feed-session > summary').first().click();
+    await page.waitForSelector('#past-sessions .feed-session .entry', { timeout: 8000 });
     await shoot('session-collapsed.png');
+    // UI3b B1: a poll that rewrites the panel must not close the session the owner opened.
+    fixture.setLive(session('thinking', '2026-10-12T11:00:00Z', 2, [
+      { seq: 1, kind: 'inputTranscription', text: 'and tomorrow' },
+      { seq: 2, kind: 'turnComplete' },
+    ], { pastSession: { outcome: 'closed', endedAt: '2026-10-12T11:05:00Z', lastObservedAt: '2026-10-12T11:05:00Z' } }));
+    await page.waitForFunction(() => document.querySelectorAll('#past-sessions .feed-session').length >= 2, { timeout: 8000 });
+    assert.equal(await page.locator('#past-sessions').evaluate(el => el.open), true, 'the panel stays open after the first poll');
+    assert.equal(await page.locator('#past-sessions .feed-session').first().evaluate(el => el.open), true, 'an opened past session survives the first poll repaint');
+    // A second poll rewrites the same list again; the opened row must still be open.
+    fixture.setLive(session('thinking', '2026-10-12T12:00:00Z', 2, [
+      { seq: 1, kind: 'inputTranscription', text: 'and the day after' },
+      { seq: 2, kind: 'turnComplete' },
+    ], { pastSession: { outcome: 'closed', endedAt: '2026-10-12T12:05:00Z', lastObservedAt: '2026-10-12T12:05:00Z' } }));
+    await page.waitForFunction(() => document.querySelectorAll('#past-sessions .feed-session').length >= 3, { timeout: 8000 });
+    assert.equal(await page.locator('#past-sessions').evaluate(el => el.open), true, 'the panel stays open after the second poll');
+    assert.equal(await page.locator('#past-sessions .feed-session').first().evaluate(el => el.open), true, 'an opened past session survives the second poll repaint');
 
     // Reduced motion: the calm animation is off.
     await page.emulateMedia({ reducedMotion: 'reduce' });

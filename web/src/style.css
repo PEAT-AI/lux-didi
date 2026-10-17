@@ -357,6 +357,14 @@ html,body{height:100%;overflow:hidden}
 .feed-session-headline{color:var(--text);font-size:13px}
 .feed-session-count{color:var(--muted)}
 .feed-session-body{display:flex;flex-direction:column;gap:16px;opacity:.72}
+/* The past-sessions panel: one collapsed line under the feed, closed on every open and every session. */
+.feed-sessions{margin-top:4px;border-top:1px solid var(--border);padding-top:10px}
+.feed-sessions>summary{list-style:none;cursor:pointer;color:var(--muted);font-size:12px}
+.feed-sessions>summary::-webkit-details-marker{display:none}
+.feed-sessions>summary::marker{content:""}
+.feed-sessions>summary:hover{color:var(--text)}
+.feed-session-list{display:flex;flex-direction:column;gap:16px;padding-top:12px;opacity:.72}
+.live-job-gist{color:var(--muted);margin-left:8px}
 .feed-activity{align-self:flex-start;max-width:100%}
 .feed-notices{display:flex;flex-direction:column;gap:8px;max-width:min(var(--feed-measure),100%);margin:0 auto}
 .feed-jobs{display:flex;flex-direction:column;gap:16px;max-width:min(var(--feed-measure),100%);margin:0 auto;padding-top:16px}
@@ -375,6 +383,8 @@ html,body{height:100%;overflow:hidden}
 /* The jump pill: centred above the bottom edge, only while the reader is away from the newest line. */
 .jump-pill{position:sticky;bottom:12px;left:50%;transform:translateX(-50%);display:block;width:max-content;margin:0 auto;padding:6px 14px;border:1px solid var(--border);border-radius:999px;background:var(--surface-2);color:var(--text);font-size:12px;cursor:pointer;box-shadow:0 8px 20px var(--shadow);z-index:5}
 .jump-pill[hidden]{display:none}
+/* The header mark is the orb itself, not a letter: a 22 px round teal sphere (UI3B-R3). */
+.brand-orb{width:22px;height:22px;flex:none;border-radius:50%;background:radial-gradient(circle at 36% 32%,var(--teal),var(--accent) 58%,var(--accent-soft) 100%);box-shadow:0 0 12px var(--accent-soft)}
 @keyframes entry-rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 .entry-new{animation:entry-rise 160ms ease-out}
 @media(prefers-reduced-motion:reduce){.entry-new{animation:none}}
@@ -479,3 +489,9 @@ html.mini .mini-stage canvas[data-state=IDLE],html.mini .mini-stage canvas[data-
 .mini-mode{margin-left:2px;padding:3px 9px;border:1px solid var(--border);border-radius:999px;background:var(--surface-2);color:var(--text-secondary);font:inherit;font-size:12px;line-height:1.4;letter-spacing:.02em;cursor:pointer}
 .mini-mode:hover{background:var(--surface-3);color:var(--text)}
 .mini-mode:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+#connected-panel .connected-disclosure{width:100%;max-width:760px;margin:12px auto 0;padding:0 24px;box-sizing:border-box;font-size:12px;line-height:1.5;color:var(--muted)}
+
+/* The pill floats over the end of a scrolled list (a 44 px box), so each list reserves the pill's own height
+   plus 12 px at its end: the newest line is never under it, in the voice lane and the chat lane alike. */
+.transcript{padding-bottom:56px}
+#connected-entries{padding-bottom:56px}

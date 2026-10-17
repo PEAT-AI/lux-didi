@@ -13,7 +13,7 @@ import { join, resolve } from 'node:path';
 
 const { chromium } = createRequire(new URL('../package.json', import.meta.url))('playwright');
 const root = resolve(import.meta.dirname, '../..');
-const out = '/Users/rob/.lux/reports/lux-didi-stability-1015/v3-shots';
+const out = '/Users/rob/.lux/reports/lux-didi-stability-1015/ui3b-shots';
 await mkdir(out, { recursive: true });
 const state = await mkdtemp(join(tmpdir(), 'v3-shots-'));
 let child, descriptor, stderr = '';
@@ -235,6 +235,14 @@ try {
 
   let table = await sample('1440x900-dark-a-idle');
   idleStageTop = table.stageTop;
+  // UI3b item 5, shot 1: an app start with no session at all is a blank voice view under the orb.
+  await page.screenshot({ path: join(out, 'idle-fresh.png') });
+  shots.push('idle-fresh');
+  assert.deepEqual(await page.evaluate(() => ({
+    entries: document.querySelectorAll('.transcript .entry').length,
+    placeholder: !!document.querySelector('.transcript .transcript-placeholder'),
+    pastSessions: !!document.querySelector('#past-sessions'),
+  })), { entries: 0, placeholder: true, pastSessions: false }, 'idle-fresh is a blank voice view');
   assert.equal(table.labels, 0, 'no speaker labels anywhere');
   assert.equal(table.documentScrolls, false, 'the document never scrolls');
   assert.equal(table.chatColumn <= 760, true, 'the chat column is at most 760 px');
@@ -268,6 +276,27 @@ try {
   table = await sample('1440x900-dark-b-speaking', { width: 1440, height: 900 });
   assert.equal(table.stageTop, idleStageTop, `appending 30 lines never moves the orb stage (${idleStageTop} then ${table.stageTop})`);
   assert.equal(table.transcriptDistance <= 2, true, `the transcript stays pinned at the bottom (distance ${table.transcriptDistance})`);
+  // UI3b item 5, shot 2: thirty synthetic lines in, the view is still following the newest line.
+  await page.screenshot({ path: join(out, 'in-call-following.png') });
+  shots.push('in-call-following');
+  assert.deepEqual(await page.evaluate(() => ({
+    entries: document.querySelectorAll('.transcript .entry').length,
+    pinned: Math.round(document.querySelector('.transcript').scrollHeight - document.querySelector('.transcript').scrollTop - document.querySelector('.transcript').clientHeight) <= 2,
+    pillHidden: document.querySelector('#transcript-jump').hidden,
+  })), { entries: 30, pinned: true, pillHidden: true }, 'in-call-following follows the newest line');
+  // UI3b item 5, shot 3: the reader scrolled up, so the jump-to-latest pill is on screen. Taken here,
+  // with the other two, because the measurement block below samples the animated canvas frame by frame.
+  const scrollAway = async () => {
+    await page.evaluate(() => { for (const selector of ['.transcript', '#connected-entries']) { const el = document.querySelector(selector); if (el) el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight - 400); } });
+    await page.waitForFunction(() => !document.querySelector('#transcript-jump').hidden);
+  };
+  await scrollAway();
+  await page.screenshot({ path: join(out, 'scrolled-up-with-pill.png') });
+  shots.push('scrolled-up-with-pill');
+  assert.deepEqual(await page.evaluate(() => ({ hidden: document.querySelector('#transcript-jump').hidden, label: document.querySelector('#transcript-jump').textContent })), { hidden: false, label: 'Jump to latest' }, 'scrolled-up-with-pill shows the pill');
+  await page.locator('#transcript-jump').click();
+  await page.locator('#chat-jump').click();
+  await page.waitForFunction(() => document.querySelector('#transcript-jump').hidden && document.querySelector('#chat-jump').hidden);
   if (table.chatDistance > 2) {
     const chatState = await page.evaluate(() => { const el = document.querySelector('#connected-entries'); const pill = document.querySelector('#chat-jump'); return { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight, jumpHidden: pill.hidden, entries: el.children.length }; });
     throw Error(`the chat list is not pinned: ${JSON.stringify({ ...chatState, distance: table.chatDistance })}`);

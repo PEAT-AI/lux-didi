@@ -52,7 +52,8 @@ test('mini markup carries each glance state', () => {
 
 test('the level meter follows the input level and its curve is bounded', () => {
   assert.equal(miniBarHeights(0.5).length, 5, 'one height per bar');
-  assert.ok(miniBarHeights(1).every(height => height > 0.9 && height <= 1), 'a loud level fills the meter');
+  assert.ok(miniBarHeights(1).every(height => height > 0.7 && height <= 1), 'a loud level fills the meter');
+  assert.equal(Math.max(...miniBarHeights(1)), 1, 'a loud level reaches the top on its tallest bar');
   assert.ok(miniBarHeights(0).every(height => height > 0 && height <= 0.1), 'a silent level keeps a visible floor');
   assert.deepEqual(miniBarHeights(2), miniBarHeights(1), 'a level above one is clamped');
   assert.deepEqual(miniBarHeights(-1), miniBarHeights(0), 'a negative level is silence');

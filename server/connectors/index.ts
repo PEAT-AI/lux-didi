@@ -283,6 +283,39 @@ export class ConnectorCompositionError extends Error {
 }
 
 /** Company readers accept only an optional bounded limit and one required text field. */
+const isText = (value: unknown, max: number): boolean => typeof value === 'string' && value.trim() !== '' && value.length <= max;
+const isCount = (value: unknown, min: number, max: number): boolean => typeof value === 'number' && Number.isSafeInteger(value) && value >= min && value <= max;
+
+/** A declaration whose tool takes more than one text field and a limit: the Mattermost read surface. */
+function mattermostDeclaration(name: string, description: string, properties: Record<string, unknown>, required: readonly string[], validate: (args: Record<string, unknown>) => boolean, extra: Pick<ConnectorToolDeclaration, 'normalize' | 'guidance'> = {}): ConnectorToolDeclaration {
+  return {
+    name, description, effect: 'read',
+    parameters: { type: 'object', additionalProperties: false, required: [...required], properties },
+    validate(args) { return isRecord(args) && validate(args); },
+    ...extra,
+  };
+}
+
+/** research.ts sends the thread id as post_id; the thread tool takes either spelling of that id. */
+function threadPostId(args: Record<string, unknown>): string {
+  const value = args['postId'] ?? args['post_id'];
+  return typeof value === 'string' ? value.trim() : '';
+}
+function threadArgs(args: Record<string, unknown>): boolean {
+  return Object.keys(args).every(key => key === 'postId' || key === 'post_id') && threadPostId(args) !== '';
+}
+function searchArgs(args: Record<string, unknown>, maxText: number, maxLimit: number): boolean {
+  if (!Object.keys(args).every(key => ['query', 'limit', 'after', 'before'].includes(key))) return false;
+  if (!isText(args['query'], maxText)) return false;
+  if (args['limit'] !== undefined && !isCount(args['limit'], 1, maxLimit)) return false;
+  return ['after', 'before'].every(key => args[key] === undefined || isText(args[key], 40));
+}
+function attentionArgs(args: Record<string, unknown>): boolean {
+  if (!Object.keys(args).every(key => key === 'days' || key === 'limit')) return false;
+  if (args['days'] !== undefined && !isCount(args['days'], 1, 30)) return false;
+  return args['limit'] === undefined || isCount(args['limit'], 1, 20);
+}
+
 function companyDeclaration(name: string, description: string, maxText: number, textField?: string, maxLimit?: number): ConnectorToolDeclaration {
   const properties: Record<string, unknown> = {};
   if (textField) properties[textField] = { type: 'string', minLength: 1, maxLength: maxText };
@@ -314,8 +347,13 @@ const mattermostDescriptor: ConnectorDescriptor = {
     return [
       companyDeclaration('mattermost_whoami', 'Read the authenticated Mattermost identity.', text),
       companyDeclaration('mattermost_get_channel_history', 'Read bounded history from a Mattermost channel, newest first. channel is a channel name or display name; no channel list needed. An id still works. Returns at most 8 posts, 250 characters each.', text, 'channel', limit),
-      companyDeclaration('mattermost_get_thread', 'Read a bounded Mattermost thread. postId is a post id taken from a channel history. Returns at most 8 posts, 250 characters each.', text, 'postId'),
-      companyDeclaration('mattermost_search', 'Search bounded Mattermost messages by query. No channel id needed: search first, no channel list needed. Put filters inside the query: From:<user>, After:<date>, In:<channel>, so "what did X say about Y" or "what happened in channel Z this week" is one call. Results are shaped newest first, at most 8 posts of 250 characters, not whole threads.', text, 'query', limit),
+      mattermostDeclaration('mattermost_get_thread', 'Read a bounded Mattermost thread. postId is a post id taken from a channel history, and post_id is accepted as the same id. Returns at most 8 posts, 250 characters each.',
+        { postId: { type: 'string', minLength: 1, maxLength: text }, post_id: { type: 'string', minLength: 1, maxLength: text } }, ['postId'], threadArgs,
+        { normalize: args => (isRecord(args) && threadPostId(args) !== '' ? { args: { postId: threadPostId(args) } } : undefined) }),
+      mattermostDeclaration('mattermost_search', 'Search bounded Mattermost messages by query, newest first, over the last 90 days unless after names an older start. No channel id needed: search first, no channel list needed. Put filters inside the query: From:<user>, After:<date>, In:<channel>, so "what did X say about Y" or "what happened in channel Z this week" is one call. Results are shaped newest first, at most 8 posts of 250 characters, not whole threads.',
+        { query: { type: 'string', minLength: 1, maxLength: text }, limit: { type: 'integer', minimum: 1, maximum: limit }, after: { type: 'string', minLength: 1, maxLength: 40, description: 'ISO instant the window starts at; 90 days before now by default.' }, before: { type: 'string', minLength: 1, maxLength: 40 } }, ['query'], args => searchArgs(args, text, limit)),
+      mattermostDeclaration('mattermost_attention', 'What needs a reply from the owner, newest first: mentions, direct and group messages, and threads the owner posted in or was mentioned in where the newest post is not theirs. Each item carries channel, author, ISO time, permalink and one line. Use it for "do I need to reply", "anything new for me", "what did I miss".',
+        { days: { type: 'integer', minimum: 1, maximum: 30, description: 'Window in days; 7 by default.' }, limit: { type: 'integer', minimum: 1, maximum: 20 } }, [], args => attentionArgs(args)),
     ];
   },
   createReader({ port, registry, endpoint, schemaDigest, generation, policy }) {
@@ -325,7 +363,8 @@ const mattermostDescriptor: ConnectorDescriptor = {
         case 'mattermost_whoami': return reader.whoami(signal);
         case 'mattermost_get_channel_history': return reader.getChannelHistory(args as { channel: string; limit?: number }, signal);
         case 'mattermost_get_thread': return reader.getThread(args as { postId: string }, signal);
-        case 'mattermost_search': return reader.search(args as { query: string; limit?: number }, signal);
+        case 'mattermost_search': return reader.search(args as { query: string; limit?: number; after?: string; before?: string }, signal);
+        case 'mattermost_attention': return reader.attention(args as { days?: number; limit?: number }, signal);
         case 'mattermost_list_channels': return reader.listChannels(args, signal);
         default: throw new ConnectorCompositionError('unknown_connector_tool', endpoint.id, 'mattermost');
       }

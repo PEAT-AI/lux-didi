@@ -118,8 +118,8 @@ test('--json returns machine-readable output for each command', t => {
   assert.equal(tools[0].result, 'eleven chars');
   const errors = JSON.parse(run(root, ['errors', '--json']));
   assert.equal(errors.some((row: { event: string }) => row.event === 'debug_journal_error'), true);
-  const slow = JSON.parse(run(root, ['slow', '--json']));
-  assert.equal(slow.length >= 2, true);
+  const slow = JSON.parse(run(root, ['slow', '--json', '--over', '500']));
+  assert.equal(slow.length >= 2, true, 'the round and the tool both cross the threshold');
 });
 
 test('native reads the app subsystem log for the session window', t => {

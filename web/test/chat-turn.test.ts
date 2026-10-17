@@ -122,7 +122,7 @@ test('a stamp becomes relative words, and an unreadable stamp renders nothing at
   assert.equal(eventWords('not a date', NOW), '');
 });
 
-test('a mail row without a sender keeps the subject first and drops the stamp it cannot place (F2)', () => {
+test('a mail row without a sender says unknown sender beside its relative time, never a raw stamp (F2)', () => {
   const html = evidenceMarkup([{ name: 'gmail_list', markdown: '- Deck | date: 2026-10-16T08:00:00Z | ready', sources: [] }], NOW);
   assert.doesNotMatch(html, /2026-10-16T08:00:00Z/, 'a raw ISO stamp never reaches the owner');
   assert.match(html, /chat-evidence-line">unknown sender · Deck · yesterday</, 'the sender slot says so in words, and the stamp is relative');

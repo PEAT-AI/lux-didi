@@ -121,7 +121,8 @@ export function stepsAnswered(live: LiveCurrent | undefined): boolean {
  *  the owner hears the answer now, and the lines stay a few seconds only so the last look-up is
  *  still readable. */
 export function stepsFading(live: LiveCurrent | undefined): boolean {
-  return (live?.steps ?? []).length > 0 && (live.state === 'speaking' || stepsAnswered(live));
+  if (live === undefined || (live.steps ?? []).length === 0) return false;
+  return live.state === 'speaking' || stepsAnswered(live);
 }
 
 /** The compact live step list under the orb. Empty when nothing is running. */

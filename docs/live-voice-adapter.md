@@ -172,15 +172,22 @@ boundaries itself, and never drops an output frame doing it.
 - A cut answer does not replay. After a barge-in flush the frames of the answer the owner cut
   keep arriving; they are dropped until the output stream shows a gap of 400 ms
   (`POST_FLUSH_GAP_MS`) or 2500 ms have passed since the flush (`POST_FLUSH_DROP_LIMIT_MS`),
-  whichever comes first, and then forwarded again. The window is bounded, so it cannot latch,
-  and it reports `gptlive_post_flush_dropped_ms` {ms} once when it ends.
-- Barge-in. The adapter emits `interrupted`, once per input episode, only when assistant audio
-  is queued or playing (the modelled playback queue below) and the assembled input transcript
-  of that episode holds at least two words. An input episode ends after 700 ms with no
-  input-transcript delta (`INPUT_EPISODE_QUIET_MS`), which resets the assembled transcript and
-  re-arms the once-per-episode latch, so the deltas of one word count as one word and a
-  one-word utterance ("mm", "stop") never cuts the reply. The host flushes its native playback
-  queue on `interrupted`.
+  whichever comes first, and then forwarded again. With the yield rule below a flush only ever
+  follows a server that stopped sending, so what lands in this window is the straggler tail of
+  the cut answer. The window is bounded, so it cannot latch, and it reports
+  `gptlive_post_flush_dropped_ms` {ms} once when it ends.
+- Barge-in. The server decides. The adapter emits `interrupted`, once per input episode, only
+  when assistant audio is queued or playing (the modelled playback queue below) and no output
+  delta has arrived for 350 ms (`SERVER_YIELD_GAP_MS`) since the newest of the episode's first
+  word and the last output delta. One word is enough, so a one-word "stop" over an answer the
+  server has already finished sending is obeyed; a stream that keeps arriving is a backchannel
+  or background speech the server chose to talk over, and nothing is cut. Field session
+  82ab994a is why: a local two-word rule flushed 61 times in 70 episodes, 0.17 s after the first
+  transcribed word, and threw away 32 percent of the session while the server never stopped and
+  resumed after each cut. An input episode ends after 700 ms with no input-transcript delta
+  (`INPUT_EPISODE_QUIET_MS`), which resets the assembled transcript and re-arms the
+  once-per-episode latch, so the deltas of one word count as one word. The host flushes its
+  native playback queue on `interrupted`.
 - Head start. gpt-live-1 sends output audio at about 1x real time and the native jitter buffer is 80 ms, so the
   first audio of each speaking stretch is held and forwarded as one event once it holds 300 ms of audio
   (`HEAD_START_MS`) or 300 ms of clock time have passed, whichever comes first; after that every delta passes
@@ -197,12 +204,16 @@ boundaries itself, and never drops an output frame doing it.
 - Playback drain. No native playback-drained signal reaches the host, so the adapter models the
   queue from forwarded PCM: 24 kHz s16 mono is 48,000 bytes per second, appended behind whatever
   is still queued and reset by a flush or a provider error.
-- Receipts, metadata only and never transcript text: `gptlive_flush` {words, queuedMs},
-  `gptlive_turn_complete` {idleMs, drained}, `gptlive_post_flush_audio_ms` {ms} for the audio
-  still received after a barge-in before the next input episode, and `openai_instructions_size`
-  {chars, bytes} at session start, which proves in a log that the instructions were not cut.
-  Empty and whitespace-only input transcript deltas carry no word: they start no episode and
-  never flush.
+- Receipts, metadata only and never transcript text: `gptlive_flush` {words, queuedMs,
+  yieldGapMs}, where the gap is the measured output silence that proved the server had yielded;
+  `gptlive_no_flush` {reason, words} once per episode that cut nothing, with the reason
+  `server_continued` or `queue_empty`; `gptlive_unknown_frame` {type, count} once per session
+  for each provider frame name the adapter has no rule for, which is how a yield or cancel
+  signal the server may already send would show up; `gptlive_turn_complete` {idleMs, drained};
+  `gptlive_post_flush_audio_ms` {ms} for the audio still received after a barge-in before the
+  next input episode; and `openai_instructions_size` {chars, bytes} at session start, which
+  proves in a log that the instructions were not cut. Empty and whitespace-only input
+  transcript deltas carry no word: they start no episode and never flush.
 - The wrapper instructions additionally carry OpenAI's live prompting lines "Do not treat a
   cough, music, or nearby conversation as a new request." and "Keep listening while the owner
   pauses to think."

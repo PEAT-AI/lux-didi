@@ -93,7 +93,7 @@ test('a step subject caps at 60 characters and never quotes a body or an id', ()
   assert.equal(subject, 'release freeze timeline for the whole team, last 7 days');
   assert.ok(subject!.length <= STEP_SUBJECT_CAP);
 
-  const capped = stepSubject({ query: 'release freeze retro notes and follow ups for the whole team' });
+  const capped = stepSubject({ query: 'release freeze retro notes and follow ups for the whole team today' });
   assert.ok(capped!.length <= STEP_SUBJECT_CAP, 'a long query is capped');
   assert.ok(capped!.endsWith('\u2026'), 'the cap is visible, never a silent cut mid-word');
 

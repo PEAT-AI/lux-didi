@@ -7,6 +7,7 @@ import { validateEndpointUrl, validateApprovedStdioEnv } from '../adapters/mcp/r
 import { endpointBinding } from '../adapters/mcp/port.js';
 import { ConnectorCompositionError, connectorDescriptor, CONNECTOR_ENVELOPES } from '../connectors/index.js';
 import { canonicalJSON, detached, sha256 } from './canonical.js';
+import { redactSecretsWithCount } from './redact.js';
 import type { BoundConnection, ConnectionApplyResult, ConnectionPolicy, HttpConnectionEndpoint, ModelSnapshot, RunAcceptance, RunSnapshot, StdioConnectionEndpoint, ToolsOwner, ToolsOwnerOptions } from './types.js';
 import { REMEMBER_IDENTITY, REMEMBER_PARAMETERS, validateRemember } from './remember.js';
 import { researchDeclaration, researchSourcesFromToolNames } from './research.js';
@@ -438,6 +439,13 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner {
                 // Only safe class/code metadata, never remote payloads or arbitrary exception text.
                 options.log?.({ event: 'tool_failure', code, tool: name, connector: p.connector, errorClass: error instanceof SyntaxError ? 'SyntaxError' : error instanceof Error ? 'Error' : 'UnknownThrow', messageHead: code });
                 return { status: 'failed', code };
+              }
+              // One boundary for every connector: a projected tool result is redacted before it is
+              // persisted to tool_calls, put into evidence or source cards, or sent to the model.
+              const redacted = redactSecretsWithCount(value.response);
+              if (redacted.count > 0) {
+                options.log?.({ event: 'tool_redaction', tool: name, count: redacted.count });
+                value = { ...value, response: redacted.value };
               }
               if (prepared?.notice !== undefined && typeof value.response['text'] === 'string') {
                 value = { ...value, response: { ...value.response, text: `${value.response['text']} ${prepared.notice}` } };

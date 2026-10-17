@@ -35,8 +35,12 @@ export interface ToolFailureEvent {
   event: 'tool_failure'; code: ToolFailureCode;
   tool: string; connector: string; errorClass: 'Error' | 'SyntaxError' | 'UnknownThrow'; messageHead: string;
 }
+/** Receipt for a tool result that carried secrets: the tool name and how many, never the value. */
+export interface ToolRedactionEvent {
+  event: 'tool_redaction'; tool: string; count: number;
+}
 export interface ToolsOwnerOptions {
-  log?: (event: ToolFailureEvent) => void;
+  log?: (event: ToolFailureEvent | ToolRedactionEvent) => void;
   grantMode?: 'explicit' | 'owner-trusted-reads';
   store: StorePort; ownerId: string; registry: McpRegistry; port: McpPort;
   lookupAuthority(runId: string, signal: AbortSignal): Promise<LiveAuthority | null>;

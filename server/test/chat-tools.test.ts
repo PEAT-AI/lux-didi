@@ -55,8 +55,9 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
   let onDispatch: (() => void) | undefined;
   let reject = false;
   let errorFlag = true;
+  let payload = ACCEPTED;
   sdk.setRequestHandler('tools/list', () => ({ tools: exposed }) as never);
-  sdk.setRequestHandler('tools/call', () => { executions++; onDispatch?.(); return { content: [{ type: 'text', text: reject ? REJECTED : ACCEPTED }], structuredContent: { hidden: UNCLASSIFIED }, ...(reject && errorFlag ? { isError: true } : {}) } as never; });
+  sdk.setRequestHandler('tools/call', () => { executions++; onDispatch?.(); return { content: [{ type: 'text', text: reject ? REJECTED : payload }], structuredContent: { hidden: UNCLASSIFIED }, ...(reject && errorFlag ? { isError: true } : {}) } as never; });
   await sdk.connect(transport);
   t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
     const req = new Request(input, init); assert.equal(req.url, endpoint.url);
@@ -69,7 +70,8 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
   let authority: ((runId: string, signal: AbortSignal) => Promise<LiveAuthority | null>) | undefined;
   writeFileSync(join(dir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [{ ...endpoint, connector: 'lux-knowledge', transport: 'streamable-http', credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'ordinary' }] }), { mode: 0o600 });
   // Use actual host policy construction, including its current denial, never a matching fixture route.
-  const mcp = await composeMcpRuntime({ store: f.store, ownerId: f.store.assistantId, configDir: dir, lookupAuthority: async (id, signal) => authority?.(id, signal) ?? null });
+  const logEvents: Record<string, unknown>[] = [];
+  const mcp = await composeMcpRuntime({ store: f.store, ownerId: f.store.assistantId, configDir: dir, lookupAuthority: async (id, signal) => authority?.(id, signal) ?? null, log: event => logEvents.push(event as unknown as Record<string, unknown>) });
   const { owner, registry } = mcp;
   assert.deepEqual(mcp.connectionIds(), [endpoint.id]);
   t.after(async () => { await mcp.close(); await transport.close(); await sdk.close(); });
@@ -88,6 +90,8 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
   return { ...f, chat, owner, registry, requests, responseEntities, endpoint, mcp, composition, session, turn, executions: () => executions, repeatCalls: () => { repeat = true; }, noCalls: () => { ask = false; }, rejectResult: () => { reject = true; }, rawRejectedResult: () => { reject = true; errorFlag = false; }, setDispatchHook: (hook: () => void) => { onDispatch = hook; },
     illegalFinalCall: () => { illegalFinal = true; }, finalOutcome: (status: 'empty' | 'truncated') => { finalStatus = status; },
     setFinalHook: (hook: () => void) => { beforeFinal = hook; },
+    leak: (text: string) => { payload = text; },
+    logEvents,
     approveY: async () => { exposed.push({ name: 'get_insight', inputSchema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'integer' } }, include_links: { type: 'boolean' } }, required: ['ids', 'include_links'], additionalProperties: false } }); const current = f.store.transaction(tx => tx.get('SELECT policy_json,policy_sha256 FROM tool_connections WHERE connection_id=?', [endpoint.id])!); const prior = JSON.parse(String(current.policy_json)) as ConnectionPolicy; owner.applyConnectionIntent({ expectedPolicySha256: String(current.policy_sha256), policy: { ...prior, generation: prior.generation + 1, toolNames: exposed.map(tool => tool.name), schemaDigest: canonicalToolDigest(exposed) } }); await mcp.refresh(); },
     privateOnly: async () => { const p = f.store.transaction(tx => JSON.parse(String(tx.get('SELECT policy_json FROM tool_connections WHERE connection_id=?', [endpoint.id])!.policy_json)) as ConnectionPolicy); owner.applyConnection({ ...p, generation: p.generation + 1, sourcePolicy: { ...p.sourcePolicy, unknownClass: 'private', allowedClasses: ['private'] }, route: { ...p.route, allowedClasses: ['private'] } }); assert.equal((await mcp.port.discover(endpoint.id)).state, 'discovered'); owner.projectConnection(endpoint.id); },
     sensitiveOnly: async () => { const p = f.store.transaction(tx => JSON.parse(String(tx.get('SELECT policy_json FROM tool_connections WHERE connection_id=?', [endpoint.id])!.policy_json)) as ConnectionPolicy); owner.applyConnection({ ...p, generation: p.generation + 1, sourcePolicy: { ...p.sourcePolicy, unknownClass: 'sensitive', allowedClasses: ['sensitive'] }, route: { ...p.route, allowedClasses: ['sensitive'] } }); assert.equal((await mcp.port.discover(endpoint.id)).state, 'discovered'); owner.projectConnection(endpoint.id); },
@@ -114,6 +118,52 @@ test('real chat declares approved reads, journals execution, and discloses only 
   assert.doesNotMatch(JSON.stringify(run), /unclassified/);
   assert.doesNotMatch(JSON.stringify(f.requests), /unclassified/);
   assert.deepEqual(f.chat.get(run.runId, f.context).toolEvidence?.[0]?.sources, SOURCES);
+});
+
+// Synthetic fixtures only: every secret below is invented for this test.
+const SECRETS = [
+  'alpha-bravo-charlie',
+  'zulu-yankee-xray-1234',
+  'sk-proj-QWERTYUIOP12345',
+  'ghp_ABCDEFGHIJKLMNOPQRSTUV',
+  'github_pat_ABCDEFGHIJKLMNOPQRSTUV',
+  'xoxb-123456789012-abcdefghij',
+  'AKIAABCDEFGHIJKLMNOP',
+  `AIza${'K'.repeat(35)}`,
+  'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJzeW50aGV0aWMifQ.c2lnbmF0dXJlLXZhbHVl',
+];
+const NEIGHBOURHOOD_LEAK = 'xK9!mQ2vR7tZ';
+const PEM_BODY = 'MIIBOgIBAAJBAK'.repeat(3);
+const LEAKY = [
+  'Archive results', 'someone@example.invalid', 'username: deploybot', NEIGHBOURHOOD_LEAK,
+  `password=${SECRETS[0]}`, `authorization: ${SECRETS[1]}`, SECRETS[2] as string, SECRETS[3] as string,
+  SECRETS[4] as string, SECRETS[5] as string, SECRETS[6] as string, SECRETS[7] as string, SECRETS[8] as string,
+  '-----BEGIN RSA PRIVATE KEY-----', PEM_BODY, '-----END RSA PRIVATE KEY-----', 'ACCEPTED',
+].join('\n');
+
+test('tool results are redacted before the model, storage and evidence', async t => {
+  const f = await fixture(t);
+  f.leak(LEAKY);
+  const run = await f.turn(f.session());
+  const rows = f.store.transaction(tx => tx.all('SELECT result_json FROM tool_calls WHERE run_id=?', [run.runId]));
+  const surfaces: [string, string][] = [
+    ['stored result_json', String(rows[0]?.result_json)],
+    ['model request', JSON.stringify(f.requests)],
+    ['tool evidence', JSON.stringify((run as { toolEvidence?: unknown }).toolEvidence)],
+    ['snapshot retrieval', JSON.stringify(f.chat.get(run.runId, f.context))],
+  ];
+  const forbidden = [...SECRETS, NEIGHBOURHOOD_LEAK, PEM_BODY, 'alpha-bravo-charlie'];
+  for (const [name, surface] of surfaces) {
+    assert.match(surface, /\[redacted\]/, `${name} carries no redaction marker`);
+    for (const secret of forbidden) assert.equal(surface.includes(secret), false, `${name} leaked ${secret}`);
+  }
+  assert.match(JSON.stringify(f.chat.get(run.runId, f.context)), /ACCEPTED/, 'ordinary evidence survives');
+  const receipt = f.logEvents.filter(event => event['event'] === 'tool_redaction');
+  assert.equal(receipt.length, 1, 'one receipt per redacted tool result');
+  assert.deepEqual(Object.keys(receipt[0] as object).sort(), ['count', 'event', 'tool']);
+  assert.equal(receipt[0]?.['tool'], 'search_knowledge');
+  assert.ok(Number(receipt[0]?.['count']) >= SECRETS.length);
+  assert.equal(JSON.stringify(f.logEvents).includes('alpha-bravo-charlie'), false, 'a receipt never carries a value');
 });
 
 test('frozen declarations cannot authorize a revoked registry grant', async t => {

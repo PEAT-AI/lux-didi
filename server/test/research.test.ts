@@ -450,7 +450,10 @@ test('an identical duplicate read in one run is executed once', async () => {
 
 test('the brief fan-out is credited to every source it read and its findings reach the answer', async () => {
   const selector = selectorOf({ questionClass: 'cross_source', actions: [{ kind: 'brief' }], pUseful: { brief: 1 } });
-  const h = harness({ selector });
+  const h = harness({ selector, execute: async subs => subs.map(call => sub(call.name,
+    call.name === 'gcal_list' ? '- Mon 09:00, Standup [id e1]'
+      : call.name === 'gmail_list' ? '- Invoice | Landlord | Mon | due soon [id m1]'
+        : 'evidence', true, call.key)) });
   const reply = await runResearch(h.deps, { action: 'start', question: 'catch me up' }, new AbortController().signal);
   const sources = (reply['findings'] as { source?: string }[]).map(finding => finding.source);
   for (const source of ['calendar', 'mail', 'chat', 'knowledge']) assert.ok(sources.includes(source), `the brief read of ${source} is delivered to the answer`);

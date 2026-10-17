@@ -545,6 +545,9 @@ function paintLive(){
   if(actions){const controls=orbControlsMarkup();if(actions.innerHTML!==controls){actions.innerHTML=controls;bindOrbControls();}}
   const next=orbState();if(next!==appliedOrbState){appliedOrbState=next;orb?.setState(next);}
   if(liveMachine.view.state==='starting')transcriptPin?.repin();
+  // The mini stage repaints from the same projection as the full shell. It is
+  // the last step of paintLive, not of any other binder (UI3a merge).
+  if (miniRoute) paintMiniStage();
 }
 function bindOrbControls() {
   document.getElementById('voice-start')?.addEventListener('click', () => liveMachine.requestStart());
@@ -575,7 +578,6 @@ function bindTranscript() {
   const list = document.getElementById('transcript');
   const pill = document.getElementById('transcript-jump');
   if (list && pill) transcriptPin = attachPin(list, pill);
-  if(miniRoute)paintMiniStage();
 }
 onAuthorityChanged(reason=>{
   ++readGeneration;controller?.abort();controller=undefined;busy=false;readBusy=false;pairingBusy=false;connectionsBusy=false;liveBusy=false;

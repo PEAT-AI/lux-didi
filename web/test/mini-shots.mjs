@@ -19,7 +19,10 @@ try {
   await page.goto(fixture.url);
   await page.getByLabel('One-time pairing code').fill('synthetic-only');
   await page.getByRole('button', { name: 'Pair this browser', exact: true }).click();
-  await page.locator('#connected-route').waitFor();
+  // main's three-lane shell has no #connected-route; the header state is the
+  // signal that pairing finished and the same cookie can serve the mini route.
+  await page.locator('.app-shell').waitFor();
+  await page.locator('#connection-state', { hasText: 'Connected' }).waitFor();
 
   const since = 'synthetic-mini-orb';
   const openMini = async state => {

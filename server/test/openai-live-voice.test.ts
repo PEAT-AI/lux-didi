@@ -173,7 +173,7 @@ describe('openai gpt-live adapter', () => {
     await until(() => opened.captured.events.some(event => event.type === 'inputTranscription' && event.text === '\n\t '));
     const journaled = opened.captured.events.flatMap(event => (event.type === 'inputTranscription' ? [event.text] : []));
     assert.deepEqual(journaled, ['mm', '   ', '\n\t '], 'a whitespace-only fragment is still journaled, an empty one is not');
-    for (let index = 0; index < 30; index += 1) speak(opened.f, 2_400);
+    for (let index = 0; index < 30; index += 1) { speak(opened.f, 2_400); await quiet(); clock.advance(100); }
     await until(() => audioOf(opened.captured).length === 31);
     assert.equal(audioBytes(opened.captured), (7_200 + 30 * 2_400) * 2, 'every valid output delta is forwarded');
     assert.equal(interruptions(opened.captured), 0, 'one word is not a barge-in');
@@ -428,7 +428,7 @@ describe('openai gpt-live adapter', () => {
     const logged = hostReceipts(t);
     const clock = new FakeClock();
     const opened = await ready(t, { clock });
-    speak(opened.f);
+    speak(opened.f, 96_000);
     await until(() => audioOf(opened.captured).length === 1);
     opened.f.send({ type: 'session.input_transcript.delta', delta: 'hold on' });
     await quiet();
@@ -458,7 +458,7 @@ describe('openai gpt-live adapter', () => {
     const logged = hostReceipts(t);
     const clock = new FakeClock();
     const opened = await ready(t, { clock });
-    speak(opened.f);
+    speak(opened.f, 96_000);
     await until(() => audioOf(opened.captured).length === 1);
     opened.f.send({ type: 'session.input_transcript.delta', delta: 'hold on' });
     await quiet();
@@ -485,7 +485,7 @@ describe('openai gpt-live adapter', () => {
   test('a closed session leaks no turn-taking timer or latch into the next one', async t => {
     const clock = new FakeClock();
     const first = await ready(t, { clock });
-    speak(first.f);
+    speak(first.f, 96_000);
     await until(() => audioOf(first.captured).length === 1);
     first.f.send({ type: 'session.input_transcript.delta', delta: 'hold on' });
     await quiet();
@@ -496,7 +496,7 @@ describe('openai gpt-live adapter', () => {
     await quiet();
     assert.equal(clock.timers, 0, 'the episode and idle timers are cleared on close');
     const second = await ready(t, { clock });
-    speak(second.f);
+    speak(second.f, 96_000);
     await until(() => audioOf(second.captured).length === 1);
     second.f.send({ type: 'session.input_transcript.delta', delta: 'hold on' });
     await quiet();
@@ -511,11 +511,13 @@ describe('openai gpt-live adapter', () => {
     const { f, session, captured } = await ready(t, { clock });
     f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.created', response: { id: 'resp_1' } } });
     f.send({ type: 'session.output_transcript.delta', delta: 'Checking', start_ms: 0, end_ms: 200 });
-    speak(f);
+    speak(f, 96_000);
     f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.output_item.done',
       item: { type: 'function_call', call_id: 'call_1', name: 'research', arguments: '{}' } } });
     await until(() => captured.events.some(event => event.type === 'audio'));
     f.send({ type: 'session.input_transcript.delta', delta: 'stop, something else', start_ms: 200, end_ms: 500 });
+    await quiet();
+    clock.advance(350);
     await until(() => captured.events.some(event => event.type === 'interrupted') && captured.events.some(event => event.type === 'toolCall'));
     session.sendToolResponse({ responses: [{ id: 'call_1', name: 'research', response: { ok: true } }] });
     await f.frame(2);
@@ -694,7 +696,7 @@ describe('openai gpt-live turn states', () => {
     opened.f.send({ type: 'session.input_transcript.delta', delta: 'mm' });
     await until(() => opened.captured.events.some(event => event.type === 'inputTranscription'));
     // The server answers this background speech by carrying on, so no 350 ms gap ever opens and nothing is cut.
-    for (let index = 0; index < 2; index += 1) { clock.advance(300); sendAudio(opened.f, 7_200); }
+    for (let index = 0; index < 2; index += 1) { clock.advance(300); sendAudio(opened.f, 7_200); await quiet(); }
     clock.advance(100);
     await quiet();
     assert.equal(starts(opened.captured), 0, 'her audio is playing, so this is not a think time');

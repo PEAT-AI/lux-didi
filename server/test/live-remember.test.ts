@@ -209,6 +209,10 @@ test('Live remember provenance refusals do not write memory', async t => {
     ['remember: this is private', 'this is private', 'private_memory_unsupported'],
     ['remember that this is private', 'this is private', 'private_memory_unsupported'],
     ['remember that this is sensitive', 'this is sensitive', 'private_memory_unsupported'],
+    ['note that this is private: mint is Friday', 'mint is Friday', 'private_memory_unsupported'],
+    ['note that this is sensitive: mint is Friday', 'mint is Friday', 'private_memory_unsupported'],
+    ['keep in mind this is private: mint is Friday', 'mint is Friday', 'private_memory_unsupported'],
+    ['please keep in mind this is sensitive: mint is Friday', 'mint is Friday', 'private_memory_unsupported'],
   ] as const) {
     await t.test(code, async st => {
       const scheduler = new RememberClock();

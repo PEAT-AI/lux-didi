@@ -69,19 +69,20 @@ try {
     await writeFile(join(artifacts, `renderer-${sha}.json`), JSON.stringify({ sha, renderer }, null, 2));
     const pairing = await operator('/auth/pairing'); await page.locator('#pair-code').fill(pairing.pairingCode); await page.locator('#pair-form').evaluate(form => form.requestSubmit());
     await page.locator('#connected-send').waitFor(); await page.locator('#didi-orb').waitFor();
-    // V3 (#264): no turns yet, so the Voice lane is its orb stage: the real orb at 55 percent of the
-    // stage height (clamped 120 to 200 px), centred, and the stage holds the top third of the lane.
+    // FE1-R1: the orb is the hero. Spec 2.1 pins the orb area at about 300 px at 1440x900 (34 to 44
+    // percent of the voice lane), the caption and the controls stack under it, and the stage sizes to its
+    // content. The V3 (#264) top-third stage and 55 percent orb are replaced by that sizing.
     await page.locator('#orb-stage').waitFor();
     await page.waitForFunction(() => { const o = document.querySelector('#didi-orb'), s = document.querySelector('#orb-stage'); return !!o && !!s && s.getBoundingClientRect().height > 0 && o.getBoundingClientRect().height > 0; });
     const measured = await page.evaluate(() => { const or = document.querySelector('#didi-orb').getBoundingClientRect(), sr = document.querySelector('#orb-stage').getBoundingClientRect(), lr = document.querySelector('#lane-voice').getBoundingClientRect(); return { orb: { x: or.x, y: or.y, width: or.width, height: or.height }, stage: { x: sr.x, y: sr.y, width: sr.width, height: sr.height }, lane: { height: lr.height } }; });
     const desktopOrb = measured.orb, stage = measured.stage;
-    const expectedStage = Math.min(380, Math.max(240, measured.lane.height * 0.33));
-    assert.ok(Math.abs(stage.height - expectedStage) <= 2, `stage height ${stage.height} is not the top third of the ${measured.lane.height} px lane (${expectedStage.toFixed(1)})`);
-    assert.ok(Math.abs(desktopOrb.height - expectedStage * 0.55) <= 3, `orb diameter ${desktopOrb.height} is not 55 percent of the ${stage.height} px stage (${(expectedStage * 0.55).toFixed(1)})`);
+    const heroBand = [270, 330];
+    assert.ok(desktopOrb.width >= heroBand[0] && desktopOrb.width <= heroBand[1] && desktopOrb.height >= heroBand[0] && desktopOrb.height <= heroBand[1], `the orb renders the hero diameter (${desktopOrb.width}x${desktopOrb.height}, band ${heroBand[0]}-${heroBand[1]})`);
     assert.ok(await page.locator('#didi-orb').isVisible(), 'the desktop stage orb canvas is visible');
-    assert.ok(Math.abs(desktopOrb.height - stage.height * 0.55) <= 2, 'the orb diameter is 55 percent of the stage height');
     assert.equal(Math.round(desktopOrb.width), Math.round(desktopOrb.height), 'the orb canvas is square');
     assert.ok(Math.abs((desktopOrb.x + desktopOrb.width / 2) - (stage.x + stage.width / 2)) <= 1, 'the orb canvas is horizontally centred in the stage');
+    assert.ok(desktopOrb.y >= stage.y && desktopOrb.y + desktopOrb.height <= stage.y + stage.height, 'the stage contains the whole orb');
+    assert.ok(stage.height <= measured.lane.height, `the stage (${stage.height} px) never grows past the ${measured.lane.height} px voice lane`);
     assert.equal(await page.locator('.voice-state').first().innerText(), 'Live is off', 'the header state is the one source of truth');
     assert.equal(await page.locator('.live-state').count(), 0, 'no second Live state surface');
   });
@@ -139,19 +140,19 @@ try {
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     const counts = await page.evaluate(() => Object.fromEntries(['#app', '#connected-panel', '#connected-entries', '#connected-draft', '#connected-send', '#didi-orb', '#orb-stage'].map(selector => [selector, document.querySelectorAll(selector).length])));
     for (const [selector, count] of Object.entries(counts)) assert.equal(count, 1, `Unique rendered DOM ${selector}`);
-    // V2-R1 narrow: a Voice/Chat switcher shows one lane at a time; the empty-state orb stays in the Voice segment.
+    // Narrow (FE1-R1, #282): the Voice/Chat switcher and its stacking rules were dropped, so both lanes share
+    // one narrow scroll; the voice stage keeps the narrow hero orb (a 180 px holder under 880 px), square and
+    // inside the stage, and the chat composer stays reachable in the same scroll.
     await page.waitForFunction(() => document.querySelector('.app-shell')?.dataset.narrow === 'true', { timeout: 8000 });
-    assert.ok(await page.locator('.lane-switch').isVisible(), 'the narrow switcher is visible');
-    assert.equal(await page.locator('#lane-voice').isVisible(), true, 'the Voice segment is visible');
-    assert.equal(await page.locator('#lane-chat').isVisible(), false, 'the Chat lane hides behind the switcher');
+    assert.equal(await page.locator('.lane-switch').count(), 0, 'the dropped narrow switcher never returns');
+    assert.equal(await page.locator('#lane-voice').isVisible(), true, 'the Voice lane is visible at 375');
     const mobileOrb = await page.locator('#didi-orb').boundingBox();
     const mobileStage = await page.locator('#orb-stage').boundingBox();
-    assert.ok(Math.abs(mobileOrb.height - mobileStage.height * 0.55) <= 2, 'the narrow voice view keeps the orb at 55 percent of the stage');
+    assert.ok(mobileOrb.width >= 160 && mobileOrb.width <= 200 && mobileOrb.height >= 160 && mobileOrb.height <= 200, `the narrow orb renders the hero diameter (${mobileOrb.width}x${mobileOrb.height}, band 160-200)`);
     assert.equal(Math.round(mobileOrb.width), Math.round(mobileOrb.height), 'the narrow orb canvas is square');
-    await page.locator('[data-segment="chat"]').click();
-    await page.locator('#lane-chat').waitFor();
-    assert.equal(await page.locator('#lane-chat').isVisible(), true, 'the Chat segment becomes visible');
-    assert.equal(await page.locator('#lane-voice').isVisible(), false, 'the Voice lane hides behind the switcher');
+    assert.ok(mobileOrb.y >= mobileStage.y && mobileOrb.y + mobileOrb.height <= mobileStage.y + mobileStage.height, 'the narrow stage contains the whole orb');
+    assert.ok(Math.abs((mobileOrb.x + mobileOrb.width / 2) - (mobileStage.x + mobileStage.width / 2)) <= 1, 'the narrow orb is centred in the stage');
+    assert.equal(await page.locator('#connected-draft').isEnabled(), true, 'the chat composer stays reachable in the same narrow scroll');
     assert.equal(await page.locator('#connected-entries .assistant').count(), 2);
     const savedTurns = await page.locator('#connected-entries article').count(); assert.equal(savedTurns, 4);
     const positions = [];

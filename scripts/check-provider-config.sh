@@ -12,7 +12,7 @@ if [[ ! -f "$deps/typescript/bin/tsc" || ! -d "$deps/@types/node" ]]; then
 fi
 out="$(mktemp -d "${TMPDIR:-/tmp}/didi-provider-config.XXXXXX")"
 trap 'rm -rf "$out"' EXIT
-mkdir -p "$out/source/config" "$out/source/prompt" "$out/source/adapters/model" "$out/source/adapters/mcp" "$out/source/test" "$out/source/tools" "$out/source/runtime" "$out/source/connectors"
+mkdir -p "$out/source/config" "$out/source/prompt" "$out/source/adapters/model" "$out/source/adapters/mcp" "$out/source/test" "$out/source/tools" "$out/source/runtime" "$out/source/connectors" "$out/source/domain" "$out/source/host"
 cp "$root"/server/config/*.ts "$out/source/config/"
 cp "$root"/server/prompt/*.ts "$out/source/prompt/"
 cp "$root"/server/adapters/model/*.ts "$out/source/adapters/model/"
@@ -23,7 +23,10 @@ cp "$root"/server/connectors/*.ts "$out/source/connectors/"
 mkdir -p "$out/source/live" "$out/source/adapters/live-voice" "$out/source/contracts"
 cp "$root"/server/live/{config,types}.ts "$out/source/live/"
 cp "$root"/server/adapters/live-voice/*.ts "$out/source/adapters/live-voice/"
-cp "$root"/server/contracts/{storage,errors}.ts "$out/source/contracts/"
+cp "$root"/server/contracts/*.ts "$out/source/contracts/"
+# server/tools reads the memory model and the debug journal receipt: copy those trees too.
+cp "$root"/server/domain/*.ts "$out/source/domain/"
+cp "$root/server/host/journal.ts" "$out/source/host/"
 ln -s "$deps" "$out/node_modules"
 cp "$root/server/test/provider-config.test.ts" "$out/source/test/"
 printf '{"type":"module"}\n' > "$out/package.json"

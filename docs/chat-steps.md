@@ -54,3 +54,16 @@ budgets the run was given, so a receipt shows whether the fence cut the run earl
 Every `end` event carries `resultCount`: the number of result cards the tool's response yields, the
 same `sourceCards` projection the owner evidence uses. A call that failed, was cut by the fence, or
 whose response was refused by the result gate carries `0`.
+
+## Intent surface (composition only, not yet declared)
+
+`chatIntentTools` in `server/chat/tools.ts` composes the same five coarse intent declarations the Live
+session declares (`INTENT_TOOL_NAMES`) from the shared `planIntent`, `intentResponse` and
+`IntentDeclaration` helpers, runs each plan phase through a caller-supplied sub runner, and completes
+one shaped digest under the intent's own journaled call, so one model call both searches and shapes.
+
+It is not yet added to the chat declaration set. The first wiring attempt made a run end `error` with
+zero connector executions when the fixture model called the intent tool, so the sub execution or the
+journaled-intent completion is not right yet; declaring it before that is fixed would give the model a
+tool that fails. The builder's contract (five names, one digest per call, fail closed when no intent is
+journaled) is covered by `server/test/chat-tools.test.ts`.

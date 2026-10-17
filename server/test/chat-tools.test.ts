@@ -1,7 +1,8 @@
 import { test, type TestContext } from 'node:test';
-import { answerInstruction, chatToolRegistry, CHAT_TOOL_TIMEOUT_MS, deterministicAnswer, notReachedLabels, toolLabel } from '../chat/tools.js';
+import { answerInstruction, chatIntentTools, chatToolRegistry, CHAT_TOOL_TIMEOUT_MS, deterministicAnswer, notReachedLabels, toolLabel } from '../chat/tools.js';
+import { INTENT_TOOL_NAMES } from '../tools/intent.js';
 import type { ChatStepEvent } from '../chat/types.js';
-import type { ExecutionContext, ToolDefinition } from '../adapters/model/types.js';
+import type { ExecutionContext, JsonObject, ToolCallIntent, ToolDefinition } from '../adapters/model/types.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 import { safeEvent } from '../host/log.js';
 import assert from 'node:assert/strict';
@@ -433,3 +434,39 @@ test('the evidence gathered before the fence is answered from even when the answ
   assert.equal((run.toolEvidence ?? []).length, 1, 'the first round evidence is kept, never discarded');
   assert.match(run.finalText ?? '', /found 1 item/, 'the deterministic answer is written from that evidence');
 });
+
+// --- The chat intent surface: voice parity, one call searches and shapes ---
+
+const intentCall = (toolName: string): ToolCallIntent => ({ runId: 'run-1', actorId: 'owner', authorityEpoch: 'e',
+  revision: 1, accountId: 'acct', resourceId: 'res', executionId: 'run-1:0:0', toolName, argumentsHash: 'h' });
+
+test('the chat intent surface declares exactly the tools the Live session declares', () => {
+  const names = chatIntentTools({ runSubs: async () => [], callOf: () => undefined, complete: () => { throw Error('unused'); } })
+    .map(tool => tool.name).sort();
+  assert.deepEqual(names, [...INTENT_TOOL_NAMES].sort());
+});
+
+test('one chat intent call runs the plan and completes the shaped digest under its journaled call', async () => {
+  const completed: JsonObject[] = [];
+  const subs: string[] = [];
+  const tools = chatIntentTools({
+    runSubs: async calls => { subs.push(...calls.map(call => call.name)); return calls.map(call => ({ name: call.name, ok: true, response: { text: `body of ${call.name}` } })); },
+    callOf: () => intentCall('search'),
+    complete: (_call, response) => { completed.push(response); return { id: 'result-1', sha256: 'a'.repeat(64) }; },
+  });
+  const outcome = await tools[0]!.execute({ query: 'lux didi' }, execContext());
+  assert.deepEqual(outcome, { status: 'completed', result: { id: 'result-1', sha256: 'a'.repeat(64) } });
+  assert.equal(subs.length > 0, true);
+  assert.equal(completed.length, 1, 'one model-visible result per intent call, not one per sub read');
+  assert.equal(completed[0]!.tool, 'search');
+  assert.match(String(completed[0]!.text), /body of search_knowledge/);
+});
+
+test('a chat intent call without a journaled intent fails closed and completes nothing', async () => {
+  let completed = 0;
+  const tools = chatIntentTools({ runSubs: async () => [], callOf: () => undefined,
+    complete: () => { completed += 1; throw Error('must not complete'); } });
+  assert.deepEqual(await tools[0]!.execute({ query: 'lux didi' }, execContext()), { status: 'failed', code: 'handler_outcome' });
+  assert.equal(completed, 0);
+});
+

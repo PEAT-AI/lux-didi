@@ -76,9 +76,11 @@ test('the connected consent wall is a closed disclosure', () => {
   assert.match(connected, /<\/details>/);
 });
 
-test('typed text to Naya is an input under the voice card that posts to the live text endpoint', () => {
+test('typed text goes through the connected composer, Enter to send, not the removed Live text box', () => {
   const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
-  assert.match(main, /id="live-text-form"/);
-  assert.match(main, /id="live-text"/);
-  assert.ok(main.includes("request<{ sent: boolean }>('/live/text'"));
+  const connected = readFileSync(new URL('../src/connected.ts', import.meta.url), 'utf8');
+  assert.match(connected, /id="connected-draft"/);
+  assert.match(connected, /id="connected-send"/);
+  assert.match(connected, /addEventListener\('keydown', event => \{ if \(composerIntent\(event\) === 'send'\)/);
+  assert.doesNotMatch(main, /live-text-form|id="live-text"|\/live\/text/, 'the removed optional Live text surface never returns');
 });

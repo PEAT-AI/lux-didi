@@ -15,6 +15,16 @@ import type { OrbPosture } from './orb-level.ts';
 
 export type MiniVisualState = 'cold' | 'connecting' | 'listening' | 'thinking' | 'tool' | 'speaking' | 'hot-muted';
 
+/** A hue change is a crossfade of the two state layers, never a hue number walked
+ *  through the colour wheel: teal 167 to amber 34 walked through the wheel passes
+ *  saturated lime, which is why M3-R6 forbids it. */
+export interface HueMix {
+  from: number;
+  to: number;
+  /** The eased crossfade, 0 for the old layer only, 1 for the new one only. */
+  t: number;
+}
+
 export interface OrbVisual {
   state: MiniVisualState;
   /** HSL degrees, the same unit orb.ts hands the classic renderer. */
@@ -36,6 +46,8 @@ export interface OrbVisual {
   /** Listening follows the owner's microphone; speaking follows Naya's output. */
   followsMic: boolean;
   followsOutput: boolean;
+  /** Present while two states are crossfading. `hue` is always the layer being faded in. */
+  mixing?: HueMix;
 }
 
 /** The one visual per state. `off` and `muted` share the quiet posture (a slow
@@ -67,6 +79,8 @@ export interface OrbVisualOverride {
   glow?: number;
   amplitude?: number;
   posture?: OrbPosture;
+  /** The crossfading layers, when a state change is in flight. */
+  mixing?: HueMix;
 }
 
 const published = new WeakMap<HTMLCanvasElement, OrbVisualOverride>();
@@ -107,19 +121,21 @@ export function easeInOut(t: number): number {
   return (1 - Math.cos(Math.PI * c)) / 2;
 }
 
-/** Linear between two visuals. Posture and the level source switch at the
- *  commit, because the renderer already eases its own motion character. */
+/** Between two visuals: the scalars interpolate, and the colour is handed over as the
+ *  two layers plus the crossfade, so no hue number is ever walked through the wheel.
+ *  Posture and the level source switch at the commit, because the renderer already eases
+ *  its own motion character. */
 export function mixVisual(from: OrbVisual, to: OrbVisual, t: number): OrbVisual {
   const k = easeInOut(t);
   const at = (a: number, b: number) => a + (b - a) * k;
   return {
     ...to,
-    hue: at(from.hue, to.hue),
     glow: at(from.glow, to.glow),
     amplitude: at(from.amplitude, to.amplitude),
     opacity: at(from.opacity, to.opacity),
     grey: at(from.grey, to.grey),
     bright: at(from.bright, to.bright),
+    mixing: { from: from.hue, to: to.hue, t: k },
   };
 }
 

@@ -472,9 +472,11 @@ html.mini .mini-stage{position:relative;flex:0 0 18px;display:block;width:18px;h
    orb out of the pill (UI3A-R8). */
 html.mini .mini-stage canvas{position:static;width:18px;height:18px;margin:0;display:block}
 html.mini .mini-pill{position:relative;display:flex;align-items:center;gap:5px;box-sizing:border-box;width:64px;height:26px;min-height:26px;max-width:none;margin:0;padding:0 5px;border:1px solid var(--mini-pill-edge);border-radius:13px;background:var(--mini-pill-bg);-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);overflow:hidden}
-/* The presence glow is one soft wash behind the orb, never a second drawing. Its
-   opacity is the state machine's eased glow, so it moves with the state. */
-html.mini .mini-pill:before{content:"";position:absolute;left:9px;top:50%;width:26px;height:26px;margin:-13px 0 0 -13px;border-radius:50%;background:radial-gradient(circle,var(--mini-wash-1),var(--mini-wash-0) 70%);opacity:var(--mini-wash,0);pointer-events:none}
+/* The presence glow is one soft wash behind the orb, never a second drawing. It belongs
+   to the stage and is sized from it, so it scales with the orb instead of sitting at a
+   fixed spot: at 64x26 it is a wash behind the 18 pt orb, and in the orb window it is the
+   orb's own glow (M3-R6 removed the fixed offset that read as a stray dot at the left). */
+html.mini .mini-stage:before{content:"";position:absolute;left:50%;top:50%;width:180%;height:180%;margin:-90% 0 0 -90%;border-radius:50%;background:radial-gradient(circle,var(--mini-wash-1),var(--mini-wash-0) 70%);opacity:var(--mini-wash,0);pointer-events:none}
 /* The one orb renderer at 18 pt; the canvas backing store is larger so the orb
    stays crisp on a Retina pill and in a 2x shot. The stage sizes it. */
 html.mini .mini-stage canvas{transform:none}

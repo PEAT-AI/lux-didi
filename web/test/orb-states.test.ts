@@ -65,7 +65,12 @@ test('the transition is 450 to 600 ms on an ease-in-out curve', () => {
   assert.ok(Math.abs(easeInOut(0.5) - 0.5) < 1e-9, 'the midpoint is the halfway colour');
   assert.ok(easeInOut(0.1) < 0.1 && easeInOut(0.9) > 0.9, 'eased at both ends');
   const half = mixVisual(ORB_VISUALS.listening, ORB_VISUALS.tool, 0.5);
-  assert.ok(Math.abs(half.hue - (ORB_VISUALS.listening.hue + ORB_VISUALS.tool.hue) / 2) < 1e-9);
+  // M3-R6: no halfway hue exists, because a walked hue between teal and amber is lime.
+  assert.equal(half.hue, ORB_VISUALS.tool.hue);
+  // easeInOut(0.5) is exactly 0.5, so the crossfade is half way.
+  assert.equal(half.mixing?.from, ORB_VISUALS.listening.hue);
+  assert.equal(half.mixing?.to, ORB_VISUALS.tool.hue);
+  assert.ok(Math.abs((half.mixing?.t ?? 0) - 0.5) < 1e-9);
   assert.equal(half.posture, ORB_VISUALS.tool.posture, 'the motion character switches at the commit');
 });
 
@@ -80,15 +85,21 @@ test('a committed change eases colour, glow and amplitude, never jumps', () => {
   const at = (offset: number) => machine.visual(start + offset).hue;
   const mid = machine.visual(start + TRANSITION_MS / 2);
   assert.equal(at(0), ORB_VISUALS.cold.hue, 'the ease starts where the old state was');
-  assert.equal(mid.hue, (ORB_VISUALS.cold.hue + ORB_VISUALS.listening.hue) / 2, 'half way at half time');
-  assert.equal(at(TRANSITION_MS), ORB_VISUALS.listening.hue, 'the ease lands exactly on the new state');
+  // M3-R6: the colour is a crossfade of two layers, never one hue walked through the wheel.
+  assert.equal(mid.hue, ORB_VISUALS.listening.hue, 'the incoming layer is the target');
+  assert.deepEqual({ from: mid.mixing?.from, to: mid.mixing?.to }, { from: ORB_VISUALS.cold.hue, to: ORB_VISUALS.listening.hue });
+  assert.ok(Math.abs((mid.mixing?.t ?? 0) - 0.5) < 1e-9, 'half way at half time');
   const glow = mid.glow;
   assert.ok(glow > ORB_VISUALS.cold.glow && glow < ORB_VISUALS.listening.glow, 'glow eases too');
   const amplitude = mid.amplitude;
   assert.ok(amplitude > ORB_VISUALS.cold.amplitude && amplitude < ORB_VISUALS.listening.amplitude, 'amplitude eases too');
-  const trail = [0, 60, 120, 180, 240, 300, 360, 420, 480, 540].map(at);
-  // The hue travels from the cold blue down to the listening teal, one way, no overshoot.
-  for (let i = 1; i < trail.length; i += 1) assert.ok(trail[i]! <= trail[i - 1]!, 'one way, no overshoot');
+  // The crossfade only grows, never overshoots, and finishes exactly at the bound.
+  // From the first frame inside the fade (the commit frame is still the old layer) to just
+  // under the bound.
+  const trail = [1, 60, 120, 180, 240, 300, 360, 420, 480].map(offset => machine.visual(start + offset).mixing?.t ?? 1);
+  for (let i = 1; i < trail.length; i += 1) assert.ok(trail[i]! >= trail[i - 1]!, 'the fade only grows');
+  assert.ok(trail.at(-1)! < 1 && trail.at(-1)! > 0.9, 'almost there just under the bound');
+  assert.equal(at(TRANSITION_MS), ORB_VISUALS.listening.hue, 'the ease lands exactly on the new state');
   assert.equal(machine.state(start + TRANSITION_MS), 'listening');
 });
 
@@ -105,16 +116,21 @@ test('a state that lasts under 250 ms is a flicker and never shows', () => {
   assert.equal(machine.state(6100 + DEBOUNCE_MS), 'tool', 'the state that lasts commits');
 });
 
-test('a new request mid-transition starts from the colour on screen', () => {
+test('a new request mid-transition crossfades in from the layer on screen', () => {
   const machine = createOrbStateMachine('cold');
   machine.request('listening', 0);
-  const mid = DEBOUNCE_MS + TRANSITION_MS / 2;
-  machine.visual(mid);
-  machine.request('tool', mid);
-  const commit = mid + DEBOUNCE_MS;
-  const before = machine.visual(commit - 1).hue;
-  const after = machine.visual(commit + 1).hue;
-  assert.ok(Math.abs(after - before) < 1, `no jump at the commit: ${before} then ${after}`);
+  const changedAt = DEBOUNCE_MS + TRANSITION_MS * 0.3;
+  const running = machine.visual(changedAt);
+  assert.ok(running.mixing && running.mixing.t > 0 && running.mixing.t < 1, 'the first crossfade was in flight');
+  machine.request('tool', changedAt);
+  const commit = changedAt + DEBOUNCE_MS;
+  const before = machine.visual(commit - 1);
+  const after = machine.visual(commit + 1);
+  // No jump: the new crossfade fades in the layer the old one was arriving at.
+  assert.ok(after.mixing && after.mixing.t < 0.05, 'the new crossfade starts from nothing');
+  assert.equal(after.mixing?.to, ORB_VISUALS.tool.hue);
+  assert.equal(after.mixing?.from, before.mixing?.to, 'it fades in from the layer that was arriving');
+  assert.equal(after.mixing?.from, ORB_VISUALS.listening.hue);
 });
 
 test('reduced motion keeps the colour change and drops the motion', () => {

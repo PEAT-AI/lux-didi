@@ -206,7 +206,8 @@ export function startMiniOrbVisuals(scope: MiniOrbScope = {}): () => void {
     element?.style?.setProperty('--mini-orb-opacity', breathe(visual.opacity, visual.breatheMs, at).toFixed(3));
     element?.style?.setProperty('--mini-orb-grey', visual.grey.toFixed(3));
     element?.style?.setProperty('--mini-orb-bright', visual.bright.toFixed(3));
-    (pill as HTMLElement | null | undefined)?.style?.setProperty('--mini-wash', visual.glow.toFixed(3));
+    // The wash is drawn by the stage, so it scales with the orb (M3-R6).
+    element?.style?.setProperty('--mini-wash', visual.glow.toFixed(3));
     miniMeter(pill ?? null, visual.followsMic ? pillMic : 0);
     handle = frame?.(step);
   };

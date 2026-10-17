@@ -28,15 +28,20 @@ async function pngSize(path) {
   return { width: head.readUInt32BE(16), height: head.readUInt32BE(20), bytes: (await stat(path)).size };
 }
 
-/// The pill's own states, in the owner's words (M3-R2 added cold and hot-muted).
-const STATES = ['idle', 'listening', 'thinking', 'tool', 'speaking', 'muted'];
-/// The five transitions the owner asked to see, as the pill's state attributes.
+/// The orb's own states, in the owner's words (M3-R6 asks for cold and hot-muted strips
+/// of their own). The page paints a pill state, so each visual maps to the attribute.
+const STATES = ['cold', 'connecting', 'listening', 'thinking', 'tool', 'speaking', 'hot-muted'];
+const PILL_STATE = {
+  cold: 'idle', connecting: 'connecting', listening: 'listening', thinking: 'thinking',
+  tool: 'tool', speaking: 'speaking', 'hot-muted': 'muted',
+};
+/// The five transitions the owner asked to see, as visual states.
 const TRANSITIONS = [
   ['listening', 'thinking'],
   ['thinking', 'tool'],
   ['tool', 'speaking'],
   ['speaking', 'listening'],
-  ['listening', 'muted'],
+  ['listening', 'hot-muted'],
 ];
 
 const fixture = await startFixture({ configured: false });
@@ -73,9 +78,17 @@ try {
   /// would pass on the breathe alone (review F5).
   const painted = () => page.evaluate(() => {
     const visual = window.didiOrbVisual && window.didiOrbVisual();
-    return visual ? { hue: Math.round(visual.hue * 10) / 10, glow: Math.round(visual.glow * 1000) / 1000, state: visual.state } : null;
+    return visual ? {
+      hue: Math.round(visual.hue * 10) / 10,
+      glow: Math.round(visual.glow * 1000) / 1000,
+      state: visual.state,
+      // M3-R6: the crossfade progress, 1 when the change has landed.
+      mix: visual.mixing ? Math.round(visual.mixing.t * 1000) / 1000 : 1,
+      mixFrom: visual.mixing ? Math.round(visual.mixing.from * 10) / 10 : null,
+      mixTo: visual.mixing ? Math.round(visual.mixing.to * 10) / 10 : null,
+    } : null;
   });
-  const HUES = { idle: 216, listening: 167, thinking: 34, tool: 34, speaking: 173, muted: 216 };
+  const HUES = { cold: 216, connecting: 216, listening: 167, thinking: 34, tool: 34, speaking: 173, 'hot-muted': 216 };
 
   // The state lives on the mini stage (M3-R4: the stage is the orb, the pill is the chrome).
   const setState = (state) => page.locator('.mini-stage').evaluate((el, next) => el.setAttribute('data-mini-state', next), state);
@@ -112,7 +125,7 @@ try {
   };
 
   for (const state of STATES) {
-    await setState(state);
+    await setState(PILL_STATE[state]);
     await page.waitForTimeout(700);            // past the debounce and the ease
     await capture(`state-${state}-pill`, true);
     // The mini stage enlarged to 300x300: the orb and its rings, nothing else.
@@ -122,15 +135,15 @@ try {
   }
 
   for (const [from, to] of TRANSITIONS) {
-    await setState(from);
+    await setState(PILL_STATE[from]);
     await page.waitForTimeout(900);            // settle the strip's starting state
     for (const enlarged of [false, true]) {
       if (enlarged) {
         await enlarge(true);
-        await setState(from);
+        await setState(PILL_STATE[from]);
         await page.waitForTimeout(900);
       }
-      await setState(to);
+      await setState(PILL_STATE[to]);
       const started = Date.now();
       const samples = [];
       const visuals = [];
@@ -145,25 +158,24 @@ try {
       }
       const distinct = new Set(samples).size;
       assert.ok(distinct >= 3, `${from} to ${to} moves through at least three frames, got ${JSON.stringify(samples)}`);
-      // The colour itself: it starts at the old state's hue, moves while the strip runs,
-      // and settles on the new one, so the six frames prove an eased colour change and not
-      // a breathe. The strip is only 600 ms long and the debounce takes the first 250, so
-      // the settle is read after the last frame.
+      // The colour: M3-R6 forbids walking a hue between teal and amber, so the strip
+      // proves a crossfade instead. The incoming layer is the target from the first frame,
+      // the fade is partial in the middle of the strip, and it lands at 1.
       const first = visuals[0], last = visuals.at(-1);
       assert.ok(first && last, `${from} to ${to} reported a painted visual on every frame`);
-      assert.equal(first.hue, HUES[from], `${from} to ${to} starts on the ${from} hue`);
-      const settled = await (async () => {
-        await page.waitForTimeout(450);
-        const visual = await painted();
-        return visual;
-      })();
-      if (HUES[from] !== HUES[to]) {
-        const direction = Math.sign(HUES[to] - HUES[from]);
-        assert.ok(direction * (last.hue - first.hue) > 3, `${from} to ${to} moved toward ${to}: ${first.hue} then ${last.hue}`);
-        const between = visuals.map((v) => v.hue).filter((hue) => Math.abs(hue - HUES[from]) > 2 && Math.abs(hue - HUES[to]) > 2);
-        assert.ok(between.length >= 1, `${from} to ${to} shows an in-between colour: ${JSON.stringify(visuals.map((v) => v.hue))}`);
+      assert.equal(last.hue, HUES[to], `${from} to ${to} fades in the ${to} hue`);
+      assert.equal(first.mix, 0, `${from} to ${to} starts before the fade`);
+      const partial = visuals.filter((v) => v.mix > 0 && v.mix < 1).length;
+      assert.ok(partial >= 1, `${from} to ${to} fades across the strip: ${JSON.stringify(visuals.map((v) => v.mix))}`);
+      assert.equal(last.mixFrom ?? HUES[from], HUES[from], `${from} to ${to} fades from the ${from} hue`);
+      await page.waitForTimeout(450);
+      const settled = await painted();
+      if (HUES[from] === HUES[to]) {
+        assert.equal(settled.state, to, `${from} to ${to} lands on ${to}`);
+      } else {
+        assert.equal(settled.hue, HUES[to], `${from} to ${to} settles on the ${to} hue`);
+        assert.equal(settled.mix, 1, `${from} to ${to} finishes the fade`);
       }
-      assert.ok(settled && Math.abs(settled.hue - HUES[to]) <= 2, `${from} to ${to} settles on the ${to} hue, got ${JSON.stringify(settled)}`);
       moved.push(`${from}-to-${to}${enlarged ? '@300' : ''}:${distinct}->${Math.round(settled.hue)}`);
       if (enlarged) await enlarge(false);
     }

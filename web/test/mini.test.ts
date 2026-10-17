@@ -284,13 +284,16 @@ test('the pill loop eases to the state and gates the microphone', () => {
   clock += DEBOUNCE_MS + TRANSITION_MS / 2; // commit lands, the ease is half way
   step();
   const half = published.at(-1)!;
-  assert.ok(half.hue < ORB_VISUALS.cold.hue && half.hue > ORB_VISUALS.listening.hue, `eased hue ${half.hue}`);
+  // M3-R6: no hue is walked; the two state layers crossfade instead.
+  assert.equal(half.hue, ORB_VISUALS.listening.hue, 'the layer being faded in is the listening teal');
+  assert.ok(half.mixing && Math.abs(half.mixing.t - 0.5) < 0.01, `half way across the crossfade, got ${JSON.stringify(half.mixing)}`);
+  assert.equal(half.mixing?.from, ORB_VISUALS.cold.hue);
   assert.equal(half.followsMic, true);
   clock += TRANSITION_MS;
   step();
   assert.equal(published.at(-1)?.hue, ORB_VISUALS.listening.hue, 'it lands on the listening teal');
   assert.equal(style.vars.get('--mini-orb-grey'), '0.000', 'a live listening orb carries its colour');
-  assert.ok(Number.parseFloat(pillStyle.vars.get('--mini-wash') ?? '0') > 0.3, 'the wash follows the eased glow');
+  assert.ok(Number.parseFloat(style.vars.get('--mini-wash') ?? '0') > 0.3, 'the wash follows the eased glow, on the stage');
   assert.equal(style.vars.get('--mini-orb-bright'), '1.000', 'a live orb is at full brightness');
   host = {};
   installMiniVisuals(host);

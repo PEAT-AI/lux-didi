@@ -103,7 +103,16 @@ export class Orb {
     this.hue=this.hue===undefined||still||visual?.hue!==undefined?hueTarget:this.hue+(hueTarget-this.hue)*smoothingAlpha(dt,0.14);
     // The pill's machine has already eased these, so they are drawn as given.
     const activity=m.activity*(visual?.amplitude??1), glow=visual?.glow??m.glow;
-    this.classic?.draw(c,c,s*0.05,this.hue,still?0.8:this.phase,active,m.level,activity,glow,m.flare,this.mid,this.high,m.flux,m.low);
+    const drawLayer=(hue: number, alpha: number) => {
+      ctx.globalAlpha=alpha;
+      this.classic?.draw(c,c,s*0.05,hue,still?0.8:this.phase,active,m.level,activity,glow,m.flare,this.mid,this.high,m.flux,m.low);
+    };
+    // M3-R6: a state change crossfades the two layers by opacity. Walking one hue number
+    // from the listening teal to the amber would pass saturated lime on the way.
+    const mix=visual?.mixing;
+    if(mix&&mix.t<1){ drawLayer(mix.from,1); drawLayer(mix.to,Math.max(0,Math.min(1,mix.t))); }
+    else drawLayer(this.hue,1);
+    ctx.globalAlpha=1;
     ctx.restore();
     // Nothing reaches the square edge: the outermost band fades the whole drawing (rings and glow
     // included) to transparent, so the canvas never shows a straight cut (V3-R6 item 1).

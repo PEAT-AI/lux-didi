@@ -1375,7 +1375,7 @@ test('attach wins before deadline including opening, and expiry wins after it wi
   await attachment.ready;
   h.advance(100); scheduler.runDue();
   assert.equal(h.owner.get(row.liveSessionId).lifecycle, 'active');
-  assert.equal(scheduler.pending.size, 2, 'only active session and idle budgets remain');
+  assert.equal(scheduler.pending.size, 3, 'only the session window, the call deadline and the idle budget remain');
   t.mock.restoreAll();
   const past = h.owner.create({ idempotencyKey: 'deadline-attach-late', inputClass: 'ordinary' }, h.ctx);
   h.advance(21);

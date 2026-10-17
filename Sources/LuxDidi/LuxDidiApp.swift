@@ -891,7 +891,7 @@ struct RootView: View {
             window.endSheet(sheet); gettingStartedSheet = nil; gettingStartedProofRows = nil
             print("MAC-UI PASS screenshot=\(path) close=retains-agent escape=hides draft=retained hotkeyCallback=show quit=clean-no-session voiceEffects=none notificationEffects=none")
             NSApp.terminate(nil)
-        } catch { failProof("Screenshot could not be written") }
+        } catch { failProof("Screenshot could not be written: \(error)") }
     }
     func failProof(_ reason: String) { fputs("MAC-PROOF FAIL: \(reason)\n", stderr); exit(1) }
 }

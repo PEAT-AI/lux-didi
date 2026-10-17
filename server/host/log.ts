@@ -190,6 +190,15 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeCount(value.deadAirMs)) return;
     return { event: 'live_dead_air', deadAirMs: value.deadAirMs };
   }
+  if (value.event === 'live_turn_script') {
+    // E1: which script the model spoke this turn, in closed buckets and code-point counts. Never text.
+    if (Object.keys(value).sort().join(',') !== ['event', 'liveSessionId', 'script', 'latinChars', 'devanagariChars', 'afterTool', 'interrupted'].sort().join(',')) return;
+    if (typeof value.liveSessionId !== 'string' || !/^[0-9a-f-]{36}$/i.test(value.liveSessionId)) return;
+    if (!isSafeMember(value.script, ['latin', 'devanagari', 'mixed'])) return;
+    if (!isSafeCount(value.latinChars) || !isSafeCount(value.devanagariChars)) return;
+    if (typeof value.afterTool !== 'boolean' || typeof value.interrupted !== 'boolean') return;
+    return { event: 'live_turn_script', liveSessionId: value.liveSessionId, script: value.script, latinChars: value.latinChars, devanagariChars: value.devanagariChars, afterTool: value.afterTool, interrupted: value.interrupted };
+  }
   if (value.event === 'live_state') {
     // F7: one closed-shape transition record per projected state change, so the orb timeline is
     // reconstructable from host.log. Enums and an epoch millisecond only, never any turn content.

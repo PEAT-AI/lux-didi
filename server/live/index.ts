@@ -43,6 +43,10 @@ interface ActiveSession {
   inputFinalAt: number | undefined;
   /** First model audio of the current turn; reset at each model turn start. */
   firstAudioAt: number | undefined;
+  /** Spoken output script codes of the current turn, counted and then reported as counts only. */
+  turnLatin: number; turnDevanagari: number; turnChars: number;
+  /** Whether this turn followed tool work and whether the owner cut it off. */
+  turnAfterTool: boolean; turnInterrupted: boolean;
   inputJournalId?: number;
   inputFinalTimer?: ReturnType<JobTimer>;
   inputFinalWaiters?: Set<() => void>;
@@ -111,6 +115,32 @@ type SummaryHooks = {
 
 function identity(value: unknown): string { return createHash('sha256').update(JSON.stringify(value)).digest('hex'); }
 function journalKind(type: string): JournalKind | null { return (persistedKinds as readonly string[]).includes(type) ? type as JournalKind : null; }
+
+/**
+ * The script of what the model actually spoke this turn, counted from the output transcript.
+ * Counters only: live_turn_script reports buckets and code-point counts, never any spoken text.
+ */
+function countTurnScript(handle: ActiveSession, text: string): void {
+  for (const character of text) {
+    if (/\s/u.test(character)) continue;
+    handle.turnChars += 1;
+    if (/[\u0900-\u097F]/u.test(character)) handle.turnDevanagari += 1;
+    else if (/[A-Za-z]/u.test(character)) handle.turnLatin += 1;
+  }
+}
+
+function resetTurnScript(handle: ActiveSession): void {
+  handle.turnLatin = 0; handle.turnDevanagari = 0; handle.turnChars = 0;
+  handle.turnAfterTool = false; handle.turnInterrupted = false;
+}
+
+/** One metadata-only record per turn. A turn with no spoken output reports nothing. */
+function logTurnScript(handle: ActiveSession): void {
+  if (handle.turnChars === 0) { resetTurnScript(handle); return; }
+  const script = handle.turnLatin > 0 && handle.turnDevanagari > 0 ? 'mixed' : handle.turnDevanagari > 0 ? 'devanagari' : 'latin';
+  hostLogEvent({ event: 'live_turn_script', liveSessionId: handle.liveSessionId, script, latinChars: handle.turnLatin, devanagariChars: handle.turnDevanagari, afterTool: handle.turnAfterTool, interrupted: handle.turnInterrupted });
+  resetTurnScript(handle);
+}
 // Wire-38: barge-in sends serverContent.interrupted, never toolCallCancellation, and a late
 // toolResponse is accepted silently. A batch dispatched before that interruption is answered
 // once, marked after_barge_in so the UI can show why the answer may not match the pending turn.
@@ -662,7 +692,7 @@ export class LiveSessionOwner {
       sessionTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()),
       researchLedger: new ResearchLedger(),
-      registry, host, toolStep: 0, toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined,
+      registry, host, toolStep: 0, toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
       consumerState: 'attached', journalEvents: 0, journalBytes: 0, adapterOutcome: undefined,
@@ -862,6 +892,7 @@ export class LiveSessionOwner {
       for await (const event of session.events) {
         if (this.#settled(handle) || generation !== handle.generation) break;
         if (event.type === 'modelTurnStarted') {
+          resetTurnScript(handle);
           handle.firstAudioAt = undefined;
           this.#beginModelTurn(handle);
           handle.turnCompleteSeen = false;
@@ -884,6 +915,7 @@ export class LiveSessionOwner {
         if (event.type !== 'ready' && event.type !== 'outcome') this.#armIdle(handle, this.#profile.limits.idleMs);
         if (event.type === 'toolCall') {
           handle.toolCalls += event.calls.length;
+          handle.turnAfterTool = true;
           for (const call of event.calls) { handle.pendingCallIds.add(call.id); handle.pendingCalls.set(call.id, call.name); }
           void this.#toolBatch(handle, event, generation).catch(() => {
             if (this.#settled(handle) || generation !== handle.generation) return;
@@ -912,6 +944,8 @@ export class LiveSessionOwner {
           // A barge-in abandons any awaited output, and a tool that never resolves must not leave
           // THINKING stuck (F4).
           handle.thinking = false;
+          handle.turnInterrupted = true;
+          logTurnScript(handle);
           // E1: one metadata-only host record per provider barge-in. Never audio, text or a provider payload.
           hostLogEvent({ event: 'live_interrupted', liveSessionId: handle.liveSessionId,
             turnCompleteSeen: handle.turnCompleteSeen,
@@ -919,7 +953,7 @@ export class LiveSessionOwner {
         }
         // generationComplete alone does not end SPEAKING: the orb holds it until the turn completes
         // and playback drains (F2).
-        if (event.type === 'turnComplete') { handle.speaking = false; handle.turnCompleteSeen = true; handle.thinking = handle.pendingCallIds.size > 0; }
+        if (event.type === 'turnComplete') { handle.speaking = false; handle.turnCompleteSeen = true; handle.thinking = handle.pendingCallIds.size > 0; logTurnScript(handle); }
         if (event.type === 'waitingForInput') { handle.thinking = !event.value; if (event.value) handle.speaking = false; }
         if (event.type === 'audio') {
           handle.thinking = false; handle.speaking = true; handle.lastModelAudioAt = this.#now();
@@ -933,6 +967,7 @@ export class LiveSessionOwner {
           this.#pushChunk(handle, { kind: 'audio', pcm: event.pcm }); continue;
         }
         if (event.type === 'outcome') { outcome = event.outcome; continue; }
+        if (event.type === 'outputTranscription') countTurnScript(handle, event.text);
         if (event.type === 'inputTranscription') {
           handle.inputFinalTimer?.cancel();
           handle.inputAt = this.#now();

@@ -139,24 +139,18 @@ test('a granted google endpoint calls the real child with bounded defaults and b
   }
 });
 
-test('a merged calendar read stops at its own budget and reports the calendars it did not reach as unread', async () => {
-  const { dir, pidFile } = scratch();
-  const registry = new McpRegistry();
-  registry.register(config('local-stdio', 'slow', pidFile));
-  const adapter = adapterFor(registry);
-  try {
-    const digest = await discoverAndApprove(registry, adapter, 'local-stdio', GOOGLE_TOOLS);
-    // The child answers the primary at once and every other calendar after 250 ms.
-    const calendar = readerFor(adapter, registry, digest, { family: 'calendar', calendarReadMs: 120 });
-    const merged = completed(await calendar.gcalList({}));
-    payloadPorts.set(merged, adapter);
-    const data = envelopeOf(merged)['data'] as Record<string, unknown>;
-    assert.equal((data['events'] as unknown[]).length, 1, 'the calendar read before the budget carries its event');
-    assert.deepEqual(data['partial'], { unread: 1 }, 'the calendar the read did not reach is reported, never dropped');
-  } finally {
-    await adapter.close();
-    rmSync(dir, { recursive: true, force: true });
-  }
+test('a merged calendar read stops at its own budget and names the calendars it did not reach', async () => {
+  const fake = fakeCalendarPort({
+    calendars: [{ id: 'primary', summary: 'Mine', primary: true }, { id: 'b', summary: 'Beta' }, { id: 'c', summary: 'Gamma' }, { id: 'd', summary: 'Delta' }],
+    eventsFor: id => ({ id: `e-${id}`, summary: `Event ${id}`, start: { dateTime: '2026-10-16T09:00:00+05:30' } }),
+    // The primary answers at once and every other calendar takes longer than the read budget.
+    delayFor: id => (id === 'primary' ? undefined : 200),
+  });
+  const result = await (await calendarReader(fake.port, { calendarReadMs: 120 })).gcalList({});
+  const data = dataOf(result);
+  const events = data['events'] as Record<string, unknown>[];
+  assert.deepEqual(events.map(event => event['id']), ['e-primary'], 'the calendar read before the budget keeps its event');
+  assert.deepEqual(data['partial'], { unread: 3 }, 'the calendars the read did not reach are named, never dropped');
 });
 
 test('a default gmail_list asks the child for exactly the digest cap, so the upstream per-message metadata fetch count is the digest cap not ten', async () => {
@@ -406,14 +400,14 @@ test('gmail_list projects an SSE MCP entity from separately decodedResult', asyn
 
 const CALENDAR_DIGEST = 'synthetic-calendar-digest';
 
-async function calendarReader(port: McpPort) {
+async function calendarReader(port: McpPort, overrides: Partial<GoogleConfig> = {}) {
   const registry = new McpRegistry();
   const endpoint = config('calendar-fake', 'ok', join(tmpdir(), 'calendar-fake.pid'));
   registry.register(endpoint); registry.enable(endpoint.id); registry.allowEgress(endpoint.id);
   const tools = [{ name: 'gcal_calendars', inputSchema: { type: 'object' } }, { name: 'gcal_list', inputSchema: { type: 'object' } }];
   const digest = registry.observed('calendar-fake', tools, registry.revision('calendar-fake'));
   registry.approve({ endpointId: 'calendar-fake', schemaDigest: digest, toolNames: ['gcal_calendars', 'gcal_list'], effect: 'read', account: ACCOUNT, resource: RESOURCE, generation: 1 });
-  return createGoogleReader({ port, registry, config: { endpointId: 'calendar-fake', account: ACCOUNT, resource: RESOURCE, schemaDigest: digest, generation: 1, family: 'calendar' } });
+  return createGoogleReader({ port, registry, config: { endpointId: 'calendar-fake', account: ACCOUNT, resource: RESOURCE, schemaDigest: digest, generation: 1, ...overrides, family: 'calendar' } });
 }
 function dataOf(result: GoogleResult): Record<string, unknown> {
   if (result.state !== 'completed') throw new Error(`not completed: ${JSON.stringify(result)}`);
@@ -421,7 +415,7 @@ function dataOf(result: GoogleResult): Record<string, unknown> {
   const envelope = JSON.parse(content?.[0]?.text ?? '{}') as { data?: Record<string, unknown> };
   return envelope.data ?? {};
 }
-function fakeCalendarPort(options: { calendars: { id: string; summary: string; primary?: boolean }[]; eventsFor: (id: string, index: number) => Record<string, unknown>; defer?: boolean; delayMs?: number }): { port: McpPort; listArgs: Record<string, unknown>[]; peak: () => number; pending: () => number; release: () => void } {
+function fakeCalendarPort(options: { calendars: { id: string; summary: string; primary?: boolean }[]; eventsFor: (id: string, index: number) => Record<string, unknown>; delayFor?: (id: string) => number | undefined; defer?: boolean; delayMs?: number }): { port: McpPort; listArgs: Record<string, unknown>[]; peak: () => number; pending: () => number; release: () => void } {
   const scope = { endpointId: 'calendar-fake', url: 'https://fake.invalid', schemaDigest: CALENDAR_DIGEST, toolName: 'gcal_list', generation: 1, account: ACCOUNT, resource: RESOURCE } as unknown as ResultScope;
   const completed = (data: unknown): CompletedResult => ({
     state: 'completed', decodedResult: { content: [{ type: 'text', text: JSON.stringify({ data }) }] },
@@ -444,7 +438,8 @@ function fakeCalendarPort(options: { calendars: { id: string; summary: string; p
       const id = String(request.arguments['calendarId']);
       listArgs.push({ ...request.arguments });
       const at = index++;
-      if (options.delayMs !== undefined) await new Promise<void>(resolve => { const timer = setTimeout(resolve, options.delayMs!); signal?.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, { once: true }); });
+      const delay = options.delayFor?.(id) ?? options.delayMs;
+      if (delay !== undefined) await new Promise<void>(resolve => { const timer = setTimeout(resolve, options.delayMs!); signal?.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, { once: true }); });
       if (options.defer) {
         inFlight += 1; peak = Math.max(peak, inFlight);
         await new Promise<void>(resolve => gates.push(resolve));

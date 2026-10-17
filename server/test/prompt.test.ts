@@ -308,6 +308,6 @@ test('owner fields retain expanded UTF-16 content exactly under the shared compl
 test('the research outcome sentence distinguishes nothing matched from a read cut short', async () => {
   const { NAYA_TOOLS } = await import('../prompt/live-persona.js');
   assert.ok(NAYA_TOOLS.includes('say what you searched and that nothing matched'), 'an empty search is still voiced as nothing matched');
-  assert.ok(NAYA_TOOLS.includes('say it was cut short and offer a narrower ask instead'), 'a cut read is voiced as cut short');
-  assert.ok(NAYA_TOOLS.includes('never call that nothing matched'), 'and the two are never blurred');
+  assert.ok(NAYA_TOOLS.includes('a read cut short is said as cut short, so offer a narrower ask'), 'a cut read is voiced as cut short');
+  assert.ok(NAYA_TOOLS.indexOf('cut short is said as cut short') > NAYA_TOOLS.indexOf('that nothing matched'), 'the cut-short clause follows the empty-search clause, so neither is read as the other');
 });

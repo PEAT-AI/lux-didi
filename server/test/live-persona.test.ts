@@ -520,7 +520,7 @@ test('the recovery pickup line is the exact fixed text of release 3g-c', () => {
 });
 test('the tool conduct gates research to factual questions and voices an empty search honestly', () => {
   assert.ok(NAYA_TOOLS.includes("Call research only for a factual question about the owner's mail, calendar, chat, knowledge or the web. Never call it for an opinion, a statement, a feeling or small talk."), 'the research gate is stated verbatim');
-  assert.ok(NAYA_TOOLS.includes('When a search finds nothing, say what you searched and that nothing matched. When a result says the read was cut short or timed out, say it was cut short and offer a narrower ask instead; never call that nothing matched. Never call a source unreachable unless the tool result says it is down.'), 'the empty-search and cut-short line is stated verbatim');
+  assert.ok(NAYA_TOOLS.includes('When a search finds nothing, say what you searched and that nothing matched; a read cut short is said as cut short, so offer a narrower ask. Never call a source unreachable unless the tool result says it is down.'), 'the empty-search and cut-short line is stated verbatim');
 });
 
 test('the voice surface asks for varied phrasing, never the same framing phrase twice', () => {

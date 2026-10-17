@@ -280,8 +280,8 @@ expect(registeredKeys == [1, 2, 3, 4], "shortcut registrations are separate even
 expect(shortcutRegistration.startStatus.contains("Unavailable") && shortcutRegistration.muteStatus == "registered" && shortcutRegistration.windowStatus == "registered" && shortcutRegistration.pillStatus == "registered", "conflict does not hide independent mute or pill registration")
 // MINI2: the pill is Control-Option-Space, a different mask from the window's
 // Control-Option-Shift-Space, so both keys can be live at once.
-expect(registeredModifiers[3] == NativeShortcuts.pillModifiers && registeredModifiers[2] == NativeShortcuts.windowModifiers, "the pill chord carries its own modifier mask")
-expect(NativeShortcuts.pillModifiers != NativeShortcuts.windowModifiers, "the pill chord is not the window chord")
+expect(registeredModifiers[3] == ShortcutModifiers.pill && registeredModifiers[2] == ShortcutModifiers.window, "the pill chord carries its own modifier mask")
+expect(ShortcutModifiers.pill != ShortcutModifiers.window, "the pill chord is not the window chord")
 var shown = 0, started = 0, muted = 0, stopped = 0
 var active = false
 let actions = NativeSummonActions(show: { shown += 1 }, isCapturing: { active }, start: {

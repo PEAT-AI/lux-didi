@@ -53,19 +53,24 @@ struct LiveShortcutRegistration {
     /// One registration per hotkey, each with its own Carbon modifier mask, so a
     /// conflict in one never hides another.
     init(register: (_ key: Int, _ id: UInt32, _ modifiers: Int) -> Int32) {
-        startStatus = ShortcutStatus.describe(code: register(kVK_ANSI_L, 1, NativeShortcuts.windowModifiers))
-        muteStatus = ShortcutStatus.describe(code: register(kVK_ANSI_M, 2, NativeShortcuts.windowModifiers))
-        windowStatus = ShortcutStatus.describe(code: register(kVK_Space, 3, NativeShortcuts.windowModifiers))
-        pillStatus = ShortcutStatus.describe(code: register(kVK_Space, 4, NativeShortcuts.pillModifiers))
+        startStatus = ShortcutStatus.describe(code: register(kVK_ANSI_L, 1, ShortcutModifiers.window))
+        muteStatus = ShortcutStatus.describe(code: register(kVK_ANSI_M, 2, ShortcutModifiers.window))
+        windowStatus = ShortcutStatus.describe(code: register(kVK_Space, 3, ShortcutModifiers.window))
+        pillStatus = ShortcutStatus.describe(code: register(kVK_Space, 4, ShortcutModifiers.pill))
     }
 }
 /// Control-Option-Shift-L starts/shows Live; Control-Option-Shift-M mutes;
 /// Control-Option-Shift-Space toggles the full window; Control-Option-Space
 /// (MINI2) toggles the pill.
 /// Each registration and Carbon event identity is independent of Show/hide.
+/// The Carbon modifier masks. Control-Option-Shift is the window chord and
+/// Control-Option the pill chord, and they live outside the actor so a value can
+/// be read from the registration table without hopping to the main actor.
+enum ShortcutModifiers {
+    static let window = controlKey | optionKey | shiftKey
+    static let pill = controlKey | optionKey
+}
 @MainActor final class NativeShortcuts {
-    static let windowModifiers = controlKey | optionKey | shiftKey
-    static let pillModifiers = controlKey | optionKey
     private var references: [EventHotKeyRef] = []
     private var handler: EventHandlerRef?
     var onStart: (() -> Void)?

@@ -2569,7 +2569,7 @@ test('a model turn that stops generating without turnComplete is logged open (#3
     for (let i = 0; i < 200 && !events.some(entry => entry.event === 'live_turn_open'); i++) await tick();
   } finally { detach(); }
   const open = events.find(entry => entry.event === 'live_turn_open');
-  assert.ok(open, 'a turn that idles out without turnComplete is logged open');
+  assert.ok(open, 'a turn that idles out without turnComplete is logged open: ' + JSON.stringify(events.map(entry => entry.event)));
   assert.equal(typeof open!.msSinceLastModelAudio, 'number');
 });
 test('the calendar intent reads events from every calendar the owner keeps', async t => {

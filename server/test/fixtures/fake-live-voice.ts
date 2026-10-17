@@ -5,7 +5,7 @@ import type {
 
 /** A test-only port whose capabilities differ from the Gemini adapter, so the host cannot key on a model name. */
 export type FakeLiveVoiceEvent =
-  | { type: 'audio'; pcm: Uint8Array; mimeType: 'audio/pcm;rate=24000' }
+  | { type: 'audio'; pcm: Uint8Array; rate: number }
   | { type: 'modelTurnStarted' }
   | { type: 'generationComplete' } | { type: 'turnComplete' } | { type: 'interrupted' }
   | { type: 'resumptionHandle'; handle: string }

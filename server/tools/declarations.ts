@@ -6,23 +6,30 @@ import { hostLogEvent } from './host-events.js';
 import type { Authority, DataClass, FunctionDeclaration, HostContext, JsonObject, ModelControl, Part, ToolCallIntent, ToolCallJournal, ToolCallRefusal, ToolDefinition, ToolOutcome, ToolRecord, ToolResultBinding, ToolResultGate, ToolResultRef, LoopResult } from '../adapters/model/types.js';
 
 /** Provider schemas are presentation only. Validation and approval retain the originals. */
+/**
+ * The Gemini provider dialect: uppercase scalar type names, ARRAY/BOOLEAN/enum collapsed to STRING, and the
+ * original schema appended to the description. Shared by the text model payload and the Gemini Live adapter,
+ * which each decide to apply it; other providers get the original JSON schema through the port.
+ */
+export function geminiDialect(value: unknown): JsonObject {
+  const schema = value as JsonObject;
+  const type = String(schema.type ?? 'OBJECT').toUpperCase();
+  if (type === 'ARRAY' || type === 'BOOLEAN' || schema.enum !== undefined) return { type: 'STRING', description: [schema.description, `Original schema: ${JSON.stringify(schema)}`].filter(Boolean).join(' ') };
+  // Build the restricted provider dialect, never copy arbitrary original keys.
+  const result: JsonObject = { type: ['STRING', 'NUMBER', 'INTEGER', 'OBJECT'].includes(type) ? type : 'STRING' };
+  for (const key of ['description', 'required', 'nullable'] as const) if (schema[key] !== undefined) result[key] = structuredClone(schema[key]);
+  const presentation = new Set(['type', 'properties', 'description', 'required', 'nullable', '$schema', '$id', 'title', 'default', 'examples']);
+  if (type !== result.type || Object.keys(schema).some(key => !presentation.has(key))) {
+    result.description = [schema.description, `Original schema: ${JSON.stringify(schema)}`].filter(Boolean).join(' ');
+  }
+  if (schema.properties && typeof schema.properties === 'object') result.properties = Object.fromEntries(Object.entries(schema.properties).map(([k, v]) => [k, geminiDialect(v)]));
+  return result;
+}
 export function declarationsFor(registry: readonly ToolDefinition[]): { declarations: FunctionDeclaration[]; originalByName: Map<string, ToolDefinition['parameters']> } {
-  const originalByName = new Map(registry.map(t => [t.name, structuredClone(t.parameters)]));
-  const flatten = (value: unknown): JsonObject => {
-    const schema = value as JsonObject;
-    const type = String(schema.type ?? 'OBJECT').toUpperCase();
-    if (type === 'ARRAY' || type === 'BOOLEAN' || schema.enum !== undefined) return { type: 'STRING', description: [schema.description, `Original schema: ${JSON.stringify(schema)}`].filter(Boolean).join(' ') };
-    // Build the restricted provider dialect, never copy arbitrary original keys.
-    const result: JsonObject = { type: ['STRING', 'NUMBER', 'INTEGER', 'OBJECT'].includes(type) ? type : 'STRING' };
-    for (const key of ['description', 'required', 'nullable'] as const) if (schema[key] !== undefined) result[key] = structuredClone(schema[key]);
-    const presentation = new Set(['type', 'properties', 'description', 'required', 'nullable', '$schema', '$id', 'title', 'default', 'examples']);
-    if (type !== result.type || Object.keys(schema).some(key => !presentation.has(key))) {
-      result.description = [schema.description, `Original schema: ${JSON.stringify(schema)}`].filter(Boolean).join(' ');
-    }
-    if (schema.properties && typeof schema.properties === 'object') result.properties = Object.fromEntries(Object.entries(schema.properties).map(([k, v]) => [k, flatten(v)]));
-    return result;
+  return {
+    originalByName: new Map(registry.map(t => [t.name, structuredClone(t.parameters)])),
+    declarations: registry.map(t => ({ name: t.name, description: t.description, parameters: geminiDialect(t.parameters) })),
   };
-  return { originalByName, declarations: registry.map(t => ({ name: t.name, description: t.description, parameters: flatten(t.parameters) })) };
 }
 export interface ToolCallsContext {
   registry: readonly ToolDefinition[]; host: HostContext; authority: Authority; control: ModelControl;

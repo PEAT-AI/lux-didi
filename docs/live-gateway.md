@@ -44,8 +44,22 @@ Live transcript fragment. HTTP preflight success alone does not prove attachment
 ## Configuration
 
 Strict owner-only `live.json` in the existing `configDir` (the same directory as the model
-`profile.json`/`gemini-primary.json`). It is loaded once at host startup; edits require an explicit
-restart. No dynamic watch and no automatic grant rebinding.
+`profile.json` and the provider's credential slot file). It is loaded once at host startup; edits
+require an explicit restart. No dynamic watch and no automatic grant rebinding.
+
+A `live.json` that names no provider is the owner default: `provider: "openai"`, `modelId: "gpt-live-1"`,
+`voice: "marin"`. Naming `gemini` selects Gemini 3.8 Live with `models/...` ids and `gemini-primary`
+(OV1-R2). The owner changes the choice from the settings page or `config/cli.js select`; both write the
+same fields through `saveLiveSelection`, and the change applies when the service next starts.
+
+`provider` names the voice provider and selects both the adapter and the credential slot:
+`gemini` (Gemini 3.8 Live, `models/...` ids on `gemini-primary`) or `openai` (GPT-Live, `gpt-live-*`
+ids on `openai-primary`). `modelId` is validated by the selected provider's own pattern and
+`keyReference` must name that provider's slot, so a Gemini id can never be paired with an OpenAI key.
+The adapter factory selects on `provider`; every provider in the union has its own adapter, and an
+unknown name is refused by the union as `unsupported_provider` instead of borrowing another adapter. A missing key in the selected slot fails
+closed with `file_missing` and never falls back across slots. The Live status payload reports the
+provider the profile carries.
 
 ```json
 {
@@ -94,6 +108,37 @@ prechecked synchronously, then `handleUpgrade`, then the owner attaches synchron
 there is no `await` and no user callback gap, so a malformed handshake never consumes the grant or opens
 a provider. An optional `x-didi-live-profile` header is a nonsecret staleness pin compared against the
 stored grant and the current owner identity, never authority.
+
+## Providers
+
+The host speaks to one provider-neutral port (`server/adapters/live-voice/types.ts`); each provider is
+one adapter, chosen by the route provider and never by a call-site literal. The provider, model and voice
+are frozen per session, so a setting change applies at the next session start.
+
+| provider | adapter | transport | input | output | resumption |
+| --- | --- | --- | --- | --- | --- |
+| `gemini` | `gemini.ts` | Gemini Live WebSocket | 16 kHz PCM16 | 24 kHz PCM16 | handle |
+| `openai` | `openai.ts` | GPT-Live WebSocket | 16 kHz PCM16, upsampled to 24 kHz in the adapter | 24 kHz PCM16 | none |
+
+### GPT-Live (`gpt-live-1`)
+
+- Endpoint `wss://api.openai.com/v1/live/sessions`, no query parameters, `Authorization: Bearer` from the
+  resolved `openai-primary` credential. The key never appears in the URL, a log line or an event.
+- Start barrier: socket open, one `session.start` (instructions, voice, `audio.format` at 24 kHz, the seeded
+  `input`, and `delegation.responses`), then wait for `session.started`; audio is refused before that.
+- Tools are the port's own JSON schemas, passed unchanged into `delegation.responses.tools` as function
+  tools; a delegated call arrives as a nested `response.output_item.done` and is answered with
+  `function_call_output` carrying its `call_id`, then `response.create`.
+- The voice layer publishes no speech-start and no spoken-response-end event, so the adapter derives
+  `interrupted` from the first input transcript delta of a user turn that overlaps assistant speech (its
+  audio is then dropped by a generation counter) and `turnComplete` from the nested `response.done`.
+- Voice default `marin`; the Hindi voice `nira` is refused. The wrapper around the unchanged shared persona
+  adds exactly three sections: Language, Tools and Delivery.
+- No resumption: a drop, or `session.closed` with reason `expired`, uses the host's fresh-seeded path.
+- Protocol details were checked against developers.openai.com on 2026-10-17 (guides `live-conversations`,
+  `live-delegation`, `live-migration`, `voice-websockets`, and the `gpt-live-1` model page).
+- `scripts/probe-gpt-live.mjs` opens one real session, sends three seconds of synthetic speech and prints
+  event names and timings only. It is not part of any check and is run once by the operator.
 
 ## Wire
 

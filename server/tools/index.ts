@@ -5,6 +5,7 @@ import type { DataClass, HostContext, JsonObject, ToolCallIntent, ToolCallRefusa
 import { isMcpFailureStage, isToolFailureCode } from '../adapters/model/types.js';
 import { validateEndpointUrl, validateApprovedStdioEnv } from '../adapters/mcp/registry.js';
 import { endpointBinding } from '../adapters/mcp/port.js';
+import { isLiveVoiceProvider } from '../adapters/live-voice/types.js';
 import { ConnectorCompositionError, connectorDescriptor, CONNECTOR_ENVELOPES } from '../connectors/index.js';
 import { canonicalJSON, detached, sha256 } from './canonical.js';
 import type { BoundConnection, ConnectionApplyResult, ConnectionPolicy, HttpConnectionEndpoint, ModelSnapshot, RunAcceptance, RunSnapshot, StdioConnectionEndpoint, ToolsOwner, ToolsOwnerOptions } from './types.js';
@@ -70,7 +71,7 @@ function validateAcceptance(input: RunAcceptance): RunAcceptance {
   exact(a, ['ownerId', 'actorId', 'runId', 'authorityEpoch', 'revision', 'route', 'allowedClasses', 'connectionIds']);
   [a.ownerId, a.actorId, a.runId, a.authorityEpoch].forEach(text); positive(a.revision); classSet(a.allowedClasses);
   exact(a.route, ['identity', 'provider', 'modelId', 'allowedClasses']); [a.route.identity, a.route.modelId].forEach(text); classSet(a.route.allowedClasses);
-  if (a.route.provider !== 'gemini' || !Array.isArray(a.connectionIds) || new Set(a.connectionIds).size !== a.connectionIds.length || a.connectionIds.length > 32) throw Error('invalid_run_acceptance');
+  if (!isLiveVoiceProvider(a.route.provider) || !Array.isArray(a.connectionIds) || new Set(a.connectionIds).size !== a.connectionIds.length || a.connectionIds.length > 32) throw Error('invalid_run_acceptance');
   a.connectionIds.forEach(text); return a;
 }
 function callDTO(input: ToolCallRefusal): ToolCallRefusal {

@@ -15,6 +15,18 @@ const FILE_ROWS: [string, string][] = [
   ['Connectors', 'provider-config/mcp.json'],
 ];
 
+/** The selectable voice providers, in switch order, with the first voice of each list as its default. */
+export const LIVE_PROVIDERS: readonly { provider: string; label: string; voices: readonly string[] }[] = [
+  { provider: 'openai', label: 'OpenAI GPT-Live', voices: ['marin'] },
+  { provider: 'gemini', label: 'Gemini 3.8 Live', voices: ['Aoede'] },
+];
+function providerLabel(value: string | undefined): string | undefined {
+  return LIVE_PROVIDERS.find(choice => choice.provider === value)?.label;
+}
+function voicesOf(value: string | undefined): readonly string[] {
+  return LIVE_PROVIDERS.find(choice => choice.provider === value)?.voices ?? LIVE_PROVIDERS[0]!.voices;
+}
+
 export interface SettingsInput {
   /** Envelope data from GET /api/v1/status. */
   status?: unknown;
@@ -76,14 +88,16 @@ function liveRows(summary: unknown, summaryUnavailable: boolean): string {
 <dt>Live voice</dt><dd>${unavailable()}</dd>
 <dt>Session limit</dt><dd>${unavailable()}</dd>
 <dt>Idle limit</dt><dd>${unavailable()}</dd>`;
-  if (!row) return unavailableRows;
+  if (!row) return `<dt>Live provider</dt><dd>${unavailable()}</dd>${unavailableRows}`;
   if (row.profileEnabled !== true) return `<dt>Live profile</dt><dd>${unavailable('Live profile disabled')}</dd>`;
   const model = text(row.modelId, 120);
   const voice = text(row.voice, 60);
   const limits = record(row.limits);
   const session = limitMinutes(limits?.sessionMs);
   const idle = limitMinutes(limits?.idleMs);
-  return `<dt>Live model</dt><dd>${model ? escapeHtml(model) : unavailable()}</dd>
+  const provider = text(row.provider, 40);
+  return `<dt>Live provider</dt><dd>${provider ? escapeHtml(providerLabel(provider) ?? provider) : unavailable()}</dd>
+<dt>Live model</dt><dd>${model ? escapeHtml(model) : unavailable()}</dd>
 <dt>Live voice</dt><dd>${voice ? escapeHtml(voice) : unavailable()}</dd>
 <dt>Session limit</dt><dd>${session ?? unavailable()}</dd>
 <dt>Idle limit</dt><dd>${idle ?? unavailable()}</dd>`;
@@ -123,20 +137,42 @@ ${connected.conversations.length ? `<label for="connected-history">Connected his
 <div class="button-row"><button type="button" id="connected-recover" class="secondary">Recover saved history</button>${connected.standingRevoke ? '<button type="button" id="connected-standing-revoke" class="secondary">Revoke standing consent</button>' : ''}${connected.conversationState ? `<button type="button" id="connected-revoke" class="secondary" ${connected.conversationState === 'revoked' || connected.busy ? 'disabled' : ''}>Revoke conversation consent</button>` : ''}</div></section>`;
 }
 
+/**
+ * The one writable setting: which voice provider and voice the next Live session uses. The choice is stored in
+ * live.json, so it applies at the next start of the service and never interrupts a call in flight.
+ */
+function liveSwitch(summary: unknown, summaryUnavailable: boolean): string {
+  const row = summaryUnavailable ? undefined : record(summary);
+  const current = text(row?.provider, 40) ?? LIVE_PROVIDERS[0]!.provider;
+  const voice = text(row?.voice, 64) ?? voicesOf(current)[0]!;
+  const options = LIVE_PROVIDERS.map(choice =>
+    `<option value="${escapeHtml(choice.provider)}"${choice.provider === current ? ' selected' : ''}>${escapeHtml(choice.label)}</option>`).join('');
+  const voices = [...new Set([...voicesOf(current), voice])].map(name => `<option value="${escapeHtml(name)}"></option>`).join('');
+  return `<form id="live-settings-form" class="live-settings">
+<label for="live-provider">Provider</label>
+<select id="live-provider" name="provider">${options}</select>
+<label for="live-voice">Voice</label>
+<input id="live-voice" name="voice" value="${escapeHtml(voice)}" list="live-voices" autocomplete="off">
+<datalist id="live-voices">${voices}</datalist>
+<p class="muted">Saved to <code>live.json</code>. It applies when Lux Didi next starts; a call in progress is never switched.</p>
+<div class="button-row"><button type="submit">Save provider</button></div></form>`;
+}
+
 export function settingsMarkup(input: SettingsInput): string {
   return `<section id="settings-summary" class="panel didi-settings" aria-label="Didi settings">
 <h2>Didi settings</h2>
-<p class="muted">Read-only summary of what this Didi is running with. Values come from the running service; this page cannot change them.</p>
+<p class="muted">Summary of what this Didi is running with. Only the Live voice provider below can be changed here; everything else is read-only.</p>
 <dl class="settings-facts">${liveRows(input.summary, input.summaryUnavailable === true)}${serviceRows(input.status, input.statusUnavailable === true, summaryPersona(input))}
 <dt>Service mode</dt><dd>${input.statusUnavailable === true ? unavailable() : escapeHtml(text(record(input.status)?.serviceMode, 40) ?? 'loopback')}</dd></dl>
 <section class="settings-section">${connectorsSection(input.connections, input.connectionsUnavailable === true)}</section>
 ${connectedSection(input.connected)}
+<section class="settings-section"><h3>Live voice provider</h3>${liveSwitch(input.summary, input.summaryUnavailable === true)}</section>
 <section class="settings-section"><h3>Appearance</h3>
 <label for="appearance-theme">Appearance</label>
 <select id="appearance-theme" name="appearance-theme"><option value="dark"${input.theme === 'light' ? '' : ' selected'}>Dark</option><option value="light"${input.theme === 'light' ? ' selected' : ''}>Light</option></select>
 <p class="muted">Dark is the default. Your choice is saved on this device.</p></section>
 <section class="settings-section"><h3>Where these settings live</h3>
 <dl class="settings-files">${FILE_ROWS.map(([what, file]) => `<dt>${escapeHtml(what)}</dt><dd><code>${escapeHtml(file)}</code></dd>`).join('')}</dl>
-<p class="settings-restart">Changes to these files need a restart of Lux Didi. This page is read-only.</p></section>
+<p class="settings-restart">Changes to these files need a restart of Lux Didi. Only the Live voice provider can be changed here.</p></section>
 </section>`;
 }

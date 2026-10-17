@@ -750,6 +750,25 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
                 await bad.stop(); await badHTTP.finish()
             }
             print("PASS status/profile + grant/epoch/scope mismatch zero real socket attempts")
+
+            // N2 provider guard: the intent gate accepts any provider the host can report (OpenAI included) and
+            // the host's own status still pins the value, so a second provider is never refused as a literal.
+            for (provider, expected) in [("openai", LiveClientState.failed(.statusMismatch)),
+                                          ("not-a-provider", LiveClientState.failed(.invalidIntent))] {
+                let altHTTP = TestHTTP(fixture); let altSockets = CountedSockets(fixture)
+                let alt = LiveSessionCoordinator(http: altHTTP, sockets: altSockets, sink: SilentSink())
+                let other = LiveBeginIntent(origin: URL(string: fixture.origin)!, assistantID: fixture.assistantId,
+                                            authorityEpoch: fixture.authorityEpoch, provider: provider,
+                                            model: frozen.model, voice: frozen.voice,
+                                            profileIdentity: fixture.profileIdentity, inputClass: "ordinary")
+                await alt.begin(other)
+                // openai passes the provider gate and is caught by the host status pin; an unknown name is
+                // refused by the gate itself. Neither reaches a real socket.
+                try require(await alt.state == expected, "provider gate \(provider) state")
+                try require(await altSockets.attempts == 0, "provider gate mismatch zero attach")
+                await alt.stop(); await altHTTP.finish()
+            }
+            print("PASS provider guard accepts a second provider and the host status pins it")
             record("pins")
 
             let lateHTTP = TestHTTP(fixture); let lateSockets = CountedSockets(fixture); let gate = Gate()

@@ -1,4 +1,5 @@
 import { liveVoiceTimerDefaults, isLiveVoiceProvider } from '../adapters/live-voice/types.js';
+import { slotFor } from '../config/index.js';
 import { createHash } from 'node:crypto';
 import type { DataClass } from '../adapters/live-voice/index.js';
 import { LIVE_INSTRUCTION_HARD_LIMIT, validatePersonaOverlay } from '../prompt/live-persona.js';
@@ -6,7 +7,6 @@ import { ownerProfileClasses, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, va
 import { LiveConfigError, type AcceptedPromptSnapshot, type LiveLimits, type LiveProfile, type LiveMemoryProvenance, type LiveProvider } from './types.js';
 
 const classes: readonly DataClass[] = ['ordinary', 'private', 'sensitive'];
-const modelPattern = /^models\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const maxTimer = 2_147_483_647;
 const limitBounds: Readonly<Record<keyof LiveLimits, number>> = {
   sessionMs: maxTimer, idleMs: maxTimer, unusedMs: maxTimer, handshakeMs: maxTimer, closeMs: maxTimer,
@@ -108,7 +108,8 @@ export function validateLiveProfile(input: unknown): LiveProfile {
   const provider = input['provider'];
   if (!isLiveVoiceProvider(provider)) fail('invalid_provider');
   const liveModelId = text(input['liveModelId'], 'invalid_model');
-  if (!modelPattern.test(liveModelId)) fail('invalid_model');
+  // The provider owns its model-id dialect: a Gemini id can never validate as an OpenAI one.
+  if (!slotFor(provider).modelPattern.test(liveModelId)) fail('invalid_model');
   const voice = text(input['voice'], 'invalid_voice');
   const keyReference = text(input['keyReference'], 'invalid_key_reference');
   const language = input['language'];

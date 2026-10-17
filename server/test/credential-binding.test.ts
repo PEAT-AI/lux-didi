@@ -28,7 +28,8 @@ function fixture(t: TestContext) {
   const put = (path: string, text: string) => { writeFileSync(path, text, { mode: 0o600 }); chmodSync(path, 0o600); };
   put(profilePath, JSON.stringify(profile())); put(sourcePath, `GEMINI_API_KEY=${key}\n`); put(bindingPath, JSON.stringify(binding()));
   const run = (args: string[]) => spawnSync(process.execPath, [cli, ...args], { encoding: 'utf8', timeout: 10000 });
-  const init = (bound = true) => run(['init', '--config-dir', dir, '--owner-id', 'owner', '--profile-input', profilePath, '--source-env', sourcePath, ...(bound ? ['--binding-input', bindingPath] : [])]);
+  // The credential binding exercises the Gemini text slot, which OV1-R2 no longer selects by default.
+  const init = (bound = true) => run(['init', '--provider', 'gemini', '--config-dir', dir, '--owner-id', 'owner', '--profile-input', profilePath, '--source-env', sourcePath, ...(bound ? ['--binding-input', bindingPath] : [])]);
   const migrate = () => run(['migrate-binding', '--config-dir', dir, '--owner-id', 'owner', '--binding-input', bindingPath]);
   const secretPath = join(dir, 'gemini-primary.json');
   const replace = (change: Record<string, unknown>) => {

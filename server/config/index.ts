@@ -2,15 +2,55 @@ import { constants, closeSync, copyFileSync, fstatSync, fsyncSync, linkSync, mkd
 import { isAbsolute, join } from 'node:path';
 import type { Credentials, DataClass, Route } from '../adapters/model/types.js';
 import { validatePreferences, type ValidatedPreferences } from '../prompt/index.js';
+import { isLiveVoiceProvider, type LiveVoiceProvider } from '../adapters/live-voice/types.js';
 import { ConfigError, type ConfigErrorCode, currentUid, fail, fields, parseJson, readPrivate, safeError, validateFile, validateRoot } from './files.js';
 export { ConfigError, type ConfigErrorCode } from './files.js';
 
-export const reference = 'gemini-primary';
+/**
+ * The one credential slot table: a provider's key reference, private file name, endpoint, api-version,
+ * source env variable and model-id pattern live together, so no second place can disagree. A resolver
+ * reads the slot it is asked for and never borrows another provider's key.
+ */
+export interface ProviderSlot {
+  readonly keyReference: string; readonly endpoint: string; readonly apiVersion: string;
+  readonly sourceEnvKey: string; readonly modelPattern: RegExp;
+  /** The voice model and voice the settings switch and a bare live.json use for this provider. */
+  readonly defaultLiveModelId: string; readonly defaultVoice: string;
+}
+export const providerSlots: Readonly<Record<LiveVoiceProvider, ProviderSlot>> = Object.freeze({
+  gemini: Object.freeze({
+    keyReference: 'gemini-primary', endpoint: 'https://generativelanguage.googleapis.com', apiVersion: 'v1beta',
+    sourceEnvKey: 'GEMINI_API_KEY', modelPattern: /^models\/[A-Za-z0-9][A-Za-z0-9._-]*$/,
+    defaultLiveModelId: 'models/gemini-3.8-live', defaultVoice: 'Aoede',
+  }),
+  openai: Object.freeze({
+    keyReference: 'openai-primary', endpoint: 'https://api.openai.com/v1', apiVersion: 'v1',
+    sourceEnvKey: 'OPENAI_API_KEY', modelPattern: /^gpt-live-[A-Za-z0-9][A-Za-z0-9._-]*$/,
+    defaultLiveModelId: 'gpt-live-1', defaultVoice: 'marin',
+  }),
+});
+export function slotFor(provider: LiveVoiceProvider): ProviderSlot { return providerSlots[provider]; }
+/** Owner default when live.json names no provider: OpenAI GPT-Live, then Gemini stays selectable by name. */
+export const defaultLiveProvider: LiveVoiceProvider = 'openai';
+/** Is the selected provider's key present and readable? A missing slot never borrows another provider's key. */
+export function slotKeyPresent(configDir: string, reference: string): boolean {
+  try {
+    pathArgument(configDir);
+    const slot = slotByReference(reference);
+    if (!slot) return false;
+    readKey(configDir, slot);
+    return true;
+  } catch { return false; }
+}
+/** Reference lookup only: an unknown reference is refused, never mapped onto a known slot. */
+export function slotByReference(reference: string): ProviderSlot | undefined {
+  return Object.values(providerSlots).find(slot => slot.keyReference === reference);
+}
 const profileLimit = 16 * 1024;
 const secretLimit = 8 * 1024;
 const sourceLimit = 64 * 1024;
 export interface ProviderProfile {
-  schemaVersion: 1; enabled: boolean; provider: 'gemini'; modelId: string; keyReference: 'gemini-primary';
+  schemaVersion: 1; enabled: boolean; provider: 'gemini'; modelId: string; keyReference: string;
   dataClasses: DataClass[]; preferences: ValidatedPreferences;
 }
 export type ProviderStatus =
@@ -19,16 +59,20 @@ export type ProviderStatus =
   | { status: 'error'; code: ConfigErrorCode }
   | { status: 'ready'; profile: ProviderProfile; route: Route; credentials: Credentials };
 export interface ConfigOptions { configDir: string; ownerId: string }
-export interface InitializeOptions extends ConfigOptions { profileInputPath: string; sourceEnvPath: string; bindingInputPath?: string }
+export interface InitializeOptions extends ConfigOptions {
+  profileInputPath: string; sourceEnvPath: string; bindingInputPath?: string;
+  /** Which credential slot to seed. Defaults to the OpenAI voice slot; Gemini needs `--provider gemini`. */
+  provider?: LiveVoiceProvider;
+}
 export interface MigrateBindingOptions extends ConfigOptions { bindingInputPath: string }
-/** Exact text route. Configured account is an operator assertion, never provider verification. */
+/** Exact provider route. Configured account is an operator assertion, never provider verification. */
 export interface CredentialRouteScope {
-  readonly provider: 'gemini'; readonly modelId: string;
-  readonly endpoint: 'https://generativelanguage.googleapis.com'; readonly apiVersion: 'v1beta';
-  readonly keyReference: 'gemini-primary'; readonly allowedClasses: readonly DataClass[];
+  readonly provider: LiveVoiceProvider; readonly modelId: string;
+  readonly endpoint: string; readonly apiVersion: string;
+  readonly keyReference: string; readonly allowedClasses: readonly DataClass[];
 }
 export interface CredentialBindingReceipt {
-  readonly schemaVersion: 1; readonly keyReference: 'gemini-primary'; readonly configuredAccount: string;
+  readonly schemaVersion: 1; readonly keyReference: string; readonly configuredAccount: string;
   readonly routeScope: CredentialRouteScope; readonly bindingGeneration: string;
 }
 export interface RequestCredentials {
@@ -36,18 +80,22 @@ export interface RequestCredentials {
   /** Last successful resolution in THIS invocation; undefined initially or after a failed resolve. */
   readonly resolvedReceipt: () => CredentialBindingReceipt | undefined;
 }
-const endpoint = 'https://generativelanguage.googleapis.com';
-const apiVersion = 'v1beta';
+// The text model route is the Gemini slot: same endpoint, api-version and key reference as before.
+const textSlot = providerSlots.gemini;
 function routeScopeFrom(raw: unknown): CredentialRouteScope {
   const s = fields(raw, ['provider', 'modelId', 'endpoint', 'apiVersion', 'keyReference', 'allowedClasses'], 'invalid_secret');
-  if (s['provider'] !== 'gemini' || s['endpoint'] !== endpoint || s['apiVersion'] !== apiVersion ||
+  const provider = s['provider'];
+  if (!isLiveVoiceProvider(provider)) fail('invalid_secret');
+  const slot = slotFor(provider);
+  // Every slot pins its own endpoint, api-version and reference; a scope may never mix two providers.
+  if (s['endpoint'] !== slot.endpoint || s['apiVersion'] !== slot.apiVersion ||
       typeof s['modelId'] !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(s['modelId'])) fail('invalid_secret');
-  if (s['keyReference'] !== reference) fail('invalid_reference');
+  if (s['keyReference'] !== slot.keyReference) fail('invalid_reference');
   const classes = s['allowedClasses'];
   const order: DataClass[] = ['ordinary', 'private', 'sensitive'];
   if (!Array.isArray(classes) || classes.length === 0 || classes.length > 3 ||
       new Set(classes).size !== classes.length || classes.some(c => !order.includes(c))) fail('invalid_secret');
-  return Object.freeze({ provider: 'gemini', modelId: s['modelId'], endpoint, apiVersion, keyReference: reference,
+  return Object.freeze({ provider, modelId: s['modelId'], endpoint: slot.endpoint, apiVersion: slot.apiVersion, keyReference: slot.keyReference,
     allowedClasses: Object.freeze(order.filter(c => classes.includes(c))) });
 }
 function labelValid(value: unknown): value is string {
@@ -55,20 +103,26 @@ function labelValid(value: unknown): value is string {
 }
 function receiptFrom(s: Record<string, unknown>): CredentialBindingReceipt {
   if (!labelValid(s['configuredAccount']) || !labelValid(s['bindingGeneration'])) fail('invalid_secret');
-  return Object.freeze({ schemaVersion: 1, keyReference: reference, configuredAccount: s['configuredAccount'],
-    routeScope: routeScopeFrom(s['routeScope']), bindingGeneration: s['bindingGeneration'] });
+  const routeScope = routeScopeFrom(s['routeScope']);
+  return Object.freeze({ schemaVersion: 1, keyReference: routeScope.keyReference, configuredAccount: s['configuredAccount'],
+    routeScope, bindingGeneration: s['bindingGeneration'] });
 }
 function sameScope(a: CredentialRouteScope, b: CredentialRouteScope): boolean {
   return JSON.stringify(a) === JSON.stringify(b); // Both inputs are full canonical non-secret scopes.
 }
-function bindingFrom(text: string, profile: ProviderProfile): CredentialBindingReceipt {
+function bindingFrom(text: string, expected: CredentialRouteScope): CredentialBindingReceipt {
   const b = fields(parseJson(text), ['schemaVersion', 'configuredAccount', 'routeScope', 'bindingGeneration'], 'invalid_secret');
   if (b['schemaVersion'] !== 1) fail('invalid_secret');
   const receipt = receiptFrom(b);
-  const expected = routeScopeFrom({ provider: profile.provider, modelId: profile.modelId, endpoint, apiVersion,
-    keyReference: profile.keyReference, allowedClasses: profile.dataClasses });
-  if (!sameScope(receipt.routeScope, expected)) fail('invalid_secret');
+  if (!sameScope(receipt.routeScope, routeScopeFrom(expected))) fail('invalid_secret');
   return receipt;
+}
+/** The route scope a freshly seeded slot pins: the profile's text model for Gemini, the slot's voice model otherwise. */
+function seedScope(provider: LiveVoiceProvider, modelId: string, allowedClasses: readonly DataClass[]): CredentialRouteScope {
+  return routeScopeFrom({
+    provider, modelId, endpoint: slotFor(provider).endpoint, apiVersion: slotFor(provider).apiVersion,
+    keyReference: slotFor(provider).keyReference, allowedClasses: [...allowedClasses],
+  });
 }
 function pathArgument(path: unknown): asserts path is string {
   if (typeof path !== 'string' || !isAbsolute(path) || path.includes('\0')) fail('invalid_arguments');
@@ -81,7 +135,7 @@ function optionsValid(options: ConfigOptions): void {
 function profileFrom(text: string, ownerId: string): ProviderProfile {
   const p = fields(parseJson(text), ['schemaVersion', 'enabled', 'provider', 'modelId', 'keyReference', 'dataClasses', 'preferences'], 'invalid_profile');
   if (p['schemaVersion'] !== 1 || typeof p['enabled'] !== 'boolean' || p['provider'] !== 'gemini' || typeof p['modelId'] !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(p['modelId'])) fail('invalid_profile');
-  if (p['keyReference'] !== reference) fail('invalid_reference');
+  if (p['keyReference'] !== textSlot.keyReference) fail('invalid_reference');
   const dataClasses = p['dataClasses'];
   if (!Array.isArray(dataClasses) || dataClasses.length === 0 || dataClasses.length > 3 || new Set(dataClasses).size !== dataClasses.length || dataClasses.some(c => !['ordinary', 'private', 'sensitive'].includes(c as string))) fail('invalid_profile');
   const input = fields(p['preferences'], ['dataClass', 'language', 'register', 'humor', 'verbosity'], 'invalid_profile');
@@ -89,29 +143,33 @@ function profileFrom(text: string, ownerId: string): ProviderProfile {
   try { preferences = validatePreferences({ ...input, schemaVersion: 1, ownerId }, ownerId); }
   catch { return fail('invalid_profile'); }
   // Freeze sanitized values. Route receives its own array because the existing port uses mutable arrays.
-  const profile: ProviderProfile = { schemaVersion: 1, enabled: p['enabled'] as boolean, provider: 'gemini', modelId: p['modelId'] as string, keyReference: reference, dataClasses: [...dataClasses] as DataClass[], preferences };
+  const profile: ProviderProfile = { schemaVersion: 1, enabled: p['enabled'] as boolean, provider: 'gemini', modelId: p['modelId'] as string, keyReference: textSlot.keyReference, dataClasses: [...dataClasses] as DataClass[], preferences };
   Object.freeze(profile.dataClasses);
   return Object.freeze(profile);
 }
 function keyValid(key: unknown): key is string {
   return typeof key === 'string' && key.length <= 1024 && /^[\x21-\x7e]+$/.test(key);
 }
-function secretRecordFrom(text: string): { key: string; receipt?: CredentialBindingReceipt } {
+function secretRecordFrom(text: string, expected: string = textSlot.keyReference): { key: string; receipt?: CredentialBindingReceipt } {
   const raw = parseJson(text);
   const version = raw && typeof raw === 'object' ? (raw as Record<string, unknown>)['schemaVersion'] : undefined;
   const s = fields(raw, version === 2 ? ['schemaVersion', 'keyReference', 'key', 'configuredAccount', 'routeScope', 'bindingGeneration'] : ['schemaVersion', 'keyReference', 'key'], 'invalid_secret');
   if ((version !== 1 && version !== 2) || !keyValid(s['key'])) fail('invalid_secret');
-  if (s['keyReference'] !== reference) fail('invalid_reference');
+  if (s['keyReference'] !== expected) fail('invalid_reference');
   return version === 2 ? { key: s['key'], receipt: receiptFrom(s) } : { key: s['key'] };
 }
-function secretFrom(text: string): string { return secretRecordFrom(text).key; }
-function readRecord(configDir: string): { key: string; receipt?: CredentialBindingReceipt } {
+function secretFrom(text: string, expected?: string): string { return secretRecordFrom(text, expected).key; }
+function slotFile(configDir: string, slot: ProviderSlot): string { return join(configDir, `${slot.keyReference}.json`); }
+function readRecord(configDir: string, slot: ProviderSlot): { key: string; receipt?: CredentialBindingReceipt } {
   if (!validateRoot(configDir)) fail('file_missing');
-  return secretRecordFrom(readPrivate(join(configDir, 'gemini-primary.json'), secretLimit));
+  return secretRecordFrom(readPrivate(slotFile(configDir, slot), secretLimit), slot.keyReference);
 }
-function readKey(configDir: string): string { return readRecord(configDir).key; }
+function readKey(configDir: string, slot: ProviderSlot): string { return readRecord(configDir, slot).key; }
 function boundRecord(configDir: string, expected: CredentialRouteScope): { key: string; receipt: CredentialBindingReceipt } {
-  const record = readRecord(configDir);
+  // The expected scope names its own slot, so a binding can never be satisfied by another provider's file.
+  const slot = slotByReference(expected.keyReference);
+  if (!slot || slot.endpoint !== expected.endpoint || slot.apiVersion !== expected.apiVersion) fail('invalid_reference');
+  const record = readRecord(configDir, slot);
   if (!record.receipt || !sameScope(record.receipt.routeScope, expected)) fail('invalid_secret');
   return { key: record.key, receipt: record.receipt };
 }
@@ -131,7 +189,7 @@ export function requestCredentialsFor(configDir: string, expectedScope: Credenti
     const credentials: Credentials = Object.freeze({ resolve: async (requested: string): Promise<string | undefined> => {
       receipt = undefined;
       try {
-        if (requested !== reference) fail('invalid_reference');
+        if (requested !== expected.keyReference) fail('invalid_reference');
         const record = boundRecord(configDir, expected); // One descriptor/parse yields key AND receipt.
         receipt = record.receipt;
         return record.key;
@@ -144,8 +202,10 @@ export function credentialsFor(configDir: string): Credentials {
   // Capture only the trusted path, never key bytes or raw input.
   return Object.freeze({ resolve: async (requested: string): Promise<string | undefined> => {
     try {
-      if (requested !== reference) fail('invalid_reference');
-      return readKey(configDir);
+      // Resolve the slot the caller names, or refuse: a missing slot file never falls back to another key.
+      const slot = slotByReference(requested);
+      if (!slot) fail('invalid_reference');
+      return readKey(configDir, slot);
     } catch (e) { throw safeError(e); }
   } });
 }
@@ -158,11 +218,11 @@ export function loadProviderConfig(options: ConfigOptions): ProviderStatus {
     catch (e) { if (e instanceof ConfigError && e.code === 'file_missing') return { status: 'unconfigured' }; throw e; }
     const profile = profileFrom(text, options.ownerId);
     if (!profile.enabled) return { status: 'disabled', profile };
-    readKey(options.configDir); // Validate now; missing/invalid configured key is a visible error.
+    readKey(options.configDir, textSlot); // Validate now; missing/invalid configured key is a visible error.
     return { status: 'ready', profile, route: { enabled: true, provider: 'gemini', modelId: profile.modelId, dataClasses: [...profile.dataClasses] }, credentials: credentialsFor(options.configDir) };
   } catch (e) { return { status: 'error', code: safeError(e).code }; }
 }
-function sourceKey(text: string): string {
+function sourceKey(text: string, envKey: string): string {
   let found: string | undefined;
   for (const line of text.split(/\r?\n/)) {
     const trimmed = line.replace(/^[ \t]+|[ \t]+$/g, '');
@@ -177,7 +237,7 @@ function sourceKey(text: string): string {
       if (value.includes(quote) || (quote === '"' && value.includes('`'))) fail('invalid_source');
     } else if (/['"`]/.test(value)) fail('invalid_source');
     if (value.endsWith('\\')) fail('invalid_source');
-    if (assignment[1] !== 'GEMINI_API_KEY') continue;
+    if (assignment[1] !== envKey) continue;
     if (!/^[A-Za-z0-9_.:/+,=@%\-]*$/.test(value)) fail('invalid_source');
     if (found !== undefined || !keyValid(value)) fail('invalid_source');
     found = value;
@@ -185,6 +245,9 @@ function sourceKey(text: string): string {
   if (found === undefined) return fail('invalid_source');
   return found;
 }
+/** Same exclusive, owner-only, fsync'd private write the config unit uses, shared with the Live selection. */
+export function writePrivateFile(path: string, text: string, limit: number): void { createPrivate(path, text, limit); }
+export function requireAbsolutePath(path: unknown): asserts path is string { pathArgument(path); }
 function createPrivate(path: string, text: string, limit: number): void {
   if (Buffer.byteLength(text, 'utf8') > limit) fail('too_large');
   let fd: number | undefined;
@@ -200,20 +263,32 @@ function createPrivate(path: string, text: string, limit: number): void {
 export function initializeProviderConfig(options: InitializeOptions): void {
   try {
     optionsValid(options); pathArgument(options.profileInputPath); pathArgument(options.sourceEnvPath);
+    const provider = options.provider ?? defaultLiveProvider;
+    // A voice-only slot may be added to an existing config dir (the installed one already names Gemini); the
+    // Gemini path still owns a brand-new dir because it publishes the text profile.
     try { mkdirSync(options.configDir, { mode: 0o700 }); }
-    catch (e) { if ((e as NodeJS.ErrnoException).code === 'EEXIST') fail('destination_exists'); throw e; }
+    catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') fail('initialization_failed');
+      if (provider === 'gemini') fail('destination_exists');
+    }
     if (!validateRoot(options.configDir)) fail('initialization_failed');
+    if (!isLiveVoiceProvider(provider)) fail('invalid_arguments');
+    const slot = slotFor(provider);
     const profile = profileFrom(readPrivate(options.profileInputPath, profileLimit), options.ownerId);
     if (!profile.enabled) fail('invalid_profile');
-    const key = sourceKey(readPrivate(options.sourceEnvPath, sourceLimit));
+    // The text profile names its own model; any other provider seeds the slot's voice model instead.
+    const modelId = provider === 'gemini' ? profile.modelId : slot.defaultLiveModelId;
+    if (modelId === undefined) fail('invalid_arguments');
+    const key = sourceKey(readPrivate(options.sourceEnvPath, sourceLimit), slot.sourceEnvKey);
     let binding: CredentialBindingReceipt | undefined;
     if (options.bindingInputPath !== undefined) {
       pathArgument(options.bindingInputPath);
-      binding = bindingFrom(readPrivate(options.bindingInputPath, secretLimit), profile);
+      binding = bindingFrom(readPrivate(options.bindingInputPath, secretLimit), seedScope(provider, modelId, profile.dataClasses));
     }
-    const secret = binding ? boundSecret(key, binding) : JSON.stringify({ schemaVersion: 1, keyReference: reference, key });
-    secretFrom(secret); // Full secret validation precedes profile activation.
-    createPrivate(join(options.configDir, 'gemini-primary.json'), secret, secretLimit);
+    const secret = binding ? boundSecret(key, binding) : JSON.stringify({ schemaVersion: 1, keyReference: slot.keyReference, key });
+    secretFrom(secret, slot.keyReference); // Full secret validation precedes profile activation.
+    createPrivate(slotFile(options.configDir, slot), secret, secretLimit);
+    if (provider !== 'gemini') return; // A voice-only slot pins no text profile; the Live profile is separate.
     // Portable serialization deliberately omits injected ownership/schema from preferences.
     const { dataClass, language, register, humor, verbosity } = profile.preferences;
     const portable = JSON.stringify({ ...profile, preferences: { dataClass, language, register, humor, verbosity } });
@@ -225,7 +300,7 @@ export function initializeProviderConfig(options: InitializeOptions): void {
 }
 
 function boundSecret(key: string, receipt: CredentialBindingReceipt): string {
-  return JSON.stringify({ schemaVersion: 2, keyReference: reference, key, configuredAccount: receipt.configuredAccount,
+  return JSON.stringify({ schemaVersion: 2, keyReference: receipt.keyReference, key, configuredAccount: receipt.configuredAccount,
     routeScope: receipt.routeScope, bindingGeneration: receipt.bindingGeneration });
 }
 function syncPrivate(path: string): void {
@@ -241,13 +316,15 @@ export function migrateProviderBinding(options: MigrateBindingOptions): void {
     optionsValid(options); pathArgument(options.bindingInputPath);
     if (!validateRoot(options.configDir)) fail('file_missing');
     const profile = profileFrom(readPrivate(join(options.configDir, 'profile.json'), profileLimit), options.ownerId);
-    const active = join(options.configDir, 'gemini-primary.json');
-    const legacy = secretRecordFrom(readPrivate(active, secretLimit));
+    const active = slotFile(options.configDir, textSlot);
+    const legacy = secretRecordFrom(readPrivate(active, secretLimit), textSlot.keyReference);
     if (legacy.receipt) fail('invalid_secret'); // Never reinterpret/rebind a v2 record as a legacy migration.
-    const binding = bindingFrom(readPrivate(options.bindingInputPath, secretLimit), profile);
+    // Retained migration is the Gemini text slot only: its reference, endpoint and api-version are fixed.
+    const binding = bindingFrom(readPrivate(options.bindingInputPath, secretLimit),
+      seedScope('gemini', profile.modelId, profile.dataClasses));
     const replacement = boundSecret(legacy.key, binding);
     secretRecordFrom(replacement);
-    const backup = join(options.configDir, 'gemini-primary.legacy.json');
+    const backup = join(options.configDir, `${textSlot.keyReference}.legacy.json`);
     // Copy exact bytes (including a possible UTF-8 BOM), never a decoded/normalized serialization.
     // Paths were privately validated above; same-UID malicious replacement remains out of boundary.
     try { copyFileSync(active, backup, constants.COPYFILE_EXCL); }

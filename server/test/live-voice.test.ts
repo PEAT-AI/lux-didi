@@ -4,9 +4,10 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { describe, test, type TestContext } from 'node:test';
 import WebSocket from 'ws';
-import { GeminiLiveVoiceAdapter, LiveVoiceError, liveVoiceActivityDefaults } from '../adapters/live-voice/index.js';
+import { GeminiLiveVoiceAdapter, LiveVoiceError } from '../adapters/live-voice/index.js';
+import { liveVoiceActivityDefaults } from '../adapters/live-voice/gemini.js';
 import { LIVE_RECOVERY_PICKUP } from '../prompt/live-persona.js';
-import type { GeminiLiveVoiceOptions, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceRequest } from '../adapters/live-voice/index.js';
+import type { LiveVoiceAdapterOptions, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceRequest } from '../adapters/live-voice/index.js';
 import { CANARY, speechActivityFrames, collect, control, deferred, fixture as providerFixture, options, pcm, ready as providerReady, request } from './live-voice-fixture.js';
 import { safeEvent } from '../host/log.js';
 
@@ -16,7 +17,7 @@ function noCanary(value: unknown) { assert.equal(JSON.stringify(value).includes(
 
 for (const frameMode of ['binary', 'text'] as const) describe(`${frameMode} provider frames`, () => {
 const fixture = (t: TestContext) => providerFixture(t, frameMode);
-const ready = (t: TestContext, overrides: Partial<GeminiLiveVoiceOptions> = {}) => providerReady(t, overrides, frameMode);
+const ready = (t: TestContext, overrides: Partial<LiveVoiceAdapterOptions> = {}) => providerReady(t, overrides, frameMode);
 
 test('explicit user-first opening preserves incomplete history and model-first opens a spoken turn without user audio', async t => {
   for (const opening of ['user_first', 'model_first'] as const) {
@@ -137,7 +138,7 @@ test('wire setup/history snapshots, readiness, PCM and three independent output 
   assert.deepEqual(captured.events.map(e => e.type), ['ready', 'audio', 'modelText', 'outputTranscription', 'modelTurnStarted', 'generationComplete', 'turnComplete', 'interrupted', 'turnComplete', 'audio', 'modelTurnStarted', 'generationComplete', 'turnComplete', 'waitingForInput', 'interactionStatus', 'inputTranscription', 'resumptionHandle', 'goAway', 'outcome']);
   assert.deepEqual(captured.events.map(e => e.sequence), captured.events.map((_, i) => i + 1));
   const output = captured.events.find((e): e is Extract<LiveVoiceEvent, { type: 'audio' }> => e.type === 'audio')!;
-  assert.deepEqual(output.pcm, pcm); assert.equal(output.mimeType, 'audio/pcm;rate=24000');
+  assert.deepEqual(output.pcm, pcm); assert.equal(output.rate, 24000);
   assert.ok(captured.events.some(e => e.type === 'resumptionHandle' && e.handle === 'synthetic-adapter-resumption-secret'));
   assert.equal(captured.events.some(e => 'turnId' in e || 'heard' in e), false); noCanary(captured.events);
   assert.equal(f.attempts, 1); assert.equal(f.frames.length, 4);
@@ -168,7 +169,7 @@ test('disabled/mismatched/unknown route and classified request fail before crede
   let keys = 0, sockets = 0;
   const base = options({ credentials: { resolve: async () => { keys++; return CANARY; } }, socketFactory: () => { sockets++; throw Error(CANARY); } });
   for (const route of [ { ...base.route, enabled: false }, { ...base.route, modelId: 'models/other' }, { ...base.route, provider: 'unknown' } ]) {
-    assert.throws(() => new GeminiLiveVoiceAdapter({ ...base, route } as GeminiLiveVoiceOptions).open(request(), control()), code('route_denied'));
+    assert.throws(() => new GeminiLiveVoiceAdapter({ ...base, route } as LiveVoiceAdapterOptions).open(request(), control()), code('route_denied'));
   }
   for (const bad of [ { ...request(), dataClasses: ['private'] }, { ...request(), dataClasses: ['unknown'] }, { ...request(), system: { text: 'x', dataClass: 'private' } }, { ...request(), history: [{ role: 'tool', text: 'x', dataClass: 'ordinary' }] }, { ...request(), history: [{ role: 'user', text: '', dataClass: 'ordinary' }] }, { ...request(), system: null } ]) {
     assert.throws(() => new GeminiLiveVoiceAdapter(base).open(bad as LiveVoiceRequest, control()), e => e instanceof LiveVoiceError);
@@ -409,7 +410,7 @@ class FakeUpstream extends EventEmitter {
 
 async function fakeReady(limits?: Partial<LiveVoiceLimits>) {
   let socket!: FakeUpstream;
-  const socketFactory = (() => (socket = new FakeUpstream())) as unknown as NonNullable<GeminiLiveVoiceOptions['socketFactory']>;
+  const socketFactory = (() => (socket = new FakeUpstream())) as unknown as NonNullable<LiveVoiceAdapterOptions['socketFactory']>;
   const session = new GeminiLiveVoiceAdapter(options({ socketFactory, ...(limits ? { limits } : {}) })).open(request(), control());
   await new Promise<void>(resolve => setImmediate(resolve));
   socket.open(); socket.setup(); await session.ready;
@@ -563,9 +564,12 @@ test('3.8 Live omits thinking config and cancellation releases an unanswered bat
   t.after(() => session.close()); const events = session.events[Symbol.asyncIterator]();
   await f.frame(1); const setup = (f.frames[0] as { setup: { generationConfig: object; tools: unknown } }).setup;
   assert.equal('thinkingConfig' in setup.generationConfig, false);
+  // Golden: the port carries the original schema and this adapter builds the Gemini dialect itself, so the
+  // wire payload is exactly what the host used to declare (enum and ARRAY collapsed to STRING, original kept
+  // in the description) and the caller's declarations are never rewritten.
   const expectedTools = [{ functionDeclarations: [
-    { name: 'first', description: 'First', parameters: { type: 'OBJECT', properties: { query: { type: 'STRING', enum: ['one', 'two'] } }, required: ['query'] }, behavior: 'BLOCKING' },
-    { name: 'second', description: 'Second', parameters: { type: 'OBJECT', properties: { ids: { type: 'ARRAY', items: { type: 'STRING' } } } }, behavior: 'BLOCKING' },
+    { name: 'first', description: 'First', parameters: { type: 'OBJECT', required: ['query'], properties: { query: { type: 'STRING', description: 'Original schema: {"type":"STRING","enum":["one","two"]}' } } }, behavior: 'BLOCKING' },
+    { name: 'second', description: 'Second', parameters: { type: 'OBJECT', properties: { ids: { type: 'STRING', description: 'Original schema: {"type":"ARRAY","items":{"type":"STRING"}}' } } }, behavior: 'BLOCKING' },
   ] }];
   assert.deepEqual(setup.tools, expectedTools);
   assert.equal(JSON.stringify(setup.tools), JSON.stringify(expectedTools), 'serialized declaration and nested schema order is exact');
@@ -643,16 +647,23 @@ test('a rejected provider frame reports one shape-only diagnostic with no value 
   assert.equal(safeEvent({ ...diagnostic, keys: ['serverContent', 'bad key name!'] }), undefined, 'a non-key path is refused');
 });
 
-test('provider fixture rejects unsupported setup schema with 1007 before ready', async t => {
+test('an original schema with unsupported keys never reaches the wire raw', async t => {
+  // The fixture closes 1007 on any additionalProperties in the setup schema, exactly as Gemini does. The port
+  // now carries the original schema, so this adapter must build the dialect itself and keep the wire clean.
   const f = await providerFixture(t);
   const session = new GeminiLiveVoiceAdapter(options(f)).open({ ...request(), tools: [
     { name: 'invalid', description: 'Invalid original schema', parameters: { type: 'OBJECT', properties: { nested: { type: 'OBJECT', additionalProperties: false } } } },
   ] }, control());
   const captured = collect(session);
-  await assert.rejects(session.ready, code('provider_setup_rejected'));
-  assert.equal((await session.done).code, 'provider_setup_rejected');
-  await captured.done;
-  assert.equal(captured.events.some(event => event.type === 'ready'), false);
+  await f.frame(1);
+  const declaration = (f.frames[0] as { setup: { tools: { functionDeclarations: { parameters: { properties: { nested: unknown } } }[] }[] } })
+    .setup.tools[0]!.functionDeclarations[0]!;
+  // The unsupported key survives only inside the description text, never as a schema key the provider rejects.
+  assert.deepEqual(declaration.parameters.properties.nested,
+    { type: 'OBJECT', description: 'Original schema: {"type":"OBJECT","additionalProperties":false}' });
+  f.send({ setupComplete: {} });
+  await session.ready;
+  session.close(); await captured.done;
   noCanary(captured.events);
 });
 

@@ -374,7 +374,12 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; c
   if (kind === 'chat_thread') { const id = config.evidence.get('chat_search'); return id ? [search('mattermost_get_thread', { postId: id }, 'ct0')] : []; }
   if (kind === 'brief') {
     const subs: IntentSubCall[] = [];
-    if (config.configured.includes('calendar')) subs.push(search(INTERNAL.calendars, { maxResults: 20 }, 'b0'));
+    // The calendar read is the merged event read, not the calendar-name list: a brief that only
+    // named the calendars delivered no calendar finding at all.
+    if (config.configured.includes('calendar')) {
+      const range = windowRange('today', config.nowMs ?? Date.now());
+      subs.push(search(INTERNAL.calendarList, { timeMin: range.timeMin, timeMax: range.timeMax, maxResults: RESEARCH.calendarLines }, 'b0'));
+    }
     if (config.configured.includes('mail')) subs.push(search(INTERNAL.mailList, { q: 'newer_than:2d' }, 'b1'));
     if (config.configured.includes('chat')) subs.push(search(INTERNAL.chatSearch, { query: 'after:yesterday', limit: RESEARCH.chatLines }, 'b2'));
     if (config.configured.includes('knowledge')) subs.push(search(INTERNAL.knowledgeSearch, { query: keywords || 'open loop follow up', limit: RESEARCH.knowledgeLines }, 'b3'));

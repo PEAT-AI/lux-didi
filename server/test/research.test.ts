@@ -453,10 +453,9 @@ test('the brief fan-out is credited to every source it read and its findings rea
   const h = harness({ selector, execute: async subs => subs.map(call => sub(call.name,
     call.name === 'gcal_list' ? MERGED_CALENDAR
       : call.name === 'gmail_list' ? '- Invoice | Landlord | Mon | due soon [id m1]'
-        : call.name === 'mattermost_search' ? '**team** [post p1]\nthe decision was recorded'
+        : call.name === 'mattermost_search' ? '**team**\nthe decision was recorded'
           : '### Insight (PATTERN) [id 1]\nbody', true, call.key)) });
   const reply = await runResearch(h.deps, { action: 'start', question: 'catch me up' }, new AbortController().signal);
-  console.error('DBG ' + JSON.stringify(reply));
   const sources = (reply['findings'] as { source?: string }[]).map(finding => finding.source);
   for (const source of ['calendar', 'mail', 'chat', 'knowledge']) assert.ok(sources.includes(source), `the brief read of ${source} is delivered to the answer`);
   assert.deepEqual(reply['unchecked'], [], 'every configured source was credited, so none is unchecked');

@@ -26,7 +26,7 @@ export const MATTERMOST_AUTH_NEEDED = 'auth needed: run mattermost_login once';
 export const MATTERMOST_ATTENTION_TOOL = 'mattermost_attention';
 
 /** Attention window and read bounds; a caller may only narrow `days` and `limit`. */
-export const MATTERMOST_ATTENTION = { days: 7, maxDays: 30, limit: 20, maxDmChannels: 4, maxThreads: 6, historyLimit: 20, snippet: 160 } as const;
+export const MATTERMOST_ATTENTION = { days: 7, maxDays: 30, limit: 20, maxDmChannels: 4, maxThreads: 8, historyLimit: 20, snippet: 160 } as const;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** General search looks back 90 days unless the caller names an older period. */
@@ -356,19 +356,23 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     return 'channel' in resolved ? resolved.channel : { error: resolved.error };
   }
 
+  /** The owner identity: one whoami per process, dropped as soon as a read reports the session changed. */
+  let identity: { owner: Owner; evidence: MattermostEvidence } | undefined;
+
   /** One internal read with its own preflight, so a composed digest never bypasses the grant. */
   async function read(tool: MattermostTool, args: Record<string, unknown>, signal?: AbortSignal): Promise<{ ok: true; evidence: MattermostEvidence } | { ok: false; result: MattermostResult }> {
     const denied = preflight(registry, settings, tool);
     const evidence = denied === undefined ? await dispatch(tool, args, signal) : { state: 'refused' as const, reason: denied };
-    return evidence.state === 'completed' ? { ok: true, evidence } : { ok: false, result: evidence };
+    if (evidence.state === 'completed') return { ok: true, evidence };
+    // Any refused, failed or unknown read may mean the session changed, so the cached identity goes.
+    identity = undefined;
+    return { ok: false, result: evidence };
   }
 
-  /** The owner identity: one whoami per process, dropped as soon as a read reports the session changed. */
-  let identity: { owner: Owner; evidence: MattermostEvidence } | undefined;
   async function ownerIdentity(signal?: AbortSignal): Promise<{ ok: true; owner: Owner; evidence: MattermostEvidence } | { ok: false; result: MattermostResult }> {
     if (identity) return { ok: true, ...identity };
     const whoami = await read('mattermost_whoami', {}, signal);
-    if (!whoami.ok) { identity = undefined; return whoami; }
+    if (!whoami.ok) return whoami;
     const data = contentJson(whoami.evidence.decodedResult);
     const username = isRecord(data) ? firstText(data, ['username', 'user_name']) : '';
     if (!isRecord(data) || username === '') return { ok: false, result: { state: 'refused', reason: 'identity-unreadable' } };
@@ -419,6 +423,14 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       const root = post.rootId ?? post.id;
       if (root !== undefined) threads.add(root);
     };
+    // Threads the owner wrote in anywhere: the child's own-author search seeds them whatever the
+    // channel, because a thread nobody mentioned the owner in never reaches the handle search.
+    const written = await read('mattermost_search', { query: `from:${who.owner.username}`, limit: settings.maxLimit }, signal);
+    if (!written.ok) return written.result;
+    for (const raw of postsIn(written.evidence.decodedResult) ?? []) {
+      const post = childPost(raw);
+      if (post !== undefined && post.at >= cutoff) threadCandidate(post);
+    }
     // Mentions: the child's own handle search, with the window and the handle itself checked here.
     const mentions = await read('mattermost_search', { query: `@${who.owner.username}`, limit: settings.maxLimit }, signal);
     if (!mentions.ok) return mentions.result;

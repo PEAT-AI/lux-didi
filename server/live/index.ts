@@ -847,10 +847,13 @@ export class LiveSessionOwner {
     if (this.#settled(handle) || handle.rebuilding) return;
     // A tool call in flight owns the silence through the dead-air path: never two timers on one silence.
     if (handle.pendingCallIds.size > 0) { this.#cancelWatchdog(handle); return; }
+    // One record per phase change: a streaming reply refreshes the clock on every chunk and must not write a
+    // receipt per chunk into the rotating host log.
+    const wasArmed = handle.watchdogPhase === 'armed';
     handle.watchdogTimer?.cancel();
     handle.watchdogSince ??= this.#now();
     handle.watchdogPhase = 'armed';
-    hostLogEvent({ event: 'live_watchdog', phase: 'armed', turnAgeMs: 0, generation: handle.generation });
+    if (!wasArmed) hostLogEvent({ event: 'live_watchdog', phase: 'armed', turnAgeMs: this.#now() - handle.watchdogSince, generation: handle.generation });
     this.#scheduleWatchdog(handle, RESPONSE_WATCHDOG_NUDGE_MS, handle.generation, 'nudge');
   }
 
@@ -1165,6 +1168,9 @@ export class LiveSessionOwner {
     try {
       for await (const event of session.events) {
         if (this.#settled(handle) || generation !== handle.generation) break;
+        // 3j: the watchdog sees every port event before the per-type dispatch, because the arms sit on events
+        // this loop handles early (modelTurnStarted) and on ones it consumes later.
+        this.#watchdogEvent(handle, event);
         // Any model output or owner input ends the dead-air window; a nudge is only sent into silence.
         if (event.type === 'modelTurnStarted' || event.type === 'audio' || event.type === 'modelText' || event.type === 'outputTranscription' || event.type === 'inputTranscription') this.#cancelNudge(handle);
         if (event.type === 'modelTurnStarted') {
@@ -1197,7 +1203,6 @@ export class LiveSessionOwner {
           if (handle.rebuilding) { handle.rebuilding = false; this.#continuity(handle, 'resumed'); continue; }
         }
         if (IDLE_ACTIVITY.has(event.type)) this.#armIdle(handle, this.#profile.limits.idleMs);
-        this.#watchdogEvent(handle, event);
         if (event.type === 'toolCall') {
           handle.toolCalls += event.calls.length;
           handle.turnAfterTool = true;

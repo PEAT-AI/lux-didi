@@ -101,6 +101,16 @@ test('a mute owner turn is nudged once and then recovered on a fresh seeded sess
     'the recovery is the fresh seeded path with reason model_mute');
 });
 
+test('an open model turn that emits one chunk and then nothing is nudged once and then recovered', async t => {
+  const live = await openLive(t);
+  await live.emit({ type: 'modelTurnStarted' });
+  for (let chunk = 0; chunk < 5; chunk++) await live.emit({ type: 'audio', pcm: new Uint8Array(8), mimeType: 'audio/pcm;rate=24000' });
+  assert.deepEqual(phases(live), ['armed'], 'one armed record per turn, not one per audio chunk');
+  await until(live, () => phases(live).includes('recovered'), RESPONSE_WATCHDOG_NUDGE_MS + RESPONSE_WATCHDOG_RECOVERY_MS + 5_000);
+  assert.deepEqual(phases(live), ['armed', 'nudged', 'recovered'], 'a turn that opens and goes quiet is watched to recovery');
+  assert.equal(live.fake.sessionsOpened, 2);
+});
+
 test('model output after the nudge disarms the watchdog', async t => {
   const live = await openLive(t);
   await ownerTurnEnd(live);
@@ -141,7 +151,7 @@ test('idle measures silence, so it fires with mic frames flowing and no speech, 
   assert.equal(terminalCode(live), 'idle_timeout');
 });
 
-test('a port with different declarations drives the same watchdog, so it reads port events and no model name', async t => {
+test('a port with different declarations runs the same watchdog path', async t => {
   for (const capabilities of [{}, { supportsResumption: true, supportsInterruption: true, outputModalities: ['audio'] as const }]) {
     const live = await openLive(t, { capabilities });
     await ownerTurnEnd(live);

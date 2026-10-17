@@ -136,7 +136,7 @@ const NEIGHBOURHOOD_LEAK = 'xK9!mQ2vR7tZ';
 const PEM_BODY = 'MIIBOgIBAAJBAK'.repeat(3);
 const LEAKY = [
   'Archive results', 'someone@example.invalid', 'username: deploybot', NEIGHBOURHOOD_LEAK,
-  `password=${SECRETS[0]}`, `authorization: ${SECRETS[1]}`, SECRETS[2] as string, SECRETS[3] as string,
+  `password=${SECRETS[0]}`, `authorization: Bearer ${SECRETS[1]}`, SECRETS[2] as string, SECRETS[3] as string,
   SECRETS[4] as string, SECRETS[5] as string, SECRETS[6] as string, SECRETS[7] as string, SECRETS[8] as string,
   '-----BEGIN RSA PRIVATE KEY-----', PEM_BODY, '-----END RSA PRIVATE KEY-----', 'ACCEPTED',
 ].join('\n');

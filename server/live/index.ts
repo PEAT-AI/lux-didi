@@ -65,6 +65,11 @@ function stepSourceOf(name: string): string {
   return STEP_SOURCES[prefix] ?? prefix;
 }
 
+/** Non-empty lines of a shaped result: one item per line, the same unit the research path counts. */
+function countedLines(text: string): number {
+  return text.split('\n').map(line => line.trim()).filter(Boolean).length;
+}
+
 /** The action word a direct tool asks its source for. */
 function stepActionOf(name: string): string {
   const suffix = name.split('_').slice(1).join('_');
@@ -102,6 +107,8 @@ interface ActiveSession {
   toolStep: number;
   /** The live tool steps of the turn in flight, oldest first; never journalled. */
   liveSteps: LiveToolStepBody[];
+  /** How many items each call of this turn returned, so its end step counts items and not citations. */
+  liveStepItems: Map<string, number>;
   toolCalls: number;
   seenIds: Set<string>;
   thinking: boolean;
@@ -770,7 +777,7 @@ export class LiveSessionOwner {
       sessionTimer: undefined, callTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()),
       researchLedger: new ResearchLedger(),
-      registry, host, toolStep: 0, liveSteps: [], toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
+      registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
       consumerState: 'attached', journalEvents: 0, journalBytes: 0, adapterOutcome: undefined,
@@ -1387,6 +1394,7 @@ export class LiveSessionOwner {
    *  A `research` call opens one line per source from inside the run instead. */
   #openSteps(handle: ActiveSession, calls: readonly { id: string; name: string; args: JsonObject }[]): void {
     handle.liveSteps = [];
+    handle.liveStepItems = new Map();
     for (const call of calls) {
       if (call.name === RESEARCH_TOOL_NAME) continue;
       const subject = stepSubject(call.args);
@@ -1522,6 +1530,8 @@ export class LiveSessionOwner {
           const digest = unit.plan.combine(subResults);
           const ok = subResults.some(result => result.ok);
           projections[index] = { name: call.name, status: ok ? 'completed' : 'error', markdown: noEmptyResult(digest.text), sources: [] };
+          // The count the voice view shows is the items the source returned, never the citation count.
+          if (ok) handle.liveStepItems.set(call.id, digest.itemCount ?? countedLines(noEmptyResult(digest.text)));
           return { id: call.id, name: call.name, response: ok ? intentResponse(digest, unit.intent) : { error: reason } };
         }
         const accepted = batch?.accepted.find(result => result.binding.callId === call.id && result.binding.name === call.name);
@@ -1557,10 +1567,11 @@ export class LiveSessionOwner {
       const call = event.calls[index]!;
       if (call.name === RESEARCH_TOOL_NAME) continue;
       const started = handle.callStartedAt.get(call.id);
+      const items = handle.liveStepItems.get(call.id);
       this.#recordStep(handle, {
         callId: call.id, stepId: `${call.id}:0`, source: stepSourceOf(call.name), action: stepActionOf(call.name),
         phase: 'end', ok: projection.status === 'completed',
-        ...(projection.sources.length > 0 ? { resultCount: projection.sources.length } : {}),
+        ...(items !== undefined ? { resultCount: items } : {}),
         ...(started !== undefined ? { ms: Math.max(0, this.#now() - started) } : {}),
       });
     }

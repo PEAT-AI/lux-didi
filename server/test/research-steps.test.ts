@@ -103,3 +103,18 @@ test('a step subject caps at 60 characters and never quotes a body or an id', ()
   assert.equal(stepSubject({ channelId: 'chan-123', body: 'the private message body', text: 'body text' }), undefined, 'an id or a body alone is never a subject');
   assert.equal(stepSubject(undefined), undefined);
 });
+
+test('F3 a subject refuses identifier-shaped values and control characters', () => {
+  // A channel key is not read at all, so a channel id can never ride along with the search words.
+  assert.equal(stepSubject({ channel: 'chan-9f2c4b6d8e1a', query: 'release freeze' }), 'release freeze');
+  // A person-shaped key is read, but an identifier value is refused.
+  assert.equal(stepSubject({ person: 'user:8f14e45fceea167a' }), undefined);
+  assert.equal(stepSubject({ person: '8f14e45f-fcee-4a67-9d1b-2c3e4f5a6b7c' }), undefined);
+  assert.equal(stepSubject({ person: 'Priya Raman' }), 'Priya Raman');
+  // Control characters and ansi escapes never reach the owner view.
+  const cleaned = stepSubject({ query: 'release\u0000\u0007 freeze\u001b[31m' });
+  assert.equal(cleaned, 'release freeze');
+  assert.equal(/[\u0000-\u001f\u007f-\u009f]/.test(cleaned!), false);
+  // A real date window is still readable words, not an id.
+  assert.equal(stepSubject({ window: '2026-10-17' }), 'on 2026-10-17');
+});

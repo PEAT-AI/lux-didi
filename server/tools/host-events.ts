@@ -47,10 +47,23 @@ export function liveToolStep(step: LiveToolStepBody): void {
 /** A step subject never runs longer than this. */
 export const STEP_SUBJECT_CAP = 60;
 
-/** Argument keys a subject may quote: what to look for, for whom, in which window. An id key or a
- *  body key is never read, so nothing private can become a subject. */
-const SUBJECT_KEYS: readonly string[] = ['query', 'q', 'search', 'terms', 'question', 'person', 'name', 'channel', 'window', 'when', 'day', 'date'];
+/** Argument keys a subject may quote: what to look for, for whom, in which window. An id-shaped key
+ *  (`channel`, any `*Id`), a body key and a text key are never read, so nothing private and no
+ *  identifier can become a subject. */
+const SUBJECT_KEYS: readonly string[] = ['query', 'q', 'search', 'terms', 'question', 'person', 'name', 'window', 'when', 'day', 'date'];
 const WINDOWS: Record<string, string> = { today: 'today', tomorrow: 'tomorrow', week: 'last 7 days' };
+/** A value that is an identifier rather than owner-readable words: a long hex run, a `type:value`
+ *  token, a digit run, or a `prefix-…` slug with no space in it. */
+const ID_SHAPED = /[0-9a-f]{8,}|^[a-z]{2,}[-_:][\w-]{4,}$|\d{5,}|^[0-9a-f]{8}-[0-9a-f]{4}-/i;
+
+/** Printable words only: ansi escapes and control or bidi characters never reach a subject. */
+function readable(text: string): string {
+  return text
+    .replace(/\u001b\[[0-9;]*[A-Za-z]/g, '')
+    .replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
 function clipSubject(text: string, cap: number): string {
   if (text.length <= cap) return text;
@@ -68,8 +81,8 @@ export function stepSubject(args: unknown, cap = STEP_SUBJECT_CAP): string | und
   for (const key of SUBJECT_KEYS) {
     const value = record[key];
     if (typeof value !== 'string') continue;
-    const text = value.trim().replace(/\s+/g, ' ');
-    if (!text) continue;
+    const text = readable(value);
+    if (!text || ID_SHAPED.test(text)) continue;
     const shown = key === 'window' || key === 'when'
       ? WINDOWS[text] ?? (/^\d{4}-\d{2}-\d{2}$/.test(text) ? `on ${text}` : text)
       : text;

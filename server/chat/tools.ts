@@ -1,5 +1,4 @@
-import type { DataClass, ExecutionContext, JsonObject, ToolCallIntent, ToolDefinition, ToolOutcome, ToolResultRef } from '../adapters/model/types.js';
-import { intentDeclarations, planIntent, intentResponse, type IntentDeclaration, type IntentSubResult } from '../tools/intent.js';
+import type { ExecutionContext, JsonObject, ToolDefinition, ToolOutcome } from '../adapters/model/types.js';
 import type { ChatStepEvent } from './types.js';
 
 /** One chat tool call never holds a run longer than this; the connector call is aborted. */
@@ -134,66 +133,4 @@ export function deterministicAnswer(evidence: readonly FrozenEvidence[], notReac
     `found ${evidence.length} item${evidence.length === 1 ? '' : 's'}`];
   if (notReached.length) parts.push(`${list(notReached)} did not answer in time`);
   return `${parts.join('; ')}.`;
-}
-
-
-/** One sub read the plan ran, already materialized through the result gate. */
-export interface ChatSubResult { name: string; ok: boolean; response: JsonObject;
-  /** The classes the gate authorized for this read; the digest inherits them, never ordinary by default. */
-  dataClasses?: readonly DataClass[] }
-
-export interface ChatIntentOptions {
-  /** Runs the planned connector calls; the caller owns the loop, the journal and the result gate. */
-  runSubs(calls: readonly { name: string; args: JsonObject }[], signal: AbortSignal): Promise<readonly ChatSubResult[]>;
-  /** The intent journaled for this execution, so the shaped digest completes under it. */
-  callOf(executionId: string): ToolCallIntent | undefined;
-  complete(call: ToolCallIntent, response: JsonObject, dataClasses: readonly DataClass[]): ToolResultRef;
-  /** The real capability identity of the covered source; the builder never invents one. */
-  identity(toolName: string): { accountId: string; resourceId: string };
-  /** The owner reads this surface covers, so the declared descriptions match what is actually wired. */
-  ownerTools?: readonly ToolDefinition[];
-  declarations?: readonly IntentDeclaration[];
-}
-
-const textOf = (response: JsonObject): string => typeof response.text === 'string' ? response.text
-  : typeof response.markdown === 'string' ? response.markdown : '';
-
-/**
- * The chat intent surface: the same coarse tools the Live session declares, so one model call both
- * searches and shapes instead of spending rounds on discovery reads. Each call runs its plan through
- * the caller's sub runner and returns the combined digest as its own completed result.
- */
-export function chatIntentTools(options: ChatIntentOptions): ToolDefinition[] {
-  const declarations = options.declarations ?? intentDeclarations();
-  return declarations.map(declaration => ({
-    name: declaration.name, description: declaration.description, guidance: declaration.guidance,
-    parameters: declaration.parameters, validate: declaration.validate,
-    effect: 'read' as const, ...options.identity(declaration.name),
-    execute: async (args: JsonObject, context: ExecutionContext): Promise<ToolOutcome> => {
-      const call = options.callOf(context.executionId);
-      // No journaled intent means the shaped digest has nothing to complete under: fail closed.
-      if (!call) return { status: 'failed', code: 'handler_outcome' };
-      let plan: ReturnType<typeof planIntent>;
-      try { plan = planIntent(declaration.name, args); } catch { return { status: 'failed', code: 'handler_outcome' }; }
-      const classes = new Set<DataClass>();
-      const shape = (planned: readonly { name: string; args: JsonObject }[], results: readonly ChatSubResult[]): IntentSubResult[] =>
-        planned.map((entry, index) => {
-          const result = results[index];
-          const ok = result !== undefined && result.name === entry.name && result.ok;
-          const text = ok ? textOf(result.response) : '';
-          if (ok) for (const dataClass of result.dataClasses ?? []) classes.add(dataClass);
-          return { key: String(index), name: entry.name, ok, text, originalCharacters: text.length,
-            omittedCharacters: 0, ...(ok ? {} : { code: 'connector_error' }) };
-        });
-      const results = shape(plan.calls, await options.runSubs(plan.calls.map(entry => ({ name: entry.name, args: entry.args })), context.signal));
-      if (plan.follow) {
-        const extra = plan.follow(results);
-        if (extra.length) results.push(...shape(extra, await options.runSubs(extra, context.signal)));
-      }
-      // One model-visible digest under the intent's own journaled call, shaped by the shared combiner.
-      // The digest carries the union of the authorized classes: a private read never lands as ordinary.
-      const dataClasses = [...classes];
-      return { status: 'completed', result: options.complete(call, intentResponse(plan.combine(results), declaration.name), dataClasses) };
-    },
-  }));
 }

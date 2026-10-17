@@ -7,7 +7,7 @@ import type { DataClass, JsonObject, LoopResult, ModelResult, ModelRequest, Mode
 import { publicOwnerProfile, validateOwnerProfile, PROMPT_VERSION } from '../prompt/index.js';
 import { runTools } from '../adapters/model/loop.js';
 import { authorizeToolBatch, declarationsFor, runToolCalls } from '../tools/declarations.js';
-import { intentResponse, isIntentTool, planIntent } from '../tools/intent.js';
+import { intentDeclarations, intentResponse, isIntentTool, planIntent } from '../tools/intent.js';
 import { definitionsInTransaction } from '../tools/index.js';
 import { stripModelOnlyNotes } from '../tools/live-shape.js';
 import { hostLogEvent } from '../tools/host-events.js';
@@ -16,7 +16,9 @@ import type { LiveAuthority, RunAcceptance, RunSnapshot as OwnerRunSnapshot } fr
 import type { ToolEvidence } from './types.js';
 import { assemble, chatAllowsToolClasses, classify, ContextFailure, type ContextTrace } from './context.js';
 import { Subscription } from './subscription.js';
-import { answerInstruction, chatIntentTools, chatToolRegistry, deterministicAnswer, notReachedLabels, type ChatCallRecord, type ChatSubResult } from './tools.js';
+import { answerInstruction, chatToolRegistry, deterministicAnswer, notReachedLabels, type ChatCallRecord } from './tools.js';
+/** One materialized owner read inside a composed intent call. */
+export interface ChatSubResult { name: string; ok: boolean; response: JsonObject; dataClasses?: readonly DataClass[] }
 import { memorySelectionSnapshot, normalizeSelectedMemory, selectedEvidenceId, MAX_SERIALIZED_SELECTION_BYTES, type RunSelection } from './memorySelection.js';
 import { ChatError, type AcceptInput, type ChatConfig, type ChatEvent, type ChatStepEvent, type ChatPort, type ChatToolsComposition, type ChatRecoveryContext, type ConversationEvent, type Outcome, type RunSnapshot, type EnrollInput, type ConversationStatus, type MemorySelectionSnapshot } from './types.js';
 export * from './types.js';
@@ -147,13 +149,13 @@ export class ChatService implements ChatPort {
       const ownerTools = definitionsInTransaction(tools.owner, run.runId, tx).filter(t => t.effect === 'read' && t.name !== 'remember_note');
       // The same coarse intent tools the Live session declares. Their calls are answered before
       // journaling (see the loop intercept), so no compose call needs a single-connection scope.
-      const intents = ownerTools.length ? chatIntentTools({
-        runSubs: () => Promise.resolve([]),
-        callOf: () => undefined,
-        complete: () => { throw new Error('composed_intent_intercepted'); },
-        identity: (name: string) => ({ accountId: 'gateway:chat-intent', resourceId: name }),
-        ownerTools,
-      }) : [];
+      // Declared only: every intent call is answered by the loop intercept, never by this execute.
+      const intents = intentDeclarations().map(declaration => ({
+        name: declaration.name, description: declaration.description, guidance: declaration.guidance,
+        parameters: declaration.parameters, validate: declaration.validate, effect: 'read' as const,
+        accountId: 'gateway:chat-intent', resourceId: declaration.name,
+        execute: async () => ({ status: 'failed' as const, code: 'handler_outcome' as const }),
+      }));
       const registry = [...ownerTools, ...intents];
       if (!frozen && registry.length) tx.run('INSERT INTO chat_capability_acceptances VALUES (?,?,?,?,?,?,?,?)',
         [run.sessionId, this.#config.route.provider, this.#config.route.model, routeIdentity, canonicalJSON([...permitted].sort()),

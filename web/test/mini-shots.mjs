@@ -49,6 +49,15 @@ try {
     // One renderer: the built bundle's own orb canvas and level bars.
     assert.equal(await page.locator('.mini-pill canvas#didi-orb').count(), 1, 'one orb renderer');
     assert.equal(await page.locator('.mini-pill .mini-level i').count(), 5, 'five level bars');
+    // Machine-wide GPU rendering rule (harness owner, 10-17): the browser renders
+    // on Metal, never on a software path.
+    const renderer = await page.evaluate(() => {
+      const gl = document.createElement('canvas').getContext('webgl2')
+        || document.createElement('canvas').getContext('webgl');
+      const ext = gl && gl.getExtension('WEBGL_debug_renderer_info');
+      return ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : String(gl && gl.getParameter(gl.RENDERER));
+    });
+    assert.match(String(renderer), /Metal/i, `headless renderer must be Metal, got ${renderer}`);
     const box = await page.locator('.mini-pill').boundingBox();
     assert.ok(Math.abs(box.width - 64) <= 0.5 && Math.abs(box.height - 26) <= 0.5,
       `the pill is 64x26 pt, got ${JSON.stringify(box)}`);

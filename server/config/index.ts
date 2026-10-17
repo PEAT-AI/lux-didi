@@ -14,20 +14,34 @@ export { ConfigError, type ConfigErrorCode } from './files.js';
 export interface ProviderSlot {
   readonly keyReference: string; readonly endpoint: string; readonly apiVersion: string;
   readonly sourceEnvKey: string; readonly modelPattern: RegExp;
-  /** The voice model a non-text provider seeds its credential receipt against (Gemini takes the profile's). */
-  readonly seedModelId?: string;
+  /** The voice model and voice the settings switch and a bare live.json use for this provider. */
+  readonly defaultLiveModelId: string; readonly defaultVoice: string;
 }
 export const providerSlots: Readonly<Record<LiveVoiceProvider, ProviderSlot>> = Object.freeze({
   gemini: Object.freeze({
     keyReference: 'gemini-primary', endpoint: 'https://generativelanguage.googleapis.com', apiVersion: 'v1beta',
     sourceEnvKey: 'GEMINI_API_KEY', modelPattern: /^models\/[A-Za-z0-9][A-Za-z0-9._-]*$/,
+    defaultLiveModelId: 'models/gemini-3.8-live', defaultVoice: 'Aoede',
   }),
   openai: Object.freeze({
     keyReference: 'openai-primary', endpoint: 'https://api.openai.com/v1', apiVersion: 'v1',
-    sourceEnvKey: 'OPENAI_API_KEY', modelPattern: /^gpt-live-[A-Za-z0-9][A-Za-z0-9._-]*$/, seedModelId: 'gpt-live-1',
+    sourceEnvKey: 'OPENAI_API_KEY', modelPattern: /^gpt-live-[A-Za-z0-9][A-Za-z0-9._-]*$/,
+    defaultLiveModelId: 'gpt-live-1', defaultVoice: 'marin',
   }),
 });
 export function slotFor(provider: LiveVoiceProvider): ProviderSlot { return providerSlots[provider]; }
+/** Owner default when live.json names no provider: OpenAI GPT-Live, then Gemini stays selectable by name. */
+export const defaultLiveProvider: LiveVoiceProvider = 'openai';
+/** Is the selected provider's key present and readable? A missing slot never borrows another provider's key. */
+export function slotKeyPresent(configDir: string, reference: string): boolean {
+  try {
+    pathArgument(configDir);
+    const slot = slotByReference(reference);
+    if (!slot) return false;
+    readKey(configDir, slot);
+    return true;
+  } catch { return false; }
+}
 /** Reference lookup only: an unknown reference is refused, never mapped onto a known slot. */
 export function slotByReference(reference: string): ProviderSlot | undefined {
   return Object.values(providerSlots).find(slot => slot.keyReference === reference);
@@ -47,7 +61,7 @@ export type ProviderStatus =
 export interface ConfigOptions { configDir: string; ownerId: string }
 export interface InitializeOptions extends ConfigOptions {
   profileInputPath: string; sourceEnvPath: string; bindingInputPath?: string;
-  /** Which credential slot to seed. Defaults to the Gemini text slot; another provider needs its own env key. */
+  /** Which credential slot to seed. Defaults to the OpenAI voice slot; Gemini needs `--provider gemini`. */
   provider?: LiveVoiceProvider;
 }
 export interface MigrateBindingOptions extends ConfigOptions { bindingInputPath: string }
@@ -231,6 +245,9 @@ function sourceKey(text: string, envKey: string): string {
   if (found === undefined) return fail('invalid_source');
   return found;
 }
+/** Same exclusive, owner-only, fsync'd private write the config unit uses, shared with the Live selection. */
+export function writePrivateFile(path: string, text: string, limit: number): void { createPrivate(path, text, limit); }
+export function requireAbsolutePath(path: unknown): asserts path is string { pathArgument(path); }
 function createPrivate(path: string, text: string, limit: number): void {
   if (Buffer.byteLength(text, 'utf8') > limit) fail('too_large');
   let fd: number | undefined;
@@ -246,16 +263,21 @@ function createPrivate(path: string, text: string, limit: number): void {
 export function initializeProviderConfig(options: InitializeOptions): void {
   try {
     optionsValid(options); pathArgument(options.profileInputPath); pathArgument(options.sourceEnvPath);
+    const provider = options.provider ?? defaultLiveProvider;
+    // A voice-only slot may be added to an existing config dir (the installed one already names Gemini); the
+    // Gemini path still owns a brand-new dir because it publishes the text profile.
     try { mkdirSync(options.configDir, { mode: 0o700 }); }
-    catch (e) { if ((e as NodeJS.ErrnoException).code === 'EEXIST') fail('destination_exists'); throw e; }
+    catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') fail('initialization_failed');
+      if (provider === 'gemini') fail('destination_exists');
+    }
     if (!validateRoot(options.configDir)) fail('initialization_failed');
-    const provider = options.provider ?? 'gemini';
     if (!isLiveVoiceProvider(provider)) fail('invalid_arguments');
     const slot = slotFor(provider);
     const profile = profileFrom(readPrivate(options.profileInputPath, profileLimit), options.ownerId);
     if (!profile.enabled) fail('invalid_profile');
     // The text profile names its own model; any other provider seeds the slot's voice model instead.
-    const modelId = provider === 'gemini' ? profile.modelId : slot.seedModelId;
+    const modelId = provider === 'gemini' ? profile.modelId : slot.defaultLiveModelId;
     if (modelId === undefined) fail('invalid_arguments');
     const key = sourceKey(readPrivate(options.sourceEnvPath, sourceLimit), slot.sourceEnvKey);
     let binding: CredentialBindingReceipt | undefined;

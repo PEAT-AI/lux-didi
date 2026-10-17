@@ -2,14 +2,14 @@ import * as memory from '../domain/memory.js';
 import * as labels from '../domain/labels.js';
 import type { LiveMemorySource } from '../live/types.js';
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
-import { credentialsFor, loadProviderConfig } from '../config/index.js';
-import { loadLiveConfig, type LiveConfiguredProfile, type LiveConfigStatus } from '../config/live.js';
-import { createLiveVoiceAdapter, type DataClass, type LiveSocketFactory } from '../adapters/live-voice/index.js';
+import { credentialsFor, loadProviderConfig, slotKeyPresent } from '../config/index.js';
+import { loadLiveConfig, saveLiveSelection, type LiveConfiguredProfile, type LiveConfigStatus } from '../config/live.js';
+import { createLiveVoiceAdapter, LiveVoiceError, type DataClass, type LiveSocketFactory } from '../adapters/live-voice/index.js';
 import { GeminiAdapter } from '../adapters/model/index.js';
 import type { Credentials } from '../adapters/model/types.js';
 import { createLiveSessionOwner, defaultLiveLimits, liveProfileIdentity, type LiveAttachment, type LiveContext, type LiveToolsComposition, type LivePageProjection, type LiveFragmentPage, type LiveProfile, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import type { Store } from '../runtime/store.js';
-import type { LiveService, LiveStatusPayload } from '../http/live-upgrade.js';
+import type { LiveSelectionResult, LiveService, LiveStatusPayload } from '../http/live-upgrade.js';
 import { hostLogEvent } from './log.js';
 import { createGeminiSelector, type ResearchSelector } from '../tools/research.js';
 
@@ -53,13 +53,20 @@ class HostLiveService implements LiveService {
   readonly maxIncomingBytes = maxIncomingBytes;
   readonly maxBufferedBytes: number;
   readonly profileIdentity: string;
-  constructor(private readonly profile: LiveProfile, private readonly owner: LiveSessionOwner, private readonly store: Store) {
+  constructor(private readonly profile: LiveProfile, private readonly owner: LiveSessionOwner, private readonly store: Store,
+    private readonly configDir: string) {
     this.maxBufferedBytes = profile.limits.wsBufferedBytes;
     this.profileIdentity = liveProfileIdentity(profile);
   }
   current(cursor = 0): LivePageProjection { return this.owner.current(cursor); }
   lookupAuthority(runId: string) { return this.owner.lookupAuthority(runId); }
   status(): LiveStatusPayload { return { ...statusFromProfile(this.profile), ...{ memory: this.owner.profileProjection().memory } }; }
+  /** Owner choice persisted into live.json; the loaded profile here keeps the call in flight untouched. */
+  saveSelection(input: { provider: unknown; voice?: unknown }): LiveSelectionResult {
+    const saved = saveLiveSelection({ configDir: this.configDir, ownerId: this.store.assistantId, provider: input.provider,
+      ...(input.voice !== undefined ? { voice: input.voice } : {}) });
+    return { ...saved, appliesAt: 'next_start' };
+  }
   create(inputClass: DataClass, idempotencyKey: string, context: LiveContext): LiveSessionSnapshot {
     const created = this.owner.create({ inputClass, idempotencyKey }, context);
     this.supersedeOtherSessions(created.liveSessionId);
@@ -121,11 +128,18 @@ export function composeLive(store: Store, configDir: string, testing?: LiveTesti
   const status = statusPayload(loaded, profile);
   if (!profile) return { service: new UnconfiguredLive(status), status };
   const credentials = testing?.credentials ?? credentialsFor(configDir);
+  // Fail closed, named, and never on a silent provider fallback: a selected provider whose key slot is empty
+  // or whose adapter does not exist yet reports its own status code instead of serving Gemini.
+  if (!testing?.credentials && !slotKeyPresent(configDir, profile.keyReference)) {
+    const missing: LiveStatusPayload = { ...status, status: 'error', code: 'key_missing' };
+    return { service: new UnconfiguredLive(missing), status: missing };
+  }
   const provider = testing?.researchSelector === undefined ? loadProviderConfig({ configDir, ownerId: store.assistantId }) : undefined;
   const researchSelector = testing?.researchSelector ?? (provider?.status === 'ready'
     ? createGeminiSelector(new GeminiAdapter({ modelId: provider.profile.modelId, keyReference: provider.profile.keyReference, credentials, route: provider.route }))
     : undefined);
-  const voice = createLiveVoiceAdapter({
+  let voice: ReturnType<typeof createLiveVoiceAdapter>;
+  try { voice = createLiveVoiceAdapter({
     modelId: profile.liveModelId, voice: profile.voice, keyReference: profile.keyReference, credentials,
     route: { enabled: true, provider: profile.provider, modelId: profile.liveModelId, dataClasses: [...profile.route.dataClasses] },
     // wsBufferedBytes belongs to the gateway consumer socket, not this provider socket.
@@ -134,10 +148,15 @@ export function composeLive(store: Store, configDir: string, testing?: LiveTesti
       sessionMs: profile.limits.sessionMs, closeMs: profile.limits.closeMs,
     },
     ...(testing?.socketFactory ? { socketFactory: testing.socketFactory } : {}),
-  });
+  }); } catch (error) {
+    // A provider with no adapter yet (or one that rejects its settings) reports its own code, never a fallback.
+    const code = error instanceof LiveVoiceError ? error.code : 'unsupported_provider';
+    const failed: LiveStatusPayload = { ...status, status: 'error', code };
+    return { service: new UnconfiguredLive(failed), status: failed };
+  }
   const owner = createLiveSessionOwner({ store, voice, profile, memorySource: resolveLiveMemory, ...(tools ? { tools } : {}), ...(researchSelector ? { research: researchSelector } : {}), ...(now ? { now } : {}) });
   tools?.registerAuthoritySource?.(async (runId, signal) => signal.aborted ? null : owner.lookupAuthority(runId) ?? owner.lookupJobAuthority(runId));
-  return { service: new HostLiveService(profile, owner, store), status };
+  return { service: new HostLiveService(profile, owner, store, configDir), status };
 }
 
 /** Same durable entries and routing labels as text chat. Unknown or non-ordinary labels never leave this port. */

@@ -9,6 +9,7 @@ import { ChatError, redactDeletedMemoryContext, type ChatPort } from '../chat/in
 import { redactDeletedMemorySnapshots } from '../live/index.js';
 import type { ConnectedStatus } from '../host/connected.js';
 import { ServiceError } from '../contracts/errors.js';
+import { ConfigError } from '../config/index.js';
 import { clientDiagnostic, object, resolveRoute } from './routes.js';
 import { projectIdentity } from '../connectors/identity.js';
 import { ConversationSelection, NO_SELECTION } from './conversationSelection.js';
@@ -123,6 +124,14 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
         if (route.action === 'snapshot') { send(res, 200, success(live.snapshot(route.id!))); return; }
         if (route.action === 'journal') { send(res, 200, success(live.journal(route.id!, route.input['cursor'] as number | undefined, route.input['limit'] as number | undefined))); return; }
         if (route.action === 'revoke') { live.revoke(route.id!); send(res, 200, success({ liveSessionId: route.id!, revoked: true })); return; }
+        if (route.action === 'settings') {
+          if (!live.saveSelection) throw new ServiceError('MODEL_NOT_CONFIGURED', 'Live settings are not writable here', 503);
+          let saved;
+          try { saved = live.saveSelection({ provider: route.input['provider'], ...(route.input['voice'] !== undefined ? { voice: route.input['voice'] } : {}) }); }
+          catch (error) { throw new ServiceError('BAD_REQUEST', error instanceof ConfigError ? error.code : 'invalid_selection', 400); }
+          send(res, 200, success(saved));
+          return;
+        }
         if (route.action === 'text') { live.text(String(route.input['text'])); send(res, 200, success({ sent: true })); return; }
         throw new ServiceError('METHOD_NOT_ALLOWED', 'Audio requires a WebSocket upgrade', 405);
       }
@@ -135,6 +144,7 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
         const personaName = options.ownerProfileStatus?.displayName ?? null;
         res.setHeader('Cache-Control', 'no-store');
         send(res, 200, success({
+          provider: active?.provider ?? null,
           modelId: active?.model ?? null,
           voice: active?.voice ?? null,
           personaName: active ? personaName : null,

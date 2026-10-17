@@ -163,6 +163,23 @@ loaded/exported to the environment. It prints a constant success message or a
 finite safe error code, not input paths/source lines. No shell, child credential
 CLI, eval, source, command substitution, interpolation or execution is used.
 
+`init --provider openai --source-env <file>` also works against an **existing** config dir: it adds only
+the OpenAI slot (a new private file plus its reference) and never reads, rewrites or rotates the Gemini
+slot or `profile.json`. The Gemini path still requires a brand-new directory because it publishes the
+text profile. `--provider` defaults to `openai` (owner order, OV1-R2).
+
+`select` persists the same Live selection the settings page writes, through one shared function:
+
+```text
+node <compiled-root>/config/cli.js select --config-dir <existing-private-dir> --provider openai|gemini [--voice <id>]
+```
+
+It validates the provider against the slot table, refuses a provider whose key slot is empty
+(`file_missing`) instead of pointing at another provider's key, sets the model id from that provider's
+dialect, and leaves `limits`, `dataClasses` and the persona preferences untouched. The running service
+keeps the profile it loaded, so the choice applies when the service next starts and never to a call in
+flight.
+
 ### Provider slots
 
 One slot table (`providerSlots` in `server/config/index.ts`) holds each provider's

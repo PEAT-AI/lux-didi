@@ -5,12 +5,13 @@ import { compileVoiceInstruction, createCapabilitySnapshot, PROMPT_VERSION, vali
 import { liveIdentityOf, validateLiveProfile } from '../live/config.js';
 import { LiveConfigError, type LiveProfile } from '../live/types.js';
 import { ConfigError, fail, fields, parseJson, readPrivate, safeError, validateRoot } from './files.js';
-import { slotFor } from './index.js';
+import { renameSync } from 'node:fs';
+import { defaultLiveProvider, requireAbsolutePath, slotFor, slotKeyPresent, writePrivateFile } from './index.js';
 
 const liveLimit = 16 * 1024;
 const liveKeys = ['schemaVersion', 'enabled', 'provider', 'modelId', 'voice', 'keyReference', 'dataClasses', 'preferences', 'limits'];
 const preferenceKeys = ['dataClass', 'language', 'register', 'humor', 'verbosity'];
-const requiredKeys = ['schemaVersion', 'enabled', 'provider', 'modelId', 'voice', 'keyReference', 'dataClasses', 'preferences'];
+const requiredKeys = ['schemaVersion', 'enabled', 'dataClasses', 'preferences'];
 const classes: readonly DataClass[] = ['ordinary', 'private', 'sensitive'];
 
 // A two-letter language with an optional two-letter region, case-normalised, or undefined when the
@@ -85,12 +86,16 @@ export function loadLiveConfig(options: { configDir: string; ownerId: string; ow
     for (const key of requiredKeys) if (!(key in input)) fail('invalid_profile');
     if (input['schemaVersion'] !== 1) fail('invalid_profile');
     if (typeof input['enabled'] !== 'boolean') fail('invalid_profile');
-    const provider = input['provider'];
-    if (!isLiveVoiceProvider(provider)) throw new LiveConfigError('invalid_provider');
+    // A live.json that names no provider is the OpenAI default (GPT-Live, marin); Gemini stays selectable by
+    // name. An explicit provider still pins its own model-id dialect and credential slot.
+    const named = input['provider'];
+    if (named !== undefined && !isLiveVoiceProvider(named)) throw new LiveConfigError('invalid_provider');
+    const provider = named === undefined ? defaultLiveProvider : named;
     const slot = slotFor(provider);
-    if (input['keyReference'] !== slot.keyReference) fail('invalid_reference');
-    const model = modelId(provider, input['modelId']);
-    const chosenVoice = voice(input['voice']);
+    const reference = input['keyReference'];
+    if (reference !== undefined && reference !== slot.keyReference) fail('invalid_reference');
+    const model = modelId(provider, input['modelId'] ?? slot.defaultLiveModelId);
+    const chosenVoice = input['voice'] === undefined ? slot.defaultVoice : voice(input['voice']);
     const dataClasses = classList(input['dataClasses']);
     const preferences = validatePreferences(
       { ...fields(input['preferences'], preferenceKeys, 'invalid_profile'), schemaVersion: 1, ownerId: options.ownerId },
@@ -123,9 +128,9 @@ export function loadLiveConfig(options: { configDir: string; ownerId: string; ow
       ...(language !== undefined ? { language } : {}),
     });
     const profile = validateLiveProfile({
-      provider: input['provider'], liveModelId: model, voice: chosenVoice, keyReference: slot.keyReference,
+      provider, liveModelId: model, voice: chosenVoice, keyReference: slot.keyReference,
       language: setupLanguage,
-      route: { enabled: true, provider: input['provider'], modelId: model, dataClasses },
+      route: { enabled: true, provider, modelId: model, dataClasses },
       prompt: { text: composed.text, dataClass: preferences.dataClass },
       ...(overlay !== undefined ? { overlay } : {}),
       acceptedPrompt: { schemaVersion: 1, ownerProfile, compilerVersion: instruction.promptVersion,
@@ -138,5 +143,54 @@ export function loadLiveConfig(options: { configDir: string; ownerId: string; ow
       : error instanceof ConfigError ? error.code
       : error instanceof PersonaOverlayError ? error.code : safeError(error).code;
     return { status: 'error', code };
+  }
+}
+
+/** The provider/voice pairs the owner can pick, in switch order, from the one slot table. */
+export const liveProviderChoices: readonly { provider: LiveVoiceProvider; label: string; modelId: string; voice: string }[] =
+  Object.freeze([
+    Object.freeze({ provider: 'openai', label: 'OpenAI GPT-Live', ...slotChoice('openai') }),
+    Object.freeze({ provider: 'gemini', label: 'Gemini 3.8 Live', ...slotChoice('gemini') }),
+  ] as const);
+function slotChoice(provider: LiveVoiceProvider): { modelId: string; voice: string } {
+  const slot = slotFor(provider);
+  return { modelId: slot.defaultLiveModelId, voice: slot.defaultVoice };
+}
+
+/**
+ * Persist the owner's provider and voice choice into live.json, in place, atomically and owner-only. The
+ * model follows the provider's dialect; the running host keeps the profile it loaded, so a change never
+ * reaches a call in flight. Only the three selection fields are rewritten; limits, classes and persona
+ * preferences survive byte for byte.
+ */
+export function saveLiveSelection(options: { configDir: string; ownerId?: string; provider: unknown; voice?: unknown }): {
+  provider: LiveVoiceProvider; modelId: string; voice: string;
+} {
+  try {
+    requireAbsolutePath(options.configDir);
+    if (!isLiveVoiceProvider(options.provider)) throw new LiveConfigError('invalid_provider');
+    const provider = options.provider;
+    const slot = slotFor(provider);
+    // A provider whose credential slot is empty is refused here; the switch never falls back to another key.
+    if (!slotKeyPresent(options.configDir, slot.keyReference)) fail('file_missing');
+    const chosenVoice = options.voice === undefined ? slot.defaultVoice : voice(options.voice);
+    if (!validateRoot(options.configDir)) fail('file_missing');
+    const input = parseJson(readPrivate(join(options.configDir, 'live.json'), liveLimit)) as Record<string, unknown>;
+    if (!input || typeof input !== 'object' || Array.isArray(input)) fail('invalid_profile');
+    const model = modelId(provider, slot.defaultLiveModelId);
+    const next: Record<string, unknown> = { ...input, provider, modelId: model, voice: chosenVoice, keyReference: slot.keyReference };
+    // Validate the document we are about to publish through the same loader rules, minus prompt composition.
+    const allowed = new Set(liveKeys);
+    for (const key of Object.keys(next)) if (!allowed.has(key)) fail('invalid_profile');
+    for (const key of requiredKeys) if (!(key in next)) fail('invalid_profile');
+    if (next['schemaVersion'] !== 1 || typeof next['enabled'] !== 'boolean') fail('invalid_profile');
+    classList(next['dataClasses']);
+    const pending = join(options.configDir, '.live.pending');
+    writePrivateFile(pending, JSON.stringify(next), liveLimit);
+    renameSync(pending, join(options.configDir, 'live.json'));
+    return { provider, modelId: model, voice: chosenVoice };
+  } catch (error) {
+    if (error instanceof LiveConfigError) throw error;
+    throw safeError(error);
   }
 }

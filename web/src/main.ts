@@ -1,6 +1,6 @@
 import './style.css';
 import { memoryDeleteControl, deleteMemoryAndReload, attachMemoryDeleteControls, memoryListMarkup, type MemoryListItem } from './memory-list';
-import { deleteMemoryEntry, deleteMemorySummary, listMemorySummaries, type MemorySummaryItem } from './api';
+import { deleteMemoryEntry, deleteMemorySummary, listMemorySummaries, type MemorySummaryItem, saveLiveSelection } from './api';
 import { ConnectedView } from './connected';
 import { Orb, type VoiceState } from './orb';
 import { ApiError, request, pair, demoMode, onAuthorityChanged, authorityVersion, assertAuthority, restoreSession, logout, fetchLive } from './api';
@@ -352,6 +352,7 @@ function bind() {
   form('commitment-form',()=>{if(!titleDraft.trim())return;void mutate(async (signal,version)=>{await request<Commitment>('/commitments',{method:'POST',body:{title:titleDraft.trim(),dueAt:null,timeZone:zone},signal});assertAuthority(version);titleDraft='';await loadPlan();assertAuthority(version);notice='Commitment saved.';});});
   form('edit-form',()=>{if(!editing || !editTitle.trim())return;void changeCommitment(editing,'edit');});
   form('recall-form',()=>void searchRecall());
+  form('live-settings-form',()=>{const provider=(document.getElementById('live-provider') as HTMLSelectElement).value;const voice=(document.getElementById('live-voice') as HTMLInputElement).value.trim();const version=authorityVersion();void mutate(async(signal)=>{await saveLiveSelection({provider,voice},signal);if(version===authorityVersion()){notice='Saved. It applies when Lux Didi next starts.';render();}});});
   form('pair-form',()=>{const code=(document.getElementById('pair-code') as HTMLInputElement).value;void pairBrowser(code);});
   button('new-conversation',()=>{session=undefined;entries=[];entriesMore=false;historyOpen=true;notice='';render();});
   button('close-edit',()=>{editing=undefined;render();});button('close-history',()=>{detail=undefined;render();});

@@ -87,11 +87,20 @@ export async function fetchLive(cursor: string | number | undefined, signal?: Ab
 
 /** The browser-safe Live summary whitelist returned by GET /api/v1/live/summary. */
 export interface LiveSummary {
+  provider: string | null;
   modelId: string | null;
   voice: string | null;
   personaName: string | null;
   limits: { sessionMs: number; idleMs: number } | null;
   profileEnabled: boolean;
+}
+
+/** The owner's persisted Live provider and voice; it applies when the service next starts. */
+export interface LiveSelection { provider: string; modelId: string; voice: string; appliesAt: string }
+
+/** Persist the Live provider and voice choice into live.json. Never touches a call in flight. */
+export async function saveLiveSelection(input: { provider: string; voice: string }, signal?: AbortSignal): Promise<LiveSelection> {
+  return request<LiveSelection>('/live/settings', { method: 'POST', body: input, signal });
 }
 
 /** Read-only Live summary. GET with the page cookie; the operator bearer is accepted too. */

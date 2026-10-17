@@ -47,12 +47,14 @@ for (let i = 1; i < argv.length; i++) {
 
 // ---------- the data directory, resolved exactly as the host resolves it ----------
 
+// The same order and the same per-platform default as defaultDataDir() in server/host/runtime.ts.
 function dataDirectory() {
   if (options.dataDir !== undefined) return options.dataDir;
   const state = process.env.DIDI_STATE_DIR;
   if (state) return state;
-  const base = process.env.XDG_DATA_HOME ?? join(homedir(), '.local', 'share');
-  return join(base, 'lux-didi');
+  if (process.platform === 'darwin') return join(homedir(), 'Library', 'Application Support', 'Lux Didi');
+  if (process.platform === 'win32') return join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'), 'Lux Didi');
+  return join(process.env.XDG_DATA_HOME ?? join(homedir(), '.local', 'share'), 'lux-didi');
 }
 
 function sinceMs() {

@@ -1,7 +1,9 @@
 # Debugging Naya from her own logs
 
-Two local files describe every session. They sit in the host data directory, which is
-`--data-dir`, else `DIDI_STATE_DIR`, else `$XDG_DATA_HOME/lux-didi`, else `~/.local/share/lux-didi`.
+Two local files describe every session. They sit in the host data directory, which is `--data-dir`,
+else `DIDI_STATE_DIR`, else the platform default the host itself uses: `~/Library/Application
+Support/Lux Didi` on macOS, `%LOCALAPPDATA%\Lux Didi` on Windows, and `$XDG_DATA_HOME/lux-didi`
+(or `~/.local/share/lux-didi`) elsewhere. The reader resolves it the same way.
 
 | path | holds | privacy |
 | --- | --- | --- |

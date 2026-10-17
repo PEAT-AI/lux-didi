@@ -49,6 +49,11 @@ const run = (root: string, args: string[], env: Record<string, string> = {}): st
   encoding: 'utf8', env: { ...process.env, ...env }, timeout: 60_000,
 });
 
+/** Run with no `--data-dir`, so the reader has to resolve the host's own default. */
+const runBare = (args: string[], env: NodeJS.ProcessEnv): string => execFileSync(process.execPath, [script, ...args], {
+  encoding: 'utf8', env, timeout: 60_000,
+});
+
 test('sessions lists one row per session with its identity and terminal code', t => {
   const root = fixtures(t);
   const out = run(root, ['sessions']);
@@ -140,4 +145,26 @@ test('native reads the app subsystem log for the session window', t => {
 test('a missing session is reported, never silently empty', t => {
   const root = fixtures(t);
   assert.throws(() => run(root, ['timeline', 'live-absent']), /no session live-absent/);
+});
+
+test('the reader resolves the host default data dir with no --data-dir', t => {
+  const home = mkdtempSync(join(tmpdir(), 'didi-naya-home-'));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  // The platform default defaultDataDir() gives, mirrored here so the assertion is the host's own rule.
+  const expected = process.platform === 'darwin'
+    ? join(home, 'Library', 'Application Support', 'Lux Didi')
+    : process.platform === 'win32'
+      ? join(process.env.LOCALAPPDATA ?? join(home, 'AppData', 'Local'), 'Lux Didi')
+      : join(home, '.local', 'share', 'lux-didi');
+  const day = join(expected, 'debug', '2026-10-17');
+  mkdirSync(day, { recursive: true, mode: 0o700 });
+  writeFileSync(join(day, 'live-live-default.jsonl'), [
+    { t: START, mono: 0, kind: 'live', sessionId: 'live-default', event: 'session_start', provider: 'gemini', model: 'models/live', instructionChars: 4, instructions: 'Synthetic' },
+    { t: '2026-10-17T12:00:01.000Z', mono: 1000, kind: 'live', sessionId: 'live-default', event: 'session_end', code: 'closed', by: 'ended' },
+  ].map(row => `${JSON.stringify(row)}\n`).join(''));
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: home };
+  delete env.DIDI_STATE_DIR;
+  delete env.XDG_DATA_HOME;
+  const out = runBare(['sessions'], env);
+  assert.match(out, /live-default\s+live/, `the reader found the session under ${expected}`);
 });

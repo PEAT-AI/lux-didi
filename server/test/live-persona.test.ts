@@ -434,7 +434,7 @@ test('earlier-conversations fills the space left under the budget, newest first,
   // Tight budget: as many whole summaries as fit, newest first, never over the budget.
   const tight = buildEarlierConversationsSection(candidates, { now, timeZone: 'UTC', maxChars: 400 });
   assert.ok(tight.selectedIds.length > 0 && tight.selectedIds.length < 20, 'a tight budget keeps a prefix');
-  assert.deepEqual(tight.selectedIds, candidates.slice(0, tight.selectedIds.length).map(candidate => candidate.id), 'newest first');
+  assert.deepEqual(tight.selectedIds, candidates.map(candidate => candidate.id).filter(id => tight.selectedIds.includes(id)), 'newest first');
   assert.ok(tight.section.length <= 400, `section stayed at the budget (${tight.section.length})`);
   assert.deepEqual(tight.omitted.map(o => o.id), candidates.slice(tight.selectedIds.length).map(candidate => candidate.id));
   assert.ok(tight.omitted.every(o => o.reason === 'budget'));

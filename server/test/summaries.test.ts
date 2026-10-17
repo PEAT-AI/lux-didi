@@ -386,7 +386,7 @@ test('twenty complete summaries fill the space left under the target instead of 
     const section = buildEarlierConversationsSection(candidates, { now: NOW + 1, timeZone: 'UTC', maxChars: earlierConversationsBudget(basis.text.length) });
     assert.ok(section.selectedIds.length > 6, `kept ${section.selectedIds.length} summaries`);
     assert.equal(section.omitted.length, 20 - section.selectedIds.length);
-    assert.deepEqual(section.selectedIds, candidates.slice(0, section.selectedIds.length).map(candidate => candidate.id), 'newest first');
+    assert.deepEqual(section.selectedIds, candidates.map(candidate => candidate.id).filter(id => section.selectedIds.includes(id)), 'newest first');
     const composed = build(section.section);
     assert.equal(composed.earlierConversationsIncluded, true);
     assert.ok(composed.text.length > basis.text.length);

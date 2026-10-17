@@ -104,7 +104,7 @@ test('a mute owner turn is nudged once and then recovered on a fresh seeded sess
 test('an open model turn that emits one chunk and then nothing is nudged once and then recovered', async t => {
   const live = await openLive(t);
   await live.emit({ type: 'modelTurnStarted' });
-  for (let chunk = 0; chunk < 5; chunk++) await live.emit({ type: 'audio', pcm: new Uint8Array(8), mimeType: 'audio/pcm;rate=24000' });
+  for (let chunk = 0; chunk < 5; chunk++) await live.emit({ type: 'audio', pcm: new Uint8Array(8), rate: 24000 });
   assert.deepEqual(phases(live), ['armed'], 'one armed record per turn, not one per audio chunk');
   await until(live, () => phases(live).includes('recovered'), RESPONSE_WATCHDOG_NUDGE_MS + RESPONSE_WATCHDOG_RECOVERY_MS + 5_000);
   assert.deepEqual(phases(live), ['armed', 'nudged', 'recovered'], 'a turn that opens and goes quiet is watched to recovery');
@@ -116,7 +116,7 @@ test('model output after the nudge disarms the watchdog', async t => {
   await ownerTurnEnd(live);
   await until(live, () => phases(live).includes('nudged'));
   await live.emit({ type: 'modelTurnStarted' });
-  await live.emit({ type: 'audio', pcm: new Uint8Array(8), mimeType: 'audio/pcm;rate=24000' });
+  await live.emit({ type: 'audio', pcm: new Uint8Array(8), rate: 24000 });
   await live.emit({ type: 'turnComplete' });
   const before = phases(live).length;
   await live.advance(RESPONSE_WATCHDOG_NUDGE_MS + RESPONSE_WATCHDOG_RECOVERY_MS + 5_000);
@@ -142,7 +142,7 @@ test('a second mute inside the window settles the call honestly instead of loopi
 test('idle measures silence, so it fires with mic frames flowing and no speech, and live_turn_open is recorded', async t => {
   const live = await openLive(t, { limits: { idleMs: 3_000 } });
   await live.emit({ type: 'modelTurnStarted' });
-  await live.emit({ type: 'audio', pcm: new Uint8Array(8), mimeType: 'audio/pcm;rate=24000' });
+  await live.emit({ type: 'audio', pcm: new Uint8Array(8), rate: 24000 });
   for (let elapsed = 0; elapsed < 5_000 && !live.receipts.some(record => record.event === 'live_turn_open'); elapsed += 500) {
     live.sendAudio();
     await live.advance(500);

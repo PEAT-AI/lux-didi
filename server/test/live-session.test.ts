@@ -2926,7 +2926,6 @@ test('a model turn start enters THINKING and every live_state change is written 
   const session = h.owner.create({ idempotencyKey: 'live-state-receipts', inputClass: 'ordinary' }, h.ctx);
   const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
   await attachment.ready;
-  const states = () => receipts.map(record => String(record.state));
   const transitions = () => receipts.map(record => `${record.from === undefined ? '-' : String(record.from)}>${String(record.state)}@${String(record.cause)}`);
   const settle = async () => { for (let attempt = 0; attempt < 6; attempt += 1) await tick(); };
   await settle();

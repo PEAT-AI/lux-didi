@@ -619,13 +619,14 @@ export class LiveSessionOwner {
 
   current(cursor = 0): LivePageProjection {
     if (!Number.isSafeInteger(cursor) || cursor < 0) throw new LiveError('invalid_request');
+    let handle: ActiveSession | undefined;
     const page: LivePageProjection = this.#store.transaction(tx => {
       const row = tx.get('SELECT live_session_id,lifecycle,created_at,updated_at,terminal_at,terminal_outcome,memory_provenance FROM live_sessions WHERE owner_assistant_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1', [this.#store.assistantId]);
       // A fresh origin or session restart opens on a blank voice view: an idle page carries no job rows,
       // and a live page carries only the rows of its own session (UI3b).
       const jobs = row ? this.#feedJobs(tx, String(row.live_session_id)) : [];
       if (!row) return { state: 'idle', since: null, ...(jobs.length ? { jobs } : {}), entries: [], cursor };
-      const handle = this.#active.get(String(row.live_session_id));
+      handle = this.#active.get(String(row.live_session_id));
       const terminal = parseTerminal(row.terminal_outcome);
       const pastSession: LivePageProjection['pastSession'] = terminal || !handle
         ? { outcome: terminal?.state ?? 'unknown', endedAt: terminal ? Number(row.terminal_at) : null, lastObservedAt: Number(row.updated_at) } : undefined;

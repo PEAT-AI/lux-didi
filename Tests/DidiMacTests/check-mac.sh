@@ -19,6 +19,16 @@ if [ "${1:-}" = "--prepare" ]; then
   exit 0
 fi
 
+# Declared-check mode (P1-R3): a declared check calls this script with no arguments and no
+# prepared artifacts, so the script owns the same prepare phase and its tempdir itself and
+# removes it on success. A caller that already prepared keeps passing LUX_MAC_ARTIFACTS.
+if [ -z "${LUX_MAC_ARTIFACTS:-}" ]; then
+  owned=$(mktemp -d "${TMPDIR:-/tmp}/didi-mac-check.XXXXXX")
+  trap 'status=$?; if [ "$status" -eq 0 ]; then rm -rf "$owned"; else printf "FAILED ARTIFACTS: %s\n" "$owned" >&2; fi' EXIT
+  bash "$0" --prepare "$owned"
+  LUX_MAC_ARTIFACTS="$owned"
+fi
+
 # Leased run phase: native launches only, from the prepared absolute artifacts.
 artifacts="${LUX_MAC_ARTIFACTS:?check-mac.sh needs LUX_MAC_ARTIFACTS from the prepare phase}"
 app="$artifacts/Lux Didi.app"

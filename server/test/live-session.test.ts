@@ -2913,3 +2913,100 @@ test('a tool call in flight owns the silence, so the response watchdog never fir
   assert.ok(h.f.frames.some(frame => 'toolResponse' in (frame as object)), 'the tool response still reaches the provider');
   assert.equal(h.requests.length, 1, 'a delivered tool response returns to the same session');
 });
+
+test('a model turn start enters THINKING and every live_state change is written as it happens', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const detach = attachHostLogSink({ event: raw => {
+    const record = raw as Record<string, unknown>;
+    if (record.event === 'live_state') receipts.push(record);
+  } });
+  t.after(() => detach());
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port, language: 'en-IN' });
+  const session = h.owner.create({ idempotencyKey: 'live-state-receipts', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  const transitions = () => receipts.map(record => `${record.from === undefined ? '-' : String(record.from)}>${String(record.state)}@${String(record.cause)}`);
+  const settle = async () => { for (let attempt = 0; attempt < 6; attempt += 1) await tick(); };
+  await settle();
+  assert.deepEqual(transitions(), ['->listening@created'], 'the opening state is written at the start, with no poll');
+  fake.emit({ type: 'inputTranscription', text: 'plan my week', finished: true });
+  fake.emit({ type: 'modelTurnStarted' });
+  await settle();
+  assert.deepEqual(transitions(), ['->listening@created', 'listening>thinking@model_turn_start'], 'a generation start is the think time');
+  fake.emit({ type: 'audio', pcm, rate: 24_000 });
+  await settle();
+  fake.emit({ type: 'turnComplete' });
+  await settle();
+  assert.deepEqual(transitions(),
+    ['->listening@created', 'listening>thinking@model_turn_start', 'thinking>speaking@audio', 'speaking>listening@turn_complete'],
+    'each change is written once, when it happens, with the state it came from and why');
+  for (const record of receipts) assert.ok(safeEvent(record), 'the host log whitelist accepts the exact transition shape');
+  assert.equal(h.owner.get(session.liveSessionId).consumerState, 'attached', 'the owner is still attached and listening');
+  attachment.close();
+  await settle();
+  assert.deepEqual(transitions().slice(-1), ['listening>ended@settle'], 'the end is written without a poll too');
+});
+
+test('an owner turn that ends arms the watchdog, and the next turn arms it again', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const detach = attachHostLogSink({ event: raw => {
+    const record = raw as Record<string, unknown>;
+    if (record.event === 'live_watchdog') receipts.push(record);
+  } });
+  t.after(() => detach());
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port, language: 'en-IN' });
+  const session = h.owner.create({ idempotencyKey: 'watchdog-rearm', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  const phases = () => receipts.map(record => String(record.phase));
+  const ownerTurnEnd = async (text: string) => {
+    fake.emit({ type: 'inputTranscription', text, finished: true });
+    fake.emit({ type: 'modelTurnStarted' });
+    for (let attempt = 0; attempt < 6; attempt += 1) await tick();
+  };
+  await ownerTurnEnd('what is on my plate');
+  assert.deepEqual(phases(), ['armed'], 'the ended owner turn owes a reply');
+  fake.emit({ type: 'turnComplete' });
+  // The second turn arms through the synthesized generation start alone, which is the event the real adapter
+  // emits when a plain owner episode ends: that is what stops the watchdog going blind after the first turn.
+  fake.emit({ type: 'modelTurnStarted' });
+  for (let attempt = 0; attempt < 6; attempt += 1) await tick();
+  assert.deepEqual(phases(), ['armed', 'armed'], 'the second turn is watched as well, so the watchdog is never blind');
+  attachment.close();
+});
+
+test('a delegated response that thinks for ten seconds is busy, not mute', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const detach = attachHostLogSink({ event: raw => {
+    const record = raw as Record<string, unknown>;
+    if (record.event === 'live_watchdog') receipts.push(record);
+  } });
+  t.after(() => detach());
+  const fake = fakeLiveVoicePort();
+  const scheduler = new DeadlineClock();
+  // Long timers: this test walks 19 s of wall clock, so only the response watchdog may fire.
+  const h = await harness(t, { port: fake.port, scheduler, language: 'en-IN', limits: { idleMs: 600_000, sessionMs: 1_200_000 } });
+  const session = h.owner.create({ idempotencyKey: 'delegated-busy', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  const phases = () => receipts.map(record => String(record.phase));
+  const advance = async (ms: number) => { h.advance(ms); scheduler.runDue(); for (let attempt = 0; attempt < 6; attempt += 1) await tick(); };
+  // The fake port's event union does not declare the tool events the host already handles, so the shape is named here.
+  fake.emit({ type: 'toolCall', calls: [{ id: 'call_1', name: 'research_lookup', args: { q: 'plate' } }] } as unknown as Parameters<typeof fake.emit>[0]);
+  await advanceUntil(ms => h.advance(ms), scheduler, () => fake.toolResponses.length === 1);
+  fake.emit({ type: 'modelTurnStarted' });
+  for (let attempt = 0; attempt < 6; attempt += 1) await tick();
+  assert.deepEqual(phases(), ['armed'], 'the delegated response is watched from its start');
+  for (let second = 0; second < 10; second += 1) await advance(1_000);
+  assert.deepEqual(phases(), ['armed'], 'no nudge and no rebuild while the delegated response generates');
+  assert.equal(fake.sessionsOpened, 1, 'the working session is not rebuilt');
+  assert.equal(h.owner.get(session.liveSessionId).terminal, null, 'the call is still up');
+  fake.emit({ type: 'audio', pcm, rate: 24_000 });
+  for (let attempt = 0; attempt < 6; attempt += 1) await tick();
+  for (let second = 0; second < 9; second += 1) await advance(1_000);
+  assert.deepEqual(phases(), ['armed', 'nudged'], 'a reply that went silent again is watched again');
+  assert.equal(fake.sessionsOpened, 1, 'a nudge is not a recovery');
+  attachment.close();
+});

@@ -2560,8 +2560,9 @@ test('a model turn that stops generating without turnComplete is logged open (#3
   const detach = attachHostLogSink({ event: raw => { events.push(raw as { event?: string; msSinceLastModelAudio?: number | null }); } });
   try {
     // The 3h-a witness shape: the greeting streams audio, then the provider goes quiet without turnComplete.
+    const output = attachment.output[Symbol.asyncIterator]();
     h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [audio()] } } });
-    await tick();
+    await output.next();
     h.advance(1000); scheduler.runDue();
     await attachment.done;
   } finally { detach(); }

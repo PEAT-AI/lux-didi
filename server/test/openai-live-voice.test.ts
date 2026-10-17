@@ -776,6 +776,7 @@ describe('openai gpt-live turn states', () => {
     assert.equal(shed.length, 1, 'the shed receipt is bounded to one per window');
     assert.ok(Number(shed[0]!.bytes) > 0, 'the receipt counts the shed bytes');
     assert.ok(Number(shed[0]!.bufferedPeak) >= 96 * 1024, 'and the peak backlog it was shed against');
+    assert.ok(safeEvent(shed[0]), 'the host log whitelist accepts the shed receipt');
     // The uplink recovers: eleven of the twelve frames are gone, so what the model gets is the newest speech.
     socket.bufferedAmount = 0;
     session.sendAudio({ pcm: pcm16(480), dataClass: 'ordinary' });
@@ -818,6 +819,7 @@ describe('openai gpt-live turn states', () => {
     const stall = receipts().filter(record => record.event === 'live_stall');
     assert.equal(stall.length, 1, 'one stall receipt');
     assert.ok(Number(stall[0]!.silentMs) >= 8_000, 'and it carries the inbound silence that ended the transport');
+    assert.ok(safeEvent(stall[0]), 'the host log whitelist accepts the stall receipt');
   });
 
   // 3o: the standing cushion. After any dry the native 80 ms prebuffer is below one 100 ms delta, so the hold
@@ -847,5 +849,6 @@ describe('openai gpt-live turn states', () => {
     const rearm = receipts().filter(record => record.event === 'playback_rearm');
     assert.equal(rearm.length, 1, 'the turn reports its re-arm count once');
     assert.equal(rearm[0]!.count, 1);
+    assert.ok(safeEvent(rearm[0]), 'the host log whitelist accepts the re-arm receipt');
   });
 });

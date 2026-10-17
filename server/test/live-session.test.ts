@@ -572,6 +572,7 @@ test('a consumer detached for five seconds ends the session cleanly and keeps it
   const gone = receipts.filter(record => record.event === 'consumer_gone_end');
   assert.equal(gone.length, 1, 'one receipt for the end');
   assert.equal(gone[0]!['detachedMs'], 5_000);
+  assert.ok(safeEvent(gone[0]), 'the host log whitelist accepts the end receipt');
 });
 
 test('excluded transport facts and raw secrets never persist; Domain and CHAT stay untouched', async t => {
